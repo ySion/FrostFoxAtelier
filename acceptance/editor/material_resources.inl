@@ -51,14 +51,14 @@ void verify_material_resources() {
     require(take(material::capture(document.world().runtime(),resource.id()))->description().parameters.roughness==.4f &&
         !document.material_dirty(key),"Changing a texture committed a cancelled parameter draft or created no-op history.");
     changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));const auto entity_a=document.selection().entity;
-    const auto a=component(document,entity_a,document.types().static_mesh_component);
+    const auto a=component(document,entity_a,document.presentation_types().static_mesh_component);
     changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));const auto entity_b=document.selection().entity;
-    const auto b=component(document,entity_b,document.types().static_mesh_component);
+    const auto b=component(document,entity_b,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,a,"slot/0",key));take(document.assign_material(project,b,"slot/0",key));
     const auto count=document.undo_count();take(document.assign_material(project,a,"slot/0",key));
     require(document.undo_count()==count,"Idempotent slot assignment created history.");
     take(document.set_material_override(a,"slot/0",roughness.path,true));
-    const auto instance=take(world::read_material_bindings(document.world().runtime(),a)).front().resource;
+    const auto instance=take(presentation::read_material_bindings(document.world().runtime(),a)).front().resource;
     require(instance.id()!=resource.id(),"Instance override changed the shared asset identity.");
     require(!material::create_instance(document.world().runtime(),instance),"A second material inheritance level was accepted.");
     auto cyclic=take(material::read_material(document.world().runtime(),instance.id()));cyclic.parent=instance;
@@ -71,7 +71,7 @@ void verify_material_resources() {
         take(material::capture(document.world().runtime(),instance.id()))->description().parameters.roughness==.8f,
         "Idempotent override assignment retained an unfinished parameter draft.");
     take(document.set_property(resource.id(),red.path,Scalar{.25f},112));
-    const auto capture=[&](ObjectId id){return take(world::material_surfaces(document.world().runtime(),id))->front();};
+    const auto capture=[&](ObjectId id){return take(presentation::material_surfaces(document.world().runtime(),id))->front();};
     require(capture(a)->description().parameters.roughness==.8f && capture(b)->description().parameters.roughness==.4f &&
         capture(a)->description().parameters.base_color[0]==.25f && capture(b)->description().parameters.base_color[0]==.25f,
         "Explicit roughness override stopped inheriting the parent's color.");
@@ -90,28 +90,35 @@ void verify_material_resources() {
     changed(document.undo());require(capture(a)->description().parameters.roughness==.8f,"Scene undo did not restore override intent.");
     changed(document.redo());require(capture(a)->description().parameters.roughness==.4f,"Scene redo lost inherited state.");
     changed(document.undo());
-    application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto revision=snapshot.revision;
-    take(snapshot.refresh(document));require(snapshot.revision==revision,"Unchanged material rebuilt renderer snapshots.");
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto surfaces=snapshot.meshes.at(0).surfaces;
+    take(snapshot.refresh(document));require(surfaces && snapshot.meshes.at(0).surfaces==surfaces,"Unchanged material rebuilt renderer snapshots.");
+    // A shared asset edit changes no component byte; the slot surfaces capture finds it.
+    take(document.set_property(resource.id(),red.path,Scalar{.5f},119));
+    const auto built=snapshot.built;take(snapshot.refresh(document));
+    require(snapshot.built>built && snapshot.meshes.at(0).surfaces!=surfaces &&
+        snapshot.meshes.at(0).surfaces->front()->description().parameters.base_color[0]==.5f,
+        "A shared material edit did not reach the renderer snapshot.");
+    take(document.material_undo(key));
     take(document.save_material(project,key));
     auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
     auto changed_parent=take(project.material(key));changed_parent.description.parameters.base_color[1]=.35f;
     take(project.save_material(changed_parent));
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(project.root()/"Content/Scenes/Main.scene")),project));
     const auto reopened_entities=take(reopened->world().members());
-    const auto reopened_a=component(*reopened,reopened_entities[0].id(),reopened->types().static_mesh_component);
-    const auto reopened_b=component(*reopened,reopened_entities[1].id(),reopened->types().static_mesh_component);
-    const auto reopened_bindings=take(world::read_material_bindings(reopened->world().runtime(),reopened_a));
+    const auto reopened_a=component(*reopened,reopened_entities[0].id(),reopened->presentation_types().static_mesh_component);
+    const auto reopened_b=component(*reopened,reopened_entities[1].id(),reopened->presentation_types().static_mesh_component);
+    const auto reopened_bindings=take(presentation::read_material_bindings(reopened->world().runtime(),reopened_a));
     require(take(material::read_material(reopened->world().runtime(),reopened_bindings[0].resource.id())).overrides!=0,
         "Scene serialization inferred away explicit override intent.");
-    require(take(world::material_surfaces(reopened->world().runtime(),reopened_a))->front()->description().parameters.roughness==.8f &&
-        take(world::material_surfaces(reopened->world().runtime(),reopened_b))->front()->description().parameters.roughness==.4f,
+    require(take(presentation::material_surfaces(reopened->world().runtime(),reopened_a))->front()->description().parameters.roughness==.8f &&
+        take(presentation::material_surfaces(reopened->world().runtime(),reopened_b))->front()->description().parameters.roughness==.4f,
         "Material inheritance did not survive project save/reopen.");
-    const auto reopened_surface=take(world::material_surfaces(reopened->world().runtime(),reopened_a))->front();
+    const auto reopened_surface=take(presentation::material_surfaces(reopened->world().runtime(),reopened_a))->front();
     require(reopened_surface->description().parameters.base_color[1]==.35f,"Saved instance values replaced a later parent-asset change.");
     reopened.reset();require(bool(reopened_surface->description().textures[0].image),"Closing a Runtime invalidated its published texture content.");
     take(document.select(entity_a));changed(document.duplicate_selected());
-    const auto duplicate=component(document,document.selection().entity,document.types().static_mesh_component);
-    const auto duplicate_material=take(world::read_material_bindings(document.world().runtime(),duplicate))[0].resource;
+    const auto duplicate=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
+    const auto duplicate_material=take(presentation::read_material_bindings(document.world().runtime(),duplicate))[0].resource;
     require(duplicate_material.id()!=instance.id(),"Duplicating an Entity shared mutable instance overrides.");
     require(take(material::read_material(document.world().runtime(),duplicate_material.id())).parent.id()==resource.id(),
         "Duplicating an Entity copied the shared asset.");
@@ -119,16 +126,16 @@ void verify_material_resources() {
     take(editor::write_file(evidence/"Replacement.obj",
         "mtllib Replacement.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl replacement\nf 1 2 3\n"));
     const auto replacement=take(project.mesh(take(project.import_mesh(evidence/"Replacement.obj"))));
-    take(world::set_mesh_binding(document.world().runtime(),duplicate,{replacement.key,replacement.mesh}));
+    take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{replacement.key,replacement.mesh}));
     take(document.assign_material(project,duplicate,"replacement",key));
     const auto original=take(project.mesh("builtin/cube"));
-    take(world::set_mesh_binding(document.world().runtime(),duplicate,{original.key,original.mesh}));
-    const auto retained=take(world::read_material_bindings(document.world().runtime(),duplicate));
+    take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{original.key,original.mesh}));
+    const auto retained=take(presentation::read_material_bindings(document.world().runtime(),duplicate));
     require(retained.size()==1 && retained[0].slot=="slot/0" && retained[0].resource.id()==duplicate_material.id(),
         "Replacing geometry retained a missing slot or discarded a matching instance.");
     auto swapped=take(editor::Session::deserialize(take(document.serialize()),project));static_cast<void>(swapped);
-    take(world::set_mesh_binding(document.world().runtime(),duplicate,{}));
-    require(take(world::read_material_bindings(document.world().runtime(),duplicate)).empty(),"Clearing a mesh retained invalid material slots.");
+    take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{}));
+    require(take(presentation::read_material_bindings(document.world().runtime(),duplicate)).empty(),"Clearing a mesh retained invalid material slots.");
     auto cleared=take(editor::Session::deserialize(take(document.serialize()),project));static_cast<void>(cleared);
     {
         editor::Session local;auto& local_runtime=local.world().runtime();
@@ -136,12 +143,12 @@ void verify_material_resources() {
         const auto original=take(local.material_resource(project,asset));
         changed(local.create_static_mesh(take(project.mesh("builtin/cube"))));
         const auto original_entity=local.selection().entity;
-        const auto original_mesh=component(local,original_entity,local.types().static_mesh_component);
-        const std::array<world::MaterialBinding,1> bindings{{{"slot/0",original,true}}};
-        take(world::set_material_bindings(local_runtime,original_mesh,bindings));
+        const auto original_mesh=component(local,original_entity,local.presentation_types().static_mesh_component);
+        const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",original,true}}};
+        take(presentation::set_material_bindings(local_runtime,original_mesh,bindings));
         changed(local.duplicate_selected());
-        const auto copied_mesh=component(local,local.selection().entity,local.types().static_mesh_component);
-        const auto copied=take(world::read_material_bindings(local_runtime,copied_mesh)).front().resource;
+        const auto copied_mesh=component(local,local.selection().entity,local.presentation_types().static_mesh_component);
+        const auto copied=take(presentation::read_material_bindings(local_runtime,copied_mesh)).front().resource;
         const auto original_state=take(material::read_material(local_runtime,original.id()));
         const auto copied_state=take(material::read_material(local_runtime,copied.id()));
         require(copied.id()!=original.id() && copied_state.source.empty() && !copied_state.parent.registered() &&
@@ -164,8 +171,8 @@ void verify_material_resources() {
         const auto entities=take(reopened_local->world().members());require(entities.size()==2,"Inline material scene lost its Entities.");
         auto& reopened_runtime=reopened_local->world().runtime();
         const auto material_of=[&](std::size_t index) {
-            const auto mesh=component(*reopened_local,entities[index].id(),reopened_local->types().static_mesh_component);
-            return take(world::read_material_bindings(reopened_runtime,mesh)).front().resource;
+            const auto mesh=component(*reopened_local,entities[index].id(),reopened_local->presentation_types().static_mesh_component);
+            return take(presentation::read_material_bindings(reopened_runtime,mesh)).front().resource;
         };
         const auto reopened_original=material_of(0),reopened_copy=material_of(1);
         const auto left=take(material::read_material(reopened_runtime,reopened_original.id())),right=take(material::read_material(reopened_runtime,reopened_copy.id()));
@@ -185,9 +192,9 @@ void verify_material_resources() {
     take(editor::write_file(evidence/"Two.obj","mtllib Two.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nusemtl First\nf 1 2 3\nusemtl Second\nf 2 4 3\n"));
     const auto two_slots=take(project.mesh(take(project.import_mesh(evidence/"Two.obj"))));
     changed(document.create_static_mesh(two_slots));const auto partial_entity=document.selection().entity;
-    const auto partial=component(document,partial_entity,document.types().static_mesh_component);
-    const auto first_slot=world::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().front().material);
-    const auto second_slot=world::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().back().material);
+    const auto partial=component(document,partial_entity,document.presentation_types().static_mesh_component);
+    const auto first_slot=presentation::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().front().material);
+    const auto second_slot=presentation::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().back().material);
     take(document.assign_material(project,partial,first_slot,key));
     const auto fallback=find_property(partial,"material.roughness");
     const auto fallback_visible=[&] {
@@ -233,7 +240,7 @@ void verify_missing_resources() {
     const auto brick=take(project.create_material("Content/Materials/Brick.material"));
     const auto moss=take(project.create_material("Content/Materials/Moss.material")); // Named only by the mesh that goes missing.
     const auto wall=take(project.mesh(take(project.import_mesh(evidence/"Wall.obj"))));
-    const auto wall_slot=world::material_slot_name(*wall.mesh,wall.mesh->parts().front().material);
+    const auto wall_slot=presentation::material_slot_name(*wall.mesh,wall.mesh->parts().front().material);
     editor::Session document;auto& runtime=document.world().runtime();
     const auto stone_resource=take(document.material_resource(project,stone));
     const auto roughness=[&] {
@@ -243,14 +250,14 @@ void verify_missing_resources() {
     take(document.set_material_texture(project,stone_resource.id(),material::Input::base_color,texture));
     take(document.set_property(stone_resource.id(),roughness,Scalar{.4f},201));take(document.save_material(project,stone));
     changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
-    const auto textured=component(document,document.selection().entity,document.types().static_mesh_component);
+    const auto textured=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,textured,"slot/0",stone));
     changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));
-    const auto instanced=component(document,document.selection().entity,document.types().static_mesh_component);
+    const auto instanced=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,instanced,"slot/0",brick));take(document.set_material_override(instanced,"slot/0",roughness,true));
-    take(document.set_property(take(world::read_material_bindings(runtime,instanced)).front().resource.id(),roughness,Scalar{.8f},202));
+    take(document.set_property(take(presentation::read_material_bindings(runtime,instanced)).front().resource.id(),roughness,Scalar{.8f},202));
     changed(document.create_static_mesh(wall,{4,0,0}));
-    const auto walled=component(document,document.selection().entity,document.types().static_mesh_component);
+    const auto walled=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,walled,wall_slot,moss));
     physics::BodySettings body;body.shape=physics::ShapeKind::triangle_mesh;take(document.configure_body(walled,body));
     const auto saved=take(document.serialize());take(editor::write_file(root/"Content/Scenes/Main.scene",saved));
@@ -275,22 +282,22 @@ void verify_missing_resources() {
     require(kept->load_issues().size()==4 && issue({"textures","base_color"})==1 && issue({"parent"})==1 && issue({"mesh"})==1 &&
         issue({"properties","body","shape"})==1,"Missing texture, parent material, mesh and collision were not each reported once.");
     const auto entities=take(kept->world().members());
-    const auto part=[&](std::size_t index){return component(*kept,entities[index].id(),kept->types().static_mesh_component);};
-    const auto shared=take(world::read_material_bindings(kept_runtime,part(0))).front().resource;
+    const auto part=[&](std::size_t index){return component(*kept,entities[index].id(),kept->presentation_types().static_mesh_component);};
+    const auto shared=take(presentation::read_material_bindings(kept_runtime,part(0))).front().resource;
     const auto shared_state=take(material::read_material(kept_runtime,shared.id()));
     const auto missing_texture=take(material::read_texture(kept_runtime,shared_state.textures[0].id()));
     require(shared_state.source==stone && shared_state.description.parameters.roughness==.4f && missing_texture.source==texture &&
         !missing_texture.image && kept->unavailable(editor::AssetKind::texture,texture) && !kept->unavailable(editor::AssetKind::material,stone),
         "A missing texture replaced its material or lost the material's other parameters.");
-    const auto instance=take(world::read_material_bindings(kept_runtime,part(1))).front().resource;
+    const auto instance=take(presentation::read_material_bindings(kept_runtime,part(1))).front().resource;
     const auto instance_state=take(material::read_material(kept_runtime,instance.id()));
     const auto stand_in=instance_state.parent;
     require(take(material::capture(kept_runtime,instance.id()))->description().parameters.roughness==.8f &&
         take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(editor::AssetKind::material,brick),
         "A missing parent material lost its instance's overrides or reference.");
-    const auto mesh=take(world::read_static_mesh(kept_runtime,part(2))).mesh;
+    const auto mesh=take(presentation::read_static_mesh(kept_runtime,part(2))).mesh;
     const auto retained=take(kept->retained(part(2)));
-    require(mesh.source==wall.key && !mesh.resolved && take(world::read_material_bindings(kept_runtime,part(2))).empty() &&
+    require(mesh.source==wall.key && !mesh.resolved && take(presentation::read_material_bindings(kept_runtime,part(2))).empty() &&
         retained.entries.size()==1 && retained.entries[0].path==std::vector<std::string>{"materials"} &&
         retained.entries[0].kind==world::DiagnosticKind::missing_resource &&
         !take(physics::read_settings(kept_runtime,part(2))).cooked_shape,
@@ -320,10 +327,10 @@ void verify_missing_resources() {
     auto repaired=take(editor::Project::open(root)); // Cache/Physics has no entry for the wall; loading cooks it.
     auto restored=take(editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict));
     const auto restored_entities=take(restored->world().members());
-    const auto restored_part=[&](std::size_t index){return component(*restored,restored_entities[index].id(),restored->types().static_mesh_component);};
-    const auto restored_shared=take(world::read_material_bindings(restored->world().runtime(),restored_part(0))).front().resource;
+    const auto restored_part=[&](std::size_t index){return component(*restored,restored_entities[index].id(),restored->presentation_types().static_mesh_component);};
+    const auto restored_shared=take(presentation::read_material_bindings(restored->world().runtime(),restored_part(0))).front().resource;
     require(take(material::capture(restored->world().runtime(),restored_shared.id()))->description().textures[0].image &&
-        take(world::read_material_bindings(restored->world().runtime(),restored_part(2))).size()==1 &&
+        take(presentation::read_material_bindings(restored->world().runtime(),restored_part(2))).size()==1 &&
         take(physics::read_settings(restored->world().runtime(),restored_part(2))).cooked_shape,
         "Restored resources did not resolve through the preserved references or rebuild the missing Cook cache.");
     {
@@ -365,7 +372,7 @@ void verify_missing_resources() {
             return item.kind==world::DiagnosticKind::unreadable_resource && std::ranges::equal(item.field,field);
         });
     };
-    const auto broken_wall=component(*broken,take(broken->world().members())[2].id(),broken->types().static_mesh_component);
+    const auto broken_wall=component(*broken,take(broken->world().members())[2].id(),broken->presentation_types().static_mesh_component);
     require(unreadable_at({"mesh"})==1 && unreadable_at({"properties","body","shape"})==1 &&
         take(broken->retained(broken_wall)).entries.at(0).kind==world::DiagnosticKind::unreadable_resource && take(broken->serialize())==saved,
         "An unreadable mesh did not stand in with unreadable_resource diagnostics and saved data.");

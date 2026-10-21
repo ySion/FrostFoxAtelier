@@ -1,4 +1,4 @@
-#include "world/world.hpp"
+#include "presentation/presentation.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 #include <mimalloc.h>
@@ -13,7 +13,7 @@
 
 namespace {
 using namespace atelier;
-namespace w = atelier::world;
+namespace w = atelier::world; namespace p = atelier::presentation;
 
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 template<class T> T take(Result<T> result) {
@@ -44,10 +44,26 @@ TypeId holder_type(Runtime& runtime, const w::Types& types) {
         .field<&Holder::entity>("entity", {types.entity, ValueForm::strong_reference})
         .field<&Holder::component>("component", {types.component, ValueForm::strong_reference}).publish());
 }
-struct TestTypes : w::Types { TypeId counter; FieldId counter_value; };
+// World and presentation types, as hosts register them.
+struct AllTypes : w::Types, p::Types {};
+AllTypes register_all_types(Runtime& runtime) {
+    AllTypes types;
+    static_cast<w::Types&>(types) = take(w::register_types(runtime));
+    static_cast<p::Types&>(types) = take(p::register_types(runtime));
+    return types;
+}
+// Mesh and light registrations of the Scene, or those naming `object` as component or owner.
+std::size_t presented(const w::World& world, const p::Scene& scene, ObjectId object = {}) {
+    std::size_t count{};
+    for (const auto id : {scene.meshes(), scene.lights()})
+        for (const auto& member : take(world.members(id)))
+            count += object == ObjectId{} || member.component == object || member.entity == object;
+    return count;
+}
+struct TestTypes : AllTypes { TypeId counter; FieldId counter_value; };
 TestTypes register_test_types(Runtime& runtime) {
     TestTypes types;
-    static_cast<w::Types&>(types) = take(w::register_types(runtime));
+    static_cast<AllTypes&>(types) = register_all_types(runtime);
     types.counter = take(NativeRegistration<Counter>{runtime, "worldAcceptance.Counter", TypeKind::object}
         .base<w::Component>().field<&Counter::value>("value").field<&Counter::steps>("steps")
         .method<&Counter::advance>("advance").publish());
@@ -58,14 +74,14 @@ void publish(source::Program& program, std::string_view text) {
     auto candidate = take(source::Program::prepare(take(program.request("world-acceptance.source", text))));
     take(program.try_publish(candidate));
 }
-std::vector<ObjectRoot> add_shape(Runtime& runtime, const w::Types& types, w::World& world, ObjectId entity) {
+std::vector<ObjectRoot> add_shape(Runtime& runtime, const AllTypes& types, w::World& world, ObjectId entity) {
     std::vector<ObjectRoot> roots;
     roots.push_back(take(w::create_component(runtime, types.component)));
     roots.push_back(take(w::create_component(runtime, types.static_mesh_component)));
     take(world.set_transform(entity, {}));
     const std::array added{w::Attachment{roots[0].id()}, w::Attachment{roots[1].id()}};
     committed(world.attach_components(entity, added));
-    take(w::set_geometry(runtime, roots[1].id(), geometry::cube_mesh()));
+    take(p::set_geometry(runtime, roots[1].id(), geometry::cube_mesh()));
     return roots;
 }
 
@@ -75,10 +91,11 @@ void editing_and_execution() {
     const auto derived = take(NativeRegistration<DerivedCounter>{runtime, "worldAcceptance.DerivedCounter", TypeKind::object}
         .base<Counter>().field<&DerivedCounter::extra>("extra").publish());
     w::World world(runtime, types);
+    const auto scene = take(p::Scene::create(world, types));
     auto entity = take(w::create_entity(runtime));
     require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::detached, "New Entity was not Detached.");
     committed(world.attach(entity.id()));
-    require(take(world.members()).size() == 1 && take(w::components(runtime, entity.id())).empty() && take(world.render_items()).empty(),
+    require(take(world.members()).size() == 1 && take(w::components(runtime, entity.id())).empty() && take(scene.render_items()).empty(),
         "Empty Entity needs a Transform or render component.");
     auto cube = take(w::create_component(runtime, types.static_mesh_component));
     require(!take(w::has_transform(runtime, entity.id())), "Empty Entity silently acquired spatial identity.");
@@ -92,9 +109,9 @@ void editing_and_execution() {
     take(world.set_transform(entity.id(), {}));
     const std::array added{w::Attachment{collision.id()}, w::Attachment{cube.id()}};
     committed(world.attach_components(entity.id(), added));
-    take(w::set_geometry(runtime, cube.id(), geometry::cube_mesh()));
+    take(p::set_geometry(runtime, cube.id(), geometry::cube_mesh()));
     const auto entity_status = take(w::inspect_entity(runtime, entity.id()));
-    require(entity_status.state == w::EntityState::attached_inactive && entity_status.can_edit && entity_status.can_present,
+    require(entity_status.state == w::EntityState::attached_inactive && entity_status.can_edit && presented(world, scene, entity.id()),
         "Editor Entity must be visible/editable without game activation.");
     require(take(world.query(types.component)).size() == 2 && take(world.query(types.component, false)).empty(), "Inherited component query is incorrect.");
     take(world.write(entity.id(), types.position_fields[0], Scalar{4.f}));
@@ -106,7 +123,7 @@ void editing_and_execution() {
     require(take(w::read_transform(runtime, entity.id())).position.x == 4.f, "A rejected whole-value Transform write changed the position.");
     w::Trs trs{{4.f, 5.f, 6.f}, {0.f, 0.f, std::sqrt(.5f), std::sqrt(.5f)}, {2.f, 3.f, 4.f}};
     take(world.set_transform(entity.id(), trs));
-    const auto matrix = take(world.render_items()).front().world;
+    const auto matrix = take(scene.render_items()).front().world;
     require(near(matrix[0], 0.f) && near(matrix[1], 2.f) && near(matrix[4], -3.f) && near(matrix[10], 4.f) && matrix[12] == 4.f,
         "TRS did not produce S*R*T row-vector geometry.");
     const auto original = take(w::read_transform(runtime, entity.id()));
@@ -126,11 +143,11 @@ void editing_and_execution() {
 
     auto removed = take(world.remove_component(cube.id()));
     collect(runtime);
-    require(take(world.render_items()).empty() && take(w::inspect_component(runtime, cube.id())).owner == ObjectId{}, "Cube removal retained participation or owner.");
+    require(take(scene.render_items()).empty() && take(w::inspect_component(runtime, cube.id())).owner == ObjectId{}, "Cube removal retained participation or owner.");
     require(take(w::has_transform(runtime, entity.id())) && take(w::read_transform(runtime, entity.id())) == original,
         "Removing Mesh capability removed Entity spatial identity.");
     committed(world.restore(removed));
-    require(take(world.render_items()).size() == 1, "Component undo did not restore drawing.");
+    require(take(scene.render_items()).size() == 1, "Component undo did not restore drawing.");
     auto counter = take(w::create_component(runtime, derived));
     const std::array counter_added{w::Attachment{counter.id()}};
     committed(world.attach_components(entity.id(), counter_added));
@@ -153,7 +170,7 @@ void editing_and_execution() {
     committed(world.set_enabled(counter.id(), false)); take(world.update(7.f));
     require(std::get<float>(take(runtime.read(counter.id(), types.counter_value))) == 2.f && !take(w::inspect_component(runtime, counter.id())).active,
         "Disabled component still ran.");
-    require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::active && take(world.render_items()).size() == 1,
+    require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::active && take(scene.render_items()).size() == 1,
         "Component activation was confused with Entity activation or presentation.");
     committed(world.set_enabled(counter.id(), true));
     source::Program deferred(runtime, types.counter);
@@ -177,14 +194,14 @@ void editing_and_execution() {
     take(world.observe_lifecycle({}));
     committed(world.set_enabled(entity.id(), true));
     committed(world.stop());
-    require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::attached_inactive && take(world.render_items()).size() == 1,
+    require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::attached_inactive && take(scene.render_items()).size() == 1,
         "World.stop removed editor presentation or membership.");
     auto removal = take(world.detach(entity.id()));
     const auto entity_id = entity.id(), collision_id = collision.id(), cube_id = cube.id(), counter_id = counter.id();
     entity.reset(); collision.reset(); cube.reset(); counter.reset(); removed.root.reset();
     require(runtime.root_count() == 1, "Delete/undo sample still has roots outside its Entity removal record.");
     collect(runtime);
-    require(take(w::inspect_entity(runtime, entity_id)).state == w::EntityState::detached && take(world.render_items()).empty(), "Entity detach left participation.");
+    require(take(w::inspect_entity(runtime, entity_id)).state == w::EntityState::detached && take(scene.render_items()).empty(), "Entity detach left participation.");
     take(world.write(entity_id, types.position_fields[0], Scalar{99.f}));
     require(std::get<float>(take(world.read(entity_id, types.position_fields[0]))) == 99.f,
         "Detached composition did not support preparation through the same World editor entry.");
@@ -199,7 +216,7 @@ void editing_and_execution() {
     take(world.update(0.f));
     require(world.activity().tasks == 1, "Close sample did not contain a suspended real task.");
     committed(world.close());
-    require(world.activity().tasks == 0 && world.activity().update_registrations == 0 && world.activity().presentation_registrations == 0,
+    require(world.activity().tasks == 0 && world.activity().update_registrations == 0 && !world.members(scene.meshes()),
         "Close retained real execution/presentation registrations or task frames.");
     committed(w::destroy_entity(runtime, entity.id()));
     require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::invalid, "Explicit destroy did not invalidate a strongly held Entity.");
@@ -209,7 +226,7 @@ void editing_and_execution() {
 
 void reference_lifetime() {
     Runtime runtime;
-    const auto types = take(w::register_types(runtime));
+    const auto types = register_all_types(runtime);
     const auto holder = holder_type(runtime, types);
     auto keeper = take(runtime.create(holder));
     const auto entity_field = take(runtime.find_field(holder, "entity"));
@@ -263,8 +280,9 @@ void reference_lifetime() {
 
 void worlds_and_requests() {
     Runtime runtime, other;
-    const auto types = take(w::register_types(runtime)), foreign_types = take(w::register_types(other));
+    const auto types = register_all_types(runtime), foreign_types = register_all_types(other);
     w::World first(runtime, types), second(runtime, types);
+    const auto second_scene = take(p::Scene::create(second, types));
     auto entity = take(w::create_entity(runtime));
     auto foreign = take(w::create_entity(other));
     auto scalar_object = take(runtime.create(runtime.object_type()));
@@ -284,7 +302,7 @@ void worlds_and_requests() {
         "Old World queued destroy followed the Entity into a different World.");
     reject(first.restore(removed), "History stole the Entity from another World.");
     committed(first.close());
-    require(take(second.members()).size() == 1 && take(second.render_items()).size() == 1, "Closing one World affected another.");
+    require(take(second.members()).size() == 1 && take(second_scene.render_items()).size() == 1, "Closing one World affected another.");
     const auto destruction = take(second.request({w::RequestKind::destroy_entity, entity.id()}));
     auto destroyed = take(second.flush());
     require(destroyed.size() == 1 && destroyed[0].request == destruction && destroyed[0].result && !runtime.type_of(entity.id()),
@@ -300,7 +318,7 @@ void worlds_and_requests() {
 
 void lifecycle_subscription_unsubscribe() {
     Runtime runtime;
-    const auto types = take(w::register_types(runtime));
+    const auto types = register_all_types(runtime);
     w::World world(runtime, types);
     auto entity = take(w::create_entity(runtime));
     auto component = take(w::create_component(runtime, types.component));
@@ -340,7 +358,7 @@ void lifecycle_subscription_unsubscribe() {
 
 void failures_and_reentry() {
     Runtime runtime;
-    const auto types = take(w::register_types(runtime));
+    const auto types = register_all_types(runtime);
     w::World world(runtime, types);
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime));
@@ -372,7 +390,7 @@ void failures_and_reentry() {
         return {};
     }));
     committed(world.close());
-    require(close_callbacks == 1 && world.activity().tasks == 0 && world.activity().presentation_registrations == 0 &&
+    require(close_callbacks == 1 && world.activity().tasks == 0 &&
         !take(world.close()).changed, "Close was not complete/idempotent.");
     committed(w::destroy_entity(runtime, entity.id()));
     std::puts("[pass] World failure boundaries: committed notification failure, deferred reentry, closed admission and no resurrection");
@@ -618,16 +636,17 @@ void isolated_failures() {
 
 void spatial_tree_and_mesh() {
     Runtime runtime;
-    const auto types = take(w::register_types(runtime));
+    const auto types = register_all_types(runtime);
     w::World world(runtime, types);
-    auto entity = take(w::create_static_mesh_entity(world,{geometry::cube_mesh(),
+    const auto scene = take(p::Scene::create(world, types));
+    auto entity = take(p::create_static_mesh_entity(world,{geometry::cube_mesh(),
         {{10,0,0},{0,0,std::sqrt(.5f),std::sqrt(.5f)},{2,2,2}}}));
     auto child = take(w::create_entity(runtime));
     auto leaf = take(w::create_entity(runtime));
     auto mesh = take(w::create_component(runtime, types.static_mesh_component));
     auto triangle = std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
         {{0,0,0},{0,0,-1}}, {{1,0,0},{0,0,-1}}, {{0,1,0},{0,0,-1}}});
-    take(w::set_geometry(runtime, mesh.id(), triangle));
+    take(p::set_geometry(runtime, mesh.id(), triangle));
     const std::array attachments{w::Attachment{mesh.id()}};
     take(world.set_transform(child.id(), {{1,0,0},{},{1,1,1}}));
     take(world.set_transform(leaf.id(), {{0,3,0},{},{1,1,1}}));
@@ -639,7 +658,7 @@ void spatial_tree_and_mesh() {
     require(take(world.members()).size()==3, "Subtree attach duplicated or omitted a member.");
     auto before = take(w::world_matrix(runtime, leaf.id()));
     require(near(before[12],4) && near(before[13],2), "Hierarchy did not compose Entity local transforms.");
-    const auto snapshots = take(world.render_items());
+    const auto snapshots = take(scene.render_items());
     require(snapshots.size() == 2 && snapshots[1].geometry == triangle,
         "Mesh capabilities lost their distinct shared geometry resources.");
     committed(world.reparent(leaf.id(), entity.id(), w::ReparentRule::keep_world));
@@ -659,12 +678,12 @@ void spatial_tree_and_mesh() {
     require(take(w::read_transform(runtime,leaf.id()))==local && take(w::has_transform(runtime,leaf.id())),
         "Deleting Mesh capability deleted or changed Entity space.");
     committed(world.restore(removal));
-    require(take(world.render_items()).back().geometry == triangle, "Undo lost geometry identity.");
+    require(take(scene.render_items()).back().geometry == triangle, "Undo lost geometry identity.");
     committed(world.start());
-    take(w::set_geometry(runtime, mesh.id(), {}));
-    require(take(world.render_items()).size() == 1 && world.activity().update_registrations == 0,
+    take(p::set_geometry(runtime, mesh.id(), {}));
+    require(take(scene.render_items()).size() == 1 && world.activity().update_registrations == 0,
         "Pure mesh resource replacement created Tick or retained presentation.");
-    take(w::set_geometry(runtime, mesh.id(), triangle));
+    take(p::set_geometry(runtime, mesh.id(), triangle));
     committed(world.close());
     committed(w::destroy_entity(runtime,entity.id()));
     require(!runtime.type_of(child.id()) && !runtime.type_of(leaf.id()) && !runtime.type_of(mesh.id()),
@@ -673,7 +692,7 @@ void spatial_tree_and_mesh() {
 }
 
 void sparse_presentation() {
-    Runtime runtime; const auto types=take(w::register_types(runtime)); w::World world(runtime,types);
+    Runtime runtime; const auto types=register_all_types(runtime); w::World world(runtime,types); const auto scene=take(p::Scene::create(world,types));
     const auto allocated_bytes=[] {
         mi_collect(true); // Flush shared allocator counters outside the observed extraction.
         mi_stats_t stats; mi_stats_init(&stats);
@@ -681,9 +700,9 @@ void sparse_presentation() {
         return stats.malloc_normal.total+stats.malloc_huge.total;
     };
     const auto capture=[&] {
-        (void)take(world.render_items()); // Warm immutable material publication before observing allocations.
+        (void)take(scene.render_items()); // Warm immutable material publication before observing allocations.
         const auto before=allocated_bytes();
-        auto items=world.render_items();
+        auto items=scene.render_items();
         const auto bytes=allocated_bytes()-before;
         return std::pair{take(std::move(items)),bytes};
     };
@@ -718,8 +737,8 @@ void sparse_presentation() {
         if(i) committed(world.reparent(ancestors[i].id(),ancestors[i-1].id(),w::ReparentRule::keep_local));
     }
     const auto mesh=geometry::cube_mesh();
-    auto first=take(w::create_static_mesh_entity(world,{mesh,{{2,0,0},{},{1,1,1}}}));
-    auto second=take(w::create_static_mesh_entity(world,{mesh,{{3,0,0},{},{1,1,1}}}));
+    auto first=take(p::create_static_mesh_entity(world,{mesh,{{2,0,0},{},{1,1,1}}}));
+    auto second=take(p::create_static_mesh_entity(world,{mesh,{{3,0,0},{},{1,1,1}}}));
     committed(world.reparent(first.id(),ancestors.back().id(),w::ReparentRule::keep_local));
     committed(world.reparent(second.id(),ancestors.back().id(),w::ReparentRule::keep_local));
     committed(world.attach(ancestors.front().id()));
@@ -735,29 +754,29 @@ void sparse_presentation() {
         "Unrelated logical members increased sparse render extraction allocations.");
 
     take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{5.f}));
-    auto moved=take(world.render_items());
+    auto moved=take(scene.render_items());
     require(near(moved[0].world[12],14) && near(moved[1].world[12],15),"Extraction hid a direct Runtime transform write.");
     // Isolate (default) skips the dependent meshes and reports the failing Entity
     // once while the failure persists; halt fails the whole extraction.
     const auto break_ancestor=[&] {take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{std::numeric_limits<float>::infinity()}));};
     break_ancestor();
-    require(take(world.render_items()).empty() && take(world.render_items()).empty(),"Isolated extraction kept meshes below a non-finite ancestor.");
+    require(take(scene.render_items()).empty() && take(scene.render_items()).empty(),"Isolated extraction kept meshes below a non-finite ancestor.");
     const auto isolated=world.take_diagnostics();
     require(isolated.size()==1 && isolated[0].object==ancestors.front().id() && isolated[0].entity==ancestors.front().id() &&
         isolated[0].kind==w::DiagnosticKind::invalid_value && isolated[0].phase==w::DiagnosticPhase::presentation &&
         isolated[0].severity==w::Severity::error && isolated[0].type=="world.Entity" && isolated[0].repeats==2 && !isolated[0].message.empty(),
         "Isolated extraction did not report the non-finite ancestor once per persisting failure.");
     take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{1.f}));
-    require(near(take(world.render_items()).front().world[12],10),"Failed extraction retained invalid spatial state.");
+    require(near(take(scene.render_items()).front().world[12],10),"Failed extraction retained invalid spatial state.");
     take(world.set_failure_policy(w::FailurePolicy::halt));
     break_ancestor();
-    reject(world.render_items(),"Halted extraction accepted a non-finite ancestor transform.");
+    reject(scene.render_items(),"Halted extraction accepted a non-finite ancestor transform.");
     require(world.take_diagnostics().size()==1,"Halted extraction did not report its resolved-then-repeated failure.");
     take(world.set_failure_policy(w::FailurePolicy::isolate));
     take(runtime.write(ancestors.front().id(),types.position_fields[0],Scalar{1.f}));
-    require(near(take(world.render_items()).front().world[12],10),"Failed extraction retained invalid spatial state.");
-    take(w::set_geometry(runtime,sparse.first[0].component,{}));
-    take(w::set_geometry(runtime,sparse.first[1].component,{}));
+    require(near(take(scene.render_items()).front().world[12],10),"Failed extraction retained invalid spatial state.");
+    take(p::set_geometry(runtime,sparse.first[0].component,{}));
+    take(p::set_geometry(runtime,sparse.first[1].component,{}));
     const auto cleared=capture();
     require(cleared.first.empty() && cleared.first.capacity()==0 && cleared.second==empty.second,
         "Removing all meshes retained allocation beyond the empty return-container baseline.");
@@ -784,6 +803,7 @@ int main() {
         static_mesh_entity_creation();
         lit_materials_and_lights();
         environment_and_group_writes();
+        presentation_cache();
         hierarchical_lifecycle();
         hierarchical_reference_lifetime();
         hierarchical_space_boundaries();
@@ -791,7 +811,7 @@ int main() {
         attachment_space_and_authoring();
         mirrored_and_degenerate_space();
         frame_phases();
-        std::puts("World acceptance: PASS (20/20)");
+        std::puts("World acceptance: PASS (21/21)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

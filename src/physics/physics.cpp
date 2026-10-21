@@ -1,6 +1,7 @@
 #include "physics/physics.hpp"
 #include "physics/components.hpp"
 #include "physics/timing.hpp"
+#include "presentation/presentation.hpp"
 #include "runtime/native.hpp"
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
@@ -662,7 +663,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     geometry::MeshRef mesh;
     std::string source;
     if (settings->shape==ShapeKind::triangle_mesh) {
-        auto binding=world::read_static_mesh(runtime,component);
+        auto binding=presentation::read_static_mesh(runtime,component);
         if (!binding) return std::unexpected(binding.error());
         mesh=binding->mesh.resolved;source=binding->mesh.source;
         if (!mesh) return failure(ErrorCode::invalid_member,"Triangle collision requires this Primitive's mesh resource.");

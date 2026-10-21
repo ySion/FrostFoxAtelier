@@ -137,8 +137,8 @@ void hierarchical_reference_lifetime() {
 
 void hierarchical_space_boundaries() {
     Runtime runtime,foreign_runtime;
-    const auto types=take(w::register_types(runtime));
-    (void)take(w::register_types(foreign_runtime));
+    const auto types=register_all_types(runtime);
+    (void)register_all_types(foreign_runtime);
     w::World world(runtime,types),other(runtime,types);
     auto a=take(w::create_entity(runtime)),b=take(w::create_entity(runtime)),group=take(w::create_entity(runtime));
     auto x=take(w::create_entity(runtime)),y=take(w::create_entity(runtime));
@@ -429,11 +429,11 @@ void attachment_space_and_authoring() {
     const auto nonspatial=take(w::create_component(runtime,types.environment_component));
     require(take(w::component_requires_space(runtime,mesh.id())) && take(w::component_requires_space(runtime,light.id())) &&
         !take(w::component_requires_space(runtime,nonspatial.id())),"SpatialComponent did not decide the space requirement.");
-    take(world.set_material(mesh.id(),{}));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
+    take(p::set_material(world,mesh.id(),{}));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
     committed(world.attach_components(prepared_id,capabilities));
-    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),{}));
+    take(p::set_material(world,mesh.id(),{}));take(p::set_light(world,light.id(),{}));
     committed(world.attach(prepared_id));
-    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),{}));
+    take(p::set_material(world,mesh.id(),{}));take(p::set_light(world,light.id(),{}));
 
     auto a=take(w::create_entity(runtime)),b=take(w::create_entity(runtime));a_id=a.id();b_id=b.id();
     take(world.set_transform(a_id,{{2,0,0},{},{1,1,1}}));take(world.set_transform(b_id,{{5,0,0},{},{1,1,1}}));
@@ -508,10 +508,10 @@ void attachment_space_and_authoring() {
     std::puts("[pass] Final space plans: atomic origin publication, preview/Cook matrices, root boundaries, inherited Transform removal and Detached running authoring");
 }
 void mirrored_and_degenerate_space() {
-    Runtime runtime;const auto types=take(w::register_types(runtime));w::World world(runtime,types);
+    Runtime runtime;const auto types=register_all_types(runtime);w::World world(runtime,types);const auto scene=take(p::Scene::create(world,types));
     const auto same=[](const math::Matrix4& left,const math::Matrix4& right){for(std::size_t i=0;i<16;++i) if(std::abs(left[i]-right[i])>1e-4f) return false;return true;};
-    const auto item=[&](ObjectId entity)->std::optional<w::RenderItem>{
-        for(const auto& value:take(world.render_items())) if(value.entity==entity) return value;
+    const auto item=[&](ObjectId entity)->std::optional<p::RenderItem>{
+        for(const auto& value:take(scene.render_items())) if(value.entity==entity) return value;
         return std::nullopt;
     };
     const float half=std::sqrt(.5f);
@@ -597,9 +597,9 @@ void mirrored_and_degenerate_space() {
     // Light frames ignore scale magnitudes and keep signs: under a uniform mirror
     // they follow the mirrored local axes, with right negated to stay right-handed.
     std::vector<atelier::ObjectRoot> lights;
-    const auto light=[&](ObjectId parent,w::LightKind kind,math::Quaternion rotation) {
+    const auto light=[&](ObjectId parent,p::LightKind kind,math::Quaternion rotation) {
         auto entity=take(w::create_entity(runtime));auto component=take(w::create_component(runtime,types.light_component));
-        w::LightSettings settings;settings.kind=kind;take(world.set_light(component.id(),settings));
+        p::LightSettings settings;settings.kind=kind;take(p::set_light(world,component.id(),settings));
         committed(world.attach_components(entity.id(),std::array{w::Attachment{component.id()}}));
         take(world.set_transform(entity.id(),{{1,2,3},rotation,{1,1,1}}));
         committed(world.attach(entity.id(),w::append,parent));
@@ -612,8 +612,8 @@ void mirrored_and_degenerate_space() {
     for(const auto& [scale,odd]:{std::pair{math::Vector3{-1,1,1},true},std::pair{math::Vector3{-1,-1,1},false}}) {
         auto parent=take(w::create_entity(runtime));
         take(world.set_transform(parent.id(),{{0,0,20},roll,scale}));committed(world.attach(parent.id()));
-        const auto rectangle=light(parent.id(),w::LightKind::rectangle,tilt),sun=light(parent.id(),w::LightKind::directional,tilt);
-        for(const auto& value:take(world.light_items())) {
+        const auto rectangle=light(parent.id(),p::LightKind::rectangle,tilt),sun=light(parent.id(),p::LightKind::directional,tilt);
+        for(const auto& value:take(scene.light_items())) {
             if(value.component!=rectangle && value.component!=sun) continue;
             const auto m=take(w::world_matrix(runtime,value.entity));
             const auto right=axis(m,0)*(odd?-1.f:1.f);

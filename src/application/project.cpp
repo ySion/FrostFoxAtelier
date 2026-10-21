@@ -97,7 +97,7 @@ Result<void> Application::open_example(editor::Command command) {
     auto loaded=load_project(*folder,false,example->scene);if(!loaded) return loaded;
     workspace_.assets.navigate(std::filesystem::path(example->scene).parent_path().parent_path());
     if(!workspace_.scene_available) return {}; // Keep normal project build diagnostics visible.
-    const auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    const auto items=document_->presentation().render_items();if(!items) return std::unexpected(items.error());
     const bool textured=command==editor::Command::example_physic || command==editor::Command::example_dungeons;
     return configure_view(example->eye,example->target,textured?renderer::Shading::smooth:renderer::Shading::scene_lit,!textured && !items->empty());
 }

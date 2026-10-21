@@ -173,7 +173,7 @@ Result<void> Application::workbench_history(bool redo) {
 }
 void Application::scene_changed() {workspace_.inspecting_asset=false;sync_world_view();}
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
-    auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    auto items=document_->presentation().render_items();if(!items) return std::unexpected(items.error());
     if(items->empty()) return std::unexpected(Error{ErrorCode::invalid_definition,"DDGI volume fitting requires rendered geometry."});
     struct Bounds {math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;};
     Bounds world_bounds;
@@ -691,8 +691,8 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case create_entity: workspace_.inspecting_asset=false;result=completion(document_->add_entity()); break;
     case create_point_light:case create_rectangle_light:case create_directional_light: {
         workspace_.inspecting_asset=false;
-        const auto kind=command==create_point_light?world::LightKind::point:
-            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
+        const auto kind=command==create_point_light?presentation::LightKind::point:
+            command==create_rectangle_light?presentation::LightKind::rectangle:presentation::LightKind::directional;
         result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
     }
     case create_static_mesh: {
@@ -1368,7 +1368,7 @@ bool Application::step(renderer::Capture* capture) try {
     const auto lighting_focus=camera_.state().target;
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
-        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
+        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,camera_cut_ || projection_cut,
         rendering::sky_radiance(effective_view.lit),{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
     const auto lighting_start=Clock::now();
     const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&

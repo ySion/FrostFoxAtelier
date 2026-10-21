@@ -1,7 +1,7 @@
 void verify_rotated_viewport_transforms() {
     using namespace editor;
     Session document;
-    changed(document.create_light(world::LightKind::directional));
+    changed(document.create_light(presentation::LightKind::directional));
     const auto entity=document.selection().entity;
     const world::Trs authored{{-5.8103158e-9f,2.9999993f,-1.532578e-7f},
         {.761490941f,.141828924f,-.176239014f,.607417405f},{1.f,.999999762f,.999999881f}};
@@ -208,7 +208,7 @@ void verify_viewport_duplication() {
     changed(document.add_component(document.types().collision_component));
     auto body=physics::BodySettings{};body.sensor=true;body.radius=2.f;
     take(document.configure_body(document.selection().object,body));
-    changed(document.create_light(world::LightKind::point,{4,5,6}));
+    changed(document.create_light(presentation::LightKind::point,{4,5,6}));
     const auto second=document.selection().entity;
     const std::array selected{first,second};take(document.select_entities(selected,second));
     const auto history=document.undo_count();
@@ -229,8 +229,8 @@ void verify_viewport_duplication() {
         require(clone==original,"Duplicate lost component state, links, physics settings or reflected properties.");
     }
     const auto root=[&](ObjectId entity){return entity;};
-    const auto original_mesh=take(world::read_static_mesh(document.world().runtime(),component(document,first,document.types().static_mesh_component)));
-    require(take(world::read_static_mesh(document.world().runtime(),component(document,copies[0],document.types().static_mesh_component))).mesh.resolved==original_mesh.mesh.resolved,
+    const auto original_mesh=take(presentation::read_static_mesh(document.world().runtime(),component(document,first,document.presentation_types().static_mesh_component)));
+    require(take(presentation::read_static_mesh(document.world().runtime(),component(document,copies[0],document.presentation_types().static_mesh_component))).mesh.resolved==original_mesh.mesh.resolved,
         "Duplicating an Entity unnecessarily copied its immutable mesh resource.");
     editor::ViewportTool tool;editor::Camera camera;
     const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1.f);
@@ -258,7 +258,7 @@ void verify_viewport_duplication() {
     editor::Session restricted;
     changed(restricted.create_static_mesh(editor::mesh_assets().front()));const auto mesh_entity=restricted.selection().entity;
     // A World keeps one Environment, so copying it with a mesh fails as one group.
-    auto restricted_lighting=take(restricted.world().environment());restricted_lighting.exposure_ev=1;take(restricted.set_environment(restricted_lighting));
+    auto restricted_lighting=take(restricted.presentation().environment());restricted_lighting.exposure_ev=1;take(restricted.set_environment(restricted_lighting));
     const auto sky_entity=take(world::inspect_component(restricted.world().runtime(),restricted.environment())).owner;
     const std::array mixed{mesh_entity,sky_entity};take(restricted.select_entities(mixed,sky_entity));
     const auto checkpoint=take(restricted.serialize());const auto checkpoint_history=restricted.undo_count();
@@ -432,13 +432,13 @@ void verify_viewport_editing() {
     // Runtime writes need no Session revision. Extraction must still reread
     // author values, including after rejecting an invalid transient value.
     const auto runtime_position=take(world::read_transform(document.world().runtime(),first)).position;
-    const auto runtime_revision=document.revision(),snapshot_revision=overlay_scene.revision;
+    const auto runtime_revision=document.revision();
     const auto write_position=[&](math::Vector3 position) {
         take(document.world().runtime().with_native<world::Entity>(first,[&](auto& entity)->Result<void>{entity.position=position;return {};}));
     };
     write_position({runtime_position.x+7,runtime_position.y,runtime_position.z});take(overlay_scene.refresh(document));
     const auto moved=std::ranges::find(overlay_scene.mesh_entities,first)-overlay_scene.mesh_entities.begin();
-    require(document.revision()==runtime_revision && overlay_scene.revision==snapshot_revision &&
+    require(document.revision()==runtime_revision &&
         overlay_scene.meshes[moved].world[12]==runtime_position.x+7,
         "Scene extraction cached a direct Runtime transform behind Session revision.");
     // The World isolates the invalid Entity: the rest of the scene still extracts.
@@ -543,7 +543,7 @@ void verify_viewport_editing() {
         take(workspace.set_tree_expanded(document,Workspace::EntityTree::scene_tree,std::array{ObjectId{}},false));publish();
         require(!ui.presented()->find(workspace.object_control(first)) && !ui.presented()->find(workspace.object_control(second)),
             "Collapsing World kept its Entity rows.");
-        const auto mesh_component=component(document,first,document.types().static_mesh_component);
+        const auto mesh_component=component(document,first,document.presentation_types().static_mesh_component);
         require(!workspace.set_tree_expanded(document,Workspace::EntityTree::scene_tree,std::array{ObjectId{},mesh_component},true),
             "Scene Tree expanded a Component identity.");
         publish();require(!ui.presented()->find(workspace.object_control(first)),"A refused expansion request changed the tree.");
@@ -729,7 +729,7 @@ void verify_viewport_editing() {
                 "HSV conversion did not round-trip.");
             require(color_hex({1,.5,0})==L"FF8000" && parse_color_hex(L"#ff8000") && !parse_color_hex(L"12345") && !parse_color_hex(L"GG0000"),
                 "Hex colour formatting or parsing was wrong.");
-            changed(document.create_light(world::LightKind::point,{0,2,0}));
+            changed(document.create_light(presentation::LightKind::point,{0,2,0}));
             const auto light=document.selection().entity;
             const auto component=take(world::components(document.world().runtime(),light)).front().id();
             std::vector<world::FieldPath> lanes;

@@ -87,7 +87,7 @@ void cost_cases(Fixture& f) {
             reference.frame.view=f.frame.view;reference.frame.camera=f.frame.camera;
             reference.frame.scene_viewport=f.frame.scene_viewport;
             reference.frame.environment=f.frame.environment;reference.frame.lighting_focus=f.frame.lighting_focus;
-            reference.frame.scene_identity=f.frame.scene_identity;reference.frame.scene_revision=f.frame.scene_revision;
+            reference.frame.scene_identity=f.frame.scene_identity;
             reference.frame.meshes=reference.room.meshes;reference.frame.lights=reference.lights;
             reference.frame.camera_cut=true;
             render::Capture actual,expected;

@@ -189,20 +189,21 @@ void frame_phases() {
     probe = Probe::none;
     // A rejected edit returns the field to its exact previous bytes, even a value that bypassed
     // the write path: NaN keeps its payload and an out-of-bounds value is not clamped.
-    bool deny = false;
+    bool deny = false, raise = false;
     const auto denied = [&](const w::World&, std::span<const ObjectId>) -> Result<void> {
         if (deny) return std::unexpected(Error{ErrorCode::argument_mismatch, "Restore probe denied the edit."});
+        if (raise) throw std::runtime_error("Restore probe threw.");
         return {};
     };
     take(shown.add_admission(types.static_mesh_component, denied));
     take(shown.add_admission(types.light_component, denied));
-    auto lamp = take(w::create_static_mesh_entity(shown, {geometry::cube_mesh(), {{}, {}, {1, 1, 1}}}));
+    auto lamp = take(p::create_static_mesh_entity(shown, {geometry::cube_mesh(), {{}, {}, {1, 1, 1}}}));
     const auto surface = take(w::components(runtime, lamp.id())).front().id();
     auto bulb = take(w::create_component(runtime, types.light_component));
     committed(shown.attach_components(lamp.id(), std::array{w::Attachment{bulb.id()}}));
     committed(shown.attach(lamp.id()));
     const auto field = [&](TypeId type, std::string_view name) { return take(runtime.find_field(type, name)); };
-    const auto settings = field(types.light_component, "settings"), intensity = field(take(runtime.native_type<w::LightSettings>()), "intensity");
+    const auto settings = field(types.light_component, "settings"), intensity = field(take(runtime.native_type<p::LightSettings>()), "intensity");
     const auto material = field(types.static_mesh_component, "material");
     const auto roughness = field(types.material, "roughness"), base_color = field(types.material, "base_color");
     const auto x = field(take(runtime.native_type<math::Vector3>()), "x");
@@ -210,36 +211,59 @@ void frame_phases() {
         return !result && result.error().message == "Restore probe denied the edit.";
     };
     const auto quiet_nan = std::bit_cast<float>(0x7fc12345u);
-    take(runtime.with_native<w::LightComponent>(bulb.id(), [&](w::LightComponent& light) -> Result<void> {
+    take(runtime.with_native<p::LightComponent>(bulb.id(), [&](p::LightComponent& light) -> Result<void> {
         light.settings.intensity = quiet_nan; return {};
     }));
     deny = true;
     require(rejected(shown.write(bulb.id(), std::array{settings, intensity}, Scalar{1.f})) &&
-        std::bit_cast<std::uint32_t>(take(w::read_light(runtime, bulb.id())).intensity) == 0x7fc12345u,
+        std::bit_cast<std::uint32_t>(take(p::read_light(runtime, bulb.id())).intensity) == 0x7fc12345u,
         "A rejected scalar edit did not restore a non-finite previous value bit for bit.");
     deny = false;
-    take(runtime.with_native<w::StaticMeshComponent>(surface, [&](w::StaticMeshComponent& mesh) -> Result<void> {
+    take(runtime.with_native<p::StaticMeshComponent>(surface, [&](p::StaticMeshComponent& mesh) -> Result<void> {
         mesh.material.roughness = 2.f; mesh.material.base_color.x = 2.f; return {};
     }));
-    const auto bypassed = take(w::read_static_mesh(runtime, surface)).material;
+    const auto bypassed = take(p::read_static_mesh(runtime, surface)).material;
     deny = true;
     require(rejected(shown.write(surface, std::array{material, roughness}, Scalar{.5f})) &&
         rejected(shown.write(surface, std::array{material, base_color, x}, Scalar{.5f})) &&
-        take(w::read_static_mesh(runtime, surface)).material == bypassed,
+        take(p::read_static_mesh(runtime, surface)).material == bypassed,
         "A rejected scalar or vector-component edit clamped an out-of-bounds previous value.");
     deny = false;
-    take(runtime.with_native<w::StaticMeshComponent>(surface, [&](w::StaticMeshComponent& mesh) -> Result<void> {
+    take(runtime.with_native<p::StaticMeshComponent>(surface, [&](p::StaticMeshComponent& mesh) -> Result<void> {
         mesh.material.metallic = quiet_nan; return {};
     }));
-    const auto corrupted = take(w::read_static_mesh(runtime, surface)).material;
-    const w::Material clean{};
+    const auto corrupted = take(p::read_static_mesh(runtime, surface)).material;
+    const p::Material clean{};
     deny = true;
     require(rejected(shown.write(surface, std::array{material}, ValueInput{types.material, &clean})),
         "A rejected whole-value edit was not reported with its admission error.");
-    const auto restored = take(w::read_static_mesh(runtime, surface)).material;
-    require(std::memcmp(&restored, &corrupted, sizeof(w::Material)) == 0,
+    const auto restored = take(p::read_static_mesh(runtime, surface)).material;
+    require(std::memcmp(&restored, &corrupted, sizeof(p::Material)) == 0,
         "A rejected whole-value edit did not restore a record holding NaN bit for bit.");
-    deny = false;
+    // The typed entries share write's admissions and exact restore: a denying or throwing admission
+    // fails the edit with its own error and leaves both NaN-holding values as they were.
+    const auto unchanged = [&] {
+        auto light = take(p::read_light(runtime, bulb.id()));
+        const auto mesh = take(p::read_static_mesh(runtime, surface)).material;
+        const bool nan = std::bit_cast<std::uint32_t>(light.intensity) == 0x7fc12345u;
+        light.intensity = 1.f;
+        auto expected = take(p::read_light(runtime, bulb.id()));expected.intensity = 1.f;
+        return nan && light == expected && std::memcmp(&mesh, &corrupted, sizeof(p::Material)) == 0;
+    };
+    p::LightSettings brighter; brighter.intensity = 2.f;
+    p::Material shiny; shiny.roughness = .2f;
+    require(rejected(p::set_light(shown, bulb.id(), brighter)) && rejected(p::set_material(shown, surface, shiny)) && unchanged(),
+        "A denied typed edit did not fail with the admission error or changed its field.");
+    deny = false;raise = true;
+    const auto thrown = [](Result<void> result) {
+        return !result && result.error().code == ErrorCode::invocation_failed && result.error().message == "Restore probe threw.";
+    };
+    require(thrown(p::set_light(shown, bulb.id(), brighter)) && thrown(p::set_material(shown, surface, shiny)) && unchanged(),
+        "A throwing admission did not fail a typed edit or changed its field.");
+    raise = false;
+    take(p::set_light(shown, bulb.id(), brighter));take(p::set_material(shown, surface, shiny));
+    require(take(p::read_light(runtime, bulb.id())) == brighter && take(p::read_static_mesh(runtime, surface)).material == shiny,
+        "An admitted typed edit was not kept.");
     committed(shown.close());
-    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore, rejected edits restore exact bytes)");
+    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore, rejected edits and typed entries restore exact bytes)");
 }

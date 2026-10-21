@@ -287,7 +287,7 @@ void verify_declarative_parameters() {
     const auto inspection_history=document.undo_count();
     const auto root_group=std::ranges::find_if(controls,[&](const auto& control) {
         const auto* binding=workspace.binding(control.key);
-        return binding && binding->kind==editor::Workspace::Binding::Kind::property_group && binding->object==component(document,entity,document.types().static_mesh_component);
+        return binding && binding->kind==editor::Workspace::Binding::Kind::property_group && binding->object==component(document,entity,document.presentation_types().static_mesh_component);
     });
     require(root_group!=controls.end(),"The mesh capability has no property group.");
     const auto root_group_key=root_group->key;

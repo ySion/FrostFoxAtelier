@@ -244,11 +244,11 @@ std::string dotted(std::span<const std::string> path) {
 }
 std::string dump_retained(const Json& value) {return value.empty()?std::string{}:value.dump();}
 
-std::vector<detail::ScalarField> business_fields(Runtime& runtime,const world::Types& types,TypeId type) {
+std::vector<detail::ScalarField> business_fields(Runtime& runtime,const world::Types& types,const presentation::Types& shown,TypeId type) {
     auto result=take(detail::author_fields(runtime,type));std::vector<FieldId> reserved;
     if(derives(runtime,type,types.entity))
         for(const auto key:{"position","rotation","scale"}) reserved.push_back(take(runtime.find_field(types.entity,key)));
-    if(derives(runtime,type,types.static_mesh_component)) reserved.push_back(take(runtime.find_field(types.static_mesh_component,"material")));
+    if(derives(runtime,type,shown.static_mesh_component)) reserved.push_back(take(runtime.find_field(shown.static_mesh_component,"material")));
     std::erase_if(result,[&](const auto& field){return std::ranges::find(reserved,field.path.front())!=reserved.end();});
     return result;
 }
@@ -536,7 +536,7 @@ Result<void> decode_properties(Runtime& runtime,const PropertyTarget& target,con
 }
 
 struct Session::GraphCodec {
-    struct MeshCopy {world::StaticMeshState state;std::vector<world::MaterialBinding> bindings;};
+    struct MeshCopy {presentation::StaticMeshState state;std::vector<presentation::MaterialBinding> bindings;};
     struct Graph {
         Json data;
         std::unordered_map<std::string,MeshCopy> meshes;
@@ -661,7 +661,7 @@ struct Session::GraphCodec {
     static bool upgrade(Session& session,Json& data,Load& load) {
         auto& runtime=session.runtime_;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
-        const auto environment_type=type_name(runtime,session.types_.environment_component);
+        const auto environment_type=type_name(runtime,session.presentation_types_.environment_component);
         auto& entities=data.at("entities");
         if(!entities.is_array()) throw std::runtime_error("Invalid Entity graph directory.");
         if(json_format::identity(data.at("version"))!=6) {
@@ -689,7 +689,7 @@ struct Session::GraphCodec {
             if(!part.is_object()) return false;
             const auto type=part.find("type");if(type==part.end() || !type->is_string()) return false;
             const auto found=runtime.find_type(type->get<std::string>());
-            if(!found || !derives(runtime,*found,session.types_.light_component)) return false;
+            if(!found || !derives(runtime,*found,session.presentation_types_.light_component)) return false;
             const auto properties=part.find("properties");if(properties==part.end() || !properties->is_object()) return false;
             const auto light=properties->find("settings");if(light==properties->end() || !light->is_object()) return false;
             const auto kind=light->find("kind");return kind!=light->end() && *kind=="sky";
@@ -836,13 +836,13 @@ struct Session::GraphCodec {
             material_values.push_back(std::move(value));return key;
         };
         for(auto object:nodes) for(const auto& part:take(world::components(runtime,object)))
-            if(derives(runtime,take(runtime.type_of(part.id())),session.types_.static_mesh_component))
-                for(const auto& binding:take(world::read_material_bindings(runtime,part.id()))) (void)archive_material(binding.resource.id());
+            if(derives(runtime,take(runtime.type_of(part.id())),session.presentation_types_.static_mesh_component))
+                for(const auto& binding:take(presentation::read_material_bindings(runtime,part.id()))) (void)archive_material(binding.resource.id());
         if(document) for(const auto& material:session.retained_document_.materials)
             if(runtime.type_of(material.id())) static_cast<void>(archive_material(material.id()));
         const auto properties=[&](ObjectId object,TypeId type) {
             Json result=Json::object();
-            for(const auto& field:business_fields(runtime,session.types_,type)) {
+            for(const auto& field:business_fields(runtime,session.types_,session.presentation_types_,type)) {
                 Json value;
                 if(field.form==ValueForm::inline_value)
                     value=field.kind==TypeKind::string?encode_string(runtime,object,field):encode_scalar(runtime,take(runtime.read(object,field.path)));
@@ -871,16 +871,16 @@ struct Session::GraphCodec {
             for(const auto& child:take(world::children(runtime,object))) children.push_back(std::to_string(ids.at(child.id())));
             for(const auto& part:take(world::components(runtime,object))) {
                 const auto state=take(world::inspect_component(runtime,part.id()));const auto key=std::to_string(ids.at(part.id()));
-                if(derives(runtime,state.type,session.types_.light_component)) take(world::validate_light(runtime,take(world::read_light(runtime,part.id()))));
+                if(derives(runtime,state.type,session.presentation_types_.light_component)) take(presentation::validate_light(runtime,take(presentation::read_light(runtime,part.id()))));
                 if(physical_type(runtime,state.type)) {
                     auto body=take(physics::read_settings(runtime,part.id()));take(world::validate_body_settings(runtime,body));
                     graph.bodies.emplace(key,std::move(body));
                 }
                 Json value={{"id",key},{"type",type_name(runtime,state.type)},{"name",utf8(session.name(part.id()))},{"enabled",state.enabled},{"properties",properties(part.id(),state.type)}};
-                if(derives(runtime,state.type,session.types_.static_mesh_component)) {
-                    auto mesh=take(world::read_static_mesh(runtime,part.id()));take(world::validate_material(runtime,mesh.material));
+                if(derives(runtime,state.type,session.presentation_types_.static_mesh_component)) {
+                    auto mesh=take(presentation::read_static_mesh(runtime,part.id()));take(presentation::validate_material(runtime,mesh.material));
                     if(persistent && mesh.mesh.resolved && mesh.mesh.source.empty()) throw std::runtime_error("A procedural mesh has no persistent source; save/import it before archiving.");
-                    auto bindings=take(world::read_material_bindings(runtime,part.id()));graph.meshes.emplace(key,MeshCopy{mesh,bindings});
+                    auto bindings=take(presentation::read_material_bindings(runtime,part.id()));graph.meshes.emplace(key,MeshCopy{mesh,bindings});
                     value["mesh"]=mesh.mesh.source;value["base_color"]=vector(mesh.material.base_color);value["roughness"]=mesh.material.roughness;
                     value["metallic"]=mesh.material.metallic;value["emissive"]=vector(mesh.material.emissive);auto entries=Json::array();
                     for(const auto& binding:bindings) {
@@ -988,18 +988,18 @@ struct Session::GraphCodec {
     static Json live_properties(Session& session,ObjectId object,std::span<const world::FieldPath> paths,std::string* key=nullptr) {
         auto& runtime=session.runtime_;const auto type=take(runtime.type_of(object));
         const auto fields=take(detail::author_fields(runtime,type));
-        const auto material_field=derives(runtime,type,session.types_.static_mesh_component)?
-            std::optional(take(runtime.find_field(session.types_.static_mesh_component,"material"))):std::nullopt;
+        const auto material_field=derives(runtime,type,session.presentation_types_.static_mesh_component)?
+            std::optional(take(runtime.find_field(session.presentation_types_.static_mesh_component,"material"))):std::nullopt;
         Json op={{"op","set"},{"id",live_id(session,object)}},properties=Json::object();
         if(key) *key="field "+op.at("id").get<std::string>();
-        std::optional<world::Material> material;
+        std::optional<presentation::Material> material;
         for(const auto& path:paths) {
             const auto field=std::ranges::find_if(fields,[&](const auto& item){return std::ranges::equal(item.path,path);});
             if(field==fields.end()) throw std::runtime_error("A changed field is not a scene property.");
             if(key) *key+=" "+dotted(field->names);
             // The mesh material is a component record; its fields travel as top-level set keys.
             if(material_field && path.front()==*material_field) {
-                if(!material) material=take(world::read_static_mesh(runtime,object)).material;
+                if(!material) material=take(presentation::read_static_mesh(runtime,object)).material;
                 const auto& name=field->names.at(1);
                 if(name=="base_color") op[name]=vector(material->base_color);
                 else if(name=="emissive") op[name]=vector(material->emissive);
@@ -1016,7 +1016,7 @@ struct Session::GraphCodec {
     }
     static Json live_body(Session& session,ObjectId component) {
         auto& runtime=session.runtime_;Json body=Json::object();
-        for(const auto& field:business_fields(runtime,session.types_,take(runtime.type_of(component))))
+        for(const auto& field:business_fields(runtime,session.types_,session.presentation_types_,take(runtime.type_of(component))))
             if(field.form==ValueForm::inline_value && field.names.size()>1 && field.names.front()=="body") {
                 Json* at=&body;for(auto name=field.names.begin()+1;name!=field.names.end();++name) at=&(*at)[*name];
                 *at=encode_scalar(runtime,take(runtime.read(component,field.path)));
@@ -1032,7 +1032,7 @@ struct Session::GraphCodec {
             [&](std::vector<std::string> at,const Json& item) {
                 load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
             }};
-        read_record(runtime,{type,object},business_fields(runtime,session.types_,type),record,{"properties"},resolve,write,&report);
+        read_record(runtime,{type,object},business_fields(runtime,session.types_,session.presentation_types_,type),record,{"properties"},resolve,write,&report);
     }
     // Scene material definition or inline binding entry to a material object.
     static ObjectRoot restore_material(Session& session,Project* project,const Json& entry,std::vector<MissingResource>* missing=nullptr) {
@@ -1111,7 +1111,7 @@ struct Session::GraphCodec {
             const auto found=runtime.find_type(name);
             const auto matches=found?runtime.is_a(*found,base):Result<bool>{false};
             const bool placeholder=!matches || !*matches;
-            const auto type=!placeholder?*found:!entity && value.contains("mesh")?session.types_.static_mesh_component:base;
+            const auto type=!placeholder?*found:!entity && value.contains("mesh")?session.presentation_types_.static_mesh_component:base;
             auto root=entity?take(world::create_entity(runtime,type)):take(world::create_component(runtime,type));
             const auto object=root.id();ids.emplace(key,object);descriptors.emplace(key,&value);records.emplace(object,&value);result.objects.push_back(std::move(root));
             if(keep_ids) session.local_ids_.emplace(object,key);else (void)identity(session,object);
@@ -1161,7 +1161,7 @@ struct Session::GraphCodec {
             if(!parts.is_array() || parts.size()>maximum_components) throw std::runtime_error("Invalid Component count.");
             for(const auto& part:parts) {
                 const auto component=create(part,false,object);
-                if(derives(runtime,take(runtime.type_of(component)),session.types_.static_mesh_component))
+                if(derives(runtime,take(runtime.type_of(component)),session.presentation_types_.static_mesh_component))
                     load.extra(component,part,{"id","type","name","enabled","properties","mesh","base_color","roughness","metallic","emissive","materials"});
                 else load.extra(component,part,{"id","type","name","enabled","properties"});
             }
@@ -1310,7 +1310,7 @@ struct Session::GraphCodec {
         using Defaults=std::vector<std::pair<world::FieldPath,PropertyLeaf>>;
         const auto snapshot=[&](ObjectId object,std::string_view prefix) {
             Defaults values;
-            for(const auto& field:business_fields(runtime,session.types_,take(runtime.type_of(object))))
+            for(const auto& field:business_fields(runtime,session.types_,session.presentation_types_,take(runtime.type_of(object))))
                 if(field.form==ValueForm::inline_value && !field.names.empty() && (prefix.empty() || field.names.front()==prefix)) {
                     if(field.kind!=TypeKind::string) {values.emplace_back(field.path,take(runtime.read(object,field.path)));continue;}
                     String text;take(runtime.read(object,field.path,ValueOutput{field.type,&text}));values.emplace_back(field.path,std::move(text));
@@ -1352,22 +1352,22 @@ struct Session::GraphCodec {
             if(const auto key=local_key(entity.at("id"));!anchors.contains(key)) properties(entity,ids.at(key));
             for(const auto& part:entity.at("components")) {
                 const auto object=ids.at(local_key(part.at("id")));const auto type=take(runtime.type_of(object));
-                const bool light=derives(runtime,type,session.types_.light_component),physical=physical_type(runtime,type);
-                const bool environment=derives(runtime,type,session.types_.environment_component);
+                const bool light=derives(runtime,type,session.presentation_types_.light_component),physical=physical_type(runtime,type);
+                const bool environment=derives(runtime,type,session.presentation_types_.environment_component);
                 const auto light_defaults=light?snapshot(object,"settings"):Defaults{};
                 const auto environment_defaults=environment?snapshot(object,{}):Defaults{};
                 const auto body_defaults=physical?snapshot(object,"body"):Defaults{};
                 properties(part,object);
-                if(derives(runtime,type,session.types_.static_mesh_component)) {
+                if(derives(runtime,type,session.presentation_types_.static_mesh_component)) {
                     const auto key=part.at("id").get<std::string>();
                     if(auto at=graph.meshes.find(key);at!=graph.meshes.end()) {
-                        const auto& copy=at->second;take(world::set_mesh_binding(runtime,object,copy.state.mesh));
-                        take(world.set_material(object,copy.state.material));auto bindings=copy.bindings;
+                        const auto& copy=at->second;take(presentation::set_mesh_binding(runtime,object,copy.state.mesh));
+                        take(presentation::set_material(world,object,copy.state.material));auto bindings=copy.bindings;
                         for(auto& binding:bindings) {
                             used_materials.insert(copied_material_keys.at(binding.resource.id()));
                             binding.resource=copied_materials.at(binding.resource.id());
                         }
-                        take(world::set_material_bindings(runtime,object,bindings));
+                        take(presentation::set_material_bindings(runtime,object,bindings));
                         if(const auto entries=part.find("materials");!copy.state.mesh.resolved && !copy.state.mesh.source.empty() &&
                             entries!=part.end() && entries->is_array()) keep_bindings(object,*entries);
                     } else {
@@ -1392,8 +1392,8 @@ struct Session::GraphCodec {
                             }
                         }
                         const bool unresolved=!source.empty() && !mesh;
-                        take(world::set_mesh_binding(runtime,object,{source,std::move(mesh)}));
-                        world::Material material;std::vector<std::string> applied;
+                        take(presentation::set_mesh_binding(runtime,object,{source,std::move(mesh)}));
+                        presentation::Material material;std::vector<std::string> applied;
                         const auto vector_value=[&](const char* name,math::Vector3& target) {
                             const auto found=part.find(name);if(found==part.end()) return;
                             std::string problem;
@@ -1408,12 +1408,12 @@ struct Session::GraphCodec {
                         };
                         vector_value("base_color",material.base_color);number_value("roughness",material.roughness);
                         number_value("metallic",material.metallic);vector_value("emissive",material.emissive);
-                        if(auto set=world.set_material(object,material);!set) {
+                        if(auto set=presentation::set_material(world,object,material);!set) {
                             load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"material"},nullptr,set.error().message+" Defaults are used and the saved values are kept.");
                             for(const auto& name:applied) load.store(object,std::array{name},part.at(name));
-                            take(world.set_material(object,world::Material{}));
+                            take(presentation::set_material(world,object,presentation::Material{}));
                         }
-                        std::vector<world::MaterialBinding> bindings;
+                        std::vector<presentation::MaterialBinding> bindings;
                         if(const auto entries=part.find("materials");entries!=part.end() && !entries->is_array())
                             load.keep(object,{"materials"},*entries,world::DiagnosticKind::mismatch,"Expected a material binding table. Bindings are empty and the saved value is kept.");
                         else if(entries!=part.end() && unresolved) keep_bindings(object,*entries);
@@ -1445,10 +1445,10 @@ struct Session::GraphCodec {
                                 bindings.push_back({slot,std::move(resource),overridden});
                             }
                         }
-                        take(world::set_material_bindings(runtime,object,bindings));
+                        take(presentation::set_material_bindings(runtime,object,bindings));
                     }
                 }
-                if(light) if(auto valid=world::validate_light(runtime,take(world::read_light(runtime,object)));!valid)
+                if(light) if(auto valid=presentation::validate_light(runtime,take(presentation::read_light(runtime,object)));!valid)
                     invalid_record(object,"settings",light_defaults,valid.error().message);
                 // The Environment's rules span its fields, so a record that breaks them returns whole to the defaults.
                 if(environment) if(const auto failure=take(runtime.validate(object)))
@@ -1457,7 +1457,7 @@ struct Session::GraphCodec {
                     auto settings=take(physics::read_settings(runtime,object));std::string problem;
                     if(auto valid=world::validate_body_settings(runtime,settings);!valid) problem=valid.error().message;
                     else if(settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh && project) {
-                        const auto mesh=world::read_static_mesh(runtime,object);
+                        const auto mesh=presentation::read_static_mesh(runtime,object);
                         if(!mesh) problem=mesh.error().message;
                         else if(mesh->mesh.source.empty()) problem="Triangle collision needs a persistent mesh source.";
                     }
@@ -1465,7 +1465,7 @@ struct Session::GraphCodec {
                     if(auto at=graph.bodies.find(part.at("id").get<std::string>());at!=graph.bodies.end())
                         settings.cooked_shape=at->second.cooked_shape;
                     if(settings.enabled && settings.shape==physics::ShapeKind::triangle_mesh) {
-                        const auto mesh=take(world::read_static_mesh(runtime,object));
+                        const auto mesh=take(presentation::read_static_mesh(runtime,object));
                         if(!mesh.mesh.resolved && !mesh.mesh.source.empty()) {
                             const auto* item=session.unavailable(AssetKind::mesh,mesh.mesh.source);
                             load.report(world::Severity::warning,item?item->kind:world::DiagnosticKind::missing_resource,object,{"properties","body","shape"},nullptr,
@@ -1549,7 +1549,7 @@ struct Session::GraphCodec {
         // Bodies sharing a mesh and world scale share one cooked shape for this load.
         std::map<std::pair<std::string,std::array<float,3>>,Result<std::shared_ptr<const std::string>>> cooks;
         for(const auto object:prepared.triangle_meshes) {
-            const auto mesh=take(world::read_static_mesh(session.runtime_,object));
+            const auto mesh=take(presentation::read_static_mesh(session.runtime_,object));
             const auto at=anchored.find(object);
             const auto owner=at!=anchored.end()?at->second:take(world::inspect_component(session.runtime_,object)).owner;
             // Components added to a live Entity take its current space.
@@ -1744,16 +1744,16 @@ struct Session::GraphCodec {
                     if(!paths.empty()) take(world.write(edited,std::span<const world::FieldPath>(paths),std::span<const Scalar>(values)));
                 }
                 if(op.contains("base_color") || op.contains("roughness") || op.contains("metallic") || op.contains("emissive")) {
-                    auto material=take(world::read_static_mesh(runtime,edited)).material;
+                    auto material=take(presentation::read_static_mesh(runtime,edited)).material;
                     if(const auto at=op.find("base_color");at!=op.end()) material.base_color=vector(*at);
                     if(const auto at=op.find("roughness");at!=op.end()) material.roughness=live_number(*at);
                     if(const auto at=op.find("metallic");at!=op.end()) material.metallic=live_number(*at);
                     if(const auto at=op.find("emissive");at!=op.end()) material.emissive=vector(*at);
-                    take(world.set_material(edited,material));
+                    take(presentation::set_material(world,edited,material));
                 }
                 if(const auto at=op.find("materials");at!=op.end()) {
                     if(!at->is_array() || at->size()>1024) throw std::runtime_error("Expected a material binding table.");
-                    std::vector<world::MaterialBinding> bindings;
+                    std::vector<presentation::MaterialBinding> bindings;
                     for(const auto& entry:*at) {
                         fields(entry,{"slot","resource","overridden"});
                         const auto key=local_key(entry.at("resource"));const auto live=live_object(session,key);
@@ -1761,7 +1761,7 @@ struct Session::GraphCodec {
                         if(!live || *live==ObjectId{} || !session.is_material(*live)) throw std::runtime_error("Material #"+std::to_string(key)+" does not exist in Play.");
                         bindings.push_back({entry.at("slot").get<std::string>(),take(runtime.hold(*live)),entry.at("overridden").get<bool>()});
                     }
-                    take(world::set_material_bindings(runtime,edited,bindings));
+                    take(presentation::set_material_bindings(runtime,edited,bindings));
                 }
                 if(const auto at=op.find("space");at!=op.end()) {
                     if(!entity) throw std::runtime_error("Only an Entity has a space.");
@@ -1929,7 +1929,7 @@ void Session::forward_change(const Change& change,bool forward) {
                     push(set(entry.root.id(),"space",C::space_leaves(take(world::read_transform(runtime_,entry.root.id())),C::leaf_mask(entry.before,entry.after))));
             } else if constexpr(std::is_same_v<T,MaterialBindingChange>) {
                 // Play resolves a binding only to a material it already has, so definitions go first.
-                const auto component=item.root.id();const auto bindings=take(world::read_material_bindings(runtime_,component));
+                const auto component=item.root.id();const auto bindings=take(presentation::read_material_bindings(runtime_,component));
                 Json definitions=Json::array(),table=Json::array();std::unordered_set<ObjectId> defined;
                 for(const auto& binding:bindings) {
                     const auto resource=binding.resource.id();
@@ -2072,7 +2072,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
             const auto at=std::ranges::find((*info)->fields,id,&FieldInfo::id);if(at==(*info)->fields.end()) return;
             names.emplace_back(at->name);owner=at->value.type;
         }
-        const auto mesh=runtime_.is_a(*type,types_.static_mesh_component);
+        const auto mesh=runtime_.is_a(*type,presentation_types_.static_mesh_component);
         if(mesh && *mesh && names[1]=="material" && names.size()>2) drop(object,std::span(names).subspan(2,1));
         else drop(object,names);
     };
@@ -2140,9 +2140,9 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         view.type=entry->type;
         const bool document=object==ObjectId{},material=!document && is_material(object);
         std::vector<detail::ScalarField> schema;
-        if(!document && !material) schema=business_fields(world_.runtime(),types_,take(runtime_.type_of(object)));
+        if(!document && !material) schema=business_fields(world_.runtime(),types_,presentation_types_,take(runtime_.type_of(object)));
         const MissingResource* mesh_unavailable{};
-        if(!document && !material) if(const auto mesh=world::read_static_mesh(world_.runtime(),object); mesh && !mesh->mesh.resolved)
+        if(!document && !material) if(const auto mesh=presentation::read_static_mesh(world_.runtime(),object); mesh && !mesh->mesh.resolved)
             mesh_unavailable=unavailable(AssetKind::mesh,mesh->mesh.source);
         // Descends into records the current schema still declares; anything else is one entry.
         const auto classify=[&](std::span<const std::string> path)->std::pair<bool,world::DiagnosticKind> {

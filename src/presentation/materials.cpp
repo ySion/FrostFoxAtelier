@@ -1,7 +1,7 @@
-#include "world/detail.hpp"
+#include "presentation/detail.hpp"
 #include <unordered_set>
 
-namespace atelier::world {
+namespace atelier::presentation {
 using detail::Access;
 using detail::error;
 std::string material_slot_name(const geometry::Mesh& mesh,std::size_t index) {
@@ -22,14 +22,9 @@ Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime,Obj
 }
 Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const MaterialBinding> bindings) {
     if(auto ready=runtime.check_code_publication();!ready) return ready;
-    auto component=inspect_component(runtime,id);if(!component) return std::unexpected(component.error());
+    auto component=world::inspect_component(runtime,id);if(!component) return std::unexpected(component.error());
     if(!component->valid) return error(ErrorCode::invalid_member,"Material bindings need a live mesh component.");
-    auto data=detail::component_data(runtime,id);if(!data) return std::unexpected(data.error());
-    if(data->owner!=ObjectId{}) {
-        auto entity=detail::entity_data(runtime,data->owner);if(!entity) return std::unexpected(entity.error());
-        if(entity->transitioning) return error(ErrorCode::busy,"Entity is transitioning.");
-        if(entity->world) if(auto ready=Access::state(*entity->world).admit();!ready) return ready;
-    }
+    if(auto admitted=world::admit_component_edit(runtime,id);!admitted) return std::unexpected(admitted.error());
     return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<void> {
         const auto& mesh=Access::geometry(value);
         if(bindings.size()>(mesh?mesh->materials().size():0)) return error(ErrorCode::argument_mismatch,"Too many material slot bindings.");

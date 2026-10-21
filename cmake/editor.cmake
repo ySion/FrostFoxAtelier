@@ -44,7 +44,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/viewport_tool.cpp")
     atelier_target(atelier_editor_core)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_world atelier_ui_language atelier_physics PRIVATE ole32 shell32 windowscodecs nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_presentation atelier_ui_language atelier_physics PRIVATE ole32 shell32 windowscodecs nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"

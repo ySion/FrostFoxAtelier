@@ -91,7 +91,6 @@ struct Frame {
     std::span<const OverlayShape> overlay{};
     std::span<const Light> lights{};
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
-    std::uint64_t scene_revision{}; // Content revision; signal owners distinguish changes from scene replacement.
     bool camera_cut{};
     // Uniform sky radiance from the scene's environment (rendering::sky_radiance).
     // Zero when the sky is off; this is not a viewport ambient-light setting.

@@ -3,10 +3,8 @@
 #include "world/world.hpp"
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
-#include <cstring>
 #include <deque>
 #include <optional>
-#include <type_traits>
 #include <unordered_map>
 
 namespace atelier::world::detail {
@@ -37,16 +35,6 @@ struct Access {
     static bool& spatial(Entity& value) noexcept { return value.spatial_; }
     static bool& explicit_origin(Entity& value) noexcept { return value.explicit_origin_; }
     static bool& world_origin(Entity& value) noexcept { return value.world_origin_; }
-    static geometry::MeshRef& geometry(StaticMeshComponent& value) noexcept { return value.geometry_; }
-    static const geometry::MeshRef& geometry(const StaticMeshComponent& value) noexcept { return value.geometry_; }
-    static String& mesh_source(StaticMeshComponent& value) noexcept { return value.mesh_source_; }
-    static const String& mesh_source(const StaticMeshComponent& value) noexcept { return value.mesh_source_; }
-    static ReferenceSequence& materials(StaticMeshComponent& value) noexcept {return value.materials_;}
-    static std::vector<std::string>& material_slots(StaticMeshComponent& value) noexcept {return value.material_slots_;}
-    static std::vector<bool>& material_overrides(StaticMeshComponent& value) noexcept {return value.material_overrides_;}
-    static auto& surfaces(StaticMeshComponent& value) noexcept {return value.surfaces_;}
-    static auto& surface_geometry(StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
-    static auto& surface_parameters(StaticMeshComponent& value) noexcept {return value.surface_parameters_;}
     static World*& member_world(Entity& value) noexcept { return value.member_world_; }
     static bool& enabled(Entity& value) noexcept { return value.enabled_; }
     static bool& enabled(Component& value) noexcept { return value.enabled_; }
@@ -63,10 +51,8 @@ Result<void> unlink_parent(Runtime&, ObjectId entity);
 Result<void> requires_space(Runtime&, ObjectId entity, std::span<const ObjectRoot>);
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
-// Validators registered with LightSettings, BodySettings and EnvironmentComponent.
-Result<void> light_rules(const LightSettings&);
+// The validator registered with BodySettings.
 Result<void> body_rules(const BodySettings&);
-Result<void> environment_rules(const EnvironmentComponent&);
 // Checks a native value against its reflected type's hard bounds and validators.
 template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
     auto type = runtime.native_type<T>();
@@ -76,23 +62,6 @@ template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
     if (*failure) return std::unexpected((*failure)->error);
     return {};
 }
-// Values that passed validation, by bucket position. Validators are pure checks
-// of a value's bytes and published types never change, so the same bytes pass
-// again; any other value at that position is validated again.
-template<class T> class PassedValues {
-    static_assert(std::is_trivially_copyable_v<T>);
-    std::vector<std::optional<T>> values_;
-public:
-    void resize(std::size_t size) { values_.resize(size); }
-    [[nodiscard]] bool contains(std::size_t at, const T& value) const noexcept {
-        return values_[at] && std::memcmp(&*values_[at], &value, sizeof(T)) == 0;
-    }
-    void insert(std::size_t at, const T& value) noexcept { std::memcpy(&values_[at].emplace(), &value, sizeof(T)); }
-};
-// world::material_surfaces inside the caller's borrow of the mesh component.
-Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&, ObjectId, StaticMeshComponent&);
-// One EnvironmentComponent per World, disabled components included.
-World::Admission unique_environment(CapabilityId environments);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 Result<void> queue_request(Runtime&, ObjectId object, RequestKind, bool enabled);
 
@@ -203,18 +172,13 @@ struct World::Impl {
     Map<ObjectId, std::size_t> positions;
     // Derived lazily from `states`.
     bool schedule_dirty{true}, buckets_dirty{true};
+    std::uint64_t revision{1}; // World::revision; advanced by changed().
     std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
     std::vector<Bucket> buckets;
     struct Registration { TypeId type; CapabilityPredicate predicate; };
     std::vector<Registration> registrations;
     std::vector<std::vector<CapabilityMember>> capable; // Rebuilt with `buckets`.
-    // The world library's own registrations; owned by presentation code.
-    CapabilityId meshes, lights, environments;
-    // Aligned with the meshes and lights buckets at each extraction call.
-    detail::PassedValues<Material> valid_materials;
-    detail::PassedValues<LightSettings> valid_lights;
     static constexpr std::uint32_t bit(CapabilityId id) noexcept { return 1u << id.value; }
-    std::uint32_t presented() const noexcept { return bit(meshes) | bit(lights); }
     Result<std::uint32_t> capabilities_of(ObjectId component, TypeId type) const;
     // Tick prerequisite edges, both directions; only between current participants.
     std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites, dependents;

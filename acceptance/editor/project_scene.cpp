@@ -73,12 +73,12 @@ void verify_primitive_source(editor::Project& project) {
     acceptance_phase="Primitive Source reflection and persistence";
     editor::Session document;
     auto& runtime=document.world().runtime();
-    source::Program program(runtime,document.types().static_mesh_component);
+    source::Program program(runtime,document.presentation_types().static_mesh_component);
     auto candidate=take(source::Program::prepare(take(program.request("Primitive.source",
         "void configure() { self.body.enabled = true; self.body.half_extents.x = 2.0f; self.body.material.friction = 0.6f; }"))));
     take(program.try_publish(candidate));
     changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
-    const auto component=member(document,document.types().static_mesh_component);
+    const auto component=member(document,document.presentation_types().static_mesh_component);
     auto lease=take(program.pin());take(lease.invoke(component,{}));
     const auto settings=take(physics::read_settings(runtime,component));
     require(settings.enabled && settings.half_extents.x==2.f && settings.material.friction==.6f,
@@ -248,20 +248,20 @@ void verify_codec_graph(editor::Project& project) {
         std::array<ObjectId,3> entities,meshes;
         for(std::size_t i=0;i<entities.size();++i) {
             changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));entities[i]=document.selection().entity;
-            meshes[i]=member(document,document.types().static_mesh_component);
+            meshes[i]=member(document,document.presentation_types().static_mesh_component);
         }
         material::State state;state.description.parameters.roughness=.3f;
         const auto shared=take(material::create_material(runtime,state)),independent=take(material::create_material(runtime,state));
         for(std::size_t i=0;i<meshes.size();++i) {
-            const std::array<world::MaterialBinding,1> bindings{{{"slot/0",i==2?independent:shared,true}}};
-            take(world::set_material_bindings(runtime,meshes[i],bindings));
+            const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",i==2?independent:shared,true}}};
+            take(presentation::set_material_bindings(runtime,meshes[i],bindings));
         }
         const auto saved=take(document.serialize());const auto data=Json::parse(saved);
         require(data["materials"].size()==2,"Scene material definitions did not preserve shared and equal-but-independent identities.");
         auto reopened=take(editor::Session::deserialize(saved,project));
         require(take(reopened->serialize())==saved,"Material document identities changed after save/reload.");
         const auto bindings_of=[&](editor::Session& session,ObjectId entity) {
-            take(session.select(entity));return take(world::read_material_bindings(session.world().runtime(),member(session,session.types().static_mesh_component))).front().resource;
+            take(session.select(entity));return take(presentation::read_material_bindings(session.world().runtime(),member(session,session.presentation_types().static_mesh_component))).front().resource;
         };
         const auto members=take(reopened->world().members());
         const auto a=bindings_of(*reopened,members[0].id()),b=bindings_of(*reopened,members[1].id()),c=bindings_of(*reopened,members[2].id());
@@ -285,7 +285,7 @@ void verify_codec_graph(editor::Project& project) {
         const auto key=take(project.create_material("Content/Materials/Codec-parent.material"));
         const auto parent=take(document.material_resource(project,key));const auto instance=take(material::create_instance(runtime,parent));
         for(std::size_t i=0;i<2;++i) {
-            const std::array<world::MaterialBinding,1> bindings{{{"slot/0",instance,true}}};take(world::set_material_bindings(runtime,meshes[i],bindings));
+            const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",instance,true}}};take(presentation::set_material_bindings(runtime,meshes[i],bindings));
         }
         auto instances=take(editor::Session::deserialize(take(document.serialize()),project));
         const auto instance_members=take(instances->world().members());
@@ -307,7 +307,7 @@ void verify_codec_graph(editor::Project& project) {
         const auto incoming=take(project.create_material("Content/Materials/Codec-incoming.material",asset));
         const auto retained=take(project.create_material("Content/Materials/Codec-retained.material"));
         editor::Session source;changed(source.create_static_mesh(take(project.mesh("builtin/cube"))));
-        take(source.assign_material(project,member(source,source.types().static_mesh_component),"slot/0",incoming));
+        take(source.assign_material(project,member(source,source.presentation_types().static_mesh_component),"slot/0",incoming));
         changed(source.add_entity());auto invalid=Json::parse(take(source.serialize()));
         invalid["entities"][1]["properties"]["unknown_business_field"]={{"$ref","999999"}};
         editor::Session target;changed(target.add_entity());const auto original=target.selection().entity;
@@ -394,7 +394,7 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
         std::get<float>(take(runtime.read(move_object,field(*document,move_type,"speed"))))==4 &&
         std::get<std::int32_t>(take(runtime.read(entity_object,field(*document,entity_type,"health"))))==75,
         "Mismatched values did not fall back to defaults, or applicable values were lost.");
-    require(document->placeholder_count()==3 && take(world::read_static_mesh(runtime,mesh_object)).mesh.source=="builtin/cube" &&
+    require(document->placeholder_count()==3 && take(presentation::read_static_mesh(runtime,mesh_object)).mesh.source=="builtin/cube" &&
         take(physics::constraint_target(runtime,constraint))==ObjectId{},
         "Placeholders did not keep their native base, or a mistyped reference was applied.");
     const auto view=take(document->retained(move_object));
@@ -581,7 +581,7 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     const auto body_type=take(ra.find_type("world.CollisionComponent"));changed(a.add_component(body_type));const auto body=member(a,body_type);
     physics::BodySettings settings;settings.shape=physics::ShapeKind::sphere;settings.motion=physics::MotionKind::dynamic;settings.radius=.5f;
     take(a.configure_body(body,settings));
-    auto lighting=take(a.world().environment());lighting.exposure_ev=1.5f;take(a.set_environment(lighting));const auto environment=a.environment();
+    auto lighting=take(a.presentation().environment());lighting.exposure_ev=1.5f;take(a.set_environment(lighting));const auto environment=a.environment();
     const auto saved=Json::parse(take(a.serialize()));
     const auto id=[&](ObjectId object){return std::to_string(*a.document_identity(object));};
     require(find_entity(saved,id(falling))->at("components")[0]["properties"]["body"]["motion"]=="dynamic","Body motion is not saved by member name.");
@@ -642,12 +642,12 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
 
     // Scalar leaves of one set are one group: moving a probe volume past its old bounds fails leaf by leaf in either order.
     applied({{{"op","set"},{"id",id(environment)},{"properties",{{"volume0",{{"minimum",{{"x",-20},{"y",10}}},{"maximum",{{"x",-10},{"y",20}}}}}}}}});
-    const auto moved_volume=take(b->world().environment()).probe_volumes[0];
+    const auto moved_volume=take(b->presentation().environment()).probe_volumes[0];
     require(moved_volume.minimum[0]==-20 && moved_volume.maximum[0]==-10 && moved_volume.minimum[1]==10 && moved_volume.maximum[1]==20 &&
-        take(b->world().environment()).exposure_ev==1.5f,
+        take(b->presentation().environment()).exposure_ev==1.5f,
         "A Play set did not write a moved probe volume as one group.");
     require(!apply({{{"op","set"},{"id",id(environment)},{"properties",{{"volume0",{{"maximum",{{"x",-30}}}}}}}}}).empty() &&
-        take(b->world().environment()).probe_volumes[0].maximum[0]==-10,"A Play set that breaks the Environment's rules was applied.");
+        take(b->presentation().environment()).probe_volumes[0].maximum[0]==-10,"A Play set that breaks the Environment's rules was applied.");
     const auto key=take(project.create_material("Content/Materials/Live.material"));
     require(b->loaded_material(key)==ObjectId{},"Play loaded an unreferenced material.");
     editor::MaterialAsset asset;asset.description.parameters.roughness=.25f;
@@ -715,7 +715,7 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     physics::BodySettings triangle;triangle.shape=physics::ShapeKind::triangle_mesh;
     take(a.configure_body(member(a,take(ra.find_type("world.StaticMeshComponent"))),triangle));
     applied({{{"op","add"},{"parent",nullptr},{"index",nullptr},{"graph",Json::parse(take(a.serialize_live_subtree(imported)))}}});
-    require(std::ranges::any_of(take(b->world().render_items()),[&](const auto& item){return item.entity==in_b(imported);}),
+    require(std::ranges::any_of(take(b->presentation().render_items()),[&](const auto& item){return item.entity==in_b(imported);}),
         "A mesh imported during Play did not resolve in the Play copy.");
     // A rescale outgrows the shape cooked at load; physics cooks the new scale once instead of dropping the body.
     auto& simulation=*b->physics_scene();
@@ -786,13 +786,13 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     };
     const auto first=added({1,2,3});changed(a.add_component(move_type));const auto move=member(a,move_type);
     const auto second=added({0,0,4});
-    changed(a.create_static_mesh(take(project.mesh("builtin/cube")),{0,1,0}));const auto mesh=member(a,a.types().static_mesh_component);
+    changed(a.create_static_mesh(take(project.mesh("builtin/cube")),{0,1,0}));const auto mesh=member(a,a.presentation_types().static_mesh_component);
     take(a.assign_material(project,mesh,"slot/0",material_key));
     const auto property=[&](ObjectId object,std::string_view name) {
         const auto properties=take(a.properties(object));const auto at=std::ranges::find(properties,name,&editor::Property::name);
         require(at!=properties.end(),"A forwarded property is missing.");return at->path;
     };
-    const auto shared=take(world::read_material_bindings(ra,mesh)).front().resource.id();
+    const auto shared=take(presentation::read_material_bindings(ra,mesh)).front().resource.id();
     const auto roughness=property(shared,"parameters.roughness"),mesh_roughness=property(mesh,"material.roughness");
     const auto speed=field(a,move_type,"speed"),mass=field(a,move_type,"mass");
 
@@ -818,15 +818,15 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     const rendering::SceneLightingSettings defaults{};
     auto lighting=defaults;lighting.exposure_ev=1.5f;lighting.sky_enabled=true;
     take(a.set_environment(lighting));
-    require(sync("World settings creation")==1 && b->environment()!=ObjectId{} && take(b->world().environment())==lighting,
+    require(sync("World settings creation")==1 && b->environment()!=ObjectId{} && take(b->presentation().environment())==lighting,
         "The first World Settings edit did not reach Play as one add with its values.");
     changed(a.undo());sync("World settings creation undo");
-    require(b->environment()==ObjectId{} && take(b->world().environment())==defaults,"Undoing the first World Settings edit left Play with an Environment.");
+    require(b->environment()==ObjectId{} && take(b->presentation().environment())==defaults,"Undoing the first World Settings edit left Play with an Environment.");
     changed(a.redo());sync("World settings creation redo");
-    require(take(b->world().environment())==lighting,"Redoing the first World Settings edit did not restore Play's Environment.");
+    require(take(b->presentation().environment())==lighting,"Redoing the first World Settings edit did not restore Play's Environment.");
     lighting.exposure_ev=2.5f;lighting.probe_volumes[0].minimum[0]=7;lighting.probe_volumes[0].maximum[0]=9;
     each("World settings",[&]{take(a.set_environment(lighting));});
-    require(take(b->world().environment())==lighting,"A later World Settings edit did not reach Play.");
+    require(take(b->presentation().environment())==lighting,"A later World Settings edit did not reach Play.");
     each("Name",[&]{take(a.rename(first,L"Runner"));});
     each("Field",[&]{edit(a,move,speed,Scalar{5.f},201);});
     each("Field group",[&]{
@@ -851,7 +851,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     each("Body",[&]{take(a.configure_body(body,settings));});
     each("Mesh material field",[&]{take(a.set_property(mesh,mesh_roughness,Scalar{.3f},205));});
     each("Material override",[&]{take(a.set_material_override(mesh,"slot/0",roughness,true));});
-    const auto instance=take(world::read_material_bindings(ra,mesh)).front().resource.id();
+    const auto instance=take(presentation::read_material_bindings(ra,mesh)).front().resource.id();
     require(instance!=shared,"The override did not create a material instance.");
     each("Material instance",[&]{take(a.set_property(instance,roughness,Scalar{.8f},206));});
     const auto shared_roughness=[&](editor::Session& session) {
@@ -890,7 +890,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
 void verify_environment_migration(editor::Project& project) {
     acceptance_phase="Environment migration";
     using enum world::DiagnosticKind;
-    const auto settings=[](const editor::Session& session){return take(session.world().environment());};
+    const auto settings=[](const editor::Session& session){return take(session.presentation().environment());};
     const Json space={{"position",{0,0,0}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}},{"origin",nullptr}};
     const auto light=[](const char* id,const char* kind,bool enabled,Json color,double intensity) {
         return Json{{"id",id},{"type","world.LightComponent"},{"name",""},{"enabled",enabled},
@@ -923,7 +923,7 @@ void verify_environment_migration(editor::Project& project) {
     auto sky=load(sky_only);
     const auto lit=settings(*sky);
     require(sky->environment()!=ObjectId{} && !sky->lighting_supplied() && lit.sky_enabled && lit.sky_color==std::array{.1f,.2f,.3f} &&
-        lit.sky_intensity==2 && take(sky->world().light_items()).empty() && !sky->dirty(),
+        lit.sky_intensity==2 && take(sky->presentation().light_items()).empty() && !sky->dirty(),
         "A version 6 Sky Light did not become the Environment sky, or counted as supplied World lighting.");
     const auto emptied=take(sky->local_object(1));
     require(take(world::components(sky->world().runtime(),emptied)).empty() && take(world::has_transform(sky->world().runtime(),emptied)) &&
@@ -936,7 +936,7 @@ void verify_environment_migration(editor::Project& project) {
             entity("4","Second",true,{light("5","sky",true,{{"x",1},{"y",1},{"z",1}},9),light("6","point",true,{{"x",1},{"y",1},{"z",1}},5)})},"7");
         auto chosen=load(data);const auto value=settings(*chosen);
         require(!value.sky_enabled && value.sky_color==std::array{.4f,.5f,.6f} && value.sky_intensity==3 &&
-            take(chosen->world().light_items()).size()==1 && std::ranges::count(chosen->load_issues(),conflict,&world::Diagnostic::kind)==1 &&
+            take(chosen->presentation().light_items()).size()==1 && std::ranges::count(chosen->load_issues(),conflict,&world::Diagnostic::kind)==1 &&
             take(world::components(chosen->world().runtime(),take(chosen->local_object(4)))).size()==1,
             "Sky migration did not take the first Sky in preorder with its ancestors' enabled state, or kept another Sky.");
     }
@@ -1039,7 +1039,7 @@ void run() {
     // JSON source decimals round through the authored float storage.
     const auto migrated_json=Json::parse(take(migrated->serialize()));
     upgraded["actors"][0]["components"][0]["base_color"]=migrated_json["entities"][0]["components"][0]["base_color"];
-    upgraded["actors"][0]["components"][0]["roughness"]=world::Material{}.roughness;
+    upgraded["actors"][0]["components"][0]["roughness"]=presentation::Material{}.roughness;
     upgraded["actors"][0]["components"][0]["metallic"]=0.f;
     upgraded["actors"][0]["components"][0]["emissive"]=Json::array({0.f,0.f,0.f});
     require(migrated_json["version"]==7 && migrated_json["entities"][0]["components"][0]["properties"]["body"]["enabled"]==false,

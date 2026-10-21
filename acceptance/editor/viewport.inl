@@ -33,7 +33,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     wheel(app,control::viewport,5);
     const auto entity=app.document().selection().entity;
     const auto history=app.document().undo_count();
-    const auto items=model(app.document().world().render_items());
+    const auto items=model(app.document().presentation().render_items());
     require(items.size()==1,"Viewport fixture did not create a real sphere.");
     atelier::renderer::Capture initial;
     require(app.step(&initial),"Initial MatCap frame failed.");
@@ -78,7 +78,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
         require(image.depth==initial.depth,"A display-only switch changed scene depth.");
         require(app.document().selection().entity==entity && app.document().undo_count()==history,
                 "A viewport option changed selection or document history.");
-        const auto current=model(app.document().world().render_items());
+        const auto current=model(app.document().presentation().render_items());
         require(current.size()==items.size() && current[0].geometry==items[0].geometry &&
                 current[0].world.elements==items[0].world.elements &&
                 current[0].material.base_color.x==items[0].material.base_color.x &&

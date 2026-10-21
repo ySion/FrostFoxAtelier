@@ -7,7 +7,7 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     if(!snapshot_only) await_acceptance_activation(app,output,"Official examples");
     // Sponza's four Entities and the Environment its fitted probe volume created.
-    require(entities(app).size()==5 && app.document().environment()!=atelier::ObjectId{} && model(app.document().world().render_items()).front().geometry->vertices().size()==786801 &&
+    require(entities(app).size()==5 && app.document().environment()!=atelier::ObjectId{} && model(app.document().presentation().render_items()).front().geometry->vertices().size()==786801 &&
         Access::scene_lit_view(app).shading==atelier::renderer::Shading::scene_lit && Access::scene_lit_view(app).lit.ddgi,
         "Editor default startup did not load the complete Sponza Scene Lit/DDGI scene.");
     // Fitting an unsaved DDGI volume is load initialization: switching examples must not prompt to save.
@@ -33,13 +33,13 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
             "Example selection did not close the menu and configure Scene Lit.");
     };
     choose(Command::example_scene_lit);
-    require(entities(app).size()==16 && model(app.document().world().light_items()).size()==4 && app.document().environment()!=atelier::ObjectId{},
+    require(entities(app).size()==16 && model(app.document().presentation().light_items()).size()==4 && app.document().environment()!=atelier::ObjectId{},
         "Examples menu did not open the complete Scene Lit Room, including the Environment its Sky Light became.");
     clean("Opening Scene Lit Room left the document modified or with history.");
     tick(app,96);capture(app,output/"03-scene-lit-room.png");
     const auto shipped=atelier::editor::asset_directory()/"examples/Examples/Scene Lit Room/Scenes/Main.scene";
     const auto original=model(atelier::editor::read_file(shipped));
-    const auto mesh=model(app.document().world().render_items()).front().component;
+    const auto mesh=model(app.document().presentation().render_items()).front().component;
     const auto fields=model(app.document().properties(mesh));
     const auto roughness=std::ranges::find(fields,"material.roughness",&atelier::editor::Property::name);
     require(roughness!=fields.end(),"Scene Lit Room has no editable roughness.");

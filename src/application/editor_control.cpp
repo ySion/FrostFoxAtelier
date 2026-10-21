@@ -399,7 +399,7 @@ struct EditorControl::Impl {
         for(const auto& entity:take(app.document_->world().members())) {live.insert(entity.id());for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id()))) live.insert(component.id());}
         for(const auto id:app.document_->material_objects()) live.insert(id);
         const auto objects_snapshot=live;
-        for(const auto id:objects_snapshot) if(auto bindings=world::read_material_bindings(app.document_->world().runtime(),id);bindings)
+        for(const auto id:objects_snapshot) if(auto bindings=presentation::read_material_bindings(app.document_->world().runtime(),id);bindings)
             for(const auto& binding:*bindings) live.insert(binding.resource.id());
         std::erase_if(handles,[&](const auto& entry) {if(live.contains(entry.first)) return false;objects.erase(entry.second);return true;});
     }
@@ -409,7 +409,7 @@ struct EditorControl::Impl {
         for(const auto& entity:*entities) {if(entity.id()==object) return true;auto components=world::components(app.document_->world().runtime(),entity.id());
             if(components) for(const auto& component:*components) {
                 if(component.id()==object) return true;
-                if(auto bindings=world::read_material_bindings(app.document_->world().runtime(),component.id());bindings)
+                if(auto bindings=presentation::read_material_bindings(app.document_->world().runtime(),component.id());bindings)
                     for(const auto& binding:*bindings) if(binding.resource.id()==object) return true;
             }}
         return false;
@@ -454,8 +454,8 @@ struct EditorControl::Impl {
         }
         if(auto transform=world::read_transform(runtime,id)) result["transform"]={{"position",vector3(transform->position)},
             {"rotation",{transform->rotation.x,transform->rotation.y,transform->rotation.z,transform->rotation.w}},{"scale",vector3(transform->scale)}};
-        if(auto bindings=world::read_material_bindings(runtime,id);bindings) {
-            if(const auto mesh=world::read_static_mesh(runtime,id))
+        if(auto bindings=presentation::read_material_bindings(runtime,id);bindings) {
+            if(const auto mesh=presentation::read_static_mesh(runtime,id))
                 result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()}};
             result["materials"]=Json::array();
             for(const auto& binding:*bindings) {
@@ -573,7 +573,7 @@ struct EditorControl::Impl {
         data.drafts=Json::array();for(const auto& file:app.workspace_.source_editor.files()) if(file->dirty())
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
         for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id())))
-            if(auto mesh=world::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved)
+            if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved)
                 if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.first==mesh->mesh.source;})) data.meshes.emplace_back(mesh->mesh.source,mesh->mesh.resolved);
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
@@ -732,7 +732,7 @@ struct EditorControl::Impl {
             ObjectId component;std::string slot;
             if(op=="material.override") {
                 component=object(args.at("component"));slot=text(args.at("slot"));
-                const auto bindings=take(world::read_material_bindings(runtime,component));const auto at=std::ranges::find(bindings,slot,&world::MaterialBinding::slot);
+                const auto bindings=take(presentation::read_material_bindings(runtime,component));const auto at=std::ranges::find(bindings,slot,&presentation::MaterialBinding::slot);
                 if(at==bindings.end()) throw Failure("invalid_request","Assign a material to this slot first");target=at->resource.id();
             }
             if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
@@ -835,7 +835,7 @@ struct EditorControl::Impl {
             }
             bool disagrees=false;
             const auto opened=app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene,[&](const editor::Session& candidate)->Result<void> {
-                const auto environment=candidate.world().environment();if(!environment) return std::unexpected(environment.error());
+                const auto environment=candidate.presentation().environment();if(!environment) return std::unexpected(environment.error());
                 // Before schema 3 the view had no sky; the scene's Sky Light, now part of its Environment, supplies it.
                 if(view_schema<3) {view.lit.sky_enabled=environment->sky_enabled;view.lit.sky_color=environment->sky_color;view.lit.sky_intensity=environment->sky_intensity;}
                 else if(scene_version>=4 && static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) {

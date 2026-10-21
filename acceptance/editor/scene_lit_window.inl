@@ -73,6 +73,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     using atelier::editor::Command;
     namespace render=atelier::renderer;
     namespace world=atelier::world;
+    namespace presentation=atelier::presentation;
     const auto source=scene_lit_window_example(requested);
     const auto outside=output.lexically_relative(source);
     require(!outside.empty() && *outside.begin()==L"..","Scene Lit evidence output must be outside the source example project.");
@@ -88,7 +89,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     std::filesystem::create_directories(copy/"Source");
     Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Examples/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
     require(!app.document().dirty() && entities(app).size()==16 && app.document().environment()!=atelier::ObjectId{} &&
-        model(app.document().world().render_items()).size()==10 && model(app.document().world().light_items()).size()==4,
+        model(app.document().presentation().render_items()).size()==10 && model(app.document().presentation().light_items()).size()==4,
         "The formal application failed to load the complete Scene Lit example World.");
     const auto loaded=model(app.document().serialize());
     scene_lit_display(app,control::shading_first+2);
@@ -117,14 +118,14 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     }
     scene_lit_antialiasing(app,static_cast<unsigned>(render::Antialiasing::smaa));
 
-    const auto sky=[&]{return atelier::rendering::sky_radiance(model(app.document().world().environment()));};
+    const auto sky=[&]{return atelier::rendering::sky_radiance(model(app.document().presentation().environment()));};
     require(sky()==std::array{.025f,.035f,.055f},"The example's Sky Light did not become its Environment sky.");
     model(Access::select_entity(app,model(world::inspect_component(app.document().world().runtime(),app.document().environment())).owner));tick(app,2);
     click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
     click(app,static_cast<ControlKey>(Command::erase_selected));tick(app,2);
     require(sky()==std::array<float,3>{} && app.document().environment()==atelier::ObjectId{},"Deleting the Environment left environment radiance.");
     constexpr std::array commands{Command::create_point_light,Command::create_rectangle_light,Command::create_directional_light};
-    constexpr std::array kinds{world::LightKind::point,world::LightKind::rectangle,world::LightKind::directional};
+    constexpr std::array kinds{presentation::LightKind::point,presentation::LightKind::rectangle,presentation::LightKind::directional};
     constexpr std::array captions{L"Intensity (cd)",L"Intensity (cd/m²)",L"Illuminance (lux)"};
     constexpr std::array intensities{79.25f,22.5f,3.25f};
     std::array<atelier::ObjectId,3> created;
@@ -142,13 +143,13 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
                 " did not publish one Entity/history entry"+diagnostic);
         created[index]=app.document().selection().entity;
         auto& runtime=app.document().world().runtime();
-        const auto root=std::optional(component_object(app.document(),created[index],app.document().types().light_component));
-        if(!root || !model(runtime.is_a(model(runtime.type_of(*root)),app.document().types().light_component)))
+        const auto root=std::optional(component_object(app.document(),created[index],app.document().presentation_types().light_component));
+        if(!root || !model(runtime.is_a(model(runtime.type_of(*root)),app.document().presentation_types().light_component)))
             throw std::runtime_error("Scene Lit native light creation step "+std::to_string(index)+
                 " selected an Entity without its expected LightComponent root"+diagnostic);
         const auto light=*root;
         require(entities(app).size()==count+1 && app.document().undo_count()==history+1 &&
-            model(world::read_light(runtime,light)).kind==kinds[index],
+            model(presentation::read_light(runtime,light)).kind==kinds[index],
             "Native light creation did not create one complete, undoable World Entity.");
         click(app,static_cast<ControlKey>(Command::show_parameters));
         const auto fields=model(app.document().properties(light));
@@ -179,7 +180,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         }),"Native light intensity row has no visible painted caption.");
         std::printf("Scene Lit native parameter units: %s\n",atelier::editor::utf8(captions[index]).c_str());
         const auto text=std::to_wstring(intensities[index]);type(app,text.c_str());key(app,VK_RETURN);
-        require(model(world::read_light(runtime,light)).intensity==intensities[index] &&
+        require(model(presentation::read_light(runtime,light)).intensity==intensities[index] &&
             app.document().undo_count()==edit_history+1,
             "Native light Parameters did not commit one typed World edit.");
         const auto target=std::ranges::find(Access::scene_snapshot(app).lights,intensities[index],&render::Light::intensity);

@@ -13,6 +13,7 @@ void entity_lifecycle_and_detached_graph() {
         .base<LifecycleEntity>().publish());
     const auto value_field = take(runtime.find_field(entity_type, "value"));
     w::World world(runtime, types), foreign(runtime, types);
+    const auto foreign_scene = take(p::Scene::create(foreign, types));
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime, derived_type));
     auto second = take(w::create_entity(runtime, entity_type));
@@ -132,11 +133,11 @@ void entity_lifecycle_and_detached_graph() {
     take(foreign.set_transform(detached.id(),{{3,2,0},{},{1,1,1}}));
     const std::array shape{w::Attachment{mesh.id()},w::Attachment{sibling.id()}};
     committed(foreign.attach_components(detached.id(),shape));
-    take(w::set_geometry(runtime,mesh.id(),geometry::cube_mesh()));
+    take(p::set_geometry(runtime,mesh.id(),geometry::cube_mesh()));
     const auto matrix = take(w::world_matrix(runtime,detached.id()));
-    require(near(matrix[12],3) && near(matrix[13],2) && take(foreign.render_items()).empty(),"Detached graph entered rendering or lost Entity TRS.");
+    require(near(matrix[12],3) && near(matrix[13],2) && take(foreign_scene.render_items()).empty(),"Detached graph entered rendering or lost Entity TRS.");
     committed(foreign.attach(detached.id()));
-    require(take(foreign.render_items()).size() == 1,"Preassembled graph did not enter presentation on attach.");
+    require(take(foreign_scene.render_items()).size() == 1,"Preassembled graph did not enter presentation on attach.");
     w::World outsider(runtime,types);
     reject(outsider.set_transform(detached.id(),{}),"Foreign World edited a member Transform.");
     auto detached_history = take(foreign.detach(detached.id())); detached_history.root.reset();
@@ -151,7 +152,7 @@ void entity_lifecycle_and_detached_graph() {
     require(!runtime.type_of(garbage_id) && !runtime.type_of(garbage_component_id),"Never registered detached composition cycle did not collect.");
     auto pending=take(w::create_entity(runtime));
     auto pending_mesh=take(w::create_component(runtime,types.static_mesh_component));
-    take(w::set_geometry(runtime,pending_mesh.id(),geometry::cube_mesh()));
+    take(p::set_geometry(runtime,pending_mesh.id(),geometry::cube_mesh()));
     const std::array pending_shape{w::Attachment{pending_mesh.id()}};
     committed(foreign.attach_components(pending.id(),pending_shape));
     std::size_t pending_begins{};
@@ -159,10 +160,10 @@ void entity_lifecycle_and_detached_graph() {
     require(!take(w::has_transform(runtime,pending.id())) && take(w::components(runtime,pending.id())).size()==1,
         "Detached capability assembly implicitly created spatial identity.");
     reject(foreign.attach(pending.id()),"Incomplete Detached spatial owner entered World.");
-    require(take(foreign.members()).empty() && pending_begins==0 && take(foreign.render_items()).empty(),
+    require(take(foreign.members()).empty() && pending_begins==0 && take(foreign_scene.render_items()).empty(),
         "Failed incomplete-owner publication registered members or invoked Begin.");
     take(foreign.set_transform(pending.id(),{}));committed(foreign.attach(pending.id()));committed(foreign.start());
-    require(pending_begins==1 && take(foreign.render_items()).size()==1,
+    require(pending_begins==1 && take(foreign_scene.render_items()).size()==1,
         "Explicit spatial completion did not publish the same capability graph.");
     committed(foreign.stop());committed(w::destroy_entity(runtime,pending.id()));committed(foreign.close());
     std::puts("[pass] Entity lifecycle and detached assembly: inherited hooks, ordering, tasks, failures, requests, symmetric registration, atomic graph and GC");

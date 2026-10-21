@@ -174,6 +174,7 @@ Result<void> World::Impl::relocate(ObjectId edited) {
 }
 void World::Impl::changed(bool spatial) noexcept {
     schedule_dirty = buckets_dirty = true;
+    ++revision;
     if (spatial) space.clear();
 }
 World::Impl::MemberState* World::Impl::state_of(ObjectId object) noexcept {
@@ -415,16 +416,6 @@ Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
 World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl>(runtime, types, *this)) {
     const auto registered = runtime.native_type<Entity>();
     if (!registered || *registered != types.entity) throw std::invalid_argument("World types must be registered in its Runtime.");
-    // The world library presents its own mesh and light components; a mesh needs geometry.
-    impl_->meshes = {0};
-    impl_->registrations.push_back({types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
-        return runtime.with_native<StaticMeshComponent>(object, [](StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
-    }});
-    impl_->lights = {1};
-    impl_->registrations.push_back({types.light_component, {}});
-    impl_->environments = {2};
-    impl_->registrations.push_back({types.environment_component, {}});
-    impl_->admissions.push_back({types.environment_component, detail::unique_environment(impl_->environments)});
 }
 World::~World() {
     if (!impl_->closed) {
@@ -437,9 +428,10 @@ Runtime& World::runtime() const noexcept { return impl_->runtime; }
 const Types& World::types() const noexcept { return impl_->types; }
 bool World::running() const noexcept { return impl_->running; }
 bool World::closed() const noexcept { return impl_->closed; }
+std::uint64_t World::revision() const noexcept { return impl_->revision; }
 Activity World::activity() const noexcept {
     const auto& state = *impl_;
-    Activity result{0, 0, state.tasks.size()};
+    Activity result{0, state.tasks.size()};
     for (const auto& member : state.states) {
         const auto ticks = [](const Behavior* behavior) {
             return behavior && (behavior->tick || behavior->post_physics_tick || behavior->late_tick);
@@ -449,7 +441,6 @@ Activity World::activity() const noexcept {
         for (const auto& item : member.components) {
             result.update_registrations += state.running && item.begun && item.fault == Impl::Fault::none && member.eligible &&
                 item.enabled && ticks(item.behavior);
-            result.presentation_registrations += (item.capabilities & state.presented()) != 0;
         }
     }
     return result;
@@ -980,60 +971,6 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
     return impl_->checked_write(object, *entity,
         [&] { return runtime().write(object, path, value); },
         [&] { return runtime().restore(object, path, ValueOutput{value.type, previous.storage.data()}); });
-}
-Result<std::vector<RenderItem>> World::render_items() const {
-    auto pass = spatial_pass(DiagnosticPhase::presentation);
-    if (!pass) return std::unexpected(pass.error());
-    auto& state = *impl_;
-    std::vector<RenderItem> result;
-    auto meshes = members(state.meshes);
-    if (!meshes) return std::unexpected(meshes.error());
-    result.reserve(meshes->size());
-    state.valid_materials.resize(meshes->size());
-    for (std::size_t slot = 0; slot < meshes->size(); ++slot) {
-        const auto& [owner, object, active] = (*meshes)[slot];
-        (void)active;
-        // Isolated items are skipped: an unusable space is reported once on
-        // its Entity, an invalid material on its component.
-        auto matrix = pass->matrix(owner);
-        if (!matrix) return std::unexpected(matrix.error());
-        if (!*matrix || pass->degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
-            continue;
-        RenderItem item{owner, object, **matrix, {}, {}};
-        Result<std::optional<ValidationFailure>> invalid = std::nullopt;
-        Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> surfaces;
-        auto read = runtime().with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<void> {
-            item.geometry = Access::geometry(value);
-            item.material = value.material;
-            if (!state.valid_materials.contains(slot, value.material)) {
-                invalid = runtime().validate_value(types().material, std::as_bytes(std::span{&value.material, 1}));
-                if (!invalid || *invalid) return {};
-                state.valid_materials.insert(slot, value.material);
-            }
-            surfaces = detail::material_surfaces(runtime(), object, value);
-            return {};
-        });
-        if (!read) {
-            if (!state.contain(read.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner))
-                return std::unexpected(read.error());
-            continue;
-        }
-        if (!invalid) return std::unexpected(invalid.error());
-        if (*invalid) {
-            const auto& failure = **invalid;
-            if (!state.contain(failure.error, validation_diagnostic(failure, DiagnosticPhase::presentation, object, owner, {"material"})))
-                return std::unexpected(failure.error);
-            continue;
-        }
-        if (!surfaces) {
-            if (!state.contain(surfaces.error(), DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner, {"materials"}))
-                return std::unexpected(surfaces.error());
-            continue;
-        }
-        item.surfaces = std::move(*surfaces);
-        result.push_back(std::move(item));
-    }
-    return result;
 }
 
 }

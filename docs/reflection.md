@@ -88,7 +88,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 - `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标可以是本组的反射对象，也可以是组外任意对象类型的限定名（如 `world.Entity`）：生成代码按名称引用，由 Runtime 在发布时解析，所以组外目标必须先发布或在同一批中，缺失时发布错误写明字段和所引用的名称。目标指向本组的非对象类型时生成器报错。这些选项不能用于普通内联值。
 - `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。
 - 漏标直接引用槽、序列或内嵌包含引用存储的记录/数组会报错，避免遗漏 GC 边。未标记的普通原生状态不自动成为反射字段；任意外部资源的所有权仍由原生实现负责。
-- 对象支持一个 public、非 virtual 的原生反射基类，基类须在本组中；记录不支持继承。继承反射成员重名会报错。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。
+- 对象支持一个 public、非 virtual 的原生反射基类；记录不支持继承。基类可以在本组中，也可以来自另一个生成组：生成器凭基类的 `AGENERATED_BODY` 识别（类模板特化不在此列），使用方必须在基类所在组之后注册。组内基类的反射成员重名由生成器报错；跨组时，基类是否为对象类型、成员是否重名，由 Runtime 注册时检查（`Object base must resolve to an object type`、`Member hides an inherited declaration`），不在生成时报。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。
 - 方法支持 void、标量（含 bool）/枚举、内建数学值或 plain struct 结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数。静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值与递归 plain struct 支持同步按值参数/结果；资源记录与容器按值参数/结果与借用视图参数尚未开放。生成的定型 C++ thunk 负责实际平台 ABI。生成器使用完整成员指针类型和完全限定的原生类型名消除重载与命名空间歧义。
 - `AFUNCTION(BorrowSafe)` 发布 `MethodInfo::preserves_borrows`，允许同步原生值区间调用该方法。它是开发者对完整调用链的保证，不是自动效果分析；具体约束见[语言规则](../LANGUAGE.md#拥有型-stringarray-与原生算法)。普通方法无需此标记，已有调用行为保持。
 - 满足自然对齐的标准布局类型中，公开反射字段额外生成 `offsetof`，由同一 Runtime 发布并校验，供源码借用直接访问。隐藏、非标准布局或不能保证自然对齐的字段继续使用既有成员访问器，不推测偏移；这一限制不影响原有反射能力。详见[原生值借用](native-value-borrows.md)。
@@ -171,4 +171,4 @@ cmake --build --preset release --target reflection_acceptance world_acceptance
 
 [生成消费者](../acceptance/reflection/main.cpp)实际编译并调用生成方法，检查私有记录、重载别名、const/noexcept、配置宏和构析，以及 double、数学值的字段/参数/结果和 Array<double>。字段展示验收覆盖原生/描述定义、空值、UTF-8 与转义、隐藏与继承、字段身份和布局，以及定义与 Runtime 销毁后的描述副本寿命。[调用链消费者](../acceptance/reflection/calls.cpp)覆盖 i32、枚举、三种传递方式、原生/描述型存储、JIT 双向调用、别名、错误、协程与签名更新。[命令行消费者](../acceptance/reflection/cli.ps1)检查展示参数生成、旧输出隔离、可重现写入、include 依赖及带位置的非法输入诊断。World 验收继续覆盖实际对象图、字段/方法、GC、JIT、协程和业务生命周期。
 
-当前生成组要求共同解析其反射基类、记录与引用目标；跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。初始 C#/ClangSharp、Attribute 路线对照见[选型记录](research/attribute-reflection-feasibility.md)。
+内联记录与枚举字段的类型须在本生成组中解析；反射基类和引用目标可以来自其他生成组，分别按上文的 `AGENERATED_BODY` 识别和限定名解析，其余跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。初始 C#/ClangSharp、Attribute 路线对照见[选型记录](research/attribute-reflection-feasibility.md)。
