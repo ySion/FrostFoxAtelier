@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -293,6 +294,10 @@ struct Renderer::State {
     std::vector<MeshGroup> mesh_groups;
     // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
     std::vector<std::uint32_t> instance_groups, draw_instances;
+    // Persistent CPU-written copies of draw_instances, one per frame in flight,
+    // indexed by recording frame sequence. Grown on demand, never shrunk.
+    std::vector<GfxBuffer> draw_order_slots;
+    std::uint64_t draw_order_sequence{}; // Recording frame of the last slot write.
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
@@ -402,6 +407,12 @@ struct Renderer::State {
             geometry.vertices = {};
         }
         geometries.clear(); mesh_groups.clear();
+        for(auto& slot:draw_order_slots)if(slot) {
+            const auto r=gfxDestroyBuffer(gfx,slot);
+            if(r)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Draw order retirement failed",true,r));
+            slot={};
+        }
+        draw_order_slots.clear();
         if (sampler) {
             const auto r = gfxDestroySamplerState(gfx, sampler);
             if (r)
@@ -786,7 +797,8 @@ struct Renderer::State {
                 depth_extent = extent;
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
-            BufferOwner data{gfx, {}}, order{gfx, {}};
+            BufferOwner data{gfx, {}};
+            GfxBuffer order{};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
@@ -805,16 +817,31 @@ struct Renderer::State {
                     geometry.used = true;
                 }
                 if (!draw_instances.empty()) {
-                    order.buffer = gfxCreateBuffer<std::uint32_t>(gfx,
-                        static_cast<std::uint32_t>(draw_instances.size()), draw_instances.data());
-                    allocation(bool(order.buffer));
+                    // gfx began recording frame N only after frame N - frames_in_flight
+                    // completed, so this frame's slot is no longer read by the GPU.
+                    const auto slots = context.info().frames_in_flight;
+                    if (draw_order_slots.empty()) draw_order_slots.resize(slots);
+                    const auto sequence = gfxGetRecordingFrameSequence(gfx);
+                    // Draws already recorded in this frame read the slot at execution; a second write would redirect them.
+                    if (sequence == draw_order_sequence)
+                        throw error(rhi::ErrorCode::execution_failed, "Draw order slot written twice in one recording frame", true);
+                    draw_order_sequence = sequence;
+                    auto& slot = draw_order_slots[sequence % slots];
+                    const auto count = static_cast<std::uint32_t>(draw_instances.size());
+                    if (slot.getCount() < count) {
+                        if (slot) require(gfxDestroyBuffer(gfx, std::exchange(slot, {})), "Retire draw order slot");
+                        slot = gfxCreateBuffer<std::uint32_t>(gfx, std::bit_ceil(count), nullptr, kGfxCpuAccess_Write);
+                        allocation(bool(slot));
+                    }
+                    std::memcpy(gfxBufferGetData(gfx, slot), draw_instances.data(), count * sizeof(std::uint32_t));
+                    order = slot;
                 }
             }
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
                 if(selected_only&&!selected)return;
-                if(!order.buffer)return; // Nothing visible.
+                if(!order)return; // Nothing visible.
                 if(!data.buffer) {
                     timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
@@ -836,7 +863,7 @@ struct Renderer::State {
                     frame.view.triangle_edges ? 1u : 0u, pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
                 require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
-                require(gfxProgramSetParameter(gfx, program, "draw_instances", order.buffer), "Bind mesh draw order");
+                require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
                 require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
@@ -868,7 +895,7 @@ struct Renderer::State {
                         group.visible_first,group.visible_count});
                 {
                     timing::Scope lit_stage{phases::encode_lit};
-                    scene_lit->draw(frame,extent,depth,{lit_draws,instance_groups,order.buffer},materials,stats);
+                    scene_lit->draw(frame,extent,depth,{lit_draws,instance_groups,order},materials,stats);
                 }
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
                 if(editing_depth) {
