@@ -2,6 +2,8 @@
 
 #include "editor/session.hpp"
 #include "renderer/renderer.hpp"
+#include <algorithm>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,6 +13,9 @@ namespace atelier::application {
 // are mapped with full equality; their hashes are never used as renderer IDs.
 class SceneSnapshot final {
 public:
+    // Extractions performed. A refresh whose presentation version, selection and
+    // identity equal the last extraction's keeps the previous snapshot.
+    std::uint64_t extractions{};
     std::vector<renderer::MeshInstance> meshes;
     // Same-frame geometry membership, shared with viewport locator overlays.
     std::vector<ObjectId> mesh_entities;
@@ -21,6 +26,19 @@ public:
         ++identity;revision=1;next_key_=1;keys_.clear();meshes.clear();mesh_entities.clear();lights.clear();
     }
     Result<void> refresh(const editor::Session& document) {
+        auto version=document.presentation().version();if(!version) return std::unexpected(version.error());
+        const auto selection=document.selected_entities();
+        if(extracted_ && extracted_->identity==identity && extracted_->version==*version && std::ranges::equal(extracted_->selection,selection))
+            return {};
+        extracted_.reset();
+        if(auto extracted=extract(document);!extracted) return extracted;
+        extracted_=Extracted{identity,*version,{selection.begin(),selection.end()}};
+        ++extractions;return {};
+    }
+private:
+    struct Extracted { std::uint64_t identity,version;std::vector<ObjectId> selection; };
+    std::optional<Extracted> extracted_;
+    Result<void> extract(const editor::Session& document) {
         auto geometry=document.presentation().render_items();if(!geometry) return std::unexpected(geometry.error());
         auto illumination=document.presentation().light_items();if(!illumination) return std::unexpected(illumination.error());
         for(auto& [object,key]:keys_) { (void)object;key.seen=false; }

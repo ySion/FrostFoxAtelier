@@ -158,9 +158,39 @@ void verify_environment_sky_application() {
         "The Environment sky changed after saved scene reopen.");
     std::puts("Environment sky application acceptance: PASS (first edit creates it, unique, enable/remove/undo, scene save/reopen)");
 }
+// A refresh extracts only when the presentation version, the selection or the
+// snapshot identity changed; static frames keep the previous snapshot.
+void verify_scene_snapshot_skip() {
+    using namespace editor;
+    Session document;
+    auto& world=const_cast<world::World&>(document.world());
+    changed(document.create_static_mesh(mesh_assets().front()));const auto mesh_entity=document.selection().entity;
+    changed(document.create_light(presentation::LightKind::point));
+    const auto light=component(document,document.selection().entity,document.presentation_types().light_component);
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));
+    const auto refreshed=[&](bool extracted,const char* message) {
+        const auto before=snapshot.extractions;take(snapshot.refresh(document));
+        require(snapshot.extractions==before+(extracted?1:0),message);
+    };
+    refreshed(false,"A static frame extracted the presentation again.");
+    refreshed(false,"A second static frame extracted the presentation again.");
+    take(document.select(mesh_entity));refreshed(true,"A selection change kept the previous highlight.");
+    require(snapshot.meshes[0].selected,"The refreshed snapshot lost the selection highlight.");
+    refreshed(false,"An unchanged selection extracted the presentation again.");
+    take(world.runtime().write(mesh_entity,document.types().position_fields[0],Scalar{2.f}));
+    refreshed(true,"A TRS write past World kept the previous mesh matrix.");
+    require(snapshot.meshes[0].world[12]==2,"The refreshed snapshot lost the written position.");
+    auto settings=take(presentation::read_light(world.runtime(),light));settings.intensity=9;
+    take(presentation::set_light(world,light,settings));refreshed(true,"A light edit kept the previous light.");
+    require(snapshot.lights[0].intensity==9,"The refreshed snapshot lost the light edit.");
+    refreshed(false,"A static frame after edits extracted the presentation again.");
+    snapshot.reset();refreshed(true,"A reset snapshot reused the previous extraction.");
+    std::puts("Scene snapshot skip acceptance: PASS (static frames reuse the snapshot; selection, TRS past World, light edit and reset extract)");
+}
 void verify_scene_lit_application(const std::filesystem::path& source_example = {}) {
     verify_scene_lit_example(source_example);
     verify_environment_sky_application();
+    verify_scene_snapshot_skip();
     using namespace editor;
     const auto folder=std::filesystem::current_path()/"out/scene-lit-application-evidence"/
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());

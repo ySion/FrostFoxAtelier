@@ -70,6 +70,7 @@ world::World::Admission detail::unique_environment(world::CapabilityId environme
 Result<rendering::SceneLightingSettings> Scene::environment() const {
     auto environments=world_->members(environments_);
     if(!environments) return std::unexpected(environments.error());
+    isolated_environment_=true;
     for(const auto& [owner,object,active]:*environments) {
         if(!active) continue;
         auto invalid=world_->runtime().validate(object);
@@ -77,12 +78,15 @@ Result<rendering::SceneLightingSettings> Scene::environment() const {
         if(*invalid) {
             const auto& failure=**invalid;
             if(!world_->contain(failure.error,world::validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner))) return std::unexpected(failure.error);
-            break;
+            return rendering::SceneLightingSettings{};
         }
-        return world_->runtime().with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& value)->Result<rendering::SceneLightingSettings> {
+        auto settings=world_->runtime().with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& value)->Result<rendering::SceneLightingSettings> {
             return environment_settings(value);
         });
+        if(settings) isolated_environment_=false;
+        return settings;
     }
+    isolated_environment_=false;
     return rendering::SceneLightingSettings{};
 }
 Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
@@ -115,6 +119,8 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
     auto lights=world_->members(lights_);
     if (!lights) return std::unexpected(lights.error());
     valid_lights_.resize(lights->size());
+    isolated_lights_=true;
+    bool isolated=false;
     {
         for (std::size_t slot=0;slot<lights->size();++slot) {
             const auto& [owner,object,active]=(*lights)[slot];
@@ -123,6 +129,7 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
             auto settings=read_light(runtime,object);
             if (!settings) {
                 if (!world_->contain(settings.error(),detail::diagnostic(DiagnosticKind::invalid_value,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(settings.error());
+                isolated=true;
                 continue;
             }
             if (!valid_lights_.contains(slot,*settings)) {
@@ -131,16 +138,17 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
                 if (*invalid) {
                     const auto& failure=**invalid;
                     if (!world_->contain(failure.error,world::validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
+                    isolated=true;
                     continue;
                 }
                 valid_lights_.insert(slot,*settings);
             }
             auto matrix=pass->matrix(owner);
             if (!matrix) return std::unexpected(matrix.error());
-            if (!*matrix) continue;
+            if (!*matrix) {isolated=true;continue;}
             auto frame=pass->orientation(owner);
             if (!frame) return std::unexpected(frame.error());
-            if (!*frame) continue;
+            if (!*frame) {isolated=true;continue;}
             // A mirrored frame is -R; negating its right axis keeps it right-handed.
             const double sign=(*frame)->mirrored?-1:1;
             const auto axis=[&](math::Vector3d local) {
@@ -152,6 +160,7 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
                 axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings});
         }
     }
+    isolated_lights_=isolated;
     return result;
 }
 }

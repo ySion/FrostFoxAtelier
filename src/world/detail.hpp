@@ -172,6 +172,7 @@ struct World::Impl {
     Map<ObjectId, std::size_t> positions;
     // Derived lazily from `states`.
     bool schedule_dirty{true}, buckets_dirty{true};
+    std::uint64_t revision{1}; // World::revision; advanced by changed().
     std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
     std::vector<Bucket> buckets;
     struct Registration { TypeId type; CapabilityPredicate predicate; };

@@ -145,6 +145,8 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity。几何资源、材质、灯参数和呈现成员变化递增 scene_revision；TRS、选择和相机连续移动不递增。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 
+`SceneSnapshot::refresh` 先取 [presentation 的版本号](../presentation/README.md#呈现版本号)：版本号、选择和快照身份都与上一次提取相同时保留上一份快照，不调用 `render_items` 与 `light_items`，所以只转相机或只做 UI 操作的帧不重新提取；`extractions` 记录实际提取次数。
+
 光照及快照的当前合同见 [Scene Lit](../renderer/scene-lit.md)，应用创建、撤销、保存重开和正式窗口结果统一见 [Renderer 验收](../renderer/acceptance.md)。早期只完成语法检查的交接记录已被这些集成结果替代。
 
 ### GPU Pass 耗时

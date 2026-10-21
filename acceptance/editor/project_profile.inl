@@ -95,6 +95,16 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("material_surfaces",[&]{for(const auto& item:geometry) take(presentation::material_surfaces(document->world().runtime(),item.component));});
     measure("scene_snapshot",[&]{take(snapshot.refresh(*document));});
     {
+        // A changed frame: one mesh Entity's position alternates through a Runtime write.
+        auto& runtime=document->world().runtime();
+        const auto entity=geometry.front().entity;const auto& x=document->types().position_fields[0];
+        const auto original=std::get<float>(take(runtime.read(entity,x)));bool moved{};
+        measure("scene_snapshot_changed",[&]{
+            moved=!moved;take(runtime.write(entity,x,Scalar{moved?original+1:original}));take(snapshot.refresh(*document));
+        });
+        take(runtime.write(entity,x,Scalar{original}));take(snapshot.refresh(*document));
+    }
+    {
         // Paired World edits restore the same graph; the document history is not involved.
         auto& world=const_cast<world::World&>(document->world());
         auto& runtime=world.runtime();

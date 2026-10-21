@@ -287,6 +287,15 @@ public:
     // without one. An invalid Environment is reported as invalid_value in the
     // lighting phase's current pass and yields the defaults; see contain.
     [[nodiscard]] Result<rendering::SceneLightingSettings> environment() const;
+    // Advances when render_items, light_items or environment may return a
+    // different result than at the previous call: World::revision, a presented
+    // space chain, mesh geometry, Material bytes or slot surfaces, light
+    // settings, or the active Environment's values. Values written past World
+    // (Runtime::write, native code, JIT) are found by comparing bytes. While the
+    // latest extraction isolated an item, every call advances, so extraction
+    // keeps reporting it. It may advance without a visible change. Reports
+    // nothing and does not begin a diagnostic pass.
+    [[nodiscard]] Result<std::uint64_t> version() const;
 private:
     Scene(world::World& world, const Types& types) noexcept : world_(&world), types_(types) {}
     world::World* world_;
@@ -295,6 +304,31 @@ private:
     // Aligned with the meshes and lights buckets at each extraction call.
     mutable detail::PassedValues<Material> valid_materials_;
     mutable detail::PassedValues<LightSettings> valid_lights_;
+    // Whether the latest call of each extraction isolated an item.
+    mutable bool isolated_meshes_{}, isolated_lights_{}, isolated_environment_{};
+    // What version() saw at its previous call, by bucket position.
+    struct SeenMesh {
+        bool placed{}, flat{}, slotted{};
+        math::Matrix4 world{};
+        geometry::MeshRef geometry;
+        Material material;
+        std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces;
+    };
+    struct SeenLight {
+        bool placed{};
+        math::Matrix4 world{};
+        world::World::Orientation frame;
+        LightSettings settings;
+    };
+    struct Seen {
+        std::uint64_t world{};
+        std::vector<SeenMesh> meshes;
+        std::vector<SeenLight> lights;
+        ObjectId environment;
+        rendering::SceneLightingSettings settings;
+    };
+    mutable Seen seen_;
+    mutable std::uint64_t version_{1};
 };
 
 }

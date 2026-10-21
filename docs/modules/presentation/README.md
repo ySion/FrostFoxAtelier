@@ -10,6 +10,16 @@
 
 `render_items()`、`light_items()` 与 `environment()` 只遍历这些桶，经 `World::spatial_pass` 读取空间，对象失败经 `World::contain` 写入 World 的诊断日志，按 World 的失败策略隔离或使调用失败。Scene 只持有材质与灯参数的校验缓存，不缓存提取结果。
 
+### 呈现版本号
+
+`Scene::version()` 返回一个单调的版本号，供消费者跳过没有变化的帧。只要三项提取中任何一项的结果可能与上一次调用 `version()` 时不同，它就前进。Runtime 没有字段写入通知，所以它由三处已有的检查合成：
+
+- 结构：`World::revision()`，成员、组合、启用、空间关系、Transform 有无和能力登记的变化都会使它前进；
+- 空间：经 `World::spatial_probe()` 读取每个网格和启用灯光的世界矩阵（灯另读朝向），与上一次逐字节比较；
+- 数据：网格的几何、Material 字节和材质槽 Surface 快照，启用灯光的 LightSettings 字节，启用中的 Environment 的设置值，均与上一次比较。经 `Runtime::write`、`with_native` 或 JIT 绕过 World 写入的值也由此发现。
+
+上一次提取隔离了某一项（空间不可求值、值无效）时，每次调用都前进，消费者因此每帧重新提取，诊断照旧逐次累计 `repeats`；修复后恢复跳过。版本号允许没有可见变化时前进，不会在内容变化时停留。`version()` 不写诊断，也不开始诊断遍历；跳过的帧不提取，所以持续的警告（如零缩放）按提取次数而不是帧数累计。
+
 ## 网格
 
 `create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform 与 mesh_source；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
