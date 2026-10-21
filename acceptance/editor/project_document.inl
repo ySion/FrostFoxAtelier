@@ -18,7 +18,7 @@ void verify_scene_v1(editor::Project& project) {
         !runtime.find_type("world.Vec3") && !runtime.find_type("world.Quaternion"),
         "Scene loading did not use the canonical Runtime math types.");
     const auto entity=take(document->world().members()).front().id();
-    const auto root=component(*document,entity,document->types().static_mesh_component);
+    const auto root=component(*document,entity,document->presentation_types().static_mesh_component);
     const auto child=take(world::children(runtime,entity)).front().id();
     require(take(world::has_transform(runtime,entity)) && take(world::parent_entity(runtime,child))==entity &&
         document->name(entity)==L"旧场景","Scene v1 lost its root, parent or Unicode name.");
@@ -26,7 +26,7 @@ void verify_scene_v1(editor::Project& project) {
     require(matrix[0]==-2 && matrix[5]==-6 && matrix[10]==4 &&
         matrix[12]==.25f && matrix[13]==-3.25f && matrix[14]==-.25f,
         "Scene v1 changed xyzw rotation, float TRS values or row-vector hierarchy composition.");
-    const auto mesh=take(world::read_static_mesh(runtime,root));
+    const auto mesh=take(presentation::read_static_mesh(runtime,root));
     require(mesh.mesh.source=="builtin/sphere" && mesh.mesh.resolved==take(project.mesh("builtin/sphere")).mesh &&
         mesh.material.base_color==math::Vector3{.125f,.25f,.5f},
         "Scene v1 lost its mesh source or material.");
@@ -39,7 +39,7 @@ void verify_scene_v1(editor::Project& project) {
             component["properties"]=nlohmann::json::object();
             if(component["type"]=="world.StaticMeshComponent") {
                 component["materials"]=nlohmann::json::array();
-                const world::Material material;
+                const presentation::Material material;
                 component["roughness"]=material.roughness;component["metallic"]=material.metallic;
                 component["emissive"]=nlohmann::json::array({0.f,0.f,0.f});
             }
@@ -48,7 +48,7 @@ void verify_scene_v1(editor::Project& project) {
     auto upgraded_document=take(editor::Session::deserialize(upgraded.dump(),project));
     require(take(reopened->serialize())==take(upgraded_document->serialize()),
         "Scene v1 and v3 migration disagreed on authored values or the canonical Entity graph.");
-    require(!take(physics::read_settings(reopened->world().runtime(),component(*reopened,take(reopened->world().members()).front().id(),reopened->types().static_mesh_component))).enabled,
+    require(!take(physics::read_settings(reopened->world().runtime(),component(*reopened,take(reopened->world().members()).front().id(),reopened->presentation_types().static_mesh_component))).enabled,
         "Legacy visual mesh unexpectedly enabled collision.");
 }
 
@@ -78,7 +78,7 @@ void verify_physics_test_project() {
     auto& world=const_cast<world::World&>(document->world());
     const auto capsule_children=take(world::children(world.runtime(),capsule));
     require(capsule_children.size()==1 && take(world::read_transform(world.runtime(),capsule_children.front().id())).scale==math::Vector3{1,2,1} &&
-        take(world::read_static_mesh(world.runtime(),component(*document,capsule_children.front().id(),document->types().static_mesh_component))).mesh.source=="builtin/sphere",
+        take(presentation::read_static_mesh(world.runtime(),component(*document,capsule_children.front().id(),document->presentation_types().static_mesh_component))).mesh.source=="builtin/sphere",
         "Legacy capsule body migration lost its independent visual space or sphere mesh.");
     const auto body_settings=[&](ObjectId entity) {
         for(const auto& component:take(world::components(world.runtime(),entity)))
@@ -176,10 +176,10 @@ void verify_project_document() {
     changed(document.create_static_mesh(take(project.mesh(resource))));
     const auto entity=document.selection().entity;
     take(document.rename(entity,L"主角 Triangle"));
-    const auto mesh=component(document,entity,document.types().static_mesh_component);
+    const auto mesh=component(document,entity,document.presentation_types().static_mesh_component);
     take(const_cast<world::World&>(document.world()).set_transform(entity,{{1,2,3},{0,0,0,1},{2,3,4}}));
     changed(document.add_component(document.types().component));
-    changed(document.add_component(document.types().static_mesh_component)); // Null mesh must survive.
+    changed(document.add_component(document.presentation_types().static_mesh_component)); // Null mesh must survive.
     const auto saved=take(document.serialize());
     take(editor::write_file(take(project.resolve(project.startup_scene())),saved));document.mark_saved();
     take(document.rename(entity,L"Changed"));require(document.dirty(),"Rename did not dirty the document.");
@@ -190,13 +190,13 @@ void verify_project_document() {
         editor::Session built_in;
         changed(built_in.create_static_mesh(take(project.mesh("builtin/sphere"))));
         const auto built_in_entity=built_in.selection().entity;
-        const auto body=component(built_in,built_in_entity,built_in.types().static_mesh_component);
+        const auto body=component(built_in,built_in_entity,built_in.presentation_types().static_mesh_component);
         physics::BodySettings settings;
         settings.shape=physics::ShapeKind::triangle_mesh;
         take(built_in.configure_body(body,settings));
         auto reopened=take(editor::Session::deserialize(take(built_in.serialize()),project));
         const auto restored_body=component(*reopened,take(reopened->world().members()).front().id(),
-            reopened->types().static_mesh_component);
+            reopened->presentation_types().static_mesh_component);
         const auto restored_settings=take(physics::read_settings(reopened->world().runtime(),restored_body));
         require(restored_settings.shape==physics::ShapeKind::triangle_mesh && !restored_settings.cooked_shape,
             "Built-in triangle collision required a project Cook cache after reopening.");
@@ -213,7 +213,7 @@ void verify_project_document() {
         const auto physical_entity=physical.selection().entity;
         take(const_cast<world::World&>(physical.world()).set_transform(physical_entity,
             {{0,0,0},{0,0,0,1},collision_scale}));
-        const auto body=component(physical,physical_entity,physical.types().static_mesh_component);
+        const auto body=component(physical,physical_entity,physical.presentation_types().static_mesh_component);
         physics::BodySettings settings;
         settings.shape=physics::ShapeKind::triangle_mesh;
         settings.material.friction=.65f;
@@ -228,7 +228,7 @@ void verify_project_document() {
             take(imported.set_transform(parent,{{10,0,0},{},{2,2,2}}));
             const math::Vector3 final_scale{4,6,8}; // Not cooked yet: the import cooks it.
             changed(imported.instantiate_subtree(physical_scene,project,parent));const auto child=imported.selection().entity;
-            const auto primitive=component(imported,child,imported.types().static_mesh_component);
+            const auto primitive=component(imported,child,imported.presentation_types().static_mesh_component);
             require(take(world::parent_entity(imported.world().runtime(),child))==parent &&
                 *take(physics::read_settings(imported.world().runtime(),primitive)).cooked_shape==*take(project.collision(resource,final_scale)),
                 "Composition import restored triangle Cook with Detached scale instead of its prospective parent space.");
@@ -249,7 +249,7 @@ void verify_project_document() {
         physics_scene.reset();
         take(editor::write_file(collision_file,"invalid"));
         auto rebuilt=take(editor::Session::deserialize(physical_scene,project,{},editor::LoadPolicy::strict));
-        const auto rebuilt_body=component(*rebuilt,take(rebuilt->world().members()).front().id(),rebuilt->types().static_mesh_component);
+        const auto rebuilt_body=component(*rebuilt,take(rebuilt->world().members()).front().id(),rebuilt->presentation_types().static_mesh_component);
         require(*take(physics::read_settings(rebuilt->world().runtime(),rebuilt_body)).cooked_shape==*collision_bytes &&
             take(editor::read_file(collision_file))==*collision_bytes,
             "A corrupt Cook cache rejected the scene instead of being rebuilt from its source mesh.");
@@ -352,19 +352,19 @@ void verify_project_document() {
         auto meshless=take(editor::Session::deserialize(saved,reopened));
         const auto issues=meshless->load_issues();
         const auto mesh_issue=std::ranges::find(issues,world::DiagnosticKind::missing_resource,&world::Diagnostic::kind);
-        const auto restored=component(*meshless,take(meshless->world().members()).front().id(),meshless->types().static_mesh_component);
-        const auto binding=take(world::read_static_mesh(meshless->world().runtime(),restored)).mesh;
+        const auto restored=component(*meshless,take(meshless->world().members()).front().id(),meshless->presentation_types().static_mesh_component);
+        const auto binding=take(presentation::read_static_mesh(meshless->world().runtime(),restored)).mesh;
         require(issues.size()==1 && mesh_issue!=issues.end() && mesh_issue->field==std::vector<std::string>{"mesh"} && mesh_issue->object==restored &&
             binding.source==resource && !binding.resolved && take(meshless->serialize())==saved,
             "Tolerant loading did not keep a missing mesh reference verbatim with one diagnostic.");
     }
     require(take(document.serialize())==saved,"Failed loading changed the original document.");
-    const auto material=take(world::read_static_mesh(document.world().runtime(),mesh)).material;
-    take(document.world().runtime().with_native<world::StaticMeshComponent>(mesh,[](auto& value)->Result<void>{value.material.base_color.x=2;return {};}));
+    const auto material=take(presentation::read_static_mesh(document.world().runtime(),mesh)).material;
+    take(document.world().runtime().with_native<presentation::StaticMeshComponent>(mesh,[](auto& value)->Result<void>{value.material.base_color.x=2;return {};}));
     require(!document.serialize(),"Save produced a material that its own loader rejects.");
-    take(document.world().runtime().with_native<world::StaticMeshComponent>(mesh,[&](auto& value)->Result<void>{value.material=material;return {};}));
-    take(world::set_geometry(document.world().runtime(),mesh,editor::mesh_assets().front().mesh));
-    require(take(world::read_static_mesh(document.world().runtime(),mesh)).mesh.source.empty() && !document.serialize(),
+    take(document.world().runtime().with_native<presentation::StaticMeshComponent>(mesh,[&](auto& value)->Result<void>{value.material=material;return {};}));
+    take(presentation::set_geometry(document.world().runtime(),mesh,editor::mesh_assets().front().mesh));
+    require(take(presentation::read_static_mesh(document.world().runtime(),mesh)).mesh.source.empty() && !document.serialize(),
         "Unattributed procedural geometry retained stale provenance or was silently saved.");
     std::ofstream(evidence/"acceptance.txt")<<"Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal; fixed Scene v1 file preserves canonical math, TRS hierarchy, mesh source and material across reopen.\n";
     std::puts("Project document acceptance: PASS");

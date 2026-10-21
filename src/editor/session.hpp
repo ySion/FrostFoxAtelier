@@ -4,6 +4,7 @@
 #include "world/diagnostic.hpp"
 #include "editor/assets.hpp"
 #include "physics/physics.hpp"
+#include "presentation/presentation.hpp"
 #include <map>
 #include <unordered_map>
 
@@ -65,7 +66,9 @@ public:
     Result<void> set_failure_policy(world::FailurePolicy policy) { return world_.set_failure_policy(policy); }
     std::vector<world::Diagnostic> take_diagnostics() { return world_.take_diagnostics(); }
     const world::Types& types() const noexcept { return types_; }
+    const presentation::Types& presentation_types() const noexcept { return presentation_types_; }
     const physics::Types& physics_types() const noexcept { return physics_types_; }
+    const presentation::Scene& presentation() const noexcept { return presentation_; }
     // Borrowed running scene; invalidated by stop, close, or a failed update.
     physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
@@ -96,7 +99,7 @@ public:
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
     Result<world::Commit> add_entity(TypeId actual = {});
     Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {});
-    Result<world::Commit> create_light(world::LightKind, math::Vector3 position = {});
+    Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
     Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
     Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
     Result<world::Commit> duplicate_selected(); // Fresh Entity/Component identities; immutable resources stay shared.
@@ -267,7 +270,7 @@ private:
     };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
-    struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<world::MaterialBinding> before,after;};
+    struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<presentation::MaterialBinding> before,after;};
     struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
     using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,RetainedChange>;
@@ -284,9 +287,11 @@ private:
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
+    presentation::Types presentation_types_;
     physics::Types physics_types_;
     std::shared_ptr<void> prepared_;
     world::World world_;
+    presentation::Scene presentation_;
     std::unique_ptr<physics::PhysicsScene> physics_;
     std::array<Parameter, 3> parameters_;
     std::vector<Entry> history_;
@@ -330,7 +335,7 @@ private:
     struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};std::vector<world::FieldPath> paths;ObjectId entity,component;};
     std::optional<MaterialEdit> material_edit_;
     Result<ObjectRoot> texture_resource(Project&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);
-    Result<void> replace_material_bindings(ObjectId,std::vector<world::MaterialBinding>);
+    Result<void> replace_material_bindings(ObjectId,std::vector<presentation::MaterialBinding>);
     Result<void> admit_entity_edit(ObjectId) const;
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     Result<ObjectId> admit_property_edit(ObjectId) const;

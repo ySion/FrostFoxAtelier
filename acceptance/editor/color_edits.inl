@@ -21,7 +21,7 @@ void verify_color_edits() {
     // Material colors are bounded 0–1, so only a non-finite channel is rejected; 1e30 clamps.
     const std::array non_finite{Scalar{.8f},Scalar{std::nanf("")},Scalar{.1f}},clamped_range{Scalar{.8f},Scalar{1.f},Scalar{.1f}};
 
-    changed(document.create_light(world::LightKind::point,{0,2,0}));
+    changed(document.create_light(presentation::LightKind::point,{0,2,0}));
     const auto light=take(world::components(runtime,document.selection().entity)).front().id();
     const auto light_paths=paths(light,"settings.color.");
     const auto original=read(light,light_paths);const auto light_history=document.undo_count();
@@ -68,10 +68,10 @@ void verify_color_edits() {
 
     changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
     const auto entity=document.selection().entity;
-    const auto mesh=component(document,entity,document.types().static_mesh_component);
+    const auto mesh=component(document,entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,mesh,"slot/0",key));
     take(document.set_material_override(mesh,"slot/0",material_paths.front(),true));
-    const auto instance=take(world::read_material_bindings(runtime,mesh)).front().resource;
+    const auto instance=take(presentation::read_material_bindings(runtime,mesh)).front().resource;
     take(document.set_material_override(mesh,"slot/0",material_paths.front(),false));
     const auto before=take(material::read_material(runtime,instance.id()));
     const auto instance_history=document.undo_count();document.mark_saved();
@@ -95,8 +95,8 @@ void verify_color_edits() {
     auto scene=take(editor::Session::deserialize(take(document.serialize()),project));
     ObjectId saved_mesh;
     for(const auto& member:take(scene->world().members())) for(const auto& part:take(world::components(scene->world().runtime(),member.id())))
-        if(take(scene->world().runtime().is_a(take(scene->world().runtime().type_of(part.id())),scene->types().static_mesh_component))) saved_mesh=part.id();
-    require(saved_mesh!=ObjectId{} && take(world::material_surfaces(scene->world().runtime(),saved_mesh))->front()->description().parameters.base_color==
+        if(take(scene->world().runtime().is_a(take(scene->world().runtime().type_of(part.id())),scene->presentation_types().static_mesh_component))) saved_mesh=part.id();
+    require(saved_mesh!=ObjectId{} && take(presentation::material_surfaces(scene->world().runtime(),saved_mesh))->front()->description().parameters.base_color==
         take(material::capture(runtime,instance.id()))->description().parameters.base_color,"Instance color did not survive scene roundtrip.");
     std::puts("Editor color transactions: PASS (dirty, reject rollback, cancel, asset/instance history and save)");
 }

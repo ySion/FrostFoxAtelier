@@ -112,7 +112,7 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
     const auto filter_incarnation=app.presented()->find(control::parameter_search)->incarnation;
     const auto filter_bounds=app.presented()->find(control::parameter_search)->bounds;
     const auto property_group=[&] {
-        return atelier::application::EditorAcceptanceAccess::property_group(app,component(app,selected,app.document().types().static_mesh_component));
+        return atelier::application::EditorAcceptanceAccess::property_group(app,component(app,selected,app.document().presentation_types().static_mesh_component));
     };
     require(app.presented()->find(field) && property_group() && !app.presented()->find(control::add_component),
         "Entity properties were split into fixed pages or retained component commands in Parameters.");

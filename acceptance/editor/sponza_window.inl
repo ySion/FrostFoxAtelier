@@ -2,6 +2,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     using Access=atelier::application::EditorAcceptanceAccess;
     namespace render=atelier::renderer;
     namespace world=atelier::world;
+    namespace presentation=atelier::presentation;
     // Fitting the DDGI volume writes World lighting; the dynamic checks below must restore this fitted state.
     model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit,true));
     const auto authored=model(app.document().serialize());
@@ -10,7 +11,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     const auto& meshes=Access::scene_snapshot(app).meshes;
     require(meshes.size()==1 && Access::scene_snapshot(app).lights.size()==3,
         "Sponza Scene Lit did not consume the complete model and three World lights.");
-    for(const auto& item:model(app.document().world().render_items())) for(const auto& vertex:item.geometry->vertices()) {
+    for(const auto& item:model(app.document().presentation().render_items())) for(const auto& vertex:item.geometry->vertices()) {
         const auto p=atelier::math::transform_point(atelier::math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world);
         for(unsigned axis=0;axis<3;++axis) require(p[axis]>=settings.probe_volumes[0].minimum[axis] && p[axis]<=settings.probe_volumes[0].maximum[axis],
             "Sponza DDGI volume excludes authored geometry.");
@@ -56,7 +57,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         <<" budget="<<settings.probe_update_budget<<" rays/probe="<<settings.probe_rays<<'\n';
     // Sponza has no sky; isolate indirect diffuse from AO, screen reflections and bloom. Opening it fitted the probe
     // volume into a new Environment without marking the document modified.
-    require(atelier::rendering::sky_radiance(model(app.document().world().environment()))==std::array<float,3>{} &&
+    require(atelier::rendering::sky_radiance(model(app.document().presentation().environment()))==std::array<float,3>{} &&
         app.document().environment()!=atelier::ObjectId{} && !app.document().dirty(),"Sponza unexpectedly has environment radiance, or its fitted Environment is missing or modified.");
     // These are World-authored settings; the test edits them like the World panel and restores them below.
     const auto authored_lighting=settings;
@@ -79,8 +80,8 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         require(field!=fields.end(),"Sponza light has no requested editable property.");
         model(Access::edit_field(app,component,field->path,value));
     };
-    const auto light_items=model(scene.light_items());
-    const auto moving=std::ranges::find_if(light_items,[](const auto& item){return item.settings.kind==world::LightKind::point && item.settings.color.x>.9f;});
+    const auto light_items=model(app.document().presentation().light_items());
+    const auto moving=std::ranges::find_if(light_items,[](const auto& item){return item.settings.kind==presentation::LightKind::point && item.settings.color.x>.9f;});
     require(moving!=light_items.end(),"Sponza has no warm movable light.");
     const auto original=model(world::read_transform(runtime,moving->entity));
     std::ofstream motion(output/"ddgi-motion.csv");motion<<"frame,x,y,z,history_resets\n";
@@ -138,7 +139,7 @@ int verify_sponza_window(atelier::application::Application& app,const char* outp
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     const auto root=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
     model(app.open_project(root/"assets/examples"));model(app.open_scene("Examples/Sponza/Scenes/Sponza.scene"));
-    require(model(app.document().world().render_items()).front().geometry->vertices().size()==786801,"Sponza viewport lost model geometry.");
+    require(model(app.document().presentation().render_items()).front().geometry->vertices().size()==786801,"Sponza viewport lost model geometry.");
     model(app.configure_view({8,2,0},{-6,3,0},atelier::renderer::Shading::smooth));tick(app,3);
     atelier::renderer::Capture image;require(app.step(&image) && image.frame_id,"Sponza frame was not accepted.");
     const auto view=app.presented()->find(atelier::editor::control::viewport);require(view!=nullptr,"Sponza viewport is absent.");

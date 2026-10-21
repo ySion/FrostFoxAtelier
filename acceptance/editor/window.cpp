@@ -1415,7 +1415,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
     std::ofstream(output/"popup-open.csv") << "path,cpu_us\nfirst," << first_open_us << "\nwarm," << warm_open_us << "\n";
     click(app,control::add_static_mesh);
     require(entities(app).size()==1 && app.document().undo_count()==1,"Static mesh creation was not a single document command.");
-    require(model(app.document().world().runtime().type_of(app.document().selection().entity))==app.document().types().static_mesh_entity,
+    require(model(app.document().world().runtime().type_of(app.document().selection().entity))==app.document().presentation_types().static_mesh_entity,
         "Create shelf did not construct the real StaticMeshEntity type.");
     verify_parameter_search(app,output);
     verify_tool_shelf(app,output);
@@ -1479,23 +1479,23 @@ int verify_editor_window(Application& app, const char* output_directory) {
     require(contains(app, added_id), "Redo add replaced object identity.");
     require(model(atelier::world::components(app.document().world().runtime(), added_key)).empty(),
         "Add Entity did not produce an empty Entity.");
-    const auto render_count = model(app.document().world().render_items()).size();
+    const auto render_count = model(app.document().presentation().render_items()).size();
     const auto creation_history=app.document().undo_count();
     click(app,atelier::application::EditorAcceptanceAccess::asset_key(app,"builtin/sphere"));
     require(app.document().undo_count()==creation_history,"Browsing a resource created a scene object.");
     click(app,atelier::editor::browser_control::add);
     const auto mesh_entity=app.document().selection().entity;
-    const auto mesh_component=component(app,mesh_entity,app.document().types().static_mesh_component);
+    const auto mesh_component=component(app,mesh_entity,app.document().presentation_types().static_mesh_component);
     require(app.document().undo_count()==creation_history+1 &&
-        model(app.document().world().render_items()).size()==render_count+1 &&
-        model(app.document().world().runtime().type_of(mesh_entity))==app.document().types().static_mesh_entity,
+        model(app.document().presentation().render_items()).size()==render_count+1 &&
+        model(app.document().world().runtime().type_of(mesh_entity))==app.document().presentation_types().static_mesh_entity,
         "Asset shelf did not create one complete typed Entity through scene history.");
     capture(app,output/"world-properties.png");
     click(app,control::undo);
-    require(!contains(app,mesh_entity) && model(app.document().world().render_items()).size()==render_count,
+    require(!contains(app,mesh_entity) && model(app.document().presentation().render_items()).size()==render_count,
         "Undo did not remove the whole Entity created by the shelf.");
     click(app,control::redo);
-    require(contains(app,mesh_entity) && component(app,mesh_entity,app.document().types().static_mesh_component)==mesh_component,
+    require(contains(app,mesh_entity) && component(app,mesh_entity,app.document().presentation_types().static_mesh_component)==mesh_component,
         "Redo changed the created Entity/component identity.");
     click(app,static_cast<ControlKey>(atelier::editor::Command::show_structure));
     click(app,control::add_component);

@@ -34,7 +34,7 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
     capture(app,output/"tree-view.png");
     require(app.document().undo_count()==history,"Scene Tree navigation/filtering polluted scene history");
 
-    const auto root=component_object(app.document(),entity,app.document().types().static_mesh_component);
+    const auto root=component_object(app.document(),entity,app.document().presentation_types().static_mesh_component);
     const auto members=model(atelier::world::components(app.document().world().runtime(),entity)).size();
     click(app,static_cast<ControlKey>(atelier::editor::Command::show_structure));
     const auto structure_entity=Access::structure_control(app,entity),structure_root=Access::structure_control(app,root);
@@ -77,7 +77,7 @@ void verify_tree_view(Application& app,const std::filesystem::path& output,ateli
         "Component deletion Redo retained the removed row or stale inspection target.");
     key(app,'Z',true);key(app,'Z',true);
     require(model(atelier::world::components(app.document().world().runtime(),entity)).size()==members &&
-        component_object(app.document(),entity,app.document().types().static_mesh_component)==root,
+        component_object(app.document(),entity,app.document().presentation_types().static_mesh_component)==root,
         "Undoing structure creation changed the Entity's original root or composition.");
     capture(app,output/"entity-structure.png");
     click(app,control::show_entities);click(app,app.object_control(entity));

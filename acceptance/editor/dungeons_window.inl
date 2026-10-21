@@ -6,7 +6,7 @@ int verify_dungeons_window(Application& app,const char* output_directory) try {
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     model(app.open_example(atelier::editor::Command::example_dungeons));
     if(const auto& build=Access::project_build(app);build && build->error) throw std::runtime_error(build->error->message);
-    require(entities(app).size()==3617 && model(app.document().world().render_items()).size()==3425,
+    require(entities(app).size()==3617 && model(app.document().presentation().render_items()).size()==3425,
         "The official Dungeons entry did not load the complete demo.");
     require(Access::scene_lit_view(app).shading==atelier::renderer::Shading::smooth,"Dungeons did not select textured rendering.");
     tick(app,3);capture(app,output/"01-dungeon.png");
@@ -17,11 +17,11 @@ int verify_dungeons_window(Application& app,const char* output_directory) try {
     model(app.save_scene("Examples/Dungeons/Scenes/Acceptance.scene"));
     model(app.open_scene("Examples/Dungeons/Scenes/DungeonOverview.scene"));
     model(app.configure_view({45,42,-48},{0,0,0},atelier::renderer::Shading::smooth));
-    require(model(app.document().world().render_items()).size()==626,"Dungeon overview lost model instances.");
+    require(model(app.document().presentation().render_items()).size()==626,"Dungeon overview lost model instances.");
     tick(app,2);capture(app,output/"02-dungeon-overview.png");
     model(app.open_scene("Examples/Dungeons/Scenes/GenericOverview.scene"));
     model(app.configure_view({125,95,-130},{0,0,0},atelier::renderer::Shading::smooth));
-    require(model(app.document().world().render_items()).size()==380,"Generic overview lost model instances.");
+    require(model(app.document().presentation().render_items()).size()==380,"Generic overview lost model instances.");
     tick(app,2);capture(app,output/"03-generic-overview.png");
     model(app.open_scene("Examples/Dungeons/Scenes/Acceptance.scene"));
     require(atelier::acceptance::dungeons_roundtrip_equal(saved,model(app.document().serialize())),"Dungeons save/reopen changed scene data.");

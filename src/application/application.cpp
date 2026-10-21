@@ -173,7 +173,7 @@ Result<void> Application::workbench_history(bool redo) {
 }
 void Application::scene_changed() {workspace_.inspecting_asset=false;sync_world_view();}
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
-    auto items=document_->world().render_items();if(!items) return std::unexpected(items.error());
+    auto items=document_->presentation().render_items();if(!items) return std::unexpected(items.error());
     if(items->empty()) return std::unexpected(Error{ErrorCode::invalid_definition,"DDGI volume fitting requires rendered geometry."});
     struct Bounds {math::Vector3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},high=-low;};
     Bounds world_bounds;
@@ -691,8 +691,8 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case create_entity: workspace_.inspecting_asset=false;result=completion(document_->add_entity()); break;
     case create_point_light:case create_rectangle_light:case create_directional_light: {
         workspace_.inspecting_asset=false;
-        const auto kind=command==create_point_light?world::LightKind::point:
-            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
+        const auto kind=command==create_point_light?presentation::LightKind::point:
+            command==create_rectangle_light?presentation::LightKind::rectangle:presentation::LightKind::directional;
         result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
     }
     case create_static_mesh: {

@@ -205,11 +205,11 @@ void entity_physics_bindings() {
     auto wheel=take(w::create_entity(f.runtime));
     take(f.world.set_transform(wheel.id(),{}));
     auto metadata=take(w::create_component(f.runtime,f.physics_types.vehicle_wheel_component));
-    auto mesh=take(w::create_component(f.runtime,f.world_types.static_mesh_component));
-    take(w::set_geometry(f.runtime,mesh.id(),atelier::geometry::cube_mesh()));
+    auto mesh=take(w::create_component(f.runtime,f.presentation_types.static_mesh_component));
+    take(pr::set_geometry(f.runtime,mesh.id(),atelier::geometry::cube_mesh()));
     committed(f.world.attach_components(wheel.id(),std::array{w::Attachment{metadata.id()},w::Attachment{mesh.id()}}));
     committed(f.world.attach(wheel.id(),w::append,chassis.id()));
-    require(!take(f.runtime.is_a(take(f.runtime.type_of(metadata.id())),f.world_types.static_mesh_component)),
+    require(!take(f.runtime.is_a(take(f.runtime.type_of(metadata.id())),f.presentation_types.static_mesh_component)),
         "Wheel metadata still carries presentation or spatial inheritance.");
     require(!p::set_vehicle_wheels(f.runtime,vehicle.id(),std::array{wheel.id(),wheel.id()}),
         "Duplicate Entity bindings were accepted.");

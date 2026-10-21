@@ -19,7 +19,7 @@ void verify_dungeons() {
         const auto original=take(editor::read_file(path));
         auto document=take(editor::Session::deserialize(original,project));
         require(take(document->world().members()).size()==scene.at("entities").get<std::size_t>() &&
-            take(document->world().render_items()).size()==scene.at("visible_meshes").get<std::size_t>(),"Dungeons scene lost authored model instances.");
+            take(document->presentation().render_items()).size()==scene.at("visible_meshes").get<std::size_t>(),"Dungeons scene lost authored model instances.");
         const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
         const auto after=take(reopened->serialize());
         require(atelier::acceptance::dungeons_roundtrip_equal(saved,after) && take(editor::read_file(path))==original,"Dungeons scene round trip changed data or the template.");

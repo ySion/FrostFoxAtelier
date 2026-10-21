@@ -12,7 +12,7 @@ void verify_material_picking() {
     };
     editor::Session document;
     changed(document.create_static_mesh({{},L"Cutout",mesh(cutout)}));const auto front=document.selection().entity;
-    const auto front_component=component(document,front,document.types().static_mesh_component);
+    const auto front_component=component(document,front,document.presentation_types().static_mesh_component);
     changed(document.create_static_mesh({{},L"Receiver",mesh({})},{0,0,.8f}));const auto back=document.selection().entity;
     editor::Camera camera;require(camera.look_at({0,0,-5},{0,0,0}),"Material picking camera is invalid.");
     auto view=editor::ViewportView::make(camera,{0,0,800,600},1);
@@ -21,11 +21,11 @@ void verify_material_picking() {
     require(pick({-.5f,.5f,0})==back && pick({.5f,.5f,0})==front,
         "Point picking did not pass through transparent texels to the rear Entity.");
     cutout.texture(mat::Input::opacity).scale[0]=-1;
-    take(world::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
+    take(presentation::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
     require(pick({-.5f,.5f,0})==front && pick({.5f,.5f,0})==back,
         "Point picking ignored mirrored negative UV repetition.");
     cutout.parameters.coverage=mat::Coverage::opaque;cutout.parameters.double_sided=false;
-    take(world::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
+    take(presentation::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
     take(document.select(back));changed(document.erase_selected());
     require(pick({0,0,0})==front,"Single-sided picking discarded the authored front side.");
     require(camera.look_at({0,0,5},{0,0,0}),"Backface picking camera is invalid.");view=editor::ViewportView::make(camera,{0,0,800,600},1);
@@ -103,16 +103,16 @@ void verify_sponza_project() {
     const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"assets/examples";
     auto project=take(editor::Project::open(folder));
     auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Examples/Sponza/Scenes/Sponza.scene")),project));
-    const auto items=take(document->world().render_items());require(items.size()==1,"Sponza scene should contain one complete static model.");
+    const auto items=take(document->presentation().render_items());require(items.size()==1,"Sponza scene should contain one complete static model.");
     const auto mesh=items.front().geometry;
     require(mesh->vertices().size()==786801 && mesh->materials().size()==26 && mesh->parts().size()>20,"Sponza geometry/material completeness changed.");
     std::size_t textured=0;for(const auto& material:mesh->materials()) textured+=bool(material.surface->description().texture(atelier::material::Input::base_color).image);
     require(textured==24,"Sponza diffuse material count changed.");
     const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
-    require(take(reopened->serialize())==saved && take(reopened->world().render_items()).front().geometry==mesh,
+    require(take(reopened->serialize())==saved && take(reopened->presentation().render_items()).front().geometry==mesh,
         "Scene save/reopen lost material-backed shared geometry.");
-    const auto lights=take(reopened->world().light_items());
-    require(lights.size()==3 && std::ranges::count_if(lights,[](const auto& light){return light.settings.kind==world::LightKind::directional;})==1 &&
+    const auto lights=take(reopened->presentation().light_items());
+    require(lights.size()==3 && std::ranges::count_if(lights,[](const auto& light){return light.settings.kind==presentation::LightKind::directional;})==1 &&
         std::ranges::all_of(lights,[](const auto& light){return light.settings.casts_shadow && light.settings.intensity>0;}),
         "Sponza save/reopen lost its directional and two local lights.");
     std::printf("Sponza project acceptance: PASS (%zu triangles, %zu parts, %zu textured materials)\n",mesh->vertices().size()/3,mesh->parts().size(),textured);

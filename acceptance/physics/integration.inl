@@ -1,17 +1,18 @@
 void simulate_world() {
-    namespace w = atelier::world;
+    namespace w = atelier::world; namespace pr = atelier::presentation;
     namespace p = atelier::physics;
     atelier::Runtime runtime;
     const auto world_types = take(w::register_types(runtime));
+    (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
     w::World world(runtime, world_types);
     auto scene = take(p::PhysicsScene::create(world, physics_types));
 
-    w::StaticMeshEntityDesc floor_desc;
+    pr::StaticMeshEntityDesc floor_desc;
     floor_desc.mesh = atelier::geometry::cube_mesh();
     floor_desc.transform.position = {0, -.5f, 0};
     floor_desc.transform.scale = {8, 1, 8};
-    auto floor = take(w::create_static_mesh_entity(world, floor_desc));
+    auto floor = take(pr::create_static_mesh_entity(world, floor_desc));
     auto floor_body = take(runtime.hold(mesh_component(runtime,floor.id())));
     p::BodySettings floor_settings;
     floor_settings.shape = p::ShapeKind::triangle_mesh;
@@ -61,7 +62,7 @@ void simulate_world() {
         "sphere overlap returns Entity identity");
     const auto floor_mesh = mesh_component(runtime,floor.id());
     auto vertices = floor_desc.mesh->vertices();
-    take(w::set_geometry(runtime, floor_mesh,
+    take(pr::set_geometry(runtime, floor_mesh,
         std::make_shared<const atelier::geometry::Mesh>(
             std::vector<atelier::geometry::Vertex>(vertices.begin(), vertices.end()))));
     step(world, *scene, 0);
@@ -125,10 +126,11 @@ void simulate_world() {
     require(scene->body_count() == 0, "stopped World releases physics bodies");
 }
 void simulate_filter_and_trigger() {
-    namespace w = atelier::world;
+    namespace w = atelier::world; namespace pr = atelier::presentation;
     namespace p = atelier::physics;
     atelier::Runtime runtime;
     const auto world_types = take(w::register_types(runtime));
+    (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
     w::World world(runtime, world_types);
     auto scene = take(p::PhysicsScene::create(world, physics_types));
@@ -203,7 +205,7 @@ void simulate_filter_and_trigger() {
 }
 
 void simulate_cooked_assets() {
-    namespace w = atelier::world;
+    namespace w = atelier::world; namespace pr = atelier::presentation;
     namespace p = atelier::physics;
     const auto mesh = atelier::geometry::cube_mesh();
     const auto cooked = take(p::cook_triangle_mesh(mesh, {8, 1, 8}, "builtin/cube"));
@@ -223,13 +225,14 @@ void simulate_cooked_assets() {
     const auto load = [&](std::string bytes, std::string_view source, atelier::math::Vector3 scale) -> std::optional<std::uint32_t> {
         atelier::Runtime runtime;
         const auto world_types = take(w::register_types(runtime));
+        (void)take(pr::register_types(runtime));
         const auto physics_types = take(p::register_types(runtime));
         w::World world(runtime, world_types);
-        w::StaticMeshEntityDesc desc;
+        pr::StaticMeshEntityDesc desc;
         desc.mesh = mesh;
         desc.mesh_source = source;
         desc.transform.scale = scale;
-        auto ground = take(w::create_static_mesh_entity(world, desc));
+        auto ground = take(pr::create_static_mesh_entity(world, desc));
         auto body = take(runtime.hold(mesh_component(runtime,ground.id())));
         p::BodySettings settings;
         settings.shape = p::ShapeKind::triangle_mesh;
@@ -265,10 +268,11 @@ void simulate_cooked_assets() {
 }
 
 void simulate_special_systems() {
-    namespace w = atelier::world;
+    namespace w = atelier::world; namespace pr = atelier::presentation;
     namespace p = atelier::physics;
     atelier::Runtime runtime;
     const auto world_types = take(w::register_types(runtime));
+    (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
     w::World world(runtime, world_types);
     auto scene = take(p::PhysicsScene::create(world, physics_types));

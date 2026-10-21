@@ -27,7 +27,7 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
         }
         return false;
     };
-    auto items = context.document.world().render_items(); if (!items) return std::unexpected(items.error());
+    auto items = context.document.presentation().render_items(); if (!items) return std::unexpected(items.error());
     std::vector<ObjectId> rendered;
     for (const auto& item : *items) {
         rendered.push_back(item.entity); if (!wanted(item.entity)) continue;

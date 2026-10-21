@@ -1,4 +1,4 @@
-namespace w = atelier::world;
+namespace w = atelier::world; namespace pr = atelier::presentation;
 namespace p = atelier::physics;
 using atelier::math::Vector3;
 constexpr float fixed_delta = 1.f / 60.f;
@@ -7,8 +7,10 @@ constexpr float fixed_delta = 1.f / 60.f;
 struct PhysicsFixture {
     atelier::Runtime runtime;
     w::Types world_types = take(w::register_types(runtime));
+    pr::Types presentation_types = take(pr::register_types(runtime));
     p::Types physics_types = take(p::register_types(runtime));
     w::World world{runtime, world_types};
+    pr::Scene shown = take(pr::Scene::create(world, presentation_types));
     std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types));
 
     struct Entity {
@@ -457,7 +459,7 @@ void lifecycle() {
     // A scene recreated on one World reuses its capability registrations instead of exhausting them.
     for (int i = 0; i < 40; ++i) { f.scene.reset(); f.scene = take(p::PhysicsScene::create(f.world, f.physics_types)); }
     require(bodies() == 2, "recreated scenes lost a body");
-    require(!take(w::inspect_component(f.runtime, idle.body.id())).can_present && f.world.activity().presentation_registrations == 0,
+    require(take(f.world.members(f.shown.meshes())).empty() && take(f.world.members(f.shown.lights())).empty(),
         "a physics capability made a Primitive count as presented");
     committed(f.world.close());
     committed(f.world.close());

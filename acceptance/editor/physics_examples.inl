@@ -59,7 +59,7 @@ void verify_physics_examples() {
             const auto parts=take(p::ragdoll_parts(doc->world().runtime(),component(*doc,old.entity,doc->physics_types().ragdoll_component)));
             require(parts.size()==pose.positions.size(),"Ragdoll simulation and authored Entity part sequence disagree.");
             std::unordered_set<ObjectId> presented;
-            for(const auto& item:take(doc->world().render_items())) {
+            for(const auto& item:take(doc->presentation().render_items())) {
                 const auto found=std::ranges::find(parts,item.entity);if(found==parts.end()) continue;
                 const auto index=static_cast<std::size_t>(found-parts.begin());
                 require(std::abs(item.world.elements[13]-pose.positions[index].y)<.01f,"Ragdoll visual part did not follow its simulated pose.");

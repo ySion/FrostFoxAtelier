@@ -1,5 +1,6 @@
 #include "physics/physics.hpp"
 #include "physics/timing.hpp"
+#include "presentation/presentation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -35,7 +36,7 @@ void committed(atelier::Result<atelier::world::Commit> result) {
 }
 
 atelier::ObjectId mesh_component(atelier::Runtime& runtime,atelier::ObjectId entity) {
-    const auto type=take(runtime.native_type<atelier::world::StaticMeshComponent>());
+    const auto type=take(runtime.native_type<atelier::presentation::StaticMeshComponent>());
     for(const auto& component:take(atelier::world::components(runtime,entity)))
         if(take(runtime.is_a(take(runtime.type_of(component.id())),type))) return component.id();
     throw std::runtime_error("Expected a mesh component on the Entity.");

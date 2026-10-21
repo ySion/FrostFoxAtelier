@@ -1,5 +1,5 @@
-struct EntityDirectionalLight : world::LightComponent {
-    EntityDirectionalLight() {settings.kind=world::LightKind::directional;}
+struct EntityDirectionalLight : presentation::LightComponent {
+    EntityDirectionalLight() {settings.kind=presentation::LightKind::directional;}
 };
 
 void verify_entity_composition() {
@@ -97,18 +97,18 @@ void verify_entity_composition() {
     {
         TypeId sky_type;
         editor::Session sky([&](world::World& world)->Result<std::shared_ptr<void>> {
-            TypeDefinition type;type.name="acceptance.EntityDirectionalLight";type.base=world.types().light_component;
+            TypeDefinition type;type.name="acceptance.EntityDirectionalLight";type.base=TypeReference::native<presentation::LightComponent>();
             type.native={sizeof(EntityDirectionalLight),alignof(EntityDirectionalLight),atelier::detail::representation<EntityDirectionalLight>(),
                 [](void* storage){std::construct_at(static_cast<EntityDirectionalLight*>(storage));},
                 [](void* storage) noexcept {std::destroy_at(static_cast<EntityDirectionalLight*>(storage));}};
-            type.native.base_address=[](void* storage) noexcept -> void* {return static_cast<world::LightComponent*>(static_cast<EntityDirectionalLight*>(storage));};
+            type.native.base_address=[](void* storage) noexcept -> void* {return static_cast<presentation::LightComponent*>(static_cast<EntityDirectionalLight*>(storage));};
             auto registered=world.runtime().register_type(std::move(type));if(!registered) return std::unexpected(registered.error());
             sky_type=*registered;return std::shared_ptr<void>{};
         });
         changed(sky.add_entity());const auto entity=sky.selection().entity;sky.mark_saved();const auto cursor=sky.undo_count();
         changed(sky.add_component(sky_type));const auto light=sky.selection().object;
         // Space follows the type: a project type derived from a SpatialComponent needs it whatever its values.
-        require(take(world::read_light(sky.world().runtime(),light)).kind==world::LightKind::directional &&
+        require(take(presentation::read_light(sky.world().runtime(),light)).kind==presentation::LightKind::directional &&
             take(world::has_transform(sky.world().runtime(),entity)),"A derived spatial component did not give its Entity space.");
         changed(sky.undo());require(sky.undo_count()==cursor && !sky.dirty() && !take(world::has_transform(sky.world().runtime(),entity)),
             "Derived spatial component Undo kept the space it created or changed document history.");
@@ -133,12 +133,12 @@ void verify_entity_composition() {
     changed(document.undo());require(take(world::parent_entity(runtime,leaf))==ObjectId{} && take(world::read_transform(runtime,leaf)).position.x==3,
         "Reparent Undo did not restore original composition and local pose.");
     changed(document.redo());
-    const auto mesh=component(document,child,document.types().static_mesh_component);
+    const auto mesh=component(document,child,document.presentation_types().static_mesh_component);
     const auto pose=take(world::read_transform(runtime,child));
     changed(document.remove_component(mesh));
     require(take(world::has_transform(runtime,child)) && take(world::read_transform(runtime,child))==pose &&
         take(world::parent_entity(runtime,leaf))==child,"Removing mesh destroyed Entity space or recursive composition.");
-    changed(document.undo());require(component(document,child,document.types().static_mesh_component)==mesh,"Mesh Undo changed component identity.");
+    changed(document.undo());require(component(document,child,document.presentation_types().static_mesh_component)==mesh,"Mesh Undo changed component identity.");
     const std::array selection{group,child};take(document.select_entities(selection,child));
     editor::ViewportTool tool;tool.cursor={20,0,0};take(tool.snap_selection(document,{},true));
     require(take(world::read_transform(runtime,group)).position.x==20 && take(world::read_transform(runtime,child)).position.x==2 &&
@@ -172,7 +172,7 @@ void verify_entity_composition() {
     require(take(document.world().members()).size()==3,"Deleting ancestor and descendant did not detach one complete subtree.");
     collect(document);changed(document.undo());
     require(take(world::parent_entity(runtime,child))==group && take(world::parent_entity(runtime,leaf))==child &&
-        component(document,child,document.types().static_mesh_component)==mesh,"Delete/collect/Undo did not restore recursive object identities.");
+        component(document,child,document.presentation_types().static_mesh_component)==mesh,"Delete/collect/Undo did not restore recursive object identities.");
     {
         editor::Session affine;auto& rt=affine.world().runtime();
         changed(affine.add_entity());const auto parent=affine.selection().entity;
@@ -296,7 +296,7 @@ void verify_entity_composition() {
         require(forest.selected_entities().size()==2,"Different-parent forest copy changed the selected roots.");
         const auto copied_follower=forest.selected_entities()[0],copied_origin=forest.selected_entities()[1];
         const auto copied_descendant=take(world::children(rt,copied_follower)).front().id();
-        const auto copied_component=component(forest,copied_follower,forest.types().static_mesh_component);
+        const auto copied_component=component(forest,copied_follower,forest.presentation_types().static_mesh_component);
         require(copied_follower!=follower && copied_origin!=origin && copied_descendant!=descendant &&
             take(world::parent_entity(rt,copied_follower))==first_parent && take(world::parent_entity(rt,copied_origin))==second_parent &&
             take(world::space_reference(rt,copied_follower))==std::optional<ObjectId>{copied_origin} &&
@@ -310,7 +310,7 @@ void verify_entity_composition() {
         require(graph()==original_graph,"Cross-root copy Undo left a partial forest or changed original identities.");
         changed(forest.redo());
         require(graph()==copied_graph && forest.selected_entities()[0]==copied_follower && forest.selected_entities()[1]==copied_origin &&
-            component(forest,copied_follower,forest.types().static_mesh_component)==copied_component &&
+            component(forest,copied_follower,forest.presentation_types().static_mesh_component)==copied_component &&
             children(first_parent)==first_order && children(second_parent)==second_order,
             "Cross-root copy Redo lost identities, references, or original sibling order.");
         const std::array overlapping{copied_origin,copied_descendant,copied_follower};
@@ -318,7 +318,7 @@ void verify_entity_composition() {
         require(graph()==original_graph,"Cross-parent batch deletion left a partial forest.");
         changed(forest.undo());
         require(graph()==copied_graph && take(world::space_reference(rt,copied_follower))==std::optional<ObjectId>{copied_origin} &&
-            component(forest,copied_follower,forest.types().static_mesh_component)==copied_component &&
+            component(forest,copied_follower,forest.presentation_types().static_mesh_component)==copied_component &&
             children(first_parent)==first_order && children(second_parent)==second_order,
             "Forest deletion Undo lost spatial references, identity, or hierarchy order.");
         changed(forest.redo());require(graph()==original_graph,"Forest deletion Redo changed unrelated objects.");
@@ -368,10 +368,10 @@ void verify_entity_composition() {
                 take(physics::query_ignored_entities(runtime,restored_query))==std::vector<ObjectId>{target,owner} &&
                 take(runtime.type_of(restored_constraint))==instance.physics_types().distance_constraint_component &&
                 take(runtime.type_of(restored_query))==instance.physics_types().scene_query_component &&
-                take(runtime.type_of(component(instance,owner,instance.types().static_mesh_component)))==instance.types().static_mesh_component,
+                take(runtime.type_of(component(instance,owner,instance.presentation_types().static_mesh_component)))==instance.presentation_types().static_mesh_component,
                 "Imported ordinary references crossed instances, changed sequence order, or lost actual component types.");
-            return std::array{root,owner,target,restored_constraint,restored_query,component(instance,owner,instance.types().static_mesh_component),
-                component(instance,target,instance.types().static_mesh_component)};
+            return std::array{root,owner,target,restored_constraint,restored_query,component(instance,owner,instance.presentation_types().static_mesh_component),
+                component(instance,target,instance.presentation_types().static_mesh_component)};
         };
         std::unordered_set<ObjectId> identities;
         for(const auto root:{original,imported_first,imported_second}) for(const auto object:check_instance(graph,root))

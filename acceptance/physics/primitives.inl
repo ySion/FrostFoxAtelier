@@ -1,14 +1,14 @@
 void primitive_composition() {
     PhysicsFixture f;
     auto entity=take(w::create_entity(f.runtime));
-    auto parent=take(w::create_component(f.runtime,f.world_types.static_mesh_component));
+    auto parent=take(w::create_component(f.runtime,f.presentation_types.static_mesh_component));
     auto child_entity=take(w::create_entity(f.runtime)),visual_entity=take(w::create_entity(f.runtime));
     auto alternate_parent=take(w::create_entity(f.runtime));
     auto child=take(w::create_component(f.runtime,f.world_types.collision_component));
-    auto visual=take(w::create_component(f.runtime,f.world_types.static_mesh_component));
+    auto visual=take(w::create_component(f.runtime,f.presentation_types.static_mesh_component));
     require(!take(p::read_settings(f.runtime,parent.id())).enabled,"A visual mesh unexpectedly creates a body.");
-    take(w::set_geometry(f.runtime,parent.id(),atelier::geometry::cube_mesh()));
-    take(w::set_geometry(f.runtime,visual.id(),atelier::geometry::cube_mesh()));
+    take(pr::set_geometry(f.runtime,parent.id(),atelier::geometry::cube_mesh()));
+    take(pr::set_geometry(f.runtime,visual.id(),atelier::geometry::cube_mesh()));
     take(f.world.set_transform(entity.id(),{{10,2,0},{0,.70710677f,0,.70710677f},{1,1,1}}));
     take(f.world.set_transform(child_entity.id(),{{4,2,0},{0,0,0,1},{1,1,1}}));
     take(f.world.set_transform(visual_entity.id(),{{0,1,0},{0,0,0,1},{.25f,.25f,.25f}}));
@@ -43,7 +43,7 @@ void primitive_composition() {
         auto hit=take(f.scene->overlap_sphere(state.position,.1f));
         require(hit.has_hit && hit.hits.front().body==state.handle,"Query lost a Primitive's identity or current pose.");
     }
-    const auto rendered=take(f.world.render_items());
+    const auto rendered=take(f.shown.render_items());
     require(rendered.size()==2,"Physical meshes and ordinary visual children lost presentation.");
     const auto child_visual=take(w::world_matrix(f.runtime,visual_entity.id()));
     require(near(child_visual[13],second.position.y+1),"Visual child did not follow its simulated Primitive.");
@@ -76,7 +76,7 @@ void primitive_composition() {
 
 void primitive_authoring() {
     PhysicsFixture f;
-    auto mesh_entity=take(w::create_static_mesh_entity(f.world,{.mesh=atelier::geometry::cube_mesh()}));
+    auto mesh_entity=take(pr::create_static_mesh_entity(f.world,{.mesh=atelier::geometry::cube_mesh()}));
     const auto mesh=mesh_component(f.runtime,mesh_entity.id());
     const auto body_field=take(f.runtime.find_field(f.world_types.primitive_component,"body"));
     const auto settings_type=take(f.runtime.native_type<p::BodySettings>());
@@ -152,7 +152,7 @@ void mirrored_scale() {
     const auto cooked=std::make_shared<const std::string>(take(p::cook_triangle_mesh(ramp,mirror,"acceptance/ramp")));
     std::vector<atelier::ObjectRoot> roots;
     for(const auto& [z,shape]:{std::pair{0.f,std::shared_ptr<const std::string>{}},std::pair{10.f,cooked}}) {
-        auto entity=take(w::create_static_mesh_entity(f.world,{.mesh=ramp,.transform={{0,0,z},{0,0,0,1},mirror},.mesh_source="acceptance/ramp"}));
+        auto entity=take(pr::create_static_mesh_entity(f.world,{.mesh=ramp,.transform={{0,0,z},{0,0,0,1},mirror},.mesh_source="acceptance/ramp"}));
         p::BodySettings settings;settings.shape=p::ShapeKind::triangle_mesh;settings.cooked_shape=shape;
         take(p::configure(f.runtime,mesh_component(f.runtime,entity.id()),settings));
         committed(f.world.attach(entity.id()));roots.push_back(std::move(entity));

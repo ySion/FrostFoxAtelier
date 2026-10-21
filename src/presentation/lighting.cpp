@@ -1,10 +1,12 @@
-#include "world/detail.hpp"
+#include "presentation/detail.hpp"
 #include <algorithm>
 #include <cmath>
 #include <numbers>
 
-namespace atelier::world {
+namespace atelier::presentation {
 using detail::error;
+using world::DiagnosticKind;
+using world::DiagnosticPhase;
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
 Result<void> detail::light_rules(const LightSettings& settings) {
@@ -51,8 +53,8 @@ Result<void> detail::environment_rules(const EnvironmentComponent& value) {
         return error(ErrorCode::argument_mismatch,message);
     return {};
 }
-World::Admission detail::unique_environment(CapabilityId environments) {
-    return [environments](const World& world,std::span<const ObjectId> candidates)->Result<void> {
+world::World::Admission detail::unique_environment(world::CapabilityId environments) {
+    return [environments](const world::World& world,std::span<const ObjectId> candidates)->Result<void> {
         auto members=world.members(environments);if(!members) return std::unexpected(members.error());
         ObjectId first;
         const auto visit=[&](ObjectId object)->Result<void> {
@@ -65,20 +67,19 @@ World::Admission detail::unique_environment(CapabilityId environments) {
         return {};
     };
 }
-Result<rendering::SceneLightingSettings> World::environment() const {
-    auto& state=*impl_;
-    auto environments=members(state.environments);
+Result<rendering::SceneLightingSettings> Scene::environment() const {
+    auto environments=world_->members(environments_);
     if(!environments) return std::unexpected(environments.error());
     for(const auto& [owner,object,active]:*environments) {
         if(!active) continue;
-        auto invalid=runtime().validate(object);
+        auto invalid=world_->runtime().validate(object);
         if(!invalid) return std::unexpected(invalid.error());
         if(*invalid) {
             const auto& failure=**invalid;
-            if(!state.contain(failure.error,validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner))) return std::unexpected(failure.error);
+            if(!world_->contain(failure.error,world::validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner))) return std::unexpected(failure.error);
             break;
         }
-        return runtime().with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& value)->Result<rendering::SceneLightingSettings> {
+        return world_->runtime().with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& value)->Result<rendering::SceneLightingSettings> {
             return environment_settings(value);
         });
     }
@@ -91,46 +92,48 @@ Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
 namespace {
 // The new value's own rules first: World::write would clamp it to its hard bounds, and checks
 // the whole object's rules only when the object was valid before the edit.
-template<class T> Result<void> set_value(World& world,ObjectId object,TypeId owner,std::string_view name,TypeId type,const T& value) {
+template<class Owner,class T> Result<void> set_value(world::World& world,ObjectId object,std::string_view name,const T& value) {
     auto& runtime=world.runtime();
     if (auto valid=detail::check_value(runtime,value); !valid) return valid;
-    auto field=runtime.find_field(owner,name); if (!field) return std::unexpected(field.error());
-    return world.write(object,std::span{&*field,1},ValueInput{type,&value});
+    auto owner=runtime.native_type<Owner>(); if (!owner) return std::unexpected(owner.error());
+    auto type=runtime.native_type<T>(); if (!type) return std::unexpected(type.error());
+    auto field=runtime.find_field(*owner,name); if (!field) return std::unexpected(field.error());
+    return world.write(object,std::span{&*field,1},ValueInput{*type,&value});
 }
 }
-Result<void> set_material(World& world,ObjectId object,Material value) {
-    return set_value(world,object,world.types().static_mesh_component,"material",world.types().material,value);
+Result<void> set_material(world::World& world,ObjectId object,Material value) {
+    return set_value<StaticMeshComponent>(world,object,"material",value);
 }
-Result<void> set_light(World& world,ObjectId object,LightSettings value) {
-    return set_value(world,object,world.types().light_component,"settings",world.types().light_settings,value);
+Result<void> set_light(world::World& world,ObjectId object,LightSettings value) {
+    return set_value<LightComponent>(world,object,"settings",value);
 }
-Result<std::vector<LightRenderItem>> World::light_items() const {
-    auto pass=spatial_pass(DiagnosticPhase::lighting);
+Result<std::vector<LightRenderItem>> Scene::light_items() const {
+    auto pass=world_->spatial_pass(DiagnosticPhase::lighting);
     if (!pass) return std::unexpected(pass.error());
-    auto& state=*impl_;
+    auto& runtime=world_->runtime();
     std::vector<LightRenderItem> result;
-    auto lights=members(state.lights);
+    auto lights=world_->members(lights_);
     if (!lights) return std::unexpected(lights.error());
-    state.valid_lights.resize(lights->size());
+    valid_lights_.resize(lights->size());
     {
         for (std::size_t slot=0;slot<lights->size();++slot) {
             const auto& [owner,object,active]=(*lights)[slot];
             if (!active) continue;
             // Isolated lights are skipped.
-            auto settings=read_light(runtime(),object);
+            auto settings=read_light(runtime,object);
             if (!settings) {
-                if (!state.contain(settings.error(),DiagnosticKind::invalid_value,DiagnosticPhase::lighting,object,owner,{"settings"})) return std::unexpected(settings.error());
+                if (!world_->contain(settings.error(),detail::diagnostic(DiagnosticKind::invalid_value,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(settings.error());
                 continue;
             }
-            if (!state.valid_lights.contains(slot,*settings)) {
-                auto invalid=runtime().validate_value(types().light_settings,std::as_bytes(std::span{&*settings,1}));
+            if (!valid_lights_.contains(slot,*settings)) {
+                auto invalid=runtime.validate_value(types_.light_settings,std::as_bytes(std::span{&*settings,1}));
                 if (!invalid) return std::unexpected(invalid.error());
                 if (*invalid) {
                     const auto& failure=**invalid;
-                    if (!state.contain(failure.error,validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
+                    if (!world_->contain(failure.error,world::validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
                     continue;
                 }
-                state.valid_lights.insert(slot,*settings);
+                valid_lights_.insert(slot,*settings);
             }
             auto matrix=pass->matrix(owner);
             if (!matrix) return std::unexpected(matrix.error());

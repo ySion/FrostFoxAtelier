@@ -28,8 +28,8 @@ std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target,const S
         current=state->textures[target.index];
         add(L"None",{MaterialChoice::Kind::texture,target.object,{}, {},target.index},current.empty());
     } else {
-        auto bindings=world::read_material_bindings(session.world().runtime(),target.object);if(!bindings) return result;
-        const auto at=std::ranges::find(*bindings,target.slot,&world::MaterialBinding::slot);
+        auto bindings=presentation::read_material_bindings(session.world().runtime(),target.object);if(!bindings) return result;
+        const auto at=std::ranges::find(*bindings,target.slot,&presentation::MaterialBinding::slot);
         if(at!=bindings->end()) {
             auto state=material::read_material(session.world().runtime(),at->resource.id());
             if(state) {if(state->parent.registered()) state=material::read_material(session.world().runtime(),state->parent.id());if(state) current=state->source;}

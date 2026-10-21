@@ -121,23 +121,23 @@ int main(int argc, char** argv) {
         {
             editor::Session single;
             changed(single.create_static_mesh(editor::mesh_assets().front()));
-            require(single.undo_count()==1 && take(single.world().runtime().type_of(single.selection().entity))==single.types().static_mesh_entity,
+            require(single.undo_count()==1 && take(single.world().runtime().type_of(single.selection().entity))==single.presentation_types().static_mesh_entity,
                 "Static mesh factory did not enter document history as one typed Entity creation.");
             const auto entity = single.selection().entity;
             auto& rt = single.world().runtime();
-            const auto mesh = component(single,entity,single.types().static_mesh_component);
-            require(take(world::components(rt, entity)).size() == 1 && take(rt.type_of(mesh)) == single.types().static_mesh_component,
+            const auto mesh = component(single,entity,single.presentation_types().static_mesh_component);
+            require(take(world::components(rt, entity)).size() == 1 && take(rt.type_of(mesh)) == single.presentation_types().static_mesh_component,
                 "A mesh Entity acquired a redundant Transform component.");
             changed(single.undo()); collect(single);
-            require(take(single.world().members()).empty() && take(single.world().render_items()).empty(),
+            require(take(single.world().members()).empty() && take(single.presentation().render_items()).empty(),
                 "Creation undo retained the Entity or its rendering.");
             changed(single.redo());
-            require(single.selection().entity==entity && component(single,entity,single.types().static_mesh_component)==mesh &&
-                take(single.world().render_items()).front().geometry==editor::mesh_assets().front().mesh,
+            require(single.selection().entity==entity && component(single,entity,single.presentation_types().static_mesh_component)==mesh &&
+                take(single.presentation().render_items()).front().geometry==editor::mesh_assets().front().mesh,
                 "Creation redo changed Entity/component identity or mesh resource.");
             take(single.begin_edit(entity, single.types().position_fields[0], 91));
             take(single.preview_edit(91, 4)); take(single.commit_edit(91));
-            require(take(single.world().render_items()).front().world[12] == 4, "Inherited root field did not move the mesh.");
+            require(take(single.presentation().render_items()).front().world[12] == 4, "Inherited root field did not move the mesh.");
             take(single.begin_edit(entity, single.types().rotation_fields[2], 92));
             take(single.preview_edit(92, .7f)); take(single.commit_edit(92));
             take(single.begin_edit(entity, single.types().scale_fields[0], 93));
@@ -152,13 +152,13 @@ int main(int argc, char** argv) {
             take(single.reset_position(entity));
             require(single.undo_count() == reset_history + 1, "Unchanged tuple reset created history.");
             changed(single.undo());
-            require(take(world::read_transform(rt, entity)) == before_reset && component(single,entity,single.types().static_mesh_component)==mesh,
+            require(take(world::read_transform(rt, entity)) == before_reset && component(single,entity,single.presentation_types().static_mesh_component)==mesh,
                 "Tuple undo replaced root identity or failed to restore the complete Entity TRS.");
             changed(single.redo()); changed(single.undo());
             changed(single.remove_component(mesh));
-            require(take(world::has_transform(rt,entity)) && take(world::read_transform(rt,entity))==before_reset && take(single.world().render_items()).empty(), "Removing the mesh lost Entity space or retained presentation state.");
+            require(take(world::has_transform(rt,entity)) && take(world::read_transform(rt,entity))==before_reset && take(single.presentation().render_items()).empty(), "Removing the mesh lost Entity space or retained presentation state.");
             changed(single.undo());
-            require(component(single,entity,single.types().static_mesh_component)==mesh && take(single.world().render_items()).front().world[12] == 4,
+            require(component(single,entity,single.presentation_types().static_mesh_component)==mesh && take(single.presentation().render_items()).front().world[12] == 4,
                 "Root mesh undo did not restore explicit root identity and inherited fields.");
             changed(single.close());
         }
@@ -167,9 +167,10 @@ int main(int argc, char** argv) {
         const auto entity = document.selection().entity;
         auto& runtime = document.world().runtime();
         require(take(document.world().members()).size() == 1 && take(world::components(runtime, entity)).empty() &&
-            take(document.world().render_items()).empty(), "An empty Entity acquired implicit components or rendering.");
+            take(document.presentation().render_items()).empty(), "An empty Entity acquired implicit components or rendering.");
         const auto state = take(world::inspect_entity(runtime, entity));
-        require(state.state == world::EntityState::attached_inactive && state.can_edit && !state.can_present,
+        require(state.state == world::EntityState::attached_inactive && state.can_edit &&
+            take(document.world().members(document.presentation().meshes())).empty() && take(document.world().members(document.presentation().lights())).empty(),
             "Empty Entity state confused editability with render registrations.");
         const std::wstring original_name(document.name(entity));
         const auto before_rename=document.undo_count();
@@ -182,18 +183,18 @@ int main(int argc, char** argv) {
         require(document.name(entity)==original_name,"Name Undo did not restore the label.");
         changed(document.redo());
         require(document.name(entity)==L"主角 Hero","Name Redo did not restore the label.");
-        changed(document.add_component(document.types().static_mesh_component));
+        changed(document.add_component(document.presentation_types().static_mesh_component));
         const auto transform = entity;
-        const auto cube = component(document, entity, document.types().static_mesh_component);
-        take(world::set_geometry(runtime,cube,editor::mesh_assets().front().mesh));
-        require(take(document.world().render_items()).size() == 1 && take(world::inspect_entity(runtime, entity)).can_present,
+        const auto cube = component(document, entity, document.presentation_types().static_mesh_component);
+        take(presentation::set_geometry(runtime,cube,editor::mesh_assets().front().mesh));
+        require(take(document.presentation().render_items()).size() == 1 && take(document.world().members(document.presentation().meshes())).size() == 1,
             "AttachedInactive mesh component did not create a value projection.");
         changed(document.remove_component(cube));
-        require(take(document.world().members()).size() == 1 && take(document.world().render_items()).empty(),
+        require(take(document.world().members()).size() == 1 && take(document.presentation().render_items()).empty(),
             "Removing mesh removed its Entity or retained rendering.");
         collect(document);
         changed(document.undo());
-        require(component(document, entity, document.types().static_mesh_component) == cube &&
+        require(component(document, entity, document.presentation_types().static_mesh_component) == cube &&
             take(world::inspect_component(runtime, cube)).owner == entity, "Component undo replaced identity or owner.");
         changed(document.redo()); changed(document.undo());
         const auto history = document.undo_count();
@@ -230,12 +231,12 @@ int main(int argc, char** argv) {
             "TRS undo did not restore the complete value after quaternion normalization.");
         take(document.select(entity));
         changed(document.erase_selected());
-        require(take(document.world().members()).size() == 1 && take(document.world().render_items()).empty() &&
+        require(take(document.world().members()).size() == 1 && take(document.presentation().render_items()).empty() &&
             !document.begin_edit(transform, path, 15) && !document.rename(entity,L"Detached"), "A detached Entity remained editable or presentable in the World.");
         collect(document);
         changed(document.undo());
         require(document.selection().entity == entity && take(document.world().members()).front().id() == entity &&
-            take(world::has_transform(runtime,entity)) && component(document, entity, document.types().static_mesh_component) == cube &&
+            take(world::has_transform(runtime,entity)) && component(document, entity, document.presentation_types().static_mesh_component) == cube &&
             value(document, transform) == 34 && document.name(entity)==L"主角 Hero", "Entity delete/GC/undo did not restore identities, composition, order, names and values.");
         take(document.begin_edit(transform, path, 16)); take(document.preview_edit(16, 88));
         changed(document.erase_selected()); changed(document.undo());

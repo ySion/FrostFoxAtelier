@@ -23,7 +23,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     auto project=take(Project::open(copy));
     auto document=take(Session::deserialize(take(read_file(take(project.resolve("Examples/Scene Lit Room/Scenes/Main.scene")))),project));
     application::SceneSnapshot scene;take(scene.refresh(*document));
-    const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.world().environment()));};
+    const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.presentation().environment()));};
     require(scene.meshes.size()==10 && scene.lights.size()==4 && sky(*document)==std::array{.025f,.035f,.055f} &&
         document->environment()!=ObjectId{} && !document->lighting_supplied(),
         "Scene Lit example did not load its ten meshes, four direct lights and the Sky Light merged into its Environment.");
@@ -37,7 +37,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
         std::ranges::any_of(scene.meshes,[](const auto& mesh){return std::ranges::any_of(mesh.material.emissive,[](float value){return value>1;});}),
         "Scene Lit example lost its real metal, reflection roughness or HDR emission.");
     const auto entity=take(document->world().members()).front().id();
-    const auto mesh=component(*document,entity,document->types().static_mesh_component);
+    const auto mesh=component(*document,entity,document->presentation_types().static_mesh_component);
     const auto fields=take(document->properties(mesh));
     const auto roughness=std::ranges::find(fields,"material.roughness",&Property::name);
     require(roughness!=fields.end(),"Scene Lit example floor has no reflected roughness.");
@@ -86,10 +86,10 @@ void verify_environment_sky_application() {
     });
     application::SceneSnapshot snapshot;
     const std::array<float,3> dark{},radiance{.025f,.05f,.075f};
-    const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.world().environment()));};
+    const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.presentation().environment()));};
     require(document.environment()==ObjectId{} && sky(document)==dark,"A World without an Environment has implicit environment radiance.");
     // The first World Settings edit creates the Environment and writes its values as one history item.
-    auto lighting=take(document.world().environment());
+    auto lighting=take(document.presentation().environment());
     lighting.sky_enabled=true;lighting.sky_color={.25f,.5f,.75f};lighting.sky_intensity=.1f;
     take(document.set_environment(lighting));
     const auto environment=document.environment();
@@ -109,10 +109,10 @@ void verify_environment_sky_application() {
     lighting.sky_intensity=.1f;
     const auto history=document.undo_count();
     take(document.select(entity));
-    require(!document.add_component(document.types().environment_component) && document.undo_count()==history,
+    require(!document.add_component(document.presentation_types().environment_component) && document.undo_count()==history,
         "A second Environment was accepted on the same Entity.");
     changed(document.add_entity());const auto other=document.selection().entity;
-    require(!document.add_component(document.types().environment_component),"A second Environment was accepted in the World.");
+    require(!document.add_component(document.presentation_types().environment_component),"A second Environment was accepted in the World.");
     changed(sky_world->set_enabled(environment,false));
     require(sky(document)==dark,"A disabled Environment kept its sky.");
     // World Settings show a disabled Environment's defaults, so an edit is refused rather than diffed against them.
@@ -121,17 +121,17 @@ void verify_environment_sky_application() {
     const auto disabled=document.set_environment(refused);
     require(!disabled && disabled.error().message.find("enable it in Parameters")!=std::string::npos && document.undo_count()==disabled_history,
         "A disabled Environment accepted a World Settings edit or did not name the fix.");
-    require(!document.add_component(document.types().environment_component),"A disabled Environment did not keep the only Environment slot.");
+    require(!document.add_component(document.presentation_types().environment_component),"A disabled Environment did not keep the only Environment slot.");
     changed(sky_world->set_enabled(environment,true));
     changed(sky_world->set_enabled(entity,false));require(sky(document)==dark,"A disabled Environment Entity kept its sky.");
     require(!document.set_environment(refused) && document.undo_count()==disabled_history,"An Environment under a disabled Entity accepted a World Settings edit.");
     changed(sky_world->set_enabled(entity,true));
-    require(sky(document)==radiance && take(document.world().environment())==lighting,"A re-enabled Environment did not restore its sky or kept a refused edit.");
+    require(sky(document)==radiance && take(document.presentation().environment())==lighting,"A re-enabled Environment did not restore its sky or kept a refused edit.");
     take(document.select(other));changed(document.erase_selected());
     take(snapshot.refresh(document));
     const auto before_point=snapshot.revision;
-    changed(document.create_light(world::LightKind::point));
-    const auto point=component(document,document.selection().entity,document.types().light_component);
+    changed(document.create_light(presentation::LightKind::point));
+    const auto point=component(document,document.selection().entity,document.presentation_types().light_component);
     take(snapshot.refresh(document));
     require(snapshot.lights.size()==1 && snapshot.revision==before_point+1,"Appending a direct light failed to advance the scene revision.");
     take(snapshot.refresh(document));
@@ -167,7 +167,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     auto project=take(Project::create(folder));Session document;
     auto& runtime=document.world().runtime();
     changed(document.create_static_mesh(mesh_assets().front()));const auto mesh_entity=document.selection().entity;
-    const auto mesh=component(document,mesh_entity,document.types().static_mesh_component);
+    const auto mesh=component(document,mesh_entity,document.presentation_types().static_mesh_component);
     std::uint64_t edit_session=990000;
     const auto property=[&](ObjectId object,std::string_view name) {
         const auto fields=take(document.properties(object));
@@ -178,18 +178,18 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     };
     edit(mesh,"material.roughness",.27f);edit(mesh,"material.metallic",.6f);edit(mesh,"material.emissive.x",4.f);
     std::array<ObjectId,3> light_entities,lights;
-    constexpr std::array kinds{world::LightKind::point,world::LightKind::rectangle,world::LightKind::directional};
+    constexpr std::array kinds{presentation::LightKind::point,presentation::LightKind::rectangle,presentation::LightKind::directional};
     for(std::size_t i=0;i<kinds.size();++i) {
         const auto history=document.undo_count();changed(document.create_light(kinds[i],{float(i)*2,3,0}));
-        light_entities[i]=document.selection().entity;lights[i]=component(document,light_entities[i],document.types().light_component);
+        light_entities[i]=document.selection().entity;lights[i]=component(document,light_entities[i],document.presentation_types().light_component);
         require(document.undo_count()==history+1 && take(world::components(runtime,light_entities[i])).size()==1 &&
-            take(world::read_light(runtime,lights[i])).kind==kinds[i],"Light creation did not publish one complete, undoable Entity composition.");
+            take(presentation::read_light(runtime,lights[i])).kind==kinds[i],"Light creation did not publish one complete, undoable Entity composition.");
     }
     edit(lights[0],"settings.intensity",80.f);edit(lights[0],"settings.source_radius",.05f);
     edit(lights[1],"settings.width",2.f);edit(lights[1],"settings.height",3.f);edit(lights[1],"settings.two_sided",true);
     edit(lights[2],"settings.intensity",1000.f);edit(lights[2],"settings.source_radius",.0046f);
     const auto component_types=take(document.component_types());
-    require(std::ranges::any_of(component_types,[&](const auto& type){return type.type==document.types().light_component;}),
+    require(std::ranges::any_of(component_types,[&](const auto& type){return type.type==document.presentation_types().light_component;}),
         "Entity Structure cannot discover LightComponent through the shared type list.");
     application::SceneSnapshot snapshot;take(snapshot.refresh(document));
     require(snapshot.meshes.size()==1 && snapshot.lights.size()==3 && snapshot.meshes[0].material.roughness==.27f &&
@@ -206,7 +206,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(document.select(light_entities[0]));changed(document.remove_component(lights[0]));take(snapshot.refresh(document));
     require(snapshot.lights.size()==2,"Removed LightComponent remained in the renderer snapshot.");
     changed(document.undo());take(snapshot.refresh(document));
-    require(component(document,light_entities[0],document.types().light_component)==lights[0] && snapshot.lights.size()==3,
+    require(component(document,light_entities[0],document.presentation_types().light_component)==lights[0] && snapshot.lights.size()==3,
         "Component undo failed to restore the real light identity and presentation.");
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Lighting.scene"));
     take(write_file(file,text,WriteMode::create));auto reopened=take(Session::deserialize(take(read_file(file)),project));
@@ -228,8 +228,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/intensity"),"A saved light intensity outside its hard bound loaded without a diagnostic.");
     data=nlohmann::json::parse(text);auto& old_material=data["entities"][0]["components"][0];
     old_material.erase("roughness");old_material.erase("metallic");old_material.erase("emissive");
-    auto old=take(Session::deserialize(data.dump(),project));const auto old_items=take(old->world().render_items());
-    require(old_items[0].material.roughness==world::Material{}.roughness && old_items[0].material.emissive==math::Vector3{},
+    auto old=take(Session::deserialize(data.dump(),project));const auto old_items=take(old->presentation().render_items());
+    require(old_items[0].material.roughness==presentation::Material{}.roughness && old_items[0].material.emissive==math::Vector3{},
         "Existing v2 scenes did not retain World material defaults.");
     const auto identity=snapshot.identity;snapshot.reset();take(snapshot.refresh(*reopened));
     require(snapshot.identity!=identity,"Document replacement reused the previous renderer history domain.");
@@ -303,7 +303,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     set_world_number(ViewOption::exposure_ev,2);
     require(workspace.view.lit.exposure_ev==2 && document.undo_count()>history,"World exposure did not enter scene history or used the wrong units.");
     set_world_number(ViewOption::direct_candidates,32);
-    require(workspace.view.lit.direct_candidates==32 && take(document.world().environment()).direct_candidates==32,
+    require(workspace.view.lit.direct_candidates==32 && take(document.presentation().environment()).direct_candidates==32,
         "Direct candidates were not routed through World author settings.");
     workspace.menu=ui::ContextMenuRequest{control::scene_shading,0,0,0};publish();
     const auto lit=std::ranges::find(workspace.menu_items,control::shading_scene_lit,&ui::MenuItem::key);
@@ -354,7 +354,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     {
     // World Settings edits are Environment property edits; their Undo selects the Environment.
     const auto selected=document.selection().entity;
-    const auto settings=[](const Session& session){return take(session.world().environment());};
+    const auto settings=[](const Session& session){return take(session.presentation().environment());};
     // A version 6 world section: every World option under its saved name.
     const auto world_keys=[](const rendering::SceneLightingSettings& lit) {
         renderer::ViewSettings view;static_cast<rendering::SceneLightingSettings&>(view.lit)=lit;

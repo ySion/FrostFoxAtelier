@@ -20,7 +20,9 @@ template<class T> T take(Result<T> result) {
 }
 }
 Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))),
+    presentation_types_(take(presentation::register_types(runtime_))),
     physics_types_(take(physics::register_types(runtime_))), world_(runtime_, types_),
+    presentation_(take(presentation::Scene::create(world_, presentation_types_))),
     parameters_{Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
                 Parameter{"Z", "m", types_.position_fields[2]}} {
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);
@@ -87,14 +89,14 @@ std::vector<std::string> environment_field(std::string_view option) {
     return {std::string(option)};
 }
 ObjectId Session::environment() const {
-    const auto found=world_.query(types_.environment_component);
+    const auto found=world_.query(presentation_types_.environment_component);
     return found && !found->empty()?found->front():ObjectId{};
 }
 Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
-    auto current=world_.environment();if(!current) return std::unexpected(current.error());
+    auto current=presentation_.environment();if(!current) return std::unexpected(current.error());
     renderer::ViewSettings before,after;
     static_cast<rendering::SceneLightingSettings&>(before.lit)=*current;static_cast<rendering::SceneLightingSettings&>(after.lit)=settings;
-    auto fields=detail::author_fields(world_.runtime(),types_.environment_component);if(!fields) return std::unexpected(fields.error());
+    auto fields=detail::author_fields(world_.runtime(),presentation_types_.environment_component);if(!fields) return std::unexpected(fields.error());
     EnvironmentEdit edit;
     for(const auto& option:view_options()) {
         if(!world_option(option.option)) continue;
@@ -150,7 +152,7 @@ Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath>
     auto members=world_.members();if(!members) return std::unexpected(members.error());
     if(members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
     auto entity=world::create_entity(runtime_);if(!entity) return std::unexpected(entity.error());
-    auto component=world::create_component(runtime_,types_.environment_component);if(!component) return std::unexpected(component.error());
+    auto component=world::create_component(runtime_,presentation_types_.environment_component);if(!component) return std::unexpected(component.error());
     if(!paths.empty()) if(auto written=world_.write(component->id(),paths,values);!written) return std::unexpected(written.error());
     const std::array parts{world::Attachment{component->id()}};
     auto composed=world_.attach_components(entity->id(),parts);if(!composed) return std::unexpected(composed.error());
@@ -316,28 +318,28 @@ Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset, math::
     auto members=world_.members();
     if (!members) return std::unexpected(members.error());
     if (members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
-    world::Material material;
+    presentation::Material material;
     if(asset.mesh && asset.mesh->has_materials()) material.base_color={1,1,1};
-    auto root=world::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},material,asset.key});
+    auto root=presentation::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},material,asset.key});
     if (!root) return std::unexpected(root.error());
     return attach_created(std::move(*root),asset.name);
 }
-Result<world::Commit> Session::create_light(world::LightKind kind,math::Vector3 position) {
+Result<world::Commit> Session::create_light(presentation::LightKind kind,math::Vector3 position) {
     auto cancelled=cancel_edit();if(!cancelled) return std::unexpected(cancelled.error());
     auto members=world_.members();if(!members) return std::unexpected(members.error());
     if(members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
     auto entity=world::create_entity(runtime_);if(!entity) return std::unexpected(entity.error());
-    auto light=world::create_component(runtime_,types_.light_component);if(!light) return std::unexpected(light.error());
-    auto configured=runtime_.with_native<world::LightComponent>(light->id(),[&](auto& value)->Result<void> {
+    auto light=world::create_component(runtime_,presentation_types_.light_component);if(!light) return std::unexpected(light.error());
+    auto configured=runtime_.with_native<presentation::LightComponent>(light->id(),[&](auto& value)->Result<void> {
         value.settings.kind=kind;
-        return world::validate_light(runtime_,value.settings);
+        return presentation::validate_light(runtime_,value.settings);
     });
     if(!configured) return std::unexpected(configured.error());
     auto positioned=world_.set_transform(entity->id(),{position,{},{1,1,1}});if(!positioned) return std::unexpected(positioned.error());
     const std::array parts{world::Attachment{light->id()}};
     auto attached=world_.attach_components(entity->id(),parts);if(!attached) return attached;
     if(attached->notification_error) return std::unexpected(*attached->notification_error);
-    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":L"Directional Light";
+    const auto label=kind==presentation::LightKind::point?L"Point Light":kind==presentation::LightKind::rectangle?L"Rectangle Light":L"Directional Light";
     return attach_created(std::move(*entity),label);
 }
 Result<world::Commit> Session::attach_created(ObjectRoot root,std::wstring_view label) {
@@ -855,7 +857,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
         } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
             auto state=admit_component_edit(item.root.id());if(!state) return std::unexpected(state.error());
             if(state->owner!=item.entity) return invalid("The material binding's owning Entity changed.");
-            auto changed=world::set_material_bindings(runtime_,item.root.id(),forward?item.after:item.before);
+            auto changed=presentation::set_material_bindings(runtime_,item.root.id(),forward?item.after:item.before);
             if(!changed) return std::unexpected(changed.error());
             set_selection({item.entity,item.root.id()});return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, BodyChange>) {

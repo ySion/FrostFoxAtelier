@@ -190,7 +190,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
     // Lock authoring state before either a product frame or a diagnostic write.
     const auto source_world=Json::parse(model(editor::read_file(scene_file))).value("world",Json(nullptr));
     const auto original_scene=model(app.document().serialize());
-    const auto original_world=model(app.document().world().environment());
+    const auto original_world=model(app.document().presentation().environment());
     const auto loaded_environment=[&] {
         for(const auto& entity:Json::parse(original_scene).at("entities"))
             for(const auto& part:entity.at("components")) if(part.at("type")=="world.EnvironmentComponent") return part.value("properties",Json::object());
@@ -202,7 +202,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
     const auto unchanged_author=[&] {
         require(&app.document()==original_document && Access::project_root(app)==project && Access::scene_path(app)==scene &&
             app.document().undo_count()==history && app.document().redo_count()==redo && app.document().revision()==revision &&
-            app.document().dirty()==dirty && model(app.document().world().environment())==original_world,
+            app.document().dirty()==dirty && model(app.document().presentation().environment())==original_world,
             "Performance preparation or sampling changed the loaded Scene or its authoring history.");
     };
     const auto unchanged_scene=[&] {
@@ -279,7 +279,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             ~RestoreView() {
                 // A failure must never restore old author values over a changed document.
                 if(active && &app.document()==document && !app.document().world().closed() &&
-                    static_cast<const rendering::SceneLightingSettings&>(view.lit)==model(app.document().world().environment()))
+                    static_cast<const rendering::SceneLightingSettings&>(view.lit)==model(app.document().presentation().environment()))
                     static_cast<void>(Access::performance_view(app,view));
             }
         } restore{app,original_view,original_document};

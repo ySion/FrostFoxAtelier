@@ -1,4 +1,24 @@
-# World Lit 数据合同
+# Presentation：网格、灯光与环境
+
+正式入口为 [presentation.hpp](../../../src/presentation/presentation.hpp)。`atelier_presentation` 在 World 核心之上定义网格、灯光、环境与材质资源的类型和规则，依赖 world、material、geometry 与 rendering（只用到 `scene_lighting.hpp` 头文件）；World 核心不引用其中任何类型。物理链接它，三角网格碰撞经 `read_static_mesh` 取网格。持久类型名沿用场景格式的 `world.` 前缀（`world.StaticMeshComponent` 等），C++ 命名空间为 `atelier::presentation`。
+
+`presentation::register_types(Runtime&)` 在 `world::register_types` 之后调用，登记 material 资源类型与本库类型，`core.String` 不存在时一并登记。
+
+## Scene
+
+`presentation::Scene::create(World&, Types)` 在宿主边界为一个 World 建立呈现：登记网格（要求组件已有几何）、灯光、环境三项能力，以及“每个 World 至多一个 EnvironmentComponent”的准入。每个 World 只创建一个 Scene，它先于 World 析构；网格登记带谓词，重复创建会累积登记。编辑器 Session（编辑与 Play 共用）在 World 旁持有它，由 `Session::presentation()` 取得。`meshes() / lights() / environments()` 返回这三个 `CapabilityId`，可经 `World::members(id)` 查询桶。
+
+`render_items()`、`light_items()` 与 `environment()` 只遍历这些桶，经 `World::spatial_pass` 读取空间，对象失败经 `World::contain` 写入 World 的诊断日志，按 World 的失败策略隔离或使调用失败。Scene 只持有材质与灯参数的校验缓存，不缓存提取结果。
+
+## 网格
+
+`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform 与 mesh_source；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
+
+`set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照，见[项目场景](../world/project-scenes.md)。
+
+`render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。空间不可求值时诊断记在失败的 Entity 上，材质记在组件上，该项跳过；零缩放空间中的网格不绘制，报告 `degenerate_value` 警告。
+
+材质与灯参数的校验结果按桶位置缓存：某个位置上的当前值与上次在该位置通过校验的值逐字节相同时，跳过 `validate_value`，其余照常执行。这样做成立，是因为类型校验器是对值字节的纯检查，已发布的类型规则也不再改变，所以不需要按对象身份核对，也不依赖写入通知。Runtime 直接写入和生成代码写入的值，下一次提取时同样会被校验；未通过的值不进入缓存，每次提取都会重新校验并报告。每个网格每次提取只借用一次组件。
 
 ## 材质
 
@@ -11,7 +31,7 @@
 | metallic | 0 | 硬边界 [0,1] |
 | emissive | (0,0,0) | 线性 HDR RGB，每通道硬边界 [0,65504]（UI 范围 0–10），与不可变 Surface 的 GBuffer 表达范围一致 |
 
-Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMin / LockMax / HardMax`），没有跨字段校验器。Runtime 写入越界时夹到边界，NaN/Inf 拒绝；`validate_material(Runtime&, Material)` 用 Runtime 检查一个完整值。`set_material(World&, ObjectId, Material)` 先按完整值检查，失败即拒绝、不夹值，再经整值 `World::write` 写入；`World::write` 的单字段写入与其他字段相同，见 [World 编辑](README.md#编辑呈现与资源)。两者使用宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂也检查完整 Material。可信原生直接写入不经硬边界，`render_items` 提取时用 Runtime 校验 material，越界项按对象诊断（field 为 `material.<字段>`，value 为越界值）并跳过，不会把无效数据交给 Renderer。
+Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMin / LockMax / HardMax`），没有跨字段校验器。Runtime 写入越界时夹到边界，NaN/Inf 拒绝；`validate_material(Runtime&, Material)` 用 Runtime 检查一个完整值。`set_material(World&, ObjectId, Material)` 先按完整值检查，失败即拒绝、不夹值，再经整值 `World::write` 写入；`World::write` 的单字段写入与其他字段相同，见 [World 编辑](../world/README.md#编辑呈现与资源)。两者使用宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂也检查完整 Material。可信原生直接写入不经硬边界，`render_items` 提取时用 Runtime 校验 material，越界项按对象诊断（field 为 `material.<字段>`，value 为越界值）并跳过，不会把无效数据交给 Renderer。
 
 ## 灯类型与参数
 
@@ -42,13 +62,13 @@ Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMi
 
 天光首版是均匀天空入射辐射：`sky_enabled` 为假时环境辐射为零，颜色和强度保留；没有可见天空、HDRI 或方向性天空分布的隐式资源。宿主用 `rendering::sky_radiance(settings)` 求 `Frame.environment`，Renderer 接口不变。
 
-每个 World 至多一个 EnvironmentComponent，停用的也计数；这是 world 库登记的准入。`World::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，World 不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](README.md#编辑呈现与资源)。
+每个 World 至多一个 EnvironmentComponent，停用的也计数；这是 Scene 登记的准入。`Scene::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](../world/README.md#编辑呈现与资源)。
 
 ## 提取与坐标
 
-`World::light_items()` 返回 `LightRenderItem { entity, component, position, direction, right, up, settings }`。两个身份都是完整 ObjectId；它们只用于当前 Runtime 的关联，不落盘、不转换成裸地址，也不额外保活对象。Renderer 的 key 映射由应用适配，Renderer 无需依赖 World。
+`Scene::light_items()` 返回 `LightRenderItem { entity, component, position, direction, right, up, settings }`。两个身份都是完整 ObjectId；它们只用于当前 Runtime 的关联，不落盘、不转换成裸地址，也不额外保活对象。Renderer 的 key 映射由应用适配，Renderer 无需依赖 World。
 
-World 使用能力登记共同登记网格与灯光。render_items 只返回网格，light_items 只返回 Entity 和 Component 均启用的灯，顺序仍为 Entity 成员顺序及组件组成顺序。停止的编辑 World 可以提取；零 intensity 仍保留条目和身份；Detached/已移除对象不会出现；关闭后的提取返回错误。`can_present` 和 presentation_registrations 表示登记，不等于该帧产生可见能量。
+Scene 创建时登记网格与灯光两个桶。render_items 只返回网格，light_items 只返回 Entity 和 Component 均启用的灯，顺序仍为 Entity 成员顺序及组件组成顺序。停止的编辑 World 可以提取；零 intensity 仍保留条目和身份；Detached/已移除对象不会出现；关闭后的提取返回错误。桶中的登记不等于该帧产生可见能量。
 
 position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子节点的位置偏移。方向基沿 Entity 空间参考链组合每一级的正交部分 R·D，其中 D = diag(sign(scale))，忽略 scale 幅值与 shear，零分量按正号处理；得到正交矩阵 O 后取 right = O(+X)、up = O(+Y)、direction = O(+Z)，det(O) < 0 时 right 取反，使三者仍为右手正交单位基。全为正缩放时即各级 quaternion 的组合；幅值均匀时与网格同一局部轴的镜像方向一致，因此镜像祖先下的矩形光与方向光随几何一起镜像。direction 是光传播方向，矩形位于局部 XY 平面，以 position 为中心、宽沿 right、高沿 up，关于 right 轴对称，所以 right 取反不改变发光面。range、source_radius 的物理长度、width/height 是世界米，不再乘任何 scale；方向光的 source_radius 为角度量。零缩放祖先只使位置偏移塌缩，朝向保持作者值，灯光不按退化处理。
 
@@ -56,6 +76,6 @@ position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子�
 
 ## 验收与接线边界
 
-`world_acceptance` 包含真实消费者：反射枚举/值/对象和派生灯、Source/JIT 修改 LightSettings、Material HDR、标量与整组拒绝原子性、混合 mesh/light 提取、父级非均匀缩放、停用/启用、反序 End、删除恢复、Detached 及快照 GC 寿命。数值边界覆盖解析光乘积及矩形面积乘积的边界和相邻越界值、65504 自发光提取、原生绕过 setter 后的提取拒绝；开发和发布构建均使用同一消费者。
+`world_acceptance` 同时链接 presentation，包含真实消费者：反射枚举/值/对象和派生灯、Source/JIT 修改 LightSettings、Material HDR、标量与整组拒绝原子性、混合 mesh/light 提取、父级非均匀缩放、停用/启用、反序 End、删除恢复、Detached 及快照 GC 寿命。数值边界覆盖解析光乘积及矩形面积乘积的边界和相邻越界值、65504 自发光提取、原生绕过 setter 后的提取拒绝；开发和发布构建均使用同一消费者。
 
 World E2E 验证数据与生命周期合同。场景文件、编辑器控件和 SceneSnapshot 接入由应用端到端验收覆盖，GPU 灯、天光、材质、历史与阴影消费由 Renderer 及正式编辑器窗口验收覆盖，见 [Renderer 验收记录](../renderer/acceptance.md)。单独的 World E2E 不替代这些集成证据。

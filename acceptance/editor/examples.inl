@@ -19,7 +19,7 @@ void verify_official_examples() {
         const auto original=take(editor::read_file(source_scene));
         const auto scene_path=take(project.resolve(example.scene));
         auto document=take(editor::Session::deserialize(take(editor::read_file(scene_path)),project));
-        const auto meshes=take(document->world().render_items());
+        const auto meshes=take(document->presentation().render_items());
         require(example.command==editor::Command::example_dungeons?meshes.size()==3425:
             example.command==editor::Command::example_physic?meshes.size()==19:
             meshes.size()==(example.command==editor::Command::example_sponza?1u:10u),"Official example lost geometry.");

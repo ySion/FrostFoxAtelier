@@ -21,8 +21,8 @@ public:
         ++identity;revision=1;next_key_=1;keys_.clear();meshes.clear();mesh_entities.clear();lights.clear();
     }
     Result<void> refresh(const editor::Session& document) {
-        auto geometry=document.world().render_items();if(!geometry) return std::unexpected(geometry.error());
-        auto illumination=document.world().light_items();if(!illumination) return std::unexpected(illumination.error());
+        auto geometry=document.presentation().render_items();if(!geometry) return std::unexpected(geometry.error());
+        auto illumination=document.presentation().light_items();if(!illumination) return std::unexpected(illumination.error());
         for(auto& [object,key]:keys_) { (void)object;key.seen=false; }
         bool changed=meshes.size()!=geometry->size();
         meshes.reserve(geometry->size());lights.reserve(illumination->size());
@@ -70,9 +70,9 @@ public:
             renderer::Light value;
             value.stable_key=key(item.component);
             switch(settings.kind) {
-            case world::LightKind::point:value.kind=renderer::LightKind::point;break;
-            case world::LightKind::rectangle:value.kind=renderer::LightKind::rectangle;break;
-            case world::LightKind::directional:value.kind=renderer::LightKind::directional;break;
+            case presentation::LightKind::point:value.kind=renderer::LightKind::point;break;
+            case presentation::LightKind::rectangle:value.kind=renderer::LightKind::rectangle;break;
+            case presentation::LightKind::directional:value.kind=renderer::LightKind::directional;break;
             }
             value.position=rgb(item.position);value.direction=rgb(item.direction);value.right=rgb(item.right);value.up=rgb(item.up);
             value.color=rgb(settings.color);value.intensity=settings.intensity;value.range=settings.range;

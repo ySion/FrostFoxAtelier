@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/world.hpp"
+#include "geometry/mesh.hpp"
 #include <unordered_set>
 
 namespace atelier::physics {

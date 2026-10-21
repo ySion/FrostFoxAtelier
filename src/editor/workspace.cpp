@@ -437,7 +437,7 @@ std::optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session,c
 }
 bool Workspace::sync_world(const Session& session) {
     auto& author=static_cast<rendering::SceneLightingSettings&>(view.lit);
-    const auto current=session.world().environment();
+    const auto current=session.presentation().environment();
     if(!current || author==*current) return false;
     lighting.cancel();author=*current;++view_revision_;return true;
 }
@@ -495,11 +495,11 @@ std::string described(std::string description,const FieldRange& range) {
 }
 // Houdini-style parameter label from a reflected field path: "material.base_color"
 // becomes "Base Color". The path still identifies the field; only the caption changes.
-ui::ControlIcon light_icon(world::LightKind kind) {
+ui::ControlIcon light_icon(presentation::LightKind kind) {
     switch(kind) {
-    case world::LightKind::point:return ui::ControlIcon::point_light;
-    case world::LightKind::rectangle:return ui::ControlIcon::area_light;
-    case world::LightKind::directional:return ui::ControlIcon::sun_light;
+    case presentation::LightKind::point:return ui::ControlIcon::point_light;
+    case presentation::LightKind::rectangle:return ui::ControlIcon::area_light;
+    case presentation::LightKind::directional:return ui::ControlIcon::sun_light;
     }
     return ui::ControlIcon::point_light;
 }
@@ -508,11 +508,11 @@ ui::ControlIcon light_icon(world::LightKind kind) {
 ui::ControlIcon entity_icon(const Session& session,ObjectId entity) {
     auto& runtime=session.world().runtime();
     const auto state=world::inspect_entity(runtime,entity);
-    if(state && runtime.is_a(state->type,session.types().static_mesh_entity).value_or(false)) return ui::ControlIcon::mesh;
+    if(state && runtime.is_a(state->type,session.presentation_types().static_mesh_entity).value_or(false)) return ui::ControlIcon::mesh;
     if(const auto parts=world::components(runtime,entity)) for(const auto& part:*parts) {
         const auto type=runtime.type_of(part.id());
-        if(type && runtime.is_a(*type,session.types().light_component).value_or(false))
-            if(const auto light=world::read_light(runtime,part.id())) return light_icon(light->kind);
+        if(type && runtime.is_a(*type,session.presentation_types().light_component).value_or(false))
+            if(const auto light=presentation::read_light(runtime,part.id())) return light_icon(light->kind);
     }
     return ui::ControlIcon::object;
 }
@@ -566,7 +566,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         std::ranges::any_of(navigation_,unresolved) ||
         std::ranges::any_of(bindings_,[&](const auto& binding){return unresolved(binding.object);});
     if(needs_materials) for(const auto component:components) {
-        const auto bindings=world::read_material_bindings(runtime,component);
+        const auto bindings=presentation::read_material_bindings(runtime,component);
         if(bindings) for(const auto& binding:*bindings) live.add(binding.resource.id());
     }
     // Closing/hiding a view is not an object lifetime change. Retire bindings and
@@ -820,7 +820,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             if (!row.node) {world_row=position;continue;}
             const auto state=take(world::inspect_entity(runtime,entity));
             const auto entity_key=bind(entity);
-            const bool mesh_entity=take(runtime.is_a(state.type,session.types().static_mesh_entity));
+            const bool mesh_entity=take(runtime.is_a(state.type,session.presentation_types().static_mesh_entity));
             const bool retained=session.has_retained(entity) || std::ranges::any_of(take(world::components(runtime,entity)),
                 [&](const auto& component){return session.has_retained(component.id());});
             rows->push_back({entity_key,{std::wstring(session.name(entity)),
@@ -928,12 +928,12 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         const bool resource=session.is_material(object);
         const bool instance=material_component!=ObjectId{};
         const auto material_state=resource?std::optional(take(material::read_material(runtime,object))):std::nullopt;
-        const auto material_bindings=resource?atelier::Result<std::vector<world::MaterialBinding>>{std::vector<world::MaterialBinding>{}}:world::read_material_bindings(runtime,object);
-        const auto mesh=!resource && material_bindings?std::optional(take(world::read_static_mesh(runtime,object))):std::nullopt;
+        const auto material_bindings=resource?atelier::Result<std::vector<presentation::MaterialBinding>>{std::vector<presentation::MaterialBinding>{}}:presentation::read_material_bindings(runtime,object);
+        const auto mesh=!resource && material_bindings?std::optional(take(presentation::read_static_mesh(runtime,object))):std::nullopt;
         const bool all_slots_bound=mesh && mesh->mesh.resolved && !material_bindings->empty() &&
             std::ranges::all_of(mesh->mesh.resolved->parts(),[&](const auto& part) {
-                return std::ranges::find(*material_bindings,world::material_slot_name(*mesh->mesh.resolved,part.material),
-                    &world::MaterialBinding::slot)!=material_bindings->end();
+                return std::ranges::find(*material_bindings,presentation::material_slot_name(*mesh->mesh.resolved,part.material),
+                    &presentation::MaterialBinding::slot)!=material_bindings->end();
             });
         const auto property_caption=[&](std::string_view name,std::string_view declared) {
             auto label=declared.empty()?parameter_label(name):wide(declared);
@@ -950,8 +950,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         auto component_properties=std::make_shared<std::vector<ui_language::Item>>();
         auto properties=component_properties;
         const auto schema=take(session.properties(object));
-        const auto light=take(runtime.is_a(type,session.types().light_component))?
-            std::optional(take(world::read_light(runtime,object))):std::nullopt;
+        const auto light=take(runtime.is_a(type,session.presentation_types().light_component))?
+            std::optional(take(presentation::read_light(runtime,object))):std::nullopt;
         for(std::size_t index=0;index<schema.size();++index) {
             const auto& property=schema[index];
             if(parameter_by_category_ && material_object==ObjectId{}) {
@@ -969,9 +969,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
             if(light) {
                 const auto& name=property.name;
-                if(light->kind!=world::LightKind::rectangle && (name=="settings.width" || name=="settings.height" || name=="settings.two_sided")) continue;
-                if(light->kind==world::LightKind::rectangle && name=="settings.source_radius") continue;
-                if(light->kind==world::LightKind::directional && name=="settings.range") continue;
+                if(light->kind!=presentation::LightKind::rectangle && (name=="settings.width" || name=="settings.height" || name=="settings.two_sided")) continue;
+                if(light->kind==presentation::LightKind::rectangle && name=="settings.source_radius") continue;
+                if(light->kind==presentation::LightKind::directional && name=="settings.range") continue;
             }
             auto parent_type=type;TypeId aggregate_type{};
             for(std::size_t depth=0;depth+1<property.path.size();++depth) {
@@ -987,12 +987,12 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 const bool spatial_position=std::ranges::equal(property.path,session.types().position_fields[0]);
                 const bool spatial_rotation=std::ranges::equal(property.path,session.types().rotation_fields[0]);
                 const bool spatial_scale=std::ranges::equal(property.path,session.types().scale_fields[0]);
-                const bool base_color=(aggregate_type==session.types().material || aggregate_type==take(runtime.native_type<material::ParameterValues>())) &&
+                const bool base_color=(aggregate_type==session.presentation_types().material || aggregate_type==take(runtime.native_type<material::ParameterValues>())) &&
                     property.path[property.path.size()-2]==take(runtime.find_field(aggregate_type,"base_color"));
-                const bool emission=(aggregate_type==session.types().material || aggregate_type==take(runtime.native_type<material::ParameterValues>())) &&
+                const bool emission=(aggregate_type==session.presentation_types().material || aggregate_type==take(runtime.native_type<material::ParameterValues>())) &&
                     property.path[property.path.size()-2]==take(runtime.find_field(aggregate_type,"emissive"));
-                const bool light_color=aggregate_type==session.types().light_settings &&
-                    property.path[property.path.size()-2]==take(runtime.find_field(session.types().light_settings,"color"));
+                const bool light_color=aggregate_type==session.presentation_types().light_settings &&
+                    property.path[property.path.size()-2]==take(runtime.find_field(session.presentation_types().light_settings,"color"));
                 const bool color=base_color || emission || light_color;
                 const auto euler=spatial_rotation?euler_degrees(take(world::read_transform(runtime,object)).rotation):math::Vector3{};
                 std::vector<ui::NumberField> tuple;bool matches=group_matches || lowercase(wide(name+" "+property.label+" "+property.category)).find(folded)!=std::wstring::npos;
@@ -1039,9 +1039,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             if(light && property.name.starts_with("settings.")) {
                 const auto field=std::string_view(property.name).substr(9);
                 if(field=="kind") caption=L"Light Type";
-                else if(field=="intensity") caption=light->kind==world::LightKind::point?L"Intensity (cd)":
-                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":L"Illuminance (lux)";
-                else if(field=="source_radius") caption=light->kind==world::LightKind::directional?L"Angular Radius (rad)":L"Source Radius (m)";
+                else if(field=="intensity") caption=light->kind==presentation::LightKind::point?L"Intensity (cd)":
+                    light->kind==presentation::LightKind::rectangle?L"Intensity (cd/m²)":L"Illuminance (lux)";
+                else if(field=="source_radius") caption=light->kind==presentation::LightKind::directional?L"Angular Radius (rad)":L"Source Radius (m)";
                 else if(field=="range") caption=L"Range (m)";
                 else if(field=="width") caption=L"Width (m)";
                 else if(field=="height") caption=L"Height (m)";
@@ -1110,8 +1110,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 properties->push_back(std::move(row).item());
             }
             if(mesh->mesh.resolved) for(std::size_t i=0;i<mesh->mesh.resolved->materials().size();++i) {
-                const auto slot_name=world::material_slot_name(*mesh->mesh.resolved,i);std::wstring choice=L"Mesh Default";
-                const auto at=std::ranges::find(*material_bindings,slot_name,&world::MaterialBinding::slot);
+                const auto slot_name=presentation::material_slot_name(*mesh->mesh.resolved,i);std::wstring choice=L"Mesh Default";
+                const auto at=std::ranges::find(*material_bindings,slot_name,&presentation::MaterialBinding::slot);
                 if(at!=material_bindings->end()) {
                     auto state=take(material::read_material(runtime,at->resource.id()));
                     if(state.parent.registered()) state=take(material::read_material(runtime,state.parent.id()));
@@ -1155,7 +1155,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     }
     const auto append_object=[&](ObjectId object) {
         append_properties(object);
-        const auto bindings=world::read_material_bindings(runtime,object);
+        const auto bindings=presentation::read_material_bindings(runtime,object);
         if(bindings) for(const auto& binding:*bindings) append_properties(binding.resource.id(),object,binding.slot);
     };
     if(inspected!=ObjectId{}) {

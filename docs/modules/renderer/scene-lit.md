@@ -16,7 +16,7 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 - GBuffer、射线命中、发光采样、辅助深度和选择叠层消费同一表面；Mesh/MTL 默认材质与显式资产绑定走同一解析入口。颜色/发光图使用 sRGB，标量/法线图使用线性数据，详见[材质系统](materials.md)。
 - 点光源使用 candela，矩形面光源使用 cd/m²，方向光使用 lux。点光源半径以米表示，方向光角半径以弧度表示；矩形使用米制宽高与单面/双面设置。
 - 天光是同一作者值中的 `sky_enabled`、`sky_color` 与 `sky_intensity`（cd/m²），首版表示均匀入射辐射，宿主用 `rendering::sky_radiance` 求颜色乘强度写入 `Frame.environment`。天光关闭或没有 Environment 时该值为零；它不进入局部光源候选池，不依据空间变换改变照明，也不自动绘制天空。Scene Lit 背景固定为黑，工作室模式的渐变偏好单独保留。HDRI / 方向性天空尚未实现。
-- World 唯一负责层级变换与灯的正交方向；Renderer 接收最终位置、传播方向和矩形切向轴。空间缩放不隐式改变灯的物理尺寸、范围或强度。权威数据约束见 [World lighting](../world/lighting.md)。
+- World 唯一负责层级变换与灯的正交方向；Renderer 接收最终位置、传播方向和矩形切向轴。空间缩放不隐式改变灯的物理尺寸、范围或强度。权威数据约束见 [Presentation](../presentation/README.md)。
 - 点光和矩形光使用有界距离衰减；方向光覆盖全场景。直接光使用 GGX 表面响应，矩形光对真实发光面积采样。当前没有 LTC 贴图或 RTXDI 依赖。
 - Renderer 的灯光值域与 World 一致：方向光允许零 range，非矩形光允许零 width/height，方向光角半径小于 π/2。局部光源在共享贡献求值入口按真实采样位置检查距离衰减与侧向。
 - 默认 A 路径对解析局部灯精确枚举，发光三角形按 `direct_candidates` 个候选做 RIS；ReSTIR 回退路径中点光、矩形光和发光三角形进入同一局部候选池。方向光逐盏独立评估，不进入该池，避免太阳漏选或重复计算。`direct_candidates` 控制每个接收点的初始局部候选数，范围 1～32，默认 8。已移除旧 256 盏截断灯表及四灯阴影槽；下述新精确列表的固定容量只限制快速存储，不截断光源。源数仍受身份表示和实际缓冲大小校验约束。所有选中且 `casts_shadow` 的光源都查询可见性；Shadows 关闭时沿同一求值入口忽略遮挡。
@@ -33,7 +33,7 @@ LightComponent 不自动创建可见发光几何。`LightFrame` 沿同一 MeshIn
 
 屏幕 DI 的 fresh RIS 与 DDGI 命中处的 fresh RIS 共用上述分布构造、样本域及完整 `q`，DDGI 不借屏幕 reservoir 历史。方向光继续独立逐盏求值，不进入近源网格。网格源版本或整格原点变化时重建并上传，未变化时复用；网格滚动本身不属于辐射变化，不重置光照历史。已归一化 reservoir 权重携带其生成分布的责任，时间复用仍按原有前后源映射和各接收面目标计算 MIS，无需保存或重建旧网格。
 
-解析光的输入计算域沿 [World 灯光合同](../world/lighting.md#灯类型与参数)，由共享检查同时约束 authoring 和低层 Frame；超界帧在编码前拒绝，保留已接受的画面与历史。矩形光先乘已验证的辐射量与面积，再施加有界衰减。MIS 在极大有限 target 下共同缩放 confidence 加权项，并按大小选择乘除顺序，避免中间溢出和过早丢失弱权重；普通范围保留原次序。未夹取 reservoir W。此范围保证的余量只覆盖解析光求值与初始累计，发光三角形的极近 `area/d²`、超出 FP32 的数学 W 及任意历史 target 倍率仍非全域保证，详见[数值审查](../../research/render-pipeline-audit-20261013.md#本轮代码审查与取舍)。
+解析光的输入计算域沿 [灯光合同](../presentation/README.md#灯类型与参数)，由共享检查同时约束 authoring 和低层 Frame；超界帧在编码前拒绝，保留已接受的画面与历史。矩形光先乘已验证的辐射量与面积，再施加有界衰减。MIS 在极大有限 target 下共同缩放 confidence 加权项，并按大小选择乘除顺序，避免中间溢出和过早丢失弱权重；普通范围保留原次序。未夹取 reservoir W。此范围保证的余量只覆盖解析光求值与初始累计，发光三角形的极近 `area/d²`、超出 FP32 的数学 W 及任意历史 target 倍率仍非全域保证，详见[数值审查](../../research/render-pipeline-audit-20261013.md#本轮代码审查与取舍)。
 
 屏幕原生 ReSTIR DI 以初始 RIS 和前帧 reservoir 生成 scratch，再从 scratch 复用最多两个合格空间邻居，写入 current；使用 GRIS generalized balance MIS 在每个输入接收面重新求目标。reservoir 保留样本、贡献权重与受限历史置信度，不保存 visibility；最终着色重新追踪选中源到当前接收点的遮挡。零实现仍代表一个候选分布，不能因本次选中贡献为零就删除其归一化责任。有界近源网格补充全局功率 proposal，尚不是自适应光源树或完整影响域索引；RTXDI SDK 未引入。
 

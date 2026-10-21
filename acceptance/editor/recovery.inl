@@ -35,9 +35,9 @@ void verify_scene_recovery() {
     editor::Session missing;
     const auto mesh=take(project.mesh("builtin/cube"));
     changed(missing.create_static_mesh(mesh));
-    const auto missing_root=component(missing,missing.selection().entity,missing.types().static_mesh_component);
+    const auto missing_root=component(missing,missing.selection().entity,missing.presentation_types().static_mesh_component);
     const std::string missing_key="project/{00000000-0000-0000-0000-000000000099}";
-    take(world::set_mesh_binding(missing.world().runtime(),missing_root,{missing_key,mesh.mesh}));
+    take(presentation::set_mesh_binding(missing.world().runtime(),missing_root,{missing_key,mesh.mesh}));
     application::SceneRecovery missing_recovery;
     const auto& missing_result=missing_recovery.preserve(missing,project.root(),{},"missing asset",evidence/"Recovery");
     require(missing_result && *missing_result && missing_result->value().scene!=path,"Missing asset blocked raw scene preservation.");

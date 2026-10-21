@@ -24,7 +24,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     auto document=take(editor::Session::deserialize(source,project));
     const auto original=take(document->serialize());
     application::SceneSnapshot snapshot;take(snapshot.refresh(*document));
-    const auto geometry=take(document->world().render_items());
+    const auto geometry=take(document->presentation().render_items());
     std::unordered_set<const geometry::Mesh*> unique;
     std::unordered_set<ObjectId> materials;
     std::unordered_map<const material::Image*,unsigned> image_modes;
@@ -42,7 +42,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     }
     std::size_t sampled_images{};
     for(const auto& [image,modes]:image_modes) {(void)image;sampled_images+=(modes&1)!=0;sampled_images+=(modes&2)!=0;}
-    for(const auto& item:geometry) for(const auto& binding:take(world::read_material_bindings(document->world().runtime(),item.component))) {
+    for(const auto& item:geometry) for(const auto& binding:take(presentation::read_material_bindings(document->world().runtime(),item.component))) {
         materials.insert(binding.resource.id());++material_bindings;
     }
     Json report{{"schema","atelier.editor.scene-cpu.v3"},{"project",editor::utf8(root.wstring())},{"scene",scene},
@@ -90,9 +90,9 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         report["stages"][name]={{"mean_ms",total/samples.size()},{"median_ms",samples[60]},{"p95_ms",samples[114]}};
         std::printf("Scene CPU %.*s: %.3f ms median\n",static_cast<int>(name.size()),name.data(),samples[60]);
     };
-    measure("render_items",[&]{take(document->world().render_items());});
-    measure("light_items",[&]{take(document->world().light_items());});
-    measure("material_surfaces",[&]{for(const auto& item:geometry) take(world::material_surfaces(document->world().runtime(),item.component));});
+    measure("render_items",[&]{take(document->presentation().render_items());});
+    measure("light_items",[&]{take(document->presentation().light_items());});
+    measure("material_surfaces",[&]{for(const auto& item:geometry) take(presentation::material_surfaces(document->world().runtime(),item.component));});
     measure("scene_snapshot",[&]{take(snapshot.refresh(*document));});
     {
         // Paired World edits restore the same graph; the document history is not involved.

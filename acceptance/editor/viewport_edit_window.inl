@@ -56,9 +56,9 @@ void verify_viewport_edit_window(Application& app,const std::filesystem::path& o
         "Angle field edited quaternion X instead of the complete rotation.");
     // Body rows precede the Material group, so reach Base Color X by its binding and the panel's own scrolling.
     auto& runtime=app.document().world().runtime();
-    const auto mesh_component=component(app,root,app.document().types().static_mesh_component);
+    const auto mesh_component=component(app,root,app.document().presentation_types().static_mesh_component);
     const std::array base_color_x{model(runtime.find_field(model(runtime.type_of(mesh_component)),"material")),
-        model(runtime.find_field(app.document().types().material,"base_color")),
+        model(runtime.find_field(app.document().presentation_types().material,"base_color")),
         model(runtime.describe(app.document().types().vector3))->fields.front().id};
     const auto color_key=app.field_control(mesh_component,base_color_x);
     require(color_key!=0,"Static Mesh Base Color X has no parameter field.");

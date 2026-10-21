@@ -28,7 +28,7 @@ Entity 模型落地后，World、源码执行、编辑器与 Play 宿主中存�
 
 | 本仓硬闸 | UE 5.8（源码） | 其他引擎 | 来历 | 判断 |
 | --- | --- | --- | --- | --- |
-| 单个坏数据使 `render_items` / `light_items` 整次失败，Play 宿主 `take()` 抛异常退出 | `CheckAndSanitizePrimitiveBounds` 对 NaN 包围盒 ensure 后置零继续（RendererScene.cpp:1362）；阴影阶段跳过坏图元（PrimitiveSceneInfo.cpp:2399）；物理按 body 拒绝（BodyInstance.cpp:1499） | Godot 仅 debug 构建拒绝单次服务器调用；Bevy 直接存储；均不整帧失败 | 契约（[光照数据](../modules/world/lighting.md)第 14 行） | 保留不变量，改为逐项排除并按对象诊断 |
+| 单个坏数据使 `render_items` / `light_items` 整次失败，Play 宿主 `take()` 抛异常退出 | `CheckAndSanitizePrimitiveBounds` 对 NaN 包围盒 ensure 后置零继续（RendererScene.cpp:1362）；阴影阶段跳过坏图元（PrimitiveSceneInfo.cpp:2399）；物理按 body 拒绝（BodyInstance.cpp:1499） | Godot 仅 debug 构建拒绝单次服务器调用；Bevy 直接存储；均不整帧失败 | 契约（[光照数据](../modules/presentation/README.md)（当时为 world/lighting.md 第 14 行）） | 保留不变量，改为逐项排除并按对象诊断 |
 | 任一 Begin/Tick/任务错误使整个 World 停机 | 蓝图访问空对象：告警、清零结果后继续（ScriptCore.cpp:3163-3247）；死循环只中止最内层函数（:1265-1295） | Unity、Godot 记录后继续；Bevy 默认 panic，但错误处理器可按错误或全局配置；Verse 停止当前 device 的 Verse 执行 | 首版设计，被写成契约 | 默认按对象隔离，策略可配置 |
 | TRS 要求每轴严格正缩放 | 零、负缩放照常存储；镜像按行列式符号反转剔除（PrimitiveSceneProxy.cpp:908）；物理把零缩放夹到极小值（BodyInstance.cpp:2116） | Godot、Bevy 存储负缩放，Bevy 的 `GlobalTransform::scale` 显式处理负行列式 | “首片”后硬化 | 支持负缩放；零缩放按退化处理；保留有限性检查 |
 | 首个对象创建后封闭类型注册 | 任何时候可注册新类，只在热重载之外重定义已有类时致命（UObjectBase.cpp:755-790、762） | Godot 只拒绝重复注册；Bevy、Flecs 运行期注册 | “本阶段”后硬化 | 允许追加新类型，已发布定义保持不可变 |

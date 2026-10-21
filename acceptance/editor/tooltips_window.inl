@@ -62,7 +62,7 @@ int verify_editor_tooltips(Application& app,const char* output_directory) {
     // Exercise the colour form through Application input and its real DSL controls.
     require(bool(Access::command(app,editor::Command::create_point_light)),"Colour fixture could not create a light.");
     auto& document=Access::physics_document(app);
-    const auto light=component(app,document.selection().entity,document.types().light_component);
+    const auto light=component(app,document.selection().entity,document.presentation_types().light_component);
     std::array<world::FieldPath,3> channels;
     for(const auto& property:model(document.properties(light))) {
         if(property.name=="settings.color.x") channels[0]=property.path;

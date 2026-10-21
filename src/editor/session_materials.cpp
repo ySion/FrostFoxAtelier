@@ -105,7 +105,7 @@ Result<void> Session::begin_material_edit(ObjectId object,std::uint64_t control)
         for(const auto& entity:*members) {
             auto parts=world::components(runtime_,entity.id());if(!parts) return std::unexpected(parts.error());
             for(const auto& part:*parts) {
-                auto bindings=world::read_material_bindings(runtime_,part.id());if(!bindings) continue;
+                auto bindings=presentation::read_material_bindings(runtime_,part.id());if(!bindings) continue;
                 for(const auto& binding:*bindings) if(binding.resource.id()==object) {
                     if(component!=ObjectId{} && component!=part.id()) return failure("A material instance cannot be edited across multiple components.");
                     owner=entity.id();component=part.id();
@@ -202,33 +202,33 @@ Result<void> Session::set_material_texture(Project& project,ObjectId object,mate
     if(!changed) {auto restored=cancel_material_edit();if(!restored) return restored;}
     return changed;
 }
-Result<void> Session::replace_material_bindings(ObjectId object,std::vector<world::MaterialBinding> after) {
+Result<void> Session::replace_material_bindings(ObjectId object,std::vector<presentation::MaterialBinding> after) {
     if(auto cancelled=cancel_edit();!cancelled) return cancelled;
     auto component=admit_component_edit(object);if(!component) return std::unexpected(component.error());
-    auto before=world::read_material_bindings(runtime_,object);if(!before) return std::unexpected(before.error());
+    auto before=presentation::read_material_bindings(runtime_,object);if(!before) return std::unexpected(before.error());
     const auto equal=[](const auto& a,const auto& b){return a.slot==b.slot && a.resource.reference()==b.resource.reference() && a.overridden==b.overridden;};
     if(std::ranges::equal(*before,after,equal)) return {};
     auto root=runtime_.hold(object);if(!root) return std::unexpected(root.error());
-    auto changed=world::set_material_bindings(runtime_,object,after);if(!changed) return changed;
+    auto changed=presentation::set_material_bindings(runtime_,object,after);if(!changed) return changed;
     remember(MaterialBindingChange{std::move(*root),component->owner,std::move(*before),std::move(after)});return {};
 }
 Result<void> Session::assign_material(Project& project,ObjectId object,std::string_view slot,std::string_view key) {
     auto resource=material_resource(project,key);if(!resource) return std::unexpected(resource.error());
-    auto bindings=world::read_material_bindings(runtime_,object);if(!bindings) return std::unexpected(bindings.error());
-    const auto at=std::ranges::find(*bindings,slot,&world::MaterialBinding::slot);
+    auto bindings=presentation::read_material_bindings(runtime_,object);if(!bindings) return std::unexpected(bindings.error());
+    const auto at=std::ranges::find(*bindings,slot,&presentation::MaterialBinding::slot);
     if(at==bindings->end()) bindings->push_back({std::string(slot),std::move(*resource),true});
     else {at->resource=std::move(*resource);at->overridden=true;}
     return replace_material_bindings(object,std::move(*bindings));
 }
 Result<void> Session::clear_material(ObjectId object,std::string_view slot) {
-    auto bindings=world::read_material_bindings(runtime_,object);if(!bindings) return std::unexpected(bindings.error());
+    auto bindings=presentation::read_material_bindings(runtime_,object);if(!bindings) return std::unexpected(bindings.error());
     std::erase_if(*bindings,[&](const auto& binding){return binding.slot==slot && binding.overridden;});
     return replace_material_bindings(object,std::move(*bindings));
 }
 Result<void> Session::set_material_override(ObjectId component,std::string_view slot,std::span<const FieldId> path,bool enabled) {
     if(auto cancelled=cancel_edit();!cancelled) return cancelled;
-    auto bindings=world::read_material_bindings(runtime_,component);if(!bindings) return std::unexpected(bindings.error());
-    const auto at=std::ranges::find(*bindings,slot,&world::MaterialBinding::slot);
+    auto bindings=presentation::read_material_bindings(runtime_,component);if(!bindings) return std::unexpected(bindings.error());
+    const auto at=std::ranges::find(*bindings,slot,&presentation::MaterialBinding::slot);
     if(at==bindings->end()) return failure("Assign a shared material before creating parameter overrides.");
     auto state=material::read_material(runtime_,at->resource.id());if(!state) return std::unexpected(state.error());
     auto bit=material::override_bit(runtime_,path);if(!bit) return std::unexpected(bit.error());

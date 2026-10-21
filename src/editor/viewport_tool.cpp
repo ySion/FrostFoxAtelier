@@ -259,7 +259,7 @@ std::optional<ObjectId> ViewportTool::pick(const Session& session,const Viewport
 }
 std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,const ViewportView& view,float x,float y,bool locators) {
     const auto ray=view.ray(x,y);float nearest=std::numeric_limits<float>::max();std::optional<Hit> found;
-    const auto items=session.world().render_items();if(!items) return {};
+    const auto items=session.presentation().render_items();if(!items) return {};
     std::unordered_set<ObjectId> rendered;
     for(const auto& item:*items) {
         rendered.insert(item.entity);const auto inverse=math::try_inverse(item.world);if(!inverse) continue;
@@ -349,7 +349,7 @@ Result<void> ViewportTool::snap_selection(Session& session,Settings settings,boo
     const auto cancelled=session.cancel_edit();return cancelled?result:cancelled;
 }
 std::vector<ObjectId> ViewportTool::pick_box(const Session& session,const ViewportView& view,ui::Rect box) const {
-    std::vector<ObjectId> found;const auto items=session.world().render_items();if(!items) return found;
+    std::vector<ObjectId> found;const auto items=session.presentation().render_items();if(!items) return found;
     const auto intersects=[&](float left,float top,float right,float bottom) {
         return left<=box.x+box.width && right>=box.x && top<=box.y+box.height && bottom>=box.y;
     };

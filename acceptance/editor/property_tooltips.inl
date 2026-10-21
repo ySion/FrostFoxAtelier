@@ -4,11 +4,11 @@ void verify_property_tooltips() {
     editor::Session document;
     changed(document.create_static_mesh(editor::mesh_assets().front()));
     const auto mesh=document.selection().entity;
-    changed(document.create_light(world::LightKind::point));
-    const auto light=component(document,document.selection().entity,document.types().light_component);
+    changed(document.create_light(presentation::LightKind::point));
+    const auto light=component(document,document.selection().entity,document.presentation_types().light_component);
     take(document.select(mesh));document.mark_saved();
     const auto history=document.undo_count(),redo=document.redo_count();
-    const auto lighting=take(document.world().environment());
+    const auto lighting=take(document.presentation().environment());
     auto& runtime=document.world().runtime();
     const auto* mesh_type=take(runtime.describe(take(runtime.type_of(mesh))));
     const auto field=[&](TypeId type,std::string_view name)->const FieldInfo& {
@@ -18,7 +18,7 @@ void verify_property_tooltips() {
     };
     const auto& position=field(mesh_type->id,"position");
     const auto& rotation=field(mesh_type->id,"rotation");
-    const auto& color=field(document.types().light_settings,"color");
+    const auto& color=field(document.presentation_types().light_settings,"color");
     require(!position.description.empty() && !rotation.description.empty() && !color.description.empty(),
         "Real editor authoring fields have no native descriptions.");
 
@@ -97,11 +97,11 @@ void verify_property_tooltips() {
 
     // Declared field ranges: the number's legal range is the hard bounds, a float with a UI range
     // gains a slider over it, and the help states both. Vector lanes keep the ladder without a slider.
-    const auto mesh_component=component(document,mesh,document.types().static_mesh_component);
+    const auto mesh_component=component(document,mesh,document.presentation_types().static_mesh_component);
     take(document.select(mesh_component));publish();
     const auto& surface_field=field(take(runtime.type_of(mesh_component)),"material");
-    const auto& roughness=field(document.types().material,"roughness");
-    const auto& emissive=field(document.types().material,"emissive");
+    const auto& roughness=field(document.presentation_types().material,"roughness");
+    const auto& emissive=field(document.presentation_types().material,"emissive");
     const auto number_at=[&](world::FieldPath path)->const ui::Control& {
         const auto key=workspace.field_control(mesh_component,path);
         const auto at=std::ranges::find(controls,key,&ui::Control::key);
@@ -154,7 +154,7 @@ void verify_property_tooltips() {
     require(!surface.presented()->tooltip && !surface.accept(world_frame),
         "Leaving World settings for an empty Parameters page retained its help.");
     require(!document.dirty() && document.undo_count()==history && document.redo_count()==redo &&
-        take(document.world().environment())==lighting && document.environment()==ObjectId{},
+        take(document.presentation().environment())==lighting && document.environment()==ObjectId{},
         "Reading parameter or World help changed the document or its history.");
     std::puts("Editor property tooltip acceptance: PASS (real Runtime/Session/DSL layout, Transform/type and Light Color metadata, delayed label hover, World metadata, stale-target retirement and history isolation)");
 }

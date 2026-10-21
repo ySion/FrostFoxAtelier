@@ -43,7 +43,7 @@ function(atelier_add_jolt)
         "${PROJECT_SOURCE_DIR}/src/physics/physics.cpp")
     atelier_target(atelier_physics)
     target_include_directories(atelier_physics PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_physics PUBLIC atelier_world PRIVATE Jolt::Jolt)
+    target_link_libraries(atelier_physics PUBLIC atelier_presentation PRIVATE Jolt::Jolt)
 
     add_executable(atelier_physics_acceptance "${PROJECT_SOURCE_DIR}/acceptance/physics/main.cpp")
     atelier_target(atelier_physics_acceptance)

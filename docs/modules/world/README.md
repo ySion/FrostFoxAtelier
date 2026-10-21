@@ -1,6 +1,6 @@
 # World 与游戏对象
 
-正式入口为 [world.hpp](../../../src/world/world.hpp)，数学值为 [math.hpp](../../../src/world/math.hpp)。`atelier_world` 使用同一 Runtime 类型、对象身份、引用和 GC；网格使用 [mesh.hpp](../../../src/geometry/mesh.hpp) 的不可变 CPU 资源协议。无窗口宿主不链接 renderer/RHI，语言行为由宿主绑定正式 Source 入口。
+正式入口为 [world.hpp](../../../src/world/world.hpp)，数学值为 [math.hpp](../../../src/world/math.hpp)。`atelier_world` 使用同一 Runtime 类型、对象身份、引用和 GC，只依赖 Runtime。网格、灯光、环境与材质资源属于 [presentation](../presentation/README.md) 库，经能力登记接入 World。无窗口宿主不链接 renderer/RHI，语言行为由宿主绑定正式 Source 入口。
 
 ## 类型与所有权
 
@@ -17,6 +17,8 @@ core.Object
    └─ EnvironmentComponent
 ```
 
+StaticMeshEntity、StaticMeshComponent、LightComponent 与 EnvironmentComponent 由 presentation 库定义，持久名仍为 `world.*`；其余类型属于 World 核心。
+
 Entity 是唯一的组成与可选空间节点。它内联保存 position、rotation、scale；启用空间能力时这些字段形成一个 TRS，不需要额外 Transform 对象。Component 只承担能力和业务字段，使用 owner Entity 的空间。多个需要独立位置的网格、灯或碰撞体使用多个子 Entity，业务派生 Entity/Component 保留自己的真实类型和默认字段。
 
 Entity 的隐藏强引用序列分别拥有有序 children 和 components；组合 parent 和显式空间 origin 为弱引用，Component 强持 owner。同类型组件允许多实例，物理位姿写入者的排他规则由物理模块校验。普通根可以保住组成图；无外部根的引用环沿 Runtime GC 回收。
@@ -29,7 +31,7 @@ World 为每个成员 Entity 持有 ObjectRoot，成员身份以 Entity 的 Worl
 
 Detached 的 keep_local 组装立即校验组合身份与环，空间可等完整关系准备后再校验；矩阵查询仍会报告当前图的无效状态。keep_world 要即时保留世界位姿，因此仍要求操作前后空间均可求值。World 预览与发布统一校验完整空间图。
 
-`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform 与 mesh_source；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
+presentation 的 `create_static_mesh_entity` 用这些入口创建完整的 StaticMeshEntity，见[网格](../presentation/README.md#网格)。
 
 EntityRemoval 保留子树、原组合父与位置；ComponentRemoval 保留 owner 与组成位置。撤销恢复同一 Runtime 身份，不重建另一套对象。编辑器把整组创建记录成一个历史项。`Commit.notification_error` 表示关系已经提交，消费者记录变更后再报告通知错误。
 
@@ -49,7 +51,7 @@ EntityRemoval 保留子树、原组合父与位置；ComponentRemoval 保留 own
 
 TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每轴 scale。Matrix4 为行主序、行向量，local = S * R * T，平移位于 12–14，world = local * reference_world。层级矩阵可含剪切，不保存第二份可编辑空间状态，也不以伪造单位矩阵掩盖无效关系。
 
-负 scale 表示镜像，rotation 始终是真旋转。从矩阵分解 TRS（keep_world、物理回写）时，奇数个负轴优先取对象原局部 scale 的符号，符号奇偶不符时只取 X 为负，因此 (-1,-1,-1) 的回写保持原 TRS，而无偏好的世界分解为 (-1,1,1) 加半周旋转。零 scale 可以存储，但该节点及其整棵空间子树退化：按链上是否有零缩放轴判定，不看舍入成 FP32 后的行列式（旋转后的零轴会在子级矩阵里留下非零舍入残差）；网格不绘制、Primitive 不建刚体，各报告一条 `degenerate_value` 警告，身份指向链上最上层的零缩放节点，持续期间合并计数；这不是对象失败，任何策略下都不停用行为或停机。涉及奇异矩阵的 keep_world 仍拒绝。灯光朝向忽略 scale 幅值、保留符号，随镜像一起镜像；零缩放不使灯光退化，见[灯光](lighting.md)。
+负 scale 表示镜像，rotation 始终是真旋转。从矩阵分解 TRS（keep_world、物理回写）时，奇数个负轴优先取对象原局部 scale 的符号，符号奇偶不符时只取 X 为负，因此 (-1,-1,-1) 的回写保持原 TRS，而无偏好的世界分解为 (-1,1,1) 加半周旋转。零 scale 可以存储，但该节点及其整棵空间子树退化：按链上是否有零缩放轴判定，不看舍入成 FP32 后的行列式（旋转后的零轴会在子级矩阵里留下非零舍入残差）；网格不绘制、Primitive 不建刚体，各报告一条 `degenerate_value` 警告，身份指向链上最上层的零缩放节点，持续期间合并计数；这不是对象失败，任何策略下都不停用行为或停机。涉及奇异矩阵的 keep_world 仍拒绝。灯光朝向忽略 scale 幅值、保留符号，随镜像一起镜像；零缩放不使灯光退化，见[灯光](../presentation/README.md#提取与坐标)。
 
 StaticMeshComponent 保存网格与材质，LightComponent 保存灯参数，PrimitiveComponent 保存 body 作者配置；绘制、灯光与物理都查询 owner Entity 的空间。需要独立空间时创建子 Entity，将能力组件放到该子实体。
 
@@ -91,7 +93,7 @@ isolate 下：
 - Begin 失败的对象记为 Begin 故障，不 Tick、不启动任务、不收到 End；它的组件与子 Entity 照常 Begin。
 - Tick 或任务失败的对象停止 Tick，取消其任务并丢弃它待应用的平移；它已完成 Begin，退出时仍收到一次 End。End 失败只记诊断，清理继续。
 - 观察者失败记为 `observer_failed`，不写 `Commit.notification_error`。
-- `render_items / light_items` 逐项跳过：空间不可求值时诊断记在失败的 Entity 上，材质、灯参数记在组件上。重复天光按组合前序保留第一个，之后的以 `conflict` 跳过。
+- presentation 的 `render_items / light_items` 逐项跳过：空间不可求值时诊断记在失败的 Entity 上，材质、灯参数记在组件上。
 - `translate_owner` 命令逐条复核，被拒绝的命令（例如模拟系统写入位姿的 Entity）记 `command_rejected` 警告；`apply_simulation_transforms` 逐个拒绝无效位姿并以剩余位姿重新换算，被拒绝的 Entity 保持局部 TRS。物理按 Entity 或控制器排除失败项，见[物理](../physics/README.md)。
 
 halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行，并逆序清理已开始对象；End 或通知错误继续清理并保留首错，不回滚已产生的业务副作用；提取与位姿批次整次失败，不部分发布。
@@ -108,20 +110,18 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 `destroy_entity / destroy_component` 是游戏对象终结入口：先退出 World，再清理组成并调用 Runtime；可信宿主不得绕过它直接销毁活跃成员。detach 保留对象图；历史裁剪只释放根，不隐式 destroy。close 退出所有子树、释放成员根后不可重启，重复 close 无副作用。
 
-`set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照。具体合同见 [Lit 数据](lighting.md)和[项目场景](project-scenes.md)。
+网格绑定、材质、灯参数与环境的合同见 [presentation](../presentation/README.md)，场景格式见[项目场景](project-scenes.md)。
 
-能力按组件类型登记：`register_capability(component_type, predicate)` 返回不透明的 `CapabilityId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出，active 即自身启用且 owner 有效启用，不含是否已 Begin），随组合、成员与启用的每次变化更新，由 `members(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_capabilities(component)` 重新求值谓词。不带谓词再次登记同一类型时返回已有的无谓词登记，所以在同一 World 上重建的领域宿主（例如每次 Play 新建的 PhysicsScene）不会累积登记。每个 World 最多 32 个登记。领域代码在 `write` 之外改动组件的原生数据（例如网格绑定）前调用 `admit_component_edit(Runtime&, component)`：组件 Detached 时返回空；属于某个 World 时要求该 World 处在宿主边界（未关闭、未在转换或分派中），并返回它，改动后由调用方对数据影响谓词的组件调用 `reevaluate_capabilities`。目前 world 库自己登记网格（需要有几何）与灯光，`render_items / light_items` 只遍历这两个桶，`can_present` 与 `Activity::presentation_registrations` 也只按这两个登记计算；物理登记 Primitive、Character、Ragdoll 作为逐帧协调的候选来源。
+能力按组件类型登记：`register_capability(component_type, predicate)` 返回不透明的 `CapabilityId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出，active 即自身启用且 owner 有效启用，不含是否已 Begin），随组合、成员与启用的每次变化更新，由 `members(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_capabilities(component)` 重新求值谓词。不带谓词再次登记同一类型时返回已有的无谓词登记，所以在同一 World 上重建的领域宿主（例如每次 Play 新建的 PhysicsScene）不会累积登记。每个 World 最多 32 个登记。领域代码在 `write` 之外改动组件的原生数据（例如网格绑定）前调用 `admit_component_edit(Runtime&, component)`：组件 Detached 时返回空；属于某个 World 时要求该 World 处在宿主边界（未关闭、未在转换或分派中），并返回它，改动后由调用方对数据影响谓词的组件调用 `reevaluate_capabilities`。World 核心自己不登记能力：presentation::Scene 登记网格（需要有几何）、灯光与环境，物理登记 Primitive、Character、Ragdoll 作为逐帧协调的候选来源。
 
-跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write`、`set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 的两个重载都用 `Runtime::restore` 把写入前读出的原值换回字段，不再经过硬边界、有限性检查与类型校验器，所以由可信路径写成 NaN 或越过硬边界的原值也按位恢复；这样的原值本身违反字段不变量，`Runtime::validate` 会继续报告它。`set_material / set_light` 先检查新值自身的规则，再经整值 `write` 写入，所以准入与按位恢复与之相同。Admission 运行时按分派处理：它可以读 World，但其中的编辑和 `add_admission` 返回 busy。Admission 抛出的异常转为 `invocation_failed`（内存不足时为 `capacity_exceeded`），与返回错误一样拒绝这次改动并恢复原值。恢复是交换，不分配内存，对可交换的类型不会失败；只有结构性错误（例如对象在原生借用中、非 plain 值返回 busy）才会使恢复失败，这时返回的错误写明被拒的值未能恢复，并给出原因。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。world 库目前登记一条：每个 World 至多一个 EnvironmentComponent，停用的也计数。
+跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write` 及其上的类型化入口，例如 presentation 的 `set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 的两个重载都用 `Runtime::restore` 把写入前读出的原值换回字段，不再经过硬边界、有限性检查与类型校验器，所以由可信路径写成 NaN 或越过硬边界的原值也按位恢复；这样的原值本身违反字段不变量，`Runtime::validate` 会继续报告它。类型化入口先检查新值自身的规则，再经整值 `write` 写入，所以准入与按位恢复与之相同。Admission 运行时按分派处理：它可以读 World，但其中的编辑和 `add_admission` 返回 busy。Admission 抛出的异常转为 `invocation_failed`（内存不足时为 `capacity_exceeded`），与返回错误一样拒绝这次改动并恢复原值。恢复是交换，不分配内存，对可交换的类型不会失败；只有结构性错误（例如对象在原生借用中、非 plain 值返回 busy）才会使恢复失败，这时返回的错误写明被拒的值未能恢复，并给出原因。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。World 核心不登记准入；presentation::Scene 登记一条：每个 World 至多一个 EnvironmentComponent，停用的也计数。
 
-`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对链上有零缩放轴或矩阵奇异的空间，在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](lighting.md)）。`render_items / light_items` 只经这三个入口读取空间。
+`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对链上有零缩放轴或矩阵奇异的空间，在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](../presentation/README.md#提取与坐标)）。presentation 的提取只经这三个入口读取空间。
 
-`render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。成员的世界矩阵来自 World 持有的一份空间缓存，`render_items`、`light_items`、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。只有 World 成员的 Transform 增删与空间参考变化会使缓存失效。Detached 对象和候选图仍使用临时求值。
-
-材质与灯参数的校验结果按桶位置缓存：某个位置上的当前值与上次在该位置通过校验的值逐字节相同时，跳过 `validate_value`，其余照常执行。这样做成立，是因为类型校验器是对值字节的纯检查，已发布的类型规则也不再改变，所以不需要按对象身份核对，也不依赖写入通知。Runtime 直接写入和生成代码写入的值，下一次提取时同样会被校验；未通过的值不进入缓存，每次提取都会重新校验并报告。每个网格每次提取只借用一次组件。
+成员的世界矩阵来自 World 持有的一份空间缓存，各个提取遍历（例如 presentation 的 `render_items`、`light_items`）、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。只有 World 成员的 Transform 增删与空间参考变化会使缓存失效。Detached 对象和候选图仍使用临时求值。
 
 ## 运行位姿与验收入口
 
 Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。已登记模拟系统以 `writes_pose` 声明位姿的 Entity（例如物理 body 或控制器所在的 Entity）拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。被拒绝的命令与位姿按失败策略处理。
 
-端到端入口为 `world_acceptance`、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。Scene 写出 v7；仓库里的官方示例仍是 v6，读取时迁移，旧 v1–v5 先经严格导入，见[项目场景](project-scenes.md#v6--v7-迁移)。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。
+端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。Scene 写出 v7；仓库里的官方示例仍是 v6，读取时迁移，旧 v1–v5 先经严格导入，见[项目场景](project-scenes.md#v6--v7-迁移)。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。
