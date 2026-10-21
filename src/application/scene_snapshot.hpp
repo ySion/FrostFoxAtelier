@@ -15,11 +15,10 @@ public:
     // Same-frame geometry membership, shared with viewport locator overlays.
     std::vector<ObjectId> mesh_entities;
     std::vector<renderer::Light> lights;
-    std::array<float,3> environment{};
     std::uint64_t identity{1}, revision{1};
 
     void reset() {
-        ++identity;revision=1;next_key_=1;keys_.clear();meshes.clear();mesh_entities.clear();lights.clear();environment={};
+        ++identity;revision=1;next_key_=1;keys_.clear();meshes.clear();mesh_entities.clear();lights.clear();
     }
     Result<void> refresh(const editor::Session& document) {
         auto geometry=document.world().render_items();if(!geometry) return std::unexpected(geometry.error());
@@ -64,17 +63,9 @@ public:
             return std::tuple{light.stable_key,light.kind,light.color,light.intensity,light.range,light.source_radius,
                 light.width,light.height,light.two_sided,light.casts_shadow};
         };
-        std::array<double,3> sky_radiance{};
         std::size_t light_count=0;
         for(const auto& item:*illumination) {
             const auto& settings=item.settings;
-            if(settings.kind==world::LightKind::sky) {
-                // The World's single Sky Light is outside local-light tiling and
-                // shadow budgets. Disabled components are absent here.
-                for(std::size_t channel=0;channel<3;++channel)
-                    sky_radiance[channel]=double(settings.color[channel])*settings.intensity;
-                continue;
-            }
             const auto i=light_count++;
             renderer::Light value;
             value.stable_key=key(item.component);
@@ -82,7 +73,6 @@ public:
             case world::LightKind::point:value.kind=renderer::LightKind::point;break;
             case world::LightKind::rectangle:value.kind=renderer::LightKind::rectangle;break;
             case world::LightKind::directional:value.kind=renderer::LightKind::directional;break;
-            case world::LightKind::sky:break; // Reduced above, never uploaded as a direct light.
             }
             value.position=rgb(item.position);value.direction=rgb(item.direction);value.right=rgb(item.right);value.up=rgb(item.up);
             value.color=rgb(settings.color);value.intensity=settings.intensity;value.range=settings.range;
@@ -92,13 +82,6 @@ public:
             else {lights.push_back(value);changed=true;}
         }
         changed|=lights.size()!=light_count;lights.resize(light_count);
-        std::array<float,3> next_environment{};
-        for(std::size_t channel=0;channel<3;++channel) {
-            if(!(sky_radiance[channel]>=0 && sky_radiance[channel]<=65504))
-                return std::unexpected(Error{ErrorCode::argument_mismatch,"Sky Light radiance exceeds the HDR scene range."});
-            next_environment[channel]=static_cast<float>(sky_radiance[channel]);
-        }
-        changed|=environment!=next_environment;environment=next_environment;
         std::erase_if(keys_,[](const auto& item){return !item.second.seen;});
         // TRS, selection and camera movement are temporal inputs, not scene cuts.
         // Geometry/material/light settings and presentation membership invalidate history.

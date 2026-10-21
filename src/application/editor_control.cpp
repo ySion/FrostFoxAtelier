@@ -15,7 +15,8 @@
 namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
-constexpr unsigned repro_view_schema=2;
+// 3: the view carries the sky (sky_enabled, sky_intensity, sky_color_x/y/z).
+constexpr unsigned repro_view_schema=3;
 constexpr unsigned inspect_page_items=256;
 constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
 template<class T> T take(Result<T> value) {if(!value) throw Failure("operation_failed",value.error().message);return std::move(*value);}
@@ -184,7 +185,7 @@ const std::vector<Operation>& operations() {
         {"project.open","Open an existing project; refuses unsaved scene or source drafts",true,{{"path",str}},{"path"}},
         {"scene.open","Open a project-relative scene; refuses unsaved scene",true,{{"path",str}},{"path"}},
         {"scene.save","Save the current scene through the normal project save command",true,{{"path",str}},{}},
-        {"scene.create","Create one entity, mesh, point/rectangle/directional/sky light",true,{{"kind",{{"enum",{"entity","mesh","point","rectangle","directional","sky"}}}},{"mesh",str}},{"kind"}},
+        {"scene.create","Create one entity, mesh, point/rectangle/directional light; the sky is a World setting (view.set)",true,{{"kind",{{"enum",{"entity","mesh","point","rectangle","directional"}}}},{"mesh",str}},{"kind"}},
         {"scene.rename","Rename one entity through document history; components use their type names",true,{{"object",str},{"name",str}},{"object","name"}},
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
@@ -748,8 +749,9 @@ struct EditorControl::Impl {
             const auto kind=text(args.at("kind"),40);editor::Command command;
             if(kind=="entity") command=editor::Command::create_entity;else if(kind=="mesh") command=editor::Command::create_static_mesh;
             else if(kind=="point") command=editor::Command::create_point_light;else if(kind=="rectangle") command=editor::Command::create_rectangle_light;
-            else if(kind=="directional") command=editor::Command::create_directional_light;else if(kind=="sky") command=editor::Command::create_sky_light;
-            else throw Failure("invalid_request","Unknown entity creation kind");
+            else if(kind=="directional") command=editor::Command::create_directional_light;
+            else throw Failure("invalid_request","Unknown entity creation kind; use entity, mesh, point, rectangle or directional. "
+                "The sky is a World setting: view.set sky_enabled, sky_color_x/y/z and sky_intensity.");
             if(!app.workspace_.command_enabled(command,doc)) throw Failure("unavailable","Creation is unavailable in this document");
             take(app.execute(command,text(args.value("mesh",Json("")))));return {{"object",handle(doc.selection().entity)}};
         } else if(op=="scene.rename") take(doc.rename(object(args.at("object")),control::wide(text(args.at("name"),1024))));
@@ -803,8 +805,10 @@ struct EditorControl::Impl {
             const auto scene_text=take(editor::read_file(take(project.resolve(project.startup_scene()))));
             const auto scene=editor::json_format::parse(scene_text);
             const auto scene_version=editor::json_format::identity(scene.at("version"));
-            if(scene_version>=4) {
-                const auto authored=repro_view(scene.at("world"),scene_version==4,{focus.x,focus.y,focus.z});
+            if(scene_version>=4 && scene_version<7) {
+                auto authored=repro_view(scene.at("world"),scene_version==4,{focus.x,focus.y,focus.z});
+                // These versions kept the sky in a Sky Light, not the world section; the Environment check below covers it.
+                authored.lit.sky_enabled=view.lit.sky_enabled;authored.lit.sky_color=view.lit.sky_color;authored.lit.sky_intensity=view.lit.sky_intensity;
                 if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))
                     throw Failure("dependency_mismatch","Repro frame snapshot disagrees with its Scene World settings");
             }
@@ -829,7 +833,17 @@ struct EditorControl::Impl {
                 // Validate and resolve all old identities before replacing the current document.
                 legacy_objects=take(editor::Session::legacy_selection(scene_text,requests));
             }
-            take(app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene));
+            bool disagrees=false;
+            const auto opened=app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene,[&](const editor::Session& candidate)->Result<void> {
+                const auto environment=candidate.world().environment();if(!environment) return std::unexpected(environment.error());
+                // Before schema 3 the view had no sky; the scene's Sky Light, now part of its Environment, supplies it.
+                if(view_schema<3) {view.lit.sky_enabled=environment->sky_enabled;view.lit.sky_color=environment->sky_color;view.lit.sky_intensity=environment->sky_intensity;}
+                else if(scene_version>=4 && static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) {
+                    disagrees=true;return std::unexpected(Error{ErrorCode::invalid_definition,"Repro frame snapshot disagrees with its Scene Environment"});
+                }
+                return {};
+            });
+            if(!opened) throw Failure(disagrees?"dependency_mismatch":"operation_failed",opened.error().message);
             take(app.workspace_.set_view_settings(*app.document_,view,{focus.x,focus.y,focus.z}));app.document_->mark_saved();app.camera_=camera;app.camera_cut_=true;app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
             const auto members=take(app.document_->world().members());std::vector<ObjectId> selected;
             for(std::size_t index=0;index<indices.size();++index) {

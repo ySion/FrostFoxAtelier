@@ -4,7 +4,7 @@
 
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
-光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 持有，随 Scene v6 的 `world` 字段保存并进入 Session 撤销历史。旧版继续读取；v4 的 `shadow_light_budget` / `shadow_samples` 只在兼容读取边界严格校验后丢弃，新字段采用默认值，v1～v3 使用默认 World 配置。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
+光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v7 保存并进入 Session 撤销历史。旧版继续读取；v4 的 `shadow_light_budget` / `shadow_samples` 只在兼容读取边界严格校验后丢弃，新字段采用默认值，v1～v3 使用默认 World 配置。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
 
 实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线。管线按视图设置分组，在 RHI 工作线程上准备，未就绪的帧返回 not_ready（见 [Renderer 合同](contract.md#场景和-ui)）；采样器、查询、读回与查找表在第一个编码的 Lit 帧创建。关闭与尺寸变化沿既有 gfx 退休机制处理。
 
@@ -15,7 +15,7 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 - 标准金属度/粗糙度材质支持基础色、roughness、metallic、切线空间法线、线性 HDR RGB 自发光与 Opaque/Mask。六个贴图输入及 UV/采样设置由统一材质表提供，自发光因子在曝光前保留大于 1 的值。
 - GBuffer、射线命中、发光采样、辅助深度和选择叠层消费同一表面；Mesh/MTL 默认材质与显式资产绑定走同一解析入口。颜色/发光图使用 sRGB，标量/法线图使用线性数据，详见[材质系统](materials.md)。
 - 点光源使用 candela，矩形面光源使用 cd/m²，方向光使用 lux。点光源半径以米表示，方向光角半径以弧度表示；矩形使用米制宽高与单面/双面设置。
-- Sky Light 是场景唯一的天光，首版表示均匀入射辐射，颜色乘 cd/m² 强度经 SceneSnapshot 写入 `Frame.environment`。没有启用的 Sky Light 时该值为零；它不进入局部光源候选池，不依据空间变换改变照明，也不自动绘制天空。Scene Lit 背景固定为黑，工作室模式的渐变偏好单独保留。HDRI / 方向性天空尚未实现。
+- 天光是同一作者值中的 `sky_enabled`、`sky_color` 与 `sky_intensity`（cd/m²），首版表示均匀入射辐射，宿主用 `rendering::sky_radiance` 求颜色乘强度写入 `Frame.environment`。天光关闭或没有 Environment 时该值为零；它不进入局部光源候选池，不依据空间变换改变照明，也不自动绘制天空。Scene Lit 背景固定为黑，工作室模式的渐变偏好单独保留。HDRI / 方向性天空尚未实现。
 - World 唯一负责层级变换与灯的正交方向；Renderer 接收最终位置、传播方向和矩形切向轴。空间缩放不隐式改变灯的物理尺寸、范围或强度。权威数据约束见 [World lighting](../world/lighting.md)。
 - 点光和矩形光使用有界距离衰减；方向光覆盖全场景。直接光使用 GGX 表面响应，矩形光对真实发光面积采样。当前没有 LTC 贴图或 RTXDI 依赖。
 - Renderer 的灯光值域与 World 一致：方向光允许零 range，非矩形光允许零 width/height，方向光角半径小于 π/2。局部光源在共享贡献求值入口按真实采样位置检查距离衰减与侧向。
@@ -116,7 +116,7 @@ Mask 模式、alpha 因子/阈值或相关贴图采样描述改变，均属于�
 
 固定体积的 min/max 是世界坐标；跟随体积的 min/max 是相对 `Frame::lighting_focus` 的范围，关注点由宿主提供，编辑器使用相机 target。间距保持固定，跨整数格点时改变环形地址；亚格移动不会重建场。跟随影响范围在存储边界内缩一格，并随关注点连续移动，避免离散换片直接接管接收面。负坐标采用正模，跨多轴清理进入切片的并集；整跨缓存跨度按整层新区域处理。历史传递同步清理新区的运输/呈现辐照度、距离矩、offset/state 与年龄；反馈始终使用上一轮描述及其不可变纹理快照，不将旧槽位解释为新的世界位置。
 
-缓存范围不限制照明射程。不可变几何缓存保有局部 AABB，场景几何/拓扑/TRS 改变时以八角变换维护共享世界 bounds；每个探针的射线追到足以越过这些场景几何的位置，才能将 miss 解释为 Sky Light。局部 distance 归一尺度仍随 volume 固定，远于该尺度的距离在形成一/二阶矩之前逐射线截断；固定几何射线最近命中搜索使用完整实际距离。小体积不能因忽略远墙而在密闭室内引入天光。
+缓存范围不限制照明射程。不可变几何缓存保有局部 AABB，场景几何/拓扑/TRS 改变时以八角变换维护共享世界 bounds；每个探针的射线追到足以越过这些场景几何的位置，才能将 miss 解释为天光。局部 distance 归一尺度仍随 volume 固定，远于该尺度的距离在形成一/二阶矩之前逐射线截断；固定几何射线最近命中搜索使用完整实际距离。小体积不能因忽略远墙而在密闭室内引入天光。
 
 初始化/重定位缺失与有效黑色分开。体积内部照度按合法八邻权重归一化；体积之间依边界与实际观测预热程度分配剩余权重，不累加两份完整 GI。四次有效方向观测完成预热，颜色不参与就绪判定；较优先体积的有效黑色同样占有权重。优先体积覆盖完整时停止查询后续体积，缺失时后续体积也必须通过自身遮挡。`blend_cells` 控制固定区域边界的 0～2 格过渡；跟随区域至少使用一格过渡。体积包围不保证室内有效支持，接收面缺口仍需用 Debug 检查。
 
@@ -193,7 +193,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 World 页统一编辑光照与效果的作者配置，进入同一 World 值和 Session 历史，包括 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI、抗锯齿、曝光和直接光候选预算；不再提供 Shadow Budget / Shadow Samples。诊断仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
 
-**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v6 保存；`direct_reference`、`spatial_light_sampling`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。Diagnostics 的 Spatial light sampling 默认开启，关闭后 DI/DDGI fresh RIS 使用完整全局 proposal；此开关由统一 ViewOption/Control 入口读写，不写 World、Scene 或 Session 撤销历史，也不关闭 CPU 网格维护和已有 GPU 缓冲的驻留。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
+**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v7 保存；`direct_reference`、`spatial_light_sampling`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。Diagnostics 的 Spatial light sampling 默认开启，关闭后 DI/DDGI fresh RIS 使用完整全局 proposal；此开关由统一 ViewOption/Control 入口读写，不写 World、Scene 或 Session 撤销历史，也不关闭 CPU 网格维护和已有 GPU 缓冲的驻留。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
 
 `SceneLitSettings::antialiasing` 为 `Antialiasing::{none,taa,smaa,smaa_t2x}`，菜单显示 Off / TAA / SMAA / SMAA T2x，默认 SMAA。所有模式均使用原生分辨率：
 

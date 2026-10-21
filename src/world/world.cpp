@@ -422,8 +422,9 @@ World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl
     }});
     impl_->lights = {1};
     impl_->registrations.push_back({types.light_component, {}});
-    impl_->admissions.push_back({types.light_component, detail::unique_sky_light(impl_->lights)});
-    impl_->admissions.push_back({types.light_component, detail::spatial_lights()});
+    impl_->environments = {2};
+    impl_->registrations.push_back({types.environment_component, {}});
+    impl_->admissions.push_back({types.environment_component, detail::unique_environment(impl_->environments)});
 }
 World::~World() {
     if (!impl_->closed) {
@@ -433,12 +434,6 @@ World::~World() {
     }
 }
 Runtime& World::runtime() const noexcept { return impl_->runtime; }
-const rendering::SceneLightingSettings& World::lighting_settings() const noexcept { return impl_->lighting; }
-Result<void> World::set_lighting_settings(const rendering::SceneLightingSettings& candidate) {
-    if(auto ready=impl_->admit();!ready) return ready;
-    if(const auto* message=rendering::scene_lighting_error(candidate)) return error(ErrorCode::invalid_definition,message);
-    impl_->lighting=candidate;return {};
-}
 const Types& World::types() const noexcept { return impl_->types; }
 bool World::running() const noexcept { return impl_->running; }
 bool World::closed() const noexcept { return impl_->closed; }
@@ -870,6 +865,17 @@ Result<void> World::Impl::checked_write(ObjectId object, bool entity, Write&& wr
         if (auto valid = check_admissions(std::span<const ObjectId>{&object, 1}); !valid) return reject(valid.error());
     return {};
 }
+// Exchanges a scalar leaf with `old`, the exact value read before a write.
+static Result<void> restore_scalar(Runtime& runtime, ObjectId object, std::span<const FieldId> path, Scalar& old) {
+    return std::visit([&]<class T>(T& value) -> Result<void> {
+        if constexpr (std::is_same_v<T, EnumValue>) return runtime.restore(object, path, ValueOutput{value.type, &value.bits});
+        else {
+            auto type = runtime.native_type<T>();
+            if (!type) return std::unexpected(type.error());
+            return runtime.restore(object, path, ValueOutput{*type, &value});
+        }
+    }, old);
+}
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
     if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
     auto entity = detail::is(runtime(),component,types().entity);
@@ -905,7 +911,49 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
     if (!previous) return std::unexpected(previous.error());
     return impl_->checked_write(object, *transform,
         [&] { return runtime().write(object, path, value); },
-        [&] { return runtime().write(object, path, *previous); });
+        [&] { return restore_scalar(runtime(), object, path, *previous); });
+}
+Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std::span<const Scalar> values) {
+    if (auto ready = impl_->admit_edit(object); !ready) return ready;
+    if (paths.empty() || paths.size() != values.size()) return error(ErrorCode::argument_mismatch, "A group write needs one value per field.");
+    auto entity = detail::is(runtime(), object, types().entity);
+    if (!entity) return std::unexpected(entity.error());
+    const auto transform = [&](const FieldPath& path, const auto& leaves) {
+        return std::ranges::any_of(leaves, [&](const auto& leaf) { return !path.empty() && leaf.front() == path.front(); });
+    };
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        if (*entity && (transform(paths[i], types().position_fields) || transform(paths[i], types().rotation_fields) ||
+            transform(paths[i], types().scale_fields)))
+            return error(ErrorCode::unsupported_operation, "A group write cannot contain Transform fields; use set_transform.");
+        for (std::size_t j = 0; j < i; ++j)
+            if (paths[j] == paths[i]) return error(ErrorCode::argument_mismatch, "A group write names the same field more than once.");
+    }
+    std::vector<Scalar> previous;
+    previous.reserve(paths.size());
+    for (const auto& path : paths) {
+        auto value = runtime().read(object, path);
+        if (!value) return std::unexpected(value.error());
+        previous.push_back(*value);
+    }
+    std::size_t written = 0;
+    const auto restore = [&]() -> Result<void> {
+        while (written > 0) {
+            --written;
+            if (auto restored = restore_scalar(runtime(), object, paths[written], previous[written]); !restored) return restored;
+        }
+        return {};
+    };
+    return impl_->checked_write(object, *entity,
+        [&]() -> Result<void> {
+            for (; written < paths.size(); ++written)
+                if (auto leaf = runtime().write(object, paths[written], values[written]); !leaf) {
+                    if (auto restored = restore(); !restored)
+                        return error(restored.error().code, "The group's earlier values could not be restored (" + restored.error().message + "); a field was rejected because: " + leaf.error().message);
+                    return leaf;
+                }
+            return {};
+        },
+        restore);
 }
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
     if (auto ready = impl_->admit_edit(object); !ready) return ready;
@@ -931,7 +979,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
     if (auto read = runtime().read(object, path, ValueOutput{value.type, previous.storage.data()}); !read) return read;
     return impl_->checked_write(object, *entity,
         [&] { return runtime().write(object, path, value); },
-        [&] { return runtime().write(object, path, ValueInput{value.type, previous.storage.data()}); });
+        [&] { return runtime().restore(object, path, ValueOutput{value.type, previous.storage.data()}); });
 }
 Result<std::vector<RenderItem>> World::render_items() const {
     auto pass = spatial_pass(DiagnosticPhase::presentation);

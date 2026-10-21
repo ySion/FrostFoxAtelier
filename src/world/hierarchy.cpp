@@ -45,21 +45,11 @@ Result<bool> has_transform(Runtime& runtime, ObjectId object) {
 }
 Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
     auto component = runtime.native_type<Component>();
-    auto primitive = runtime.native_type<PrimitiveComponent>();
-    auto light = runtime.native_type<LightComponent>();
+    auto spatial = runtime.native_type<SpatialComponent>();
     if (!component) return std::unexpected(component.error());
-    if (!primitive) return std::unexpected(primitive.error());
-    if (!light) return std::unexpected(light.error());
+    if (!spatial) return std::unexpected(spatial.error());
     if (auto valid = detail::validate_object(runtime, object, *component); !valid) return std::unexpected(valid.error());
-    auto is_primitive = detail::is(runtime, object, *primitive);
-    if (!is_primitive) return std::unexpected(is_primitive.error());
-    if (*is_primitive) return true;
-    auto is_light = detail::is(runtime, object, *light);
-    if (!is_light) return std::unexpected(is_light.error());
-    if (!*is_light) return false;
-    auto settings = read_light(runtime, object);
-    if (!settings) return std::unexpected(settings.error());
-    return settings->kind != LightKind::sky;
+    return detail::is(runtime, object, *spatial);
 }
 Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     auto entity = detail::entity_data(runtime, object);

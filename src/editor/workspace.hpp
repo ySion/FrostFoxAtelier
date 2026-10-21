@@ -150,7 +150,8 @@ struct Workspace {
     // Built from the focused Dock page until the keymap step; UI calls are interactive.
     Context operator_context(Session&,Project*,bool interactive) const;
     Result<bool> apply_view(Session&,const ui::Action&,std::array<float,3> focus = {});
-    void sync_world(const Session&);
+    // Copies the World's environment into the view's author settings; true when they changed.
+    bool sync_world(const Session&);
     Result<void> set_view_settings(Session&,const renderer::ViewSettings&,std::array<float,3> focus = {});
     std::uint64_t view_revision() const noexcept {return view_revision_;}
     Result<bool> apply_ui(const ui::Action&);

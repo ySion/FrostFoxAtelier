@@ -187,6 +187,59 @@ void frame_phases() {
         std::get<float>(take(runtime.read(dark.id(), types.counter_value))) == 3.f,
         "A throwing admission did not reject the edit and restore the previous value.");
     probe = Probe::none;
+    // A rejected edit returns the field to its exact previous bytes, even a value that bypassed
+    // the write path: NaN keeps its payload and an out-of-bounds value is not clamped.
+    bool deny = false;
+    const auto denied = [&](const w::World&, std::span<const ObjectId>) -> Result<void> {
+        if (deny) return std::unexpected(Error{ErrorCode::argument_mismatch, "Restore probe denied the edit."});
+        return {};
+    };
+    take(shown.add_admission(types.static_mesh_component, denied));
+    take(shown.add_admission(types.light_component, denied));
+    auto lamp = take(w::create_static_mesh_entity(shown, {geometry::cube_mesh(), {{}, {}, {1, 1, 1}}}));
+    const auto surface = take(w::components(runtime, lamp.id())).front().id();
+    auto bulb = take(w::create_component(runtime, types.light_component));
+    committed(shown.attach_components(lamp.id(), std::array{w::Attachment{bulb.id()}}));
+    committed(shown.attach(lamp.id()));
+    const auto field = [&](TypeId type, std::string_view name) { return take(runtime.find_field(type, name)); };
+    const auto settings = field(types.light_component, "settings"), intensity = field(take(runtime.native_type<w::LightSettings>()), "intensity");
+    const auto material = field(types.static_mesh_component, "material");
+    const auto roughness = field(types.material, "roughness"), base_color = field(types.material, "base_color");
+    const auto x = field(take(runtime.native_type<math::Vector3>()), "x");
+    const auto rejected = [&](Result<void> result) {
+        return !result && result.error().message == "Restore probe denied the edit.";
+    };
+    const auto quiet_nan = std::bit_cast<float>(0x7fc12345u);
+    take(runtime.with_native<w::LightComponent>(bulb.id(), [&](w::LightComponent& light) -> Result<void> {
+        light.settings.intensity = quiet_nan; return {};
+    }));
+    deny = true;
+    require(rejected(shown.write(bulb.id(), std::array{settings, intensity}, Scalar{1.f})) &&
+        std::bit_cast<std::uint32_t>(take(w::read_light(runtime, bulb.id())).intensity) == 0x7fc12345u,
+        "A rejected scalar edit did not restore a non-finite previous value bit for bit.");
+    deny = false;
+    take(runtime.with_native<w::StaticMeshComponent>(surface, [&](w::StaticMeshComponent& mesh) -> Result<void> {
+        mesh.material.roughness = 2.f; mesh.material.base_color.x = 2.f; return {};
+    }));
+    const auto bypassed = take(w::read_static_mesh(runtime, surface)).material;
+    deny = true;
+    require(rejected(shown.write(surface, std::array{material, roughness}, Scalar{.5f})) &&
+        rejected(shown.write(surface, std::array{material, base_color, x}, Scalar{.5f})) &&
+        take(w::read_static_mesh(runtime, surface)).material == bypassed,
+        "A rejected scalar or vector-component edit clamped an out-of-bounds previous value.");
+    deny = false;
+    take(runtime.with_native<w::StaticMeshComponent>(surface, [&](w::StaticMeshComponent& mesh) -> Result<void> {
+        mesh.material.metallic = quiet_nan; return {};
+    }));
+    const auto corrupted = take(w::read_static_mesh(runtime, surface)).material;
+    const w::Material clean{};
+    deny = true;
+    require(rejected(shown.write(surface, std::array{material}, ValueInput{types.material, &clean})),
+        "A rejected whole-value edit was not reported with its admission error.");
+    const auto restored = take(w::read_static_mesh(runtime, surface)).material;
+    require(std::memcmp(&restored, &corrupted, sizeof(w::Material)) == 0,
+        "A rejected whole-value edit did not restore a record holding NaN bit for bit.");
+    deny = false;
     committed(shown.close());
-    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore)");
+    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore, rejected edits restore exact bytes)");
 }

@@ -320,18 +320,9 @@ bool Workspace::command_enabled(Command command,Session& session,Project* projec
     case Command::save_document: return source_history()?source_editor.active()!=nullptr:project_open && scene_available;
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
     case Command::create_entity: case Command::create_static_mesh:
-    case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: case Command::create_sky_light: {
+    case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: {
         const auto members=session.world().members();
-        if(!scene_available || !members || members->size()>=Session::maximum_entities) return false;
-        if(command==Command::create_sky_light) {
-            const auto lights=session.world().query(session.types().light_component);
-            if(!lights) return false;
-            for(const auto object:*lights) {
-                const auto light=world::read_light(session.world().runtime(),object);
-                if(!light || light->kind==world::LightKind::sky) return false;
-            }
-        }
-        return true;
+        return scene_available && members && members->size()<Session::maximum_entities;
     }
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
     case Command::erase_selected: {
@@ -444,16 +435,15 @@ std::optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session,c
     // Empty space below the rows is World, as in Houdini's tree view.
     return TreeDrop{{},control::tree_world};
 }
-void Workspace::sync_world(const Session& session) {
+bool Workspace::sync_world(const Session& session) {
     auto& author=static_cast<rendering::SceneLightingSettings&>(view.lit);
-    if(author!=session.world().lighting_settings()) {
-        lighting.cancel();author=session.world().lighting_settings();++view_revision_;
-    }
+    const auto current=session.world().environment();
+    if(!current || author==*current) return false;
+    lighting.cancel();author=*current;++view_revision_;return true;
 }
 Result<void> Workspace::set_view_settings(Session& session,const renderer::ViewSettings& candidate,std::array<float,3> focus) {
     if(auto valid=validate_view_options(candidate,focus);!valid) return valid;
-    if(static_cast<const rendering::SceneLightingSettings&>(candidate.lit)!=session.world().lighting_settings())
-        if(auto changed=session.set_world_lighting(candidate.lit);!changed) return changed;
+    if(auto changed=session.set_environment(candidate.lit);!changed) return changed;
     if(view!=candidate) {lighting.cancel();view=candidate;++view_revision_;}
     return {};
 }
@@ -510,7 +500,6 @@ ui::ControlIcon light_icon(world::LightKind kind) {
     case world::LightKind::point:return ui::ControlIcon::point_light;
     case world::LightKind::rectangle:return ui::ControlIcon::area_light;
     case world::LightKind::directional:return ui::ControlIcon::sun_light;
-    case world::LightKind::sky:return ui::ControlIcon::sky_light;
     }
     return ui::ControlIcon::point_light;
 }
@@ -641,7 +630,6 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         const auto icon=definition.id==Command::create_point_light?ui::ControlIcon::point_light:
             definition.id==Command::create_rectangle_light?ui::ControlIcon::area_light:
             definition.id==Command::create_directional_light?ui::ControlIcon::sun_light:
-            definition.id==Command::create_sky_light?ui::ControlIcon::sky_light:
             definition.id==Command::create_static_mesh?ui::ControlIcon::mesh:
             definition.id==Command::create_entity?ui::ControlIcon::object:ui::ControlIcon::axes;
         auto& items=definition.group==CommandGroup::create?create_tools:view_tools;
@@ -981,7 +969,6 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
             if(light) {
                 const auto& name=property.name;
-                if(light->kind==world::LightKind::sky && (name=="settings.range" || name=="settings.source_radius" || name=="settings.casts_shadow")) continue;
                 if(light->kind!=world::LightKind::rectangle && (name=="settings.width" || name=="settings.height" || name=="settings.two_sided")) continue;
                 if(light->kind==world::LightKind::rectangle && name=="settings.source_radius") continue;
                 if(light->kind==world::LightKind::directional && name=="settings.range") continue;
@@ -1053,8 +1040,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 const auto field=std::string_view(property.name).substr(9);
                 if(field=="kind") caption=L"Light Type";
                 else if(field=="intensity") caption=light->kind==world::LightKind::point?L"Intensity (cd)":
-                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":
-                    light->kind==world::LightKind::sky?L"Radiance (cd/m²)":L"Illuminance (lux)";
+                    light->kind==world::LightKind::rectangle?L"Intensity (cd/m²)":L"Illuminance (lux)";
                 else if(field=="source_radius") caption=light->kind==world::LightKind::directional?L"Angular Radius (rad)":L"Source Radius (m)";
                 else if(field=="range") caption=L"Range (m)";
                 else if(field=="width") caption=L"Width (m)";

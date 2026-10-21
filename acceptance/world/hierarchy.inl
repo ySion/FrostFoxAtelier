@@ -212,18 +212,16 @@ void hierarchical_space_boundaries() {
     require(probe.id()==probe_id && take(w::spatial_parent(runtime,probe_id))==a.id() && near(inherited_probe[12],13),
         "Re-added Transform restored hidden world-space configuration or replaced Entity identity.");
     auto optional_space=take(w::create_entity(runtime)),temporary_origin=take(w::create_entity(runtime));
-    auto sky=take(w::create_component(runtime,types.light_component));
+    auto environment=take(w::create_component(runtime,types.environment_component));
     const auto optional_id=optional_space.id();
-    w::LightSettings sky_settings;sky_settings.kind=w::LightKind::sky;
-    take(world.set_light(sky.id(),sky_settings));
     take(world.set_transform(optional_id,probe_local));take(world.set_transform(temporary_origin.id(),{}));
-    const std::array sky_group{w::Attachment{sky.id()}};
-    committed(world.attach_components(optional_id,sky_group));
+    const std::array environment_group{w::Attachment{environment.id()}};
+    committed(world.attach_components(optional_id,environment_group));
     committed(world.set_space_reference(optional_id,temporary_origin.id(),w::ReparentRule::keep_local));
     take(world.remove_transform(optional_id));
     require(!take(w::has_transform(runtime,optional_id)) && !take(w::space_reference(runtime,optional_id)).has_value() &&
-        take(w::components(runtime,optional_id)).front().id()==sky.id(),
-        "Sky Light prevented space removal or lost its Entity/component identity.");
+        take(w::components(runtime,optional_id)).front().id()==environment.id(),
+        "A nonspatial component prevented space removal or lost its Entity/component identity.");
     committed(w::destroy_entity(runtime,temporary_origin.id()));
     committed(world.attach(optional_id));
     take(world.set_transform(optional_id,probe_local));
@@ -428,14 +426,14 @@ void attachment_space_and_authoring() {
     committed(world.set_space_reference(prepared_id,ObjectId{},w::ReparentRule::keep_local));
     auto mesh=take(w::create_component(runtime,types.static_mesh_component));
     auto light=take(w::create_component(runtime,types.light_component));
-    w::LightSettings sky;sky.kind=w::LightKind::sky;take(world.set_light(light.id(),sky));
-    require(take(w::component_requires_space(runtime,mesh.id())) && !take(w::component_requires_space(runtime,light.id())),
-        "Actual Sky/Primitive space requirement was not shared.");
+    const auto nonspatial=take(w::create_component(runtime,types.environment_component));
+    require(take(w::component_requires_space(runtime,mesh.id())) && take(w::component_requires_space(runtime,light.id())) &&
+        !take(w::component_requires_space(runtime,nonspatial.id())),"SpatialComponent did not decide the space requirement.");
     take(world.set_material(mesh.id(),{}));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
     committed(world.attach_components(prepared_id,capabilities));
-    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),sky));
+    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),{}));
     committed(world.attach(prepared_id));
-    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),sky));
+    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),{}));
 
     auto a=take(w::create_entity(runtime)),b=take(w::create_entity(runtime));a_id=a.id();b_id=b.id();
     take(world.set_transform(a_id,{{2,0,0},{},{1,1,1}}));take(world.set_transform(b_id,{{5,0,0},{},{1,1,1}}));

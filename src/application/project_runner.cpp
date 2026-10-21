@@ -221,11 +221,11 @@ int run_project(const RunOptions& options) {
                     for(auto& mesh:scene.meshes) mesh.selected=false;
                     const auto matrices=camera.matrices(static_cast<float>(extent.width)/std::max(extent.height,1u));
                     renderer::ViewSettings view;view.shading=renderer::Shading::scene_lit;
-                    static_cast<rendering::SceneLightingSettings&>(view.lit)=document.world().lighting_settings();
+                    {auto environment=document.world().environment();report_diagnostics();static_cast<rendering::SceneLightingSettings&>(view.lit)=take(std::move(environment));}
                     const auto focus=camera.state().target;
                     renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
                         options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},scene.meshes,
-                        view,{},scene.lights,scene.identity,scene.revision,false,scene.environment,{focus.x,focus.y,focus.z}};
+                        view,{},scene.lights,scene.identity,scene.revision,false,rendering::sky_radiance(view.lit),{focus.x,focus.y,focus.z}};
                     const auto lighting_start=RenderClock::Clock::now();
                     const bool lighting_active=target.drawable && !options.preview_ui && !scene.meshes.empty() && view.lit.ddgi;
                     rendered.render_delta_seconds=lighting_clock.delta(lighting_start,lighting_active);

@@ -63,9 +63,10 @@ Result<void> unlink_parent(Runtime&, ObjectId entity);
 Result<void> requires_space(Runtime&, ObjectId entity, std::span<const ObjectRoot>);
 Result<bool> is(Runtime&, ObjectId, TypeId);
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
-// Validators registered with LightSettings and BodySettings.
+// Validators registered with LightSettings, BodySettings and EnvironmentComponent.
 Result<void> light_rules(const LightSettings&);
 Result<void> body_rules(const BodySettings&);
+Result<void> environment_rules(const EnvironmentComponent&);
 // Checks a native value against its reflected type's hard bounds and validators.
 template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
     auto type = runtime.native_type<T>();
@@ -90,10 +91,8 @@ public:
 };
 // world::material_surfaces inside the caller's borrow of the mesh component.
 Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&, ObjectId, StaticMeshComponent&);
-// One Sky Light per World, disabled components included.
-World::Admission unique_sky_light(CapabilityId lights);
-// A light other than Sky needs a Transform on its member owner.
-World::Admission spatial_lights();
+// One EnvironmentComponent per World, disabled components included.
+World::Admission unique_environment(CapabilityId environments);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
 Result<void> queue_request(Runtime&, ObjectId object, RequestKind, bool enabled);
 
@@ -192,7 +191,6 @@ struct World::Impl {
     };
     struct Bucket { TypeId type; std::vector<ObjectId> objects; };
 
-    rendering::SceneLightingSettings lighting;
     Runtime& runtime;
     Types types;
     World& world;
@@ -211,7 +209,7 @@ struct World::Impl {
     std::vector<Registration> registrations;
     std::vector<std::vector<CapabilityMember>> capable; // Rebuilt with `buckets`.
     // The world library's own registrations; owned by presentation code.
-    CapabilityId meshes, lights;
+    CapabilityId meshes, lights, environments;
     // Aligned with the meshes and lights buckets at each extraction call.
     detail::PassedValues<Material> valid_materials;
     detail::PassedValues<LightSettings> valid_lights;

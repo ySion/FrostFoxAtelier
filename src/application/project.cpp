@@ -82,11 +82,11 @@ void Application::publish_document(std::unique_ptr<editor::Session> next,editor:
     const auto closed=document_->close();if (!closed) throw std::runtime_error(closed.error().message);
     document_=std::move(next);project_code_=code;scene_.reset();workspace_.render_notice.clear();camera_.reset();sync_world_view();camera_cut_=true;invalidate_surface();
 }
-Result<void> Application::open_project(const std::filesystem::path& folder,bool create,ProjectOpenPolicy policy) {
+Result<void> Application::open_project(const std::filesystem::path& folder,bool create,ProjectOpenPolicy policy,const std::function<Result<void>(const editor::Session&)>& admit) {
     // A save decision can change the file we are about to open. Read only after
     // that decision; cancellation also precedes Project::create's disk changes.
     if (!confirm_discard()) return {};
-    return load_project(folder,create,{},policy);
+    return load_project(folder,create,{},policy,admit);
 }
 Result<void> Application::open_example(editor::Command command) {
     const auto* example=editor::example_definition(command);
@@ -101,7 +101,7 @@ Result<void> Application::open_example(editor::Command command) {
     const bool textured=command==editor::Command::example_physic || command==editor::Command::example_dungeons;
     return configure_view(example->eye,example->target,textured?renderer::Shading::smooth:renderer::Shading::scene_lit,!textured && !items->empty());
 }
-Result<void> Application::load_project(const std::filesystem::path& folder,bool create,const std::filesystem::path& scene,ProjectOpenPolicy policy) {
+Result<void> Application::load_project(const std::filesystem::path& folder,bool create,const std::filesystem::path& scene,ProjectOpenPolicy policy,const std::function<Result<void>(const editor::Session&)>& admit) {
     auto project=create?editor::Project::create(folder):editor::Project::open(folder);
     if (!project) return std::unexpected(project.error());
     const auto initial_scene=scene.empty()?project->startup_scene():scene;
@@ -114,6 +114,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     auto candidate=editor::load_project_scene(*project,*content,reproducible?editor::LoadPolicy::strict:editor::LoadPolicy::tolerant,!reproducible);
     if(reproducible && (!candidate.session || candidate.error))
         return candidate.error?std::unexpected(*candidate.error):failed("Project did not produce a complete scene.");
+    if(reproducible && admit) if(auto admitted=admit(*candidate.session);!admitted) return admitted;
     play_.close();
     workspace_.source_editor.clear();
     project_=std::move(*project);scene_path_=initial_scene;workspace_.project_open=true;

@@ -66,7 +66,18 @@ struct SceneLightingSettings {
     std::uint32_t probe_rays{128}; // At most 256 rays per probe update.
     float probe_bounce{.85f}; // Feedback transport, 0..0.99; changing it invalidates the field.
     float indirect_gain{1.f}; // Final diffuse composition only, 0..8; never feeds the field.
+    // Uniform incident sky radiance, sky_color * sky_intensity (cd/m^2) per channel.
+    bool sky_enabled{};
+    std::array<float, 3> sky_color{1.f, 1.f, 1.f};
+    float sky_intensity{.03f};
 };
+
+// The Frame environment radiance the host passes to the renderer; zero when the sky is off.
+inline std::array<float, 3> sky_radiance(const SceneLightingSettings& settings) noexcept {
+    if(!settings.sky_enabled) return {};
+    return {settings.sky_color[0]*settings.sky_intensity,settings.sky_color[1]*settings.sky_intensity,
+            settings.sky_color[2]*settings.sky_intensity};
+}
 
 inline const char* probe_layout_error(const SceneLightingSettings& settings) noexcept {
     if(settings.probe_update_budget<1 || settings.probe_update_budget>probe_resident_limit ||
@@ -106,6 +117,11 @@ inline const char* scene_lighting_error(const SceneLightingSettings& settings) n
        !range(settings.reflection_distance,.001f,10000) || !range(settings.reflection_roughness,0,1))
         return "Invalid World lighting or effects settings";
     if(settings.gtao && settings.ssil) return "GTAO and Local GI are mutually exclusive";
+    for(float channel:settings.sky_color) {
+        const double radiance=double(channel)*settings.sky_intensity;
+        if(!std::isfinite(channel) || channel<0 || !std::isfinite(settings.sky_intensity) || settings.sky_intensity<0 ||
+           radiance>65504) return "Sky radiance must be finite, non-negative and within the HDR scene range";
+    }
     return nullptr;
 }
 

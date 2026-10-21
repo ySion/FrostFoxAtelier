@@ -26,12 +26,12 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x+48,.y=y,.button=ui::PointerButton::primary});tick(app);
     require(table().data->columns[0].width>width+10,"Performance columns did not resize through shared Table input.");
     const auto saved_width=table().data->columns[0].width;
-    require(bool(Access::command(app,editor::Command::create_sky_light)),"Performance fixture sky light failed.");
     require(bool(Access::command(app,editor::Command::create_point_light)),"Performance fixture local light failed.");
     Access::performance_panel(app);tick(app);click(key::performance_tab);
     auto view=Access::scene_lit_view(app);view.shading=renderer::Shading::scene_lit;view.wireframe=renderer::Wireframe::off;
     view.lit.ddgi=false;view.lit.direct_reference=false;view.lit.direct_clustered=false;view.lit.direct_shadow_cache=false;view.lit.direct_candidates=8;
-    require(bool(Access::performance_view(app,view)),"Performance Scene Lit setup failed.");tick(app,1);
+    view.lit.sky_enabled=true;
+    require(bool(Access::performance_view(app,view)) && app.document().environment()!=atelier::ObjectId{},"Performance Scene Lit setup failed.");tick(app,1);
     const auto history=app.document().undo_count();
     const auto wait_samples=[&](std::size_t minimum,std::uint64_t after=0) {
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(180);
@@ -190,14 +190,19 @@ int profile_editor_render_performance(Application& app,const char* output_direct
     // Lock authoring state before either a product frame or a diagnostic write.
     const auto source_world=Json::parse(model(editor::read_file(scene_file))).value("world",Json(nullptr));
     const auto original_scene=model(app.document().serialize());
-    const auto original_world=app.document().world().lighting_settings();
+    const auto original_world=model(app.document().world().environment());
+    const auto loaded_environment=[&] {
+        for(const auto& entity:Json::parse(original_scene).at("entities"))
+            for(const auto& part:entity.at("components")) if(part.at("type")=="world.EnvironmentComponent") return part.value("properties",Json::object());
+        return Json(nullptr);
+    }();
     const auto* original_document=&app.document();
     const auto history=app.document().undo_count(),redo=app.document().redo_count(),revision=app.document().revision();
     const auto dirty=app.document().dirty();
     const auto unchanged_author=[&] {
         require(&app.document()==original_document && Access::project_root(app)==project && Access::scene_path(app)==scene &&
             app.document().undo_count()==history && app.document().redo_count()==redo && app.document().revision()==revision &&
-            app.document().dirty()==dirty && app.document().world().lighting_settings()==original_world,
+            app.document().dirty()==dirty && model(app.document().world().environment())==original_world,
             "Performance preparation or sampling changed the loaded Scene or its authoring history.");
     };
     const auto unchanged_scene=[&] {
@@ -212,11 +217,11 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         model(Access::performance_view(app,candidate));
         unchanged_author();
     };
-    Json report{{"schema","atelier.editor.render-performance.v3"},{"status","preparing"},
+    Json report{{"schema","atelier.editor.render-performance.v4"},{"status","preparing"},
         {"revision",build_info::revision},{"configuration",build_info::configuration},
         {"project",editor::utf8(project.wstring())},{"scene",editor::utf8(scene.wstring())},{"scene_sha256",file_hash},
         {"authoring_baseline",{{"source_world",source_world},
-            {"loaded_world",Json::parse(original_scene).at("world")},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
+            {"loaded_environment",loaded_environment},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
         {"gpu_validation",Access::gpu_validation(app)},{"vsync",Access::vsync(app)},
         {"wall_semantics","Intervals between the frame timing ends of consecutive accepted Application steps; include skipped calls, waits and harness work between steps. GPU durations are not FPS."},
         {"cpu_semantics","CPU wall time in milliseconds of current accepted Application calls. render.* are frame timing phases of the same step: render contains prepare, encode and frame; frame contains submit, present, wait and recycle. Do not sum parent and child stages. timing_sequence is the step's frame timing ordinal, separate from completed GPU sequence/frame_id."},
@@ -267,7 +272,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             ~RestoreView() {
                 // A failure must never restore old author values over a changed document.
                 if(active && &app.document()==document && !app.document().world().closed() &&
-                    static_cast<const rendering::SceneLightingSettings&>(view.lit)==app.document().world().lighting_settings())
+                    static_cast<const rendering::SceneLightingSettings&>(view.lit)==model(app.document().world().environment()))
                     static_cast<void>(Access::performance_view(app,view));
             }
         } restore{app,original_view,original_document};

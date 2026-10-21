@@ -7,7 +7,7 @@ int verify_physics_examples_window(Application& app,const char* output_directory
     model(app.open_example(atelier::editor::Command::example_physic));
     if(const auto& build=Access::project_build(app);build && build->error) throw std::runtime_error(build->error->message);
     require(Access::scene_lit_view(app).shading==atelier::renderer::Shading::smooth &&
-        static_cast<const atelier::rendering::SceneLightingSettings&>(Access::scene_lit_view(app).lit)==app.document().world().lighting_settings(),
+        static_cast<const atelier::rendering::SceneLightingSettings&>(Access::scene_lit_view(app).lit)==model(app.document().world().environment()),
         "Physic did not open Smooth rendering with its authored lighting settings preserved.");
     struct Example {const char* name;std::size_t entities,roots;};
     constexpr std::array examples{
