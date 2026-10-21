@@ -49,7 +49,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     }
     Json report{{"schema","atelier.editor.scene-cpu.v2"},{"project",editor::utf8(root.wstring())},{"scene",scene},
         {"gpu",false},{"samples",121},{"warmup",20},{"source_bytes",source.size()},
-        {"entities",take(document->world().members()).size()},{"meshes",snapshot.meshes.size()},
+        {"entities",take(document->world().members()).size()},{"selected_entities",document->selected_entities().size()},{"meshes",snapshot.meshes.size()},
         {"unique_geometries",unique.size()},{"adjacent_geometry_batches",batches},{"instance_triangles",triangles},
         {"unique_sampled_images",sampled_images},{"material_texture_table_entries",sampled_images+1},
         {"material_bindings",material_bindings},{"unique_bound_materials",materials.size()},

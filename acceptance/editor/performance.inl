@@ -219,7 +219,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             {"loaded_world",Json::parse(original_scene).at("world")},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
         {"gpu_validation",Access::gpu_validation(app)},{"vsync",Access::vsync(app)},
         {"wall_semantics","Intervals between the frame timing ends of consecutive accepted Application steps; include skipped calls, waits and harness work between steps. GPU durations are not FPS."},
-        {"cpu_semantics","CPU wall time in milliseconds of current accepted Application calls. render.* are frame timing phases of the same step: render contains prepare, encode and frame; frame contains submit, present, wait and recycle. Do not sum parent and child stages. timing_sequence is the step's frame timing ordinal, separate from completed GPU sequence/frame_id."},
+        {"cpu_semantics","CPU wall time in milliseconds of current accepted Application calls. render.* are frame timing phases of the same step: render contains prepare, encode and frame; encode contains scene (materials, upload, draws, lit) and ui (upload); frame contains submit, present, wait and recycle. A phase sums every entry in the step and entries counts them; in studio modes only, render.encode.scene.draws divided by scene_draw_calls is the mean cost of one recorded scene draw (it also includes the per-instance visibility scan); Scene Lit surface draws count in scene_draw_calls but are timed under render.encode.scene.lit. Do not sum parent and child stages. timing_sequence is the step's frame timing ordinal, separate from completed GPU sequence/frame_id."},
         {"resource_semantics","Current CPU logical Scene Lit bytes, tagged with observation frame; not completed-frame physical VRAM."},
         {"warmup_accepted_frames",192},{"completed_gpu_samples_per_scene_lit_case",240},
         {"non_lit_accepted_steps_per_case",240},{"cases",Json::array()}};
@@ -454,7 +454,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         };
         struct CpuSample {
             application::FrameTiming host;
-            std::array<std::uint64_t,3> draws{};
+            std::array<std::uint64_t,4> draws{};
             std::uint64_t scene_instances{},scene_culled_instances{};
             timing::FrameRecord record;
         };
@@ -464,7 +464,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             const std::array values{host.step_us,host.controls_us,host.prepare_us,host.scene_us,host.render_us,host.events_us,host.gc_us};
             require(std::ranges::all_of(values,[](auto value){return std::isfinite(value) && value>=0;}),"Invalid CPU frame timing.");
             const auto& stats=app.frame_statistics();
-            samples.push_back({host,{stats.scene_draw_calls,stats.ui_draw_calls,stats.viewport_draw_calls},
+            samples.push_back({host,{stats.scene_draw_calls,stats.ui_draw_calls,stats.viewport_draw_calls,stats.overlay_draw_calls},
                 stats.scene_instances,stats.scene_culled_instances,recorder.last()});
         };
         const auto cpu_json=[&](const std::vector<CpuSample>& samples) {
@@ -478,17 +478,21 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 const std::array values{host.step_us/1000.,host.events_us/1000.,host.gc_us/1000.,host.controls_us/1000.,host.prepare_us/1000.,host.scene_us/1000.,host.render_us/1000.,
                     std::max(0.,host.step_us-host.events_us-host.gc_us-host.controls_us-host.prepare_us-host.scene_us-host.render_us)/1000.};
                 Json row{{"accepted_frame_id",host.frame_id},{"timing_sequence",sample.record.sequence},{"scene_draw_calls",sample.draws[0]},
-                    {"ui_draw_calls",sample.draws[1]},{"viewport_draw_calls",sample.draws[2]},
+                    {"ui_draw_calls",sample.draws[1]},{"viewport_draw_calls",sample.draws[2]},{"overlay_draw_calls",sample.draws[3]},
                     {"scene_instances",sample.scene_instances},{"scene_culled_instances",sample.scene_culled_instances}};
                 for(std::size_t i=0;i<keys.size();++i) {stages[i].push_back(values[i]);row[keys[i]]=values[i];}
                 for(std::size_t i=0;i<markers.size();++i) {
                     const auto value=std::chrono::duration<double,std::milli>(sample.record.time(*markers[i])).count();
                     stages[keys.size()+i].push_back(value);row[std::string(markers[i]->key())]=value;
+                    // Entries of the phase in this step; a phase may run once per pass or not at all.
+                    row["entries"][std::string(markers[i]->key())]=sample.record.count(*markers[i]);
                 }
                 result["samples"].push_back(std::move(row));
             }
             for(std::size_t i=0;i<keys.size();++i) result["stages"][keys[i]]=distribution(std::move(stages[i]));
             for(std::size_t i=0;i<markers.size();++i) result["stages"][std::string(markers[i]->key())]=distribution(std::move(stages[keys.size()+i]));
+            // SceneSnapshot also composes inherited selection over every member when something is selected.
+            result["selected_entities"]=app.document().selected_entities().size();
             return result;
         };
         for(const auto [clustered,orbit]:{std::pair{false,false},std::pair{true,false},std::pair{true,true}}) {

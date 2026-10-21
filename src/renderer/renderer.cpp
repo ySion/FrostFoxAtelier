@@ -737,7 +737,11 @@ struct Renderer::State {
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         for(auto& [key,image]:material_images) { (void)key;image.used=false; }
         if (draw_scene) {
-            prepare_materials(frame);
+            timing::Scope scene_stage{phases::encode_scene};
+            {
+                timing::Scope materials_stage{phases::encode_materials};
+                prepare_materials(frame);
+            }
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
             const bool selected=std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;});
@@ -779,26 +783,30 @@ struct Renderer::State {
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
             BufferOwner data{gfx, {}};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
-            for (const auto& batch : mesh_batches) {
-                auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
-                auto& geometry = found->second;
-                const auto vertices = geometry.source->vertices();
-                if (inserted) {
-                    std::vector<SceneTriangle> triangles;
-                    triangles.reserve(vertices.size() / 3);
-                    for (std::size_t i = 0; i < vertices.size() / 3; ++i)
-                        triangles.push_back(prepare_triangle(*geometry.source, i));
-                    geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
-                        static_cast<std::uint32_t>(triangles.size()), triangles.data());
-                    allocation(bool(geometry.vertices));
+            {
+                timing::Scope upload_stage{phases::encode_scene_upload};
+                for (const auto& batch : mesh_batches) {
+                    auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
+                    auto& geometry = found->second;
+                    const auto vertices = geometry.source->vertices();
+                    if (inserted) {
+                        std::vector<SceneTriangle> triangles;
+                        triangles.reserve(vertices.size() / 3);
+                        for (std::size_t i = 0; i < vertices.size() / 3; ++i)
+                            triangles.push_back(prepare_triangle(*geometry.source, i));
+                        geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
+                            static_cast<std::uint32_t>(triangles.size()), triangles.data());
+                        allocation(bool(geometry.vertices));
+                    }
+                    geometry.used = true;
                 }
-                geometry.used = true;
             }
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
                 if(selected_only&&!selected)return;
                 if(!data.buffer) {
+                    timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
                     // editing data only when an actual raster pass consumes it.
                     data.buffer=gfxCreateBuffer<Instance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());
@@ -826,6 +834,7 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
+                timing::Scope draws_stage{phases::encode_draws};
                 for (const auto& batch : mesh_batches) {
                     const auto visible=[&](std::uint32_t index) {
                         return raster_visibility[index] && (!selected_only||frame.meshes[index].selected);
@@ -853,7 +862,10 @@ struct Renderer::State {
                 for(const auto& batch:mesh_batches){const auto& geometry=geometries.at(batch.geometry.get());
                     lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size()),
                         std::span<const std::uint8_t>(raster_visibility).subspan(batch.first,batch.count)});}
-                scene_lit->draw(frame,extent,depth,lit_draws,materials,stats);
+                {
+                    timing::Scope lit_stage{phases::encode_lit};
+                    scene_lit->draw(frame,extent,depth,lit_draws,materials,stats);
+                }
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
                 if(editing_depth) {
                     // AA has consumed and retained its sampled depth. Editing
@@ -861,7 +873,10 @@ struct Renderer::State {
                     require(gfxCommandClearTexture(gfx,depth),"Clear sampled scene depth for editing");
                     draw_batches(scene_depth,2);
                 }
-                scene_lit->draw_debug(frame,extent,depth,stats);
+                {
+                    timing::Scope lit_stage{phases::encode_lit};
+                    scene_lit->draw_debug(frame,extent,depth,stats);
+                }
                 draw_grid(frame,true);
                 if(editing_lines)draw_batches(visible_lines,1);
             } else if (lines_only) {
@@ -904,8 +919,10 @@ struct Renderer::State {
                 "Set UI viewport");
         for (auto &[key, image] : images)
             image.used = false;
+        std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
         BufferOwner ui_data{gfx, {}};
         if (!ui_instances.empty()) {
+            timing::Scope ui_upload{phases::encode_ui_upload};
             ui_data.buffer = gfxCreateBuffer<UiInstance>(gfx, static_cast<std::uint32_t>(ui_instances.size()), ui_instances.data());
             allocation(bool(ui_data.buffer));
             stats.ui_instance_upload_bytes = (ui_instances.size() - overlay_instances) * sizeof(UiInstance);
@@ -938,6 +955,7 @@ struct Renderer::State {
             require(gfxCommandDraw(gfx, 6, batch.count), "Draw UI batch");
             ++(index < overlay_batches ? stats.overlay_draw_calls : stats.ui_draw_calls);
         }
+        ui_stage.reset();
         for (auto it = images.begin(); it != images.end();) {
             if (it->second.used) {
                 ++it;
