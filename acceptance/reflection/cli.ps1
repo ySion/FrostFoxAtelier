@@ -23,6 +23,7 @@ ConvertTo-Json -InputObject @($command) -Depth 4 | Set-Content "$OutputDirectory
 using ProbeScalar = float;
 ACLASS(Name="probe.External")
 struct External { AGENERATED_BODY(External) };
+template<class T> struct Templated { AGENERATED_BODY(Templated) };
 '@ | Set-Content "$OutputDirectory/dependency.hpp" -Encoding utf8
 $productionConfig = Get-Content -Raw (Join-Path $BuildDirectory 'generated/atelier_reflection_acceptance/reflection.json') | ConvertFrom-Json
 $config = @{
@@ -137,6 +138,7 @@ $cases = @(
     @{name='body'; text=$valid.Replace('AGENERATED_BODY(Widget)', ''); error='requires exactly one AGENERATED_BODY'},
     @{name='grouped'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() float first{}, second{};'); error='split grouped declarations'},
     @{name='unreflected-base'; text='struct Plain {};' + $valid.Replace('struct Widget {', 'struct Widget : Plain {'); error='A reflected base must be a public, non-virtual reflected object type'},
+    @{name='template-base'; text=$valid.Replace('struct Widget {', 'struct Widget : Templated<int> {'); error='A reflected base must be a public, non-virtual reflected object type'},
     @{name='inherited-name'; text='ACLASS() struct Base { AGENERATED_BODY(Base) AFIELD() float value{}; };' + $valid.Replace('struct Widget {', 'struct Widget : Base {'); error='Inherited reflected member name cannot be shadowed'},
     @{name='range-lock-alone'; text=$valid.Replace('AFIELD()', 'AFIELD(LockMin)'); error='LockMin requires Min and excludes HardMin'},
     @{name='range-lock-hard'; text=$valid.Replace('AFIELD()', 'AFIELD(Max="1", LockMax, HardMax="2")'); error='LockMax requires Max and excludes HardMax'},

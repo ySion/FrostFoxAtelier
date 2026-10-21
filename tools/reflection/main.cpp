@@ -378,7 +378,8 @@ const Type* reflected(State& state, const CXXRecordDecl* record) {
 // befriends its Definition. Registration checks that it is a native object type
 // registered before this group.
 bool generated_elsewhere(const CXXRecordDecl* record) {
-    if (!record || !(record = record->getDefinition())) return false;
+    // A template specialization would be named without its arguments.
+    if (!record || isa<ClassTemplateSpecializationDecl>(record) || !(record = record->getDefinition())) return false;
     for (const auto* declaration : record->friends()) {
         const auto* friend_type = declaration->getFriendType();
         const auto* definition = friend_type ? dyn_cast_or_null<ClassTemplateSpecializationDecl>(
