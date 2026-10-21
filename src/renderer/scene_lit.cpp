@@ -1463,7 +1463,6 @@ struct SceneLit::State {
 SceneLit::SceneLit(rhi::Context& context):state_(std::make_unique<State>(context)){}
 SceneLit::~SceneLit(){if(state_){const auto result=close();if(!result){std::fprintf(stderr,"Scene Lit cleanup failed: %s\n",result.error().cause.message.c_str());std::abort();}}}
 void SceneLit::validate(const Frame& frame) const {
-    invalid(state_->context.info().inline_ray_query,"Scene Lit requires hardware DXR 1.1 inline ray tracing");
     const auto view_inverse=math::try_inverse(matrix(frame.camera.view));
     const auto vp=matrix(frame.camera.view)*matrix(frame.camera.projection);const auto vp_inverse=math::try_inverse(vp);
     invalid(bool(view_inverse)&&bool(vp_inverse),"Scene Lit requires an invertible camera");

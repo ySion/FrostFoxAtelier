@@ -52,6 +52,18 @@ std::wstring widen(std::string_view text) {
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size);
     return result;
 }
+
+bool meets_hardware_floor(ID3D12Device& device) {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS7 mesh{};
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 raytracing{};
+    D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_5};
+    return SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &mesh, sizeof(mesh))) &&
+        mesh.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED &&
+        SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &raytracing, sizeof(raytracing))) &&
+        raytracing.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1 &&
+        SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model))) &&
+        model.HighestShaderModel >= D3D_SHADER_MODEL_6_5;
+}
 } // namespace
 
 namespace detail {
@@ -73,7 +85,7 @@ class Preparer {
 public:
     struct Config {
         ID3D12Device* device{};
-        bool gpu_validation{}, sixteen_bit_types{};
+        bool gpu_validation{};
         std::filesystem::path cache;
     };
     explicit Preparer(Config config) : config_(std::move(config)) {}
@@ -171,7 +183,7 @@ private:
     void run(PreparationJob& job, Worker& worker) noexcept {
         try {
             if (!worker.compiler) {
-                auto compiler = ShaderCompiler::open(config_.sixteen_bit_types, config_.cache);
+                auto compiler = ShaderCompiler::open(config_.cache);
                 if (!compiler) {
                     job.error = compiler.error();
                     return;
@@ -347,18 +359,16 @@ Result<Context> Context::open(const ContextOptions& options) {
             return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_InternalError, "DXGI adapter enumeration failed"});
         DXGI_ADAPTER_DESC1 desc{};
         ComPtr<ID3D12Device> candidate_device;
-        D3D12_FEATURE_DATA_D3D12_OPTIONS7 capabilities{};
         if (SUCCEEDED(candidate->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
             SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&candidate_device))) &&
-            SUCCEEDED(candidate_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7,
-                &capabilities, sizeof(capabilities))) && capabilities.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED) {
+            meets_hardware_floor(*candidate_device.Get())) {
             adapter = std::move(candidate);
             break;
         }
     }
     if (!adapter)
         return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation,
-                                     "no hardware adapter with FL12_1 and Mesh Shader support"});
+                                     "no hardware adapter with FL12_1, Mesh Shader and DXR 1.1 inline RayQuery support"});
     auto state = std::make_shared<detail::ContextState>();
     const GfxCreateContextFlags flags = (debug ? kGfxCreateContextFlag_EnableDebugLayer : 0) |
         (validation == Validation::gpu ? kGfxCreateContextFlag_EnableGPUBasedValidation : 0) |
@@ -372,23 +382,18 @@ Result<Context> Context::open(const ContextOptions& options) {
     state->info.adapter = state->context.getName();
     state->info.vendor_id = state->context.getVendorId();
     state->info.frames_in_flight = gfxGetBackBufferCount(state->context);
-    D3D12_FEATURE_DATA_D3D12_OPTIONS7 capabilities{};
     auto* device = gfxGetDevice(state->context);
-    state->info.mesh_shader = SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7,
-        &capabilities, sizeof(capabilities))) && capabilities.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
-    if (!state->info.mesh_shader)
-        return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation, "created device lacks Mesh Shader support"});
-    D3D12_FEATURE_DATA_SHADER_MODEL shader_model{D3D_SHADER_MODEL_6_5};
-    state->info.inline_ray_query = gfxIsRaytracingSupported(state->context) &&
-        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shader_model, sizeof(shader_model))) &&
-        shader_model.HighestShaderModel >= D3D_SHADER_MODEL_6_5;
+    // gfx drops its DXR device when it cannot obtain the DXR interfaces.
+    if (!meets_hardware_floor(*device) || !gfxIsRaytracingSupported(state->context))
+        return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation,
+                                     "created device lacks Mesh Shader or DXR 1.1 inline RayQuery support"});
     ComPtr<ID3D12InfoQueue> queue;
     state->info.debug_layer = SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue)));
     if (debug && !state->info.debug_layer)
         return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_DeviceError, "requested validation did not activate"});
     state->info.gpu_validation = validation == Validation::gpu;
     state->preparer = std::make_shared<detail::Preparer>(detail::Preparer::Config{
-        device, state->info.gpu_validation, gfxIsRaytracingSupported(state->context), options.shader_cache});
+        device, state->info.gpu_validation, options.shader_cache});
     return Context(std::move(state));
 }
 
@@ -415,8 +420,6 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
         return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "invalid program description"});
     if (desc.kind != PipelineKind::compute && desc.kind != PipelineKind::vertex && desc.kind != PipelineKind::mesh)
         return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "invalid pipeline kind"});
-    if (desc.kind == PipelineKind::mesh && !state_->info.mesh_shader)
-        return std::unexpected(Error{ErrorCode::unsupported, kGfxResult_InvalidOperation, "mesh shaders are unsupported"});
     if (!desc.file_name) {
         const char* primary = desc.kind == PipelineKind::compute ? desc.source.cs
             : desc.kind == PipelineKind::vertex ? desc.source.vs : desc.source.ms;
