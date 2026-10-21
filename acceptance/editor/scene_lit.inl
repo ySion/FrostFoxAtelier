@@ -115,10 +115,18 @@ void verify_environment_sky_application() {
     require(!document.add_component(document.types().environment_component),"A second Environment was accepted in the World.");
     changed(sky_world->set_enabled(environment,false));
     require(sky(document)==dark,"A disabled Environment kept its sky.");
+    // World Settings show a disabled Environment's defaults, so an edit is refused rather than diffed against them.
+    auto refused=lighting;refused.exposure_ev+=1;
+    const auto disabled_history=document.undo_count();
+    const auto disabled=document.set_environment(refused);
+    require(!disabled && disabled.error().message.find("enable it in Parameters")!=std::string::npos && document.undo_count()==disabled_history,
+        "A disabled Environment accepted a World Settings edit or did not name the fix.");
     require(!document.add_component(document.types().environment_component),"A disabled Environment did not keep the only Environment slot.");
     changed(sky_world->set_enabled(environment,true));
     changed(sky_world->set_enabled(entity,false));require(sky(document)==dark,"A disabled Environment Entity kept its sky.");
-    changed(sky_world->set_enabled(entity,true));require(sky(document)==radiance,"A re-enabled Environment did not restore its sky.");
+    require(!document.set_environment(refused) && document.undo_count()==disabled_history,"An Environment under a disabled Entity accepted a World Settings edit.");
+    changed(sky_world->set_enabled(entity,true));
+    require(sky(document)==radiance && take(document.world().environment())==lighting,"A re-enabled Environment did not restore its sky or kept a refused edit.");
     take(document.select(other));changed(document.erase_selected());
     take(snapshot.refresh(document));
     const auto before_point=snapshot.revision;

@@ -80,7 +80,8 @@ public:
     // World Settings: the World options of `settings` that differ from the current
     // environment become one property edit of the Environment, written as one group.
     // Without an Environment the first edit creates it with these values, in the same
-    // history item; undoing that edit removes it again.
+    // history item; undoing that edit removes it again. A disabled Environment (the component or an ancestor)
+    // rejects any change.
     Result<void> set_environment(const rendering::SceneLightingSettings&);
     // Load initialization of a freshly opened document, before any history: writes the
     // environment, creating it when absent, without an undo entry or a modified mark.

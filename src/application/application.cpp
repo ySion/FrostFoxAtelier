@@ -1351,8 +1351,9 @@ bool Application::step(renderer::Capture* capture) try {
     if(had_viewport_gesture && !viewport_tool_.active()) window_.capture(false);
     const auto scene_start = sample ? Clock::now() : Clock::time_point{};
     if(viewport) take(scene_.refresh(*document_));
-    // Any edit of the Environment (Parameters, deletion, Play) reaches the evaluated view before rendering.
-    sync_world_view();
+    // Any edit of the Environment (Parameters, deletion, Play) reaches the evaluated view before rendering;
+    // only such a change re-anchors the lighting focus.
+    if(workspace_.sync_world(*document_)) sync_world_view();
     const auto scene_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - scene_start).count() : 0;
     for(const auto& item:document_->take_diagnostics()) workspace_.log_repeated(editor::describe_diagnostic(*document_,item));
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));

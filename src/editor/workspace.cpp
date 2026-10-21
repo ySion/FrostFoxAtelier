@@ -435,11 +435,11 @@ std::optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session,c
     // Empty space below the rows is World, as in Houdini's tree view.
     return TreeDrop{{},control::tree_world};
 }
-void Workspace::sync_world(const Session& session) {
+bool Workspace::sync_world(const Session& session) {
     auto& author=static_cast<rendering::SceneLightingSettings&>(view.lit);
-    if(const auto current=session.world().environment();current && author!=*current) {
-        lighting.cancel();author=*current;++view_revision_;
-    }
+    const auto current=session.world().environment();
+    if(!current || author==*current) return false;
+    lighting.cancel();author=*current;++view_revision_;return true;
 }
 Result<void> Workspace::set_view_settings(Session& session,const renderer::ViewSettings& candidate,std::array<float,3> focus) {
     if(auto valid=validate_view_options(candidate,focus);!valid) return valid;

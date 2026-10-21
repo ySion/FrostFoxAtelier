@@ -120,6 +120,10 @@ Result<void> Session::set_environment(const rendering::SceneLightingSettings& se
     if(edit->paths.empty()) return {};
     if(editing()) return invalid("Finish the current property edit before changing World settings.");
     if(const auto existing=environment();existing!=ObjectId{}) {
+        // The World Settings show a disabled Environment's defaults, which an edit would silently diff against.
+        auto status=world::inspect_component(runtime_,existing);if(!status) return std::unexpected(status.error());
+        auto owner=world::effective_enabled(runtime_,status->owner);if(!owner) return std::unexpected(owner.error());
+        if(!status->enabled || !*owner) return invalid("The Environment is disabled; enable it in Parameters before changing World settings.");
         auto entity=admit_property_edit(existing);if(!entity) return std::unexpected(entity.error());
         auto root=runtime_.hold(existing);if(!root) return std::unexpected(root.error());
         FieldGroupChange change{std::move(*root),*entity,edit->paths,0,{},edit->values};
