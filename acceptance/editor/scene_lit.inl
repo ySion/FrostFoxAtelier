@@ -129,21 +129,14 @@ void verify_environment_sky_application() {
     require(sky(document)==radiance && take(document.world().environment())==lighting,"A re-enabled Environment did not restore its sky or kept a refused edit.");
     take(document.select(other));changed(document.erase_selected());
     take(snapshot.refresh(document));
-    const auto before_point=snapshot.revision;
     changed(document.create_light(world::LightKind::point));
     const auto point=component(document,document.selection().entity,document.types().light_component);
     take(snapshot.refresh(document));
-    require(snapshot.lights.size()==1 && snapshot.revision==before_point+1,"Appending a direct light failed to advance the scene revision.");
-    take(snapshot.refresh(document));
-    require(snapshot.revision==before_point+1,"Unchanged appended light advanced the scene revision.");
+    require(snapshot.lights.size()==1,"Appending a direct light did not reach the scene snapshot.");
     changed(sky_world->set_enabled(point,false));take(snapshot.refresh(document));
-    require(snapshot.lights.empty() && snapshot.revision==before_point+2,"Disabling the trailing direct light failed to update scene membership and revision.");
-    take(snapshot.refresh(document));
-    require(snapshot.revision==before_point+2,"Unchanged disabled light advanced the scene revision.");
+    require(snapshot.lights.empty(),"Disabling the trailing direct light did not update scene membership.");
     changed(sky_world->set_enabled(point,true));take(snapshot.refresh(document));
-    require(snapshot.lights.size()==1 && snapshot.revision==before_point+3,"Re-enabling the trailing direct light failed to advance the scene revision.");
-    take(snapshot.refresh(document));
-    require(snapshot.revision==before_point+3,"Unchanged re-enabled light advanced the scene revision.");
+    require(snapshot.lights.size()==1,"Re-enabling the trailing direct light did not update scene membership.");
     take(document.select(entity));changed(document.remove_component(environment));
     require(sky(document)==dark && document.environment()==ObjectId{},"A removed Environment remained effective.");
     changed(document.undo());
@@ -195,14 +188,13 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(snapshot.meshes.size()==1 && snapshot.lights.size()==3 && snapshot.meshes[0].material.roughness==.27f &&
         snapshot.meshes[0].material.emissive[0]==4 && snapshot.lights[1].two_sided && snapshot.lights[1].width==2,
         "World material and light values did not reach the formal renderer snapshot.");
-    const auto key=snapshot.meshes[0].stable_key,light_key=snapshot.lights[0].stable_key,revision=snapshot.revision;
+    const auto key=snapshot.meshes[0].stable_key,light_key=snapshot.lights[0].stable_key;
     require(key && light_key && key!=light_key,"Opaque component identities collided in the renderer projection.");
-    take(snapshot.refresh(document));require(snapshot.revision==revision,"An unchanged scene reset temporal history.");
     edit(mesh_entity,"position.x",2.f);edit(light_entities[0],"position.x",3.f);take(document.select(mesh_entity));take(snapshot.refresh(document));
-    require(snapshot.revision==revision && snapshot.meshes[0].stable_key==key && snapshot.lights[0].stable_key==light_key &&
-        snapshot.meshes[0].world[12]==2 && snapshot.lights[0].position[0]==3,"TRS or selection churn reset scene history or lost component identity.");
-    edit(mesh,"material.roughness",.38f);take(snapshot.refresh(document));require(snapshot.revision==revision+1,"Material edits did not invalidate scene history.");
-    changed(document.undo());take(snapshot.refresh(document));require(snapshot.revision==revision+2 && snapshot.meshes[0].material.roughness==.27f,"Material undo did not reach rendering.");
+    require(snapshot.meshes[0].stable_key==key && snapshot.lights[0].stable_key==light_key &&
+        snapshot.meshes[0].world[12]==2 && snapshot.lights[0].position[0]==3,"TRS or selection churn lost component identity or the new pose.");
+    edit(mesh,"material.roughness",.38f);take(snapshot.refresh(document));require(snapshot.meshes[0].material.roughness==.38f,"Material edits did not reach rendering.");
+    changed(document.undo());take(snapshot.refresh(document));require(snapshot.meshes[0].material.roughness==.27f,"Material undo did not reach rendering.");
     take(document.select(light_entities[0]));changed(document.remove_component(lights[0]));take(snapshot.refresh(document));
     require(snapshot.lights.size()==2,"Removed LightComponent remained in the renderer snapshot.");
     changed(document.undo());take(snapshot.refresh(document));

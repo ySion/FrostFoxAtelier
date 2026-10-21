@@ -211,7 +211,7 @@ struct Fixture {
                              "SceneLit benchmark uses the requested native 1440p scene target");
         metrics.open(output / (benchmark ? "benchmark-summary.txt" : "image-metrics.csv"));
         check(metrics.good(), "SceneLit evidence directory opened");
-        frame.lights = lights; frame.scene_identity = 1; frame.scene_revision = 1;
+        frame.lights = lights; frame.scene_identity = 1;
         // This fixture authors a sky explicitly; the renderer default is dark.
         frame.environment = {.025f,.035f,.055f};
         if (!benchmark) {
@@ -278,7 +278,7 @@ struct Fixture {
                     name, delta.mean, delta.p95, delta.changed, delta.darker);
         return delta;
     }
-    void edited() { ++frame.scene_revision; frame.meshes = room.meshes; frame.lights = lights; }
+    void edited() { frame.meshes = room.meshes; frame.lights = lights; }
     Region region(Vec3 point) const { return project_region(frame.camera,frame.scene_viewport,drawing.extent,point); }
     void close() { check(bool(renderer.close()), "SceneLit drains GPU resources before HWND destruction"); }
 };
@@ -405,12 +405,12 @@ void environment_cases(Fixture& f) {
             "Scene Lit has no implicit ambient light without authored sky, lights or emission");
     }
     check(surfaces>1000,"dark environment check contains real visible geometry");
-    f.frame.environment={.12f,.08f,.04f};++f.frame.scene_revision;
+    f.frame.environment={.12f,.08f,.04f};
     const auto sky=f.capture("sky-authored-on",warmup_frames);
     check(f.compare("sky-authored-response",dark,sky).changed>1000,
         "explicit scene sky radiance illuminates real surfaces");
     check(f.step().stats.scene_lit_shadow_sources==0,"sky is independent of direct shadow sources");
-    f.frame.environment={};++f.frame.scene_revision;
+    f.frame.environment={};
     // Allow the budgeted multi-bounce histories to decay to a one-code-value
     // SDR endpoint; the scene radiance input itself is already exactly zero.
     const auto removed=f.capture("sky-removed-dark",384);

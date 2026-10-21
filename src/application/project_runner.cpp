@@ -225,7 +225,7 @@ int run_project(const RunOptions& options) {
                     const auto focus=camera.state().target;
                     renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
                         options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},scene.meshes,
-                        view,{},scene.lights,scene.identity,scene.revision,false,rendering::sky_radiance(view.lit),{focus.x,focus.y,focus.z}};
+                        view,{},scene.lights,scene.identity,false,rendering::sky_radiance(view.lit),{focus.x,focus.y,focus.z}};
                     const auto lighting_start=RenderClock::Clock::now();
                     const bool lighting_active=target.drawable && !options.preview_ui && !scene.meshes.empty() && view.lit.ddgi;
                     rendered.render_delta_seconds=lighting_clock.delta(lighting_start,lighting_active);

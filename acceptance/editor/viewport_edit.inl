@@ -432,13 +432,13 @@ void verify_viewport_editing() {
     // Runtime writes need no Session revision. Extraction must still reread
     // author values, including after rejecting an invalid transient value.
     const auto runtime_position=take(world::read_transform(document.world().runtime(),first)).position;
-    const auto runtime_revision=document.revision(),snapshot_revision=overlay_scene.revision;
+    const auto runtime_revision=document.revision();
     const auto write_position=[&](math::Vector3 position) {
         take(document.world().runtime().with_native<world::Entity>(first,[&](auto& entity)->Result<void>{entity.position=position;return {};}));
     };
     write_position({runtime_position.x+7,runtime_position.y,runtime_position.z});take(overlay_scene.refresh(document));
     const auto moved=std::ranges::find(overlay_scene.mesh_entities,first)-overlay_scene.mesh_entities.begin();
-    require(document.revision()==runtime_revision && overlay_scene.revision==snapshot_revision &&
+    require(document.revision()==runtime_revision &&
         overlay_scene.meshes[moved].world[12]==runtime_position.x+7,
         "Scene extraction cached a direct Runtime transform behind Session revision.");
     // The World isolates the invalid Entity: the rest of the scene still extracts.
