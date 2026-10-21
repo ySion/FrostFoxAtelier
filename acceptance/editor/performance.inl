@@ -249,11 +249,18 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 require(app.step(),"Render performance editor closed before completion.");
                 frame.finish();
                 unchanged_author();
+                // A popup renders its own surface within the step. The profile never opens one, so it came from external input.
+                require(!app.menu_window(),"A menu popup opened during measurement (external input); the window must stay untouched while profiling.");
             }
             require(app.presented() && Access::accepted_view(app),"Accepted Scene View is absent.");
-            require(recorder.last().structure_errors==0 && recorder.last().count(renderer::phases::frame)==1,
-                "Accepted step did not record exactly one renderer frame phase.");
-            return frame_end(recorder.last());
+            const auto& record=recorder.last();
+            if(record.structure_errors!=0 || record.count(renderer::phases::frame)!=1)
+                throw std::runtime_error("Accepted step did not record exactly one renderer frame phase: structure_errors="+
+                    std::to_string(record.structure_errors)+" first_error="+(record.first_error?std::string(record.first_error->key()):"none")+
+                    " render="+std::to_string(record.count(renderer::phases::render))+" prepare="+std::to_string(record.count(renderer::phases::prepare))+
+                    " encode="+std::to_string(record.count(renderer::phases::encode))+" frame="+std::to_string(record.count(renderer::phases::frame))+
+                    " accepted_frame="+std::to_string(app.presented()->drawing->id)+" preparation=\""+editor::utf8(Access::render_notice(app))+"\"");
+            return frame_end(record);
         };
         // Let the product publish its loaded World into the accepted UI/view.
         // No stale workspace defaults may flow back into Session authoring.
