@@ -195,6 +195,12 @@ void run(const std::filesystem::path& root) {
         auto widened=editor::load_project_scene(project,take(narrowed.session->serialize()));
         require(widened.session && widened.session->load_issues().empty() && std::get<float>(field(*widened.session,"speed"))==5,
             "A restored Source field did not recover its saved value.");
+        // The editor's document publishes editor.* operator records before Source builds; Source still cannot name them.
+        take(editor::write_file(helper,"float travel(float speed,float dt) { editor.ToolSettings tools; return speed * dt; }\n"));
+        const auto reserved=editor::load_project_scene(project,authored,editor::LoadPolicy::tolerant,false,editor::SessionRole::editor);
+        require(!reserved.session && reserved.error && reserved.error->message.find("editor.ToolSettings")!=std::string::npos &&
+            reserved.error->message.find("Unknown registered value type")!=std::string::npos,
+            "Project Source in the editor's document used an editor operator record.");
         // A broken build opens interactively with placeholders; once it builds, a fresh load restores them.
         take(editor::write_file(helper,"float travel(float speed,float dt) { return missing; }\n"));
         require(!editor::load_project_scene(project,authored).session,"Exact loading accepted a broken Source build.");

@@ -1,10 +1,10 @@
 #pragma once
 
+#include "editor/operator_parameters.hpp"
 #include "math/math.hpp"
 #include <string_view>
 
 namespace atelier::editor {
-enum class CameraView : std::uint8_t { perspective, top, front, right, bottom, back, left };
 constexpr std::wstring_view camera_view_name(CameraView view) noexcept {
     switch(view) {
     case CameraView::perspective:return L"Persp";case CameraView::top:return L"Top";

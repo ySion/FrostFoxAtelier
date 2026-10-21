@@ -130,7 +130,9 @@ Result<void> Application::set_camera(const editor::Camera& camera,bool cut) {
     return {};
 }
 editor::Context Application::operator_context(bool interactive) {
-    return workspace_.operator_context(*document_,project_?&*project_:nullptr,interactive);
+    auto context=workspace_.operator_context(*document_,project_?&*project_:nullptr,interactive);
+    context.cursor=viewport_tool_.cursor;
+    return context;
 }
 Result<editor::OperatorReport> Application::call_operator(const editor::OperatorCall& request,bool interactive) {
     const auto shown=workspace_.status;
@@ -612,36 +614,37 @@ Result<void> Application::begin_asset_rename() {
 }
 Result<void> Application::execute(editor::Command command,std::string_view asset_key) {
     using enum editor::Command;
-    if(const auto id=editor::operator_for(command);!id.empty()) return run_operator(id);
+    if(auto call=editor::operator_for(command)) {
+        if(command==create_static_mesh && !asset_key.empty()) call->args["mesh"]=std::string(asset_key);
+        auto report=call_operator(*call,true);if(!report) return std::unexpected(report.error());
+        // A command that fixes arguments reports its own title rather than the operator's.
+        if(report->status==editor::OperatorStatus::finished && !call->args.empty())
+            workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
+        return {};
+    }
     if (!workspace_.command_enabled(command,*document_)) return {};
     if(auto ended=end_interaction();!ended) return ended;
     Result<void> result;
     switch (command) {
     case frame_all:case focus:case reset_camera:case reset_layout:case close_tab:case maximize_pane:case undo:case redo:
-    case add_transform:case remove_transform:case discard_saved_data:break; // Operators, routed above.
+    case add_transform:case remove_transform:case discard_saved_data:
+    case create_entity:case create_static_mesh:case create_point_light:case create_rectangle_light:case create_directional_light:
+    case tool_select:case tool_transform:case tool_move:case tool_rotate:case tool_scale:case pivot_median:case pivot_cursor:
+    case snap_grid_01:case snap_grid_02:case snap_grid_05:case snap_grid_1:
+    case snap_rotation_1:case snap_rotation_5:case snap_rotation_15:case snap_rotation_45:case orientation_global:case orientation_local:
+    case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
+    case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
+        break; // Operators, routed above.
     case example_sponza:case example_scene_lit:case example_physic:case example_dungeons:return open_example(command);
-    case tool_select: case tool_transform: case tool_move: case tool_rotate: case tool_scale:
-        workspace_.viewport_settings.tool=static_cast<editor::TransformTool>(static_cast<unsigned>(command)-static_cast<unsigned>(tool_select));
-        workspace_.status=std::wstring(editor::command_definition(static_cast<std::uint64_t>(command))->title);break;
-    case pivot_median:workspace_.viewport_settings.pivot=editor::PivotMode::median;break;
-    case pivot_cursor:workspace_.viewport_settings.pivot=editor::PivotMode::cursor;break;
     case cursor_origin:viewport_tool_.cursor={};viewport_tool_.cursor_rotation={};break;
     case snap_toggle:workspace_.viewport_settings.grid_snap=!workspace_.viewport_settings.grid_snap;break;
-    case snap_grid_01:case snap_grid_02:case snap_grid_05:case snap_grid_1: {
-        constexpr std::array steps{.1f,.2f,.5f,1.f};
-        workspace_.viewport_settings.grid_spacing=steps[static_cast<unsigned>(command)-static_cast<unsigned>(snap_grid_01)];break;
-    }
     case selection_grid:case selection_cursor: result=viewport_tool_.snap_selection(*document_,workspace_.viewport_settings,command==selection_cursor);break;
     case cursor_selected:result=viewport_tool_.cursor_to_selection(*document_);break;
     case cursor_grid:viewport_tool_.cursor_to_grid(workspace_.viewport_settings);break;
     case cursor_surface:workspace_.viewport_settings.cursor_surface=!workspace_.viewport_settings.cursor_surface;break;
-    case orientation_global:case orientation_local:
-        workspace_.viewport_settings.orientation=command==orientation_local?editor::Orientation::local:editor::Orientation::global;break;
     case snap_affect_move:workspace_.viewport_settings.snap_move=!workspace_.viewport_settings.snap_move;break;
     case snap_affect_rotate:workspace_.viewport_settings.snap_rotate=!workspace_.viewport_settings.snap_rotate;break;
     case snap_affect_scale:workspace_.viewport_settings.snap_scale=!workspace_.viewport_settings.snap_scale;break;
-    case snap_rotation_1:case snap_rotation_5:case snap_rotation_15:case snap_rotation_45:
-        workspace_.viewport_settings.rotation_step=command==snap_rotation_1?1.f:command==snap_rotation_5?5.f:command==snap_rotation_15?15.f:45.f;break;
     case select_all:case select_none:case select_invert:
         result=viewport_tool_.select_all(*document_,command==select_all?editor::SelectAll::select:command==select_none?editor::SelectAll::deselect:editor::SelectAll::invert);break;
     case select_box:viewport_tool_.arm_box_select(pointer_position_,false);window_.capture(true);break;
@@ -672,10 +675,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         }
         break;
     }
-    case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
-        workspace_.viewport_settings.select_mode=static_cast<editor::SelectMode>(static_cast<unsigned>(command)-static_cast<unsigned>(select_mode_set));break;
-    case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
-        camera_.set_view(*editor::camera_view_command(command));camera_cut_=true;break;
     case viewport_options:workspace_.viewport_options_collapsed=!workspace_.viewport_options_collapsed;break;
     case show_fps:return action({ui::ActionKind::activate,editor::control::command_key(command),!workspace_.show_fps});
     case open_source: case edit_ui_source: case save_document: case close_source: case reload_source: case save_all:
@@ -688,27 +687,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
-    case create_entity: workspace_.inspecting_asset=false;result=completion(document_->add_entity()); break;
-    case create_point_light:case create_rectangle_light:case create_directional_light: {
-        workspace_.inspecting_asset=false;
-        const auto kind=command==create_point_light?world::LightKind::point:
-            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
-        result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
-    }
-    case create_static_mesh: {
-        workspace_.inspecting_asset=false;
-        const auto catalog=editor::mesh_assets();
-        if (asset_key.empty()) asset_key=catalog.front().key;
-        if (project_) {
-            auto asset=project_->mesh(asset_key);if (!asset) return std::unexpected(asset.error());
-            result=completion(document_->create_static_mesh(*asset,viewport_tool_.cursor));
-        } else {
-            const auto* asset=editor::mesh_asset(asset_key);
-            if (!asset) return std::unexpected(Error{ErrorCode::invalid_definition,"Unknown mesh asset."});
-            result=completion(document_->create_static_mesh(*asset,viewport_tool_.cursor));
-        }
-        break;
-    }
     case erase_selected: workspace_.inspecting_asset=false;result=completion(document_->erase_selected()); break;
     case erase_entities: workspace_.inspecting_asset=false;result=completion(document_->erase_entities()); break;
     case duplicate_selected: workspace_.inspecting_asset=false;result=completion(document_->duplicate_selected()); break;

@@ -626,8 +626,10 @@ struct EditorControl::Impl {
             for(const auto& [flag,name]:{std::pair{editor::OperatorFlag::undo,"undo"},{editor::OperatorFlag::history,"history"},
                 {editor::OperatorFlag::replaces_document,"replaces_document"},{editor::OperatorFlag::prompts,"prompts"}})
                 if(editor::has_flag(info.flags,flag)) flags.push_back(name);
+            auto parameters=editor::parameter_schema(app.document_->world().runtime(),info);
+            if(!parameters) throw Failure("operation_failed",parameters.error().message);
             operators.push_back({{"id",info.id},{"title",control::utf8(info.title)},{"description",info.description},{"flags",flags},
-                {"parameters",{{"type","object"},{"properties",Json::object()},{"additionalProperties",false}}}});
+                {"parameters",std::move(*parameters)}});
         }
         auto regions=Json::array();for(const auto name:editor::region_names()) regions.push_back(name);
         const Json handle{{"type","string"}};

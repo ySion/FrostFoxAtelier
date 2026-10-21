@@ -15,7 +15,7 @@ void verify_entity_composition() {
         editor::Camera camera;camera.set_view(editor::CameraView::front);
         const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1);
         const auto pointer=*view.project(parent_before.position);
-        editor::ViewportTool tool;editor::ViewportTool::Settings settings;
+        editor::ViewportTool tool;editor::ToolSettings settings;
         settings.tool=editor::TransformTool::move;settings.orientation=editor::Orientation::local;
         const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
             return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,pointer);

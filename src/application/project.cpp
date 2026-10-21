@@ -111,7 +111,8 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     // before retiring the current document. Interactive opening keeps unresolved
     // saved data and loads placeholders while the Source build is broken.
     const bool reproducible=policy==ProjectOpenPolicy::require_scene;
-    auto candidate=editor::load_project_scene(*project,*content,reproducible?editor::LoadPolicy::strict:editor::LoadPolicy::tolerant,!reproducible);
+    auto candidate=editor::load_project_scene(*project,*content,reproducible?editor::LoadPolicy::strict:editor::LoadPolicy::tolerant,!reproducible,
+        editor::SessionRole::editor);
     if(reproducible && (!candidate.session || candidate.error))
         return candidate.error?std::unexpected(*candidate.error):failed("Project did not produce a complete scene.");
     if(reproducible && admit) if(auto admitted=admit(*candidate.session);!admitted) return admitted;
@@ -120,7 +121,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     project_=std::move(*project);scene_path_=initial_scene;workspace_.project_open=true;
     pending_scene_=*content;workspace_.scene_available=candidate.session!=nullptr;
     if(candidate.session) publish_document(std::move(candidate.session),candidate.code);
-    else publish_document(std::make_unique<editor::Session>());
+    else publish_document(std::make_unique<editor::Session>(editor::Session::Prepare{},editor::SessionRole::editor));
     if(candidate.error) {
         auto report=std::make_shared<editor::ProjectBuild>();if(candidate.build) *report=*candidate.build;
         report->error=candidate.error;report->state=editor::BuildState::failed;candidate.build=std::move(report);
@@ -143,7 +144,7 @@ Result<void> Application::open_scene(const std::filesystem::path& relative) {
     if (!confirm_discard(false)) return {};
     auto path=project_->resolve(relative);if (!path) return std::unexpected(path.error());
     auto text=editor::read_file(*path);if (!text) return std::unexpected(text.error());
-    auto next=editor::load_project_scene(*project_,*text,editor::LoadPolicy::tolerant,true);
+    auto next=editor::load_project_scene(*project_,*text,editor::LoadPolicy::tolerant,true,editor::SessionRole::editor);
     if(!next.session) {publish_build(next.build);return std::unexpected(*next.error);}
     play_.close();scene_path_=relative;pending_scene_=*text;workspace_.scene_available=true;
     publish_document(std::move(next.session),next.code);publish_build(next.build);

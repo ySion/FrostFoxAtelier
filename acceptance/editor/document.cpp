@@ -72,6 +72,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "material_resources.inl"
 #include "color_edits.inl"
 #include "recovery.inl"
+#include "operator_parameters.inl"
 }
 int main(int argc, char** argv) {
     std::string_view stage=argc>1?argv[1]:"document history";
@@ -117,6 +118,7 @@ int main(int argc, char** argv) {
         stage="UI source patch";verify_ui_source_patch();
         stage="UI code reuse";verify_ui_code_reuse();
         stage="source editor";verify_source_editor();
+        stage="operator parameters";verify_operator_parameters();
         stage="document history";
         {
             editor::Session single;

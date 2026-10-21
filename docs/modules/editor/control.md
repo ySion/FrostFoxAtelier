@@ -44,11 +44,11 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | 操作 | 权威入口与行为 |
 | --- | --- |
 | editor.inspect | 默认 `detail: full` 返回完整场景与资源目录，适用于小场景；`summary` 返回状态、历史、相机、显示和最近接受帧，不枚举对象；`objects` 分页发现 Entity/Component 句柄，`object` 读取一个已发现对象的反射属性。full/summary 的 `performance` 共用 World 性能表的有界统计快照 |
-| op.list | 列出编辑器操作符：ID、标题、说明、历史标志和参数 schema，以及 Context 覆盖的 schema。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
-| op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`context` 只在本次调用内替换 `selection {entities, active, object}` 或 `region`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`，参数或 Context 不合法为 `invalid_request`。成功时返回调用后的选择 |
+| op.list | 列出编辑器操作符：ID、标题、说明、历史标志和参数 schema，以及 Context 覆盖的 schema。参数 schema 由文档 Runtime 中的参数记录生成（字段、枚举成员、硬边界 minimum/maximum、界面范围 ui_min/ui_max；非补丁式带 default，补丁式标 `"seeded": true`）。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
+| op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`args` 按参数记录严格解码：未知字段、类型不符或越过硬边界都返回 `invalid_request`，不夹值，文档不变；补丁式操作符（`tool.settings`）只改出现的字段。`context` 只在本次调用内替换 `selection {entities, active, object}` 或 `region`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`，参数或 Context 不合法为 `invalid_request`。成功时返回调用后的选择 |
 | view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | project.open、scene.open、scene.save | Application 工程/场景命令；替换拒绝未保存场景或源码草稿，避免无人处理的保存对话框 |
-| scene.create | Entity、StaticMeshEntity、Point/Rectangle/Directional Light，共用现有命令和 World 工厂。`kind: sky` 已删除，返回 `invalid_request`，错误消息指向 view.set 的 sky 键 |
+| scene.create | Entity、StaticMeshEntity、Point/Rectangle/Directional Light，走与 Create 菜单相同的 `op.call scene.add`。`kind: sky` 已删除，返回 `invalid_request`，错误消息指向 view.set 的 sky 键 |
 | scene.rename、scene.delete | Session 的名称和删除；rename 只修改 Entity 名称，Component 使用类型名。选择改用 `op.call scene.select`，选择放在 context |
 | scene.set_property | 按发现到的属性名及精确标量类型写入；枚举使用名称 |
 | scene.transform | Entity 的可选内联完整 TRS；无空间时显式添加空间，一次撤销；位置/缩放三分量，旋转 quaternion xyzw |

@@ -136,6 +136,19 @@ void verify_operators(Driver& d,const std::string& entity) {
     error(d.try_op("scene.select",Json::object(),{{"selection",{{"entities",Json::array({entity})},{"active","stale/1"}}}}),"stale_object");
     error(d.try_op("view.frame_all",Json::object(),{{"region","nowhere"}}),"invalid_request");
     error(d.try_op("scene.select",Json::object(),{{"selection",{{"entities",Json::array({entity,entity})}}}}),"invalid_request");
+    // Arguments decode strictly into the operator's parameter record; a rejected call changes nothing.
+    require(find("scene.add").at("parameters").at("properties").at("kind").at("enum")==Json::array({"entity","mesh","point","rectangle","directional"}) &&
+        find("scene.add").at("flags")==Json::array({"undo"}) && find("tool.settings").at("parameters").value("seeded",false),
+        "op.list does not publish the operator parameter records");
+    const auto entries=d.inspect().at("undo").get<std::size_t>();
+    error(d.try_op("scene.add",{{"kind","sky"}}),"invalid_request");
+    require(d.inspect().at("undo")==entries,"A rejected scene.add changed the scene");
+    const auto light=d.ok("op.call",{{"id","scene.add"},{"args",{{"kind","point"}}}}).at("active");
+    after=d.inspect();
+    require(after.at("undo")==entries+1 && after.at("selection")==Json::array({light}) &&
+        std::ranges::any_of(after.at("entities"),[&](const Json& item){return item.at("handle")==light;}),
+        "scene.add did not add and select one Entity in one history entry");
+    d.op("edit.undo");require(d.inspect().at("undo")==entries,"Undo did not remove the added Entity");
     d.op("scene.select",selection(entity));
     require(d.inspect().at("selection")==Json::array({entity}),"scene.select did not restore the selection");
 }

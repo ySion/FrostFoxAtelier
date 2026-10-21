@@ -1,6 +1,6 @@
 # 编辑器操作符（设计稿）
 
-状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。第 3 步已迁移不带参数的 `layout.close_tab`、`layout.maximize`、`scene.transform_add`、`scene.transform_remove`、`scene.discard_saved_data`。注册表由 Workspace 持有，Context 也由 Workspace 构建；第 4 步之前菜单和快捷区仍按命令登记，`command_enabled` 对已迁移的命令直接取对应操作符的 poll，不再保留第二份可用性判断。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
+状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。第 3 步已迁移不带参数的 `layout.close_tab`、`layout.maximize`、`scene.transform_add`、`scene.transform_remove`、`scene.discard_saved_data`。第 2 步已实现参数记录与 3 个带参数的操作符：`scene.add`（String）、`tool.settings`（seed）、`view.axis`（枚举），Create、工具、轴心、吸附步长、坐标轴、选择模式和轴向视图命令都改为调用它们；`editor.ViewSettings` 和 `view.set` 推迟到 4b-3 步骤 A 之后，区域状态记录移到第 3 步。注册表由 Workspace 持有，Context 也由 Workspace 构建；第 4 步之前菜单和快捷区仍按命令登记，`command_enabled` 对已迁移的命令直接取对应操作符的 poll，不再保留第二份可用性判断。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
 
 编辑器的每个操作都是一个注册的操作符。菜单、快捷区、按钮、快捷键、Control，以及以后的自有语言，都经同一个入口调用它：`OperatorCall {id, args, context}` → poll → 解码参数 → execute。UI 只描述“调用哪个操作符、带什么参数”，不写逻辑。
 
@@ -63,7 +63,7 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 - execute 只读 Context（`const Context&`）。需要回传的东西一律经 result 记录（例如 `asset.new_material` 返回新资产键）或 Host（例如新选择由 Session 产生，调用后从文档读取）。
 - 参数值的生命周期：`call` 分配按 `TypeInfo::size/alignment` 对齐的存储，`initialize_value` 默认构造。类型 `contains_references` 时，紧接着 `root_value`，让 GC 追踪其中的引用；结束时先撤根，再 `destroy_value`。弱引用不保活目标，execute 读弱引用一律用 `try_acquire`，并处理目标在同一次调用里已被删除的情况。
 - 参数类型发布在文档的 Runtime，`OperatorInfo` 只存类型名，每次调用在当前文档里解析 TypeId。只有 document 角色的 Session 发布 `editor.*` 参数类型：编辑器宿主构造文档 Session 时把这组类型定义交给 Session，与 World 类型一起注册。Play 角色（P0 的 `enter_play`）、独立运行器和以后的专用服务器不传这组定义，不会带上 `editor.*`。
-- 现状：Runtime 没有类型可见性控制，Source 绑定会把所有已发布的、不含引用的类型纳入目录。O1 第 2 步编辑器参数类型第一次进入文档 Runtime 时，由运行时负责人在 Source 绑定目录里加一条最小规则：`editor.` 前缀保留给编辑器，工程 Source 既不能引用也不能声明这类类型。O3 再换成按 Program 划分的可见域。编辑器不自行添加机制。
+- Runtime 没有类型可见性控制，Source 绑定会把所有已发布的、不含引用的类型纳入目录。编辑器参数类型进入文档 Runtime 后，靠 Source 绑定目录里的一条最小规则隔开：`editor.` 前缀保留给编辑器，工程 Source 既不能引用也不能声明这类类型（引用时按类型未登记报错，声明时报 "reserved for editor types"）。O3 再换成按 Program 划分的可见域。编辑器不自行添加机制。
 - `OperatorHost` 是 execute 访问宿主能力的接口（相机、视口工具、Dock、Play 进程、文件选择器、状态栏、文档替换请求），由 Application 实现。Context 只装数据，Host 只装能力；O3 的语言操作符只拿 Context 和 Runtime。
 - `state` 取代 `Workspace::command_item` 中按命令硬写的单选/勾选判断：单选项在“用这组参数调用不会改变任何东西”时为选中，勾选项返回当前布尔值。
 - 执行结果 `OperatorReport {status, message, result}`：status 为 finished、cancelled 或 failed；poll 失败时 status=failed、message 为原因、execute 不运行。
@@ -124,33 +124,18 @@ struct Context {
 
 参数是原生登记的 Runtime 记录：头文件里用 `ASTRUCT/AFIELD/AENUM` 声明，由 `atelier_reflect` 生成，范围用 `Min/Max/HardMin/HardMax`。默认值就是类型的默认构造。由它派生 `op.list` 的 schema、keymap 和菜单参数的校验，以后也派生“调整上次操作”面板。编辑器为 `src/editor/operator_parameters.hpp` 新增一个反射生成组。
 
-```cpp
-AENUM(Name = "editor.AddKind") enum class AddKind : std::uint32_t { entity, mesh, point, rectangle, directional };
-ASTRUCT(Name = "editor.op.SceneAdd", DESC = "在 3D 光标处新建一个 Entity。")
-struct SceneAdd {
-    AGENERATED_BODY(SceneAdd)
-public:
-    AFIELD(DESC = "新建的种类。") AddKind kind{AddKind::entity};
-    AFIELD(DESC = "网格资源键；为空时使用第一个内置网格。只用于 mesh。") String mesh{};
-};
+已实现的记录（`src/editor/operator_parameters.hpp`，由 `operator_parameters.cpp` 的 `register_editor_types` 登记）：
 
-ASTRUCT(Name = "editor.ToolSettings", DESC = "视口变换工具与吸附设置。")
-struct ToolSettings {
-    AGENERATED_BODY(ToolSettings)
-public:
-    AFIELD() TransformTool tool{TransformTool::select};
-    AFIELD() PivotMode pivot{PivotMode::median};
-    AFIELD() bool grid_snap{};
-    AFIELD(Min = "0.1", Max = "1", HardMin = "0.001", DESC = "网格吸附步长，单位 m。") float grid_spacing{.5f};
-    AFIELD(Min = "1", Max = "45", HardMin = "0.01", DESC = "旋转吸附步长，单位度。") float rotation_step{15};
-    AFIELD() bool snap_move{true}, snap_rotate{true}, snap_scale{true};
-    AFIELD() Orientation orientation{Orientation::global};
-    AFIELD() SelectMode select_mode{SelectMode::set};
-    AFIELD() bool cursor_surface{};
-};
-```
+| 记录 | 操作符 | 字段 |
+| --- | --- | --- |
+| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、point、rectangle、directional）、mesh（String，空为第一个内置网格） |
+| `editor.ToolSettings` | `tool.settings`（seed） | tool、pivot、grid_snap、cursor_surface、grid_spacing、select_mode、orientation、snap_move、snap_rotate、snap_scale、rotation_step、scale_step |
+| `editor.ViewAxis` | `view.axis` | view（`editor.CameraView`） |
 
-- 现有的 `ViewportSettings` 直接改为 `editor.ToolSettings` 这个记录类型，`tool.settings` 的参数就是它。各编辑器枚举的底层类型从 `uint8_t` 改为 `uint32_t`，因为生成器只支持 int32/uint32。
+- 只有编辑器自己的文档 Session（`SessionRole::editor`）在引擎类型之后、工程 Source 构建之前登记这些类型；Play、独立运行和其他 Session 不登记。工程 Source 既看不到也不能声明 `editor.*` 类型（运行时的前缀规则），`project_integration` 在编辑器文档里断言这一点。
+- 原来的 `ViewportTool::Settings` 直接改为 `editor.ToolSettings`，字段和默认值不变；`tool.settings` 的参数就是它。各编辑器枚举的底层类型从 `uint8_t` 改为 `uint32_t`，因为生成器只支持 int32/uint32。这些枚举不进持久格式：工具、轴心、选择模式和坐标轴从不保存；`CameraView` 只以序号出现在 Control 的相机 JSON、repro 包和 Play 的 `--camera` 参数里，外部表示不变。
+- `editor.AddKind` 没有 sky：天光是 Environment 组件的属性，由 World Settings（`set_environment`）编辑，不是新建的 Entity。
+- 参数记录暂不能含引用（调用时拒绝），第一个引用参数落地时再处理根集。
 - 补丁式操作符（`tool.settings`、`view.set`、`region.set`）用 `seed` 从当前状态初始化参数，args 只写出现的叶。因此 `snap_grid_05` 就是 `tool.settings {"grid_spacing":0.5}`。
 - `tool.toggle` 不幂等，只给菜单和快捷键这类交互绑定使用；`op.list` 的说明里写明这一点，Control 和脚本应当用 `tool.settings` 写绝对值。
 - JSON → 参数值：调用运行时负责人的 R5-6a 共用叶解码（建在 P0 的 `read_properties` 之上：写入目标为“对象 | 调用方记录存储”，含 String 叶），不另写解码器。操作符一律用它的严格模式：未知字段、类型不符、越过硬边界都报错（越界按与 `constrain` 结果比较判断），不夹值；场景加载仍走宽容模式。
@@ -215,7 +200,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 
 ## 7. Control
 
-- 新增 `op.list`：返回每个操作符的 `{id, title, description, flags, parameters: JSON schema, result: JSON schema}`，以及 Context 覆盖的 schema。参数 schema 完全由 Runtime 的 TypeInfo/FieldInfo 生成：字段名、类型、枚举成员、范围；非 seed 式操作符带默认值，seed 式操作符不带默认值，改标 `"seeded": true`（缺省表示保持当前值）。`@context.object` 写成 `{"dynamic":"context.object"}`。
+- 新增 `op.list`：返回每个操作符的 `{id, title, description, flags, parameters: JSON schema, result: JSON schema}`，以及 Context 覆盖的 schema。参数 schema 完全由 Runtime 的 TypeInfo/FieldInfo 生成：`{"type":"object","additionalProperties":false,"title":记录名,"properties":{…}}`；每个字段给出 `type`（boolean/integer/number/string）或 `enum`（成员名）和 `description`，硬边界写成 `minimum`/`maximum`，界面范围写成 `ui_min`/`ui_max`。非 seed 式操作符带 `default`；seed 式操作符不带默认值，改标 `"seeded": true`（缺省表示保持当前值）。无参数的操作符是空的 properties，没有 title。`@context.object` 写成 `{"dynamic":"context.object"}`。
 - 新增 `op.call {id, args, context}`：需要状态令牌，与现有的改动类 op 相同；返回 `OperatorReport`，并附上调用后的选择。poll 失败时返回 `{"status":"failed","code":"poll_failed","message":原因}`。Control 调用时 `interactive=false`，带 `prompts` 标志的操作符缺少路径或名称时直接失败，不弹窗。
 - 删除所有已迁移的专用 op，不保留兼容名字。Control 只保留 `capabilities`、`editor.inspect`（并入 `material.inspect`，新增 `detail:"asset"`）、`render.*`、`job.*`、`repro.*`。验收客户端 `acceptance/editor/control.cpp` 和 `control.md` 一起改。
 
@@ -240,7 +225,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | run_project / stop_project / show_project_ui | `play.start` / `play.stop` / `play.preview_ui` |
 | exit / about | `app.quit` / `app.about` |
 | undo / redo | `edit.undo` / `edit.redo`（按区域选择历史：源码、材质资产、Controls 示例或场景） |
-| create_entity / create_static_mesh / create_*_light | `scene.add {kind, mesh}` |
+| create_entity / create_static_mesh / create_point/rectangle/directional_light | `scene.add {kind, mesh}`（create_sky_light 由 4b-3 步骤 A 删除，见第 4 节） |
 | duplicate_selected | `scene.duplicate {place}`（视口的 Shift+D 为 place=true，接到现有放置；O2 改为 modal） |
 | erase_selected / erase_entities | `scene.delete {target: object\|entities}` |
 | rename_selected | `scene.rename {name}`（prompts：交互调用不带 name 时开始内联重命名） |
@@ -306,7 +291,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 子线程目前不可用，各步都由我自己完成。每一步结束时，dev/release 无窗口全量和受影响的窗口验收都要通过。
 
 1. **核心**：注册表、Context、`call`、参数存储、历史不变量、文档替换请求；Control 的 `op.list` / `op.call`；启动校验，以及 Control 验收中的 `op.list`、`op.call`、Context 覆盖和 poll 失败用例。先用无参数的操作符打通整条链（`view.frame_all`、`view.reset`、`edit.undo`/`edit.redo`、`layout.reset`、`scene.select`）；R5-6a 落地后接上参数解码，再迁移 3 个带参数的代表：`scene.add`（String）、`tool.settings`（seed）、`view.axis`（枚举）。
-2. **参数类型**：`operator_parameters.hpp` 生成组，只经文档 Session 发布；`ViewportSettings` 改为 `editor.ToolSettings`；由表格生成 `editor.ViewSettings`；区域状态记录。
+2. **参数类型**（已完成）：`operator_parameters.hpp` 生成组，只经编辑器文档 Session 发布；`ViewportTool::Settings` 改为 `editor.ToolSettings`；`scene.add`、`tool.settings`、`view.axis`。由表格生成 `editor.ViewSettings` 和 `view.set` 推迟到 4b-3 步骤 A 之后；区域状态记录随第 3 步的对应区域一起做。
 3. **按组迁移**：把 `Application::execute` 的每个 case 搬进操作符定义，把 `command_enabled` 的对应 case 改为 poll，参数和 ID 以第 8 节的表为准。顺序：window/layout → view/tool/cursor → scene → project/play/source → asset/material。Session 中依赖选择的方法同时改为显式目标；会产生多个历史条目的动作（已知 `unparent_selected`）合成一个条目。
 4. **菜单与按钮**：菜单构建改为 `OperatorCall`，删除 `command_item` 的硬写状态逻辑。
 5. **Keymap**：建表，删除 `application.cpp`、`viewport.cpp`、`viewport_tool.cpp` 中的非 modal 分支。

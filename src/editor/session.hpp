@@ -25,6 +25,9 @@ struct Selection {
 };
 // Tolerant loading keeps data it cannot apply and reports it; strict stops at the first warning.
 enum class LoadPolicy { tolerant, strict };
+// The editor's own document also publishes the editor.* operator parameter types;
+// Play and other standalone Sessions publish only engine and project types.
+enum class SessionRole { runtime, editor };
 // Saved scene data the loader could not apply, addressed by its scene record path
 // (for example properties.speed, space or name). It is written back on save.
 struct RetainedEntry { std::vector<std::string> path; std::string value; world::DiagnosticKind kind{}; };
@@ -59,7 +62,7 @@ public:
     // Runs after engine registration, before any object exists. The returned
     // code owner is released after World End, always before its Runtime.
     using Prepare = std::function<Result<std::shared_ptr<void>>(world::World&)>;
-    explicit Session(Prepare = {});
+    explicit Session(Prepare = {}, SessionRole = SessionRole::runtime);
     ~Session();
     const world::World& world() const noexcept { return world_; }
     Result<void> set_failure_policy(world::FailurePolicy policy) { return world_.set_failure_policy(policy); }
@@ -196,7 +199,8 @@ public:
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
     Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
-    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {},LoadPolicy = LoadPolicy::tolerant);
+    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {},LoadPolicy = LoadPolicy::tolerant,
+        SessionRole = SessionRole::runtime);
     // Diagnostics recorded by the load that created this document.
     std::span<const world::Diagnostic> load_issues() const noexcept { return load_issues_; }
     // Current unresolved data of the document; entries disappear when edited or discarded.

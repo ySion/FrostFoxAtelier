@@ -32,7 +32,7 @@ Result<void> Application::build_project(bool rebuild) {
     auto text=workspace_.scene_available?document_->serialize():Result<std::string>{pending_scene_};
     if(!text) return std::unexpected(text.error());
     const bool dirty=workspace_.scene_available && document_->dirty();
-    auto next=editor::load_project_scene(*project_,*text);
+    auto next=editor::load_project_scene(*project_,*text,editor::LoadPolicy::tolerant,false,editor::SessionRole::editor);
     if(!next.session) {
         auto report=std::make_shared<editor::ProjectBuild>();if(next.build) *report=*next.build;
         report->state=editor::BuildState::failed;report->error=next.error;publish_build(std::move(report));
