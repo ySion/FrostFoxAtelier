@@ -1,5 +1,5 @@
-struct EntityDefaultSky : world::LightComponent {
-    EntityDefaultSky() {settings.kind=world::LightKind::sky;}
+struct EntityDirectionalLight : world::LightComponent {
+    EntityDirectionalLight() {settings.kind=world::LightKind::directional;}
 };
 
 void verify_entity_composition() {
@@ -97,22 +97,23 @@ void verify_entity_composition() {
     {
         TypeId sky_type;
         editor::Session sky([&](world::World& world)->Result<std::shared_ptr<void>> {
-            TypeDefinition type;type.name="acceptance.EntityDefaultSky";type.base=world.types().light_component;
-            type.native={sizeof(EntityDefaultSky),alignof(EntityDefaultSky),atelier::detail::representation<EntityDefaultSky>(),
-                [](void* storage){std::construct_at(static_cast<EntityDefaultSky*>(storage));},
-                [](void* storage) noexcept {std::destroy_at(static_cast<EntityDefaultSky*>(storage));}};
-            type.native.base_address=[](void* storage) noexcept -> void* {return static_cast<world::LightComponent*>(static_cast<EntityDefaultSky*>(storage));};
+            TypeDefinition type;type.name="acceptance.EntityDirectionalLight";type.base=world.types().light_component;
+            type.native={sizeof(EntityDirectionalLight),alignof(EntityDirectionalLight),atelier::detail::representation<EntityDirectionalLight>(),
+                [](void* storage){std::construct_at(static_cast<EntityDirectionalLight*>(storage));},
+                [](void* storage) noexcept {std::destroy_at(static_cast<EntityDirectionalLight*>(storage));}};
+            type.native.base_address=[](void* storage) noexcept -> void* {return static_cast<world::LightComponent*>(static_cast<EntityDirectionalLight*>(storage));};
             auto registered=world.runtime().register_type(std::move(type));if(!registered) return std::unexpected(registered.error());
             sky_type=*registered;return std::shared_ptr<void>{};
         });
         changed(sky.add_entity());const auto entity=sky.selection().entity;sky.mark_saved();const auto cursor=sky.undo_count();
         changed(sky.add_component(sky_type));const auto light=sky.selection().object;
-        require(take(world::read_light(sky.world().runtime(),light)).kind==world::LightKind::sky &&
-            !take(world::has_transform(sky.world().runtime(),entity)),"A default Sky derived component acquired unnecessary Entity space.");
+        // Space follows the type: a project type derived from a SpatialComponent needs it whatever its values.
+        require(take(world::read_light(sky.world().runtime(),light)).kind==world::LightKind::directional &&
+            take(world::has_transform(sky.world().runtime(),entity)),"A derived spatial component did not give its Entity space.");
         changed(sky.undo());require(sky.undo_count()==cursor && !sky.dirty() && !take(world::has_transform(sky.world().runtime(),entity)),
-            "Default Sky component Undo changed optional space or document history.");
-        changed(sky.redo());require(sky.selection().object==light && !take(world::has_transform(sky.world().runtime(),entity)),
-            "Default Sky component Redo replaced identity or created unnecessary space.");
+            "Derived spatial component Undo kept the space it created or changed document history.");
+        changed(sky.redo());require(sky.selection().object==light && take(world::has_transform(sky.world().runtime(),entity)),
+            "Derived spatial component Redo replaced identity or lost its space.");
     }
     editor::Session document;auto& runtime=document.world().runtime();
     changed(document.add_entity());const auto group=document.selection().entity;
@@ -190,12 +191,12 @@ void verify_entity_composition() {
         editor::Session optional_space;auto& rt=optional_space.world().runtime();
         changed(optional_space.add_entity());const auto origin=optional_space.selection().entity;
         take(optional_space.set_transform(origin,{{10,0,0},{},{1,1,1}}));
-        changed(optional_space.create_light(world::LightKind::sky));const auto target=optional_space.selection().entity;
+        changed(optional_space.add_entity());const auto target=optional_space.selection().entity;
         take(optional_space.set_transform(target,{{2,0,0},{},{1,1,1}}));
         changed(optional_space.set_space_reference(target,origin,world::ReparentRule::keep_local));
         const auto before=take(optional_space.serialize());take(optional_space.remove_transform(target));
         require(!take(world::has_transform(rt,target)) && !take(world::space_reference(rt,target)),
-            "Removing optional space from Sky Light retained a hidden origin.");
+            "Removing optional space from an Entity retained a hidden origin.");
         changed(optional_space.undo());
         require(take(world::read_transform(rt,target)).position.x==2 && take(world::space_reference(rt,target))==std::optional<ObjectId>{origin} &&
             take(world::world_matrix(rt,target))[12]==12 && take(optional_space.serialize())==before,

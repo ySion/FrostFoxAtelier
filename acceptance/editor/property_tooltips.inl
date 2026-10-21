@@ -8,7 +8,7 @@ void verify_property_tooltips() {
     const auto light=component(document,document.selection().entity,document.types().light_component);
     take(document.select(mesh));document.mark_saved();
     const auto history=document.undo_count(),redo=document.redo_count();
-    const auto lighting=document.world().lighting_settings();
+    const auto lighting=take(document.world().environment());
     auto& runtime=document.world().runtime();
     const auto* mesh_type=take(runtime.describe(take(runtime.type_of(mesh))));
     const auto field=[&](TypeId type,std::string_view name)->const FieldInfo& {
@@ -154,7 +154,7 @@ void verify_property_tooltips() {
     require(!surface.presented()->tooltip && !surface.accept(world_frame),
         "Leaving World settings for an empty Parameters page retained its help.");
     require(!document.dirty() && document.undo_count()==history && document.redo_count()==redo &&
-        document.world().lighting_settings()==lighting,
+        take(document.world().environment())==lighting && document.environment()==ObjectId{},
         "Reading parameter or World help changed the document or its history.");
     std::puts("Editor property tooltip acceptance: PASS (real Runtime/Session/DSL layout, Transform/type and Light Color metadata, delayed label hover, World metadata, stale-target retirement and history isolation)");
 }

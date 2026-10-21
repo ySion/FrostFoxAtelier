@@ -373,7 +373,7 @@ std::string legacy_type(std::string name) {
 struct LegacyActorSelection {std::uint64_t entity{};std::vector<std::pair<std::uint64_t,std::uint64_t>> components;};
 Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nullptr) {
     const auto version=json_format::identity(source.at("version"));
-    if(version==6) return source;
+    if(version==6 || version==7) return source;
     if(version<1 || version>5) throw std::runtime_error("Unsupported scene format version.");
     fields(source,{"version","actors","world"});
     if(!source.contains("actors")) throw std::runtime_error("Legacy scene requires an Actor directory.");
@@ -510,7 +510,7 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
         }
         roots.push_back(actor_ids[a]);for(auto& node:nodes) entities.push_back(std::move(node));
     }
-    Json lighting=source.value("world",Json::object());if(version==4) lighting=world_settings(world_settings(lighting,true));
+    Json lighting=source.value("world",Json::object());if(version==4 && !(lighting.is_object() && lighting.empty())) lighting=world_settings(world_settings(lighting,true));
     return {{"version",6},{"next_id",std::to_string(next)},{"world",std::move(lighting)},{"roots",std::move(roots)},{"entities",std::move(entities)}};
 }
 }
@@ -653,54 +653,98 @@ struct Session::GraphCodec {
         if(session.next_local_id_==std::numeric_limits<std::uint64_t>::max()) throw std::runtime_error("Document object identity space is exhausted.");
         const auto id=session.next_local_id_++;session.local_ids_.emplace(object,id);return id;
     }
-    // Saved World settings apply option by option; data that does not fit is kept.
-    static rendering::SceneLightingSettings load_world(const Json& data,Load& load) {
-        renderer::ViewSettings candidate;
-        const auto found=data.find("world");
-        if(found==data.end()) {
-            load.report(world::Severity::warning,world::DiagnosticKind::mismatch,{},{"world"},nullptr,"World settings are missing; defaults are used.");
-            return candidate.lit;
+    // Version 6 kept World settings in a document "world" section and the sky in a Sky
+    // LightComponent; version 7 keeps both in one EnvironmentComponent. A document gains
+    // an "Environment" root Entity only when it had World settings or a Sky Light.
+    // Returns whether the file supplied World lighting: a version 6 world key or a saved
+    // Environment. One merged only from a Sky Light does not count.
+    static bool upgrade(Session& session,Json& data,Load& load) {
+        auto& runtime=session.runtime_;
+        if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
+        const auto environment_type=type_name(runtime,session.types_.environment_component);
+        auto& entities=data.at("entities");
+        if(!entities.is_array()) throw std::runtime_error("Invalid Entity graph directory.");
+        if(json_format::identity(data.at("version"))!=6) {
+            for(const auto& entity:entities) if(entity.is_object())
+                if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
+                    for(const auto& part:*parts) if(part.is_object() && part.value("type",std::string{})==environment_type) return true;
+            return false;
         }
-        const auto& source=*found;
-        if(!source.is_object()) {
-            load.keep({},{"world"},source,world::DiagnosticKind::mismatch,"Expected a World settings record. Defaults are used and the saved value is kept.");
-            return candidate.lit;
+        Json settings=Json::object(),unknown=Json::object();bool supplied{};
+        if(const auto section=data.find("world");section==data.end()) {
+            if(load.document) load.report(world::Severity::warning,world::DiagnosticKind::mismatch,{},{"world"},nullptr,"World settings are missing; defaults are used.");
+        } else {
+            if(load.document && !section->is_object()) load.keep({},{"world"},*section,world::DiagnosticKind::mismatch,"Expected a World settings record. Defaults are used and the saved value is kept.");
+            else if(load.document) for(const auto& [name,value]:section->items()) {
+                supplied=true;
+                const auto* option=view_option(name);
+                if(!option || option->name!=name || !world_option(option->option)) {unknown[name]=value;continue;}
+                Json* at=&settings;for(const auto& part:environment_field(name)) at=&(*at)[part];
+                *at=value;
+            }
+            data.erase(section);
         }
-        for(const auto& [name,value]:source.items()) {
-            const auto* option=view_option(name);
-            if(!option || option->name!=name || !world_option(option->option)) {
-                load.keep({},{"world",name},value,world::DiagnosticKind::unknown_key,"Unknown World setting kept from the saved scene.");
+        const auto enabled=[](const Json& record) {const auto at=record.find("enabled");return at==record.end() || !at->is_boolean() || at->get<bool>();};
+        const auto sky=[&](const Json& part) {
+            if(!part.is_object()) return false;
+            const auto type=part.find("type");if(type==part.end() || !type->is_string()) return false;
+            const auto found=runtime.find_type(type->get<std::string>());
+            if(!found || !derives(runtime,*found,session.types_.light_component)) return false;
+            const auto properties=part.find("properties");if(properties==part.end() || !properties->is_object()) return false;
+            const auto light=properties->find("settings");if(light==properties->end() || !light->is_object()) return false;
+            const auto kind=light->find("kind");return kind!=light->end() && *kind=="sky";
+        };
+        // Composition preorder, as the version 6 sky slot was assigned.
+        struct Sky {Json* entity;std::size_t index;bool enabled;};
+        std::vector<Sky> skies;std::unordered_map<std::uint64_t,Json*> by_key;std::unordered_set<std::uint64_t> visited;
+        for(auto& entity:entities) if(entity.is_object()) if(const auto id=entity.find("id");id!=entity.end()) by_key.emplace(local_key(*id),&entity);
+        const auto walk=[&](auto&& self,std::uint64_t key,bool active)->void {
+            const auto at=by_key.find(key);if(at==by_key.end() || !visited.insert(key).second) return;
+            auto& entity=*at->second;active=active && enabled(entity);
+            if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
+                for(std::size_t i=0;i<parts->size();++i) if(sky((*parts)[i])) skies.push_back({&entity,i,active && enabled((*parts)[i])});
+            if(const auto children=entity.find("children");children!=entity.end() && children->is_array())
+                for(const auto& child:*children) self(self,local_key(child),active);
+        };
+        if(const auto roots=data.find("roots");roots!=data.end() && roots->is_array()) for(const auto& root:*roots) walk(walk,local_key(root),true);
+        for(std::size_t i=0;i<skies.size();++i) {
+            const auto& part=skies[i].entity->at("components")[skies[i].index];
+            const std::vector<std::string> field{"entities",skies[i].entity->at("id").get<std::string>(),"components",part.at("id").get<std::string>()};
+            if(!load.document) {
+                load.report(world::Severity::warning,world::DiagnosticKind::conflict,{},field,nullptr,"A Sky Light is not imported; the sky is part of a document's Environment.");
                 continue;
             }
-            try {
-                double number{};
-                if(option->kind==ViewValueKind::boolean) {
-                    if(!value.is_boolean()) throw Mismatch("Expected a boolean World option.");
-                    number=value.get<bool>()?1:0;
-                } else if(option->kind==ViewValueKind::enumeration) {
-                    if(!value.is_string()) throw Mismatch("Expected a World option name.");
-                    const auto at=std::ranges::find(option->choices,value.get<std::string>());
-                    if(at==option->choices.end()) throw Mismatch("Unknown World option value.");
-                    number=static_cast<double>(at-option->choices.begin());
-                } else {
-                    if(!value.is_number()) throw Mismatch("Expected a numeric World option.");
-                    number=value.get<double>();
-                }
-                if(auto set=set_view_option(candidate,option->option,number);!set) throw Mismatch(set.error().message);
-            } catch(const Mismatch& error) {
-                load.keep({},{"world",name},value,world::DiagnosticKind::mismatch,std::string(error.what())+" The default is used and the saved value is kept.");
+            if(i) {
+                load.report(world::Severity::warning,world::DiagnosticKind::conflict,{},field,nullptr,"A World has one sky; this additional Sky Light is removed.");
+                continue;
             }
+            const auto& light=part.at("properties").at("settings");
+            settings["sky_enabled"]=skies[i].enabled;
+            settings["sky_color"]=light.value("color",Json{{"x",1},{"y",1},{"z",1}});
+            settings["sky_intensity"]=light.value("intensity",Json(1));
         }
-        // Contradictory settings are not resolved by JSON iteration order.
-        const auto flag=[&](const char* key,bool fallback) {
-            const auto at=source.find(key);return at!=source.end() && at->is_boolean()?at->get<bool>():fallback;
-        };
-        const char* conflict=flag("gtao",true) && flag("ssil",false)?"GTAO and Local GI are mutually exclusive.":rendering::scene_lighting_error(candidate.lit);
-        if(conflict) {
-            load.keep({},{"world"},source,world::DiagnosticKind::mismatch,std::string(conflict)+" Defaults are used and the saved values are kept.");
-            return renderer::ViewSettings{}.lit;
+        // Remove from the back so earlier indices of the same Entity stay valid.
+        for(auto sky=skies.rbegin();sky!=skies.rend();++sky) {
+            auto& parts=sky->entity->at("components");
+            parts.erase(parts.begin()+static_cast<std::ptrdiff_t>(sky->index));
+            if(parts.empty()) load.report(world::Severity::info,world::DiagnosticKind::converted,{},{"entities",sky->entity->at("id").get<std::string>()},nullptr,
+                load.document?"The Sky Light is now part of the Environment; this Entity has no components.":"The Sky Light was not imported; this Entity has no components.");
         }
-        return candidate.lit;
+        for(const auto& [name,value]:unknown.items()) {
+            // A field name the settings already use keeps its value with the document.
+            if(settings.contains(name)) load.keep({},{"world",name},value,world::DiagnosticKind::unknown_key,"Unknown World setting kept from the saved scene.");
+            else settings[name]=value;
+        }
+        if(load.document && (supplied || !skies.empty())) {
+            const auto next=local_key(data.at("next_id"));
+            if(next>std::numeric_limits<std::uint64_t>::max()-2) throw std::runtime_error("Document object identity space is exhausted.");
+            const auto entity=std::to_string(next),component=std::to_string(next+1);
+            entities.push_back({{"id",entity},{"type",type_name(runtime,session.types_.entity)},{"name","Environment"},{"enabled",true},{"space",nullptr},
+                {"children",Json::array()},{"components",Json::array({Json{{"id",component},{"type",environment_type},{"enabled",true},{"properties",std::move(settings)}}})}});
+            data.at("roots").push_back(entity);data["next_id"]=std::to_string(next+2);
+        }
+        data["version"]=7;
+        return supplied;
     }
     static Graph capture(const Session& session,std::span<const ObjectId> requested,bool persistent,bool document=false,bool live=false) {
         struct IdentityRollback {
@@ -855,7 +899,7 @@ struct Session::GraphCodec {
             merge_retained(value,object);
             values.push_back(std::move(value));
         }
-        graph.data={{"version",6},{"next_id",std::to_string(session.next_local_id_)},{"world",world_settings(session.world_.lighting_settings())},
+        graph.data={{"version",7},{"next_id",std::to_string(session.next_local_id_)},
             {"roots",std::move(root_keys)},{"entities",std::move(values)},{"materials",std::move(material_values)}};
         if(document && !session.retained_document_.record.empty())
             overlay(graph.data,restore_references(Json::parse(session.retained_document_.record)));
@@ -1040,9 +1084,9 @@ struct Session::GraphCodec {
     static Prepared construct(Session& session,const Graph& graph,Project* project,bool keep_ids,Load& load) {
         const auto& data=graph.data;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
-        if(json_format::identity(data.at("version"))!=6) throw std::runtime_error("Object graph requires scene format version 6.");
+        if(json_format::identity(data.at("version"))!=7) throw std::runtime_error("Object graph requires scene format version 7.");
         for(const auto& [name,value]:data.items())
-            if(name!="version" && name!="next_id" && name!="world" && name!="roots" && name!="entities" && name!="materials") {
+            if(name!="version" && name!="next_id" && name!="roots" && name!="entities" && name!="materials") {
                 if(load.document) load.keep({},{name},value,world::DiagnosticKind::unknown_key,"Unknown scene key kept from the saved scene.");
                 else load.report(world::Severity::warning,world::DiagnosticKind::unknown_key,{},{name},&value,"Unknown scene key is not imported.");
             }
@@ -1267,7 +1311,7 @@ struct Session::GraphCodec {
         const auto snapshot=[&](ObjectId object,std::string_view prefix) {
             Defaults values;
             for(const auto& field:business_fields(runtime,session.types_,take(runtime.type_of(object))))
-                if(field.form==ValueForm::inline_value && !field.names.empty() && field.names.front()==prefix) {
+                if(field.form==ValueForm::inline_value && !field.names.empty() && (prefix.empty() || field.names.front()==prefix)) {
                     if(field.kind!=TypeKind::string) {values.emplace_back(field.path,take(runtime.read(object,field.path)));continue;}
                     String text;take(runtime.read(object,field.path,ValueOutput{field.type,&text}));values.emplace_back(field.path,std::move(text));
                 }
@@ -1276,11 +1320,14 @@ struct Session::GraphCodec {
         const auto saved_property=[&](ObjectId object,std::string_view name)->const Json* {
             const auto& record=*records.at(object);const auto at=record.find("properties");
             if(at==record.end() || !at->is_object()) return nullptr;
+            if(name.empty()) return &*at;
             const auto found=at->find(name);return found==at->end()?nullptr:&*found;
         };
+        // An empty name is the whole properties record.
         const auto invalid_record=[&](ObjectId object,const std::string& name,const Defaults& defaults,const std::string& problem) {
-            if(const auto* value=saved_property(object,name)) load.keep(object,{"properties",name},*value,world::DiagnosticKind::mismatch,problem+" Defaults are used and the saved value is kept.");
-            else load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"properties",name},nullptr,problem+" Defaults are used.");
+            std::vector<std::string> path{"properties"};if(!name.empty()) path.push_back(name);
+            if(const auto* value=saved_property(object,name)) load.keep(object,path,*value,world::DiagnosticKind::mismatch,problem+" Defaults are used and the saved value is kept.");
+            else load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,path,nullptr,problem+" Defaults are used.");
             for(const auto& [path,value]:defaults) {
                 if(const auto* scalar=std::get_if<Scalar>(&value)) take(runtime.write(object,path,*scalar));
                 else take(runtime.write(object,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(value)}));
@@ -1306,7 +1353,9 @@ struct Session::GraphCodec {
             for(const auto& part:entity.at("components")) {
                 const auto object=ids.at(local_key(part.at("id")));const auto type=take(runtime.type_of(object));
                 const bool light=derives(runtime,type,session.types_.light_component),physical=physical_type(runtime,type);
+                const bool environment=derives(runtime,type,session.types_.environment_component);
                 const auto light_defaults=light?snapshot(object,"settings"):Defaults{};
+                const auto environment_defaults=environment?snapshot(object,{}):Defaults{};
                 const auto body_defaults=physical?snapshot(object,"body"):Defaults{};
                 properties(part,object);
                 if(derives(runtime,type,session.types_.static_mesh_component)) {
@@ -1401,6 +1450,9 @@ struct Session::GraphCodec {
                 }
                 if(light) if(auto valid=world::validate_light(runtime,take(world::read_light(runtime,object)));!valid)
                     invalid_record(object,"settings",light_defaults,valid.error().message);
+                // The Environment's rules span its fields, so a record that breaks them returns whole to the defaults.
+                if(environment) if(const auto failure=take(runtime.validate(object)))
+                    invalid_record(object,{},environment_defaults,failure->error.message);
                 if(physical) {
                     auto settings=take(physics::read_settings(runtime,object));std::string problem;
                     if(auto valid=world::validate_body_settings(runtime,settings);!valid) problem=valid.error().message;
@@ -1683,10 +1735,13 @@ struct Session::GraphCodec {
                         auto held=runtime.hold(*live,field_type);if(!held) return std::nullopt;
                         return form==ValueForm::weak_reference?take(runtime.observe(held->reference())):held->reference();
                     };
+                    // Scalar leaves are one group write: a type's rules can span them, as when a probe volume moves.
+                    std::vector<world::FieldPath> paths;std::vector<Scalar> values;
                     read_properties(session,edited,*at,load,resolve,[&](std::span<const FieldId> path,const PropertyLeaf& leaf)->Result<void> {
-                        if(const auto* scalar=std::get_if<Scalar>(&leaf)) return world.write(edited,path,*scalar);
+                        if(const auto* scalar=std::get_if<Scalar>(&leaf)) {paths.emplace_back(path.begin(),path.end());values.push_back(*scalar);return {};}
                         return world.write(edited,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(leaf)});
                     });
+                    if(!paths.empty()) take(world.write(edited,std::span<const world::FieldPath>(paths),std::span<const Scalar>(values)));
                 }
                 if(op.contains("base_color") || op.contains("roughness") || op.contains("metallic") || op.contains("emissive")) {
                     auto material=take(world::read_static_mesh(runtime,edited)).material;
@@ -1737,9 +1792,6 @@ struct Session::GraphCodec {
                     fields(space,{"position","rotation","scale","origin"});
                     relocated(world.set_transform(moved,json_trs(space)));
                 }
-            } else if(kind=="world") {
-                fields(op,{"op","world"});load.policy=LoadPolicy::strict;
-                take(world.set_lighting_settings(load_world(Json{{"world",op.at("world")}},load)));
             } else if(kind=="materials") {
                 fields(op,{"op","materials"});
                 const auto& definitions=op.at("materials");
@@ -1835,8 +1887,7 @@ void Session::forward_change(const Change& change,bool forward) {
     try {
         std::visit([&](const auto& item) {
             using T=std::decay_t<decltype(item)>;
-            if constexpr(std::is_same_v<T,LightingChange>) push({{"op","world"},{"world",world_settings(world_.lighting_settings())}},"world");
-            else if constexpr(std::is_same_v<T,EntityChange>) {
+            if constexpr(std::is_same_v<T,EntityChange>) {
                 if(item.added!=forward) {for(const auto& removal:item.removals) push({{"op","remove"},{"id",C::live_id(*this,removal.id())}});return;}
                 struct Add {std::uint64_t parent;std::size_t index;Json op;};std::vector<Add> adds;
                 for(const auto& removal:item.removals) {
@@ -1948,7 +1999,7 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Proj
     try {
         GraphCodec::Graph graph;graph.data=migrate_scene(json_format::parse(text));auto session=std::make_unique<Session>(std::move(prepare));
         GraphCodec::Load load;load.policy=policy;load.document=true;
-        take(session->world_.set_lighting_settings(GraphCodec::load_world(graph.data,load)));
+        session->lighting_supplied_=GraphCodec::upgrade(*session,graph.data,load);
         auto prepared=GraphCodec::construct(*session,graph,&project,true,load);
         for(const auto& [object,label]:prepared.labels) session->names_.emplace(object,label);
         if(!prepared.roots.empty()) {
@@ -1968,7 +2019,7 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text,Project
         if(editing() || world_.running()) throw std::runtime_error("Composition import requires a stopped document without an active edit.");
         if(parent!=ObjectId{}) take(admit_entity_edit(parent));
         GraphCodec::Graph graph;graph.data=migrate_scene(json_format::parse(text));
-        GraphCodec::Load load;
+        GraphCodec::Load load;(void)GraphCodec::upgrade(*this,graph.data,load);
         auto prepared=GraphCodec::construct(*this,graph,&project,false,load);
         if(prepared.roots.empty()) return world::Commit{};return GraphCodec::publish(*this,prepared,graph,parent,false,load);
     } catch(const std::exception& error) {return failed(error);}
@@ -2025,12 +2076,11 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         if(mesh && *mesh && names[1]=="material" && names.size()>2) drop(object,std::span(names).subspan(2,1));
         else drop(object,names);
     };
-    static const std::array<std::string,1> space{"space"},name{"name"},world_path{"world"};
+    static const std::array<std::string,1> space{"space"},name{"name"};
     static const std::array<std::string,2> body{"properties","body"};
     std::visit([&](const auto& item) {
         using T=std::decay_t<decltype(item)>;
-        if constexpr(std::is_same_v<T,LightingChange>) drop({},world_path);
-        else if constexpr(std::is_same_v<T,FieldChange>) {
+        if constexpr(std::is_same_v<T,FieldChange>) {
             if(std::holds_alternative<world::Trs>(item.after)) drop(item.root.id(),space);else field(item.root.id(),item.path);
         } else if constexpr(std::is_same_v<T,FieldGroupChange>) {for(const auto& path:item.paths) field(item.root.id(),path);}
         else if constexpr(std::is_same_v<T,NameChange>) drop(item.root.id(),name);
@@ -2099,9 +2149,8 @@ Result<RetainedView> Session::retained(ObjectId object) const {
             using enum world::DiagnosticKind;
             if(document) {
                 if(path.front()!="world") return {false,unknown_key};
-                if(path.size()==1) return {true,mismatch};
-                const auto* option=view_option(path[1]);
-                return {false,option && option->name==path[1] && world_option(option->option)?mismatch:unknown_key};
+                // A version 6 world value the Environment could not take.
+                return {path.size()==1,path.size()==1?mismatch:unknown_key};
             }
             if(material) return {false,unknown_key};
             if(path.front()=="properties") {

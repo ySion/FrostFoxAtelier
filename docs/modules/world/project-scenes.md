@@ -12,11 +12,11 @@ Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 
 
 属性记录由一个共用的叶解码器逐叶解码，场景加载、Play 增量和编辑器操作符参数都经过它。`editor::decode_properties`（[properties.hpp](../../../src/editor/properties.hpp)）是严格模式入口：目标是对象或调用方持有的记录值，未知字段、类型不符、越过硬边界都报错，不夹值；整数字段中可无损转换的浮点值照常接受；记录中缺省的字段保持原值。传入写入钩子时，内联叶交给钩子（例如收集成补丁），不写入目标；钩子不接收引用叶，所以不能与引用解析同时传入。Play 增量对已存在对象的 String 字段经 `World::write(ValueInput)` 整值写入，与标量叶一样经过类型规则与准入检查，被拒时整值恢复并以 error 级 `command_rejected` 报告。
 
-## Scene v6
+## Scene v7
 
-统一写出 v6，旧 v1–v5 严格导入后再按 v6 保存。顶层包含：
+统一写出 v7，旧 v1–v6 读取时迁移，再按 v7 保存。顶层包含：
 
-- `version: 6`、十进制字符串 `next_id`、作者配置 `world`。
+- `version: 7`、十进制字符串 `next_id`。World 设置不再是顶层段，而是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，见下文 v6 迁移。
 - `roots`：有序顶层 Entity 文档 ID。
 - `entities`：Entity 记录，每个包含 `id / type / name / enabled / properties / children / components / space`。
 - `space`：null 表示无空间；否则保存 position、rotation、scale 和 origin。origin 为 null 时继承组合祖先，为字符串 `"0"` 时使用世界，为 Entity ID 字符串时使用显式空间参考。
@@ -35,6 +35,19 @@ Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字�
 - 缺失或无法读取的资源（`missing_resource` / `unreadable_resource`）：工程目录中已不存在的 Mesh、Material、Texture 报告 `missing_resource`；目录中仍列出但读不出来（文件损坏、类型不符）的报告 `unreadable_resource`，消息带读取错误。两者都由占位资源代替，引用键原样写回，资源文件本身不被改写。缺失 Texture 只让该输入没有贴图，材质的其他参数照常；缺失 Material（含实例的父材质）用默认参数代替，实例覆盖照常；缺失 Mesh 的组件不绘制、没有材质槽，`materials` 绑定表作为保留数据原样写回，表中引用的场景材质随之保活。缺失 Mesh 的三角形碰撞跳过 Cook 并另报一条诊断，运行时该刚体按 World 失败策略处理。占位资源不能作为工程资产编辑、保存或指派；在 Asset Browser 或 Control 中直接打开无法读取的资产仍然报错。恢复文件后重新打开场景生效。
 - 保留数据中的引用与活引用规则相同：子树导出拒绝图外目标，同一 Session 内复制继续指向原目标；目标在文档中被删除时写为 null 并报告 `reference_dropped`，撤销删除后恢复。
 - 编辑某字段会释放它的保留值；`Session::discard_retained` 丢弃一个对象的全部保留值，占位对象仍保留原类型。两者都进入 Undo/Redo。
+
+### v6 → v7 迁移
+
+v6 把 World 设置存在顶层 `world` 段（键名来自与 World Settings、Control 共用的 ViewOption 目录），天光是 kind 为 sky 的 LightComponent。读取 v6 文档时：
+
+- `world` 段的每个键写到 EnvironmentComponent 的对应字段：`probe_volume_N_min_x` 写到 `volumeN.minimum.x`，`probe_volume_N_count_x` 写到 `volumeN.count_x`，其余同名。未知键、类型不符或越界的值与普通属性一样按上文的加载策略处理，保留在该组件上；违反跨字段规则（例如 GTAO 与 Local GI 同时开启）时整个组件取默认值，原记录整体保留。`world` 不是对象时按 `mismatch` 保留在文档级；缺少 `world` 段时报告 warning。
+- 按组合前序的第一个 Sky Light 提供 `sky_color`、`sky_intensity`（缺省分别为 (1,1,1) 和 1），`sky_enabled` 为该组件、所属 Entity 及全部祖先都启用。其余字段对天光本来无效，直接丢弃。之后的 Sky Light 各报一条 `conflict` warning 并移除，数据不保留。所有 Sky 组件都从原 Entity 上移除，Entity 保留名称、空间和其他组件；变空的 Entity 报一条 info 级 `converted`。
+- 只有 `world` 段至少有一个键或存在 Sky Light 时才生成 Environment：一个名为 Environment、没有空间的根 Entity，追加在 `roots` 末尾，Entity 与组件的 ID 依次取 `next_id` 和 `next_id+1`，`next_id` 增加 2。仓库里的示例都是 `world: {}`：Scene Lit Room 因 Sky Light 生成 Environment，其余不生成。
+- 子树导入（`instantiate_subtree`）不是文档：v6 的 `world` 段被忽略，Sky Light 不导入并报 `conflict` warning。
+
+v1–v5 先按严格导入升到 v6（v4 的旧阴影字段在这一步校验后丢弃），再走上面的迁移。仓库里的示例场景保持 v6，打开时迁移，保存后写为 v7。
+
+`Session::lighting_supplied()` 表示文件是否提供了 World 光照：v6 的 `world` 段至少有一个键，或 v7 文件中有 EnvironmentComponent；只因 Sky Light 生成的 Environment 不算。示例入口与 `--scene-lit-camera` 只在未提供时拟合 DDGI 体积（`initialize_environment`：没有 Environment 时创建它，不进历史、不标脏，下次保存写出），之后该标志为真。
 
 诊断记录使用 `world::Diagnostic`（[src/world/diagnostic.hpp](../../../src/world/diagnostic.hpp)），`phase` 为 `load`，`Session::load_issues()` 返回本次加载的诊断，`Session::issues()` 返回当前仍未解决的数据。没有改名重定向表；字段改名前后的值以 `unknown_field` 保留，改回原名后恢复。
 
@@ -56,4 +69,4 @@ Session::start/update/stop 是运行宿主唯一驱动。start 创建 PhysicsSce
 
 `world` 保存共享 SceneLightingSettings，包括直接光预算；Session 历史负责持久化与撤销，Renderer 消费副本。诊断模式、GPU 缓存与实际 follow-focus 锚点不属于存档，详见[持久格式与责任](../editor/projects.md#持久格式与责任)。
 
-端到端验收入口为 `project_scene_acceptance`、`world_acceptance`、`editor_document_acceptance`；Scene v6 与严格旧格式导入的结果以本轮实际执行记录为准。
+端到端验收入口为 `project_scene_acceptance`、`world_acceptance`、`editor_document_acceptance`；Scene v7、v6 迁移与严格旧格式导入的结果以本轮实际执行记录为准。

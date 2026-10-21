@@ -422,8 +422,6 @@ World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl
     }});
     impl_->lights = {1};
     impl_->registrations.push_back({types.light_component, {}});
-    impl_->admissions.push_back({types.light_component, detail::unique_sky_light(impl_->lights)});
-    impl_->admissions.push_back({types.light_component, detail::spatial_lights()});
     impl_->environments = {2};
     impl_->registrations.push_back({types.environment_component, {}});
     impl_->admissions.push_back({types.environment_component, detail::unique_environment(impl_->environments)});
@@ -436,12 +434,6 @@ World::~World() {
     }
 }
 Runtime& World::runtime() const noexcept { return impl_->runtime; }
-const rendering::SceneLightingSettings& World::lighting_settings() const noexcept { return impl_->lighting; }
-Result<void> World::set_lighting_settings(const rendering::SceneLightingSettings& candidate) {
-    if(auto ready=impl_->admit();!ready) return ready;
-    if(const auto* message=rendering::scene_lighting_error(candidate)) return error(ErrorCode::invalid_definition,message);
-    impl_->lighting=candidate;return {};
-}
 const Types& World::types() const noexcept { return impl_->types; }
 bool World::running() const noexcept { return impl_->running; }
 bool World::closed() const noexcept { return impl_->closed; }

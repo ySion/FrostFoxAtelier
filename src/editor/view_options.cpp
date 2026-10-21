@@ -24,6 +24,7 @@ constexpr std::string_view volume_placement = "Fixed 使用固定的世界坐标
 constexpr std::string_view volume_minimum = "Volume 范围的最小 XYZ，单位 m。Fixed 使用世界坐标，Follow Focus 使用相对于 lighting focus 的偏移。每个分量必须小于对应的最大值。";
 constexpr std::string_view volume_maximum = "Volume 范围的最大 XYZ，单位 m。Fixed 使用世界坐标，Follow Focus 使用相对于 lighting focus 的偏移。每个分量必须大于对应的最小值。";
 constexpr std::string_view volume_counts = "三个轴各自的探针数量。范围不变时，增加数量会缩小间距，同时增加存储和更新工作量。\n所有启用的 Volume 合计最多 4096 个探针；Follow Focus 还需要足够的内部格子容纳边界过渡。";
+constexpr std::string_view sky_color = "天光的非负线性 RGB，三个分量依次为 R、G、B，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。";
 constexpr std::string_view volume_blend = "Volume 边缘的过渡宽度，以探针格子为单位。边缘贡献会平滑交给其他覆盖该处的 Volume；它不会补出没有探针覆盖的区域。";
 #define VFIELD(slot,id,kind,low,high,label,description) \
     ViewOptionInfo{probe_volume_option(slot,ProbeVolumeField::id),"probe_volume_" #slot "_" #id,K::kind,low,high,{},label,"DDGI Volume",description}
@@ -84,7 +85,11 @@ constexpr std::array options{
     FIELD(cavity_ridge,number,0,2,"Ridge","Cavity","凸边的对比强度。0 关闭凸边增强，不影响 Valley 的凹处增强。"),
     FIELD(cavity_valley,number,0,2,"Valley","Cavity","凹处的对比强度。0 关闭凹处增强，不影响 Ridge 的凸边增强。"),
     FIELD(cavity_radius,number,.5,4,"Radius (px)","Cavity","Cavity 的屏幕空间观察半径，单位为物理像素。较大值强调更宽的边缘区域。"),
-    VOLUME(0),VOLUME(1),VOLUME(2),VOLUME(3)
+    VOLUME(0),VOLUME(1),VOLUME(2),VOLUME(3),
+    FIELD(sky_enabled,boolean,0,1,"Sky","Sky","启用均匀天光。关闭时环境照明为零；颜色和强度保留。"),
+    FIELD(sky_intensity,number,0,65504,"Intensity (cd/m²)","Sky","均匀天光的辐亮度，单位 cd/m²，再由 Color 逐通道调制。每个通道的 Color × Intensity 不能超过 65504。"),
+    FIELD(sky_color_x,number,0,65504,"Color","Sky",sky_color),FIELD(sky_color_y,number,0,65504,"Color","Sky",sky_color),
+    FIELD(sky_color_z,number,0,65504,"Color","Sky",sky_color)
 };
 #undef VOLUME
 #undef VFIELD
@@ -100,7 +105,8 @@ auto invalid(std::string message) { return std::unexpected(Error{ErrorCode::inva
 }
 bool world_option(ViewOption option) noexcept {
     return (option>=ViewOption::shadows && option<=ViewOption::probe_rays) ||
-        option==ViewOption::probe_bounce || option==ViewOption::indirect_gain || volume_option(option);
+        option==ViewOption::probe_bounce || option==ViewOption::indirect_gain || volume_option(option) ||
+        (option>=ViewOption::sky_enabled && option<=ViewOption::sky_color_z);
 }
 std::span<const ViewOptionInfo> view_options() noexcept { return options; }
 std::span<const ViewOptionAlias> view_option_aliases() noexcept {return aliases;}
@@ -148,6 +154,8 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(direct_shadow_cache,lit.direct_shadow_cache);
     VALUE(direct_cluster_inspect,lit.direct_cluster_inspect);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
+    VALUE(sky_enabled,lit.sky_enabled);VALUE(sky_intensity,lit.sky_intensity);
+    VALUE(sky_color_x,lit.sky_color[0]);VALUE(sky_color_y,lit.sky_color[1]);VALUE(sky_color_z,lit.sky_color[2]);
 #undef VALUE
     case ViewOption::volume_first:case ViewOption::volume_last:break;
     }
@@ -190,6 +198,8 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(direct_shadow_cache,lit.direct_shadow_cache);
     SET(direct_cluster_inspect,lit.direct_cluster_inspect);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
+    SET(sky_enabled,lit.sky_enabled);SET(sky_intensity,lit.sky_intensity);
+    SET(sky_color_x,lit.sky_color[0]);SET(sky_color_y,lit.sky_color[1]);SET(sky_color_z,lit.sky_color[2]);
 #undef SET
     case ViewOption::volume_first:case ViewOption::volume_last:break;
     }

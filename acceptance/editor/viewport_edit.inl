@@ -257,7 +257,9 @@ void verify_viewport_duplication() {
     changed(document.duplicate_selected());require(document.undo_count()==count,"Empty duplicate changed history.");
     editor::Session restricted;
     changed(restricted.create_static_mesh(editor::mesh_assets().front()));const auto mesh_entity=restricted.selection().entity;
-    changed(restricted.create_light(world::LightKind::sky));const auto sky_entity=restricted.selection().entity;
+    // A World keeps one Environment, so copying it with a mesh fails as one group.
+    auto restricted_lighting=take(restricted.world().environment());restricted_lighting.exposure_ev=1;take(restricted.set_environment(restricted_lighting));
+    const auto sky_entity=take(world::inspect_component(restricted.world().runtime(),restricted.environment())).owner;
     const std::array mixed{mesh_entity,sky_entity};take(restricted.select_entities(mixed,sky_entity));
     const auto checkpoint=take(restricted.serialize());const auto checkpoint_history=restricted.undo_count();
     require(!restricted.duplicate_selected() && restricted.undo_count()==checkpoint_history && take(restricted.serialize())==checkpoint &&

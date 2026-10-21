@@ -91,10 +91,6 @@ public:
 };
 // world::material_surfaces inside the caller's borrow of the mesh component.
 Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&, ObjectId, StaticMeshComponent&);
-// One Sky Light per World, disabled components included.
-World::Admission unique_sky_light(CapabilityId lights);
-// A light other than Sky needs a Transform on its member owner.
-World::Admission spatial_lights();
 // One EnvironmentComponent per World, disabled components included.
 World::Admission unique_environment(CapabilityId environments);
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
@@ -195,7 +191,6 @@ struct World::Impl {
     };
     struct Bucket { TypeId type; std::vector<ObjectId> objects; };
 
-    rendering::SceneLightingSettings lighting;
     Runtime& runtime;
     Types types;
     World& world;

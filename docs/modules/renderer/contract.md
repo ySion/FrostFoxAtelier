@@ -29,7 +29,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
-World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v6 保存；Diagnostics 的 `direct_reference` 属于视口，仅启用 64 次独立估计并关闭直接光复用/降噪。`spatial_light_sampling` 同属视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换 DI/DDGI fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史；屏幕直接光参考模式始终使用全局 proposal。旧四灯阴影槽与单灯样本参数已退出当前接口；Scene v4 只在读取边界严格校验旧字段并丢弃。解析灯和发光面经同一光源快照、采样及可见性入口，方向光独立评估；屏幕 reservoir 和 DDGI 独立采样不互借历史。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。该原生实现未引入 RTXDI SDK，具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
+World Settings 的直接光候选预算 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v7 保存；Diagnostics 的 `direct_reference` 属于视口，仅启用 64 次独立估计并关闭直接光复用/降噪。`spatial_light_sampling` 同属视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换 DI/DDGI fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史；屏幕直接光参考模式始终使用全局 proposal。旧四灯阴影槽与单灯样本参数已退出当前接口；Scene v4 只在读取边界严格校验旧字段并丢弃。解析灯和发光面经同一光源快照、采样及可见性入口，方向光独立评估；屏幕 reservoir 和 DDGI 独立采样不互借历史。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。该原生实现未引入 RTXDI SDK，具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
 
 `LightFrame` 消费已验证的低层 Frame 与对应 MaterialFrame，在 CPU 派生统一光源快照及当前近源 proposal；它不持有 World 或创建 GPU 资源。Scene Lit 仍是上传、绑定、统计与退休的唯一拥有者。近源网格只改变抽样概率，候选批次按确定性近源/全局配额生成，并以实际整数配额组成的完整概率求权重；单候选或无有效局部域时全部使用全局 proposal，远源与溢出源保留全局支持。网格滚动不作为辐射变化清历史，也不要求第二份旧网格。当前编码帧的保留源数、非空 cell 数、逻辑字节及上传标记，与异步 GPU 完成统计分开，具体口径见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
@@ -64,7 +64,7 @@ CPU 在编码前复用数学模块计算一次 inverse view-projection。有限�
 
 Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用 Scene Lit。Scene Lit 消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
 
-Scene Lit 的环境照明由场景唯一的 Sky Light（天光）提供。Application 从 World 提取天光颜色乘强度，填入 `Frame.environment`；默认是零，不再由 ViewSettings 隐式补光。禁用、删除或更换场景会更新该值，并沿既有信号历史处理收敛。该辐射参与 DDGI 和环境反射，但不自动绘制可见天空；当前 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI / GTAO 互斥合同见 [Scene Lit](scene-lit.md)。带方向的环境贴图和可见天空资产尚未接入。
+Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSettings` 的 `sky_enabled`、`sky_color`、`sky_intensity`，写在 Environment 组件上）。宿主用 `rendering::sky_radiance` 求颜色乘强度，填入 `Frame.environment`；默认关闭，值为零。关闭天光、删除 Environment 或更换场景会更新该值，并沿既有信号历史处理收敛。该辐射参与 DDGI 和环境反射，但不自动绘制可见天空；当前 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI / GTAO 互斥合同见 [Scene Lit](scene-lit.md)。带方向的环境贴图和可见天空资产尚未接入。
 
 每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 

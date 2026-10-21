@@ -1107,7 +1107,7 @@ int verify_editor_scene_lit(Application& app,const char* output_directory,const 
     std::ofstream report(output/"acceptance.txt");
     report<<"Editor Scene Lit window acceptance: PASS\nBuild: "<<atelier::build_info::revision
         <<"\nConfiguration: "<<atelier::build_info::configuration
-        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three direct-light creation menus plus unique Sky Light, typed Parameters, native middle-orbit direction, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
+        <<"\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three direct-light creation menus, Environment sky, typed Parameters, native middle-orbit direction, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
             <<"Runtime World snapshots use separate document/Renderer E2E; no Simulate UI exists. Native display choices leave the editing lifecycle, authored history and data unchanged.\n"
         <<"GPU validation/vsync enabled; this window run is not a performance benchmark.\n";
     require(report.good(),"Cannot save Scene Lit window acceptance evidence.");

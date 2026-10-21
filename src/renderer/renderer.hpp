@@ -93,8 +93,8 @@ struct Frame {
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
     std::uint64_t scene_revision{}; // Content revision; signal owners distinguish changes from scene replacement.
     bool camera_cut{};
-    // Uniform radiance from the scene's single Sky Light.
-    // No Sky Light means zero; this is not a viewport ambient-light setting.
+    // Uniform sky radiance from the scene's environment (rendering::sky_radiance).
+    // Zero when the sky is off; this is not a viewport ambient-light setting.
     std::array<float, 3> environment{};
     std::array<float, 3> lighting_focus{}; // Receiver/play focus for following DDGI volumes; not camera eye.
     // Active rendering time since the last accepted frame, independent of Play.

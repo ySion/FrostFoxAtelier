@@ -48,7 +48,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`context` 只在本次调用内替换 `selection {entities, active, object}` 或 `region`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`，参数或 Context 不合法为 `invalid_request`。成功时返回调用后的选择 |
 | view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | project.open、scene.open、scene.save | Application 工程/场景命令；替换拒绝未保存场景或源码草稿，避免无人处理的保存对话框 |
-| scene.create | Entity、StaticMeshEntity、Point/Rectangle/Directional/Sky Light，共用现有命令和 World 工厂 |
+| scene.create | Entity、StaticMeshEntity、Point/Rectangle/Directional Light，共用现有命令和 World 工厂。`kind: sky` 已删除，返回 `invalid_request`，错误消息指向 view.set 的 sky 键 |
 | scene.rename、scene.delete | Session 的名称和删除；rename 只修改 Entity 名称，Component 使用类型名。选择改用 `op.call scene.select`，选择放在 context |
 | scene.set_property | 按发现到的属性名及精确标量类型写入；枚举使用名称 |
 | scene.transform | Entity 的可选内联完整 TRS；无空间时显式添加空间，一次撤销；位置/缩放三分量，旋转 quaternion xyzw |
@@ -107,7 +107,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left，原有 0–3 编码不变；yaw/pitch 为弧度，distance 为 0.5–2000 米，恢复时验证相机基底。视图命令与 UI 使用同一六向相机入口，`camera.set` 仍恢复完整状态。
 
-启用 GTAO 或 Local GI/SSIL 会关闭另一项；同一个 patch 同时请求两者为 true 会失败。持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自场景的唯一 Sky Light；background 仍保存工作室模式偏好。
+启用 GTAO 或 Local GI/SSIL 会关闭另一项；同一个 patch 同时请求两者为 true 会失败。持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自 World 的天光设置；background 仍保存工作室模式偏好。天光是 scene 项 `sky_enabled`（bool）、`sky_intensity`（cd/m²）和 `sky_color_x/y/z`（线性 RGB 三个标量），与其他 World 选项一样经 `view.set` 写入 Environment 组件，第一次写入时创建 Environment，二者是同一条历史；`sky_enabled` 为 false 时环境辐射为零。
 
 直接光作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制统一局部光源池的初始候选数，方向光独立评估。视口诊断 `direct_reference` 固定平均 64 次独立估计，每次保留当前候选预算，关闭 reservoir 复用和直接光颜色降噪，并强制屏幕直接光使用全局光源提议作独立参考，不改写 DDGI 的提议设置。视口诊断 `spatial_light_sampling` 默认 true，控制 DI 与 DDGI hit 是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。视口设置 `direct_clustered` 默认 true（A）；false 回退 ReSTIR 直接光，仅作诊断对照。A 使用 tile + depth-slice 的保守局部灯列表并精确枚举，列表超过 64 项时回退完整枚举；不写 World 或 Undo，不进入正式渲染模式菜单。`direct_reference=true` 优先执行旧的 64 次参考估计，两个开关的记录值仍各自保留；DDGI 不受该开关影响。`direct_cluster_inspect` 默认 false，仅 clustered 且非 reference 路径生效，按需统计 GBuffer 接收像素的局部解析灯支持数量；它不重置光照历史、不持久化，但其诊断工作计入列表构建，性能采样必须关闭。当前接口不接受旧阴影槽预算与单灯样本参数；它们只在 Scene v4 文件读取边界严格校验后丢弃。
 
@@ -217,7 +217,7 @@ repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、
 
 含 v1–v5 场景的旧包通过同一场景迁移器解析选择与检查目标，再按文档 ID 查找新对象。空间组件展开成子 Entity 后，旧序号仍对应原来的对象；不会用展开后的 World 成员下标猜测身份。旧纯空间组件的检查目标映射到相应 Entity，能力组件则保留其真实 owner。正式 Control 请求继续使用 Entity 命名。
 
-新产物的 manifest 标记 `view_schema: 2`；无标记或显式版本 1 视为旧视图快照，未知版本拒绝。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`；旧值 64 不开启 `direct_reference`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4 的 World 设置在一致性预校验中应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
+新产物的 manifest 标记 `view_schema: 3`，视图带上天光的五个键；版本 2 没有天光键，无标记或显式版本 1 视为更旧的视图快照，未知版本拒绝。打开版本 1、2 时，天光取自迁移后场景的 Environment（v6 的 Sky Light 已并入），视图里其余的 World 设置照旧与场景核对；版本 3 的视图与场景（版本 4 及以后）迁移后的 Environment 不一致时返回 `dependency_mismatch`；这项核对在加载出的候选文档上进行，失败时保留当前文档。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`；旧值 64 不开启 `direct_reference`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4–6 的 `world` 段在一致性预校验中与视图比较（天光不在 `world` 段，由上面的 Environment 核对覆盖），版本 4 应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
 
 ## 生命周期和扩展
 
@@ -274,4 +274,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 是 scene 项，随 Scene v6 保存；`direct_reference`、`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v7 保存；`direct_reference`、`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

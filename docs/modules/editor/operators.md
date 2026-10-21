@@ -125,7 +125,7 @@ struct Context {
 参数是原生登记的 Runtime 记录：头文件里用 `ASTRUCT/AFIELD/AENUM` 声明，由 `atelier_reflect` 生成，范围用 `Min/Max/HardMin/HardMax`。默认值就是类型的默认构造。由它派生 `op.list` 的 schema、keymap 和菜单参数的校验，以后也派生“调整上次操作”面板。编辑器为 `src/editor/operator_parameters.hpp` 新增一个反射生成组。
 
 ```cpp
-AENUM(Name = "editor.AddKind") enum class AddKind : std::uint32_t { entity, mesh, point, rectangle, directional, sky };
+AENUM(Name = "editor.AddKind") enum class AddKind : std::uint32_t { entity, mesh, point, rectangle, directional };
 ASTRUCT(Name = "editor.op.SceneAdd", DESC = "在 3D 光标处新建一个 Entity。")
 struct SceneAdd {
     AGENERATED_BODY(SceneAdd)
@@ -159,7 +159,7 @@ public:
 
 ### `view.set`：由表格生成的描述型记录
 
-`view.set` 的参数类型 `editor.ViewSettings` 是描述型记录，启动时由现有 `ViewOptionInfo` 表生成。表仍然是唯一的定义：表中的种类、范围和枚举值成为字段和 AENUM，类型名固定为 `editor.ViewSettings`，字段顺序就是表的顺序，确定且稳定。验收断言 `op.list` 中 `view.set` 的 schema 与表逐项一致。World 作者值在 4b-3 之前仍走 LightingChange，之后改为环境组件上的 `scene.set_properties`。
+`view.set` 的参数类型 `editor.ViewSettings` 是描述型记录，启动时由现有 `ViewOptionInfo` 表生成。表仍然是唯一的定义：表中的种类、范围和枚举值成为字段和 AENUM，类型名固定为 `editor.ViewSettings`，字段顺序就是表的顺序，确定且稳定。验收断言 `op.list` 中 `view.set` 的 schema 与表逐项一致。World 作者值是 Environment 组件的属性：`Session::set_environment` 比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通的属性编辑历史；没有 Environment 时同一历史项先创建它。LightingChange 已删除。
 
 ### `scene.set_properties`：对象类型约束下的稀疏补丁
 

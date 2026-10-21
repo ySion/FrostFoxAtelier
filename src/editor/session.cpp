@@ -1,5 +1,6 @@
 #include "editor/session.hpp"
 #include "editor/fields.hpp"
+#include "editor/view_options.hpp"
 #include "physics/physics.hpp"
 #include <algorithm>
 #include <cmath>
@@ -8,7 +9,7 @@
 
 namespace atelier::editor {
 namespace {
-auto invalid(const char* message) { return std::unexpected(Error{ErrorCode::invalid_definition, message}); }
+auto invalid(std::string message) { return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)}); }
 bool contains_member(const world::World& world, ObjectId entity) {
     const auto members=world.members();
     return members && std::ranges::any_of(*members,[&](const auto& member){return member.id()==entity;});
@@ -72,17 +73,99 @@ Result<void> Session::validate_name(std::wstring_view name) {
         return invalid("Use a name with 1–256 visible characters.");
     return {};
 }
-Result<void> Session::set_world_lighting(const rendering::SceneLightingSettings& settings) {
-    const auto before=world_.lighting_settings();
-    if(before==settings) return world_.set_lighting_settings(settings);
-    if(editing()) return invalid("Finish the current property edit before changing World settings.");
-    if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
-    remember(LightingChange{before,settings});return {};
+std::vector<std::string> environment_field(std::string_view option) {
+    constexpr std::string_view volume="probe_volume_";
+    if(option.starts_with(volume) && option.size()>volume.size()+2) {
+        std::vector<std::string> names{"volume"+std::string(option.substr(volume.size(),1))};
+        const auto rest=option.substr(volume.size()+2);
+        if(rest.starts_with("min_")) {names.emplace_back("minimum");names.emplace_back(rest.substr(4));}
+        else if(rest.starts_with("max_")) {names.emplace_back("maximum");names.emplace_back(rest.substr(4));}
+        else names.emplace_back(rest);
+        return names;
+    }
+    if(option.starts_with("sky_color_")) return {"sky_color",std::string(option.substr(10))};
+    return {std::string(option)};
 }
-Result<void> Session::initialize_world_lighting(const rendering::SceneLightingSettings& settings) {
+ObjectId Session::environment() const {
+    const auto found=world_.query(types_.environment_component);
+    return found && !found->empty()?found->front():ObjectId{};
+}
+Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
+    auto current=world_.environment();if(!current) return std::unexpected(current.error());
+    renderer::ViewSettings before,after;
+    static_cast<rendering::SceneLightingSettings&>(before.lit)=*current;static_cast<rendering::SceneLightingSettings&>(after.lit)=settings;
+    auto fields=detail::author_fields(world_.runtime(),types_.environment_component);if(!fields) return std::unexpected(fields.error());
+    EnvironmentEdit edit;
+    for(const auto& option:view_options()) {
+        if(!world_option(option.option)) continue;
+        const auto value=view_value(after,option.option);
+        if(value==view_value(before,option.option)) continue;
+        const auto names=environment_field(option.name);
+        const auto field=std::ranges::find(*fields,names,&detail::ScalarField::names);
+        if(field==fields->end()) return invalid("World setting "+std::string(option.name)+" has no Environment field.");
+        // The view option kind matches the field's Scalar type.
+        Scalar leaf;
+        switch(option.kind) {
+        case ViewValueKind::boolean:leaf=value!=0;break;
+        case ViewValueKind::enumeration:leaf=EnumValue{field->type,static_cast<std::uint32_t>(value)};break;
+        case ViewValueKind::integer:leaf=static_cast<std::uint32_t>(value);break;
+        case ViewValueKind::number:leaf=static_cast<float>(value);break;
+        }
+        edit.paths.push_back(field->path);edit.values.push_back(leaf);
+    }
+    return edit;
+}
+Result<void> Session::set_environment(const rendering::SceneLightingSettings& settings) {
+    auto edit=environment_edit(settings);if(!edit) return std::unexpected(edit.error());
+    if(edit->paths.empty()) return {};
+    if(editing()) return invalid("Finish the current property edit before changing World settings.");
+    if(const auto existing=environment();existing!=ObjectId{}) {
+        auto entity=admit_property_edit(existing);if(!entity) return std::unexpected(entity.error());
+        auto root=runtime_.hold(existing);if(!root) return std::unexpected(root.error());
+        FieldGroupChange change{std::move(*root),*entity,edit->paths,0,{},edit->values};
+        for(const auto& path:edit->paths) {
+            auto value=world_.read(existing,path);if(!value) return std::unexpected(value.error());
+            change.before.push_back(*value);
+        }
+        if(auto written=world_.write(existing,edit->paths,edit->values);!written) return written;
+        remember(std::move(change));return {};
+    }
+    // The first edit creates the Environment with its values: one history item, and
+    // Play receives the complete component in one add.
+    auto created=create_environment(edit->paths,edit->values);if(!created) return std::unexpected(created.error());
+    EntityChange change;change.added=true;change.removals.emplace_back().root=std::move(*created);
+    const auto id=change.removals.front().id();
+    names_.emplace(id,L"Environment");
+    auto attached=world_.attach(id);
+    if(!attached) {names_.erase(id);return std::unexpected(attached.error());}
+    remember(std::move(change));
+    if(attached->notification_error) return std::unexpected(*attached->notification_error);
+    return {};
+}
+Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath> paths,std::span<const Scalar> values) {
+    auto members=world_.members();if(!members) return std::unexpected(members.error());
+    if(members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
+    auto entity=world::create_entity(runtime_);if(!entity) return std::unexpected(entity.error());
+    auto component=world::create_component(runtime_,types_.environment_component);if(!component) return std::unexpected(component.error());
+    if(!paths.empty()) if(auto written=world_.write(component->id(),paths,values);!written) return std::unexpected(written.error());
+    const std::array parts{world::Attachment{component->id()}};
+    auto composed=world_.attach_components(entity->id(),parts);if(!composed) return std::unexpected(composed.error());
+    return std::move(*entity);
+}
+Result<void> Session::initialize_environment(const rendering::SceneLightingSettings& settings) {
     if(undo_count() || redo_count() || editing() || dirty()) return invalid("World settings initialize only a freshly opened document.");
-    if(auto changed=world_.set_lighting_settings(settings);!changed) return changed;
-    ++revision_;return {};
+    auto edit=environment_edit(settings);if(!edit) return std::unexpected(edit.error());
+    if(edit->paths.empty()) return {};
+    if(const auto existing=environment();existing!=ObjectId{}) {
+        if(auto written=world_.write(existing,edit->paths,edit->values);!written) return written;
+    } else {
+        auto created=create_environment(edit->paths,edit->values);if(!created) return std::unexpected(created.error());
+        const auto id=created->id();
+        auto attached=world_.attach(id);if(!attached) return std::unexpected(attached.error());
+        if(attached->notification_error) return std::unexpected(*attached->notification_error);
+        names_.emplace(id,L"Environment");
+    }
+    lighting_supplied_=true;++revision_;return {};
 }
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     if (auto valid=validate_name(name);!valid) return valid;
@@ -243,18 +326,14 @@ Result<world::Commit> Session::create_light(world::LightKind kind,math::Vector3 
     auto light=world::create_component(runtime_,types_.light_component);if(!light) return std::unexpected(light.error());
     auto configured=runtime_.with_native<world::LightComponent>(light->id(),[&](auto& value)->Result<void> {
         value.settings.kind=kind;
-        if(kind==world::LightKind::sky) value.settings.intensity=.03f;
         return world::validate_light(runtime_,value.settings);
     });
     if(!configured) return std::unexpected(configured.error());
-    if(kind!=world::LightKind::sky) {
-        auto positioned=world_.set_transform(entity->id(),{position,{},{1,1,1}});if(!positioned) return std::unexpected(positioned.error());
-    }
+    auto positioned=world_.set_transform(entity->id(),{position,{},{1,1,1}});if(!positioned) return std::unexpected(positioned.error());
     const std::array parts{world::Attachment{light->id()}};
     auto attached=world_.attach_components(entity->id(),parts);if(!attached) return attached;
     if(attached->notification_error) return std::unexpected(*attached->notification_error);
-    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":
-        kind==world::LightKind::directional?L"Directional Light":L"Sky Light";
+    const auto label=kind==world::LightKind::point?L"Point Light":kind==world::LightKind::rectangle?L"Rectangle Light":L"Directional Light";
     return attach_created(std::move(*entity),label);
 }
 Result<world::Commit> Session::attach_created(ObjectRoot root,std::wstring_view label) {
@@ -436,6 +515,9 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
 Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::FieldPath> paths,std::uint64_t control_session) {
     if (editing()) return invalid("A field edit is already active.");
     if (!control_session || paths.empty()) return invalid("A group edit requires a control session and fields.");
+    for(std::size_t i=1;i<paths.size();++i)
+        if(std::ranges::find(paths.begin(),paths.begin()+static_cast<std::ptrdiff_t>(i),paths[i])!=paths.begin()+static_cast<std::ptrdiff_t>(i))
+            return invalid("A group edit names the same field more than once.");
     if(is_material(object)) {
         for(const auto& path:paths) {
             auto value=read_property(object,path);if(!value) return std::unexpected(value.error());
@@ -467,12 +549,10 @@ Result<void> Session::preview_group_edit(std::uint64_t control_session,std::span
 }
 Result<void> Session::write_group(ObjectId object,std::span<const world::FieldPath> paths,std::span<const Scalar> values) {
     if(paths.empty() || values.size()!=paths.size()) return invalid("A group edit needs one value per field.");
-    std::vector<Scalar> previous;previous.reserve(paths.size());
     for(std::size_t i=0;i<paths.size();++i) {
         if(!detail::finite_scalar(values[i])) return invalid("Property values must be finite.");
         auto value=read_property(object,paths[i]);if(!value) return std::unexpected(value.error());
         if(value->index()!=values[i].index()) return invalid("A group edit value changed its field type.");
-        previous.push_back(*value);
     }
     // Material rollback also restores override bits and the inherited surface.
     if(is_material(object)) {
@@ -482,15 +562,7 @@ Result<void> Session::write_group(ObjectId object,std::span<const world::FieldPa
         }
         return {};
     }
-    for(std::size_t i=0;i<paths.size();++i) if(auto written=world_.write(object,paths[i],values[i]);!written) {
-        // Each World write rejects its own value without changing it. Restore
-        // earlier lanes in reverse order, including repeated paths.
-        for(auto lane=i;lane>0;) {
-            --lane;if(auto restored=world_.write(object,paths[lane],previous[lane]);!restored) return restored;
-        }
-        return written;
-    }
-    return {};
+    return world_.write(object,paths,values);
 }
 Result<void> Session::apply_group(const FieldGroupChange& change,bool forward) {
     auto entity=admit_property_edit(change.root.id()); if (!entity) return std::unexpected(entity.error());
@@ -714,11 +786,7 @@ Result<void> Session::reset_position(ObjectId component) {
 Result<world::Commit> Session::replay(Change& change, bool forward) {
     return std::visit([&](auto& item) -> Result<world::Commit> {
         using T = std::decay_t<decltype(item)>;
-        if constexpr (std::is_same_v<T, LightingChange>) {
-            auto changed=world_.set_lighting_settings(forward?item.after:item.before);
-            if(!changed) return std::unexpected(changed.error());
-            return world::Commit{true,{}};
-        } else if constexpr (std::is_same_v<T, NameChange>) {
+        if constexpr (std::is_same_v<T, NameChange>) {
             if (auto ready = admit_entity_edit(item.root.id()); !ready) return std::unexpected(ready.error());
             names_.at(item.root.id())=forward?item.after:item.before;
             set_selection({item.root.id(),item.root.id()});

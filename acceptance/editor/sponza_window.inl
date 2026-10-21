@@ -54,8 +54,10 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
         <<" max="<<settings.probe_volumes[0].maximum[0]<<','<<settings.probe_volumes[0].maximum[1]<<','<<settings.probe_volumes[0].maximum[2]
         <<" grid="<<settings.probe_volumes[0].counts[0]<<'x'<<settings.probe_volumes[0].counts[1]<<'x'<<settings.probe_volumes[0].counts[2]
         <<" budget="<<settings.probe_update_budget<<" rays/probe="<<settings.probe_rays<<'\n';
-    // Sponza has no Sky Light; isolate indirect diffuse from AO, screen reflections and bloom.
-    require(Access::scene_snapshot(app).environment==std::array<float,3>{},"Sponza unexpectedly has environment radiance.");
+    // Sponza has no sky; isolate indirect diffuse from AO, screen reflections and bloom. Opening it fitted the probe
+    // volume into a new Environment without marking the document modified.
+    require(atelier::rendering::sky_radiance(model(app.document().world().environment()))==std::array<float,3>{} &&
+        app.document().environment()!=atelier::ObjectId{} && !app.document().dirty(),"Sponza unexpectedly has environment radiance, or its fitted Environment is missing or modified.");
     // These are World-authored settings; the test edits them like the World panel and restores them below.
     const auto authored_lighting=settings;
     settings.gtao=false;settings.sssr=false;settings.bloom=false;

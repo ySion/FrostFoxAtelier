@@ -87,8 +87,8 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
             std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     std::filesystem::create_directories(copy/"Source");
     Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Examples/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
-    require(!app.document().dirty() && entities(app).size()==15 &&
-        model(app.document().world().render_items()).size()==10 && model(app.document().world().light_items()).size()==5,
+    require(!app.document().dirty() && entities(app).size()==16 && app.document().environment()!=atelier::ObjectId{} &&
+        model(app.document().world().render_items()).size()==10 && model(app.document().world().light_items()).size()==4,
         "The formal application failed to load the complete Scene Lit example World.");
     const auto loaded=model(app.document().serialize());
     scene_lit_display(app,control::shading_first+2);
@@ -117,18 +117,17 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     }
     scene_lit_antialiasing(app,static_cast<unsigned>(render::Antialiasing::smaa));
 
-    const auto authored_lights=model(app.document().world().light_items());
-    const auto sky=std::ranges::find_if(authored_lights,[](const auto& light){return light.settings.kind==world::LightKind::sky;});
-    require(sky!=authored_lights.end(),"Example has no explicit Sky Light to replace.");
-    model(Access::select_entity(app,sky->entity));tick(app,2);
+    const auto sky=[&]{return atelier::rendering::sky_radiance(model(app.document().world().environment()));};
+    require(sky()==std::array{.025f,.035f,.055f},"The example's Sky Light did not become its Environment sky.");
+    model(Access::select_entity(app,model(world::inspect_component(app.document().world().runtime(),app.document().environment())).owner));tick(app,2);
     click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
     click(app,static_cast<ControlKey>(Command::erase_selected));tick(app,2);
-    require(Access::scene_snapshot(app).environment==std::array<float,3>{},"Deleting the only Sky Light left environment radiance.");
-    constexpr std::array commands{Command::create_point_light,Command::create_rectangle_light,Command::create_directional_light,Command::create_sky_light};
-    constexpr std::array kinds{world::LightKind::point,world::LightKind::rectangle,world::LightKind::directional,world::LightKind::sky};
-    constexpr std::array captions{L"Intensity (cd)",L"Intensity (cd/m²)",L"Illuminance (lux)",L"Radiance (cd/m²)"};
-    constexpr std::array intensities{79.25f,22.5f,3.25f,.12f};
-    std::array<atelier::ObjectId,4> created;
+    require(sky()==std::array<float,3>{} && app.document().environment()==atelier::ObjectId{},"Deleting the Environment left environment radiance.");
+    constexpr std::array commands{Command::create_point_light,Command::create_rectangle_light,Command::create_directional_light};
+    constexpr std::array kinds{world::LightKind::point,world::LightKind::rectangle,world::LightKind::directional};
+    constexpr std::array captions{L"Intensity (cd)",L"Intensity (cd/m²)",L"Illuminance (lux)"};
+    constexpr std::array intensities{79.25f,22.5f,3.25f};
+    std::array<atelier::ObjectId,3> created;
     for (std::size_t index=0;index<commands.size();++index) {
         const auto history=app.document().undo_count();
         const auto count=entities(app).size();
@@ -161,8 +160,6 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
             "Real Parameters exposed the wrong light-shape fields.");
         if(index==2) require(!has_field("settings.range") && has_field("settings.source_radius"),
             "Directional Parameters used a local-light range or omitted angular radius.");
-        if(index==3) require(!has_field("settings.range") && !has_field("settings.source_radius") && !has_field("settings.casts_shadow"),
-            "Sky Light Parameters exposed local emitter or direct shadow controls.");
         const auto intensity=std::ranges::find(fields,"settings.intensity",&atelier::editor::Property::name);
         require(intensity!=fields.end(),"Created light has no reflected intensity field.");
         const auto edit_history=app.document().undo_count();
@@ -185,12 +182,8 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         require(model(world::read_light(runtime,light)).intensity==intensities[index] &&
             app.document().undo_count()==edit_history+1,
             "Native light Parameters did not commit one typed World edit.");
-        if(index==3) require(Access::scene_snapshot(app).environment==std::array{.12f,.12f,.12f},
-            "Edited Sky Light Parameters did not reach the scene radiance.");
-        else {
-            const auto target=std::ranges::find(Access::scene_snapshot(app).lights,intensities[index],&render::Light::intensity);
-            require(target!=Access::scene_snapshot(app).lights.end(),"Edited light Parameters did not reach the formal renderer snapshot.");
-        }
+        const auto target=std::ranges::find(Access::scene_snapshot(app).lights,intensities[index],&render::Light::intensity);
+        require(target!=Access::scene_snapshot(app).lights.end(),"Edited light Parameters did not reach the formal renderer snapshot.");
         capture(app,output/("03-parameters-light-"+std::to_string(index)+".png"));
         if(index==0) {
             tick(app,2);
@@ -203,6 +196,14 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         }
     }
 
+    // The sky is a World setting: its first edit creates the Environment again, as one history item.
+    {
+        const auto history=app.document().undo_count();const auto count=entities(app).size();
+        auto lit=Access::scene_lit_view(app).lit;lit.sky_enabled=true;lit.sky_color={1,1,1};lit.sky_intensity=.12f;
+        model(Access::scene_lit_settings(app,lit));tick(app,2);
+        require(sky()==std::array{.12f,.12f,.12f} && entities(app).size()==count+1 && app.document().undo_count()==history+1,
+            "The World sky edit did not create one Environment in one history item.");
+    }
     // Native editor mode changes stay within the editing document's lifecycle.
     // Running World snapshots are exercised by the document + Renderer E2E.
     const auto history=app.document().undo_count();
@@ -223,13 +224,13 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto saved=model(atelier::editor::read_file(copy/"Content/Scenes/Acceptance.scene"));
     require(!app.document().dirty(),"Scene Lit temporary save did not mark the authored document clean.");
     model(app.open_scene("Content/Scenes/Acceptance.scene"));tick(app,96);
-    require(model(app.document().serialize())==saved && entities(app).size()==18 &&
+    require(model(app.document().serialize())==saved && entities(app).size()==19 &&
         Access::scene_snapshot(app).meshes.size()==10 && Access::scene_snapshot(app).lights.size()==7 &&
-        Access::scene_snapshot(app).environment==std::array{.12f,.12f,.12f} &&
+        sky()==std::array{.12f,.12f,.12f} &&
         app.frame_statistics().scene_lit_shadow_sources>=7 &&
         app.frame_statistics().scene_lit_shadow_sources==app.frame_statistics().scene_lit_light_sources,
         "Reopening the actual saved Scene lost edited World lights, materials or Scene Lit rendering.");
-    for(auto intensity:std::span(intensities).first(3)) require(std::ranges::any_of(Access::scene_snapshot(app).lights,
+    for(auto intensity:intensities) require(std::ranges::any_of(Access::scene_snapshot(app).lights,
         [&](const auto& light){return light.intensity==intensity;}),"Reopened Scene lost a light edited through native Parameters.");
     capture(app,output/"08-scene-lit-saved-reopened.png");
     // Exercise the real native middle-drag input path from a known front view.
@@ -248,6 +249,6 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     std::ofstream(output/"scene-lit-product.txt")<<"Source project: "<<atelier::editor::utf8(source.wstring())
         <<"\nTemporary project: "<<atelier::editor::utf8(copy.wstring())
         <<"\nSource Config/Content retained. No Source compilation files copied.\n"
-        <<"Native Scene Lit/MatCap menu, point/rectangle/directional and unique Sky Light creation/Parameters; requested=5, budget=4, shadowed=4, unshadowed=1, status=Shadows 4/5.\n"
-        <<"Actual GPU captures, native middle-orbit direction and editor modes. Runtime World snapshots are verified separately through document/Renderer E2E; no Simulate UI exists. Saved scene reopened with 10 meshes, 7 direct lights and one Sky Light.\n";
+        <<"Native Scene Lit/MatCap menu, point/rectangle/directional creation/Parameters, Environment deletion and sky edit; requested=5, budget=4, shadowed=4, unshadowed=1, status=Shadows 4/5.\n"
+        <<"Actual GPU captures, native middle-orbit direction and editor modes. Runtime World snapshots are verified separately through document/Renderer E2E; no Simulate UI exists. Saved scene reopened with 10 meshes, 7 direct lights and the Environment sky.\n";
 }

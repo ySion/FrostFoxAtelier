@@ -220,29 +220,18 @@ void lit_materials_and_lights() {
     take(world.set_transform(light_entity.id(),{}));committed(world.attach_components(light_entity.id(),only_light));committed(world.attach(light_entity.id()));
     require(take(world.render_items()).size()==1 && take(w::inspect_entity(runtime,light_entity.id())).can_present && take(world.light_items()).size()==4,
         "A light-only Entity required a mesh or another root type.");
-    w::LightSettings sky_settings;sky_settings.kind=w::LightKind::sky;
-    take(world.set_light(light_root.id(),sky_settings));take(world.remove_transform(light_entity.id()));
-    reject(world.set_light(light_root.id(),{}),"Nonspatial Sky owner accepted a point light without Transform.");
-    reject(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,static_cast<std::uint32_t>(w::LightKind::directional)}),
-        "Light field authoring bypassed its owner's spatial requirement.");
-    require(take(w::read_light(runtime,light_root.id()))==sky_settings && !take(w::has_transform(runtime,light_entity.id())) &&
-        take(world.light_items()).size()==4,"Rejected spatial Light edits changed settings or damaged presentation.");
-    take(world.set_transform(light_entity.id(),{}));
-    take(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,static_cast<std::uint32_t>(w::LightKind::point)}));
-    require(take(w::read_light(runtime,light_root.id())).kind==w::LightKind::point && take(world.light_items()).size()==4,
-        "Adding Transform did not permit the same spatial Light edit.");
-    // Authoring rejects a second Sky; one written directly loses to the first in composition preorder.
-    take(world.set_light(light_root.id(),sky_settings));
-    take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.kind=w::LightKind::sky;return {};}));
-    const auto skies=take(world.light_items());const auto sky_report=world.take_diagnostics();
-    require(skies.size()==3 && skies[1].component==point_id && skies[1].settings.kind==w::LightKind::sky &&
-        std::ranges::none_of(skies,[&](const auto& light){return light.component==light_root.id();}) &&
-        sky_report.size()==1 && sky_report[0].object==light_root.id() && sky_report[0].kind==w::DiagnosticKind::conflict,
-        "A second Sky Light did not lose to the first in composition preorder.");
-    take(world.set_light(point_id,point_settings));
+    // Every light is spatial: its owner keeps the Transform, and a light cannot join an Entity without one.
+    reject(world.remove_transform(light_entity.id()),"A light's owner lost its Transform.");
+    auto bare=take(w::create_entity(runtime));auto stray=take(w::create_component(runtime,types.light_component));
+    const std::array stray_group{w::Attachment{stray.id()}};
+    committed(world.attach(bare.id()));
+    reject(world.attach_components(bare.id(),stray_group),"A light joined an Entity without a Transform.");
+    reject(world.write(light_root.id(),light_path("kind"),EnumValue{types.light_kind,3}),"The removed Sky light kind was accepted.");
+    require(take(w::has_transform(runtime,light_entity.id())) && take(world.light_items()).size()==4,
+        "Rejected spatial Light edits damaged presentation.");
     committed(world.close());committed(world.close());reject(world.light_items(),"Closed World exposed a stale light directory.");
     const auto saved_identity=snapshot.front().component;
-    entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();collect(runtime);
+    entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();bare.reset();stray.reset();collect(runtime);
     require(runtime.live_objects()==0 && !runtime.type_of(saved_identity) && snapshot.front().settings==rect_settings,
         "Light snapshots retained business objects or depended on their later state.");
     std::puts("[pass] Lit data: reflected Material/LightSettings, HDR validation, Source inheritance, TRS extraction, position-cached validation, slot surfaces, identity/history and lifecycle");

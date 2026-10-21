@@ -48,6 +48,9 @@ struct ResourceLess {
     bool operator()(std::pair<AssetKind, std::string_view> a, std::pair<AssetKind, std::string_view> b) const noexcept { return a < b; }
 };
 using UnavailableResources = std::map<std::pair<AssetKind, std::string>, MissingResource, ResourceLess>;
+// The EnvironmentComponent field names of a World Settings option (a view option
+// for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
+std::vector<std::string> environment_field(std::string_view option);
 
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
@@ -72,10 +75,21 @@ public:
     std::span<const ObjectId> selected_entities() const noexcept { return selected_entities_; }
     bool is_selected(ObjectId entity) const noexcept { return std::ranges::find(selected_entities_,entity)!=selected_entities_.end(); }
     std::wstring_view name(ObjectId) const noexcept;
-    Result<void> set_world_lighting(const rendering::SceneLightingSettings&);
-    // Load initialization of a freshly opened document, before any history: writes
-    // World settings without an undo entry or a modified mark. The next save writes them.
-    Result<void> initialize_world_lighting(const rendering::SceneLightingSettings&);
+    // The document's EnvironmentComponent, disabled or not; null without one.
+    ObjectId environment() const;
+    // World Settings: the World options of `settings` that differ from the current
+    // environment become one property edit of the Environment, written as one group.
+    // Without an Environment the first edit creates it with these values, in the same
+    // history item; undoing that edit removes it again.
+    Result<void> set_environment(const rendering::SceneLightingSettings&);
+    // Load initialization of a freshly opened document, before any history: writes the
+    // environment, creating it when absent, without an undo entry or a modified mark.
+    // The next save writes it.
+    Result<void> initialize_environment(const rendering::SceneLightingSettings&);
+    // Whether the loaded file supplied World lighting, a version 6 world section with a
+    // key or a saved Environment, or initialize_environment has run. An Environment
+    // migrated only from a Sky Light does not count.
+    bool lighting_supplied() const noexcept { return lighting_supplied_; }
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
@@ -250,13 +264,12 @@ private:
         Selection inspection;
         bool amend_creation{}; // Initial placement belongs to the immediately preceding creation entry.
     };
-    struct LightingChange { rendering::SceneLightingSettings before,after; };
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
     struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<world::MaterialBinding> before,after;};
     struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
-    using Change = std::variant<LightingChange, EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,RetainedChange>;
+    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,RetainedChange>;
     // Sparse scene-record JSON text the loader could not apply. On the document entry,
     // materials are unreferenced definitions kept for write-back; on a component, they
     // are the scene materials its kept binding table names.
@@ -295,6 +308,7 @@ private:
     mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
     mutable std::uint64_t next_local_id_{1};
     bool play_{};
+    bool lighting_supplied_{};
     // Play copy: document identity to object, including objects the game destroyed.
     std::unordered_map<std::uint64_t,ObjectId> live_objects_;
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
@@ -323,6 +337,10 @@ private:
     Result<void> apply_group(const FieldGroupChange&, bool forward);
     Result<void> write_group(ObjectId,std::span<const world::FieldPath>,std::span<const Scalar>);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
+    struct EnvironmentEdit { std::vector<world::FieldPath> paths; std::vector<Scalar> values; };
+    Result<EnvironmentEdit> environment_edit(const rendering::SceneLightingSettings&) const;
+    // A Detached Entity holding a new Environment with these values.
+    Result<ObjectRoot> create_environment(std::span<const world::FieldPath>,std::span<const Scalar>);
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
     void forget_entity(ObjectId) noexcept;

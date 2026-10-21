@@ -207,10 +207,10 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
     workspace_.sync_world(*document_);
     auto candidate=workspace_.view;
-    // Fitting fills a probe volume the scene did not save. It belongs to loading,
-    // not authoring: no history, the document stays clean and the next save writes
-    // it. A saved volume is the author's and stays.
-    const bool fit=fit_ddgi_volume && document_->world().lighting_settings().probe_volumes==rendering::SceneLightingSettings{}.probe_volumes;
+    // Fitting fills probe volumes for a file that supplied no World lighting. It belongs
+    // to loading, not authoring: no history, the document stays clean and the next save
+    // writes the Environment. Saved settings are the author's and stay.
+    const bool fit=fit_ddgi_volume && !document_->lighting_supplied();
     if(fit) {
         auto fitted=fitted_probe_view(false);if(!fitted) return std::unexpected(fitted.error());candidate=*fitted;
         const auto& counts=candidate.lit.probe_volumes[0].counts;
@@ -222,7 +222,7 @@ Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,
     candidate.shading=shading;
     // Reject the whole view before the fitted volume reaches the World, which keeps no history of it.
     if(auto valid=editor::validate_view_options(candidate,{target.x,target.y,target.z});!valid) return valid;
-    if(fit) if(auto initialized=document_->initialize_world_lighting(candidate.lit);!initialized) return initialized;
+    if(fit) if(auto initialized=document_->initialize_environment(candidate.lit);!initialized) return initialized;
     if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
     camera_=camera;camera_cut_=true;invalidate_surface();return {};
 }
@@ -689,11 +689,10 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
     case create_entity: workspace_.inspecting_asset=false;result=completion(document_->add_entity()); break;
-    case create_point_light:case create_rectangle_light:case create_directional_light:case create_sky_light: {
+    case create_point_light:case create_rectangle_light:case create_directional_light: {
         workspace_.inspecting_asset=false;
         const auto kind=command==create_point_light?world::LightKind::point:
-            command==create_rectangle_light?world::LightKind::rectangle:
-            command==create_directional_light?world::LightKind::directional:world::LightKind::sky;
+            command==create_rectangle_light?world::LightKind::rectangle:world::LightKind::directional;
         result=completion(document_->create_light(kind,viewport_tool_.cursor));break;
     }
     case create_static_mesh: {
@@ -1352,6 +1351,8 @@ bool Application::step(renderer::Capture* capture) try {
     if(had_viewport_gesture && !viewport_tool_.active()) window_.capture(false);
     const auto scene_start = sample ? Clock::now() : Clock::time_point{};
     if(viewport) take(scene_.refresh(*document_));
+    // Any edit of the Environment (Parameters, deletion, Play) reaches the evaluated view before rendering.
+    sync_world_view();
     const auto scene_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - scene_start).count() : 0;
     for(const auto& item:document_->take_diagnostics()) workspace_.log_repeated(editor::describe_diagnostic(*document_,item));
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
@@ -1367,7 +1368,7 @@ bool Application::step(renderer::Capture* capture) try {
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
         viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
-        scene_.environment,{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
+        rendering::sky_radiance(effective_view.lit),{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
     const auto lighting_start=Clock::now();
     const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&
         effective_view.shading==renderer::Shading::scene_lit && effective_view.wireframe!=renderer::Wireframe::only && effective_view.lit.ddgi;

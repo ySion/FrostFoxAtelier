@@ -184,6 +184,10 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     scalar(*lighting,ViewOption::shadows);scalar(*lighting,ViewOption::direct_candidates);
     scalar(*lighting,ViewOption::shadow_bias);
     group(key::root+103,wide(view_option(ViewOption::shadows)->category),std::move(lighting));
+    auto sky=std::make_shared<std::vector<Item>>();
+    scalar(*sky,ViewOption::sky_enabled);scalar(*sky,ViewOption::sky_intensity);
+    row(*sky,std::array{ViewOption::sky_color_x,ViewOption::sky_color_y,ViewOption::sky_color_z});
+    group(key::root+105,wide(view_option(ViewOption::sky_enabled)->category),std::move(sky));
     auto lighting_groups=groups;groups=std::make_shared<std::vector<Item>>();
     auto effects=std::make_shared<std::vector<Item>>();
     scalar(*effects,ViewOption::antialiasing);scalar(*effects,ViewOption::gtao);

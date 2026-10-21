@@ -53,7 +53,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 参数和坐标
 
-材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v6、旧版兼容读取、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
+材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v7、旧版兼容读取、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
 
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
@@ -131,7 +131,7 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光采用 ReSTIR DI；`Direct candidates`（1～32，默认 8）控制局部光初始候选数，每个被选中的投影光源都执行当前帧遮挡查询。旧 Shadow Budget 和 Shadows 实际/请求提示已退役。Local GI 与 GTAO 在作者配置中互斥，AA 默认 SMAA；显示模式、相机和诊断开关仍属于视口。Scene Lit 管线由 Renderer 在工作线程上按设置分组准备，首次使用某组时不阻塞编辑器：视口先继续显示上一个已画出的 Scene Lit 视图，还没画过时显示 Smooth，状态栏显示 `Compiling shaders n/m`（n/m 按当前视图需要的组计算，打开新组时总数会变大），就绪后自动切回。准备失败时状态栏显示错误，视口保持 Smooth。编辑器和 Play 进程把编译结果缓存到环境变量 `ATELIER_SHADER_CACHE` 指定的目录，未设置时为 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`。窗口验收、快照、性能采样模式和 Control 验收在宿主未设置该变量时改用编辑器可执行文件旁的 `shader-cache`（即 `out\dev\shader-cache` 与 `out\release\shader-cache`，两种配置不共用），并由它们启动的 Play 进程继承，不写用户缓存。验收需要冷启动（强制出现未就绪和回退）时，宿主在启动编辑器或 `atelier_editor_control_acceptance` 前把 `ATELIER_SHADER_CACHE` 设为一个新建的空目录；已设置的值不会被覆盖。窗口验收的帧推进只计入画出所请求视图的接受帧，Scene Lit 未就绪时等待准备完成（上限 20 分钟，覆盖 GPU 验证下的预热）。
 
-**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影与直接光候选数；具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含独立高样本 Direct reference（不改变 World 作者参数或历史）、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
+**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影、直接光候选数与 Sky 组（均匀天光的开关、强度和颜色）；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含独立高样本 Direct reference（不改变 World 作者参数或历史）、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
 
 World 字段的 label、category、description 与类型、范围、枚举值统一声明在 `ViewOptionInfo` 原定义表中，面板不再维护另一份逐项名称或帮助表。同一描述供共享属性行与 Control 查询使用；Probe Volume 的四个槽位和 XYZ 分量共用说明，Follow Focus 只按真实语义把边界标题改为 Min / Max offset。World 与 Entity 参数共用属性行和悬浮说明的呈现契约；World 仍是场景持有的设置值，通过完整候选值验证与 Session 撤销提交，不为显示参数创建 Entity。视口诊断保持独立生命周期，不进入 Scene 数据。
 
@@ -141,7 +141,7 @@ World 字段的 label、category、description 与类型、范围、枚举值统
 
 覆盖预设根据场景几何边界和相机观察目标确定范围；楼层高度、薄墙和空腔会影响有效支持。多层室内场景可在现有槽位中配置局部楼层体积，用 Receiver Coverage 的 Status / Volume 检查实际贡献。观察时应等待多个完整更新轮次，分别判断覆盖范围、遮挡、有效支持和照明强度。
 
-Create 菜单与工具架沿同一命令创建 Point、Rectangle、Directional Light 和 Sky Light。场景已有 Sky Light 时，其创建入口禁用；天光的颜色和 Radiance (cd/m²) 强度由同一属性链编辑，隐藏局部范围、光源尺寸和直接阴影控件。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 锁定在 `[0,1]`，emissive 为非负 HDR RGB（常用范围 0–10，硬上限 65504）。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
+Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional Light。天光不是灯，而是 World Settings 的 Lighting 页中 Sky 组（开关、Intensity (cd/m²) 和 RGB 颜色），写在 Environment 组件上。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 锁定在 `[0,1]`，emissive 为非负 HDR RGB（常用范围 0–10，硬上限 65504）。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity。几何资源、材质、灯参数和呈现成员变化递增 scene_revision；TRS、选择和相机连续移动不递增。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 

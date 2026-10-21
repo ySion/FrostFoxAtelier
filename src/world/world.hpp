@@ -129,8 +129,15 @@ public:
 // Each checks a value against its reflected type's hard bounds and validator.
 [[nodiscard]] Result<void> validate_body_settings(Runtime&, const BodySettings&);
 
+// The base of components that take their space from the owner Entity, which
+// must then have a Transform.
+ACLASS(Name="world.SpatialComponent", DESC="需要所属 Entity 提供空间的组件基类。挂接它的 Entity 必须有 Transform；Primitive 与 Light 都派生自它。")
+class SpatialComponent : public Component {
+    AGENERATED_BODY(SpatialComponent)
+};
+
 ACLASS(Name="world.PrimitiveComponent", DESC="具有碰撞和刚体配置的基础组件。空间由所属 Entity 提供，具体形状和运动方式在 Body 中设置。")
-class PrimitiveComponent : public Component {
+class PrimitiveComponent : public SpatialComponent {
     AGENERATED_BODY(PrimitiveComponent)
 public:
     AFIELD(Category="Physics", DESC="此组件的碰撞形状、运动方式和接触规则。关闭 Body Enabled 可保留组件而停用其物理能力。")
@@ -180,26 +187,25 @@ private:
     Material surface_parameters_;
 };
 
-AENUM(Name="world.LightKind", DESC="Point 点光、Rectangle 矩形面光、Directional 平行光或 Sky 均匀天光。不同种类使用不同的强度单位和形状参数。")
-enum class LightKind : std::uint32_t { point, rectangle, directional, sky };
+AENUM(Name="world.LightKind", DESC="Point 点光、Rectangle 矩形面光或 Directional 平行光。不同种类使用不同的强度单位和形状参数；天光在 Environment 中设置。")
+enum class LightKind : std::uint32_t { point, rectangle, directional };
 
-ASTRUCT(Name="world.LightSettings", DESC="灯光的 Scene 作者参数。Color 与 Intensity 一起决定发光量，局部灯的位置和朝向来自所属 Entity。")
+ASTRUCT(Name="world.LightSettings", DESC="灯光的 Scene 作者参数。Color 与 Intensity 一起决定发光量，位置和朝向来自所属 Entity。")
 struct LightSettings {
     AGENERATED_BODY(LightSettings)
 public:
-    AFIELD(DESC="灯光种类，决定 Intensity 单位及哪些尺寸参数生效。一个 World 只能拥有一个 Sky Light，包括已停用的 Sky Light。")
+    AFIELD(DESC="灯光种类，决定 Intensity 单位及哪些尺寸参数生效。")
     LightKind kind{LightKind::point};
     AFIELD(HardMin="0", DESC="非负线性 RGB，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 color{1.f,1.f,1.f};
-    // Reference-white intensity: point cd, rectangle/sky cd/m^2, directional lux.
-    // Sky is uniform incident radiance; spatial transform and emitter shape do not affect it.
-    AFIELD(HardMin="0", DESC="参考白色的发光强度，再由 Color 调制。Point 使用 cd；Rectangle 和 Sky 使用 cd/m²；Directional 使用 lux。")
+    // Reference-white intensity: point cd, rectangle cd/m^2, directional lux.
+    AFIELD(HardMin="0", DESC="参考白色的发光强度，再由 Color 调制。Point 使用 cd；Rectangle 使用 cd/m²；Directional 使用 lux。")
     float intensity{1.f};
-    AFIELD(HardMin="0", DESC="Point 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 和 Sky 忽略此值；Entity 缩放不会改变它。")
+    AFIELD(HardMin="0", DESC="Point 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 忽略此值；Entity 缩放不会改变它。")
     float range{10.f};
     // Point: metres. Directional: angular radius in radians, below pi/2.
     // Rectangle emission size uses width/height instead.
-    AFIELD(HardMin="0", DESC="Point 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 和 Sky 忽略此值。")
+    AFIELD(HardMin="0", DESC="Point 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 忽略此值。")
     float source_radius{};
     AFIELD(HardMin="0", DESC="Rectangle 沿局部 X 方向的发光宽度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
     float width{1.f};
@@ -207,13 +213,13 @@ public:
     float height{1.f};
     AFIELD(DESC="让 Rectangle 的两面都按同样的 Intensity 发光，不把每面的强度减半。其他灯光种类不使用此项。")
     bool two_sided{};
-    AFIELD(DESC="此直接灯是否参与阴影投射，实际效果还受 World 阴影设置控制。Sky 不使用此项。")
+    AFIELD(DESC="此直接灯是否参与阴影投射，实际效果还受 World 阴影设置控制。")
     bool casts_shadow{true};
     bool operator==(const LightSettings&) const = default;
 };
 
-ACLASS(Name="world.LightComponent", DESC="让 Entity 提供 Point、Rectangle、Directional 或 Sky 光照。Sky 不受 Entity 的位置、旋转和缩放影响。")
-class LightComponent : public Component {
+ACLASS(Name="world.LightComponent", DESC="让 Entity 提供 Point、Rectangle 或 Directional 光照。所属 Entity 必须有 Transform。")
+class LightComponent : public SpatialComponent {
     AGENERATED_BODY(LightComponent)
 public:
     AFIELD(Category="Lighting", DESC="此灯的种类、颜色、强度和形状。参数随 Scene 保存；全局曝光与效果在 World Settings 中调整。")
@@ -318,7 +324,7 @@ struct Types {
     TypeId vector3, quaternion;
     TypeId light_kind, light_settings, light_component;
     TypeId primitive_component, collision_component;
-    TypeId environment_component;
+    TypeId environment_component, spatial_component;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
@@ -368,7 +374,7 @@ struct StaticMeshEntityDesc {
 [[nodiscard]] Result<std::vector<ObjectRoot>> children(Runtime&, ObjectId entity);
 [[nodiscard]] Result<ObjectId> parent_entity(Runtime&, ObjectId entity);
 [[nodiscard]] Result<bool> has_transform(Runtime&, ObjectId entity);
-// Evaluates an actual capability, including nonspatial Sky Lights.
+// True when the component derives from SpatialComponent.
 [[nodiscard]] Result<bool> component_requires_space(Runtime&, ObjectId component);
 [[nodiscard]] Result<bool> effective_enabled(Runtime&, ObjectId entity);
 [[nodiscard]] Result<Trs> read_transform(Runtime&, ObjectId entity);
@@ -564,8 +570,6 @@ public:
     World& operator=(World&&) = delete;
 
     [[nodiscard]] Runtime& runtime() const noexcept;
-    const rendering::SceneLightingSettings& lighting_settings() const noexcept;
-    [[nodiscard]] Result<void> set_lighting_settings(const rendering::SceneLightingSettings&);
     [[nodiscard]] const Types& types() const noexcept;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool closed() const noexcept;

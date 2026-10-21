@@ -12,6 +12,7 @@
 #include "editor/workspace.hpp"
 #include "renderer/renderer.hpp"
 #include <chrono>
+#include <functional>
 
 namespace atelier::application {
 class EditorControl;
@@ -29,7 +30,8 @@ public:
     ~Application();
     bool step(renderer::Capture* = nullptr);
     void enable_control(const std::filesystem::path& directory);
-    Result<void> open_project(const std::filesystem::path&,bool create=false,ProjectOpenPolicy=ProjectOpenPolicy::allow_repair);
+    // A require_scene open also checks the loaded scene with dmit before retiring the current document.
+    Result<void> open_project(const std::filesystem::path&,bool create=false,ProjectOpenPolicy=ProjectOpenPolicy::allow_repair,const std::function<Result<void>(const editor::Session&)>& admit={});
     Result<void> open_example(editor::Command = editor::Command::example_sponza);
     Result<void> open_scene(const std::filesystem::path&);
     // Optional one-time DDGI fit to rendered world bounds; ordinary camera moves retain the volume.
@@ -209,7 +211,7 @@ private:
     void poll_project();
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
     void publish_document(std::unique_ptr<editor::Session>,editor::ProjectCode* = nullptr);
-    Result<void> load_project(const std::filesystem::path&,bool create=false,const std::filesystem::path& scene={},ProjectOpenPolicy=ProjectOpenPolicy::allow_repair);
+    Result<void> load_project(const std::filesystem::path&,bool create=false,const std::filesystem::path& scene={},ProjectOpenPolicy=ProjectOpenPolicy::allow_repair,const std::function<Result<void>(const editor::Session&)>& admit={});
     void cancel_interaction(const ui::Reply&);
     void invalidate_surface();
     bool pointer_ready() const noexcept;

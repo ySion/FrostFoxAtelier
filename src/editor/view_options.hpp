@@ -16,7 +16,8 @@ enum class ViewOption {
     probe_coverage, probe_debug_volume, direct_reference, spatial_light_sampling, direct_clustered, direct_shadow_cache, direct_cluster_inspect,
     probe_history, probe_inspect, probe_inspect_x, probe_inspect_y, probe_inspect_source,
     cavity, cavity_ridge, cavity_valley, cavity_radius,
-    volume_first, volume_last=volume_first+4*static_cast<int>(ProbeVolumeField::count)-1
+    volume_first, volume_last=volume_first+4*static_cast<int>(ProbeVolumeField::count)-1,
+    sky_enabled, sky_intensity, sky_color_x, sky_color_y, sky_color_z
 };
 constexpr ViewOption probe_volume_option(unsigned slot,ProbeVolumeField field) noexcept {
     return static_cast<ViewOption>(static_cast<unsigned>(ViewOption::volume_first)+slot*static_cast<unsigned>(ProbeVolumeField::count)+static_cast<unsigned>(field));
