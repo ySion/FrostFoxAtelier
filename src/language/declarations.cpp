@@ -26,6 +26,7 @@ TypeDeclaration detail::parse_type_declaration(Tokens& tokens) {
     result.name = tokens.qualified_identifier();
     if (result.name == "String" || result.name == "Array" || result.name.starts_with("core.") || result.name.starts_with("math."))
         reject(result.position, "Source declarations cannot replace built-in types.");
+    if (editor_reserved(result.name)) reject(result.position, "Source declarations cannot use the editor. prefix; it is reserved for editor types.");
     if (result.enumeration && tokens.accept(":")) {
         if (tokens.accept("uint")) result.signed_enum = false;
         else tokens.expect("int");

@@ -21,6 +21,9 @@ struct TypeDeclaration {
     }
 };
 [[nodiscard]] std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std::string_view source);
+// The editor publishes its own types under this prefix. Until Programs have their own visibility
+// domains, Source cannot declare such types and its host catalog does not contain them.
+[[nodiscard]] inline bool editor_reserved(std::string_view name) noexcept { return name.starts_with("editor."); }
 namespace detail {
 class Tokens;
 TypeName parse_type_name(Tokens&);

@@ -725,6 +725,14 @@ public:
     // callbacks and native borrows. Reads copy into a live value of the exact type.
     [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
     [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, ValueInput value);
+    // Undoes the caller's own write: `previous` must hold the value the caller read from this
+    // field in the same operation, before that write; Runtime cannot check this. Exchanges the
+    // field with `previous`, which then holds the replaced value for the caller to destroy.
+    // Skips hard bounds, finite checks and validators, so a value that bypassed them returns bit
+    // for bit. Paths, exact types, object and busy checks match write(ValueInput); GC references
+    // are a type_mismatch, a non-plain type without a non-throwing swap is unsupported_operation,
+    // and a failure changes neither side.
+    [[nodiscard]] Result<void> restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous);
     // The same accesses on a caller-owned live value of `type`, under the value-operation trust rules.
     [[nodiscard]] Result<Scalar> read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path) const;
     [[nodiscard]] Result<void> write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, Scalar value);
@@ -837,8 +845,9 @@ private:
     [[nodiscard]] Result<void> enter_execution_inspection();
     void leave_execution_inspection() noexcept;
     struct Impl;
-    // `range` is set when hard bounds apply to the addressed value or its components.
-    struct Address { void* data; ValueDescription value; const FieldRange* range{}; };
+    // `range` is set when hard bounds apply to the addressed value or its components. `root` and
+    // `path` name the field in diagnostics; `path` borrows the caller's span for the call.
+    struct Address { void* data; ValueDescription value; const FieldRange* range{}; TypeId root{}; std::span<const FieldId> path{}; };
     struct NativeBorrow {
         Runtime* runtime;
         void* storage;

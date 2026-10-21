@@ -142,8 +142,10 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (std::ranges::any_of(state_->contract->binding.values, [&](const auto& value) {
             return value.math && cls.name == math::short_name(value.math);
         })) return fail(source_error(input, cls.file, cls.position, "Source class conflicts with a builtin math name: " + cls.name));
+        // Hidden editor. types resolve as if they were not registered.
         const auto base = runtime.find_type(cls.base);
-        if (!base) return fail(source_error(input, cls.file, cls.position, "Unknown native base type: " + cls.base));
+        if (!base || language::editor_reserved(cls.base))
+            return fail(source_error(input, cls.file, cls.position, "Unknown native base type: " + cls.base));
         const auto info = runtime.describe(*base);
         if (!info || (*info)->kind != TypeKind::object || !(*info)->native_storage)
             return fail(source_error(input, cls.file, cls.position, "Source classes require an existing native object base."));

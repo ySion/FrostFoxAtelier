@@ -89,6 +89,8 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                 if (declaration.name == "String" || declaration.name == "Array" || declaration.name.starts_with("core.") ||
                     declaration.name.starts_with("math.") || declaration.name.starts_with("__source_"))
                     reject(begin, "Source classes cannot replace reserved types.");
+                if (editor_reserved(declaration.name))
+                    reject(begin, "Source classes cannot use the editor. prefix; it is reserved for editor types.");
                 if (std::ranges::any_of(result.classes, [&](const auto& c) { return c.name == declaration.name; }))
                     reject(begin, "Duplicate source class name.");
                 tokens.expect(":"); declaration.base = tokens.qualified_identifier(); tokens.expect("{");

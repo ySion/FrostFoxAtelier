@@ -1,6 +1,8 @@
 #include "runtime/foundation.hpp"
 
 #include <array>
+#include <bit>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -104,7 +106,8 @@ void verify_value_paths() {
             described_field("name", TypeReference{"core.String"}), described_field("settings", TypeReference{"values.Settings"}),
             described_field("pair", TypeReference{"values.Pair"}), described_field("fragile", TypeReference{"values.FragileArray"}),
             described_field("sticky", TypeReference{"values.Sticky"}), described_field("link", TypeReference{"values.Link"}),
-            described_field("twin", TypeReference{"values.Twin"})}),
+            described_field("twin", TypeReference{"values.Twin"}),
+            described_field("point", TypeReference::native<math::Vector3>(), hard(-1.0f, 1.0f))}),
     }));
     const auto string_type = types[0], leaf_type = types[1], float_array = types[2], leaf_array = types[3], settings_type = types[4];
     const auto fragile_array = types[6], sticky_type = types[7], pair_type = types[8], twin_type = types[10], bag_type = types[11];
@@ -242,11 +245,69 @@ void verify_value_paths() {
         return runtime.write(settings_type, scratch.bytes, std::array{label}, ValueInput{string_type, &title});
     }));
 
+    // restore undoes the caller's own write with what it read before: bit for bit, without bounds.
+    const auto f32 = take(runtime.native_type<float>()), vector3 = take(runtime.native_type<math::Vector3>());
+    const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
+    const auto undo = [&](std::span<const FieldId> path, float rejected) {
+        float previous{};
+        take(runtime.read(id, path, ValueOutput{f32, &previous}));
+        take(runtime.write(id, path, Scalar{rejected}));
+        take(runtime.restore(id, path, ValueOutput{f32, &previous}));
+        require(previous == rejected, "restore did not hand back the replaced value.");
+        float restored{};
+        take(runtime.read(id, path, ValueOutput{f32, &restored}));
+        return restored;
+    };
+    const auto payload = std::bit_cast<float>(0x7fc0'1234u);
+    const std::array weight_path{pair, pair_weight};
+    take(runtime.with_native<float>(id, weight_path, [&](float& value) -> Result<void> { value = payload; return {}; }));
+    require(bits(undo(weight_path, 0.5f)) == bits(payload), "restore did not put a NaN back bit for bit.");
+    take(runtime.with_native<float>(id, weight_path, [](float& value) -> Result<void> { value = 2.0f; return {}; }));
+    require(undo(weight_path, 0.25f) == 2.0f, "restore clamped an out-of-bound value.");
+    const std::array point_x{field(bag_type, "point"), field(vector3, "x")};
+    take(runtime.with_native<math::Vector3>(id, std::array{point_x[0]}, [](math::Vector3& value) -> Result<void> {
+        value.x = 3.0f;
+        return {};
+    }));
+    require(undo(point_x, 0.0f) == 3.0f, "restore did not accept a vector component leaf.");
+    const std::array element_gain{settings, leaves, at(leaf_array, 0), gain};
+    take(runtime.with_native<Settings>(id, std::array{settings}, [](Settings& value) -> Result<void> {
+        value.leaves[0].gain = 5.0f;
+        return {};
+    }));
+    require(undo(element_gain, 0.5f) == 5.0f, "restore did not accept an Array element leaf.");
+    // Non-plain values exchange: the field gets the old value back, the caller the rejected one.
+    take(runtime.with_native<float>(id, weight_path, [&](float& value) -> Result<void> { value = payload; return {}; }));
+    PairValue before;
+    take(runtime.read(id, std::array{pair}, ValueOutput{pair_type, &before}));
+    PairValue replacement{String{StringView{"replacement"}}, 0.5f};
+    take(runtime.write(id, std::array{pair}, ValueInput{pair_type, &replacement}));
+    take(runtime.restore(id, std::array{pair}, ValueOutput{pair_type, &before}));
+    take(runtime.read(id, std::array{pair, pair_text}, ValueOutput{string_type, &copy}));
+    float weight{};
+    take(runtime.read(id, weight_path, ValueOutput{f32, &weight}));
+    require(text(copy) == "heavy" && bits(weight) == bits(payload) && text(before.text) == "replacement",
+        "restore did not exchange a whole record with a NaN leaf.");
+    // Refusals change neither side.
+    reject(runtime.restore(id, std::array{sticky}, ValueOutput{sticky_type, &noted}), ErrorCode::unsupported_operation,
+        "restore accepted a value without a non-throwing swap.");
+    require(text(noted.text) == "note", "A refused restore changed its value.");
+    reject(runtime.restore(id, std::array{name}, ValueOutput{f64, &title}), ErrorCode::type_mismatch,
+        "restore accepted another value type.");
+    take(runtime.with_native<Settings>(id, std::array{settings}, [&](Settings&) -> Result<void> {
+        reject(runtime.restore(id, std::array{name}, ValueOutput{string_type, &copy}), ErrorCode::busy,
+            "A String field was restored during a native borrow.");
+        return {};
+    }));
+    require(text(copy) == "heavy", "A busy restore changed its value.");
+
     // Values holding GC references keep using reference writes.
     alignas(16) std::array<std::byte, 64> link_bytes{};
     reject(runtime.write(id, std::array{link}, ValueInput{take(runtime.find_type("values.Link")), link_bytes.data()}),
         ErrorCode::type_mismatch, "A value with GC references was replaced as a whole.");
+    reject(runtime.restore(id, std::array{link}, ValueOutput{take(runtime.find_type("values.Link")), link_bytes.data()}),
+        ErrorCode::type_mismatch, "A value with GC references was restored.");
     reject(runtime.write(id, std::array{name}, ValueInput{f64, &title}), ErrorCode::type_mismatch,
         "A String field accepted another value type.");
-    std::puts("[pass] Value paths: caller-owned records, String and Array leaves, clamped copies, strong replacement and busy borrows");
+    std::puts("[pass] Value paths: caller-owned records, String and Array leaves, clamped copies, strong replacement, busy borrows and bitwise restore");
 }
