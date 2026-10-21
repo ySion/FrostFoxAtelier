@@ -266,6 +266,12 @@ public:
 };
 }
 
+// One position of the mesh bucket in the cached extraction.
+struct MeshSlot {
+    std::optional<RenderItem> item; // Absent while isolated or degenerate.
+    std::uint64_t changed{};        // Scene::update serial that last changed `item`.
+};
+
 // The presentation of one World; a World without a Scene created by its host is
 // not presented. Creating it registers the mesh (a mesh needs
 // geometry), light and Environment capabilities and the one-Environment
@@ -280,55 +286,47 @@ public:
     [[nodiscard]] world::CapabilityId meshes() const noexcept { return meshes_; }
     [[nodiscard]] world::CapabilityId lights() const noexcept { return lights_; }
     [[nodiscard]] world::CapabilityId environments() const noexcept { return environments_; }
+    // Brings the cached extraction up to date in one presentation pass and one
+    // lighting pass, and returns the presentation version: the serial of the
+    // latest update that changed a mesh slot, the mesh layout, the lights or the
+    // Environment settings. Every member's space and component are read again,
+    // so values written past World (Runtime::write, native code, JIT) are found;
+    // only changed meshes are validated and rebuilt. Failures are reported as by
+    // extraction on every update, so persistent ones keep counting repeats.
+    [[nodiscard]] Result<std::uint64_t> update() const;
+    // The cache as of the latest update, by mesh bucket position.
+    [[nodiscard]] std::span<const MeshSlot> mesh_slots() const noexcept { return mesh_slots_; }
+    // Serial of the latest update that rebuilt every slot after the mesh bucket
+    // changed (World::revision advanced); slot positions keep their component until then.
+    [[nodiscard]] std::uint64_t mesh_layout() const noexcept { return mesh_layout_; }
+    [[nodiscard]] std::span<const LightRenderItem> light_snapshot() const noexcept { return lights_cache_; }
+    [[nodiscard]] std::uint64_t lights_changed() const noexcept { return lights_changed_; }
+    // update(), then the drawn items in Entity/composition order.
     [[nodiscard]] Result<std::vector<RenderItem>> render_items() const;
     // Enabled members, in Entity/composition order. Stopped Worlds also present.
+    // Extracted afresh on every call.
     [[nodiscard]] Result<std::vector<LightRenderItem>> light_items() const;
     // The active EnvironmentComponent's settings, or SceneLightingSettings{}
     // without one. An invalid Environment is reported as invalid_value in the
     // lighting phase's current pass and yields the defaults; see contain.
     [[nodiscard]] Result<rendering::SceneLightingSettings> environment() const;
-    // Advances when render_items, light_items or environment may return a
-    // different result than at the previous call: World::revision, a presented
-    // space chain, mesh geometry, Material bytes or slot surfaces, light
-    // settings, or the active Environment's values. Values written past World
-    // (Runtime::write, native code, JIT) are found by comparing bytes. While the
-    // latest extraction isolated an item, every call advances, so extraction
-    // keeps reporting it. It may advance without a visible change. Reports
-    // nothing and does not begin a diagnostic pass.
-    [[nodiscard]] Result<std::uint64_t> version() const;
 private:
     Scene(world::World& world, const Types& types) noexcept : world_(&world), types_(types) {}
+    // Re-reads the mesh bucket in one presentation pass; changed slots take `serial`.
+    Result<void> update_meshes(std::uint64_t serial) const;
+    // Re-reads one mesh slot; true when its item changed.
+    Result<bool> update_mesh(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
     world::World* world_;
     Types types_;
     world::CapabilityId meshes_, lights_, environments_;
     // Aligned with the meshes and lights buckets at each extraction call.
     mutable detail::PassedValues<Material> valid_materials_;
     mutable detail::PassedValues<LightSettings> valid_lights_;
-    // Whether the latest call of each extraction isolated an item.
-    mutable bool isolated_meshes_{}, isolated_lights_{}, isolated_environment_{};
-    // What version() saw at its previous call, by bucket position.
-    struct SeenMesh {
-        bool placed{}, flat{}, slotted{};
-        math::Matrix4 world{};
-        geometry::MeshRef geometry;
-        Material material;
-        std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces;
-    };
-    struct SeenLight {
-        bool placed{};
-        math::Matrix4 world{};
-        world::World::Orientation frame;
-        LightSettings settings;
-    };
-    struct Seen {
-        std::uint64_t world{};
-        std::vector<SeenMesh> meshes;
-        std::vector<SeenLight> lights;
-        ObjectId environment;
-        rendering::SceneLightingSettings settings;
-    };
-    mutable Seen seen_;
-    mutable std::uint64_t version_{1};
+    mutable std::vector<MeshSlot> mesh_slots_;
+    mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from material slots.
+    mutable std::vector<LightRenderItem> lights_cache_;
+    mutable rendering::SceneLightingSettings environment_cache_;
+    mutable std::uint64_t serial_{}, version_{}, mesh_layout_{}, lights_changed_{}, layout_revision_{};
 };
 
 }

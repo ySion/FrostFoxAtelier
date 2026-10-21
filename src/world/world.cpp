@@ -572,28 +572,20 @@ Result<World::SpatialPass> World::spatial_pass(DiagnosticPhase phase) const {
     impl_->space.begin_pass();
     return SpatialPass{*impl_, phase};
 }
-Result<World::SpatialPass> World::spatial_probe() const {
-    if (auto ready = impl_->admit(false); !ready) return std::unexpected(ready.error());
-    impl_->space.begin_pass();
-    return SpatialPass{*impl_, std::nullopt};
-}
 Result<std::optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity) {
     auto& state = *impl_;
     if (!state.positions.contains(entity)) return error(ErrorCode::invalid_member, "A spatial pass reads only member Entities.");
     auto matrix = state.space.matrix(entity);
     if (matrix) return *matrix;
     const auto at = state.space.failed;
-    if (!phase_) {
-        if (state.invariant_failed || !isolatable(matrix.error())) return std::unexpected(matrix.error());
-    } else if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, *phase_, at, at)) return std::unexpected(matrix.error());
+    if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, phase_, at, at)) return std::unexpected(matrix.error());
     return std::nullopt;
 }
 bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message) {
     if (!singular(world) && !impl_->space.entry(entity)->flat) return false;
-    if (!phase_) return true;
     Diagnostic diagnostic;
     diagnostic.severity = Severity::warning; diagnostic.kind = DiagnosticKind::degenerate_value;
-    diagnostic.phase = *phase_;
+    diagnostic.phase = phase_;
     diagnostic.object = diagnostic.entity = impl_->space.degenerate_root(entity); diagnostic.field = {"scale"};
     diagnostic.message = message;
     impl_->report(std::move(diagnostic));
@@ -631,9 +623,7 @@ Result<std::optional<World::Orientation>> World::SpatialPass::orientation(Object
         return {};
     }();
     if (composed) return result;
-    if (!phase_) {
-        if (impl_->invariant_failed || !isolatable(composed.error())) return std::unexpected(composed.error());
-    } else if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, *phase_, entity, entity, {"rotation"})) return std::unexpected(composed.error());
+    if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, phase_, entity, entity, {"rotation"})) return std::unexpected(composed.error());
     return std::nullopt;
 }
 Result<std::uint64_t> World::add_simulation(Simulation simulation) {

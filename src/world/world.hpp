@@ -344,9 +344,10 @@ public:
     [[nodiscard]] bool closed() const noexcept;
     [[nodiscard]] Activity activity() const noexcept;
     // Advances with every change of membership, composition, enablement, spatial
-    // relations, Transform presence and capability membership. Field values, TRS
-    // included, also change outside World; consumers that skip unchanged frames
-    // compare those themselves.
+    // relations, Transform presence and capability membership, so capability
+    // buckets keep their order and components until it advances. Field values,
+    // TRS included, also change outside World; consumers caching them compare
+    // those themselves.
     [[nodiscard]] std::uint64_t revision() const noexcept;
     [[nodiscard]] bool contains(ObjectId entity) const noexcept;
     // Borrow ends at the next structural change. Queries during a transition fail.
@@ -490,15 +491,11 @@ public:
         [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
     private:
         friend class World;
-        SpatialPass(Impl& impl, std::optional<DiagnosticPhase> phase) noexcept : impl_(&impl), phase_(phase) {}
+        SpatialPass(Impl& impl, DiagnosticPhase phase) noexcept : impl_(&impl), phase_(phase) {}
         Impl* impl_;
-        std::optional<DiagnosticPhase> phase_;
+        DiagnosticPhase phase_;
     };
     [[nodiscard]] Result<SpatialPass> spatial_pass(DiagnosticPhase) const;
-    // A pass for change detection: it begins no diagnostic pass and reports
-    // nothing. Object failures yield nullopt under every policy and degenerate()
-    // only answers; World-level failures still fail.
-    [[nodiscard]] Result<SpatialPass> spatial_probe() const;
 
     // Scheduling configuration keyed by the Runtime's existing type identity.
     // The nearest ancestor binding is inherited as a whole. Allowed at host

@@ -145,7 +145,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity；快照不另记内容修订号，内容变化由 Renderer 逐帧比较得知。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 
-`SceneSnapshot::refresh` 先取 [presentation 的版本号](../presentation/README.md#呈现版本号)：版本号、选择和快照身份都与上一次提取相同时保留上一份快照，不调用 `render_items` 与 `light_items`，所以只转相机或只做 UI 操作的帧不重新提取；`extractions` 记录实际提取次数。
+`SceneSnapshot::refresh` 跟随 [presentation 的提取缓存](../presentation/README.md#提取缓存)：先调用 `Scene::update()`，版本号和选择都与上一次相同时保留整份快照，所以只转相机或只做 UI 操作的帧不重建任何条目。否则只重建变化的部分：网格槽位不变、只是内容变化时原位改写对应的 MeshInstance，保留它的稳定键和选中状态；网格布局变化、或有槽位开始或停止绘制时，按缓存重排全部网格并重新计算选中；灯光变化时重建灯列表；只有选择变化时只重新计算选中。`built` 累计实际重建的 MeshInstance 与灯数量。替换文档时调用 `reset()`，它改变 scene_identity 并清空映射，下一次 refresh 完整重建。
 
 光照及快照的当前合同见 [Scene Lit](../renderer/scene-lit.md)，应用创建、撤销、保存重开和正式窗口结果统一见 [Renderer 验收](../renderer/acceptance.md)。早期只完成语法检查的交接记录已被这些集成结果替代。
 
@@ -188,7 +188,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 ### 不创建 GPU 的场景 CPU 定位
 
-`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot 的静止帧（`scene_snapshot`，跳过提取）与变化帧（`scene_snapshot_changed`，每个样本经 Runtime 写入交替移动一个网格 Entity），以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95；与 Play 进程一样，`play_start`/`play_update`/`play_stop` 在从同一源文件另行加载的副本上运行，含动态刚体的场景也不改变被测文档。报告（schema v2）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
+`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot 的静止帧（`scene_snapshot`，不重建条目）与变化帧（`scene_snapshot_changed` 与 `scene_snapshot_changed_50`，每个样本经 Runtime 写入交替移动 1 个或 50 个叶网格 Entity，计时包含这些写入），以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95；与 Play 进程一样，`play_start`/`play_update`/`play_stop` 在从同一源文件另行加载的副本上运行，含动态刚体的场景也不改变被测文档。报告（schema v2）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
 
 报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 Image 身份和 sRGB 模式计数的纹理数；纹理表大小额外包含默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
 

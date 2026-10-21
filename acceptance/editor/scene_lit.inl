@@ -146,44 +146,48 @@ void verify_environment_sky_application() {
     auto project=take(Project::create(folder));
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Sky.scene"));
     take(write_file(file,text,WriteMode::create));
-    auto reopened=take(Session::deserialize(take(read_file(file)),project));take(snapshot.refresh(*reopened));
+    auto reopened=take(Session::deserialize(take(read_file(file)),project));snapshot.reset();take(snapshot.refresh(*reopened));
     require(sky(*reopened)==radiance && reopened->lighting_supplied() && snapshot.lights.size()==1 && !nlohmann::json::parse(text).contains("world"),
         "The Environment sky changed after saved scene reopen.");
     std::puts("Environment sky application acceptance: PASS (first edit creates it, unique, enable/remove/undo, scene save/reopen)");
 }
-// A refresh extracts only when the presentation version, the selection or the
-// snapshot identity changed; static frames keep the previous snapshot.
-void verify_scene_snapshot_skip() {
+// A refresh rebuilds only what changed in the Scene cache: nothing on a static
+// frame, the moved mesh alone, the lights, or every instance after a reset.
+void verify_scene_snapshot_updates() {
     using namespace editor;
     Session document;
     auto& world=const_cast<world::World&>(document.world());
-    changed(document.create_static_mesh(mesh_assets().front()));const auto mesh_entity=document.selection().entity;
+    changed(document.create_static_mesh(mesh_assets().front()));const auto first=document.selection().entity;
+    changed(document.create_static_mesh(mesh_assets().front()));
     changed(document.create_light(presentation::LightKind::point));
     const auto light=component(document,document.selection().entity,document.presentation_types().light_component);
     application::SceneSnapshot snapshot;take(snapshot.refresh(document));
-    const auto refreshed=[&](bool extracted,const char* message) {
-        const auto before=snapshot.extractions;take(snapshot.refresh(document));
-        require(snapshot.extractions==before+(extracted?1:0),message);
+    require(snapshot.meshes.size()==2 && snapshot.lights.size()==1 && snapshot.built==3,"The first refresh did not build every instance once.");
+    const auto refreshed=[&](std::uint64_t built,const char* message) {
+        const auto before=snapshot.built;take(snapshot.refresh(document));
+        require(snapshot.built==before+built,message);
     };
-    refreshed(false,"A static frame extracted the presentation again.");
-    refreshed(false,"A second static frame extracted the presentation again.");
-    take(document.select(mesh_entity));refreshed(true,"A selection change kept the previous highlight.");
-    require(snapshot.meshes[0].selected,"The refreshed snapshot lost the selection highlight.");
-    refreshed(false,"An unchanged selection extracted the presentation again.");
-    take(world.runtime().write(mesh_entity,document.types().position_fields[0],Scalar{2.f}));
-    refreshed(true,"A TRS write past World kept the previous mesh matrix.");
-    require(snapshot.meshes[0].world[12]==2,"The refreshed snapshot lost the written position.");
+    refreshed(0,"A static frame rebuilt snapshot instances.");
+    refreshed(0,"A second static frame rebuilt snapshot instances.");
+    const auto keys=std::array{snapshot.meshes[0].stable_key,snapshot.meshes[1].stable_key};
+    take(world.runtime().write(first,document.types().position_fields[0],Scalar{2.f}));
+    refreshed(1,"A TRS write past World did not rebuild exactly the moved mesh.");
+    require(snapshot.meshes[0].world[12]==2 && snapshot.meshes[0].stable_key==keys[0] && snapshot.meshes[1].stable_key==keys[1],
+        "The moved mesh lost its position or a mesh lost its stable key.");
+    take(document.select(first));refreshed(0,"A selection change rebuilt snapshot instances.");
+    require(snapshot.meshes[0].selected && !snapshot.meshes[1].selected,"The refreshed snapshot did not highlight exactly the selection.");
     auto settings=take(presentation::read_light(world.runtime(),light));settings.intensity=9;
-    take(presentation::set_light(world,light,settings));refreshed(true,"A light edit kept the previous light.");
+    take(presentation::set_light(world,light,settings));refreshed(1,"A light edit did not rebuild the lights alone.");
     require(snapshot.lights[0].intensity==9,"The refreshed snapshot lost the light edit.");
-    refreshed(false,"A static frame after edits extracted the presentation again.");
-    snapshot.reset();refreshed(true,"A reset snapshot reused the previous extraction.");
-    std::puts("Scene snapshot skip acceptance: PASS (static frames reuse the snapshot; selection, TRS past World, light edit and reset extract)");
+    refreshed(0,"A static frame after edits rebuilt snapshot instances.");
+    snapshot.reset();refreshed(3,"A reset snapshot did not rebuild every instance.");
+    require(snapshot.meshes[0].selected && snapshot.meshes[0].world[12]==2,"A reset snapshot lost the selection or the moved position.");
+    std::puts("Scene snapshot update acceptance: PASS (static frames build nothing; a moved mesh, a light edit and a reset rebuild only their instances)");
 }
 void verify_scene_lit_application(const std::filesystem::path& source_example = {}) {
     verify_scene_lit_example(source_example);
     verify_environment_sky_application();
-    verify_scene_snapshot_skip();
+    verify_scene_snapshot_updates();
     using namespace editor;
     const auto folder=std::filesystem::current_path()/"out/scene-lit-application-evidence"/
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());

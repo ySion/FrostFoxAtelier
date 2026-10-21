@@ -803,7 +803,7 @@ int main() {
         static_mesh_entity_creation();
         lit_materials_and_lights();
         environment_and_group_writes();
-        presentation_version();
+        presentation_cache();
         hierarchical_lifecycle();
         hierarchical_reference_lifetime();
         hierarchical_space_boundaries();

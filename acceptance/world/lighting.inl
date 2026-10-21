@@ -351,15 +351,18 @@ void environment_and_group_writes() {
     committed(world.close());
     std::puts("[pass] Environment: defaults without one, uniqueness with disabled ones, invalid values fall back, atomic group writes with exact restore");
 }
-// Scene::version: extraction alone keeps it; every presented input advances it,
-// values written past World included. It reports nothing.
-void presentation_version() {
+// Scene::update keeps one cached extraction: an unchanged update keeps the version;
+// every presented input advances it, values written past World included, and only
+// the slots that changed take the new serial. Failures are reported on every update.
+void presentation_cache() {
     Runtime runtime; const auto types=register_all_types(runtime);
     w::World world(runtime,types);
     const auto scene=take(p::Scene::create(world,types));
     auto parent=take(w::create_entity(runtime));take(world.set_transform(parent.id(),{}));
     auto mesh_entity=take(p::create_static_mesh_entity(world,{geometry::cube_mesh(),{{1,0,0},{},{1,1,1}}}));
     const auto mesh=take(w::components(runtime,mesh_entity.id())).front().id();
+    auto still_entity=take(p::create_static_mesh_entity(world,{geometry::cube_mesh(),{{5,0,0},{},{1,1,1}}}));
+    const auto still=take(w::components(runtime,still_entity.id())).front().id();
     auto light_entity=take(w::create_entity(runtime));take(world.set_transform(light_entity.id(),{{0,2,0},{},{1,1,1}}));
     auto light=take(w::create_component(runtime,types.light_component));const auto light_id=light.id();
     const std::array light_group{w::Attachment{light_id}};
@@ -370,57 +373,64 @@ void presentation_version() {
     committed(world.attach_components(environment_entity.id(),environment_group));
     committed(world.reparent(mesh_entity.id(),parent.id(),w::ReparentRule::keep_local));
     committed(world.reparent(light_entity.id(),parent.id(),w::ReparentRule::keep_local));
-    committed(world.attach(parent.id()));committed(world.attach(environment_entity.id()));
+    committed(world.attach(parent.id()));committed(world.attach(still_entity.id()));committed(world.attach(environment_entity.id()));
     const auto field=[&](TypeId type,std::string_view name){return take(runtime.find_field(type,name));};
     const w::FieldPath roughness{field(types.static_mesh_component,"material"),field(types.material,"roughness")};
     const w::FieldPath intensity{field(types.light_component,"settings"),field(types.light_settings,"intensity")};
     const w::FieldPath range{field(types.light_component,"settings"),field(types.light_settings,"range")};
     const w::FieldPath exposure{field(types.environment_component,"exposure_ev")};
-    const auto extract=[&]{take(scene.render_items());take(scene.light_items());take(scene.environment());};
-    extract();
-    auto seen=take(scene.version());
-    for(int frame=0;frame<3;++frame) {extract();require(take(scene.version())==seen,"An unchanged presentation advanced its version.");}
-    const auto advanced=[&](const char* message) {
-        const auto next=take(scene.version());require(next!=seen,message);
-        extract();seen=take(scene.version());
-        require(seen==next,"Extracting a changed presentation advanced its version again.");
+    const auto& x=types.position_fields[0];
+    const auto slot=[&](ObjectId component)->const p::MeshSlot& {
+        const auto members=take(world.members(scene.meshes()));
+        return scene.mesh_slots()[std::size_t(std::ranges::find(members,component,&w::CapabilityMember::component)-members.begin())];
     };
+    auto version=take(scene.update());
+    for(int frame=0;frame<3;++frame) require(take(scene.update())==version,"An unchanged presentation advanced its version.");
+    const auto advanced=[&](const char* message) {
+        const auto next=take(scene.update());require(next!=version,message);
+        require(take(scene.update())==next,"Updating a changed presentation again advanced its version.");
+        version=next;
+    };
+    const auto untouched=slot(still).changed;
     take(world.write(mesh,roughness,.25f));advanced("A Material edit through World did not advance the version.");
+    require(slot(mesh).changed==version && slot(mesh).item->material.roughness==.25f && slot(still).changed==untouched,
+        "A Material edit did not rebuild exactly its own slot.");
+    take(runtime.write(mesh,roughness,Scalar{.3f}));advanced("A Material write past World did not advance the version.");
     take(runtime.write(light_id,intensity,Scalar{7.f}));advanced("A light edit past World did not advance the version.");
+    require(scene.lights_changed()==version && scene.light_snapshot().front().settings.intensity==7 && slot(still).changed==untouched,
+        "A light edit did not refresh the lights alone.");
     take(world.write(environment.id(),exposure,1.f));advanced("An Environment edit did not advance the version.");
-    take(runtime.write(parent.id(),types.position_fields[0],Scalar{3.f}));advanced("An ancestor TRS write did not advance the version.");
+    take(runtime.write(parent.id(),x,Scalar{3.f}));advanced("An ancestor TRS write did not advance the version.");
+    require(slot(mesh).item->world[12]==4 && slot(still).changed==untouched,"An ancestor move did not rebuild exactly the slots below it.");
     committed(world.set_enabled(light_id,false));advanced("Disabling a light did not advance the version.");
     committed(world.set_enabled(light_id,true));advanced("Enabling a light did not advance the version.");
     auto removal=take(world.remove_component(light_id));advanced("Removing a light did not advance the version.");
     committed(world.restore(removal));advanced("Restoring a light did not advance the version.");
     committed(world.reparent(light_entity.id(),{},w::ReparentRule::keep_local));advanced("Reparenting a light did not advance the version.");
+    require(scene.mesh_layout()==version,"A structural edit did not rebuild the mesh layout.");
     material::State shared;shared.description.parameters.roughness=.2f;
     const auto resource=take(material::create_material(runtime,shared));
     const std::array<p::MaterialBinding,1> binding{{{"slot/0",resource,true}}};
     take(p::set_material_bindings(runtime,mesh,binding));advanced("Binding a slot material did not advance the version.");
     shared.description.parameters.roughness=.6f;take(material::update_material(runtime,resource.id(),shared));
     advanced("Editing a bound material resource did not advance the version.");
-    require(take(scene.render_items()).front().surfaces->front()->description().parameters.roughness==.6f,
-        "The bound material edit did not reach extraction.");
+    require(slot(mesh).item->surfaces->front()->description().parameters.roughness==.6f,"The bound material edit did not reach the cache.");
     require(world.take_diagnostics().empty(),"Valid presentation edits reported diagnostics.");
-    // While an item is isolated every call advances, so extraction keeps reporting it; the
-    // version check itself reports nothing. Repair returns to the last presented bytes.
-    take(runtime.write(light_id,range,Scalar{0.f}));
-    const auto broken=take(scene.version());
-    require(broken!=seen,"An invalid light written past World did not advance the version.");
-    extract();
-    require(world.take_diagnostics().size()==1 && take(scene.version())!=broken,"An isolated light did not keep the version advancing.");
-    take(runtime.write(parent.id(),types.position_fields[0],Scalar{std::numeric_limits<float>::infinity()}));
-    const auto unplaced=take(scene.version());
-    require(take(scene.version())!=unplaced && world.take_diagnostics().empty(),
-        "A broken space did not advance every version check, or the check reported it.");
-    extract();
-    require(world.take_diagnostics().size()==1 && take(scene.light_items()).empty(),"Extraction did not isolate the broken space.");
-    take(runtime.write(light_id,range,Scalar{10.f}));
-    take(runtime.write(parent.id(),types.position_fields[0],Scalar{3.f}));
-    const auto repaired=take(scene.version());extract();
-    require(take(scene.version())==repaired && take(scene.light_items()).size()==1 && take(scene.render_items()).size()==1,
-        "A repaired presentation kept advancing its version or stayed isolated.");
+    // An isolated item leaves the cache once; while it stays isolated the version
+    // holds and every update reports it again.
+    take(runtime.write(light_id,range,Scalar{0.f}));advanced("Isolating a light did not advance the version.");
+    auto reports=world.take_diagnostics();
+    require(reports.size()==1 && reports[0].repeats==2 && scene.light_snapshot().empty(),
+        "An isolated light stayed presented or was not reported on each update.");
+    take(runtime.write(light_id,range,Scalar{10.f}));advanced("Repairing an isolated light did not advance the version.");
+    const auto placed=slot(still).changed; // The reparent above rebuilt the layout.
+    take(runtime.write(parent.id(),x,Scalar{std::numeric_limits<float>::infinity()}));advanced("Isolating a space did not advance the version.");
+    reports=world.take_diagnostics();
+    require(reports.size()==1 && reports[0].repeats==2 && !slot(mesh).item && slot(still).item && slot(still).changed==placed,
+        "A broken space did not isolate exactly its mesh, or was not reported on each update.");
+    take(runtime.write(parent.id(),x,Scalar{3.f}));advanced("Repairing an isolated space did not advance the version.");
+    require(scene.light_snapshot().size()==1 && slot(mesh).item && take(scene.render_items()).size()==2 && world.take_diagnostics().empty(),
+        "Repaired items did not return to the cache.");
     committed(world.close());
-    std::puts("[pass] Presentation version: stable across extractions; World, Runtime, Environment, TRS, enablement, composition and reparent edits advance it; isolated items keep it advancing without reports");
+    std::puts("[pass] Presentation cache: unchanged updates keep the version; World, Runtime, Environment, TRS, enablement, composition, reparent and material resource edits advance it and rebuild only their slots; isolated items are reported on every update");
 }

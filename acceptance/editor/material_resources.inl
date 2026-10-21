@@ -92,6 +92,13 @@ void verify_material_resources() {
     changed(document.undo());
     application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto surfaces=snapshot.meshes.at(0).surfaces;
     take(snapshot.refresh(document));require(surfaces && snapshot.meshes.at(0).surfaces==surfaces,"Unchanged material rebuilt renderer snapshots.");
+    // A shared asset edit changes no component byte; the slot surfaces capture finds it.
+    take(document.set_property(resource.id(),red.path,Scalar{.5f},119));
+    const auto built=snapshot.built;take(snapshot.refresh(document));
+    require(snapshot.built>built && snapshot.meshes.at(0).surfaces!=surfaces &&
+        snapshot.meshes.at(0).surfaces->front()->description().parameters.base_color[0]==.5f,
+        "A shared material edit did not reach the renderer snapshot.");
+    take(document.material_undo(key));
     take(document.save_material(project,key));
     auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
     auto changed_parent=take(project.material(key));changed_parent.description.parameters.base_color[1]=.35f;

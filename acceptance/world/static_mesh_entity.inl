@@ -98,7 +98,8 @@ void static_mesh_entity_creation() {
     require(!runtime.type_of(entity_id) && !runtime.type_of(component_id) && !resource.expired(),
         "Entity destruction retained its component or invalidated a held render resource.");
     draws.clear();
-    require(resource.expired(), "Mesh content outlived all component/history/snapshot owners.");
+    take(scene.update());
+    require(resource.expired(), "Mesh content outlived all component/history/snapshot/cache owners.");
     committed(world.close());
     const auto closed_objects = runtime.live_objects();
     reject(p::create_static_mesh_entity(world,{}), "Factory created objects through a closed World.");

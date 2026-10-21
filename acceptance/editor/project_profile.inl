@@ -95,14 +95,26 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("material_surfaces",[&]{for(const auto& item:geometry) take(presentation::material_surfaces(document->world().runtime(),item.component));});
     measure("scene_snapshot",[&]{take(snapshot.refresh(*document));});
     {
-        // A changed frame: one mesh Entity's position alternates through a Runtime write.
-        auto& runtime=document->world().runtime();
-        const auto entity=geometry.front().entity;const auto& x=document->types().position_fields[0];
-        const auto original=std::get<float>(take(runtime.read(entity,x)));bool moved{};
-        measure("scene_snapshot_changed",[&]{
-            moved=!moved;take(runtime.write(entity,x,Scalar{moved?original+1:original}));take(snapshot.refresh(*document));
-        });
-        take(runtime.write(entity,x,Scalar{original}));take(snapshot.refresh(*document));
+        // Changed frames: the positions of 1 or 50 leaf mesh Entities alternate through Runtime writes.
+        auto& runtime=document->world().runtime();const auto& x=document->types().position_fields[0];
+        std::vector<std::pair<ObjectId,float>> leaves;
+        for(const auto& item:geometry) {
+            if(leaves.size()==50) break;
+            if(std::ranges::find(leaves,item.entity,&std::pair<ObjectId,float>::first)!=leaves.end() ||
+               !take(world::children(runtime,item.entity)).empty()) continue;
+            leaves.emplace_back(item.entity,std::get<float>(take(runtime.read(item.entity,x))));
+        }
+        require(leaves.size()==50,"CPU profile requires 50 leaf mesh Entities.");
+        bool moved{};
+        const auto move=[&](std::size_t count) {
+            moved=!moved;
+            for(std::size_t i=0;i<count;++i) take(runtime.write(leaves[i].first,x,Scalar{moved?leaves[i].second+1:leaves[i].second}));
+            take(snapshot.refresh(*document));
+        };
+        measure("scene_snapshot_changed",[&]{move(1);});
+        measure("scene_snapshot_changed_50",[&]{move(50);});
+        for(const auto& [entity,original]:leaves) take(runtime.write(entity,x,Scalar{original}));
+        take(snapshot.refresh(*document));
     }
     {
         // Paired World edits restore the same graph; the document history is not involved.

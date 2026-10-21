@@ -8,17 +8,20 @@
 
 `presentation::Scene::create(World&, Types)` 在宿主边界为一个 World 建立呈现：登记网格（要求组件已有几何）、灯光、环境三项能力，以及“每个 World 至多一个 EnvironmentComponent”的准入。每个 World 只创建一个 Scene，它先于 World 析构；网格登记带谓词，重复创建会累积登记。编辑器 Session（编辑与 Play 共用）在 World 旁持有它，由 `Session::presentation()` 取得。`meshes() / lights() / environments()` 返回这三个 `CapabilityId`，可经 `World::members(id)` 查询桶。
 
-`render_items()`、`light_items()` 与 `environment()` 只遍历这些桶，经 `World::spatial_pass` 读取空间，对象失败经 `World::contain` 写入 World 的诊断日志，按 World 的失败策略隔离或使调用失败。Scene 只持有材质与灯参数的校验缓存，不缓存提取结果。
+`render_items()`、`light_items()` 与 `environment()` 只遍历这些桶，经 `World::spatial_pass` 读取空间，对象失败经 `World::contain` 写入 World 的诊断日志，按 World 的失败策略隔离或使调用失败。
 
-### 呈现版本号
+### 提取缓存
 
-`Scene::version()` 返回一个单调的版本号，供消费者跳过没有变化的帧。只要三项提取中任何一项的结果可能与上一次调用 `version()` 时不同，它就前进。Runtime 没有字段写入通知，所以它由三处已有的检查合成：
+Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只经 `update()` 和 `render_items()` 推进。
 
-- 结构：`World::revision()`，成员、组合、启用、空间关系、Transform 有无和能力登记的变化都会使它前进；
-- 空间：经 `World::spatial_probe()` 读取每个网格和启用灯光的世界矩阵（灯另读朝向），与上一次逐字节比较；
-- 数据：网格的几何、Material 字节和材质槽 Surface 快照，启用灯光的 LightSettings 字节，启用中的 Environment 的设置值，均与上一次比较。经 `Runtime::write`、`with_native` 或 JIT 绕过 World 写入的值也由此发现。
+- 缓存内容：网格桶每个位置一个 `MeshSlot`，`item` 是该位置的 RenderItem（隔离或退化时为空），`changed` 是最后改变它的更新序号；上一次更新的灯光结果；上一次的 Environment 设置。
+- 布局：`World::revision()` 前进时，网格槽全部清空重建，`mesh_layout()` 记下这次更新的序号。在此之前，每个槽位都对应同一个组件，消费者可以按槽位保留自己的派生数据。
+- 每次更新：`update()` 在一次 presentation 遍历中重新读取每个网格成员的空间和组件字节，与缓存逐字节比较，只对变化的网格校验 Material、重算 surfaces；带材质槽的网格每次都重新捕获 surfaces 并按指针比较，所以共享材质资源的编辑也能发现。灯光与 Environment 每次完整提取，与缓存比较。Runtime 没有字段写入通知，经 `Runtime::write`、`with_native` 或 JIT 绕过 World 写入的值也由这些比较发现。
+- 版本号：`update()` 返回最近一次改变了某个网格槽、网格布局、灯光或 Environment 设置的更新序号。它单调、只在内容变化时前进；消费者保存上次同步的版本号，版本号相同时整帧跳过，否则只处理 `changed`、`mesh_layout()`、`lights_changed()` 大于该值的部分。`render_items()` 也推进缓存，序号与 `update()` 共用，所以其他调用方插入的提取不会让消费者漏掉变化。
+- 所有权：缓存的 RenderItem 共享持有网格几何与 surfaces，组件被销毁或换了网格、材质后，旧内容保留到下一次更新。Scene 先于 World 析构时一并释放。
+- 失败隔离：隔离或退化的网格不留在缓存中，每次更新都重新读取并报告，持续的失败和零缩放警告按更新次数累计 `repeats`；修复后在下一次更新回到缓存。调用失败（halt 策略或 World 级错误）时返回错误，失败前已更新的槽保留新值和序号；下一次成功的更新返回的版本号不小于这些序号，消费者不会漏掉它们。
 
-上一次提取隔离了某一项（空间不可求值、值无效）时，每次调用都前进，消费者因此每帧重新提取，诊断照旧逐次累计 `repeats`；修复后恢复跳过。版本号允许没有可见变化时前进，不会在内容变化时停留。`version()` 不写诊断，也不开始诊断遍历；跳过的帧不提取，所以持续的警告（如零缩放）按提取次数而不是帧数累计。
+静止帧的耗时下限来自“每次更新都要读一遍”：为了发现绕过 World 的写入，所有呈现成员的世界矩阵和组件字节每帧都要读取比较，开销与呈现成员数成正比，与变化多少无关。根本的解法是 Runtime 层的字段写通知或脏标记，它牵涉语言直接访问字段的设计，属于运行时的架构决定，目前没有。
 
 ## 网格
 
