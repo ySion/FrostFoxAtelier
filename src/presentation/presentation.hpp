@@ -266,7 +266,8 @@ public:
 };
 }
 
-// The presentation of one World. Creating it registers the mesh (a mesh needs
+// The presentation of one World; a World without a Scene created by its host is
+// not presented. Creating it registers the mesh (a mesh needs
 // geometry), light and Environment capabilities and the one-Environment
 // admission on that World; extraction reads only those buckets and reports
 // object failures to the World's log under its failure policy. One per World,
