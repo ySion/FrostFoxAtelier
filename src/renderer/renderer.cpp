@@ -135,8 +135,9 @@ public:
             auto &entry = entries_[i];
             materials_changed |= entry.geometry != mesh.geometry || entry.surfaces != mesh.surfaces ||
                 !same_bits(entry.color, mesh.color) || !same_bits(entry.material, mesh.material);
-            release(entry.stable_key);
+            // Only acquire allocates; once it succeeds the rest of this position's update cannot throw.
             acquire(mesh.stable_key);
+            release(entry.stable_key);
             entry = {mesh.world, mesh.color, mesh.material, mesh.stable_key, mesh.geometry, mesh.surfaces,
                      static_cast<std::uint32_t>(mesh.geometry->materials().size()), std::nullopt};
         }
@@ -149,6 +150,8 @@ public:
     bool materials_changed{true};
 
 private:
+    // Every MeshInstance field but selected; a new field must join same() and valid_instance.
+    static_assert(sizeof(MeshInstance) == 152);
     static bool same(const Entry &entry, const MeshInstance &mesh) noexcept {
         return entry.geometry == mesh.geometry && entry.surfaces == mesh.surfaces && entry.stable_key == mesh.stable_key &&
             same_bits(entry.world, mesh.world) && same_bits(entry.color, mesh.color) && same_bits(entry.material, mesh.material);
