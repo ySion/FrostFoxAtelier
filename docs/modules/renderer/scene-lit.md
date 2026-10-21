@@ -74,7 +74,7 @@ atlas 压力先调整分辨率，再使用“更新本批 → 着色本批 → �
 近期管线成本、剔除边界和工业依据见[审计研究](../../research/render-pipeline-audit-20261013.md)。
 
 1. 光栅 GBuffer 写入着色法线/粗糙度、基础色/金属度、HDR 自发光、运动信息、独立 R32_FLOAT 预期前帧设备深度与 RG16_FLOAT 八面体几何法线。法线贴图只改变着色法线；偏移、支持平面和历史深度梯度使用几何法线。当前 D32_FLOAT 深度、前帧 R32_FLOAT 深度与 RG32_FLOAT min/max Hi-Z 都遵循有限 Reversed-Z；方向和背景约定见 [Renderer 合同](contract.md#场景和-ui)。屏幕坐标使用整个窗口，`scene_viewport` 处理物理像素偏移，支持透视与正交投影。
-2. 共享不可变网格缓存 BLAS，稳定实例更新 TLAS。内联 RayQuery 完成灯光可见性和 DDGI 探针射线；RHI 只在支持 DXR 1.1 的硬件上打开 Context，Renderer 不另做能力判断。
+2. 共享不可变网格缓存 BLAS，稳定实例更新 TLAS。每个快照索引记住上一次完整编码时对应的对象和网格；对象和网格不变时不再查哈希表。材质表修订号不变、对象仍在原索引上时，不再逐槽比较材质。成员、网格和材质都没变的帧跳过覆盖扫描与退休扫描，未变且已稳定的对象只重新登记阴影投射者。内联 RayQuery 完成灯光可见性和 DDGI 探针射线；RHI 只在支持 DXR 1.1 的硬件上打开 Context，Renderer 不另做能力判断。
 3. 局部 ReSTIR 初始/时间 → 空间 → fresh visibility 着色，另加独立方向光，估计实际 `f×L×V`（解析灯为 GGX 全项，屏幕 mesh NEE 为漫反射项）。不把独立平均的光照和可见性再相乘。随后漫反射与镜面分别去除材质调制，使用各自的时间历史、FP32 亮度矩和三个步长的方差引导空间滤波，再恢复材质贡献；reservoir 与颜色降噪历史分别拥有。重建范围由当前接收点的估计方差决定，亮邻点的高方差不能使稳定暗点获得额外混色支持；法线、切平面、粗糙度和材质约束保留 lowpoly 硬边。
 4. 有限体积 DDGI：规则 XYZ 探针格、八面体方向辐照度与距离矩、背面分类、受限位置修正、分帧采样与逐帧照明过渡，以及有界上一轮间接反弹。屏幕接收点用实际射线可见性选择八探针贡献，直接输出间接辐照度。
 5. GTAO 基于深度重建与地平线积分，使用独立历史，只调制间接项。一次派发先写出 R32_FLOAT 视空间深度及其四个缩减层级；缩减层级只平均足迹内接近最远表面的深度（XeGTAO 的深度 MIP 思路），空像素不当作遮挡者。地平线 tap 按距离选层：约 14 px 内用全分辨率，之后每倍距离升一级。视空间位置由带 jitter 的投影系数经乘加重建，透视与正交投影通用。积分、切线、偏置和衰减与原世界空间公式一致。resolve 由 8×8 工作组把 12×12 邻域的世界位置、法线和原始 AO 一次性载入组共享内存，5×5 支持和时间重投影算法不变。可选 Local GI 提供有界近场漫反射修正；两者使用同一个近场策略选择，保留直接光与自发光。
@@ -86,9 +86,9 @@ atlas 压力先调整分辨率，再使用“更新本批 → 着色本批 → �
 
 直接光的材质恢复与 HDR Compose 在同一通道完成，沿用去除独立 `direct_hdr` 中转后的资源路径与 RGBA16F 舍入行为。参考模式或没有光源时跳过直接光空间滤波，Compose 与 Local GI 共用已解析的直接光历史。候选数、参考模式和 Shadows 变化使受影响的直接光历史失效。
 
-关闭 SSSR 时仍写入环境回退和空来源历史，但跳过 HiZ 构建、工作列表 reset/prepare 与三个反射空间滤波通道；下一次开启重新构建这些输入。关闭 Bloom 时跳过下采样和两次模糊，色调映射沿原开关忽略 Bloom。实例上传比较完整 GPU 数据，包括 previous_world、历史有效位和几何偏移；静止帧复用缓冲，物体停止运动后的前帧矩阵更新仍会上传。法线矩阵按 world 变化计算，统一光源快照按真实 Renderer sequence 推进前后状态，不以可重复的 UI 帧号判定帧生命周期。
+关闭 SSSR 时仍写入环境回退和空来源历史，但跳过 HiZ 构建、工作列表 reset/prepare 与三个反射空间滤波通道；下一次开启重新构建这些输入。关闭 Bloom 时跳过下采样和两次模糊，色调映射沿原开关忽略 Bloom。实例表、光源表与阴影批次表都常驻默认堆（`DeviceTable`），变化的内容先写入本帧槽再拷入，内容未变的帧不拷贝；这些表被直接光、DDGI 与阴影光栅逐像素或逐顶点反复读取，改为由 GPU 直接读帧槽时 Dungeon 的 direct_visibility 与 direct_initial 各慢约 2%。实例表逐项比较完整 GPU 数据（包括 previous_world、历史有效位和几何偏移），只拷变化的连续区间，物体停止运动后的前帧矩阵更新仍会上传。阴影作业内的投射者按几何组排序，同一网格的投射者合成一次实例化绘制。法线矩阵按 world 变化计算，统一光源快照按真实 Renderer sequence 推进前后状态，不以可重复的 UI 帧号判定帧生命周期。
 
-直接光、DDGI 屏幕 gather、GTAO 和 Local GI 共用 `lit_screen_dispatch` 的整数原点与独占终点，只派发视口内接收像素；坐标、纹理索引和随机数仍使用原窗口坐标。范围按像素中心与小数视口相交，参考分块也使用独立终点，补齐线程不会写相邻 tile。Compose、公共表面历史和显示后处理仍定义完整窗口；邻域消费者先检查表面和视口，不能读未写的外部区域。这个裁剪不改变光源池、TLAS 或离屏探针更新。
+直接光、DDGI 屏幕 gather、GTAO 和 Local GI 共用 `lit_screen_dispatch` 的整数原点与独占终点，只派发视口内接收像素；坐标、纹理索引和随机数仍使用原窗口坐标。终点按像素中心与小数视口相交；原点向下取整到 16 的倍数（cluster tile 尺寸），8×8 线程组与纹理分块对齐，多出的左上边距由 `lit_inside` 和表面检查早退或写中性值（cluster 着色在这里写零可见性）。编辑器最大化视口原点为 (57,255)，未对齐时组跨越分块边界，直接光的 resolve 与滤波慢 5–9%；覆盖整窗的游戏视口原点为 (0,0)，不受影响。参考分块也使用独立终点，补齐线程不会写相邻 tile。Compose、SSR 分类与反射 resolve/filter、TAA 与表面历史、色调映射和 SMAA 同样只派发视口；每次历史复位（含视口变化、AA 切换与目标重建）后的两帧仍覆盖完整窗口，使两组 parity 的视口外纹素保持零或远深度，SMAA 搜索等越界邻域读取得到与此前相同的值。Bloom 与深度金字塔仍按完整目标派发；邻域消费者先检查表面和视口。这个裁剪不改变光源池、TLAS 或离屏探针更新。
 
 直接光的成对时间 resolve 在一次 3×3 当前邻域和一次 2×2 前帧重投影遍历中共享漫反射/镜面的几何资格读取与重建。两种信号仍独立检查有效样本、粗糙度门槛，保留各自 support、权重、亮度矩和历史响应，按原行优先次序累积；共享几何资格不意味着合并信号或共用历史权重。参考模式与无光帧沿同一 resolve 直接写当前结果，不保留已删除光源。
 
@@ -256,7 +256,7 @@ ReSTIR、直接光降噪、GTAO、Local GI、最终 TAA 以及 SSSR 接收面/�
 
 阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联。`scene_lit_light_sources`、`scene_lit_shadow_sources`、`scene_lit_di_candidates` 与历史重置数描述当前编码帧，分别为统一源总数、启用 Shadows 时具备投影资格的源数、初始候选预算；投影资格数不是本帧实际射线数，也没有“未获阴影槽”的灯。`scene_lit_resource_bytes` 是资源逻辑字节加 AS 数据量，不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
 
-空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码是否上传这些缓冲）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
+空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码这些表的内容是否变化或首次建立）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 
 Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程和窗口中运行下列入口，任一入口失败即整体失败；每个入口也是单独的目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口为 `renderer_acceptance_default`），供必要性测试只跑相关入口。证据写入构建目录的 `renderer-evidence/<入口>`，日志为 `renderer-acceptance-<入口>.log`：
 
@@ -265,7 +265,7 @@ Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程
 | 默认（无参数） | cavity、材质与材质光输运、UI、变换、网格、可见性、选中、视口显示与参考辅助、关闭 |
 | `--scene-lit` | 环境、逐项图像、时间稳定、Edit/Play 收敛、删灯、正交、模式独立性、resize |
 | `--scene-lit-benchmark` | 原生 2560×1440 完成样本与 GPU 分段计时合同；测量阶段关闭验证且不 Capture |
-| `--scene-lit-temporal` | 信号编辑、移动历史、时间隔离、刚体运动响应 |
+| `--scene-lit-temporal` | 信号编辑、移动历史、时间隔离、刚体运动响应、停止后首帧运动向量与静止参考一致 |
 | `--scene-lit-quality` | 四种 AA、灯光编辑与收敛、direct64、DI 辐射响应、SSIL、深度、DDGI 质量、contracts |
 | `--scene-lit-stability` | 稳定性、DDGI 质量、多体积 |
 | `--scene-lit-restir-suite` | 材质/传输、ReSTIR、多体积、DDGI 质量/调试、audit、contracts（同一 Renderer） |

@@ -21,7 +21,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。
 - 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留作者朝向，默认双面；显式单面材质在共享表面路径中裁弃背面。正反面由逆转置几何法线判定，不依赖三角形绕序；将来启用光栅背面剔除或 RayQuery/TLAS 剔除标志时，镜像实例必须按行列式符号翻转正面约定，或按符号分批。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 可为负（镜像）或零；World 不提交奇异 world 矩阵的网格，零缩放空间在 World 侧按退化跳过并诊断。
 - 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。场景覆盖按像素中心处于逻辑视口半开区间判断。`RasterViewport` 统一导出整数外包硬件视口、像素中心 scissor 与最终 clip 补偿，避免 D3D 对小数 viewport 的隐式向下取整漏掉末列/末行；场景表面、深度、线框、辅助显示和 Lit 诊断复用同一转换。逻辑相机、运动、深度 Z/W 和屏幕重建矩阵不变，整数视口直接保留原 clip。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
-- UI 支持半开 scissor、实色矩形、R8 覆盖图与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。
+- UI 支持半开像素裁剪、实色矩形、R8 覆盖图、RGBA 图片与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。裁剪逐实例进行：clip 收紧到目标范围后打包进实例，pixel shader 按像素中心落在半开区间内判断，与同一整数 scissor 逐像素一致；空 clip、零尺寸、透明以及与 clip 不相交的项在 CPU 侧剔除，不上传实例或贴图。全部 UI 实例共用一次上传、一条管线和一次 draw，视口叠加层另占一次，两者都只依赖 D3D 在同一次 draw 内按图元提交顺序混合来保持数组顺序，不重排、不按 clip 或贴图切批。本帧用到的 Coverage 与 Image 按首次出现的顺序去重成一张贴图表，作为无界纹理数组绑定，实例携带表内下标；表的内容和顺序与上一帧相同时 gfx 不重写描述符，任何变化都会让 gfx 重写整张表的描述符。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
 - Coverage 的非零 identity 与 revision 一起标识不可变内容，renderer 缓存同时保有 `shared_ptr<const Coverage>`。CPU 行可有 padding；上传时收紧行。每个实际使用的版本只上传一次，无用缓存释放 CPU owner，GPU 资源沿 gfx 原有机制退休。当前没有字体图集、显存预算或资源管理器。
 
@@ -100,11 +100,11 @@ Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSetting
 
 `FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机、实例、可见性与按资源分组的绘制索引表准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制，其中 `render.encode.scene` 覆盖有场景时的全部录制（子阶段：`.materials` 为材质表与贴图的创建和上传；`.upload` 为逐批的几何缓存使用标记（静止帧也不为 0）、未命中时建三角形缓冲、绘制索引表写入本帧槽（每个在途帧一份持久的 CPU 可写缓冲，GPU 直接读取；按录制帧序号选槽，容量不足时才按 2 的幂重建），以及实例缓冲，实例缓冲在 Lit 模式只在需要编辑深度或编辑线时才建；`.draws` 为各 raster pass 逐批绘制的录制，只有工作室模式（MatCap、Smooth、Flat、线框）才能用它除以 FrameStats 的 `scene_draw_calls` 估算每次绘制的平均开销，因为 Scene Lit 的表面绘制计入 `scene_draw_calls`，耗时却记在 `.lit`；`.lit` 为 Scene Lit 的 draw 和 draw_debug，含其内部的灯、实例上传与 AS 构建），`render.encode.ui` 覆盖 UI 实例上传（子阶段 `.upload`）和 UI/叠加层批次录制；同一阶段在一帧内可进入多次，时间累加、次数另计。无场景时的网格与 Scene Lit 调试绘制只计入 `render.encode`。`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
+CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机、实例、可见性与按资源分组的绘制索引表准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制，其中 `render.encode.scene` 覆盖有场景时的全部录制（子阶段：`.materials` 为材质表与贴图的创建和上传；`.upload` 为逐批的几何缓存使用标记（静止帧也不为 0）、未命中时建三角形缓冲、绘制索引表和实例缓冲写入本帧槽（每个在途帧一份持久的 CPU 可写缓冲，GPU 直接读取；按录制帧序号选槽，容量不足时才按 2 的幂重建），实例缓冲在 Lit 模式只在需要编辑深度或编辑线时才写；`.draws` 为各 raster pass 逐批绘制的录制，只有工作室模式（MatCap、Smooth、Flat、线框）才能用它除以 FrameStats 的 `scene_draw_calls` 估算每次绘制的平均开销，因为 Scene Lit 的表面绘制计入 `scene_draw_calls`，耗时却记在 `.lit`；`.lit` 为 Scene Lit 的 draw 和 draw_debug，含其内部的灯、实例上传与 AS 构建），`render.encode.ui` 覆盖 UI 贴图表的建立（含新版本贴图上传）、实例写入本帧槽（子阶段 `.upload`，与绘制索引表同一种帧槽）和叠加层、UI 各至多一次 draw 的录制；同一阶段在一帧内可进入多次，时间累加、次数另计。无场景时的网格与 Scene Lit 调试绘制只计入 `render.encode`。`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
 
 | 字段 | 统计边界 |
 | --- | --- |
-| `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
+| `ui_draw_calls` | 实际成功编码的 UI draw 次数：有可见 UI 实例时为 1，否则为 0；不含视口叠加层（`overlay_draw_calls`） |
 | `scene_draw_calls` | 实际成功编码的场景 draw 次数；同网格资源的可见实例共享批次，不论在 Frame 中是否相邻。实体/叠线每批的每个材质组一次，纯线框深度与边线各一次，空场景为 0 |
 | `scene_instances` / `scene_culled_instances` | 本帧输入实例数 / 主视锥判定完全不可见的实例数；不是 TLAS、光源或阴影投影者的裁剪数，也不包括物体之间的遮挡 |
 | `material_upload_count` | 本帧新场景图片上传次数，包括首次使用的白图；复用版本不上传，不含 UI 图片 |
@@ -122,7 +122,7 @@ CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation
 
 ### 显式图像读回
 
-`render(frame, &capture)` 显式请求 GPU 同步，返回本帧目标的紧密 sRGB RGBA8 和 float32 深度，行自上向下。仅在 accepted 时替换输出。UI 不写场景深度；深度遵循上述 Reversed-Z 合同，背景为 0。普通 render 不调用 finish；诊断捕获不应放入交互帧热路径。
+`render(frame, &capture)` 显式请求 GPU 同步，返回本帧目标的紧密 sRGB RGBA8 和 float32 深度，行自上向下；Scene Lit 帧另返回 GBuffer 的逐像素表面运动（前帧减当前窗口 UV，两个 float32），其他着色模式为空。仅在 accepted 时替换输出。UI 不写场景深度；深度遵循上述 Reversed-Z 合同，背景为 0。普通 render 不调用 finish；诊断捕获不应放入交互帧热路径。
 
 TAA / SMAA T2x 的采样深度只用于内部光照重建与历史。需要编辑辅助显示或 Capture 时，AA 完成后复用现有深度通道重建公开 Camera 对应的无抖动 D32 深度，再绘制网格与选中边；这次绘制计入 `scene_draw_calls`。没有这些消费者时省去重绘。
 

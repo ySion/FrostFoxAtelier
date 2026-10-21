@@ -2,6 +2,7 @@
 #include "shader_source.hpp"
 #include "math/math.hpp"
 #include "scene_lit.hpp"
+#include "frame_slots.hpp"
 #include "raster_viewport.hpp"
 #include "scene_visibility.hpp"
 #include "timing.hpp"
@@ -39,6 +40,12 @@ void allocation(bool valid) {
 }
 bool finite(float value) {
     return std::isfinite(value);
+}
+float half_float(std::uint16_t h) {
+    const std::uint32_t sign = std::uint32_t(h & 0x8000u) << 16, exponent = (h >> 10) & 31u, mantissa = h & 1023u;
+    if (exponent == 31) return std::bit_cast<float>(sign | 0x7f800000u | (mantissa << 13));
+    if (exponent) return std::bit_cast<float>(sign | ((exponent + 112) << 23) | (mantissa << 13));
+    return (sign ? -1.0f : 1.0f) * std::ldexp(float(mantissa), -24);
 }
 bool valid(const ui::Color &c) {
     return finite(c.r) && finite(c.g) && finite(c.b) && finite(c.a) && c.r >= 0 && c.g >= 0 && c.b >= 0 &&
@@ -228,22 +235,28 @@ struct CachedImage {
     std::shared_ptr<const void> owner;
     GfxTexture texture;
     bool used{};
+    std::uint32_t slot{}; // Index in this frame's ui_textures while used.
     std::uint64_t texel_bytes{}, cpu_bytes{};
 };
+enum class UiShading : std::uint32_t { solid, coverage, image, capsule };
 struct UiInstance {
     ui::Rect bounds, uv;
     ui::Color tint, border_color;
     ui::CornerRadii radius;
     ui::Color image_background;
-    float border_width{}, reserved[3]{};
+    float border_width{};
+    std::uint32_t shading{}; // UiShading; textured kinds add their ui_textures slot << 2.
+    std::array<std::uint32_t, 2> clip{}; // Half-open pixels: left | top << 16, right | bottom << 16.
 };
 static_assert(sizeof(UiInstance) == 112);
-struct UiBatch {
-    std::uint32_t first{}, count{};
-    ui::Clip clip;
-    TextureKey texture;
-    const ui::DrawQuad *source{};
-};
+std::array<std::uint32_t, 2> pack_clip(const ui::Clip &c) {
+    return {std::uint32_t(c.left) | std::uint32_t(c.top) << 16, std::uint32_t(c.right) | std::uint32_t(c.bottom) << 16};
+}
+// Conservative: a quad that misses the clip cannot cover any pixel center inside it.
+bool overlaps(const ui::Rect &bounds, const ui::Clip &c) {
+    return bounds.x < float(c.right) && bounds.x + bounds.width > float(c.left) &&
+        bounds.y < float(c.bottom) && bounds.y + bounds.height > float(c.top);
+}
 ui::CornerRadii fit_radius(ui::CornerRadii r, ui::Rect bounds) {
     double factor = 1;
     const auto fit = [&](double sum, double extent) { if (sum > 0) factor = std::min(factor, extent / sum); };
@@ -272,7 +285,7 @@ struct Renderer::State {
     rhi::Context context;
     GfxContext gfx;
     Options options;
-    rhi::Pipeline scene, scene_depth, visible_lines, all_lines, solid, coverage, color_image;
+    rhi::Pipeline scene, scene_depth, visible_lines, all_lines, ui_pipeline;
     rhi::Pipeline background, grid, grid_depth;
     rhi::Pipeline cavity_surface,cavity_composite;
     GfxTexture cavity_normals,cavity_color;
@@ -294,10 +307,8 @@ struct Renderer::State {
     std::vector<MeshGroup> mesh_groups;
     // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
     std::vector<std::uint32_t> instance_groups, draw_instances;
-    // Persistent CPU-written copies of draw_instances, one per frame in flight,
-    // indexed by recording frame sequence. Grown on demand, never shrunk.
-    std::vector<GfxBuffer> draw_order_slots;
-    std::uint64_t draw_order_sequence{}; // Recording frame of the last slot write.
+    detail::FrameSlots<std::uint32_t> draw_order_slots; // draw_instances, read in place.
+    detail::FrameSlots<Instance> instance_slots;
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
@@ -320,8 +331,11 @@ struct Renderer::State {
     std::vector<Instance> instances;
     std::vector<std::uint8_t> raster_visibility;
     std::vector<UiInstance> ui_instances;
-    std::vector<UiBatch> ui_batches;
-    std::size_t overlay_instances{}, overlay_batches{}; // Leading viewport annotations in ui_instances/ui_batches.
+    std::size_t overlay_instances{}; // Leading viewport annotations in ui_instances.
+    // Textured UI instances; their slots are resolved while encoding, when uploads can be recorded.
+    std::vector<std::pair<std::uint32_t, const ui::DrawQuad *>> ui_textured;
+    std::vector<GfxTexture> ui_textures; // This frame's distinct UI images in first-use order.
+    detail::FrameSlots<UiInstance> ui_slots; // Overlay then UI instances, read in place.
     std::vector<std::uint8_t> upload_pixels;
     std::optional<Error> failure;
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
@@ -376,7 +390,7 @@ struct Renderer::State {
             material_sampler={};
         }
         material_keys.clear();next_material_keys.clear();used_material_images.clear();
-        materials.descriptions.clear();materials.textures.clear();materials.surfaces.clear();materials.indices.clear();materials.offsets.clear();
+        materials.descriptions.clear();materials.textures.clear();materials.surfaces.clear();materials.indices.clear();materials.offsets.clear();++materials.revision;
         if (matcap) {
             const auto r = gfxDestroyTexture(gfx, matcap);
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
@@ -407,12 +421,10 @@ struct Renderer::State {
             geometry.vertices = {};
         }
         geometries.clear(); mesh_groups.clear();
-        for(auto& slot:draw_order_slots)if(slot) {
-            const auto r=gfxDestroyBuffer(gfx,slot);
-            if(r)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Draw order retirement failed",true,r));
-            slot={};
-        }
-        draw_order_slots.clear();
+        for(const auto r:{draw_order_slots.retire(gfx),instance_slots.retire(gfx)})if(r)
+            return std::unexpected(error(rhi::ErrorCode::execution_failed,"Scene frame slot retirement failed",true,r));
+        if(const auto r=ui_slots.retire(gfx))
+            return std::unexpected(error(rhi::ErrorCode::execution_failed,"UI frame slot retirement failed",true,r));
         if (sampler) {
             const auto r = gfxDestroySamplerState(gfx, sampler);
             if (r)
@@ -424,9 +436,7 @@ struct Renderer::State {
         scene_depth = {};
         visible_lines = {};
         all_lines = {};
-        solid = {};
-        coverage = {};
-        color_image = {};
+        ui_pipeline = {};
         background = {};
         grid = {};
         grid_depth = {};
@@ -556,7 +566,7 @@ struct Renderer::State {
             next_material_keys.clear();return;
         }
         material_keys.swap(next_material_keys);next_material_keys.clear();used_material_images.clear();
-        materials.descriptions.clear();materials.textures.clear();
+        materials.descriptions.clear();materials.textures.clear();++materials.revision;
         next_surfaces.clear();next_material_indices.clear();next_material_offsets.clear();
         std::map<std::pair<const material::Image*,bool>,std::uint32_t> texture_indices;
         std::map<detail::GpuSurface,std::uint32_t> surface_indices;
@@ -602,40 +612,46 @@ struct Renderer::State {
             materials.samplers[i]=gfxCreateSamplerState(gfx,D3D12_FILTER_ANISOTROPIC,addresses[i],addresses[i]);allocation(bool(materials.samplers[i]));
         }
     }
-    template<class Pixels> GfxTexture texture(const std::shared_ptr<const Pixels> &owner) {
+    // Returns the image's slot in this frame's ui_textures; a new revision uploads once.
+    template<class Pixels> std::uint32_t texture(const std::shared_ptr<const Pixels> &owner) {
         constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
         constexpr unsigned channels = color ? 4 : 1;
         const TextureKey key{owner->identity, owner->revision, color};
         auto [it, inserted] = images.try_emplace(key);
         auto &image = it->second;
-        image.used = true;
-        if (!inserted) return image.texture;
-        image.owner = owner;
-        image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height,
-            color ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8_UNORM);
-        allocation(bool(image.texture));
-        image.texel_bytes = std::uint64_t(owner->width) * owner->height * channels;
-        image.cpu_bytes = owner->pixels.size();
-        ++(color ? stats.cached_image_count : stats.cached_coverage_count);
-        (color ? stats.cached_image_texel_bytes : stats.cached_coverage_texel_bytes) += image.texel_bytes;
-        (color ? stats.cached_image_cpu_bytes : stats.cached_coverage_cpu_bytes) += image.cpu_bytes;
-        // The protocol permits padded CPU rows; gfx's upload contract is tight.
-        const auto pitch = std::size_t(owner->width) * channels;
-        upload_pixels.resize(pitch * owner->height);
-        for (std::uint32_t y = 0; y < owner->height; ++y)
-            std::memcpy(upload_pixels.data() + std::size_t(y) * pitch,
-                        owner->pixels.data() + std::size_t(y) * owner->row_pitch, pitch);
-        BufferOwner upload{
-            gfx, gfxCreateBuffer(gfx, upload_pixels.size(), upload_pixels.data(), kGfxCpuAccess_Write)};
-        allocation(bool(upload.buffer));
-        require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI texture");
-        ++(color ? stats.image_upload_count : stats.coverage_upload_count);
-        (color ? stats.image_upload_bytes : stats.coverage_upload_bytes) += upload_pixels.size();
-        return image.texture;
+        if (inserted) {
+            image.owner = owner;
+            image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height,
+                color ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8_UNORM);
+            allocation(bool(image.texture));
+            image.texel_bytes = std::uint64_t(owner->width) * owner->height * channels;
+            image.cpu_bytes = owner->pixels.size();
+            ++(color ? stats.cached_image_count : stats.cached_coverage_count);
+            (color ? stats.cached_image_texel_bytes : stats.cached_coverage_texel_bytes) += image.texel_bytes;
+            (color ? stats.cached_image_cpu_bytes : stats.cached_coverage_cpu_bytes) += image.cpu_bytes;
+            // The protocol permits padded CPU rows; gfx's upload contract is tight.
+            const auto pitch = std::size_t(owner->width) * channels;
+            upload_pixels.resize(pitch * owner->height);
+            for (std::uint32_t y = 0; y < owner->height; ++y)
+                std::memcpy(upload_pixels.data() + std::size_t(y) * pitch,
+                            owner->pixels.data() + std::size_t(y) * owner->row_pitch, pitch);
+            BufferOwner upload{
+                gfx, gfxCreateBuffer(gfx, upload_pixels.size(), upload_pixels.data(), kGfxCpuAccess_Write)};
+            allocation(bool(upload.buffer));
+            require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI texture");
+            ++(color ? stats.image_upload_count : stats.coverage_upload_count);
+            (color ? stats.image_upload_bytes : stats.coverage_upload_bytes) += upload_pixels.size();
+        }
+        if (!image.used) {
+            image.used = true;
+            image.slot = static_cast<std::uint32_t>(ui_textures.size());
+            ui_textures.push_back(image.texture);
+        }
+        return image.slot;
     }
     void prepare_ui(const Frame &source) {
         const auto &frame = source.ui_frame;
-        ui_instances.clear(); ui_batches.clear(); overlay_instances = 0;
+        ui_instances.clear(); ui_textured.clear(); overlay_instances = 0;
         ui_instances.reserve(frame.draws.size() + source.overlay.size());
         const auto &viewport = source.scene_viewport;
         if (viewport.width > 0 && viewport.height > 0 && !source.overlay.empty()) {
@@ -643,6 +659,7 @@ struct Renderer::State {
             for (const auto &shape : source.overlay) {
                 UiInstance instance{};
                 instance.tint = shape.color;
+                instance.clip = pack_clip(clip);
                 if (shape.kind == OverlayShape::Kind::segment) {
                     if (shape.color.a == 0 || shape.width == 0) continue;
                     const auto [ax, ay, bx, by] = shape.points;
@@ -651,7 +668,7 @@ struct Renderer::State {
                         std::abs(bx - ax) + 2 * pad, std::abs(by - ay) + 2 * pad};
                     instance.uv = {ax, ay, bx, by};
                     instance.radius = {shape.width * .5f, 0, 0, 0};
-                    instance.reserved[0] = 1; // Capsule coverage in the solid pipeline.
+                    instance.shading = std::to_underlying(UiShading::capsule);
                 } else {
                     if ((shape.color.a == 0 && (shape.width == 0 || shape.border.a == 0)) ||
                         shape.points[2] == 0 || shape.points[3] == 0) continue;
@@ -660,32 +677,26 @@ struct Renderer::State {
                     instance.border_color = shape.border;
                     instance.border_width = std::min({shape.width, shape.points[2] * .5f, shape.points[3] * .5f});
                 }
-                const auto first = static_cast<std::uint32_t>(ui_instances.size());
-                ui_instances.push_back(instance);
-                ++overlay_instances;
-                if (!ui_batches.empty()) ++ui_batches.back().count;
-                else ui_batches.push_back({first, 1, clip, {}, nullptr});
+                if (overlaps(instance.bounds, clip)) ui_instances.push_back(instance);
             }
+            overlay_instances = ui_instances.size();
         }
-        overlay_batches = ui_batches.size();
         for (const auto &item : frame.draws) {
             const ui::Clip clip{std::clamp(item.clip.left, 0, int(frame.extent.width)),
                 std::clamp(item.clip.top, 0, int(frame.extent.height)),
                 std::clamp(item.clip.right, 0, int(frame.extent.width)),
                 std::clamp(item.clip.bottom, 0, int(frame.extent.height))};
             if (clip.left >= clip.right || clip.top >= clip.bottom || item.bounds.width == 0 || item.bounds.height == 0 ||
+                !overlaps(item.bounds, clip) ||
                 (item.color.a == 0 && (!item.image || item.image_background.a == 0) &&
                     (item.border_width == 0 || item.border_color.a == 0))) continue;
-            TextureKey key{};
-            if (item.coverage) key = {item.coverage->identity, item.coverage->revision, false};
-            if (item.image) key = {item.image->identity, item.image->revision, true};
-            const auto first = static_cast<std::uint32_t>(ui_instances.size());
+            const auto shading = item.coverage ? UiShading::coverage : item.image ? UiShading::image : UiShading::solid;
+            if (shading != UiShading::solid)
+                ui_textured.emplace_back(static_cast<std::uint32_t>(ui_instances.size()), &item);
             ui_instances.push_back({item.bounds, item.uv, item.color, item.border_color,
                 fit_radius(item.radius, item.bounds), item.image_background,
-                std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f})});
-            if (ui_batches.size() > overlay_batches && ui_batches.back().clip == clip && ui_batches.back().texture == key)
-                ++ui_batches.back().count;
-            else ui_batches.push_back({first, 1, clip, key, &item});
+                std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f}),
+                std::to_underlying(shading), pack_clip(clip)});
         }
     }
     void draw_grid(const Frame& frame, bool with_depth) {
@@ -797,8 +808,7 @@ struct Renderer::State {
                 depth_extent = extent;
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
-            BufferOwner data{gfx, {}};
-            GfxBuffer order{};
+            GfxBuffer instance_data{}, order{};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
@@ -816,40 +826,19 @@ struct Renderer::State {
                     }
                     geometry.used = true;
                 }
-                if (!draw_instances.empty()) {
-                    // gfx began recording frame N only after frame N - frames_in_flight
-                    // completed, so this frame's slot is no longer read by the GPU.
-                    const auto slots = context.info().frames_in_flight;
-                    if (draw_order_slots.empty()) draw_order_slots.resize(slots);
-                    const auto sequence = gfxGetRecordingFrameSequence(gfx);
-                    if (!sequence)
-                        throw error(rhi::ErrorCode::execution_failed, "Draw order upload outside a recording frame", true);
-                    // Draws already recorded in this frame read the slot at execution; a second write would redirect them.
-                    if (sequence == draw_order_sequence)
-                        throw error(rhi::ErrorCode::execution_failed, "Draw order slot written twice in one recording frame", true);
-                    draw_order_sequence = sequence;
-                    auto& slot = draw_order_slots[sequence % slots];
-                    const auto count = static_cast<std::uint32_t>(draw_instances.size());
-                    if (slot.getCount() < count) {
-                        if (slot) require(gfxDestroyBuffer(gfx, std::exchange(slot, {})), "Retire draw order slot");
-                        slot = gfxCreateBuffer<std::uint32_t>(gfx, std::bit_ceil(count), nullptr, kGfxCpuAccess_Write);
-                        allocation(bool(slot));
-                    }
-                    std::memcpy(gfxBufferGetData(gfx, slot), draw_instances.data(), count * sizeof(std::uint32_t));
-                    order = slot;
-                }
+                if (!draw_instances.empty())
+                    order = draw_order_slots.write(gfx, context.info().frames_in_flight, draw_instances, true, "Draw order");
             }
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
                 if(selected_only&&!selected)return;
                 if(!order)return; // Nothing visible.
-                if(!data.buffer) {
+                if(!instance_data) {
                     timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
                     // editing data only when an actual raster pass consumes it.
-                    data.buffer=gfxCreateBuffer<Instance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());
-                    allocation(bool(data.buffer));
+                    instance_data=instance_slots.write(gfx,context.info().frames_in_flight,instances,true,"Scene instance");
                     // Match SceneLit's CPU-composed view/projection before the
                     // precise clip path; chained GPU matrices differ by ULPs.
                     math::Matrix4d camera_view,camera_projection;
@@ -864,7 +853,7 @@ struct Renderer::State {
                     static_cast<std::uint32_t>(frame.view.shading), static_cast<std::uint32_t>(frame.view.wireframe),
                     frame.view.triangle_edges ? 1u : 0u, pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
-                require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
+                require(gfxProgramSetParameter(gfx, program, "instances", instance_data), "Bind mesh instances");
                 require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
@@ -930,7 +919,7 @@ struct Renderer::State {
                 if(cavity_projection&&editing_lines)draw_batches(visible_lines,3);
             }
         } else {
-            materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();
+            materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();++materials.revision;
             if(has_viewport) {
                 if(scene_lit)scene_lit->draw_debug(frame,extent,depth,stats);
                 draw_grid(frame,false);
@@ -953,40 +942,39 @@ struct Renderer::State {
         for (auto &[key, image] : images)
             image.used = false;
         std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
-        BufferOwner ui_data{gfx, {}};
         if (!ui_instances.empty()) {
-            timing::Scope ui_upload{phases::encode_ui_upload};
-            ui_data.buffer = gfxCreateBuffer<UiInstance>(gfx, static_cast<std::uint32_t>(ui_instances.size()), ui_instances.data());
-            allocation(bool(ui_data.buffer));
+            ui_textures.clear();
+            for (const auto &[index, item] : ui_textured)
+                ui_instances[index].shading |= (item->coverage ? texture(item->coverage) : texture(item->image)) << 2;
+            GfxBuffer ui_data;
+            {
+                timing::Scope ui_upload{phases::encode_ui_upload};
+                ui_data = ui_slots.write(gfx, context.info().frames_in_flight, ui_instances, true, "UI instance");
+            }
             stats.ui_instance_upload_bytes = (ui_instances.size() - overlay_instances) * sizeof(UiInstance);
             stats.ui_quads = ui_instances.size() - overlay_instances;
             stats.overlay_shapes = overlay_instances;
-        }
-        for (std::size_t index = 0; index < ui_batches.size(); ++index) {
-            const auto &batch = ui_batches[index];
-            const auto *source = batch.source;
-            const auto &pipeline = source && source->coverage ? coverage : source && source->image ? color_image : solid;
-            const auto program = pipeline.program();
-            if (source && source->coverage) {
-                require(gfxProgramSetParameter(gfx, program, "coverage", texture(source->coverage)),
-                        "Bind UI coverage");
-                require(gfxProgramSetParameter(gfx, program, "coverage_sampler", sampler),
-                        "Bind coverage sampler");
-            }
-            if (source && source->image) {
-                require(gfxProgramSetParameter(gfx, program, "color_image", texture(source->image)), "Bind UI image");
-                require(gfxProgramSetParameter(gfx, program, "image_sampler", sampler), "Bind image sampler");
-            }
-            const std::array<float, 2> size{static_cast<float>(extent.width),
-                                            static_cast<float>(extent.height)};
-            require(gfxProgramSetParameter(gfx, program, "ui_instances", ui_data.buffer), "Bind UI instances");
-            require(gfxProgramSetParameter(gfx, program, "first_instance", batch.first), "Set UI instance offset");
+            const auto program = ui_pipeline.program();
+            const std::array<float, 2> size{static_cast<float>(extent.width), static_cast<float>(extent.height)};
+            require(gfxProgramSetParameter(gfx, program, "ui_instances", ui_data), "Bind UI instances");
             require(gfxProgramSetParameter(gfx, program, "target_size", size), "Set UI target");
-            const auto &clip = batch.clip;
-            require(gfxCommandSetScissorRect(gfx, clip.left, clip.top, clip.right - clip.left, clip.bottom - clip.top), "Set UI scissor");
-            require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind UI pipeline");
-            require(gfxCommandDraw(gfx, 6, batch.count), "Draw UI batch");
-            ++(index < overlay_batches ? stats.overlay_draw_calls : stats.ui_draw_calls);
+            require(gfxProgramSetParameter(gfx, program, "ui_textures", ui_textures.data(),
+                                           static_cast<std::uint32_t>(ui_textures.size())), "Bind UI textures");
+            require(gfxProgramSetParameter(gfx, program, "ui_sampler", sampler), "Bind UI sampler");
+            require(gfxCommandSetScissorRect(gfx, 0, 0, static_cast<std::int32_t>(extent.width),
+                                             static_cast<std::int32_t>(extent.height)), "Set UI scissor");
+            require(gfxCommandBindKernel(gfx, ui_pipeline.kernel()), "Bind UI pipeline");
+            // Clips are per instance and D3D blends a draw's primitives in submission
+            // order, so each layer keeps painter order in one draw.
+            const auto draw_layer = [&](std::size_t first, std::size_t count, std::uint64_t &calls) {
+                if (count == 0) return;
+                require(gfxProgramSetParameter(gfx, program, "first_instance", static_cast<std::uint32_t>(first)),
+                        "Set UI instance offset");
+                require(gfxCommandDraw(gfx, 6, static_cast<std::uint32_t>(count)), "Draw UI instances");
+                ++calls;
+            };
+            draw_layer(0, overlay_instances, stats.overlay_draw_calls);
+            draw_layer(overlay_instances, ui_instances.size() - overlay_instances, stats.ui_draw_calls);
         }
         ui_stage.reset();
         for (auto it = images.begin(); it != images.end();) {
@@ -1007,11 +995,18 @@ struct Renderer::State {
                 gfx, gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read)};
             allocation(bool(color.buffer));
             require(gfxCommandCopyBackBufferToBuffer(gfx, color.buffer, pitch), "Capture window color");
-            BufferOwner z{gfx, {}};
+            BufferOwner z{gfx, {}}, motion{gfx, {}};
+            const std::uint32_t motion_pitch = (extent.width * 8 + 255) & ~255u;
             if (draw_scene) {
                 z.buffer = gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
                 allocation(bool(z.buffer));
                 require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
+                if (frame.view.shading == Shading::scene_lit && frame.view.wireframe != Wireframe::only) {
+                    motion.buffer = gfxCreateBuffer(gfx, std::uint64_t(motion_pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
+                    allocation(bool(motion.buffer));
+                    require(gfxCommandCopyTextureToBufferPitched(gfx, motion.buffer, scene_lit->motion(), motion_pitch),
+                            "Capture Scene Lit surface motion");
+                }
             } else {
                 // A UI-only capture describes this frame, not a retained scene depth texture.
                 std::fill(capture->depth.begin(), capture->depth.end(), 0.0f);
@@ -1021,13 +1016,23 @@ struct Renderer::State {
             const auto *rgba = static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, color.buffer));
             const auto *depth_bytes = draw_scene
                 ? static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, z.buffer)) : nullptr;
-            allocation(rgba && (!draw_scene || depth_bytes));
+            const auto *motion_bytes = motion.buffer
+                ? static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, motion.buffer)) : nullptr;
+            allocation(rgba && (!draw_scene || depth_bytes) && (!motion.buffer || motion_bytes));
+            if (motion_bytes) capture->motion.resize(std::size_t(extent.width) * extent.height * 2);
             for (std::uint32_t y = 0; y < extent.height; ++y) {
                 std::memcpy(capture->rgba.data() + std::size_t(y) * extent.width * 4,
                             rgba + std::size_t(y) * pitch, extent.width * 4);
                 if (depth_bytes)
                     std::memcpy(capture->depth.data() + std::size_t(y) * extent.width,
                                 depth_bytes + std::size_t(y) * pitch, extent.width * 4);
+                if (motion_bytes)
+                    for (std::uint32_t x = 0; x < extent.width; ++x)
+                        for (std::uint32_t c = 0; c < 2; ++c) {
+                            std::uint16_t half;
+                            std::memcpy(&half, motion_bytes + std::size_t(y) * motion_pitch + x * 8 + c * 2, 2);
+                            capture->motion[(std::size_t(y) * extent.width + x) * 2 + c] = half_float(half);
+                        }
             }
         }
     }
@@ -1060,9 +1065,7 @@ Result<Renderer> Renderer::open(HWND window, const Options &options) {
                 error(rhi::ErrorCode::unsupported, "Editor renderer requires an sRGB RGBA8 window target"));
         if (options.validation != rhi::Validation::disabled)
             gfxGetDevice(s.gfx)->QueryInterface(IID_PPV_ARGS(&s.debug));
-        s.prepare_pipeline(s.solid, "editor rectangles", shaders::ui_vs, shaders::solid_ps, PipelineStyle::ui);
-        s.prepare_pipeline(s.coverage, "editor text coverage", shaders::ui_vs, shaders::coverage_ps, PipelineStyle::ui);
-        s.prepare_pipeline(s.color_image, "editor color images", shaders::ui_vs, shaders::image_ps, PipelineStyle::ui);
+        s.prepare_pipeline(s.ui_pipeline, "editor UI", shaders::ui_vs, shaders::ui_ps, PipelineStyle::ui);
         s.sampler = gfxCreateSamplerState(s.gfx, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
         allocation(bool(s.sampler));
         s.check_debug();

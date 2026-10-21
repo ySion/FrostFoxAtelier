@@ -152,7 +152,7 @@ struct FrameStats {
     // Optional completed inspection; owns its exact sampled layout and frame.
     std::shared_ptr<const ProbeInspection> scene_lit_probe_inspection;
     std::uint64_t ui_draw_calls{};
-    std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
+    std::uint64_t ui_quads{}; // Visible instances that overlap their clip; all share one draw.
     std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
     std::uint64_t scene_instances{}, scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.
@@ -213,6 +213,8 @@ struct FrameResult {
 };
 // Explicit diagnostic capture stalls the GPU once; normal rendering does not.
 // Color is tightly packed sRGB RGBA8, depth tightly packed float32, top-left.
+// Scene Lit captures add surface motion: per pixel, previous minus current
+// window UV as two float32; empty for other shading.
 // Output is replaced only for a fully accepted frame, before any end-of-frame
 // resize. UI does not modify scene depth. Acceptance is not a scanout guarantee.
 struct Capture {
@@ -220,6 +222,7 @@ struct Capture {
     ui::PixelExtent extent;
     std::vector<std::uint8_t> rgba;
     std::vector<float> depth;
+    std::vector<float> motion;
 };
 
 // Single owner thread. Application owns HWND and keeps it alive through close.

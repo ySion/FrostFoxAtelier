@@ -6,8 +6,10 @@ struct UiInstance {
     float4 radius; // top-left, top-right, bottom-right, bottom-left
     float4 image_background;
     float border_width;
-    float3 reserved;
+    uint shading; // ui_solid..ui_capsule; textured kinds keep their ui_textures slot from bit 2.
+    uint2 clip; // Half-open pixels: left | top << 16, right | bottom << 16.
 };
+static const uint ui_solid = 0, ui_coverage = 1, ui_image = 2, ui_capsule = 3;
 StructuredBuffer<UiInstance> ui_instances;
 float2 target_size;
 uint first_instance;

@@ -6,9 +6,7 @@ inline constexpr char cavity_surface_ps[] = R"shader(#define CAVITY_SURFACE 1
 @scene_ps@)shader";
 inline constexpr char cavity_ps[] = R"shader(@cavity_ps@)shader";
 inline constexpr char ui_vs[] = R"shader(@ui_vs@)shader";
-inline constexpr char solid_ps[] = R"shader(@solid_ps@)shader";
-inline constexpr char coverage_ps[] = R"shader(@coverage_ps@)shader";
-inline constexpr char image_ps[] = R"shader(@image_ps@)shader";
+inline constexpr char ui_ps[] = R"shader(@ui_ps@)shader";
 inline constexpr char viewport_vs[] = R"shader(@viewport_vs@)shader";
 inline constexpr char background_ps[] = R"shader(@background_ps@)shader";
 inline constexpr char lit_gbuffer[] = R"shader(@lit_gbuffer@)shader";

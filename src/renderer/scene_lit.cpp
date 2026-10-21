@@ -6,6 +6,7 @@
 #include "smaa_lut.hpp"
 #include "solid_geometry.hpp"
 #include "raster_viewport.hpp"
+#include "frame_slots.hpp"
 #include "math/math.hpp"
 
 #include <algorithm>
@@ -102,7 +103,10 @@ struct SceneLit::State {
     ShadowCache shadow_cache;
     GfxTexture shadow_static,shadow_dynamic;
     struct ShadowGpuBatch {
-        GfxBuffer faces,lights,instances;
+        DeviceTable<GpuShadowFace> face_table;
+        DeviceTable<GpuShadowLight> light_table;
+        DeviceTable<std::uint32_t> instance_table;
+        GfxBuffer faces,lights,instances; // This frame's tables.
         std::vector<GpuShadowFace> previous_faces;
         std::vector<GpuShadowLight> previous_lights;
         std::vector<std::uint32_t> previous_instances;
@@ -126,7 +130,21 @@ struct SceneLit::State {
     bool probe_visibility_valid{};
     ProbeField probe_field;
     std::array<ProbeVolumeSettings,probe_volume_limit> previous_probe_settings{};
-    GfxBuffer gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current;
+    DeviceTable<GpuInstance> instance_table;
+    GfxBuffer gpu_instances; // This frame's instance table.
+    struct LightTables {
+        DeviceTable<GpuLightSource> sources,previous_sources;
+        DeviceTable<GpuLightProposal> proposals;
+        DeviceTable<std::uint32_t> current_to_previous,previous_to_current,spatial_source_slots;
+        DeviceTable<GpuLightCell> cells;
+        DeviceTable<GpuSpatialLightProposal> spatial_proposals;
+        template<class Self,class F> void each(this Self& self,F&& f) {
+            f(self.sources);f(self.previous_sources);f(self.proposals);f(self.current_to_previous);f(self.previous_to_current);
+            f(self.spatial_source_slots);f(self.cells);f(self.spatial_proposals);
+        }
+    } light_tables;
+    // This frame's light tables.
+    GfxBuffer gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current;
     GfxBuffer gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots;
     GfxBuffer rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments;
     LightFrame light_frame;
@@ -179,10 +197,16 @@ struct SceneLit::State {
     };
     std::unordered_map<const geometry::Mesh*,Geometry> geometries;
     std::unordered_map<ObjectKey,Object,ObjectKeyHash> objects;
+    // Per snapshot index, the object and mesh entries the last complete pass
+    // resolved. Only a complete pass retires entries, after rewriting every
+    // slot, so slots are trusted only while resolved_complete holds.
+    struct Slot { ObjectKey key; Object* object{}; Geometry* geometry{}; };
+    std::vector<Slot> resolved;
+    bool resolved_complete{};
+    std::uint64_t material_revision{}; // MaterialFrame revision the complete pass compared surfaces against.
     std::vector<GpuInstance> instances;
     std::vector<GpuRayTriangle> packed_triangles;
     std::vector<std::uint32_t> packed_closed_slots;
-    std::vector<ObjectKey> object_keys,previous_object_keys;
     std::array<float,16> view_projection{},inverse_view_projection{},previous_view_projection{},previous_inverse_view_projection{};
     std::array<float,16> camera_view{};
     std::array<float,4> viewport{},environment{},controls{},temporal{},jitter{},probe_history{},probe_controls{};
@@ -194,7 +218,7 @@ struct SceneLit::State {
     std::array<float,4> raster_transform{1,1,0,0};
     std::uint32_t effect_flags{},di_history_valid{},direct_stochastic{},direct_radiance_age{};
     float direct_response{};
-    std::uint64_t scene_identity{},scene_revision{},reset_events{},sequence{};
+    std::uint64_t scene_identity{},reset_events{},sequence{};
     std::uint32_t parity{},probe_parity{},probe_response_epoch{},probe_geometry_pending{},probe_sequence{};
     std::uint32_t probe_history_mode{};
     float previous_probe_bounce{.85f},previous_indirect_gain{1};
@@ -204,6 +228,7 @@ struct SceneLit::State {
     std::uint32_t history_invalid{};
     Antialiasing previous_antialiasing{Antialiasing::none};
     bool history_valid{},enabled{},brdf_ready{},tlas_built{};
+    std::uint32_t full_window_frames{};
     bool light_changed{},material_changed{},coverage_changed{},emitter_changed{};
     const MaterialFrame* material_frame{};
     explicit State(rhi::Context& owner):context(owner),gfx(owner.borrow()){}
@@ -408,13 +433,11 @@ struct SceneLit::State {
         cluster_count=gfxCreateBuffer<std::uint32_t>(gfx,tiles*4);allocation(bool(cluster_count));
         cluster_source=gfxCreateBuffer<std::uint32_t>(gfx,tiles*4*64);allocation(bool(cluster_source));
     }
-    template<class T> void shadow_upload(GfxBuffer& buffer,std::vector<T>& previous,const std::vector<T>& values) {
-        if(buffer && previous.size()==values.size() &&
-            (values.empty()||std::memcmp(previous.data(),values.data(),values.size()*sizeof(T))==0))return;
-        retire(buffer);
-        const T empty{};
-        buffer=gfxCreateBuffer<T>(gfx,std::max(std::size_t{1},values.size()),values.empty()?&empty:values.data());allocation(bool(buffer));
-        previous=values;
+    template<class T> GfxBuffer shadow_upload(DeviceTable<T>& table,std::vector<T>& previous,const std::vector<T>& values) {
+        const bool changed=previous.size()!=values.size()||
+            (!values.empty()&&std::memcmp(previous.data(),values.data(),values.size()*sizeof(T))!=0);
+        if(changed)previous=values;
+        return table.write(gfx,context.info().frames_in_flight,values,changed,"Shadow batch");
     }
     void prepare_shadows() {
         if(!shadow_static||!shadow_dynamic) {
@@ -425,15 +448,28 @@ struct SceneLit::State {
         }
     }
     void shadow_update(const ShadowBatch& batch,ShadowGpuBatch& gpu,const SceneLitDraws& scene_draws,ShadowSample& sample) {
-        shadow_upload(gpu.faces,gpu.previous_faces,batch.faces);shadow_upload(gpu.lights,gpu.previous_lights,batch.lights);
+        gpu.faces=shadow_upload(gpu.face_table,gpu.previous_faces,batch.faces);
+        gpu.lights=shadow_upload(gpu.light_table,gpu.previous_lights,batch.lights);
         if(batch.updates.empty())return;
+        const auto& instance_draws=scene_draws.instance_draws;
         shadow_instance_indices.clear();
-        for(const auto& job:batch.updates)shadow_instance_indices.insert(shadow_instance_indices.end(),job.instances.begin(),job.instances.end());
-        shadow_upload(gpu.instances,gpu.previous_instances,shadow_instance_indices);
+        for(const auto& job:batch.updates) {
+            const auto first=shadow_instance_indices.size();
+            for(const auto index:job.instances) {
+                invalid(index<instance_draws.size(),"Shadow caster missing from current geometry snapshot");
+                shadow_instance_indices.push_back(index);
+            }
+            // Depth-only rasterization is order independent: group each job's casters
+            // by geometry so every run of one mesh is a single instanced draw.
+            std::sort(shadow_instance_indices.begin()+first,shadow_instance_indices.end(),[&](std::uint32_t a,std::uint32_t b) {
+                return std::pair{instance_draws[a],a}<std::pair{instance_draws[b],b};
+            });
+        }
+        gpu.instances=shadow_upload(gpu.instance_table,gpu.previous_instances,shadow_instance_indices);
         const auto p=shadow_depth.program();bind_materials(gfx,p,*material_frame);
         bind(p,"lit_instances",gpu_instances);bind(p,"lit_shadow_instances",gpu.instances);
         require(gfxCommandBindKernel(gfx,shadow_depth.kernel()),"Bind cached shadow raster");
-        std::uint32_t first=0;
+        std::size_t first=0;
         for(const auto& job:batch.updates) {
             const auto target=job.layer==ShadowLayer::stationary?shadow_static:shadow_dynamic;
             const auto& r=job.rect;
@@ -443,17 +479,16 @@ struct SceneLit::State {
             require(gfxCommandSetViewport(gfx,float(r[0]),float(r[1]),float(r[2]),float(r[3])),"Set shadow tile viewport");
             require(gfxCommandSetScissorRect(gfx,r[0],r[1],r[2],r[3]),"Set shadow tile scissor");
             bind(p,"lit_shadow_view_projection",job.view_projection);
-            for(std::size_t at=0;at<job.instances.size();) {
-                const auto& instance_draws=scene_draws.instance_draws;
-                invalid(job.instances[at]<instance_draws.size(),"Shadow caster missing from current geometry snapshot");
-                const auto draw_index=instance_draws[job.instances[at]];
+            const auto last=first+job.instances.size();
+            for(std::size_t at=first;at<last;) {
+                const auto draw_index=instance_draws[shadow_instance_indices[at]];
                 const auto& draw=scene_draws.draws[draw_index];std::size_t end=at+1;
-                while(end<job.instances.size()&&instance_draws[job.instances[end]]==draw_index)++end;
-                bind(p,"lit_triangles",draw.triangles);bind(p,"lit_shadow_first_instance",first+static_cast<std::uint32_t>(at));
+                while(end<last&&instance_draws[shadow_instance_indices[end]]==draw_index)++end;
+                bind(p,"lit_triangles",draw.triangles);bind(p,"lit_shadow_first_instance",static_cast<std::uint32_t>(at));
                 require(gfxCommandDraw(gfx,draw.vertex_count,static_cast<std::uint32_t>(end-at)),"Draw invalidated shadow casters");
                 ++sample.draws;at=end;
             }
-            first+=static_cast<std::uint32_t>(job.instances.size());
+            first=last;
         }
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind cached shadow atlas before sampling");
     }
@@ -592,6 +627,13 @@ struct SceneLit::State {
     void dispatch_screen(const rhi::Pipeline& pipeline,GfxTexture depth,std::uint32_t visibility_counter=0) {
         const auto width=screen_dispatch[2]-screen_dispatch[0],height=screen_dispatch[3]-screen_dispatch[1];
         if(width&&height)dispatch(pipeline,depth,(width+7)/8,(height+7)/8,1,visibility_counter);
+    }
+    // After a history reset both parities cover the whole window once, so texels outside the
+    // viewport keep the zero/far values neighbor reads expect; later frames touch only the viewport.
+    void dispatch_window(const rhi::Pipeline& pipeline,GfxTexture depth) {
+        if(!full_window_frames){dispatch_screen(pipeline,depth);return;}
+        const auto viewport_rect=screen_dispatch;screen_dispatch={0,0,size_frame[0],size_frame[1]};
+        dispatch_screen(pipeline,depth);screen_dispatch=viewport_rect;
     }
     void begin(std::uint32_t pass,bool enabled=true) {
         if(enabled)encoded_pass_mask|=1u<<pass;
@@ -743,9 +785,10 @@ struct SceneLit::State {
         for(const auto& signal:direct_signals){add_texture(signal.raw);for(const auto* pair:{&signal.history,&signal.moments,&signal.scratch})for(auto t:*pair)add_texture(t);}
         add_texture(direct_visibility);for(auto t:direct_penumbra)add_texture(t);
         for(auto t:pyramid)add_texture(t);
-        for(auto b:{gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots,gpu_instances,gpu_sources,gpu_previous_sources,gpu_proposals,gpu_current_to_previous,gpu_previous_to_current,di_scratch,di_reservoirs[0],di_reservoirs[1],cluster_depth,cluster_count,cluster_source,direct_tiles,direct_tile_arguments,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters})result+=b.getSize();
+        result+=instance_table.bytes();light_tables.each([&](const auto& table){result+=table.bytes();});
+        for(auto b:{di_scratch,di_reservoirs[0],di_reservoirs[1],cluster_depth,cluster_count,cluster_source,direct_tiles,direct_tile_arguments,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
-        for(const auto& batch:shadow_batches)result+=batch.faces.getSize()+batch.lights.getSize()+batch.instances.getSize();
+        for(const auto& batch:shadow_batches)result+=batch.face_table.bytes()+batch.light_table.bytes()+batch.instance_table.bytes();
         if(inspection) {result+=inspection->output.getSize()+inspection->rays.getSize();for(auto b:inspection->readback)result+=b.getSize();for(auto b:inspection->ray_readback)result+=b.getSize();}
         for(const auto& [key,g]:geometries){(void)key;result+=g.positions.getSize()+gfxBottomLevelAccelerationStructureGetDataSize(gfx,g.blas);}
         if(tlas)result+=gfxTopLevelAccelerationStructureGetDataSize(gfx,tlas);
@@ -753,26 +796,50 @@ struct SceneLit::State {
     }
 
     bool acceleration(const Frame& frame) {
+        const auto count=frame.meshes.size();
         shadow_casters.clear();shadow_changes.clear();
-        if(shadows_cached)shadow_casters.reserve(frame.meshes.size());
+        if(shadows_cached)shadow_casters.reserve(count);
         material_changed=false;coverage_changed=false;
         emitter_changed=false;
         bool geometry_changed=false,topology_changed=false,transform_changed=false;
-        bool instances_changed=instances.size()!=frame.meshes.size();
+        // Indices whose GpuInstance changed; only this range is copied to the GPU.
+        std::size_t dirty_first=instances.size()!=count?0:count,dirty_last=instances.size()!=count?count:0;
+        const auto dirty=[&](std::size_t index){dirty_first=std::min(dirty_first,index);dirty_last=std::max(dirty_last,index+1);};
         if(!tlas){tlas=gfxCreateTopLevelAccelerationStructure(gfx);allocation(bool(tlas));}
-        for(auto& [key,g]:geometries){(void)key;g.used=false;g.next_opaque=true;}
-        for(auto& [key,o]:objects){(void)key;o.used=false;}
-        for(std::size_t i=0;i<frame.meshes.size();++i) {
-            const auto& mesh=frame.meshes[i];bool opaque=true;
-            for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
-                opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
-            auto [at,added]=geometries.try_emplace(mesh.geometry.get());auto& g=at->second;
-            if(added)g.source=mesh.geometry;
-            g.used=true;g.next_opaque &= opaque;
+        const auto key_of=[&](std::size_t index){const auto stable=frame.meshes[index].stable_key;return ObjectKey{stable?stable:index,stable==0};};
+        // A slot is reused only for the same key and mesh at the same index. Its
+        // surfaces were compared against material_revision, and the MaterialFrame
+        // keeps a revision only while every description stays the same.
+        const bool reuse=std::exchange(resolved_complete,false);
+        const bool materials_same=reuse&&material_frame->revision==material_revision;
+        bool remapped=!reuse||resolved.size()!=count;
+        if(reuse)resolved.resize(count);else resolved.assign(count,{});
+        // A steady frame has the same objects, meshes and materials at every index
+        // as the last complete pass: used flags, coverage and offsets stay valid
+        // and nothing retires.
+        bool steady=materials_same&&!remapped;
+        for(std::size_t i=0;steady&&i<count;++i)
+            steady=resolved[i].key==key_of(i)&&resolved[i].geometry->source==frame.meshes[i].geometry;
+        if(!steady) {
+            for(auto& [key,g]:geometries){(void)key;g.used=false;g.next_opaque=true;}
+            for(auto& [key,o]:objects){(void)key;o.used=false;}
+            for(std::size_t i=0;i<count;++i) {
+                const auto& mesh=frame.meshes[i];auto& slot=resolved[i];const auto key=key_of(i);
+                if(!slot.object||slot.key!=key||slot.geometry->source!=mesh.geometry) {
+                    remapped|=slot.key!=key;
+                    auto [at,added]=geometries.try_emplace(mesh.geometry.get());
+                    if(added)at->second.source=mesh.geometry;
+                    slot={key,nullptr,&at->second};
+                }
+                bool opaque=true;
+                for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
+                    opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
+                slot.geometry->used=true;slot.geometry->next_opaque &= opaque;
+            }
         }
         // Aggregate coverage in the owning geometry cache. Repeated frames and
         // instances share it without allocating a second per-frame hash table.
-        for(auto& [key,g]:geometries) {
+        if(!steady)for(auto& [key,g]:geometries) {
             (void)key;if(!g.used)continue;
             if(!g.blas) {
                 g.volumes=triangle_volumes(*g.source);const auto vertices=g.source->vertices();
@@ -797,11 +864,23 @@ struct SceneLit::State {
                 require(gfxBuildBottomLevelAccelerationStructures(gfx,&g.blas,&flags,1),"Rebuild changed material coverage BLAS");topology_changed=true;
             }
         }
-        object_keys.clear();object_keys.reserve(frame.meshes.size());instances.resize(frame.meshes.size());
-        for(std::size_t index=0;index<frame.meshes.size();index++) {
-            const auto& mesh=frame.meshes[index];const ObjectKey key{mesh.stable_key?mesh.stable_key:index,mesh.stable_key==0};
-            object_keys.push_back(key);auto [found,inserted]=objects.try_emplace(key);auto& object=found->second;object.used=true;
+        instances.resize(count);
+        for(std::size_t index=0;index<count;index++) {
+            const auto& mesh=frame.meshes[index];auto& slot=resolved[index];
+            // Only a reused slot keeps its object; the coverage pass cleared every other one.
+            const bool same_slot=slot.object!=nullptr;
+            bool inserted=false;
+            if(!same_slot){auto [found,added]=objects.try_emplace(slot.key);slot.object=&found->second;inserted=added;}
+            auto& object=*slot.object;const auto& g=*slot.geometry;object.used=true;
             const bool correspondence=!inserted&&mesh.stable_key!=0&&object.geometry==mesh.geometry.get()&&history_valid;
+            const bool surfaces_same=materials_same&&same_slot;
+            // Unchanged object at an unchanged index: its instance, RT state and caster bounds stand.
+            if(surfaces_same&&object.world==mesh.world&&(!shadows_cached||object.shadow_tracked)&&
+                instances[index].previous_world==mesh.world&&instances[index].geometry[2]==(correspondence?1u:0u)) {
+                if(shadows_cached)shadow_casters.push_back({static_cast<std::uint32_t>(index),object.shadow_bounds,object.shadow_dynamic});
+                else object.shadow_tracked=false;
+                continue;
+            }
             GpuInstance instance{};instance.world=mesh.world;instance.previous_world=correspondence?object.world:mesh.world;
             if(inserted||object.world!=mesh.world) {
                 const auto inverse=math::try_inverse(matrix(mesh.world));allocation(bool(inverse));
@@ -814,7 +893,7 @@ struct SceneLit::State {
             }
             instance.normal_x=object.normal_x;instance.normal_y=object.normal_y;instance.normal_z=object.normal_z;
             const auto descriptions=std::span(material_frame->descriptions).subspan(material_frame->offsets[index],mesh.geometry->materials().size());
-            const bool surface_changed=!inserted&&!std::ranges::equal(object.surfaces,descriptions);
+            const bool surface_changed=!inserted&&!surfaces_same&&!std::ranges::equal(object.surfaces,descriptions);
             material_changed|=surface_changed;
             bool object_coverage_changed=false;
             if(surface_changed) {
@@ -851,9 +930,12 @@ struct SceneLit::State {
                 }
                 shadow_casters.push_back({static_cast<std::uint32_t>(index),object.shadow_bounds,object.shadow_dynamic});
             } else object.shadow_tracked=false;
-            bool emitting=false;
-            for(const auto& surface:descriptions) {
-                const auto& e=surface.parameters.emissive;emitting|=e[0]>0||e[1]>0||e[2]>0;
+            bool emitting=object.emitting;
+            if(!surfaces_same) {
+                emitting=false;
+                for(const auto& surface:descriptions) {
+                    const auto& e=surface.parameters.emissive;emitting|=e[0]>0||e[1]>0||e[2]>0;
+                }
             }
             if(emitting||object.emitting)
                 emitter_changed|=inserted||object.geometry!=mesh.geometry.get()||object.world!=mesh.world||surface_changed;
@@ -861,12 +943,12 @@ struct SceneLit::State {
             object.emitting=emitting;
             // Keep geometric motion, but edited material/radiance has no valid
             // previous shading observation, including when seen through SSR.
-            instance.geometry={geometries.at(mesh.geometry.get()).offset,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
-            instances_changed|=instances[index]!=instance;instances[index]=instance;
+            instance.geometry={g.offset,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
+            if(instances[index]!=instance){instances[index]=instance;dirty(index);}
             if(inserted){object.instance=gfxCreateTopLevelAccelerationStructureInstance(gfx);allocation(bool(object.instance));
                 require(gfxTopLevelAccelerationStructureAddInstance(gfx,tlas,object.instance),"Attach RT scene instance");topology_changed=true;}
             if(inserted||object.geometry!=mesh.geometry.get()) {
-                require(gfxTopLevelAccelerationStructureInstanceSetBottomLevelAccelerationStructure(gfx,object.instance,geometries.at(mesh.geometry.get()).blas),"Set RT instance mesh");topology_changed=true;
+                require(gfxTopLevelAccelerationStructureInstanceSetBottomLevelAccelerationStructure(gfx,object.instance,g.blas),"Set RT instance mesh");topology_changed=true;
             }
             if(inserted||object.world!=mesh.world) {
                 std::array<float,12> transform{};for(std::size_t r=0;r<3;r++)for(std::size_t c=0;c<4;c++)transform[r*4+c]=mesh.world[c*4+r];
@@ -875,7 +957,7 @@ struct SceneLit::State {
             require(gfxTopLevelAccelerationStructureInstanceSetInstanceID(gfx,object.instance,static_cast<std::uint32_t>(index)),"Remap current RT snapshot");
             object.world=mesh.world;object.geometry=mesh.geometry.get();
         }
-        for(auto it=objects.begin();it!=objects.end();) {
+        if(!steady)for(auto it=objects.begin();it!=objects.end();) {
             if(it->second.used){++it;continue;}
             if(shadows_cached&&it->second.shadow_tracked)shadow_changes.push_back({it->second.shadow_bounds,{},true,false,
                 !it->second.shadow_dynamic,it->second.shadow_dynamic});
@@ -883,7 +965,7 @@ struct SceneLit::State {
             require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,it->second.instance),"Detach removed RT instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,it->second.instance),"Retire removed RT instance");it=objects.erase(it);topology_changed=true;
         }
-        for(auto it=geometries.begin();it!=geometries.end();) {
+        if(!steady)for(auto it=geometries.begin();it!=geometries.end();) {
             if(it->second.used){++it;continue;}auto& g=it->second;
             require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire unused static BLAS");
             require(gfxDestroyGeometry(gfx,g.geometry),"Retire unused RT geometry");retire(g.positions);it=geometries.erase(it);geometry_changed=true;
@@ -912,19 +994,16 @@ struct SceneLit::State {
             rt_closed_slots=gfxCreateBuffer<std::uint32_t>(gfx,std::max(1u,static_cast<std::uint32_t>(packed_closed_slots.size())),packed_closed_slots.empty()?nullptr:packed_closed_slots.data());allocation(bool(rt_closed_slots));
             retire(rt_triangles);rt_triangles=gfxCreateBuffer<GpuRayTriangle>(gfx,static_cast<std::uint32_t>(packed_triangles.size()),packed_triangles.data());allocation(bool(rt_triangles));
         }
-        for(std::size_t i=0;i<instances.size();i++) {
-            const auto offset=geometries.at(frame.meshes[i].geometry.get()).offset;
-            instances_changed|=instances[i].geometry[0]!=offset;instances[i].geometry[0]=offset;
+        if(!steady)for(std::size_t i=0;i<count;i++) {
+            const auto offset=resolved[i].geometry->offset;
+            if(instances[i].geometry[0]!=offset){instances[i].geometry[0]=offset;dirty(i);}
         }
         // Membership/order changes do not change the world-space probe domain.
         // New/replaced objects already have no surface correspondence above;
         // surviving stable objects retain it even if their GPU indices change.
         if(!tlas_built||topology_changed) {require(gfxTopLevelAccelerationStructureBuild(gfx,tlas),"Build scene TLAS");tlas_built=true;}
-        else if(transform_changed||object_keys!=previous_object_keys)require(gfxTopLevelAccelerationStructureUpdate(gfx,tlas),"Update scene TLAS");
-        previous_object_keys=object_keys;
-        if(instances_changed||!gpu_instances) {
-            retire(gpu_instances);gpu_instances=gfxCreateBuffer<GpuInstance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());allocation(bool(gpu_instances));
-        }
+        else if(transform_changed||remapped)require(gfxTopLevelAccelerationStructureUpdate(gfx,tlas),"Update scene TLAS");
+        gpu_instances=instance_table.write(gfx,context.info().frames_in_flight,instances,dirty_first,dirty_last,"Scene Lit instance");
         if(geometry_changed||topology_changed||transform_changed) {
             std::array<double,3> low,high;low.fill(std::numeric_limits<double>::max());high.fill(-std::numeric_limits<double>::max());
             for(const auto& mesh:frame.meshes) {
@@ -939,6 +1018,7 @@ struct SceneLit::State {
                 probe_scene_min[axis]=static_cast<float>(low[axis]);probe_scene_max[axis]=static_cast<float>(high[axis]);
             }
         }
+        material_revision=material_frame->revision;resolved_complete=true;
         end(1);
         return geometry_changed||topology_changed||transform_changed;
     }
@@ -946,21 +1026,20 @@ struct SceneLit::State {
     void lighting(const Frame& frame) {
         light_frame.update(frame,*material_frame,sequence);
         light_changed=light_frame.radiance_changed;
-        const auto upload=[&]<class T>(GfxBuffer& buffer,const std::vector<T>& data) {
-            retire(buffer);
-            buffer=gfxCreateBuffer<T>(gfx,std::max(std::size_t{1},data.size()),data.empty()?nullptr:data.data());
-            allocation(bool(buffer));
+        const auto slots=context.info().frames_in_flight;
+        const auto upload=[&]<class T>(DeviceTable<T>& target,const std::vector<T>& data,bool changed) {
+            return target.write(gfx,slots,data,changed,"Scene Lit light table");
         };
-        if(light_frame.changed||!gpu_sources) {
-            upload(gpu_sources,light_frame.sources);upload(gpu_previous_sources,light_frame.previous_sources);
-            upload(gpu_proposals,light_frame.proposals);
-            upload(gpu_current_to_previous,light_frame.current_to_previous);upload(gpu_previous_to_current,light_frame.previous_to_current);
-        }
-        spatial_uploaded=light_frame.spatial_changed||!gpu_light_cells;
-        if(spatial_uploaded) {
-            upload(gpu_light_cells,light_frame.spatial_cells);upload(gpu_spatial_proposals,light_frame.spatial_proposals);
-            upload(gpu_spatial_source_slots,light_frame.spatial_source_slots);
-        }
+        const bool changed=light_frame.changed;
+        gpu_sources=upload(light_tables.sources,light_frame.sources,changed);
+        gpu_previous_sources=upload(light_tables.previous_sources,light_frame.previous_sources,changed);
+        gpu_proposals=upload(light_tables.proposals,light_frame.proposals,changed);
+        gpu_current_to_previous=upload(light_tables.current_to_previous,light_frame.current_to_previous,changed);
+        gpu_previous_to_current=upload(light_tables.previous_to_current,light_frame.previous_to_current,changed);
+        spatial_uploaded=light_frame.spatial_changed||!light_tables.cells.bytes();
+        gpu_light_cells=upload(light_tables.cells,light_frame.spatial_cells,light_frame.spatial_changed);
+        gpu_spatial_proposals=upload(light_tables.spatial_proposals,light_frame.spatial_proposals,light_frame.spatial_changed);
+        gpu_spatial_source_slots=upload(light_tables.spatial_source_slots,light_frame.spatial_source_slots,light_frame.spatial_changed);
         light_grid_counts_gpu={light_grid_counts[0],light_grid_counts[1],light_grid_counts[2],
             frame.view.lit.spatial_light_sampling&&!light_frame.spatial_cells.empty()?1u:0u};
         source_counts={light_frame.local_count,light_frame.directional_count,light_frame.emitter_count,
@@ -1010,7 +1089,7 @@ struct SceneLit::State {
         previous_antialiasing=settings.antialiasing;
         previous_effect_flags=flags;previous_direct_candidates=settings.direct_candidates;previous_direct_reference=settings.direct_reference;
         previous_direct_clustered=clustered;
-        scene_identity=frame.scene_identity;scene_revision=frame.scene_revision;enabled=true;
+        scene_identity=frame.scene_identity;enabled=true;
         probes(settings,frame.lighting_focus,stats);
         const bool transform_changed=acceleration(frame);lighting(frame);
         direct_stochastic=light_frame.local_count!=0 || std::ranges::any_of(light_frame.sources,[](const GpuLightSource& source) {
@@ -1051,9 +1130,10 @@ struct SceneLit::State {
         viewport=next_viewport;
         const auto raster=raster_viewport(frame.scene_viewport);
         raster_transform=raster.clip_transform;
-        // The validated logical rect lies in this window. Raster and receiver
-        // dispatch share one pixel-center range, including fractional edges.
-        screen_dispatch={static_cast<std::uint32_t>(raster.scissor.left),static_cast<std::uint32_t>(raster.scissor.top),
+        // The validated logical rect lies in this window. Receiver dispatch ends with the raster
+        // pixel-center range; its origin rounds down to 16 so thread groups align with texture
+        // tiles, and lit_inside rejects the added margin.
+        screen_dispatch={static_cast<std::uint32_t>(raster.scissor.left)&~15u,static_cast<std::uint32_t>(raster.scissor.top)&~15u,
             static_cast<std::uint32_t>(raster.scissor.right),static_cast<std::uint32_t>(raster.scissor.bottom)};
         if(clustered)clusters();
         environment=next_environment;
@@ -1075,7 +1155,6 @@ struct SceneLit::State {
         }
         for(std::uint32_t i=0;i<gbuffer_textures.size();i++)require(gfxCommandBindColorTarget(gfx,i,{}),"Unbind Scene Lit GBuffer");
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind Scene Lit primary depth");end(0);
-        const auto dx=(next.width+7)/8,dy=(next.height+7)/8;
         begin(2);begin(20,clustered);
         if(clustered && cluster_tiles[0] && cluster_tiles[1]) {
             const auto& build=settings.direct_cluster_inspect?cluster_inspect:cluster_build;
@@ -1292,10 +1371,11 @@ struct SceneLit::State {
             dispatch_screen(ssil_trace,depth);dispatch_screen(ssil_resolve,depth);
         }
         end(4);
+        if(!history_valid)full_window_frames=2;
         begin(5);for(std::size_t i=0;i<2;++i)bind(compose.program(),filter_inputs[i],direct_result[i]);
         bind(compose.program(),"lit_indirect_source",settings.ssil?ssil_irradiance:indirect);bind(compose.program(),"lit_ao",ao_texture);
         bind(compose.program(),"lit_indirect_gain",settings.indirect_gain);
-        bind(compose.program(),"lit_hdr_output",hdr);dispatch(compose,depth,dx,dy);
+        bind(compose.program(),"lit_hdr_output",hdr);dispatch_window(compose,depth);
         if(!brdf_ready){bind(brdf.program(),"lit_brdf_output",brdf_lut);dispatch(brdf,depth,8,8);brdf_ready=true;}
         if(settings.sssr)for(std::uint32_t i=0;i<pyramid_count;i++) {
             // Specialize the first reduction so even a 1x1 hierarchy has no
@@ -1312,22 +1392,22 @@ struct SceneLit::State {
             require(gfxProgramSetParameter(gfx,p,"lit_depth_pyramid",pyramid_array.data(),12),"Bind separate depth hierarchy");bind(p,"lit_depth_level_count",next.width==1&&next.height==1?1u:pyramid_count+1);
         }
         if(settings.sssr)dispatch(ssr_reset,depth,1);
-        dispatch(ssr_classify,depth,dx,dy);
+        dispatch_window(ssr_classify,depth);
         if(settings.sssr)dispatch(ssr_prepare,depth,1);
         if(settings.sssr){common(ssr_trace.program(),depth);require(gfxCommandBindKernel(gfx,ssr_trace.kernel()),"Bind SSSR work kernel");require(gfxCommandDispatchIndirect(gfx,reflection_arguments),"Dispatch SSSR classified work");}
         bind(reflection_resolve.program(),"lit_reflection_trace",reflection_trace);bind(reflection_resolve.program(),"lit_reflection_hit_trace",reflection_hit_trace);
         bind(reflection_resolve.program(),"lit_reflection_previous",reflection_history[1-parity]);bind(reflection_resolve.program(),"lit_reflection_hit_previous",reflection_hit_history[1-parity]);
         bind(reflection_resolve.program(),"lit_reflection_resolved_output",reflection_history[parity]);bind(reflection_resolve.program(),"lit_reflection_hit_output",reflection_hit_history[parity]);
         bind(reflection_resolve.program(),"lit_reflection_moments_previous",reflection_moments[1-parity]);bind(reflection_resolve.program(),"lit_reflection_moments_output",reflection_moments[parity]);
-        dispatch(reflection_resolve,depth,dx,dy);
+        dispatch_window(reflection_resolve,depth);
         if(settings.sssr)for(std::uint32_t step=0;step<3;++step){const auto p=reflection_filter.program();
             bind(p,"lit_reflection_filter_input",step==0?reflection_history[parity]:reflection_scratch[(step-1)%2]);
             bind(p,"lit_reflection_filter_output",reflection_scratch[step%2]);bind(p,"lit_reflection_moments",reflection_moments[parity]);
-            bind(p,"lit_reflection_hit_trace",reflection_hit_trace);bind(p,"lit_reflection_filter_step",1u<<step);dispatch(reflection_filter,depth,dx,dy);}
+            bind(p,"lit_reflection_hit_trace",reflection_hit_trace);bind(p,"lit_reflection_filter_step",1u<<step);dispatch_window(reflection_filter,depth);}
         end(5);
         begin(6);bind(taa.program(),"lit_reflection",settings.sssr?reflection_scratch[0]:reflection_history[parity]);bind(taa.program(),"lit_reflection_moments",reflection_moments[parity]);bind(taa.program(),"lit_taa_previous",taa_history[1-parity]);bind(taa.program(),"lit_taa_output",taa_history[parity]);
         bind(taa.program(),"lit_history_depth_output",history_depth[parity]);bind(taa.program(),"lit_history_normal_output",history_normal[parity]);bind(taa.program(),"lit_history_geometry_normal_output",history_geometry_normal[parity]);
-        bind(taa.program(),"lit_history_base_metallic_output",history_base_metallic[parity]);bind(taa.program(),"lit_history_surface_id_output",history_surface_id[parity]);dispatch(taa,depth,dx,dy);end(6);
+        bind(taa.program(),"lit_history_base_metallic_output",history_base_metallic[parity]);bind(taa.program(),"lit_history_surface_id_output",history_surface_id[parity]);dispatch_window(taa,depth);end(6);
         begin(7);const std::array<float,4> bloom_controls{1,.5f,settings.bloom?.04f:0.f,64};
         if(settings.bloom) {
         bind(bloom_downsample.program(),"lit_taa",taa_history[parity]);bind(bloom_downsample.program(),"lit_bloom_output",bloom[0]);bind(bloom_downsample.program(),"lit_bloom_controls",bloom_controls);
@@ -1335,7 +1415,7 @@ struct SceneLit::State {
         for(std::uint32_t i=0;i<2;i++){bind(bloom_blur.program(),"lit_bloom_input",bloom[i]);bind(bloom_blur.program(),"lit_bloom_output",bloom[1-i]);
             bind(bloom_blur.program(),"lit_bloom_direction",std::array<std::int32_t,2>{i==0?1:0,i==0?0:1});dispatch(bloom_blur,depth,(bloom[0].getWidth()+7)/8,(bloom[0].getHeight()+7)/8);}
         }
-        bind(tone_map.program(),"lit_taa",taa_history[parity]);bind(tone_map.program(),"lit_bloom",bloom[0]);bind(tone_map.program(),"lit_bloom_controls",bloom_controls);bind(tone_map.program(),"lit_tone_output",tone_color);dispatch(tone_map,depth,dx,dy);
+        bind(tone_map.program(),"lit_taa",taa_history[parity]);bind(tone_map.program(),"lit_bloom",bloom[0]);bind(tone_map.program(),"lit_bloom_controls",bloom_controls);bind(tone_map.program(),"lit_tone_output",tone_color);dispatch_window(tone_map,depth);
         GfxTexture display=tone_color;
         if(settings.antialiasing==Antialiasing::smaa||smaa_temporal) {
             const float phase=sequence%2==0?1.f:2.f;
@@ -1346,8 +1426,8 @@ struct SceneLit::State {
                 bind(p,"lit_smaa_area",smaa_area);bind(p,"lit_smaa_search",smaa_search);bind(p,"lit_smaa_subsample_indices",subsamples);
                 bind(p,"lit_smaa_spatial_output",smaa_spatial[parity]);bind(p,"lit_smaa_spatial",smaa_spatial[parity]);bind(p,"lit_smaa_previous",smaa_spatial[1-parity]);
                 bind(p,"lit_smaa_output",smaa_output);bind(p,"lit_smaa_temporal_enabled",smaa_temporal?1u:0u);}
-            dispatch(smaa_edges_pass,depth,dx,dy);dispatch(smaa_weights_pass,depth,dx,dy);dispatch(smaa_neighborhood,depth,dx,dy);
-            display=smaa_spatial[parity];if(smaa_temporal){dispatch(smaa_resolve,depth,dx,dy);display=smaa_output;}
+            dispatch_window(smaa_edges_pass,depth);dispatch_window(smaa_weights_pass,depth);dispatch_window(smaa_neighborhood,depth);
+            display=smaa_spatial[parity];if(smaa_temporal){dispatch_window(smaa_resolve,depth);display=smaa_output;}
         }
         common(tone.program(),depth);bind(tone.program(),"lit_display_source",display);
         require(gfxCommandBindKernel(gfx,tone.kernel()),"Bind Scene Lit tone map");require(gfxCommandDraw(gfx,3),"Compose Scene Lit display");stats.viewport_draw_calls++;end(7);
@@ -1355,7 +1435,8 @@ struct SceneLit::State {
         stats.scene_lit_light_sources=static_cast<std::uint32_t>(light_frame.sources.size());
         stats.scene_lit_spatial_sources=static_cast<std::uint32_t>(light_frame.spatial_proposals.size());
         stats.scene_lit_spatial_cells=light_frame.spatial_nonempty_cells;
-        stats.scene_lit_spatial_bytes=gpu_light_cells.getSize()+gpu_spatial_proposals.getSize()+gpu_spatial_source_slots.getSize();
+        const auto logical=[](const auto& values){return std::max<std::size_t>(1,values.size())*sizeof(values[0]);};
+        stats.scene_lit_spatial_bytes=logical(light_frame.spatial_cells)+logical(light_frame.spatial_proposals)+logical(light_frame.spatial_source_slots);
         stats.scene_lit_spatial_changed=spatial_uploaded;
         stats.scene_lit_shadow_sources=settings.shadows?static_cast<std::uint32_t>(std::count_if(light_frame.sources.begin(),light_frame.sources.end(),[](const GpuLightSource& l){return (l.meta[1]&2u)!=0;})):0;
         stats.scene_lit_di_candidates=settings.direct_candidates;
@@ -1366,6 +1447,7 @@ struct SceneLit::State {
         readback_shadows[readback_slot]=shadow_sample;
         probe_visibility_valid=settings.ddgi&&!taa_enabled&&!smaa_temporal;
         stats.scene_lit_history_resets=reset_events;reset_events=0;previous_view_projection=view_projection;previous_inverse_view_projection=inverse_view_projection;history_valid=true;sequence++;parity=1-parity;
+        if(full_window_frames)--full_window_frames;
     }
     void bind_probe_debug(GfxProgram p) {
         const auto read=1-probe_parity;
@@ -1420,19 +1502,22 @@ struct SceneLit::State {
         stats.scene_lit_resource_bytes=resource_bytes();
     }
     void retire_scene() {
+        resolved.clear();resolved_complete=false;
         shadow_cache.invalidate();shadows_cached=false;shadow_casters.clear();shadow_changes.clear();
         retire(shadow_static);retire(shadow_dynamic);
-        for(auto& batch:shadow_batches){retire(batch.faces);retire(batch.lights);retire(batch.instances);
+        for(auto& batch:shadow_batches){for(auto r:{batch.face_table.retire(gfx),batch.light_table.retire(gfx),batch.instance_table.retire(gfx)})require(r,"Retire shadow batch tables");
             for(auto q:{batch.update_query,batch.shade_query})if(q)require(gfxDestroyTimestampQuery(gfx,q),"Retire shadow batch timestamp");}
         shadow_batches.clear();shadow_instance_indices.clear();
         for(auto& [key,o]:objects){(void)key;if(tlas)require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,o.instance),"Detach Scene Lit instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,o.instance),"Retire Scene Lit instance");}objects.clear();
         if(tlas)require(gfxDestroyTopLevelAccelerationStructure(gfx,std::exchange(tlas,{})),"Retire Scene Lit TLAS");
         for(auto& [key,g]:geometries){(void)key;require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire Scene Lit BLAS");require(gfxDestroyGeometry(gfx,g.geometry),"Retire Scene Lit geometry");retire(g.positions);}geometries.clear();
-        for(auto* b:{&gpu_light_cells,&gpu_spatial_proposals,&gpu_spatial_source_slots,&gpu_instances,&gpu_sources,&gpu_previous_sources,&gpu_proposals,&gpu_current_to_previous,&gpu_previous_to_current,&rt_triangles,&rt_closed_slots,&probe_ray_hits})retire(*b);
+        for(auto* b:{&rt_triangles,&rt_closed_slots,&probe_ray_hits})retire(*b);
+        require(instance_table.retire(gfx),"Retire Scene Lit instance table");
+        light_tables.each([&](auto& table){require(table.retire(gfx),"Retire Scene Lit light tables");});
+        for(auto* b:{&gpu_instances,&gpu_light_cells,&gpu_spatial_proposals,&gpu_spatial_source_slots,&gpu_sources,&gpu_previous_sources,&gpu_proposals,&gpu_current_to_previous,&gpu_previous_to_current})*b={};
         std::vector<GpuInstance>{}.swap(instances);light_frame.clear();
         std::vector<GpuRayTriangle>{}.swap(packed_triangles);std::vector<std::uint32_t>{}.swap(packed_closed_slots);
-        object_keys.clear();previous_object_keys.clear();
         tlas_built=false;
     }
     void close() {
@@ -1483,6 +1568,7 @@ void SceneLit::validate(const Frame& frame) const {
 void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,const SceneLitDraws& scene_draws,const MaterialFrame& materials,FrameStats& stats){state_->draw(frame,extent,depth,scene_draws,materials,stats);}
 Result<Preparation> SceneLit::preparation(const ViewSettings& view){return state_->preparation(view);}
 void SceneLit::draw_debug(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,FrameStats& stats){state_->draw_debug(frame,extent,depth,stats);}
+GfxTexture SceneLit::motion() const{return state_->gbuffer_textures[3];}
 void SceneLit::invalidate(bool empty_scene,FrameStats& stats) {
     state_->enabled=false;state_->reset();if(!empty_scene)state_->retire(state_->probe_debug_depth);if(empty_scene)state_->retire_scene();
     stats.scene_lit_resource_bytes=state_->resource_bytes();
