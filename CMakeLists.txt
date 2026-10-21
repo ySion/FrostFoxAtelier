@@ -133,11 +133,11 @@ include(cmake/editor.cmake)
 atelier_add_editor()
 
 get_property(_headless_acceptance GLOBAL PROPERTY ATELIER_HEADLESS_ACCEPTANCE)
+get_property(_renderer_acceptance GLOBAL PROPERTY ATELIER_RENDERER_ACCEPTANCE)
 # GPU creation and native input belong here even when a target starts with CPU checks.
 # USES_TERMINAL on these leaf targets serializes them in Ninja's console pool.
-set(_dev_window_acceptance rhi_acceptance renderer_acceptance)
 set(_window_acceptance
-    ${_dev_window_acceptance} editor_acceptance
+    rhi_acceptance ${_renderer_acceptance} editor_acceptance
     editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
     editor_shortcuts_acceptance editor_edit_acceptance editor_surfaces_acceptance
     editor_dialogs_acceptance editor_scene_lit_acceptance physics_examples_acceptance
@@ -147,7 +147,5 @@ add_custom_target(acceptance_window DEPENDS ${_window_acceptance})
 add_custom_target(acceptance DEPENDS acceptance_headless acceptance_window)
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/acceptance-window-targets.txt"
     CONTENT "$<JOIN:${_window_acceptance},\n>\n")
-file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/acceptance-dev-window-targets.txt"
-    CONTENT "$<JOIN:${_dev_window_acceptance},\n>\n")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/acceptance-headless-targets.txt"
     CONTENT "$<JOIN:${_headless_acceptance},\n>\n")

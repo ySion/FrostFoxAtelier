@@ -258,7 +258,7 @@ ReSTIR、直接光降噪、GTAO、Local GI、最终 TAA 以及 SSSR 接收面/�
 
 空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码是否上传这些缓冲）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 
-Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程和窗口中依次运行下列入口，任一入口失败即整体失败；证据写入构建目录的 `renderer-evidence/<入口>`，日志为 `renderer-acceptance-<入口>.log`：
+Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程和窗口中运行下列入口，任一入口失败即整体失败；每个入口也是单独的目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口为 `renderer_acceptance_default`），供必要性测试只跑相关入口。证据写入构建目录的 `renderer-evidence/<入口>`，日志为 `renderer-acceptance-<入口>.log`：
 
 | 入口 | 覆盖 |
 |---|---|
