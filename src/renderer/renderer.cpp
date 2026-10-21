@@ -822,6 +822,8 @@ struct Renderer::State {
                     const auto slots = context.info().frames_in_flight;
                     if (draw_order_slots.empty()) draw_order_slots.resize(slots);
                     const auto sequence = gfxGetRecordingFrameSequence(gfx);
+                    if (!sequence)
+                        throw error(rhi::ErrorCode::execution_failed, "Draw order upload outside a recording frame", true);
                     // Draws already recorded in this frame read the slot at execution; a second write would redirect them.
                     if (sequence == draw_order_sequence)
                         throw error(rhi::ErrorCode::execution_failed, "Draw order slot written twice in one recording frame", true);
