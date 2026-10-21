@@ -167,7 +167,7 @@ Result<ObjectRoot> create_component(Runtime& runtime, TypeId actual) {
 }
 
 Result<ObjectRoot> create_static_mesh_entity(World& world, const StaticMeshEntityDesc& description) {
-    if (auto ready = Access::state(world).admit(); !ready) return std::unexpected(ready.error());
+    if (world.closed()) return error(ErrorCode::unsupported_operation, "World is closed.");
     auto transform = canonical_transform(description.transform);
     if (!transform) return std::unexpected(transform.error());
     if (auto valid = validate_material(world.runtime(), description.material); !valid) return std::unexpected(valid.error());
@@ -189,14 +189,7 @@ Result<ObjectRoot> create_static_mesh_entity(World& world, const StaticMeshEntit
     auto component = create_component(runtime, world.types().static_mesh_component);
     if (!component) return std::unexpected(component.error());
     created.component = std::move(*component);
-    auto placed = runtime.with_native<Entity>(created.entity.id(), [&](Entity& value) -> Result<void> {
-        value.position = transform->position;
-        value.rotation = transform->rotation;
-        value.scale = transform->scale;
-        Access::spatial(value) = true;
-        return {};
-    });
-    if (!placed) return std::unexpected(placed.error());
+    if (auto placed = world.set_transform(created.entity.id(), *transform); !placed) return std::unexpected(placed.error());
     auto configured = runtime.with_native<StaticMeshComponent>(created.component.id(), [&](StaticMeshComponent& value) -> Result<void> {
         value.material = description.material;
         return {};
@@ -295,6 +288,16 @@ Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
         return Trs{entity.position, entity.rotation, entity.scale};
     });
 }
+Result<World*> admit_component_edit(Runtime& runtime, ObjectId object) {
+    auto component = detail::component_data(runtime, object);
+    if (!component) return std::unexpected(component.error());
+    if (component->owner == ObjectId{}) return nullptr;
+    auto owner = detail::entity_data(runtime, component->owner);
+    if (!owner) return std::unexpected(owner.error());
+    if (owner->transitioning) return error(ErrorCode::busy, "Entity is transitioning.");
+    if (owner->world) if (auto ready = Access::state(*owner->world).admit(); !ready) return std::unexpected(ready.error());
+    return owner->world;
+}
 Result<void> set_geometry(Runtime& runtime, ObjectId object, geometry::MeshRef geometry) {
     return set_mesh_binding(runtime,object,{{},std::move(geometry)});
 }
@@ -313,19 +316,8 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
     try { source=String(StringView(binding.source)); }
     catch (const std::exception& failure) { return error(ErrorCode::invalid_definition,failure.what()); }
     if (auto ready = runtime.check_code_publication(); !ready) return ready;
-    auto component = detail::component_data(runtime, object);
-    if (!component) return std::unexpected(component.error());
-    World* world{};
-    if (component->owner != ObjectId{}) {
-        auto owner = detail::entity_data(runtime, component->owner);
-        if (!owner) return std::unexpected(owner.error());
-        if (owner->transitioning) return error(ErrorCode::busy, "Entity is transitioning.");
-        world = owner->world;
-        if (world) {
-            auto& state = Access::state(*world);
-            if (auto ready = state.admit(); !ready) return ready;
-        }
-    }
+    auto world = admit_component_edit(runtime, object);
+    if (!world) return std::unexpected(world.error());
     auto changed = runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<void> {
         std::vector<std::string> names;std::vector<bool> overrides;std::vector<ObjectReference> references;
         auto field=runtime.reference_field(object,Access::materials(component));if(!field) return std::unexpected(field.error());
@@ -347,7 +339,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         Access::geometry(component) = std::move(binding.resolved); return {};
     });
     if (!changed) return changed;
-    return world ? world->reevaluate_capabilities(object) : Result<void>{};
+    return *world ? (*world)->reevaluate_capabilities(object) : Result<void>{};
 }
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready) return std::unexpected(ready.error());

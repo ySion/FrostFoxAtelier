@@ -35,7 +35,7 @@ void lit_materials_and_lights() {
     w::LightSettings rect_settings;rect_settings.kind=w::LightKind::rectangle;rect_settings.color={2,1,.5f};
     rect_settings.intensity=50;rect_settings.width=2;rect_settings.height=3;rect_settings.two_sided=true;rect_settings.casts_shadow=false;
     w::LightSettings sun_settings;sun_settings.kind=w::LightKind::directional;sun_settings.intensity=1000;sun_settings.range=0;sun_settings.source_radius=.01f;
-    take(world.set_light(point_id,point_settings));take(world.set_light(rectangle_id,rect_settings));take(world.set_light(directional_id,sun_settings));
+    take(w::set_light(world,point_id,point_settings));take(w::set_light(world,rectangle_id,rect_settings));take(w::set_light(world,directional_id,sun_settings));
     require(take(w::read_light(runtime,rectangle_id))==rect_settings && take(world.light_items()).empty(),"Detached lights entered presentation.");
     const float half=std::sqrt(.5f);
     const math::Quaternion parent_rotation{0,half,0,half};
@@ -73,7 +73,7 @@ void lit_materials_and_lights() {
     require(world.activity().presentation_registrations==4 && take(w::inspect_component(runtime,point_id)).can_present &&
         take(world.query(types.light_component)).size()==3 && take(world.query(types.light_component,false)).size()==2,
         "Light registration bypassed World presentation or inherited type queries.");
-    w::World other(runtime,types);reject(other.set_light(point_id,{}),"Another World edited a registered light.");
+    w::World other(runtime,types);reject(w::set_light(other,point_id,{}),"Another World edited a registered light.");
     const auto light_field=take(runtime.find_field(types.light_component,"settings"));
     const auto material_field=take(runtime.find_field(types.static_mesh_component,"material"));
     const auto light_path=[&](std::string_view name){return w::FieldPath{light_field,take(runtime.find_field(types.light_settings,name))};};
@@ -108,39 +108,53 @@ void lit_materials_and_lights() {
     require(take(w::read_static_mesh(runtime,root)).material.emissive.x==atelier::material::emission_limit,
         "Emission above the HDR range was not clamped to the material capture limit.");
     reject(world.write(root,emissive,std::numeric_limits<float>::infinity()),"Infinite emission was accepted.");
-    take(world.set_material(root,material));
+    take(w::set_material(world,root,material));
     require(take(w::read_static_mesh(runtime,root)).material==material,"Restoring the Material changed the value.");
     take(world.write(root,emissive,32.f));take(world.write(root,material_path("roughness"),0.f));
     require(take(world.render_items()).front().material.emissive.x==32 && take(world.render_items()).front().material.roughness==0,"HDR emission or zero roughness was clamped away.");
-    take(world.set_material(root,material));
+    take(w::set_material(world,root,material));
     auto boundary_material=material;boundary_material.emissive={atelier::material::emission_limit,0,0};
-    take(world.set_material(root,boundary_material));
+    take(w::set_material(world,root,boundary_material));
     require(take(world.render_items()).front().material==boundary_material,"Representable emission boundary did not survive World extraction.");
-    take(world.set_material(root,material));
+    take(w::set_material(world,root,material));
     auto boundary_light=sun_settings;
     boundary_light.intensity=static_cast<float>(atelier::rendering::analytic_light_radiance_limit);
-    take(world.set_light(directional_id,boundary_light));
+    take(w::set_light(world,directional_id,boundary_light));
     require(take(w::read_light(runtime,directional_id))==boundary_light,"Analytic range incorrectly used the smaller HDR storage limit.");
     boundary_light.intensity=std::nextafter(boundary_light.intensity,std::numeric_limits<float>::infinity());
-    reject(world.set_light(directional_id,boundary_light),"Analytic radiance above the boundary was accepted.");
-    take(world.set_light(directional_id,sun_settings));
+    reject(w::set_light(world,directional_id,boundary_light),"Analytic radiance above the boundary was accepted.");
+    take(w::set_light(world,directional_id,sun_settings));
     boundary_light=point_settings;boundary_light.intensity=1e20f;boundary_light.color={1e-20f,1e-20f,1e-20f};
-    take(world.set_light(point_id,boundary_light)); // Validate the product, not an arbitrary intensity cap.
-    take(world.set_light(point_id,point_settings));
+    take(w::set_light(world,point_id,boundary_light)); // Validate the product, not an arbitrary intensity cap.
+    take(w::set_light(world,point_id,point_settings));
     boundary_light=rect_settings;boundary_light.color={1,1,1};boundary_light.width=boundary_light.height=2;
     boundary_light.intensity=static_cast<float>(atelier::rendering::analytic_light_radiance_limit/4);
-    take(world.set_light(rectangle_id,boundary_light));
+    take(w::set_light(world,rectangle_id,boundary_light));
     boundary_light.width=std::nextafter(2.f,std::numeric_limits<float>::infinity());
-    reject(world.set_light(rectangle_id,boundary_light),"Rectangle area-weighted radiance exceeded the shared sampling range.");
-    take(world.set_light(rectangle_id,rect_settings));
+    reject(w::set_light(world,rectangle_id,boundary_light),"Rectangle area-weighted radiance exceeded the shared sampling range.");
+    take(w::set_light(world,rectangle_id,rect_settings));
     auto bad_material=material;bad_material.emissive.y=std::numeric_limits<float>::infinity();
-    reject(world.set_material(root,bad_material),"Nonfinite emissive was accepted.");
+    reject(w::set_material(world,root,bad_material),"Nonfinite emissive was accepted.");
     reject(w::create_static_mesh_entity(world,{geometry::cube_mesh(),{},bad_material}),"Factory bypassed expanded Material validation.");
     auto bad_light=point_settings;bad_light.color.z=std::numeric_limits<float>::quiet_NaN();
-    reject(world.set_light(point_id,bad_light),"Nonfinite light color was accepted.");
+    reject(w::set_light(world,point_id,bad_light),"Nonfinite light color was accepted.");
+    // The typed entries reject a value outside its hard bounds instead of clamping it as a field write does.
+    auto rough=material;rough.roughness=1.5f;
+    reject(w::set_material(world,root,rough),"set_material clamped an out-of-bounds roughness instead of rejecting it.");
+    auto dim=point_settings;dim.intensity=-1.f;
+    reject(w::set_light(world,point_id,dim),"set_light clamped a negative intensity instead of rejecting it.");
+    require(take(w::read_static_mesh(runtime,root)).material==material && take(w::read_light(runtime,point_id))==point_settings,
+        "A rejected typed edit changed its field.");
+    // A light already breaking its rules, as a native write can leave it, still has the new value's rules checked.
+    take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.range=0;return {};}));
+    auto flat=rect_settings;flat.width=0;
+    reject(w::set_light(world,point_id,flat),"set_light skipped the light rules of a new value for an invalid light.");
+    require(take(w::read_light(runtime,point_id)).kind==w::LightKind::point && take(w::read_light(runtime,point_id)).range==0,
+        "A rejected typed edit of an invalid light changed it.");
+    take(w::set_light(world,point_id,point_settings));
     take(world.write(point_id,light_path("intensity"),0.f));
     require(take(world.light_items()).size()==3 && take(world.light_items())[1].settings.intensity==0,"Zero intensity dropped stable light identity.");
-    take(world.set_light(point_id,point_settings));
+    take(w::set_light(world,point_id,point_settings));
     committed(world.set_enabled(point_id,false));require(take(world.light_items()).size()==2,"Disabled Component still illuminated the World.");
     committed(world.set_enabled(entity.id(),false));require(take(world.light_items()).empty(),"Disabled Entity still illuminated the World.");
     committed(world.set_enabled(entity.id(),true));committed(world.set_enabled(point_id,true));
@@ -148,7 +162,7 @@ void lit_materials_and_lights() {
     committed(world.restore(removal));removal.root.reset();require(take(world.light_items())[0].component==rectangle_id,"Undo changed light identity/order.");
     committed(world.start());committed(world.start());
     require(begins==std::vector<ObjectId>{rectangle_id,point_id,directional_id},"Light inheritance bypassed ordered Begin.");
-    take(world.set_light(point_id,point_settings));
+    take(w::set_light(world,point_id,point_settings));
     take(world.update(2));
     require(take(world.light_items())[0].settings.intensity==52 && take(world.light_items())[1].settings.intensity==22,
         "Source behavior could not access reflected LightSettings on a derived light.");
@@ -162,11 +176,11 @@ void lit_materials_and_lights() {
         light_report[0].field==std::vector<std::string>{"settings","intensity"} && light_report[0].value=="-1" && light_report[0].type=="world.LightComponent",
         "Isolated light extraction did not skip and report only the invalid light.");
     take(world.set_failure_policy(w::FailurePolicy::halt));
-    reject(world.light_items(),"Unsafe native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
+    reject(world.light_items(),"Unsafe native light mutation escaped extraction validation.");take(w::set_light(world,point_id,point_settings));
     take(runtime.with_native<w::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=1e38f;return {};}));
-    reject(world.light_items(),"Finite overflowing native light mutation escaped extraction validation.");take(world.set_light(point_id,point_settings));
+    reject(world.light_items(),"Finite overflowing native light mutation escaped extraction validation.");take(w::set_light(world,point_id,point_settings));
     take(runtime.with_native<w::StaticMeshComponent>(root,[](auto& mesh)->Result<void>{mesh.material.metallic=2;return {};}));
-    reject(world.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(world.set_material(root,material));
+    reject(world.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(w::set_material(world,root,material));
     // The negative intensity persisted from the isolated pass; the analytic overflow (a
     // LightSettings validator failure) and the Material bound are new causes.
     const auto halted=world.take_diagnostics();

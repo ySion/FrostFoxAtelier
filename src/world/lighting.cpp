@@ -88,30 +88,21 @@ Result<LightSettings> read_light(Runtime& runtime,ObjectId object) {
     return runtime.with_native<const LightComponent>(object,[](const LightComponent& light)->Result<LightSettings> { return light.settings; });
 }
 
-Result<void> World::set_material(ObjectId object,Material value) {
-    if (auto ready=impl_->admit_edit(object); !ready) return ready;
-    auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
-    if (auto valid=validate_material(runtime(),value); !valid) return valid;
-    const auto assign=[&](const Material& material) {
-        return runtime().with_native<StaticMeshComponent>(object,[&](auto& mesh)->Result<void> {mesh.material=material;return {};});
-    };
-    auto previous=runtime().with_native<const StaticMeshComponent>(object,[](const auto& mesh)->Result<Material> {return mesh.material;});
-    if (!previous) return std::unexpected(previous.error());
-    if (auto written=assign(value); !written) return written;
-    if (auto admitted=impl_->check_edit(object); !admitted) { (void)assign(*previous); return admitted; }
-    return {};
+namespace {
+// The new value's own rules first: World::write would clamp it to its hard bounds, and checks
+// the whole object's rules only when the object was valid before the edit.
+template<class T> Result<void> set_value(World& world,ObjectId object,TypeId owner,std::string_view name,TypeId type,const T& value) {
+    auto& runtime=world.runtime();
+    if (auto valid=detail::check_value(runtime,value); !valid) return valid;
+    auto field=runtime.find_field(owner,name); if (!field) return std::unexpected(field.error());
+    return world.write(object,std::span{&*field,1},ValueInput{type,&value});
 }
-Result<void> World::set_light(ObjectId object,LightSettings value) {
-    if (auto ready=impl_->admit_edit(object); !ready) return ready;
-    auto component=impl_->composition_component(object); if (!component) return std::unexpected(component.error());
-    if (auto valid=validate_light(runtime(),value); !valid) return valid;
-    const auto assign=[&](const LightSettings& settings) {
-        return runtime().with_native<LightComponent>(object,[&](auto& light)->Result<void> {light.settings=settings;return {};});
-    };
-    auto previous=read_light(runtime(),object); if (!previous) return std::unexpected(previous.error());
-    if (auto written=assign(value); !written) return written;
-    if (auto admitted=impl_->check_edit(object); !admitted) { (void)assign(*previous); return admitted; }
-    return {};
+}
+Result<void> set_material(World& world,ObjectId object,Material value) {
+    return set_value(world,object,world.types().static_mesh_component,"material",world.types().material,value);
+}
+Result<void> set_light(World& world,ObjectId object,LightSettings value) {
+    return set_value(world,object,world.types().light_component,"settings",world.types().light_settings,value);
 }
 Result<std::vector<LightRenderItem>> World::light_items() const {
     auto pass=spatial_pass(DiagnosticPhase::lighting);

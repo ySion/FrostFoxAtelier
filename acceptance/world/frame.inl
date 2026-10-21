@@ -189,9 +189,10 @@ void frame_phases() {
     probe = Probe::none;
     // A rejected edit returns the field to its exact previous bytes, even a value that bypassed
     // the write path: NaN keeps its payload and an out-of-bounds value is not clamped.
-    bool deny = false;
+    bool deny = false, raise = false;
     const auto denied = [&](const w::World&, std::span<const ObjectId>) -> Result<void> {
         if (deny) return std::unexpected(Error{ErrorCode::argument_mismatch, "Restore probe denied the edit."});
+        if (raise) throw std::runtime_error("Restore probe threw.");
         return {};
     };
     take(shown.add_admission(types.static_mesh_component, denied));
@@ -239,7 +240,30 @@ void frame_phases() {
     const auto restored = take(w::read_static_mesh(runtime, surface)).material;
     require(std::memcmp(&restored, &corrupted, sizeof(w::Material)) == 0,
         "A rejected whole-value edit did not restore a record holding NaN bit for bit.");
-    deny = false;
+    // The typed entries share write's admissions and exact restore: a denying or throwing admission
+    // fails the edit with its own error and leaves both NaN-holding values as they were.
+    const auto unchanged = [&] {
+        auto light = take(w::read_light(runtime, bulb.id()));
+        const auto mesh = take(w::read_static_mesh(runtime, surface)).material;
+        const bool nan = std::bit_cast<std::uint32_t>(light.intensity) == 0x7fc12345u;
+        light.intensity = 1.f;
+        auto expected = take(w::read_light(runtime, bulb.id()));expected.intensity = 1.f;
+        return nan && light == expected && std::memcmp(&mesh, &corrupted, sizeof(w::Material)) == 0;
+    };
+    w::LightSettings brighter; brighter.intensity = 2.f;
+    w::Material shiny; shiny.roughness = .2f;
+    require(rejected(w::set_light(shown, bulb.id(), brighter)) && rejected(w::set_material(shown, surface, shiny)) && unchanged(),
+        "A denied typed edit did not fail with the admission error or changed its field.");
+    deny = false;raise = true;
+    const auto thrown = [](Result<void> result) {
+        return !result && result.error().code == ErrorCode::invocation_failed && result.error().message == "Restore probe threw.";
+    };
+    require(thrown(w::set_light(shown, bulb.id(), brighter)) && thrown(w::set_material(shown, surface, shiny)) && unchanged(),
+        "A throwing admission did not fail a typed edit or changed its field.");
+    raise = false;
+    take(w::set_light(shown, bulb.id(), brighter));take(w::set_material(shown, surface, shiny));
+    require(take(w::read_light(runtime, bulb.id())) == brighter && take(w::read_static_mesh(runtime, surface)).material == shiny,
+        "An admitted typed edit was not kept.");
     committed(shown.close());
-    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore, rejected edits restore exact bytes)");
+    std::puts("[pass] Frame phases: whole-frame dt per phase, simulation step, transitive prerequisites, phase-end requests, running rebind, Source requests, capability buckets, admissions (no reentry, exceptions restore, rejected edits and typed entries restore exact bytes)");
 }

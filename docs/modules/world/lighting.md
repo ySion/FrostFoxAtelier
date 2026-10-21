@@ -11,7 +11,7 @@
 | metallic | 0 | 硬边界 [0,1] |
 | emissive | (0,0,0) | 线性 HDR RGB，每通道硬边界 [0,65504]（UI 范围 0–10），与不可变 Surface 的 GBuffer 表达范围一致 |
 
-Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMin / LockMax / HardMax`），没有跨字段校验器。Runtime 写入越界时夹到边界，NaN/Inf 拒绝；`validate_material(Runtime&, Material)` 用 Runtime 检查一个完整值。`World::set_material` 按完整值检查，失败即拒绝、不夹值；`World::write` 与其他字段相同，见 [World 编辑](README.md#编辑呈现与资源)。两者使用停止状态、宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂也检查完整 Material。可信原生直接写入不经硬边界，`render_items` 提取时用 Runtime 校验 material，越界项按对象诊断（field 为 `material.<字段>`，value 为越界值）并跳过，不会把无效数据交给 Renderer。
+Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMin / LockMax / HardMax`），没有跨字段校验器。Runtime 写入越界时夹到边界，NaN/Inf 拒绝；`validate_material(Runtime&, Material)` 用 Runtime 检查一个完整值。`set_material(World&, ObjectId, Material)` 先按完整值检查，失败即拒绝、不夹值，再经整值 `World::write` 写入；`World::write` 的单字段写入与其他字段相同，见 [World 编辑](README.md#编辑呈现与资源)。两者使用宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂也检查完整 Material。可信原生直接写入不经硬边界，`render_items` 提取时用 Runtime 校验 material，越界项按对象诊断（field 为 `material.<字段>`，value 为越界值）并跳过，不会把无效数据交给 Renderer。
 
 ## 灯类型与参数
 
@@ -34,7 +34,7 @@ Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMi
 
 点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。这条乘积规则在 LightSettings 的类型校验器中，World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
 
-单字段规则是反射硬边界，跨字段规则（种类、局部灯 range、矩形尺寸、方向光角半径、解析光乘积）是 LightSettings 登记的类型校验器，二者都由 Runtime 执行。`validate_light(Runtime&, LightSettings)`、`read_light(Runtime&, ObjectId)`、`World::set_light(ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 按完整值检查，失败即拒绝、不部分改写原值。World 标量属性编辑先经 Runtime 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再检查类型规则与准入，失败时恢复原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
+单字段规则是反射硬边界，跨字段规则（种类、局部灯 range、矩形尺寸、方向光角半径、解析光乘积）是 LightSettings 登记的类型校验器，二者都由 Runtime 执行。`validate_light(Runtime&, LightSettings)`、`read_light(Runtime&, ObjectId)`、`set_light(World&, ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 先按完整值检查（包括跨字段规则，即使组件原值已经违反规则），失败即拒绝、不夹值，再经整值 `World::write` 写入，准入与精确恢复同 write。World 标量属性编辑先经 Runtime 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再检查类型规则与准入，失败时恢复原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
 
 ## 环境
 

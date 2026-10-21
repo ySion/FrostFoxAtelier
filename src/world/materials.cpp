@@ -24,12 +24,7 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
     if(auto ready=runtime.check_code_publication();!ready) return ready;
     auto component=inspect_component(runtime,id);if(!component) return std::unexpected(component.error());
     if(!component->valid) return error(ErrorCode::invalid_member,"Material bindings need a live mesh component.");
-    auto data=detail::component_data(runtime,id);if(!data) return std::unexpected(data.error());
-    if(data->owner!=ObjectId{}) {
-        auto entity=detail::entity_data(runtime,data->owner);if(!entity) return std::unexpected(entity.error());
-        if(entity->transitioning) return error(ErrorCode::busy,"Entity is transitioning.");
-        if(entity->world) if(auto ready=Access::state(*entity->world).admit();!ready) return ready;
-    }
+    if(auto admitted=admit_component_edit(runtime,id);!admitted) return std::unexpected(admitted.error());
     return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<void> {
         const auto& mesh=Access::geometry(value);
         if(bindings.size()>(mesh?mesh->materials().size():0)) return error(ErrorCode::argument_mismatch,"Too many material slot bindings.");

@@ -429,11 +429,11 @@ void attachment_space_and_authoring() {
     const auto nonspatial=take(w::create_component(runtime,types.environment_component));
     require(take(w::component_requires_space(runtime,mesh.id())) && take(w::component_requires_space(runtime,light.id())) &&
         !take(w::component_requires_space(runtime,nonspatial.id())),"SpatialComponent did not decide the space requirement.");
-    take(world.set_material(mesh.id(),{}));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
+    take(w::set_material(world,mesh.id(),{}));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
     committed(world.attach_components(prepared_id,capabilities));
-    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),{}));
+    take(w::set_material(world,mesh.id(),{}));take(w::set_light(world,light.id(),{}));
     committed(world.attach(prepared_id));
-    take(world.set_material(mesh.id(),{}));take(world.set_light(light.id(),{}));
+    take(w::set_material(world,mesh.id(),{}));take(w::set_light(world,light.id(),{}));
 
     auto a=take(w::create_entity(runtime)),b=take(w::create_entity(runtime));a_id=a.id();b_id=b.id();
     take(world.set_transform(a_id,{{2,0,0},{},{1,1,1}}));take(world.set_transform(b_id,{{5,0,0},{},{1,1,1}}));
@@ -599,7 +599,7 @@ void mirrored_and_degenerate_space() {
     std::vector<atelier::ObjectRoot> lights;
     const auto light=[&](ObjectId parent,w::LightKind kind,math::Quaternion rotation) {
         auto entity=take(w::create_entity(runtime));auto component=take(w::create_component(runtime,types.light_component));
-        w::LightSettings settings;settings.kind=kind;take(world.set_light(component.id(),settings));
+        w::LightSettings settings;settings.kind=kind;take(w::set_light(world,component.id(),settings));
         committed(world.attach_components(entity.id(),std::array{w::Attachment{component.id()}}));
         take(world.set_transform(entity.id(),{{1,2,3},rotation,{1,1,1}}));
         committed(world.attach(entity.id(),w::append,parent));

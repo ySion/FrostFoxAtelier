@@ -1362,7 +1362,7 @@ struct Session::GraphCodec {
                     const auto key=part.at("id").get<std::string>();
                     if(auto at=graph.meshes.find(key);at!=graph.meshes.end()) {
                         const auto& copy=at->second;take(world::set_mesh_binding(runtime,object,copy.state.mesh));
-                        take(world.set_material(object,copy.state.material));auto bindings=copy.bindings;
+                        take(world::set_material(world,object,copy.state.material));auto bindings=copy.bindings;
                         for(auto& binding:bindings) {
                             used_materials.insert(copied_material_keys.at(binding.resource.id()));
                             binding.resource=copied_materials.at(binding.resource.id());
@@ -1408,10 +1408,10 @@ struct Session::GraphCodec {
                         };
                         vector_value("base_color",material.base_color);number_value("roughness",material.roughness);
                         number_value("metallic",material.metallic);vector_value("emissive",material.emissive);
-                        if(auto set=world.set_material(object,material);!set) {
+                        if(auto set=world::set_material(world,object,material);!set) {
                             load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"material"},nullptr,set.error().message+" Defaults are used and the saved values are kept.");
                             for(const auto& name:applied) load.store(object,std::array{name},part.at(name));
-                            take(world.set_material(object,world::Material{}));
+                            take(world::set_material(world,object,world::Material{}));
                         }
                         std::vector<world::MaterialBinding> bindings;
                         if(const auto entries=part.find("materials");entries!=part.end() && !entries->is_array())
@@ -1749,7 +1749,7 @@ struct Session::GraphCodec {
                     if(const auto at=op.find("roughness");at!=op.end()) material.roughness=live_number(*at);
                     if(const auto at=op.find("metallic");at!=op.end()) material.metallic=live_number(*at);
                     if(const auto at=op.find("emissive");at!=op.end()) material.emissive=vector(*at);
-                    take(world.set_material(edited,material));
+                    take(world::set_material(world,edited,material));
                 }
                 if(const auto at=op.find("materials");at!=op.end()) {
                     if(!at->is_array() || at->size()>1024) throw std::runtime_error("Expected a material binding table.");

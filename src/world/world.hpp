@@ -316,6 +316,10 @@ public:
 [[nodiscard]] Result<void> validate_light(Runtime&, const LightSettings&);
 // Reads authored settings, including detached/disabled objects. Does not root them.
 [[nodiscard]] Result<LightSettings> read_light(Runtime&, ObjectId light_component);
+// Typed whole-value authoring: a value that fails its type rules is rejected, not clamped;
+// World::write then applies it with the World's admissions and exact restore.
+[[nodiscard]] Result<void> set_material(World&, ObjectId static_mesh_component, Material);
+[[nodiscard]] Result<void> set_light(World&, ObjectId light_component, LightSettings);
 
 using FieldPath = std::vector<FieldId>;
 struct Types {
@@ -383,6 +387,10 @@ struct StaticMeshEntityDesc {
 // explicitly selects world space. A non-null identity is a weak spatial origin.
 [[nodiscard]] Result<std::optional<ObjectId>> space_reference(Runtime&, ObjectId entity);
 [[nodiscard]] Result<ObjectId> spatial_parent(Runtime&, ObjectId entity);
+// Admits a domain's native edit of a component outside World::write: detached, or owned by a member
+// of a World at a host boundary (not transitioning, dispatching or closed). Returns that World, null
+// when the component is not in one.
+[[nodiscard]] Result<World*> admit_component_edit(Runtime&, ObjectId component);
 
 struct Commit {
     bool changed{};
@@ -670,10 +678,6 @@ public:
     [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldPath>, std::span<const Scalar>);
     [[nodiscard]] Result<void> set_transform(ObjectId entity, Trs);
     [[nodiscard]] Result<void> remove_transform(ObjectId entity);
-    // Whole-value authoring, rejected (not clamped) when the value fails its
-    // type rules. Shares set_transform's edit eligibility.
-    [[nodiscard]] Result<void> set_material(ObjectId static_mesh_component, Material);
-    [[nodiscard]] Result<void> set_light(ObjectId light_component, LightSettings);
     // Writes Entity world poses between dispatch phases. The batch is validated
     // and converted parent-first before any TRS is published; scale is retained.
     [[nodiscard]] Result<void> apply_simulation_transform(ObjectId entity, math::Vector3 position,
@@ -700,7 +704,7 @@ public:
     [[nodiscard]] Result<void> reevaluate_capabilities(ObjectId component);
     // A rule over the components of one registered type (or derived) that may
     // become or stay members. Attach runs it on the incoming components before
-    // publishing. Author edits (write, set_material, set_light) of a member
+    // publishing. Author edits (write and the typed entries over it) of a member
     // component run it on that component after writing and restore the previous
     // value when it fails. Runtime writes outside World are not admitted.
     using Admission = std::function<Result<void>(const World&, std::span<const ObjectId> candidates)>;
