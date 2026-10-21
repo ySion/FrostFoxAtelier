@@ -1995,9 +1995,9 @@ Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text
         return result;
     } catch(const std::exception& error) {return failed(error);}
 }
-Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Project& project,Prepare prepare,LoadPolicy policy) {
+Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Project& project,Prepare prepare,LoadPolicy policy,SessionRole role) {
     try {
-        GraphCodec::Graph graph;graph.data=migrate_scene(json_format::parse(text));auto session=std::make_unique<Session>(std::move(prepare));
+        GraphCodec::Graph graph;graph.data=migrate_scene(json_format::parse(text));auto session=std::make_unique<Session>(std::move(prepare),role);
         GraphCodec::Load load;load.policy=policy;load.document=true;
         session->lighting_supplied_=GraphCodec::upgrade(*session,graph.data,load);
         auto prepared=GraphCodec::construct(*session,graph,&project,true,load);

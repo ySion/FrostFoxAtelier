@@ -1,4 +1,6 @@
 #include "editor/operators.hpp"
+#include "editor/assets.hpp"
+#include "editor/project.hpp"
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -7,6 +9,14 @@ namespace atelier::editor {
 namespace {
 std::unexpected<Error> unavailable(std::string reason) { return std::unexpected(Error{ErrorCode::unsupported_operation, std::move(reason)}); }
 Result<void> available(const Context&) { return {}; }
+// Adapts an operator over the reflected parameter record P to the type-erased entry.
+template<class P> auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, const P&)) {
+    return [execute](OperatorHost& host, const Context& context, ValueInput input) -> Result<void> {
+        const auto type = context.document.world().runtime().native_type<P>();
+        if (!type || *type != input.type) return std::unexpected(Error{ErrorCode::type_mismatch, "Operator parameters have another type."});
+        return execute(host, context, *static_cast<const P*>(input.data));
+    };
+}
 Result<void> committed(Result<world::Commit> result) {
     if (!result) return std::unexpected(result.error());
     if (result->notification_error) return std::unexpected(*result->notification_error);
@@ -75,7 +85,7 @@ OperatorInfo history(bool redo) {
             if (context.region == RegionKind::controls) return can(context.workbench_history);
             return (redo ? context.document.redo_count() : context.document.undo_count()) ? Result<void>{} : empty();
         },
-        [redo](OperatorHost& host, const Context& context) -> Result<void> {
+        [redo](OperatorHost& host, const Context& context, ValueInput) -> Result<void> {
             if (context.region == RegionKind::code) return host.source_history(redo);
             if (!context.asset.empty()) return context.document.material_undo(context.asset, redo);
             if (context.region == RegionKind::controls) return host.workbench_history(redo);
@@ -102,28 +112,69 @@ OperatorInfo transform_presence(bool add) {
             if (*spatial == add) return unavailable(add ? "The Entity already has a Transform." : "The Entity has no Transform.");
             return {};
         },
-        [add](OperatorHost&, const Context& context) {
+        [add](OperatorHost&, const Context& context, ValueInput) {
             return add ? context.document.set_transform(context.selection.active, {}) : context.document.remove_transform(context.selection.active);
         }};
 }
 Result<void> docked(const Context& context) {
     return context.region == RegionKind::none ? unavailable("Focus a pane first.") : Result<void>{};
 }
+Result<void> add_poll(const Context& context) {
+    if (!context.scene_available) return unavailable("Load a scene before adding to it.");
+    const auto members = context.document.world().members();
+    if (!members) return std::unexpected(members.error());
+    if (members->size() >= Session::maximum_entities) return unavailable("The scene has reached its Entity limit.");
+    return {};
+}
+Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAdd& p) {
+    auto& document = context.document;
+    Result<world::Commit> added;
+    switch (p.kind) {
+    case AddKind::entity: added = document.add_entity(); break;
+    case AddKind::mesh: {
+        const auto catalog = mesh_assets();
+        std::string_view key{p.mesh.c_str(), p.mesh.size()};
+        if (key.empty()) key = catalog.front().key;
+        if (context.project) {
+            auto asset = context.project->mesh(key);
+            if (!asset) return std::unexpected(asset.error());
+            added = document.create_static_mesh(*asset, context.cursor);
+        } else {
+            const auto* asset = mesh_asset(key);
+            if (!asset) return std::unexpected(Error{ErrorCode::invalid_definition, "Unknown mesh asset."});
+            added = document.create_static_mesh(*asset, context.cursor);
+        }
+        break;
+    }
+    case AddKind::point: added = document.create_light(presentation::LightKind::point, context.cursor); break;
+    case AddKind::rectangle: added = document.create_light(presentation::LightKind::rectangle, context.cursor); break;
+    case AddKind::directional: added = document.create_light(presentation::LightKind::directional, context.cursor); break;
+    }
+    auto result = committed(std::move(added));
+    host.scene_changed();
+    return result;
+}
+Result<void> tool_settings(OperatorHost& host, const Context&, const ToolSettings& p) { host.set_tool_settings(p); return {}; }
+Result<void> view_axis(OperatorHost& host, const Context&, const ViewAxis& p) {
+    auto camera = host.camera();
+    camera.set_view(p.view);
+    return host.set_camera(camera);
+}
 }
 void register_builtin_operators(OperatorRegistry& registry) {
     const auto add = [&](OperatorInfo info) { if (auto added = registry.add(std::move(info)); !added) throw std::logic_error(added.error().message); };
     add({"view.frame_all", L"Frame All", "Frame every rendered Entity and spatial locator", OperatorFlag::none, available,
-        [](OperatorHost& host, const Context& context) { return frame(host, context, false); }});
+        [](OperatorHost& host, const Context& context, ValueInput) { return frame(host, context, false); }});
     add({"view.frame_selected", L"Focus Selection", "Frame the selected Entities and their subtrees", OperatorFlag::none, frame_selected_poll,
-        [](OperatorHost& host, const Context& context) { return frame(host, context, true); }});
+        [](OperatorHost& host, const Context& context, ValueInput) { return frame(host, context, true); }});
     add({"view.reset", L"Reset Camera", "Return the viewport camera to its default view", OperatorFlag::none, available,
-        [](OperatorHost& host, const Context&) { auto camera = host.camera(); camera.reset(); return host.set_camera(camera); }});
+        [](OperatorHost& host, const Context&, ValueInput) { auto camera = host.camera(); camera.reset(); return host.set_camera(camera); }});
     add({"layout.reset", L"Reset Layout", "Restore the default pane layout", OperatorFlag::none, available,
-        [](OperatorHost& host, const Context&) { host.reset_layout(); return Result<void>{}; }});
+        [](OperatorHost& host, const Context&, ValueInput) { host.reset_layout(); return Result<void>{}; }});
     add({"layout.close_tab", L"Close Pane Tab", "Close the focused region's pane tab; on the Code page, close its active document first",
-        OperatorFlag::none, docked, [](OperatorHost& host, const Context& context) { return host.close_tab(context.region, context.interactive); }});
+        OperatorFlag::none, docked, [](OperatorHost& host, const Context& context, ValueInput) { return host.close_tab(context.region, context.interactive); }});
     add({"layout.maximize", L"Maximize / Restore Pane", "Maximize the focused region's pane, or restore the layout when it is maximized",
-        OperatorFlag::none, docked, [](OperatorHost& host, const Context& context) { host.maximize_tab(context.region); return Result<void>{}; }});
+        OperatorFlag::none, docked, [](OperatorHost& host, const Context& context, ValueInput) { host.maximize_tab(context.region); return Result<void>{}; }});
     add(history(false));
     add(history(true));
     add(transform_presence(true));
@@ -136,10 +187,10 @@ void register_builtin_operators(OperatorRegistry& registry) {
             if (object == ObjectId{} || !context.document.has_retained(object)) return unavailable("The inspected object has no saved data.");
             return {};
         },
-        [](OperatorHost&, const Context& context) { return context.document.discard_retained(context.selection.object); }});
+        [](OperatorHost&, const Context& context, ValueInput) { return context.document.discard_retained(context.selection.object); }});
     add({"scene.select", L"Select", "Make the context selection the document selection; a component can be inspected only with one Entity selected",
         OperatorFlag::none, available,
-        [](OperatorHost& host, const Context& context) -> Result<void> {
+        [](OperatorHost& host, const Context& context, ValueInput) -> Result<void> {
             const auto& selection = context.selection;
             if (selection.object != selection.active && selection.entities.size() != 1)
                 return std::unexpected(Error{ErrorCode::unsupported_operation, "Inspect a component with only its Entity selected."});
@@ -148,5 +199,17 @@ void register_builtin_operators(OperatorRegistry& registry) {
             host.scene_changed();
             return {};
         }});
+    add({"scene.add", L"Add", "Add an Entity, a static mesh or a light at the 3D cursor and select it", OperatorFlag::undo, add_poll,
+        with_parameters(scene_add), "editor.SceneAdd"});
+    add({"tool.settings", L"Tool Settings", "Change the viewport tool, selection mode and snapping; unnamed fields keep their values",
+        OperatorFlag::none, available, with_parameters(tool_settings), "editor.ToolSettings",
+        [](const Context& context, ValueOutput out) -> Result<void> {
+            const auto type = context.document.world().runtime().native_type<ToolSettings>();
+            if (!type || *type != out.type) return std::unexpected(Error{ErrorCode::type_mismatch, "Operator parameters have another type."});
+            *static_cast<ToolSettings*>(out.data) = context.tools;
+            return {};
+        }});
+    add({"view.axis", L"View", "Switch the viewport camera to perspective or an axis view around the same target", OperatorFlag::none,
+        available, with_parameters(view_axis), "editor.ViewAxis"});
 }
 }

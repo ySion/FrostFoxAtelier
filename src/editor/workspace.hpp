@@ -102,7 +102,7 @@ struct Workspace {
     Workspace& operator=(Workspace&&)=delete;
     OperatorRegistry operators; // Built-in operators; menus, Control and later the keymap call them.
     ui::DockSpace dock;
-    ViewportTool::Settings viewport_settings;
+    ToolSettings viewport_settings;
     bool camera_flying{}; // Projection only; Application owns the navigation lifecycle.
     TransformTool viewport_mode{TransformTool::transform}; // Current operation, including a modal gesture.
     std::wstring viewport_readout; // Modal G/R/S header text; empty hides the band.
@@ -261,8 +261,8 @@ private:
     ui::ControlKey bind_material(ObjectId,std::span<const FieldId>,Binding::Kind,ObjectId component={},std::string_view slot={},std::size_t index=0);
     std::vector<ui::MenuItem> material_menu(const Binding&,const Session&,const Project*);
 };
-// The operator serving a command, or empty; menus and keys call operators directly in later O1 steps.
-std::string_view operator_for(Command) noexcept;
+// The operator call serving a command, or none; menus and keys call operators directly in later O1 steps.
+std::optional<OperatorCall> operator_for(Command);
 RegionKind region_of(ui::ControlKey tab) noexcept;
 ui::ControlKey region_tab(RegionKind) noexcept; // 0 when the region has no Dock page.
 }

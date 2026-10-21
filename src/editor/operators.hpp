@@ -1,6 +1,7 @@
 #pragma once
 #include "editor/camera.hpp"
 #include "editor/json_format.hpp"
+#include "editor/operator_parameters.hpp"
 #include "editor/session.hpp"
 #include <functional>
 #include <optional>
@@ -45,6 +46,8 @@ struct Context {
     HistoryState workbench_history; // The Controls page samples.
     bool scene_available{true}; // False while a project has no loadable scene.
     bool interactive{};
+    ToolSettings tools;
+    math::Vector3 cursor{}; // The viewport's 3D cursor: where new Entities appear.
 };
 // Control replaces fields for one call; the document selection does not change.
 struct ContextOverride {
@@ -69,6 +72,7 @@ public:
     virtual Result<void> workbench_history(bool redo) = 0;
     // The scene document changed outside an edit gesture; views follow it.
     virtual void scene_changed() = 0;
+    virtual void set_tool_settings(const ToolSettings&) = 0;
 };
 
 struct OperatorInfo {
@@ -77,7 +81,12 @@ struct OperatorInfo {
     std::string description;
     OperatorFlag flags{};
     std::function<Result<void>(const Context&)> poll; // The error message is the reason.
-    std::function<Result<void>(OperatorHost&, const Context&)> execute;
+    // The decoded parameter record, or an empty input when `parameters` is empty.
+    std::function<Result<void>(OperatorHost&, const Context&, ValueInput parameters)> execute;
+    // Runtime name of the parameter record, published in the document; empty for none.
+    std::string parameters{};
+    // Patch-style operators start from the current state, so arguments name only the leaves they change.
+    std::function<Result<void>(const Context&, ValueOutput parameters)> seed{};
 };
 class OperatorRegistry {
 public:
@@ -99,8 +108,13 @@ struct OperatorReport {
     OperatorStatus status{};
     std::string message; // Poll reason when unavailable.
 };
-// Poll, then execute, then check the history contract of the operator's flags.
+// Poll, then seed or default-construct the parameters and decode the arguments strictly
+// into them, then execute, then check the history contract of the operator's flags.
 // Unknown operators, invalid arguments or context, execution errors and history
 // contract violations are errors in every build configuration.
 Result<OperatorReport> call(const OperatorRegistry&, OperatorHost&, const Context&, const OperatorCall&);
+// JSON schema of an operator's arguments, from its parameter record in this Runtime:
+// field names, kinds, enum members, hard bounds as minimum/maximum, the UI range, and
+// defaults; a seeded operator has no defaults and reports "seeded": true instead.
+Result<json_format::Json> parameter_schema(Runtime&, const OperatorInfo&);
 }

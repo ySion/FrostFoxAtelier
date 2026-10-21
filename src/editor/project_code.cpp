@@ -191,7 +191,7 @@ Result<void> ProjectCode::poll(const Project& project,bool force) {
     if (!force && stamps==stamps_) return {};
     stamps_=std::move(stamps);return build(project);
 }
-ProjectDocument load_project_scene(Project& project,std::string_view source,LoadPolicy policy,bool allow_failed_build) {
+ProjectDocument load_project_scene(Project& project,std::string_view source,LoadPolicy policy,bool allow_failed_build,SessionRole role) {
     ProjectDocument result;
     auto document=Session::deserialize(source,project,[&](world::World& world)->Result<std::shared_ptr<void>> {
         auto code=std::make_shared<ProjectCode>(world);const auto built=code->build(project);result.build=code->report();
@@ -202,7 +202,7 @@ ProjectDocument load_project_scene(Project& project,std::string_view source,Load
             return std::shared_ptr<void>{};
         }
         result.code=code.get();return std::static_pointer_cast<void>(std::move(code));
-    },policy);
+    },policy,role);
     if (document) {
         result.session=std::move(*document);
         if(result.build && result.build->error) result.error=*result.build->error;

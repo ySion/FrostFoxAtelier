@@ -85,7 +85,7 @@ private:
     friend class EditorControl;
     std::unique_ptr<EditorControl> control_;
     Window window_;
-    std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>()};
+    std::unique_ptr<editor::Session> document_{std::make_unique<editor::Session>(editor::Session::Prepare{},editor::SessionRole::editor)};
     SceneRecovery recovery_;
     void preserve_failure(std::string_view) noexcept;
     std::optional<editor::Project> project_;
@@ -189,6 +189,7 @@ private:
     Result<void> source_history(bool redo) override;
     Result<void> workbench_history(bool redo) override;
     void scene_changed() override;
+    void set_tool_settings(const editor::ToolSettings& settings) override { workspace_.viewport_settings=settings; }
     Result<void> action(const ui::Action&);
     void sync_text_input();
     void status(Result<void>, const wchar_t* success);

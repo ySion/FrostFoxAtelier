@@ -8,7 +8,7 @@ void verify_rotated_viewport_transforms() {
     take(document.set_transform(entity,authored));
     const auto original=take(world::read_transform(document.world().runtime(),entity));
     Camera camera;const auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);
-    ViewportTool tool;ViewportTool::Settings settings{TransformTool::transform,PivotMode::median};
+    ViewportTool tool;ToolSettings settings{TransformTool::transform,PivotMode::median};
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
         return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,{500,350});
     };
@@ -44,7 +44,7 @@ void verify_mirrored_viewport_transforms() {
     const world::Trs mirrored{{1,2,3},from_euler_degrees({0,30,0}),{1,-1,1}};
     take(document.set_transform(entity,mirrored));
     Camera camera;const auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);
-    ViewportTool tool;ViewportTool::Settings settings{TransformTool::transform,PivotMode::median};
+    ViewportTool tool;ToolSettings settings{TransformTool::transform,PivotMode::median};
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
         return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,{500,350});
     };
@@ -96,7 +96,7 @@ void verify_viewport_local_constraints() {
     const auto before=take(world::read_transform(document.world().runtime(),entity));
     Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
     const auto center=*view.project({}),travel=center+math::Vector2{60,0};
-    ViewportTool tool;ViewportTool::Settings settings;settings.tool=TransformTool::select;settings.orientation=Orientation::local;
+    ViewportTool tool;ToolSettings settings;settings.tool=TransformTool::select;settings.orientation=Orientation::local;
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
         return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,center);
     };
@@ -127,7 +127,7 @@ void verify_viewport_gesture_input() {
     changed(document.create_static_mesh(mesh_assets().front(),{2,0,0}));const auto second=document.selection().entity;take(document.select(first));
     Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
     const auto center=*view.project({});auto pointer=center;
-    ViewportTool tool;ViewportTool::Settings settings;settings.tool=TransformTool::select;settings.grid_spacing=.25f;
+    ViewportTool tool;ToolSettings settings;settings.tool=TransformTool::select;settings.grid_spacing=.25f;
     const auto key=[&](std::uint32_t code,ui::Event event=ui::Event{.kind=ui::EventKind::key_down}) {
         return tool.key(document,view,event,code,settings,pointer);
     };
@@ -296,7 +296,7 @@ void verify_viewport_editing() {
     const auto transform=[&](ObjectId entity){return take(world::read_transform(document.world().runtime(),root(entity)));};
     const auto first_root=root(first),second_root=root(second);
     Camera camera;const auto view=ViewportView::make(camera,{30,40,1000,700},1.5f);
-    ViewportTool tool;ViewportTool::Settings settings{TransformTool::select,PivotMode::median};
+    ViewportTool tool;ToolSettings settings{TransformTool::select,PivotMode::median};
     const auto point=[&](ObjectId entity){return *view.project(transform(entity).position);};
     const auto pointer=[&](ui::EventKind kind,math::Vector2 p,bool shift=false,bool control=false,ui::PointerButton button=ui::PointerButton::secondary) {
         ui::Event event;event.kind=kind;event.x=p.x;event.y=p.y;event.shift=shift;event.control=control;event.button=button;

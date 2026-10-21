@@ -58,7 +58,8 @@ struct ProjectDocument {
 };
 // With allow_failed_build, a Source build failure still produces a document without
 // a code owner: project types are absent, so their objects load as placeholders.
-ProjectDocument load_project_scene(Project&,std::string_view,LoadPolicy=LoadPolicy::tolerant,bool allow_failed_build=false);
+ProjectDocument load_project_scene(Project&,std::string_view,LoadPolicy=LoadPolicy::tolerant,bool allow_failed_build=false,
+    SessionRole=SessionRole::runtime);
 // Project Output lines for a load: one summary, then one line per diagnostic.
 std::vector<std::wstring> describe_issues(const Session&,std::span<const world::Diagnostic>,std::wstring_view source);
 // One Project Output line for a World object diagnostic.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/camera.hpp"
+#include "editor/operator_parameters.hpp"
 #include "editor/session.hpp"
 #include "renderer/overlay.hpp"
 #include "ui/session.hpp"
@@ -11,16 +12,8 @@
 #include <vector>
 
 namespace atelier::editor {
-// Viewport handle families. Transform combines move arrows, plane squares,
-// axis scale boxes and rotation rings in one handle (the default).
-enum class TransformTool : std::uint8_t { select, transform, move, rotate, scale };
-enum class PivotMode : std::uint8_t { median, cursor };
-// Blender header selection modes: how a click or box combines with the current selection.
-enum class SelectMode : std::uint8_t { set, extend, subtract, invert, intersect };
 enum class SelectAll : std::uint8_t { select, deselect, toggle, invert };
 enum class TransformChannel : std::uint8_t { location, rotation, scale };
-// Blender transform orientation for move/rotate handles and X/Y/Z constraints. Scale always uses Local.
-enum class Orientation : std::uint8_t { global, local };
 
 // XYZ Euler angles in degrees, applied X then Y then Z (Houdini "Rx Ry Rz").
 math::Vector3 euler_degrees(math::Quaternion) noexcept;
@@ -49,15 +42,6 @@ struct ViewportView {
 // Every change goes through Session transactions; one gesture is one undo.
 class ViewportTool final {
 public:
-    struct Settings {
-        TransformTool tool{TransformTool::transform}; PivotMode pivot{PivotMode::median};
-        bool grid_snap{}, cursor_surface{true}; float grid_spacing{.2f};
-        SelectMode select_mode{SelectMode::set};
-        Orientation orientation{Orientation::global};
-        // Blender snapping "Affect": which operations the snap toggle drives, and their increments.
-        bool snap_move{true}, snap_rotate{true}, snap_scale{false};
-        float rotation_step{15}, scale_step{.1f}; // Degrees; scale factor increment.
-    };
     math::Vector3 cursor{}; // Blender-style 3D cursor: pivot option and creation point.
     // The cursor is a full 3D frame like Blender's: surface placement aligns its
     // local Z with the hit normal; the drawn ticks are its X/Y axes in 3D.
@@ -68,11 +52,11 @@ public:
     std::wstring_view hint() const noexcept { return hint_; }
     // Live modal readout (Blender's header line); empty outside a modal gesture.
     std::wstring_view readout() const noexcept { return gesture_ && gesture_->modal?std::wstring_view(hint_):std::wstring_view{}; }
-    TransformTool displayed_tool(Settings) const noexcept;
-    Result<void> snap_selection(Session&,Settings,bool to_cursor);
+    TransformTool displayed_tool(ToolSettings) const noexcept;
+    Result<void> snap_selection(Session&,ToolSettings,bool to_cursor);
     Result<void> cursor_to_selection(const Session&);
-    Result<void> place_duplicates(Session&, const ViewportView&, Settings, math::Vector2 pointer);
-    void cursor_to_grid(Settings) noexcept;
+    Result<void> place_duplicates(Session&, const ViewportView&, ToolSettings, math::Vector2 pointer);
+    void cursor_to_grid(ToolSettings) noexcept;
     Result<void> select_all(Session&,SelectAll);
     Result<void> clear(Session& session,TransformChannel channel) {
         return clear_channel(session,channel==TransformChannel::location?Operation::move:channel==TransformChannel::rotation?Operation::rotate:Operation::scale);
@@ -81,9 +65,9 @@ public:
     ui::Cursor pointer_cursor() const noexcept;
     // Pointer events inside the viewport, or any pointer event while active().
     // Returns true when consumed; capture() reports whether the host should hold mouse capture.
-    Result<bool> pointer(Session&, const ViewportView&, const ui::Event&, Settings);
+    Result<bool> pointer(Session&, const ViewportView&, const ui::Event&, ToolSettings);
     // Viewport hotkeys (host checks pointer hover and text focus). vk is the native virtual key.
-    Result<bool> key(Session&, const ViewportView&, const ui::Event&, std::uint32_t vk, Settings,
+    Result<bool> key(Session&, const ViewportView&, const ui::Event&, std::uint32_t vk, ToolSettings,
                      math::Vector2 pointer);
     bool capture() const noexcept { return active(); }
     // Ends any gesture: restores previews through Session::cancel_edit.
@@ -91,7 +75,7 @@ public:
     // Drop tool state after Session already ended the transaction (undo, selection change...).
     void forget(const Session&) noexcept;
     // Geometry membership comes from the same frame snapshot as scene rendering.
-    void overlay(const Session&, const ViewportView&, Settings, std::span<const ObjectId> mesh_entities,
+    void overlay(const Session&, const ViewportView&, ToolSettings, std::span<const ObjectId> mesh_entities,
         std::vector<renderer::OverlayShape>&) const;
     // Topmost Entity under a physical-pixel point.
     std::optional<ObjectId> pick(const Session&, const ViewportView&, float x, float y) const;
@@ -114,7 +98,7 @@ private:
         Operation operation{};
         Handle handle{};
         bool modal{}, valid{true};
-        Settings settings;
+        ToolSettings settings;
         int axis{-1};       // Constraint axis, or -1.
         bool plane{};       // Constraint is the plane normal to axis.
         std::uint64_t session{};
@@ -142,14 +126,14 @@ private:
     static std::optional<Targets> targets(const Session&, PivotMode, math::Vector3 cursor);
     struct Hit { ObjectId entity; math::Vector3 position, normal{0,1,0}; };
     static std::optional<Hit> trace(const Session&,const ViewportView&,float x,float y,bool locators);
-    Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,Settings,bool control);
+    Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,ToolSettings,bool control);
     Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2, Orientation) const;
-    Result<void> begin(Session&, const ViewportView&, Settings, Operation, Handle, bool modal, math::Vector2, bool amend_creation = false);
+    Result<void> begin(Session&, const ViewportView&, ToolSettings, Operation, Handle, bool modal, math::Vector2, bool amend_creation = false);
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine=false);
     Result<void> finish(Session&);
     Result<void> clear_channel(Session&, Operation);
-    Result<void> select_click(Session&, const ViewportView&, math::Vector2, Settings, bool shift, bool control);
-    Result<void> select_box(Session&, const ViewportView&, Settings, const Marquee&);
+    Result<void> select_click(Session&, const ViewportView&, math::Vector2, ToolSettings, bool shift, bool control);
+    Result<void> select_box(Session&, const ViewportView&, ToolSettings, const Marquee&);
     static Result<void> combine(Session&, std::span<const ObjectId> hits, ObjectId active, SelectMode);
 };
 }

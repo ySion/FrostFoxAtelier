@@ -306,7 +306,7 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,cons
     }
     return found;
 }
-Result<void> ViewportTool::place_cursor(const Session& session,const ViewportView& view,V2 p,Settings settings,bool control) {
+Result<void> ViewportTool::place_cursor(const Session& session,const ViewportView& view,V2 p,ToolSettings settings,bool control) {
     std::optional<V3> position;V3 normal=view.construction_normal;
     if(settings.cursor_surface) if(const auto hit=trace(session,view,p.x,p.y,false)) {position=hit->position;normal=hit->normal;}
     if(!position) position=on_plane(view,p,{},view.construction_normal);
@@ -325,18 +325,18 @@ Result<void> ViewportTool::place_cursor(const Session& session,const ViewportVie
     cursor_rotation=frame_rotation(*x,y,z);
     hint_=L"3D Cursor placed · Right click selects · W opens the viewport menu";return {};
 }
-TransformTool ViewportTool::displayed_tool(Settings settings) const noexcept {
+TransformTool ViewportTool::displayed_tool(ToolSettings settings) const noexcept {
     if(gesture_) return gesture_->operation==Operation::move?TransformTool::move:gesture_->operation==Operation::rotate?TransformTool::rotate:TransformTool::scale;
     return marquee_?TransformTool::select:settings.tool;
 }
-void ViewportTool::cursor_to_grid(Settings settings) noexcept {
+void ViewportTool::cursor_to_grid(ToolSettings settings) noexcept {
     for(int axis=0;axis<3;++axis) cursor[axis]=std::round(cursor[axis]/settings.grid_spacing)*settings.grid_spacing;
 }
 Result<void> ViewportTool::cursor_to_selection(const Session& session) {
     const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     cursor=selected->pivot;return {};
 }
-Result<void> ViewportTool::snap_selection(Session& session,Settings settings,bool to_cursor) {
+Result<void> ViewportTool::snap_selection(Session& session,ToolSettings settings,bool to_cursor) {
     const auto selected=targets(session,PivotMode::median,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     auto values=selected->transforms;
     for(auto& value:values) {
@@ -386,7 +386,7 @@ Result<void> ViewportTool::combine(Session& session,std::span<const ObjectId> hi
     if(!contains(active)) active=selected.empty()?ObjectId{}:selected.back();
     return session.select_entities(selected,active);
 }
-Result<void> ViewportTool::select_click(Session& session,const ViewportView& view,V2 p,Settings settings,bool shift,bool control) {
+Result<void> ViewportTool::select_click(Session& session,const ViewportView& view,V2 p,ToolSettings settings,bool shift,bool control) {
     const auto object=pick(session,view,p.x,p.y);
     const auto mode=control?SelectMode::subtract:shift?SelectMode::invert:settings.select_mode;
     // A miss in Set mode clears (Blender's deselect-on-nothing); other modes keep the selection.
@@ -394,7 +394,7 @@ Result<void> ViewportTool::select_click(Session& session,const ViewportView& vie
     std::vector<ObjectId> hits;if(object) hits.push_back(*object);
     return combine(session,hits,object.value_or(ObjectId{}),mode);
 }
-Result<void> ViewportTool::select_box(Session& session,const ViewportView& view,Settings settings,const Marquee& marquee) {
+Result<void> ViewportTool::select_box(Session& session,const ViewportView& view,ToolSettings settings,const Marquee& marquee) {
     const auto a=marquee.start,b=marquee.current;
     const auto hits=pick_box(session,view,{std::min(a.x,b.x),std::min(a.y,b.y),std::abs(a.x-b.x),std::abs(a.y-b.y)});
     const auto mode=marquee.control?SelectMode::subtract:marquee.shift?SelectMode::extend:settings.select_mode;
@@ -413,11 +413,11 @@ void ViewportTool::arm_box_select(V2 pointer,bool extend) {
     if(active()) return;
     marquee_=Marquee{pointer,pointer,false,extend,false,true};hint_=L"Box select · Drag to select · Esc cancel";
 }
-Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView& view,Settings settings,V2 pointer) {
+Result<void> ViewportTool::place_duplicates(Session& session,const ViewportView& view,ToolSettings settings,V2 pointer) {
     if (!targets(session,settings.pivot,cursor)) return {}; // Nonspatial Entities still duplicate normally.
     return begin(session,view,settings,Operation::move,Handle::none,true,pointer,true);
 }
-Result<void> ViewportTool::begin(Session& session,const ViewportView&,Settings settings,Operation operation,Handle handle,bool modal,V2 p,bool amend_creation) {
+Result<void> ViewportTool::begin(Session& session,const ViewportView&,ToolSettings settings,Operation operation,Handle handle,bool modal,V2 p,bool amend_creation) {
     if(active()) return invalid("Finish the active viewport gesture before starting another.");
     auto selected=targets(session,settings.pivot,cursor);if(!selected) return invalid("Select an Entity with a Transform.");
     const auto token=next_session_++;
@@ -562,7 +562,7 @@ ui::Cursor ViewportTool::pointer_cursor() const noexcept {
     if(hover_==Handle::none) return ui::Cursor::arrow;
     return hover_>=Handle::scale_x?ui::Cursor::scale:hover_>=Handle::rotate_x?ui::Cursor::rotate:ui::Cursor::translate;
 }
-Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,const ui::Event& event,Settings settings) {
+Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,const ui::Event& event,ToolSettings settings) {
     const V2 p{event.x,event.y};
     if(event.kind==ui::EventKind::pointer_down && event.button==ui::PointerButton::secondary && (gesture_ || (marquee_ && marquee_->await_press))) {
         auto result=cancel(session);if(!result) return std::unexpected(result.error());return true;
@@ -622,7 +622,7 @@ Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,con
     }
     return false;
 }
-Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const ui::Event& event,std::uint32_t vk,Settings settings,V2 pointer) {
+Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const ui::Event& event,std::uint32_t vk,ToolSettings settings,V2 pointer) {
     if(active() && event.kind==ui::EventKind::key_down && event.key==ui::Key::escape) {
         const auto result=cancel(session);if(!result) return std::unexpected(result.error());return true;
     }
@@ -672,7 +672,7 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
     }
     return false;
 }
-void ViewportTool::overlay(const Session& session,const ViewportView& view,Settings settings,std::span<const ObjectId> mesh_entities,std::vector<Shape>& out) const {
+void ViewportTool::overlay(const Session& session,const ViewportView& view,ToolSettings settings,std::span<const ObjectId> mesh_entities,std::vector<Shape>& out) const {
     const auto stroke=[&](V2 a,V2 b,float width,ui::Color color){out.push_back({Shape::Kind::segment,{a.x,a.y,b.x,b.y},width*view.dpi_scale,color});};
     const std::unordered_set<ObjectId> rendered(mesh_entities.begin(),mesh_entities.end());
     const auto members=session.world().members();

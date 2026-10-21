@@ -1,5 +1,6 @@
 #include "editor/session.hpp"
 #include "editor/fields.hpp"
+#include "editor/operator_parameters.hpp"
 #include "editor/view_options.hpp"
 #include "physics/physics.hpp"
 #include <algorithm>
@@ -19,7 +20,7 @@ template<class T> T take(Result<T> result) {
     return std::move(*result);
 }
 }
-Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))),
+Session::Session(Prepare prepare, SessionRole role) : types_(take(world::register_types(runtime_))),
     presentation_types_(take(presentation::register_types(runtime_))),
     physics_types_(take(physics::register_types(runtime_))), world_(runtime_, types_),
     presentation_(take(presentation::Scene::create(world_, presentation_types_))),
@@ -27,6 +28,8 @@ Session::Session(Prepare prepare) : types_(take(world::register_types(runtime_))
                 Parameter{"Z", "m", types_.position_fields[2]}} {
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);
     history_.reserve(history_limit + 1);
+    if (role == SessionRole::editor)
+        if (auto registered = register_editor_types(runtime_); !registered) throw std::runtime_error(registered.error().message);
     if (prepare) {
         auto ready = prepare(world_);
         if (!ready) throw std::runtime_error(ready.error().message);

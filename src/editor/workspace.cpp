@@ -48,20 +48,51 @@ ui::ControlKey region_tab(RegionKind region) noexcept {
     const auto at=std::ranges::find(region_tabs,region,&std::pair<RegionKind,ui::ControlKey>::first);
     return at==region_tabs.end()?ui::ControlKey{}:at->second;
 }
-std::string_view operator_for(Command command) noexcept {
+std::optional<OperatorCall> operator_for(Command command) {
+    using json_format::Json;
+    const auto call=[](std::string id,Json args=Json::object()) {return std::optional<OperatorCall>{OperatorCall{std::move(id),std::move(args),{}}};};
+    const auto index=[command](Command first) {return static_cast<std::size_t>(command)-static_cast<std::size_t>(first);};
+    constexpr std::array tools{"select","transform","move","rotate","scale"};
+    constexpr std::array select_modes{"set","extend","subtract","invert","intersect"};
+    constexpr std::array views{"perspective","top","front","right","bottom","back","left"};
     switch(command) {
-    case Command::frame_all:return "view.frame_all";
-    case Command::focus:return "view.frame_selected";
-    case Command::reset_camera:return "view.reset";
-    case Command::reset_layout:return "layout.reset";
-    case Command::close_tab:return "layout.close_tab";
-    case Command::maximize_pane:return "layout.maximize";
-    case Command::undo:return "edit.undo";
-    case Command::redo:return "edit.redo";
-    case Command::add_transform:return "scene.transform_add";
-    case Command::remove_transform:return "scene.transform_remove";
-    case Command::discard_saved_data:return "scene.discard_saved_data";
-    default:return {};
+    case Command::frame_all:return call("view.frame_all");
+    case Command::focus:return call("view.frame_selected");
+    case Command::reset_camera:return call("view.reset");
+    case Command::reset_layout:return call("layout.reset");
+    case Command::close_tab:return call("layout.close_tab");
+    case Command::maximize_pane:return call("layout.maximize");
+    case Command::undo:return call("edit.undo");
+    case Command::redo:return call("edit.redo");
+    case Command::add_transform:return call("scene.transform_add");
+    case Command::remove_transform:return call("scene.transform_remove");
+    case Command::discard_saved_data:return call("scene.discard_saved_data");
+    case Command::create_entity:return call("scene.add",{{"kind","entity"}});
+    case Command::create_static_mesh:return call("scene.add",{{"kind","mesh"}});
+    case Command::create_point_light:return call("scene.add",{{"kind","point"}});
+    case Command::create_rectangle_light:return call("scene.add",{{"kind","rectangle"}});
+    case Command::create_directional_light:return call("scene.add",{{"kind","directional"}});
+    case Command::tool_select:case Command::tool_transform:case Command::tool_move:case Command::tool_rotate:case Command::tool_scale:
+        return call("tool.settings",{{"tool",tools[index(Command::tool_select)]}});
+    case Command::pivot_median:return call("tool.settings",{{"pivot","median"}});
+    case Command::pivot_cursor:return call("tool.settings",{{"pivot","cursor"}});
+    case Command::snap_grid_01:return call("tool.settings",{{"grid_spacing",.1}});
+    case Command::snap_grid_02:return call("tool.settings",{{"grid_spacing",.2}});
+    case Command::snap_grid_05:return call("tool.settings",{{"grid_spacing",.5}});
+    case Command::snap_grid_1:return call("tool.settings",{{"grid_spacing",1.}});
+    case Command::snap_rotation_1:return call("tool.settings",{{"rotation_step",1.}});
+    case Command::snap_rotation_5:return call("tool.settings",{{"rotation_step",5.}});
+    case Command::snap_rotation_15:return call("tool.settings",{{"rotation_step",15.}});
+    case Command::snap_rotation_45:return call("tool.settings",{{"rotation_step",45.}});
+    case Command::orientation_global:return call("tool.settings",{{"orientation","global"}});
+    case Command::orientation_local:return call("tool.settings",{{"orientation","local"}});
+    case Command::select_mode_set:case Command::select_mode_extend:case Command::select_mode_subtract:
+    case Command::select_mode_invert:case Command::select_mode_intersect:
+        return call("tool.settings",{{"select_mode",select_modes[index(Command::select_mode_set)]}});
+    case Command::view_perspective:case Command::view_top:case Command::view_front:case Command::view_right:
+    case Command::view_bottom:case Command::view_back:case Command::view_left:
+        return call("view.axis",{{"view",views[static_cast<std::size_t>(*camera_view_command(command))]}});
+    default:return std::nullopt;
     }
 }
 Context Workspace::operator_context(Session& session,Project* project,bool interactive) const {
@@ -70,7 +101,7 @@ Context Workspace::operator_context(Session& session,Project* project,bool inter
     return {session,project,
         {session.selection().entity,session.selection().object,{session.selected_entities().begin(),session.selected_entities().end()}},
         region_of(dock.focused_tab()),inspecting_asset?material_inspection:std::string{},
-        source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,interactive};
+        source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,interactive,viewport_settings};
 }
 void Workspace::log(std::wstring text) {
     auto messages=std::make_shared<ui::TableData>(*output);
@@ -283,8 +314,8 @@ std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree,ObjectId 
     return ui::tree_window(tree.rows,viewport,rows);
 }
 bool Workspace::command_enabled(Command command,Session& session,Project* project) const {
-    if(const auto id=operator_for(command);!id.empty()) {
-        const auto* info=operators.find(id);
+    if(const auto call=operator_for(command)) {
+        const auto* info=operators.find(call->id);
         return info && info->poll(operator_context(session,project,true)).has_value();
     }
     switch (command) {
@@ -319,11 +350,6 @@ bool Workspace::command_enabled(Command command,Session& session,Project* projec
     case Command::import_mesh:case Command::import_texture:case Command::create_material: case Command::refresh_assets: return project_open;
     case Command::save_document: return source_history()?source_editor.active()!=nullptr:project_open && scene_available;
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
-    case Command::create_entity: case Command::create_static_mesh:
-    case Command::create_point_light: case Command::create_rectangle_light: case Command::create_directional_light: {
-        const auto members=session.world().members();
-        return scene_available && members && members->size()<Session::maximum_entities;
-    }
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
     case Command::erase_selected: {
         if (session.selection().entity==ObjectId{}) return false;
