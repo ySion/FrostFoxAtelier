@@ -102,6 +102,15 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     frame.view.lit.shadows=true;
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));const auto blocked=pixel(capture,x*3,y)[1];
     check(blocked<unshadowed*.3f,"ray-query shadow commits opaque texels of a cutout surface");
+    {
+        // A new mesh for the same object at the same snapshot index must be traced, not the previous one.
+        const auto cutout=meshes[0].geometry;
+        meshes[0].geometry=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>(vertices.begin()+6,vertices.end()),
+            std::vector<std::uint8_t>{},std::vector<material::Slot>{cutout->materials()[1]},std::vector<geometry::MeshPart>{{0,6,0}});
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
+        check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"a replaced mesh at an unchanged index and identity traces its new triangles");
+        meshes[0].geometry=cutout;
+    }
     sunlight[0].direction={0,0,1};
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"ray-query shadow traverses transparent texels visible to the camera");
@@ -218,7 +227,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     room.meshes[3].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{cool});
     ui::Frame drawing{.id=12000,.extent=take(renderer.target()).extent,.draws={}};
     render::Frame frame{drawing,camera(drawing.extent),{0,0,float(drawing.extent.width),float(drawing.extent.height)},room.meshes};
-    frame.scene_identity=12000;frame.scene_revision=1;frame.lights=lights;frame.view.shading=render::Shading::scene_lit;
+    frame.scene_identity=12000;frame.lights=lights;frame.view.shading=render::Shading::scene_lit;
     auto& options=frame.view.lit;options.antialiasing=render::Antialiasing::none;
     options.gtao=options.sssr=options.ssil=options.bloom=false;
     options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};options.probe_volumes[0].counts={11,7,10};options.probe_update_budget=96;options.probe_rays=64;
@@ -246,11 +255,11 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     room.meshes[2].geometry=std::make_shared<const geometry::Mesh>(std::move(vertices),std::vector<std::uint8_t>{},
         std::vector<material::Slot>{{"wall",warm},{"unrelated-cutout",invisible}},std::vector<geometry::MeshPart>{{0,36,0},{36,3,1}});
     room.meshes[2].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{warm,invisible});
-    ++frame.scene_identity;++frame.scene_revision;const auto mixed=capture("material-ddgi-mixed-components.png");
+    ++frame.scene_identity;const auto mixed=capture("material-ddgi-mixed-components.png");
     const auto lm=mean_rgb(mixed,left);
     check(std::abs(lm[0]-l1[0])<4&&std::abs(lm[2]-l1[2])<4,"disconnected cutout does not disable an opaque shell's DDGI closure");
     room.meshes[2].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{cool,invisible});
-    ++frame.scene_revision;const auto updated=capture("material-ddgi-texture-update.png");
+    const auto updated=capture("material-ddgi-texture-update.png");
     options.ddgi=false;const auto updated_direct=capture("material-ddgi-update-off.png");
     const auto lu=mean_rgb(updated,left),ld=mean_rgb(updated_direct,left);
     check(lu[2]-ld[2]>lu[0]-ld[0]+1,"texture-only edit updates DDGI without replacing geometry or object identity");
@@ -266,7 +275,6 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     const auto publish_emitter=[&] {
         room.meshes[7].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(
             std::vector<material::SurfaceRef>{std::make_shared<const material::Surface>(emitter)});
-        ++frame.scene_revision;
     };
     emitter.texture(material::Input::emissive).image=warm->description().texture(material::Input::base_color).image;
     publish_emitter();const auto emitted_warm=mean_rgb(capture("material-offscreen-emission-warm.png"),left);
@@ -274,7 +282,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     publish_emitter();const auto emitted_cool=mean_rgb(capture("material-offscreen-emission-cool.png"),left);
     check(emitted_warm[0]>emitted_warm[2]+20&&emitted_cool[2]>emitted_cool[0]+20,
           "offscreen textured emission and content-only replacement illuminate real receivers");
-    room.meshes[7].world=box(0,12,0,1,-1,1);++frame.scene_revision;
+    room.meshes[7].world=box(0,12,0,1,-1,1);
     const auto back=mean_rgb(capture("material-single-sided-emission-back.png"),left);
     check(back[0]<2&&back[1]<2&&back[2]<2,"single-sided emission respects authored orientation under mirror transforms");
     emitter.parameters.emission_two_sided=true;publish_emitter();

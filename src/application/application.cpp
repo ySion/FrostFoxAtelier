@@ -1368,7 +1368,7 @@ bool Application::step(renderer::Capture* capture) try {
     const auto lighting_focus=camera_.state().target;
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
-        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,scene_.revision,camera_cut_ || projection_cut,
+        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,camera_cut_ || projection_cut,
         rendering::sky_radiance(effective_view.lit),{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
     const auto lighting_start=Clock::now();
     const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&

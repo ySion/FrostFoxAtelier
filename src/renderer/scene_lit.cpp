@@ -179,10 +179,16 @@ struct SceneLit::State {
     };
     std::unordered_map<const geometry::Mesh*,Geometry> geometries;
     std::unordered_map<ObjectKey,Object,ObjectKeyHash> objects;
+    // Per snapshot index, the object and mesh entries the last complete pass
+    // resolved. Only a complete pass retires entries, after rewriting every
+    // slot, so slots are trusted only while resolved_complete holds.
+    struct Slot { ObjectKey key; Object* object{}; Geometry* geometry{}; };
+    std::vector<Slot> resolved;
+    bool resolved_complete{};
+    std::uint64_t material_revision{}; // MaterialFrame revision the complete pass compared surfaces against.
     std::vector<GpuInstance> instances;
     std::vector<GpuRayTriangle> packed_triangles;
     std::vector<std::uint32_t> packed_closed_slots;
-    std::vector<ObjectKey> object_keys,previous_object_keys;
     std::array<float,16> view_projection{},inverse_view_projection{},previous_view_projection{},previous_inverse_view_projection{};
     std::array<float,16> camera_view{};
     std::array<float,4> viewport{},environment{},controls{},temporal{},jitter{},probe_history{},probe_controls{};
@@ -194,7 +200,7 @@ struct SceneLit::State {
     std::array<float,4> raster_transform{1,1,0,0};
     std::uint32_t effect_flags{},di_history_valid{},direct_stochastic{},direct_radiance_age{};
     float direct_response{};
-    std::uint64_t scene_identity{},scene_revision{},reset_events{},sequence{};
+    std::uint64_t scene_identity{},reset_events{},sequence{};
     std::uint32_t parity{},probe_parity{},probe_response_epoch{},probe_geometry_pending{},probe_sequence{};
     std::uint32_t probe_history_mode{};
     float previous_probe_bounce{.85f},previous_indirect_gain{1};
@@ -753,26 +759,48 @@ struct SceneLit::State {
     }
 
     bool acceleration(const Frame& frame) {
+        const auto count=frame.meshes.size();
         shadow_casters.clear();shadow_changes.clear();
-        if(shadows_cached)shadow_casters.reserve(frame.meshes.size());
+        if(shadows_cached)shadow_casters.reserve(count);
         material_changed=false;coverage_changed=false;
         emitter_changed=false;
         bool geometry_changed=false,topology_changed=false,transform_changed=false;
-        bool instances_changed=instances.size()!=frame.meshes.size();
+        bool instances_changed=instances.size()!=count;
         if(!tlas){tlas=gfxCreateTopLevelAccelerationStructure(gfx);allocation(bool(tlas));}
-        for(auto& [key,g]:geometries){(void)key;g.used=false;g.next_opaque=true;}
-        for(auto& [key,o]:objects){(void)key;o.used=false;}
-        for(std::size_t i=0;i<frame.meshes.size();++i) {
-            const auto& mesh=frame.meshes[i];bool opaque=true;
-            for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
-                opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
-            auto [at,added]=geometries.try_emplace(mesh.geometry.get());auto& g=at->second;
-            if(added)g.source=mesh.geometry;
-            g.used=true;g.next_opaque &= opaque;
+        const auto key_of=[&](std::size_t index){const auto stable=frame.meshes[index].stable_key;return ObjectKey{stable?stable:index,stable==0};};
+        // A slot is reused only for the same key and mesh at the same index. Its
+        // surfaces were compared against material_revision, and the MaterialFrame
+        // keeps a revision only while every description stays the same.
+        const bool reuse=std::exchange(resolved_complete,false);
+        const bool materials_same=reuse&&material_frame->revision==material_revision;
+        bool remapped=!reuse||resolved.size()!=count;
+        if(reuse)resolved.resize(count);else resolved.assign(count,{});
+        // A steady frame has the same objects, meshes and materials at every index
+        // as the last complete pass: used flags, coverage and offsets stay valid
+        // and nothing retires.
+        bool steady=materials_same&&!remapped;
+        for(std::size_t i=0;steady&&i<count;++i)
+            steady=resolved[i].key==key_of(i)&&resolved[i].geometry->source==frame.meshes[i].geometry;
+        if(!steady) {
+            for(auto& [key,g]:geometries){(void)key;g.used=false;g.next_opaque=true;}
+            for(auto& [key,o]:objects){(void)key;o.used=false;}
+            for(std::size_t i=0;i<count;++i) {
+                const auto& mesh=frame.meshes[i];auto& slot=resolved[i];const auto key=key_of(i);
+                if(!slot.object||slot.key!=key||slot.geometry->source!=mesh.geometry) {
+                    remapped|=slot.key!=key;
+                    auto [at,added]=geometries.try_emplace(mesh.geometry.get());
+                    if(added)at->second.source=mesh.geometry;
+                    slot={key,nullptr,&at->second};
+                }
+                bool opaque=true;
+                for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
+                    opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
+                slot.geometry->used=true;slot.geometry->next_opaque &= opaque;
+            }
         }
         // Aggregate coverage in the owning geometry cache. Repeated frames and
         // instances share it without allocating a second per-frame hash table.
-        for(auto& [key,g]:geometries) {
+        if(!steady)for(auto& [key,g]:geometries) {
             (void)key;if(!g.used)continue;
             if(!g.blas) {
                 g.volumes=triangle_volumes(*g.source);const auto vertices=g.source->vertices();
@@ -797,11 +825,23 @@ struct SceneLit::State {
                 require(gfxBuildBottomLevelAccelerationStructures(gfx,&g.blas,&flags,1),"Rebuild changed material coverage BLAS");topology_changed=true;
             }
         }
-        object_keys.clear();object_keys.reserve(frame.meshes.size());instances.resize(frame.meshes.size());
-        for(std::size_t index=0;index<frame.meshes.size();index++) {
-            const auto& mesh=frame.meshes[index];const ObjectKey key{mesh.stable_key?mesh.stable_key:index,mesh.stable_key==0};
-            object_keys.push_back(key);auto [found,inserted]=objects.try_emplace(key);auto& object=found->second;object.used=true;
+        instances.resize(count);
+        for(std::size_t index=0;index<count;index++) {
+            const auto& mesh=frame.meshes[index];auto& slot=resolved[index];
+            // Only a reused slot keeps its object; the coverage pass cleared every other one.
+            const bool same_slot=slot.object!=nullptr;
+            bool inserted=false;
+            if(!same_slot){auto [found,added]=objects.try_emplace(slot.key);slot.object=&found->second;inserted=added;}
+            auto& object=*slot.object;const auto& g=*slot.geometry;object.used=true;
             const bool correspondence=!inserted&&mesh.stable_key!=0&&object.geometry==mesh.geometry.get()&&history_valid;
+            const bool surfaces_same=materials_same&&same_slot;
+            // Unchanged object at an unchanged index: its instance, RT state and caster bounds stand.
+            if(surfaces_same&&object.world==mesh.world&&(!shadows_cached||object.shadow_tracked)&&
+                instances[index].previous_world==mesh.world&&instances[index].geometry[2]==(correspondence?1u:0u)) {
+                if(shadows_cached)shadow_casters.push_back({static_cast<std::uint32_t>(index),object.shadow_bounds,object.shadow_dynamic});
+                else object.shadow_tracked=false;
+                continue;
+            }
             GpuInstance instance{};instance.world=mesh.world;instance.previous_world=correspondence?object.world:mesh.world;
             if(inserted||object.world!=mesh.world) {
                 const auto inverse=math::try_inverse(matrix(mesh.world));allocation(bool(inverse));
@@ -814,7 +854,7 @@ struct SceneLit::State {
             }
             instance.normal_x=object.normal_x;instance.normal_y=object.normal_y;instance.normal_z=object.normal_z;
             const auto descriptions=std::span(material_frame->descriptions).subspan(material_frame->offsets[index],mesh.geometry->materials().size());
-            const bool surface_changed=!inserted&&!std::ranges::equal(object.surfaces,descriptions);
+            const bool surface_changed=!inserted&&!surfaces_same&&!std::ranges::equal(object.surfaces,descriptions);
             material_changed|=surface_changed;
             bool object_coverage_changed=false;
             if(surface_changed) {
@@ -851,9 +891,12 @@ struct SceneLit::State {
                 }
                 shadow_casters.push_back({static_cast<std::uint32_t>(index),object.shadow_bounds,object.shadow_dynamic});
             } else object.shadow_tracked=false;
-            bool emitting=false;
-            for(const auto& surface:descriptions) {
-                const auto& e=surface.parameters.emissive;emitting|=e[0]>0||e[1]>0||e[2]>0;
+            bool emitting=object.emitting;
+            if(!surfaces_same) {
+                emitting=false;
+                for(const auto& surface:descriptions) {
+                    const auto& e=surface.parameters.emissive;emitting|=e[0]>0||e[1]>0||e[2]>0;
+                }
             }
             if(emitting||object.emitting)
                 emitter_changed|=inserted||object.geometry!=mesh.geometry.get()||object.world!=mesh.world||surface_changed;
@@ -861,12 +904,12 @@ struct SceneLit::State {
             object.emitting=emitting;
             // Keep geometric motion, but edited material/radiance has no valid
             // previous shading observation, including when seen through SSR.
-            instance.geometry={geometries.at(mesh.geometry.get()).offset,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
+            instance.geometry={g.offset,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
             instances_changed|=instances[index]!=instance;instances[index]=instance;
             if(inserted){object.instance=gfxCreateTopLevelAccelerationStructureInstance(gfx);allocation(bool(object.instance));
                 require(gfxTopLevelAccelerationStructureAddInstance(gfx,tlas,object.instance),"Attach RT scene instance");topology_changed=true;}
             if(inserted||object.geometry!=mesh.geometry.get()) {
-                require(gfxTopLevelAccelerationStructureInstanceSetBottomLevelAccelerationStructure(gfx,object.instance,geometries.at(mesh.geometry.get()).blas),"Set RT instance mesh");topology_changed=true;
+                require(gfxTopLevelAccelerationStructureInstanceSetBottomLevelAccelerationStructure(gfx,object.instance,g.blas),"Set RT instance mesh");topology_changed=true;
             }
             if(inserted||object.world!=mesh.world) {
                 std::array<float,12> transform{};for(std::size_t r=0;r<3;r++)for(std::size_t c=0;c<4;c++)transform[r*4+c]=mesh.world[c*4+r];
@@ -875,7 +918,7 @@ struct SceneLit::State {
             require(gfxTopLevelAccelerationStructureInstanceSetInstanceID(gfx,object.instance,static_cast<std::uint32_t>(index)),"Remap current RT snapshot");
             object.world=mesh.world;object.geometry=mesh.geometry.get();
         }
-        for(auto it=objects.begin();it!=objects.end();) {
+        if(!steady)for(auto it=objects.begin();it!=objects.end();) {
             if(it->second.used){++it;continue;}
             if(shadows_cached&&it->second.shadow_tracked)shadow_changes.push_back({it->second.shadow_bounds,{},true,false,
                 !it->second.shadow_dynamic,it->second.shadow_dynamic});
@@ -883,7 +926,7 @@ struct SceneLit::State {
             require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,it->second.instance),"Detach removed RT instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,it->second.instance),"Retire removed RT instance");it=objects.erase(it);topology_changed=true;
         }
-        for(auto it=geometries.begin();it!=geometries.end();) {
+        if(!steady)for(auto it=geometries.begin();it!=geometries.end();) {
             if(it->second.used){++it;continue;}auto& g=it->second;
             require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire unused static BLAS");
             require(gfxDestroyGeometry(gfx,g.geometry),"Retire unused RT geometry");retire(g.positions);it=geometries.erase(it);geometry_changed=true;
@@ -912,16 +955,15 @@ struct SceneLit::State {
             rt_closed_slots=gfxCreateBuffer<std::uint32_t>(gfx,std::max(1u,static_cast<std::uint32_t>(packed_closed_slots.size())),packed_closed_slots.empty()?nullptr:packed_closed_slots.data());allocation(bool(rt_closed_slots));
             retire(rt_triangles);rt_triangles=gfxCreateBuffer<GpuRayTriangle>(gfx,static_cast<std::uint32_t>(packed_triangles.size()),packed_triangles.data());allocation(bool(rt_triangles));
         }
-        for(std::size_t i=0;i<instances.size();i++) {
-            const auto offset=geometries.at(frame.meshes[i].geometry.get()).offset;
+        if(!steady)for(std::size_t i=0;i<count;i++) {
+            const auto offset=resolved[i].geometry->offset;
             instances_changed|=instances[i].geometry[0]!=offset;instances[i].geometry[0]=offset;
         }
         // Membership/order changes do not change the world-space probe domain.
         // New/replaced objects already have no surface correspondence above;
         // surviving stable objects retain it even if their GPU indices change.
         if(!tlas_built||topology_changed) {require(gfxTopLevelAccelerationStructureBuild(gfx,tlas),"Build scene TLAS");tlas_built=true;}
-        else if(transform_changed||object_keys!=previous_object_keys)require(gfxTopLevelAccelerationStructureUpdate(gfx,tlas),"Update scene TLAS");
-        previous_object_keys=object_keys;
+        else if(transform_changed||remapped)require(gfxTopLevelAccelerationStructureUpdate(gfx,tlas),"Update scene TLAS");
         if(instances_changed||!gpu_instances) {
             retire(gpu_instances);gpu_instances=gfxCreateBuffer<GpuInstance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());allocation(bool(gpu_instances));
         }
@@ -939,6 +981,7 @@ struct SceneLit::State {
                 probe_scene_min[axis]=static_cast<float>(low[axis]);probe_scene_max[axis]=static_cast<float>(high[axis]);
             }
         }
+        material_revision=material_frame->revision;resolved_complete=true;
         end(1);
         return geometry_changed||topology_changed||transform_changed;
     }
@@ -1010,7 +1053,7 @@ struct SceneLit::State {
         previous_antialiasing=settings.antialiasing;
         previous_effect_flags=flags;previous_direct_candidates=settings.direct_candidates;previous_direct_reference=settings.direct_reference;
         previous_direct_clustered=clustered;
-        scene_identity=frame.scene_identity;scene_revision=frame.scene_revision;enabled=true;
+        scene_identity=frame.scene_identity;enabled=true;
         probes(settings,frame.lighting_focus,stats);
         const bool transform_changed=acceleration(frame);lighting(frame);
         direct_stochastic=light_frame.local_count!=0 || std::ranges::any_of(light_frame.sources,[](const GpuLightSource& source) {
@@ -1420,6 +1463,7 @@ struct SceneLit::State {
         stats.scene_lit_resource_bytes=resource_bytes();
     }
     void retire_scene() {
+        resolved.clear();resolved_complete=false;
         shadow_cache.invalidate();shadows_cached=false;shadow_casters.clear();shadow_changes.clear();
         retire(shadow_static);retire(shadow_dynamic);
         for(auto& batch:shadow_batches){retire(batch.faces);retire(batch.lights);retire(batch.instances);
@@ -1432,7 +1476,6 @@ struct SceneLit::State {
         for(auto* b:{&gpu_light_cells,&gpu_spatial_proposals,&gpu_spatial_source_slots,&gpu_instances,&gpu_sources,&gpu_previous_sources,&gpu_proposals,&gpu_current_to_previous,&gpu_previous_to_current,&rt_triangles,&rt_closed_slots,&probe_ray_hits})retire(*b);
         std::vector<GpuInstance>{}.swap(instances);light_frame.clear();
         std::vector<GpuRayTriangle>{}.swap(packed_triangles);std::vector<std::uint32_t>{}.swap(packed_closed_slots);
-        object_keys.clear();previous_object_keys.clear();
         tlas_built=false;
     }
     void close() {

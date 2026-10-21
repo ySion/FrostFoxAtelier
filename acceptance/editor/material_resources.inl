@@ -90,8 +90,8 @@ void verify_material_resources() {
     changed(document.undo());require(capture(a)->description().parameters.roughness==.8f,"Scene undo did not restore override intent.");
     changed(document.redo());require(capture(a)->description().parameters.roughness==.4f,"Scene redo lost inherited state.");
     changed(document.undo());
-    application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto revision=snapshot.revision;
-    take(snapshot.refresh(document));require(snapshot.revision==revision,"Unchanged material rebuilt renderer snapshots.");
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto surfaces=snapshot.meshes.at(0).surfaces;
+    take(snapshot.refresh(document));require(surfaces && snapshot.meshes.at(0).surfaces==surfaces,"Unchanged material rebuilt renderer snapshots.");
     take(document.save_material(project,key));
     auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
     auto changed_parent=take(project.material(key));changed_parent.description.parameters.base_color[1]=.35f;

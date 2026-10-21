@@ -486,7 +486,7 @@ void stability_cases(Fixture& f) {
 
     // Replacing the scene must filter old completed payloads before publication,
     // not only when the consumer happens to compare a scene identity.
-    ++f.frame.scene_identity;++f.frame.scene_revision;f.frame.meshes={};
+    ++f.frame.scene_identity;f.frame.meshes={};
     for(unsigned i=0;i<4;++i)check(!f.step().stats.scene_lit_probe_inspection,
                                  "DDGI empty scene skips SceneLit and publishes no inspection");
     // Keep the ordinary SceneLit path active with real geometry outside the
