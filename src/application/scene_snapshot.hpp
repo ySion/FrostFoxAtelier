@@ -29,6 +29,9 @@ public:
     }
     Result<void> refresh(const editor::Session& document) {
         const auto& scene=document.presentation();
+        // The slot map below indexes the synchronized Scene's cache; another one needs reset().
+        if(synced_ && synced_->scene!=scene.identity())
+            return std::unexpected(Error{ErrorCode::argument_mismatch,"A scene snapshot was refreshed from another document without reset()."});
         auto version=scene.update();if(!version) return std::unexpected(version.error());
         const auto selection=document.selected_entities();
         const bool reselect=!synced_ || !std::ranges::equal(synced_->selection,selection);
@@ -63,13 +66,13 @@ public:
             for(const auto& item:scene.light_snapshot()) lights.push_back(light(item,key(light_keys_,item.component)));
             std::erase_if(light_keys_,[](const auto& item){return !item.second.seen;});
         }
-        synced_=Synced{*version,{selection.begin(),selection.end()}};
+        synced_=Synced{scene.identity(),*version,{selection.begin(),selection.end()}};
         return {};
     }
 private:
     static constexpr std::uint32_t absent=std::numeric_limits<std::uint32_t>::max();
     struct Key { std::uint64_t value{};bool seen{}; };
-    struct Synced { std::uint64_t version;std::vector<ObjectId> selection; };
+    struct Synced { std::uint64_t scene,version;std::vector<ObjectId> selection; };
     std::unordered_map<ObjectId,Key> mesh_keys_,light_keys_;
     std::uint64_t next_key_{1};
     std::vector<std::uint32_t> dense_; // Mesh slot to its index in `meshes`, or absent.

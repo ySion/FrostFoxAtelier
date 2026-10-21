@@ -145,7 +145,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity；快照不另记内容修订号，内容变化由 Renderer 逐帧比较得知。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 
-`SceneSnapshot::refresh` 跟随 [presentation 的提取缓存](../presentation/README.md#提取缓存)：先调用 `Scene::update()`，版本号和选择都与上一次相同时保留整份快照，所以只转相机或只做 UI 操作的帧不重建任何条目。否则只重建变化的部分：网格槽位不变、只是内容变化时原位改写对应的 MeshInstance，保留它的稳定键和选中状态；网格布局变化、或有槽位开始或停止绘制时，按缓存重排全部网格并重新计算选中；灯光变化时重建灯列表；只有选择变化时只重新计算选中。`built` 累计实际重建的 MeshInstance 与灯数量。替换文档时调用 `reset()`，它改变 scene_identity 并清空映射，下一次 refresh 完整重建。
+`SceneSnapshot::refresh` 跟随 [presentation 的提取缓存](../presentation/README.md#提取缓存)：先调用 `Scene::update()`，版本号和选择都与上一次相同时保留整份快照，所以只转相机或只做 UI 操作的帧不重建任何条目。否则只重建变化的部分：网格槽位不变、只是内容变化时原位改写对应的 MeshInstance，保留它的稳定键和选中状态；网格布局变化、或有槽位开始或停止绘制时，按缓存重排全部网格并重新计算选中；灯光变化时重建灯列表；只有选择变化时只重新计算选中。`built` 累计实际重建的 MeshInstance 与灯数量。替换文档时调用 `reset()`，它改变 scene_identity 并清空映射，下一次 refresh 完整重建；没有 reset 就用同一份快照刷新另一个文档时，refresh 按 `Scene::identity()` 发现并返回错误。
 
 光照及快照的当前合同见 [Scene Lit](../renderer/scene-lit.md)，应用创建、撤销、保存重开和正式窗口结果统一见 [Renderer 验收](../renderer/acceptance.md)。早期只完成语法检查的交接记录已被这些集成结果替代。
 

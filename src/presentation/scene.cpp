@@ -1,5 +1,6 @@
 #include "presentation/detail.hpp"
 #include <algorithm>
+#include <atomic>
 
 namespace atelier::presentation {
 using detail::Access;
@@ -27,6 +28,8 @@ Result<Scene> Scene::create(world::World& world, const Types& types) {
     if (auto admitted = world.add_admission(types.environment_component, detail::unique_environment(*environments)); !admitted)
         return std::unexpected(admitted.error());
     scene.meshes_ = *meshes; scene.lights_ = *lights; scene.environments_ = *environments;
+    static std::atomic<std::uint64_t> created;
+    scene.identity_ = ++created;
     return scene;
 }
 

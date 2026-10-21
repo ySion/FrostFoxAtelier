@@ -176,12 +176,17 @@ void verify_scene_snapshot_updates() {
         "The moved mesh lost its position or a mesh lost its stable key.");
     take(document.select(first));refreshed(0,"A selection change rebuilt snapshot instances.");
     require(snapshot.meshes[0].selected && !snapshot.meshes[1].selected,"The refreshed snapshot did not highlight exactly the selection.");
+    // Dragging a selected mesh rewrites its instance in place on every frame.
+    take(world.runtime().write(first,document.types().position_fields[0],Scalar{3.f}));
+    refreshed(1,"Moving the selected mesh did not rebuild exactly that mesh.");
+    require(snapshot.meshes[0].selected && !snapshot.meshes[1].selected && snapshot.meshes[0].world[12]==3,
+        "Moving the selected mesh lost its highlight.");
     auto settings=take(presentation::read_light(world.runtime(),light));settings.intensity=9;
     take(presentation::set_light(world,light,settings));refreshed(1,"A light edit did not rebuild the lights alone.");
     require(snapshot.lights[0].intensity==9,"The refreshed snapshot lost the light edit.");
     refreshed(0,"A static frame after edits rebuilt snapshot instances.");
     snapshot.reset();refreshed(3,"A reset snapshot did not rebuild every instance.");
-    require(snapshot.meshes[0].selected && snapshot.meshes[0].world[12]==2,"A reset snapshot lost the selection or the moved position.");
+    require(snapshot.meshes[0].selected && snapshot.meshes[0].world[12]==3,"A reset snapshot lost the selection or the moved position.");
     std::puts("Scene snapshot update acceptance: PASS (static frames build nothing; a moved mesh, a light edit and a reset rebuild only their instances)");
 }
 void verify_scene_lit_application(const std::filesystem::path& source_example = {}) {

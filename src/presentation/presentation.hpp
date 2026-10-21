@@ -286,6 +286,9 @@ public:
     [[nodiscard]] world::CapabilityId meshes() const noexcept { return meshes_; }
     [[nodiscard]] world::CapabilityId lights() const noexcept { return lights_; }
     [[nodiscard]] world::CapabilityId environments() const noexcept { return environments_; }
+    // Unique in the process: no later Scene takes it, so consumers of the cache
+    // can tell a replaced document from the one they synchronized with.
+    [[nodiscard]] std::uint64_t identity() const noexcept { return identity_; }
     // Brings the cached extraction up to date in one presentation pass and one
     // lighting pass, and returns the presentation version: the serial of the
     // latest update that changed a mesh slot, the mesh layout, the lights or the
@@ -326,6 +329,7 @@ private:
     mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from material slots.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
+    std::uint64_t identity_{};
     mutable std::uint64_t serial_{}, version_{}, mesh_layout_{}, lights_changed_{}, layout_revision_{};
 };
 
