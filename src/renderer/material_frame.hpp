@@ -25,6 +25,7 @@ struct MaterialFrame {
     std::vector<GfxTexture> textures;
     GfxBuffer surface_buffer{}, index_buffer{}, offset_buffer{};
     std::array<GfxSamplerState,3> samplers{};
+    std::uint64_t revision{}; // Advances whenever descriptions change.
     const material::Description& surface(std::size_t instance,std::size_t slot) const {
         return descriptions[offsets[instance]+slot];
     }

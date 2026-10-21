@@ -102,6 +102,15 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     frame.view.lit.shadows=true;
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));const auto blocked=pixel(capture,x*3,y)[1];
     check(blocked<unshadowed*.3f,"ray-query shadow commits opaque texels of a cutout surface");
+    {
+        // A new mesh for the same object at the same snapshot index must be traced, not the previous one.
+        const auto cutout=meshes[0].geometry;
+        meshes[0].geometry=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>(vertices.begin()+6,vertices.end()),
+            std::vector<std::uint8_t>{},std::vector<material::Slot>{cutout->materials()[1]},std::vector<geometry::MeshPart>{{0,6,0}});
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
+        check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"a replaced mesh at an unchanged index and identity traces its new triangles");
+        meshes[0].geometry=cutout;
+    }
     sunlight[0].direction={0,0,1};
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"ray-query shadow traverses transparent texels visible to the camera");

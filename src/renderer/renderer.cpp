@@ -376,7 +376,7 @@ struct Renderer::State {
             material_sampler={};
         }
         material_keys.clear();next_material_keys.clear();used_material_images.clear();
-        materials.descriptions.clear();materials.textures.clear();materials.surfaces.clear();materials.indices.clear();materials.offsets.clear();
+        materials.descriptions.clear();materials.textures.clear();materials.surfaces.clear();materials.indices.clear();materials.offsets.clear();++materials.revision;
         if (matcap) {
             const auto r = gfxDestroyTexture(gfx, matcap);
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
@@ -556,7 +556,7 @@ struct Renderer::State {
             next_material_keys.clear();return;
         }
         material_keys.swap(next_material_keys);next_material_keys.clear();used_material_images.clear();
-        materials.descriptions.clear();materials.textures.clear();
+        materials.descriptions.clear();materials.textures.clear();++materials.revision;
         next_surfaces.clear();next_material_indices.clear();next_material_offsets.clear();
         std::map<std::pair<const material::Image*,bool>,std::uint32_t> texture_indices;
         std::map<detail::GpuSurface,std::uint32_t> surface_indices;
@@ -930,7 +930,7 @@ struct Renderer::State {
                 if(cavity_projection&&editing_lines)draw_batches(visible_lines,3);
             }
         } else {
-            materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();
+            materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();++materials.revision;
             if(has_viewport) {
                 if(scene_lit)scene_lit->draw_debug(frame,extent,depth,stats);
                 draw_grid(frame,false);
