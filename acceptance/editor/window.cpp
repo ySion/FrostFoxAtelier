@@ -276,6 +276,25 @@ struct KeyStateScope {
     }
     ~KeyStateScope() { SetKeyboardState(original); }
 };
+// Synthetic input reaches the editor through Access::input. The OS still routes real mouse
+// messages to this thread, and to a capturing window wherever the cursor is, so a gesture
+// driven synthetically would follow the user's mouse. They are dropped here and counted.
+struct ExternalMouseFilter {
+    static inline unsigned discarded{};
+    HHOOK hook{};
+    ExternalMouseFilter() : hook(SetWindowsHookExW(WH_GETMESSAGE, filter, nullptr, GetCurrentThreadId())) {
+        require(hook != nullptr, "Cannot install the external mouse filter.");
+    }
+    ~ExternalMouseFilter() { UnhookWindowsHookEx(hook); }
+    static LRESULT CALLBACK filter(int code, WPARAM removal, LPARAM parameter) {
+        auto& message = *reinterpret_cast<MSG*>(parameter);
+        if (code == HC_ACTION && ((message.message >= WM_MOUSEFIRST && message.message <= WM_MOUSELAST) || message.message == WM_MOUSELEAVE)) {
+            if (removal == PM_REMOVE) ++discarded;
+            message.message = WM_NULL;
+        }
+        return CallNextHookEx(nullptr, code, removal, parameter);
+    }
+};
 // Unattended runs cannot wait for a person: any top-level dialog outside an expected scope ends the run.
 int expected_native_dialogs{};
 struct ExpectedNativeDialogs {

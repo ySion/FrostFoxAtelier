@@ -4,6 +4,7 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     using Access=application::EditorAcceptanceAccess;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
+    ExternalMouseFilter external_mouse;
     const auto output=std::filesystem::absolute(editor::wide(output_directory));std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Surface scene creation failed.");tick(app);
@@ -376,7 +377,8 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     Access::mark_saved(app);PostMessageW(app.window(),WM_CLOSE,0,0);
     require(!app.step(),"A native close request could not pass the render retry gate.");
     report<<"render-retry,validation-control-recovery-close,passed\n";report.flush();
-    std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens\n",resized_during_drag,redundant_presents);
+    std::printf("Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens; external mouse messages dropped %u\n",
+        resized_during_drag,redundant_presents,ExternalMouseFilter::discarded);
     require(resized_during_drag==0,"Dock dragging resized the live viewport before release.");
     require(redundant_presents==0,"Popup resize presented an obsolete canvas before its accepted frame.");
     std::puts("Editor surfaces acceptance: PASS (retained menu highlight/availability, no leading separator, parameter states/button metrics, World diagnostics and edits/lifetime, deferred dock geometry, resizable asset directories, camera Control lifetime, both axes, Escape/focus/capture loss, late release)");return 0;
