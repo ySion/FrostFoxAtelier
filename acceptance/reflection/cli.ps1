@@ -19,7 +19,11 @@ $command.command = $command.command.Replace($command.file.Replace('/','\'), $sou
 $command.file = $sourcePath
 ConvertTo-Json -InputObject @($command) -Depth 4 | Set-Content "$OutputDirectory/compile_commands.json" -Encoding utf8
 '#include "probe.hpp"' | Set-Content $sourcePath -Encoding utf8
-'using ProbeScalar = float;' | Set-Content "$OutputDirectory/dependency.hpp" -Encoding utf8
+@'
+using ProbeScalar = float;
+ACLASS(Name="probe.External")
+struct External { AGENERATED_BODY(External) };
+'@ | Set-Content "$OutputDirectory/dependency.hpp" -Encoding utf8
 $productionConfig = Get-Content -Raw (Join-Path $BuildDirectory 'generated/atelier_reflection_acceptance/reflection.json') | ConvertFrom-Json
 $config = @{
     source=$sourcePath; database=$OutputDirectory; cpp=$generatedSource
@@ -64,6 +68,11 @@ if (-not (Get-Content -Raw $generatedSource).Contains('"Position", "Transform"')
     throw 'Generated registration lost field presentation metadata.'
 }
 Run-Generator 'empty-description' $valid.Replace('AFIELD()', 'AFIELD(DESC="")')
+# A base reflected by another generation group is named for registration, not regenerated.
+Run-Generator 'external-base' $valid.Replace('struct Widget {', 'struct Widget : External {')
+if (-not (Get-Content -Raw $generatedSource).Contains('.base<::External>()') -or (Get-Content -Raw $generatedSource).Contains('Definition<::External>::build')) {
+    throw 'Generated registration did not name the external reflected base.'
+}
 $ranged = '#include "math/math.hpp"' + "`n" + $valid.Replace('AFIELD() ProbeScalar value{};', @'
 AFIELD(Min="0", Max="10", LockMin, HardMax="65504") ProbeScalar value{};
     AFIELD(Min="-1.5", Max="2", LockMax) atelier::math::Vector3d direction;
@@ -127,6 +136,7 @@ $cases = @(
     @{name='static-method'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFUNCTION() static float bad() { return 0; }'); error='non-static member with a scalar, void or plain record result'},
     @{name='body'; text=$valid.Replace('AGENERATED_BODY(Widget)', ''); error='requires exactly one AGENERATED_BODY'},
     @{name='grouped'; text=$valid.Replace('AFIELD() ProbeScalar value{};', 'AFIELD() float first{}, second{};'); error='split grouped declarations'},
+    @{name='unreflected-base'; text='struct Plain {};' + $valid.Replace('struct Widget {', 'struct Widget : Plain {'); error='A reflected base must be a public, non-virtual reflected object type'},
     @{name='inherited-name'; text='ACLASS() struct Base { AGENERATED_BODY(Base) AFIELD() float value{}; };' + $valid.Replace('struct Widget {', 'struct Widget : Base {'); error='Inherited reflected member name cannot be shadowed'},
     @{name='range-lock-alone'; text=$valid.Replace('AFIELD()', 'AFIELD(LockMin)'); error='LockMin requires Min and excludes HardMin'},
     @{name='range-lock-hard'; text=$valid.Replace('AFIELD()', 'AFIELD(Max="1", LockMax, HardMax="2")'); error='LockMax requires Max and excludes HardMax'},

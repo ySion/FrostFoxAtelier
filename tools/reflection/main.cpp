@@ -1,5 +1,6 @@
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/DeclFriend.h>
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/RecordLayout.h>
 #include <clang/AST/QualTypeNames.h>
@@ -373,6 +374,23 @@ const Type* reflected(State& state, const CXXRecordDecl* record) {
     for (const auto& type : state.types) if (type.declaration == definition) return &type;
     return nullptr;
 }
+// A type reflected by another generation group carries AGENERATED_BODY, which
+// befriends its Definition. Registration checks that it is a native object type
+// registered before this group.
+bool generated_elsewhere(const CXXRecordDecl* record) {
+    if (!record || !(record = record->getDefinition())) return false;
+    for (const auto* declaration : record->friends()) {
+        const auto* friend_type = declaration->getFriendType();
+        const auto* definition = friend_type ? dyn_cast_or_null<ClassTemplateSpecializationDecl>(
+            friend_type->getType()->getAsCXXRecordDecl()) : nullptr;
+        if (!definition || definition->getSpecializedTemplate()->getQualifiedNameAsString() != "atelier::reflection::Definition") continue;
+        const auto& arguments = definition->getTemplateArgs();
+        if (arguments.size() != 1 || arguments[0].getKind() != TemplateArgument::Type) continue;
+        const auto* subject = arguments[0].getAsType()->getAsCXXRecordDecl();
+        if (subject && subject->getCanonicalDecl() == record->getCanonicalDecl()) return true;
+    }
+    return false;
+}
 std::optional<std::string> scalar(QualType type, State& state, ASTContext& context, bool allow_void = false) {
     if (type.hasLocalQualifiers()) return {};
     type = type.getCanonicalType();
@@ -496,11 +514,13 @@ void members(State& state, Type& type, ASTContext& context) {
         state.error(record->getLocation(), "This reflection slice supports one object base and no record inheritance."); return;
     }
     for (const auto& base : record->bases()) {
-        const auto* parent = reflected(state, base.getType()->getAsCXXRecordDecl());
-        if (!parent || !parent->object || base.isVirtual() || base.getAccessSpecifier() != AS_public) {
-            state.error(base.getBeginLoc(), "A reflected base must be a public, non-virtual reflected object in this generation group."); return;
+        const auto* declaration = base.getType()->getAsCXXRecordDecl();
+        const auto* parent = reflected(state, declaration);
+        const bool external = !parent && generated_elsewhere(declaration);
+        if ((parent ? !parent->object : !external) || base.isVirtual() || base.getAccessSpecifier() != AS_public) {
+            state.error(base.getBeginLoc(), "A reflected base must be a public, non-virtual reflected object type."); return;
         }
-        type.base = parent->qualified;
+        type.base = parent ? parent->qualified : "::" + declaration->getDefinition()->getQualifiedNameAsString();
     }
     unsigned bodies = 0;
     const auto begin = sources.getFileOffset(record->getBeginLoc());
