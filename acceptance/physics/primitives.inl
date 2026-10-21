@@ -227,3 +227,71 @@ void mirrored_scale() {
         require(bool(f.scene->body_handle(body)),"A Primitive did not regain its body once its space was no longer degenerate.");
     committed(f.world.stop());
 }
+
+// A step publishes only the poses it moved: active bodies, bodies that fell asleep in
+// it, teleported bodies and bodies below a published Entity. Values written past World
+// on the others stay. Spatial ancestors are read again on every step.
+void pose_publication() {
+    PhysicsFixture f;take(f.world.set_failure_policy(w::FailurePolicy::isolate));
+    auto floor=f.ground();
+    auto resting=f.make({0,.5f,0},dynamic_body());
+    auto falling=f.make({4,60,0},dynamic_body());
+    auto carried=f.make({8,.5f,0},dynamic_body());
+    committed(f.world.reparent(carried.id(),falling.id(),w::ReparentRule::keep_world));
+    auto holder=take(w::create_entity(f.runtime));take(f.world.set_transform(holder.id(),{{20,0,0},{0,0,0,1},{1,1,1}}));
+    committed(f.world.attach(holder.id()));
+    auto held=f.make({20,.5f,0},dynamic_body());
+    committed(f.world.reparent(held.id(),holder.id(),w::ReparentRule::keep_world));
+    f.start();
+    for(unsigned frame=0;frame<240 && !(f.state(resting).sleeping && f.state(carried).sleeping);++frame) f.advance(1);
+    require(f.state(resting).sleeping && f.state(carried).sleeping && !f.state(falling).sleeping,
+        "The fixture did not settle its resting bodies while another still falls.");
+    require(take(w::read_transform(f.runtime,resting.id())).position==f.state(resting).position,
+        "A body that fell asleep kept a pose from before its last step.");
+    const auto& x=f.world_types.position_fields[0];
+    const auto local=[&](const auto& entity){return take(w::read_transform(f.runtime,entity.id()));};
+    for(const auto* entity:{&floor,&resting,&falling}) take(f.runtime.write(entity->id(),x,atelier::Scalar{local(*entity).position.x+.25f}));
+    f.advance(1);
+    require(local(floor).position.x==.25f && local(resting).position.x==f.state(resting).position.x+.25f,
+        "A step wrote the pose of a static or sleeping body.");
+    require(local(falling).position==f.state(falling).position,"A step did not publish a falling body.");
+    const auto carried_state=f.state(carried);const auto carried_matrix=take(w::world_matrix(f.runtime,carried.id()));
+    require(near(carried_matrix[12],carried_state.position.x,1e-4f) && near(carried_matrix[13],carried_state.position.y,1e-4f),
+        "A sleeping body below a moving one did not keep its world pose.");
+    take(f.scene->teleport(f.handle(floor),{0,-.5f,2},{0,0,0,1}));f.advance(1);
+    require(local(floor).position.z==2,"A teleported static body did not publish its pose.");
+    require(f.world.take_diagnostics().empty() && bool(f.scene->body_handle(held.id())),"The fixture reported an unexpected physics failure.");
+    take(f.runtime.write(holder.id(),f.world_types.scale_fields[1],atelier::Scalar{2.f}));f.advance(1);
+    const auto reports=f.world.take_diagnostics();
+    require(!f.scene->body_handle(held.id()) && reports.size()==1 && reports[0].entity==held.id() && reports[0].phase==w::DiagnosticPhase::physics,
+        "An ancestor scale made nonuniform past World was not checked again on the next step.");
+    committed(f.world.stop());
+}
+
+// The solver pool runs on several threads; the same input still gives the same poses bit for bit.
+void solver_determinism() {
+    const auto run=[] {
+        PhysicsFixture f;f.ground();
+        std::vector<PhysicsFixture::Entity> boxes;
+        for(unsigned i=0;i<160;++i) {
+            const auto layer=i/40,cell=i%40;
+            const float offset=layer%2?.35f:0.f;
+            boxes.push_back(f.make({float(cell%8)*1.15f-4+offset,1.5f+float(layer)*1.6f,float(cell/8)*1.15f-2+offset},dynamic_body()));
+        }
+        f.start();
+        std::vector<float> poses;
+        for(unsigned frame=0;frame<120;++frame) {
+            f.advance(1);
+            for(const auto& box:boxes) {
+                const auto state=f.state(box);const auto local=take(w::read_transform(f.runtime,box.id()));
+                for(const auto* value:{&state.position,&local.position}) poses.insert(poses.end(),{value->x,value->y,value->z});
+                for(const auto* value:{&state.rotation,&local.rotation}) poses.insert(poses.end(),{value->x,value->y,value->z,value->w});
+            }
+        }
+        committed(f.world.stop());
+        return poses;
+    };
+    const auto first=run(),second=run();
+    require(first.size()==second.size() && std::memcmp(first.data(),second.data(),first.size()*sizeof(float))==0,
+        "The same physics input produced different poses on the solver pool.");
+}

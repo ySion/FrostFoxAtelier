@@ -29,6 +29,8 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `primitive_composition` | Entity 子树中的网格刚体、动态碰撞子实体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |
 | `primitive_authoring` | 反射配置的缩放网格与运动学触发子实体 | 属性验证回滚、Box 缩放、owner Entity 刚体查找、运动学目标到达后停止、局部位姿转换、非法缩放拒绝并清理 |
 | `mirrored_scale` | 镜像的非对称三角网格（运行时构建与 Cook 各一）、负缩放 Box、(-1,-1,-1) 动态体及其子体、嵌套零缩放空间 | 镜像位置与正面、Box 尺寸取绝对值、镜像 Character 拒绝、镜像回写保持局部 TRS、零缩放不建刚体且只在最上层节点报告一次、恢复后重建；全程 halt 策略 |
+| `pose_publication` | 静态地面、已睡眠与仍下落的动态体、下落体下的睡眠子体、空间父节点下的动态体 | 刚睡眠体回写最终位姿；越过 World 写入的 TRS 在静态与睡眠体上保留、在下落体上被覆盖；移动父节点下的睡眠子体保持世界位姿；传送的静态体回写；只改祖先缩放使其不均匀后，下一步重新检查并按对象报告 |
+| `solver_determinism` | 160 个动态箱子在多线程求解池上下落堆叠 120 帧 | 两次全新运行的全部刚体状态与 World 局部 TRS 逐位一致 |
 | `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤；事件保留场景与刚体代际，历史结束事件不能操作重建后的刚体 |
 | `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
 | `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |

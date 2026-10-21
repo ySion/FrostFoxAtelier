@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -79,6 +80,8 @@ const Scenario scenarios[]{
     {"primitive_composition", primitive_composition},
     {"primitive_authoring", primitive_authoring},
     {"mirrored_scale", mirrored_scale},
+    {"pose_publication", pose_publication},
+    {"solver_determinism", solver_determinism},
 };
 } // namespace
 
