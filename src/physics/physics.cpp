@@ -1487,6 +1487,7 @@ Result<QueryResult> PhysicsScene::overlap_sphere(math::Vector3 center, float rad
     return result;
 }
 std::size_t PhysicsScene::body_count() const noexcept { return impl_->bodies.size(); }
+std::size_t PhysicsScene::active_body_count() const noexcept { return impl_->system.GetNumActiveBodies(JPH::EBodyType::RigidBody); }
 
 Result<QueryResult> PhysicsScene::trace(math::Vector3 start,math::Vector3 end,
     const TraceSettings& settings,QueryIgnore ignore) const {

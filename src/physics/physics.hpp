@@ -314,6 +314,8 @@ public:
     void on_before_step(StepHandler handler) { before_step_ = std::move(handler); }
     void on_after_step(StepHandler handler) { after_step_ = std::move(handler); }
     [[nodiscard]] std::size_t body_count() const noexcept;
+    // Rigid bodies Jolt is simulating now; sleeping and static bodies are not counted.
+    [[nodiscard]] std::size_t active_body_count() const noexcept;
 
 private:
     friend class detail::ComponentSimulation;

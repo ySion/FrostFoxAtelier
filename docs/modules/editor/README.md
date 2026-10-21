@@ -190,6 +190,8 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 `atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot 的静止帧（`scene_snapshot`，不重建条目）与变化帧（`scene_snapshot_changed` 与 `scene_snapshot_changed_50`，每个样本经 Runtime 写入交替移动 1 个或 50 个叶网格 Entity，计时包含这些写入），以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95；与 Play 进程一样，`play_start`/`play_update`/`play_stop` 在从同一源文件另行加载的副本上运行，含动态刚体的场景也不改变被测文档。报告（schema v2）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
 
+`atelier_editor_document_acceptance --profile-physics-cpu <工程目录> <相对Scene路径> <新建绝对输出.json>` 在 Play 副本上以 1/60 s 的帧逐帧推进（每帧一个固定步），直到连续 120 帧没有活动刚体或满 1800 帧，按帧结束时是否仍有活动刚体把帧分为 active / sleeping 两组，分别报告 `physics.step`、`physics.reconcile`、`physics.solve`、`physics.write_back` 的中位数与 P95。它只是测量入口，数值不作为通过条件。
+
 报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 Image 身份和 sRGB 模式计数的纹理数；纹理表大小额外包含默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
 
 此 CPU 定位不创建窗口或图形设备，也不提供接受 UI 帧；因此不包含 UI prepare、实际裁剪、Present 或完整帧耗时。尤其正常停靠布局的数值只能用于相同测量条件的前后比较，不能转换为产品 FPS。实现与地牢结果见 [CPU 链路记录](../../research/editor-cpu-pipeline-20261016.md)。
