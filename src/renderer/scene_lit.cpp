@@ -228,6 +228,7 @@ struct SceneLit::State {
     std::uint32_t history_invalid{};
     Antialiasing previous_antialiasing{Antialiasing::none};
     bool history_valid{},enabled{},brdf_ready{},tlas_built{};
+    std::uint32_t full_window_frames{};
     bool light_changed{},material_changed{},coverage_changed{},emitter_changed{};
     const MaterialFrame* material_frame{};
     explicit State(rhi::Context& owner):context(owner),gfx(owner.borrow()){}
@@ -626,6 +627,13 @@ struct SceneLit::State {
     void dispatch_screen(const rhi::Pipeline& pipeline,GfxTexture depth,std::uint32_t visibility_counter=0) {
         const auto width=screen_dispatch[2]-screen_dispatch[0],height=screen_dispatch[3]-screen_dispatch[1];
         if(width&&height)dispatch(pipeline,depth,(width+7)/8,(height+7)/8,1,visibility_counter);
+    }
+    // After a history reset both parities cover the whole window once, so texels outside the
+    // viewport keep the zero/far values neighbor reads expect; later frames touch only the viewport.
+    void dispatch_window(const rhi::Pipeline& pipeline,GfxTexture depth) {
+        if(!full_window_frames){dispatch_screen(pipeline,depth);return;}
+        const auto viewport_rect=screen_dispatch;screen_dispatch={0,0,size_frame[0],size_frame[1]};
+        dispatch_screen(pipeline,depth);screen_dispatch=viewport_rect;
     }
     void begin(std::uint32_t pass,bool enabled=true) {
         if(enabled)encoded_pass_mask|=1u<<pass;
@@ -1122,9 +1130,10 @@ struct SceneLit::State {
         viewport=next_viewport;
         const auto raster=raster_viewport(frame.scene_viewport);
         raster_transform=raster.clip_transform;
-        // The validated logical rect lies in this window. Raster and receiver
-        // dispatch share one pixel-center range, including fractional edges.
-        screen_dispatch={static_cast<std::uint32_t>(raster.scissor.left),static_cast<std::uint32_t>(raster.scissor.top),
+        // The validated logical rect lies in this window. Receiver dispatch ends with the raster
+        // pixel-center range; its origin rounds down to 16 so thread groups align with texture
+        // tiles, and lit_inside rejects the added margin.
+        screen_dispatch={static_cast<std::uint32_t>(raster.scissor.left)&~15u,static_cast<std::uint32_t>(raster.scissor.top)&~15u,
             static_cast<std::uint32_t>(raster.scissor.right),static_cast<std::uint32_t>(raster.scissor.bottom)};
         if(clustered)clusters();
         environment=next_environment;
@@ -1146,7 +1155,6 @@ struct SceneLit::State {
         }
         for(std::uint32_t i=0;i<gbuffer_textures.size();i++)require(gfxCommandBindColorTarget(gfx,i,{}),"Unbind Scene Lit GBuffer");
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind Scene Lit primary depth");end(0);
-        const auto dx=(next.width+7)/8,dy=(next.height+7)/8;
         begin(2);begin(20,clustered);
         if(clustered && cluster_tiles[0] && cluster_tiles[1]) {
             const auto& build=settings.direct_cluster_inspect?cluster_inspect:cluster_build;
@@ -1363,10 +1371,11 @@ struct SceneLit::State {
             dispatch_screen(ssil_trace,depth);dispatch_screen(ssil_resolve,depth);
         }
         end(4);
+        if(!history_valid)full_window_frames=2;
         begin(5);for(std::size_t i=0;i<2;++i)bind(compose.program(),filter_inputs[i],direct_result[i]);
         bind(compose.program(),"lit_indirect_source",settings.ssil?ssil_irradiance:indirect);bind(compose.program(),"lit_ao",ao_texture);
         bind(compose.program(),"lit_indirect_gain",settings.indirect_gain);
-        bind(compose.program(),"lit_hdr_output",hdr);dispatch(compose,depth,dx,dy);
+        bind(compose.program(),"lit_hdr_output",hdr);dispatch_window(compose,depth);
         if(!brdf_ready){bind(brdf.program(),"lit_brdf_output",brdf_lut);dispatch(brdf,depth,8,8);brdf_ready=true;}
         if(settings.sssr)for(std::uint32_t i=0;i<pyramid_count;i++) {
             // Specialize the first reduction so even a 1x1 hierarchy has no
@@ -1383,22 +1392,22 @@ struct SceneLit::State {
             require(gfxProgramSetParameter(gfx,p,"lit_depth_pyramid",pyramid_array.data(),12),"Bind separate depth hierarchy");bind(p,"lit_depth_level_count",next.width==1&&next.height==1?1u:pyramid_count+1);
         }
         if(settings.sssr)dispatch(ssr_reset,depth,1);
-        dispatch(ssr_classify,depth,dx,dy);
+        dispatch_window(ssr_classify,depth);
         if(settings.sssr)dispatch(ssr_prepare,depth,1);
         if(settings.sssr){common(ssr_trace.program(),depth);require(gfxCommandBindKernel(gfx,ssr_trace.kernel()),"Bind SSSR work kernel");require(gfxCommandDispatchIndirect(gfx,reflection_arguments),"Dispatch SSSR classified work");}
         bind(reflection_resolve.program(),"lit_reflection_trace",reflection_trace);bind(reflection_resolve.program(),"lit_reflection_hit_trace",reflection_hit_trace);
         bind(reflection_resolve.program(),"lit_reflection_previous",reflection_history[1-parity]);bind(reflection_resolve.program(),"lit_reflection_hit_previous",reflection_hit_history[1-parity]);
         bind(reflection_resolve.program(),"lit_reflection_resolved_output",reflection_history[parity]);bind(reflection_resolve.program(),"lit_reflection_hit_output",reflection_hit_history[parity]);
         bind(reflection_resolve.program(),"lit_reflection_moments_previous",reflection_moments[1-parity]);bind(reflection_resolve.program(),"lit_reflection_moments_output",reflection_moments[parity]);
-        dispatch(reflection_resolve,depth,dx,dy);
+        dispatch_window(reflection_resolve,depth);
         if(settings.sssr)for(std::uint32_t step=0;step<3;++step){const auto p=reflection_filter.program();
             bind(p,"lit_reflection_filter_input",step==0?reflection_history[parity]:reflection_scratch[(step-1)%2]);
             bind(p,"lit_reflection_filter_output",reflection_scratch[step%2]);bind(p,"lit_reflection_moments",reflection_moments[parity]);
-            bind(p,"lit_reflection_hit_trace",reflection_hit_trace);bind(p,"lit_reflection_filter_step",1u<<step);dispatch(reflection_filter,depth,dx,dy);}
+            bind(p,"lit_reflection_hit_trace",reflection_hit_trace);bind(p,"lit_reflection_filter_step",1u<<step);dispatch_window(reflection_filter,depth);}
         end(5);
         begin(6);bind(taa.program(),"lit_reflection",settings.sssr?reflection_scratch[0]:reflection_history[parity]);bind(taa.program(),"lit_reflection_moments",reflection_moments[parity]);bind(taa.program(),"lit_taa_previous",taa_history[1-parity]);bind(taa.program(),"lit_taa_output",taa_history[parity]);
         bind(taa.program(),"lit_history_depth_output",history_depth[parity]);bind(taa.program(),"lit_history_normal_output",history_normal[parity]);bind(taa.program(),"lit_history_geometry_normal_output",history_geometry_normal[parity]);
-        bind(taa.program(),"lit_history_base_metallic_output",history_base_metallic[parity]);bind(taa.program(),"lit_history_surface_id_output",history_surface_id[parity]);dispatch(taa,depth,dx,dy);end(6);
+        bind(taa.program(),"lit_history_base_metallic_output",history_base_metallic[parity]);bind(taa.program(),"lit_history_surface_id_output",history_surface_id[parity]);dispatch_window(taa,depth);end(6);
         begin(7);const std::array<float,4> bloom_controls{1,.5f,settings.bloom?.04f:0.f,64};
         if(settings.bloom) {
         bind(bloom_downsample.program(),"lit_taa",taa_history[parity]);bind(bloom_downsample.program(),"lit_bloom_output",bloom[0]);bind(bloom_downsample.program(),"lit_bloom_controls",bloom_controls);
@@ -1406,7 +1415,7 @@ struct SceneLit::State {
         for(std::uint32_t i=0;i<2;i++){bind(bloom_blur.program(),"lit_bloom_input",bloom[i]);bind(bloom_blur.program(),"lit_bloom_output",bloom[1-i]);
             bind(bloom_blur.program(),"lit_bloom_direction",std::array<std::int32_t,2>{i==0?1:0,i==0?0:1});dispatch(bloom_blur,depth,(bloom[0].getWidth()+7)/8,(bloom[0].getHeight()+7)/8);}
         }
-        bind(tone_map.program(),"lit_taa",taa_history[parity]);bind(tone_map.program(),"lit_bloom",bloom[0]);bind(tone_map.program(),"lit_bloom_controls",bloom_controls);bind(tone_map.program(),"lit_tone_output",tone_color);dispatch(tone_map,depth,dx,dy);
+        bind(tone_map.program(),"lit_taa",taa_history[parity]);bind(tone_map.program(),"lit_bloom",bloom[0]);bind(tone_map.program(),"lit_bloom_controls",bloom_controls);bind(tone_map.program(),"lit_tone_output",tone_color);dispatch_window(tone_map,depth);
         GfxTexture display=tone_color;
         if(settings.antialiasing==Antialiasing::smaa||smaa_temporal) {
             const float phase=sequence%2==0?1.f:2.f;
@@ -1417,8 +1426,8 @@ struct SceneLit::State {
                 bind(p,"lit_smaa_area",smaa_area);bind(p,"lit_smaa_search",smaa_search);bind(p,"lit_smaa_subsample_indices",subsamples);
                 bind(p,"lit_smaa_spatial_output",smaa_spatial[parity]);bind(p,"lit_smaa_spatial",smaa_spatial[parity]);bind(p,"lit_smaa_previous",smaa_spatial[1-parity]);
                 bind(p,"lit_smaa_output",smaa_output);bind(p,"lit_smaa_temporal_enabled",smaa_temporal?1u:0u);}
-            dispatch(smaa_edges_pass,depth,dx,dy);dispatch(smaa_weights_pass,depth,dx,dy);dispatch(smaa_neighborhood,depth,dx,dy);
-            display=smaa_spatial[parity];if(smaa_temporal){dispatch(smaa_resolve,depth,dx,dy);display=smaa_output;}
+            dispatch_window(smaa_edges_pass,depth);dispatch_window(smaa_weights_pass,depth);dispatch_window(smaa_neighborhood,depth);
+            display=smaa_spatial[parity];if(smaa_temporal){dispatch_window(smaa_resolve,depth);display=smaa_output;}
         }
         common(tone.program(),depth);bind(tone.program(),"lit_display_source",display);
         require(gfxCommandBindKernel(gfx,tone.kernel()),"Bind Scene Lit tone map");require(gfxCommandDraw(gfx,3),"Compose Scene Lit display");stats.viewport_draw_calls++;end(7);
@@ -1438,6 +1447,7 @@ struct SceneLit::State {
         readback_shadows[readback_slot]=shadow_sample;
         probe_visibility_valid=settings.ddgi&&!taa_enabled&&!smaa_temporal;
         stats.scene_lit_history_resets=reset_events;reset_events=0;previous_view_projection=view_projection;previous_inverse_view_projection=inverse_view_projection;history_valid=true;sequence++;parity=1-parity;
+        if(full_window_frames)--full_window_frames;
     }
     void bind_probe_debug(GfxProgram p) {
         const auto read=1-probe_parity;

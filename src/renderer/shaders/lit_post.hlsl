@@ -362,8 +362,8 @@ bool lit_ssr_eligible(uint2 p, float4 nr) {
 }
 [numthreads(8, 8, 1)]
 void lit_ssr_classify_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     lit_reflection_hit_trace_output[p] = 0;
     if (!lit_post_surface(p)) { lit_reflection_output[p] = 0; return; }
     lit_reflection_output[p] = float4(lit_post_environment(p), 0);
@@ -732,8 +732,8 @@ void lit_gtao_resolve_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadI
 }
 [numthreads(8, 8, 1)]
 void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     float4 center = lit_reflection_trace.Load(int3(p, 0));
     float4 hit = lit_reflection_unpack_hit(lit_reflection_hit_trace.Load(int3(p, 0)));
     lit_reflection_hit_output[p] = hit.w > 0 ? hit.xy : 0;
@@ -877,8 +877,8 @@ void lit_reflection_resolve_cs(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void lit_reflection_filter_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     float4 center = lit_reflection_filter_input.Load(int3(p, 0));
     lit_reflection_filter_output[p] = center;
     if (!lit_post_surface(p) || (lit_effect_flags & 8) == 0) return;
@@ -935,8 +935,8 @@ float3 lit_post_current_hdr(uint2 p) {
 }
 [numthreads(8, 8, 1)]
 void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     float depth = lit_depth.Load(int3(p, 0));
     float4 nr = lit_normal_roughness.Load(int3(p, 0));
     lit_history_depth_output[p] = lit_inside(p) ? depth : lit_depth_far_value();
@@ -1054,8 +1054,9 @@ float4 lit_post_tonemap(uint2 p) {
 }
 [numthreads(8, 8, 1)]
 void lit_tonemap_cs(uint3 id : SV_DispatchThreadID) {
-    if (any(id.xy >= lit_size_frame.xy)) return;
-    lit_tone_output[id.xy] = lit_post_tonemap(id.xy);
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
+    lit_tone_output[p] = lit_post_tonemap(p);
 }
 // IEC 61966-2-1 piecewise transfer, the same curve the sRGB RTV applies.
 float3 lit_srgb_encode(float3 c) {

@@ -10,7 +10,7 @@
 static const float LIT_PI = 3.14159265359;
 uint4 lit_size_frame; // width,height,sequence,history valid
 float4 lit_viewport; // x,y,width,height
-uint4 lit_screen_dispatch; // Integer pixel origin and exclusive end, preserving window coordinates.
+uint4 lit_screen_dispatch; // 16-aligned pixel origin and exclusive end in window coordinates; lit_inside rejects the margin.
 row_major float4x4 lit_view_projection;
 row_major float4x4 lit_camera_view;
 row_major float4x4 lit_inverse_view_projection;

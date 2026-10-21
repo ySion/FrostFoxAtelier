@@ -82,8 +82,8 @@ float lit_smaa_gamma_luma(int2 p) {
 
 [numthreads(8, 8, 1)]
 void lit_smaa_edges_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     // Explicit zero stores replace reference's discard + per-frame clear.
     if (!lit_inside(p)) { lit_smaa_edges_output[p] = 0; return; }
     int2 q = int2(p);
@@ -106,8 +106,8 @@ void lit_smaa_edges_cs(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void lit_smaa_weights_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     if (!lit_inside(p) || dot(lit_smaa_edges.Load(int3(p, 0)).rg, float2(1, 1)) == 0) {
         lit_smaa_weights_output[p] = 0; return;
     }
@@ -120,8 +120,8 @@ void lit_smaa_weights_cs(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void lit_smaa_neighborhood_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     if (!lit_inside(p)) { lit_smaa_spatial_output[p] = 0; return; }
     float2 uv = lit_smaa_uv(p); float4 offset;
     SMAANeighborhoodBlendingVS(uv, offset);
@@ -139,8 +139,8 @@ void lit_smaa_neighborhood_cs(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void lit_smaa_resolve_cs(uint3 id : SV_DispatchThreadID) {
-    uint2 p = id.xy;
-    if (any(p >= lit_size_frame.xy)) return;
+    uint2 p;
+    if (!lit_screen_pixel(id.xy, p)) return;
     if (!lit_inside(p)) { lit_smaa_output[p] = 0; return; }
     float4 current = lit_smaa_spatial.Load(int3(p, 0));
     float3 color = lit_smaa_sdr(current.rgb);

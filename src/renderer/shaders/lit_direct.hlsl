@@ -545,7 +545,7 @@ void lit_direct_filter4_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThrea
 
 [numthreads(8,8,1)]
 void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
-    uint2 p=tid.xy;if(any(p>=lit_size_frame.xy))return;
+    uint2 p;if(!lit_screen_pixel(tid.xy,p))return;
     if(!lit_inside(p)||lit_is_background_depth(lit_depth[p])) {
         // Sky Light supplies incident radiance, not a visible sky surface.
         lit_hdr_output[p]=float4(0,0,0,1);return;
