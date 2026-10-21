@@ -2,6 +2,7 @@
 #include "shader_source.hpp"
 #include "math/math.hpp"
 #include "scene_lit.hpp"
+#include "frame_slots.hpp"
 #include "raster_viewport.hpp"
 #include "scene_visibility.hpp"
 #include "timing.hpp"
@@ -39,6 +40,12 @@ void allocation(bool valid) {
 }
 bool finite(float value) {
     return std::isfinite(value);
+}
+float half_float(std::uint16_t h) {
+    const std::uint32_t sign = std::uint32_t(h & 0x8000u) << 16, exponent = (h >> 10) & 31u, mantissa = h & 1023u;
+    if (exponent == 31) return std::bit_cast<float>(sign | 0x7f800000u | (mantissa << 13));
+    if (exponent) return std::bit_cast<float>(sign | ((exponent + 112) << 23) | (mantissa << 13));
+    return (sign ? -1.0f : 1.0f) * std::ldexp(float(mantissa), -24);
 }
 bool valid(const ui::Color &c) {
     return finite(c.r) && finite(c.g) && finite(c.b) && finite(c.a) && c.r >= 0 && c.g >= 0 && c.b >= 0 &&
@@ -294,10 +301,8 @@ struct Renderer::State {
     std::vector<MeshGroup> mesh_groups;
     // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
     std::vector<std::uint32_t> instance_groups, draw_instances;
-    // Persistent CPU-written copies of draw_instances, one per frame in flight,
-    // indexed by recording frame sequence. Grown on demand, never shrunk.
-    std::vector<GfxBuffer> draw_order_slots;
-    std::uint64_t draw_order_sequence{}; // Recording frame of the last slot write.
+    detail::FrameSlots<std::uint32_t> draw_order_slots; // draw_instances, read in place.
+    detail::FrameSlots<Instance> instance_slots;
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
@@ -407,12 +412,8 @@ struct Renderer::State {
             geometry.vertices = {};
         }
         geometries.clear(); mesh_groups.clear();
-        for(auto& slot:draw_order_slots)if(slot) {
-            const auto r=gfxDestroyBuffer(gfx,slot);
-            if(r)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Draw order retirement failed",true,r));
-            slot={};
-        }
-        draw_order_slots.clear();
+        for(const auto r:{draw_order_slots.retire(gfx),instance_slots.retire(gfx)})if(r)
+            return std::unexpected(error(rhi::ErrorCode::execution_failed,"Scene frame slot retirement failed",true,r));
         if (sampler) {
             const auto r = gfxDestroySamplerState(gfx, sampler);
             if (r)
@@ -797,8 +798,7 @@ struct Renderer::State {
                 depth_extent = extent;
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
-            BufferOwner data{gfx, {}};
-            GfxBuffer order{};
+            GfxBuffer instance_data{}, order{};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
@@ -816,40 +816,19 @@ struct Renderer::State {
                     }
                     geometry.used = true;
                 }
-                if (!draw_instances.empty()) {
-                    // gfx began recording frame N only after frame N - frames_in_flight
-                    // completed, so this frame's slot is no longer read by the GPU.
-                    const auto slots = context.info().frames_in_flight;
-                    if (draw_order_slots.empty()) draw_order_slots.resize(slots);
-                    const auto sequence = gfxGetRecordingFrameSequence(gfx);
-                    if (!sequence)
-                        throw error(rhi::ErrorCode::execution_failed, "Draw order upload outside a recording frame", true);
-                    // Draws already recorded in this frame read the slot at execution; a second write would redirect them.
-                    if (sequence == draw_order_sequence)
-                        throw error(rhi::ErrorCode::execution_failed, "Draw order slot written twice in one recording frame", true);
-                    draw_order_sequence = sequence;
-                    auto& slot = draw_order_slots[sequence % slots];
-                    const auto count = static_cast<std::uint32_t>(draw_instances.size());
-                    if (slot.getCount() < count) {
-                        if (slot) require(gfxDestroyBuffer(gfx, std::exchange(slot, {})), "Retire draw order slot");
-                        slot = gfxCreateBuffer<std::uint32_t>(gfx, std::bit_ceil(count), nullptr, kGfxCpuAccess_Write);
-                        allocation(bool(slot));
-                    }
-                    std::memcpy(gfxBufferGetData(gfx, slot), draw_instances.data(), count * sizeof(std::uint32_t));
-                    order = slot;
-                }
+                if (!draw_instances.empty())
+                    order = draw_order_slots.write(gfx, context.info().frames_in_flight, draw_instances, true, "Draw order");
             }
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
                 if(selected_only&&!selected)return;
                 if(!order)return; // Nothing visible.
-                if(!data.buffer) {
+                if(!instance_data) {
                     timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
                     // editing data only when an actual raster pass consumes it.
-                    data.buffer=gfxCreateBuffer<Instance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());
-                    allocation(bool(data.buffer));
+                    instance_data=instance_slots.write(gfx,context.info().frames_in_flight,instances,true,"Scene instance");
                     // Match SceneLit's CPU-composed view/projection before the
                     // precise clip path; chained GPU matrices differ by ULPs.
                     math::Matrix4d camera_view,camera_projection;
@@ -864,7 +843,7 @@ struct Renderer::State {
                     static_cast<std::uint32_t>(frame.view.shading), static_cast<std::uint32_t>(frame.view.wireframe),
                     frame.view.triangle_edges ? 1u : 0u, pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
-                require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
+                require(gfxProgramSetParameter(gfx, program, "instances", instance_data), "Bind mesh instances");
                 require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
@@ -1007,11 +986,18 @@ struct Renderer::State {
                 gfx, gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read)};
             allocation(bool(color.buffer));
             require(gfxCommandCopyBackBufferToBuffer(gfx, color.buffer, pitch), "Capture window color");
-            BufferOwner z{gfx, {}};
+            BufferOwner z{gfx, {}}, motion{gfx, {}};
+            const std::uint32_t motion_pitch = (extent.width * 8 + 255) & ~255u;
             if (draw_scene) {
                 z.buffer = gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
                 allocation(bool(z.buffer));
                 require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
+                if (frame.view.shading == Shading::scene_lit && frame.view.wireframe != Wireframe::only) {
+                    motion.buffer = gfxCreateBuffer(gfx, std::uint64_t(motion_pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
+                    allocation(bool(motion.buffer));
+                    require(gfxCommandCopyTextureToBufferPitched(gfx, motion.buffer, scene_lit->motion(), motion_pitch),
+                            "Capture Scene Lit surface motion");
+                }
             } else {
                 // A UI-only capture describes this frame, not a retained scene depth texture.
                 std::fill(capture->depth.begin(), capture->depth.end(), 0.0f);
@@ -1021,13 +1007,23 @@ struct Renderer::State {
             const auto *rgba = static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, color.buffer));
             const auto *depth_bytes = draw_scene
                 ? static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, z.buffer)) : nullptr;
-            allocation(rgba && (!draw_scene || depth_bytes));
+            const auto *motion_bytes = motion.buffer
+                ? static_cast<const std::uint8_t *>(gfxBufferGetData(gfx, motion.buffer)) : nullptr;
+            allocation(rgba && (!draw_scene || depth_bytes) && (!motion.buffer || motion_bytes));
+            if (motion_bytes) capture->motion.resize(std::size_t(extent.width) * extent.height * 2);
             for (std::uint32_t y = 0; y < extent.height; ++y) {
                 std::memcpy(capture->rgba.data() + std::size_t(y) * extent.width * 4,
                             rgba + std::size_t(y) * pitch, extent.width * 4);
                 if (depth_bytes)
                     std::memcpy(capture->depth.data() + std::size_t(y) * extent.width,
                                 depth_bytes + std::size_t(y) * pitch, extent.width * 4);
+                if (motion_bytes)
+                    for (std::uint32_t x = 0; x < extent.width; ++x)
+                        for (std::uint32_t c = 0; c < 2; ++c) {
+                            std::uint16_t half;
+                            std::memcpy(&half, motion_bytes + std::size_t(y) * motion_pitch + x * 8 + c * 2, 2);
+                            capture->motion[(std::size_t(y) * extent.width + x) * 2 + c] = half_float(half);
+                        }
             }
         }
     }

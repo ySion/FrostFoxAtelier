@@ -36,6 +36,7 @@ public:
     // Called only after CPU preparation succeeds, inside the encoding phase.
     // Post-AA diagnostics use the public camera and preserve scene depth.
     void draw_debug(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,FrameStats& stats);
+    GfxTexture motion() const; // This frame's GBuffer surface motion, RGBA16F.
     void invalidate(bool empty_scene,FrameStats& stats);
     Result<void> close();
 private:

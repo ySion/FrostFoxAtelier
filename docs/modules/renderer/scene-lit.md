@@ -86,7 +86,7 @@ atlas 压力先调整分辨率，再使用“更新本批 → 着色本批 → �
 
 直接光的材质恢复与 HDR Compose 在同一通道完成，沿用去除独立 `direct_hdr` 中转后的资源路径与 RGBA16F 舍入行为。参考模式或没有光源时跳过直接光空间滤波，Compose 与 Local GI 共用已解析的直接光历史。候选数、参考模式和 Shadows 变化使受影响的直接光历史失效。
 
-关闭 SSSR 时仍写入环境回退和空来源历史，但跳过 HiZ 构建、工作列表 reset/prepare 与三个反射空间滤波通道；下一次开启重新构建这些输入。关闭 Bloom 时跳过下采样和两次模糊，色调映射沿原开关忽略 Bloom。实例上传比较完整 GPU 数据，包括 previous_world、历史有效位和几何偏移；静止帧复用缓冲，物体停止运动后的前帧矩阵更新仍会上传。法线矩阵按 world 变化计算，统一光源快照按真实 Renderer sequence 推进前后状态，不以可重复的 UI 帧号判定帧生命周期。
+关闭 SSSR 时仍写入环境回退和空来源历史，但跳过 HiZ 构建、工作列表 reset/prepare 与三个反射空间滤波通道；下一次开启重新构建这些输入。关闭 Bloom 时跳过下采样和两次模糊，色调映射沿原开关忽略 Bloom。实例表常驻默认堆，逐项比较完整 GPU 数据（包括 previous_world、历史有效位和几何偏移），只把变化的连续区间写入本帧槽再拷入；静止帧不拷贝，物体停止运动后的前帧矩阵更新仍会上传。光源表与阴影批次表放在帧槽里由 GPU 直接读取，内容未变且本帧槽已是最新时不重写。阴影作业内的投射者按几何组排序，同一网格的投射者合成一次实例化绘制。法线矩阵按 world 变化计算，统一光源快照按真实 Renderer sequence 推进前后状态，不以可重复的 UI 帧号判定帧生命周期。
 
 直接光、DDGI 屏幕 gather、GTAO 和 Local GI 共用 `lit_screen_dispatch` 的整数原点与独占终点，只派发视口内接收像素；坐标、纹理索引和随机数仍使用原窗口坐标。范围按像素中心与小数视口相交，参考分块也使用独立终点，补齐线程不会写相邻 tile。Compose、公共表面历史和显示后处理仍定义完整窗口；邻域消费者先检查表面和视口，不能读未写的外部区域。这个裁剪不改变光源池、TLAS 或离屏探针更新。
 
@@ -256,7 +256,7 @@ ReSTIR、直接光降噪、GTAO、Local GI、最终 TAA 以及 SSSR 接收面/�
 
 阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联。`scene_lit_light_sources`、`scene_lit_shadow_sources`、`scene_lit_di_candidates` 与历史重置数描述当前编码帧，分别为统一源总数、启用 Shadows 时具备投影资格的源数、初始候选预算；投影资格数不是本帧实际射线数，也没有“未获阴影槽”的灯。`scene_lit_resource_bytes` 是资源逻辑字节加 AS 数据量，不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
 
-空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码是否上传这些缓冲）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
+空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码这些表的内容是否变化或首次建立）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 
 Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程和窗口中运行下列入口，任一入口失败即整体失败；每个入口也是单独的目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口为 `renderer_acceptance_default`），供必要性测试只跑相关入口。证据写入构建目录的 `renderer-evidence/<入口>`，日志为 `renderer-acceptance-<入口>.log`：
 
@@ -265,7 +265,7 @@ Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程
 | 默认（无参数） | cavity、材质与材质光输运、UI、变换、网格、可见性、选中、视口显示与参考辅助、关闭 |
 | `--scene-lit` | 环境、逐项图像、时间稳定、Edit/Play 收敛、删灯、正交、模式独立性、resize |
 | `--scene-lit-benchmark` | 原生 2560×1440 完成样本与 GPU 分段计时合同；测量阶段关闭验证且不 Capture |
-| `--scene-lit-temporal` | 信号编辑、移动历史、时间隔离、刚体运动响应 |
+| `--scene-lit-temporal` | 信号编辑、移动历史、时间隔离、刚体运动响应、停止后首帧运动向量与静止参考一致 |
 | `--scene-lit-quality` | 四种 AA、灯光编辑与收敛、direct64、DI 辐射响应、SSIL、深度、DDGI 质量、contracts |
 | `--scene-lit-stability` | 稳定性、DDGI 质量、多体积 |
 | `--scene-lit-restir-suite` | 材质/传输、ReSTIR、多体积、DDGI 质量/调试、audit、contracts（同一 Renderer） |

@@ -702,14 +702,33 @@ void temporal_isolation(Fixture& f) {
     check(stable,"all SceneLit temporal isolation configurations meet the unchanged stability bounds");
     f.frame.view.lit=defaults;f.edited();
     const auto before_motion=f.capture("rigid-before",warmup_frames);
+    render::Capture moving,stopped;
     for(unsigned index=1;index<=16;++index) {
         f.room.meshes[4].world[12]=float(index)*.1f;
-        check(f.step().stats.scene_lit_history_resets==0,
+        check(f.step(index==16?&moving:nullptr).stats.scene_lit_history_resets==0,
               "continuous rigid motion updates AS/probes without resetting the stable scene domain");
     }
-    const auto after_motion=f.capture("rigid-after",8);
+    f.step(&stopped);
+    const auto after_motion=f.capture("rigid-after",7);
     check(f.compare("rigid-motion-light-response",before_motion,after_motion).changed>=64,
           "continuous rigid motion changes real receiver illumination with stable object identity");
+    // A camera cut rebuilds every instance from its current transform, so this
+    // reference cannot inherit a stale previous transform from the motion above.
+    f.frame.camera_cut=true;
+    const auto still=f.capture("rigid-still");
+    const auto motion_values=std::size_t(still.extent.width)*still.extent.height*2;
+    check(moving.motion.size()==motion_values&&stopped.motion.size()==motion_values&&still.motion.size()==motion_values,
+          "Scene Lit captures publish per-pixel surface motion");
+    std::size_t moving_pixels=0,stale_pixels=0;
+    for(std::size_t i=0;i<motion_values;i+=2) {
+        const auto delta=[&](const render::Capture& c) {
+            return std::max(std::abs(c.motion[i]-still.motion[i]),std::abs(c.motion[i+1]-still.motion[i+1]));
+        };
+        moving_pixels+=delta(moving)>1e-3f;stale_pixels+=delta(stopped)>1e-4f;
+    }
+    std::printf("SceneLit rigid stop: moving pixels %zu, stale motion pixels after stopping %zu\n",moving_pixels,stale_pixels);
+    check(moving_pixels>=64,"a moving object writes surface motion");
+    check(stale_pixels==0,"the first frame after an object stops has the same surface motion as a still reference");
     std::puts("Renderer SceneLit temporal isolation: PASS");
 }
 

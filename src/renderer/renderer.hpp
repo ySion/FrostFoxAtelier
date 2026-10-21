@@ -213,6 +213,8 @@ struct FrameResult {
 };
 // Explicit diagnostic capture stalls the GPU once; normal rendering does not.
 // Color is tightly packed sRGB RGBA8, depth tightly packed float32, top-left.
+// Scene Lit captures add surface motion: per pixel, previous minus current
+// window UV as two float32; empty for other shading.
 // Output is replaced only for a fully accepted frame, before any end-of-frame
 // resize. UI does not modify scene depth. Acceptance is not a scanout guarantee.
 struct Capture {
@@ -220,6 +222,7 @@ struct Capture {
     ui::PixelExtent extent;
     std::vector<std::uint8_t> rgba;
     std::vector<float> depth;
+    std::vector<float> motion;
 };
 
 // Single owner thread. Application owns HWND and keeps it alive through close.
