@@ -1044,8 +1044,6 @@ Result<Preparation> Renderer::preparation(const ViewSettings &view) {
     if (const auto checked = state_->check(); !checked) return std::unexpected(checked.error());
     if (view.shading != Shading::scene_lit || view.wireframe == Wireframe::only) return Preparation{.ready = true};
     auto &s = *state_;
-    if (!s.context.info().inline_ray_query)
-        return std::unexpected(error(rhi::ErrorCode::unsupported, "Scene Lit requires hardware DXR 1.1 inline ray tracing"));
     try {
         if (!s.scene_lit) s.scene_lit = std::make_unique<detail::SceneLit>(s.context);
         return s.scene_lit->preparation(view);

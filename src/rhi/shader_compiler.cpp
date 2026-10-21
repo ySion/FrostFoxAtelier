@@ -187,9 +187,8 @@ void store(const std::filesystem::path& directory, const std::filesystem::path& 
 }
 } // namespace
 
-Result<ShaderCompiler> ShaderCompiler::open(bool sixteen_bit_types, std::filesystem::path cache) {
+Result<ShaderCompiler> ShaderCompiler::open(std::filesystem::path cache) {
     ShaderCompiler compiler;
-    compiler.sixteen_bit_types_ = sixteen_bit_types;
     if (FAILED(DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&compiler.utils_))) ||
         FAILED(DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler.compiler_))) ||
         FAILED(compiler.utils_->CreateDefaultIncludeHandler(&compiler.includes_)))
@@ -208,8 +207,7 @@ Result<ShaderCompiler> ShaderCompiler::open(bool sixteen_bit_types, std::filesys
 }
 
 Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
-    std::vector<LPCWSTR> arguments{source.name.c_str()};
-    if (sixteen_bit_types_) arguments.push_back(L"-enable-16bit-types");
+    std::vector<LPCWSTR> arguments{source.name.c_str(), L"-enable-16bit-types"};
     for (LPCWSTR argument : {L"-I", L".", L"-T", source.profile.c_str(), L"-HV 2021", L"-Wno-parameter-usage",
                              L"-fdiagnostics-format=msvc", DXC_ARG_ALL_RESOURCES_BOUND, DXC_ARG_RESOURCES_MAY_ALIAS,
                              L"-E", source.entry.c_str()})

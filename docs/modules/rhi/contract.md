@@ -4,7 +4,7 @@
 
 ## 执行域与所有权
 
-- `Context::open` 按高性能顺序筛选同时支持 FL12_1 与 Mesh Shader 的硬件 adapter，跳过不合格候选；无合格硬件返回 unsupported，没有 WARP 回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
+- `Context::open` 按高性能顺序筛选同时支持 FL12_1、Mesh Shader、DXR 1.1 与 Shader Model 6.5 的硬件 adapter，跳过不合格候选；无合格硬件，或创建后的 gfx 设备拿不到 DXR 接口，都返回 unsupported，没有 WARP 或无光追回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
 - 一个 Context 对应一个 owned gfx context、一个 owner 线程、一条 DIRECT queue。`frame` 异步推进 gfx 帧槽；`finish` 提交当前工作并等待完成。
 - `Context`、`Pipeline` 不可复制，可移动。Pipeline 持有 Program/Kernel 和执行域；Context 外壳消失不提前销毁仍被 Pipeline 持有的执行域。最后一个所有者负责有限排空与释放。
 - 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
@@ -54,7 +54,7 @@
 
 ## Scene Lit：inline RayQuery 与离屏资源
 
-- `Context::info().inline_ray_query` 表示当前执行域同时满足固定 gfx 的 DXR 1.1 门槛及设备 Shader Model 6.5。能力为 false 时消费者不得准备或执行 RayQuery 路径；普通非 RT Context 仍可使用。不新增 DispatchRays 管线种类，使用 `PipelineKind::compute`、`shader_model="6_5"` 和普通 `prepare`；HLSL 通过 `RaytracingAccelerationStructure` / `RayQuery` 访问。
+- 每个打开的 Context 都支持 inline RayQuery（见上方的硬件门槛），消费者不再检查能力。不新增 DispatchRays 管线种类，使用 `PipelineKind::compute`、`shader_model="6_5"` 和普通 `prepare`；HLSL 通过 `RaytracingAccelerationStructure` / `RayQuery` 访问。
 - AS 沿同一个 `borrow()`：`gfxCreateGeometryTriangles` → `gfxCreateBottomLevelAccelerationStructure` / AddGeometry → `gfxBuildBottomLevelAccelerationStructures` → instance SetBottomLevelAccelerationStructure / SetTransform / SetInstanceID / SetInstanceMask → TLAS AddInstance / Build → `gfxProgramSetParameter(gfx, program, name, tlas)` → compute dispatch。变换是 row-major 3×4；InstanceID 由 Renderer 映射到自身场景数据，RHI 不保存 World 对象。
 - **Geometry 接收 buffer 句柄的所有权**，update 会销毁旧输入句柄，destroy 会销毁当前输入句柄。共享 raster 顶点/索引存储时，把 `gfxCreateBufferRange` 创建的独立 range 句柄交给 Geometry；原始 buffer 由原 owner 保持，不得将同一句柄交给多个 Geometry 或再重复销毁。BLAS 的 geometry 列表、TLAS 的 instance 列表及 instance 的 BLAS 引用均不转移对应对象所有权。
 - 可更新 BLAS 首次 build 使用 `kGfxBuildBottomLevelASFlag_Updateable`。update 只改变允许的顶点位置/输入地址，不改变 geometry 数量、顶点数量、索引内容与格式等拓扑条件；条件变化调用 build。TLAS update 保持 instance 数量，增删 instance 后调用 build。任何被 TLAS 引用的 BLAS 更新后，先更新或重建对应 TLAS，再执行查询。

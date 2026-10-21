@@ -28,7 +28,7 @@ struct CompiledShader {
 // truncated or mismatched entries are misses and are overwritten.
 class ShaderCompiler {
 public:
-    [[nodiscard]] static Result<ShaderCompiler> open(bool sixteen_bit_types, std::filesystem::path cache);
+    [[nodiscard]] static Result<ShaderCompiler> open(std::filesystem::path cache);
     [[nodiscard]] Result<CompiledShader> compile(const ShaderSource& source);
 
 private:
@@ -37,7 +37,6 @@ private:
     Microsoft::WRL::ComPtr<IDxcIncludeHandler> includes_;
     std::string identity_; // Compiler version and commit; part of every cache key.
     std::filesystem::path cache_;
-    bool sixteen_bit_types_{};
 };
 
 } // namespace atelier::rhi::detail

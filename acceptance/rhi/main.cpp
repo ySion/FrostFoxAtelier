@@ -257,7 +257,6 @@ int main() {
             require(gfxGetRecordingFrameSequence(context.borrow()) == 1, "headless synchronization advanced a frame");
         }
         require(context.info().debug_layer && context.info().gpu_validation, "validation not enabled");
-        require(context.info().mesh_shader, "acceptance requires hardware mesh shader support");
         print_adapter(context.borrow());
         auto debug = debug_queue(context.borrow());
         std::puts("debug-layer=1 gpu-validation=1");

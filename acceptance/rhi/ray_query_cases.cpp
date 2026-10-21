@@ -50,8 +50,6 @@ void ray_query_cases() {
     ContextOptions options;
     options.validation = Validation::gpu;
     auto owner = take(Context::open(options));
-    require(owner.info().inline_ray_query,
-            "inline RayQuery acceptance requires verified DXR 1.1 support (RX 6800 XT must support it)");
     const auto gfx = owner.borrow();
     auto debug = debug_queue(gfx);
     PipelineDesc desc;
