@@ -1,6 +1,7 @@
 #include "source/detail/bridge.hpp"
 #include "source/detail/diagnostics.hpp"
 #include "source/detail/debugger.hpp"
+#include "language/declarations.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -40,7 +41,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     binding.dependencies = {binding.f32, binding.f64, binding.u32, binding.i32, binding.boolean};
     for (const auto* enumeration : catalog) {
         const auto id = enumeration->id;
-        if (!enumeration->enumeration) continue;
+        if (!enumeration->enumeration || language::editor_reserved(enumeration->name)) continue;
         binding.enumerations.push_back({id, enumeration->name,
             enumeration->enumeration->underlying == binding.i32 ? ValueKind::i32 : ValueKind::u32,
             enumeration->enumeration->values});
@@ -54,7 +55,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     };
     std::vector<const TypeInfo*> pending_arrays;
     for (const auto* value : catalog) {
-        if (value->contains_references) continue;
+        if (value->contains_references || language::editor_reserved(value->name)) continue;
         if (value->kind == TypeKind::record) append_value(*value, ValueKind::record);
         else if (value->kind == TypeKind::string && value->sequence_view) append_value(*value, ValueKind::string);
         else if (value->kind == TypeKind::array && value->sequence_view) pending_arrays.push_back(value);

@@ -151,6 +151,64 @@ class game.Probe : project.Probe {
     require(!std::get<bool>(*take(take(program.entry("game.Probe.work")).invoke(id,{}))),
         "Unrelated borrowed entry suppressed an ordinary loop's GC progress.");
 }
+struct EditorPanel { float x; };
+struct ProjectHost { float x; };
+// The editor registers its own types under editor. in the same Runtime before project Source
+// compiles. Project Source neither sees nor declares them; other registered types bind as usual.
+void verify_editor_reserved_types() {
+    Runtime runtime;
+    // The editor and project records differ only by name.
+    const auto record = [](std::string name) {
+        TypeDefinition definition;
+        definition.name = std::move(name);
+        definition.kind = TypeKind::record;
+        FieldDefinition x;
+        x.name = "x";
+        x.value = {TypeReference::native<float>()};
+        definition.fields.push_back(std::move(x));
+        return definition;
+    };
+    TypeDefinition mode;
+    mode.name = "editor.Mode";
+    mode.kind = TypeKind::enumeration;
+    mode.enumeration = TypeDefinition::Enumeration{TypeReference::native<std::uint32_t>(), {{"a", 0}, {"b", 1}}};
+    auto level = mode;
+    level.name = "project.Level";
+    take(runtime.register_types({
+        record("editor.Probe"),
+        NativeRegistration<EditorPanel>(runtime, "editor.Panel", TypeKind::object).build(),
+        std::move(mode),
+        record("project.Reading"),
+        NativeRegistration<ProjectHost>(runtime, "project.Host", TypeKind::object).build(),
+        std::move(level)}));
+    Program program(runtime);
+    const auto rejected = [&](std::string text, std::string_view expected, const char* message) {
+        auto failed = Program::prepare(take(program.request(source::SourceSnapshot{"editor", 1, {{"Reserved.source", 1, std::move(text)}}})));
+        if (failed || failed.error().code != ErrorCode::invalid_definition || failed.error().message.find(expected) == std::string::npos)
+            throw std::runtime_error(std::string(message) + (failed ? "" : " Got: " + failed.error().message));
+    };
+    rejected("float read() { editor.Probe probe; return probe.x; }", "Unknown registered value type 'editor.Probe'",
+        "Project Source used an editor. record.");
+    rejected("bool pick() { return editor.Mode::a == editor.Mode::b; }", "Unknown enum type",
+        "Project Source used an editor. enumeration.");
+    rejected("struct game.Holder { editor.Probe probe; };", "editor.Probe", "A project struct held an editor. record.");
+    rejected("class game.Panel : editor.Panel { }", "Unknown native base type: editor.Panel",
+        "A project class derived from an editor. object type.");
+    rejected("struct editor.Mine { float a; };", "reserved for editor types", "Project Source declared an editor. struct.");
+    rejected("enum editor.Choice { A }", "reserved for editor types", "Project Source declared an editor. enumeration.");
+    rejected("class editor.Tool : project.Host { }", "reserved for editor types", "Project Source declared an editor. class.");
+    require(!runtime.find_type("game.Holder") && !runtime.find_type("game.Panel"), "A rejected project published a type.");
+    publish(program, {"editor", 2, {{"Visible.source", 2, R"(
+struct game.Holder { project.Reading reading; float scale; };
+float read(float value) { game.Holder holder; holder.reading.x = value; return holder.reading.x; }
+bool pick() { return project.Level::a != project.Level::b; }
+class game.Panel : project.Host { float speed = 1.0f; }
+)"}}});
+    const std::array value{Scalar{2.5f}};
+    require(std::get<float>(*take(take(program.entry("read")).invoke({}, value))) == 2.5f &&
+        std::get<bool>(*take(take(program.entry("pick")).invoke({}, {}))) && program.classes().size() == 1,
+        "Registered project types did not bind beside hidden editor. types.");
+}
 }
 
 void verify_source_projects() {
@@ -300,5 +358,6 @@ void verify_source_projects() {
     verify_declaration_only_project();
     verify_project_borrow_effects();
     verify_project_field_ranges();
+    verify_editor_reserved_types();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime)");
 }
