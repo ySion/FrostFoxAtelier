@@ -1537,7 +1537,7 @@ struct SceneLit::State {
 
 SceneLit::SceneLit(rhi::Context& context):state_(std::make_unique<State>(context)){}
 SceneLit::~SceneLit(){if(state_){const auto result=close();if(!result){std::fprintf(stderr,"Scene Lit cleanup failed: %s\n",result.error().cause.message.c_str());std::abort();}}}
-void SceneLit::validate(const Frame& frame) const {
+void SceneLit::validate(const Frame& frame,bool duplicate_mesh_keys) const {
     const auto view_inverse=math::try_inverse(matrix(frame.camera.view));
     const auto vp=matrix(frame.camera.view)*matrix(frame.camera.projection);const auto vp_inverse=math::try_inverse(vp);
     invalid(bool(view_inverse)&&bool(vp_inverse),"Scene Lit requires an invertible camera");
@@ -1549,9 +1549,8 @@ void SceneLit::validate(const Frame& frame) const {
         finite(s.reflection_distance)&&s.reflection_distance>0&&finite(s.reflection_roughness)&&s.reflection_roughness>=0&&s.reflection_roughness<=1&&s.probe_update_budget>0&&s.probe_rays>=1&&s.probe_rays<=256&&s.antialiasing<=Antialiasing::smaa_t2x&&s.probe_visualization<=ProbeVisualization::distance&&finite(s.probe_radius)&&s.probe_radius>=.01f&&s.probe_radius<=.45f,"Invalid Scene Lit settings");
     for(float radiance:frame.environment)invalid(finite(radiance)&&radiance>=0&&radiance<=65504,"Invalid Scene Lit sky radiance");
     if(const auto* error=probe_focus_error(s,frame.lighting_focus))invalid(false,error);
-    std::unordered_set<std::uint64_t> mesh_keys,light_keys;
-    for(const auto& mesh:frame.meshes)if(mesh.stable_key)
-        invalid(mesh_keys.insert(mesh.stable_key).second,"Duplicate stable mesh identity");
+    invalid(!duplicate_mesh_keys,"Duplicate stable mesh identity");
+    std::unordered_set<std::uint64_t> light_keys;
     for(const auto& l:frame.lights){invalid(l.kind<=LightKind::directional&&finite(l.intensity)&&l.intensity>=0&&finite(l.range)&&l.range>=0&&finite(l.source_radius)&&l.source_radius>=0&&finite(l.width)&&l.width>=0&&finite(l.height)&&l.height>=0,"Invalid Scene Lit light");
         invalid(l.kind==LightKind::directional||l.range>0,"Local light range must be positive");
         invalid(l.kind!=LightKind::rectangle||(l.width>0&&l.height>0),"Rectangle dimensions must be positive");

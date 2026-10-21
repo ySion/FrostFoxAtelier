@@ -62,7 +62,112 @@ template<class Pixels> bool valid_pixels(const Pixels &image, unsigned channels)
         std::uint64_t(image.row_pitch) >= std::uint64_t(image.width) * channels &&
         std::uint64_t(image.row_pitch) * image.height <= image.pixels.size();
 }
-void validate(const Frame &frame) {
+struct Instance {
+    std::array<float, 16> world;
+    std::array<float, 9> normal_matrix;
+    float selected;
+    float tangent_sign{1};
+};
+static_assert(sizeof(Instance) == 108 && sizeof(geometry::Vertex) == 48);
+bool same_bits(float a, float b) noexcept { return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b); }
+template<std::size_t N> bool same_bits(const std::array<float, N> &a, const std::array<float, N> &b) noexcept {
+    for (std::size_t i = 0; i < N; ++i)
+        if (!same_bits(a[i], b[i])) return false;
+    return true;
+}
+bool same_bits(const ui::Color &a, const ui::Color &b) noexcept {
+    return same_bits(a.r, b.r) && same_bits(a.g, b.g) && same_bits(a.b, b.b) && same_bits(a.a, b.a);
+}
+bool same_bits(const Material &a, const Material &b) noexcept {
+    return same_bits(a.roughness, b.roughness) && same_bits(a.metallic, b.metallic) && same_bits(a.emissive, b.emissive);
+}
+// Everything an instance check reads belongs to the instance itself.
+bool valid_instance(const MeshInstance &mesh) {
+    bool good = bool(mesh.geometry) && valid(mesh.color);
+    if (mesh.surfaces) {
+        good &= mesh.geometry && mesh.surfaces->size() == mesh.geometry->materials().size();
+        for (const auto &surface : *mesh.surfaces) good &= bool(surface);
+    }
+    good &= finite(mesh.material.roughness) && mesh.material.roughness >= 0 && mesh.material.roughness <= 1 &&
+        finite(mesh.material.metallic) && mesh.material.metallic >= 0 && mesh.material.metallic <= 1;
+    for (float e : mesh.material.emissive) good &= finite(e) && e >= 0 && e <= material::emission_limit;
+    for (float v : mesh.world) good &= finite(v);
+    return good && mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
+}
+// The last content at each Frame::meshes position that passed valid_instance, and
+// the stable keys it holds in every shading mode. An unchanged position skips its
+// check and reuses its prepared Instance. Geometry, surfaces and their images are
+// immutable once published, so while an entry owns them pointer equality is content equality.
+class MeshChecks {
+public:
+    struct Entry {
+        std::array<float, 16> world{};
+        ui::Color color{};
+        Material material{};
+        std::uint64_t stable_key{};
+        geometry::MeshRef geometry;
+        std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces;
+        std::uint32_t material_slots{};
+        std::optional<Instance> prepared; // Set by the first frame that prepares this content.
+    };
+    // Adds the frame's material slot count; false means an invalid instance. Changes nothing.
+    bool check(std::span<const MeshInstance> meshes, std::uint64_t &material_slots) {
+        changed_.clear();
+        for (std::size_t i = 0; i < meshes.size(); ++i) {
+            const auto &mesh = meshes[i];
+            if (i < entries_.size() && same(entries_[i], mesh)) {
+                material_slots += entries_[i].material_slots;
+                continue;
+            }
+            if (!valid_instance(mesh)) return false;
+            material_slots += mesh.geometry->materials().size();
+            changed_.push_back(static_cast<std::uint32_t>(i));
+        }
+        return true;
+    }
+    // Adopts the meshes of a frame whose renderer-level checks all passed.
+    void commit(std::span<const MeshInstance> meshes) {
+        for (std::size_t i = meshes.size(); i < entries_.size(); ++i) release(entries_[i].stable_key);
+        if (entries_.size() != meshes.size()) materials_changed = true;
+        entries_.resize(meshes.size());
+        for (const auto i : changed_) {
+            const auto &mesh = meshes[i];
+            auto &entry = entries_[i];
+            materials_changed |= entry.geometry != mesh.geometry || entry.surfaces != mesh.surfaces ||
+                !same_bits(entry.color, mesh.color) || !same_bits(entry.material, mesh.material);
+            release(entry.stable_key);
+            acquire(mesh.stable_key);
+            entry = {mesh.world, mesh.color, mesh.material, mesh.stable_key, mesh.geometry, mesh.surfaces,
+                     static_cast<std::uint32_t>(mesh.geometry->materials().size()), std::nullopt};
+        }
+        changed_.clear();
+    }
+    [[nodiscard]] Entry &operator[](std::size_t i) noexcept { return entries_[i]; }
+    // Nonzero stable keys held by more than one position of the committed frame.
+    [[nodiscard]] bool duplicate_keys() const noexcept { return duplicates_ != 0; }
+    // The committed geometry, surfaces or constant materials differ from the built material tables.
+    bool materials_changed{true};
+
+private:
+    static bool same(const Entry &entry, const MeshInstance &mesh) noexcept {
+        return entry.geometry == mesh.geometry && entry.surfaces == mesh.surfaces && entry.stable_key == mesh.stable_key &&
+            same_bits(entry.world, mesh.world) && same_bits(entry.color, mesh.color) && same_bits(entry.material, mesh.material);
+    }
+    void acquire(std::uint64_t key) {
+        if (key && ++uses_[key] == 2) ++duplicates_;
+    }
+    void release(std::uint64_t key) {
+        if (!key) return;
+        const auto at = uses_.find(key);
+        if (--at->second == 1) --duplicates_;
+        else if (at->second == 0) uses_.erase(at);
+    }
+    std::vector<Entry> entries_;
+    std::vector<std::uint32_t> changed_;
+    std::unordered_map<std::uint64_t, std::uint32_t> uses_;
+    std::uint32_t duplicates_{};
+};
+void validate(const Frame &frame, MeshChecks &meshes) {
     const auto &ui = frame.ui_frame;
     bool good =
         ui.id != 0 && finite(ui.dpi_scale) && ui.dpi_scale > 0 && valid(frame.scene_viewport) &&
@@ -85,20 +190,7 @@ void validate(const Frame &frame) {
     for (float v : frame.camera.projection)
         good &= finite(v);
     std::uint64_t material_slots=0;
-    for (const auto &mesh : frame.meshes) {
-        if(mesh.geometry)material_slots+=mesh.geometry->materials().size();
-        good &= bool(mesh.geometry) && valid(mesh.color);
-        if(mesh.surfaces) {
-            good &= mesh.geometry && mesh.surfaces->size()==mesh.geometry->materials().size();
-            for(const auto& surface:*mesh.surfaces)good &= bool(surface);
-        }
-        good &= finite(mesh.material.roughness) && mesh.material.roughness>=0 && mesh.material.roughness<=1 &&
-            finite(mesh.material.metallic) && mesh.material.metallic>=0 && mesh.material.metallic<=1;
-        for(float e:mesh.material.emissive)good &= finite(e)&&e>=0&&e<=material::emission_limit;
-        for (float v : mesh.world)
-            good &= finite(v);
-        good &= mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
-    }
+    good &= meshes.check(frame.meshes, material_slots);
     good &= material_slots<=std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface);
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
@@ -117,14 +209,8 @@ void validate(const Frame &frame) {
         if (shape.kind == OverlayShape::Kind::rectangle) valid_shape &= shape.points[2] >= 0 && shape.points[3] >= 0;
         if (!valid_shape) throw error(rhi::ErrorCode::invalid_argument, "Invalid viewport overlay shape");
     }
+    meshes.commit(frame.meshes);
 }
-struct Instance {
-    std::array<float, 16> world;
-    std::array<float, 9> normal_matrix;
-    float selected;
-    float tangent_sign{1};
-};
-static_assert(sizeof(Instance) == 108 && sizeof(geometry::Vertex) == 48);
 struct SceneTriangle {
     std::array<geometry::Vertex, 3> vertices;
     std::uint32_t edge_mask;
@@ -321,6 +407,7 @@ struct Renderer::State {
         bool operator==(const MaterialCaptureKey&) const=default;
     };
     std::vector<MaterialCaptureKey> material_keys,next_material_keys;
+    MeshChecks mesh_checks;
     std::vector<std::pair<const material::Image*,bool>> used_material_images;
     std::vector<detail::GpuSurface> next_surfaces;
     std::vector<std::uint32_t> next_material_indices,next_material_offsets;
@@ -555,6 +642,10 @@ struct Renderer::State {
         ++stats.material_upload_count;return image.texture;
     }
     void prepare_materials(const Frame& frame) {
+        if(materials.surface_buffer&&!mesh_checks.materials_changed) {
+            for(const auto& key:used_material_images)material_images.at(key).used=true;
+            return;
+        }
         next_material_keys.clear();next_material_keys.reserve(frame.meshes.size());
         for(const auto& mesh:frame.meshes) {
             MaterialCaptureKey key{mesh.geometry,mesh.surfaces,{1,1,1,1},0,0,{}};
@@ -563,7 +654,7 @@ struct Renderer::State {
         }
         if(materials.surface_buffer&&material_keys==next_material_keys) {
             for(const auto& key:used_material_images)material_images.at(key).used=true;
-            next_material_keys.clear();return;
+            next_material_keys.clear();mesh_checks.materials_changed=false;return;
         }
         material_keys.swap(next_material_keys);next_material_keys.clear();used_material_images.clear();
         materials.descriptions.clear();materials.textures.clear();++materials.revision;
@@ -611,6 +702,7 @@ struct Renderer::State {
         for(std::size_t i=0;i<materials.samplers.size();++i)if(!materials.samplers[i]) {
             materials.samplers[i]=gfxCreateSamplerState(gfx,D3D12_FILTER_ANISOTROPIC,addresses[i],addresses[i]);allocation(bool(materials.samplers[i]));
         }
+        mesh_checks.materials_changed=false;
     }
     // Returns the image's slot in this frame's ui_textures; a new revision uploads once.
     template<class Pixels> std::uint32_t texture(const std::shared_ptr<const Pixels> &owner) {
@@ -920,6 +1012,7 @@ struct Renderer::State {
             }
         } else {
             materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();++materials.revision;
+            mesh_checks.materials_changed=true;
             if(has_viewport) {
                 if(scene_lit)scene_lit->draw_debug(frame,extent,depth,stats);
                 draw_grid(frame,false);
@@ -1138,12 +1231,12 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     bool encoding = false;
     try {
         std::optional<timing::Scope> stage{std::in_place, phases::prepare};
-        validate(frame);
+        validate(frame, s.mesh_checks);
         if(!std::isfinite(frame.render_delta_seconds) || frame.render_delta_seconds<0 || frame.render_delta_seconds>.1f)
             throw error(rhi::ErrorCode::invalid_argument,"Render delta must be finite and in [0, .1] seconds");
         if(frame.view.shading==Shading::scene_lit&&frame.view.wireframe!=Wireframe::only&&(!frame.meshes.empty()||frame.view.lit.probe_overlay())&&frame.scene_viewport.width>0&&frame.scene_viewport.height>0) {
             if(!s.scene_lit)s.scene_lit=std::make_unique<detail::SceneLit>(s.context);
-            s.scene_lit->validate(frame);
+            s.scene_lit->validate(frame, s.mesh_checks.duplicate_keys());
             const auto prepared=s.scene_lit->preparation(frame.view);
             if(!prepared) return std::unexpected(prepared.error());
             if(!prepared->ready)
@@ -1156,8 +1249,12 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.raster_visibility.clear();s.raster_visibility.reserve(frame.meshes.size());
         const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height);
         s.mesh_groups.clear();s.instance_groups.clear();s.instance_groups.reserve(frame.meshes.size());
-        for (const auto &mesh : frame.meshes) {
-            s.instances.push_back(prepare_instance(mesh));
+        for (std::size_t i = 0; i < frame.meshes.size(); ++i) {
+            const auto &mesh = frame.meshes[i];
+            auto &checked = s.mesh_checks[i];
+            if (!checked.prepared) checked.prepared = prepare_instance(mesh);
+            s.instances.push_back(*checked.prepared);
+            s.instances.back().selected = mesh.selected ? 1.0f : 0.0f;
             const bool visible=frustum.visible(mesh.geometry->bounds(),mesh.world);
             s.raster_visibility.push_back(visible?1u:0u);
             ++s.stats.scene_instances;s.stats.scene_culled_instances+=visible?0u:1u;
