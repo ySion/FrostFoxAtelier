@@ -152,7 +152,7 @@ struct FrameStats {
     // Optional completed inspection; owns its exact sampled layout and frame.
     std::shared_ptr<const ProbeInspection> scene_lit_probe_inspection;
     std::uint64_t ui_draw_calls{};
-    std::uint64_t ui_quads{}; // Visible instances; adjacent compatible quads share a draw.
+    std::uint64_t ui_quads{}; // Visible instances that overlap their clip; all share one draw.
     std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
     std::uint64_t scene_instances{}, scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.

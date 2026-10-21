@@ -544,7 +544,7 @@ int main(int argc, char** argv) try {
     check(result.status == render::FrameStatus::accepted && result.accepted_id == 1 &&
               result.accepted_extent == target.extent,
           "accepted metadata");
-    check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 1 &&
+    check(result.stats.ui_draw_calls == 1 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 1 &&
               result.stats.coverage_upload_count == 1 && result.stats.coverage_upload_bytes == 6 &&
               result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
               result.stats.cached_coverage_cpu_bytes == 10,
@@ -568,7 +568,7 @@ int main(int argc, char** argv) try {
           pixel(capture, 360, 200)[1] == pixel(initial, 360, 200)[1],
           "selection highlights polygon edges while preserving the surface");
     // Cavity composites before selected edges; UI coverage activity remains unchanged.
-    check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 2 &&
+    check(result.stats.ui_draw_calls == 1 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 2 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 10,
           "unchanged coverage reuses cache without accumulating per-frame activity");
@@ -602,7 +602,7 @@ int main(int argc, char** argv) try {
     for (int i = 0; i < 12; ++i) {
         ++ui_frame.id;
         result = take(prepared_render(renderer,frame));
-        check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
+        check(result.stats.ui_draw_calls == 1 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
                   result.stats.coverage_upload_count == (i == 0 ? 1u : 0u) &&
                   result.stats.coverage_upload_bytes == (i == 0 ? 6u : 0u) &&
                   result.stats.cached_coverage_count == 1 && result.stats.cached_coverage_texel_bytes == 6 &&
@@ -617,12 +617,13 @@ int main(int argc, char** argv) try {
     auto hidden = std::make_shared<ui::Coverage>(*ui_frame.draws[2].coverage);
     hidden->identity = 2;
     ui_frame.draws.push_back({{0, 0, 30, 20}, {}, {1, 1, 1, 1}, {0, 0, 1, 1}, hidden});
+    ui_frame.draws.push_back({{0, 0, 30, 20}, {30, 0, 60, 20}, {1, 1, 1, 1}, {0, 0, 1, 1}, hidden});
     ++ui_frame.id;
     result = take(prepared_render(renderer,frame));
-    check(result.stats.ui_draw_calls == 3 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
+    check(result.stats.ui_draw_calls == 1 && result.stats.ui_quads == 4 && result.stats.scene_draw_calls == 2 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 1,
-          "empty-clipped input is not counted as a draw or upload");
+          "empty or disjoint clips are not counted as a quad, draw or upload");
     window.resize(703, 427);
     result = take(prepared_render(renderer,frame, &capture));
     check(result.accepted_extent == ui::PixelExtent{641, 385} && capture.extent == result.accepted_extent &&
@@ -670,7 +671,7 @@ int main(int argc, char** argv) try {
     frame.meshes = {};
     ++ui_frame.id;
     result = take(prepared_render(renderer,frame, &capture));
-    check(result.stats.ui_draw_calls == 2 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 0 &&
+    check(result.stats.ui_draw_calls == 1 && result.stats.ui_quads == 3 && result.stats.scene_draw_calls == 0 &&
               result.stats.coverage_upload_count == 0 && result.stats.coverage_upload_bytes == 0 &&
               result.stats.cached_coverage_count == 0 && result.stats.cached_coverage_texel_bytes == 0 &&
               result.stats.cached_coverage_cpu_bytes == 0,
