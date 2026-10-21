@@ -6,7 +6,6 @@
 #include "smaa_lut.hpp"
 #include "solid_geometry.hpp"
 #include "raster_viewport.hpp"
-#include "scene_visibility.hpp"
 #include "math/math.hpp"
 
 #include <algorithm>
@@ -112,7 +111,7 @@ struct SceneLit::State {
     std::vector<ShadowGpuBatch> shadow_batches;
     std::vector<ShadowCaster> shadow_casters;
     std::vector<ShadowChange> shadow_changes;
-    std::vector<std::uint32_t> shadow_instance_indices,shadow_instance_draws;
+    std::vector<std::uint32_t> shadow_instance_indices;
     bool shadows_cached{};
     struct ShadowSample { ShadowPlanStats plan;std::uint32_t batches{},draws{}; };
     GfxTexture ssil_raw,ssil_irradiance;
@@ -425,12 +424,7 @@ struct SceneLit::State {
                 *t=gfxCreateTexture2D(gfx,shadow_atlas_extent,shadow_atlas_extent,DXGI_FORMAT_D32_FLOAT,1,clear);allocation(bool(*t));}
         }
     }
-    void shadow_geometry(const Frame& frame,std::span<const SceneLitDraw> draws) {
-        shadow_instance_draws.assign(frame.meshes.size(),~0u);
-        for(std::uint32_t i=0;i<draws.size();++i)for(std::uint32_t j=0;j<draws[i].count;++j)
-            shadow_instance_draws[draws[i].first+j]=i;
-    }
-    void shadow_update(const ShadowBatch& batch,ShadowGpuBatch& gpu,std::span<const SceneLitDraw> draws,ShadowSample& sample) {
+    void shadow_update(const ShadowBatch& batch,ShadowGpuBatch& gpu,const SceneLitDraws& scene_draws,ShadowSample& sample) {
         shadow_upload(gpu.faces,gpu.previous_faces,batch.faces);shadow_upload(gpu.lights,gpu.previous_lights,batch.lights);
         if(batch.updates.empty())return;
         shadow_instance_indices.clear();
@@ -450,10 +444,11 @@ struct SceneLit::State {
             require(gfxCommandSetScissorRect(gfx,r[0],r[1],r[2],r[3]),"Set shadow tile scissor");
             bind(p,"lit_shadow_view_projection",job.view_projection);
             for(std::size_t at=0;at<job.instances.size();) {
-                const auto draw_index=shadow_instance_draws[job.instances[at]];
-                invalid(draw_index<draws.size(),"Shadow caster missing from current geometry snapshot");
-                const auto& draw=draws[draw_index];std::size_t end=at+1;
-                while(end<job.instances.size()&&shadow_instance_draws[job.instances[end]]==draw_index)++end;
+                const auto& instance_draws=scene_draws.instance_draws;
+                invalid(job.instances[at]<instance_draws.size(),"Shadow caster missing from current geometry snapshot");
+                const auto draw_index=instance_draws[job.instances[at]];
+                const auto& draw=scene_draws.draws[draw_index];std::size_t end=at+1;
+                while(end<job.instances.size()&&instance_draws[job.instances[end]]==draw_index)++end;
                 bind(p,"lit_triangles",draw.triangles);bind(p,"lit_shadow_first_instance",first+static_cast<std::uint32_t>(at));
                 require(gfxCommandDraw(gfx,draw.vertex_count,static_cast<std::uint32_t>(end-at)),"Draw invalidated shadow casters");
                 ++sample.draws;at=end;
@@ -971,7 +966,7 @@ struct SceneLit::State {
         source_counts={light_frame.local_count,light_frame.directional_count,light_frame.emitter_count,
             static_cast<std::uint32_t>(light_frame.previous_sources.size())};
     }
-    void draw(const Frame& frame,ui::PixelExtent next,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats) {
+    void draw(const Frame& frame,ui::PixelExtent next,GfxTexture depth,const SceneLitDraws& scene_draws,const MaterialFrame& materials,FrameStats& stats) {
         material_frame=&materials;
         resources();publish_gpu_sample(stats);encoded_pass_mask=0;begin(1);const auto& settings=frame.view.lit;targets(next);
         if(!settings.probe_inspect || !settings.ddgi || (stats.scene_lit_probe_inspection &&
@@ -1072,15 +1067,11 @@ struct SceneLit::State {
         begin(0);for(std::uint32_t i=0;i<gbuffer_textures.size();i++){require(gfxCommandClearTexture(gfx,gbuffer_textures[i]),"Clear Scene Lit GBuffer");require(gfxCommandBindColorTarget(gfx,i,gbuffer_textures[i]),"Bind Scene Lit GBuffer");}
         require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit primary depth");common(gbuffer.program(),depth);
         require(gfxCommandBindKernel(gfx,gbuffer.kernel()),"Bind Scene Lit raster pipeline");
-        for(const auto& draw:draws) {
-            if(std::ranges::none_of(draw.raster_visibility,[](std::uint8_t visible){return visible!=0;}))continue;
-            bind(gbuffer.program(),"lit_triangles",draw.triangles);
-            draw_visible_ranges(draw.first,draw.count,
-                [&](std::uint32_t index){return draw.raster_visibility[index-draw.first]!=0;},
-                [&](std::uint32_t first,std::uint32_t count) {
-                    bind(gbuffer.program(),"lit_first_instance",first);
-                    require(gfxCommandDraw(gfx,draw.vertex_count,count),"Draw Scene Lit surface geometry");++stats.scene_draw_calls;
-                });
+        bind(gbuffer.program(),"lit_draw_instances",scene_draws.draw_instances);
+        for(const auto& draw:scene_draws.draws) {
+            if(!draw.count)continue;
+            bind(gbuffer.program(),"lit_triangles",draw.triangles);bind(gbuffer.program(),"lit_first_instance",draw.first);
+            require(gfxCommandDraw(gfx,draw.vertex_count,draw.count),"Draw Scene Lit surface geometry");++stats.scene_draw_calls;
         }
         for(std::uint32_t i=0;i<gbuffer_textures.size();i++)require(gfxCommandBindColorTarget(gfx,i,{}),"Unbind Scene Lit GBuffer");
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind Scene Lit primary depth");end(0);
@@ -1127,7 +1118,6 @@ struct SceneLit::State {
             const auto& plan=shadow_cache.prepare(frame,light_frame,shadow_casters,shadow_changes,sequence);
             shadow_sample.plan=plan.stats;shadow_sample.batches=static_cast<std::uint32_t>(plan.batches.size());
             if(plan.stats.static_updates||plan.stats.dynamic_updates)encoded_pass_mask|=1u<<21;
-            if(plan.stats.rendered_instances)shadow_geometry(frame,draws);
             while(shadow_batches.size()<plan.batches.size()) {
                 auto& batch=shadow_batches.emplace_back();
                 batch.update_query=gfxCreateTimestampQuery(gfx);allocation(bool(batch.update_query));
@@ -1137,7 +1127,7 @@ struct SceneLit::State {
             for(std::size_t i=0;i<plan.batches.size();++i) {
                 auto& gpu=shadow_batches[i];const auto& batch=plan.batches[i];
                 require(gfxCommandBeginTimestampQuery(gfx,gpu.update_query),"Begin shadow update batch");
-                shadow_update(batch,gpu,draws,shadow_sample);
+                shadow_update(batch,gpu,scene_draws,shadow_sample);
                 require(gfxCommandEndTimestampQuery(gfx,gpu.update_query),"End shadow update batch");
                 require(gfxCommandBeginTimestampQuery(gfx,gpu.shade_query),"Begin shadow shading batch");
                 // Keep cached filtering and endpoint RT in separate kernels.
@@ -1434,7 +1424,7 @@ struct SceneLit::State {
         retire(shadow_static);retire(shadow_dynamic);
         for(auto& batch:shadow_batches){retire(batch.faces);retire(batch.lights);retire(batch.instances);
             for(auto q:{batch.update_query,batch.shade_query})if(q)require(gfxDestroyTimestampQuery(gfx,q),"Retire shadow batch timestamp");}
-        shadow_batches.clear();shadow_instance_indices.clear();shadow_instance_draws.clear();
+        shadow_batches.clear();shadow_instance_indices.clear();
         for(auto& [key,o]:objects){(void)key;if(tlas)require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,o.instance),"Detach Scene Lit instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,o.instance),"Retire Scene Lit instance");}objects.clear();
         if(tlas)require(gfxDestroyTopLevelAccelerationStructure(gfx,std::exchange(tlas,{})),"Retire Scene Lit TLAS");
@@ -1491,7 +1481,7 @@ void SceneLit::validate(const Frame& frame) const {
             l.kind==LightKind::rectangle?double(l.width)*l.height:1))invalid(false,message);
         if(l.kind==LightKind::directional)invalid(double(l.source_radius)<std::numbers::pi_v<double>/2,"Directional source angular radius is too large");if(l.stable_key)invalid(light_keys.insert(l.stable_key).second,"Duplicate stable light identity");}
 }
-void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,std::span<const SceneLitDraw> draws,const MaterialFrame& materials,FrameStats& stats){state_->draw(frame,extent,depth,draws,materials,stats);}
+void SceneLit::draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,const SceneLitDraws& scene_draws,const MaterialFrame& materials,FrameStats& stats){state_->draw(frame,extent,depth,scene_draws,materials,stats);}
 Result<Preparation> SceneLit::preparation(const ViewSettings& view){return state_->preparation(view);}
 void SceneLit::draw_debug(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,FrameStats& stats){state_->draw_debug(frame,extent,depth,stats);}
 void SceneLit::invalidate(bool empty_scene,FrameStats& stats) {

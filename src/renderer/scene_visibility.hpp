@@ -76,18 +76,4 @@ private:
     std::array<double,4> magnitude_{};
     bool finite_{true};
 };
-
-// Keep the original snapshot indices and order: depth ties, material offsets
-// and temporal object identities must not change when visibility changes.
-template<class Visible,class Draw>
-void draw_visible_ranges(std::uint32_t first,std::uint32_t count,Visible visible,Draw draw) {
-    const auto end=first+count;
-    while(first<end) {
-        while(first<end&&!visible(first))++first;
-        if(first==end)break;
-        auto last=first+1;
-        while(last<end&&visible(last))++last;
-        draw(first,last-first);first=last;
-    }
-}
 }

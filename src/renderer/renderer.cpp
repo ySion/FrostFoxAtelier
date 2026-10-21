@@ -284,10 +284,15 @@ struct Renderer::State {
     struct MaterialImage { material::ImageRef owner; GfxTexture texture; bool used{}; };
     std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
     material::ImageRef white_image;
-    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
-    struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
+    // group is this frame's MeshGroup only while that group points back at the entry.
+    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; std::uint32_t group{}; };
+    // One per geometry in first-appearance order over the complete snapshot, so
+    // visibility and selection never reorder draws. Ranges index draw_instances.
+    struct MeshGroup { CachedGeometry* geometry; std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{}; };
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
-    std::vector<MeshBatch> mesh_batches;
+    std::vector<MeshGroup> mesh_groups;
+    // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
+    std::vector<std::uint32_t> instance_groups, draw_instances;
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
@@ -396,7 +401,7 @@ struct Renderer::State {
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
             geometry.vertices = {};
         }
-        geometries.clear(); mesh_batches.clear();
+        geometries.clear(); mesh_groups.clear();
         if (sampler) {
             const auto r = gfxDestroySamplerState(gfx, sampler);
             if (r)
@@ -781,15 +786,14 @@ struct Renderer::State {
                 depth_extent = extent;
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
-            BufferOwner data{gfx, {}};
+            BufferOwner data{gfx, {}}, order{gfx, {}};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
-                for (const auto& batch : mesh_batches) {
-                    auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
-                    auto& geometry = found->second;
-                    const auto vertices = geometry.source->vertices();
-                    if (inserted) {
+                for (const auto& group : mesh_groups) {
+                    auto& geometry = *group.geometry;
+                    if (!geometry.vertices) {
+                        const auto vertices = geometry.source->vertices();
                         std::vector<SceneTriangle> triangles;
                         triangles.reserve(vertices.size() / 3);
                         for (std::size_t i = 0; i < vertices.size() / 3; ++i)
@@ -800,11 +804,17 @@ struct Renderer::State {
                     }
                     geometry.used = true;
                 }
+                if (!draw_instances.empty()) {
+                    order.buffer = gfxCreateBuffer<std::uint32_t>(gfx,
+                        static_cast<std::uint32_t>(draw_instances.size()), draw_instances.data());
+                    allocation(bool(order.buffer));
+                }
             }
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
                 if(selected_only&&!selected)return;
+                if(!order.buffer)return; // Nothing visible.
                 if(!data.buffer) {
                     timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
@@ -826,6 +836,7 @@ struct Renderer::State {
                     frame.view.triangle_edges ? 1u : 0u, pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
                 require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
+                require(gfxProgramSetParameter(gfx, program, "draw_instances", order.buffer), "Bind mesh draw order");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
                 require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
@@ -835,36 +846,29 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
                 timing::Scope draws_stage{phases::encode_draws};
-                for (const auto& batch : mesh_batches) {
-                    const auto visible=[&](std::uint32_t index) {
-                        return raster_visibility[index] && (!selected_only||frame.meshes[index].selected);
-                    };
-                    const auto batch_end=batch.first+batch.count;
-                    auto first_visible=batch.first;
-                    while(first_visible<batch_end&&!visible(first_visible))++first_visible;
-                    if(first_visible==batch_end)continue;
-                    const auto& geometry = geometries.at(batch.geometry.get());
+                for (const auto& group : mesh_groups) {
+                    const auto first=selected_only?group.selected_first:group.visible_first;
+                    const auto count=selected_only?group.selected_count:group.visible_count;
+                    if(!count)continue;
+                    const auto& geometry = *group.geometry;
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
+                    require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
                     for(const auto& part:geometry.source->parts()) {
                         require(gfxProgramSetParameter(gfx,program,"material_slot",part.material),"Set material slot");
                         require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
-                        const auto draw_instances=[&](std::uint32_t first,std::uint32_t count) {
-                            require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
-                            require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
-                            ++stats.scene_draw_calls;
-                        };
-                        detail::draw_visible_ranges(first_visible,batch_end-first_visible,visible,draw_instances);
+                        require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
+                        ++stats.scene_draw_calls;
                     }
                 }
             };
             if(lighting) {
-                lit_draws.clear();lit_draws.reserve(mesh_batches.size());
-                for(const auto& batch:mesh_batches){const auto& geometry=geometries.at(batch.geometry.get());
-                    lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size()),
-                        std::span<const std::uint8_t>(raster_visibility).subspan(batch.first,batch.count)});}
+                lit_draws.clear();lit_draws.reserve(mesh_groups.size());
+                for(const auto& group:mesh_groups)
+                    lit_draws.push_back({group.geometry->vertices,static_cast<std::uint32_t>(group.geometry->source->vertices().size()),
+                        group.visible_first,group.visible_count});
                 {
                     timing::Scope lit_stage{phases::encode_lit};
-                    scene_lit->draw(frame,extent,depth,lit_draws,materials,stats);
+                    scene_lit->draw(frame,extent,depth,{lit_draws,instance_groups,order.buffer},materials,stats);
                 }
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
                 if(editing_depth) {
@@ -910,7 +914,7 @@ struct Renderer::State {
         stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
-            require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
+            if (it->second.vertices) require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
             it = geometries.erase(it);
         }
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");
@@ -1121,17 +1125,35 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.instances.reserve(frame.meshes.size());
         s.raster_visibility.clear();s.raster_visibility.reserve(frame.meshes.size());
         const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height);
-        s.mesh_batches.clear();
+        s.mesh_groups.clear();s.instance_groups.clear();s.instance_groups.reserve(frame.meshes.size());
         for (const auto &mesh : frame.meshes) {
-            const auto first = static_cast<std::uint32_t>(s.instances.size());
             s.instances.push_back(prepare_instance(mesh));
             const bool visible=frustum.visible(mesh.geometry->bounds(),mesh.world);
             s.raster_visibility.push_back(visible?1u:0u);
             ++s.stats.scene_instances;s.stats.scene_culled_instances+=visible?0u:1u;
-            if (!s.mesh_batches.empty() && s.mesh_batches.back().geometry == mesh.geometry)
-                ++s.mesh_batches.back().count;
-            else s.mesh_batches.push_back({first, 1, mesh.geometry});
+            const auto [found,inserted]=s.geometries.try_emplace(mesh.geometry.get());
+            auto& cached=found->second;
+            if(inserted)cached.source=mesh.geometry;
+            if(cached.group>=s.mesh_groups.size()||s.mesh_groups[cached.group].geometry!=&cached) {
+                cached.group=static_cast<std::uint32_t>(s.mesh_groups.size());
+                s.mesh_groups.push_back({&cached});
+            }
+            auto& group=s.mesh_groups[cached.group];
+            group.visible_count+=visible?1u:0u;group.selected_count+=visible&&mesh.selected?1u:0u;
+            s.instance_groups.push_back(cached.group);
         }
+        std::uint32_t order_size=0;
+        for(auto& group:s.mesh_groups){group.visible_first=order_size;order_size+=group.visible_count;}
+        for(auto& group:s.mesh_groups){group.selected_first=order_size;order_size+=group.selected_count;}
+        s.draw_instances.resize(order_size);
+        // Firsts advance as fill cursors, then return to the range starts.
+        for(std::uint32_t i=0;i<s.instance_groups.size();++i) {
+            if(!s.raster_visibility[i])continue;
+            auto& group=s.mesh_groups[s.instance_groups[i]];
+            s.draw_instances[group.visible_first++]=i;
+            if(frame.meshes[i].selected)s.draw_instances[group.selected_first++]=i;
+        }
+        for(auto& group:s.mesh_groups){group.visible_first-=group.visible_count;group.selected_first-=group.selected_count;}
         s.prepare_ui(frame);
         stage.reset();
         Capture pending;

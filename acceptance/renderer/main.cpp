@@ -363,12 +363,23 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     render::Capture image;
     const auto capture=[&] {++drawing.id;return take(prepared_render(renderer,frame,&image)).stats;};
     auto stats=capture();const auto reference=image;
-    check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==2,
-        "a visibility gap splits an instance batch while preserving original indices");
+    check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==1,
+        "a visibility gap keeps one geometry draw that reads original instance indices");
     std::array<render::MeshInstance,2> visible{meshes[0],meshes[2]};frame.meshes=visible;
     stats=capture();
     check(stats.scene_draw_calls==1 && image.rgba==reference.rgba && image.depth==reference.depth,
         "frustum filtering preserves material identity, pixel-center coverage, color and depth");
+    // Another geometry between two instances in the Frame does not split their draw.
+    const auto wedge=std::make_shared<const atelier::geometry::Mesh>(std::vector<atelier::geometry::Vertex>{
+        {{-.3f,-.3f,0},{0,0,-1}},{{.3f,-.3f,0},{0,0,-1}},{{0,.3f,0},{0,0,-1}}});
+    std::array<render::MeshInstance,3> separated{meshes[0],meshes[0],meshes[2]};
+    separated[1].geometry=wedge;separated[1].world=translation(0,.4f,2.5f);separated[1].color={0,1,0,1};
+    frame.meshes=separated;stats=capture();const auto grouped=image;
+    std::array<render::MeshInstance,3> adjacent{separated[0],separated[2],separated[1]};
+    frame.meshes=adjacent;
+    const auto adjacent_stats=capture();
+    check(stats.scene_draw_calls==2 && adjacent_stats.scene_draw_calls==2 && image.rgba==grouped.rgba && image.depth==grouped.depth,
+        "instances of one geometry share a draw across other geometries and keep their own transforms and materials");
     frame.meshes=meshes;
     meshes[1].world=translation(0,0,1);stats=capture();
     check(stats.scene_culled_instances==0 && stats.scene_draw_calls==1 && image.depth!=reference.depth,
@@ -404,13 +415,13 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     lit.ddgi=lit.gtao=lit.sssr=lit.ssil=lit.bloom=false;
     lit.antialiasing=render::Antialiasing::none;
     stats=capture();
-    check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==2 &&
+    check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==1 &&
         stats.scene_lit_light_sources>0 && std::ranges::any_of(image.depth,[](float d){return d>0;}),
         "Lit filters primary GBuffer draws while retaining off-camera emitters in the complete light domain");
     frame.meshes={};stats=capture();
     check(stats.scene_instances==0 && stats.scene_culled_instances==0 && stats.scene_draw_calls==0,
         "empty scenes reset visibility activity without carrying prior-frame counters");
-    std::puts("Renderer visibility: PASS (ranges, identical pixels, reentry, invalid input, six planes, reflected scale, eye crossing, off-camera light domain, empty scene)");
+    std::puts("Renderer visibility: PASS (geometry groups, identical pixels, reentry, invalid input, six planes, reflected scale, eye crossing, off-camera light domain, empty scene)");
 }
 #include "ui_shapes.inl"
 #include "selection.inl"
