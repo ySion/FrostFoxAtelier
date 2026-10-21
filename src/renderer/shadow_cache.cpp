@@ -33,7 +33,7 @@ V corner(const ShadowBounds& b,std::uint32_t i) {
 }
 double distance_squared(const ShadowBounds& b,V p) {
     double result=0;for(std::size_t axis=0;axis<3;++axis){
-        const double d=std::max({double(b.minimum[axis])-p[axis],p[axis]-b.maximum[axis],0.0});result+=d*d;}
+        const double d=std::max(std::max(double(b.minimum[axis])-p[axis],p[axis]-b.maximum[axis]),0.0);result+=d*d;}
     return result;
 }
 double far_distance(const ShadowBounds& b,V p) {
@@ -125,7 +125,7 @@ Request point_request(const Frame& frame,const GpuLightSource& source,std::span<
     // Match the FP32 minimum in lit_local_range before widening to double.
     const double effective_range=std::max(source.origin_range[3],.001f);
     const double support=effective_range+source.direction_radius[3];
-    const double rounding_margin=std::max(1e-4,1e-5*std::max({support,std::abs(origin.x),std::abs(origin.y),std::abs(origin.z)}));
+    const double rounding_margin=std::max(1e-4,1e-5*std::max(std::max(support,std::abs(origin.x)),std::max(std::abs(origin.y),std::abs(origin.z))));
     const double conservative_support=support+rounding_margin;
     const double receiver_bias=std::abs(double(frame.view.lit.shadow_bias));
     const double endpoint_radius=std::max(double(source.direction_radius[3]),receiver_bias*2)+rounding_margin;
