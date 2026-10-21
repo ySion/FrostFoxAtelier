@@ -12,8 +12,8 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 场景和 UI
 
-- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry；Scene Lit 还消费粗糙度、金属度、HDR 自发光及稳定组件键。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。相邻且引用同一资源的实例合为一次 instanced draw，不同资源分批。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。全部表面路径消费同一标准材质和 Opaque/Mask 覆盖；具体范围见[材质系统](materials.md)和 [Scene Lit](scene-lit.md)。
-- 主视图采用不可变 Mesh 构造时计算的局部包围盒，按当前 world/view/projection 做保守齐次视锥剔除。六个裁剪面包含浮点误差余量，XY 另留一个像素覆盖时间抖动与小数视口；不作透视除法，跨眼点/近平面、镜像和非均匀变换仍按包围盒支持范围处理。可见实例只拆为原批次内的连续区间，不重排或压缩 Frame 索引；GBuffer、工作室、深度和选中边线共用可见性。完整 Frame、材质表、TLAS、发光域、DDGI 与阴影投影者仍保留屏幕外物体，缓存也不随相机进出逐帧退休。不可表示的浮点裁剪范围保守保留；非法 world 变换仍在剔除前拒绝整帧。当前尚无物体遮挡剔除、LOD 或网格簇剔除。
+- `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry；Scene Lit 还消费粗糙度、金属度、HDR 自发光及稳定组件键。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。引用同一资源的可见实例合为一个批次，每个材质分组一次 instanced draw，不同资源分批；批次的划分与顺序见[运行状态与着色模式的独立性](#运行状态与着色模式的独立性)。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。全部表面路径消费同一标准材质和 Opaque/Mask 覆盖；具体范围见[材质系统](materials.md)和 [Scene Lit](scene-lit.md)。
+- 主视图采用不可变 Mesh 构造时计算的局部包围盒，按当前 world/view/projection 做保守齐次视锥剔除。六个裁剪面包含浮点误差余量，XY 另留一个像素覆盖时间抖动与小数视口；不作透视除法，跨眼点/近平面、镜像和非均匀变换仍按包围盒支持范围处理。可见实例写入按资源分组的绘制索引表，着色器经该表读取原 Frame 索引上的实例、材质偏移与身份，Frame 本身不重排；GBuffer、工作室、深度和选中边线共用这张表，选中边线只读其中可见且选中的一段。完整 Frame、材质表、TLAS、发光域、DDGI 与阴影投影者仍保留屏幕外物体，缓存也不随相机进出逐帧退休。不可表示的浮点裁剪范围保守保留；非法 world 变换仍在剔除前拒绝整帧。当前尚无物体遮挡剔除、LOD 或网格簇剔除。
 - 场景管线和深度纹理在首次绘制非空场景且 viewport 非零时创建；后续按原生命周期复用，深度尺寸在实际场景绘制时跟随目标更新。纯 UI 窗口仍使用同一 Renderer/Context，无场景管线创建、深度分配或清除。UI 管线在 `open` 时准备，应用可提前创建并保留隐藏的弹出窗口以移出首次点击的初始化成本。
 - Scene Lit 管线按使用条件分组，在 RHI Context 的工作线程上准备；Renderer 的 owner 线程从不等待编译、PSO 创建或 GBV 预热。基础组 38 条，任何 Lit 视图都需要；其余组只在视图设置用到时提交：直接光参考或非 clustered 路径的 RT 着色 1 条、ReSTIR 复用 2 条、B 缓存阴影 4 条、clustered 接收面统计 1 条、DDGI 检视 2 条、DDGI 覆盖诊断 1 条、探针叠层 1 条。`preparation(view)` 启动该视图缺少的组，收集已完成的管线，并按该视图所需的组报告 done/total；不画 Lit 的视图总是 ready。done/total 只描述当前视图：设置改变后需要新的组时，total 随之变大，已经 ready 的进度会回到未就绪，直到新组完成。进度显示和作业状态不能假设 total 固定不变。`render` 对画 Lit 的帧做同样的检查。准备失败（例如编译错误）不是终止错误，之后的 Lit 视图都返回同一错误，工作室着色不受影响。`Options::shader_cache` 是交给 RHI 的 DXIL 缓存目录，空路径表示不用缓存，见 [RHI 合同](../rhi/contract.md#异步准备与-dxil-磁盘缓存)。
 - 相机为左手系，+Y 向上，使用有限 Reversed-Z：D3D 深度近端为 1、远端为 0，背景清除值为 0。矩阵为 row-major，行向量按 `p * world * view * projection` 执行；透视和正交都遵循同一深度约定。renderer 不维护相机控制状态。
@@ -66,7 +66,7 @@ Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场�
 
 Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSettings` 的 `sky_enabled`、`sky_color`、`sky_intensity`，写在 Environment 组件上）。宿主用 `rendering::sky_radiance` 求颜色乘强度，填入 `Frame.environment`；默认关闭，值为零。关闭天光、删除 Environment 或更换场景会更新该值，并沿既有信号历史处理收敛。该辐射参与 DDGI 和环境反射，但不自动绘制可见天空；当前 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI / GTAO 互斥合同见 [Scene Lit](scene-lit.md)。带方向的环境贴图和可见天空资产尚未接入。
 
-每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。每个场景批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
+每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。批次按资源在完整 `Frame::meshes` 中首次出现的顺序排列，批内保持 Frame 顺序；这个顺序只由成员表决定，不随可见性或选中状态变化。不同资源之间的绘制顺序不属于契约，但对同一份成员表稳定：完全共面且重叠的不同资源由谁覆盖、Lines: All 半透明边线在重叠处的混合，都取决于它，调用方和验收不能依赖原成员顺序。每个有可见实例的批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 
 ## 工作室 Cavity
 
@@ -100,12 +100,12 @@ Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSetting
 
 `FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机与实例批次准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制；`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
+CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机、实例、可见性与按资源分组的绘制索引表准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制，其中 `render.encode.scene` 覆盖有场景时的全部录制（子阶段：`.materials` 为材质表与贴图的创建和上传；`.upload` 为逐批的几何缓存使用标记（静止帧也不为 0）、未命中时建三角形缓冲、绘制索引表写入本帧槽（每个在途帧一份持久的 CPU 可写缓冲，GPU 直接读取；按录制帧序号选槽，容量不足时才按 2 的幂重建），以及实例缓冲，实例缓冲在 Lit 模式只在需要编辑深度或编辑线时才建；`.draws` 为各 raster pass 逐批绘制的录制，只有工作室模式（MatCap、Smooth、Flat、线框）才能用它除以 FrameStats 的 `scene_draw_calls` 估算每次绘制的平均开销，因为 Scene Lit 的表面绘制计入 `scene_draw_calls`，耗时却记在 `.lit`；`.lit` 为 Scene Lit 的 draw 和 draw_debug，含其内部的灯、实例上传与 AS 构建），`render.encode.ui` 覆盖 UI 实例上传（子阶段 `.upload`）和 UI/叠加层批次录制；同一阶段在一帧内可进入多次，时间累加、次数另计。无场景时的网格与 Scene Lit 调试绘制只计入 `render.encode`。`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
 
 | 字段 | 统计边界 |
 | --- | --- |
 | `ui_draw_calls` | 实际成功编码的 UI draw 次数；空 clip、零尺寸和透明项不计入 |
-| `scene_draw_calls` | 实际成功编码的场景 draw 次数；相邻同网格资源实例共享批次。实体/叠线每批的每个材质组一次，纯线框深度与边线各一次，空场景为 0 |
+| `scene_draw_calls` | 实际成功编码的场景 draw 次数；同网格资源的可见实例共享批次，不论在 Frame 中是否相邻。实体/叠线每批的每个材质组一次，纯线框深度与边线各一次，空场景为 0 |
 | `scene_instances` / `scene_culled_instances` | 本帧输入实例数 / 主视锥判定完全不可见的实例数；不是 TLAS、光源或阴影投影者的裁剪数，也不包括物体之间的遮挡 |
 | `material_upload_count` | 本帧新场景图片上传次数，包括首次使用的白图；复用版本不上传，不含 UI 图片 |
 | `cached_material_images` | 当前场景 Image/颜色空间缓存项数，不含 UI 图片或 gfx 等待退休的资源 |

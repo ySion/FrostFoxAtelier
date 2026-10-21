@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -284,10 +285,19 @@ struct Renderer::State {
     struct MaterialImage { material::ImageRef owner; GfxTexture texture; bool used{}; };
     std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
     material::ImageRef white_image;
-    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; };
-    struct MeshBatch { std::uint32_t first, count; geometry::MeshRef geometry; };
+    // group is this frame's MeshGroup only while that group points back at the entry.
+    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; std::uint32_t group{}; };
+    // One per geometry in first-appearance order over the complete snapshot, so
+    // visibility and selection never reorder draws. Ranges index draw_instances.
+    struct MeshGroup { CachedGeometry* geometry; std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{}; };
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
-    std::vector<MeshBatch> mesh_batches;
+    std::vector<MeshGroup> mesh_groups;
+    // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
+    std::vector<std::uint32_t> instance_groups, draw_instances;
+    // Persistent CPU-written copies of draw_instances, one per frame in flight,
+    // indexed by recording frame sequence. Grown on demand, never shrunk.
+    std::vector<GfxBuffer> draw_order_slots;
+    std::uint64_t draw_order_sequence{}; // Recording frame of the last slot write.
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
@@ -396,7 +406,13 @@ struct Renderer::State {
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
             geometry.vertices = {};
         }
-        geometries.clear(); mesh_batches.clear();
+        geometries.clear(); mesh_groups.clear();
+        for(auto& slot:draw_order_slots)if(slot) {
+            const auto r=gfxDestroyBuffer(gfx,slot);
+            if(r)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Draw order retirement failed",true,r));
+            slot={};
+        }
+        draw_order_slots.clear();
         if (sampler) {
             const auto r = gfxDestroySamplerState(gfx, sampler);
             if (r)
@@ -737,7 +753,11 @@ struct Renderer::State {
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
         for(auto& [key,image]:material_images) { (void)key;image.used=false; }
         if (draw_scene) {
-            prepare_materials(frame);
+            timing::Scope scene_stage{phases::encode_scene};
+            {
+                timing::Scope materials_stage{phases::encode_materials};
+                prepare_materials(frame);
+            }
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             const bool lighting=frame.view.shading==Shading::scene_lit&&!lines_only;
             const bool selected=std::ranges::any_of(frame.meshes,[](const MeshInstance& mesh){return mesh.selected;});
@@ -778,27 +798,54 @@ struct Renderer::State {
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
             BufferOwner data{gfx, {}};
+            GfxBuffer order{};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
-            for (const auto& batch : mesh_batches) {
-                auto [found, inserted] = geometries.try_emplace(batch.geometry.get(), CachedGeometry{batch.geometry, {}, false});
-                auto& geometry = found->second;
-                const auto vertices = geometry.source->vertices();
-                if (inserted) {
-                    std::vector<SceneTriangle> triangles;
-                    triangles.reserve(vertices.size() / 3);
-                    for (std::size_t i = 0; i < vertices.size() / 3; ++i)
-                        triangles.push_back(prepare_triangle(*geometry.source, i));
-                    geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
-                        static_cast<std::uint32_t>(triangles.size()), triangles.data());
-                    allocation(bool(geometry.vertices));
+            {
+                timing::Scope upload_stage{phases::encode_scene_upload};
+                for (const auto& group : mesh_groups) {
+                    auto& geometry = *group.geometry;
+                    if (!geometry.vertices) {
+                        const auto vertices = geometry.source->vertices();
+                        std::vector<SceneTriangle> triangles;
+                        triangles.reserve(vertices.size() / 3);
+                        for (std::size_t i = 0; i < vertices.size() / 3; ++i)
+                            triangles.push_back(prepare_triangle(*geometry.source, i));
+                        geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
+                            static_cast<std::uint32_t>(triangles.size()), triangles.data());
+                        allocation(bool(geometry.vertices));
+                    }
+                    geometry.used = true;
                 }
-                geometry.used = true;
+                if (!draw_instances.empty()) {
+                    // gfx began recording frame N only after frame N - frames_in_flight
+                    // completed, so this frame's slot is no longer read by the GPU.
+                    const auto slots = context.info().frames_in_flight;
+                    if (draw_order_slots.empty()) draw_order_slots.resize(slots);
+                    const auto sequence = gfxGetRecordingFrameSequence(gfx);
+                    if (!sequence)
+                        throw error(rhi::ErrorCode::execution_failed, "Draw order upload outside a recording frame", true);
+                    // Draws already recorded in this frame read the slot at execution; a second write would redirect them.
+                    if (sequence == draw_order_sequence)
+                        throw error(rhi::ErrorCode::execution_failed, "Draw order slot written twice in one recording frame", true);
+                    draw_order_sequence = sequence;
+                    auto& slot = draw_order_slots[sequence % slots];
+                    const auto count = static_cast<std::uint32_t>(draw_instances.size());
+                    if (slot.getCount() < count) {
+                        if (slot) require(gfxDestroyBuffer(gfx, std::exchange(slot, {})), "Retire draw order slot");
+                        slot = gfxCreateBuffer<std::uint32_t>(gfx, std::bit_ceil(count), nullptr, kGfxCpuAccess_Write);
+                        allocation(bool(slot));
+                    }
+                    std::memcpy(gfxBufferGetData(gfx, slot), draw_instances.data(), count * sizeof(std::uint32_t));
+                    order = slot;
+                }
             }
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
                 if(selected_only&&!selected)return;
+                if(!order)return; // Nothing visible.
                 if(!data.buffer) {
+                    timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
                     // editing data only when an actual raster pass consumes it.
                     data.buffer=gfxCreateBuffer<Instance>(gfx,static_cast<std::uint32_t>(instances.size()),instances.data());
@@ -818,6 +865,7 @@ struct Renderer::State {
                     frame.view.triangle_edges ? 1u : 0u, pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
                 require(gfxProgramSetParameter(gfx, program, "instances", data.buffer), "Bind mesh instances");
+                require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order");
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
                 require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
@@ -826,34 +874,31 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
                 require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
-                for (const auto& batch : mesh_batches) {
-                    const auto visible=[&](std::uint32_t index) {
-                        return raster_visibility[index] && (!selected_only||frame.meshes[index].selected);
-                    };
-                    const auto batch_end=batch.first+batch.count;
-                    auto first_visible=batch.first;
-                    while(first_visible<batch_end&&!visible(first_visible))++first_visible;
-                    if(first_visible==batch_end)continue;
-                    const auto& geometry = geometries.at(batch.geometry.get());
+                timing::Scope draws_stage{phases::encode_draws};
+                for (const auto& group : mesh_groups) {
+                    const auto first=selected_only?group.selected_first:group.visible_first;
+                    const auto count=selected_only?group.selected_count:group.visible_count;
+                    if(!count)continue;
+                    const auto& geometry = *group.geometry;
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
+                    require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
                     for(const auto& part:geometry.source->parts()) {
                         require(gfxProgramSetParameter(gfx,program,"material_slot",part.material),"Set material slot");
                         require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
-                        const auto draw_instances=[&](std::uint32_t first,std::uint32_t count) {
-                            require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
-                            require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
-                            ++stats.scene_draw_calls;
-                        };
-                        detail::draw_visible_ranges(first_visible,batch_end-first_visible,visible,draw_instances);
+                        require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
+                        ++stats.scene_draw_calls;
                     }
                 }
             };
             if(lighting) {
-                lit_draws.clear();lit_draws.reserve(mesh_batches.size());
-                for(const auto& batch:mesh_batches){const auto& geometry=geometries.at(batch.geometry.get());
-                    lit_draws.push_back({geometry.vertices,batch.first,batch.count,static_cast<std::uint32_t>(geometry.source->vertices().size()),
-                        std::span<const std::uint8_t>(raster_visibility).subspan(batch.first,batch.count)});}
-                scene_lit->draw(frame,extent,depth,lit_draws,materials,stats);
+                lit_draws.clear();lit_draws.reserve(mesh_groups.size());
+                for(const auto& group:mesh_groups)
+                    lit_draws.push_back({group.geometry->vertices,static_cast<std::uint32_t>(group.geometry->source->vertices().size()),
+                        group.visible_first,group.visible_count});
+                {
+                    timing::Scope lit_stage{phases::encode_lit};
+                    scene_lit->draw(frame,extent,depth,{lit_draws,instance_groups,order},materials,stats);
+                }
                 require(gfxCommandBindDepthStencilTarget(gfx,depth),"Bind Scene Lit editing depth");
                 if(editing_depth) {
                     // AA has consumed and retained its sampled depth. Editing
@@ -861,7 +906,10 @@ struct Renderer::State {
                     require(gfxCommandClearTexture(gfx,depth),"Clear sampled scene depth for editing");
                     draw_batches(scene_depth,2);
                 }
-                scene_lit->draw_debug(frame,extent,depth,stats);
+                {
+                    timing::Scope lit_stage{phases::encode_lit};
+                    scene_lit->draw_debug(frame,extent,depth,stats);
+                }
                 draw_grid(frame,true);
                 if(editing_lines)draw_batches(visible_lines,1);
             } else if (lines_only) {
@@ -895,7 +943,7 @@ struct Renderer::State {
         stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
-            require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
+            if (it->second.vertices) require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
             it = geometries.erase(it);
         }
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");
@@ -904,8 +952,10 @@ struct Renderer::State {
                 "Set UI viewport");
         for (auto &[key, image] : images)
             image.used = false;
+        std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
         BufferOwner ui_data{gfx, {}};
         if (!ui_instances.empty()) {
+            timing::Scope ui_upload{phases::encode_ui_upload};
             ui_data.buffer = gfxCreateBuffer<UiInstance>(gfx, static_cast<std::uint32_t>(ui_instances.size()), ui_instances.data());
             allocation(bool(ui_data.buffer));
             stats.ui_instance_upload_bytes = (ui_instances.size() - overlay_instances) * sizeof(UiInstance);
@@ -938,6 +988,7 @@ struct Renderer::State {
             require(gfxCommandDraw(gfx, 6, batch.count), "Draw UI batch");
             ++(index < overlay_batches ? stats.overlay_draw_calls : stats.ui_draw_calls);
         }
+        ui_stage.reset();
         for (auto it = images.begin(); it != images.end();) {
             if (it->second.used) {
                 ++it;
@@ -1101,17 +1152,35 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.instances.reserve(frame.meshes.size());
         s.raster_visibility.clear();s.raster_visibility.reserve(frame.meshes.size());
         const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height);
-        s.mesh_batches.clear();
+        s.mesh_groups.clear();s.instance_groups.clear();s.instance_groups.reserve(frame.meshes.size());
         for (const auto &mesh : frame.meshes) {
-            const auto first = static_cast<std::uint32_t>(s.instances.size());
             s.instances.push_back(prepare_instance(mesh));
             const bool visible=frustum.visible(mesh.geometry->bounds(),mesh.world);
             s.raster_visibility.push_back(visible?1u:0u);
             ++s.stats.scene_instances;s.stats.scene_culled_instances+=visible?0u:1u;
-            if (!s.mesh_batches.empty() && s.mesh_batches.back().geometry == mesh.geometry)
-                ++s.mesh_batches.back().count;
-            else s.mesh_batches.push_back({first, 1, mesh.geometry});
+            const auto [found,inserted]=s.geometries.try_emplace(mesh.geometry.get());
+            auto& cached=found->second;
+            if(inserted)cached.source=mesh.geometry;
+            if(cached.group>=s.mesh_groups.size()||s.mesh_groups[cached.group].geometry!=&cached) {
+                cached.group=static_cast<std::uint32_t>(s.mesh_groups.size());
+                s.mesh_groups.push_back({&cached});
+            }
+            auto& group=s.mesh_groups[cached.group];
+            group.visible_count+=visible?1u:0u;group.selected_count+=visible&&mesh.selected?1u:0u;
+            s.instance_groups.push_back(cached.group);
         }
+        std::uint32_t order_size=0;
+        for(auto& group:s.mesh_groups){group.visible_first=order_size;order_size+=group.visible_count;}
+        for(auto& group:s.mesh_groups){group.selected_first=order_size;order_size+=group.selected_count;}
+        s.draw_instances.resize(order_size);
+        // Firsts advance as fill cursors, then return to the range starts.
+        for(std::uint32_t i=0;i<s.instance_groups.size();++i) {
+            if(!s.raster_visibility[i])continue;
+            auto& group=s.mesh_groups[s.instance_groups[i]];
+            s.draw_instances[group.visible_first++]=i;
+            if(frame.meshes[i].selected)s.draw_instances[group.selected_first++]=i;
+        }
+        for(auto& group:s.mesh_groups){group.visible_first-=group.visible_count;group.selected_first-=group.selected_count;}
         s.prepare_ui(frame);
         stage.reset();
         Capture pending;

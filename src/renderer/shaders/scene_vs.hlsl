@@ -10,6 +10,7 @@ struct Instance {
 };
 StructuredBuffer<Triangle> triangles;
 StructuredBuffer<Instance> instances;
+StructuredBuffer<uint> draw_instances;
 uint first_instance;
 uint first_vertex;
 uint material_slot;
@@ -19,7 +20,8 @@ SceneOutput main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
     Triangle face = triangles[vertex_id / 3];
     uint corner = vertex_id % 3;
     Vertex vertex = face.vertices[corner];
-    Instance instance = instances[first_instance + instance_id];
+    uint index = draw_instances[first_instance + instance_id];
+    Instance instance = instances[index];
     SceneOutput o;
     o.position = raster_position(vertex.position,instance.world,scene_view_projection);
     float3 normal = display.x == 1 ? face.face_normal : vertex.normal;
@@ -29,7 +31,7 @@ SceneOutput main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
     float3 gn=face.face_normal.x*instance.normal_x+face.face_normal.y*instance.normal_y+face.face_normal.z*instance.normal_z;
     o.eye_geometric_normal=mul(float4(gn,0),view).xyz;
     o.uv = vertex.uv;
-    o.material_index=material_indices[material_offsets[first_instance+instance_id]+material_slot];
+    o.material_index=material_indices[material_offsets[index]+material_slot];
     o.edge_coordinates = float4(corner == 0, corner == 1, corner == 2, o.position.w);
     o.edge_mask = display.z != 0 ? 7 : face.edge_mask;
     o.selected = instance.selected;

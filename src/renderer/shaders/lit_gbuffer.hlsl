@@ -1,5 +1,6 @@
 struct LitTriangle { LitVertex vertices[3]; uint edge_mask; float3 face_normal; uint material_slot; uint3 reserved; };
 StructuredBuffer<LitTriangle> lit_triangles;
+StructuredBuffer<uint> lit_draw_instances;
 uint lit_first_instance;
 struct LitRaster {
     precise float4 position:SV_Position;
@@ -14,7 +15,8 @@ struct LitRaster {
 };
 LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     LitVertex v=lit_triangles[vertex/3].vertices[vertex%3];
-    LitInstance i=lit_instances[lit_first_instance+instance]; LitRaster o;
+    uint index=lit_draw_instances[lit_first_instance+instance];
+    LitInstance i=lit_instances[index]; LitRaster o;
     o.position=raster_position(v.position,i.world,lit_view_projection);
     o.previous=raster_position(v.position,i.previous_world,lit_previous_view_projection);
     o.normal=v.normal.x*i.normal_x.xyz+v.normal.y*i.normal_y.xyz+v.normal.z*i.normal_z.xyz;
@@ -22,7 +24,7 @@ LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     o.tangent=float4(material_transform_tangent(v.tangent.xyz,i.world),v.tangent.w*i.normal_x.w);
     float3 gn=lit_triangles[vertex/3].face_normal;
     o.geometric_normal=gn.x*i.normal_x.xyz+gn.y*i.normal_y.xyz+gn.z*i.normal_z.xyz;
-    o.material_index=material_indices[material_offsets[lit_first_instance+instance]+lit_triangles[vertex/3].material_slot];
+    o.material_index=material_indices[material_offsets[index]+lit_triangles[vertex/3].material_slot];
     o.valid=i.geometry.z;o.identity=i.geometry.yw;
     o.position=raster_viewport_position(o.position);
     return o;

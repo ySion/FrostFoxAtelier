@@ -46,13 +46,13 @@ void audit_selection_work(Fixture& f) {
             for(unsigned i=0;i<5;++i)
                 f.room.meshes[i].selected=selection==2 || (selection==1&&(i==1||i==2||i==4));
             f.edited();
-            const unsigned runs=selection==0?0:selection==1?2:1;
-            // A selected run shares the existing geometry batch. Temporal AA
-            // needs an additional unjittered depth draw for editing/capture.
+            // Selected instances of one geometry share one editing-line draw. Temporal
+            // AA needs an additional unjittered depth draw for editing/capture.
+            const unsigned runs=selection==0?0:1;
             const auto without_capture=f.step().stats.scene_draw_calls;
             const unsigned editing_depth=aa==render::Antialiasing::taa&&selection!=0?1:0;
             check(without_capture==1+runs+editing_depth,
-                  "SceneLit emits one GBuffer draw plus selected runs and only the required editing depth");
+                  "SceneLit emits one GBuffer draw plus one selected-line draw and only the required editing depth");
             render::Capture image;const auto captured=f.step(&image).stats.scene_draw_calls;
             check(captured==1+runs+(aa==render::Antialiasing::taa?1:0),
                   "capture adds unjittered depth only for temporal AA and reports every actual scene draw");

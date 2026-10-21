@@ -28,11 +28,9 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     std::unordered_set<const geometry::Mesh*> unique;
     std::unordered_set<ObjectId> materials;
     std::unordered_map<const material::Image*,unsigned> image_modes;
-    const geometry::Mesh* previous{};
-    std::size_t batches{},triangles{},material_bindings{};
+    std::size_t triangles{},material_bindings{};
     for(const auto& mesh:snapshot.meshes) {
         unique.insert(mesh.geometry.get());triangles+=mesh.geometry->vertices().size()/3;
-        if(mesh.geometry.get()!=previous) {++batches;previous=mesh.geometry.get();}
         for(std::size_t slot=0;slot<mesh.geometry->materials().size();++slot) {
             const auto& surface=mesh.surfaces?(*mesh.surfaces)[slot]:mesh.geometry->materials()[slot].surface;
             for(std::size_t input=0;input<static_cast<std::size_t>(material::Input::count);++input) {
@@ -47,10 +45,10 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     for(const auto& item:geometry) for(const auto& binding:take(world::read_material_bindings(document->world().runtime(),item.component))) {
         materials.insert(binding.resource.id());++material_bindings;
     }
-    Json report{{"schema","atelier.editor.scene-cpu.v2"},{"project",editor::utf8(root.wstring())},{"scene",scene},
+    Json report{{"schema","atelier.editor.scene-cpu.v3"},{"project",editor::utf8(root.wstring())},{"scene",scene},
         {"gpu",false},{"samples",121},{"warmup",20},{"source_bytes",source.size()},
-        {"entities",take(document->world().members()).size()},{"meshes",snapshot.meshes.size()},
-        {"unique_geometries",unique.size()},{"adjacent_geometry_batches",batches},{"instance_triangles",triangles},
+        {"entities",take(document->world().members()).size()},{"selected_entities",document->selected_entities().size()},{"meshes",snapshot.meshes.size()},
+        {"unique_geometries",unique.size()},{"instance_triangles",triangles},
         {"unique_sampled_images",sampled_images},{"material_texture_table_entries",sampled_images+1},
         {"material_bindings",material_bindings},{"unique_bound_materials",materials.size()},
         {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."}};
@@ -62,19 +60,17 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         const auto height=viewport.at("receiver_pixel_extent").at(1).get<float>();
         const renderer::detail::SceneFrustum frustum(camera.at("view_matrix").get<std::array<float,16>>(),
             camera.at("projection_matrix").get<std::array<float,16>>(),width,height);
-        std::size_t visible{},visible_triangles{},visible_runs{};
-        previous=nullptr;bool continuing=false;
+        // The Renderer draws each visible geometry's material parts once per surface pass.
+        std::unordered_set<const geometry::Mesh*> drawn;
+        std::size_t visible{},visible_triangles{},visible_geometry_parts{};
         for(const auto& mesh:snapshot.meshes) {
-            if(frustum.visible(mesh.geometry->bounds(),mesh.world)) {
-                ++visible;visible_triangles+=mesh.geometry->vertices().size()/3;
-                if(!continuing || mesh.geometry.get()!=previous) ++visible_runs;
-                continuing=true;
-            } else continuing=false;
-            previous=mesh.geometry.get();
+            if(!frustum.visible(mesh.geometry->bounds(),mesh.world)) continue;
+            ++visible;visible_triangles+=mesh.geometry->vertices().size()/3;
+            if(drawn.insert(mesh.geometry.get()).second) visible_geometry_parts+=mesh.geometry->parts().size();
         }
         report["visibility"]={{"camera_report",editor::utf8(camera_report.wstring())},{"camera",camera},
             {"pixel_extent",{width,height}},{"visible_instances",visible},{"culled_instances",snapshot.meshes.size()-visible},
-            {"visible_geometry_runs",visible_runs},{"visible_instance_triangles",visible_triangles}};
+            {"visible_geometries",drawn.size()},{"visible_geometry_parts",visible_geometry_parts},{"visible_instance_triangles",visible_triangles}};
     }
 #ifdef NDEBUG
     report["configuration"]="release";
