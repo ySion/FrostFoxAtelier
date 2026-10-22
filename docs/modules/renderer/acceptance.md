@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| D1 2.1 融合 compose | 2026-10-22 rendering-d1-compose，基线 `691ae0ea`：cluster 列表确定性求值加单批阴影 atlas 取代 ReSTIR DI、A 路径和重建链；网格发光只经 DDGI 探针命中。Release 默认与 `--scene-lit`（GBV）及 shadows、quality、stability、clustered、cost、temporal、Control、编辑器文档入口通过；shadows 两条变异失败，法线偏移 ×10 未被发现，见[本批记录](#d1-21-融合-compose2026-10-22) |
 | 显示抖动 | 2026-10-21 rendering 工作树，基线 `a743ac13`：Lit 显示 pass 加静态 IGN 抖动，room 的 moving−settled 差异图不再成环；必要的 6 个 Release 入口在调试层下通过；Composite p50 0.423→0.424 ms，在噪声范围内，见[本批记录](#显示抖动2026-10-21) |
 | 异步准备与 GBV 预热 | 2026-10-19 rendering 工作树，基线 `80de8156`：Scene Lit 管线按组在 RHI 工作线程上准备，首帧 2.0 ms 返回 not_ready；GBV 下基础组 141 s 就绪。Release 全部 10 个入口通过；与 ec-3 门禁相比，9 个 `--scene-lit*` 入口的整进程时长合计从 59.7 min 降到 34.9 min，见[本批记录](#异步准备与-gbv-预热2026-10-19) |
 | 默认直接光切到 A | 2026-10-18 rendering 工作树：`direct_clustered` 默认 true，ReSTIR 保留为诊断回退；切换前 Release 九个入口通过，Edit/Play 收敛 1.228/4，Play 宿主走 A；合并后 ec-3 门禁（`5911be69`）在 Dev 和 Release 下跑完全部入口并通过，见[本批记录](#默认直接光切到-a2026-10-18) |
@@ -35,6 +36,40 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## D1 2.1 融合 compose（2026-10-22）
+
+状态：rendering-d1-compose 分支，基线 integration/ec-7 `691ae0ea`，本地提交，未推送；D1 的 2.1–2.5 一起交付。行为见 [Scene Lit](scene-lit.md)。Control 的 view 键升到 schema 4，删除的键返回 invalid_request，见[编辑器 Control](../editor/control.md)。
+
+Release 入口，RX 6800 XT，一个入口一个进程，退出码均为 0：
+
+| 入口 | 验证 | 时长 |
+|---|---|---|
+| 无参数默认入口 | GBV | 185 s |
+| `--scene-lit` | GBV | 259 s |
+| `--scene-lit-shadows` | debug layer | 8 s |
+| `--scene-lit-quality` | debug layer | 25 s |
+| `--scene-lit-stability` | debug layer | 32 s |
+| `--scene-lit-clustered` | debug layer | 7 s |
+| `--scene-lit-cost` | debug layer | 10 s |
+| `--scene-lit-temporal` | debug layer | 14 s（刚性停止的运动向量 2835 对 0） |
+| 编辑器 Control 全套、`--repro-lighting`、场景文档、viewport 编辑 | debug layer | 73 / 58 / 48 / 8 s |
+
+temporal、cost 和 `--repro-lighting` 跑的是最后一处渲染修正之前的二进制。那处修正只把"没有投射阴影的光源"时的阴影参数改成绑定空句柄：GPU 看到的同样是空描述符，只是不再触发 gfx 的失效句柄报错，所以没有重跑。Dev 也构建通过。`--acceptance-surfaces` 失败（"Asset directory splitter did not preview shrinking"），不含本批改动的构建同样失败；修复在 ec-7 的 `2c0eb730` 里，变基后自然解决。需要焦点的 `--acceptance-scene-lit` 编辑器入口还没跑，留到桌面空闲时段。
+
+改写的测试场景及理由：
+
+- CSM 真值：阳光原来向 x 偏，13 号接收列的影子真实地落在 14 号列左缘；真值模型只把阳光遮挡物当作遮挡体，于是报了 589 个"未遮挡却变暗"的像素。改成只向 y 偏（`(0,.2,1)`，移动后 `(.03,.2,1)`），接收列之间不再互相遮挡。真值 margin 从 .04 改为 .03：.04 正好等于遮挡物的 z 半厚，收缩后盒子为空，occluded 恒为 0。末级 cascade 的探测点移到正交相机下影子的实际位置 `{2.24,.24,2}`。
+- 网格发光经 DDGI：原探针体积的 z 上限 3.75 不含 z=4 的接收面，体积外的 gather 返回 0。扩到 4.6、7 层、预算 441。
+- 可见性：删掉"视口外发光体使 `scene_lit_light_sources>0`"。网格发光不再生成光源；视口外发光体照亮接收面由材质传输的"offscreen textured emission"覆盖。
+- 材质传输：单面背面、双面、Mask 三次采集前各换一次 `scene_identity`，因为探针历史会保留上一个发光体很多帧。
+- 271 盏点光的 atlas 压力：原平面 AABB 加 PCSS 切向扩张后每盏光要约 4 个面，271×4 超过 1024 格。平面缩到 `1/6×.25`，遮挡物移到每盏光只需 +Z/+X/−Y 三个面的位置。
+
+`--scene-lit-shadows` 变异（各自单独构建、运行后撤回）：
+
+- compose 忽略全部阴影：失败于 "off-camera-ray caster produces an actual dark receiver shadow"。
+- 只让方向光忽略阴影：失败于 shadow-csm-truth，6 个应遮挡像素全亮（178）。
+- 阴影采样的法线偏移 ×10（0.02 m）：未被发现。推断：接收面几乎正对阳光，影子横向只移约 4 mm，小于真值的 0.03 m 边带；点光用例的距离同样让这个偏移看不出来。CSM 真值只有 6 个遮挡像素，只能发现整片阴影丢失。2.2 换成 SampleCmp 和固定纹素偏移时补一条掠射角或接触阴影用例，并用同一变异确认它会失败；2.5 放大 CSM 遮挡物。
 
 ## 显示抖动（2026-10-21）
 

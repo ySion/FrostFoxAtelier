@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <utility>
 
 namespace atelier::renderer::detail {
@@ -89,8 +90,8 @@ M expanded_projection(M vp,std::uint32_t size) {
 }
 struct Request {
     std::uint32_t kind{},size{128},count{};
-    bool endpoint_visibility{};
     double projected_diameter{};
+    double importance{}; // Point power times the camera solid angle of its support.
     std::array<bool,6> needed{};
     std::array<M,6> projection{};
     std::array<std::array<double,2>,6> depth{};
@@ -119,24 +120,23 @@ V unproject(const M& inverse,double x,double y,double z) {
     check(std::isfinite(p.w)&&p.w!=0,"Shadow planning needs a finite camera near plane");
     return {p.x/p.w,p.y/p.w,p.z/p.w};
 }
+// Rectangles cast from their centre; their support matches lit_cluster_radius.
 Request point_request(const Frame& frame,const GpuLightSource& source,std::span<const ShadowCaster> receivers,const M& camera_view) {
     Request request;request.kind=1;request.count=6;
     const V origin{source.origin_range[0],source.origin_range[1],source.origin_range[2]};
     // Match the FP32 minimum in lit_local_range before widening to double.
     const double effective_range=std::max(source.origin_range[3],.001f);
-    const double support=effective_range+source.direction_radius[3];
+    const double extent=source.meta[0]==1?
+        .5*(length({source.edge1_area[0],source.edge1_area[1],source.edge1_area[2]})+length({source.edge2[0],source.edge2[1],source.edge2[2]})):
+        source.direction_radius[3];
+    const double support=effective_range+extent;
     const double rounding_margin=std::max(1e-4,1e-5*std::max(std::max(support,std::abs(origin.x)),std::max(std::abs(origin.y),std::abs(origin.z))));
     const double conservative_support=support+rounding_margin;
     const double receiver_bias=std::abs(double(frame.view.lit.shadow_bias));
-    const double endpoint_radius=std::max(double(source.direction_radius[3]),receiver_bias*2)+rounding_margin;
     const double far_z=ceil_power_two((conservative_support+receiver_bias)*(1+shadow_filter_tangent_limit));
     const double near_z=std::max(1e-30,std::min(double(shadow_maximum_near),far_z*shadow_near_ratio));
     for(std::uint32_t face=0;face<request.count;++face){request.projection[face]=point_projection(origin,face,near_z,far_z);request.depth[face]={near_z,far_z};}
     for(const auto& receiver:receivers){
-        // Recomputed from current bounds/radius each frame, independently of
-        // quantized depth projections. Test before range rejection so even an
-        // unusually large normal bias cannot hide endpoint-kernel demand.
-        request.endpoint_visibility|=distance_squared(receiver.bounds,origin)<=endpoint_radius*endpoint_radius;
         if(distance_squared(receiver.bounds,origin)>conservative_support*conservative_support)continue;
         // PCSS directions extend beyond the receiver's center direction. The
         // shader shares this maximum tangent footprint; no delayed feedback is
@@ -156,6 +156,12 @@ Request point_request(const Frame& frame,const GpuLightSource& source,std::span<
     const double diameter=perspective?pixels*support/std::max(eye.z-support,1e-6):pixels*support;
     request.projected_diameter=diameter;
     request.size=diameter>512?512u:(diameter>192?256u:128u);
+    const double radiance=.2126*source.radiance[0]+.7152*source.radiance[1]+.0722*source.radiance[2];
+    const double flux=source.meta[0]==1?std::numbers::pi*source.edge1_area[3]*((source.meta[1]&1u)?2:1):4*std::numbers::pi;
+    const double camera_distance=length({eye.x,eye.y,eye.z});
+    const double solid_angle=camera_distance<=support?4*std::numbers::pi:
+        2*std::numbers::pi*(1-std::sqrt(1-(support/camera_distance)*(support/camera_distance)));
+    request.importance=std::max(0.,radiance)*flux*solid_angle;
     return request;
 }
 Request directional_request(const Frame& frame,const GpuLightSource& source,std::span<const ShadowCaster> receivers,
@@ -235,19 +241,14 @@ struct ShadowCache::State {
     std::vector<ReservationUndo> reservation_undo;
     std::vector<Light> previous_lights;
     std::vector<Request> requests;
-    std::vector<std::uint32_t> sizes;
+    std::vector<std::uint32_t> sizes,order;
     std::vector<ShadowCaster> receivers;
-    std::vector<ShadowBatch> recycled_batches;
     std::array<bool,grid_size*grid_size> occupied{};
     ShadowFramePlan plan;
-    std::uint64_t scene{},sequence{},batch_serial{1};
-    std::uint32_t local_count{},analytic_count{},next_generation{};
+    std::uint64_t scene{},sequence{},plan_serial{1};
+    std::uint32_t next_generation{};
     bool initialized{},pending{},plan_ready{};
 
-    static std::uint32_t cache_index(std::uint32_t source,std::uint32_t local,std::uint32_t analytic) {
-        return source<analytic?source:(source>=local?analytic+source-local:no_slot);
-    }
-    std::uint32_t cache_index(std::uint32_t source) const {return cache_index(source,local_count,analytic_count);}
     std::uint32_t generation(){if(++next_generation==0)++next_generation;return next_generation;}
 
     void mark(const Face& face,bool value) {
@@ -271,24 +272,23 @@ struct ShadowCache::State {
     bool evict() {
         Face* oldest=nullptr;
         for(auto& light:lights)for(auto& face:light.faces)
-            if(face.slot!=no_slot&&face.pinned!=batch_serial&&(!oldest||face.used<oldest->used))oldest=&face;
+            if(face.slot!=no_slot&&face.pinned!=plan_serial&&(!oldest||face.used<oldest->used))oldest=&face;
         if(!oldest)return false;
         reservation_undo.push_back({oldest,*oldest});release(*oldest);return true;
     }
     bool reserve(std::uint32_t source,const Request& request,std::uint32_t size) {
         reservation_undo.clear();
-        source=cache_index(source);
         bool resident=true;
         for(std::uint32_t i=0;i<request.count;++i)if(request.needed[i])
             resident&=lights[source].faces[i].slot!=no_slot&&lights[source].faces[i].size==size;
         if(resident) {
             for(std::uint32_t i=0;i<request.count;++i)if(request.needed[i]) {
-                lights[source].faces[i].pinned=batch_serial;lights[source].faces[i].used=sequence;
+                lights[source].faces[i].pinned=plan_serial;lights[source].faces[i].used=sequence;
             }
             return true;
         }
         // At most six faces are one atomic reservation. Rollback is CPU-only,
-        // before jobs or descriptors are published; never overwrite this batch.
+        // before jobs or descriptors are published; never overwrite this plan.
         const auto saved_occupied=occupied;
         auto& light=lights[source];
         // lights never resizes during a reservation. Record every needed face
@@ -296,7 +296,7 @@ struct ShadowCache::State {
         // across calls instead of copying the complete light table per source.
         for(std::uint32_t i=0;i<request.count;++i)if(request.needed[i])
             reservation_undo.push_back({&light.faces[i],light.faces[i]});
-        for(std::uint32_t i=0;i<request.count;++i)if(request.needed[i])light.faces[i].pinned=batch_serial;
+        for(std::uint32_t i=0;i<request.count;++i)if(request.needed[i])light.faces[i].pinned=plan_serial;
         for(std::uint32_t i=0;i<request.count;++i)if(request.needed[i]){
             auto& face=light.faces[i];
             if(face.slot!=no_slot&&face.size!=size)release(face);
@@ -306,30 +306,22 @@ struct ShadowCache::State {
                     occupied=saved_occupied;reservation_undo.clear();return false;
                 }
             }
-            face.pinned=batch_serial;face.used=sequence;
+            face.pinned=plan_serial;face.used=sequence;
         }
         reservation_undo.clear();return true;
     }
-    ShadowBatch& add_batch(std::size_t sources) {
-        if(recycled_batches.empty())plan.batches.emplace_back();
-        else {plan.batches.push_back(std::move(recycled_batches.back()));recycled_batches.pop_back();}
-        auto& batch=plan.batches.back();batch.sources.clear();batch.faces.clear();batch.updates.clear();
-        batch.lights.assign(sources,{});
-        batch.endpoint_visibility=false;
-        batch.include_emitters=plan.batches.size()==1;++batch_serial;
-        if(batch_serial==0){batch_serial=1;for(auto& light:lights)for(auto& face:light.faces)face.pinned=0;}
-        return batch;
+    void begin_plan(std::size_t sources) {
+        plan.faces.clear();plan.updates.clear();plan.stats={};plan.lights.assign(sources,{});
+        if(++plan_serial==0){plan_serial=1;for(auto& light:lights)for(auto& face:light.faces)face.pinned=0;}
     }
     void append(std::uint32_t source,const Request& request,std::uint32_t size,std::span<const ShadowCaster> casters) {
-        auto& batch=plan.batches.back();batch.sources.push_back(source);
-        batch.endpoint_visibility|=request.endpoint_visibility;
-        auto& gpu_light=batch.lights[cache_index(source)];gpu_light.meta={request.kind,static_cast<std::uint32_t>(batch.faces.size()),request.count,1};
+        auto& gpu_light=plan.lights[source];gpu_light.meta={request.kind,static_cast<std::uint32_t>(plan.faces.size()),request.count,0};
         gpu_light.splits=request.splits;
         for(std::uint32_t i=0;i<request.count;++i){
-            batch.faces.emplace_back();auto& gpu=batch.faces.back();gpu.meta={0,0,source,i};
+            plan.faces.emplace_back();auto& gpu=plan.faces.back();gpu.meta={0,0,source,i};
             if(!request.needed[i])continue;
             ++plan.stats.requested_faces;
-            auto& face=lights[cache_index(source)].faces[i];
+            auto& face=lights[source].faces[i];
             const auto vp=request_projection(request,i,size),draw_vp=expanded_projection(vp,size);
             const auto projection=packed(vp);
             if(face.projection!=projection){face.projection=projection;face.stationary_valid=face.dynamic_valid=false;
@@ -339,14 +331,14 @@ struct ShadowCache::State {
             for(const auto layer:{ShadowLayer::stationary,ShadowLayer::dynamic}){
                 bool& valid=layer==ShadowLayer::stationary?face.stationary_valid:face.dynamic_valid;
                 if(valid)continue;
-                ShadowUpdate job;job.face=static_cast<std::uint32_t>(batch.faces.size()-1);job.layer=layer;
+                ShadowUpdate job;job.face=static_cast<std::uint32_t>(plan.faces.size()-1);job.layer=layer;
                 job.rect=rect;job.view_projection=packed(draw_vp);
                 for(const auto& caster:casters)if(caster.dynamic==(layer==ShadowLayer::dynamic)&&intersects(caster.bounds,draw_vp))
                     job.instances.push_back(caster.instance);
                 if(layer==ShadowLayer::dynamic){face.dynamic_nonempty=!job.instances.empty();++plan.stats.dynamic_updates;}
                 else ++plan.stats.static_updates;
                 plan.stats.rendered_instances+=static_cast<std::uint32_t>(job.instances.size());
-                batch.updates.push_back(std::move(job));valid=true;
+                plan.updates.push_back(std::move(job));valid=true;
             }
             if(reused)++plan.stats.reused_faces;
             gpu.view_projection=projection;
@@ -364,8 +356,8 @@ struct ShadowCache::State {
 ShadowCache::ShadowCache():state_(std::make_unique<State>()){}
 ShadowCache::~ShadowCache()=default;
 void ShadowCache::invalidate() noexcept {
-    auto& s=*state_;s.lights.clear();s.previous_lights.clear();s.occupied.fill(false);s.plan.batches.clear();
-    s.recycled_batches.clear();s.initialized=false;s.pending=false;s.plan_ready=false;
+    auto& s=*state_;s.lights.clear();s.previous_lights.clear();s.occupied.fill(false);
+    s.plan.lights.clear();s.plan.faces.clear();s.plan.updates.clear();s.initialized=false;s.pending=false;s.plan_ready=false;
 }
 void ShadowCache::commit() noexcept {if(state_->plan_ready)state_->pending=false;}
 const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame& sources,
@@ -375,20 +367,14 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
     // An unconsumed plan is never GPU-valid. It can be abandoned safely without
     // allowing its scheduled writes to masquerade as completed cache contents.
     if(s.pending||!s.initialized||s.scene!=frame.scene_identity)invalidate();
-    s.recycled_batches.swap(s.plan.batches);s.plan.batches.clear();s.plan.stats={};
     s.scene=frame.scene_identity;s.sequence=sequence;s.initialized=true;s.pending=true;s.plan_ready=false;
-    const auto previous_local=s.local_count,previous_analytic=s.analytic_count;
-    s.local_count=sources.local_count;s.analytic_count=sources.local_count-sources.emitter_count;
     s.previous_lights.swap(s.lights);auto& previous=s.previous_lights;
-    s.lights.assign(std::size_t(s.analytic_count)+sources.directional_count,{});
+    s.lights.assign(sources.sources.size(),{});
     for(std::uint32_t i=0;i<s.lights.size();++i){
-        const auto source=i<s.analytic_count?i:s.local_count+i-s.analytic_count;
-        if(source>=sources.current_to_previous.size())continue;
-        const auto old_source=sources.current_to_previous[source];
-        if(old_source==no_slot)continue;
-        const auto old=State::cache_index(old_source,previous_local,previous_analytic);
+        const auto old=i<sources.current_to_previous.size()?sources.current_to_previous[i]:no_slot;
         if(old<previous.size())s.lights[i]=std::move(previous[old]);
     }
+    s.begin_plan(s.lights.size());
     s.occupied.fill(false);for(const auto& light:s.lights)for(const auto& face:light.faces)s.mark(face,true);
     for(auto& light:s.lights)for(auto& face:light.faces)if(face.slot!=no_slot){
         const auto vp=expanded_projection(matrix(face.projection),face.size);
@@ -413,12 +399,10 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
     const auto cell_count=[](const Request& request,std::uint32_t size){
         return std::uint64_t(std::count(request.needed.begin(),request.needed.end(),true))*(size/cell_size)*(size/cell_size);};
     for(std::uint32_t index=0;index<s.lights.size();++index){
-        const auto source=index<s.analytic_count?index:s.local_count+index-s.analytic_count;
-        const auto& light=sources.sources[source];
-        if(light.meta[0]==1){requests[index].endpoint_visibility=true;continue;}
+        const auto& light=sources.sources[index];
         if((light.meta[1]&2u)==0)continue;
-        requests[index]=light.meta[0]==0?point_request(frame,light,receivers,camera_view):
-            directional_request(frame,light,receivers,casters,camera_view);
+        requests[index]=light.meta[0]==2?directional_request(frame,light,receivers,casters,camera_view):
+            point_request(frame,light,receivers,camera_view);
         if(requests[index].kind==1){
             auto& request=requests[index];const auto previous_size=s.lights[index].preferred_size;
             const auto diameter=request.projected_diameter;
@@ -429,9 +413,9 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
         }
         sizes[index]=requests[index].size;required_cells+=cell_count(requests[index],sizes[index]);
     }
-    // Fit the entire current demand before resorting to sequential batches.
-    // Point faces are reduced first; the sun otherwise loses near detail for
-    // many unrelated small lamps. The same demand gives the same tier choices.
+    // Fit the entire current demand before dropping any light. Point faces
+    // are reduced first; the sun otherwise loses near detail for many
+    // unrelated small lamps. The same demand gives the same tier choices.
     while(required_cells>grid_size*grid_size){
         std::size_t selected=sizes.size();std::uint64_t largest=0;
         for(std::uint32_t kind:{1u,2u}){
@@ -443,20 +427,20 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
         if(selected==sizes.size())break;
         required_cells-=largest;sizes[selected]/=2;required_cells+=cell_count(requests[selected],sizes[selected]);
     }
-    s.add_batch(s.lights.size());
-    for(std::uint32_t index=0;index<s.lights.size();++index){
-        const auto source=index<s.analytic_count?index:s.local_count+index-s.analytic_count;
-        const auto& light=sources.sources[source];
-        if((light.meta[1]&2u)==0||light.meta[0]==1){
-            s.append(source,requests[index],0,casters);continue;}
+    auto& order=s.order;order.clear();
+    for(std::uint32_t index=0;index<s.lights.size();++index)if(requests[index].kind)order.push_back(index);
+    std::ranges::sort(order,[&](std::uint32_t a,std::uint32_t b){
+        const auto& ra=requests[a];const auto& rb=requests[b];
+        if(ra.kind!=rb.kind)return ra.kind==2;
+        if(ra.importance!=rb.importance)return ra.importance>rb.importance;
+        return a<b;
+    });
+    for(const auto index:order){
+        const auto& light=sources.sources[index];
         const auto& request=requests[index];std::uint32_t size=sizes[index];
-        while(!s.reserve(source,request,size)){
-            if(size>cell_size){size/=2;continue;}
-            // One light's six minimum-size faces always fit an empty atlas.
-            // A new batch releases previous batch pins, not shadow semantics.
-            check(!s.plan.batches.back().sources.empty(),"Shadow atlas cannot fit a minimum light allocation");
-            s.add_batch(s.lights.size());++s.plan.stats.pressure_batches;size=sizes[index];
-        }
+        bool resident=s.reserve(index,request,size);
+        while(!resident&&size>cell_size)resident=s.reserve(index,request,size/=2);
+        if(!resident){++s.plan.stats.dropped_lights;continue;}
         if(size<request.size)++s.plan.stats.resolution_downgrades;
         bool near_caster=false;
         if(request.kind==1){const V origin{light.origin_range[0],light.origin_range[1],light.origin_range[2]};
@@ -464,9 +448,9 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
             for(const auto& caster:casters)if(distance_squared(caster.bounds,origin)<=near_z*near_z){near_caster=true;break;}
             if(near_caster)for(bool needed:request.needed)if(needed)++s.plan.stats.near_plane_faces;
         }
-        s.append(source,request,size,casters);
-        if(near_caster){auto& batch=s.plan.batches.back();const auto first=batch.lights[index].meta[1];
-            for(std::uint32_t face=0;face<request.count;++face)if(request.needed[face])batch.faces[first+face].meta[0]|=4;}
+        s.append(index,request,size,casters);
+        if(near_caster){const auto first=s.plan.lights[index].meta[1];
+            for(std::uint32_t face=0;face<request.count;++face)if(request.needed[face])s.plan.faces[first+face].meta[0]|=4;}
     }
     s.plan_ready=true;return s.plan;
 }

@@ -10,7 +10,7 @@ void cost_cases(Fixture& f) {
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     auto& options=f.frame.view.lit;options={};
     options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-    options.direct_clustered=true;options.antialiasing=render::Antialiasing::none;
+    options.antialiasing=render::Antialiasing::none;
     f.frame.environment={};f.room.meshes.assign(1,{});
     auto& receiver=f.room.meshes.front();receiver.stable_key=1;
     receiver.geometry=std::make_shared<const Mesh>(std::vector<Vertex>{
@@ -21,27 +21,13 @@ void cost_cases(Fixture& f) {
     f.lights.front().position={0,0,1};f.lights.front().intensity=24;f.lights.front().range=12;
     ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
     f.capture("cost-delta-warm",12);
-    const auto exact_current=[&](const char* name,bool verify_rt_work=false) {
+    // Direct light keeps no history: an edit's first frame is already final.
+    const auto exact_current=[&](const char* name) {
         const auto current=f.capture(name);
-        if(verify_rt_work) {
-            bool observed=false;
-            for(unsigned attempt=0;attempt<60;++attempt) {
-                const auto stats=f.step().stats;
-                if(!stats.scene_lit_gpu_timing_valid)continue;
-                check(stats.scene_lit_gpu_sample_frame_id<=current.frame_id,"return-to-RT first completed sample was not skipped");
-                if(stats.scene_lit_gpu_sample_frame_id!=current.frame_id)continue;
-                check((stats.scene_lit_gpu_pass_mask&(1u<<21))==0&&stats.scene_lit_shadow_cache_draws==0,
-                      "return-to-RT first frame has no stale shadow-atlas work");
-                observed=true;break;
-            }
-            check(observed,"return-to-RT first frame has exact completed work evidence");
-        }
-        options.direct_reference=true;
-        const auto reference=f.capture((std::string(name)+"-reference").c_str());
-        options.direct_reference=false;
-        const auto delta=f.compare(name,current,reference);
-        check(delta.mean<.05 && delta.p95<=1 && current.depth==reference.depth,
-              "deterministic direct light matches current independent integration without history lag");
+        const auto settled=f.capture((std::string(name)+"-settled").c_str(),4);
+        const auto delta=f.compare(name,current,settled);
+        check(delta.mean==0 && delta.p95==0 && current.depth==settled.depth,
+              "deterministic direct light shows its settled value in the edit's first frame");
     };
     f.lights.front().position[0]=1;f.lights.front().intensity=5;f.edited();
     exact_current("cost-delta-light-edit");
@@ -53,20 +39,16 @@ void cost_cases(Fixture& f) {
     f.capture("cost-delta-caster-warm",4);
     f.room.meshes.back().world[12]=.5f;f.edited();
     exact_current("cost-delta-caster-first-frame");
-    options.direct_shadow_cache=true;f.capture("cost-cached-backend",4);
-    options.direct_shadow_cache=false;
-    exact_current("cost-return-to-rt-first-frame",true);
-    f.room.meshes.pop_back();f.edited();
-    options.direct_clustered=false;f.lights.front().kind=render::LightKind::directional;
+    f.room.meshes.pop_back();f.lights.front().kind=render::LightKind::directional;
     f.lights.front().direction={0,0,1};f.edited();
-    exact_current("cost-delta-sun-legacy");
+    exact_current("cost-delta-sun");
 
     // Both consumers receive identical author snapshots and probe visits. Only
     // the comparison consumer cuts its screen history before every frame.
     Fixture reference(false,f.output/"visibility-reference");
     reference.window.resize(352,224);reference.drawing.extent=take(reference.renderer.sync_window_target()).extent;
     check(reference.drawing.extent==f.drawing.extent,"visibility pair uses identical physical extents");
-    options.direct_clustered=true;options.ddgi=true;options.probe_bounce=0;
+    options.ddgi=true;options.probe_bounce=0;
     options.probe_volumes[0].minimum={-6,-4,0};options.probe_volumes[0].maximum={6,4,8};
     options.probe_volumes[0].counts={4,4,4};options.probe_update_budget=64;options.probe_rays=64;
     f.lights.clear();f.frame.environment={.1f,.1f,.1f};++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();

@@ -113,24 +113,20 @@ void audit_surface_history(Fixture& f) {
     const auto roi=f.region({0,0,3.951f});
     f.frame.camera_cut=true;
     const auto clean=f.capture("audit-di-high-key-clean");
-    options.direct_reference=true;
-    const auto raw=f.capture("audit-di-high-key-reference64");
-    check(revealed.depth==clean.depth && clean.depth==raw.depth,
-          "DI identity isolation and its independent raw reference observe identical geometry");
-    const auto old_color=mean_rgb(before,roi),new_color=mean_rgb(revealed,roi);
-    const auto clean_color=mean_rgb(clean,roi),raw_color=mean_rgb(raw,roi);
-    std::printf("SceneLit high-key DI blue: revealed=%.3f clean=%.3f raw=%.3f; old red=%.3f\n",
-                new_color[2],clean_color[2],raw_color[2],old_color[0]);
-    check(old_color[0]>30 && raw_color[2]>30,
-          "DI identity fixture contains a bright red foreground and independently lit blue revealed receiver");
+    check(revealed.depth==clean.depth,"surface identity isolation and its reset frame observe identical geometry");
+    const auto old_color=mean_rgb(before,roi),new_color=mean_rgb(revealed,roi),clean_color=mean_rgb(clean,roi);
+    std::printf("SceneLit high-key direct blue: revealed=%.3f clean=%.3f; old red=%.3f\n",
+                new_color[2],clean_color[2],old_color[0]);
+    check(old_color[0]>30 && clean_color[2]>30,
+          "identity fixture contains a bright red foreground and a lit blue revealed receiver");
     for(unsigned c=0;c<3;++c)
-        check(std::abs(new_color[c]-clean_color[c])<=1 && std::abs(new_color[c]-raw_color[c])<=1,
-              "DI immediately matches reset and raw lighting when only the high surface-key word differs");
+        check(std::abs(new_color[c]-clean_color[c])<=1,
+              "the revealed receiver immediately matches a reset frame when only the high surface-key word differs");
 
     // Reflect a nearly coplanar pair of immutable red/blue emitters. Reusing
     // the red source's anchor through the blue actor leaves forbidden red on
     // the stationary metallic floor, even though both source motions are valid.
-    options.direct_reference=false;options.sssr=true;f.lights.clear();
+    options.sssr=true;f.lights.clear();
     f.room.meshes={defaults.meshes[0],defaults.meshes[7],defaults.meshes[7]};
     f.room.meshes[0].color={.7f,.7f,.7f,1};
     f.room.meshes[0].material={.roughness=.18f,.metallic=1};

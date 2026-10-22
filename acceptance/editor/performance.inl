@@ -29,7 +29,7 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     require(bool(Access::command(app,editor::Command::create_point_light)),"Performance fixture local light failed.");
     Access::performance_panel(app);tick(app);click(key::performance_tab);
     auto view=Access::scene_lit_view(app);view.shading=renderer::Shading::scene_lit;view.wireframe=renderer::Wireframe::off;
-    view.lit.ddgi=false;view.lit.direct_reference=false;view.lit.direct_clustered=false;view.lit.direct_shadow_cache=false;view.lit.direct_candidates=8;
+    view.lit.ddgi=false;view.lit.direct_candidates=8;
     view.lit.sky_enabled=true;
     require(bool(Access::performance_view(app,view)) && app.document().environment()!=atelier::ObjectId{},"Performance Scene Lit setup failed.");tick(app,1);
     const auto history=app.document().undo_count();
@@ -54,19 +54,16 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     }
     require(std::abs(sum-full.timings[Performance::total_pass]->mean)<.00001 && full.timings[Performance::total_pass]->mean>0,
         "Performance total double-counted child intervals.");
-    double reconstruction_sum=0;
-    for(std::size_t i=16;i<20;++i) {
-        require(passes[i].parent==13 && !passes[i].in_total,"Reconstruction row lost its parent or entered the total.");
-        reconstruction_sum+=full.timings[i]->mean;
+    double direct_sum=0;
+    for(std::size_t i=12;i<15;++i) {
+        require(passes[i].parent==2 && !passes[i].in_total,"A direct subpass lost its Direct parent or entered the total.");
+        direct_sum+=full.timings[i]->mean;
     }
-    require(full.timings[16]->current_active && reconstruction_sum<=full.timings[13]->mean+.01,
-        "Completed reconstruction children do not belong to their resolve/filter parent.");
-    require(passes[20].key=="direct_cluster" && passes[20].parent==2 && !passes[20].in_total &&
-        !full.timings[20]->current_active,"Legacy direct path exposed an active cluster pass or duplicated its parent total.");
-    require(passes[21].key=="shadow_cache" && passes[21].parent==2 && !passes[21].in_total,
-        "Shadow atlas updates lost the Direct parent or duplicated the measured total.");
+    require(passes[12].key=="direct_cluster" && passes[13].key=="shadow_cache" && passes[14].key=="direct_shading" &&
+        full.timings[12]->current_active && full.timings[14]->current_active && direct_sum<=full.timings[2]->mean+.01,
+        "Light lists, shadow updates and shading do not belong to their Direct parent interval.");
     require(!full.timings[3]->current_active && !full.timings[8]->current_active && !full.timings[9]->current_active &&
-        !full.timings[14]->current_active && !full.timings[15]->current_active,"Disabled DDGI was shown as an active pass.");
+        !full.timings[10]->current_active && !full.timings[11]->current_active,"Disabled DDGI was shown as an active pass.");
     require(table().data->columns[0].width==saved_width,"Timing publication discarded the user's column width.");
     capture(app,output/"world-performance.png");
 
@@ -81,10 +78,10 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
         require(app.step(),"Editor closed during performance inspection.");
     const auto response=pending.get();require(response.at("status")=="ok","Performance summary inspection failed.");
     const auto& report=response.at("result").at("performance");
-    require(response.at("result").at("last_frame").at("gpu_sample").at("direct_reconstruction_pass_ms").size()==4,
-        "Control omitted the four completed direct reconstruction durations.");
+    require(response.at("result").at("last_frame").at("gpu_sample").at("direct_shading_ms").is_number(),
+        "Control omitted the completed direct shading duration.");
     require(response.at("result").at("last_frame").at("gpu_sample").at("shadow_cache_ms").is_number() &&
-        response.at("result").at("last_frame").at("gpu_sample").at("shadow_cache").size()==12,
+        response.at("result").at("last_frame").at("gpu_sample").at("shadow_cache").size()==11,
         "Control omitted the completed shadow cache duration or counters.");
     require(report.at("state")=="ready" && report.at("samples")==Performance::window_size &&
         report.at("passes").size()==Performance::pass_count && report.at("passes")[3].at("current_ms").is_null() &&
@@ -101,37 +98,22 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
             request["state_token"]=state.at("state_token");return client.call(std::move(request));
         });
         while(call.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready)
-            require(app.step(),"Editor closed during clustered direct Control operation.");
-        auto result=call.get();require(result.at("status")=="ok","Clustered direct Control operation failed.");return result;
+            require(app.step(),"Editor closed during direct-light Control operation.");
+        auto result=call.get();require(result.at("status")=="ok","Direct-light Control operation failed.");return result;
     };
-    const auto scene_before_cluster=app.document().serialize();require(bool(scene_before_cluster),"Cannot preserve performance scene baseline.");
-    const auto cluster_switch=api::Json{{"op","view.set"},{"args",{{"patch",{{"direct_clustered",true}}}}}};
-    control_call(cluster_switch);wait_samples(3,full.first_frame);
-    const auto clustered=Access::performance(app).snapshot();
-    require(clustered.direct_clustered && !clustered.direct_shadow_cache && clustered.first_frame>full.first_frame && clustered.timings[20]->current_active &&
-        !clustered.timings[10]->current_active && !clustered.timings[11]->current_active,
-        "Clustered path did not reset its domain or retained reservoir scopes.");
-    require(clustered.timings[20]->mean<=clustered.timings[2]->mean+.01,"Light list construction escaped its Direct parent interval.");
-    control_call(cluster_switch);
-    require(Access::performance(app).snapshot().first_frame==clustered.first_frame,"Repeated cluster patch reset the performance domain.");
+    control_call({{"op","view.set"},{"args",{{"patch",{{"direct_candidates",8}}}}}});
+    require(Access::performance(app).snapshot().first_frame==full.first_frame,"An unchanged Control patch reset the performance domain.");
     const auto cluster_report=control_call({{"op","editor.inspect"},{"args",{{"detail","summary"}}}});
     const auto& gpu=cluster_report.at("result").at("last_frame").at("gpu_sample");
-    require(cluster_report.at("result").at("view").at("direct_clustered")==true &&
-        cluster_report.at("result").at("view").at("direct_shadow_cache")==false &&
-        cluster_report.at("result").at("performance").at("configuration").at("direct_shadow_cache")==false && gpu.at("valid")==true &&
-        gpu.at("frame_id").get<std::uint64_t>()>=clustered.first_frame && gpu.at("sequence").get<std::uint64_t>()>=clustered.sequence &&
-        (gpu.at("pass_mask").get<std::uint32_t>()&(1u<<20))!=0 && gpu.at("direct_cluster_ms").get<double>()>=0 &&
+    constexpr std::uint32_t direct_scopes=1u<<12|1u<<14;
+    require(!cluster_report.at("result").at("view").contains("direct_clustered") &&
+        !cluster_report.at("result").at("performance").at("configuration").contains("direct_shadow_cache") && gpu.at("valid")==true &&
+        gpu.at("frame_id").get<std::uint64_t>()>=full.first_frame && gpu.at("sequence").get<std::uint64_t>()>=full.sequence &&
+        (gpu.at("pass_mask").get<std::uint32_t>()&direct_scopes)==direct_scopes && gpu.at("direct_cluster_ms").get<double>()>=0 &&
         gpu.at("direct_cluster").at("overflows").get<std::uint32_t>()<=gpu.at("direct_cluster").at("cells").get<std::uint32_t>() &&
         gpu.at("direct_cluster").at("max_sources").is_number_unsigned(),"Control cluster timing/counts lost completed-sample identity or semantics.");
     std::ofstream(output/"performance-clustered.json")<<cluster_report.dump(2);
-    control_call({{"op","view.set"},{"args",{{"patch",{{"direct_reference",true},{"direct_shadow_cache",true}}}}}});wait_samples(3,clustered.first_frame);
-    const auto reference=Access::performance(app).snapshot();
-    require(reference.direct_reference && reference.direct_clustered && reference.direct_shadow_cache && !reference.timings[20]->current_active &&
-        reference.first_frame>clustered.first_frame,"Direct reference did not override the recorded cluster diagnostic.");
-    control_call({{"op","view.set"},{"args",{{"patch",{{"direct_clustered",false},{"direct_reference",false},{"direct_shadow_cache",false}}}}}});
-    const auto scene_after_cluster=app.document().serialize();
-    require(scene_after_cluster && *scene_after_cluster==*scene_before_cluster && app.document().undo_count()==history,
-        "Cluster/reference diagnostics entered the Scene or Undo stack.");
+    require(app.document().undo_count()==history,"Control view patches entered the Undo stack.");
 
     view.lit.ddgi=true;view.lit.probe_update_budget=64;
     for(auto& volume:view.lit.probe_volumes) volume.enabled=false;
@@ -140,7 +122,7 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     require(app.step(),"Editor closed while enabling DDGI.");wait_samples(Performance::window_size);
     const auto ddgi=Access::performance(app).snapshot();
     require(ddgi.ddgi && ddgi.first_frame>full.first_frame,"DDGI statistics retained the disabled domain.");
-    for(const auto index:{3,8,9,14,15}) require(ddgi.timings[index] && ddgi.timings[index]->current_active &&
+    for(const auto index:{3,8,9,10,11}) require(ddgi.timings[index] && ddgi.timings[index]->current_active &&
         ddgi.timings[index]->active_samples>0,"Enabled DDGI did not expose its completed subpass timings.");
     capture(app,output/"world-performance-ddgi.png");
     view.lit.direct_candidates=9;require(bool(Access::performance_view(app,view)),"Performance configuration change failed.");
@@ -284,7 +266,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             }
         } restore{app,original_view,original_document};
         auto view=original_view;view.shading=renderer::Shading::scene_lit;view.wireframe=renderer::Wireframe::off;
-        view.lit.direct_reference=false;view.lit.direct_clustered=false;view.lit.direct_shadow_cache=false;view.lit.direct_cluster_inspect=false;
+        view.lit.direct_cluster_inspect=false;
         apply_view(view);
         const auto calibrate=[&](bool docked) {
             // Acceptance may need a client larger than the desktop to retain
@@ -432,7 +414,6 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         for(std::size_t i=0;i<editor::RenderPerformance::total_pass;++i) report["gpu_pass_order"].push_back(editor::RenderPerformance::passes()[i].key);
         // Obtain receiver counts separately. Diagnostic work is absent from
         // both measured paths, including their subsequent 192-frame warmups.
-        view.lit.direct_clustered=true;apply_view(view);warmup(192);
         view.lit.direct_cluster_inspect=true;apply_view(view);
         next_frame(Clock::now()+std::chrono::minutes(5));invariant();
         const auto diagnostic_first=app.presented()->drawing->id;
@@ -440,7 +421,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         for(;;) {
             next_frame(diagnostic_deadline);invariant();const auto& s=app.frame_statistics();
             if(!s.scene_lit_gpu_timing_valid || s.scene_lit_gpu_sample_frame_id<diagnostic_first) continue;
-            require((s.scene_lit_gpu_pass_mask&(1u<<20))!=0,"Receiver inspection did not execute the clustered path.");
+            require((s.scene_lit_gpu_pass_mask&(1u<<12))!=0,"Receiver inspection did not execute the light list pass.");
             const auto receivers=std::accumulate(s.scene_lit_direct_receiver_histogram.begin(),s.scene_lit_direct_receiver_histogram.end(),std::uint64_t{});
             require(receivers>0 && receivers<=2560ull*1440,"Receiver histogram did not cover valid visible Scene pixels.");
             report["receiver_inspection"]={{"sequence",s.scene_lit_gpu_sample_sequence},{"frame_id",s.scene_lit_gpu_sample_frame_id},
@@ -454,7 +435,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             std::uint64_t sequence{},frame{},observed_frame{},resources{};
             std::uint32_t mask{};std::array<std::uint32_t,3> clusters{};
             std::array<float,editor::RenderPerformance::total_pass> ms{};
-            std::array<std::uint32_t,12> shadows{};
+            std::array<std::uint32_t,11> shadows{};
             std::uint64_t probe_rays{},shadow_rays{};
             std::array<std::uint64_t,2> ddgi_visibility_rays{};
         };
@@ -507,8 +488,8 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             result["selected_entities"]=app.document().selected_entities().size();
             return result;
         };
-        for(const auto [clustered,orbit]:{std::pair{false,false},std::pair{true,false},std::pair{true,true}}) {
-            view.lit.direct_clustered=clustered;apply_view(view);camera_fixed=!orbit;
+        for(const bool orbit:{false,true}) {
+            apply_view(view);camera_fixed=!orbit;
             const auto fence=warmup(192);
             std::vector<Sample> samples;samples.reserve(240);
             std::vector<double> wall;wall.reserve(512);
@@ -522,29 +503,27 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 const auto& s=app.frame_statistics();const auto observed=app.presented()->drawing->id;
                 if(!s.scene_lit_gpu_timing_valid || s.scene_lit_gpu_sample_frame_id<=fence || s.scene_lit_gpu_sample_sequence<=sequence) continue;
                 require(s.scene_lit_gpu_sample_frame_id<=observed,"Completed GPU sample refers to a future frame.");
-                require(((s.scene_lit_gpu_pass_mask&(1u<<20))!=0)==clustered,"Timed sample belongs to another direct-lighting path.");
                 require(s.scene_lit_direct_receiver_max_sources==0 &&
                     std::ranges::all_of(s.scene_lit_direct_receiver_histogram,[](auto n){return n==0;}),"Receiver diagnostics leaked into timed samples.");
                 Sample sample{s.scene_lit_gpu_sample_sequence,s.scene_lit_gpu_sample_frame_id,observed,s.scene_lit_resource_bytes,
                     s.scene_lit_gpu_pass_mask,{s.scene_lit_direct_cluster_cells,s.scene_lit_direct_cluster_overflows,s.scene_lit_direct_cluster_max_sources},{}};
                 std::copy(s.scene_lit_gpu_ms.begin(),s.scene_lit_gpu_ms.end(),sample.ms.begin());
                 std::copy(s.scene_lit_ddgi_gpu_ms.begin(),s.scene_lit_ddgi_gpu_ms.end(),sample.ms.begin()+8);
-                std::copy(s.scene_lit_direct_gpu_ms.begin(),s.scene_lit_direct_gpu_ms.end(),sample.ms.begin()+10);
-                std::copy(s.scene_lit_ddgi_update_gpu_ms.begin(),s.scene_lit_ddgi_update_gpu_ms.end(),sample.ms.begin()+14);
-                std::copy(s.scene_lit_direct_reconstruction_gpu_ms.begin(),s.scene_lit_direct_reconstruction_gpu_ms.end(),sample.ms.begin()+16);
-                sample.ms[20]=s.scene_lit_direct_cluster_gpu_ms;
-                sample.ms[21]=s.scene_lit_shadow_cache_gpu_ms;
+                std::copy(s.scene_lit_ddgi_update_gpu_ms.begin(),s.scene_lit_ddgi_update_gpu_ms.end(),sample.ms.begin()+10);
+                sample.ms[12]=s.scene_lit_direct_cluster_gpu_ms;
+                sample.ms[13]=s.scene_lit_shadow_cache_gpu_ms;
+                sample.ms[14]=s.scene_lit_direct_shading_gpu_ms;
                 sample.probe_rays=s.scene_lit_probe_rays;sample.shadow_rays=s.scene_lit_shadow_rays;
                 sample.ddgi_visibility_rays=s.scene_lit_ddgi_visibility_rays;
                 sample.shadows={s.scene_lit_shadow_cache_faces,s.scene_lit_shadow_cache_reused_faces,
                     s.scene_lit_shadow_cache_static_updates,s.scene_lit_shadow_cache_dynamic_updates,s.scene_lit_shadow_cache_draws,
-                    s.scene_lit_shadow_cache_resolution_downgrades,s.scene_lit_shadow_cache_pressure_batches,s.scene_lit_shadow_cache_near_plane_faces,
-                    s.scene_lit_shadow_cache_missing_taps,s.scene_lit_shadow_cache_clamped_taps,s.scene_lit_shadow_cache_rt_fallbacks,s.scene_lit_shadow_cache_plane_fallbacks};
+                    s.scene_lit_shadow_cache_resolution_downgrades,s.scene_lit_shadow_cache_dropped_lights,s.scene_lit_shadow_cache_near_plane_faces,
+                    s.scene_lit_shadow_cache_missing_taps,s.scene_lit_shadow_cache_clamped_taps,s.scene_lit_shadow_cache_plane_fallbacks};
                 require(std::ranges::all_of(sample.ms,[](auto n){return std::isfinite(n) && n>=0;}),"Invalid completed GPU duration.");
                 samples.push_back(sample);sequence=sample.sequence;
             }
             const auto elapsed=std::chrono::duration<double,std::milli>(previous-measurement_start).count();
-            const std::string name=orbit?"clustered_orbit":(clustered?"clustered":"legacy");
+            const std::string name=orbit?"clustered_orbit":"clustered";
             Json result{{"name",name},{"layout",layout},{"camera_motion",orbit?Json{{"yaw_degrees_per_frame",.2},{"yaw_amplitude_degrees",12},{"camera_cut",false}}:Json(nullptr)},{"view",settings_json(view)},{"viewport",viewport_json()},
                 {"camera",camera_json()},{"warmup_last_frame",fence},{"accepted_frames",accepted},{"elapsed_ms",elapsed},
                 {"accepted_steps_per_second",double(accepted)*1000./elapsed},{"gpu_sample_state","completed"},{"cpu",cpu_json(cpu)},
@@ -566,9 +545,8 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                     {"ddgi_visibility_rays",sample.ddgi_visibility_rays},
                     {"shadow_cache",{{"faces",sample.shadows[0]},{"reused_faces",sample.shadows[1]},
                         {"static_updates",sample.shadows[2]},{"dynamic_updates",sample.shadows[3]},{"draws",sample.shadows[4]},
-                        {"resolution_downgrades",sample.shadows[5]},{"pressure_batches",sample.shadows[6]},{"near_plane_faces",sample.shadows[7]},
-                        {"missing_taps",sample.shadows[8]},{"clamped_taps",sample.shadows[9]},
-                        {"rt_fallbacks",sample.shadows[10]},{"plane_fallbacks",sample.shadows[11]}}},
+                        {"resolution_downgrades",sample.shadows[5]},{"dropped_lights",sample.shadows[6]},{"near_plane_faces",sample.shadows[7]},
+                        {"missing_taps",sample.shadows[8]},{"clamped_taps",sample.shadows[9]},{"plane_fallbacks",sample.shadows[10]}}},
                     {"direct_cluster",{{"cells",sample.clusters[0]},{"overflows",sample.clusters[1]},{"max_sources",sample.clusters[2]}}}});
             }
             result["measured_main_total_ms"]=distribution(std::move(totals));
@@ -577,7 +555,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         }
         camera_fixed=true;require(Access::move_camera(app,camera),"The comparison camera could not be restored.");
         const auto non_lit_case=[&](renderer::Shading shading,std::string_view name) {
-            view.shading=shading;view.lit.direct_clustered=false;apply_view(view);
+            view.shading=shading;apply_view(view);
             const auto fence=warmup(192);
             std::vector<double> wall;wall.reserve(240);
             std::vector<CpuSample> cpu;cpu.reserve(240);

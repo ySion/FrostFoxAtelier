@@ -51,8 +51,8 @@ struct GpuShadowFace {
     std::array<std::uint32_t,4> meta{};
 };
 struct GpuShadowLight {
-    // Kind: 0=not cached (existing visibility), 1=point, 2=directional.
-    // First face descriptor, face count, flags (bit0: shade in this batch).
+    // Kind: 0=no atlas residency this frame, 1=cube from the light centre,
+    // 2=directional cascades. First face descriptor, face count, reserved.
     std::array<std::uint32_t,4> meta{};
     // Directional cascade far boundaries in unjittered camera view Z.
     std::array<float,4> splits{};
@@ -62,45 +62,36 @@ static_assert(sizeof(GpuShadowLight)==32);
 
 enum class ShadowLayer : std::uint32_t { stationary, dynamic };
 struct ShadowUpdate {
-    std::uint32_t face{}; // Index into this batch's faces.
+    std::uint32_t face{}; // Index into the plan's faces.
     ShadowLayer layer{};
     std::array<std::uint32_t,4> rect{}; // x,y,width,height, including guard.
     // Expanded projection used with the entire rect as viewport/scissor.
     std::array<float,16> view_projection{};
     std::vector<std::uint32_t> instances;
 };
-struct ShadowBatch {
-    // Shade only these analytic source indices, once. Rectangle/no-shadow
-    // sources are included and retain their existing visibility behavior.
-    std::vector<std::uint32_t> sources;
-    // Compact analytic prefix + directional tail, excluding emitter triangles.
-    // analytic=local_count-emitter_count; index=source<analytic ? source :
-    // analytic+(source-local_count). Never index this array with an emitter.
-    std::vector<GpuShadowLight> lights;
-    std::vector<GpuShadowFace> faces;
-    std::vector<ShadowUpdate> updates;
-    bool include_emitters{}; // Exactly the first batch, including empty scenes.
-    // Rectangle integration (including unshadowed sources), or conservative
-    // sphere-interior receivers of shadow-casting points need the endpoint kernel.
-    // Emitters are selected independently by include_emitters and their count.
-    bool endpoint_visibility{};
-};
 struct ShadowPlanStats {
     std::uint32_t requested_faces{},reused_faces{},static_updates{},dynamic_updates{};
-    std::uint32_t rendered_instances{},resolution_downgrades{},pressure_batches{};
+    std::uint32_t rendered_instances{},resolution_downgrades{};
+    // Shadow-casting lights the atlas could not hold even at the minimum
+    // resolution. They contribute no direct light this frame.
+    std::uint32_t dropped_lights{};
     // Requested point faces intersecting a caster at/before the minimum near
     // plane. A center shadow map cannot represent that part of visibility.
     std::uint32_t near_plane_faces{};
 };
+// Every shadow-casting light that is lit this frame is resident at once.
+// Reservation runs in importance order, directional lights first.
 struct ShadowFramePlan {
-    std::vector<ShadowBatch> batches;
+    // Indexed by light source. Non-casting and dropped lights keep kind 0.
+    std::vector<GpuShadowLight> lights;
+    std::vector<GpuShadowFace> faces;
+    std::vector<ShadowUpdate> updates;
     ShadowPlanStats stats;
 };
 
 // CPU-only owner of derived atlas residency. SceneLit owns the two D32_FLOAT
 // textures, clears update rects to 0, draws each update with GREATER depth, then
-// unbinds both atlases before shading the batch. Later batches may overwrite
-// earlier regions: upload/consume each batch's descriptors before the next one.
+// unbinds both atlases before shading.
 class ShadowCache {
 public:
     ShadowCache();

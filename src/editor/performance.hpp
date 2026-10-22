@@ -14,7 +14,7 @@ namespace atelier::editor {
 class RenderPerformance {
 public:
     using Clock=std::chrono::steady_clock;
-    static constexpr std::size_t window_size=120,pass_count=23,total_pass=22;
+    static constexpr std::size_t window_size=120,pass_count=16,total_pass=15;
     enum class State { unavailable,waiting,ready };
     struct Pass {
         std::string_view key,title;
@@ -37,7 +37,7 @@ public:
         std::uint64_t scene_identity{},first_frame{};
         renderer::Antialiasing antialiasing{};
         std::uint32_t direct_candidates{};
-        bool ddgi{},direct_reference{},direct_clustered{},direct_shadow_cache{};
+        bool ddgi{};
         std::optional<std::uint64_t> resource_bytes;
         std::array<std::optional<Timing>,pass_count> timings{};
     };

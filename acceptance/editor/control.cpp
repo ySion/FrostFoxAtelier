@@ -237,8 +237,8 @@ Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities
 void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema")==3 && original_scene.at("version")==7 && !original_scene.contains("world"),
-        "Current repro export did not identify view schema 3 and Scene v7");
+    require(original.at("view_schema")==4 && original_scene.at("version")==7 && !original_scene.contains("world"),
+        "Current repro export did not identify view schema 4 and Scene v7");
     const auto legacy=root/"LegacyLightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(legacy),
         std::filesystem::copy_options::recursive);
@@ -246,7 +246,7 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
     // A view before schema 3 had no sky: the scene's Sky Light carried it.
     auto old_manifest=original;old_manifest.erase("view_schema");
     for(const auto* name:{"sky_enabled","sky_intensity","sky_color_x","sky_color_y","sky_color_z"}) old_manifest["view"].erase(name);
-    old_manifest["view"].erase("direct_candidates");old_manifest["view"].erase("direct_reference");
+    old_manifest["view"].erase("direct_candidates");
     old_manifest["view"]["shadow_light_budget"]=16;old_manifest["view"]["shadow_samples"]=64;
     // The legacy lighting repro contains one flat mesh Actor; its World settings created the Environment.
     // Encode the real v4 Actor boundary instead of relabeling a v7 Entity directory as v4.
@@ -303,15 +303,24 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
     auto zero_scene=old_scene;zero_scene["world"]["shadow_samples"]=0;rejected(old_manifest,zero_scene);
     auto mixed=old_manifest;mixed["view"]["direct_candidates"]=8;rejected(mixed,old_scene);
     auto mixed_scene=old_scene;mixed_scene["world"]["direct_candidates"]=8;rejected(old_manifest,mixed_scene);
-    auto unknown=original;unknown["view_schema"]=4;rejected(unknown,original_scene);
+    auto unknown=original;unknown["view_schema"]=5;rejected(unknown,original_scene);
     auto disagrees=old_manifest;disagrees["view"]["exposure_ev"]=old_scene.at("world").at("exposure_ev").get<double>()+.25;
     rejected(disagrees,old_scene,"dependency_mismatch");
-    // A schema 3 view carries the sky, and a v7 scene keeps it in the Environment: both must agree.
+    // A schema 3 or later view carries the sky, and a v7 scene keeps it in the Environment: both must agree.
     auto drifted=original;drifted["view"]["exposure_ev"]=original.at("view").at("exposure_ev").get<double>()+.25;
     rejected(drifted,original_scene,"dependency_mismatch");
     auto sky_drifted=original;sky_drifted["view"]["sky_enabled"]=!original.at("view").at("sky_enabled").get<bool>();
     rejected(sky_drifted,original_scene,"dependency_mismatch");
-    // A schema 3 view may also pair with a version 6 scene: its Sky Light, not its world section, carries the sky,
+    // Schema 4 removed the direct-light diagnostics: a schema 3 view drops their boolean values; a current view rejects the keys.
+    for(const auto* name:{"direct_reference","direct_clustered","direct_shadow_cache"}) {
+        auto current=original;current["view"][name]=true;rejected(current,original_scene);
+        auto malformed=original;malformed["view_schema"]=3;malformed["view"][name]=1;rejected(malformed,original_scene);
+    }
+    auto schema3=original;schema3["view_schema"]=3;
+    schema3["view"]["direct_reference"]=true;schema3["view"]["direct_clustered"]=false;schema3["view"]["direct_shadow_cache"]=true;
+    publish(schema3,original_scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
+    require(d.inspect().at("view")==original.at("view"),"A schema 3 repro did not drop its removed direct-light diagnostics");
+    // A schema 3 or later view may also pair with a version 6 scene: its Sky Light, not its world section, carries the sky,
     // and a disagreement keeps the current document.
     auto sky_view=original;
     for(const auto& [name,value]:Json{{"sky_enabled",true},{"sky_intensity",2},{"sky_color_x",.25},{"sky_color_y",.5},{"sky_color_z",.75}}.items()) sky_view["view"][name]=value;
@@ -322,9 +331,9 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
             {"properties",{{"settings",{{"kind","sky"},{"color",{{"x",.25},{"y",.5},{"z",.75}}},{"intensity",2}}}}}}})}});
     auto sky_dimmer=sky_view;sky_dimmer["view"]["sky_intensity"]=1;rejected(sky_dimmer,sky_scene,"dependency_mismatch");
     publish(sky_view,sky_scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
-    require(d.inspect().at("view")==sky_view.at("view"),"A schema 3 repro with a version 6 Sky Light did not open with its view's sky.");
+    require(d.inspect().at("view")==sky_view.at("view"),"A current repro with a version 6 Sky Light did not open with its view's sky.");
 
-    auto expected_view=original.at("view");expected_view["direct_candidates"]=8;expected_view["direct_reference"]=false;
+    auto expected_view=original.at("view");expected_view["direct_candidates"]=8;
     auto expected_world=world_section;expected_world["direct_candidates"]=8;
     const auto authored=[](Json entities) {
         for(auto& entity:entities) {entity.erase("id");for(auto& component:entity.at("components")) component.erase("id");}
@@ -350,13 +359,12 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
         const std::filesystem::path new_repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto saved=read(new_repro/"manifest.json");
         const auto saved_scene=read(new_repro/"Project"/wide(saved.at("scene").get<std::string>()));
-        require(saved.at("view_schema")==3 && saved.at("view")==expected_view && saved_scene.at("version")==7 &&
+        require(saved.at("view_schema")==4 && saved.at("view")==expected_view && saved_scene.at("version")==7 &&
             !saved_scene.contains("world") && authored(saved_scene.at("entities"))==expected_entities &&
             saved.at("selection_indices")==original.at("selection_indices"),
             "Migrated repro export lost author data or retained a legacy view/scene format");
         require(!saved.at("view").contains("shadow_light_budget") && !saved.at("view").contains("shadow_samples") &&
-            !expected_entities[1]["components"][0]["properties"].contains("direct_reference"),
-            "Migrated repro retained retired author options or persisted reference diagnostics");
+            !saved.at("view").contains("direct_reference"),"Migrated repro retained retired author options or removed diagnostics");
         d.ok("repro.open",{{"directory",utf8(new_repro.wstring())}});
         const auto reopened=d.inspect();
         require(reopened.at("view")==expected_view && reopened.at("camera")==original.at("camera") &&
@@ -408,14 +416,17 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
     Driver d(discover_editor(editor,directory));d.settle();d.ok("scene.create",{{"kind","mesh"}});
     d.ok("camera.look_at",{{"eye",{8,5,-10}},{"target",{1,2,3}}});
-    d.ok("view.set",{{"patch",{{"direct_candidates",16},{"direct_reference",true},{"exposure_ev",1.25}}}});
+    const auto removed=d.call("view.set",{{"patch",{{"direct_reference",true}}}});error(removed,"invalid_request");
+    require(removed.at("error").at("message").get<std::string>().find("was removed")!=std::string::npos,
+        "Control did not report the direct reference diagnostic as removed: "+removed.dump());
+    d.ok("view.set",{{"patch",{{"direct_candidates",16},{"exposure_ev",1.25}}}});
     d.ok("scene.save");const auto id=unique_id();
     require(d.call("repro.export",Json::object(),id).at("status")=="pending","Lighting repro export did not start");
     const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
     repro_lighting_migration(d,wide(exported.at("result").at("directory").get<std::string>()),root);
     d.client.reset();editor.close();
     write(root/"result.json",Json{{"status","passed"},{"cases",{"legacy-shadow-ranges","legacy-view-and-world-agreement",
-        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema3-scene7-export-reopen","no-implicit-reference","view-and-environment-agreement"}}}.dump(2));
+        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema4-scene7-export-reopen","removed-direct-diagnostics","view-and-environment-agreement"}}}.dump(2));
     std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {

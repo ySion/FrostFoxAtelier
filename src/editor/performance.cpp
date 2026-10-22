@@ -7,33 +7,26 @@
 namespace atelier::editor {
 namespace {
 using Pass=RenderPerformance::Pass;
-// Indices 0..21 match the completed sample's mask; total is computed per sample.
+// Indices 0..14 match the completed sample's mask; total is computed per sample.
 constexpr std::array<Pass,RenderPerformance::pass_count> definitions{{
     {"gbuffer","GBuffer",-1,0,true},
     {"acceleration","AS / uploads",-1,0,true},
     {"direct","Direct lighting",-1,0,true},
     {"ddgi","DDGI",-1,0,true},
-    {"ao","GTAO / Local GI",-1,0,true},
-    {"hdr_reflections","HDR / SSSR",-1,0,true},
+    {"ao","GTAO",-1,0,true},
+    {"reflections","Reflections (SSSR)",-1,0,true},
     {"hdr_resolve","HDR resolve",-1,0,true},
     {"display","Bloom / tone / AA / display",-1,0,true},
     {"ddgi_update","Update / transfer",3,1,false},
     {"ddgi_gather","Receiver gather",3,1,false},
-    {"direct_initial","Initial / temporal reservoir",2,1,false},
-    {"direct_spatial","Spatial reservoir",2,1,false},
-    {"direct_visibility","Visibility / shading",2,1,false},
-    {"direct_resolve","Radiance resolve / filter",2,1,false},
     {"ddgi_trace","Primary trace / relocation",8,2,false},
     {"ddgi_lighting","Hit lighting / convolution",8,2,false},
-    {"direct_temporal_resolve","Temporal radiance resolve",13,2,false},
-    {"direct_filter_1","Spatial filter step 1",13,2,false},
-    {"direct_filter_2","Spatial filter step 2",13,2,false},
-    {"direct_filter_4","Spatial filter step 4",13,2,false},
     {"direct_cluster","Light list construction",2,1,false},
     {"shadow_cache","Shadow atlas updates",2,1,false},
+    {"direct_shading","Shading / HDR composition",2,1,false},
     {"total","Measured total",-1,0,false}
 }};
-constexpr std::array<std::size_t,RenderPerformance::pass_count> row_order{RenderPerformance::total_pass,0,1,2,20,21,10,11,12,13,16,17,18,19,3,8,14,15,9,4,5,6,7};
+constexpr std::array<std::size_t,RenderPerformance::pass_count> row_order{RenderPerformance::total_pass,0,1,2,12,13,14,3,8,10,11,9,4,5,6,7};
 constexpr std::array<float,5> minima{120,60,60,60,55};
 constexpr std::array<std::wstring_view,4> aa_names{L"Off",L"TAA",L"SMAA",L"SMAA T2x"};
 std::wstring wide(std::string_view value) {return {value.begin(),value.end()};}
@@ -64,11 +57,10 @@ void RenderPerformance::observe(const renderer::Frame& frame,const renderer::Fra
         std::array<double,pass_count> sample{};
         std::copy(stats.scene_lit_gpu_ms.begin(),stats.scene_lit_gpu_ms.end(),sample.begin());
         std::copy(stats.scene_lit_ddgi_gpu_ms.begin(),stats.scene_lit_ddgi_gpu_ms.end(),sample.begin()+8);
-        std::copy(stats.scene_lit_direct_gpu_ms.begin(),stats.scene_lit_direct_gpu_ms.end(),sample.begin()+10);
-        std::copy(stats.scene_lit_ddgi_update_gpu_ms.begin(),stats.scene_lit_ddgi_update_gpu_ms.end(),sample.begin()+14);
-        std::copy(stats.scene_lit_direct_reconstruction_gpu_ms.begin(),stats.scene_lit_direct_reconstruction_gpu_ms.end(),sample.begin()+16);
-        sample[20]=stats.scene_lit_direct_cluster_gpu_ms;
-        sample[21]=stats.scene_lit_shadow_cache_gpu_ms;
+        std::copy(stats.scene_lit_ddgi_update_gpu_ms.begin(),stats.scene_lit_ddgi_update_gpu_ms.end(),sample.begin()+10);
+        sample[12]=stats.scene_lit_direct_cluster_gpu_ms;
+        sample[13]=stats.scene_lit_shadow_cache_gpu_ms;
+        sample[14]=stats.scene_lit_direct_shading_gpu_ms;
         sample[total_pass]=std::accumulate(sample.begin(),sample.begin()+8,0.);
         if(std::ranges::all_of(sample,[](double value){return std::isfinite(value) && value>=0;})) {
             force|=count_==0;
@@ -86,9 +78,7 @@ void RenderPerformance::publish(Clock::time_point now) {
         published_.scene_identity=domain_->scene;published_.first_frame=first_frame_;
         published_.antialiasing=domain_->view.lit.antialiasing;
         published_.direct_candidates=domain_->view.lit.direct_candidates;
-        published_.ddgi=domain_->view.lit.ddgi;published_.direct_reference=domain_->view.lit.direct_reference;
-        published_.direct_clustered=domain_->view.lit.direct_clustered;
-        published_.direct_shadow_cache=domain_->view.lit.direct_shadow_cache;
+        published_.ddgi=domain_->view.lit.ddgi;
     }
     published_.state=domain_ && domain_->active?(count_?State::ready:State::waiting):State::unavailable;
     published_.samples=count_;published_.sequence=sequence_;published_.frame_id=frame_id_;
@@ -113,8 +103,8 @@ void RenderPerformance::publish(Clock::time_point now) {
         published_.extent.width,published_.extent.height,published_.viewport.width,published_.viewport.height);
     else status_=std::format(L"Target {} × {} · View {:.0f} × {:.0f} · {} / {} samples",published_.extent.width,published_.extent.height,
         published_.viewport.width,published_.viewport.height,count_,window_size);
-    resources_=resource_bytes_?std::format(L"Logical resources: {:.2f} MiB · DI {}{} · {} · DDGI {} · 4 Hz",double(*resource_bytes_)/(1024.*1024.),
-        published_.direct_candidates,published_.direct_reference?L" reference":L"",aa_names[static_cast<std::size_t>(published_.antialiasing)],published_.ddgi?L"on":L"off"):
+    resources_=resource_bytes_?std::format(L"Logical resources: {:.2f} MiB · {} · DDGI {} · 4 Hz",double(*resource_bytes_)/(1024.*1024.),
+        aa_names[static_cast<std::size_t>(published_.antialiasing)],published_.ddgi?L"on":L"off"):
         L"Scene Lit logical resources: unavailable";
     dirty_=false;next_publish_=now+std::chrono::milliseconds(250);rebuild_table();
 }

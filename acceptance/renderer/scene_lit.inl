@@ -174,6 +174,135 @@ double percentile(std::vector<double> values, unsigned percent) {
     return values[(values.size()-1)*percent/100];
 }
 
+// Implementation-independent radiometry for one unshadowed point light (zero
+// radius) on the plane z=plane_z facing -z, seen through a translation-only view.
+// Radiance: color*I*window/max(d^2,0.0025) with window (1-(d/range)^4)^2, times
+// Lambert diffuse weighted by (1-F) plus GGX/height-correlated Smith/Schlick
+// specular (F0 0.04). Display: exposure 1, rational filmic curve, sRGB. Every
+// receiver pixel must lie within one 8-bit code (display dither) of the band
+// that two HDR half-precision roundings allow.
+struct Analytic { std::size_t pixels{}, failures{}; double max_error{}; };
+Analytic analytic_point_plane(const render::Frame& frame,const render::Capture& image,const render::Light& light,
+                              float plane_z,double base,double roughness) {
+    const auto& view=frame.camera.view;const auto& projection=frame.camera.projection;
+    const bool perspective=projection[11]!=0;
+    const std::array<double,3> eye{-view[12],-view[13],-view[14]};
+    const auto code=[](double radiance) {
+        const double x=std::max(radiance,0.);
+        const double mapped=std::clamp(x*(2.51*x+.03)/(x*(2.43*x+.59)+.14),0.,1.);
+        return 255*(mapped<=.0031308?mapped*12.92:1.055*std::pow(mapped,1/2.4)-.055);
+    };
+    Analytic result;
+    const auto& viewport=frame.scene_viewport;
+    for(unsigned y=0;y<image.extent.height;++y) for(unsigned x=0;x<image.extent.width;++x) {
+        if(depth(image,x,y)<=0)continue;
+        const double nx=(x+.5-viewport.x)/viewport.width*2-1,ny=1-(y+.5-viewport.y)/viewport.height*2;
+        const double view_z=plane_z+view[14],scale=perspective?view_z:1;
+        const std::array<double,3> p{nx*scale/projection[0]-view[12],ny*scale/projection[5]-view[13],plane_z};
+        std::array<double,3> v{0,0,-1},l{};
+        if(perspective) {
+            double length=0;for(unsigned i=0;i<3;++i){v[i]=eye[i]-p[i];length+=v[i]*v[i];}
+            for(auto& value:v)value/=std::sqrt(length);
+        }
+        double d2=0;for(unsigned i=0;i<3;++i){l[i]=light.position[i]-p[i];d2+=l[i]*l[i];}
+        const double d=std::sqrt(d2);for(auto& value:l)value/=d;
+        const double nl=-l[2],nv=std::max(-v[2],1e-4);
+        double radiance=0;
+        if(nl>0) {
+            const double window=std::pow(std::clamp(1-std::pow(d/light.range,4),0.,1.),2);
+            const double irradiance=light.intensity*window/std::max(d2,.0025);
+            std::array<double,3> h{v[0]+l[0],v[1]+l[1],v[2]+l[2]};
+            const double hl=std::sqrt(h[0]*h[0]+h[1]*h[1]+h[2]*h[2]);
+            const double nh=std::max(-h[2]/hl,0.),vh=std::max((v[0]*h[0]+v[1]*h[1]+v[2]*h[2])/hl,0.);
+            const double a=std::max(roughness*roughness,.0025),a2=a*a;
+            const double distribution=a2/(std::numbers::pi*std::pow(nh*nh*(a2-1)+1,2));
+            const double gv=2*nv/(nv+std::sqrt(a2+(1-a2)*nv*nv)),gl=2*nl/(nl+std::sqrt(a2+(1-a2)*nl*nl));
+            const double fresnel=.04+.96*std::pow(1-vh,5);
+            const double diffuse=(1-fresnel)*base/std::numbers::pi*nl;
+            const double specular=distribution*gv*gl*fresnel/std::max(4*nl*nv,1e-5)*nl;
+            radiance=irradiance*(diffuse+specular);
+        }
+        ++result.pixels;
+        for(unsigned channel=0;channel<3;++channel) {
+            const double expected=radiance*light.color[channel],observed=pixel(image,x,y)[channel];
+            const double low=code(expected*(1-1./1024))-1,high=code(expected*(1+1./1024))+1;
+            const double error=std::max({low-observed,observed-high,0.});
+            result.max_error=std::max(result.max_error,std::abs(observed-code(expected)));
+            if(error>0){++result.failures;break;}
+        }
+    }
+    return result;
+}
+
+// Visibility truth from geometry, not from another renderer path. World
+// positions come from captured depth (translation-only view). A receiver whose
+// segment to the light hits any blocker box shrunk by `margin` is occluded and
+// must be black; one that misses every box grown by `margin` must match the same
+// frame rendered without shadows. Pixels in the margin band are not judged.
+struct Box { Vec3 center, half; };
+struct ShadowTruth { std::size_t occluded{}, lit{}, failures{}; unsigned max_lit_delta{}, max_occluded{}; };
+ShadowTruth shadow_truth(const render::Frame& frame,const render::Capture& shadowed,const render::Capture& unshadowed,
+                         const render::Light& light,const std::vector<Box>& blockers,double margin) {
+    const auto& view=frame.camera.view;const auto& projection=frame.camera.projection;
+    check(view[0]==1&&view[5]==1&&view[10]==1&&view[1]==0&&view[2]==0&&view[4]==0&&view[6]==0&&view[8]==0&&view[9]==0,
+          "shadow truth reconstructs positions through a translation-only view");
+    const bool perspective=projection[11]!=0;
+    const auto hits=[&](const std::array<double,3>& origin,const std::array<double,3>& direction,double length,double grow) {
+        for(const auto& box:blockers) {
+            double t_in=1e-4,t_out=length;bool empty=false;
+            for(unsigned axis=0;axis<3;++axis) {
+                const double low=box.center[axis]-box.half[axis]-grow,high=box.center[axis]+box.half[axis]+grow;
+                if(low>=high){empty=true;break;}
+                if(std::abs(direction[axis])<1e-12){if(origin[axis]<low||origin[axis]>high){empty=true;break;}continue;}
+                double t0=(low-origin[axis])/direction[axis],t1=(high-origin[axis])/direction[axis];
+                if(t0>t1)std::swap(t0,t1);
+                t_in=std::max(t_in,t0);t_out=std::min(t_out,t1);
+            }
+            if(!empty&&t_in<=t_out)return true;
+        }
+        return false;
+    };
+    ShadowTruth result;
+    const auto& viewport=frame.scene_viewport;
+    for(unsigned y=0;y<shadowed.extent.height;++y) for(unsigned x=0;x<shadowed.extent.width;++x) {
+        const double z=depth(shadowed,x,y);
+        if(z<=0||z!=depth(unshadowed,x,y))continue;
+        const double nx=(x+.5-viewport.x)/viewport.width*2-1,ny=1-(y+.5-viewport.y)/viewport.height*2;
+        const double view_z=perspective?projection[14]/(z-projection[10]):(z-projection[14])/projection[10];
+        const double scale=perspective?view_z:1;
+        const std::array<double,3> p{nx*scale/projection[0]-view[12],ny*scale/projection[5]-view[13],view_z-view[14]};
+        bool on_blocker=false;
+        for(const auto& box:blockers) {
+            bool inside=true;
+            for(unsigned axis=0;axis<3;++axis)inside&=std::abs(p[axis]-box.center[axis])<=box.half[axis]+margin;
+            on_blocker|=inside;
+        }
+        if(on_blocker)continue;
+        std::array<double,3> direction{};double length=1e30;
+        if(light.kind==render::LightKind::directional) {
+            for(unsigned axis=0;axis<3;++axis)direction[axis]=-light.direction[axis];
+        } else {
+            double squared=0;
+            for(unsigned axis=0;axis<3;++axis){direction[axis]=light.position[axis]-p[axis];squared+=direction[axis]*direction[axis];}
+            length=std::sqrt(squared);for(auto& value:direction)value/=length;
+        }
+        const auto* image=pixel(shadowed,x,y);const auto* reference=pixel(unshadowed,x,y);
+        if(hits(p,direction,length,-margin)) {
+            ++result.occluded;
+            const unsigned brightest=std::max({image[0],image[1],image[2]});
+            result.max_occluded=std::max(result.max_occluded,brightest);
+            result.failures+=brightest>2;
+        } else if(!hits(p,direction,length,margin)) {
+            ++result.lit;
+            unsigned delta=0;
+            for(unsigned c=0;c<3;++c)delta=std::max(delta,unsigned(std::abs(int(image[c])-int(reference[c]))));
+            result.max_lit_delta=std::max(result.max_lit_delta,delta);
+            result.failures+=delta>2;
+        }
+    }
+    return result;
+}
+
 std::vector<render::Light> room_lights() {
     std::vector<render::Light> lights(4);
     lights[0].kind = render::LightKind::directional;
@@ -197,6 +326,9 @@ struct Fixture {
     render::Frame frame;
     std::filesystem::path output;
     std::ofstream metrics;
+    ui::PixelExtent initial_extent;
+    render::ViewSettings initial_view;
+    decltype(render::Frame::environment) initial_environment{};
     Fixture(bool benchmark, std::filesystem::path evidence_path,
             atelier::rhi::Validation validation = atelier::rhi::Validation::gpu)
         : window(benchmark ? 2560 : 960, benchmark ? 1440 : 540),
@@ -224,6 +356,7 @@ struct Fixture {
         frame.view.lit.probe_volumes[0].counts = {11,7,10};
         frame.view.lit.probe_update_budget = 96; frame.view.lit.probe_rays = 64;
         if (!benchmark) metrics << "scenario,mean_rgb_delta,p95_rgb_delta,changed_pixels,darker_pixels\n";
+        initial_extent = drawing.extent; initial_view = frame.view; initial_environment = frame.environment;
     }
     render::FrameResult step(render::Capture* capture = nullptr) {
         render::FrameResult result;
@@ -279,6 +412,18 @@ struct Fixture {
         return delta;
     }
     void edited() { frame.meshes = room.meshes; frame.lights = lights; }
+    // Returns a case-modified windowed fixture to its constructed target, room,
+    // lights and view as a new scene domain.
+    void restore() {
+        window.resize(int(initial_extent.width),int(initial_extent.height));
+        drawing.extent = take(renderer.sync_window_target()).extent;
+        check(drawing.extent == initial_extent, "SceneLit fixture restores its constructed target");
+        frame.scene_viewport = {24,32,float(drawing.extent.width)-48,float(drawing.extent.height)-56};
+        frame.camera = camera({static_cast<unsigned>(frame.scene_viewport.width),static_cast<unsigned>(frame.scene_viewport.height)});
+        room = Room{}; lights = room_lights();
+        frame.view = initial_view; frame.environment = initial_environment; frame.lighting_focus = {};
+        frame.camera_cut = true; ++frame.scene_identity; edited();
+    }
     Region region(Vec3 point) const { return project_region(frame.camera,frame.scene_viewport,drawing.extent,point); }
     void close() { check(bool(renderer.close()), "SceneLit drains GPU resources before HWND destruction"); }
 };
@@ -297,17 +442,14 @@ std::array<double,3> lighting_mean(Fixture& f,const char* name,Region region,uns
 }
 
 void benchmark(Fixture& f) {
-    // Every scope, including the reservoir passes, executes on the ReSTIR fallback.
-    f.frame.view.lit.direct_clustered=false;f.edited();
     for (unsigned frame = 0; frame < warmup_frames; ++frame) f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
-    samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,di_initial_temporal_ms,di_spatial_ms,di_visibility_shading_ms,direct_resolve_filter_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,direct_temporal_resolve_ms,direct_filter_1_ms,direct_filter_2_ms,direct_filter_4_ms,completed_pass_mask\n";
+    samples << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,direct_cluster_ms,shadow_update_ms,direct_shading_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,completed_pass_mask\n";
     std::vector<double> totals;
     std::array<std::vector<double>, 8> passes;
     std::array<std::vector<double>, 2> ddgi_passes;
-    std::array<std::vector<double>, 4> direct_passes;
+    std::array<std::vector<double>, 3> direct_passes;
     std::array<std::vector<double>, 2> ddgi_update_passes;
-    std::array<std::vector<double>, 4> direct_reconstruction_passes;
     std::uint64_t resource_peak = 0;
     std::uint64_t previous_sequence = 0;
     const auto first_measured_frame = f.drawing.id;
@@ -347,14 +489,15 @@ void benchmark(Fixture& f) {
             }
             check(sum<=parent+.01,"GPU subpass timestamps belong to their enclosing completed stage");
         };
-        subpasses(direct_passes,stats.scene_lit_direct_gpu_ms,stats.scene_lit_gpu_ms[2]);
+        subpasses(direct_passes,std::array{stats.scene_lit_direct_cluster_gpu_ms,stats.scene_lit_shadow_cache_gpu_ms,
+            stats.scene_lit_direct_shading_gpu_ms},stats.scene_lit_gpu_ms[2]);
         subpasses(ddgi_update_passes,stats.scene_lit_ddgi_update_gpu_ms,stats.scene_lit_ddgi_gpu_ms[0]);
-        subpasses(direct_reconstruction_passes,stats.scene_lit_direct_reconstruction_gpu_ms,stats.scene_lit_direct_gpu_ms[3]);
-        check(stats.scene_lit_gpu_pass_mask==0xfffffu,"fixed room executes every measured GPU scope in the same completed sample");
+        // Shadow atlas updates (bit 13) run only when the static room changes.
+        check((stats.scene_lit_gpu_pass_mask&0x5fffu)==0x5fffu,"fixed room executes every measured GPU scope in the same completed sample");
         samples<<','<<stats.scene_lit_gpu_pass_mask<<'\n';
     }
     check(totals.size() >= 120 && percentile(totals, 95) > 0, "SceneLit benchmark obtains completed GPU timestamp samples");
-    f.metrics << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle plus mesh emission\n"
+    f.metrics << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle plus DDGI mesh emission\n"
               << "warmup_frames=" << warmup_frames << " gpu_samples=" << totals.size() << "\n"
               << "GPU timestamps exclude capture/readback, CPU Present duration and display scanout.\n"
               << "sum_of_measured_passes_ms p50=" << percentile(totals,50) << " p95=" << percentile(totals,95)
@@ -368,7 +511,7 @@ void benchmark(Fixture& f) {
     for(std::size_t pass=0;pass<ddgi_passes.size();++pass)
         f.metrics<<ddgi_names[pass]<<"_ms p50="<<percentile(ddgi_passes[pass],50)<<" p95="<<percentile(ddgi_passes[pass],95)
                  <<" p99="<<percentile(ddgi_passes[pass],99)<<'\n';
-    constexpr const char* direct_names[]{"DI_initial_temporal","DI_spatial","DI_visibility_shading","direct_resolve_filter"};
+    constexpr const char* direct_names[]{"direct_cluster","shadow_update","direct_shading"};
     for(std::size_t pass=0;pass<direct_passes.size();++pass)
         f.metrics<<direct_names[pass]<<"_ms p50="<<percentile(direct_passes[pass],50)<<" p95="<<percentile(direct_passes[pass],95)
                  <<" p99="<<percentile(direct_passes[pass],99)<<'\n';
@@ -376,10 +519,6 @@ void benchmark(Fixture& f) {
     for(std::size_t pass=0;pass<ddgi_update_passes.size();++pass)
         f.metrics<<update_names[pass]<<"_ms p50="<<percentile(ddgi_update_passes[pass],50)<<" p95="<<percentile(ddgi_update_passes[pass],95)
                  <<" p99="<<percentile(ddgi_update_passes[pass],99)<<'\n';
-    constexpr const char* reconstruction_names[]{"direct_temporal_resolve","direct_filter_1","direct_filter_2","direct_filter_4"};
-    for(std::size_t pass=0;pass<direct_reconstruction_passes.size();++pass)
-        f.metrics<<reconstruction_names[pass]<<"_ms p50="<<percentile(direct_reconstruction_passes[pass],50)<<" p95="<<percentile(direct_reconstruction_passes[pass],95)
-                 <<" p99="<<percentile(direct_reconstruction_passes[pass],99)<<'\n';
     check(samples.good() && f.metrics.good(), "SceneLit GPU benchmark evidence written");
     // Evidence capture happens only after the timestamp sample loop.
     f.capture("benchmark-1440p");
@@ -457,7 +596,7 @@ void image_cases(Fixture& f) {
               pixel(overflow,12,12)[1] == 255 && depth(overflow,12,12) == 0 &&
               std::count_if(overflow.depth.begin(),overflow.depth.end(),[](float value) { return value > 0; }) > 1000,
           "fifth casting light remains a shadow source with scene/UI/depth intact");
-    std::puts("SceneLit all-light visibility: accepted (all five analytic lights and emitters retain shadows)");
+    std::puts("SceneLit all-light visibility: accepted (all five analytic lights retain shadows)");
     f.lights = original_lights; f.edited();
 
     // Hold unrelated contributions at zero; compare the same receiver/depth
@@ -465,7 +604,7 @@ void image_cases(Fixture& f) {
     auto& options = f.frame.view.lit;
     options.ddgi = options.gtao = options.sssr = options.bloom = false;
     options.antialiasing = render::Antialiasing::none;
-    f.frame.environment = {0,0,0}; options.direct_reference=true;
+    f.frame.environment = {0,0,0};
     f.room.meshes[7].material.emissive = {0,0,0};
     for (std::size_t index = 0; index < original_lights.size(); ++index) {
         f.lights = {original_lights[index]};
@@ -486,7 +625,6 @@ void image_cases(Fixture& f) {
     const auto rect_back = f.capture("03-rect-back");
     check(f.compare("rectangle-backface",rect_large,rect_back).darker >= 64,
           "single-sided rectangle suppresses back-facing illumination");
-    options.direct_reference=false;
 
     // Self-emission is scene-linear HDR RGB and remains distinct from exposure.
     f.lights.clear(); f.room.meshes[7].material.emissive = {4,.3f,.05f}; f.edited();
@@ -575,7 +713,6 @@ void image_cases(Fixture& f) {
     f.room.meshes = original_meshes; f.lights = original_lights; f.edited();
     options = original_lit; f.frame.environment = original_environment; options.bloom = options.ddgi = false;
     options.antialiasing = render::Antialiasing::none;
-    options.direct_reference=true; // Independent 64-estimate reference reduces unrelated direct noise.
     options.sssr = false;
     const auto fallback = f.capture("09-reflection-fallback",warmup_frames);
     options.sssr = true;
@@ -619,9 +756,8 @@ void image_cases(Fixture& f) {
           "identical Edit and Play snapshots converge to the same SceneLit appearance");
     f.lights.clear(); f.edited();
     render::Capture deleted; const auto deleted_result = f.step(&deleted); png(deleted,f.output/"10-lights-deleted.png");
-    check(deleted_result.stats.scene_lit_history_resets == 0 &&
-              deleted_result.stats.scene_lit_shadow_sources+original_lights.size()==initial.scene_lit_shadow_sources,
-          "deleting analytic lights retains only emitter shadow sources without resetting the geometry domain");
+    check(deleted_result.stats.scene_lit_history_resets == 0 && deleted_result.stats.scene_lit_shadow_sources == 0,
+          "deleting analytic lights leaves no shadow sources without resetting the geometry domain");
     check(f.compare("light-deletion-immediate",stable1,deleted).changed >= 64,
           "light deletion visibly changes the current frame rather than leaving a temporal ghost");
 
@@ -679,22 +815,15 @@ void temporal_isolation(Fixture& f) {
     quality_signal_edits(f);
     quality_motion_history(f);
     const auto defaults=f.frame.view.lit;
-    constexpr const char* names[]{"all","no-sssr","no-ddgi","direct-only","direct-reference"};
+    constexpr const char* names[]{"all","no-sssr","no-ddgi","direct-only"};
     bool stable=true;
-    for (unsigned mode=0;mode<5;++mode) {
+    for (unsigned mode=0;mode<4;++mode) {
         f.frame.view.lit=defaults;
         if(mode==1 || mode>=3) f.frame.view.lit.sssr=false;
         if(mode>=2) f.frame.view.lit.ddgi=false;
-        if(mode==4) f.frame.view.lit.direct_reference=true;
         f.edited();
-        // The reference redraws 64 independent estimates every frame without
-        // denoising, so its stability is that of the converged signal: compare
-        // means of independent frames. Denoised modes compare displayed frames.
-        const bool reference=mode==4;
-        const auto first=reference?f.average((std::string(names[mode])+"-0").c_str(),warmup_frames,16):
-            f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
-        const auto second=reference?f.average((std::string(names[mode])+"-1").c_str(),16,16):
-            f.capture((std::string(names[mode])+"-1").c_str(),8);
+        const auto first=f.capture((std::string(names[mode])+"-0").c_str(),warmup_frames);
+        const auto second=f.capture((std::string(names[mode])+"-1").c_str(),8);
         const auto delta=f.compare(names[mode],first,second);
         stable&=delta.mean<=3 && delta.p95<=8;
         check(f.step().stats.scene_lit_history_resets==0,"static temporal isolation retains scene histories");
@@ -862,65 +991,12 @@ void quality_depth(Fixture& f) {
           "finite Reversed-Z clips geometry beyond both near and far planes to background zero");
 }
 
-void quality_ssil(Fixture& f) {
-    // A lit red front face is within the short screen-space radius of the
-    // neutral floor. Emission belongs to mesh NEE, not the SSIL residual.
-    // The remote floor has no surface within that radius.
-    f.room.meshes[0].material.metallic=0;
-    f.room.meshes[0].material.roughness=.8f;
-    f.room.meshes[4].color={.9f,.025f,.01f,1};
-    f.room.meshes[4].material.emissive={0,0,0};
-    f.room.meshes[7].material.emissive={0,0,0};
-    f.lights={room_lights()[0]};f.lights[0].source_radius=0;
-    // Horizontal illumination reaches the red face without saturating the
-    // floor, so its reflected residual remains visible in the RGBA8 evidence.
-    f.lights[0].direction={0,0,1};f.lights[0].intensity=16;f.edited();
-    auto& options=f.frame.view.lit;
-    options.antialiasing=render::Antialiasing::none;
-    options.ddgi=options.gtao=options.sssr=options.bloom=options.ssil=false;
-    f.frame.environment={.15f,.15f,.15f};options.direct_reference=true;
-    // Keep both sides free of GTAO. Deterministic direct64 and the same fixed
-    // isotropic fallback make the optional residual the only changing source.
-    const auto local=f.region({0,.01f,2.05f});
-    const auto remote=f.region({-1.1f,.01f,.5f});
-    const auto baseline=f.capture("quality-ssil-baseline",warmup_frames);
-    const auto local_before=mean_rgb(baseline,local);
-    mean_rgb(baseline,remote);
-    options.ssil=true;
-    auto previous=f.capture("quality-ssil-local-bounce",warmup_frames);
-    const auto local_after=mean_rgb(previous,local);
-    const auto local_delta=region_difference(baseline,previous,local);
-    const auto remote_delta=region_difference(baseline,previous,remote);
-    const auto global_delta=f.compare("ssil-bounded-local-correction",baseline,previous);
-    const auto visible=std::count_if(previous.depth.begin(),previous.depth.end(),[](float value){return value>0;});
-    f.metrics<<"ssil-local-roi,"<<local_delta.mean<<','<<local_delta.p95<<','<<local_delta.changed<<",0\n"
-             <<"ssil-remote-roi,"<<remote_delta.mean<<','<<remote_delta.p95<<','<<remote_delta.changed<<",0\n";
-    check(local_delta.mean>=.5 && local_after[0]-local_before[0]>
-          local_after[2]-local_before[2]+.25,
-          "optional SSIL visibly transfers reflected light from the nearby red surface to its neutral floor receiver");
-    check(remote_delta.p95<=1 && global_delta.changed<static_cast<std::size_t>(visible)/2,
-          "bounded SSIL preserves the remote baseline instead of brightening the whole scene");
-    for(unsigned index=0;index<16;++index) {
-        render::Capture current;f.step(&current);
-        const auto delta=region_difference(previous,current,local);
-        f.metrics<<"ssil-static-local-"<<index<<','<<delta.mean<<','<<delta.p95<<','<<delta.changed<<",0\n";
-        check(delta.mean<=3 && delta.p95<=8,
-              "converged SSIL local receiver meets the unchanged consecutive-frame stability bounds");
-        previous=std::move(current);
-    }
-    png(previous,f.output/"quality-ssil-static-end.png");
-    options.ssil=false;
-    const auto restored=f.capture("quality-ssil-disabled-restored",16);
-    const auto restored_delta=f.compare("ssil-off-restores-baseline",baseline,restored);
-    check(restored_delta.mean<=3 && restored_delta.p95<=8 &&
-          region_difference(baseline,restored,local).p95<=1,
-          "disabling SSIL restores the same direct and isotropic indirect baseline");
-}
-
-void quality_emissive_nee(Fixture& f) {
+// Mesh emission reaches receivers only through DDGI probe hits. Every probe
+// updates each frame and each measurement settles before averaging.
+void quality_emissive_ddgi(Fixture& f) {
     using atelier::geometry::Vertex;
     // Both representations cover precisely the same quad. The off-centre fan
-    // has unequal triangle areas, exposing a missing triangle-selection PDF.
+    // has unequal triangle areas; probe hits must not weight emission by them.
     const auto emitter_geometry=[](bool fan, bool reversed=false) {
         const std::array<Vec3,4> corners{{{1,-1,2},{3,-1,2},{3,1,2},{1,1,2}}};
         std::vector<Vertex> vertices;
@@ -938,7 +1014,7 @@ void quality_emissive_nee(Fixture& f) {
     receiver.geometry=std::make_shared<const atelier::geometry::Mesh>(std::vector<Vertex>{
         {{-3,-2,4},{0,0,-1}},{{3,-2,4},{0,0,-1}},{{3,2,4},{0,0,-1}},
         {{-3,-2,4},{0,0,-1}},{{3,2,4},{0,0,-1}},{{-3,2,4},{0,0,-1}}});
-    receiver.color={.08f,.08f,.08f,1};receiver.material={.roughness=1};
+    receiver.color={.5f,.5f,.5f,1};receiver.material={.roughness=1};
     auto& emitter=f.room.meshes[1];
     emitter={};emitter.stable_key=2;emitter.world=box(0,0,0,1,1,1);
     emitter.geometry=emitter_geometry(false);emitter.color={0,0,0,1};
@@ -946,84 +1022,69 @@ void quality_emissive_nee(Fixture& f) {
     f.lights.clear();f.edited();++f.frame.scene_identity;
     f.frame.environment={0,0,0};
     auto& options=f.frame.view.lit;
-    options={};options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-    options.antialiasing=render::Antialiasing::none;options.direct_reference=true;
+    options={};options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.antialiasing=render::Antialiasing::none;
+    // The receiver plane at z=4 lies between the last two probe slices.
+    options.probe_volumes[0].minimum={-4,-3,-.5f};options.probe_volumes[0].maximum={4,3,4.6f};
+    options.probe_volumes[0].counts={9,7,7};options.probe_update_budget=441;options.probe_rays=128;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     f.frame.camera_cut=true;
     // This broad, unoccluded receiver remains visible when the blocker is
-    // inserted halfway along every emitter segment, away from the camera ray.
+    // inserted between it and the emitter, away from the camera ray.
     const auto region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{-.7f,0,4},16);
-    const auto measure=[&](const char* name,unsigned settle=4) {
-        const auto image=f.capture(name,settle);
-        const double value=mean_rgb(image,region)[0];
+    const auto measure=[&](const char* name,unsigned settle=192) {
+        const double value=lighting_mean(f,name,region,settle,8)[0];
         f.metrics<<name<<','<<value<<",0,0,0\n";
         std::printf("SceneLit %s receiver red=%.4f\n",name,value);
         return value;
     };
-    const double dark=measure("mesh-nee-no-emitter");
+    const double dark=measure("mesh-emission-none",8);
     f.room.meshes[1].material.emissive={12,12,12};f.edited();
-    const double direct=measure("mesh-nee-direct64");
-    check(dark<=1 && direct>=32 && direct<=200,
-          "mesh emission lights an unsaturated real receiver with DDGI, SSIL and authored lights disabled");
+    const double lit=measure("mesh-emission-ddgi");
+    check(dark<=1 && lit>=24 && lit<=200,"mesh emission lights an unsaturated real receiver through converged DDGI");
+    options.ddgi=false;
+    const double no_gi=measure("mesh-emission-ddgi-off",8);
+    check(no_gi<=dark+1,"without DDGI, mesh emission lights no other surface");
+    options.ddgi=true;
     f.room.meshes[1].geometry=emitter_geometry(true);f.edited();
-    const double triangulated=measure("mesh-nee-unequal-area-fan");
-    check(std::abs(triangulated-direct)<=4,
-          "equal emitting area retains energy under unequal-area retriangulation with its complete PDF");
+    const double triangulated=measure("mesh-emission-unequal-area-fan");
+    check(std::abs(triangulated-lit)<=4,"equal emitting area retains energy under unequal-area retriangulation");
     const auto original_geometry=emitter_geometry(false);
     std::vector<Vertex> transformed(original_geometry->vertices().begin(),original_geometry->vertices().end());
     for(auto& vertex:transformed){vertex.position[0]*=-.5f;vertex.position[1]*=2;}
     f.room.meshes[1].geometry=std::make_shared<const atelier::geometry::Mesh>(std::move(transformed));
     f.room.meshes[1].world=box(0,0,0,-2,.5f,1);f.edited();
-    const double scaled=measure("mesh-nee-mirrored-nonuniform-transform");
-    check(std::abs(scaled-direct)<=4,"world-space emitter area and radiance survive mirrored nonuniform instance transforms");
+    const double scaled=measure("mesh-emission-mirrored-nonuniform-transform");
+    check(std::abs(scaled-lit)<=4,"world-space emitter area and radiance survive mirrored nonuniform instance transforms");
     f.room.meshes[1].world=box(0,0,0,1,1,1);
-    std::vector<Vertex> tiled;
-    const auto emit_triangle=[&](Vec3 a,Vec3 b,Vec3 c){for(const auto p:{a,b,c})tiled.push_back({{p[0],p[1],p[2]},{0,0,-1}});};
-    for(unsigned y=0;y<20;++y)for(unsigned x=0;x<20;++x) {
-        const float left=1+float(x)*.1f,right=1+float(x+1)*.1f,bottom=-1+float(y)*.1f,top=-1+float(y+1)*.1f;
-        emit_triangle({left,bottom,2},{right,bottom,2},{right,top,2});
-        emit_triangle({left,bottom,2},{right,top,2},{left,top,2});
-    }
-    f.room.meshes[1].geometry=std::make_shared<const atelier::geometry::Mesh>(std::move(tiled));f.edited();
-    const double many=measure("mesh-nee-800-triangles");
-    check(std::abs(many-direct)<=4,"800 emitting primitives keep complete sampling support without a 256-light truncation");
     f.room.meshes[1].geometry=emitter_geometry(false,true);f.edited();
-    const double reversed=measure("mesh-nee-reversed-winding");
-    check(std::abs(reversed-direct)<=4,
-          "two-sided mesh emission retains receiver energy when emitter winding is reversed");
+    const double reversed=measure("mesh-emission-reversed-winding");
+    check(std::abs(reversed-lit)<=4,"two-sided mesh emission retains receiver energy when emitter winding is reversed");
     f.room.meshes[1].geometry=emitter_geometry(false);
     f.room.meshes[1].material.emissive={24,24,24};f.edited();
-    const double doubled=measure("mesh-nee-double-radiance");
-    check(doubled>=direct+12,"emissive energy comparison has visible unsaturated headroom");
-    f.room.meshes[1].material.emissive={12,12,12};f.edited();
-    options.ddgi=true;
-    const double with_ddgi=measure("mesh-nee-ddgi-no-duplicate",192);
-    // The emitter reflects nothing; the only other surface is this dim planar
-    // receiver. Allow finite-probe reconstruction error, but reject a second
-    // direct contribution using an actual 2x-radiance capture (not an sRGB ratio).
-    check(with_ddgi>=direct-4 && with_ddgi<=direct+(doubled-direct)*.3+2,
-          "DDGI adds no duplicate mesh-direct emission to an isolated low-reflectance receiver");
-    options.ddgi=false;
+    const double doubled=measure("mesh-emission-double-radiance");
+    check(doubled>=lit+12,"probe-hit emission scales with authored radiance");
+    f.room.meshes[1].material.emissive={12,12,12};
     render::MeshInstance blocker;
     blocker.stable_key=3;blocker.geometry=atelier::geometry::cube_mesh();
     blocker.world=box(.65f,0,3,1.6f,2.4f,.05f);blocker.color={0,0,0,1};
     blocker.material={.roughness=1,.metallic=1};
     f.room.meshes.push_back(blocker);f.edited();
-    const double blocked=measure("mesh-nee-occluded");
-    check(blocked<=dark+2,"mesh NEE visibility rejects geometry before the sampled emitter endpoint");
+    const double blocked=measure("mesh-emission-occluded");
+    check(blocked<lit*.5,"geometry between emitter and receiver blocks probe-carried emission");
     f.room.meshes.pop_back();f.edited();
-    const double restored=measure("mesh-nee-blocker-removed");
-    check(std::abs(restored-direct)<=4,"removing the blocker restores mesh light visibility");
+    const double restored=measure("mesh-emission-blocker-removed");
+    check(std::abs(restored-lit)<=4,"removing the blocker restores probe-carried emission");
     f.room.meshes.pop_back();f.edited();
-    const double removed=measure("mesh-nee-emitter-removed");
-    check(removed<=dark+1,"removing emissive geometry removes its derived light without stale energy");
-    check(f.metrics.good(),"mesh NEE real-renderer energy and visibility evidence written");
+    const double removed=measure("mesh-emission-emitter-removed");
+    check(removed<=dark+1,"removing emissive geometry removes its light without stale probe energy");
+    check(f.metrics.good(),"mesh emission real-renderer energy and visibility evidence written");
 }
 
 void quality_ddgi(Fixture& f) {
-    quality_emissive_nee(f);
+    quality_emissive_ddgi(f);
     // Minimal real scene for the reported dirty wall/floor junction and moving
     // bright emissive mesh. Use the product's default probe field, not the
     // denser field used by the older general lighting fixture.
@@ -1126,12 +1187,6 @@ void quality_ddgi(Fixture& f) {
     const auto bright_edge=mean_rgb(subpixel,project_region(f.frame.camera,f.frame.scene_viewport,
         f.drawing.extent,{world_pixel*2,1.6f,5.38f},0));
     std::printf("SceneLit DDGI subpixel divider dark red=%.4f, lit red=%.4f\n",dark_edge[0],bright_edge[0]);
-    options.direct_reference=true;
-    const auto subpixel_reference=f.capture("ddgi-subpixel-divider-direct64",16);
-    const auto dark_reference=mean_rgb(subpixel_reference,project_region(f.frame.camera,f.frame.scene_viewport,
-        f.drawing.extent,{0,1.6f,5.38f},0));
-    std::printf("SceneLit subpixel divider direct64 dark red=%.4f\n",dark_reference[0]);
-    check(dark_reference[0]<=8,"unfiltered direct64 confirms the subpixel divider really blocks the light");
     f.metrics<<"ddgi-subpixel-divider-dark-red,"<<dark_edge[0]<<",0,0,0\n"
              <<"ddgi-subpixel-divider-lit-red,"<<bright_edge[0]<<",0,0,0\n";f.metrics.flush();
     check(profile.good() && f.metrics.good(),"DDGI whole-wall evidence written");
@@ -1145,7 +1200,7 @@ void quality_ddgi(Fixture& f) {
 }
 
 #include "scene_lit_work.inl"
-#include "scene_lit_restir.inl"
+#include "scene_lit_lights.inl"
 #include "scene_lit_clustered.inl"
 #include "scene_lit_cost.inl"
 #include "scene_lit_shadow.inl"
@@ -1260,20 +1315,16 @@ void quality_cases(Fixture& f) {
         check(f.step().stats.scene_lit_history_resets==0,"camera-cut history recovers on the following accepted frame");
     }
 
-    // Compare long-term regional means against 64 independent RIS estimates.
-    // Other effects are disabled so they cannot mask direct estimator bias.
+    // Direct light alone has no estimator or history: once the shadow atlas is
+    // warm, the receiver is identical in every frame.
     f.room.meshes=meshes;f.lights=lights;f.frame.camera=camera;f.edited();
     auto& options=f.frame.view.lit;
     options=defaults;options.antialiasing=render::Antialiasing::none;
     options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-    options.direct_reference=false;
-    const auto sampled=lighting_mean(f,"quality-direct-converged",penumbra,warmup_frames,32);
-    options.direct_reference=true;
-    const auto reference=lighting_mean(f,"quality-direct64-reference",penumbra,1,32);
-    const auto reference_later=f.capture("quality-direct64-reference-depth");
-    for(unsigned channel=0;channel<3;++channel)
-        check(std::abs(sampled[channel]-reference[channel])<=std::max(3.,reference[channel]*.08),
-              "converged direct receiver mean remains close to the independent direct64 reference");
+    const auto reference=lighting_mean(f,"quality-direct-converged",penumbra,warmup_frames,32);
+    const auto reference_later=f.capture("quality-direct-depth");
+    const auto direct_delta=f.compare("quality-direct-deterministic",f.capture("quality-direct-0"),f.capture("quality-direct-1",8));
+    check(direct_delta.mean==0&&direct_delta.p95==0,"settled direct lighting is identical across frames");
     // Legacy mesh index 4 used to occupy the same scalar key as an authored
     // UINT64_MAX-4. Both blockers must survive in their distinct object domains.
     const auto central_key=f.room.meshes[4].stable_key;
@@ -1289,13 +1340,12 @@ void quality_cases(Fixture& f) {
         check(std::abs(distinct_mean[channel]-reference[channel])<=3,
               "legacy fallback and authored uint64 keys preserve the reference lighting mean");
     f.room.meshes[4].stable_key=central_key;f.room.meshes[5].stable_key=metal_key;f.edited();
-    quality_direct_radiance_response(f,penumbra);
-    quality_ssil(f);
+    quality_direct_radiance_response(f);
     quality_depth(f);
     quality_ddgi(f);
     quality_contracts(f);
     check(f.metrics.good() && trajectory.good(),"SceneLit quality evidence and accepted-frame trajectory written");
-    std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, direct64, bounded direct radiance response, bounded SSIL, geometry/camera recovery, reversed depth, emissive DDGI wall continuity/motion/divider)");
+    std::puts("Renderer SceneLit quality: PASS (four AA policies, separate reflection/penumbra temporal ROIs, continuous light edits, convergence, deterministic direct light and immediate radiance edits, geometry/camera recovery, reversed depth, DDGI mesh emission, emissive DDGI wall continuity/motion/divider)");
 }
 } // namespace scene_lit_e2e
 
@@ -1304,7 +1354,12 @@ int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& outpu
     if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);
     else if(temporal_only) scene_lit_e2e::temporal_isolation(fixture);
-    else {scene_lit_e2e::environment_cases(fixture);scene_lit_e2e::image_cases(fixture);}
+    else {
+        scene_lit_e2e::environment_cases(fixture);scene_lit_e2e::image_cases(fixture);
+        fixture.restore();scene_lit_e2e::light_set_cases(fixture);
+        fixture.restore();scene_lit_e2e::probe_debug_cases(fixture);
+        fixture.restore();scene_lit_e2e::quality_audit(fixture);
+    }
     fixture.close();
     return 0;
 }

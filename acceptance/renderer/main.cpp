@@ -9,6 +9,7 @@
 #include <fstream>
 #include <filesystem>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -137,11 +138,8 @@ void lit_preparation_case(render::Renderer &renderer) {
           "an unprepared Lit frame returns not_ready without encoding, presenting or capturing");
     check(first_ms < 2000, "starting Lit preparation does not wait for compilation");
     const auto progress = take(renderer.preparation(frame.view));
-    check(!progress.ready && progress.total == 38 && progress.done < progress.total,
+    check(!progress.ready && progress.total == 32 && progress.done < progress.total,
           "the default Lit view reports its own pipeline groups while they prepare");
-    auto reference = frame.view;
-    reference.lit.direct_reference = true;
-    check(take(renderer.preparation(reference)).total == 39, "the direct reference adds only its ray-traced shading pipeline");
     frame.view.shading = render::Shading::smooth;
     ++drawing.id;
     const auto studio = take(renderer.render(frame, &capture));
@@ -158,7 +156,7 @@ void lit_preparation_case(render::Renderer &renderer) {
     const auto grown = take(renderer.preparation(frame.view));
     ++drawing.id;
     const auto pending = take(renderer.render(frame, &capture));
-    check(!grown.ready && grown.total == 39 && grown.done == 38 && pending.status == render::FrameStatus::not_ready &&
+    check(!grown.ready && grown.total == 33 && grown.done == 32 && pending.status == render::FrameStatus::not_ready &&
               capture.frame_id == drawing.id - 1,
           "a setting that needs a new group raises total and returns the ready view to not_ready");
     take(wait_preparation(renderer, frame.view));
@@ -409,19 +407,19 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     check(stats.scene_culled_instances==0 && stats.scene_draw_calls==1,
         "a perspective box crossing the eye and near plane is conservatively retained");
     frame.camera=camera;frame.meshes=meshes;
-    meshes[1].world=translation(8,0,2);meshes[1].material.emissive={4,2,1};
+    meshes[1].world=translation(8,0,2);
     frame.view.shading=render::Shading::scene_lit;frame.scene_identity=drawing.id;
     auto& lit=frame.view.lit;
     lit.ddgi=lit.gtao=lit.sssr=lit.ssil=lit.bloom=false;
     lit.antialiasing=render::Antialiasing::none;
     stats=capture();
     check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==1 &&
-        stats.scene_lit_light_sources>0 && std::ranges::any_of(image.depth,[](float d){return d>0;}),
-        "Lit filters primary GBuffer draws while retaining off-camera emitters in the complete light domain");
+        std::ranges::any_of(image.depth,[](float d){return d>0;}),
+        "Lit filters primary GBuffer draws to the camera frustum");
     frame.meshes={};stats=capture();
     check(stats.scene_instances==0 && stats.scene_culled_instances==0 && stats.scene_draw_calls==0,
         "empty scenes reset visibility activity without carrying prior-frame counters");
-    std::puts("Renderer visibility: PASS (geometry groups, identical pixels, reentry, invalid input, six planes, reflected scale, eye crossing, off-camera light domain, empty scene)");
+    std::puts("Renderer visibility: PASS (geometry groups, identical pixels, reentry, invalid input, six planes, reflected scale, eye crossing, Lit primary culling, empty scene)");
 }
 #include "ui_shapes.inl"
 #include "selection.inl"
@@ -444,8 +442,8 @@ int main(int argc, char** argv) try {
     if (argc > 1) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-restir-suite" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-restir-suite|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
@@ -463,49 +461,10 @@ int main(int argc, char** argv) try {
         }
         if(mode=="--scene-lit-stability") {
             scene_lit_e2e::Fixture fixture(false,output,atelier::rhi::Validation::debug_layer);
-            const auto initial_view=fixture.frame.view;
-            const auto initial_camera=fixture.frame.camera;
-            const auto initial_environment=fixture.frame.environment;
             scene_lit_e2e::stability_cases(fixture);
             scene_lit_e2e::quality_ddgi(fixture);
-            fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
-            fixture.frame.view=initial_view;fixture.frame.camera=initial_camera;
-            fixture.frame.environment=initial_environment;fixture.frame.lighting_focus={};
-            ++fixture.frame.scene_identity;fixture.frame.camera_cut=true;fixture.edited();
-            scene_lit_e2e::probe_volume_cases(fixture);
+            fixture.restore();scene_lit_e2e::probe_volume_cases(fixture);
             fixture.close();
-            return 0;
-        }
-        if(mode=="--scene-lit-restir-suite") {
-            scene_lit_e2e::Fixture fixture(false,output);
-            const auto initial_view=fixture.frame.view;
-            const auto initial_environment=fixture.frame.environment;
-            // Material fixtures use frame IDs 9000 and 12000 before this
-            // fixture's 20000 sequence. Keep that sequence advancing thereafter.
-            material_cases(fixture.renderer,output);
-            material_transport_cases(fixture.renderer,output);
-            fixture.frame.scene_identity=fixture.drawing.id;
-            const auto restore=[&] {
-                fixture.drawing.extent=take(fixture.renderer.sync_window_target()).extent;
-                fixture.frame.scene_viewport={24,32,float(fixture.drawing.extent.width)-48,
-                    float(fixture.drawing.extent.height)-56};
-                fixture.frame.camera=scene_lit_e2e::camera({
-                    static_cast<unsigned>(fixture.frame.scene_viewport.width),
-                    static_cast<unsigned>(fixture.frame.scene_viewport.height)});
-                fixture.room=scene_lit_e2e::Room{};fixture.lights=scene_lit_e2e::room_lights();
-                fixture.frame.view=initial_view;fixture.frame.environment=initial_environment;
-                fixture.frame.lighting_focus={};fixture.frame.camera_cut=true;
-                ++fixture.frame.scene_identity;fixture.edited();
-            };
-            restore();scene_lit_e2e::restir_cases(fixture);
-            restore();scene_lit_e2e::probe_volume_cases(fixture);
-            restore();scene_lit_e2e::quality_ddgi(fixture);
-            restore();scene_lit_e2e::probe_debug_cases(fixture);
-            restore();scene_lit_e2e::quality_audit(fixture);
-            // Contracts exercise terminal/repeated close and must run last.
-            restore();scene_lit_e2e::quality_contracts(fixture);
-            fixture.close();
-            std::puts("Renderer ReSTIR suite: PASS (materials, transport, ReSTIR, volumes, DDGI quality/debug, audit, contracts; one Renderer)");
             return 0;
         }
         return scene_lit_acceptance(mode == "--scene-lit-benchmark", output, mode == "--scene-lit-temporal", mode == "--scene-lit-quality");

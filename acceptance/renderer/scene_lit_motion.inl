@@ -9,13 +9,13 @@ void quality_motion_history(Fixture& f) {
     bool passed=true;
     std::ofstream evidence(f.output/"motion-history.csv");
     evidence<<"case,frames_after_motion,relative_error,mean_rgb8_error,static_noise_relative,changed_pixels\n";
-    constexpr const char* names[]{"moving-area-shadow","moving-red-reflection","moving-gray-reflection","moving-local-gi"};
-    for(unsigned mode=0;mode<4;++mode) {
+    constexpr const char* names[]{"moving-area-shadow","moving-red-reflection","moving-gray-reflection"};
+    for(unsigned mode=0;mode<3;++mode) {
         f.frame.view=view;f.frame.camera=camera;f.frame.environment={};f.lights.clear();
         auto& options=f.frame.view.lit;
         options.antialiasing=render::Antialiasing::smaa;
         options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
-        options.shadows=true;options.direct_reference=false;
+        options.shadows=true;
         f.room.meshes={meshes[0],meshes[4]};
         auto& floor=f.room.meshes[0];auto& mover=f.room.meshes[1];
         floor.color={.7f,.7f,.7f,1};floor.material={.roughness=1};
@@ -27,17 +27,11 @@ void quality_motion_history(Fixture& f) {
             light.position={0,4,6};light.direction=normalize({0,-4,-5});
             light.right={1,0,0};light.up=normalize(cross(light.direction,light.right));
             light.width=3;light.height=2;light.intensity=12;
-        } else if(mode<=2) {
+        } else {
             options.sssr=true;floor.material={.roughness=.18f,.metallic=1};
             mover.world=box(-1.4f,2.1f,6.2f,1.6f,1.8f,.1f);
             mover.color={0,0,0,1};
             mover.material.emissive=mode==1?Vec3{12,0,0}:Vec3{2.5512f,2.5512f,2.5512f};
-        } else {
-            options.ssil=true;options.exposure_ev=2;
-            mover.world=box(-1.4f,.7f,3,1,1.4f,.1f);mover.color={.8f,.03f,.01f,1};
-            f.lights.assign(1,{});auto& light=f.lights[0];
-            light.stable_key=100;light.kind=render::LightKind::directional;
-            light.direction={0,0,1};light.intensity=8;
         }
         ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
         const std::string name=names[mode];

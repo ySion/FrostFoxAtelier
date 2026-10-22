@@ -7,10 +7,9 @@ struct LitShadowFace {
 };
 struct LitShadowLight { uint4 meta;float4 splits; };
 StructuredBuffer<LitShadowFace> lit_shadow_faces;
-StructuredBuffer<LitShadowLight> lit_shadow_lights;
+StructuredBuffer<LitShadowLight> lit_shadow_lights; // Indexed by light source.
 Texture2D<float> lit_shadow_static;
 Texture2D<float> lit_shadow_dynamic;
-uint lit_shadow_enabled,lit_shadow_first_batch;
 float lit_shadow_filter_tangent_limit;
 uint lit_shadow_atlas_extent;
 
@@ -23,14 +22,6 @@ static const float2 lit_shadow_disk[16]={
     float2(.6846,.2500),float2(-.7127,.2942),float2(.3434,-.7338),float2(.2537,.8080),
     float2(-.7647,-.4432),float2(.8971,-.1972),float2(-.5470,.7831),float2(-.1265,-.9760)};
 
-uint lit_shadow_light_index(uint source) {
-    uint analytic=lit_source_counts.x-lit_source_counts.z;
-    return source<analytic?source:analytic+source-lit_source_counts.x;
-}
-bool lit_shadow_batch_contains(uint source) {
-    if(lit_shadow_enabled==0)return true;
-    return (lit_shadow_lights[lit_shadow_light_index(source)].meta.w&1u)!=0;
-}
 void lit_shadow_count(uint counter) {
     // Keep wave convergence out of divergent PCSS loops. Per-invocation
     // counters live across the entire filter measured slower on the target GPU.
@@ -255,7 +246,6 @@ float lit_shadow_directional_cascade(LitShadowLight cache,uint cascade,LitLightS
     }
     return visibility/16;
 }
-// Cache-only call graph: endpoint RT belongs to the residual shader entry.
 float lit_shadow_directional(LitShadowLight cache,LitLightSource light,LitLightingSurface surface) {
     float view_z=mul(float4(surface.position,1),lit_camera_view).z;
     uint cascade=0;[unroll] for(uint i=0;i<3;++i)if(i+1<cache.meta.z&&view_z>cache.splits[i])cascade=i+1;
