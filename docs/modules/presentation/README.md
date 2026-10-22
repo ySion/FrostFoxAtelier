@@ -75,7 +75,7 @@ Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMi
 
 天光首版是均匀天空入射辐射：`sky_enabled` 为假时环境辐射为零，颜色和强度保留；没有可见天空、HDRI 或方向性天空分布的隐式资源。宿主用 `rendering::sky_radiance(settings)` 求 `Frame.environment`，Renderer 接口不变。
 
-每个 World 至多一个 EnvironmentComponent，停用的也计数；这是 Scene 登记的准入。`Scene::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](../world/README.md#编辑呈现与资源)。
+每个 World 至多一个 EnvironmentComponent，停用的、派生类型的也计数；这是 Scene 登记的准入，创建 Scene 时也检查 World 里已有的内容，已有两个以上就拒绝创建（此时只留下可复用的环境登记）。`Scene::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](../world/README.md#编辑呈现与资源)。
 
 ## 提取与坐标
 

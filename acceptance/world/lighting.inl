@@ -1,4 +1,5 @@
 struct DerivedLight : p::LightComponent { float extra{3.f}; };
+struct DerivedEnvironment : p::EnvironmentComponent {};
 void lit_materials_and_lights() {
     Runtime runtime; const auto types=register_all_types(runtime);
     const auto derived=take(NativeRegistration<DerivedLight>{runtime,"lighting.DerivedLight",TypeKind::object}
@@ -349,7 +350,28 @@ void environment_and_group_writes() {
     take(world.write(environment.id(),admitted_paths[0],1.f));
     require(take(scene.environment()).sky_color==std::array{1.f,1.f,1.f},"Repairing the Environment did not restore its settings.");
     committed(world.close());
-    std::puts("[pass] Environment: defaults without one, uniqueness with disabled ones, invalid values fall back, atomic group writes with exact restore");
+    // Content attached before a Scene exists is checked when it is created, disabled and derived Environments included.
+    {
+        const auto derived=take(NativeRegistration<DerivedEnvironment>{runtime,"lighting.DerivedEnvironment",TypeKind::object}
+            .base<p::EnvironmentComponent>().publish());
+        w::World loaded(runtime,types);
+        const auto add=[&](TypeId type) {
+            auto holder=take(w::create_entity(runtime));auto component=take(w::create_component(runtime,type));
+            const std::array group{w::Attachment{component.id()}};
+            committed(loaded.attach_components(holder.id(),group));committed(loaded.attach(holder.id()));
+            return std::pair{std::move(holder),component.id()};
+        };
+        const auto disabled=add(types.environment_component);
+        committed(loaded.set_enabled(disabled.second,false));
+        const auto active=add(derived);
+        reject(p::Scene::create(loaded,types),"A Scene was created over a World that already held two Environments.");
+        take(loaded.detach(active.first.id()));
+        const auto accepted=p::Scene::create(loaded,types);
+        require(accepted && take(accepted->environment())==Settings{},
+            "A Scene over one disabled Environment was rejected or did not use the default settings.");
+        committed(loaded.close());
+    }
+    std::puts("[pass] Environment: defaults without one, uniqueness with disabled ones also for content before the Scene, invalid values fall back, atomic group writes with exact restore");
 }
 // Scene::update keeps one cached extraction: an unchanged update keeps the version;
 // every presented input advances it, values written past World included, and only
