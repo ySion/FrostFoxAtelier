@@ -90,6 +90,9 @@ float lit_shadow_point(LitShadowLight cache,LitLightSource light,LitLightingSurf
         float b=face.depth.x*face.depth.y/(face.depth.y-face.depth.x);
         reference.gradient=(2*b/numerator)*projected_normal*float2(1,-1)/(face.atlas.xy*float(lit_shadow_atlas_extent));
     }
+    // A receiver plane through or behind the centre still sees part of a sphere
+    // or rectangle; it compares the projected depth.
+    else lit_shadow_count(81);
     if(!all(isfinite(reference.gradient))){lit_shadow_count(81);reference.gradient=0;}
     return lit_shadow_compare(face,uv,reference);
 }
