@@ -17,15 +17,19 @@ world::Diagnostic detail::diagnostic(DiagnosticKind kind, DiagnosticPhase phase,
 
 Result<Scene> Scene::create(world::World& world, const Types& types) {
     Scene scene{world, types};
+    // The admission guards later changes; content already in the World is checked here,
+    // before registrations that a rejected creation would leave behind.
+    auto environments = world.register_capability(types.environment_component);
+    if (!environments) return std::unexpected(environments.error());
+    auto unique = detail::unique_environment(*environments);
+    if (auto existing = unique(world, {}); !existing) return std::unexpected(existing.error());
     auto meshes = world.register_capability(types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
         return runtime.with_native<StaticMeshComponent>(object, [](StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
     });
     if (!meshes) return std::unexpected(meshes.error());
     auto lights = world.register_capability(types.light_component);
     if (!lights) return std::unexpected(lights.error());
-    auto environments = world.register_capability(types.environment_component);
-    if (!environments) return std::unexpected(environments.error());
-    if (auto admitted = world.add_admission(types.environment_component, detail::unique_environment(*environments)); !admitted)
+    if (auto admitted = world.add_admission(types.environment_component, std::move(unique)); !admitted)
         return std::unexpected(admitted.error());
     scene.meshes_ = *meshes; scene.lights_ = *lights; scene.environments_ = *environments;
     static std::atomic<std::uint64_t> created;

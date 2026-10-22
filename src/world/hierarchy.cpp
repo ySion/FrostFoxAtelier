@@ -467,7 +467,8 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
             return {};
         });
     };
-    if (auto written = assign(*canonical, true); !written || !impl_->running) return written;
+    // Spatial chains of members stay within members, so a detached pose moves no simulated body.
+    if (auto written = assign(*canonical, true); !written || !impl_->running || !data->world) return written;
     const auto before = previous;
     const bool spatial = was_spatial;
     auto relocated = impl_->relocate(object);
