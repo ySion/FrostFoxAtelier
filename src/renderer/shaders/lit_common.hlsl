@@ -17,9 +17,9 @@ row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
 row_major float4x4 lit_previous_inverse_view_projection;
 float4 lit_environment; // RGB radiance, reserved
-uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom, local GI
-uint lit_history_invalid; // Per-signal incompatibility: direct=1, reflection=2, AO=4, final TAA=8, SSIL=16.
-float4 lit_controls; // exposure multiplier,shadow bias,AO radius,SSR max distance
+uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom
+uint lit_history_invalid; // Per-signal incompatibility: reflection=2, AO=4, final TAA=8.
+float4 lit_controls; // exposure multiplier,secondary ray origin offset (m),AO radius,SSR max distance
 float4 lit_temporal; // history weight,roughness threshold,radiance change,visibility geometry change
 float4 lit_jitter; // current xy,previous xy; viewport pixel units
 
@@ -174,7 +174,7 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
         lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
-struct LitSurface { float3 position,normal,geometric_normal,base; float roughness,metallic; bool closed,double_sided; };
+struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed,double_sided,emission_two_sided; };
 LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float footprint) {
     LitInstance instance=lit_instances[instance_id];
     LitRayTriangle face=lit_rt_triangles[instance.geometry.x+primitive];
@@ -198,6 +198,6 @@ LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 po
     float4 tangent=a.tangent*(1-bary.x-bary.y)+b.tangent*bary.x+c.tangent*bary.y;
     tangent.xyz=material_transform_tangent(tangent.xyz,instance.world);tangent.w*=instance.normal_x.w;
     s.normal=material_normal(surface,lit_triangle_uv(face,bary),0,0,footprint*uv_density,false,s.normal,tangent,material.roughness);
-    s.base=material.base;s.roughness=material.roughness;s.metallic=material.metallic;
-    s.double_sided=surface.flags.y!=0;return s;
+    s.base=material.base;s.roughness=material.roughness;s.metallic=material.metallic;s.emissive=max(material.emissive,0);
+    s.double_sided=surface.flags.y!=0;s.emission_two_sided=surface.flags.z!=0;return s;
 }

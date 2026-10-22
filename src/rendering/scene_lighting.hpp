@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include "rendering/sky_map.hpp"
 
 // Scene-owned authoring values shared by World and rendering. No GPU resources,
 // camera position, rolling state or diagnostic preferences are persisted here.
@@ -66,10 +67,14 @@ struct SceneLightingSettings {
     std::uint32_t probe_rays{128}; // At most 256 rays per probe update.
     float probe_bounce{.85f}; // Feedback transport, 0..0.99; changing it invalidates the field.
     float indirect_gain{1.f}; // Final diffuse composition only, 0..8; never feeds the field.
-    // Uniform incident sky radiance, sky_color * sky_intensity (cd/m^2) per channel.
+    // Incident sky radiance sky_color * sky_intensity * map (cd/m^2) per channel; map = 1
+    // without sky_map. The map turns about +Y by sky_rotation degrees in the sense of a
+    // Transform rotation about +Y (+X toward -Z).
     bool sky_enabled{};
     std::array<float, 3> sky_color{1.f, 1.f, 1.f};
     float sky_intensity{.03f};
+    SkyMapRef sky_map{};
+    float sky_rotation{};
 };
 
 // The Frame environment radiance the host passes to the renderer; zero when the sky is off.
@@ -116,6 +121,7 @@ inline const char* scene_lighting_error(const SceneLightingSettings& settings) n
        settings.direct_candidates>32 || !range(settings.ao_radius,.001f,100) ||
        !range(settings.reflection_distance,.001f,10000) || !range(settings.reflection_roughness,0,1))
         return "Invalid World lighting or effects settings";
+    if(!range(settings.sky_rotation,-180,180)) return "Sky rotation must be finite degrees within [-180, 180]";
     if(settings.gtao && settings.ssil) return "GTAO and Local GI are mutually exclusive";
     for(float channel:settings.sky_color) {
         const double radiance=double(channel)*settings.sky_intensity;

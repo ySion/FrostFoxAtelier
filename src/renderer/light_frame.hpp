@@ -1,6 +1,6 @@
 #pragma once
 
-#include "material_frame.hpp"
+#include "renderer/renderer.hpp"
 #include <limits>
 #include <unordered_map>
 
@@ -15,10 +15,9 @@ inline constexpr float light_grid_spacing=8.f;
 static_assert(light_grid_counts==std::array<std::uint32_t,3>{16,8,16}&&light_grid_cell_capacity==32);
 
 struct GpuLightSource {
-    std::array<float,4> origin_range{},direction_radius{},radiance{},edge1_area{},edge2{},uv01{},uv2{};
-    // kind: point=0, rectangle=1, directional=2, triangle=3.
-    // flags: emission two-sided=1, casts shadows=2; current material index; reserved.
-    std::array<std::uint32_t,4> meta{0,0,no_light_source,0};
+    std::array<float,4> origin_range{},direction_radius{},radiance{},edge1_area{},edge2{};
+    // kind: point=0, rectangle=1, directional=2. flags: two-sided=1, casts shadows=2; reserved.
+    std::array<std::uint32_t,4> meta{};
     bool operator==(const GpuLightSource&) const = default;
 };
 struct GpuLightProposal {
@@ -37,21 +36,23 @@ struct GpuSpatialLightProposal {
     std::uint32_t alias{}; // Relative slot within this cell.
     float probability{};
 };
-static_assert(sizeof(GpuLightSource)==128 && sizeof(GpuLightProposal)==16);
+static_assert(sizeof(GpuLightSource)==96 && sizeof(GpuLightProposal)==16);
 static_assert(sizeof(GpuLightCell)==16 && sizeof(GpuSpatialLightProposal)==16);
 
-// CPU snapshot owner. update consumes the renderer's validated Frame and the
-// corresponding MaterialFrame; it creates no GPU or World resources.
+// CPU snapshot owner of the analytic lights in the renderer's validated Frame.
+// It creates no GPU or World resources.
 class LightFrame {
 public:
     // Scene Lit's render sequence, not the potentially reused UI frame id.
-    void update(const Frame&,const MaterialFrame&,std::uint64_t sequence);
+    void update(const Frame&,std::uint64_t sequence);
     void clear();
 
-    // Local analytic lights, emissive triangles, then explicit directionals.
-    std::vector<GpuLightSource> sources,previous_sources;
+    // Local analytic lights, then explicit directionals.
+    std::vector<GpuLightSource> sources;
     std::vector<GpuLightProposal> proposals; // Local pool only; actual uploaded PMF.
-    std::vector<std::uint32_t> current_to_previous,previous_to_current;
+    // Index of each source in the previously published layout, or no_light_source.
+    // Becomes the identity on the first stationary frame after a change.
+    std::vector<std::uint32_t> current_to_previous;
     // A bounded near-source proposal, never a light influence/culling list.
     // Empty cells disable local sampling; the global proposal always survives.
     std::array<float,4> spatial_origin{}; // Minimum XYZ, cell spacing.
@@ -60,57 +61,26 @@ public:
     std::vector<std::uint32_t> spatial_source_slots; // (cell << 5) | slot, or no_light_source.
     bool spatial_changed{};
     std::uint32_t spatial_nonempty_cells{};
-    std::uint32_t local_count{},directional_count{},emitter_count{};
-    // Includes advancing previous_sources/maps on the first stationary frame
-    // after a change. Subsequent unchanged frames publish nothing new.
-    bool changed{};
-    // Current source content changed, independently of upload/remap publication.
-    // Stable identities and effective material descriptions distinguish edits
-    // from reordering or material-index renumbering. Unknown correspondence is
+    std::uint32_t local_count{},directional_count{};
+    bool changed{}; // Sources and proposals were rebuilt for this snapshot.
+    // Current source content changed, independently of reordering. Stable
+    // identities distinguish edits from reordering; unknown correspondence is
     // conservative. Repeated requests for the same snapshot preserve this flag.
     bool radiance_changed{};
+    // Zero stable keys give a source no cross-frame identity.
+    bool keyed(std::size_t source) const {return keys_[source].owner!=0;}
 
 private:
-    struct ObjectKey {
-        std::uint64_t value{};
-        bool legacy{};
-        bool operator==(const ObjectKey&) const = default;
-    };
     struct SourceKey {
         std::uint64_t owner{};
-        const geometry::Mesh* geometry{};
-        std::uint32_t primitive{},kind{};
+        std::uint32_t kind{};
         bool operator==(const SourceKey&) const = default;
     };
     struct KeyHash {
-        std::size_t operator()(const ObjectKey&) const noexcept;
         std::size_t operator()(const SourceKey&) const noexcept;
     };
-    struct Identity {
-        SourceKey key;
-        std::uint32_t material{no_light_source}; // Index in owned descriptions below.
-    };
-    struct CachedEmitter {
-        GpuLightSource source;
-        double power{};
-        std::uint32_t primitive{},material_slot{};
-    };
-    struct CachedObject {
-        geometry::MeshRef geometry;
-        std::array<float,16> world{};
-        std::vector<material::Description> descriptions;
-        std::vector<std::uint32_t> material_indices;
-        std::vector<CachedEmitter> emitters;
-        bool used{};
-    };
-    std::unordered_map<ObjectKey,CachedObject,KeyHash> objects_;
-    std::vector<ObjectKey> object_order_,next_object_order_;
-    std::vector<GpuLightSource> analytic_,next_analytic_;
-    std::vector<SourceKey> analytic_keys_,next_analytic_keys_;
-    std::vector<Identity> identities_,previous_identities_;
-    std::vector<material::Description> descriptions_,previous_descriptions_;
-    // Identity contains raw geometry pointers; these captures prevent ABA.
-    std::vector<geometry::MeshRef> geometry_owners_,previous_geometry_owners_;
+    std::vector<GpuLightSource> analytic_,next_analytic_,previous_sources_;
+    std::vector<SourceKey> analytic_keys_,next_analytic_keys_,keys_,previous_keys_;
     std::unordered_map<SourceKey,std::uint32_t,KeyHash> previous_lookup_;
     std::vector<double> powers_,scaled_,actual_;
     std::vector<std::uint32_t> below_,above_;
@@ -120,8 +90,7 @@ private:
     bool valid_{},advance_previous_{};
     bool spatial_initialized_{};
 
-    void update_impl(const Frame&,const MaterialFrame&,std::uint64_t sequence);
-    void rebuild_object(CachedObject&,const MeshInstance&,const MaterialFrame&,std::size_t);
+    void update_impl(const Frame&,std::uint64_t sequence);
     void build_proposals();
     void update_spatial(const std::array<float,3>& focus,std::uint64_t sequence);
     void map_previous();

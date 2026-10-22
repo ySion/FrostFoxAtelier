@@ -16,7 +16,10 @@ namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
 // 3: the view carries the sky (sky_enabled, sky_intensity, sky_color_x/y/z).
-constexpr unsigned repro_view_schema=3;
+// 4: direct_reference, direct_clustered and direct_shadow_cache are removed; direct
+//    light has one clustered path with cached shadows.
+constexpr unsigned repro_view_schema=4;
+constexpr std::array<std::string_view,3> removed_view_options{"direct_reference","direct_clustered","direct_shadow_cache"};
 constexpr unsigned inspect_page_items=256;
 constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
 template<class T> T take(Result<T> value) {if(!value) throw Failure("operation_failed",value.error().message);return std::move(*value);}
@@ -95,8 +98,7 @@ Json performance_json(const editor::RenderPerformance& performance) {
         {"extent",{sample.extent.width,sample.extent.height}},
         {"viewport",{sample.viewport.x,sample.viewport.y,sample.viewport.width,sample.viewport.height}},
         {"configuration",{{"antialiasing",aa_names[static_cast<unsigned>(sample.antialiasing)]},{"direct_candidates",sample.direct_candidates},
-            {"direct_reference",sample.direct_reference},{"direct_clustered",sample.direct_clustered},
-            {"direct_shadow_cache",sample.direct_shadow_cache},{"ddgi",sample.ddgi}}},
+            {"ddgi",sample.ddgi}}},
         {"logical_resource_bytes",sample.resource_bytes?Json(*sample.resource_bytes):Json(nullptr)},
         {"resource_semantics","Current logical Scene Lit allocation; excludes retired resources and physical residency"},
         {"total_semantics","Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present"},
@@ -119,6 +121,8 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patc
     if(patch.value("gtao",false) && patch.value("ssil",false)) throw Failure("invalid_request","GTAO and Local GI are mutually exclusive");
     std::set<editor::ViewOption> assigned;
     for(const auto& [name,value]:patch.items()) {
+        if(std::ranges::find(removed_view_options,name)!=removed_view_options.end())
+            throw Failure("invalid_request","Display option was removed: "+name+"; direct light always uses clustered light lists with cached shadows");
         const auto* option=editor::view_option(name);if(!option) throw Failure("invalid_request","Unknown display option: "+name);
         if(!assigned.insert(option->option).second) throw Failure("invalid_request","Display option specified through multiple names: "+name);
         double scalar{};
@@ -133,16 +137,21 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patc
     }
     take(editor::validate_view_options(view,focus));return view;
 }
-renderer::ViewSettings repro_view(const Json& snapshot,bool legacy_shadow_settings,std::array<float,3> focus) {
-    if(!legacy_shadow_settings || !snapshot.is_object())return patched_view({},snapshot,focus);
+renderer::ViewSettings repro_view(const Json& snapshot,unsigned schema,std::array<float,3> focus) {
+    if(schema>=4 || !snapshot.is_object())return patched_view({},snapshot,focus);
     auto migrated=snapshot;
     // Only persisted repro input accepts retired settings. Validate the old
     // authoring ranges, then retain today's defaults rather than infer reference mode.
-    for(const auto* name:{"shadow_light_budget","shadow_samples"}) {
+    if(schema==1)for(const auto* name:{"shadow_light_budget","shadow_samples"}) {
         const auto found=migrated.find(name);if(found==migrated.end())continue;
         if(migrated.contains("direct_candidates"))throw Failure("invalid_request","Legacy shadow settings cannot be combined with direct_candidates");
         const bool samples=std::string_view(name)=="shadow_samples";
         static_cast<void>(integer(*found,samples?1u:0u,samples?64u:16u));
+        migrated.erase(found);
+    }
+    for(const auto name:removed_view_options) {
+        const auto found=migrated.find(name);if(found==migrated.end())continue;
+        if(!found->is_boolean()) throw Failure("invalid_request","Display toggle requires a boolean");
         migrated.erase(found);
     }
     return patched_view({},migrated,focus);
@@ -284,21 +293,22 @@ struct EditorControl::Impl {
             {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
             {"frame_stats",{{"scene_draw_calls",s.scene_draw_calls},{"scene_instances",s.scene_instances},{"scene_culled_instances",s.scene_culled_instances},
-                {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
+                {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},
                 {"spatial_light_sampling",{{"retained_sources",s.scene_lit_spatial_sources},{"nonempty_cells",s.scene_lit_spatial_cells},{"resource_bytes",s.scene_lit_spatial_bytes},{"uploaded",s.scene_lit_spatial_changed}}},
                 {"probe_volumes",probe_volumes_json(s.scene_lit_probe_volumes)},{"probe_volumes_source","cpu_layout_and_schedule"},
                 {"probe_inspection",probe_inspection_json(s.scene_lit_probe_inspection)}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
-            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"direct_pass_ms",s.scene_lit_direct_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
-            {"direct_reconstruction_pass_ms",s.scene_lit_direct_reconstruction_gpu_ms},
-            {"direct_cluster_ms",s.scene_lit_direct_cluster_gpu_ms},
+            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
+            {"direct_cluster_ms",s.scene_lit_direct_cluster_gpu_ms},{"direct_shading_ms",s.scene_lit_direct_shading_gpu_ms},
             {"shadow_cache_ms",s.scene_lit_shadow_cache_gpu_ms},
             {"shadow_cache",{{"faces",s.scene_lit_shadow_cache_faces},{"reused_faces",s.scene_lit_shadow_cache_reused_faces},
                 {"static_updates",s.scene_lit_shadow_cache_static_updates},{"dynamic_updates",s.scene_lit_shadow_cache_dynamic_updates},
                 {"draws",s.scene_lit_shadow_cache_draws},{"resolution_downgrades",s.scene_lit_shadow_cache_resolution_downgrades},
-                {"pressure_batches",s.scene_lit_shadow_cache_pressure_batches},{"near_plane_faces",s.scene_lit_shadow_cache_near_plane_faces},
-                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},{"clamped_taps",s.scene_lit_shadow_cache_clamped_taps},
-                {"rt_fallbacks",s.scene_lit_shadow_cache_rt_fallbacks},{"plane_fallbacks",s.scene_lit_shadow_cache_plane_fallbacks}}},
+                {"dropped_lights",s.scene_lit_shadow_cache_dropped_lights},{"near_plane_faces",s.scene_lit_shadow_cache_near_plane_faces},
+                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},
+                {"plane_fallbacks",s.scene_lit_shadow_cache_plane_fallbacks},{"deferred_faces",s.scene_lit_shadow_cache_deferred_faces},
+                {"deferral_frames",s.scene_lit_shadow_cache_deferral_frames},{"atlas_cells",s.scene_lit_shadow_cache_atlas_cells},
+                {"pending_lights",s.scene_lit_shadow_cache_pending_lights}}},
             {"direct_cluster",{{"cells",s.scene_lit_direct_cluster_cells},{"overflows",s.scene_lit_direct_cluster_overflows},
                 {"max_sources",s.scene_lit_direct_cluster_max_sources},{"receiver_histogram",s.scene_lit_direct_receiver_histogram},
                 {"receiver_max_sources",s.scene_lit_direct_receiver_max_sources}}},
@@ -802,13 +812,13 @@ struct EditorControl::Impl {
             const auto view_schema=manifest.contains("view_schema")?integer(manifest.at("view_schema"),1,repro_view_schema):1u;
             auto camera=app.camera_;if(!camera.set_state(camera_state(manifest.at("camera")))) throw Failure("invalid_request","Invalid repro camera");
             const auto focus=camera.state().target;
-            auto view=repro_view(manifest.at("view"),view_schema==1,{focus.x,focus.y,focus.z});
+            auto view=repro_view(manifest.at("view"),view_schema,{focus.x,focus.y,focus.z});
             auto project=take(editor::Project::open(root/"Project"));
             const auto scene_text=take(editor::read_file(take(project.resolve(project.startup_scene()))));
             const auto scene=editor::json_format::parse(scene_text);
             const auto scene_version=editor::json_format::identity(scene.at("version"));
             if(scene_version>=4 && scene_version<7) {
-                auto authored=repro_view(scene.at("world"),scene_version==4,{focus.x,focus.y,focus.z});
+                auto authored=repro_view(scene.at("world"),scene_version==4?1u:repro_view_schema,{focus.x,focus.y,focus.z});
                 // These versions kept the sky in a Sky Light, not the world section; the Environment check below covers it.
                 authored.lit.sky_enabled=view.lit.sky_enabled;authored.lit.sky_color=view.lit.sky_color;authored.lit.sky_intensity=view.lit.sky_intensity;
                 if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))

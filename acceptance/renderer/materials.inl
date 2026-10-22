@@ -96,7 +96,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     }
     scene_lit_e2e::png(capture,output/"material-lit-coverage.png");
     frame.view.lit.antialiasing=render::Antialiasing::none;
-    frame.environment={};frame.view.lit.direct_reference=true;
+    frame.environment={};
     sunlight[0].direction={.89442719f,0,.4472136f};sunlight[0].casts_shadow=true;
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));const auto unshadowed=pixel(capture,x*3,y)[1];
     frame.view.lit.shadows=true;
@@ -233,11 +233,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};options.probe_volumes[0].counts={11,7,10};options.probe_update_budget=96;options.probe_rays=64;
     const auto capture=[&](const char* name) {
         render::Capture result;
-        // With AA and other temporal effects disabled above, reference DI
-        // without DDGI has no history to settle. Each captured frame still
-        // integrates 64 independent estimates; discarded frames add no evidence.
-        const unsigned frames=options.direct_reference&&!options.ddgi?1u:warmup_frames;
-        for(unsigned i=0;i<frames;++i) {pump();++drawing.id;take(prepared_render(renderer,frame,i+1==frames?&result:nullptr));}
+        for(unsigned i=0;i<warmup_frames;++i) {pump();++drawing.id;take(prepared_render(renderer,frame,i+1==warmup_frames?&result:nullptr));}
         png(result,output/name);return result;
     };
     const auto left=project_region(frame.camera,frame.scene_viewport,drawing.extent,{-3.15f,.01f,1.f});
@@ -263,13 +259,24 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     options.ddgi=false;const auto updated_direct=capture("material-ddgi-update-off.png");
     const auto lu=mean_rgb(updated,left),ld=mean_rgb(updated_direct,left);
     check(lu[2]-ld[2]>lu[0]-ld[0]+1,"texture-only edit updates DDGI without replacing geometry or object identity");
-    // The source is above the camera frustum. Its image must still illuminate
-    // receivers through mesh NEE, independent of screen visibility and DDGI.
-    frame.lights={};options.direct_reference=true;
+    // The source lies entirely above the camera frustum (checked below). Mesh
+    // emission reaches receivers only through DDGI probe hits.
+    frame.lights={};options.ddgi=true;
     room.meshes[7].geometry=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
-        {{-2,6,2},{0,-1,0},{0,0}},{{2,6,2},{0,-1,0},{1,0}},{{2,6,6},{0,-1,0},{1,1}},
-        {{-2,6,2},{0,-1,0},{0,0}},{{2,6,6},{0,-1,0},{1,1}},{{-2,6,6},{0,-1,0},{0,1}}});
+        {{-2,6,-2},{0,-1,0},{0,0}},{{2,6,-2},{0,-1,0},{1,0}},{{2,6,2},{0,-1,0},{1,1}},
+        {{-2,6,-2},{0,-1,0},{0,0}},{{2,6,2},{0,-1,0},{1,1}},{{-2,6,2},{0,-1,0},{0,1}}});
     room.meshes[7].world=box(0,0,0,1,1,1);
+    const auto above_view=[&](std::array<float,3> p) {
+        std::array<float,4> v{p[0],p[1],p[2],1};
+        for(const auto& m:{frame.camera.view,frame.camera.projection}) {
+            std::array<float,4> next{};
+            for(unsigned c=0;c<4;++c)for(unsigned r=0;r<4;++r)next[c]+=v[r]*m[r*4+c];
+            v=next;
+        }
+        return v[1]>v[3];
+    };
+    check(std::ranges::all_of(std::array<std::array<float,3>,4>{{{-2,6,-2},{2,6,-2},{2,6,2},{-2,6,2}}},above_view),
+          "the textured emitter lies entirely above the camera frustum");
     material::Description emitter;emitter.parameters.base_color={0,0,0,1};emitter.parameters.emissive={10,10,10};
     emitter.parameters.emission_two_sided=false;
     const auto publish_emitter=[&] {
@@ -282,15 +289,17 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     publish_emitter();const auto emitted_cool=mean_rgb(capture("material-offscreen-emission-cool.png"),left);
     check(emitted_warm[0]>emitted_warm[2]+20&&emitted_cool[2]>emitted_cool[0]+20,
           "offscreen textured emission and content-only replacement illuminate real receivers");
-    room.meshes[7].world=box(0,12,0,1,-1,1);
+    // Probe history carries the previous emitter for many frames; each side case
+    // below judges a freshly converged probe field.
+    room.meshes[7].world=box(0,12,0,1,-1,1);++frame.scene_identity;
     const auto back=mean_rgb(capture("material-single-sided-emission-back.png"),left);
     check(back[0]<2&&back[1]<2&&back[2]<2,"single-sided emission respects authored orientation under mirror transforms");
-    emitter.parameters.emission_two_sided=true;publish_emitter();
+    emitter.parameters.emission_two_sided=true;publish_emitter();++frame.scene_identity;
     const auto two_sided=mean_rgb(capture("material-two-sided-emission.png"),left);
     check(two_sided[2]>two_sided[0]+20,"two-sided emission is independent from geometric front-facing");
-    emitter.parameters.coverage=material::Coverage::mask;emitter.parameters.base_color[3]=0;publish_emitter();
+    emitter.parameters.coverage=material::Coverage::mask;emitter.parameters.base_color[3]=0;publish_emitter();++frame.scene_identity;
     const auto masked=mean_rgb(capture("material-masked-emission.png"),left);
     check(masked[0]<2&&masked[1]<2&&masked[2]<2,"discarded emitter texels cannot contribute light");
     frame.meshes={};frame.lights={};++drawing.id;take(prepared_render(renderer,frame));
-    std::puts("Material transport acceptance: PASS (textured DDGI, material edits, disconnected Mask/opaque closure, offscreen textured NEE, emission sides/Mask)");
+    std::puts("Material transport acceptance: PASS (textured DDGI, material edits, disconnected Mask/opaque closure, offscreen textured emission through DDGI, emission sides/Mask)");
 }

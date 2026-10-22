@@ -172,30 +172,38 @@ struct FrameStats {
     std::uint64_t cached_image_cpu_bytes{};
     // Completed, raw GPU sample. All passes, subpasses and counters refer to
     // gpu_sample_frame_id; may lag this return and repeat until a new completion.
-    std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct/denoise, DDGI, GTAO/Local GI, HDR/SSSR, HDR resolve, bloom/tone/SMAA/display.
+    std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct lighting and HDR composition, DDGI, GTAO, SSSR, HDR resolve, bloom/tone/SMAA/display.
     std::array<float, 2> scene_lit_ddgi_gpu_ms{}; // Update/transfer, receiver gather; subsets of DDGI time.
-    std::array<float, 4> scene_lit_direct_gpu_ms{}; // Initial/temporal reservoir, spatial reservoir, visibility/shading, radiance resolve/filter; subsets of direct time.
     std::array<float, 2> scene_lit_ddgi_update_gpu_ms{}; // Primary trace, hit lighting/convolution; subsets of update/transfer (copy excluded).
-    std::array<float, 4> scene_lit_direct_reconstruction_gpu_ms{}; // Temporal resolve, spatial filter steps 1/2/4; subsets of direct resolve/filter.
     float scene_lit_direct_cluster_gpu_ms{}; // Light list construction; subset of direct lighting.
+    float scene_lit_direct_shading_gpu_ms{}; // Light evaluation fused with HDR composition; subset of direct lighting.
     // Completed conservative receiver clusters, not per-pixel light counts.
     std::uint32_t scene_lit_direct_cluster_cells{},scene_lit_direct_cluster_overflows{},scene_lit_direct_cluster_max_sources{};
     // Optional completed counts at actual GBuffer receivers: 0..64, then >64.
-    // Conservative local analytic support only; no directional/emissive sources or visibility test.
+    // Conservative local analytic support only; no directional sources or visibility test.
     std::array<std::uint32_t,66> scene_lit_direct_receiver_histogram{};
     std::uint32_t scene_lit_direct_receiver_max_sources{};
-    float scene_lit_shadow_cache_gpu_ms{}; // Atlas updates only; shading stays in direct subpass 12.
+    float scene_lit_shadow_cache_gpu_ms{}; // Atlas updates only; subset of direct lighting.
     std::uint32_t scene_lit_shadow_cache_faces{},scene_lit_shadow_cache_reused_faces{};
     std::uint32_t scene_lit_shadow_cache_static_updates{},scene_lit_shadow_cache_dynamic_updates{},scene_lit_shadow_cache_draws{};
-    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{},scene_lit_shadow_cache_pressure_batches{},scene_lit_shadow_cache_near_plane_faces{};
-    std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_clamped_taps{},scene_lit_shadow_cache_rt_fallbacks{},scene_lit_shadow_cache_plane_fallbacks{};
+    // Dropped lights cast shadows but did not fit the atlas; they contribute no direct light.
+    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{},scene_lit_shadow_cache_dropped_lights{},scene_lit_shadow_cache_near_plane_faces{};
+    // Missing taps: point-light taps without a drawn face. A sun receiver beyond
+    // every cascade traces instead, counted in the direct part of shadow rays.
+    std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_plane_fallbacks{};
+    // Faces deferred by the per-frame redraw budget, their longest consecutive deferral
+    // in frames, the 128² atlas cells held by requested faces, and lights withheld
+    // from direct light until all of their faces are drawn.
+    std::uint32_t scene_lit_shadow_cache_deferred_faces{},scene_lit_shadow_cache_deferral_frames{},scene_lit_shadow_cache_atlas_cells{};
+    std::uint32_t scene_lit_shadow_cache_pending_lights{};
     // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
-    // 10..13 direct, 14..15 DDGI update, 16..19 direct reconstruction, 20 light lists, 21 shadow atlas updates. A skipped scope still has timestamp overhead.
+    // 10..11 DDGI update, 12 light lists, 13 shadow atlas updates, 14 direct shading and composition.
+    // A skipped scope still has timestamp overhead.
     std::uint32_t scene_lit_gpu_pass_mask{};
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
-    std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{},scene_lit_di_candidates{}; // Analytic lights + emissive faces; shadows eligible for every selected source.
+    std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
     std::uint32_t scene_lit_spatial_sources{},scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
     std::uint64_t scene_lit_spatial_bytes{}; // Three current logical GPU buffers, including empty sentinels.
     bool scene_lit_spatial_changed{}; // Proposal buffers uploaded in this encoded render.

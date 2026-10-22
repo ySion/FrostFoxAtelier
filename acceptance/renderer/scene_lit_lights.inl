@@ -1,21 +1,22 @@
-// Real Renderer snapshots exercise the shared source table and current/previous
-// identity mapping. The reference is independent RIS with the same estimator.
-void restir_cases(Fixture& f) {
+// Real Renderer snapshots exercise the shared source table, its world-space
+// proposal grid (DDGI hit lighting) and the stable-key lifecycle. Screen direct
+// light is deterministic, so equal configurations must give equal receivers.
+void light_set_cases(Fixture& f) {
     using atelier::geometry::Mesh;
     using atelier::geometry::Vertex;
-    std::ofstream evidence(f.output/"restir-energy.csv");
-    evidence<<"case,realtime_r,realtime_g,realtime_b,reference_r,reference_g,reference_b\n";
-    check(evidence.good(),"ReSTIR energy evidence opened");
-    std::ofstream spatial_evidence(f.output/"restir-spatial.csv");
+    std::ofstream evidence(f.output/"light-set-energy.csv");
+    evidence<<"case,r,g,b\n";
+    check(evidence.good(),"light set energy evidence opened");
+    std::ofstream spatial_evidence(f.output/"light-set-spatial.csv");
     spatial_evidence<<"case,frame_id,retained_sources,nonempty_cells,logical_bytes,uploaded,history_resets\n";
-    check(spatial_evidence.good(),"ReSTIR spatial lifecycle evidence opened");
+    check(spatial_evidence.good(),"light set spatial lifecycle evidence opened");
     f.frame.scene_viewport={24,32,320,180};
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     f.frame.lighting_focus={};
-    auto& options=f.frame.view.lit;options={};options.direct_clustered=false;
+    auto& options=f.frame.view.lit;options={};
     options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
     options.shadows=true;options.antialiasing=render::Antialiasing::none;
     f.room.meshes.assign(1,{});
@@ -34,8 +35,7 @@ void restir_cases(Fixture& f) {
     ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
     const auto sources=[&](std::size_t expected) {
         const auto stats=f.step().stats;
-        check(stats.scene_lit_light_sources==expected && stats.scene_lit_shadow_sources==expected &&
-              stats.scene_lit_di_candidates==options.direct_candidates,
+        check(stats.scene_lit_light_sources==expected && stats.scene_lit_shadow_sources==expected,
               "all sources beyond 256 and all shadow casters beyond four reach the ordinary frame without fallback");
         return stats;
     };
@@ -51,31 +51,22 @@ void restir_cases(Fixture& f) {
                        : stats.scene_lit_spatial_bytes==(f.room.meshes.empty()?0u:36u),
               "spatial GPU tables remain bounded, empty proposals use sentinels, and empty scenes retire them");
     };
-    const auto compare_endpoint=[&](const char* name,Vec3 point) {
+    const auto receiver=[&](const char* name,Vec3 point) {
         const auto region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,point,10);
-        options.direct_reference=false;
-        const auto realtime=lighting_mean(f,(std::string(name)+"-realtime").c_str(),region,96,24);
-        options.direct_reference=true;
-        const auto reference=lighting_mean(f,(std::string(name)+"-reference64").c_str(),region,1,24);
-        evidence<<name;
-        for(auto value:realtime)evidence<<','<<value;
-        for(auto value:reference)evidence<<','<<value;
-        evidence<<'\n';evidence.flush();
-        check(reference[0]>10,"ReSTIR energy comparison samples a lit receiver");
-        for(unsigned channel=0;channel<3;++channel)
-            check(std::abs(realtime[channel]-reference[channel])<=std::max(3.,reference[channel]*.06),
-                  "settled realtime mean agrees with independent reference64 at the current scene endpoint");
-        options.direct_reference=false;
-        f.step(); // Accept the diagnostic transition before the next scene edit.
-        return realtime;
+        const auto value=lighting_mean(f,name,region,4,2);
+        evidence<<name;for(auto channel:value)evidence<<','<<channel;evidence<<'\n';evidence.flush();
+        return value;
+    };
+    const auto same=[](const std::array<double,3>& a,const std::array<double,3>& b,const char* message) {
+        for(unsigned channel=0;channel<3;++channel)check(std::abs(a[channel]-b[channel])<=.5,message);
     };
     spatial("top32-overflow",sources(272),32,1);
-    const auto initial=compare_endpoint("restir-272-sources",{0,0,4});
+    f.settle_shadows(f.drawing.id);
+    const auto initial=receiver("lights-272-sources",{0,0,4});
+    check(initial[0]>10,"light set comparison samples a lit receiver");
     options.spatial_light_sampling=false;
-    const auto global_only=compare_endpoint("restir-272-global-only",{0,0,4});
-    for(unsigned channel=0;channel<3;++channel)
-        check(std::abs(initial[channel]-global_only[channel])<=std::max(3.,global_only[channel]*.06),
-              "ordinary DI with top32 spatial proposals agrees with ordinary global-only DI");
+    same(initial,receiver("lights-272-hit-proposals-global",{0,0,4}),
+         "the DDGI hit proposal diagnostic leaves screen direct lighting unchanged");
     options.spatial_light_sampling=true;
     auto stable=f.step().stats;spatial("stable",stable,32,1);
     check(!stable.scene_lit_spatial_changed,"unchanged source grid does not upload again after the diagnostic toggle");
@@ -88,10 +79,7 @@ void restir_cases(Fixture& f) {
     const auto away=f.step().stats;spatial("focus-away",away,0,0);
     check(away.scene_lit_spatial_changed && away.scene_lit_history_resets==0,
           "rolling focus outside all sources uploads an empty proposal without resetting the scene domain");
-    const auto outside=compare_endpoint("restir-focus-away-global-fallback",{0,0,4});
-    for(unsigned channel=0;channel<3;++channel)
-        check(std::abs(initial[channel]-outside[channel])<=std::max(3.,initial[channel]*.06),
-              "receiver outside the local grid retains its global-supported illumination");
+    same(initial,receiver("lights-focus-away",{0,0,4}),"a receiver outside the proposal grid keeps every light");
     f.frame.lighting_focus={};
     const auto returned=f.step().stats;spatial("focus-return",returned,32,1);
     check(returned.scene_lit_spatial_changed && returned.scene_lit_history_resets==0,
@@ -101,66 +89,52 @@ void restir_cases(Fixture& f) {
     const auto moved=f.step().stats;spatial("light-cross-cell",moved,33,2);
     check(moved.scene_lit_spatial_changed && moved.scene_lit_history_resets==0,
           "moving one light between bins updates the proposal while preserving the scene domain");
-    compare_endpoint("restir-light-cross-cell",{0,0,4});
     f.lights.back().position=original_position;f.edited();
     spatial("light-return",f.step().stats,32,1);
     std::ranges::reverse(f.lights);f.edited();sources(272);
-    const auto reordered=compare_endpoint("restir-reordered",{0,0,4});
-    for(unsigned channel=0;channel<3;++channel)
-        check(std::abs(initial[channel]-reordered[channel])<=3,"source reorder preserves long-term receiver energy");
+    same(initial,receiver("lights-reordered",{0,0,4}),"source reorder preserves the receiver exactly");
     const auto removed=f.lights.back();f.lights.pop_back();
     auto inserted=removed;inserted.stable_key=9000;inserted.position={1,-1,0};inserted.color={.2f,.4f,1};inserted.intensity=40;
     f.lights.insert(f.lights.begin()+37,inserted);f.edited();sources(272);
-    compare_endpoint("restir-delete-insert",{0,0,4});
+    const auto replaced=receiver("lights-delete-insert",{0,0,4});
+    check(replaced[2]>initial[2]+4,"an inserted blue light appears in the same frame as its edit");
     for(unsigned i=0;i<16;++i) {
         f.lights[37].position[0]+=.1f;f.room.meshes[0].world[14]+=.0625f;f.edited();
         check(f.step().stats.scene_lit_history_resets==0,"light and receiver motion keep their established scene domain");
     }
-    compare_endpoint("restir-light-receiver-motion",{0,0,5});
-    // Every local sample must consult visibility. A screen-offset blocker casts
-    // a shadow onto a still-visible receiver, including sources above the old cap.
+    // Every casting light keeps an atlas shadow. A screen-offset blocker shades
+    // a still-visible receiver, including sources above the old 256 cap. The
+    // receiver shrinks to 2x2 m and the blocker sits near it, so each light needs
+    // only its +Z, +X and -Y faces: 271x3 minimum-size faces fit the 1024 cells.
     render::MeshInstance blocker;blocker.stable_key=2;blocker.geometry=atelier::geometry::cube_mesh();
-    blocker.world=box(-1,1,2,1.2f,1.2f,.4f);blocker.color={.5f,.5f,.5f,1};
-    f.room.meshes.push_back(blocker);f.room.meshes[0].world[14]=0;
+    blocker.world=box(-.6f,.6f,3,1,1,.4f);blocker.color={.5f,.5f,.5f,1};
+    f.room.meshes.push_back(blocker);f.room.meshes[0].world=box(0,0,0,1/6.f,.25f,1);
     f.lights.erase(f.lights.begin()+37);f.edited();sources(271);
     const auto shadow_region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{0,0,4},3);
-    options.direct_reference=true;options.shadows=false;
-    const auto unshadowed=lighting_mean(f,"restir-all-sources-no-shadow",shadow_region,1,16);
-    options.shadows=true;
-    const auto shadowed=lighting_mean(f,"restir-all-sources-shadow",shadow_region,1,16);
+    options.shadows=false;
+    const auto unshadowed=lighting_mean(f,"lights-all-sources-no-shadow",shadow_region,4,2);
+    options.shadows=true;f.settle_shadows();
+    const auto shadowed=lighting_mean(f,"lights-all-sources-shadow",shadow_region,4,2);
+    check(f.step().stats.scene_lit_shadow_cache_dropped_lights==0,"271 three-face point shadows fit the atlas without dropping a light");
     check(unshadowed[0]>10 && shadowed[0]<unshadowed[0]*.2,
           "more than 256 local sources retain geometric shadows instead of contributing unshadowed fallback");
-    f.lights.clear();f.edited();options.direct_reference=false;spatial("zero-sources",sources(0),0,0);
-    const auto dark=lighting_mean(f,"restir-all-sources-deleted",shadow_region,96,8);
-    check(*std::max_element(dark.begin(),dark.end())<=1,"deleting the complete source set removes stale reservoir radiance");
+    f.room.meshes[0].world=box(0,0,0,1,1,1);
+    f.lights.clear();f.edited();spatial("zero-sources",sources(0),0,0);
+    const auto dark=lighting_mean(f,"lights-all-sources-deleted",shadow_region,1,2);
+    check(*std::max_element(dark.begin(),dark.end())==0,"deleting the complete source set removes its radiance in the same frame");
 
-    // A source whose anchor lies outside the grid still illuminates the receiver.
-    // Empty local support must select the global proposal, never discard it.
+    // A source whose anchor lies outside the grid still illuminates the receiver,
+    // and a nearby light whose range cannot reach it adds exactly nothing.
     f.room.meshes.resize(1);
     render::Light distant;distant.stable_key=12000;distant.position={0,0,-80};
     distant.intensity=6000;distant.range=200;distant.source_radius=0;distant.casts_shadow=true;
     f.lights={distant};f.edited();spatial("far-source",sources(1),0,0);
-    const auto far_only=compare_endpoint("restir-far-source-global-fallback",{0,0,4});
-    // This nearby source occupies the receiver's proposal neighborhood but its
-    // finite range cannot reach the plane. All measured energy must therefore
-    // come from the remote source through the retained global support.
+    const auto far_only=receiver("lights-far-source",{0,0,4});
+    check(far_only[0]>10,"a light anchored outside the proposal grid illuminates the receiver");
     render::Light nearby;nearby.stable_key=12001;nearby.position={1,1,.5f};
     nearby.intensity=90;nearby.range=1;nearby.source_radius=0;nearby.casts_shadow=true;
     f.lights.push_back(nearby);f.edited();spatial("near-zero-far-main",sources(2),1,1);
-    const auto mixed=compare_endpoint("restir-near-zero-far-main-spatial",{0,0,4});
-    options.spatial_light_sampling=false;
-    const auto mixed_global=compare_endpoint("restir-near-zero-far-main-global",{0,0,4});
-    options.spatial_light_sampling=true;
-    const auto candidate_count=options.direct_candidates;options.direct_candidates=1;
-    const auto single=compare_endpoint("restir-near-zero-far-main-single-candidate",{0,0,4});
-    options.direct_candidates=candidate_count;
-    for(unsigned channel=0;channel<3;++channel) {
-        const auto tolerance=std::max(3.,far_only[channel]*.06);
-        check(std::abs(mixed[channel]-far_only[channel])<=tolerance &&
-              std::abs(mixed_global[channel]-far_only[channel])<=tolerance &&
-              std::abs(single[channel]-far_only[channel])<=tolerance,
-              "zero-contribution local proposals preserve remote-light energy with spatial, global and one-candidate DI");
-    }
+    same(far_only,receiver("lights-near-zero-far-main",{0,0,4}),"an out-of-range nearby light adds no receiver energy");
     const auto receiver_copy=f.room.meshes.front();
     f.room.meshes.clear();f.lights.clear();f.edited();render::Capture empty;
     spatial("scene-release",f.step(&empty).stats,0,0);
@@ -168,13 +142,13 @@ void restir_cases(Fixture& f) {
           "empty scene retires spatial resources and captures background depth through Renderer");
     f.room.meshes={receiver_copy};distant.position={0,0,.5f};distant.intensity=90;
     f.lights={distant};f.edited();spatial("scene-rebuild",sources(1),1,1);
-    compare_endpoint("restir-spatial-scene-rebuild",{0,0,4});
+    check(receiver("lights-spatial-scene-rebuild",{0,0,4})[0]>10,"a rebuilt scene lights its receiver again");
 
     // Sunlight is evaluated separately at DDGI hits. Adding an irrelevant local
     // pool must not amplify the sun by that pool's inverse selection probability.
     f.room=Room{};f.lights={room_lights()[0]};f.lights[0].source_radius=0;
     f.room.meshes[0].material={.roughness=1};f.room.meshes[7].material.emissive={};
-    f.frame.camera=camera({320,180});options={};options.direct_clustered=false;
+    f.frame.camera=camera({320,180});options={};
     options.gtao=options.sssr=options.ssil=options.bloom=false;
     options.antialiasing=render::Antialiasing::none;
     options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};
@@ -182,25 +156,23 @@ void restir_cases(Fixture& f) {
     f.frame.environment={};++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
     const auto bounce_region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{-3.15f,.01f,1.f},2);
     options.ddgi=false;
-    const auto direct=lighting_mean(f,"restir-ddgi-sun-direct",bounce_region,32,16);
+    const auto direct=lighting_mean(f,"lights-ddgi-sun-direct",bounce_region,32,16);
     options.ddgi=true;
-    const auto sun=lighting_mean(f,"restir-ddgi-sun-only",bounce_region,192,24);
+    const auto sun=lighting_mean(f,"lights-ddgi-sun-only",bounce_region,192,24);
     for(unsigned i=0;i<96;++i) {
         render::Light irrelevant;irrelevant.stable_key=1000+i;irrelevant.position={1000.f+float(i),1000,1000};
         irrelevant.range=1;irrelevant.intensity=100;irrelevant.source_radius=0;irrelevant.casts_shadow=true;
         f.lights.push_back(irrelevant);
     }
     ++f.frame.scene_identity;f.edited();sources(97);
-    const auto with_locals=lighting_mean(f,"restir-ddgi-sun-96-irrelevant-locals",bounce_region,192,24);
+    const auto with_locals=lighting_mean(f,"lights-ddgi-sun-96-irrelevant-locals",bounce_region,192,24);
     evidence<<"ddgi-sun-with-96-irrelevant-locals";
     for(auto value:with_locals)evidence<<','<<value;
-    for(auto value:sun)evidence<<','<<value;
     evidence<<'\n';
     check(sun[0]-direct[0]>2,"sun-only fixture contains measurable DDGI bounce energy");
     for(unsigned channel=0;channel<3;++channel)
         check(std::abs(with_locals[channel]-sun[channel])<=std::max(3.,std::abs(sun[channel]-direct[channel])*.2),
               "96 noncontributing local lights preserve the sun's converged DDGI energy");
-    check(evidence.good(),"ReSTIR lifecycle and DDGI energy evidence written");
-    check(spatial_evidence.good(),"ReSTIR spatial proposal lifecycle evidence written");
-    std::puts("Renderer ReSTIR DI: PASS (272 shadow sources, spatial top32/global fallback/rolling/lifetime, independent reference means, reorder/insert/delete/motion, sun-only DDGI energy)");
+    check(evidence.good() && spatial_evidence.good(),"light set lifecycle and DDGI energy evidence written");
+    std::puts("Renderer light set: PASS (272 shadow sources, spatial top32/rolling/lifetime, exact reorder/insert/delete/focus, out-of-range lights, sun-only DDGI energy)");
 }

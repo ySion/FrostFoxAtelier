@@ -418,7 +418,6 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         "Scene v7 did not round-trip World authoring values into a clean document.");
     const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
     auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
-    diagnostic_view.lit.direct_reference=true;
     take(workspace.set_view_settings(document,diagnostic_view));
     require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
     const auto saved_json=nlohmann::json::parse(saved);
@@ -451,9 +450,6 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(settings(*reopened)==migrated_settings && take(reopened->serialize())==migrated_saved &&
         nlohmann::json::parse(migrated_saved).at("version")==7,
         "Migrated v4 scene did not save and reopen through the current v7 author format.");
-    Workspace migrated_workspace;migrated_workspace.sync_world(*reopened);
-    require(!migrated_workspace.view.lit.direct_reference,
-        "Legacy 64 shadow samples silently enabled the viewport reference diagnostic.");
     for(const auto key:{"shadow_light_budget","shadow_samples"}) {
         for(const auto& bad:std::array<nlohmann::json,5>{-1,65,1.5,"8",true}) {
             auto invalid_legacy=v4;invalid_legacy["world"][key]=bad;

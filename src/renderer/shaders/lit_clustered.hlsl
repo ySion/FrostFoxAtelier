@@ -1,9 +1,10 @@
-// Conservative lists of analytic local lights over actual GBuffer receivers.
-// Four depth slices per 16x16 tile avoid joining foreground and distant walls.
-// The 64-entry capacity limits storage only: overflow enumerates every analytic
-// light. Emissive triangles have no finite range and use a separate estimator.
+// Conservative lists of local lights over actual GBuffer receivers. Four
+// depth slices per 16x16 tile avoid joining foreground and distant walls. The
+// 64-entry capacity limits storage only: overflow enumerates every local light.
 static const uint LIT_CLUSTER_CAPACITY=64;
 uint2 lit_cluster_tiles;
+// Tile grid origin. Full-window composition widens lit_screen_dispatch, never the grid.
+uint2 lit_cluster_origin;
 RWStructuredBuffer<float2> lit_cluster_depth_output;
 RWStructuredBuffer<uint> lit_cluster_count_output;
 RWStructuredBuffer<uint> lit_cluster_source_output;
@@ -28,7 +29,6 @@ uint lit_cluster_slice(float z,float2 bounds) {
     return min(uint(saturate((z-bounds.x)*bounds.y)*4),3u);
 }
 float lit_cluster_radius(LitLightSource light) {
-    // The cutoff is evaluated from the sampled endpoint, not the source center.
     float extent=light.meta.x==0?light.direction_radius.w:
         .5*(length(light.edge1_area.xyz)+length(light.edge2.xyz));
     return lit_local_range(light)+extent;
@@ -51,7 +51,7 @@ void lit_cluster_build(uint3 group,uint3 local,uint lane,bool inspect) {
     if(lane<4){lit_cluster_receivers[lane]=0;lit_cluster_counts[lane]=0;}
     if(inspect){if(lane<66)lit_cluster_inspect_histogram[lane]=0;if(lane==0)lit_cluster_inspect_max=0;}
     GroupMemoryBarrierWithGroupSync();
-    uint2 p=lit_screen_dispatch.xy+group.xy*16+local.xy;
+    uint2 p=lit_cluster_origin+group.xy*16+local.xy;
     bool valid=all(p<lit_screen_dispatch.zw)&&lit_direct_surface(int2(p));
     float3 position=0;float z=0;
     if(valid){position=lit_direct_world(int2(p));z=mul(float4(position,1),lit_camera_view).z;
@@ -61,6 +61,8 @@ void lit_cluster_build(uint3 group,uint3 local,uint lane,bool inspect) {
     float z_min=lit_cluster_float(lit_cluster_z_min),z_max=lit_cluster_float(lit_cluster_z_max);
     float2 bounds=lit_cluster_z_min==~0u?0:float2(z_min,rcp(max(z_max-z_min,1e-5)));
     if(lane==0)lit_cluster_depth_output[tile]=bounds;
+    // Receiver view-Z range for cascade fitting; [82] holds the complement of the minimum.
+    if(lane==0&&lit_cluster_z_min!=~0u){InterlockedMax(lit_ray_counters[82],~lit_cluster_z_min);InterlockedMax(lit_ray_counters[83],lit_cluster_z_max);}
     if(valid) {
         uint slice=lit_cluster_slice(z,bounds);InterlockedAdd(lit_cluster_receivers[slice],1);
         [unroll] for(uint axis=0;axis<3;++axis) {
@@ -69,8 +71,7 @@ void lit_cluster_build(uint3 group,uint3 local,uint lane,bool inspect) {
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    uint analytic_count=lit_source_counts.x-lit_source_counts.z;
-    [loop] for(uint source=lane;source<analytic_count;source+=256) {
+    [loop] for(uint source=lane;source<lit_source_counts.x;source+=256) {
         LitLightSource light=lit_sources[source];
         [unroll] for(uint slice=0;slice<4;++slice)if(lit_cluster_receivers[slice]!=0) {
             float3 minimum,maximum;
@@ -90,7 +91,7 @@ void lit_cluster_build(uint3 group,uint3 local,uint lane,bool inspect) {
         if(valid) {
             uint slice=lit_cluster_slice(z,bounds),count=lit_cluster_counts[slice],supported=0;
             bool overflow=count>LIT_CLUSTER_CAPACITY;
-            if(overflow)count=analytic_count;
+            if(overflow)count=lit_source_counts.x;
             [loop] for(uint i=0;i<count;++i) {
                 uint source=overflow?i:lit_cluster_inspect_sources[slice*LIT_CLUSTER_CAPACITY+i];
                 if(lit_cluster_intersects(lit_sources[source],position,position))++supported;
@@ -122,205 +123,195 @@ void lit_cluster_inspect_cs(uint3 group:SV_GroupID,uint3 local:SV_GroupThreadID,
     lit_cluster_build(group,local,lane,true);
 }
 
-LitReservoir lit_cluster_emitter_initial(LitLightingSurface surface,inout uint seed) {
-    LitReservoir result=lit_empty_reservoir();
-    uint emitters=lit_source_counts.z;
-    if(emitters==0)return result;
-    uint candidates=max(lit_di_settings.x,1u),first=lit_source_counts.x-emitters;
-    float sum=0,selected_target=0;
-    [loop] for(uint i=0;i<candidates;++i) {
-        uint source=first+min(uint(lit_random(seed)*float(emitters)),emitters-1);
-        float2 uv=lit_light_random_uv(seed);
-        float target=lit_local_target(surface,source,uv,false,false);
-        if(lit_reservoir_stream(result,sum,source,uv,target*float(emitters),seed))selected_target=target;
+Texture2D<float4> lit_indirect_source;
+float lit_indirect_gain;
+Texture2D<float> lit_ao;
+RWTexture2D<float4> lit_hdr_output;
+RWStructuredBuffer<uint> lit_sun_trace_list;
+
+// Every shadow-casting light samples the atlas. A casting light the atlas
+// could not hold, or with a face not drawn yet, has no descriptor and
+// contributes nothing; meta.w fades in a light that waited. Negative: a sun
+// receiver beyond every cascade, left to lit_sun_trace_cs.
+float lit_compose_visibility(LitLightSource light,uint source,LitLightingSurface surface,bool shadows) {
+    if(!shadows||(light.meta.y&2u)==0)return 1;
+    LitShadowLight cache=lit_shadow_lights[source];
+    if(cache.meta.x==0)return 0;
+    float visibility=cache.meta.x==2?lit_shadow_directional(cache,surface):lit_shadow_point(cache,light,surface);
+    return visibility<0?-1:asfloat(cache.meta.w)*visibility;
+}
+// Linearly transformed cosines (Heitz et al. 2016) fitted to
+// lit_brdf_components by tools/ltc/fit.py. Cell (theta row, roughness column)
+// holds the inverse transform m00, m20, m02, m22 with m11 = 1, then the
+// specular albedo with F = 1 and its (1 - v.h)^5 moment.
+struct LitLtcCell { float4 inverse; float2 amplitude; };
+StructuredBuffer<LitLtcCell> lit_ltc;
+static const uint LIT_LTC_SIZE=64;
+void lit_ltc_lookup(float roughness,float nv,out float3x3 inverse,out float2 amplitude) {
+    float2 coordinate=float2(saturate(roughness),sqrt(saturate(1-nv)))*(LIT_LTC_SIZE-1);
+    uint2 base=min(uint2(coordinate),LIT_LTC_SIZE-2);
+    float2 f=coordinate-base;
+    LitLtcCell c00=lit_ltc[base.y*LIT_LTC_SIZE+base.x],c10=lit_ltc[base.y*LIT_LTC_SIZE+base.x+1];
+    LitLtcCell c01=lit_ltc[(base.y+1)*LIT_LTC_SIZE+base.x],c11=lit_ltc[(base.y+1)*LIT_LTC_SIZE+base.x+1];
+    float4 m=lerp(lerp(c00.inverse,c10.inverse,f.x),lerp(c01.inverse,c11.inverse,f.x),f.y);
+    amplitude=lerp(lerp(c00.amplitude,c10.amplitude,f.x),lerp(c01.amplitude,c11.amplitude,f.x),f.y);
+    inverse=float3x3(m.x,0,m.z, 0,1,0, m.y,0,m.w);
+}
+// Edge term of the polygon's vector form factor for corners c+a and c+b.
+// Expanding the cross product around the shared centre c avoids cancelling
+// nearly parallel corner vectors, which the near-cancelling edge sum of a
+// small, distant rectangle would amplify again. Scale-free; atan2 keeps the
+// small angles accurate.
+float3 lit_ltc_edge(float3 c,float3 a,float3 b) {
+    float3 n=cross(c,b-a)+cross(a,b);float s=length(n);
+    return s>0?n*(atan2(s,dot(c+a,c+b))/s):0;
+}
+// Vector form factor (times 2 pi) of the quad c+q[i] clipped to z > 0. A convex
+// quad leaves the horizon at most once, so one horizon edge closes the clip.
+float3 lit_ltc_quad(float3 c,float3 q[4]) {
+    float3 sum=0,leaving=0,entering=0;bool clipped=false;
+    [unroll] for(uint i=0;i<4;++i) {
+        float3 a=q[i],b=q[(i+1)&3];
+        float za=c.z+a.z,zb=c.z+b.z;
+        bool above_a=za>0,above_b=zb>0;
+        if(above_a&&above_b)sum+=lit_ltc_edge(c,a,b);
+        else if(above_a||above_b) {
+            float3 crossing=lerp(a,b,za/(za-zb));crossing.z=-c.z;clipped=true;
+            if(above_a){sum+=lit_ltc_edge(c,a,crossing);leaving=crossing;}
+            else {sum+=lit_ltc_edge(c,crossing,b);entering=crossing;}
+        }
     }
-    if(result.source!=~0u){result.weight=(sum/float(candidates))/selected_target;result.target=selected_target;}
+    if(clipped)sum+=lit_ltc_edge(c,leaving,entering);
+    return sum;
+}
+// Rectangle radiance integrated over its solid angle: the clamped-cosine
+// polygon integral gives the diffuse term, whose (1 - F) uses the half vector
+// of the polygon's mean incident direction; the fitted LTC gives the GGX term.
+// Both are exact for the point limit's direction. The range window starts at
+// the extent the cluster bound already includes. A one-sided rectangle lights
+// only the side its direction faces; a receiver whose geometric plane has every
+// corner behind it receives nothing. Visibility is separate.
+LitLightEvaluation lit_evaluate_rectangle_light(LitLightSource light,LitLightingSurface surface) {
+    LitLightEvaluation result=(LitLightEvaluation)0;
+    float3 delta=light.origin_range.xyz-surface.position;
+    float distance=length(delta);
+    float3 facing=lit_safe_normal(light.direction_radius.xyz);
+    float side=dot(facing,-delta);
+    // A receiver in the emitter's plane sees it edge-on, also when it is two-sided.
+    if(!(distance>0)||((light.meta.y&1u)!=0?abs(side):side)<=0)return result;
+    result.target=light.origin_range.xyz;result.distance=distance;result.direction=delta/distance;
+    float window=saturate(1-pow(max(distance-(lit_cluster_radius(light)-lit_local_range(light)),0)/lit_local_range(light),4));
+    window*=window;
+    float3 radiance=max(light.radiance.rgb,0)*window;
+    float3 half_width=.5*light.edge1_area.xyz,half_height=.5*light.edge2.xyz;
+    float3 offsets[4]={-half_width-half_height,half_width-half_height,half_width+half_height,half_height-half_width};
+    bool front=false;
+    [unroll] for(uint c=0;c<4;++c)front=front||dot(surface.geometric_normal,delta+offsets[c])>0;
+    if(!front||!any(radiance>0))return result;
+    float3 n=surface.normal,v=surface.view,t1=v-n*dot(n,v),t2;
+    if(dot(t1,t1)>1e-12){t1=normalize(t1);t2=cross(n,t1);}
+    else lit_basis(n,t1,t2);
+    float3 local[4],transformed[4];
+    float3x3 inverse;float2 amplitude;
+    float nv=max(saturate(dot(n,v)),1e-4);
+    lit_ltc_lookup(surface.roughness,nv,inverse,amplitude);
+    float3 centre=float3(dot(delta,t1),dot(delta,t2),dot(delta,n));
+    [unroll] for(uint i=0;i<4;++i) {
+        local[i]=float3(dot(offsets[i],t1),dot(offsets[i],t2),dot(offsets[i],n));
+        transformed[i]=mul(inverse,local[i]);
+    }
+    float3 form=lit_ltc_quad(centre,local);
+    float diffuse_integral=abs(form.z)/(2*LIT_PI);
+    float specular_integral=abs(lit_ltc_quad(mul(inverse,centre),transformed).z)/(2*LIT_PI);
+    float3 f0=lerp(.04.xxx,surface.base,surface.metallic);
+    if(diffuse_integral>0) {
+        float3 mean=lit_safe_normal(form*(form.z<0?-1:1));
+        float3 l=t1*mean.x+t2*mean.y+n*mean.z;
+        float schlick=pow(1-saturate(dot(v,lit_safe_normal(v+l))),5);
+        result.diffuse=(1-f0)*(1-schlick)*surface.base*(1-surface.metallic)*diffuse_integral*radiance;
+    }
+    result.specular=(f0*amplitude.x+(1-f0)*amplitude.y)*specular_integral*radiance;
     return result;
 }
-
-// Selection is shared by the RT and cached point entries. Visibility is kept
-// outside this helper so the cached kernels cannot inherit a RayQuery branch.
-float lit_cluster_analytic_sample(LitLightSource light,LitLightingSurface surface,inout uint seed,
-                                  out LitLightEvaluation selected) {
-    float3 delta=surface.position-light.origin_range.xyz;
-    float radius=light.direction_radius.w,inner_range=max(lit_local_range(light)-radius,0);
-    bool extended=light.meta.x==1 || radius*radius>.01*dot(delta,delta) ||
-        (radius>0 && dot(delta,delta)>=inner_range*inner_range);
-    uint samples=extended?max(lit_di_settings.x,8u):1u;
-    selected=(LitLightEvaluation)0;
-    float sum=0,selected_target=0;
-    [loop] for(uint i=0;i<samples;++i) {
-        float2 uv=light.meta.x==0&&light.direction_radius.w==0?0:lit_light_random_uv(seed);
-        LitLightEvaluation value=lit_evaluate_light_source(light,surface,uv,true);
-        float target=lit_light_target(value);sum+=target;
-        if(target>0 && (selected_target==0 || lit_random(seed)*sum<target)){selected=value;selected_target=target;}
-    }
-    return selected_target>0?(sum/float(samples))/selected_target:0;
+// Deterministic radiance: spheres and suns use Karis' representative point;
+// rectangles integrate their solid angle with linearly transformed cosines.
+float3 lit_compose_light(LitLightSource light,uint source,LitLightingSurface surface,bool shadows,inout bool traced) {
+    LitLightEvaluation value;
+    if(light.meta.x==1)value=lit_evaluate_rectangle_light(light,surface);
+    else value=lit_evaluate_compact_light(light,surface);
+    if(lit_light_target(value)<=0)return 0;
+    float visibility=lit_compose_visibility(light,source,surface,shadows);
+    if(visibility<0){traced=true;return 0;}
+    return (value.diffuse+value.specular)*visibility;
 }
-
-uint lit_cluster_accumulate;
-struct LitClusterReceiver {
-    uint2 pixel;
-    LitLightingSurface surface;
-    uint cluster,count,pixel_seed;
-    bool overflow,shadows;
-};
-bool lit_cluster_receiver(uint2 dispatch,out LitClusterReceiver receiver) {
-    receiver=(LitClusterReceiver)0;
-    uint2 p;if(!lit_screen_pixel(dispatch,p))return false;
-    // CPU clears exactly once, even when a batch has no point or sun work.
-    if(lit_cluster_accumulate==0){lit_direct_diffuse_raw_output[p]=0;lit_direct_specular_raw_output[p]=0;}
-    if(!lit_direct_surface(int2(p)))return false;
-    receiver.pixel=p;receiver.surface=lit_direct_surface_data(p);
-    float z=mul(float4(receiver.surface.position,1),lit_camera_view).z;
-    if(!all(isfinite(receiver.surface.position))||!isfinite(z))return false;
-    uint2 tile_xy=(p-lit_screen_dispatch.xy)/16;
+float3 lit_compose_direct(uint2 p) {
+    LitLightingSurface surface=lit_direct_surface_data(p);
+    float z=mul(float4(surface.position,1),lit_camera_view).z;
+    if(!all(isfinite(surface.position))||!isfinite(z))return 0;
+    bool shadows=(lit_effect_flags&1u)!=0;
+    uint2 tile_xy=(p-lit_cluster_origin)/16;
     uint tile=tile_xy.x+tile_xy.y*lit_cluster_tiles.x;
-    receiver.cluster=tile*4+lit_cluster_slice(z,lit_cluster_depth[tile]);
-    receiver.count=lit_cluster_count[receiver.cluster];receiver.overflow=receiver.count>LIT_CLUSTER_CAPACITY;
-    if(receiver.overflow)receiver.count=lit_source_counts.x-lit_source_counts.z;
-    receiver.pixel_seed=lit_hash(p.x+p.y*lit_size_frame.x+lit_size_frame.z*7919u+0x68e31da4u);
-    receiver.shadows=(lit_effect_flags&1u)!=0;
-    return true;
-}
-uint lit_cluster_source_at(LitClusterReceiver receiver,uint index) {
-    return receiver.overflow?index:lit_cluster_source[receiver.cluster*LIT_CLUSTER_CAPACITY+index];
-}
-uint lit_cluster_source_seed(LitClusterReceiver receiver,uint source) {
-    uint seed=lit_hash(receiver.pixel_seed^lit_hash(source+1));return seed!=0?seed:1;
-}
-bool lit_cluster_point_endpoint(LitLightSource light,LitLightingSurface surface,bool shadows) {
-    return shadows&&(light.meta.y&2u)!=0 &&
-        length(surface.position-light.origin_range.xyz)<=max(light.direction_radius.w,lit_controls.y*2);
-}
-void lit_cluster_store(LitClusterReceiver receiver,float3 diffuse,float3 specular,bool stochastic=true) {
-    float4 material=float4(receiver.surface.base,receiver.surface.metallic);
-    float3 diffuse_factor=lit_direct_diffuse_factor(material),specular_factor=lit_direct_specular_factor(material);
-    float3 divisor=float3(diffuse_factor.r>0?diffuse_factor.r:1,diffuse_factor.g>0?diffuse_factor.g:1,
-                         diffuse_factor.b>0?diffuse_factor.b:1);
-    uint2 p=receiver.pixel;
-    float4 previous_diffuse=lit_direct_diffuse_raw_output[p],previous_specular=lit_direct_specular_raw_output[p];
-    float support=stochastic || previous_diffuse.a>0 || previous_specular.a>0?1:0;
-    lit_direct_diffuse_raw_output[p]=float4(lit_direct_finite(previous_diffuse.rgb+diffuse/divisor),support);
-    lit_direct_specular_raw_output[p]=float4(lit_direct_finite(previous_specular.rgb+specular/specular_factor),support);
-}
-
-[numthreads(8,8,1)]
-void lit_cluster_points_cs(uint3 dispatch:SV_DispatchThreadID) {
-    // Receiver rejection precedes every diagnostic event; all other paths
-    // reconverge after the source loop before flushing this invocation's counts.
-    LitClusterReceiver receiver;if(!lit_cluster_receiver(dispatch.xy,receiver))return;
-    float3 diffuse=0,specular=0;
-    [loop] for(uint i=0;i<receiver.count;++i) {
-        uint source=lit_cluster_source_at(receiver,i);
-        if(!lit_shadow_batch_contains(source))continue;
-        LitLightSource light=lit_sources[source];if(light.meta.x!=0)continue;
-        light.meta.x=0;
-        if(!lit_cluster_intersects(light,receiver.surface.position,receiver.surface.position) ||
-            lit_cluster_point_endpoint(light,receiver.surface,receiver.shadows))continue;
-        uint seed=lit_cluster_source_seed(receiver,source);
-        LitLightEvaluation value;float weight=lit_cluster_analytic_sample(light,receiver.surface,seed,value);
-        if(weight<=0)continue;
-        if(receiver.shadows&&(light.meta.y&2u)!=0) {
-            LitShadowLight cache=lit_shadow_lights[lit_shadow_light_index(source)];
-            weight*=lit_shadow_point(cache,light,receiver.surface);
-        }
-        diffuse+=value.diffuse*weight;specular+=value.specular*weight;
-    }
-    lit_cluster_store(receiver,diffuse,specular);
-}
-
-[numthreads(8,8,1)]
-void lit_cluster_sun_cs(uint3 dispatch:SV_DispatchThreadID) {
-    LitClusterReceiver receiver;if(!lit_cluster_receiver(dispatch.xy,receiver))return;
-    float3 diffuse=0,specular=0;
-    [loop] for(uint i=0;i<lit_source_counts.y;++i) {
-        uint source=lit_source_counts.x+i;if(!lit_shadow_batch_contains(source))continue;
-        LitLightSource light=lit_sources[source];light.meta.x=2;
-        uint seed=lit_cluster_source_seed(receiver,source);
-        float2 uv=light.direction_radius.w>0?lit_light_random_uv(seed):0;
-        LitLightEvaluation value=lit_evaluate_light_source(light,receiver.surface,uv,true);
-        if(lit_light_target(value)<=0)continue;
-        float visibility=1;
-        if(receiver.shadows&&(light.meta.y&2u)!=0) {
-            LitShadowLight cache=lit_shadow_lights[lit_shadow_light_index(source)];
-            visibility=lit_shadow_directional(cache,light,receiver.surface);
-        }
-        diffuse+=value.diffuse*visibility;specular+=value.specular*visibility;
-    }
-    lit_cluster_store(receiver,diffuse,specular);
-}
-
-// Radiance is deterministic; only a finite source's soft visibility is random,
-// and each such ray records its outcome for the resolve classification.
-bool lit_cluster_compact(LitClusterReceiver receiver,LitLightSource light,uint source,
-                         inout uint visibility,inout bool stochastic,out LitLightEvaluation value) {
-    value=lit_evaluate_compact_light(light,receiver.surface);
-    if(lit_light_target(value)<=0)return false;
-    if(!receiver.shadows||(light.meta.y&2u)==0)return true;
-    uint seed=lit_cluster_source_seed(receiver,source);
-    bool visible=lit_light_sample_visible(light,receiver.surface,
-        lit_light_shadow_endpoint(light,receiver.surface,value,lit_light_random_uv(seed)),true);
-    if(light.direction_radius.w>0){stochastic=true;visibility|=lit_direct_visibility_bit(source,visible);}
-    return visible;
-}
-// Both callers specialize this constant at compile time. Neither path reaches
-// PCSS; the uncached A entry also has no dependency on shadow metadata. A
-// shades points outside four radii and suns as compact sources; nearer or
-// rectangle endpoints keep source RIS and force reconstruction.
-void lit_cluster_rt(uint2 dispatch,bool residual) {
-    uint2 pixel;
-    if(!residual&&lit_screen_pixel(dispatch,pixel))lit_direct_visibility_output[pixel]=0;
-    LitClusterReceiver receiver;if(!lit_cluster_receiver(dispatch,receiver))return;
-    float3 diffuse=0,specular=0;
-    // Classify support before sampling or visibility rejection: a random zero
-    // observation must never disable the estimator's reconstruction. Cached
-    // shadow batches conservatively retain reconstruction in this candidate.
-    bool stochastic=residual || lit_source_counts.z!=0;
-    uint visibility=stochastic?LIT_DIRECT_FORCED:0;
-    [loop] for(uint i=0;i<receiver.count;++i) {
-        uint source=lit_cluster_source_at(receiver,i);
-        if(residual&&!lit_shadow_batch_contains(source))continue;
+    uint cluster=tile*4+lit_cluster_slice(z,lit_cluster_depth[tile]);
+    uint count=lit_cluster_count[cluster];
+    bool overflow=count>LIT_CLUSTER_CAPACITY;
+    if(overflow)count=lit_source_counts.x;
+    float3 radiance=0;bool traced=false;
+    [loop] for(uint i=0;i<count;++i) {
+        uint source=overflow?i:lit_cluster_source[cluster*LIT_CLUSTER_CAPACITY+i];
         LitLightSource light=lit_sources[source];
-        light.meta.x=min(light.meta.x,1u);
-        bool endpoint=light.meta.x==0&&lit_cluster_point_endpoint(light,receiver.surface,receiver.shadows);
-        if(residual&&light.meta.x==0&&!endpoint)continue;
-        if(!lit_cluster_intersects(light,receiver.surface.position,receiver.surface.position))continue;
-        float3 offset=receiver.surface.position-light.origin_range.xyz;
-        float radius=light.direction_radius.w;
-        if(!residual&&light.meta.x==0&&16*radius*radius<=dot(offset,offset)) {
-            LitLightEvaluation value;
-            if(lit_cluster_compact(receiver,light,source,visibility,stochastic,value)){diffuse+=value.diffuse;specular+=value.specular;}
-            continue;
-        }
-        stochastic=stochastic || light.meta.x==1 || radius>0;
-        if(light.meta.x==1||radius>0)visibility|=LIT_DIRECT_FORCED;
-        uint seed=lit_cluster_source_seed(receiver,source);
-        LitLightEvaluation value;float weight=lit_cluster_analytic_sample(light,receiver.surface,seed,value);
-        if(weight<=0)continue;
-        if(residual&&endpoint)lit_shadow_count(80);
-        if(!lit_light_sample_visible(light,receiver.surface,value,receiver.shadows))continue;
-        diffuse+=value.diffuse*weight;specular+=value.specular*weight;
+        if(lit_cluster_intersects(light,surface.position,surface.position))
+            radiance+=lit_compose_light(light,source,surface,shadows,traced);
     }
-    if(!residual||lit_shadow_first_batch!=0) {
-        uint seed=receiver.pixel_seed!=0?receiver.pixel_seed:1;
-        LitReservoir emitter=lit_cluster_emitter_initial(receiver.surface,seed);
-        float3 local_diffuse,local_specular;
-        lit_reservoir_lighting(receiver.surface,emitter,false,receiver.shadows,local_diffuse,local_specular);
-        diffuse+=local_diffuse;specular+=local_specular;
+    [loop] for(uint j=0;j<lit_source_counts.y;++j) {
+        uint source=lit_source_counts.x+j;
+        LitLightSource light=lit_sources[source];light.meta.x=2;
+        radiance+=lit_compose_light(light,source,surface,shadows,traced);
     }
-    if(!residual) {
-        [loop] for(uint i=0;i<lit_source_counts.y;++i) {
-            uint source=lit_source_counts.x+i;
-            LitLightSource light=lit_sources[source];light.meta.x=2;
-            LitLightEvaluation value;
-            if(lit_cluster_compact(receiver,light,source,visibility,stochastic,value)){diffuse+=value.diffuse;specular+=value.specular;}
-        }
-        lit_direct_visibility_output[receiver.pixel]=visibility;
-    }
-    lit_cluster_store(receiver,diffuse,specular,stochastic);
+    // At most one entry per pixel; lit_sun_trace_list holds a whole target.
+    if(traced){uint slot;InterlockedAdd(lit_ray_counters[84],1,slot);lit_sun_trace_list[slot]=p.x|(p.y<<16);}
+    return lit_direct_finite(radiance);
 }
+
 [numthreads(8,8,1)]
-void lit_cluster_shade_cs(uint3 dispatch:SV_DispatchThreadID) {lit_cluster_rt(dispatch.xy,false);}
-[numthreads(8,8,1)]
-void lit_cluster_residual_cs(uint3 dispatch:SV_DispatchThreadID) {lit_cluster_rt(dispatch.xy,true);}
+void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
+    uint2 p;if(!lit_screen_pixel(tid.xy,p))return;
+    if(!lit_inside(p)||lit_is_background_depth(lit_depth[p])) {
+        // Sky Light supplies incident radiance, not a visible sky surface.
+        lit_hdr_output[p]=float4(0,0,0,1);return;
+    }
+    float4 bm=lit_base_metallic[p]; float ao=(lit_effect_flags&4)!=0?lit_ao[p]:1;
+    float3 irradiance=(lit_effect_flags&2)!=0?lit_indirect_source[p].rgb:lit_environment.rgb*LIT_PI;
+    float3 diffuse=bm.rgb*(1-bm.w)*irradiance/LIT_PI*ao*lit_indirect_gain;
+    float3 direct=lit_direct_surface(int2(p))?lit_compose_direct(p):0;
+    lit_hdr_output[p]=float4(min(direct+diffuse+lit_emissive[p].rgb,65504.xxx),1);
+}
+RWStructuredBuffer<uint> lit_sun_trace_arguments;
+// Rows of at most 65535 groups, the D3D12 limit per dimension; a 4K list needs two.
+static const uint lit_sun_trace_row=65535;
+[numthreads(1,1,1)]
+void lit_sun_trace_prepare_cs() {
+    uint groups=(lit_ray_counters[84]+63)/64;
+    lit_sun_trace_arguments[0]=min(groups,lit_sun_trace_row);lit_sun_trace_arguments[1]=max((groups+lit_sun_trace_row-1)/lit_sun_trace_row,1);
+    lit_sun_trace_arguments[2]=1;
+}
+// Adds the suns composition left out: for each listed pixel, every casting sun
+// no cascade holds is traced as far as cascade depth reaches, every caster.
+[numthreads(64,1,1)]
+void lit_sun_trace_cs(uint3 tid:SV_DispatchThreadID) {
+    uint entry=tid.y*lit_sun_trace_row*64+tid.x;
+    if(entry>=lit_ray_counters[84])return;
+    uint packed=lit_sun_trace_list[entry];uint2 p=uint2(packed&0xffffu,packed>>16);
+    LitLightingSurface surface=lit_direct_surface_data(p);
+    float3 radiance=0;
+    [loop] for(uint j=0;j<lit_source_counts.y;++j) {
+        uint source=lit_source_counts.x+j;
+        LitLightSource light=lit_sources[source];light.meta.x=2;
+        LitShadowLight cache=lit_shadow_lights[source];
+        if((light.meta.y&2u)==0||cache.meta.x!=2||lit_shadow_directional_covered(cache,surface))continue;
+        LitLightEvaluation value=lit_evaluate_compact_light(light,surface);
+        if(lit_light_target(value)<=0)continue;
+        if(lit_visible(surface.position,surface.geometric_normal,-lit_safe_normal(light.direction_radius.xyz),3.402823466e+38f))
+            radiance+=(value.diffuse+value.specular)*asfloat(cache.meta.w);
+    }
+    lit_hdr_output[p]=float4(min(lit_hdr_output[p].rgb+lit_direct_finite(radiance),65504.xxx),1);
+}
