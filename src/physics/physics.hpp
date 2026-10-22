@@ -351,6 +351,9 @@ private:
     std::uint64_t edits_{}, controlled_{};
     std::uint32_t runtime_cooks_{};
     bool paused_{}, single_step_{}, tracked_{};
+    // Set at creation and whenever Jolt holds no body (ordinary or ragdoll part); the
+    // next step with bodies builds the broad phase once.
+    bool unbuilt_{true};
 };
 
 }

@@ -660,6 +660,7 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     impl_->body_components.erase(id);
     impl_->entity_bodies.erase(entity);
     impl_->bodies.erase(found);
+    unbuilt_ |= impl_->system.GetNumBodies() == 0;
     ++edits_;
     impl_->dependents_stale = true;
     forget_pose(entity);
@@ -767,6 +768,7 @@ void PhysicsScene::remove_special(ObjectId entity) noexcept {
         for (const auto id : found->second.ragdoll->GetBodyIDs()) impl_->ragdoll_ids.erase(id);
         found->second.ragdoll->RemoveFromPhysicsSystem();
         impl_->ragdolls.erase(found);
+        unbuilt_ |= impl_->system.GetNumBodies() == 0;
     }
 }
 Result<void> PhysicsScene::reconcile(ObjectId entity) {
@@ -959,7 +961,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
     } catch(...) {
         if(impl_->bodies.contains(component)) remove(component);
-        else {bodies.RemoveBody(id);bodies.DestroyBody(id);}
+        else {bodies.RemoveBody(id);bodies.DestroyBody(id);unbuilt_ |= impl_->system.GetNumBodies() == 0;}
         throw;
     }
     return {};
@@ -1082,6 +1084,12 @@ Result<void> PhysicsScene::step(float elapsed) {
         controlled_ = next_revision_ + edits_;
     }
     reconciling.reset();
+    // Bodies added to an empty broad phase, as every run start does, would otherwise be
+    // rebalanced by Jolt during the first solves.
+    if (unbuilt_ && impl_->system.GetNumBodies() != 0) {
+        impl_->system.OptimizeBroadPhase();
+        unbuilt_ = false;
+    }
     constexpr float fixed = fixed_step;
     constexpr std::uint32_t maximum_steps = 8;
     StepResult result{.runtime_cooks = std::exchange(runtime_cooks_, 0), .completed_step = completed_step_};
