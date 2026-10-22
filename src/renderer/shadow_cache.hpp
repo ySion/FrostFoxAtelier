@@ -9,9 +9,6 @@ namespace atelier::renderer::detail {
 
 inline constexpr std::uint32_t shadow_atlas_extent=4096;
 inline constexpr std::uint32_t shadow_tile_border=2;
-// Bound as the same shader uniform by SceneLit. PCSS direction perturbations
-// must not exceed this CPU residency support.
-inline constexpr float shadow_filter_tangent_limit=0.25f;
 inline constexpr float shadow_near_ratio=1e-6f;
 inline constexpr float shadow_maximum_near=1e-5f;
 

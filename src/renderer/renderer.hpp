@@ -188,7 +188,7 @@ struct FrameStats {
     std::uint32_t scene_lit_shadow_cache_static_updates{},scene_lit_shadow_cache_dynamic_updates{},scene_lit_shadow_cache_draws{};
     // Dropped lights cast shadows but did not fit the atlas; they contribute no direct light.
     std::uint32_t scene_lit_shadow_cache_resolution_downgrades{},scene_lit_shadow_cache_dropped_lights{},scene_lit_shadow_cache_near_plane_faces{};
-    std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_clamped_taps{},scene_lit_shadow_cache_plane_fallbacks{};
+    std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_plane_fallbacks{};
     // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
     // 10..11 DDGI update, 12 light lists, 13 shadow atlas updates, 14 direct shading and composition.
     // A skipped scope still has timestamp overhead.

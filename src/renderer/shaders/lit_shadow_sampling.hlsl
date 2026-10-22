@@ -1,5 +1,5 @@
-// Private atlas ABI in shadow_cache.hpp. ShadowCache and this consumer share
-// the footprint limit through a uniform populated from the CPU constant.
+// Private atlas ABI in shadow_cache.hpp. ShadowCache's residency bounds
+// include the one-texel normal offset used here.
 struct LitShadowFace {
     row_major float4x4 view_projection;
     float4 atlas,depth;
@@ -10,21 +10,10 @@ StructuredBuffer<LitShadowFace> lit_shadow_faces;
 StructuredBuffer<LitShadowLight> lit_shadow_lights; // Indexed by light source.
 Texture2D<float> lit_shadow_static;
 Texture2D<float> lit_shadow_dynamic;
-float lit_shadow_filter_tangent_limit;
+SamplerComparisonState lit_shadow_sampler; // GREATER_EQUAL: the receiver is at or before the stored occluder.
 uint lit_shadow_atlas_extent;
 
-// World/light anchored taps: no frame-varying rotation or screen jitter.
-// Keep the PCSS loops rolled: duplicating receiver correction and cascade
-// selection per tap causes excessive DXIL and driver/validation compilation.
-static const float2 lit_shadow_disk[16]={
-    float2(.1768,0),float2(-.2258,.2068),float2(.0346,-.3938),float2(.2846,.3712),
-    float2(-.5222,-.0924),float2(.4947,-.3147),float2(-.1655,.6156),float2(-.3156,-.6076),
-    float2(.6846,.2500),float2(-.7127,.2942),float2(.3434,-.7338),float2(.2537,.8080),
-    float2(-.7647,-.4432),float2(.8971,-.1972),float2(-.5470,.7831),float2(-.1265,-.9760)};
-
 void lit_shadow_count(uint counter) {
-    // Keep wave convergence out of divergent PCSS loops. Per-invocation
-    // counters live across the entire filter measured slower on the target GPU.
     InterlockedAdd(lit_ray_counters[counter],1u);
 }
 uint lit_shadow_cube_face(float3 direction) {
@@ -32,11 +21,6 @@ uint lit_shadow_cube_face(float3 direction) {
     if(a.x>=a.y&&a.x>=a.z)return direction.x>=0?0:1;
     if(a.y>=a.z)return direction.y>=0?2:3;
     return direction.z>=0?4:5;
-}
-float lit_shadow_depth_at(LitShadowFace face,int2 pixel) {
-    float depth=lit_shadow_static.Load(int3(pixel,0));
-    if((face.meta.x&2u)!=0)depth=max(depth,lit_shadow_dynamic.Load(int3(pixel,0)));
-    return depth;
 }
 bool lit_shadow_project(LitShadowFace face,float3 position,out float2 uv,out float depth) {
     float4 clip=mul(float4(position,1),face.view_projection);
@@ -52,199 +36,75 @@ void lit_shadow_projection_axes(LitShadowFace face,out float3 x,out float3 y,out
     float3 rz=mul(float4(0,0,1,0),face.view_projection).xyz;
     x=float3(rx.x,ry.x,rz.x);y=float3(rx.y,ry.y,rz.y);z=float3(rx.z,ry.z,rz.z);
 }
-// Device depth of a plane is affine in projected UV, including perspective
-// projection. Gradients are per atlas pixel, so all four PCF comparisons and
-// blocker classification use the receiver at the fetched texel center.
+// Device depth of the receiver plane is affine in atlas pixels, including
+// perspective projection; gradient is per atlas pixel. Without a usable plane
+// the gradient is zero and every texel compares the projected depth.
 struct LitShadowReference {
     float depth;
     float2 gradient;
-    float fallback_depth;
-    float radial; // Point fallback sphere radius; zero for directional maps.
-    bool plane;
 };
-bool lit_shadow_valid_depth(float depth) {return isfinite(depth)&&depth>=0&&depth<=1;}
-float lit_shadow_texel_ray_scale(LitShadowFace face,int2 pixel) {
-    float2 uv=((float2(pixel)+.5)/float(lit_shadow_atlas_extent)-face.atlas.zw)/face.atlas.xy;
-    float2 xy=uv*float2(2,-2)+float2(-1,1);
-    // Guard texels remain in this face's expanded raster projection. Their
-    // direction can cross a cube edge; max(abs(direction)) would be wrong.
-    return sqrt(1+dot(xy,xy));
-}
-bool lit_shadow_reference_at(LitShadowFace face,int2 pixel,float2 offset, LitShadowReference reference,out float depth) {
-    depth=reference.depth+dot(reference.gradient,offset);
-    if(reference.plane&&lit_shadow_valid_depth(depth))return true;
-    if(reference.plane)lit_shadow_count(81);
-    if(reference.radial>0) {
-        float n=face.depth.x,f=face.depth.y;
-        depth=(-n+n*f*lit_shadow_texel_ray_scale(face,pixel)/reference.radial)/(f-n);
-    } else depth=reference.fallback_depth;
-    if(lit_shadow_valid_depth(depth))return true;
-    lit_shadow_count(78);return false;
-}
-bool lit_shadow_depth_nearest(LitShadowFace face,float2 uv,LitShadowReference reference,
-                             out float depth,out float receiver_depth,out int2 pixel) {
-    float2 at=(uv*face.atlas.xy+face.atlas.zw)*float(lit_shadow_atlas_extent);
-    pixel=int2(floor(at));depth=0;
-    if(!lit_shadow_reference_at(face,pixel,float2(pixel)+.5-at,reference,receiver_depth))return false;
-    depth=lit_shadow_depth_at(face,pixel);return true;
-}
+// 3x3 tent: four bilinear taps half a texel apart, gathered as four 2x2
+// comparison blocks so static and dynamic occlusion combine per texel before
+// filtering. Each block compares the plane depth at its centre; the one-texel
+// normal offset exceeds the half-texel plane slope to the block's texels.
 float lit_shadow_compare(LitShadowFace face,float2 uv,LitShadowReference reference) {
-    float2 at=(uv*face.atlas.xy+face.atlas.zw)*float(lit_shadow_atlas_extent)-.5;
-    int2 p=int2(floor(at));float2 f=frac(at);
-    // Union of static and dynamic occlusion at each tap, before filtering.
-    float4 depths;
-    if(!lit_shadow_reference_at(face,p,-f,reference,depths.x) ||
-       !lit_shadow_reference_at(face,p+int2(1,0),float2(1,0)-f,reference,depths.y) ||
-       !lit_shadow_reference_at(face,p+int2(0,1),float2(0,1)-f,reference,depths.z) ||
-       !lit_shadow_reference_at(face,p+1,1-f,reference,depths.w))return 0;
-    float4 visibility=float4(depths.x>=lit_shadow_depth_at(face,p),
-        depths.y>=lit_shadow_depth_at(face,p+int2(1,0)),
-        depths.z>=lit_shadow_depth_at(face,p+int2(0,1)),
-        depths.w>=lit_shadow_depth_at(face,p+1));
-    return lerp(lerp(visibility.x,visibility.y,f.x),lerp(visibility.z,visibility.w,f.x),f.y);
-}
-float lit_shadow_point_distance(float depth,LitShadowFace face,int2 pixel) {
-    float n=face.depth.x,f=face.depth.y;
-    float view_z=(n*f)/(depth*(f-n)+n);
-    return view_z*lit_shadow_texel_ray_scale(face,pixel);
-}
-bool lit_shadow_point_tap(LitShadowLight cache,float3 origin,float3 position,float3 normal,float3 direction,
-                          out LitShadowFace face,out float2 uv,out LitShadowReference reference) {
-    face=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(direction)];
-    uv=0;reference=(LitShadowReference)0;reference.radial=length(position-origin);
-    if((face.meta.x&1u)==0){lit_shadow_count(78);return false;}
-    // Receiver plane correction prevents a wide filter from comparing every
-    // neighboring direction against the center's nonlinear depth.
-    float denominator=dot(normal,direction),numerator=dot(normal,position-origin);
-    float intersection=abs(denominator)>1e-5?numerator/denominator:-1;
-    if(isfinite(intersection)&&intersection>0 &&
-        lit_shadow_project(face,origin+direction*intersection,uv,reference.depth)) {
-        float2 projected_normal=mul(float4(normal,0),face.view_projection).xy;
-        float b=face.depth.x*face.depth.y/(face.depth.y-face.depth.x);
-        reference.gradient=(2*b/numerator)*projected_normal*float2(1,-1)/
-            (face.atlas.xy*float(lit_shadow_atlas_extent));
-        reference.plane=all(isfinite(reference.gradient));
-        if(reference.plane)return true;
+    float extent=float(lit_shadow_atlas_extent);
+    float2 at=(uv*face.atlas.xy+face.atlas.zw)*extent;
+    float2 base=floor(at-1),f=at-1-base;
+    float4 wx=float4(1-f.x,1,f.x,0)*.5,wy=float4(1-f.y,1,f.y,0)*.5;
+    bool dynamic=(face.meta.x&2u)!=0;
+    float visibility=0;
+    [unroll] for(uint block=0;block<4;++block) {
+        uint2 b=uint2(block&1,block>>1)*2;
+        float2 corner=base+float2(b)+1;
+        float depth=reference.depth+dot(reference.gradient,corner-at);
+        // Components: x=(0,1) y=(1,1) z=(1,0) w=(0,0) within the block.
+        float4 lit=lit_shadow_static.GatherCmpRed(lit_shadow_sampler,corner/extent,depth);
+        if(dynamic)lit=min(lit,lit_shadow_dynamic.GatherCmpRed(lit_shadow_sampler,corner/extent,depth));
+        float2 x=float2(wx[b.x],wx[b.x+1]),y=float2(wy[b.y],wy[b.y+1]);
+        visibility+=dot(lit,float4(x.x*y.y,x.y*y.y,x.y*y.x,x.x*y.x));
     }
-    // A grazing receiver plane can intersect behind the source or outside the
-    // face near/far interval. Revert this tap to radial comparison, never clamp
-    // an invalid reference depth into an unrelated occlusion decision.
-    lit_shadow_count(81);
-    reference.gradient=0;reference.plane=false;
-    if(!lit_shadow_project(face,origin+direction*reference.radial,uv,reference.depth)){
-        lit_shadow_count(78);return false;
-    }
-    return true;
+    return visibility;
 }
 float lit_shadow_point(LitShadowLight cache,LitLightSource light,LitLightingSurface surface) {
-    float3 origin=light.origin_range.xyz,position=surface.position+surface.geometric_normal*lit_controls.y;
-    float3 delta=position-origin;float distance=length(delta);float3 direction=delta/max(distance,1e-20);
-    float3 tangent,bitangent;lit_basis(direction,tangent,bitangent);
-    float radius=light.direction_radius.w;
-    LitShadowFace face;float2 uv;LitShadowReference reference;
-    if(radius<=0) {
-        if(!lit_shadow_point_tap(cache,origin,position,surface.geometric_normal,direction,face,uv,reference))return 0;
-        return lit_shadow_compare(face,uv,reference);
+    float3 origin=light.origin_range.xyz,normal=surface.geometric_normal;
+    float3 delta=surface.position-origin;
+    LitShadowFace face=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(delta)];
+    // One interior texel at this distance; each face spans 90 degrees.
+    float3 position=surface.position+normal*(2*length(delta)*face.depth.z);
+    delta=position-origin;
+    face=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(delta)];
+    if((face.meta.x&1u)==0){lit_shadow_count(78);return 0;}
+    float2 uv;LitShadowReference reference=(LitShadowReference)0;
+    if(!lit_shadow_project(face,position,uv,reference.depth)){lit_shadow_count(78);return 0;}
+    float numerator=dot(normal,delta);
+    if(abs(numerator)>1e-6*length(delta)) {
+        float2 projected_normal=mul(float4(normal,0),face.view_projection).xy;
+        float b=face.depth.x*face.depth.y/(face.depth.y-face.depth.x);
+        reference.gradient=(2*b/numerator)*projected_normal*float2(1,-1)/(face.atlas.xy*float(lit_shadow_atlas_extent));
     }
-    // Search from the finite-source footprint. Clamp is an explicit quality
-    // bound shared with CPU residency, never an excuse to read an absent face.
-    float near_z=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(direction)].depth.x;
-    float search=radius*max(distance-near_z,0)/max(near_z*distance,1e-20);
-    search=min(search,lit_shadow_filter_tangent_limit);
-    float local_search=min(radius/max(distance-radius,1e-5),search);
-    float blockers=0,blocker_distance=0;
-    [loop] for(uint i=0;i<8;++i) {
-        // Keep center/local coverage while also looking for off-axis blockers
-        // near the source. A single receiver-sized disk misses those blockers.
-        float2 offset=i==0?0:lit_shadow_disk[i*2]*(i<4?local_search:(i<6?sqrt(local_search*search):search));
-        float3 sample_direction=normalize(direction+tangent*offset.x+bitangent*offset.y);
-        if(!lit_shadow_point_tap(cache,origin,position,surface.geometric_normal,sample_direction,face,uv,reference))return 0;
-        float depth,receiver_depth;int2 pixel;
-        if(!lit_shadow_depth_nearest(face,uv,reference,depth,receiver_depth,pixel))return 0;
-        if(depth>receiver_depth && depth>0){blocker_distance+=lit_shadow_point_distance(depth,face,pixel);blockers+=1;}
-    }
-    if(blockers==0)return 1;
-    blocker_distance/=blockers;
-    float filter=radius*max(distance-blocker_distance,0)/max(blocker_distance*distance,1e-10);
-    if(filter>lit_shadow_filter_tangent_limit)lit_shadow_count(79);
-    filter=min(filter,lit_shadow_filter_tangent_limit);
-    float visibility=0;
-    [loop] for(uint i=0;i<16;++i) {
-        float2 offset=lit_shadow_disk[i]*filter;
-        float3 sample_direction=normalize(direction+tangent*offset.x+bitangent*offset.y);
-        if(!lit_shadow_point_tap(cache,origin,position,surface.geometric_normal,sample_direction,face,uv,reference))return 0;
-        visibility+=lit_shadow_compare(face,uv,reference);
-    }
-    return visibility/16;
-}
-
-bool lit_shadow_directional_project(LitShadowLight cache,uint cascade,float3 position,
-                                out LitShadowFace face,out float2 uv,out float reference_depth) {
-    uv=0;reference_depth=0;face=(LitShadowFace)0;
-    [loop] for(uint i=cascade;i<cache.meta.z;++i) {
-        face=lit_shadow_faces[cache.meta.y+i];
-        if((face.meta.x&1u)!=0 && lit_shadow_project(face,position,uv,reference_depth))return true;
-    }
-    return false;
-}
-bool lit_shadow_directional_tap(LitShadowLight cache,uint cascade,float3 position,float3 offset,
-                               float3 normal,float3 direction,
-                               out LitShadowFace face,out float2 uv,out LitShadowReference reference) {
-    reference=(LitShadowReference)0;
-    float denominator=dot(normal,direction);
-    if(abs(denominator)>1e-5) {
-        float3 corrected=offset-direction*(dot(normal,offset)/denominator);
-        if(all(isfinite(corrected))&&lit_shadow_directional_project(cache,cascade,position+corrected,face,uv,reference.depth)) {
-            // Use the actual selected cascade, including a larger fallback.
-            // Orthographic columns are orthogonal scaled light basis vectors.
-            float3 x,y,z;lit_shadow_projection_axes(face,x,y,z);
-            float3 plane=float3(dot(normal,x)/dot(x,x),dot(normal,y)/dot(y,y),dot(normal,z)/dot(z,z));
-            reference.gradient=float2(-2*plane.x,2*plane.y)/plane.z/(face.atlas.xy*float(lit_shadow_atlas_extent));
-            reference.fallback_depth=mul(float4(position+offset,1),face.view_projection).z;
-            reference.plane=all(isfinite(reference.gradient));
-            if(reference.plane)return true;
-        }
-    }
-    lit_shadow_count(81);
-    reference.gradient=0;reference.plane=false;
-    if(lit_shadow_directional_project(cache,cascade,position+offset,face,uv,reference.depth)) {
-        reference.fallback_depth=reference.depth;return true;
-    }
-    lit_shadow_count(78);return false;
+    if(!all(isfinite(reference.gradient))){lit_shadow_count(81);reference.gradient=0;}
+    return lit_shadow_compare(face,uv,reference);
 }
 float lit_shadow_directional_cascade(LitShadowLight cache,uint cascade,LitLightSource light,LitLightingSurface surface) {
+    float3 normal=surface.geometric_normal,x,y,z;
     LitShadowFace face=lit_shadow_faces[cache.meta.y+cascade];
-    float3 position=surface.position+surface.geometric_normal*lit_controls.y;
-    float2 uv;LitShadowReference center_reference;
-    if(!lit_shadow_directional_tap(cache,cascade,position,0,surface.geometric_normal,light.direction_radius.xyz,face,uv,center_reference))return 0;
-    if(light.direction_radius.w<=0)return lit_shadow_compare(face,uv,center_reference);
-    float3 axis_x,axis_y,axis_z;lit_shadow_projection_axes(face,axis_x,axis_y,axis_z);
-    float3 tangent=normalize(axis_x),bitangent=normalize(axis_y);
-    float angle=tan(light.direction_radius.w);
-    if(angle>lit_shadow_filter_tangent_limit)lit_shadow_count(79);
-    angle=min(angle,lit_shadow_filter_tangent_limit);
-    float receiver_z=face.depth.y-center_reference.depth*(face.depth.y-face.depth.x);
-    float search=angle*max(receiver_z-face.depth.x,0),blockers=0,separation=0;
-    float3 normal=surface.geometric_normal;
-    [loop] for(uint i=0;i<8;++i) {
-        float2 disk=lit_shadow_disk[i*2]*search;
-        float3 offset=tangent*disk.x+bitangent*disk.y;
-        LitShadowFace tap;float2 tap_uv;LitShadowReference reference;
-        if(!lit_shadow_directional_tap(cache,cascade,position,offset,normal,light.direction_radius.xyz,tap,tap_uv,reference))return 0;
-        float depth,receiver_depth;int2 pixel;
-        if(!lit_shadow_depth_nearest(tap,tap_uv,reference,depth,receiver_depth,pixel))return 0;
-        if(depth>receiver_depth && depth>0){separation+=(depth-receiver_depth)*(tap.depth.y-tap.depth.x);blockers+=1;}
+    lit_shadow_projection_axes(face,x,y,z);
+    // Orthographic columns scale by 1/radius: one interior texel in world units.
+    float3 position=surface.position+normal*(2*face.depth.z/max(length(x),1e-20));
+    float2 uv;LitShadowReference reference=(LitShadowReference)0;
+    bool projected=false;
+    // A larger cascade covers receivers just outside the selected one.
+    [loop] for(uint i=cascade;i<cache.meta.z&&!projected;++i) {
+        face=lit_shadow_faces[cache.meta.y+i];
+        projected=(face.meta.x&1u)!=0&&lit_shadow_project(face,position,uv,reference.depth);
     }
-    if(blockers==0)return 1;
-    float filter=angle*separation/blockers,visibility=0;
-    [loop] for(uint i=0;i<16;++i) {
-        float2 disk=lit_shadow_disk[i]*filter;
-        float3 offset=tangent*disk.x+bitangent*disk.y;
-        LitShadowFace tap;float2 tap_uv;LitShadowReference reference;
-        if(!lit_shadow_directional_tap(cache,cascade,position,offset,normal,light.direction_radius.xyz,tap,tap_uv,reference))return 0;
-        visibility+=lit_shadow_compare(tap,tap_uv,reference);
-    }
-    return visibility/16;
+    if(!projected){lit_shadow_count(78);return 0;}
+    lit_shadow_projection_axes(face,x,y,z);
+    float3 plane=float3(dot(normal,x)/dot(x,x),dot(normal,y)/dot(y,y),dot(normal,z)/dot(z,z));
+    reference.gradient=float2(-2*plane.x,2*plane.y)/plane.z/(face.atlas.xy*float(lit_shadow_atlas_extent));
+    if(!all(isfinite(reference.gradient))){lit_shadow_count(81);reference.gradient=0;}
+    return lit_shadow_compare(face,uv,reference);
 }
 float lit_shadow_directional(LitShadowLight cache,LitLightSource light,LitLightingSurface surface) {
     float view_z=mul(float4(surface.position,1),lit_camera_view).z;

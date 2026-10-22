@@ -12,6 +12,10 @@ namespace {
 using V=math::Vector3d;
 using M=math::Matrix4d;
 constexpr std::uint32_t cell_size=128,grid_size=shadow_atlas_extent/cell_size;
+// lit_shadow_sampling offsets each receiver along its normal by one interior
+// texel: at most this fraction of its point distance or cascade radius, at
+// the smallest face. The 3x3 filter footprint stays inside the guard texels.
+constexpr double normal_offset_ratio=2.0/(cell_size-2*shadow_tile_border);
 constexpr std::uint32_t no_slot=~0u;
 void check(bool condition,const char* message) {
     if(!condition)throw Error{{rhi::ErrorCode::invalid_argument,kGfxResult_InvalidParameter,message},false};
@@ -132,19 +136,12 @@ Request point_request(const Frame& frame,const GpuLightSource& source,std::span<
     const double support=effective_range+extent;
     const double rounding_margin=std::max(1e-4,1e-5*std::max(std::max(support,std::abs(origin.x)),std::max(std::abs(origin.y),std::abs(origin.z))));
     const double conservative_support=support+rounding_margin;
-    const double receiver_bias=std::abs(double(frame.view.lit.shadow_bias));
-    const double far_z=ceil_power_two((conservative_support+receiver_bias)*(1+shadow_filter_tangent_limit));
+    const double far_z=ceil_power_two(conservative_support*(1+normal_offset_ratio));
     const double near_z=std::max(1e-30,std::min(double(shadow_maximum_near),far_z*shadow_near_ratio));
     for(std::uint32_t face=0;face<request.count;++face){request.projection[face]=point_projection(origin,face,near_z,far_z);request.depth[face]={near_z,far_z};}
     for(const auto& receiver:receivers){
         if(distance_squared(receiver.bounds,origin)>conservative_support*conservative_support)continue;
-        // PCSS directions extend beyond the receiver's center direction. The
-        // shader shares this maximum tangent footprint; no delayed feedback is
-        // needed to make neighbouring directions resident in the current frame.
-        // The normal offset also increases the distance used by the angular
-        // footprint: b + (d+b)*limit, not merely d*limit+b.
-        const auto bounds=expanded(receiver.bounds,receiver_bias+
-            (far_distance(receiver.bounds,origin)+receiver_bias)*shadow_filter_tangent_limit+rounding_margin);
+        const auto bounds=expanded(receiver.bounds,far_distance(receiver.bounds,origin)*normal_offset_ratio+rounding_margin);
         for(std::uint32_t face=0;face<6;++face)
             request.needed[face]=request.needed[face]||intersects(bounds,request.projection[face],.04);
     }
@@ -204,9 +201,7 @@ Request directional_request(const Frame& frame,const GpuLightSource& source,std:
     for(const auto& caster:casters)for(std::uint32_t i=0;i<8;++i){const double z=dot(corner(caster.bounds,i),request.axis_z);
         low=std::min(low,z);high=std::max(high,z);}
     const double step=ceil_power_two(std::max(high-low,1.0))/16;
-    const double receiver_bias=std::abs(double(frame.view.lit.shadow_bias));
-    low=(std::floor((low-receiver_bias)/step)-1)*step;high=(std::ceil((high+receiver_bias)/step)+1)*step;
-    double previous=camera_near;
+    double previous=camera_near,offset=0;
     constexpr std::array<double,4> fractions{1.0/64,1.0/16,1.0/4,1};
     for(std::uint32_t face=0;face<4;++face){
         const double end=camera_near+(far_z-camera_near)*fractions[face];
@@ -217,13 +212,16 @@ Request directional_request(const Frame& frame,const GpuLightSource& source,std:
             const auto camera=near_corners[i%4]+ray*((depth-near_corners[i%4].z)/ray.z);
             corners[i]=math::transform_point(camera,*inverse_view);center=center+corners[i];}
         center=center/8.0;double radius=0;for(const auto& p:corners)radius=std::max(radius,length(p-center));
-        // The margin covers snapping at the minimum 128 resolution as well as
-        // the bounded soft-shadow footprint. It is independent of allocation.
-        const double filter_margin=(high-low)*std::min(std::tan(double(source.direction_radius[3])),double(shadow_filter_tangent_limit));
-        radius=(std::max(.01,std::ceil(radius*16)/16)+filter_margin+receiver_bias)*1.04;
-        request.centers[face]=center;request.radii[face]=radius;request.depth[face]={low,high};
+        // The margin covers snapping and the receiver normal offset at the
+        // minimum 128 resolution. It is independent of allocation.
+        radius=std::max(.01,std::ceil(radius*16)/16)*1.04;offset=std::max(offset,radius*normal_offset_ratio);
+        request.centers[face]=center;request.radii[face]=radius;
         request.starts[face]=static_cast<float>(start);request.splits[face]=static_cast<float>(end);request.needed[face]=true;previous=end;
     }
+    // Offset receivers stay inside the depth range. The radii do not depend
+    // on the camera pose, so the quantized planes stay stable as it moves.
+    low=(std::floor((low-offset)/step)-1)*step;high=(std::ceil((high+offset)/step)+1)*step;
+    for(auto& depth:request.depth)depth={low,high};
     return request;
 }
 }

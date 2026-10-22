@@ -259,13 +259,24 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     options.ddgi=false;const auto updated_direct=capture("material-ddgi-update-off.png");
     const auto lu=mean_rgb(updated,left),ld=mean_rgb(updated_direct,left);
     check(lu[2]-ld[2]>lu[0]-ld[0]+1,"texture-only edit updates DDGI without replacing geometry or object identity");
-    // The source is above the camera frustum. Mesh emission reaches receivers
-    // only through DDGI probe hits, independent of screen visibility.
+    // The source lies entirely above the camera frustum (checked below). Mesh
+    // emission reaches receivers only through DDGI probe hits.
     frame.lights={};options.ddgi=true;
     room.meshes[7].geometry=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
-        {{-2,6,2},{0,-1,0},{0,0}},{{2,6,2},{0,-1,0},{1,0}},{{2,6,6},{0,-1,0},{1,1}},
-        {{-2,6,2},{0,-1,0},{0,0}},{{2,6,6},{0,-1,0},{1,1}},{{-2,6,6},{0,-1,0},{0,1}}});
+        {{-2,6,-2},{0,-1,0},{0,0}},{{2,6,-2},{0,-1,0},{1,0}},{{2,6,2},{0,-1,0},{1,1}},
+        {{-2,6,-2},{0,-1,0},{0,0}},{{2,6,2},{0,-1,0},{1,1}},{{-2,6,2},{0,-1,0},{0,1}}});
     room.meshes[7].world=box(0,0,0,1,1,1);
+    const auto above_view=[&](std::array<float,3> p) {
+        std::array<float,4> v{p[0],p[1],p[2],1};
+        for(const auto& m:{frame.camera.view,frame.camera.projection}) {
+            std::array<float,4> next{};
+            for(unsigned c=0;c<4;++c)for(unsigned r=0;r<4;++r)next[c]+=v[r]*m[r*4+c];
+            v=next;
+        }
+        return v[1]>v[3];
+    };
+    check(std::ranges::all_of(std::array<std::array<float,3>,4>{{{-2,6,-2},{2,6,-2},{2,6,2},{-2,6,2}}},above_view),
+          "the textured emitter lies entirely above the camera frustum");
     material::Description emitter;emitter.parameters.base_color={0,0,0,1};emitter.parameters.emissive={10,10,10};
     emitter.parameters.emission_two_sided=false;
     const auto publish_emitter=[&] {

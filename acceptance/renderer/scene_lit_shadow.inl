@@ -41,7 +41,7 @@ void shadow_cases(Fixture& f) {
     };
     std::ofstream counters(f.output/"shadow-cache-completed.csv");
     check(counters.good(),"shadow cache completed evidence file opened");
-    counters<<"scenario,submitted_frame,completed_frame,completed_sequence,shadow_ms,faces,reused,static_updates,dynamic_updates,draws,dropped_lights,near_plane_faces,missing_taps,clamped_taps,plane_fallbacks\n";
+    counters<<"scenario,submitted_frame,completed_frame,completed_sequence,shadow_ms,faces,reused,static_updates,dynamic_updates,draws,dropped_lights,near_plane_faces,missing_taps,plane_fallbacks\n";
     // Capturing the changed frame completes its submission. Inspect its exact
     // completed id before settling history: a later warm sample would hide the
     // one-frame invalidation being tested.
@@ -59,7 +59,7 @@ void shadow_cases(Fixture& f) {
             <<stats.scene_lit_shadow_cache_gpu_ms<<','<<stats.scene_lit_shadow_cache_faces<<','<<stats.scene_lit_shadow_cache_reused_faces<<','
             <<stats.scene_lit_shadow_cache_static_updates<<','<<stats.scene_lit_shadow_cache_dynamic_updates<<','<<stats.scene_lit_shadow_cache_draws<<','
             <<stats.scene_lit_shadow_cache_dropped_lights<<','<<stats.scene_lit_shadow_cache_near_plane_faces<<','<<stats.scene_lit_shadow_cache_missing_taps<<','
-            <<stats.scene_lit_shadow_cache_clamped_taps<<','<<stats.scene_lit_shadow_cache_plane_fallbacks<<'\n';
+            <<stats.scene_lit_shadow_cache_plane_fallbacks<<'\n';
         counters.flush();
     };
     const auto submit=[&](const char* name){
@@ -225,6 +225,23 @@ void shadow_cases(Fixture& f) {
     const auto moved_camera=f.capture("shadow-csm-camera-moved-settled",16);
     truth("shadow-csm-camera-truth",moved_camera,{bounds(sun_blocker)},.03,4);warm("shadow-csm-camera-warm");
 
+    // Grazing sun, 70 degrees from the receiver normal, and a fin standing 1 cm
+    // in front of the receiver. One interior texel (about 4.6 mm) of normal
+    // offset moves the far shadow edge about 1.3 cm, inside the 5.6 cm judged
+    // band; ten texels move it past the band. Without slope handling the lit
+    // slope shadows itself.
+    f.frame.scene_viewport={0,0,float(f.drawing.extent.width),float(f.drawing.extent.height)};
+    const float wide=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
+    f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
+    f.frame.camera.projection={1/(.25f*wide),0,0,0, 0,1/.25f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
+    // The fin's half thickness exceeds the margin, so its shrunk box is not empty.
+    auto fin=blocker(16);fin.world=box(0,0,-.06f,.04f,1,.1f);
+    f.room.meshes={receiver(17,0,0,2.4f,1.6f),fin};
+    f.lights.front().direction=normalize({2.75f,0,1});
+    ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();submit("shadow-grazing-contact-cold");
+    truth("shadow-grazing-contact-truth",f.capture("shadow-grazing-contact-settled",16),{bounds(fin)},.015,1000);
+    warm("shadow-grazing-contact-warm");
+
     // One pressure submission, not a many-frame stress benchmark. A completely
     // transparent cube requests six conservative directions without changing
     // the real GBuffer or visibility. 272*6 minimum 128 tiles exceed the fixed
@@ -379,5 +396,5 @@ void shadow_cases(Fixture& f) {
     stats=warm("shadow-csm-infinite-perspective-warm");
     check(stats.scene_lit_shadow_cache_faces==4,"infinite-far perspective reuses all four complete cascades");
     counters.flush();f.metrics.flush();
-    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
+    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, grazing near-caster normal offset, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
 }

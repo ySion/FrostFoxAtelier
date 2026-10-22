@@ -26,6 +26,8 @@
 
 namespace atelier::renderer::detail {
 namespace {
+// Secondary ray origins leave their surface by this many world meters.
+constexpr float ray_offset=.002f;
 void require(GfxResult result,const char* operation) {
     if(result) throw Error{{rhi::ErrorCode::execution_failed,result,operation},true};
 }
@@ -77,7 +79,7 @@ struct SceneLit::State {
     GfxTexture probe_age,probe_sample_cursor,probe_debug_depth;
     std::array<GfxTimestampQuery,15> queries{}; // FrameStats::scene_lit_gpu_pass_mask scopes.
     std::uint32_t encoded_pass_mask{};
-    GfxSamplerState sampler;
+    GfxSamplerState sampler,shadow_sampler;
     ui::PixelExtent extent{};
     std::array<GfxTexture,7> gbuffer_textures{};
     GfxTexture indirect_half; // DDGI receiver irradiance at one representative per 2x2 block.
@@ -367,8 +369,10 @@ struct SceneLit::State {
     void resources() {
         if(sampler)return;
         sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_MIN_MAG_MIP_LINEAR);allocation(bool(sampler));
+        shadow_sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,D3D12_COMPARISON_FUNC_GREATER_EQUAL);
+        allocation(bool(shadow_sampler));
         for(auto& query:queries){query=gfxCreateTimestampQuery(gfx);allocation(bool(query));}
-        // Rays[0..7], cluster statistics[8..10], optional histogram[11..77], shadow diagnostics[78..81] (80 unused).
+        // Rays[0..7], cluster statistics[8..10], optional histogram[11..77], shadow missing taps[78], plane fallbacks[81].
         ray_counters=gfxCreateBuffer<std::uint32_t>(gfx,82);allocation(bool(ray_counters));
         for(auto& readback:ray_readback){readback=gfxCreateBuffer(gfx,82*sizeof(std::uint32_t),nullptr,kGfxCpuAccess_Read);allocation(bool(readback));}
         brdf_lut=texture(64,64,DXGI_FORMAT_R16G16_FLOAT,4);
@@ -460,7 +464,7 @@ struct SceneLit::State {
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind cached shadow atlas before sampling");
     }
     void bind_shadows(GfxProgram p) {
-        bind(p,"lit_shadow_filter_tangent_limit",shadow_filter_tangent_limit);bind(p,"lit_shadow_atlas_extent",shadow_atlas_extent);
+        bind(p,"lit_shadow_sampler",shadow_sampler);bind(p,"lit_shadow_atlas_extent",shadow_atlas_extent);
         // Without a caster nothing reads the atlas; empty handles drop bindings to retired atlases.
         const bool on=shadows_cached;
         bind(p,"lit_shadow_faces",on?shadow_tables.faces:GfxBuffer{});bind(p,"lit_shadow_lights",on?shadow_tables.lights:GfxBuffer{});
@@ -632,7 +636,7 @@ struct SceneLit::State {
             stats.scene_lit_shadow_cache_static_updates=shadow.plan.static_updates;stats.scene_lit_shadow_cache_dynamic_updates=shadow.plan.dynamic_updates;
             stats.scene_lit_shadow_cache_draws=shadow.draws;stats.scene_lit_shadow_cache_resolution_downgrades=shadow.plan.resolution_downgrades;
             stats.scene_lit_shadow_cache_dropped_lights=shadow.plan.dropped_lights;stats.scene_lit_shadow_cache_near_plane_faces=shadow.plan.near_plane_faces;
-            stats.scene_lit_shadow_cache_missing_taps=counter[78];stats.scene_lit_shadow_cache_clamped_taps=counter[79];
+            stats.scene_lit_shadow_cache_missing_taps=counter[78];
             stats.scene_lit_shadow_cache_plane_fallbacks=counter[81];
             stats.scene_lit_gpu_pass_mask=readback_pass_masks[slot];
             stats.scene_lit_gpu_sample_frame_id=readback_frame_ids[slot];
@@ -997,7 +1001,6 @@ struct SceneLit::State {
         previous_probe_bounce=settings.probe_bounce;previous_probe_feedback_visibility=settings.probe_feedback_visibility;
         const std::uint32_t flags=(settings.shadows?1u:0u)|(settings.ddgi?2u:0u)|(settings.gtao?4u:0u)|(settings.sssr?8u:0u)|(settings.antialiasing==Antialiasing::taa?16u:0u)|(settings.bloom?32u:0u);
         const auto effect_changes=flags^previous_effect_flags;
-        const bool shadow_bias_changed=settings.shadow_bias!=controls[1];
         // Every lit shadow caster reads the atlas, so it exists whenever one can contribute.
         const bool next_shadows_cached=settings.shadows&&std::ranges::any_of(frame.lights,[](const Light& light) {
             return light.casts_shadow&&light.intensity>0&&std::ranges::any_of(light.color,[](float channel){return channel>0;});
@@ -1007,7 +1010,7 @@ struct SceneLit::State {
         shadows_cached=next_shadows_cached;
         ShadowSample shadow_sample;
         if(shadows_cached)prepare_shadows();
-        const bool direct_changed=(effect_changes&1u)!=0||shadow_backend_changed||shadow_bias_changed;
+        const bool direct_changed=(effect_changes&1u)!=0||shadow_backend_changed;
         const bool reflection_changed=settings.reflection_distance!=controls[3]||settings.reflection_roughness!=temporal[1];
         const bool ao_changed=(effect_changes&4u)!=0||settings.ao_radius!=controls[2];
         // Invalidate each signal and its actual consumers when its input contract
@@ -1025,7 +1028,7 @@ struct SceneLit::State {
         const bool radiance_changed=light_changed||material_changed||emitter_changed||next_environment!=environment;
         // The epoch describes an authored change, never stochastic radiance.
         // GPU directions keep their own progress even when sparsely scheduled.
-        if(radiance_changed||transform_changed||shadow_bias_changed)
+        if(radiance_changed||transform_changed)
             if(++probe_response_epoch==0)require(gfxCommandClearTexture(gfx,probe_response),"Reset wrapped DDGI response epoch");
         if(visibility_changed)probe_geometry_pending=2*probe_field.total;
         auto projection=matrix(frame.camera.projection);const bool taa_enabled=settings.antialiasing==Antialiasing::taa;
@@ -1056,7 +1059,7 @@ struct SceneLit::State {
             static_cast<std::uint32_t>(raster.scissor.right),static_cast<std::uint32_t>(raster.scissor.bottom)};
         clusters();
         environment=next_environment;
-        controls={std::exp2(settings.exposure_ev),settings.shadow_bias,settings.ao_radius,settings.reflection_distance};
+        controls={std::exp2(settings.exposure_ev),ray_offset,settings.ao_radius,settings.reflection_distance};
         effect_flags=flags;hit_candidates=settings.direct_candidates;
         // Receiver motion alone cannot describe changing shadows or secondary
         // hits. Keep visibility changes distinct from authored radiance edits:
@@ -1339,7 +1342,7 @@ struct SceneLit::State {
         retire_scene();retire(ray_counters);
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
-        if(sampler)require(gfxDestroySamplerState(gfx,std::exchange(sampler,{})),"Retire Scene Lit sampler");
+        for(auto* s:{&sampler,&shadow_sampler})if(*s)require(gfxDestroySamplerState(gfx,std::exchange(*s,{})),"Retire Scene Lit sampler");
         for(auto* p:{&gbuffer,&cluster_build,&cluster_inspect,&shadow_depth,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
                     &ao,&ao_depth_reduce,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
                     &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&probe_debug_surface,&probe_debug_geometry,&inspect_pass,&inspect_update})*p={};

@@ -305,7 +305,7 @@ struct EditorControl::Impl {
                 {"static_updates",s.scene_lit_shadow_cache_static_updates},{"dynamic_updates",s.scene_lit_shadow_cache_dynamic_updates},
                 {"draws",s.scene_lit_shadow_cache_draws},{"resolution_downgrades",s.scene_lit_shadow_cache_resolution_downgrades},
                 {"dropped_lights",s.scene_lit_shadow_cache_dropped_lights},{"near_plane_faces",s.scene_lit_shadow_cache_near_plane_faces},
-                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},{"clamped_taps",s.scene_lit_shadow_cache_clamped_taps},
+                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},
                 {"plane_fallbacks",s.scene_lit_shadow_cache_plane_fallbacks}}},
             {"direct_cluster",{{"cells",s.scene_lit_direct_cluster_cells},{"overflows",s.scene_lit_direct_cluster_overflows},
                 {"max_sources",s.scene_lit_direct_cluster_max_sources},{"receiver_histogram",s.scene_lit_direct_receiver_histogram},

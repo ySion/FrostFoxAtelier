@@ -19,7 +19,7 @@ row_major float4x4 lit_previous_inverse_view_projection;
 float4 lit_environment; // RGB radiance, reserved
 uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom
 uint lit_history_invalid; // Per-signal incompatibility: reflection=2, AO=4, final TAA=8.
-float4 lit_controls; // exposure multiplier,shadow bias,AO radius,SSR max distance
+float4 lit_controls; // exposure multiplier,secondary ray origin offset (m),AO radius,SSR max distance
 float4 lit_temporal; // history weight,roughness threshold,radiance change,visibility geometry change
 float4 lit_jitter; // current xy,previous xy; viewport pixel units
 
