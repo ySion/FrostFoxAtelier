@@ -86,8 +86,9 @@ Result<void> acquire_jolt() {
         JPH::Factory::sInstance = new JPH::Factory();
         JPH::RegisterTypes();
         const auto cores = std::thread::hardware_concurrency();
+        // On 500 active boxes 3 workers solved faster than 1, 7 or 15.
         solver_jobs = new JPH::JobSystemThreadPool(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
-            int(std::clamp(cores > 1 ? cores - 1 : 1u, 1u, 7u)));
+            int(std::clamp(cores > 1 ? cores - 1 : 1u, 1u, 3u)));
     }
     ++scene_count;
     return {};
@@ -313,6 +314,9 @@ struct PhysicsScene::Impl {
         std::uint64_t revision;
         math::Vector3 shape_scale;
         world::Trs target;
+        // The owner's local TRS as this scene last created, teleported or published it;
+        // any other value was written past physics and relocates the body.
+        world::Trs local;
         std::vector<ObjectId> ancestors;
     };
     enum class CommandKind { force, impulse, kinematic_target, teleport };
@@ -325,11 +329,13 @@ struct PhysicsScene::Impl {
     };
     std::vector<Command> commands;
     std::vector<world::SimulationPose> poses;
+    std::vector<std::pair<ObjectId, world::Trs>> written;
     // Bodies whose pose this step publishes: moved by Jolt or teleported.
     JPH::BodyIDVector moved, active;
     // A spatial ancestor as one reconcile pass reads it; each part is read on first use.
     struct Ancestor {
-        std::optional<bool> member, active, zero_scale, nonuniform, moving_body;
+        std::optional<bool> member, active, moving_body;
+        std::optional<world::Trs> local;
         std::optional<ObjectId> parent;
     };
     // Shared by every body checked in the current step's reconcile pass, then discarded:
@@ -644,6 +650,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     // A zero scale axis anywhere in the chain is reported once, on the topmost such node.
     ObjectId degenerate;
     std::optional<Error> hierarchy;
+    world::Trs owner_local;
     for(auto node=entity;node!=ObjectId{};) {
         // Within a step's reconcile pass each node is read once; otherwise every call reads it.
         Impl::Ancestor scratch;
@@ -656,14 +663,15 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
             checked.active=status->state==world::EntityState::active;
         }
         if(node==entity && !*checked.active) {remove(component);return {};}
-        if(!checked.zero_scale) {
+        if(!checked.local) {
             auto local=world::read_transform(runtime,node);if(!local) return std::unexpected(local.error());
-            const auto size=[](float value){return std::abs(value);};
-            checked.zero_scale=local->scale.x==0 || local->scale.y==0 || local->scale.z==0;
-            checked.nonuniform=std::abs(size(local->scale.x)-size(local->scale.y))>1e-5f || std::abs(size(local->scale.x)-size(local->scale.z))>1e-5f;
+            checked.local=*local;
         }
-        if(*checked.zero_scale) degenerate=node;
-        if(!hierarchy && node!=entity && settings->motion!=MotionKind::stationary && *checked.nonuniform)
+        const auto& scale=checked.local->scale;
+        if(node==entity) owner_local=*checked.local;
+        if(scale.x==0 || scale.y==0 || scale.z==0) degenerate=node;
+        if(!hierarchy && node!=entity && settings->motion!=MotionKind::stationary &&
+            (std::abs(std::abs(scale.x)-std::abs(scale.y))>1e-5f || std::abs(std::abs(scale.x)-std::abs(scale.z))>1e-5f))
             hierarchy=Error{ErrorCode::argument_mismatch,"Moving Primitive ancestors require uniform scale for lossless pose writeback."};
         if(!hierarchy && node!=entity && settings->motion!=MotionKind::dynamic) {
             if(!checked.moving_body) {
@@ -725,7 +733,13 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     };
     if (current!=impl_->bodies.end() && current->second.entity==entity && current->second.mesh==mesh &&
         current->second.settings==*settings && same_scale(current->second.shape_scale,scale)) {
-        if (current->second.ancestors==ancestors) return {};
+        if (current->second.ancestors==ancestors) {
+            // A TRS written past physics (Runtime, Source) moves the body as set_transform does.
+            static_assert(sizeof(world::Trs)==10*sizeof(float));
+            if (std::memcmp(&current->second.local,&owner_local,sizeof owner_local)==0) return {};
+            current->second.local=owner_local;
+            return relocate(std::span<const ObjectId>{&entity,1});
+        }
         // A keep-world hierarchy edit changes dependency metadata, not the body or its constraints.
         JPH::RVec3 where;JPH::Quat orientation;
         impl_->system.GetBodyInterface().GetPositionAndRotation(current->second.id,where,orientation);
@@ -741,6 +755,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
             std::abs(orientation.GetW()-sign*expected.GetW())<=1e-5f;
         if(same_position && same_rotation) {
             current->second.ancestors=std::move(ancestors);
+            current->second.local=owner_local;
             return {};
         }
     }
@@ -775,7 +790,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     remove(component);
     remove_special(entity);
     try {
-        impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,std::move(ancestors)});
+        impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,owner_local,std::move(ancestors)});
         impl_->entity_bodies.emplace(entity,component);
         impl_->body_components.emplace(id,component);
     } catch(...) {
@@ -994,7 +1009,9 @@ Result<void> PhysicsScene::step(float elapsed) {
                     publish(body);
             }
         }
-        if(auto written=world_.apply_simulation_transforms(poses);!written) return std::unexpected(written.error());
+        if(auto written=world_.apply_simulation_transforms(poses,&impl_->written);!written) return std::unexpected(written.error());
+        for(const auto& [entity,local]:impl_->written)
+            if(const auto body=impl_->entity_bodies.find(entity);body!=impl_->entity_bodies.end()) impl_->bodies.at(body->second).local=local;
         writing.reset();
         if (!stepping_once) remaining_ = std::max(0.f, remaining_ - fixed);
         else single_step_ = false;
@@ -1088,7 +1105,7 @@ bool PhysicsScene::writes_pose(ObjectId entity) const {
 // An authored pose replaces the simulated one at the next step; velocities are kept.
 // Everything is resolved first, so a refusal leaves the simulation untouched.
 Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
-    struct Target { ObjectId entity; std::optional<BodyHandle> body; world::Trs pose; };
+    struct Target { ObjectId entity; std::optional<BodyHandle> body; world::Trs pose, local; };
     std::vector<Target> targets;
     targets.reserve(entities.size());
     for (const auto entity : entities) {
@@ -1109,11 +1126,18 @@ Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
             if (!handle) continue;
             body = *handle;
         }
-        targets.push_back({entity, body, *pose});
+        world::Trs local{};
+        if (body) {
+            auto authored = world::read_transform(world_.runtime(), entity);
+            if (!authored) return std::unexpected(authored.error());
+            local = *authored;
+        }
+        targets.push_back({entity, body, *pose, local});
     }
     for (const auto& target : targets) {
         if (target.body) {
             impl_->commands.push_back({Impl::CommandKind::teleport, *target.body, target.pose.position, target.pose.rotation, true});
+            impl_->bodies.at(target.body->component).local = target.local;
             continue;
         }
         auto& character = *impl_->characters.at(target.entity).character;

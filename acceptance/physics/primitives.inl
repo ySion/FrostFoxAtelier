@@ -228,9 +228,10 @@ void mirrored_scale() {
     committed(f.world.stop());
 }
 
-// A step publishes only the poses it moved: active bodies, bodies that fell asleep in
-// it, teleported bodies and bodies below a published Entity. Values written past World
-// on the others stay. Spatial ancestors are read again on every step.
+// Any TRS write moves its body as set_transform does: a write past World is read at the
+// next step and teleports the body. A step publishes only the poses it moved (active
+// bodies, bodies that fell asleep in it, teleported bodies and bodies below a published
+// Entity), so it never reverts a write it did not see. Ancestors are read on every step.
 void pose_publication() {
     PhysicsFixture f;take(f.world.set_failure_policy(w::FailurePolicy::isolate));
     auto floor=f.ground();
@@ -249,15 +250,26 @@ void pose_publication() {
     require(take(w::read_transform(f.runtime,resting.id())).position==f.state(resting).position,
         "A body that fell asleep kept a pose from before its last step.");
     const auto& x=f.world_types.position_fields[0];
+    const auto& z=f.world_types.position_fields[2];
     const auto local=[&](const auto& entity){return take(w::read_transform(f.runtime,entity.id()));};
-    for(const auto* entity:{&floor,&resting,&falling}) take(f.runtime.write(entity->id(),x,atelier::Scalar{local(*entity).position.x+.25f}));
+    const auto rest_x=f.state(resting).position.x+.25f;
+    take(f.runtime.write(floor.id(),x,atelier::Scalar{.25f}));
+    take(f.runtime.write(resting.id(),x,atelier::Scalar{rest_x}));
     f.advance(1);
-    require(local(floor).position.x==.25f && local(resting).position.x==f.state(resting).position.x+.25f,
-        "A step wrote the pose of a static or sleeping body.");
+    require(near(f.state(floor).position.x,.25f,1e-6f) && local(floor).position==f.state(floor).position,
+        "A TRS written past World did not move its static body.");
+    require(near(f.state(resting).position.x,rest_x,1e-3f) && local(resting).position==f.state(resting).position,
+        "A TRS written past World did not move its sleeping body.");
     require(local(falling).position==f.state(falling).position,"A step did not publish a falling body.");
     const auto carried_state=f.state(carried);const auto carried_matrix=take(w::world_matrix(f.runtime,carried.id()));
     require(near(carried_matrix[12],carried_state.position.x,1e-4f) && near(carried_matrix[13],carried_state.position.y,1e-4f),
         "A sleeping body below a moving one did not keep its world pose.");
+    f.scene->on_before_step([&](std::uint64_t,float)->atelier::Result<void> {return f.runtime.write(floor.id(),z,atelier::Scalar{1.5f});});
+    f.advance(1);
+    f.scene->on_before_step({});
+    require(local(floor).position.z==1.5f && f.state(floor).position.z==0,"A step reverted a TRS written while it ran.");
+    f.advance(1);
+    require(f.state(floor).position.z==1.5f,"A TRS written while a step ran did not move its body at the next step.");
     take(f.scene->teleport(f.handle(floor),{0,-.5f,2},{0,0,0,1}));f.advance(1);
     require(local(floor).position.z==2,"A teleported static body did not publish its pose.");
     require(f.world.take_diagnostics().empty() && bool(f.scene->body_handle(held.id())),"The fixture reported an unexpected physics failure.");

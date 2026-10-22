@@ -586,10 +586,10 @@ Result<void> World::apply_simulation_transform(ObjectId entity, math::Vector3 po
     const SimulationPose pose{entity, position, rotation};
     return apply_simulation_transforms({&pose, 1});
 }
-Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses) {
-    return impl_->apply_poses(poses, DiagnosticPhase::physics);
+Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses, std::vector<std::pair<ObjectId, Trs>>* written) {
+    return impl_->apply_poses(poses, DiagnosticPhase::physics, written);
 }
-Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase) {
+Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase, std::vector<std::pair<ObjectId, Trs>>* written) {
     if (auto ready = admit(); !ready) return ready;
     if (!running) return error(ErrorCode::busy, "Simulation writes require a running World.");
     // A rejected pose is reported and excluded; conversion then restarts so no
@@ -643,7 +643,11 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
             if (!local) { if (!reject(i, local.error())) return std::unexpected(local.error()); restart = true; continue; }
             locals.emplace_back(pose.entity, *local);
         }
-        if (!restart) return publish_transforms(runtime, locals);
+        if (!restart) {
+            if (auto published = publish_transforms(runtime, locals); !published) return published;
+            if (written) *written = std::move(locals);
+            return {};
+        }
     }
 }
 

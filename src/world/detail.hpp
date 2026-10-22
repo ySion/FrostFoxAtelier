@@ -193,7 +193,7 @@ struct World::Impl {
     struct TranslationChange { ObjectId entity; Trs value; };
     std::vector<TranslationChange> translation_changes;
     Result<void> apply_translations();
-    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase);
+    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase, std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
     struct Binding { TypeId type; Behavior behavior; };
