@@ -136,8 +136,10 @@ public:
             materials_changed |= entry.geometry != mesh.geometry || entry.surfaces != mesh.surfaces ||
                 !same_bits(entry.color, mesh.color) || !same_bits(entry.material, mesh.material);
             // Only acquire allocates; once it succeeds the rest of this position's update cannot throw.
-            acquire(mesh.stable_key);
-            release(entry.stable_key);
+            if (entry.stable_key != mesh.stable_key) {
+                acquire(mesh.stable_key);
+                release(entry.stable_key);
+            }
             entry = {mesh.world, mesh.color, mesh.material, mesh.stable_key, mesh.geometry, mesh.surfaces,
                      static_cast<std::uint32_t>(mesh.geometry->materials().size()), std::nullopt};
         }
@@ -152,8 +154,9 @@ public:
 private:
     // Every MeshInstance field but selected; a new field must join same() and valid_instance.
     static_assert(sizeof(MeshInstance) == 152);
+    // Checked entries have geometry; a default entry left by a failed commit never matches.
     static bool same(const Entry &entry, const MeshInstance &mesh) noexcept {
-        return entry.geometry == mesh.geometry && entry.surfaces == mesh.surfaces && entry.stable_key == mesh.stable_key &&
+        return entry.geometry && entry.geometry == mesh.geometry && entry.surfaces == mesh.surfaces && entry.stable_key == mesh.stable_key &&
             same_bits(entry.world, mesh.world) && same_bits(entry.color, mesh.color) && same_bits(entry.material, mesh.material);
     }
     void acquire(std::uint64_t key) {
