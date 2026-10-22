@@ -492,6 +492,8 @@ public:
         // zero-scale node. Degenerate spaces are not object failures under any policy.
         [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
         [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
+        // Spatial parent of an Entity, null for world space; read from the same cache as matrix().
+        [[nodiscard]] Result<ObjectId> parent(ObjectId entity);
     private:
         friend class World;
         SpatialPass(Impl& impl, DiagnosticPhase phase) noexcept : impl_(&impl), phase_(phase) {}

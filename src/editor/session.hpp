@@ -74,6 +74,10 @@ public:
     const presentation::Scene& presentation() const noexcept { return presentation_; }
     // Borrowed running scene; invalidated by stop, close, or a failed update.
     physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
+    // Poses to draw the running simulation at this frame; empty without one. See PhysicsScene::presented_poses.
+    std::span<const presentation::PresentedPose> presented_poses() const noexcept {
+        return physics_ ? physics_->presented_poses() : std::span<const presentation::PresentedPose>{};
+    }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     Selection selection() const noexcept { return selection_; }
     // Entity-level multi-selection; the active Entity (selection().entity) is the

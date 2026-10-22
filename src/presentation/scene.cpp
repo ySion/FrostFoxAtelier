@@ -48,6 +48,32 @@ bool same_light(const LightRenderItem& a, const LightRenderItem& b) noexcept {
 }
 }
 
+detail::Presented::Presented(std::span<const PresentedPose> poses) {
+    offsets_.reserve(poses.size());
+    for (const auto& pose : poses) {
+        auto& offset = offsets_[pose.entity];
+        offset.reset();
+        if (same_bytes(pose.position, pose.world_position) && same_bytes(pose.rotation, pose.world_rotation)) continue;
+        // Row vectors: T(-world position) R(presented * world^-1) T(presented position), rigid by construction.
+        const auto rotation = math::try_normalize(pose.rotation * math::conjugate(pose.world_rotation));
+        if (!rotation) continue;
+        Offset value{math::rotation_matrix(*rotation), *rotation};
+        const auto moved = pose.position - math::rotate(*rotation, pose.world_position);
+        value.matrix[12] = moved.x; value.matrix[13] = moved.y; value.matrix[14] = moved.z;
+        offset = value;
+    }
+}
+Result<const detail::Presented::Offset*> detail::Presented::find(world::World::SpatialPass& pass, ObjectId entity) const {
+    // The chain was composed by this pass's matrix() of `entity`, so it ends at world space.
+    for (auto node = entity; node != ObjectId{};) {
+        if (const auto found = offsets_.find(node); found != offsets_.end()) return found->second ? &*found->second : nullptr;
+        auto parent = pass.parent(node);
+        if (!parent) return std::unexpected(parent.error());
+        node = *parent;
+    }
+    return nullptr;
+}
+
 Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slot, const world::CapabilityMember& member) const {
     auto& runtime = world_->runtime();
     auto& cached = mesh_slots_[slot].item;
@@ -102,7 +128,7 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
     return *read;
 }
 
-Result<void> Scene::update_meshes(std::uint64_t serial) const {
+Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented* presented) const {
     auto pass = world_->spatial_pass(DiagnosticPhase::presentation);
     if (!pass) return std::unexpected(pass.error());
     auto meshes = world_->members(meshes_);
@@ -112,21 +138,42 @@ Result<void> Scene::update_meshes(std::uint64_t serial) const {
         layout_revision_ = world_->revision();
         mesh_slots_.assign(meshes->size(), {});
         slotted_.assign(meshes->size(), false);
+        presented_slots_ = 0;
         mesh_layout_ = version_ = serial;
     }
     valid_materials_.resize(meshes->size());
+    // A still scene with nothing presented skips the chain searches.
+    const bool presenting = presented && (!presented->empty() || presented_slots_ != 0);
     for (std::size_t slot = 0; slot < meshes->size(); ++slot) {
         auto changed = update_mesh(*pass, slot, (*meshes)[slot]);
         if (!changed) return std::unexpected(changed.error());
-        if (*changed) mesh_slots_[slot].changed = version_ = serial;
+        auto& cached = mesh_slots_[slot];
+        if (presenting) {
+            std::optional<math::Matrix4> drawn;
+            if (cached.item && !presented->empty()) {
+                auto offset = presented->find(*pass, cached.item->entity);
+                if (!offset) return std::unexpected(offset.error());
+                if (*offset) drawn = cached.item->world * (*offset)->matrix;
+            }
+            if (drawn.has_value() != cached.presented.has_value() || (drawn && !same_bytes(*drawn, *cached.presented))) {
+                presented_slots_ = presented_slots_ + drawn.has_value() - cached.presented.has_value();
+                cached.presented = drawn;
+                *changed = true;
+            }
+        }
+        if (*changed) cached.changed = version_ = serial;
     }
     return {};
 }
 
-Result<std::uint64_t> Scene::update() const {
+Result<std::uint64_t> Scene::update(std::span<const PresentedPose> presented) const {
     const auto serial = ++serial_;
-    if (auto meshes = update_meshes(serial); !meshes) return std::unexpected(meshes.error());
-    auto lights = light_items();
+    // A still frame shares one empty table instead of building its own.
+    static const detail::Presented still{{}};
+    std::optional<detail::Presented> moving;
+    const auto& offsets = presented.empty() ? still : moving.emplace(presented);
+    if (auto meshes = update_meshes(serial, &offsets); !meshes) return std::unexpected(meshes.error());
+    auto lights = extract_lights(&offsets);
     if (!lights) return std::unexpected(lights.error());
     if (!std::ranges::equal(*lights, lights_cache_, same_light)) {
         lights_cache_ = std::move(*lights);
@@ -142,7 +189,7 @@ Result<std::uint64_t> Scene::update() const {
 }
 
 Result<std::vector<RenderItem>> Scene::render_items() const {
-    if (auto meshes = update_meshes(++serial_); !meshes) return std::unexpected(meshes.error());
+    if (auto meshes = update_meshes(++serial_, nullptr); !meshes) return std::unexpected(meshes.error());
     std::vector<RenderItem> result;
     result.reserve(static_cast<std::size_t>(std::ranges::count_if(mesh_slots_, [](const MeshSlot& slot) { return slot.item.has_value(); })));
     for (const auto& slot : mesh_slots_) if (slot.item) result.push_back(*slot.item);

@@ -591,6 +591,7 @@ bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world,
     impl_->report(std::move(diagnostic));
     return true;
 }
+Result<ObjectId> World::SpatialPass::parent(ObjectId entity) { return impl_->space.parent(entity); }
 Result<std::optional<World::Orientation>> World::SpatialPass::orientation(ObjectId entity) {
     auto matrix = this->matrix(entity);
     if (!matrix) return std::unexpected(matrix.error());

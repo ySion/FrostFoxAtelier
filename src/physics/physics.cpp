@@ -61,6 +61,7 @@ std::atomic<std::uint64_t> next_scene_id{1};
 // Derived Capacity buffers per body slot, the ratios of Jolt's Samples (10240 bodies,
 // 65536 body pairs, 20480 contact constraints).
 constexpr std::size_t body_pairs_per_body = 8, contacts_per_body = 2;
+constexpr float fixed_step = 1.f / 60.f;
 
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
     return std::unexpected(Error{code, message});
@@ -342,6 +343,13 @@ struct PhysicsScene::Impl {
     std::vector<Command> commands;
     std::vector<world::SimulationPose> poses;
     std::vector<std::pair<ObjectId, world::Trs>> written;
+    struct Pose { math::Vector3 position; math::Quaternion rotation; };
+    // Where each simulated Entity was last published, created or teleported; its next
+    // published step is drawn moving from there.
+    std::unordered_map<ObjectId, Pose> history;
+    // The poses the latest step published and the World accepted, with their history.
+    struct Interpolated { ObjectId entity; Pose from, to; };
+    std::vector<Interpolated> interpolated;
     // Bodies whose pose this step publishes: moved by Jolt or teleported.
     JPH::BodyIDVector moved, active;
     // A spatial ancestor as one reconcile pass reads it; each part is read on first use.
@@ -635,6 +643,58 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     impl_->body_components.erase(id);
     impl_->entity_bodies.erase(entity);
     impl_->bodies.erase(found);
+    forget_pose(entity);
+}
+void PhysicsScene::forget_pose(ObjectId entity) noexcept {
+    // Every interpolated and presented Entity has a history entry.
+    if (!impl_->history.erase(entity)) return;
+    std::erase_if(impl_->interpolated, [&](const Impl::Interpolated& item) { return item.entity == entity; });
+    std::erase_if(presented_, [&](const presentation::PresentedPose& item) { return item.entity == entity; });
+}
+void PhysicsScene::hold_poses(std::span<const world::SimulationPose> poses) {
+    // One compaction for the whole batch; every interpolated and presented Entity has a history entry.
+    std::unordered_set<ObjectId> held;
+    for (const auto& pose : poses) if (impl_->history.erase(pose.entity)) held.insert(pose.entity);
+    if (!held.empty()) {
+        std::erase_if(impl_->interpolated, [&](const Impl::Interpolated& item) { return held.contains(item.entity); });
+        std::erase_if(presented_, [&](const presentation::PresentedPose& item) { return held.contains(item.entity); });
+    }
+    for (const auto& [entity, where, orientation] : poses) {
+        const Impl::Pose pose{where, orientation};
+        impl_->history.insert_or_assign(entity, pose);
+        // An equal pair keeps the Entity's descendants from following a moving ancestor.
+        impl_->interpolated.push_back({entity, pose, pose});
+        if (!paused_) presented_.push_back({entity, where, orientation, where, orientation});
+    }
+}
+void PhysicsScene::set_paused(bool paused) noexcept {
+    paused_ = paused;
+    if (paused) present();
+}
+void PhysicsScene::present() {
+    presented_.clear();
+    if (paused_) {
+        // Resuming starts from the World pose shown while paused, not from an older one.
+        for (auto& item : impl_->interpolated) item.from = item.to;
+        return;
+    }
+    const float alpha = std::clamp(remaining_ / fixed_step, 0.f, 1.f);
+    presented_.reserve(impl_->interpolated.size());
+    for (const auto& [entity, from, to] : impl_->interpolated) {
+        auto where = to.position;
+        auto orientation = to.rotation;
+        if (std::memcmp(&from, &to, sizeof from) != 0) {
+            where = math::lerp(from.position, to.position, alpha);
+            // Normalized lerp along the shorter arc.
+            const auto& [ax, ay, az, aw] = from.rotation;
+            const auto& [bx, by, bz, bw] = to.rotation;
+            const float side = ax * bx + ay * by + az * bz + aw * bw < 0 ? -1.f : 1.f;
+            const auto blend = [&](float a, float b) { return std::lerp(side * a, b, alpha); };
+            if (const auto unit = math::try_normalize(math::Quaternion{blend(ax, bx), blend(ay, by), blend(az, bz), blend(aw, bw)}))
+                orientation = *unit;
+        }
+        presented_.push_back({entity, where, orientation, to.position, to.rotation});
+    }
 }
 void PhysicsScene::remove_special(ObjectId entity) noexcept {
     if (auto found = impl_->vehicles.find(entity); found != impl_->vehicles.end()) {
@@ -642,6 +702,8 @@ void PhysicsScene::remove_special(ObjectId entity) noexcept {
         impl_->system.RemoveConstraint(found->second.constraint);
         impl_->vehicles.erase(found);
     }
+    // A vehicle constraint leaves its chassis body, and that body's interpolation, in place.
+    if (impl_->characters.contains(entity) || impl_->ragdolls.contains(entity)) forget_pose(entity);
     impl_->characters.erase(entity);
     if (auto found = impl_->ragdolls.find(entity); found != impl_->ragdolls.end()) {
         for (const auto id : found->second.ragdoll->GetBodyIDs()) impl_->ragdoll_ids.erase(id);
@@ -792,6 +854,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         if(same_position && same_rotation) {
             current->second.ancestors=std::move(ancestors);
             current->second.local=owner_local;
+            // Until a step publishes it, its listing keeps it off a moving new ancestor's interpolation.
+            hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
             return {};
         }
     }
@@ -829,6 +893,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,owner_local,std::move(ancestors)});
         impl_->entity_bodies.emplace(entity,component);
         impl_->body_components.emplace(id,component);
+        hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
     } catch(...) {
         if(impl_->bodies.contains(component)) remove(component);
         else {bodies.RemoveBody(id);bodies.DestroyBody(id);}
@@ -845,6 +910,9 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
         if (!world_.running()) {
             // A stopped World steps nothing; the next start begins from an empty accumulator.
             impl_->commands.clear();
+            impl_->history.clear();
+            impl_->interpolated.clear();
+            presented_.clear();
             remaining_ = 0;
             single_step_ = false;
         }
@@ -916,7 +984,7 @@ Result<void> PhysicsScene::step(float elapsed) {
     }
     if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
     reconciling.reset();
-    constexpr float fixed = 1.f / 60.f;
+    constexpr float fixed = fixed_step;
     constexpr std::uint32_t maximum_steps = 8;
     StepResult result{.runtime_cooks = std::exchange(runtime_cooks_, 0), .completed_step = completed_step_};
     if (!paused_) {
@@ -966,6 +1034,9 @@ Result<void> PhysicsScene::step(float elapsed) {
             case Impl::CommandKind::teleport:
                 body.target.position=command.value;
                 body.target.rotation=command.rotation;
+                // The step starts from the teleported pose, so it draws no trail from the old one.
+                impl_->history.insert_or_assign(body.entity, Impl::Pose{command.value, command.rotation});
+                components_->forget_wheel_poses(body.entity);
                 bodies.SetPositionAndRotation(body.id, position(command.value), rotation(command.rotation),
                     body.motion == MotionKind::dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
                 moved.push_back(body.id);
@@ -1062,6 +1133,17 @@ Result<void> PhysicsScene::step(float elapsed) {
         if(auto written=world_.apply_simulation_transforms(poses,&impl_->written);!written) return std::unexpected(written.error());
         for(const auto& [entity,local]:impl_->written)
             if(const auto body=impl_->entity_bodies.find(entity);body!=impl_->entity_bodies.end()) impl_->bodies.at(body->second).local=local;
+        // `written` keeps the order of `poses` and omits rejected ones.
+        auto& interpolated=impl_->interpolated;
+        interpolated.clear();
+        for(std::size_t i=0,j=0;i<poses.size() && j<impl_->written.size();++i) {
+            if(poses[i].entity!=impl_->written[j].first) continue;
+            ++j;
+            const Impl::Pose to{poses[i].position,poses[i].rotation};
+            auto& from=impl_->history.try_emplace(poses[i].entity,to).first->second;
+            interpolated.push_back({poses[i].entity,from,to});
+            from=to;
+        }
         writing.reset();
         if (!stepping_once) remaining_ = std::max(0.f, remaining_ - fixed);
         else single_step_ = false;
@@ -1081,6 +1163,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         }
     }
     result.remaining = remaining_;
+    present();
     timing::Scope dispatching{phases::events};
     std::vector<ContactEvent> events;
     events.swap(impl_->ready_events);
@@ -1184,6 +1267,11 @@ Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
         }
         targets.push_back({entity, body, *pose, local});
     }
+    // Relocated Entities are drawn at their new World pose; their next step moves from there.
+    std::vector<world::SimulationPose> held;
+    held.reserve(targets.size());
+    for (const auto& target : targets) held.push_back({target.entity, target.pose.position, target.pose.rotation});
+    hold_poses(held);
     for (const auto& target : targets) {
         if (target.body) {
             impl_->commands.push_back({Impl::CommandKind::teleport, *target.body, target.pose.position, target.pose.rotation, true});
@@ -1319,6 +1407,7 @@ Result<SpecialHandle> PhysicsScene::create_character(ObjectId entity, CharacterS
         position(trs->position), rotation(trs->rotation), 0, &impl_->system);
     const auto revision = next_revision_++;
     impl_->characters.emplace(entity, Impl::Character{revision, settings, character});
+    hold_poses(std::array{world::SimulationPose{entity, trs->position, trs->rotation}});
     return SpecialHandle{entity, scene_id_, revision};
 }
 Result<void> PhysicsScene::set_character_input(SpecialHandle handle,
@@ -1361,6 +1450,7 @@ Result<CharacterState> PhysicsScene::read_character_state(SpecialHandle handle) 
 }
 Result<void> PhysicsScene::destroy_character(SpecialHandle handle) {
     if (auto state = read_character_state(handle); !state) return std::unexpected(state.error());
+    forget_pose(handle.entity);
     impl_->characters.erase(handle.entity);
     return {};
 }
@@ -1417,6 +1507,7 @@ Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity,
     for (const auto id : ragdoll->GetBodyIDs()) impl_->ragdoll_ids.insert(id);
     const auto revision = next_revision_++;
     impl_->ragdolls.emplace(entity, Impl::Ragdoll{revision, ragdoll});
+    hold_poses(std::array{world::SimulationPose{entity, trs->position, trs->rotation}});
     return SpecialHandle{entity, scene_id_, revision};
 }
 Result<RagdollPose> PhysicsScene::read_ragdoll_pose(SpecialHandle handle) const {

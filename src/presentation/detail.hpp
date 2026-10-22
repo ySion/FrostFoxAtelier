@@ -1,6 +1,7 @@
 #pragma once
 
 #include "presentation/presentation.hpp"
+#include <unordered_map>
 
 namespace atelier::presentation::detail {
 
@@ -37,5 +38,21 @@ world::World::Admission unique_environment(world::CapabilityId environments);
 // The diagnostic of an extraction item failure, for World::contain.
 world::Diagnostic diagnostic(world::DiagnosticKind, world::DiagnosticPhase, ObjectId object, ObjectId entity,
     std::vector<std::string> field = {});
+
+// The presented poses of one update as rigid offsets of world space.
+class Presented {
+public:
+    struct Offset {
+        math::Matrix4 matrix;     // Row-vector world matrix * matrix is the drawn matrix.
+        math::Quaternion rotation;
+    };
+    explicit Presented(std::span<const PresentedPose>);
+    [[nodiscard]] bool empty() const noexcept { return offsets_.empty(); }
+    // The offset of the nearest listed Entity on the spatial chain of `entity`,
+    // itself included; null without one or when that Entity is drawn at its World pose.
+    [[nodiscard]] Result<const Offset*> find(world::World::SpatialPass&, ObjectId entity) const;
+private:
+    std::unordered_map<ObjectId, std::optional<Offset>> offsets_;
+};
 
 }

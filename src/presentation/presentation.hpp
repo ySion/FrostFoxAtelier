@@ -264,12 +264,25 @@ public:
     }
     void insert(std::size_t at, const T& value) noexcept { std::memcpy(&values_[at].emplace(), &value, sizeof(T)); }
 };
+class Presented;
 }
 
 // One position of the mesh bucket in the cached extraction.
 struct MeshSlot {
     std::optional<RenderItem> item; // Absent while isolated or degenerate.
-    std::uint64_t changed{};        // Scene::update serial that last changed `item`.
+    // Where `item` is drawn at the latest update when a presented pose moves it off item->world.
+    std::optional<math::Matrix4> presented;
+    std::uint64_t changed{};        // Scene::update serial that last changed `item` or `presented`.
+};
+
+// A simulated Entity drawn this frame at position/rotation instead of the World
+// pose it was simulated to (world_position/world_rotation).
+struct PresentedPose {
+    ObjectId entity;
+    math::Vector3 position;
+    math::Quaternion rotation;
+    math::Vector3 world_position;
+    math::Quaternion world_rotation;
 };
 
 // The presentation of one World; a World without a Scene created by its host is
@@ -296,12 +309,18 @@ public:
     // so values written past World (Runtime::write, native code, JIT) are found;
     // only changed meshes are validated and rebuilt. Failures are reported as by
     // extraction on every update, so persistent ones keep counting repeats.
-    [[nodiscard]] Result<std::uint64_t> update() const;
+    // Each mesh and light is drawn relative to the nearest Entity of `presented`
+    // on its spatial chain, itself included: moved rigidly from that Entity's
+    // world pose to its presented pose, or left at its World matrix when the two
+    // are equal. Hosts list every simulated Entity below a moved one. Authoritative
+    // items and render_items() never include presented poses.
+    [[nodiscard]] Result<std::uint64_t> update(std::span<const PresentedPose> presented = {}) const;
     // The cache as of the latest update, by mesh bucket position.
     [[nodiscard]] std::span<const MeshSlot> mesh_slots() const noexcept { return mesh_slots_; }
     // Serial of the latest update that rebuilt every slot after the mesh bucket
     // changed (World::revision advanced); slot positions keep their component until then.
     [[nodiscard]] std::uint64_t mesh_layout() const noexcept { return mesh_layout_; }
+    // Lights as drawn at the latest update, presented poses applied.
     [[nodiscard]] std::span<const LightRenderItem> light_snapshot() const noexcept { return lights_cache_; }
     [[nodiscard]] std::uint64_t lights_changed() const noexcept { return lights_changed_; }
     // update(), then the drawn items in Entity/composition order.
@@ -316,9 +335,11 @@ public:
 private:
     Scene(world::World& world, const Types& types) noexcept : world_(&world), types_(types) {}
     // Re-reads the mesh bucket in one presentation pass; changed slots take `serial`.
-    Result<void> update_meshes(std::uint64_t serial) const;
+    // Without `presented` the slots keep their presented matrices.
+    Result<void> update_meshes(std::uint64_t serial, const detail::Presented* presented) const;
     // Re-reads one mesh slot; true when its item changed.
     Result<bool> update_mesh(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
+    Result<std::vector<LightRenderItem>> extract_lights(const detail::Presented*) const;
     world::World* world_;
     Types types_;
     world::CapabilityId meshes_, lights_, environments_;
@@ -327,6 +348,7 @@ private:
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
     mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from material slots.
+    mutable std::size_t presented_slots_{}; // Slots with a presented matrix after the latest update.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
     std::uint64_t identity_{};

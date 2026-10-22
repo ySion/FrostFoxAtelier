@@ -83,6 +83,7 @@ const Scenario scenarios[]{
     {"pose_publication", pose_publication},
     {"solver_determinism", solver_determinism},
     {"contact_capacity", contact_capacity},
+    {"render_interpolation", render_interpolation},
 };
 } // namespace
 

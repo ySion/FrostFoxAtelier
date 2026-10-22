@@ -23,6 +23,17 @@ Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只�
 
 静止帧的耗时下限来自“每次更新都要读一遍”：为了发现绕过 World 的写入，所有呈现成员的世界矩阵和组件字节每帧都要读取比较，开销与呈现成员数成正比，与变化多少无关。根本的解法是 Runtime 层的字段写通知或脏标记，它牵涉语言直接访问字段的设计，属于运行时的架构决定，目前没有。
 
+### 呈现位姿
+
+`update(presented)` 接收本帧的呈现位姿 `PresentedPose { entity, position, rotation, world_position, world_rotation }`：这些 Entity 本帧画在 position/rotation，而它们在 World 中的位姿是 world_position/world_rotation。物理用它做固定步长的渲染插值（见[物理](../physics/README.md#渲染插值)），presentation 不依赖物理，由宿主把两者接起来（`Session::presented_poses()` 交给 `SceneSnapshot::refresh`）。
+
+- 每个网格和灯沿自己 Entity 的空间链向上（含自身）找第一个列在表里的 Entity E。两种位姿不同时，它整体做刚体变换 D = T(p_presented)·R(q_presented·q_world⁻¹)·T(−p_world)：网格画在 M_world·D（行向量），灯的位置和三根轴同样变换；两种位姿相同或找不到时画在 World 矩阵。D 只含旋转和平移，所以镜像、非均匀缩放和子节点的局部偏移都保留。相同位姿的条目是边界：宿主列出被移动 Entity 之下的每个模拟 Entity，例如运动父刚体下的睡眠子刚体，它和它的视觉子孙就停在 World 位姿，不跟着父体晃。
+- 缓存的 `item` 仍是 World 位姿，`render_items()`、`light_items()`、拾取和 gizmo 只看权威值；呈现矩阵另存在槽的 `presented` 中，灯光快照 `light_snapshot()` 是应用呈现位姿之后的结果。`presented` 变化也推进该槽的 `changed` 和版本号；物体在动时每帧都变，表空了以后 `presented` 全部清空，版本号回到静止。`render_items()` 不改变 `presented`。
+- 表为空、且上一次没有呈现矩阵时，整段跳过，静止场景没有额外开销；否则每个槽沿父链查表，开销与槽数乘以链深成正比。
+- 隔离或退化的槽不在缓存里，没有呈现矩阵；呈现矩阵不重新校验材质。
+
+Renderer 用上一帧 Frame 里的矩阵算运动向量（`scene_lit.cpp` 中 `previous_world` 取自上一帧该对象的 `world`），所以插值帧的运动向量与画面一致。
+
 ## 网格
 
 `create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform 与 mesh_source；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。

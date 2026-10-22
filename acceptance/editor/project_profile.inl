@@ -4,7 +4,7 @@ constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
 
 // Steps a Play copy of the scene at 60 Hz, one fixed step per frame, until no rigid
 // body has been active for 120 frames (at most 1800 frames), and reports the physics
-// phases of frames that end with and without active bodies.
+// phases of frames that end with and without active bodies, and the SceneSnapshot refresh after each frame.
 void profile_physics_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output) {
     using Json=nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute physics profile file.");
@@ -15,18 +15,22 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
     changed(play->start());
     const auto& physics=*play->physics_scene();
     const std::array phases{&physics::phases::step,&physics::phases::reconcile,&physics::phases::solve,&physics::phases::write_back};
-    std::array<std::vector<double>,4> active,sleeping;
+    std::array<std::vector<double>,5> active,sleeping;
+    application::SceneSnapshot snapshot;
     std::size_t steps{},quiet{},frames{};
     for(;frames<1800 && quiet<120;++frames) {
         {
             timing::Recorder::Frame frame{recorder};take(play->update(1.f/60));
             require(frame.finish().structure_errors==0,"Physics profile recorded a misplaced or unregistered phase.");
         }
+        const auto refresh_start=std::chrono::steady_clock::now();take(snapshot.refresh(*play));
+        const std::chrono::duration<double,std::milli> refreshed=std::chrono::steady_clock::now()-refresh_start;
         steps+=physics.last_step().steps;
         const bool awake=physics.active_body_count()!=0;
         auto& bucket=awake?active:sleeping;
         for(std::size_t i=0;i<phases.size();++i)
             bucket[i].push_back(std::chrono::duration<double,std::milli>(recorder.last().time(*phases[i])).count());
+        bucket[4].push_back(refreshed.count());
         quiet=awake?0:quiet+1;
     }
     Json report{{"schema","atelier.editor.physics-cpu.v1"},{"project",editor::utf8(root.wstring())},{"scene",scene},
@@ -42,9 +46,11 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
             auto values=(*bucket)[i];std::ranges::sort(values);
             report[name][std::string(phases[i]->key())]={{"median_ms",values[values.size()/2]},{"p95_ms",values[values.size()*95/100]}};
         }
-        std::printf("Physics CPU %s frames %zu: reconcile %.3f, solve %.3f, write_back %.3f ms median\n",name,(*bucket)[0].size(),
+        auto refreshes=(*bucket)[4];std::ranges::sort(refreshes);
+        report[name]["snapshot.refresh"]={{"median_ms",refreshes[refreshes.size()/2]},{"p95_ms",refreshes[refreshes.size()*95/100]}};
+        std::printf("Physics CPU %s frames %zu: reconcile %.3f, solve %.3f, write_back %.3f, snapshot %.3f ms median\n",name,(*bucket)[0].size(),
             report[name]["physics.reconcile"]["median_ms"].get<double>(),report[name]["physics.solve"]["median_ms"].get<double>(),
-            report[name]["physics.write_back"]["median_ms"].get<double>());
+            report[name]["physics.write_back"]["median_ms"].get<double>(),report[name]["snapshot.refresh"]["median_ms"].get<double>());
     }
     changed(play->stop());
     take(editor::write_file(output,report.dump(2)+"\n"));

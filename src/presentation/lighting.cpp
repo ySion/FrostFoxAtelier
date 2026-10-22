@@ -107,7 +107,8 @@ Result<void> set_material(world::World& world,ObjectId object,Material value) {
 Result<void> set_light(world::World& world,ObjectId object,LightSettings value) {
     return set_value<LightComponent>(world,object,"settings",value);
 }
-Result<std::vector<LightRenderItem>> Scene::light_items() const {
+Result<std::vector<LightRenderItem>> Scene::light_items() const { return extract_lights(nullptr); }
+Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented) const {
     auto pass=world_->spatial_pass(DiagnosticPhase::lighting);
     if (!pass) return std::unexpected(pass.error());
     auto& runtime=world_->runtime();
@@ -148,8 +149,17 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
                 return math::Vector3{float(value.x),float(value.y),float(value.z)};
             };
             const auto& world=**matrix;
-            result.push_back({owner,object,{world[12],world[13],world[14]},
-                axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings});
+            LightRenderItem item{owner,object,{world[12],world[13],world[14]},axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings};
+            if (presented && !presented->empty()) {
+                auto offset=presented->find(*pass,owner);
+                if (!offset) return std::unexpected(offset.error());
+                if (*offset) {
+                    const auto& [moved,turn]=**offset;
+                    item.position=math::transform_point(item.position,moved);
+                    item.direction=math::rotate(turn,item.direction);item.right=math::rotate(turn,item.right);item.up=math::rotate(turn,item.up);
+                }
+            }
+            result.push_back(item);
         }
     }
     return result;

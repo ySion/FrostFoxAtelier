@@ -1,5 +1,6 @@
 #pragma once
 
+#include "presentation/presentation.hpp"
 #include "world/world.hpp"
 #include "geometry/mesh.hpp"
 #include <unordered_set>
@@ -268,6 +269,12 @@ public:
     [[nodiscard]] Capacity capacity() const noexcept { return capacity_; }
     // The latest step World::update ran; completed_step is cumulative.
     [[nodiscard]] const StepResult& last_step() const noexcept { return last_step_; }
+    // Poses to draw this frame for the Entities the latest fixed step published, for
+    // presentation::Scene::update: each between its previous and its current simulated
+    // pose by the fraction of a step left over, so the image trails the simulation by
+    // up to one step. Empty while paused. Simulated Entities below a moved one are listed
+    // with equal poses. A created, teleported or relocated Entity starts again from its new pose.
+    [[nodiscard]] std::span<const presentation::PresentedPose> presented_poses() const noexcept { return presented_; }
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
     [[nodiscard]] Result<void> add_force(ObjectId entity, math::Vector3);
     [[nodiscard]] Result<void> add_impulse(ObjectId entity, math::Vector3);
@@ -317,7 +324,7 @@ public:
     // while paused. Returned snapshots own values, never the hit Entities/bodies.
     [[nodiscard]] Result<QueryResult> execute_query(ObjectId component, QueryIgnore = {});
     [[nodiscard]] Result<QueryResult> read_query_result(ObjectId component) const;
-    void set_paused(bool paused) noexcept { paused_ = paused; }
+    void set_paused(bool paused) noexcept;
     // Paused requests coalesce and a completed solve consumes them. A failed
     // step stops the World, which discards a pending request.
     void step_once() noexcept { single_step_ = true; }
@@ -344,6 +351,13 @@ private:
     [[nodiscard]] Result<bool> controller_transform_matches(ObjectId,math::Vector3,math::Quaternion) const;
     void remove(ObjectId component) noexcept;
     void remove_special(ObjectId entity) noexcept;
+    // Drops the interpolation of an Entity that physics no longer drives.
+    void forget_pose(ObjectId entity) noexcept;
+    // Draws created or relocated Entities at these World poses until a step publishes them;
+    // that step moves from here.
+    void hold_poses(std::span<const world::SimulationPose>);
+    // Rebuilds presented_ from the latest published step and the fraction of a step left over.
+    void present();
     world::World& world_;
     Types types_;
     Capacity capacity_;
@@ -355,6 +369,7 @@ private:
     // World buckets of the components that can claim an Entity's physics pose.
     world::CapabilityId primitives_, characters_, ragdolls_;
     StepResult last_step_{};
+    std::vector<presentation::PresentedPose> presented_;
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
     std::uint32_t runtime_cooks_{};

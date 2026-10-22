@@ -220,6 +220,14 @@ void ComponentSimulation::release(const Entry& entry) noexcept {
     case Kind::query: clear_query(entry.component,true);break;
     default:break;
     }
+    // Ragdoll parts and wheels follow the released controller no longer.
+    if(entry.kind==Kind::ragdoll || entry.kind==Kind::vehicle) for(const auto target:entry.targets) scene_.forget_pose(target);
+}
+void ComponentSimulation::forget_wheel_poses(ObjectId chassis) noexcept {
+    for(const auto& [id,entry]:entries_) {
+        (void)id;
+        if(entry.kind==Kind::vehicle && entry.entity==chassis) for(const auto target:entry.targets) scene_.forget_pose(target);
+    }
 }
 void ComponentSimulation::clear() noexcept {for(const auto& [id,entry]:entries_) {(void)id;release(entry);}entries_.clear();}
 ObjectId ComponentSimulation::bound_pose_writer(ObjectId object) const {

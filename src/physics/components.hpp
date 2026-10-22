@@ -19,6 +19,8 @@ public:
     Result<void> after_step();
     Result<void> removed(ObjectId,bool detached);
     ObjectId bound_pose_writer(ObjectId) const;
+    // The wheels of a teleported chassis start their interpolation again at their next pose.
+    void forget_wheel_poses(ObjectId chassis) noexcept;
     void clear() noexcept;
     Result<QueryResult> execute_query(ObjectId,QueryIgnore = {});
     Result<QueryResult> read_query_result(ObjectId) const;

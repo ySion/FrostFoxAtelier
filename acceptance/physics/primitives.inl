@@ -373,3 +373,119 @@ void contact_capacity() {
         committed(f.world.stop());
     }
 }
+
+// A fixed 60 Hz step drawn at 120 frames per second: the World keeps the simulated pose while
+// presentation draws each simulated Entity between its previous and current step.
+void render_interpolation() {
+    PhysicsFixture f;
+    f.ground();
+    auto falling=f.make({4,60,0},dynamic_body());
+    auto carried=f.make({8,.5f,0},dynamic_body());
+    committed(f.world.reparent(carried.id(),falling.id(),w::ReparentRule::keep_world));
+    const auto visual=[&](atelier::ObjectId parent) {
+        auto entity=take(pr::create_static_mesh_entity(f.world,{atelier::geometry::cube_mesh(),{{0,2,0},{0,0,0,1},{1,1,1}}}));
+        committed(f.world.attach(entity.id()));
+        committed(f.world.reparent(entity.id(),parent,w::ReparentRule::keep_local));
+        return entity;
+    };
+    auto above=visual(falling.id()),below=visual(carried.id());
+    auto resting=f.make({-8,.5f,0},dynamic_body());
+    auto rested=visual(resting.id());
+    f.start();
+    for(unsigned frame=0;frame<240 && !(f.state(carried).sleeping && f.state(resting).sleeping);++frame) f.advance(1);
+    require(f.state(carried).sleeping && f.state(resting).sleeping && !f.state(falling).sleeping,
+        "The resting bodies did not sleep while the falling body falls.");
+    const auto slot=[&](const atelier::ObjectRoot& entity) -> const pr::MeshSlot& {
+        for(const auto& value:f.shown.mesh_slots()) if(value.item && value.item->entity==entity.id()) return value;
+        throw std::runtime_error("A mesh lost its presentation.");
+    };
+    const auto drawn=[&](const atelier::ObjectRoot& entity) { const auto& value=slot(entity);return value.presented?*value.presented:value.item->world; };
+    const auto frame=[&](float elapsed) {
+        const auto result=step(f.world,*f.scene,elapsed);
+        take(f.shown.update(f.scene->presented_poses()));
+        return result.steps;
+    };
+    constexpr float half=1.f/120;
+    frame(half);
+    float older=slot(above).item->world[13];
+    frame(half);
+    float newer=slot(above).item->world[13],last=drawn(above)[13];
+    unsigned stepped=0;
+    for(unsigned i=0;i<8;++i) {
+        const auto steps=frame(half);
+        stepped+=steps;
+        const auto& simulated=slot(above).item->world;
+        const auto shown=drawn(above)[13];
+        require(simulated==take(w::world_matrix(f.runtime,above.id())),"Presentation changed the World pose of a descendant.");
+        require(steps<=1 && (steps!=0)==(simulated[13]!=newer),"The World pose of a falling body did not change with its steps only.");
+        if(steps) {older=newer;newer=simulated[13];}
+        require(shown<last && shown>=newer-1e-4f && shown<=older+1e-4f,
+            "A falling body's descendant was not drawn between its previous and current step on every frame.");
+        require(!slot(below).presented,"A sleeping body below a moving body followed it on screen.");
+        last=shown;
+    }
+    require(stepped==4,"Eight 120 Hz frames did not run four 60 Hz steps.");
+    // No step has published a sleeping body reparented between steps, nor a ragdoll created
+    // between them; their World poses must bound the search.
+    committed(f.world.reparent(resting.id(),falling.id(),w::ReparentRule::keep_world));
+    require(frame(0)==0 && slot(above).presented && !slot(rested).presented,
+        "A body reparented below a moving body between steps followed it on screen.");
+    committed(f.world.reparent(resting.id(),{},w::ReparentRule::keep_world));
+    auto doll=take(w::create_entity(f.runtime));
+    take(f.world.set_transform(doll.id(),{{0,4,0},{0,0,0,1},{1,1,1}}));
+    committed(f.world.attach(doll.id(),w::append,falling.id()));
+    auto posed=visual(doll.id());
+    const auto ragdoll=take(f.scene->create_ragdoll(doll.id(),std::array{p::RagdollPart{"root"}}));
+    require(frame(0)==0 && slot(above).presented && !slot(posed).presented,
+        "A ragdoll created below a moving body followed it on screen before its first step.");
+    take(f.scene->destroy_ragdoll(ragdoll));
+    const auto dropped=take(f.world.detach(doll.id()));
+    frame(0);
+    const auto authoritative=take(f.shown.render_items());
+    require(std::ranges::all_of(authoritative,[&](const pr::RenderItem& item){return item.world==take(w::world_matrix(f.runtime,item.entity));}),
+        "render_items() drew a presented pose.");
+    // A horizontal move keeps the carried body on the floor.
+    const auto height=take(w::read_transform(f.runtime,falling.id())).position.y;
+    take(f.world.set_transform(falling.id(),{{-20,height,0},{0,0,0,1},{1,1,1}}));
+    take(f.shown.update(f.scene->presented_poses()));
+    require(!slot(above).presented && !slot(below).presented,"A relocated body was not drawn at its new pose at once.");
+    for(unsigned i=0;i<3;++i) {
+        frame(half);
+        require(std::abs(drawn(above)[12]+20)<1e-3f && std::abs(drawn(above)[13]-slot(above).item->world[13])<.5f,
+            "A relocated body was drawn trailing from its old pose.");
+    }
+    take(f.runtime.write(falling.id(),f.world_types.position_fields[0],atelier::Scalar{-40.f}));
+    frame(fixed_delta);
+    require(std::abs(drawn(above)[12]+40)<1e-3f,"A body moved past World was drawn trailing from its old pose.");
+    for(unsigned i=0;i<2400 && !(f.state(falling).sleeping && f.state(carried).sleeping);++i) frame(half);
+    require(f.state(falling).sleeping && f.state(carried).sleeping,"The bodies did not settle.");
+    frame(half);frame(half);
+    const auto version=take(f.shown.update(f.scene->presented_poses()));
+    frame(half);frame(half);
+    require(f.scene->presented_poses().empty() && take(f.shown.update(f.scene->presented_poses()))==version &&
+        std::ranges::none_of(f.shown.mesh_slots(),[](const pr::MeshSlot& value){return value.presented.has_value();}),
+        "A sleeping scene kept presented poses or a changing version.");
+    committed(f.world.stop());
+    // A teleported chassis carries its wheel along without a trail from the old place.
+    PhysicsFixture v;
+    v.ground();
+    auto chassis=v.make({0,2,0},dynamic_body());
+    auto vehicle=take(w::create_component(v.runtime,v.physics_types.vehicle_component));
+    committed(v.world.attach_components(chassis.id(),std::array{w::Attachment{vehicle.id()}}));
+    auto wheel=take(w::create_entity(v.runtime));
+    take(v.world.set_transform(wheel.id(),{}));
+    auto metadata=take(w::create_component(v.runtime,v.physics_types.vehicle_wheel_component));
+    committed(v.world.attach_components(wheel.id(),std::array{w::Attachment{metadata.id()}}));
+    committed(v.world.attach(wheel.id(),w::append,chassis.id()));
+    take(p::set_vehicle_wheels(v.runtime,vehicle.id(),std::array{wheel.id()}));
+    v.start();
+    v.advance(2);
+    // World::set_transform refuses a chassis whose wheels follow it; a Runtime write teleports it alone.
+    take(v.runtime.write(chassis.id(),v.world_types.position_fields[0],atelier::Scalar{100.f}));
+    v.advance(1);
+    const auto poses=v.scene->presented_poses();
+    const auto shown=std::ranges::find(poses,wheel.id(),&pr::PresentedPose::entity);
+    require(shown!=poses.end() && shown->world_position.x>99 && std::abs(shown->position.x-shown->world_position.x)<1,
+        "A teleported chassis drew its wheel trailing from its old place.");
+    committed(v.world.stop());
+}
