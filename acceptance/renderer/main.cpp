@@ -138,7 +138,7 @@ void lit_preparation_case(render::Renderer &renderer) {
           "an unprepared Lit frame returns not_ready without encoding, presenting or capturing");
     check(first_ms < 2000, "starting Lit preparation does not wait for compilation");
     const auto progress = take(renderer.preparation(frame.view));
-    check(!progress.ready && progress.total == 32 && progress.done < progress.total,
+    check(!progress.ready && progress.total == 34 && progress.done < progress.total,
           "the default Lit view reports its own pipeline groups while they prepare");
     frame.view.shading = render::Shading::smooth;
     ++drawing.id;
@@ -156,7 +156,7 @@ void lit_preparation_case(render::Renderer &renderer) {
     const auto grown = take(renderer.preparation(frame.view));
     ++drawing.id;
     const auto pending = take(renderer.render(frame, &capture));
-    check(!grown.ready && grown.total == 33 && grown.done == 32 && pending.status == render::FrameStatus::not_ready &&
+    check(!grown.ready && grown.total == 35 && grown.done == 34 && pending.status == render::FrameStatus::not_ready &&
               capture.frame_id == drawing.id - 1,
           "a setting that needs a new group raises total and returns the ready view to not_ready");
     take(wait_preparation(renderer, frame.view));
