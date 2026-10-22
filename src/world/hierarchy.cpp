@@ -206,7 +206,6 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
             return std::unexpected(*failures.find(failed));
         }
         path.push_back(id);
-        if (path.size() > relations.nodes.size()) return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
         if ((*entry)->parent == ObjectId{}) break;
         id = (*entry)->parent;
     }

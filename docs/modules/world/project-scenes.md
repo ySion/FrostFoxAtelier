@@ -16,14 +16,14 @@ Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 
 
 统一写出 v8，旧 v1–v7 读取时迁移，再按 v8 保存。顶层包含：
 
-- `version: 8`、十进制字符串 `next_id`。World 设置不再是顶层段，而是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，见下文 v6 迁移。
+- `version: 8`、十进制字符串 `next_id`。World 设置是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，见下文 v6 迁移。
 - `roots`：有序顶层 Entity 文档 ID。
 - `entities`：Entity 记录，每个包含 `id / type / name / enabled / properties / children / components / space`。
 - `space`：null 表示无空间；否则保存 position、rotation、scale 和 origin。origin 为 null 时继承组合祖先，为字符串 `"0"` 时使用世界，为 Entity ID 字符串时使用显式空间参考。
 - `components`：owner 的有序组件记录，包含自身 `id / type / name / enabled / properties`；网格与材质额外保存现有资源 payload，EnvironmentComponent 额外保存 `sky_map`（天空贴图的资产键，空字符串表示没有贴图）。组件不保存 TRS、parent 或 root。
 - `materials`：按文档 ID 去重的材质资源定义；网格槽使用 `resource` 引用该 ID。资产保留来源 GUID，匿名材质或实例保存内联参数，以及具名父材质与覆盖字段。
 
-Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字符串编码避免 JSON 数值精度丢失。引用字段用 null 或 `{"$ref":"ID"}`，引用序列用这些值的数组；持有/观察属性由 Runtime 字段定义决定，不在 JSON 创造另一套引用类型。保存不记录 Runtime TypeId、ObjectId、FieldId 或后端句柄。String 字段写成 JSON 字符串而不升版本：旧程序本来就不能保存或加载含 String 字段的类型，新格式没有带来新的不兼容。
+Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字符串编码避免 JSON 数值精度丢失。引用字段用 null 或 `{"$ref":"ID"}`，引用序列用这些值的数组；持有/观察属性由 Runtime 字段定义决定，不在 JSON 创造另一套引用类型。保存不记录 Runtime TypeId、ObjectId、FieldId 或后端句柄。String 字段写成 JSON 字符串。
 
 加载先创建全部真实对象，恢复标量、资源与引用，再按最终组合与空间关系统一校验和注册。空间参考作为整批计划提交，不依赖文件目录的先后顺序。文档加载与可移植子树导出拒绝场景外业务引用；同一 Session 内复制可以保留图外引用，发布时仍校验其目标存活和 World 归属。新增未保存字段保留类型默认值。
 
@@ -71,8 +71,8 @@ v1–v5 的 Actor 主体映射到真实 Entity 派生类型，根组件 TRS 提�
 
 ## 运行与 World 配置
 
-Session::start/update/stop 是运行宿主唯一驱动。start 创建 PhysicsScene 后开始 World，update 只调用 `World::update`，由它依次执行各 Tick 阶段和物理子步，任一路径错误都停止清理。代码保留到 close，重复 stop 不重复 End。Project → Run 从编辑快照创建独立 Session，不复用编辑 Runtime 身份，也不自动把运行结果写回编辑场景。
+Session::start/update/stop 是运行宿主唯一驱动。start 创建 PhysicsScene 后开始 World，update 只调用 `World::update`，由它依次执行各 Tick 阶段和物理子步，它返回错误时停止并清理。代码保留到 close，重复 stop 不重复 End。Project → Run 从编辑快照创建独立 Session，不复用编辑 Runtime 身份，也不自动把运行结果写回编辑场景。
 
-`world` 保存共享 SceneLightingSettings，包括直接光预算；Session 历史负责持久化与撤销，Renderer 消费副本。诊断模式、GPU 缓存与实际 follow-focus 锚点不属于存档，详见[持久格式与责任](../editor/projects.md#持久格式与责任)。
+EnvironmentComponent 保存共享 SceneLightingSettings 的作者值，包括直接光预算；Session 历史负责持久化与撤销，Renderer 消费副本。诊断模式、GPU 缓存与实际 follow-focus 锚点不属于存档，详见[持久格式与责任](../editor/projects.md#持久格式与责任)。
 
-端到端验收入口为 `project_scene_acceptance`、`world_acceptance`、`editor_document_acceptance`；Scene v8、v7 与 v6 迁移和严格旧格式导入的结果以本轮实际执行记录为准。
+端到端验收入口为 `project_scene_acceptance`、`world_acceptance`、`editor_document_acceptance`。

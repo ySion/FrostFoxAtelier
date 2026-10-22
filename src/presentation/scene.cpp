@@ -141,12 +141,9 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
 
 Result<void> Scene::index_layout(world::World::SpatialPass& pass, std::span<const world::CapabilityMember> meshes) const {
     mesh_dependents_.clear(); mesh_components_.clear(); chains_.clear(); chain_starts_.clear(); light_sources_.clear();
-    auto members = world_->members();
-    if (!members) return std::unexpected(members.error());
-    // A chain that cannot be resolved, or cycles, ends where it breaks; reading that slot reports the failure.
-    const auto chain = [&, limit = members->size()](ObjectId entity, auto&& visit) {
-        std::size_t walked = 0;
-        for (auto node = entity; node != ObjectId{} && walked++ <= limit;) {
+    // A chain that cannot be resolved ends where it breaks; reading that slot reports the failure.
+    const auto chain = [&](ObjectId entity, auto&& visit) {
+        for (auto node = entity; node != ObjectId{};) {
             visit(node);
             auto parent = pass.parent(node);
             if (!parent) break;

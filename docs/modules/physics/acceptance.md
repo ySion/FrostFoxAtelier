@@ -46,7 +46,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `ragdoll` | 两部件布娃娃落到地面 | 层级拒绝、全部部件位姿/步号、重力和碰撞、重复创建/销毁拒绝、重建及 World stop 清理 |
 | `special_integration` | 角色台阶/坡道/移动平台、旋转布娃娃 | 组合运动、布娃娃局部转世界、平台继承、普通 Body 替换专用系统、停用/退出清理 |
 | `components` | 组件拥有的角色、布娃娃及摆锤 | 重复 reconcile 幂等、非零初始部件位姿的幂等、绑定部件上原生控制器创建的原子拒绝、keep_world 重挂保留句柄/冲量状态/运动相位、组合停用与独立空间参考停用的区分、删除恢复、detach/重启代际、位姿写入者排他、约束释放/唤醒、跨 World 目标拒绝 |
-| `trace_queries` | 触碰、首个阻挡、遮挡后目标、通道忽略对象和 Sensor | 通道/对象类型 test/single/multi、Entity/Component 忽略集合、容量摘要、旧 closest 合同、球心与接触点、初始穿透、掩码/枚举/零长度/浮点溢出边界 |
+| `trace_queries` | 触碰、首个阻挡、遮挡后目标、通道忽略对象和 Sensor | 通道/对象类型 test/single/multi、Entity/Component 忽略集合、容量摘要、基础 closest 合同、球心与接触点、初始穿透、掩码/枚举/零长度/浮点溢出边界 |
 | `query_components` | 有空间父节点的查询组件和可停用目标 | 旋转/缩放与剪切空间链、独立空间参考停用时保留请求、自身忽略、自动/一次请求、暂停与立即查询、失败清空结果、组合祖先停用、删除恢复、跨 World、旧命中失效 |
 | `entity_bindings` | 嵌套角色、布娃娃与显式部件 Entity 绑定，metadata 与网格分离 | world/local 位姿转换、公开持有引用序列、重复/活动绑定拒绝、批姿态发布保留显示尺度、目标禁用/恢复、同一 Entity 的两个位姿写入者拒绝 |
 | `query_exclusions` | 组合父与同组物理部件、actual owner 自体和远近目标 | ignore_self 不猜父组、活动显式排除与调用方集合合并、重复/空绑定拒绝保留旧集合、固定步消费与清空生效 |
@@ -57,7 +57,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 `atelier_editor --acceptance-physics-examples <输出目录>` 在输出目录的 Workspace 下为每次运行创建新的官方示例副本，避免旧测试副本缺少新增场景。它使用正式 Application/Session/World/Jolt 以及 D3D12 GPU validation。每个场景输出编辑状态及实际模拟后的两张截图，检查被接受的帧和有效几何深度；布娃娃部件坐标另由文档验收与 Jolt 姿态比对。此入口直接调用应用命令和模拟器，不发送原生鼠标输入。
 
-`--examples` 文档验收确认老用户工程仅补入缺失的官方示例目录，重复打开保留编辑且不修改模板。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖 已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
+`--examples` 文档验收确认老用户工程仅补入缺失的官方示例目录，重复打开保留编辑且不修改模板。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
 
 `Raycasts.scene` 的六个查询组件经真实磁盘保存重开，验证通道最近阻挡、通道多命中截断、对象类型穿过阻挡、布尔无载荷、球扫掠与 Sensor 重叠。`project_scene_acceptance` 还通过正式 JIT 绑定查询派生组件 Tick，验证原生继承方法、一次请求、布尔/计数/距离/Vector3 返回、保存后瞬态清空和代码拥有者释放。
 
@@ -66,7 +66,3 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 底层场景是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。
-
-## Entity 迁移验收状态
-
-当前官方内容使用 Scene v6，物理姿态写入 owner Entity，布娃娃通过 parts 显式绑定子 Entity。CPU 结果、实际日志和未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)，旧模型的历史 PASS 不代表当前模型通过。
