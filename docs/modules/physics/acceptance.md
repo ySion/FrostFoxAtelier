@@ -31,6 +31,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `mirrored_scale` | 镜像的非对称三角网格（运行时构建与 Cook 各一）、负缩放 Box、(-1,-1,-1) 动态体及其子体、嵌套零缩放空间 | 镜像位置与正面、Box 尺寸取绝对值、镜像 Character 拒绝、镜像回写保持局部 TRS、零缩放不建刚体且只在最上层节点报告一次、恢复后重建；全程 halt 策略 |
 | `pose_publication` | 静态地面、已睡眠与仍下落的动态体、下落体下的睡眠子体、空间父节点下的动态体 | 刚睡眠体回写最终位姿；绕过 World 写入静态体与睡眠体的 TRS 后，下一步刚体随之传送且与 World 一致；下落体回写；移动父节点下的睡眠子体保持世界位姿；步内（`on_before_step`）写入未被本步回写还原，下一步传送刚体；显式传送的静态体回写；只改祖先缩放使其不均匀后，下一步重新检查并按对象报告 |
 | `solver_determinism` | 160 个动态箱子在多线程求解池上下落堆叠 120 帧 | 两次全新运行的全部刚体状态与 World 局部 TRS 逐位一致 |
+| `contact_capacity` | 小 World 的推导容量；接触约束容量为 8 时 32 个地面上的箱子，halt 策略；容量为 4 时 4 个静止箱子与 28 个落地箱子 | 推导默认值、超限显式值拒绝、显式值保留、低于 4 的值报告为 4；30 步全部完成、World 仍运行，每步计入 `contact_overflows`，只有一条合并 30 次、字段为 `contact_constraints` 的 `capacity_exceeded` 警告。Jolt 的刚体对与接触流形共用一块缓冲，单独调小刚体对不会先满，因此只验收接触缓冲；落地箱子占满缓冲期间静止接触失去约束，移走落地箱子后每个静止箱子仍在地面上并收到接触事件 |
 | `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤；事件保留场景与刚体代际，历史结束事件不能操作重建后的刚体 |
 | `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
 | `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |

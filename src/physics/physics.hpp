@@ -237,9 +237,19 @@ struct StepResult {
     std::uint32_t steps{}, rejected_commands{}, dropped_contact_notifications{};
     // Triangle shapes cooked at runtime since the previous step because a cooked shape no longer matched its scale or mesh.
     std::uint32_t runtime_cooks{};
+    // Fixed substeps whose solve ignored some contacts because a Capacity buffer
+    // was full; the simulation continues and each one reports a physics warning.
+    std::uint32_t contact_overflows{};
     float remaining{}, dropped{};
     std::uint64_t completed_step{};
     bool contacts_incomplete{};
+};
+
+// Jolt's solver buffers, fixed when a PhysicsScene is created. A zero field is
+// derived from the Primitives in the World at creation.
+struct Capacity {
+    std::uint32_t bodies{}, body_pairs{}, contact_constraints{};
+    bool operator==(const Capacity&) const = default;
 };
 
 // The host owns this beside a World and destroys it before that World/Runtime.
@@ -249,11 +259,13 @@ struct StepResult {
 // call World APIs; a failure there stops the World.
 class PhysicsScene final {
 public:
-    [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types);
+    [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types, Capacity = {});
     ~PhysicsScene();
     PhysicsScene(const PhysicsScene&) = delete;
     PhysicsScene& operator=(const PhysicsScene&) = delete;
 
+    // The buffers this scene was created with, derived fields filled in.
+    [[nodiscard]] Capacity capacity() const noexcept { return capacity_; }
     // The latest step World::update ran; completed_step is cumulative.
     [[nodiscard]] const StepResult& last_step() const noexcept { return last_step_; }
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
@@ -320,7 +332,7 @@ public:
 private:
     friend class detail::ComponentSimulation;
     struct Impl;
-    explicit PhysicsScene(world::World&, Types);
+    explicit PhysicsScene(world::World&, Types, Capacity);
     [[nodiscard]] Result<void> step(float elapsed);
     // Lookup failures answer true, so an unknown Entity is never translated.
     [[nodiscard]] bool writes_pose(ObjectId entity) const;
@@ -334,6 +346,7 @@ private:
     void remove_special(ObjectId entity) noexcept;
     world::World& world_;
     Types types_;
+    Capacity capacity_;
     std::unique_ptr<Impl> impl_;
     std::unique_ptr<detail::ComponentSimulation> components_;
     ContactHandler handler_;

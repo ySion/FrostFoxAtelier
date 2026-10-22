@@ -44,6 +44,7 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -57,6 +58,9 @@ std::size_t scene_count{};
 // The host thread of a step also runs jobs; each concurrent step uses one barrier.
 JPH::JobSystemThreadPool* solver_jobs{};
 std::atomic<std::uint64_t> next_scene_id{1};
+// Derived Capacity buffers per body slot, the ratios of Jolt's Samples (10240 bodies,
+// 65536 body pairs, 20480 contact constraints).
+constexpr std::size_t body_pairs_per_body = 8, contacts_per_body = 2;
 
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
     return std::unexpected(Error{code, message});
@@ -83,6 +87,14 @@ Result<void> acquire_jolt() {
     if (scene_count == 0) {
         if (JPH::Factory::sInstance) return failure(ErrorCode::busy, "Jolt has another process owner.");
         JPH::RegisterDefaultAllocator();
+#ifdef JPH_ENABLE_ASSERTS
+        // Jolt PhysicsSystem.cpp:679 asserts on every Update error; recheck this match when Jolt is upgraded.
+        // step() reports those errors as warnings; every other assert still breaks.
+        JPH::AssertFailed = [](const char* expression, const char*, const char* file, JPH::uint) {
+            return !(std::string_view(expression) == "errors == EPhysicsUpdateError::None" &&
+                std::string_view(file).ends_with("PhysicsSystem.cpp"));
+        };
+#endif
         JPH::Factory::sInstance = new JPH::Factory();
         JPH::RegisterTypes();
         const auto cores = std::thread::hardware_concurrency();
@@ -425,6 +437,11 @@ struct PhysicsScene::Impl {
         }
         for (auto it = active_pairs.begin(); it != active_pairs.end();) {
             auto& state = it->second;
+            // When the contact buffer is full Jolt reports a cached manifold removed but keeps it,
+            // and then only persists it, so a count that reaches zero is checked against Jolt.
+            if (state.contacts == 0 && system.WereBodiesInContact(JPH::BodyID(std::uint32_t(it->first >> 32)),
+                    JPH::BodyID(std::uint32_t(it->first))))
+                state.contacts = 1;
             if (state.contacts == 0) {
                 if (previous.contains(it->first)) {
                     auto event = state.event;
@@ -509,32 +526,51 @@ struct PhysicsScene::Impl {
             sub_shape, body.settings.sensor, initial, blocking, body.settings.material};
     }
 
-    Impl() {
+    explicit Impl(Capacity capacity) {
         contacts.owner = this;
         broad_phase.MapObjectToBroadPhaseLayer(stationary_layer, JPH::BroadPhaseLayer(0));
         broad_phase.MapObjectToBroadPhaseLayer(moving_layer, JPH::BroadPhaseLayer(1));
         pairs.EnableCollision(stationary_layer, moving_layer);
         pairs.EnableCollision(moving_layer, moving_layer);
         broad_phase_filter.emplace(broad_phase, 2, pairs, 2);
-        system.Init(4096, 0, 4096, 4096, broad_phase, *broad_phase_filter, pairs);
+        system.Init(capacity.bodies, 0, capacity.body_pairs, capacity.contact_constraints, broad_phase, *broad_phase_filter, pairs);
         system.SetContactListener(&contacts);
         system.SetBodyActivationListener(&activation);
         system.SetGravity(JPH::Vec3(0, -9.81f, 0));
     }
 };
 
-PhysicsScene::PhysicsScene(world::World& world, Types types)
-    : world_(world), types_(types), impl_(std::make_unique<Impl>()),
+PhysicsScene::PhysicsScene(world::World& world, Types types, Capacity capacity)
+    : world_(world), types_(types), capacity_(capacity), impl_(std::make_unique<Impl>(capacity)),
       components_(std::make_unique<detail::ComponentSimulation>(world,*this)), scene_id_(next_scene_id++) {}
-Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types) {
+Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types, Capacity capacity) {
     if (world.closed()) return failure(ErrorCode::unsupported_operation, "Cannot attach physics to a closed World.");
     auto actual = world.runtime().native_type<CharacterComponent>();
     if (!actual) return std::unexpected(actual.error());
     if (*actual != types.character_component) return failure(ErrorCode::type_mismatch, "Physics types belong to another Runtime.");
+    if (capacity.bodies > JPH::PhysicsSystem::cMaxBodiesLimit || capacity.body_pairs > JPH::PhysicsSystem::cMaxBodyPairsLimit ||
+        capacity.contact_constraints > JPH::PhysicsSystem::cMaxContactConstraintsLimit)
+        return failure(ErrorCode::argument_mismatch, "Physics capacity exceeds Jolt's limits.");
+    {
+        auto registered = world.register_capability(world.types().primitive_component);
+        if (!registered) return std::unexpected(registered.error());
+        auto primitives = world.members(*registered);
+        if (!primitives) return std::unexpected(primitives.error());
+        // Room for as many bodies again as the World holds now; Jolt cannot grow these later.
+        const auto bodies = std::clamp<std::size_t>(std::bit_ceil(std::max<std::size_t>(2 * primitives->size(), 4096)),
+            4096, JPH::PhysicsSystem::cMaxBodiesLimit);
+        if (!capacity.bodies) capacity.bodies = std::uint32_t(bodies);
+        if (!capacity.body_pairs) capacity.body_pairs = std::uint32_t(std::min<std::size_t>(body_pairs_per_body * bodies, JPH::PhysicsSystem::cMaxBodyPairsLimit));
+        if (!capacity.contact_constraints)
+            capacity.contact_constraints = std::uint32_t(std::min<std::size_t>(contacts_per_body * bodies, JPH::PhysicsSystem::cMaxContactConstraintsLimit));
+        // Jolt raises both to at least 4 so that its hash maps get 4 buckets.
+        capacity.body_pairs = std::max(capacity.body_pairs, 4u);
+        capacity.contact_constraints = std::max(capacity.contact_constraints, 4u);
+    }
     if (auto acquired = acquire_jolt(); !acquired) return std::unexpected(acquired.error());
     std::unique_ptr<PhysicsScene> result;
     try {
-        result.reset(new PhysicsScene(world, types));
+        result.reset(new PhysicsScene(world, types, capacity));
     } catch (...) {
         release_jolt();
         throw;
@@ -967,8 +1003,22 @@ Result<void> PhysicsScene::step(float elapsed) {
         {
             timing::Scope solving{phases::solve};
             impl_->activation.deactivated.clear();
-            if (impl_->system.Update(fixed, 1, &impl_->temporary, solver_jobs) != JPH::EPhysicsUpdateError::None)
-                return failure(ErrorCode::invocation_failed, "Jolt physics step failed.");
+            // Full body pair or contact buffers only drop contacts; Jolt keeps simulating.
+            const auto updated = impl_->system.Update(fixed, 1, &impl_->temporary, solver_jobs);
+            if (updated != JPH::EPhysicsUpdateError::None) {
+                ++result.contact_overflows;
+                const auto report = [&](JPH::EPhysicsUpdateError bits, const char* field, const char* message) {
+                    if ((updated & bits) == JPH::EPhysicsUpdateError::None) return;
+                    world::Diagnostic diagnostic;
+                    diagnostic.severity = world::Severity::warning; diagnostic.kind = world::DiagnosticKind::capacity_exceeded;
+                    diagnostic.phase = world::DiagnosticPhase::physics; diagnostic.field = {field}; diagnostic.message = message;
+                    world_.report(std::move(diagnostic));
+                };
+                report(JPH::EPhysicsUpdateError::BodyPairCacheFull, "body_pairs",
+                    "The physics body pair buffer is full; some contacts were ignored. Raise Capacity::body_pairs.");
+                report(JPH::EPhysicsUpdateError::ManifoldCacheFull | JPH::EPhysicsUpdateError::ContactConstraintsFull, "contact_constraints",
+                    "The physics contact buffer is full; some contacts were ignored. Raise Capacity::contact_constraints.");
+            }
         }
         std::optional<timing::Scope> writing{std::in_place, phases::write_back};
         // Only bodies this step moved publish a pose: active ones, those that fell asleep

@@ -307,3 +307,69 @@ void solver_determinism() {
     require(first.size()==second.size() && std::memcmp(first.data(),second.data(),first.size()*sizeof(float))==0,
         "The same physics input produced different poses on the solver pool.");
 }
+
+// A full body pair or contact buffer only drops contacts: the simulation runs on, even under
+// the halt policy, and every overflowing step reports one coalesced physics warning.
+void contact_capacity() {
+    {
+        PhysicsFixture f;f.scene.reset();
+        require(!p::PhysicsScene::create(f.world,f.physics_types,{.bodies=~0u}),"A capacity above Jolt's limits was accepted.");
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types));
+        const auto derived=f.scene->capacity();
+        require(derived.bodies==4096 && derived.body_pairs==8*4096 && derived.contact_constraints==2*4096,
+            "A small World did not derive the default physics capacity.");
+        f.scene.reset();
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types,{.body_pairs=1,.contact_constraints=3}));
+        require(f.scene->capacity().body_pairs==4 && f.scene->capacity().contact_constraints==4,
+            "capacity() did not report Jolt's minimum buffers.");
+    }
+    // Jolt's body pairs share one buffer with the contact manifolds, so a full contact buffer is the reliable case.
+    {
+        PhysicsFixture f;f.scene.reset();
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types,{.contact_constraints=8}));
+        require(f.scene->capacity().contact_constraints==8 && f.scene->capacity().body_pairs==8*4096,"An explicit physics capacity was not kept.");
+        take(f.world.set_failure_policy(w::FailurePolicy::halt));
+        f.ground();
+        for(unsigned i=0;i<32;++i) f.make({float(i%8)*1.2f-4,.5f,float(i/8)*1.2f-2},dynamic_body());
+        f.start();
+        std::uint32_t overflows=0;
+        for(unsigned frame=0;frame<30;++frame) overflows+=step(f.world,*f.scene,fixed_delta).contact_overflows;
+        const auto reports=f.world.take_diagnostics();
+        require(f.world.running() && f.scene->last_step().completed_step==30 && overflows==30,
+            "A full physics buffer stopped the simulation or was not counted on every step.");
+        require(reports.size()==1 && reports[0].kind==w::DiagnosticKind::capacity_exceeded && reports[0].severity==w::Severity::warning &&
+            reports[0].phase==w::DiagnosticPhase::physics && reports[0].field==std::vector<std::string>{"contact_constraints"} && reports[0].repeats==30,
+            "A full physics buffer was not reported as one coalesced warning on its buffer.");
+        committed(f.world.stop());
+    }
+    // A resting contact whose cached solve was dropped while the buffer was full is reported again once
+    // there is room. The falling boxes are created first, so Jolt's active list puts them before the
+    // resting boxes and the resting contacts are the ones left without a constraint.
+    {
+        PhysicsFixture f;f.scene.reset();
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types,{.contact_constraints=4}));
+        auto floor=f.ground();
+        std::vector<PhysicsFixture::Entity> falling,resting;
+        for(unsigned i=0;i<28;++i) falling.push_back(f.make({10+float(i%7)*1.5f,.59f,float(i/7)*1.5f},dynamic_body()));
+        for(unsigned i=0;i<4;++i) resting.push_back(f.make({-10+float(i)*1.5f,.5f,0},dynamic_body()));
+        std::vector<atelier::ObjectId> touching;
+        f.scene->on_contact([&](const p::ContactEvent& event)->atelier::Result<void>{
+            if(event.phase!=p::ContactPhase::ended && (event.first.entity==floor.id() || event.second.entity==floor.id()))
+                touching.push_back(event.first.entity==floor.id()?event.second.entity:event.first.entity);
+            return {};
+        });
+        f.start();
+        unsigned quiet=0;
+        while(quiet<15 && !step(f.world,*f.scene,fixed_delta).contact_overflows) ++quiet;
+        require(quiet>=3 && quiet<15,"The resting contacts did not settle before the falling boxes filled the contact buffer.");
+        f.advance(2);
+        for(const auto& box:falling) committed(f.world.set_enabled(box.id(),false));
+        f.advance(4);
+        touching.clear();
+        require(!step(f.world,*f.scene,fixed_delta).contact_overflows,"The contact buffer stayed full after the falling boxes left.");
+        for(const auto& box:resting)
+            require(std::ranges::find(touching,box.id())!=touching.end() && near(f.state(box).position.y,.5f,.05f),
+                "A resting contact dropped while the buffer was full was not reported again once there was room.");
+        committed(f.world.stop());
+    }
+}

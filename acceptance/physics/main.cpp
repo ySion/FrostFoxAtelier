@@ -82,6 +82,7 @@ const Scenario scenarios[]{
     {"mirrored_scale", mirrored_scale},
     {"pose_publication", pose_publication},
     {"solver_determinism", solver_determinism},
+    {"contact_capacity", contact_capacity},
 };
 } // namespace
 
