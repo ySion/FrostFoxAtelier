@@ -114,6 +114,9 @@ include(cmake/foundation.cmake)
 
 include(cmake/geometry.cmake)
 
+include(cmake/procedural.cmake)
+atelier_add_procedural()
+
 include(cmake/world.cmake)
 atelier_add_world()
 
