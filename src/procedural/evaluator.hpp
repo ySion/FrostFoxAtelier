@@ -2,6 +2,7 @@
 
 #include "procedural/graph.hpp"
 
+#include <chrono>
 #include <memory>
 #include <optional>
 
@@ -11,6 +12,7 @@ struct NodeStatus {
     std::optional<Error> error;   // Set while the node or an input it reads fails.
     std::uint64_t evaluations{};  // Calls of evaluate.
     std::uint64_t cache_hits{};   // Results found in the cache instead.
+    std::chrono::nanoseconds time{}; // Of the last evaluate call.
 };
 
 // Brings a graph's display output up to date on the Runtime thread. A node runs again only

@@ -3,6 +3,7 @@ function(atelier_add_procedural)
         src/procedural/geometry.cpp
         src/procedural/operations.cpp
         src/procedural/instances.cpp
+        src/procedural/bvh.cpp
         src/procedural/graph.cpp
         src/procedural/nodes.cpp
         src/procedural/evaluator.cpp)

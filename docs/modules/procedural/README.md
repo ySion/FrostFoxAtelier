@@ -7,6 +7,7 @@
 | [geometry.hpp](../../../src/procedural/geometry.hpp) | `Geometry` 值、层、属性列、拓扑与实例 |
 | [operations.hpp](../../../src/procedural/operations.hpp) | 导入、生成、撒点、变换、Promote、Copy to Points、包围盒 |
 | [instances.hpp](../../../src/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
+| [bvh.hpp](../../../src/procedural/bvh.hpp) | 三角形 BVH：射线与最近点查询 |
 | [graph.hpp](../../../src/procedural/graph.hpp) | `Graph`、`Node`、端口、连接与编辑入口，类型注册 |
 | [nodes.hpp](../../../src/procedural/nodes.hpp) | C++ 内置节点 |
 | [evaluator.hpp](../../../src/procedural/evaluator.hpp) | 增量求值与结果缓存 |
@@ -36,6 +37,7 @@
 - **`merge`**：按输入顺序拼接各层，属性按名字合并，缺失的元素取类型默认值，detail 取第一个有值的输入；同名属性的层、类型或用途不一致时失败。
 - **`copy_to_points`**：每个点一个实例，矩阵为 S · O · T：S = scale × pscale，O 是归一化的 `orient`，没有 orient 时由 N 和 up 对齐（只有 N 时取 +Z 到 N 的最短旋转），T 取自 P。点上的 uint 属性（默认 `variant`，缺失时为 0）选择引用。detail 属性带到输出，输出没有点。非有限输入和越界的变体失败。
 - **`bounds`**：点的包围盒，空几何没有。
+- **`Bvh`**：对三角形图元建立的包围体层次（分箱 SAH，深层退回中位数切分，深度有界），建立时复制三角形，零面积三角形不参与。`ray` 沿单位方向找 max_distance 内最近的交点，三角形双面有效；`closest` 找 max_distance 内最近的表面点。命中给出图元号、距离、重心坐标（与撒点的 `sourceprimuv` 同一约定）和位置。射线恰好穿过共享边时可能两侧都不命中。
 
 ## 实例发布
 
@@ -67,13 +69,16 @@
 | Promote | name、to、reduce | input → output |
 | Remove | flag、layer | input → output |
 | Merge | — | inputs（多个）→ output |
+| Ray | mode（project / minimum）、direction、max_distance、normal、remove_misses | points, surface → output |
 | CopyToPoints | meshes（资源键列表）、variant | context, points → output |
+
+Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模式为最近的表面点），写入 `hitprim`（int32）、`hitprimuv`、`hitdist`；未命中的点保持原位，`hitprim` 与 `hitdist` 为 -1。`normal` 打开时命中点的 N 取命中三角形按顶点顺序的法线，`remove_misses` 删除未命中的点。每次求值都重新建立 BVH。
 
 节点失败时抛出异常，Runtime 把它转成 `invocation_failed`，消息就是失败原因。未连接的单输入端口收到空几何。
 
 ## 求值器
 
-`Evaluator(runtime, graph, resources, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游，`evaluate()` 之后 `output()` 是 display 节点的第一个输出，`status(node)` 给出每个节点的错误、求值次数和缓存命中次数。
+`Evaluator(runtime, graph, resources, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游，`evaluate()` 之后 `output()` 是 display 节点的第一个输出，`status(node)` 给出每个节点的错误、求值次数、缓存命中次数和最近一次 evaluate 的耗时。
 
 - **发现变化**：先取 `change_cursor()`，再读取。图在游标之后被写过时重读节点列表、display 和种子；节点是新的或被写过时，重读它的参数和连接，算出本地键。本地键和连接都没变的写入（例如什么也没改的可写借用）不触发求值；什么都没变、资源版本也没变时直接返回。求值器只用 const 借用、`read` 和 const 接收者的 `evaluate`，不给图和节点盖章。
 - **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 evaluate 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。参数可以是标量、枚举、数学值和普通记录、String，以及这些类型的 Array，其他字段类型使节点失败。键只在本进程、本 Runtime 内有效，不能持久化。
@@ -84,7 +89,7 @@
 
 ## 验收
 
-`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）覆盖：撒点的精确点数、确定性、三角形之间互不影响、概率取整和最小间距；按用途变换（逆转置法线、奇异变换下的平面法线、镜像时图元反转与 vertex 列重排）；删除、合并冲突、Promote、写时复制；Copy to Points 的 S·O·T 与 N/up 对齐、NaN 与越界变体；发布的分块、丢弃与逐块复用。图与求值器部分构建 Grid → Transform → Merge ← Line → CopyToPoints，与直接调用操作的结果逐字节比较，并核对每个节点的求值与命中次数：
+`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）覆盖：撒点的精确点数、确定性、三角形之间互不影响、概率取整和最小间距；按用途变换（逆转置法线、奇异变换下的平面法线、镜像时图元反转与 vertex 列重排）；删除、合并冲突、Promote、写时复制；Copy to Points 的 S·O·T 与 N/up 对齐、NaN 与越界变体；发布的分块、丢弃与逐块复用。BVH 在 3200 个三角形的起伏高度场上，用向下、向上、近水平和受距离限制的射线以及最近点查询，与按另一套公式写成的 double 暴力解比较命中、距离和命中点；同一叶中叠放的两个三角形从两侧都取到较近的一个。Ray 节点核对最近的抬高三角形、重心坐标、命中法线、背后和范围外的未命中、删除未命中点，以及 minimum 模式取到比正下方更近的角点。图与求值器部分构建 Grid → Transform → Merge ← Line → CopyToPoints，与直接调用操作的结果逐字节比较，并核对每个节点的求值与命中次数：
 
 - 首次求值每个节点一次，再次求值零次，求值不给任何对象盖章；
 - 经 `Runtime::write` 和 `with_native` 改参数只重算该节点及下游，另一分支不动；撤销后全部命中缓存；什么也没改的可写借用不触发求值；图种子只重算带上下文的节点；
@@ -96,3 +101,7 @@
 . ./tools/enter-dev.ps1
 cmake --build --preset release --target procedural_acceptance
 ```
+
+## 测量
+
+`atelier_procedural_acceptance --profile-procedural <新的绝对路径.json>` 只输出数值，不属于验收。它在一块 32768 个三角形的起伏地形上构建典型生成图：MeshImport → Scatter（约 5 万点），Grid（224 × 224）→ Transform 抬高 → Ray 投射回地形，两路 Merge 后 CopyToPoints 得到约 10 万实例，再按 32 m 分块发布。报告各项 9 次的中位数（先预热 2 次）：100 万点的撒点与变换，冷启动整图求值与各节点耗时，无变化的求值，改 Scatter 种子、改 Ray 距离、改 CopyToPoints 变体属性名之后的重算，撤销到已缓存的种子，以及首次发布与逐块复用的再发布。测量时机器应空闲。

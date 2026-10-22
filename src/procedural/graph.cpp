@@ -72,6 +72,8 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Promote>::build(runtime));
     definitions.push_back(reflection::Definition<Remove>::build(runtime));
     definitions.push_back(reflection::Definition<Merge>::build(runtime));
+    definitions.push_back(reflection::Definition<RayMode>::build(runtime));
+    definitions.push_back(reflection::Definition<Ray>::build(runtime));
     definitions.push_back(reflection::Definition<CopyToPoints>::build(runtime));
     auto published = runtime.register_types(std::move(definitions));
     if (!published) return std::unexpected(published.error());

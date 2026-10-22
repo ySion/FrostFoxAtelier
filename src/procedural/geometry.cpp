@@ -200,12 +200,16 @@ void Geometry::reverse_primitives() {
 }
 
 Result<Geometry> Geometry::remove_flagged(Layer layer, StringView flag) const {
-    if (layer != Layer::point && layer != Layer::primitive && layer != Layer::instance)
-        return failure("Only points, primitives and instances can be removed.");
     auto flags = read<bool>(flag, layer);
     if (!flags) return std::unexpected(flags.error());
     if (!*flags) return failure("Geometry has no attribute " + text(flag) + ".");
-    const auto& removed = **flags;
+    return remove_flagged(layer, std::span<const bool>{(*flags)->data(), (*flags)->size()});
+}
+
+Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> removed) const {
+    if (layer != Layer::point && layer != Layer::primitive && layer != Layer::instance)
+        return failure("Only points, primitives and instances can be removed.");
+    if (removed.size() != count(layer)) return failure("Removal needs one flag per element.");
     const auto kept = [&](std::uint32_t count, auto keep) {
         Array<std::uint32_t> indices;
         for (std::uint32_t i = 0; i < count; ++i) if (keep(i)) indices.add(i);

@@ -107,6 +107,27 @@ public:
     void evaluate(const Geometries& inputs, Geometry& output) const;
 };
 
+AENUM(Name="procedural.RayMode", DESC="project：沿方向找最近的交点；minimum：取最近的表面点。")
+enum class RayMode : std::uint32_t { project, minimum };
+
+ACLASS(Name="procedural.Ray", DESC="把点移到表面三角形上：沿方向找最近的交点，或者取最近的表面点。每个点记下 hitprim（未命中为 -1）、hitprimuv 和 hitdist（未命中为 -1）。")
+class Ray : public Node {
+    AGENERATED_BODY(Ray)
+public:
+    AFIELD(Label="Mode", DESC="project 沿 Direction 投射；minimum 取最近的表面点。")
+    RayMode mode{RayMode::project};
+    AFIELD(Label="Direction", DESC="project 模式的投射方向，内部归一化。")
+    math::Vector3 direction{0.f, -1.f, 0.f};
+    AFIELD(Label="Max Distance", Min="0", Max="1000", LockMin, DESC="最远查找距离，单位 m。")
+    float max_distance{1000.f};
+    AFIELD(Label="Hit Normal", DESC="命中时把点的 N 设为命中三角形的法线。")
+    bool normal{};
+    AFIELD(Label="Remove Misses", DESC="删除没有命中的点。")
+    bool remove_misses{};
+    AFUNCTION(DESC="把点移到表面上。")
+    void evaluate(const Geometry& points, const Geometry& surface, Geometry& output) const;
+};
+
 ACLASS(Name="procedural.CopyToPoints", DESC="在每个点上放一个网格实例：变换为 S·O·T，S 来自 scale 与 pscale，O 来自 orient 或 N 与 up，T 来自 P。")
 class CopyToPoints : public Node {
     AGENERATED_BODY(CopyToPoints)

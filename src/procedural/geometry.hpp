@@ -130,6 +130,8 @@ public:
     // Elements whose `flag` is true are removed. Removing points removes the primitives that
     // use them; removing primitives keeps their points.
     Result<Geometry> remove_flagged(Layer layer, StringView flag) const;
+    // The same with one flag per element of `layer`.
+    Result<Geometry> remove_flagged(Layer layer, std::span<const bool> removed) const;
     // Concatenates layers in input order. Attributes join by name; an element without a
     // value takes the type's default. Detail values come from the first input that has
     // them. A name with different layers, types or usages is an error.

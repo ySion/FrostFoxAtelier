@@ -1,15 +1,24 @@
+#include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/instances.hpp"
 #include "procedural/nodes.hpp"
 #include "procedural/operations.hpp"
+#include "procedural/random.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 using namespace atelier;
@@ -331,6 +340,152 @@ void copy_to_points_and_publication() {
     reject(publish(instances, 0), "A zero chunk size was accepted.");
 }
 
+// References in double precision over every triangle, by other formulas than the BVH uses.
+using Corners = std::array<math::Vector3d, 3>;
+std::vector<Corners> corners(const Geometry& surface) {
+    std::vector<Corners> result;
+    const auto& p = surface.positions();
+    const auto v = surface.vertex_points();
+    const auto d = [](Vector3 x) { return math::Vector3d{x.x, x.y, x.z}; };
+    for (std::uint32_t t = 0; t < surface.count(Layer::primitive); ++t) result.push_back({d(p[v[3 * t]]), d(p[v[3 * t + 1]]), d(p[v[3 * t + 2]])});
+    return result;
+}
+// Distance along a unit ray to the plane, then inside-ness by the signs of three edge volumes.
+std::optional<double> brute_ray(const std::vector<Corners>& triangles, math::Vector3d o, math::Vector3d d, double limit) {
+    std::optional<double> best;
+    for (const auto& [a, b, c] : triangles) {
+        const auto n = math::cross(b - a, c - a);
+        const double facing = math::dot(n, d);
+        if (facing == 0) continue;
+        const double t = math::dot(a - o, n) / facing;
+        if (t < 0 || t > limit || (best && t >= *best)) continue;
+        const auto q = o + d * t;
+        const double s0 = math::dot(math::cross(b - a, q - a), n), s1 = math::dot(math::cross(c - b, q - b), n), s2 = math::dot(math::cross(a - c, q - c), n);
+        if ((s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0)) best = t;
+    }
+    return best;
+}
+double segment_distance(math::Vector3d p, math::Vector3d a, math::Vector3d b) {
+    const auto ab = b - a;
+    const double t = std::clamp(math::dot(p - a, ab) / math::dot(ab, ab), 0.0, 1.0);
+    const auto q = a + ab * t - p;
+    return std::sqrt(math::dot(q, q));
+}
+// The plane projection when it falls inside the triangle, else the nearest edge point.
+double brute_closest(const std::vector<Corners>& triangles, math::Vector3d p) {
+    double best = std::numeric_limits<double>::infinity();
+    for (const auto& [a, b, c] : triangles) {
+        const auto n = math::cross(b - a, c - a);
+        const auto q = p - n * (math::dot(p - a, n) / math::dot(n, n));
+        const double s0 = math::dot(math::cross(b - a, q - a), n), s1 = math::dot(math::cross(c - b, q - b), n), s2 = math::dot(math::cross(a - c, q - c), n);
+        const auto offset = q - p;
+        const double distance = s0 >= 0 && s1 >= 0 && s2 >= 0 ? std::sqrt(math::dot(offset, offset))
+            : std::min({segment_distance(p, a, b), segment_distance(p, b, c), segment_distance(p, c, a)});
+        best = std::min(best, distance);
+    }
+    return best;
+}
+
+void bvh_queries() {
+    // A bumpy, tilted 40 x 40 height field with alternating diagonals: 3200 triangles.
+    constexpr std::uint32_t side = 41;
+    Array<Vector3> positions;
+    for (std::uint32_t r = 0; r < side; ++r)
+        for (std::uint32_t c = 0; c < side; ++c) {
+            const float x = float(c) * 0.5f, z = float(r) * 0.5f;
+            positions.add({x, std::sin(x * 0.7f) * std::cos(z * 0.4f) * 1.5f + 0.1f * x, z});
+        }
+    Array<std::uint32_t> vertices, offsets{0};
+    for (std::uint32_t r = 0; r + 1 < side; ++r)
+        for (std::uint32_t c = 0; c + 1 < side; ++c) {
+            const std::uint32_t p00 = r * side + c, p01 = p00 + 1, p10 = p00 + side, p11 = p10 + 1;
+            const bool flip = (r + c) % 2 != 0;
+            for (const auto point : flip ? std::array{p00, p10, p11, p00, p11, p01} : std::array{p00, p10, p01, p01, p10, p11}) vertices.add(point);
+            offsets.add(static_cast<std::uint32_t>(vertices.size() - 3));
+            offsets.add(static_cast<std::uint32_t>(vertices.size()));
+        }
+    const auto surface = take(Geometry::polygons(std::move(positions), std::move(vertices), offsets));
+    const auto bvh = take(Bvh::build(surface));
+    const auto references = corners(surface);
+    std::uint32_t random = 12345, hits = 0, misses = 0;
+    const auto next = [&] { random = hash(random); return unit(random); };
+    for (int i = 0; i < 400; ++i) {
+        // Down, up from below, and nearly horizontal rays through the bumps, some starting outside.
+        const int kind = i % 3;
+        const Vector3 origin{next() * 26 - 3, kind == 0 ? 10.f : kind == 1 ? -10.f : next() * 3 - 1, next() * 26 - 3};
+        const auto direction = normalized(kind == 2 ? Vector3{next() - 0.5f, (next() - 0.5f) * 0.2f, next() - 0.5f}
+            : Vector3{(next() - 0.5f) * 0.6f, kind == 0 ? -1.f : 1.f, (next() - 0.5f) * 0.6f});
+        const float limit = i % 7 == 0 ? 4.f : 40.f;
+        const auto found = bvh.ray(origin, direction, limit);
+        const auto expected = brute_ray(references, {origin.x, origin.y, origin.z}, {direction.x, direction.y, direction.z}, limit);
+        require(found.has_value() == expected.has_value(), "A BVH ray disagrees with the brute force on hitting.");
+        if (!found) { ++misses; continue; }
+        ++hits;
+        require(std::abs(found->distance - *expected) <= 1e-4 * std::max(1.0, *expected), "A BVH ray found another distance.");
+        const auto& [a, b, c] = references[found->primitive];
+        const auto on = a * (1.0 - found->uv.x - found->uv.y) + b * double(found->uv.x) + c * double(found->uv.y);
+        require(near(found->position, Vector3{float(on.x), float(on.y), float(on.z)}, 1e-4f) &&
+            near(found->position, origin + direction * found->distance, 1e-4f), "A ray hit is not on its primitive at its distance.");
+    }
+    require(hits > 100 && misses > 30, "The rays did not cover hits and misses.");
+    for (int i = 0; i < 300; ++i) {
+        const Vector3 point{next() * 26 - 3, next() * 8 - 4, next() * 26 - 3};
+        const float limit = i % 5 == 0 ? 0.5f : 100.f;
+        const auto found = bvh.closest(point, limit);
+        const double expected = brute_closest(references, {point.x, point.y, point.z});
+        require(found.has_value() == (expected <= limit), "A closest query disagrees with the brute force on range.");
+        if (!found) continue;
+        require(std::abs(found->distance - expected) <= 1e-4 * std::max(1.0, expected), "A closest query found another distance.");
+        const auto& [a, b, c] = references[found->primitive];
+        const auto on = a * (1.0 - found->uv.x - found->uv.y) + b * double(found->uv.x) + c * double(found->uv.y);
+        require(found->uv.x >= 0 && found->uv.y >= 0 && found->uv.x + found->uv.y <= 1 + 1e-6f &&
+            near(found->position, Vector3{float(on.x), float(on.y), float(on.z)}, 1e-4f), "A closest point is not on its primitive.");
+    }
+    const auto quad = take(Geometry::polygons(Array<Vector3>{{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}}, Array<std::uint32_t>{0, 1, 2, 3},
+        Array<std::uint32_t>{0, 4}));
+    reject(Bvh::build(quad), "A quad built a BVH.");
+    require(!take(Bvh::build(take(grid({1, 1}, 2, 2)))).ray({0, 1, 0}, {0, -1, 0}, 10), "Points without primitives were hit.");
+    // Two stacked triangles share one leaf; the nearer one is found from either side.
+    const auto stacked = take(Bvh::build(triangles({{0, 1, 0}, {0, 1, 4}, {4, 1, 0}, {0, 0, 0}, {0, 0, 4}, {4, 0, 0}})));
+    const auto above = stacked.ray({1, 5, 1}, {0, -1, 0}, 10), below = stacked.ray({1, -5, 1}, {0, 1, 0}, 10);
+    require(above && above->primitive == 0 && near(above->distance, 4) && below && below->primitive == 1 && near(below->distance, 5),
+        "A ray did not keep the nearest of several hits.");
+}
+
+void ray_node() {
+    // Ground at y = 0 over [0, 10]^2, and a raised triangle at y = 2 whose winding faces +Y.
+    const auto surface = triangles({{0, 0, 0}, {0, 0, 10}, {10, 0, 0}, {10, 0, 0}, {0, 0, 10}, {10, 0, 10},
+                                    {0, 2, 0}, {0, 2, 4}, {4, 2, 0}});
+    const auto points = take(Geometry::points(Array<Vector3>{{1, 5, 1}, {8, 5, 8}, {20, 5, 20}, {1, -1, 1}}));
+    Ray node;
+    node.normal = true;
+    Geometry output;
+    node.evaluate(points, surface, output);
+    const auto& p = output.positions();
+    const auto& primitive = column<std::int32_t>(output, "hitprim", Layer::point);
+    const auto& uv = column<Vector2>(output, "hitprimuv", Layer::point);
+    const auto& distance = column<float>(output, "hitdist", Layer::point);
+    const auto& n = column<Vector3>(output, "N", Layer::point);
+    require(near(p[0], {1, 2, 1}) && primitive[0] == 2 && near(distance[0], 3) && near(uv[0].x, 0.25f) && near(uv[0].y, 0.25f) && near(n[0], {0, 1, 0}),
+        "A ray did not stop at the nearest, raised triangle.");
+    require(near(p[1], {8, 0, 8}) && (primitive[1] == 0 || primitive[1] == 1) && near(distance[1], 5), "A ray did not reach the ground.");
+    require(near(p[2], {20, 5, 20}) && primitive[2] == -1 && distance[2] == -1 && near(n[2], {0, 0, 0}), "A missing ray moved its point.");
+    require(near(p[3], {1, -1, 1}) && primitive[3] == -1, "A ray hit a surface behind its origin.");
+    node.remove_misses = true;
+    node.evaluate(points, surface, output);
+    require(output.count(Layer::point) == 2 && near(output.positions()[1], {8, 0, 8}), "Remove Misses did not keep exactly the hits.");
+    // Closest point: straight down is the ground at 2.5, but the raised triangle's corner is nearer.
+    node.mode = RayMode::minimum;
+    node.direction = {};
+    node.evaluate(take(Geometry::points(Array<Vector3>{{6, 2.5f, 1}})), surface, output);
+    require(near(output.positions()[0], {4, 2, 0}) && near(column<float>(output, "hitdist", Layer::point)[0], std::sqrt(5.25f)),
+        "Minimum mode did not find the nearest surface point.");
+    node.mode = RayMode::project;
+    bool thrown = false;
+    try { node.evaluate(points, surface, output); } catch (const std::runtime_error&) { thrown = true; }
+    require(thrown, "A zero direction was projected.");
+}
+
 struct Meshes final : Resources {
     std::map<std::string, geometry::MeshRef, std::less<>> meshes;
     std::uint64_t version{1};
@@ -558,14 +713,140 @@ void graph_evaluation() {
     expect(uncached, {{moved, {3, 0}}}, "A zero cache budget kept results.");
 }
 
+// A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
+geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
+    const auto height = [&](std::uint32_t r, std::uint32_t c) {
+        const float x = float(c) * size / float(quads), z = float(r) * size / float(quads);
+        return Vector3{x, std::sin(x * 0.21f) * std::cos(z * 0.13f) * 4.f + 0.05f * x, z};
+    };
+    std::vector<geometry::Vertex> vertices;
+    vertices.reserve(std::size_t{quads} * quads * 6);
+    for (std::uint32_t r = 0; r < quads; ++r)
+        for (std::uint32_t c = 0; c < quads; ++c)
+            for (const auto& corners : {std::array{height(r, c), height(r + 1, c), height(r, c + 1)},
+                                        std::array{height(r, c + 1), height(r + 1, c), height(r + 1, c + 1)}}) {
+                const auto n = normalized(math::cross(corners[1] - corners[0], corners[2] - corners[0]));
+                for (const auto& p : corners) vertices.push_back({{p.x, p.y, p.z}, {n.x, n.y, n.z}});
+            }
+    return std::make_shared<const geometry::Mesh>(std::move(vertices));
 }
 
-int main() {
+// Median milliseconds of `samples` runs after two warmups; `prepare` runs untimed before each.
+template<class Prepare, class Run> double median_ms(int samples, Prepare prepare, Run run) {
+    std::vector<double> times;
+    for (int i = -2; i < samples; ++i) {
+        prepare(i);
+        const auto start = std::chrono::steady_clock::now();
+        run();
+        const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (i >= 0) times.push_back(elapsed);
+    }
+    std::ranges::sort(times);
+    return times[times.size() / 2];
+}
+
+// Numbers only; not an acceptance check. A typical generator graph over a 32768-triangle
+// terrain: Scatter on it and a Grid projected onto it by Ray, merged and copied to ~100k
+// instances, then published in 32 m chunks.
+void profile(const char* path) {
+    const std::filesystem::path output{path};
+    require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute profile file.");
+    constexpr int samples = 9;
+    std::string report = "{\n  \"schema\": \"atelier.procedural.profile.v1\",\n";
+#ifdef NDEBUG
+    report += "  \"configuration\": \"release\",\n";
+#else
+    report += "  \"configuration\": \"dev\",\n";
+#endif
+    const auto number = [&](const char* name, double value) { report += "  \"" + std::string{name} + "\": " + std::to_string(value) + ",\n"; };
+
+    // One million points: the in-graph scale.
+    const auto ground = triangles({{0, 0, 0}, {0, 0, 1000}, {1000, 0, 0}, {1000, 0, 0}, {0, 0, 1000}, {1000, 0, 1000}});
+    Geometry million;
+    number("scatter_1m_ms", median_ms(samples, [](int) {}, [&] { million = take(scatter(ground, {.density = 1, .seed = 3})); }));
+    number("scatter_1m_points", million.count(Layer::point));
+    number("transform_1m_ms", median_ms(samples, [](int) {}, [&] {
+        auto moved = million;
+        take(transform(moved, {1, 2, 3}, axis_angle({0, 1, 0}, 30), {1, 2, 1}));
+    }));
+
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    resources.meshes["profile/terrain"] = terrain_mesh(128, 64);
+    resources.meshes["profile/rock"] = geometry::cube_mesh();
+    const auto graph_root = take(runtime.create(type<Graph>(runtime)));
+    const auto graph = graph_root.id();
+    const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
+    const auto imported = add(type<MeshImport>(runtime)), scattered = add(type<Scatter>(runtime)), gridded = add(type<Grid>(runtime)),
+        lifted = add(type<Transform>(runtime)), cast = add(type<Ray>(runtime)), merged = add(type<Merge>(runtime)),
+        copied = add(type<CopyToPoints>(runtime));
+    take(runtime.with_native<MeshImport>(imported.id(), [](MeshImport& node) -> Result<void> { node.mesh = String{"profile/terrain"}; return {}; }));
+    take(runtime.with_native<Scatter>(scattered.id(), [](Scatter& node) -> Result<void> { node.density = 12.2f; return {}; }));
+    take(runtime.with_native<Grid>(gridded.id(), [](Grid& node) -> Result<void> { node.size = {63, 63}; node.rows = node.columns = 224; return {}; }));
+    take(runtime.with_native<Transform>(lifted.id(), [](Transform& node) -> Result<void> { node.translate = {32, 50, 32}; return {}; }));
+    take(runtime.with_native<CopyToPoints>(copied.id(), [](CopyToPoints& node) -> Result<void> { node.meshes.add(String{"profile/rock"}); return {}; }));
+    take(connect(runtime, graph, imported.id(), 0, scattered.id(), 0));
+    take(connect(runtime, graph, gridded.id(), 0, lifted.id(), 0));
+    take(connect(runtime, graph, lifted.id(), 0, cast.id(), 0));
+    take(connect(runtime, graph, imported.id(), 0, cast.id(), 1));
+    take(connect(runtime, graph, scattered.id(), 0, merged.id(), 0));
+    take(connect(runtime, graph, cast.id(), 0, merged.id(), 0));
+    take(connect(runtime, graph, merged.id(), 0, copied.id(), 0));
+    take(set_display(runtime, graph, copied.id()));
+
+    std::optional<Evaluator> evaluator;
+    number("cold_ms", median_ms(samples, [&](int) { evaluator.emplace(runtime, graph_root, resources); }, [&] { take(evaluator->evaluate()); }));
+    const std::pair<const char*, ObjectId> nodes[]{{"mesh_import", imported.id()}, {"scatter", scattered.id()}, {"grid", gridded.id()},
+        {"transform", lifted.id()}, {"ray", cast.id()}, {"merge", merged.id()}, {"copy_to_points", copied.id()}};
+    for (const auto& [name, node] : nodes)
+        number((std::string{"node_"} + name + "_ms").c_str(), std::chrono::duration<double, std::milli>(evaluator->status(node)->time).count());
+    const auto* result = evaluator->output();
+    require(result != nullptr, "The profile graph failed.");
+    number("idle_ms", median_ms(samples, [](int) {}, [&] { take(evaluator->evaluate()); }));
+    const auto write_seed = [&](std::uint32_t seed) {
+        take(runtime.write(scattered.id(), field(runtime, type<Scatter>(runtime), "seed"), Scalar{seed}));
+    };
+    number("scatter_seed_ms", median_ms(samples, [&](int i) { write_seed(100 + std::uint32_t(i + 2)); }, [&] { take(evaluator->evaluate()); }));
+    number("undo_seed_ms", median_ms(samples, [&](int i) { write_seed(100 + std::uint32_t((i + 2) % samples)); }, [&] { take(evaluator->evaluate()); }));
+    const auto distance = field(runtime, type<Ray>(runtime), "max_distance");
+    number("ray_distance_ms", median_ms(samples, [&](int i) { take(runtime.write(cast.id(), distance, Scalar{200.f + float(i)})); },
+        [&] { take(evaluator->evaluate()); }));
+    number("copy_variant_ms", median_ms(samples, [&](int i) {
+        take(runtime.with_native<CopyToPoints>(copied.id(), [&](CopyToPoints& node) -> Result<void> {
+            node.variant = String{StringView{"v" + std::to_string(i + 2)}};
+            return {};
+        }));
+    }, [&] { take(evaluator->evaluate()); }));
+    const auto* published_from = evaluator->output();
+    Publication first;
+    number("publish_ms", median_ms(samples, [](int) {}, [&] { first = take(publish(*published_from, 32)); }));
+    number("republish_ms", median_ms(samples, [](int) {}, [&] { (void)take(publish(*published_from, 32, &first)); }));
+    number("instances", published_from->count(Layer::instance));
+    number("collections", double(first.collections.size()));
+    report.erase(report.size() - 2);
+    report += "\n}\n";
+    std::ofstream file{output, std::ios::binary};
+    file << report;
+    require(static_cast<bool>(file), "The profile file cannot be written.");
+    std::fputs(report.c_str(), stdout);
+}
+
+}
+
+int main(int argc, char** argv) {
     try {
+        if (argc == 3 && std::string_view{argv[1]} == "--profile-procedural") {
+            profile(argv[2]);
+            return 0;
+        }
+        require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
         scatter_counts_and_stability();
         transform_by_usage();
         removal_merge_and_promotion();
         copy_to_points_and_publication();
+        bvh_queries();
+        ray_node();
         graph_evaluation();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "procedural acceptance failed: %s\n", error.what());

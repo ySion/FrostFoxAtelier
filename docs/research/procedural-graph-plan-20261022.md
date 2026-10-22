@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、实例发布、图与求值器，当前行为以[程序化模块](../modules/procedural/README.md)为准；自有语言节点、规范化 JSON、BVH 查询和 `--profile-procedural` 待做。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；自有语言节点和规范化 JSON 等语言能力就绪后做。
 
 ## 0. 结论
 

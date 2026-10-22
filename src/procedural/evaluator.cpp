@@ -198,7 +198,10 @@ struct Evaluator::Impl {
             }
         }
         ++state.status.evaluations;
-        if (auto called = runtime.call(id, state.ports->evaluate, arguments); !called) return std::unexpected(called.error());
+        const auto start = std::chrono::steady_clock::now();
+        auto called = runtime.call(id, state.ports->evaluate, arguments);
+        state.status.time = std::chrono::steady_clock::now() - start;
+        if (!called) return std::unexpected(called.error());
         entry->serial = ++serials;
         entry->revision = revision;
         entry->bytes = sizeof(Entry) + entry->key.size();
