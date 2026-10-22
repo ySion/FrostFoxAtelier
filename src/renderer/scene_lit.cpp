@@ -90,7 +90,7 @@ struct SceneLit::State {
     std::array<float,4> ao_view_x{},ao_view_y{},ao_view_z{}; // Jittered projection terms for view-space reconstruction.
     std::array<GfxTexture,2> history_depth{},history_normal{},history_geometry_normal{},taa_history{},reflection_history{},reflection_hit_history{},reflection_moments{},reflection_scratch{},ao_history{},bloom{};
     GfxTexture tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search;
-    std::array<GfxTexture,2> smaa_spatial{},history_base_metallic{},history_surface_id{};
+    std::array<GfxTexture,2> smaa_spatial{},history_surface_id{};
     GfxBuffer cluster_depth,cluster_count,cluster_source;
     std::array<std::uint32_t,2> cluster_tiles{},cluster_origin{};
     ShadowCache shadow_cache;
@@ -389,7 +389,7 @@ struct SceneLit::State {
         retire(probe_visibility_cache);probe_visibility_valid=false;
         for(auto& t:gbuffer_textures)retire(t);
         for(auto* t:{&indirect_half,&hdr,&indirect,&ao_texture,&ao_raw,&ao_depth,&reflection_trace,&reflection_hit_trace,&tone_color,&smaa_edges,&smaa_weights,&smaa_output})retire(*t);
-        for(auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&bloom,&smaa_spatial,&history_base_metallic,&history_surface_id})for(auto& t:*pair)retire(t);
+        for(auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&bloom,&smaa_spatial,&history_surface_id})for(auto& t:*pair)retire(t);
         for(auto& t:pyramid)retire(t);
         for(auto* b:{&cluster_depth,&cluster_count,&cluster_source,&reflection_work,&reflection_counter,&reflection_arguments,&probe_fallback,&probe_fallback_arguments})retire(*b);
     }
@@ -486,7 +486,7 @@ struct SceneLit::State {
         ao_texture=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
         ao_raw=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
         ao_depth=gfxCreateTexture2D(gfx,w,h,DXGI_FORMAT_R32_FLOAT,5);allocation(bool(ao_depth));
-        for(auto* pair:{&history_normal,&taa_history,&reflection_history,&reflection_scratch,&smaa_spatial,&history_base_metallic})for(auto& t:*pair)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
+        for(auto* pair:{&history_normal,&taa_history,&reflection_history,&reflection_scratch,&smaa_spatial})for(auto& t:*pair)t=texture(w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,8);
         for(auto& t:reflection_hit_history)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
         for(auto& t:reflection_moments)t=texture(w,h,DXGI_FORMAT_R32G32_FLOAT,8);
         for(auto& t:history_surface_id)t=texture(w,h,DXGI_FORMAT_R32G32_UINT,8);
@@ -570,7 +570,7 @@ struct SceneLit::State {
         bind(p,"lit_visibility_counter",visibility_counter);
         bind(p,"lit_base_metallic",gbuffer_textures[1]);bind(p,"lit_emissive",gbuffer_textures[2]);bind(p,"lit_motion",gbuffer_textures[3]);
         bind(p,"lit_previous_depth",gbuffer_textures[4]);bind(p,"lit_surface_id",gbuffer_textures[6]);
-        bind(p,"lit_history_base_metallic",history_base_metallic[1-parity]);bind(p,"lit_history_surface_id",history_surface_id[1-parity]);
+        bind(p,"lit_history_surface_id",history_surface_id[1-parity]);
         bind(p,"lit_geometry_normal",gbuffer_textures[5]);bind(p,"lit_history_geometry_normal",history_geometry_normal[1-parity]);
         bind(p,"lit_linear_sampler",sampler);bind(p,"lit_history_depth",history_depth[1-parity]);bind(p,"lit_history_normal",history_normal[1-parity]);
         bind(p,"lit_hdr_source",hdr);bind(p,"lit_brdf_lut",brdf_lut);
@@ -725,7 +725,7 @@ struct SceneLit::State {
                 result+=std::uint64_t(std::max(t.getWidth()>>level,1u))*std::max(t.getHeight()>>level,1u)*t.getDepth()*bytes;};
         for(auto t:gbuffer_textures)add_texture(t);
         for(auto t:{indirect_half,hdr,indirect,ao_texture,ao_raw,ao_depth,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,probe_presentation,probe_response,probe_age,probe_sample_cursor,probe_debug_depth,shadow_static,shadow_dynamic})add_texture(t);
-        for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&bloom,&history_base_metallic,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
+        for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&bloom,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(auto t:pyramid)add_texture(t);
         result+=instance_table.bytes();light_tables.each([&](const auto& table){result+=table.bytes();});
         for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters})result+=b.getSize();
@@ -1223,7 +1223,7 @@ struct SceneLit::State {
         end(5);
         begin(6);bind(taa.program(),"lit_reflection",settings.sssr?reflection_scratch[0]:reflection_history[parity]);bind(taa.program(),"lit_reflection_moments",reflection_moments[parity]);bind(taa.program(),"lit_taa_previous",taa_history[1-parity]);bind(taa.program(),"lit_taa_output",taa_history[parity]);
         bind(taa.program(),"lit_history_depth_output",history_depth[parity]);bind(taa.program(),"lit_history_normal_output",history_normal[parity]);bind(taa.program(),"lit_history_geometry_normal_output",history_geometry_normal[parity]);
-        bind(taa.program(),"lit_history_base_metallic_output",history_base_metallic[parity]);bind(taa.program(),"lit_history_surface_id_output",history_surface_id[parity]);dispatch_window(taa,depth);end(6);
+        bind(taa.program(),"lit_history_surface_id_output",history_surface_id[parity]);dispatch_window(taa,depth);end(6);
         begin(7);const std::array<float,4> bloom_controls{1,.5f,settings.bloom?.04f:0.f,64};
         if(settings.bloom) {
         bind(bloom_downsample.program(),"lit_taa",taa_history[parity]);bind(bloom_downsample.program(),"lit_bloom_output",bloom[0]);bind(bloom_downsample.program(),"lit_bloom_controls",bloom_controls);

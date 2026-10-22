@@ -58,7 +58,9 @@ float lit_shadow_compare(LitShadowFace face,float2 uv,LitShadowReference referen
     [unroll] for(uint block=0;block<4;++block) {
         uint2 b=uint2(block&1,block>>1)*2;
         float2 corner=base+float2(b)+1;
-        float depth=reference.depth+dot(reference.gradient,corner-at);
+        // A grazing receiver offset past its own horizon extrapolates beyond the
+        // far plane, where only empty texels (depth 0) should compare lit.
+        float depth=max(reference.depth+dot(reference.gradient,corner-at),0);
         // Components: x=(0,1) y=(1,1) z=(1,0) w=(0,0) within the block.
         float4 lit=lit_shadow_static.GatherCmpRed(lit_shadow_sampler,corner/extent,depth);
         if(dynamic)lit=min(lit,lit_shadow_dynamic.GatherCmpRed(lit_shadow_sampler,corner/extent,depth));
@@ -75,13 +77,15 @@ float lit_shadow_point(LitShadowLight cache,LitLightSource light,LitLightingSurf
     LitShadowFace face=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(delta)];
     // One interior texel at this distance; each face spans 90 degrees.
     float3 position=surface.position+normal*(2*length(delta)*face.depth.z);
+    // The depth slope is the receiver's own plane: unlike the offset plane it
+    // never passes through the light while the receiver faces it.
+    float numerator=dot(normal,delta);
     delta=position-origin;
     face=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(delta)];
     if((face.meta.x&1u)==0){lit_shadow_count(78);return 0;}
     float2 uv;LitShadowReference reference=(LitShadowReference)0;
     if(!lit_shadow_project(face,position,uv,reference.depth)){lit_shadow_count(78);return 0;}
-    float numerator=dot(normal,delta);
-    if(abs(numerator)>1e-6*length(delta)) {
+    if(numerator< -1e-6*length(delta)) {
         float2 projected_normal=mul(float4(normal,0),face.view_projection).xy;
         float b=face.depth.x*face.depth.y/(face.depth.y-face.depth.x);
         reference.gradient=(2*b/numerator)*projected_normal*float2(1,-1)/(face.atlas.xy*float(lit_shadow_atlas_extent));

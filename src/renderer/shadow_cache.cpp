@@ -127,7 +127,12 @@ V unproject(const M& inverse,double x,double y,double z) {
     return {p.x/p.w,p.y/p.w,p.z/p.w};
 }
 // Rectangles cast from their centre; their support matches lit_cluster_radius.
-Request point_request(const Frame& frame,const GpuLightSource& source,std::span<const ShadowCaster> receivers,const M& camera_view) {
+// `drawn` is the origin the light's faces were drawn from when it differs from
+// the current one: while their redraw waits for budget the shader selects
+// faces from it, so for every receiver the light now reaches, the faces it
+// lies in as seen from there are kept too.
+Request point_request(const Frame& frame,const GpuLightSource& source,std::span<const ShadowCaster> receivers,const M& camera_view,
+                      const std::array<float,3>* drawn) {
     Request request;request.kind=1;request.count=6;
     const V origin{source.origin_range[0],source.origin_range[1],source.origin_range[2]};request.origin=origin;
     // Match the FP32 minimum in lit_local_range before widening to double.
@@ -141,11 +146,19 @@ Request point_request(const Frame& frame,const GpuLightSource& source,std::span<
     const double far_z=ceil_power_two(conservative_support*(1+normal_offset_ratio));
     const double near_z=std::max(1e-30,std::min(double(shadow_maximum_near),far_z*shadow_near_ratio));
     for(std::uint32_t face=0;face<request.count;++face){request.projection[face]=point_projection(origin,face,near_z,far_z);request.depth[face]={near_z,far_z};}
-    for(const auto& receiver:receivers){
-        if(distance_squared(receiver.bounds,origin)>conservative_support*conservative_support)continue;
-        const auto bounds=expanded(receiver.bounds,far_distance(receiver.bounds,origin)*normal_offset_ratio+rounding_margin);
-        for(std::uint32_t face=0;face<6;++face)
-            request.needed[face]=request.needed[face]||intersects(bounds,request.projection[face],.04);
+    const auto mark=[&](V at,const std::array<M,6>& projections){
+        for(const auto& receiver:receivers){
+            if(distance_squared(receiver.bounds,origin)>conservative_support*conservative_support)continue;
+            const auto bounds=expanded(receiver.bounds,far_distance(receiver.bounds,at)*normal_offset_ratio+rounding_margin);
+            for(std::uint32_t face=0;face<6;++face)
+                request.needed[face]=request.needed[face]||intersects(bounds,projections[face],.04);
+        }
+    };
+    mark(origin,request.projection);
+    if(drawn){
+        const V at{(*drawn)[0],(*drawn)[1],(*drawn)[2]};std::array<M,6> projections;
+        for(std::uint32_t face=0;face<6;++face)projections[face]=point_projection(at,face,near_z,far_z);
+        mark(at,projections);
     }
     const auto eye=math::Vector4d{origin.x,origin.y,origin.z,1}*camera_view;
     const auto projection=matrix(frame.camera.projection);
@@ -242,7 +255,9 @@ struct ShadowCache::State {
         std::array<float,3> origin{}; // Cube centre all drawn faces share.
         float fade{1}; // Direct-light factor; withheld lights restart at 0.
     };
-    struct Redraw {std::uint32_t source,face,plan_face,size,rank;bool cascade;};
+    // Cascades and lights without a stable key (no cached state to defer to)
+    // always redraw, outside the budget.
+    struct Redraw {std::uint32_t source,face,plan_face,size,rank;bool exempt;};
     struct ReservationUndo {Face* face;Face previous;};
     std::vector<Light> lights;
     std::vector<ReservationUndo> reservation_undo;
@@ -331,7 +346,7 @@ struct ShadowCache::State {
             float((face.slot%grid_size)*cell_size+shadow_tile_border)*inverse,float((face.slot/grid_size)*cell_size+shadow_tile_border)*inverse};
         gpu.meta={1u|(face.dynamic_nonempty?2u:0u)|(gpu.meta[0]&4u),face.generation,source,index};
     }
-    void append(std::uint32_t source,const Request& request,std::uint32_t size,std::uint32_t rank) {
+    void append(std::uint32_t source,const Request& request,std::uint32_t size,std::uint32_t rank,bool exempt) {
         auto& gpu_light=plan.lights[source];gpu_light.meta={request.kind,static_cast<std::uint32_t>(plan.faces.size()),request.count,0};
         gpu_light.splits=request.splits;
         for(std::uint32_t i=0;i<request.count;++i){
@@ -342,7 +357,7 @@ struct ShadowCache::State {
             if(face.drawn&&face.stationary_valid&&face.dynamic_valid&&face.projection==packed(request_projection(request,i,size))) {
                 ++plan.stats.reused_faces;publish(gpu,face,source,i);continue;
             }
-            redraws.push_back({source,i,static_cast<std::uint32_t>(plan.faces.size()-1),size,rank,request.kind==2});
+            redraws.push_back({source,i,static_cast<std::uint32_t>(plan.faces.size()-1),size,rank,exempt});
         }
     }
     void redraw(const Redraw& item,const Request& request,std::span<const ShadowCaster> casters) {
@@ -378,7 +393,7 @@ struct ShadowCache::State {
         queued.assign(lights.size(),0);
         for(const auto& item:redraws)queued[item.source]=std::max<std::uint8_t>(queued[item.source],lights[item.source].faces[item.face].drawn?1:2);
         std::ranges::sort(redraws,[&](const Redraw& a,const Redraw& b){
-            if(a.cascade!=b.cascade)return a.cascade;
+            if(a.exempt!=b.exempt)return a.exempt;
             if(queued[a.source]!=queued[b.source])return queued[a.source]>queued[b.source];
             const auto wa=lights[a.source].waiting,wb=lights[b.source].waiting;
             if(wa!=wb)return wa>wb;
@@ -388,8 +403,17 @@ struct ShadowCache::State {
         for(auto first=redraws.begin();first!=redraws.end();){
             const auto last=std::find_if(first,redraws.end(),[&](const Redraw& item){return item.source!=first->source;});
             const auto count=static_cast<std::uint32_t>(last-first);auto& light=lights[first->source];
-            const bool draw=first->cascade||drawn+count<=shadow_face_redraw_budget;
-            if(draw){if(!first->cascade)drawn+=count;light.waiting=0;}
+            const bool draw=first->exempt||drawn+count<=shadow_face_redraw_budget;
+            if(draw){
+                if(!first->exempt)drawn+=count;
+                light.waiting=0;
+                // Faces kept from an earlier origin would be selected from the new one.
+                const auto& request=requests[first->source];
+                if(request.kind==1&&light.origin!=std::array{float(request.origin.x),float(request.origin.y),float(request.origin.z)}){
+                    std::array<bool,6> redrawn{};for(auto item=first;item!=last;++item)redrawn[item->face]=true;
+                    for(std::uint32_t i=0;i<6;++i)if(!redrawn[i])light.faces[i].drawn=false;
+                }
+            }
             else {++light.waiting;plan.stats.deferred_faces+=count;plan.stats.deferral_frames=std::max(plan.stats.deferral_frames,light.waiting);}
             for(auto item=first;item!=last;++item){
                 auto& face=light.faces[item->face];
@@ -461,9 +485,13 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
         return std::uint64_t(std::count(request.needed.begin(),request.needed.end(),true))*(size/cell_size)*(size/cell_size);};
     for(std::uint32_t index=0;index<s.lights.size();++index){
         const auto& light=sources.sources[index];
-        if((light.meta[1]&2u)==0)continue;
+        // A light without radiance needs no visibility.
+        if((light.meta[1]&2u)==0||(light.radiance[0]<=0&&light.radiance[1]<=0&&light.radiance[2]<=0))continue;
+        const auto& held=s.lights[index];
+        const bool lagging=std::ranges::any_of(held.faces,[](const auto& face){return face.drawn;})&&
+            held.origin!=std::array{light.origin_range[0],light.origin_range[1],light.origin_range[2]};
         requests[index]=light.meta[0]==2?directional_request(frame,light,receivers,casters,camera_view):
-            point_request(frame,light,receivers,camera_view);
+            point_request(frame,light,receivers,camera_view,lagging?&held.origin:nullptr);
         if(requests[index].kind==1){
             auto& request=requests[index];const auto previous_size=s.lights[index].preferred_size;
             const auto diameter=request.projected_diameter;
@@ -527,7 +555,7 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
             for(const auto& caster:casters)if(distance_squared(caster.bounds,origin)<=near_z*near_z){near_caster=true;break;}
             if(near_caster)for(bool needed:request.needed)if(needed)++s.plan.stats.near_plane_faces;
         }
-        s.append(index,request,size,rank);
+        s.append(index,request,size,rank,request.kind==2||!sources.keyed(index));
         if(near_caster){const auto first=s.plan.lights[index].meta[1];
             for(std::uint32_t face=0;face<request.count;++face)if(request.needed[face])s.plan.faces[first+face].meta[0]|=4;}
     }

@@ -345,6 +345,93 @@ void shadow_cases(Fixture& f) {
     for(unsigned channel=0;channel<3;++channel)
         check(std::abs(mean_rgb(arrived,bright_region)[channel]-mean_rgb(arrival_unshadowed,bright_region)[channel])<=1,
             "faded-in lights reach exactly their unshadowed energy on unoccluded receivers");
+    // Lights without a stable key keep no cached faces between frames, so
+    // they redraw every frame outside the budget instead of waiting forever.
+    for(auto& light:f.lights)light.stable_key=0;
+    f.edited();f.settle_shadows();
+    const auto keyless=f.capture("shadow-keyless-settled",2);
+    for(unsigned channel=0;channel<3;++channel)
+        check(std::abs(mean_rgb(keyless,bright_region)[channel]-mean_rgb(arrival_unshadowed,bright_region)[channel])<=1,
+            "thirty lights without stable keys redraw outside the budget and keep their full energy");
+    check(mean_rgb(keyless,dark_region)[0]<=arrived_umbra+1,"lights without stable keys keep their shadows");
+
+    // Thirty dim lamps each light one small patch 0.3 m ahead and need only
+    // their +Z face; moving 1 mm per frame they keep the budget full. A probe
+    // lamp alternates every three frames between P0, where its patch straddles
+    // the +X/+Z diagonal, and P1 0.5 m to the right, where the patch needs only
+    // +Z. The probe ranks last, so the frame it moves its redraw waits behind
+    // the fillers. While it waits, the shader selects faces from the
+    // origin they were drawn from, so every face that origin selects must stay
+    // in the plan: no tap may miss. A second probe Q also shrinks its range
+    // as it moves 1.2 m right: R3 is lit only from Q0 and R2 only from Q1, and
+    // from Q0 R2 lies in +X, so the faces kept for the drawn origin must come
+    // from the receivers in the current support, not the old one.
+    f.frame.scene_viewport={0,0,float(f.drawing.extent.width),float(f.drawing.extent.height)};
+    f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
+    f.frame.camera.projection={.4f/wide,0,0,0, 0,.4f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
+    const auto patch=[&](std::uint64_t key,float x,float y,float z,float size){
+        auto mesh=receiver(key,0,0,1,1);mesh.world=box(x,y,z,size,size,1);return mesh;};
+    f.room.meshes.clear();f.lights.assign(32,{});
+    for(std::size_t i=0;i<30;++i){
+        const float x=-2+.6f*float(i%6),y=-1.2f+.6f*float(i/6);
+        f.room.meshes.push_back(patch(90000+i,x,y,-2.7f,.05f));
+        auto& light=f.lights[i];light.stable_key=90000+i;light.position={x,y,-3};light.range=.4f;light.intensity=.5f;
+    }
+    const std::array<float,3> p0{3.2f,0,-3},p1{3.7f,0,-3};
+    f.room.meshes.push_back(patch(90100,4.2f,0,-2,.2f));
+    auto& probe=f.lights[30];probe.stable_key=90100;probe.position=p0;probe.range=2;probe.intensity=.02f;
+    const std::array<float,3> q0{3,-2.1f,-3},q1{4.2f,-2.1f,-3};
+    f.room.meshes.push_back(patch(90101,3,-2.1f,-2.5f,.1f));f.room.meshes.push_back(patch(90102,4.2f,-2.1f,-2.4f,.1f));
+    auto& q=f.lights[31];q.stable_key=90101;q.position=q0;q.range=1;q.intensity=.02f;
+    ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
+    f.settle_shadows(submit("shadow-origin-lag-cold").scene_lit_gpu_sample_frame_id);
+    std::uint64_t lag_first=0;unsigned lag_samples=0;seen=0;
+    for(unsigned frame=0;frame<36;++frame){
+        for(std::size_t i=0;i<30;++i)f.lights[i].position[0]+=.001f;
+        const bool right=frame/3%2;f.lights[30].position=right?p1:p0;
+        f.lights[31].position=right?q1:q0;f.lights[31].range=right?.7f:1;f.edited();
+        const auto result=f.step();if(frame==0)lag_first=result.accepted_id;
+        const auto& sample=result.stats;const auto id=sample.scene_lit_gpu_sample_frame_id;
+        if(!sample.scene_lit_gpu_timing_valid||id<lag_first||id==seen)continue;
+        seen=id;++lag_samples;record("shadow-origin-lag",result.accepted_id,sample);
+        check(sample.scene_lit_shadow_cache_deferred_faces>0&&sample.scene_lit_shadow_cache_static_updates<=budget,
+            "origin-lag fixture keeps the redraw budget full");
+        check(sample.scene_lit_shadow_cache_missing_taps==0,
+            "a deferred light keeps every face its drawn origin selects, so no tap misses");
+    }
+    check(lag_samples>=24,"origin-lag motion observes completed samples");
+    f.settle_shadows();
+
+    // A point light 13 mm, then 4 mm, in front of an unoccluded plane, 1 m to
+    // the side of the judged region: N.L is about .013 and .004, below a 128
+    // face's one-texel offset ratio (.0161), so the offset point lies beyond
+    // the plane as seen from the light. Extrapolating with the offset plane's
+    // slope flips its sign; with the plane's own slope every texel the plane
+    // covers compares lit. At .004 the extrapolation also passes the far plane,
+    // where empty texels must still compare lit.
+    f.frame.scene_viewport={24.25f,32.75f,159.5f,111.25f};
+    f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
+    // Perspective: the light projects to about 148 pixels, the 128 tier.
+    f.frame.camera.projection={4/aspect,0,0,0, 0,4,0,0, 0,0,-.1f/39.9f,1, 0,0,4/39.9f,0};
+    struct Grazing{float height,intensity;const char* label;};
+    for(const auto& [height,intensity,label]:std::array<Grazing,2>{{{.013f,150,"13mm"},{.004f,500,"4mm"}}}){
+        f.room.meshes={receiver(96000,0,4,12,8)};f.lights.assign(1,{});
+        auto& light=f.lights.front();light.stable_key=96000;light.position={-.5f,0,4-height};light.range=2;light.intensity=intensity;
+        ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
+        const auto name=std::string("shadow-grazing-plane-")+label;
+        const auto cold=submit((name+"-cold").c_str());
+        check(cold.scene_lit_shadow_cache_faces>0&&cold.scene_lit_shadow_cache_atlas_cells==cold.scene_lit_shadow_cache_faces,
+            "grazing plane light uses 128 faces, whose one-texel offset ratio is .0161");
+        const auto shadowed=f.capture((name+"-shadowed").c_str(),4);
+        options.shadows=false;const auto unshadowed=f.capture((name+"-unshadowed").c_str(),2);options.shadows=true;
+        const auto region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{.5f,0,4},1);
+        const auto lit=mean_rgb(shadowed,region),reference=mean_rgb(unshadowed,region);
+        std::printf("Shadow grazing plane %s: shadowed=%.3f unshadowed=%.3f\n",label,lit[0],reference[0]);
+        check(reference[0]>20,"grazing plane fixture receives measurable direct light");
+        for(unsigned channel=0;channel<3;++channel)
+            check(std::abs(lit[channel]-reference[channel])<=1,"an unoccluded receiver lit at grazing incidence stays lit");
+        f.step();f.step();
+    }
 
     // A completely transparent cube requests six conservative directions
     // without changing the real GBuffer or visibility. 272*6 minimum 128 tiles
@@ -491,5 +578,5 @@ void shadow_cases(Fixture& f) {
     stats=warm("shadow-csm-infinite-perspective-warm");
     check(stats.scene_lit_shadow_cache_faces==4,"infinite-far perspective reuses all four complete cascades");
     counters.flush();f.metrics.flush();
-    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, grazing near-caster normal offset, sixteen high-tier lamps, 24-face redraw budget with whole-lamp longest-waiting rotation, thirty arriving lights withheld until drawn then faded in, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
+    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, grazing near-caster normal offset, sixteen high-tier lamps, 24-face redraw budget with whole-lamp longest-waiting rotation, thirty arriving lights withheld until drawn then faded in, keyless lights outside the budget, deferred lights sampled from their drawn origin, unoccluded grazing receivers past their own horizon, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
 }

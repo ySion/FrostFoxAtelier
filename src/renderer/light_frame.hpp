@@ -67,6 +67,8 @@ public:
     // identities distinguish edits from reordering; unknown correspondence is
     // conservative. Repeated requests for the same snapshot preserve this flag.
     bool radiance_changed{};
+    // Zero stable keys give a source no cross-frame identity.
+    bool keyed(std::size_t source) const {return keys_[source].owner!=0;}
 
 private:
     struct SourceKey {
