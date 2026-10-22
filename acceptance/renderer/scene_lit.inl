@@ -204,7 +204,17 @@ double display_code(double radiance) {
     const double mapped=std::clamp(x*(2.51*x+.03)/(x*(2.43*x+.59)+.14),0.,1.);
     return 255*(mapped<=.0031308?mapped*12.92:1.055*std::pow(mapped,1/2.4)-.055);
 }
-struct Analytic { std::size_t pixels{}, failures{}; double max_error{}; };
+// Inverse of display_code, with the linear SDR value scaled by `rounding` first
+// (its FP16 storage before encoding); infinite at full white.
+double display_radiance(double code,double rounding) {
+    if(code<=0)return 0;
+    const double s=code/255,mapped=(s<=.04045?s/12.92:std::pow((s+.055)/1.055,2.4))*rounding;
+    if(code>=255||mapped>=1)return std::numeric_limits<double>::infinity();
+    const double a=2.51-2.43*mapped,b=.03-.59*mapped,c=-.14*mapped;
+    return (-b+std::sqrt(b*b-4*a*c))/(2*a);
+}
+// margin: the smallest distance of an observed code inside its band.
+struct Analytic { std::size_t pixels{}, failures{}; double max_error{}, margin{std::numeric_limits<double>::infinity()}; };
 // Visits each receiver pixel with its plane point p and unit view vector v.
 template<class Visit> void plane_pixels(const render::Frame& frame,const render::Capture& image,float plane_z,Visit&& visit) {
     const auto& view=frame.camera.view;const auto& projection=frame.camera.projection;
@@ -251,14 +261,11 @@ Analytic analytic_point_plane(const render::Frame& frame,const render::Capture& 
 // over its area with cos_light*cos_receiver/r^2 (|cos_light| when two-sided) by
 // the midpoint rule. One sample is the point limit; otherwise each side takes at
 // least `samples` points and twelve per receiver distance to the rectangle, so
-// near receivers stay resolved. The band widens by `specular_slack` of the
-// expected specular part, which LTC approximates pointwise, and by `peak_slack`
-// of the brightest expected channel in the image.
-Analytic analytic_rectangle_plane(const render::Frame& frame,const render::Capture& image,const render::Light& light,
-                                  float plane_z,const Rgb3& base,double roughness,double metallic,unsigned samples,
-                                  double specular_slack,double peak_slack) {
-    struct Expected { unsigned x,y; Rgb3 total,specular; };
-    std::vector<Expected> expected;double peak=0;
+// near receivers stay resolved.
+struct RectangleExpected { unsigned x,y; Rgb3 diffuse,specular; };
+std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame,const render::Capture& image,const render::Light& light,
+                                                  float plane_z,const Rgb3& base,double roughness,double metallic,unsigned samples) {
+    std::vector<RectangleExpected> expected;
     const Rgb3 centre{light.position[0],light.position[1],light.position[2]};
     const Rgb3 facing{light.direction[0],light.direction[1],light.direction[2]};
     const Rgb3 right{light.right[0]*double(light.width),light.right[1]*double(light.width),light.right[2]*double(light.width)};
@@ -285,23 +292,60 @@ Analytic analytic_rectangle_plane(const render::Frame& frame,const render::Captu
             const double weight=cosine/r2*area;
             for(unsigned c=0;c<3;++c){diffuse[c]+=response.diffuse[c]*weight;specular[c]+=response.specular[c]*weight;}
         }
-        Expected value{x,y,{},{}};
+        RectangleExpected value{x,y,{},{}};
         for(unsigned c=0;c<3;++c) {
             const double radiance=double(light.color[c])*light.intensity*window;
-            value.specular[c]=specular[c]*radiance;value.total[c]=(diffuse[c]+specular[c])*radiance;
-            peak=std::max(peak,value.total[c]);
+            value.diffuse[c]=diffuse[c]*radiance;value.specular[c]=specular[c]*radiance;
         }
         expected.push_back(value);
     });
+    return expected;
+}
+// The band widens by `specular_slack` of the expected specular part, which LTC
+// approximates pointwise, and by `peak_slack` of the brightest expected channel.
+Analytic analytic_rectangle_plane(const render::Frame& frame,const render::Capture& image,const render::Light& light,
+                                  float plane_z,const Rgb3& base,double roughness,double metallic,unsigned samples,
+                                  double specular_slack,double peak_slack) {
+    const auto expected=rectangle_expected(frame,image,light,plane_z,base,roughness,metallic,samples);
+    double peak=0;
+    for(const auto& value:expected)for(unsigned c=0;c<3;++c)peak=std::max(peak,value.diffuse[c]+value.specular[c]);
     Analytic result;result.pixels=expected.size();
     for(const auto& value:expected) for(unsigned c=0;c<3;++c) {
+        const double total=value.diffuse[c]+value.specular[c];
         const double slack=specular_slack*value.specular[c]+peak_slack*peak,observed=pixel(image,value.x,value.y)[c];
-        const double low=display_code(value.total[c]*(1-1./1024)-slack)-1,high=display_code(value.total[c]*(1+1./1024)+slack)+1;
-        result.max_error=std::max(result.max_error,std::abs(observed-display_code(value.total[c])));
+        const double low=display_code(total*(1-1./1024)-slack)-1,high=display_code(total*(1+1./1024)+slack)+1;
+        result.max_error=std::max(result.max_error,std::abs(observed-display_code(total)));
+        result.margin=std::min(result.margin,std::min(observed-low,high-observed));
         if(observed<low||observed>high){
             if(result.failures<4)std::fprintf(stderr,"rectangle truth miss pixel=(%u,%u) channel=%u observed=%.0f band=[%.2f,%.2f] expected=%.5f\n",
-                value.x,value.y,c,observed,low,high,value.total[c]);
+                value.x,value.y,c,observed,low,high,total);
             ++result.failures;break;
+        }
+    }
+    return result;
+}
+// The diffuse part alone, for a white light on a dielectric with zero blue base:
+// blue is then pure specular, equal to red's, so red minus blue is red's
+// diffuse. Each channel's radiance follows from its code within one code, FP16
+// storage of the linear SDR value and HDR half precision; the difference
+// interval, widened by `slack` of the expected
+// diffuse, must hold it. max_error is the largest miss relative to the diffuse,
+// negative when every pixel lies inside by that much.
+Analytic analytic_rectangle_diffuse(const render::Frame& frame,const render::Capture& image,const render::Light& light,
+                                    float plane_z,double red,double roughness,unsigned samples,double slack) {
+    const auto expected=rectangle_expected(frame,image,light,plane_z,{red,red/2,0},roughness,0,samples);
+    Analytic result;result.pixels=expected.size();result.max_error=-std::numeric_limits<double>::infinity();
+    for(const auto& value:expected) {
+        const auto observed=pixel(image,value.x,value.y);
+        const double r=observed[0],b=observed[2],diffuse=value.diffuse[0];
+        const auto lower=[](double code){return display_radiance(code-1,1/(1+1./2048))/(1+1./1024);};
+        const auto upper=[](double code){return display_radiance(code+1,1/(1-1./2048))/(1-1./1024);};
+        const double low=lower(r)-upper(b)-slack*diffuse,high=upper(r)-lower(b)+slack*diffuse;
+        if(diffuse>0&&std::isfinite(high))result.max_error=std::max(result.max_error,std::max(low-diffuse,diffuse-high)/diffuse);
+        if(diffuse<low||diffuse>high){
+            if(result.failures<4)std::fprintf(stderr,"rectangle diffuse miss pixel=(%u,%u) red=%.0f blue=%.0f band=[%.5f,%.5f] expected=%.5f\n",
+                value.x,value.y,r,b,low,high,diffuse);
+            ++result.failures;
         }
     }
     return result;

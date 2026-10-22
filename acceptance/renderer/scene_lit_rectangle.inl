@@ -39,7 +39,7 @@ void rectangle_cases(Fixture& f) {
         const auto image=f.capture(name,2);
         const auto result=analytic_rectangle_plane(f.frame,image,light,4,base,roughness,metallic,samples,.25,peak_slack);
         f.metrics<<"rectangle-"<<name<<','<<result.max_error<<",0,"<<result.failures<<','<<result.pixels<<'\n';
-        std::printf("SceneLit rectangle %s: pixels=%zu failures=%zu max_code_error=%.3f\n",name,result.pixels,result.failures,result.max_error);
+        std::printf("SceneLit rectangle %s: pixels=%zu failures=%zu max_code_error=%.3f band_margin=%.3f\n",name,result.pixels,result.failures,result.max_error,result.margin);
         return result;
     };
     // Point limit: a 1 cm square carries 24 cd along its normal. Diffuse is
@@ -59,6 +59,37 @@ void rectangle_cases(Fixture& f) {
     orthographic(2.5f);
     result=truth("point-limit-two-sided-back",grey,1,0,1,0);
     check(result.pixels>1000 && result.failures==0,"a two-sided rectangle lights receivers behind it with the |cos| point limit");
+    // Grazing incidence opposite the view. The camera 2 m from the plane sees
+    // it up to 69 degrees off its normal; a 6 cm panel 0.3 m above the plane at
+    // x = 5.95 lights the receivers between them from 80 to 88 degrees on the
+    // opposite side, so v·h falls to about 0.27 and Fresnel takes up to 20% of
+    // the diffuse. Specular there lies outside LTC's per-direction accuracy, so
+    // only the diffuse is judged (analytic_rectangle_diffuse); its slack covers
+    // the Fresnel of the mean light direction against the per-sample truth.
+    light.two_sided=false;f.frame.camera.view[14]=-2;
+    const auto perspective=[&](float degrees) {
+        const float scale=1/std::tan(degrees*std::numbers::pi_v<float>/180);
+        f.frame.camera.projection={scale,0,0,0, 0,scale*aspect,0,0, 0,0,-.1f/39.9f,1, 0,0,4/39.9f,0};f.frame.camera_cut=true;
+    };
+    perspective(65);
+    light.position={5.95f,0,3.7f};light.direction={-1,0,0};light.right={0,1,0};light.up={0,0,-1};
+    light.width=light.height=.06f;light.intensity=30000;light.range=20;
+    material({1,.5,0},1,0);f.edited();
+    const auto grazing=f.capture("grazing-backscatter",2);
+    result=analytic_rectangle_diffuse(f.frame,grazing,light,4,1,1,24,.02);
+    f.metrics<<"rectangle-grazing-backscatter,"<<result.max_error<<",0,"<<result.failures<<','<<result.pixels<<'\n';
+    std::printf("SceneLit rectangle grazing-backscatter diffuse: pixels=%zu failures=%zu max_relative_miss=%.4f\n",result.pixels,result.failures,result.max_error);
+    check(result.pixels>1000 && result.failures==0,"the diffuse part loses the Fresnel of grazing incidence opposite the view");
+    // An oblique view of a glossy metal reflection. The LTC matrix is
+    // anisotropic away from the normal, so a transposed inverse misplaces the
+    // highlight across the image; at 60 degrees LTC stays within its accuracy.
+    perspective(60);
+    light.position={3,0,2};light.direction={-std::numbers::sqrt2_v<float>/2,0,std::numbers::sqrt2_v<float>/2};
+    light.right={0,1,0};light.up={-std::numbers::sqrt2_v<float>/2,0,-std::numbers::sqrt2_v<float>/2};
+    light.width=.6f;light.height=.4f;light.intensity=4;light.range=12;
+    result=truth("oblique-metal",{.9,.6,.3},.5f,1,96,.005);
+    check(result.pixels>1000 && result.failures==0,"an oblique glossy reflection matches the quadrature truth");
+    f.frame.camera.view[14]=4;
     // Area truth by quadrature: tilted panels 0.6 m from the plane, and one that
     // crosses the receiver plane, so the horizon clips it.
     light.two_sided=false;light.position={.3f,-.2f,3.4f};light.width=1.2f;light.height=.6f;light.range=12;
@@ -77,5 +108,5 @@ void rectangle_cases(Fixture& f) {
     light.width=.8f;light.height=1;light.intensity=4;orthographic(1.5f);
     result=truth("area-horizon",grey,.5f,0,96,.005);
     check(result.pixels>1000 && result.failures==0,"a rectangle crossing the receiver plane is clipped at its horizon");
-    std::puts("Renderer rectangle lights: PASS (room evidence, point limit in both projections and two-sided, quadrature truth on dielectric and metal in both projections, horizon clipping)");
+    std::puts("Renderer rectangle lights: PASS (room evidence, point limit in both projections and two-sided, quadrature truth on dielectric and metal in both projections, horizon clipping, grazing diffuse Fresnel opposite the view, oblique glossy metal)");
 }
