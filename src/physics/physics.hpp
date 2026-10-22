@@ -20,8 +20,8 @@ using world::BodySettings;
 
 struct Types {
     TypeId character_component{}, ragdoll_component{}, ragdoll_part_component{},
-        vehicle_component{}, vehicle_wheel_component{}, distance_constraint_component{},
-        force_component{}, kinematic_motion_component{}, scene_query_component{};
+        distance_constraint_component{}, force_component{}, kinematic_motion_component{},
+        scene_query_component{};
 };
 [[nodiscard]] Result<Types> register_types(Runtime&);
 [[nodiscard]] Result<void> configure(Runtime&, ObjectId component, BodySettings);
@@ -83,24 +83,11 @@ struct RagdollPose {
     std::vector<math::Vector3> positions;
     std::vector<math::Quaternion> rotations;
 };
-struct VehicleSettings {
-    float half_width{.8f}, half_length{1.4f}, wheel_radius{.35f};
-    float suspension_length{.5f};
-    bool operator==(const VehicleSettings&) const = default;
-};
-struct VehicleState {
-    SpecialHandle handle;
-    std::uint64_t step_id{};
-    math::Vector3 position{}, velocity{};
-    std::array<bool, 4> wheel_contact{};
-    std::array<math::Vector3, 4> wheel_positions{};
-    std::array<math::Quaternion, 4> wheel_rotations{};
-};
 
 // Authoring components use the existing Runtime graph and scene properties.
 // Inputs are sampled per fixed step. Backend handles remain scene-owned.
 // Shape/constraint configuration is sampled on activation; disable/re-enable to
-// rebuild it. Parts/wheels explicitly bind spatial Entity children.
+// rebuild it. Ragdoll parts explicitly bind spatial Entity children.
 class CharacterComponent : public world::Component {
 public:
     CharacterSettings settings;
@@ -118,16 +105,6 @@ public:
     std::int32_t parent_index{-1};
     math::Vector3 rest_position{};
     float radius{.2f}, capsule_half_height{.25f};
-};
-class VehicleComponent : public world::Component {
-public:
-    ReferenceSequence wheels;
-    VehicleSettings settings;
-    float throttle{}, steering{}, brake{};
-};
-class VehicleWheelComponent : public world::Component {
-public:
-    std::uint32_t wheel_index{};
 };
 class DistanceConstraintComponent : public world::Component {
 public:
@@ -147,8 +124,6 @@ public:
 [[nodiscard]] Result<ObjectId> constraint_target(Runtime&, ObjectId component);
 [[nodiscard]] Result<void> set_ragdoll_parts(Runtime&, ObjectId component, std::span<const ObjectId> entities);
 [[nodiscard]] Result<std::vector<ObjectId>> ragdoll_parts(Runtime&, ObjectId component);
-[[nodiscard]] Result<void> set_vehicle_wheels(Runtime&, ObjectId component, std::span<const ObjectId> entities);
-[[nodiscard]] Result<std::vector<ObjectId>> vehicle_wheels(Runtime&, ObjectId component);
 // Persistent query exclusions may change while active and affect the next sample.
 [[nodiscard]] Result<void> set_query_ignored_entities(Runtime&, ObjectId component, std::span<const ObjectId> entities);
 [[nodiscard]] Result<std::vector<ObjectId>> query_ignored_entities(Runtime&, ObjectId component);
@@ -303,13 +278,6 @@ public:
     [[nodiscard]] Result<SpecialHandle> ragdoll_handle(ObjectId entity) const;
     [[nodiscard]] Result<RagdollPose> read_ragdoll_pose(SpecialHandle) const;
     [[nodiscard]] Result<void> destroy_ragdoll(SpecialHandle);
-    [[nodiscard]] Result<SpecialHandle> create_vehicle(BodyHandle chassis,
-        VehicleSettings = {});
-    [[nodiscard]] Result<SpecialHandle> vehicle_handle(ObjectId entity) const;
-    [[nodiscard]] Result<void> set_vehicle_input(SpecialHandle, float throttle,
-        float steering, float brake);
-    [[nodiscard]] Result<VehicleState> read_vehicle_state(SpecialHandle) const;
-    [[nodiscard]] Result<void> destroy_vehicle(SpecialHandle);
     [[nodiscard]] Result<QueryResult> raycast(math::Vector3 start, math::Vector3 end,
         QueryFilter filter = {}) const;
     [[nodiscard]] Result<QueryResult> sweep_sphere(math::Vector3 start, math::Vector3 end,

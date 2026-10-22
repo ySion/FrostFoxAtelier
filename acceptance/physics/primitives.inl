@@ -503,26 +503,4 @@ void render_interpolation() {
         std::ranges::none_of(f.shown.mesh_slots(),[](const pr::MeshSlot& value){return value.presented.has_value();}),
         "A sleeping scene kept presented poses or a changing version.");
     committed(f.world.stop());
-    // A teleported chassis carries its wheel along without a trail from the old place.
-    PhysicsFixture v;
-    v.ground();
-    auto chassis=v.make({0,2,0},dynamic_body());
-    auto vehicle=take(w::create_component(v.runtime,v.physics_types.vehicle_component));
-    committed(v.world.attach_components(chassis.id(),std::array{w::Attachment{vehicle.id()}}));
-    auto wheel=take(w::create_entity(v.runtime));
-    take(v.world.set_transform(wheel.id(),{}));
-    auto metadata=take(w::create_component(v.runtime,v.physics_types.vehicle_wheel_component));
-    committed(v.world.attach_components(wheel.id(),std::array{w::Attachment{metadata.id()}}));
-    committed(v.world.attach(wheel.id(),w::append,chassis.id()));
-    take(p::set_vehicle_wheels(v.runtime,vehicle.id(),std::array{wheel.id()}));
-    v.start();
-    v.advance(2);
-    // World::set_transform refuses a chassis whose wheels follow it; a Runtime write teleports it alone.
-    take(v.runtime.write(chassis.id(),v.world_types.position_fields[0],atelier::Scalar{100.f}));
-    v.advance(1);
-    const auto poses=v.scene->presented_poses();
-    const auto shown=std::ranges::find(poses,wheel.id(),&pr::PresentedPose::entity);
-    require(shown!=poses.end() && shown->world_position.x>99 && std::abs(shown->position.x-shown->world_position.x)<1,
-        "A teleported chassis drew its wheel trailing from its old place.");
-    committed(v.world.stop());
 }

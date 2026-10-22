@@ -30,8 +30,6 @@
 #include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/Constraints/PointConstraint.h>
 #include <Jolt/Physics/Ragdoll/Ragdoll.h>
-#include <Jolt/Physics/Vehicle/VehicleConstraint.h>
-#include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <algorithm>
 #include <atomic>
@@ -416,13 +414,6 @@ struct PhysicsScene::Impl {
     };
     std::unordered_map<ObjectId, Ragdoll> ragdolls;
     std::unordered_set<JPH::BodyID> ragdoll_ids;
-    struct Vehicle {
-        BodyHandle chassis;
-        std::uint64_t revision;
-        JPH::Ref<JPH::VehicleConstraint> constraint;
-        JPH::Ref<JPH::VehicleCollisionTesterRay> tester;
-    };
-    std::unordered_map<ObjectId, Vehicle> vehicles;
     struct PairState { std::uint32_t contacts{}; ContactEvent event; };
     std::map<std::uint64_t, PairState> active_pairs;
     std::vector<ContactEvent> ready_events;
@@ -639,7 +630,6 @@ PhysicsScene::~PhysicsScene() {
     components_.reset();
     while (!impl_->characters.empty()) remove_special(impl_->characters.begin()->first);
     while (!impl_->ragdolls.empty()) remove_special(impl_->ragdolls.begin()->first);
-    while (!impl_->vehicles.empty()) remove_special(impl_->vehicles.begin()->first);
     while (!impl_->distances.empty()) {
         auto found = impl_->distances.begin();
         impl_->system.RemoveConstraint(found->second.constraint);
@@ -653,8 +643,6 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     auto found = impl_->bodies.find(component);
     if (found == impl_->bodies.end()) return;
     const auto entity=found->second.entity;
-    if (auto vehicle=impl_->vehicles.find(entity);vehicle!=impl_->vehicles.end() && vehicle->second.chassis.component==component)
-        remove_special(entity);
     for (auto it = impl_->distances.begin(); it != impl_->distances.end();) {
         if (it->second.first.component == component || it->second.second.component == component) {
             const auto revision = it->first;
@@ -768,13 +756,6 @@ Result<void> PhysicsScene::follow_handler(std::uint64_t opened) {
     return {};
 }
 void PhysicsScene::remove_special(ObjectId entity) noexcept {
-    if (auto found = impl_->vehicles.find(entity); found != impl_->vehicles.end()) {
-        impl_->system.RemoveStepListener(found->second.constraint);
-        impl_->system.RemoveConstraint(found->second.constraint);
-        impl_->vehicles.erase(found);
-        ++edits_;
-    }
-    // A vehicle constraint leaves its chassis body, and that body's interpolation, in place.
     if (impl_->characters.contains(entity) || impl_->ragdolls.contains(entity)) {
         forget_pose(entity);
         ++edits_;
@@ -1154,7 +1135,6 @@ Result<void> PhysicsScene::step(float elapsed) {
                 body.target.rotation=command.rotation;
                 // The step starts from the teleported pose, so it draws no trail from the old one.
                 impl_->history.insert_or_assign(body.entity, Impl::Pose{command.value, command.rotation});
-                components_->forget_wheel_poses(body.entity);
                 bodies.SetPositionAndRotation(body.id, position(command.value), rotation(command.rotation),
                     body.motion == MotionKind::dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
                 moved.push_back(body.id);
@@ -1380,7 +1360,7 @@ Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
     for (const auto entity : entities) {
         if (impl_->ragdolls.contains(entity) || components_->bound_pose_writer(entity) != ObjectId{})
             return failure(ErrorCode::unsupported_operation,
-                "A Ragdoll or Vehicle part follows its controller; an authored transform applies after a restart.");
+                "A Ragdoll and its parts follow their controller; an authored transform applies after a restart.");
         auto matrix = world::world_matrix(world_.runtime(), entity);
         if (!matrix) return std::unexpected(matrix.error());
         // A degenerate space has no body; the next reconcile drops it.
@@ -1570,11 +1550,6 @@ Result<SpecialHandle> PhysicsScene::ragdoll_handle(ObjectId entity) const {
     if(found==impl_->ragdolls.end()) return failure(ErrorCode::invalid_member,"Entity has no active ragdoll.");
     return SpecialHandle{entity,scene_id_,found->second.revision};
 }
-Result<SpecialHandle> PhysicsScene::vehicle_handle(ObjectId entity) const {
-    const auto found=impl_->vehicles.find(entity);
-    if(found==impl_->vehicles.end()) return failure(ErrorCode::invalid_member,"Entity has no active vehicle.");
-    return SpecialHandle{entity,scene_id_,found->second.revision};
-}
 Result<CharacterState> PhysicsScene::read_character_state(SpecialHandle handle) const {
     auto found = impl_->characters.find(handle.entity);
     if (handle.scene != scene_id_ || found == impl_->characters.end() ||
@@ -1667,80 +1642,6 @@ Result<RagdollPose> PhysicsScene::read_ragdoll_pose(SpecialHandle handle) const 
 }
 Result<void> PhysicsScene::destroy_ragdoll(SpecialHandle handle) {
     if (auto pose = read_ragdoll_pose(handle); !pose) return std::unexpected(pose.error());
-    remove_special(handle.entity);
-    return {};
-}
-Result<SpecialHandle> PhysicsScene::create_vehicle(BodyHandle chassis, VehicleSettings settings) {
-    if (auto state = read_body_state(chassis); !state) return std::unexpected(state.error());
-    if (impl_->bodies.at(chassis.component).motion != MotionKind::dynamic ||
-        impl_->vehicles.contains(chassis.entity) || !std::isfinite(settings.half_width) ||
-        settings.half_width <= 0 || !std::isfinite(settings.half_length) ||
-        settings.half_length <= settings.wheel_radius || !std::isfinite(settings.wheel_radius) ||
-        settings.wheel_radius <= 0 || !std::isfinite(settings.suspension_length) ||
-        settings.suspension_length <= 0)
-        return failure(ErrorCode::argument_mismatch, "Vehicle requires a dynamic chassis and positive wheel dimensions.");
-    const auto id = impl_->bodies.at(chassis.component).id;
-    JPH::BodyLockWrite lock(impl_->system.GetBodyLockInterface(), id);
-    if (!lock.Succeeded()) return failure(ErrorCode::busy, "Could not lock vehicle chassis.");
-    JPH::VehicleConstraintSettings vehicle;
-    for (int wheel = 0; wheel < 4; ++wheel) {
-        JPH::Ref<JPH::WheelSettingsWV> item = new JPH::WheelSettingsWV();
-        item->mPosition = JPH::Vec3(wheel % 2 == 0 ? settings.half_width : -settings.half_width,
-            -.25f, wheel < 2 ? settings.half_length : -settings.half_length);
-        item->mRadius = settings.wheel_radius;
-        item->mWidth = settings.wheel_radius * .4f;
-        item->mSuspensionMinLength = 0;
-        item->mSuspensionMaxLength = settings.suspension_length;
-        item->mMaxSteerAngle = wheel < 2 ? .6f : 0.f;
-        vehicle.mWheels.push_back(JPH::Ref<JPH::WheelSettings>(item.GetPtr()));
-    }
-    JPH::Ref<JPH::WheeledVehicleControllerSettings> controller = new JPH::WheeledVehicleControllerSettings();
-    controller->mDifferentials.resize(1);
-    controller->mDifferentials[0].mLeftWheel = 2;
-    controller->mDifferentials[0].mRightWheel = 3;
-    vehicle.mController = controller;
-    JPH::Ref<JPH::VehicleConstraint> constraint = new JPH::VehicleConstraint(lock.GetBody(), vehicle);
-    JPH::Ref<JPH::VehicleCollisionTesterRay> tester =
-        new JPH::VehicleCollisionTesterRay(Impl::moving_layer);
-    constraint->SetVehicleCollisionTester(tester);
-    impl_->system.AddConstraint(constraint);
-    impl_->system.AddStepListener(constraint);
-    const auto revision = next_revision_++;
-    impl_->vehicles.emplace(chassis.entity, Impl::Vehicle{chassis, revision, constraint, tester});
-    return SpecialHandle{chassis.entity, scene_id_, revision};
-}
-Result<void> PhysicsScene::set_vehicle_input(SpecialHandle handle,
-    float throttle, float steering, float brake) {
-    auto found = impl_->vehicles.find(handle.entity);
-    if (handle.scene != scene_id_ || found == impl_->vehicles.end() ||
-        found->second.revision != handle.revision)
-        return failure(ErrorCode::invalid_member, "Vehicle handle is stale.");
-    if (!std::isfinite(throttle) || std::abs(throttle) > 1 || !std::isfinite(steering) ||
-        std::abs(steering) > 1 || !std::isfinite(brake) || brake < 0 || brake > 1)
-        return failure(ErrorCode::argument_mismatch, "Vehicle controls are out of range.");
-    auto* controller = static_cast<JPH::WheeledVehicleController*>(found->second.constraint->GetController());
-    controller->SetDriverInput(throttle, steering, brake, 0);
-    impl_->system.GetBodyInterface().ActivateBody(impl_->bodies.at(found->second.chassis.component).id);
-    return {};
-}
-Result<VehicleState> PhysicsScene::read_vehicle_state(SpecialHandle handle) const {
-    auto found = impl_->vehicles.find(handle.entity);
-    if (handle.scene != scene_id_ || found == impl_->vehicles.end() ||
-        found->second.revision != handle.revision)
-        return failure(ErrorCode::invalid_member, "Vehicle handle is stale.");
-    auto chassis = read_body_state(found->second.chassis);
-    if (!chassis) return std::unexpected(chassis.error());
-    VehicleState state{handle, completed_step_, chassis->position, chassis->linear_velocity};
-    for (int i = 0; i < 4; ++i) {
-        state.wheel_contact[i] = found->second.constraint->GetWheel(i)->HasContact();
-        const auto transform=found->second.constraint->GetWheelWorldTransform(i,JPH::Vec3::sAxisX(),JPH::Vec3::sAxisY());
-        state.wheel_positions[i]=vector(transform.GetTranslation());
-        state.wheel_rotations[i]=rotation(transform.GetRotation().GetQuaternion());
-    }
-    return state;
-}
-Result<void> PhysicsScene::destroy_vehicle(SpecialHandle handle) {
-    if (auto state = read_vehicle_state(handle); !state) return std::unexpected(state.error());
     remove_special(handle.entity);
     return {};
 }

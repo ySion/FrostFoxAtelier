@@ -70,7 +70,6 @@ const Scenario scenarios[]{
     {"character", character},
     {"constraint", constraint},
     {"ragdoll", ragdoll},
-    {"vehicle", vehicle},
     {"special_integration", simulate_special_systems},
     {"components", component_lifecycle},
     {"entity_bindings", entity_physics_bindings},

@@ -11,8 +11,8 @@ int verify_physics_examples_window(Application& app,const char* output_directory
         "Physic did not open Smooth rendering with its authored lighting settings preserved.");
     struct Example {const char* name;std::size_t entities,roots;};
     constexpr std::array examples{
-        Example{"Overview",29,11},Example{"RigidBodies",8,5},Example{"Forces",8,5},Example{"Triggers",10,6},Example{"Queries",8,5},
-        Example{"Character",8,5},Example{"Constraints",6,4},Example{"Ragdoll",11,4},Example{"Vehicle",8,3},Example{"Raycasts",20,8}};
+        Example{"Overview",23,10},Example{"RigidBodies",8,5},Example{"Forces",8,5},Example{"Triggers",10,6},Example{"Queries",8,5},
+        Example{"Character",8,5},Example{"Constraints",6,4},Example{"Ragdoll",11,4},Example{"Raycasts",20,8}};
     for(const auto& example:examples) {
         const auto* name=example.name;
         model(app.open_scene(std::string("Examples/Physic/Scenes/")+name+".scene"));
@@ -34,6 +34,6 @@ int verify_physics_examples_window(Application& app,const char* output_directory
         png(captured,output/(std::string(name)+"-simulated.png"));
         const auto stopped=model(document.stop());require(!stopped.notification_error,"Physics scene failed during teardown.");
     }
-    std::ofstream(output/"acceptance.txt")<<"Physics examples window acceptance: PASS (10 authored scenes, real World/Jolt simulation, GPU captures).\n";
+    std::ofstream(output/"acceptance.txt")<<"Physics examples window acceptance: PASS (9 authored scenes, real World/Jolt simulation, GPU captures).\n";
     app.close();std::puts("Physics examples window acceptance: PASS");return 0;
 } catch(const std::exception& error) {std::fprintf(stderr,"Physics examples window acceptance: FAIL: %s\n",error.what());return 1;}

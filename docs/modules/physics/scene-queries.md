@@ -93,6 +93,6 @@ Scene v6 在 `properties.ignored_entities` 中保存 `{"$ref":"Entity文档ID"}`
 
 已有用户副本的 Physic 目录不会被模板更新覆盖。缺少新场景时，可把此新文件复制到用户工程的 `Examples/Physic/Scenes/`，再刷新并打开；不要替换已编辑的场景。
 
-当前查询返回已登记的 Primitive 物理体（含车辆底盘和静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。
+当前查询返回已登记的 Primitive 物理体（含静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。
 
 设计参考：[UE Trace 概览](https://dev.epicgames.com/documentation/unreal-engine/traces-in-unreal-engine---overview)、[Raycast 使用](https://dev.epicgames.com/documentation/unreal-engine/traces-with-raycasts-in-unreal-engine)、[FCollisionQueryParams](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/FCollisionQueryParams)。后端细节以仓库固定版本的 [Jolt ShapeCast](../../../third_party/jolt/Jolt/Physics/Collision/ShapeCast.h) 为准。实际覆盖与证据见[物理验收](acceptance.md)。

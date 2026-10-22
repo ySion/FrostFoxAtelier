@@ -55,13 +55,13 @@ StaticMeshComponent 的 mesh、base_color、roughness、metallic、emissive 和 
 
 灯通过 LightComponent 的 `properties.settings` 保存，空间来自 owner Entity。Primitive 的 `properties.body` 保存 BodySettings 与 PhysicsMaterial，Cook 数据是派生缓存。加载按待发布图中的 owner 世界尺度读取工程 Cook 缓存，包含导入目标 parent 与所有 origin；缓存缺失或校验不通过时从源网格重新 Cook 并写回，不产生诊断；内置网格消费 CPU 几何；Mesh 不可用时跳过。源网格可读但无法 Cook 时报告 `unreadable_resource` 并跳过该刚体。缓存准备在 World 发布与 Begin 之前完成。
 
-RagdollComponent.parts 与 VehicleComponent.wheels 是显式持有 Entity 引用序列，约束目标是 `properties.target` 观察引用。独立空间部件保留其真实 metadata 组件，网格由同 Entity 的 StaticMeshComponent 提供。
+RagdollComponent.parts 是显式持有 Entity 引用序列，约束目标是 `properties.target` 观察引用。独立空间部件保留其真实 metadata 组件，网格由同 Entity 的 StaticMeshComponent 提供。
 
 ## 旧格式导入
 
 v1–v5 的 Actor 主体映射到真实 Entity 派生类型，根组件 TRS 提升到主体 Entity；具有独立空间的组件转为子 Entity，原 parent 转为空间和组合关系。纯 SceneComponent 只留下对应空间实体；能力组件和业务派生类型保留真实类型，不降级为基础组件。旧 Body 配置沿严格兼容边界合并到 Primitive，不能无损映射的内容明确拒绝。
 
-旧 constraint_target 场景序号仅在导入时解析；保存后使用统一文档引用。旧 RagdollPart / VehicleWheel 的 metadata 与网格分离，控制器恢复显式 parts / wheels 绑定。旧 v4 阴影预算字段严格校验后丢弃，使用当前直接光预算默认值。
+旧 constraint_target 场景序号仅在导入时解析；保存后使用统一文档引用。旧 RagdollPart 的 metadata 与网格分离，控制器恢复显式 parts 绑定；含车辆组件的旧场景不再能加载。旧 v4 阴影预算字段严格校验后丢弃，使用当前直接光预算默认值。
 
 ## 运行与 World 配置
 

@@ -382,7 +382,7 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
     if(!old.is_array() || old.size()>Session::maximum_entities) throw std::runtime_error("Invalid legacy Actor count.");
     std::uint64_t next=1;Json roots=Json::array(),entities=Json::array();std::vector<std::string> actor_ids;
     for(std::size_t i=0;i<old.size();++i) actor_ids.push_back(std::to_string(next++));
-    const std::unordered_set<std::string> spatial_types{"world.SceneComponent","world.PrimitiveComponent","world.StaticMeshComponent","world.CollisionComponent","world.LightComponent","physics.RagdollPartComponent","physics.VehicleWheelComponent","physics.SceneQueryComponent"};
+    const std::unordered_set<std::string> spatial_types{"world.SceneComponent","world.PrimitiveComponent","world.StaticMeshComponent","world.CollisionComponent","world.LightComponent","physics.RagdollPartComponent","physics.SceneQueryComponent"};
     for(std::size_t a=0;a<old.size();++a) {
         auto actor=old[a];fields(actor,{"type","name","enabled","root","components","properties"});
         if(version==1 && actor.contains("properties")) throw std::runtime_error("Actor business properties require scene version 2.");
@@ -449,12 +449,12 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
         for(const auto& part:parts) {
             const auto type=part.at("type").get<std::string>();
             if(type=="world.PrimitiveComponent" || type=="world.StaticMeshComponent" || type=="world.CollisionComponent" ||
-                type=="physics.RagdollPartComponent" || type=="physics.VehicleWheelComponent") {
+                type=="physics.RagdollPartComponent") {
                 const auto id=spaces.at(json_format::identity(part.at("id")));
                 if(ignored_ids.insert(id).second) ignored.push_back(ref_key(std::stoull(id)));
             }
         }
-        Json ragdoll=Json::array(),wheels=Json::array();
+        Json ragdoll=Json::array();
         for(auto part:parts) {
             const auto key=json_format::identity(part.at("id"));const auto name=part.at("type").get<std::string>();
             fields(part,{"id","type","enabled","properties","position","rotation","scale","parent","mesh","base_color","roughness","metallic","emissive","materials","physics","body","constraint_target"});
@@ -479,7 +479,7 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
                 const auto entity=std::stoull(spaces.at(key));migrated_parts.emplace(key,std::pair{entity,entity});continue;
             }
             const auto owner=spaces.contains(key)?spaces.at(key):actor_ids[a];
-            const bool special=name=="physics.RagdollPartComponent" || name=="physics.VehicleWheelComponent";
+            const bool special=name=="physics.RagdollPartComponent";
             Json payload={{"id",std::to_string(next++)},{"type",name},{"name",""},{"enabled",part.at("enabled")},{"properties",props}};
             migrated_parts.emplace(key,std::pair<std::uint64_t,std::uint64_t>{std::stoull(owner),std::stoull(payload.at("id").get<std::string>())});
             if(name=="world.StaticMeshComponent" || special) {
@@ -491,18 +491,16 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
                 if(key==root_key || parents.at(key)!=root_key) throw std::runtime_error("Legacy physics part must directly descend from its controller root.");
                 auto metadata=payload;metadata["properties"].erase("body");for(const auto field:{"mesh","base_color","roughness","metallic","emissive","materials"}) metadata.erase(field);
                 auto mesh=payload;mesh["id"]=std::to_string(next++);mesh["type"]="world.StaticMeshComponent";mesh["properties"]=Json::object();
-                if(props.contains("body")) {mesh["properties"]["body"]=props.at("body");if(props.at("body").value("enabled",false)) throw std::runtime_error("Legacy ragdoll/wheel Primitive conflicts with its pose driver.");}
+                if(props.contains("body")) {mesh["properties"]["body"]=props.at("body");if(props.at("body").value("enabled",false)) throw std::runtime_error("Legacy ragdoll part Primitive conflicts with its pose driver.");}
                 else mesh["properties"]["body"]={{"enabled",false}};
                 nodes[node_positions.at(owner)]["components"].push_back(std::move(metadata));nodes[node_positions.at(owner)]["components"].push_back(std::move(mesh));
-                (name=="physics.RagdollPartComponent"?ragdoll:wheels).push_back(ref_key(std::stoull(owner)));
+                ragdoll.push_back(ref_key(std::stoull(owner)));
             } else nodes[node_positions.at(owner)]["components"].push_back(std::move(payload));
         }
-        unsigned ragdoll_drivers{},vehicle_drivers{};
-        for(auto& component:nodes[0]["components"]) {
+        unsigned ragdoll_drivers{};
+        for(auto& component:nodes[0]["components"])
             if(component.at("type")=="physics.RagdollComponent") {component["properties"]["parts"]=ragdoll;++ragdoll_drivers;}
-            if(component.at("type")=="physics.VehicleComponent") {component["properties"]["wheels"]=wheels;++vehicle_drivers;}
-        }
-        if(ragdoll_drivers>1 || vehicle_drivers>1 || (!ragdoll.empty() && ragdoll_drivers!=1) || (!wheels.empty() && vehicle_drivers!=1)) throw std::runtime_error("Legacy physics parts require one identifiable controller.");
+        if(ragdoll_drivers>1 || (!ragdoll.empty() && ragdoll_drivers!=1)) throw std::runtime_error("Legacy physics parts require one identifiable controller.");
         if(selections) {
             LegacyActorSelection selection;selection.entity=std::stoull(actor_ids[a]);selection.components.reserve(original_parts.size());
             for(const auto key:original_parts) selection.components.push_back(migrated_parts.at(old_body && key==*old_body?root_key:key));
@@ -1490,8 +1488,6 @@ struct Session::GraphCodec {
             const auto object=root.id();const auto type=take(runtime.type_of(object));
             if(derives(runtime,type,session.physics_types_.ragdoll_component))
                 bound(object,"parts",physics::set_ragdoll_parts(runtime,object,take(physics::ragdoll_parts(runtime,object))),[&]{return physics::set_ragdoll_parts(runtime,object,{});});
-            if(derives(runtime,type,session.physics_types_.vehicle_component))
-                bound(object,"wheels",physics::set_vehicle_wheels(runtime,object,take(physics::vehicle_wheels(runtime,object))),[&]{return physics::set_vehicle_wheels(runtime,object,{});});
             if(derives(runtime,type,session.physics_types_.scene_query_component))
                 bound(object,"ignored_entities",physics::set_query_ignored_entities(runtime,object,take(physics::query_ignored_entities(runtime,object))),
                     [&]{return physics::set_query_ignored_entities(runtime,object,{});});

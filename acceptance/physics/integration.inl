@@ -292,10 +292,6 @@ void simulate_special_systems() {
     p::BodySettings ground_settings;
     ground_settings.half_extents = {50, .5f, 50};
     auto [ground, ground_body] = make_entity({0, -.5f, 0}, true, ground_settings);
-    p::BodySettings chassis_settings;
-    chassis_settings.motion = p::MotionKind::dynamic;
-    chassis_settings.half_extents = {.8f, .25f, 1.4f};
-    auto [chassis, chassis_body] = make_entity({10, 1.5f, 0}, true, chassis_settings);
     auto [character_entity, character_body] = make_entity({0, 2, 0}, false);
     auto [ragdoll_entity, ragdoll_body] = make_entity({-10, 2, 0}, false);
     constexpr float half_yaw = .78539816f;
@@ -330,11 +326,6 @@ void simulate_special_systems() {
         std::abs(first_pose.positions[2].x + 10.f) < .02f &&
         std::abs(first_pose.positions[2].z + .6f) < .02f,
         "ragdoll local joint offset follows the Entity Entity rotation");
-    const auto chassis_handle = take(scene->body_handle(chassis.id()));
-    const auto vehicle = take(scene->create_vehicle(chassis_handle));
-    const auto tether = take(scene->create_distance_constraint(
-        take(scene->body_handle(ground.id())), chassis_handle, 0, 11));
-    take(scene->set_vehicle_input(vehicle, .5f, 0, 0));
     for (int i = 0; i < 150; ++i) step(world, *scene, 1.f / 60.f);
     const auto character_state = take(scene->read_character_state(character));
     require(character_state.grounded && character_state.position.y < 1.3f,
@@ -342,14 +333,6 @@ void simulate_special_systems() {
     const auto ragdoll_pose = take(scene->read_ragdoll_pose(ragdoll));
     require(ragdoll_pose.positions[0].y < first_pose.positions[0].y,
         "ragdoll parts simulate gravity");
-    const auto vehicle_state = take(scene->read_vehicle_state(vehicle));
-    require(std::ranges::any_of(vehicle_state.wheel_contact, [](bool value) { return value; }),
-        "vehicle wheel reaches ground");
-    require(std::abs(vehicle_state.position.z) > .2f, "four-wheel vehicle drives on World ground");
-    require(std::sqrt(vehicle_state.position.x * vehicle_state.position.x +
-        (vehicle_state.position.y + .5f) * (vehicle_state.position.y + .5f) +
-        vehicle_state.position.z * vehicle_state.position.z) < 11.5f,
-        "distance constraint limits chassis travel");
     take(scene->set_character_input(character, {2, 0, 0}, true));
     step(world, *scene, 1.f / 60.f);
     const auto jumped = take(scene->read_character_state(character));
@@ -385,9 +368,6 @@ void simulate_special_systems() {
     const auto rider_after = take(scene->read_character_state(rider));
     require(rider_after.grounded && rider_after.position.y > rider_before.position.y + .3f,
         "virtual character follows a moving World platform");
-    take(scene->destroy_constraint(tether));
-    take(scene->destroy_vehicle(vehicle));
-    require(!scene->read_vehicle_state(vehicle), "destroyed vehicle handle is rejected");
     take(scene->destroy_ragdoll(ragdoll));
     const auto next_ragdoll = take(scene->create_ragdoll(ragdoll_entity.id(),
         std::array<p::RagdollPart, 1>{{{"hip", -1, {0, 0, 0}}}}));
@@ -419,9 +399,6 @@ void simulate_special_systems() {
     require(!scene->read_character_state(replaced), "disabled character Entity invalidates special handle");
     require(!scene->create_character(character_entity.id()),
         "disabled character Entity cannot create a new controller");
-    const auto next_vehicle = take(scene->create_vehicle(chassis_handle));
-    committed(world.set_enabled(chassis_body.id(), false));
-    require(!scene->read_vehicle_state(next_vehicle), "disabled chassis removes vehicle constraint");
     committed(world.stop());
     require(!scene->read_character_state(again) && scene->body_count() == 0,
         "World stop releases all special physics systems");
