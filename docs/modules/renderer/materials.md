@@ -46,7 +46,7 @@ Control 使用相同的资源、编辑和保存入口，`material.inspect` 可�
 
 自发光上限来自现有 FP16 GBuffer 的表达范围，未降低纹理精度；旧组件的 `world.Material`、不可变 Surface 与 Renderer 的旧实例入口现在在同一范围拒绝超界值，避免编辑成功后到捕获或渲染才失败。
 
-内置方块、平面和球提供 UV。OBJ 保留 UV（导入时转换 V 轴）和原始面边界；MTL 的 Kd、d/Tr、map_Kd、map_d 转成同一默认表面，其他 MTL 参数仍不作为标准 PBR 导入。切线在 Mesh 发布时由锁定的 [MikkTSpace](../../../third_party/mikktspace/README.md) 生成，保留作者法线和 lowpoly 硬边；退化 UV 使用稳定的正交回退。非均匀缩放、镜像及法线图 UV 旋转通过同一切线帧处理。
+内置方块、平面和球提供 UV。OBJ 保留 UV（导入时转换 V 轴）和原始面边界；MTL 的 Kd、d/Tr、map_Kd、map_d 转成同一默认表面，其他 MTL 参数仍不作为标准 PBR 导入。glTF 导入的映射见[文件夹工程](../editor/projects.md)。切线默认在 Mesh 发布时由锁定的 [MikkTSpace](../../../third_party/mikktspace/README.md) 生成，保留作者法线和 lowpoly 硬边；退化 UV 使用稳定的正交回退。生产者也可以用 `geometry::Tangents::authored` 提交作者切线：每个顶点的手性（±1）原样保留，XYZ 对法线正交化并归一化，与法线平行（按切线长度的相对误差判断）或长度为零时使用同一回退；glTF 导入使用这一选项。非均匀缩放、镜像及法线图 UV 旋转通过同一切线帧处理。
 
 ## 光照、覆盖与历史
 

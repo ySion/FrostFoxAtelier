@@ -18,10 +18,14 @@ struct Vertex {
     float position[3];
     float normal[3];
     float uv[2]{};
-    float tangent[4]{}; // MikkTSpace tangent and handedness, generated once on publication.
+    float tangent[4]{}; // Tangent and handedness: MikkTSpace on publication, or authored (Tangents::authored).
 };
 
 void generate_tangents(std::span<Vertex>);
+// Keeps each authored handedness; orthogonalizes XYZ against the unit normal and normalizes it.
+// A zero tangent, or one parallel to its normal at any length, takes the same fallback as degenerate UVs.
+void adopt_tangents(std::span<Vertex>);
+enum class Tangents : std::uint8_t { generate, authored };
 
 struct MeshPart {
     std::uint32_t first_vertex{}, vertex_count{}, material{};
@@ -39,7 +43,8 @@ public:
     // No masks means all triangle edges. Producers preserve polygon boundaries
     // during triangulation; the renderer never guesses connectivity from positions.
     explicit Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {},
-                  std::vector<material::Slot> materials = {}, std::vector<MeshPart> parts = {})
+                  std::vector<material::Slot> materials = {}, std::vector<MeshPart> parts = {},
+                  Tangents tangents = Tangents::generate)
         : vertices_(std::move(vertices)), edge_masks_(std::move(edge_masks)),
           materials_(std::move(materials)), parts_(std::move(parts)) {
         if (vertices_.empty() || vertices_.size() % 3 != 0 ||
@@ -77,7 +82,8 @@ public:
             if (length == 0) throw std::invalid_argument("Mesh normal must be nonzero.");
             for (float& value : vertex.normal) value = static_cast<float>(value / length);
         }
-        generate_tangents(vertices_);
+        if (tangents == Tangents::authored) adopt_tangents(vertices_);
+        else generate_tangents(vertices_);
     }
     Mesh& operator=(const Mesh&) = delete;
     Mesh& operator=(Mesh&&) = delete;

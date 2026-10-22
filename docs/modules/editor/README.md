@@ -17,7 +17,7 @@ UI 作者层已将 Parameters 的查询、Position、属性组、Entity Structur
 
 编辑器操作统一为可经接口调用的操作符（菜单、快捷键、Control 和以后的自有语言共用同一入口），设计已定稿、尚未实现，见[操作符设计稿](operators.md)。
 
-工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ 几何导入；Source 文件已接入编辑器内创建、跨文件编译、真实组件类型、属性持久化、独立运行与兼容热更；项目 UI 采用同一工程配置并支持独立预览。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
+工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ/glTF 几何导入；Source 文件已接入编辑器内创建、跨文件编译、真实组件类型、属性持久化、独立运行与兼容热更；项目 UI 采用同一工程配置并支持独立预览。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
 
 ## 源码编辑
 
@@ -345,7 +345,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 ## 验收入口
 
-总 `acceptance` 目标中每项检查只运行一次：已有独立构建目标的文档模式（`--recovery`、`--materials`、`--physics-test-project`、`--textured-obj`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--profile-*` 是测量入口，不进入总入口。
+总 `acceptance` 目标中每项检查只运行一次：已有独立构建目标的文档模式（`--recovery`、`--materials`、`--physics-test-project`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--profile-*` 是测量入口，不进入总入口。
 
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开 About、文件选择、工程目录选择，以及 Examples 子菜单触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 

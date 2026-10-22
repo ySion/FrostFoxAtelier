@@ -92,7 +92,7 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 目录树与结果区之间使用 DSL Splitter，可拖动调整目录宽度；两边分别保留至少 96/64 DIP。Esc、失焦、捕获丢失或关闭正在编辑的区域会取消本次调整；临时缩窄整个面板只限制显示宽度，不抹掉用户此前选择的宽度。目录宽度沿现有工作区状态保留，不进入场景撤销，不触发 viewport 渲染目标缩放。
 
-单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
+单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；Import Mesh、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
 查询或类型过滤排除当前资源时立即清空选择，并禁用对应 Open/Add；仍匹配的选择保留。清除过滤不恢复先前的隐藏选择。目录导航使用共享 Tree 的展开、选择与键盘行为；从路径或内容进入目录时显露对应树行。视图和类型菜单使用互斥单选标记。目录刷新淘汰失效导航记录，当前目录消失时回到有效来源根。
 
@@ -100,13 +100,19 @@ Details 使用共享 Table 的 Name / Type / Size 列，列头显示排序方向
 
 工具行、目录树、内容槽和状态行由 `AssetBrowserShell` 声明，List/Details/Tiles 均由 `AssetResults` 的同一个 Table 节点声明，均位于 [editor.ui.source](../../../assets/editor.ui.source)。保存可更新这些区域的布局，同时保留兼容的控件身份、选择、排序列宽和搜索草稿。浏览器只提供目录/资源快照和既有命令；目录模板按实际变化缓存。全部结果由共享 Table 按当前视图虚拟绘制，原浏览器虚拟列表、合成资源按钮与逐项菜单选择路径已移除。
 
-Import OBJ 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Entity 使用白色实例颜色，避免默认蓝色染色。
+Import Mesh 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Entity 使用白色实例颜色，避免默认蓝色染色。
 
 MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与 DDGI 消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
 依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录，再独占创建依赖、网格与身份文件；已有同名文件不覆盖。发布后目录检查失败时仅删除本轮创建的文件，允许修复后重试；空目录可能保留，清理失败明确报告。
 
-Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Entity 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。Project 内多个 OBJ 引用规范路径与内容一致的贴图时共享不可变解码图像；缓存保留源字节和图像弱引用，刷新清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
+Import Mesh 也接受 glTF 2.0 的 `.gltf`，buffer 与图片为外部文件；GLB、data URI 和存放在 buffer 里的图片不支持。默认场景中带 mesh 的节点按文件顺序深度优先展开，节点 TRS 或矩阵烘焙进同一个 Mesh，每个 primitive 一个材质分段；同一 mesh 被多个节点引用时各自展开。glTF 是右手系，引擎是左手系，两者都以 +Y 向上、以米为单位（[renderer 合同](../renderer/contract.md#场景和-ui)），所以导入时镜像 X 轴：位置和切线经矩阵变换，法线经余因子矩阵，作者切线的 w 在行列式为负时取反。缺少 NORMAL 时按 glTF 正面生成面法线；缺少 TANGENT 时由 MikkTSpace 生成，并统一到 glTF 法线贴图 +Y 指向 V 减小方向的约定。UV 不翻转。
+
+glTF 材质映射：baseColorFactor 乘 sRGB 的 baseColorTexture；metallicRoughnessTexture 的 G 通道作粗糙度、B 通道作金属度，两个因子缺省为 1；normalTexture 及其 scale；emissiveFactor 乘 emissiveTexture；MASK 与 alphaCutoff（缺省 0.5）；doubleSided 同时决定背面裁弃和单面发光，缺省为单面。采样器的 wrapS 与 wrapT 必须相同（Repeat、Clamp 或 Mirror），过滤方式由渲染器决定。BLEND 材质的 primitive 不导入，导入时在 Output 记一条说明；occlusion 贴图、TEXCOORD_1、COLOR_0、KHR_lights_punctual、相机和其他非必需扩展被忽略。extensionsRequired 非空、非三角形列表、sparse 或 normalized accessor、蒙皮、贴图引用 texCoord 非 0、节点图不是树时明确报错。只读取被导入材质引用的图片。
+
+glTF 上限：文档 16 MiB，buffer 合计 512 MiB，单个图片文件 64 MiB，最多 256 张图片，解码像素合计 2 GiB，最多 800 万个三角形、65536 个节点。依赖规则与 OBJ 相同：URI 百分号解码后必须是源目录内的相对路径。上限按官方 Sponza 的 2K 数据留约一倍余量：其中最大的主体文件约 375 万个三角形、134 MiB buffer、72 张图、1.1 GiB 解码像素。图片在最多 8 个线程（不超过逻辑核数的一半）上并行解码；任一张失败时停止其余解码，报告第一个错误。
+
+Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Entity 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。Project 内的网格（OBJ 与 glTF）引用 SHA-256 相同的贴图时共享不可变解码图像；缓存只保存摘要到图像的弱引用，刷新时清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
 
 
 每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
@@ -151,6 +157,8 @@ Scene 统一写出 v7：顶层 `materials` 按文档 ID 保存材质定义，Sta
 ## 验收
 
 `editor_document_acceptance` 还直接运行真实 Project → Workspace → UI 布局/绘制/命中链，在两种逻辑窗口尺寸与 1/1.5/2 DPI 下切换三种视图和滚动选择，不创建桌面窗口。文件链覆盖真实目录创建/打开、中文名、OBJ 导入、元数据身份、组件和空网格往返、保存点撤销、坏版本/坏 JSON、写入失败、资源改名、工程搬移、Cache 删除及无来源网格拒绝保存。
+
+`editor_gltf_acceptance`（`--gltf`）用自建的 glTF 夹具检查节点变换和左手系转换、作者与生成切线、PBR 通道与因子缺省值、MASK 与单双面、BLEND 说明、按内容共享图片、拒绝条件和并行解码失败，并经 Import Mesh 发布、重新打开工程后加载。
 
 同一验收还覆盖非法数值身份、向量长度、重复键、过深/超限输入、独占发布、坏目录导致的导入重试，以及 10000 项目录导致发布后失败时的文件回滚。刷新无变化、文件改名和真实内容改写分别验证缓存复用、旧版本生命周期与新版本解析。
 

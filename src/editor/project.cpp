@@ -1,7 +1,7 @@
 #include "editor/project.hpp"
 #include "editor/session.hpp"
 #include "platform/windows_path.hpp"
-#include "editor/obj_import.hpp"
+#include "editor/mesh_import.hpp"
 #include "editor/json_format.hpp"
 #include "physics/physics.hpp"
 #include <Windows.h>
@@ -208,7 +208,7 @@ Result<void> Project::refresh() {
                 const auto filename=entry.path().filename().wstring();
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp")) continue;
                 if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
-                auto kind=entry.is_directory()?AssetKind::folder:entry.path().extension()==L".obj"?AssetKind::mesh:
+                auto kind=entry.is_directory()?AssetKind::folder:is_mesh_path(entry.path())?AssetKind::mesh:
                     entry.path().extension()==L".material"?AssetKind::material:is_texture_path(entry.path())?AssetKind::texture:
                     entry.path().extension()==L".scene"?AssetKind::scene:std::wstring_view(directory)==L"Source"?AssetKind::source:AssetKind::file;
                 std::string key=utf8(relative.generic_wstring());
@@ -256,7 +256,7 @@ Result<void> Project::refresh() {
             }
             return false;
         });
-        std::erase_if(images_.entries,[](const auto& entry){return entry.second.image.expired();});
+        std::erase_if(images_.entries,[](const auto& entry){return entry.second.expired();});
         entries_=std::move(entries);mesh_entries_=std::move(mesh_entries);++revision_;return {};
     } catch (const std::exception& error) { return failure(error.what()); }
 }
@@ -268,19 +268,23 @@ Result<MeshAsset> Project::mesh(std::string_view key) {
         const auto& entry=entries_[found->second];
         auto found_mesh=meshes_.find(entry.key);
         if(found_mesh==meshes_.end()) {
-            auto loaded=load_obj(take(resolve(entry.path)),&images_);CachedMesh cached{loaded.mesh,{}};
+            auto loaded=load_mesh(take(resolve(entry.path)),&images_);CachedMesh cached{loaded.mesh,{},std::move(loaded.notes)};
             for(const auto& file:loaded.files) if(file.relative!=entry.path.filename()) cached.dependencies.push_back(entry.path.parent_path()/file.relative);
             found_mesh=meshes_.emplace(entry.key,std::move(cached)).first;
         }
         return MeshAsset{entry.key,entry.path.stem().wstring(),found_mesh->second.mesh};
     } catch (const std::exception& error) { return failure(error.what()); }
 }
+std::span<const std::string> Project::mesh_notes(std::string_view key) const {
+    const auto found=meshes_.find(std::string(key));
+    return found==meshes_.end()?std::span<const std::string>{}:std::span<const std::string>(found->second.notes);
+}
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
     std::vector<std::filesystem::path> created;
     std::string resource;
     try {
-        if (source.extension()!=L".obj") return failure("Import Mesh accepts Wavefront OBJ geometry and its material dependencies.");
-        auto loaded=load_obj(std::filesystem::absolute(source));
+        if (!is_mesh_path(source)) return failure("Import Mesh accepts Wavefront OBJ or glTF 2.0 (.gltf) geometry and its dependencies.");
+        auto loaded=load_mesh(std::filesystem::absolute(source),&images_);
         take(refresh());
         // A dependency bundle gets its own namespace. Existing single-file OBJ
         // imports retain their established location and exclusive-create contract.
@@ -292,7 +296,7 @@ Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
         if(std::filesystem::exists(metadata)) return failure("Mesh metadata already exists at the import destination.");
         for(const auto& file:loaded.files) if(std::filesystem::exists(take(resolve(relative/file.relative))))
             return failure("A file already exists at the import destination; no files were changed.");
-        resource="project/"+identity();CachedMesh cached{loaded.mesh,{}};
+        resource="project/"+identity();CachedMesh cached{loaded.mesh,{},std::move(loaded.notes)};
         for(const auto& file:loaded.files) if(file.relative!=source.filename()) cached.dependencies.push_back(relative/file.relative);
         meshes_.emplace(resource,std::move(cached));
         created.reserve(loaded.files.size()+1);

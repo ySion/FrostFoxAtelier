@@ -2,7 +2,7 @@
 #include "runtime/runtime.hpp"
 #include "math/math.hpp"
 #include "editor/assets.hpp"
-#include "editor/obj_import.hpp"
+#include "editor/mesh_import.hpp"
 #include <filesystem>
 #include <unordered_map>
 
@@ -43,6 +43,8 @@ public:
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
     Result<MeshAsset> mesh(std::string_view);
     Result<std::string> import_mesh(const std::filesystem::path&);
+    // Source content the loaded mesh left out (see MeshImport::notes); empty until mesh() loads it.
+    std::span<const std::string> mesh_notes(std::string_view key) const;
     Result<TextureAsset> texture(std::string_view);
     Result<MaterialAsset> material(std::string_view);
     Result<std::string> import_texture(const std::filesystem::path&);
@@ -67,9 +69,9 @@ private:
     std::uint64_t revision_{};
     std::unordered_map<std::string,std::size_t> mesh_entries_;
     std::unordered_map<std::string,material::ImageRef> textures_;
-    struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; };
+    struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; std::vector<std::string> notes; };
     std::unordered_map<std::string,CachedMesh> meshes_;
-    ObjImageCache images_;
+    ImageCache images_;
 };
 // Same-directory temporary + flush + replacement. Failed writes leave the old
 // file intact. Strings and on-disk paths use validated UTF-8.

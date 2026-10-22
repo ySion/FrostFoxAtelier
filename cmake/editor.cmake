@@ -35,6 +35,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/project_materials.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/image_decode.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/obj_import.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/gltf_import.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
@@ -46,7 +47,7 @@ function(atelier_add_editor)
     atelier_target(atelier_editor_core)
     atelier_reflect(atelier_editor_core SOURCE src/editor/operator_parameters.cpp HEADERS src/editor/operator_parameters.hpp)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_presentation atelier_ui_language atelier_physics PRIVATE ole32 shell32 windowscodecs nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_presentation atelier_ui_language atelier_physics PRIVATE atelier_control_transport ole32 shell32 windowscodecs nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"
@@ -108,6 +109,9 @@ function(atelier_add_editor)
         DEPENDS atelier_editor_document_acceptance)
     atelier_headless_acceptance(editor_material_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --materials
+        DEPENDS atelier_editor_document_acceptance)
+    atelier_headless_acceptance(editor_gltf_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --gltf
         DEPENDS atelier_editor_document_acceptance)
     add_executable(atelier_project_scene_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_scene.cpp")
     atelier_target(atelier_project_scene_acceptance)
