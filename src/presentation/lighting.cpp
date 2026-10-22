@@ -108,7 +108,10 @@ Result<void> set_light(world::World& world,ObjectId object,LightSettings value) 
     return set_value<LightComponent>(world,object,"settings",value);
 }
 Result<std::vector<LightRenderItem>> Scene::light_items() const { return extract_lights(nullptr); }
-Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented) const {
+Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented,bool* failed,bool* moved) const {
+    bool unused{};
+    if (!failed) failed=&unused;
+    if (!moved) moved=&unused;
     auto pass=world_->spatial_pass(DiagnosticPhase::lighting);
     if (!pass) return std::unexpected(pass.error());
     auto& runtime=world_->runtime();
@@ -124,7 +127,7 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
             auto settings=read_light(runtime,object);
             if (!settings) {
                 if (!world_->contain(settings.error(),detail::diagnostic(DiagnosticKind::invalid_value,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(settings.error());
-                continue;
+                *failed=true;continue;
             }
             if (!valid_lights_.contains(slot,*settings)) {
                 auto invalid=runtime.validate_value(types_.light_settings,std::as_bytes(std::span{&*settings,1}));
@@ -132,16 +135,16 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                 if (*invalid) {
                     const auto& failure=**invalid;
                     if (!world_->contain(failure.error,world::validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
-                    continue;
+                    *failed=true;continue;
                 }
                 valid_lights_.insert(slot,*settings);
             }
             auto matrix=pass->matrix(owner);
             if (!matrix) return std::unexpected(matrix.error());
-            if (!*matrix) continue;
+            if (!*matrix) {*failed=true;continue;}
             auto frame=pass->orientation(owner);
             if (!frame) return std::unexpected(frame.error());
-            if (!*frame) continue;
+            if (!*frame) {*failed=true;continue;}
             // A mirrored frame is -R; negating its right axis keeps it right-handed.
             const double sign=(*frame)->mirrored?-1:1;
             const auto axis=[&](math::Vector3d local) {
@@ -154,8 +157,9 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                 auto offset=presented->find(*pass,owner);
                 if (!offset) return std::unexpected(offset.error());
                 if (*offset) {
-                    const auto& [moved,turn]=**offset;
-                    item.position=math::transform_point(item.position,moved);
+                    *moved=true;
+                    const auto& [shift,turn]=**offset;
+                    item.position=math::transform_point(item.position,shift);
                     item.direction=math::rotate(turn,item.direction);item.right=math::rotate(turn,item.right);item.up=math::rotate(turn,item.up);
                 }
             }

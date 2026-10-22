@@ -358,6 +358,9 @@ private:
     void hold_poses(std::span<const world::SimulationPose>);
     // Rebuilds presented_ from the latest published step and the fraction of a step left over.
     void present();
+    // Teleports the bodies at or below the Entities a step handler wrote whose pose changed,
+    // as set_transform would; every write is reconciled again by the next step.
+    [[nodiscard]] Result<void> follow_handler(std::uint64_t opened);
     world::World& world_;
     Types types_;
     Capacity capacity_;
@@ -372,8 +375,14 @@ private:
     std::vector<presentation::PresentedPose> presented_;
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
+    // Writes stamped after cursor_ are reconciled by the next step while tracked_; a
+    // World::revision other than reconciled_ reconciles everything.
+    std::uint64_t cursor_{}, reconciled_{};
+    // Bodies and controllers removed; with next_revision_ it tells when the component
+    // controllers must be reconciled again (controlled_).
+    std::uint64_t edits_{}, controlled_{};
     std::uint32_t runtime_cooks_{};
-    bool paused_{}, single_step_{};
+    bool paused_{}, single_step_{}, tracked_{};
 };
 
 }

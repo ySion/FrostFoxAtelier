@@ -158,7 +158,7 @@ Result<ObjectId> constraint_target(Runtime& runtime,ObjectId component) {
 namespace {
 template<class T, ReferenceSequence T::* Member>
 Result<std::vector<ObjectId>> bindings(Runtime& runtime,ObjectId component,std::size_t additional_capacity=0) {
-    return runtime.with_native<T>(component,[&](T& value)->Result<std::vector<ObjectId>> {
+    return runtime.with_native<const T>(component,[&](const T& value)->Result<std::vector<ObjectId>> {
         auto field=runtime.reference_field(component,value.*Member);if(!field) return std::unexpected(field.error());
         auto count=runtime.sequence_size(*field);if(!count) return std::unexpected(count.error());
         std::vector<ObjectId> result;result.reserve(*count+additional_capacity);
@@ -268,6 +268,7 @@ Result<void> ComponentSimulation::removed(ObjectId object,bool detached) try {
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::reconcile() try {
+    contained_=false;
     auto& runtime=world_.runtime();
     std::unordered_set<ObjectId> seen,owners;std::unordered_map<ObjectId,ObjectId> writers;
     std::vector<std::pair<Entry,bool>> desired_entries;
@@ -372,6 +373,7 @@ Result<void> ComponentSimulation::reconcile() try {
         if(duplicate) {keep_queries=true;throw Failure(std::move(*duplicate));}
         } catch(const std::exception& e) {
             if(!contain(world_,failure_of(e),member.id(),member.id())) throw;
+            contained_=true;
             writers=claimed;
             desired_entries.erase(std::remove_if(desired_entries.begin()+std::ptrdiff_t(planned),desired_entries.end(),
                 [&](const auto& entry){return !keep_queries || entry.first.kind!=Kind::query;}),desired_entries.end());
@@ -419,6 +421,7 @@ Result<void> ComponentSimulation::reconcile() try {
     } catch(const std::exception& e) {
         // An isolated controller is not created; an unconfirmed old one is released below.
         if(!contain(world_,failure_of(e),desired.component,desired.entity)) throw;
+        contained_=true;
     }
     for(auto it=entries_.begin();it!=entries_.end();) {
         if(seen.contains(it->first)) ++it;else {release(it->second);it=entries_.erase(it);}
@@ -433,7 +436,8 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
         case Kind::character: {
             const auto input=read<CharacterComponent>(runtime,id,[](const auto& v){return std::pair{v.velocity,v.jump};});
             take(scene_.set_character_input(e.special,input.first,input.second));
-            take(runtime.with_native<CharacterComponent>(id,[](auto& v)->Result<void>{v.jump=false;return {};}));break;
+            // A jump request is consumed; an idle one is left unwritten.
+            if(input.second) take(runtime.with_native<CharacterComponent>(id,[](auto& v)->Result<void>{v.jump=false;return {};}));break;
         }
         case Kind::vehicle: {
             const auto input=read<VehicleComponent>(runtime,id,[](const auto& v){return std::array{v.throttle,v.steering,v.brake};});

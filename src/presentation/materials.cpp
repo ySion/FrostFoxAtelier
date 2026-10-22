@@ -9,7 +9,7 @@ std::string material_slot_name(const geometry::Mesh& mesh,std::size_t index) {
     return slot.name.empty()?"slot/"+std::to_string(index):slot.name;
 }
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime,ObjectId id) {
-    return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<std::vector<MaterialBinding>> {
+    return runtime.with_native<const StaticMeshComponent>(id,[&](const auto& value)->Result<std::vector<MaterialBinding>> {
         auto field=runtime.reference_field(id,Access::materials(value));if(!field) return std::unexpected(field.error());
         std::vector<MaterialBinding> result;result.reserve(Access::material_slots(value).size());
         for(std::size_t i=0;i<Access::material_slots(value).size();++i) {
@@ -49,12 +49,24 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
     });
 }
 Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime& runtime,ObjectId id) {
-    return runtime.with_native<StaticMeshComponent>(id,[&](StaticMeshComponent& value) {return detail::material_surfaces(runtime,id,value);});
+    auto snapshot=runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value) {return detail::material_surfaces(runtime,id,value);});
+    if(!snapshot) return snapshot;
+    if(auto stored=detail::store_surfaces(runtime,id,*snapshot);!stored) return std::unexpected(stored.error());
+    return snapshot;
 }
-Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::material_surfaces(Runtime& runtime,ObjectId id,StaticMeshComponent& value) {
+Result<void> detail::store_surfaces(Runtime& runtime,ObjectId id,std::shared_ptr<const std::vector<material::SurfaceRef>> snapshot) {
+    auto cached=runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value)->Result<bool> {return Access::surfaces(value)==snapshot;});
+    if(!cached) return std::unexpected(cached.error());
+    if(*cached) return {};
+    return runtime.with_native<StaticMeshComponent>(id,[&](StaticMeshComponent& value)->Result<void> {
+        Access::surfaces(value)=std::move(snapshot);Access::surface_geometry(value)=Access::geometry(value);Access::surface_parameters(value)=value.material;
+        return {};
+    });
+}
+Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::material_surfaces(Runtime& runtime,ObjectId id,const StaticMeshComponent& value) {
     using Snapshot=std::shared_ptr<const std::vector<material::SurfaceRef>>;
     const auto& mesh=Access::geometry(value);if(!mesh) return Snapshot{};
-    auto& cached=Access::surfaces(value);
+    const auto& cached=Access::surfaces(value);
     const bool base_changed=!cached || Access::surface_geometry(value)!=mesh || Access::surface_parameters(value)!=value.material;
     if(!base_changed && Access::material_slots(value).empty()) return cached;
     std::optional<ReferenceField> field;
@@ -88,7 +100,7 @@ Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::materia
         } else surface=(*cached)[i];
         if(base_changed || (*cached)[i]!=surface) writable()[i]=std::move(surface);
     }
-    if(next) {cached=std::move(next);Access::surface_geometry(value)=mesh;Access::surface_parameters(value)=value.material;}
+    if(next) return Snapshot{std::move(next)};
     return cached;
 }
 }

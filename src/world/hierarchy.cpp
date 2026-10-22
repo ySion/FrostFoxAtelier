@@ -9,7 +9,7 @@ using detail::Access;
 using detail::error;
 
 Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<std::vector<ObjectRoot>> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::vector<ObjectRoot>> {
         if (Access::transitioning(entity)) return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity))
             if (auto ready = Access::state(*world).admit(false); !ready) return std::unexpected(ready.error());
@@ -30,7 +30,7 @@ Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
     });
 }
 Result<ObjectId> parent_entity(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<ObjectId> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<ObjectId> {
         const auto parent = Access::parent(entity).id();
         if (parent == ObjectId{}) return parent;
         // A detached leaf's weak parent does not keep an abandoned graph alive.
@@ -41,7 +41,7 @@ Result<ObjectId> parent_entity(Runtime& runtime, ObjectId object) {
     });
 }
 Result<bool> has_transform(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<bool> { return Access::spatial(entity); });
+    return runtime.with_native<const Entity>(object, [](const Entity& entity) -> Result<bool> { return Access::spatial(entity); });
 }
 Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
     auto component = runtime.native_type<Component>();
@@ -73,7 +73,7 @@ Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     return true;
 }
 Result<std::optional<ObjectId>> space_reference(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<std::optional<ObjectId>> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::optional<ObjectId>> {
         if (!Access::explicit_origin(entity)) return std::optional<ObjectId>{};
         if (Access::world_origin(entity)) return std::optional<ObjectId>{ObjectId{}};
         const auto target = Access::origin(entity).id();
@@ -89,7 +89,7 @@ Result<SpaceNode*> SpaceGraph::node(ObjectId object) {
     if (!parent_id) return std::unexpected(parent_id.error());
     auto origin = space_reference(runtime, object);
     if (!origin) return std::unexpected(origin.error());
-    auto value = runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<SpaceNode> {
+    auto value = runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<SpaceNode> {
         return SpaceNode{*parent_id, *origin, Access::spatial(entity),
             {entity.position, entity.rotation, entity.scale}, Access::member_world(entity)};
     });
@@ -229,7 +229,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     };
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
         failed = *it;
-        auto local = relations.runtime.with_native<Entity>(*it, [](Entity& entity) -> Result<Trs> {
+        auto local = relations.runtime.with_native<const Entity>(*it, [](const Entity& entity) -> Result<Trs> {
             return Trs{entity.position, entity.rotation, entity.scale};
         });
         if (!local) return fail(it, std::move(local.error()));
@@ -401,6 +401,13 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
 }
 Result<void> publish_transforms(Runtime& runtime, const std::vector<std::pair<ObjectId, Trs>>& values) {
     for (const auto& [id, value] : values) {
+        // An unchanged pose keeps the Entity's write stamp, so change consumers skip it.
+        auto same = runtime.with_native<const Entity>(id, [&](const Entity& entity) -> Result<bool> {
+            const Trs current{entity.position, entity.rotation, entity.scale};
+            return std::memcmp(&current, &value, sizeof current) == 0;
+        });
+        if (!same) return std::unexpected(same.error());
+        if (*same) continue;
         auto written = runtime.with_native<Entity>(id, [&](Entity& entity) -> Result<void> {
             entity.position = value.position; entity.rotation = value.rotation; entity.scale = value.scale;
             return {};
@@ -548,7 +555,7 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
     auto parent = parent_entity(runtime(), object);
     if (!parent) return std::unexpected(parent.error());
     // Rebinding can repair an expired weak origin without evaluating its old space.
-    auto node = runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<detail::SpaceNode> {
+    auto node = runtime().with_native<const Entity>(object, [&](const Entity& entity) -> Result<detail::SpaceNode> {
         return detail::SpaceNode{*parent, origin, Access::spatial(entity),
             {entity.position, entity.rotation, entity.scale}, Access::member_world(entity)};
     });
@@ -838,7 +845,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world,
                 if (!existing) return std::unexpected(existing.error());
                 origin = *existing;
             }
-            auto node = runtime.with_native<Entity>(root.id(), [&](Entity& entity) -> Result<detail::SpaceNode> {
+            auto node = runtime.with_native<const Entity>(root.id(), [&](const Entity& entity) -> Result<detail::SpaceNode> {
                 return detail::SpaceNode{root.id() == attachment.entity ? attachment.parent : *parent,
                     origin, Access::spatial(entity), {entity.position, entity.rotation, entity.scale}, &world};
             });

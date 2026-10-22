@@ -7,6 +7,8 @@
 #include <cstring>
 #include <optional>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include "presentation/presentation.gen.hpp"
 
 // Meshes, lights and the Environment: component types consumed by rendering,
@@ -305,10 +307,16 @@ public:
     // Brings the cached extraction up to date in one presentation pass and one
     // lighting pass, and returns the presentation version: the serial of the
     // latest update that changed a mesh slot, the mesh layout, the lights or the
-    // Environment settings. Every member's space and component are read again,
-    // so values written past World (Runtime::write, native code, JIT) are found;
-    // only changed meshes are validated and rebuilt. Failures are reported as by
-    // extraction on every update, so persistent ones keep counting repeats.
+    // Environment settings. Runtime write stamps find every value written since
+    // the previous update, including past World (Runtime::write, native code, JIT):
+    // a mesh slot is read again when its component or an Entity on its spatial
+    // chain was written, the lights when any light or Entity on a light's chain
+    // was, and everything after World::revision advances; only changed meshes are
+    // validated and rebuilt. Slots whose surfaces come from material slots and
+    // slots not in the cache (isolated, degenerate) are read on every update, as
+    // are the lights while one is not drawn, so failures are reported as by
+    // extraction on every update and persistent ones keep counting repeats.
+    // Must be called at a host safe point (Runtime::change_cursor is busy otherwise).
     // Each mesh and light is drawn relative to the nearest Entity of `presented`
     // on its spatial chain, itself included: moved rigidly from that Entity's
     // world pose to its presented pose, or left at its World matrix when the two
@@ -334,12 +342,16 @@ public:
     [[nodiscard]] Result<rendering::SceneLightingSettings> environment() const;
 private:
     Scene(world::World& world, const Types& types) noexcept : world_(&world), types_(types) {}
-    // Re-reads the mesh bucket in one presentation pass; changed slots take `serial`.
+    // Re-reads the mesh slots whose sources were written since the latest update (all
+    // of them after a layout change) in one presentation pass; changed slots take `serial`.
     // Without `presented` the slots keep their presented matrices.
     Result<void> update_meshes(std::uint64_t serial, const detail::Presented* presented) const;
     // Re-reads one mesh slot; true when its item changed.
     Result<bool> update_mesh(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
-    Result<std::vector<LightRenderItem>> extract_lights(const detail::Presented*) const;
+    // Rebuilds the spatial chains of the mesh slots and the light sources for a new layout.
+    Result<void> index_layout(world::World::SpatialPass&, std::span<const world::CapabilityMember> meshes) const;
+    // `failed`: an active light was not drawn. `moved`: a presented pose moved a light.
+    Result<std::vector<LightRenderItem>> extract_lights(const detail::Presented*, bool* failed = nullptr, bool* moved = nullptr) const;
     world::World* world_;
     Types types_;
     world::CapabilityId meshes_, lights_, environments_;
@@ -351,6 +363,22 @@ private:
     mutable std::size_t presented_slots_{}; // Slots with a presented matrix after the latest update.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
+    // Writes stamped after `cursor_` are not yet read; valid while `tracked_`.
+    mutable std::uint64_t cursor_{};
+    mutable bool tracked_{};
+    mutable std::vector<ObjectId> written_;
+    // Each Entity on a mesh's spatial chain, and its component, lead to that slot.
+    mutable std::unordered_map<ObjectId, std::vector<std::uint32_t>> mesh_dependents_;
+    mutable std::unordered_map<ObjectId, std::uint32_t> mesh_components_;
+    // Slot s's chain, its own Entity first, is chains_[chain_starts_[s], chain_starts_[s + 1]).
+    mutable std::vector<ObjectId> chains_;
+    mutable std::vector<std::uint32_t> chain_starts_;
+    // Light components and the Entities on their chains.
+    mutable std::unordered_set<ObjectId> light_sources_;
+    mutable std::vector<std::uint32_t> dirty_, volatile_, presented_list_;
+    mutable std::vector<bool> volatile_flags_;
+    mutable std::vector<std::uint64_t> marks_, presented_marks_; // Serial of the update that last listed each slot.
+    mutable bool lights_dirty_{true}, lights_failed_{}, lights_moved_{};
     std::uint64_t identity_{};
     mutable std::uint64_t serial_{}, version_{}, mesh_layout_{}, lights_changed_{}, layout_revision_{};
 };

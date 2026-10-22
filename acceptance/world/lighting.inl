@@ -407,7 +407,10 @@ void presentation_cache() {
         return scene.mesh_slots()[std::size_t(std::ranges::find(members,component,&w::CapabilityMember::component)-members.begin())];
     };
     auto version=take(scene.update());
+    const auto still_cursor=take(runtime.change_cursor());
     for(int frame=0;frame<3;++frame) require(take(scene.update())==version,"An unchanged presentation advanced its version.");
+    std::vector<ObjectId> written;runtime.changed_objects(still_cursor,written);
+    require(written.empty(),"Updating an unchanged presentation wrote an object.");
     const auto advanced=[&](const char* message) {
         const auto next=take(scene.update());require(next!=version,message);
         require(take(scene.update())==next,"Updating a changed presentation again advanced its version.");
@@ -453,6 +456,12 @@ void presentation_cache() {
     take(runtime.write(parent.id(),x,Scalar{3.f}));advanced("Repairing an isolated space did not advance the version.");
     require(scene.light_snapshot().size()==1 && slot(mesh).item && take(scene.render_items()).size()==2 && world.take_diagnostics().empty(),
         "Repaired items did not return to the cache.");
+    // The lights are not extracted again here; the invalid Environment still counts every update.
+    const w::FieldPath sky{field(types.environment_component,"sky_intensity")};
+    take(runtime.write(environment.id(),sky,Scalar{1e6f}));
+    (void)take(scene.update());(void)take(scene.update());
+    reports=world.take_diagnostics();
+    require(reports.size()==1 && reports[0].repeats==2,"A persistent invalid Environment was not reported on each update.");
     committed(world.close());
-    std::puts("[pass] Presentation cache: unchanged updates keep the version; World, Runtime, Environment, TRS, enablement, composition, reparent and material resource edits advance it and rebuild only their slots; isolated items are reported on every update");
+    std::puts("[pass] Presentation cache: unchanged updates keep the version; World, Runtime, Environment, TRS, enablement, composition, reparent and material resource edits advance it and rebuild only their slots; isolated items and an invalid Environment are reported on every update");
 }

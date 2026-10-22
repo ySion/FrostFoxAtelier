@@ -331,7 +331,17 @@ struct PhysicsScene::Impl {
         // any other value was written past physics and relocates the body.
         world::Trs local;
         std::vector<ObjectId> ancestors;
+        // The owner's world pose as this scene last created, teleported or published it; a
+        // different one with the same local TRS means an ancestor moved, which relocates the body.
+        world::Trs held;
     };
+    // Whether two world poses agree within the float error of a TRS round trip.
+    static bool near(const world::Trs& a, const world::Trs& b) noexcept {
+        for (std::size_t i=0;i<3;++i) if (std::abs(a.position[i]-b.position[i])>1e-5f*std::max(1.f,std::abs(b.position[i]))) return false;
+        const auto& [ax,ay,az,aw]=a.rotation;const auto& [bx,by,bz,bw]=b.rotation;
+        const float sign=ax*bx+ay*by+az*bz+aw*bw<0?-1.f:1.f;
+        return std::abs(ax-sign*bx)<=1e-5f && std::abs(ay-sign*by)<=1e-5f && std::abs(az-sign*bz)<=1e-5f && std::abs(aw-sign*bw)<=1e-5f;
+    }
     enum class CommandKind { force, impulse, kinematic_target, teleport };
     struct Command {
         CommandKind kind;
@@ -359,9 +369,26 @@ struct PhysicsScene::Impl {
         std::optional<ObjectId> parent;
     };
     // Shared by every body checked in the current step's reconcile pass, then discarded:
-    // ancestor values change without notice between steps.
+    // a later write can change an ancestor.
     std::unordered_map<ObjectId, Ancestor> ancestry;
     bool ancestry_pass{};
+    // The body components at or below each Entity, a body's own Entity included; rebuilt when stale.
+    std::unordered_map<ObjectId, std::vector<ObjectId>> dependents;
+    bool dependents_stale{true};
+    // Bucket component -> owner Entity as of the latest full reconcile.
+    std::unordered_map<ObjectId, ObjectId> component_owners;
+    // Entities a failure or a degenerate space left without a body; every step tries them again.
+    std::vector<ObjectId> retry;
+    // Written objects to reconcile: since the cursor, and those step handlers wrote.
+    std::vector<ObjectId> changed, pending, handler_writes;
+    std::unordered_map<ObjectId, std::vector<ObjectId>>& below() {
+        if (dependents_stale) {
+            dependents.clear();
+            for (const auto& [component, body] : bodies) for (const auto node : body.ancestors) dependents[node].push_back(component);
+            dependents_stale = false;
+        }
+        return dependents;
+    }
     std::unordered_map<ObjectId, Body> bodies;
     std::unordered_map<ObjectId, ObjectId> entity_bodies;
     Body* resolve(BodyHandle handle, std::uint64_t scene) {
@@ -643,6 +670,8 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     impl_->body_components.erase(id);
     impl_->entity_bodies.erase(entity);
     impl_->bodies.erase(found);
+    ++edits_;
+    impl_->dependents_stale = true;
     forget_pose(entity);
 }
 void PhysicsScene::forget_pose(ObjectId entity) noexcept {
@@ -696,14 +725,60 @@ void PhysicsScene::present() {
         presented_.push_back({entity, where, orientation, to.position, to.rotation});
     }
 }
+Result<void> PhysicsScene::follow_handler(std::uint64_t opened) {
+    auto& runtime = world_.runtime();
+    auto& written = impl_->handler_writes;
+    runtime.changed_objects(opened, written);
+    impl_->pending.insert(impl_->pending.end(), written.begin(), written.end());
+    std::unordered_set<ObjectId> moved;
+    if (world_.revision() == reconciled_) {
+        auto& below = impl_->below();
+        for (const auto object : written)
+            if (const auto found = below.find(object); found != below.end())
+                for (const auto component : found->second) moved.insert(impl_->bodies.at(component).entity);
+    } else {
+        // A structural edit since this step's reconcile leaves Body::ancestors behind; walk the current chains.
+        const std::unordered_set<ObjectId> touched(written.begin(), written.end());
+        for (const auto& [component, body] : impl_->bodies) {
+            (void)component;
+            if (!world_.contains(body.entity)) continue;
+            for (auto node = body.entity; node != ObjectId{};) {
+                if (touched.contains(node)) { moved.insert(body.entity); break; }
+                auto parent = world::spatial_parent(runtime, node);
+                if (!parent) break;
+                node = *parent;
+            }
+        }
+    }
+    for (const auto entity : moved) {
+        const auto& body = impl_->bodies.at(impl_->entity_bodies.at(entity));
+        auto relocated = [&]() -> Result<void> {
+            auto local = world::read_transform(runtime, entity);
+            if (!local) return std::unexpected(local.error());
+            auto matrix = world::world_matrix(runtime, entity);
+            if (!matrix) return std::unexpected(matrix.error());
+            auto pose = world::relative_transform(*matrix, world::transform_matrix({}));
+            // A degenerate space keeps its body until the next step's reconcile drops it.
+            if (!pose) return {};
+            if (std::memcmp(&*local, &body.local, sizeof body.local) == 0 && Impl::near(*pose, body.held)) return {};
+            return relocate(std::span<const ObjectId>{&entity, 1});
+        }();
+        if (!relocated && !detail::contain(world_, relocated.error(), entity, entity)) return relocated;
+    }
+    return {};
+}
 void PhysicsScene::remove_special(ObjectId entity) noexcept {
     if (auto found = impl_->vehicles.find(entity); found != impl_->vehicles.end()) {
         impl_->system.RemoveStepListener(found->second.constraint);
         impl_->system.RemoveConstraint(found->second.constraint);
         impl_->vehicles.erase(found);
+        ++edits_;
     }
     // A vehicle constraint leaves its chassis body, and that body's interpolation, in place.
-    if (impl_->characters.contains(entity) || impl_->ragdolls.contains(entity)) forget_pose(entity);
+    if (impl_->characters.contains(entity) || impl_->ragdolls.contains(entity)) {
+        forget_pose(entity);
+        ++edits_;
+    }
     impl_->characters.erase(entity);
     if (auto found = impl_->ragdolls.find(entity); found != impl_->ragdolls.end()) {
         for (const auto id : found->second.ragdoll->GetBodyIDs()) impl_->ragdoll_ids.erase(id);
@@ -802,6 +877,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         diagnostic.object=diagnostic.entity=degenerate!=ObjectId{}?degenerate:entity;diagnostic.field={"scale"};
         diagnostic.message="A zero scale axis makes this space degenerate; Primitives in it have no physical body.";
         world_.report(std::move(diagnostic));
+        impl_->retry.push_back(entity);
         return {};
     }
     if(hierarchy) return std::unexpected(std::move(*hierarchy));
@@ -832,9 +908,10 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     if (current!=impl_->bodies.end() && current->second.entity==entity && current->second.mesh==mesh &&
         current->second.settings==*settings && same_scale(current->second.shape_scale,scale)) {
         if (current->second.ancestors==ancestors) {
-            // A TRS written past physics (Runtime, Source) moves the body as set_transform does.
+            // A TRS written past physics (Runtime, Source), on the owner or an ancestor, moves
+            // the body as set_transform does.
             static_assert(sizeof(world::Trs)==10*sizeof(float));
-            if (std::memcmp(&current->second.local,&owner_local,sizeof owner_local)==0) return {};
+            if (std::memcmp(&current->second.local,&owner_local,sizeof owner_local)==0 && Impl::near(*canonical,current->second.held)) return {};
             current->second.local=owner_local;
             return relocate(std::span<const ObjectId>{&entity,1});
         }
@@ -854,6 +931,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         if(same_position && same_rotation) {
             current->second.ancestors=std::move(ancestors);
             current->second.local=owner_local;
+            current->second.held=*canonical;
+            impl_->dependents_stale=true;
             // Until a step publishes it, its listing keeps it off a moving new ancestor's interpolation.
             hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
             return {};
@@ -890,7 +969,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     remove(component);
     remove_special(entity);
     try {
-        impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,owner_local,std::move(ancestors)});
+        impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,owner_local,std::move(ancestors),*canonical});
+        impl_->dependents_stale=true;
         impl_->entity_bodies.emplace(entity,component);
         impl_->body_components.emplace(id,component);
         hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
@@ -908,7 +988,10 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     if (!entity) return std::unexpected(entity.error());
     if (phase == world::Lifecycle::deactivated || phase == world::Lifecycle::detached) {
         if (!world_.running()) {
-            // A stopped World steps nothing; the next start begins from an empty accumulator.
+            // A stopped World steps nothing; the next start begins from an empty accumulator
+            // and reconciles everything.
+            tracked_ = false;
+            impl_->pending.clear();
             impl_->commands.clear();
             impl_->history.clear();
             impl_->interpolated.clear();
@@ -939,34 +1022,60 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
 Result<void> PhysicsScene::step(float elapsed) {
     timing::Scope timed{phases::step};
     std::optional<timing::Scope> reconciling{std::in_place, phases::reconcile};
-    // Body settings are sampled every frame, including direct field writes.
-    // Other members hold no body or pose driver, so reconcile is a no-op for them.
     auto& runtime = world_.runtime();
-    std::unordered_set<ObjectId> candidates;
-    for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
-    for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
-    for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
-    // World keeps these buckets with composition and enablement. Body settings
-    // are still sampled every frame because direct field writes do not notify.
-    // Existing bodies and controllers stay candidates so that leaving removes them.
-    const auto add_owners = [&](world::CapabilityId id, bool body) -> Result<void> {
-        auto found = world_.members(id);
-        if (!found) return std::unexpected(found.error());
-        for (const auto& item : *found) {
-            if (!item.active) continue;
-            if (body) {
-                auto enabled = runtime.with_native<const world::PrimitiveComponent>(item.component,
-                    [](const world::PrimitiveComponent& value) -> Result<bool> { return value.body.enabled; });
-                if (!enabled) return std::unexpected(enabled.error());
-                if (!*enabled) continue;
+    // Runtime write stamps name what changed since the previous step's write-back, and
+    // pending holds what its step handlers wrote; only those Entities, the owners of those
+    // components and the bodies below those Entities are reconciled. A structural edit
+    // (World::revision) or a stopped World reconciles every body owner and controller.
+    // Other members hold no body or pose driver, so reconcile is a no-op for them.
+    const bool full = !tracked_ || reconciled_ != world_.revision();
+    reconciled_ = world_.revision();
+    auto& changed = impl_->changed;
+    changed.clear();
+    if (!full) runtime.changed_objects(cursor_, changed);
+    changed.insert(changed.end(), impl_->pending.begin(), impl_->pending.end());
+    impl_->pending.clear();
+    std::unordered_set<ObjectId> candidates(impl_->retry.begin(), impl_->retry.end());
+    impl_->retry.clear();
+    if (full) {
+        for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
+        for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
+        for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
+        impl_->component_owners.clear();
+        // World keeps these buckets with composition and enablement.
+        // Existing bodies and controllers stay candidates so that leaving removes them.
+        const auto add_owners = [&](world::CapabilityId id, bool body) -> Result<void> {
+            auto found = world_.members(id);
+            if (!found) return std::unexpected(found.error());
+            for (const auto& item : *found) {
+                impl_->component_owners.insert_or_assign(item.component, item.entity);
+                if (!item.active) continue;
+                if (body) {
+                    auto enabled = runtime.with_native<const world::PrimitiveComponent>(item.component,
+                        [](const world::PrimitiveComponent& value) -> Result<bool> { return value.body.enabled; });
+                    if (!enabled) return std::unexpected(enabled.error());
+                    if (!*enabled) continue;
+                }
+                candidates.insert(item.entity);
             }
-            candidates.insert(item.entity);
+            return {};
+        };
+        if (auto added = add_owners(primitives_, true); !added) return std::unexpected(added.error());
+        if (auto added = add_owners(characters_, false); !added) return std::unexpected(added.error());
+        if (auto added = add_owners(ragdolls_, false); !added) return std::unexpected(added.error());
+    } else {
+        auto& below = impl_->below();
+        for (const auto object : changed) {
+            // A written component stands for its owner; bodies below an owner depend on its settings too.
+            const auto owner = impl_->component_owners.find(object);
+            const auto entity = owner != impl_->component_owners.end() ? owner->second : object;
+            if (owner != impl_->component_owners.end() || impl_->entity_bodies.contains(entity) ||
+                impl_->characters.contains(entity) || impl_->ragdolls.contains(entity))
+                candidates.insert(entity);
+            if (const auto found = below.find(entity); found != below.end())
+                for (const auto component : found->second) candidates.insert(impl_->bodies.at(component).entity);
         }
-        return {};
-    };
-    if (auto added = add_owners(primitives_, true); !added) return std::unexpected(added.error());
-    if (auto added = add_owners(characters_, false); !added) return std::unexpected(added.error());
-    if (auto added = add_owners(ragdolls_, false); !added) return std::unexpected(added.error());
+    }
     if (!candidates.empty()) {
         auto members = world_.members();
         if (!members) return std::unexpected(members.error());
@@ -980,9 +1089,15 @@ Result<void> PhysicsScene::step(float elapsed) {
             // An isolated Entity keeps no ordinary body until its configuration is valid again.
             if (!detail::contain(world_, found.error(), member.id(), member.id())) return std::unexpected(found.error());
             if (auto body = impl_->entity_bodies.find(member.id()); body != impl_->entity_bodies.end()) remove(body->second);
+            impl_->retry.push_back(member.id());
         }
     }
-    if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
+    // Controllers bind Entities, components and bodies: any write, or a body or controller
+    // created or removed since, reconciles them again, as does a failure they contained.
+    if (full || !changed.empty() || controlled_ != next_revision_ + edits_ || components_->contained()) {
+        if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
+        controlled_ = next_revision_ + edits_;
+    }
     reconciling.reset();
     constexpr float fixed = fixed_step;
     constexpr std::uint32_t maximum_steps = 8;
@@ -999,6 +1114,8 @@ Result<void> PhysicsScene::step(float elapsed) {
         (!paused_ && remaining_ + 1e-7f >= fixed)) && result.steps < maximum_steps) {
         timing::Scope substep{phases::substep};
         if (before_step_) {
+            auto opened = runtime.change_cursor();
+            if (!opened) return std::unexpected(opened.error());
             try {
                 auto called = before_step_(completed_step_ + 1, fixed);
                 if (!called) return std::unexpected(called.error());
@@ -1007,6 +1124,7 @@ Result<void> PhysicsScene::step(float elapsed) {
             } catch (...) {
                 return failure(ErrorCode::invocation_failed, "Before-step handler threw an unknown exception.");
             }
+            if (auto followed = follow_handler(*opened); !followed) return followed;
         }
         if(auto input=components_->before_step(fixed); !input) return std::unexpected(input.error());
         auto& moved=impl_->moved;
@@ -1139,6 +1257,15 @@ Result<void> PhysicsScene::step(float elapsed) {
         for(std::size_t i=0,j=0;i<poses.size() && j<impl_->written.size();++i) {
             if(poses[i].entity!=impl_->written[j].first) continue;
             ++j;
+            if(const auto body=impl_->entity_bodies.find(poses[i].entity);body!=impl_->entity_bodies.end()) {
+                auto& published=impl_->bodies.at(body->second);
+                published.held={poses[i].position,poses[i].rotation,{1,1,1}};
+                // Below an ancestor the local TRS rounds the pose; reconcile compares against that rounding.
+                // A structural edit since this step's reconcile can have given a root body an ancestor.
+                if(published.ancestors.size()>1 || world_.revision()!=reconciled_)
+                    if(auto matrix=world::world_matrix(runtime,poses[i].entity))
+                        if(auto authored=world::relative_transform(*matrix,world::transform_matrix({}))) published.held=*authored;
+            }
             const Impl::Pose to{poses[i].position,poses[i].rotation};
             auto& from=impl_->history.try_emplace(poses[i].entity,to).first->second;
             interpolated.push_back({poses[i].entity,from,to});
@@ -1152,6 +1279,8 @@ Result<void> PhysicsScene::step(float elapsed) {
         if(auto visuals=components_->after_step(); !visuals) return std::unexpected(visuals.error());
         impl_->collect_contacts(completed_step_, scene_id_, result);
         if (after_step_) {
+            auto opened = runtime.change_cursor();
+            if (!opened) return std::unexpected(opened.error());
             try {
                 auto called = after_step_(completed_step_, fixed);
                 if (!called) return std::unexpected(called.error());
@@ -1160,10 +1289,17 @@ Result<void> PhysicsScene::step(float elapsed) {
             } catch (...) {
                 return failure(ErrorCode::invocation_failed, "After-step handler threw an unknown exception.");
             }
+            if (auto followed = follow_handler(*opened); !followed) return followed;
         }
     }
     result.remaining = remaining_;
     present();
+    // Every write since this step's reconcile was physics' own or a step handler's (pending);
+    // later ones, contact handlers' included, are found by the next step.
+    auto cursor = runtime.change_cursor();
+    if (!cursor) return std::unexpected(cursor.error());
+    cursor_ = *cursor;
+    tracked_ = true;
     timing::Scope dispatching{phases::events};
     std::vector<ContactEvent> events;
     events.swap(impl_->ready_events);
@@ -1275,7 +1411,9 @@ Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
     for (const auto& target : targets) {
         if (target.body) {
             impl_->commands.push_back({Impl::CommandKind::teleport, *target.body, target.pose.position, target.pose.rotation, true});
-            impl_->bodies.at(target.body->component).local = target.local;
+            auto& body = impl_->bodies.at(target.body->component);
+            body.local = target.local;
+            body.held = target.pose;
             continue;
         }
         auto& character = *impl_->characters.at(target.entity).character;
@@ -1452,6 +1590,7 @@ Result<void> PhysicsScene::destroy_character(SpecialHandle handle) {
     if (auto state = read_character_state(handle); !state) return std::unexpected(state.error());
     forget_pose(handle.entity);
     impl_->characters.erase(handle.entity);
+    ++edits_;
     return {};
 }
 Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity,
