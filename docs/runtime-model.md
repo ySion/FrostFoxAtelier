@@ -145,7 +145,7 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 
 `Runtime::object_type()` 返回本 Runtime 内建的 `core.Object`。它是可创建的空对象根，不要求 C++ 对象增加公共头部。对象定义未填写 `TypeDefinition::base` 时默认派生此根；显式基类用同一 `TypeReference` 解析，允许同批前向声明。`TypeInfo::base` 保存解析后的父类型。记录和标量不参与继承。
 
-`NativeRegistration<Derived>::base<Base>()` 显式登记基类，并生成 `NativeLayout::base_address` 的 C++ 地址转换。未登记的 C++ 继承不会自动成为 Runtime 祖先。循环基类、非法父类型及祖先成员重名（含隐藏字段）在整批发布前拒绝；不实现成员遮蔽或覆盖。
+`NativeRegistration<Derived>::base<Base>()` 显式登记基类，并生成 `NativeLayout::base_address` 的 C++ 地址转换。未登记的 C++ 继承不会自动成为 Runtime 祖先。循环基类、非法父类型及祖先成员重名（含隐藏字段）在整批发布前拒绝，重名错误写出派生类型和声明该成员的祖先，例如 `Member hides an inherited declaration: game.Crate.value hides world.Base.value`；不实现成员遮蔽或覆盖。
 
 | 派生 / 基类表示 | 布局与生命周期 |
 | --- | --- |

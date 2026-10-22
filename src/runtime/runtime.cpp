@@ -1803,7 +1803,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 for (const auto* ancestor = type.base; ancestor; ancestor = ancestor->base) {
                     for (const auto& name : type.member_names) {
                         if (std::ranges::find(ancestor->member_names, name) != ancestor->member_names.end())
-                            return failure(ErrorCode::invalid_definition, "Member hides an inherited declaration: " + name);
+                            return failure(ErrorCode::invalid_definition, "Member hides an inherited declaration: " +
+                                type.info.name + "." + name + " hides " + ancestor->info.name + "." + name);
                     }
                 }
                 type.info.fields.insert(type.info.fields.begin(), type.base->info.fields.begin(), type.base->info.fields.end());
