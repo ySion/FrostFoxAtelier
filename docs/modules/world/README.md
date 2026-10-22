@@ -120,7 +120,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 `revision()` 是 World 的结构版本号：成员、组合、启用、空间关系、Transform 有无和能力登记每变化一次就前进；在它前进之前，每个能力桶保持同样的成员、组件和顺序。字段值（包括 TRS）也会经 World 之外的路径改变，不计入它；缓存提取结果的消费者自己比较这些值，例如 [presentation 的提取缓存](../presentation/README.md#提取缓存)。
 
-成员的世界矩阵来自 World 持有的一份空间缓存，各个提取遍历（例如 presentation 的 `render_items`、`light_items`）、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。只有 World 成员的 Transform 增删与空间参考变化会使缓存失效。Detached 对象和候选图仍使用临时求值。
+成员的世界矩阵来自 World 持有的一份空间缓存，各个提取遍历（例如 presentation 的 `render_items`、`light_items`）、`world_matrix`、`spatial_parent` 与位姿批次（`apply_simulation_transforms` 和 `translate_owner` 的批量应用）共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。只有 World 成员的 Transform 增删与空间参考变化会使缓存失效。Detached 对象、结构编辑的候选图，以及祖先也在同一位姿批次里的位姿（要以祖先的目标位姿换算）仍使用临时求值。
 
 ## 运行位姿与验收入口
 

@@ -350,6 +350,8 @@ struct PhysicsScene::Impl {
     };
     std::vector<Command> commands;
     std::vector<world::SimulationPose> poses;
+    // The body each pose of `poses` publishes, null for controllers and bound parts.
+    std::vector<Body*> posed;
     std::vector<std::pair<ObjectId, world::Trs>> written;
     struct Pose { math::Vector3 position; math::Quaternion rotation; };
     // Where each simulated Entity was last published, created or teleported; its next
@@ -1198,12 +1200,17 @@ Result<void> PhysicsScene::step(float elapsed) {
         // Solver threads list bodies in any order; the batch must not depend on it.
         std::sort(moved.begin(),moved.end());
         moved.erase(std::unique(moved.begin(),moved.end()),moved.end());
+        // Update has returned and only this thread uses the system, so reads need no body lock.
+        auto& reader=impl_->system.GetBodyInterfaceNoLock();
         auto& poses=impl_->poses;
+        auto& posed=impl_->posed;
         poses.clear();
-        const auto publish=[&](const Impl::Body& body) {
+        posed.clear();
+        const auto publish=[&](Impl::Body& body) {
             JPH::RVec3 where;JPH::Quat orientation;
-            bodies.GetPositionAndRotation(body.id,where,orientation);
+            reader.GetPositionAndRotation(body.id,where,orientation);
             poses.push_back({body.entity,vector(where),rotation(orientation)});
+            posed.push_back(&body);
         };
         for(const auto id:moved)
             if(const auto owner=impl_->body_components.find(id);owner!=impl_->body_components.end()) publish(impl_->bodies.at(owner->second));
@@ -1212,16 +1219,17 @@ Result<void> PhysicsScene::step(float elapsed) {
         // Manual native ragdolls have no authoring Entry but still publish their owner pose.
         for(const auto& [entity,controlled]:impl_->ragdolls) {
             JPH::RVec3 where;JPH::Quat orientation;
-            bodies.GetPositionAndRotation(controlled.ragdoll->GetBodyIDs().front(),where,orientation);
+            reader.GetPositionAndRotation(controlled.ragdoll->GetBodyIDs().front(),where,orientation);
             poses.push_back({entity,vector(where),rotation(orientation)});
         }
         if(auto children=components_->append_poses(poses);!children) return std::unexpected(children.error());
+        posed.resize(poses.size());
         // A body below a published Entity is published too, so that its local pose keeps
         // the world pose Jolt holds for it.
         if(!poses.empty() && std::ranges::any_of(impl_->bodies,[](const auto& item){return item.second.ancestors.size()>1;})) {
             std::unordered_set<ObjectId> published;
             for(const auto& pose:poses) published.insert(pose.entity);
-            for(const auto& [component,body]:impl_->bodies) {
+            for(auto& [component,body]:impl_->bodies) {
                 (void)component;
                 if(body.ancestors.size()>1 && !published.contains(body.entity) &&
                     std::any_of(body.ancestors.begin()+1,body.ancestors.end(),[&](ObjectId node){return published.contains(node);}))
@@ -1229,16 +1237,19 @@ Result<void> PhysicsScene::step(float elapsed) {
             }
         }
         if(auto written=world_.apply_simulation_transforms(poses,&impl_->written);!written) return std::unexpected(written.error());
-        for(const auto& [entity,local]:impl_->written)
-            if(const auto body=impl_->entity_bodies.find(entity);body!=impl_->entity_bodies.end()) impl_->bodies.at(body->second).local=local;
         // `written` keeps the order of `poses` and omits rejected ones.
         auto& interpolated=impl_->interpolated;
         interpolated.clear();
         for(std::size_t i=0,j=0;i<poses.size() && j<impl_->written.size();++i) {
             if(poses[i].entity!=impl_->written[j].first) continue;
-            ++j;
-            if(const auto body=impl_->entity_bodies.find(poses[i].entity);body!=impl_->entity_bodies.end()) {
-                auto& published=impl_->bodies.at(body->second);
+            const auto& local=impl_->written[j++].second;
+            // A bound part can also own a body until the next reconcile rejects one of them.
+            auto* body=posed[i];
+            if(!body)
+                if(const auto owner=impl_->entity_bodies.find(poses[i].entity);owner!=impl_->entity_bodies.end()) body=&impl_->bodies.at(owner->second);
+            if(body) {
+                auto& published=*body;
+                published.local=local;
                 published.held={poses[i].position,poses[i].rotation,{1,1,1}};
                 // Below an ancestor the local TRS rounds the pose; reconcile compares against that rounding.
                 // A structural edit since this step's reconcile can have given a root body an ancestor.

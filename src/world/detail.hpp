@@ -207,6 +207,8 @@ struct World::Impl {
     std::vector<TranslationChange> translation_changes;
     Result<void> apply_translations();
     Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase, std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
+    Map<ObjectId, Trs> pose_targets;
+    std::vector<std::pair<ObjectId, Trs>> pose_locals;
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
     struct Binding { TypeId type; Behavior behavior; };

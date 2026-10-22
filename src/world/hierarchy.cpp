@@ -607,44 +607,60 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
         return contain(failure, DiagnosticKind::command_rejected, phase, poses[i].entity, poses[i].entity, {}, Severity::warning);
     };
     for (;;) {
-        detail::SpaceGraph before{runtime}, candidate{runtime};
-        std::unordered_map<ObjectId, Trs> desired;
+        space.begin_pass();
+        auto& desired = pose_targets;
+        desired.clear();
         for (std::size_t i = 0; i < poses.size(); ++i) {
             if (rejected[i]) continue;
             const auto& pose = poses[i];
             auto value = [&]() -> Result<Trs> {
                 if (auto at = member(pose.entity); !at) return std::unexpected(at.error());
                 if (desired.contains(pose.entity)) return error(ErrorCode::invalid_member, "An Entity has multiple simulation pose writers.");
-                auto matrix = before.matrix(pose.entity);
+                auto matrix = space.matrix(pose.entity);
                 if (!matrix) return std::unexpected(matrix.error());
                 auto original = relative_transform(*matrix, math::Matrix4::identity());
                 if (!original) return std::unexpected(original.error());
                 return canonical_transform({pose.position, pose.rotation, original->scale});
             }();
             if (!value) { if (!reject(i, value.error())) return std::unexpected(value.error()); continue; }
-            desired.emplace(pose.entity, *value);
+            desired.try_emplace(pose.entity, *value);
         }
-        // Desired world matrices make conversion independent of hash/container order.
-        for (const auto& [id, value] : desired) candidate.matrices.emplace(id, transform_matrix(value));
-        std::vector<std::pair<ObjectId, Trs>> locals;
+        // Only a pose below another pose of this batch needs that one's target as
+        // its origin; the others use the current parent matrix of this pass.
+        std::optional<detail::SpaceGraph> candidate;
+        auto& locals = pose_locals;
+        locals.clear();
         locals.reserve(poses.size());
         bool restart = false;
         for (std::size_t i = 0; i < poses.size() && !restart; ++i) {
             if (rejected[i]) continue;
             const auto& pose = poses[i];
             auto local = [&]() -> Result<Trs> {
-                auto parent = candidate.parent(pose.entity);
+                auto parent = space.parent(pose.entity);
                 if (!parent) return std::unexpected(parent.error());
-                auto origin = candidate.matrix(*parent);
+                // matrix() composed this chain in the first loop, so the walk ends.
+                bool below_target = false;
+                for (auto node = *parent; node != ObjectId{} && !below_target;) {
+                    below_target = desired.contains(node);
+                    auto next = space.parent(node);
+                    if (!next) return std::unexpected(next.error());
+                    node = *next;
+                }
+                if (below_target && !candidate) {
+                    // Desired world matrices make conversion independent of hash/container order.
+                    candidate.emplace(runtime);
+                    for (const auto [id, value] : desired) candidate->matrices.emplace(id, transform_matrix(value));
+                }
+                auto origin = *parent == ObjectId{} ? Result<math::Matrix4>{math::Matrix4::identity()}
+                    : below_target ? candidate->matrix(*parent) : space.matrix(*parent);
                 if (!origin) return std::unexpected(origin.error());
-                auto authored = before.node(pose.entity);
-                if (!authored) return std::unexpected(authored.error());
-                auto value = relative_transform(transform_matrix(desired.at(pose.entity)), *origin, (*authored)->local.scale);
+                const auto& authored = space.entry(pose.entity)->local;
+                auto value = relative_transform(transform_matrix(*desired.find(pose.entity)), *origin, authored.scale);
                 if (!value) return std::unexpected(value.error());
                 for (std::size_t axis = 0; axis < 3; ++axis)
-                    if (std::abs(value->scale[axis] - (*authored)->local.scale[axis]) > 1e-5f * std::max(1.f, std::abs((*authored)->local.scale[axis])))
+                    if (std::abs(value->scale[axis] - authored.scale[axis]) > 1e-5f * std::max(1.f, std::abs(authored.scale[axis])))
                         return error(ErrorCode::argument_mismatch, "Simulation pose would change authored local scale.");
-                value->scale = (*authored)->local.scale;
+                value->scale = authored.scale;
                 return value;
             }();
             if (!local) { if (!reject(i, local.error())) return std::unexpected(local.error()); restart = true; continue; }
@@ -652,7 +668,7 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
         }
         if (!restart) {
             if (auto published = publish_transforms(runtime, locals); !published) return published;
-            if (written) *written = std::move(locals);
+            if (written) written->swap(locals);
             return {};
         }
     }

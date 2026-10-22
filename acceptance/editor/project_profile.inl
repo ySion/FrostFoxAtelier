@@ -4,7 +4,8 @@ constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
 
 // Steps a Play copy of the scene at 60 Hz, one fixed step per frame, until no rigid
 // body has been active for 120 frames (at most 1800 frames), and reports the physics
-// phases of frames that end with and without active bodies, and the SceneSnapshot refresh after each frame.
+// phases of frames that end with and without active bodies, the SceneSnapshot refresh after each frame,
+// the Play start and each of the first five frames.
 void profile_physics_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output) {
     using Json=nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute physics profile file.");
@@ -12,10 +13,14 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
     timing::Recorder recorder;
     auto project=take(editor::Project::open(root));
     auto play=take(editor::Session::deserialize(take(editor::read_file(take(project.resolve(scene)))),project));
+    const auto starting=std::chrono::steady_clock::now();
     changed(play->start());
+    const std::chrono::duration<double,std::milli> started=std::chrono::steady_clock::now()-starting;
     const auto& physics=*play->physics_scene();
     const std::array phases{&physics::phases::step,&physics::phases::reconcile,&physics::phases::solve,&physics::phases::write_back};
     std::array<std::vector<double>,5> active,sleeping;
+    // Costs that only the first steps pay, such as building the broad phase, vanish in the medians.
+    Json first_frames=Json::array();
     application::SceneSnapshot snapshot;
     std::size_t steps{},quiet{},frames{};
     for(;frames<1800 && quiet<120;++frames) {
@@ -26,6 +31,8 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
         const auto refresh_start=std::chrono::steady_clock::now();take(snapshot.refresh(*play));
         const std::chrono::duration<double,std::milli> refreshed=std::chrono::steady_clock::now()-refresh_start;
         steps+=physics.last_step().steps;
+        if(frames<5) first_frames.push_back({{"step_ms",std::chrono::duration<double,std::milli>(recorder.last().time(physics::phases::step)).count()},
+            {"solve_ms",std::chrono::duration<double,std::milli>(recorder.last().time(physics::phases::solve)).count()}});
         const bool awake=physics.active_body_count()!=0;
         auto& bucket=awake?active:sleeping;
         for(std::size_t i=0;i<phases.size();++i)
@@ -34,7 +41,8 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
         quiet=awake?0:quiet+1;
     }
     Json report{{"schema","atelier.editor.physics-cpu.v1"},{"project",editor::utf8(root.wstring())},{"scene",scene},
-        {"bodies",physics.body_count()},{"frames",frames},{"steps",steps},{"active_frames",active[0].size()},{"sleeping_frames",sleeping[0].size()}};
+        {"bodies",physics.body_count()},{"frames",frames},{"steps",steps},{"active_frames",active[0].size()},{"sleeping_frames",sleeping[0].size()},
+        {"start_ms",started.count()},{"first_frames",first_frames}};
 #ifdef NDEBUG
     report["configuration"]="release";
 #else
