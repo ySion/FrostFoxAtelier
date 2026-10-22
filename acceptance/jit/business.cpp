@@ -2,7 +2,7 @@
 #include "jit/source_backend.hpp"
 #include "source/program.hpp"
 #include "source/detail/bridge.hpp"
-#include "source_backend_verification.hpp"
+#include "jit/source_backend_verification.hpp"
 #include "native_client.hpp"
 #include "machine.hpp"
 #include "runtime/execution.hpp"

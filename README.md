@@ -256,7 +256,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
 
-单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。配置时设置 `-DATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收及后端故障注入，正式源码库和该最小消费者仍可构建；默认 ON 保留既有完整验收入口。
+单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。
 
 同一入口包含[连续会话验收](acceptance/source/session.cpp)：原生与描述型对象各用一个 Runtime 和一个 Program，预热 4 轮后采样 32 轮；每轮 32 个 tick，每 tick 启动 8 个跨 2～12 个 yield 的协程任务，每 8 个 tick 兼容更新一次，部分任务在 ready 或 suspended 状态取消，宿主交错推进分步 GC。每轮结束时只剩接收者的一个对象和一个根，四个旧版本集中退休、代码页回到 `MEM_FREE`，预热后的活跃分配增长不超过 64 KiB；最后关闭入口并取消剩余任务，对象、根和代码全部释放。
 

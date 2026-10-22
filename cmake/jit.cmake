@@ -1,5 +1,3 @@
-option(ATELIER_BUILD_JIT_ACCEPTANCE "Build platform JIT probes and source fault-injection acceptance" ON)
-
 # LLVM-facing objects share the pinned SDK's ABI. This helper is private to
 # the backend DLLs and build-time Clang tool; other targets retain /MD(d).
 function(atelier_llvm_target target)
@@ -79,10 +77,6 @@ function(atelier_add_source)
     atelier_llvm_target(atelier_source_backend)
     target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
     target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support)
-    if(ATELIER_BUILD_JIT_ACCEPTANCE)
-        target_compile_definitions(atelier_source_backend PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
-        target_include_directories(atelier_source_backend PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
-    endif()
 
     add_library(atelier_source STATIC src/source/program.cpp src/source/diagnostics.cpp src/source/detail/bridge.cpp
         src/source/debugger.cpp src/source/detail/debugger.cpp
@@ -91,9 +85,6 @@ function(atelier_add_source)
     target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
     target_compile_features(atelier_source PUBLIC cxx_std_23)
     target_link_libraries(atelier_source PUBLIC atelier_runtime PRIVATE atelier_source_backend)
-    if(ATELIER_BUILD_JIT_ACCEPTANCE)
-        target_compile_definitions(atelier_source PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
-    endif()
 
     add_executable(atelier_source_minimal
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
@@ -113,27 +104,24 @@ function(atelier_add_source)
     atelier_target(atelier_source_measure)
     target_link_libraries(atelier_source_measure PRIVATE atelier_source mimalloc psapi)
 
-    if(ATELIER_BUILD_JIT_ACCEPTANCE)
-        add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
-        atelier_llvm_target(atelier_jit_probe)
-        target_compile_definitions(atelier_jit_probe PRIVATE ATELIER_JIT_PROBE_BUILD)
-        target_link_libraries(atelier_jit_probe PRIVATE atelier_jit_llvm_support)
+    add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
+    atelier_llvm_target(atelier_jit_probe)
+    target_compile_definitions(atelier_jit_probe PRIVATE ATELIER_JIT_PROBE_BUILD)
+    target_link_libraries(atelier_jit_probe PRIVATE atelier_jit_llvm_support)
 
-        add_library(atelier_jit_native_client SHARED acceptance/jit/native_client.cpp)
-        target_compile_definitions(atelier_jit_native_client PRIVATE ATELIER_JIT_NATIVE_CLIENT_BUILD)
-        atelier_target(atelier_jit_native_client)
+    add_library(atelier_jit_native_client SHARED acceptance/jit/native_client.cpp)
+    target_compile_definitions(atelier_jit_native_client PRIVATE ATELIER_JIT_NATIVE_CLIENT_BUILD)
+    atelier_target(atelier_jit_native_client)
 
-        configure_file("${PROJECT_SOURCE_DIR}/acceptance/jit/advance_machine.source"
-            "${CMAKE_BINARY_DIR}/advance_machine.source" COPYONLY)
-        add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp
-            acceptance/jit/math_abi.cpp acceptance/jit/bool_abi.cpp)
-        atelier_target(atelier_jit_acceptance)
-        target_compile_definitions(atelier_jit_acceptance PRIVATE ATELIER_BUILD_JIT_ACCEPTANCE=1)
-        target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
-        target_link_libraries(atelier_jit_acceptance PRIVATE
-            atelier_source atelier_source_backend atelier_jit_probe atelier_jit_native_client)
-        atelier_headless_acceptance(jit_acceptance
-            COMMAND $<TARGET_FILE:atelier_jit_acceptance>
-            DEPENDS source_acceptance atelier_jit_acceptance)
-    endif()
+    configure_file("${PROJECT_SOURCE_DIR}/acceptance/jit/advance_machine.source"
+        "${CMAKE_BINARY_DIR}/advance_machine.source" COPYONLY)
+    add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp
+        acceptance/jit/math_abi.cpp acceptance/jit/bool_abi.cpp)
+    atelier_target(atelier_jit_acceptance)
+    target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
+    target_link_libraries(atelier_jit_acceptance PRIVATE
+        atelier_source atelier_source_backend atelier_jit_probe atelier_jit_native_client)
+    atelier_headless_acceptance(jit_acceptance
+        COMMAND $<TARGET_FILE:atelier_jit_acceptance>
+        DEPENDS source_acceptance atelier_jit_acceptance)
 endfunction()

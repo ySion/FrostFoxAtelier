@@ -4,10 +4,7 @@
 #include "jit/diagnostic_artifact.hpp"
 #include "language/source.hpp"
 #include "runtime/value_storage.hpp"
-
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 #include "jit/source_backend_verification.hpp"
-#endif
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -1546,11 +1543,8 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
 }
 
 std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, const language::Program& program,
-    language::Environment environment, CompileOptions options
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-    , bool omit_poll_for_verification = false
-#endif
-    , const std::shared_ptr<CompiledBusiness>& shared = {}
+    language::Environment environment, CompileOptions options, bool omit_poll_for_verification = false,
+    const std::shared_ptr<CompiledBusiness>& shared = {}
 ) {
     const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
@@ -1707,10 +1701,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         bind("business_read_uint", state->services.read_uint);
         bind("business_write_uint", state->services.write_uint);
         bind("business_call", state->services.call);
-    #if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-        if (!omit_poll_for_verification)
-    #endif
-            bind("business_poll", state->services.poll);
+        if (!omit_poll_for_verification) bind("business_poll", state->services.poll);
         bind("business_finish", state->services.finish);
         bind("business_clear", state->services.clear);
         bind("business_reference", state->services.reference);
@@ -1772,11 +1763,8 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
     atelier::source::detail::BusinessCode** output,
-    char* error, std::uint32_t error_capacity, const char* entry_name, atelier::source::CompileOptions options
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-    , bool omit_poll_for_verification = false
-#endif
-    , const char* const* entries = nullptr, std::uint32_t entry_count = 0, bool receiver = false,
+    char* error, std::uint32_t error_capacity, const char* entry_name, atelier::source::CompileOptions options,
+    bool omit_poll_for_verification = false, const char* const* entries = nullptr, std::uint32_t entry_count = 0, bool receiver = false,
     atelier::source::detail::CompileLocation* location = nullptr, bool declarations_only = false
 ) noexcept {
     if (!error || error_capacity == 0) return 1;
@@ -1907,20 +1895,13 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             throw std::runtime_error("Source-owned values require the native value lifecycle services.");
         if (mutates_sequences && !services->mutate_sequence)
             throw std::runtime_error("Source sequence mutation requires its native service.");
-        auto state = atelier::source::detail::compile(*services, *program, source_environment, options
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-            , omit_poll_for_verification
-#endif
-        );
+        auto state = atelier::source::detail::compile(*services, *program, source_environment, options,
+            omit_poll_for_verification);
         std::vector<std::unique_ptr<BusinessCode>> codes;
         codes.push_back(std::make_unique<BusinessCode>(state));
         for (std::uint32_t i = 1; i < entry_count; ++i) {
             program->entry = program->exports[i];
-            auto next = atelier::source::detail::compile(*services, *program, source_environment, options
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-                , false
-#endif
-                , state);
+            auto next = atelier::source::detail::compile(*services, *program, source_environment, options, false, state);
             codes.push_back(std::make_unique<BusinessCode>(std::move(next)));
         }
         for (std::size_t i = 0; i < codes.size(); ++i) output[i] = codes[i].release();
@@ -1941,11 +1922,8 @@ std::uint32_t atelier_compile_business_entries(const atelier::source::detail::Bu
     atelier::source::detail::CompileLocation* location, char* error, std::uint32_t capacity,
     atelier::source::CompileOptions options) noexcept {
     if (location) *location = {};
-    return compile_business_impl(services, name, source, size, environment, output, error, capacity, entries && count ? entries[0] : nullptr, options
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
-        , false
-#endif
-        , entries, count, receiver, location, count == 0);
+    return compile_business_impl(services, name, source, size, environment, output, error, capacity,
+        entries && count ? entries[0] : nullptr, options, false, entries, count, receiver, location, count == 0);
 }
 
 std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessServices* services,
@@ -1957,7 +1935,6 @@ std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessSe
         output, error, error_capacity, entry_name, options);
 }
 
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 std::uint32_t atelier_compile_business_without_poll_for_verification(
     const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,
@@ -1967,7 +1944,6 @@ std::uint32_t atelier_compile_business_without_poll_for_verification(
     return compile_business_impl(services, source_name, source, source_size, environment,
         output, error, error_capacity, entry_name, options, true);
 }
-#endif
 
 void atelier_query_business_info(atelier::source::detail::BusinessCode* code,
     atelier::source::detail::BusinessCodeInfo* output) noexcept {
@@ -2161,7 +2137,6 @@ std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::Busines
 
 void atelier_destroy_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine) noexcept { delete coroutine; }
 
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 std::uint32_t atelier_verify_business_link_failure(
     const atelier::source::detail::BusinessServices* services, char* error, std::uint32_t error_capacity) noexcept {
     if (!error || error_capacity == 0) return 1;
@@ -2188,4 +2163,3 @@ std::uint32_t atelier_verify_business_link_failure(
     }
     return 1;
 }
-#endif
