@@ -41,7 +41,7 @@ void shadow_cases(Fixture& f) {
     };
     std::ofstream counters(f.output/"shadow-cache-completed.csv");
     check(counters.good(),"shadow cache completed evidence file opened");
-    counters<<"scenario,submitted_frame,completed_frame,completed_sequence,shadow_ms,faces,reused,static_updates,dynamic_updates,draws,dropped_lights,near_plane_faces,missing_taps,plane_fallbacks\n";
+    counters<<"scenario,submitted_frame,completed_frame,completed_sequence,shadow_ms,faces,reused,static_updates,dynamic_updates,draws,dropped_lights,near_plane_faces,missing_taps,plane_fallbacks,deferred_faces,deferral_frames,atlas_cells,pending_lights\n";
     // Capturing the changed frame completes its submission. Inspect its exact
     // completed id before settling history: a later warm sample would hide the
     // one-frame invalidation being tested.
@@ -59,7 +59,9 @@ void shadow_cases(Fixture& f) {
             <<stats.scene_lit_shadow_cache_gpu_ms<<','<<stats.scene_lit_shadow_cache_faces<<','<<stats.scene_lit_shadow_cache_reused_faces<<','
             <<stats.scene_lit_shadow_cache_static_updates<<','<<stats.scene_lit_shadow_cache_dynamic_updates<<','<<stats.scene_lit_shadow_cache_draws<<','
             <<stats.scene_lit_shadow_cache_dropped_lights<<','<<stats.scene_lit_shadow_cache_near_plane_faces<<','<<stats.scene_lit_shadow_cache_missing_taps<<','
-            <<stats.scene_lit_shadow_cache_plane_fallbacks<<'\n';
+            <<stats.scene_lit_shadow_cache_plane_fallbacks<<','<<stats.scene_lit_shadow_cache_deferred_faces<<','
+            <<stats.scene_lit_shadow_cache_deferral_frames<<','<<stats.scene_lit_shadow_cache_atlas_cells<<','
+            <<stats.scene_lit_shadow_cache_pending_lights<<'\n';
         counters.flush();
     };
     const auto submit=[&](const char* name){
@@ -242,11 +244,113 @@ void shadow_cases(Fixture& f) {
     truth("shadow-grazing-contact-truth",f.capture("shadow-grazing-contact-settled",16),{bounds(fin)},.015,1000);
     warm("shadow-grazing-contact-warm");
 
-    // One pressure submission, not a many-frame stress benchmark. A completely
-    // transparent cube requests six conservative directions without changing
-    // the real GBuffer or visibility. 272*6 minimum 128 tiles exceed the fixed
-    // atlas's cells: the single plan keeps whole lights in importance order and
-    // drops the rest, which then contribute no direct light at all.
+    // Lamps 0.6 m in front of one wall each project to about 360 pixels, the
+    // 256 tier, and need the same faces. Halving intensity per index outweighs
+    // the spread of camera solid angles, so importance rank is the index.
+    f.frame.camera.projection={.4f/wide,0,0,0, 0,.4f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
+    f.room.meshes={receiver(18,0,-1.8f,12,8)};
+    const auto lamps=[&](std::size_t count){
+        f.lights.assign(count,{});
+        for(std::size_t i=0;i<count;++i){auto& light=f.lights[i];light.stable_key=70000+i;light.range=1;
+            light.position={-1.2f+.6f*float(i%5),-.6f+.4f*float(i/5),-2.4f};light.intensity=4*std::pow(.5f,float(i));}
+        f.edited();
+    };
+    lamps(16);++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
+    f.settle_shadows(submit("shadow-tier-16-cold").scene_lit_gpu_sample_frame_id);
+    const auto tier16=warm("shadow-tier-16-warm");
+    check(tier16.scene_lit_shadow_cache_atlas_cells==4*tier16.scene_lit_shadow_cache_faces&&
+        tier16.scene_lit_shadow_cache_resolution_downgrades==0,"sixteen lamps all keep their 256 diameter tier");
+    lamps(20);stats=submit("shadow-tier-20");
+    const auto faces=stats.scene_lit_shadow_cache_faces,added=faces-tier16.scene_lit_shadow_cache_faces;
+    check(added>0&&stats.scene_lit_shadow_cache_atlas_cells==tier16.scene_lit_shadow_cache_atlas_cells+added&&
+        stats.scene_lit_shadow_cache_reused_faces==tier16.scene_lit_shadow_cache_faces&&
+        stats.scene_lit_shadow_cache_static_updates==added&&stats.scene_lit_shadow_cache_resolution_downgrades==0,
+        "only the sixteen most important lamps keep 256 faces; dimmer lamps add 128 faces without redrawing them");
+    warm("shadow-tier-20-warm");
+    // Every lamp moves 1 mm per frame, so every face is stale every frame. A
+    // lamp's k faces redraw together from one origin: floor(24/k) lamps per
+    // frame, longest-waiting first, so a lamp waits at most rotation-1 frames.
+    // Faces deferred near cube seams still project from their drawn origin.
+    // Once still, stale faces drain at the same rate.
+    constexpr std::uint32_t budget=24;
+    const auto per_lamp=faces/20,per_frame=budget/per_lamp*per_lamp,rotation=(20+budget/per_lamp-1)/(budget/per_lamp);
+    check(faces%20==0&&per_lamp>=2&&per_lamp<=6&&faces>2*per_frame,"budget fixture lamps need equal face sets beyond two frames of budget");
+    std::uint64_t first=0,last=0,seen=0;unsigned observed=0;
+    for(unsigned frame=0;frame<12;++frame){
+        for(auto& light:f.lights)light.position[0]+=.001f;
+        f.edited();const auto result=f.step();
+        if(frame==0)first=result.accepted_id;
+        last=result.accepted_id;
+        const auto& sample=result.stats;const auto id=sample.scene_lit_gpu_sample_frame_id;
+        if(!sample.scene_lit_gpu_timing_valid||id<first||id==seen)continue;
+        seen=id;++observed;record("shadow-budget-motion",result.accepted_id,sample);
+        check(sample.scene_lit_shadow_cache_faces==faces&&sample.scene_lit_shadow_cache_static_updates==per_frame&&
+            sample.scene_lit_shadow_cache_deferred_faces==faces-per_frame&&sample.scene_lit_shadow_cache_deferral_frames<rotation&&
+            sample.scene_lit_shadow_cache_missing_taps==0,
+            "moving lamps redraw whole lamps within the face budget, longest-waiting first, with every tap resident");
+    }
+    check(observed>=6&&seen>=first+rotation,"budget motion observes completed samples past one full rotation");
+    bool drained=false;
+    for(unsigned frame=0;frame<20&&!drained;++frame){
+        const auto result=f.step();const auto& sample=result.stats;const auto id=sample.scene_lit_gpu_sample_frame_id;
+        if(!sample.scene_lit_gpu_timing_valid||id<=last||id==seen)continue;
+        seen=id;record("shadow-budget-still",result.accepted_id,sample);
+        const auto pending=std::uint64_t(per_frame)*(id-last+1);
+        check(sample.scene_lit_shadow_cache_deferred_faces==(faces>pending?faces-pending:0)&&
+            sample.scene_lit_shadow_cache_missing_taps==0,"stopped lamps redraw their remaining stale faces at the same rate");
+        drained=sample.scene_lit_shadow_cache_deferred_faces==0;
+    }
+    check(drained,"stale faces drain once lamps stop");
+    warm("shadow-budget-settled");
+
+    // Thirty casting lights arrive at once, clustered around the first case's
+    // light. Their faces draw at the budget per frame, and a light adds no
+    // direct light until all of its faces exist, so the umbra stays dark in
+    // every frame. Once all are drawn and faded in, the unoccluded receiver
+    // matches the unshadowed frame.
+    f.frame.scene_viewport={24.25f,32.75f,159.5f,111.25f};
+    f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
+    f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
+    f.room.meshes={receiver(19,0,4,12,8),blocker(20)};
+    f.lights.assign(30,{});
+    for(std::size_t i=0;i<f.lights.size();++i){auto& light=f.lights[i];light.stable_key=80000+i;
+        light.position={-2.05f+.02f*float(i%6),.96f+.02f*float(i/6),0};light.range=10;light.intensity=35.f/30;}
+    ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
+    std::uint64_t arrival=0;unsigned withheld=0;bool resident=false;std::vector<double> umbra;
+    for(unsigned frame=0;frame<60&&!resident;++frame){
+        render::Capture image;const auto result=f.step(&image);
+        if(frame==0){arrival=result.accepted_id;png(image,f.output/"shadow-arrival-first.png");}
+        umbra.push_back(mean_rgb(image,dark_region)[0]);
+        const auto& sample=result.stats;const auto id=sample.scene_lit_gpu_sample_frame_id;
+        if(!sample.scene_lit_gpu_timing_valid||id<arrival)continue;
+        record("shadow-arrival",result.accepted_id,sample);
+        check(sample.scene_lit_shadow_cache_static_updates<=budget&&sample.scene_lit_shadow_cache_missing_taps==0&&
+            sample.scene_lit_shadow_cache_dropped_lights==0,"arriving lights redraw at most the face budget per frame");
+        if(sample.scene_lit_shadow_cache_pending_lights){
+            ++withheld;
+            check(id-arrival<=(sample.scene_lit_shadow_cache_faces+18)/19+8,
+                "pending shadow lights clear within ceil(faces/19)+8 frames");
+        }
+        else resident=true;
+    }
+    check(withheld>=2&&resident,"thirty arriving lights wait over several frames, then all become resident");
+    const auto arrived=f.capture("shadow-arrival-settled",8);
+    const auto arrived_lit=mean_rgb(arrived,bright_region)[0];
+    const auto arrived_umbra=mean_rgb(arrived,dark_region)[0];
+    check(arrived_lit>20&&arrived_umbra<arrived_lit*.12,"resident arriving lights light and shadow the receiver");
+    std::printf("Shadow arrival: pending samples=%u frames=%zu umbra max=%.3f settled umbra=%.3f lit=%.3f\n",
+        withheld,umbra.size(),*std::ranges::max_element(umbra),arrived_umbra,arrived_lit);
+    for(const auto value:umbra)check(value<=arrived_umbra+1,"lights with undrawn faces add nothing to the occluded receiver");
+    options.shadows=false;const auto arrival_unshadowed=f.capture("shadow-arrival-unshadowed",2);options.shadows=true;
+    for(unsigned channel=0;channel<3;++channel)
+        check(std::abs(mean_rgb(arrived,bright_region)[channel]-mean_rgb(arrival_unshadowed,bright_region)[channel])<=1,
+            "faded-in lights reach exactly their unshadowed energy on unoccluded receivers");
+
+    // A completely transparent cube requests six conservative directions
+    // without changing the real GBuffer or visibility. 272*6 minimum 128 tiles
+    // exceed the fixed atlas's cells: the plan keeps whole lights in importance
+    // order and drops the rest, which then contribute no direct light at all.
+    // The first frame draws only the face budget, four whole lights.
     f.frame.scene_viewport={24.25f,32.75f,31,23};
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     f.frame.camera.projection={1/(2.5f*(31.f/23)),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
@@ -261,31 +365,22 @@ void shadow_cases(Fixture& f) {
     for(std::size_t i=0;i<f.lights.size();++i){auto& light=f.lights[i];
         light.stable_key=30000+i;light.position={0,0,0};light.range=10;light.intensity=24.f/272;}
     ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();
-    render::Capture pressure_image;const auto pressure_submission=f.step(&pressure_image);
-    png(pressure_image,f.output/"shadow-pressure-272.png");
-    // Switch immediately to one light. Subsequent completed-query polling
-    // never renders a second 272-light pressure frame.
-    f.lights.resize(1);f.frame.camera_cut=true;f.edited();
-    const auto single_submission=f.step();
-    Stats pressure_stats,single_stats;bool have_pressure=false,have_single=false;
-    const auto observe=[&](const Stats& sample){
-        if(!sample.scene_lit_gpu_timing_valid)return;
-        if(sample.scene_lit_gpu_sample_frame_id==pressure_submission.accepted_id){pressure_stats=sample;have_pressure=true;}
-        if(sample.scene_lit_gpu_sample_frame_id==single_submission.accepted_id){single_stats=sample;have_single=true;}
-    };
-    observe(single_submission.stats);
-    // Completion is asynchronous; only the inexpensive single-light frame is
-    // submitted while waiting. Do not assume a fixed two-frame query latency.
-    for(unsigned drain=0;drain<60&&(!have_pressure||!have_single);++drain)observe(f.step().stats);
-    check(have_pressure&&have_single,"pressure and single-light samples retain their exact completed frame identities");
-    record("shadow-pressure-272",pressure_submission.accepted_id,pressure_stats);
-    record("shadow-pressure-single",single_submission.accepted_id,single_stats);
+    const auto pressure_submission=f.step();
+    Stats pressure_stats;bool have_pressure=false;
+    for(unsigned drain=0;drain<60&&!have_pressure;++drain){const auto sample=f.step().stats;
+        if(sample.scene_lit_gpu_timing_valid&&sample.scene_lit_gpu_sample_frame_id==pressure_submission.accepted_id){
+            pressure_stats=sample;have_pressure=true;}}
+    check(have_pressure,"pressure sample retains its exact completed frame identity");
+    record("shadow-pressure-272-first",pressure_submission.accepted_id,pressure_stats);
     const auto dropped=pressure_stats.scene_lit_shadow_cache_dropped_lights;
     check(dropped>0&&dropped<272&&pressure_stats.scene_lit_shadow_cache_faces==(272-dropped)*6&&
-        pressure_stats.scene_lit_shadow_cache_static_updates>0&&pressure_stats.scene_lit_shadow_cache_missing_taps==0,
-        "atlas pressure keeps whole lights with all six faces and drops the remainder");
-    check(single_stats.scene_lit_shadow_cache_dropped_lights==0&&single_stats.scene_lit_shadow_cache_missing_taps==0,
-        "single-light comparison returns to a complete resident cache");
+        pressure_stats.scene_lit_shadow_cache_static_updates==budget&&
+        pressure_stats.scene_lit_shadow_cache_pending_lights==272-dropped-budget/6&&
+        pressure_stats.scene_lit_shadow_cache_missing_taps==0,
+        "atlas pressure keeps whole lights with all six faces, drops the remainder and first draws only the face budget");
+    f.settle_shadows(pressure_submission.accepted_id);
+    render::Capture pressure_image;f.step(&pressure_image);
+    png(pressure_image,f.output/"shadow-pressure-272.png");
     // Equal importance ties keep the lowest indices: the resident set alone is
     // the exact expected image, so a dropped light leaking energy shows here.
     f.lights.assign(272-dropped,{});
@@ -396,5 +491,5 @@ void shadow_cases(Fixture& f) {
     stats=warm("shadow-csm-infinite-perspective-warm");
     check(stats.scene_lit_shadow_cache_faces==4,"infinite-far perspective reuses all four complete cascades");
     counters.flush();f.metrics.flush();
-    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, grazing near-caster normal offset, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
+    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, grazing near-caster normal offset, sixteen high-tier lamps, 24-face redraw budget with whole-lamp longest-waiting rotation, thirty arriving lights withheld until drawn then faded in, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
 }

@@ -2,6 +2,7 @@
 #include "math/math.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -101,6 +102,7 @@ struct Request {
     std::array<std::array<double,2>,6> depth{};
     std::array<float,4> splits{};
     std::array<float,4> starts{};
+    V origin{}; // Point and rectangle cube centre.
     // Orthographic matrices are snapped at the allocated resolution.
     V axis_x{},axis_y{},axis_z{};
     std::array<V,4> centers{};
@@ -127,7 +129,7 @@ V unproject(const M& inverse,double x,double y,double z) {
 // Rectangles cast from their centre; their support matches lit_cluster_radius.
 Request point_request(const Frame& frame,const GpuLightSource& source,std::span<const ShadowCaster> receivers,const M& camera_view) {
     Request request;request.kind=1;request.count=6;
-    const V origin{source.origin_range[0],source.origin_range[1],source.origin_range[2]};
+    const V origin{source.origin_range[0],source.origin_range[1],source.origin_range[2]};request.origin=origin;
     // Match the FP32 minimum in lit_local_range before widening to double.
     const double effective_range=std::max(source.origin_range[3],.001f);
     const double extent=source.meta[0]==1?
@@ -230,16 +232,25 @@ struct ShadowCache::State {
     struct Face {
         std::uint32_t slot{no_slot},size{},generation{};
         std::array<float,16> projection{};
+        std::array<float,4> depth{}; // GpuShadowFace::depth of the drawn projection.
         std::uint64_t used{},pinned{};
-        bool stationary_valid{},dynamic_valid{},dynamic_nonempty{};
+        bool stationary_valid{},dynamic_valid{},dynamic_nonempty{},drawn{};
     };
-    struct Light {std::array<Face,6> faces;std::uint32_t preferred_size{};};
+    struct Light {
+        std::array<Face,6> faces;std::uint32_t preferred_size{};bool high_tier{};
+        std::uint32_t waiting{}; // Consecutive frames this light's redraw was deferred.
+        std::array<float,3> origin{}; // Cube centre all drawn faces share.
+        float fade{1}; // Direct-light factor; withheld lights restart at 0.
+    };
+    struct Redraw {std::uint32_t source,face,plan_face,size,rank;bool cascade;};
     struct ReservationUndo {Face* face;Face previous;};
     std::vector<Light> lights;
     std::vector<ReservationUndo> reservation_undo;
     std::vector<Light> previous_lights;
     std::vector<Request> requests;
     std::vector<std::uint32_t> sizes,order;
+    std::vector<Redraw> redraws;
+    std::vector<std::uint8_t> queued; // Per light: 1 has redraws, 2 also has an undrawn face.
     std::vector<ShadowCaster> receivers;
     std::array<bool,grid_size*grid_size> occupied{};
     ShadowFramePlan plan;
@@ -255,14 +266,14 @@ struct ShadowCache::State {
         for(std::uint32_t row=0;row<n;++row)for(std::uint32_t column=0;column<n;++column)
             occupied[(y+row)*grid_size+x+column]=value;
     }
-    void release(Face& face){mark(face,false);face.slot=no_slot;face.stationary_valid=face.dynamic_valid=false;}
+    void release(Face& face){mark(face,false);face.slot=no_slot;face.stationary_valid=face.dynamic_valid=face.drawn=false;}
     bool allocate(Face& face,std::uint32_t size) {
         const auto n=size/cell_size;
         for(std::uint32_t y=0;y+n<=grid_size;y+=n)for(std::uint32_t x=0;x+n<=grid_size;x+=n){
             bool free=true;for(std::uint32_t row=0;row<n&&free;++row)for(std::uint32_t column=0;column<n;++column)
                 if(occupied[(y+row)*grid_size+x+column]){free=false;break;}
             if(!free)continue;
-            face.slot=y*grid_size+x;face.size=size;face.stationary_valid=face.dynamic_valid=false;
+            face.slot=y*grid_size+x;face.size=size;face.stationary_valid=face.dynamic_valid=face.drawn=false;
             face.generation=generation();mark(face,true);return true;
         }
         return false;
@@ -309,44 +320,96 @@ struct ShadowCache::State {
         reservation_undo.clear();return true;
     }
     void begin_plan(std::size_t sources) {
-        plan.faces.clear();plan.updates.clear();plan.stats={};plan.lights.assign(sources,{});
+        plan.faces.clear();plan.updates.clear();plan.stats={};plan.lights.assign(sources,{});redraws.clear();
         if(++plan_serial==0){plan_serial=1;for(auto& light:lights)for(auto& face:light.faces)face.pinned=0;}
     }
-    void append(std::uint32_t source,const Request& request,std::uint32_t size,std::span<const ShadowCaster> casters) {
+    // Publishes the face's drawn projection; the near-plane bit set by prepare is kept.
+    void publish(GpuShadowFace& gpu,const Face& face,std::uint32_t source,std::uint32_t index) {
+        const float inverse=1.f/shadow_atlas_extent;
+        gpu.view_projection=face.projection;gpu.depth=face.depth;
+        gpu.atlas={float(face.size-2*shadow_tile_border)*inverse,float(face.size-2*shadow_tile_border)*inverse,
+            float((face.slot%grid_size)*cell_size+shadow_tile_border)*inverse,float((face.slot/grid_size)*cell_size+shadow_tile_border)*inverse};
+        gpu.meta={1u|(face.dynamic_nonempty?2u:0u)|(gpu.meta[0]&4u),face.generation,source,index};
+    }
+    void append(std::uint32_t source,const Request& request,std::uint32_t size,std::uint32_t rank) {
         auto& gpu_light=plan.lights[source];gpu_light.meta={request.kind,static_cast<std::uint32_t>(plan.faces.size()),request.count,0};
         gpu_light.splits=request.splits;
         for(std::uint32_t i=0;i<request.count;++i){
             plan.faces.emplace_back();auto& gpu=plan.faces.back();gpu.meta={0,0,source,i};
             if(!request.needed[i])continue;
-            ++plan.stats.requested_faces;
+            ++plan.stats.requested_faces;plan.stats.atlas_cells+=(size/cell_size)*(size/cell_size);
             auto& face=lights[source].faces[i];
-            const auto vp=request_projection(request,i,size),draw_vp=expanded_projection(vp,size);
-            const auto projection=packed(vp);
-            if(face.projection!=projection){face.projection=projection;face.stationary_valid=face.dynamic_valid=false;
-                face.generation=generation();}
-            const std::array<std::uint32_t,4> rect{(face.slot%grid_size)*cell_size,(face.slot/grid_size)*cell_size,size,size};
-            const bool reused=face.stationary_valid&&face.dynamic_valid;
-            for(const auto layer:{ShadowLayer::stationary,ShadowLayer::dynamic}){
-                bool& valid=layer==ShadowLayer::stationary?face.stationary_valid:face.dynamic_valid;
-                if(valid)continue;
-                ShadowUpdate job;job.face=static_cast<std::uint32_t>(plan.faces.size()-1);job.layer=layer;
-                job.rect=rect;job.view_projection=packed(draw_vp);
-                for(const auto& caster:casters)if(caster.dynamic==(layer==ShadowLayer::dynamic)&&intersects(caster.bounds,draw_vp))
-                    job.instances.push_back(caster.instance);
-                if(layer==ShadowLayer::dynamic){face.dynamic_nonempty=!job.instances.empty();++plan.stats.dynamic_updates;}
-                else ++plan.stats.static_updates;
-                plan.stats.rendered_instances+=static_cast<std::uint32_t>(job.instances.size());
-                plan.updates.push_back(std::move(job));valid=true;
+            if(face.drawn&&face.stationary_valid&&face.dynamic_valid&&face.projection==packed(request_projection(request,i,size))) {
+                ++plan.stats.reused_faces;publish(gpu,face,source,i);continue;
             }
-            if(reused)++plan.stats.reused_faces;
-            gpu.view_projection=projection;
-            const float inverse=1.f/shadow_atlas_extent;
-            gpu.atlas={float(size-2*shadow_tile_border)*inverse,float(size-2*shadow_tile_border)*inverse,
-                float(rect[0]+shadow_tile_border)*inverse,float(rect[1]+shadow_tile_border)*inverse};
-            gpu.depth={static_cast<float>(request.depth[i][0]),static_cast<float>(request.depth[i][1]),1.f/float(size-2*shadow_tile_border),request.kind==2?request.starts[i]:0};
-            check(std::isfinite(gpu.depth[0])&&std::isfinite(gpu.depth[1])&&gpu.depth[1]>gpu.depth[0],
-                "Shadow near/far planes exceed GPU float representation");
-            gpu.meta={1u|(face.dynamic_nonempty?2u:0u),face.generation,source,i};
+            redraws.push_back({source,i,static_cast<std::uint32_t>(plan.faces.size()-1),size,rank,request.kind==2});
+        }
+    }
+    void redraw(const Redraw& item,const Request& request,std::span<const ShadowCaster> casters) {
+        auto& face=lights[item.source].faces[item.face];
+        const auto vp=request_projection(request,item.face,item.size),draw_vp=expanded_projection(vp,item.size);
+        const auto projection=packed(vp);
+        if(!face.drawn||face.projection!=projection){face.projection=projection;face.stationary_valid=face.dynamic_valid=false;
+            face.generation=generation();}
+        face.depth={static_cast<float>(request.depth[item.face][0]),static_cast<float>(request.depth[item.face][1]),
+            1.f/float(item.size-2*shadow_tile_border),request.kind==2?request.starts[item.face]:0};
+        check(std::isfinite(face.depth[0])&&std::isfinite(face.depth[1])&&face.depth[1]>face.depth[0],
+            "Shadow near/far planes exceed GPU float representation");
+        const std::array<std::uint32_t,4> rect{(face.slot%grid_size)*cell_size,(face.slot/grid_size)*cell_size,item.size,item.size};
+        for(const auto layer:{ShadowLayer::stationary,ShadowLayer::dynamic}){
+            bool& valid=layer==ShadowLayer::stationary?face.stationary_valid:face.dynamic_valid;
+            if(valid)continue;
+            ShadowUpdate job;job.face=item.plan_face;job.layer=layer;
+            job.rect=rect;job.view_projection=packed(draw_vp);
+            for(const auto& caster:casters)if(caster.dynamic==(layer==ShadowLayer::dynamic)&&intersects(caster.bounds,draw_vp))
+                job.instances.push_back(caster.instance);
+            if(layer==ShadowLayer::dynamic){face.dynamic_nonempty=!job.instances.empty();++plan.stats.dynamic_updates;}
+            else ++plan.stats.static_updates;
+            plan.stats.rendered_instances+=static_cast<std::uint32_t>(job.instances.size());
+            plan.updates.push_back(std::move(job));valid=true;
+        }
+        face.drawn=true;
+        lights[item.source].origin={float(request.origin.x),float(request.origin.y),float(request.origin.z)};
+    }
+    // A light's stale faces redraw together, so every drawn face of a cube
+    // shares one origin; the shader selects and projects faces from it. A
+    // light whose redraw does not fit the remaining budget waits whole.
+    void schedule(std::span<const Request> requests,std::span<const ShadowCaster> casters) {
+        queued.assign(lights.size(),0);
+        for(const auto& item:redraws)queued[item.source]=std::max<std::uint8_t>(queued[item.source],lights[item.source].faces[item.face].drawn?1:2);
+        std::ranges::sort(redraws,[&](const Redraw& a,const Redraw& b){
+            if(a.cascade!=b.cascade)return a.cascade;
+            if(queued[a.source]!=queued[b.source])return queued[a.source]>queued[b.source];
+            const auto wa=lights[a.source].waiting,wb=lights[b.source].waiting;
+            if(wa!=wb)return wa>wb;
+            return a.rank!=b.rank?a.rank<b.rank:a.face<b.face;
+        });
+        std::uint32_t drawn=0;
+        for(auto first=redraws.begin();first!=redraws.end();){
+            const auto last=std::find_if(first,redraws.end(),[&](const Redraw& item){return item.source!=first->source;});
+            const auto count=static_cast<std::uint32_t>(last-first);auto& light=lights[first->source];
+            const bool draw=first->cascade||drawn+count<=shadow_face_redraw_budget;
+            if(draw){if(!first->cascade)drawn+=count;light.waiting=0;}
+            else {++light.waiting;plan.stats.deferred_faces+=count;plan.stats.deferral_frames=std::max(plan.stats.deferral_frames,light.waiting);}
+            for(auto item=first;item!=last;++item){
+                auto& face=light.faces[item->face];
+                if(draw)redraw(*item,requests[item->source],casters);
+                if(face.drawn)publish(plan.faces[item->plan_face],face,item->source,item->face);
+            }
+            first=last;
+        }
+        // Undrawn faces would sample nothing; a partly drawn light would light
+        // some directions only. Withhold the whole light instead.
+        for(std::uint32_t source=0;source<lights.size();++source){
+            const auto& request=requests[source];if(!request.kind)continue;
+            auto& light=lights[source];auto& gpu=plan.lights[source];
+            bool complete=gpu.meta[0]!=0;
+            for(std::uint32_t i=0;i<request.count;++i)complete&=!request.needed[i]||light.faces[i].drawn;
+            if(!complete){if(gpu.meta[0]){gpu.meta[0]=0;++plan.stats.pending_lights;}light.fade=0;continue;}
+            if(!queued[source])light.waiting=0;
+            light.fade=std::min(1.f,light.fade+1.f/shadow_fade_frames);
+            gpu.meta[3]=std::bit_cast<std::uint32_t>(light.fade);
+            if(request.kind==1)gpu.splits={light.origin[0],light.origin[1],light.origin[2],0};
         }
     }
 };
@@ -409,6 +472,18 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
             else if(previous_size==128)request.size=diameter>576?512u:(diameter>224?256u:128u);
             s.lights[index].preferred_size=request.size;
         }
+    }
+    // Lights already in the high tier rank as 1.25 times as important, so
+    // near-equal lights do not trade tiers, and reallocate, on small motion.
+    auto& order=s.order;order.clear();
+    for(std::uint32_t index=0;index<s.lights.size();++index)if(requests[index].kind==1)order.push_back(index);
+    const auto ranked=[&](std::uint32_t index){return requests[index].importance*(s.lights[index].high_tier?1.25:1.);};
+    std::ranges::sort(order,[&](std::uint32_t a,std::uint32_t b){return ranked(a)!=ranked(b)?ranked(a)>ranked(b):a<b;});
+    for(std::size_t rank=0;rank<order.size();++rank){
+        const bool high=rank<shadow_high_tier_lights;s.lights[order[rank]].high_tier=high;
+        if(!high)requests[order[rank]].size=cell_size;
+    }
+    for(std::uint32_t index=0;index<s.lights.size();++index)if(requests[index].kind){
         sizes[index]=requests[index].size;required_cells+=cell_count(requests[index],sizes[index]);
     }
     // Fit the entire current demand before dropping any light. Point faces
@@ -425,15 +500,21 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
         if(selected==sizes.size())break;
         required_cells-=largest;sizes[selected]/=2;required_cells+=cell_count(requests[selected],sizes[selected]);
     }
-    auto& order=s.order;order.clear();
+    // Equal importance prefers lights that already hold faces: reordering the
+    // sources must not swap which light is resident and redraw both.
+    const auto resident=[&](std::uint32_t index){
+        return std::ranges::any_of(s.lights[index].faces,[](const auto& face){return face.slot!=no_slot;});};
+    order.clear();
     for(std::uint32_t index=0;index<s.lights.size();++index)if(requests[index].kind)order.push_back(index);
     std::ranges::sort(order,[&](std::uint32_t a,std::uint32_t b){
         const auto& ra=requests[a];const auto& rb=requests[b];
         if(ra.kind!=rb.kind)return ra.kind==2;
         if(ra.importance!=rb.importance)return ra.importance>rb.importance;
+        if(resident(a)!=resident(b))return resident(a);
         return a<b;
     });
-    for(const auto index:order){
+    for(std::uint32_t rank=0;rank<order.size();++rank){
+        const auto index=order[rank];
         const auto& light=sources.sources[index];
         const auto& request=requests[index];std::uint32_t size=sizes[index];
         bool resident=s.reserve(index,request,size);
@@ -446,10 +527,11 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
             for(const auto& caster:casters)if(distance_squared(caster.bounds,origin)<=near_z*near_z){near_caster=true;break;}
             if(near_caster)for(bool needed:request.needed)if(needed)++s.plan.stats.near_plane_faces;
         }
-        s.append(index,request,size,casters);
+        s.append(index,request,size,rank);
         if(near_caster){const auto first=s.plan.lights[index].meta[1];
             for(std::uint32_t face=0;face<request.count;++face)if(request.needed[face])s.plan.faces[first+face].meta[0]|=4;}
     }
+    s.schedule(requests,casters);
     s.plan_ready=true;return s.plan;
 }
 }

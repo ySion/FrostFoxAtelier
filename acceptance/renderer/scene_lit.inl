@@ -412,6 +412,26 @@ struct Fixture {
         return delta;
     }
     void edited() { frame.meshes = room.meshes; frame.lights = lights; }
+    // At most 24 shadow faces redraw per frame, whole lights at a time: once a
+    // cube of k<=6 faces does not fit, at least 25-k faces were drawn, lights with
+    // undrawn faces first. A light adds direct light once all its faces exist,
+    // then fades in over eight frames. Pending lights must clear within
+    // ceil(faces/19)+8 frames from `since` (default: the next submission).
+    void settle_shadows(std::uint64_t since = 0) {
+        if (!since) since = drawing.id + 1;
+        for (unsigned i = 0; i < 240; ++i) {
+            const auto stats = step().stats;
+            const auto id = stats.scene_lit_gpu_sample_frame_id;
+            if (!stats.scene_lit_gpu_timing_valid || id < since) continue;
+            if (stats.scene_lit_shadow_cache_pending_lights == 0) {
+                for (unsigned fade = 0; fade < 8; ++fade) step();
+                return;
+            }
+            check(id - since <= (stats.scene_lit_shadow_cache_faces + 18) / 19 + 8,
+                  "pending shadow lights clear within ceil(faces/19)+8 frames");
+        }
+        check(false, "pending shadow lights clear");
+    }
     // Returns a case-modified windowed fixture to its constructed target, room,
     // lights and view as a new scene domain.
     void restore() {

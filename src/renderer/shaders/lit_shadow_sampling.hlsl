@@ -45,8 +45,9 @@ struct LitShadowReference {
 };
 // 3x3 tent: four bilinear taps half a texel apart, gathered as four 2x2
 // comparison blocks so static and dynamic occlusion combine per texel before
-// filtering. Each block compares the plane depth at its centre; the one-texel
-// normal offset exceeds the half-texel plane slope to the block's texels.
+// filtering. Each block compares the plane depth at its centre with no slope
+// bias: along the light, a one-texel normal offset w gives w/cos(theta) of depth,
+// while the block's texels need at most .71*w*tan(theta), less at every angle.
 float lit_shadow_compare(LitShadowFace face,float2 uv,LitShadowReference reference) {
     float extent=float(lit_shadow_atlas_extent);
     float2 at=(uv*face.atlas.xy+face.atlas.zw)*extent;
@@ -67,7 +68,9 @@ float lit_shadow_compare(LitShadowFace face,float2 uv,LitShadowReference referen
     return visibility;
 }
 float lit_shadow_point(LitShadowLight cache,LitLightSource light,LitLightingSurface surface) {
-    float3 origin=light.origin_range.xyz,normal=surface.geometric_normal;
+    // Faces are selected and projected from the origin they were drawn from,
+    // which lags a moving light while its redraw waits for budget.
+    float3 origin=cache.splits.xyz,normal=surface.geometric_normal;
     float3 delta=surface.position-origin;
     LitShadowFace face=lit_shadow_faces[cache.meta.y+lit_shadow_cube_face(delta)];
     // One interior texel at this distance; each face spans 90 degrees.

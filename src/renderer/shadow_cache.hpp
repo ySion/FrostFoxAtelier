@@ -9,6 +9,7 @@ namespace atelier::renderer::detail {
 
 inline constexpr std::uint32_t shadow_atlas_extent=4096;
 inline constexpr std::uint32_t shadow_tile_border=2;
+inline constexpr std::uint32_t shadow_high_tier_lights=16,shadow_face_redraw_budget=24,shadow_fade_frames=8;
 inline constexpr float shadow_near_ratio=1e-6f;
 inline constexpr float shadow_maximum_near=1e-5f;
 
@@ -48,10 +49,13 @@ struct GpuShadowFace {
     std::array<std::uint32_t,4> meta{};
 };
 struct GpuShadowLight {
-    // Kind: 0=no atlas residency this frame, 1=cube from the light centre,
-    // 2=directional cascades. First face descriptor, face count, reserved.
+    // Kind: 0=no direct light this frame (dropped, or a face still undrawn),
+    // 1=cube from the light centre, 2=directional cascades. First face
+    // descriptor, face count, float bits of the fade-in factor.
     std::array<std::uint32_t,4> meta{};
-    // Directional cascade far boundaries in unjittered camera view Z.
+    // Directional: cascade far boundaries in unjittered camera view Z.
+    // Cube: xyz is the origin its faces were drawn from, which lags the
+    // light while a redraw waits for budget.
     std::array<float,4> splits{};
 };
 static_assert(sizeof(GpuShadowFace)==112);
@@ -75,9 +79,21 @@ struct ShadowPlanStats {
     // Requested point faces intersecting a caster at/before the minimum near
     // plane. A center shadow map cannot represent that part of visibility.
     std::uint32_t near_plane_faces{};
+    // Faces the redraw budget left for a later frame (stale faces keep their
+    // previous projection and contents), the longest consecutive deferral
+    // among them in frames, the 128² cells held by all requested faces, and
+    // resident lights withheld from direct light until every face is drawn.
+    std::uint32_t deferred_faces{},deferral_frames{},atlas_cells{},pending_lights{};
 };
 // Every shadow-casting light that is lit this frame is resident at once.
-// Reservation runs in importance order, directional lights first.
+// Reservation runs in importance order, directional lights first. Only the
+// most important point lights use 256²/512² faces; the rest use 128². Cascades
+// always redraw; at most shadow_face_redraw_budget other faces redraw per
+// frame. A cube's faces redraw together, lights with undrawn faces first, then
+// stale lights longest-waiting first; a deferred light keeps its previous
+// origin, projections and contents, so shadows lag a frame or two. A light adds
+// no direct light until all of its faces have contents; one that waited fades
+// in over shadow_fade_frames.
 struct ShadowFramePlan {
     // Indexed by light source. Non-casting and dropped lights keep kind 0.
     std::vector<GpuShadowLight> lights;

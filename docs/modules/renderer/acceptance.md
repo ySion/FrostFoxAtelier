@@ -6,6 +6,7 @@
 
 | 范围 | 实际覆盖与记录 |
 |---|---|
+| D1 2.3 阴影层级上限与重绘预算 | 2026-10-22 rendering-d1-compose：只有重要性前 16 的点光保留直径层级；每帧最多重绘 24 个 face，按整盏打包、记录绘制原点；face 没画齐的光不贡献直接光，画齐后 8 帧淡入。Release 默认与 `--scene-lit`（GBV）及其余 Scene Lit、Control 入口通过；五个变异都失败，见[本批记录](#d1-23-阴影层级上限与重绘预算2026-10-22) |
 | D1 2.2 阴影过滤与法线偏移 | 2026-10-22 rendering-d1-compose：PCSS 换成 GatherCmp 3×3 帐篷和一个纹素的法线偏移，不再读 `shadow_bias`；新增 70° 掠射、近距遮挡的真值用例。Release 默认与 `--scene-lit`（GBV）及其余 Scene Lit、Control 入口通过；法线偏移 ×10、偏移置零、去掉接收平面梯度、探针命中不计 emission 四个变异都失败，见[本批记录](#d1-22-阴影过滤与法线偏移2026-10-22) |
 | D1 2.1 融合 compose | 2026-10-22 rendering-d1-compose，基线 `691ae0ea`：cluster 列表确定性求值加单批阴影 atlas 取代 ReSTIR DI、A 路径和重建链；网格发光只经 DDGI 探针命中。Release 默认与 `--scene-lit`（GBV）及 shadows、quality、stability、clustered、cost、temporal、Control、编辑器文档入口通过；shadows 两条变异失败，法线偏移 ×10 未被发现，见[本批记录](#d1-21-融合-compose2026-10-22) |
 | 显示抖动 | 2026-10-21 rendering 工作树，基线 `a743ac13`：Lit 显示 pass 加静态 IGN 抖动，room 的 moving−settled 差异图不再成环；必要的 6 个 Release 入口在调试层下通过；Composite p50 0.423→0.424 ms，在噪声范围内，见[本批记录](#显示抖动2026-10-21) |
@@ -37,6 +38,39 @@
 | 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
+
+## D1 2.3 阴影层级上限与重绘预算（2026-10-22）
+
+状态：rendering-d1-compose 分支，接在 2.2 `cf9cd1d0` 之后，本地提交，未推送。行为见 [Scene Lit](scene-lit.md#直接光与阴影-atlas)。FrameStats 和 Control 的 `shadow_cache` 新增 `deferred_faces`、`deferral_frames`、`atlas_cells`、`pending_lights`。
+
+Release 入口，RX 6800 XT，一个入口一个进程，最终二进制上退出码均为 0：默认入口（GBV）83 s，`--scene-lit`（GBV）95 s；shadows、quality、stability、clustered、cost、temporal（debug layer）7 / 16 / 17 / 4 / 8 / 12 s；编辑器 Control 全套与 `--repro-lighting` 68 / 51 s。Dev 也构建通过。
+
+首轮运行发现两处问题，都改实现，没有放宽判据：
+
+- 预算轮转用例里灯每帧移动 1 mm，被延后的 face 沿用旧位置的投影，取样却按灯的当前位置选 face、做投影，cube 接缝附近的接收点落到旧 face 外，`missing_taps` 489。改为一盏光需要重绘的 face 整盏一起画，GPU 光源记录带上这些 face 的绘制原点，取样按它选 face、投影。
+- light_set 的 272 盏灯里有位置、颜色都相同的灯，atlas 放不下时按重要性加下标决定谁驻留。光源顺序反转后换成另一批同重要性的灯驻留，在预算下要几帧才画齐，"反转顺序画面完全不变"失败。改为同重要性时优先保留已有 face 的灯。
+
+新用例的读数（`shadow-cache-completed.csv`）：
+
+| 用例 | 结果 |
+|---|---|
+| 16 盏灯 | 80 个 face 全为 256 层级，atlas_cells 320 |
+| 增加到 20 盏 | 新增 20 个 128 face，原 80 个 face 复用不重画，atlas_cells 340 |
+| 20 盏灯每帧移动 1 mm（每盏 5 face） | 每帧整盏画 4 盏（20 个 face），延后 80；最长等待 4 帧（一轮 5 帧）；missing_taps 0。停下后延后数 60→40→20→0 |
+| 一次新增 30 盏投影点光（120 face） | 每帧 24 个 face，pending_lights 24→18→12→6→0；全过程本影均值 0，画齐后受光 90.3，未遮挡区与关阴影画面逐通道差 ≤1 |
+| 272 盏重合灯（atlas 压力） | 放弃 102 盏，驻留 1020 个 face；首帧只画 24 个，166 盏 pending；之后在上限内画齐 |
+
+`Fixture::settle_shadows` 断言 pending_lights 在 ⌈faces/19⌉+8 帧内归零：只要有光被延后，本帧至少已画 25 − k 个 face（k ≤ 6），且有未画 face 的光排在前面。light_set、clustered 的阴影用例和 272 灯压力用例都用它等待，判据不变。
+
+变异（各自单独构建；跑的是同重要性驻留优先修正之前的二进制，该修正只影响同重要性光的驻留顺序，不涉及下列检查）：
+
+| 变异 | 结果 |
+|---|---|
+| 所有点光都保留直径层级 | 失败于层级用例：atlas_cells 400，应为 340 |
+| 排队去掉等待帧数，只按重要性 | 失败于预算轮转：最长等待 5 帧，达到一整轮 |
+| 忽略预算 | 失败于预算轮转：一帧重画 100 个 face |
+| face 没画齐的光照常着色 | 失败于 30 盏新增：pending 期间本影均值 134.5，画齐后为 0 |
+| 取样按光源当前位置选 face、投影 | 失败于预算轮转：missing_taps 489 |
 
 ## D1 2.2 阴影过滤与法线偏移（2026-10-22）
 

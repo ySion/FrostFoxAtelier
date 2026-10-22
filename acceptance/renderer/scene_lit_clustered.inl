@@ -89,7 +89,7 @@ void clustered_cases(Fixture& f) {
     for(std::size_t i=0;i<f.lights.size();++i){auto& light=f.lights[i];light.stable_key=100+i;
         light.position={-2,2,0};light.range=12;light.intensity=24.f/65;}
     render::MeshInstance blocker;blocker.stable_key=2;blocker.geometry=atelier::geometry::cube_mesh();
-    blocker.world=box(-1,1,2,1.4f,1.4f,.4f);f.room.meshes.push_back(blocker);f.edited();
+    blocker.world=box(-1,1,2,1.4f,1.4f,.4f);f.room.meshes.push_back(blocker);f.edited();f.settle_shadows();
     const auto shadow=lighting_mean(f,"clustered-overflow-shadow",region,12,2);
     options.shadows=false;
     const auto lit=lighting_mean(f,"clustered-overflow-unshadowed",region,12,2);

@@ -81,7 +81,7 @@ void verify_render_performance(Application& app,const std::filesystem::path& out
     require(response.at("result").at("last_frame").at("gpu_sample").at("direct_shading_ms").is_number(),
         "Control omitted the completed direct shading duration.");
     require(response.at("result").at("last_frame").at("gpu_sample").at("shadow_cache_ms").is_number() &&
-        response.at("result").at("last_frame").at("gpu_sample").at("shadow_cache").size()==10,
+        response.at("result").at("last_frame").at("gpu_sample").at("shadow_cache").size()==14,
         "Control omitted the completed shadow cache duration or counters.");
     require(report.at("state")=="ready" && report.at("samples")==Performance::window_size &&
         report.at("passes").size()==Performance::pass_count && report.at("passes")[3].at("current_ms").is_null() &&
@@ -435,7 +435,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             std::uint64_t sequence{},frame{},observed_frame{},resources{};
             std::uint32_t mask{};std::array<std::uint32_t,3> clusters{};
             std::array<float,editor::RenderPerformance::total_pass> ms{};
-            std::array<std::uint32_t,10> shadows{};
+            std::array<std::uint32_t,14> shadows{};
             std::uint64_t probe_rays{},shadow_rays{};
             std::array<std::uint64_t,2> ddgi_visibility_rays{};
         };
@@ -518,7 +518,9 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 sample.shadows={s.scene_lit_shadow_cache_faces,s.scene_lit_shadow_cache_reused_faces,
                     s.scene_lit_shadow_cache_static_updates,s.scene_lit_shadow_cache_dynamic_updates,s.scene_lit_shadow_cache_draws,
                     s.scene_lit_shadow_cache_resolution_downgrades,s.scene_lit_shadow_cache_dropped_lights,s.scene_lit_shadow_cache_near_plane_faces,
-                    s.scene_lit_shadow_cache_missing_taps,s.scene_lit_shadow_cache_plane_fallbacks};
+                    s.scene_lit_shadow_cache_missing_taps,s.scene_lit_shadow_cache_plane_fallbacks,
+                    s.scene_lit_shadow_cache_deferred_faces,s.scene_lit_shadow_cache_deferral_frames,s.scene_lit_shadow_cache_atlas_cells,
+                    s.scene_lit_shadow_cache_pending_lights};
                 require(std::ranges::all_of(sample.ms,[](auto n){return std::isfinite(n) && n>=0;}),"Invalid completed GPU duration.");
                 samples.push_back(sample);sequence=sample.sequence;
             }
@@ -546,7 +548,9 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                     {"shadow_cache",{{"faces",sample.shadows[0]},{"reused_faces",sample.shadows[1]},
                         {"static_updates",sample.shadows[2]},{"dynamic_updates",sample.shadows[3]},{"draws",sample.shadows[4]},
                         {"resolution_downgrades",sample.shadows[5]},{"dropped_lights",sample.shadows[6]},{"near_plane_faces",sample.shadows[7]},
-                        {"missing_taps",sample.shadows[8]},{"plane_fallbacks",sample.shadows[9]}}},
+                        {"missing_taps",sample.shadows[8]},{"plane_fallbacks",sample.shadows[9]},
+                        {"deferred_faces",sample.shadows[10]},{"deferral_frames",sample.shadows[11]},{"atlas_cells",sample.shadows[12]},
+                        {"pending_lights",sample.shadows[13]}}},
                     {"direct_cluster",{{"cells",sample.clusters[0]},{"overflows",sample.clusters[1]},{"max_sources",sample.clusters[2]}}}});
             }
             result["measured_main_total_ms"]=distribution(std::move(totals));

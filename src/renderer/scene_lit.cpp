@@ -637,6 +637,8 @@ struct SceneLit::State {
             stats.scene_lit_shadow_cache_draws=shadow.draws;stats.scene_lit_shadow_cache_resolution_downgrades=shadow.plan.resolution_downgrades;
             stats.scene_lit_shadow_cache_dropped_lights=shadow.plan.dropped_lights;stats.scene_lit_shadow_cache_near_plane_faces=shadow.plan.near_plane_faces;
             stats.scene_lit_shadow_cache_missing_taps=counter[78];
+            stats.scene_lit_shadow_cache_deferred_faces=shadow.plan.deferred_faces;stats.scene_lit_shadow_cache_deferral_frames=shadow.plan.deferral_frames;
+            stats.scene_lit_shadow_cache_atlas_cells=shadow.plan.atlas_cells;stats.scene_lit_shadow_cache_pending_lights=shadow.plan.pending_lights;
             stats.scene_lit_shadow_cache_plane_fallbacks=counter[81];
             stats.scene_lit_gpu_pass_mask=readback_pass_masks[slot];
             stats.scene_lit_gpu_sample_frame_id=readback_frame_ids[slot];

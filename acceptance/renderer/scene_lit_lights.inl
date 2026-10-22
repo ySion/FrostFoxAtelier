@@ -61,6 +61,7 @@ void light_set_cases(Fixture& f) {
         for(unsigned channel=0;channel<3;++channel)check(std::abs(a[channel]-b[channel])<=.5,message);
     };
     spatial("top32-overflow",sources(272),32,1);
+    f.settle_shadows(f.drawing.id);
     const auto initial=receiver("lights-272-sources",{0,0,4});
     check(initial[0]>10,"light set comparison samples a lit receiver");
     options.spatial_light_sampling=false;
@@ -112,7 +113,7 @@ void light_set_cases(Fixture& f) {
     const auto shadow_region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{0,0,4},3);
     options.shadows=false;
     const auto unshadowed=lighting_mean(f,"lights-all-sources-no-shadow",shadow_region,4,2);
-    options.shadows=true;
+    options.shadows=true;f.settle_shadows();
     const auto shadowed=lighting_mean(f,"lights-all-sources-shadow",shadow_region,4,2);
     check(f.step().stats.scene_lit_shadow_cache_dropped_lights==0,"271 three-face point shadows fit the atlas without dropping a light");
     check(unshadowed[0]>10 && shadowed[0]<unshadowed[0]*.2,

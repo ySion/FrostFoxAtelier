@@ -127,12 +127,13 @@ Texture2D<float> lit_ao;
 RWTexture2D<float4> lit_hdr_output;
 
 // Every shadow-casting light samples the atlas. A casting light the atlas
-// could not hold this frame has no descriptor and contributes nothing.
+// could not hold, or with a face not drawn yet, has no descriptor and
+// contributes nothing; meta.w fades in a light that waited.
 float lit_compose_visibility(LitLightSource light,uint source,LitLightingSurface surface,bool shadows) {
     if(!shadows||(light.meta.y&2u)==0)return 1;
     LitShadowLight cache=lit_shadow_lights[source];
     if(cache.meta.x==0)return 0;
-    return cache.meta.x==2?lit_shadow_directional(cache,light,surface):lit_shadow_point(cache,light,surface);
+    return asfloat(cache.meta.w)*(cache.meta.x==2?lit_shadow_directional(cache,light,surface):lit_shadow_point(cache,light,surface));
 }
 // Deterministic radiance: spheres and suns use Karis' representative point;
 // rectangles are evaluated at their centre with the area-scaled cosine, and
