@@ -276,8 +276,10 @@ float3 lit_compose_direct(uint2 p) {
 void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
     uint2 p;if(!lit_screen_pixel(tid.xy,p))return;
     if(!lit_inside(p)||lit_is_background_depth(lit_depth[p])) {
-        // Sky Light supplies incident radiance, not a visible sky surface.
-        lit_hdr_output[p]=float4(0,0,0,1);return;
+        // The Sky Light is incident radiance; only a sky map is also seen behind the scene.
+        float3 sky=0;
+        if(lit_inside(p)&&lit_sky.w!=0)sky=min(lit_sky_background_at(p),65504.xxx);
+        lit_hdr_output[p]=float4(sky,1);return;
     }
     float4 bm=lit_base_metallic[p]; float ao=(lit_effect_flags&4)!=0?lit_ao[p]:1;
     float3 irradiance=(lit_effect_flags&2)!=0?lit_indirect_source[p].rgb:lit_environment.rgb*LIT_PI;

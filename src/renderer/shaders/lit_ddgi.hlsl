@@ -130,7 +130,7 @@ DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, 
     query.TraceRayInline(lit_scene, 0, 255, ray);
     while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
         lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
-    hit.radiance_distance = float4(record_surface ? ddgi_finite_radiance(lit_environment.rgb) : 0, ray.TMax);
+    hit.radiance_distance = float4(record_surface ? ddgi_finite_radiance(lit_sky_incident(direction)) : 0, ray.TMax);
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return hit;
     float distance = query.CommittedRayT();
     hit.radiance_distance = float4(0, 0, 0, distance);

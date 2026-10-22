@@ -16,7 +16,12 @@ row_major float4x4 lit_camera_view;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
 row_major float4x4 lit_previous_inverse_view_projection;
-float4 lit_environment; // RGB radiance, reserved
+float4 lit_environment; // Uniform RGB sky radiance: sky_color * sky_intensity, times the map mean when one is bound.
+float4 lit_sky; // cos and sin of the map yaw, 2^k background storage scale, 1 when a sky map is bound
+float4 lit_sky_radiance; // sky_color * sky_intensity
+Texture2D<float4> lit_sky_background; // Equirectangular, mipmapped; row 0 is +Y, u = 0.5 faces +Z.
+TextureCube<float4> lit_sky_cube; // 4^2 solid-angle box filter of the same map, unscaled.
+SamplerState lit_sky_sampler; // Linear, wrapping u and clamping v.
 uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom
 uint lit_history_invalid; // Per-signal incompatibility: reflection=2, AO=4, final TAA=8.
 float4 lit_controls; // exposure multiplier,secondary ray origin offset (m),AO radius,SSR max distance
@@ -98,6 +103,26 @@ float3 lit_view_direction(float2 uv) {
     // projections without magnifying far-plane reconstruction roundoff.
     float middle=lerp(lit_depth_near_value(),lit_depth_far_value(),.5);
     return normalize(lit_world(uv,lit_depth_near_value())-lit_world(uv,middle));
+}
+// Map space of a world direction: the inverse of the yaw, which turns +X toward -Z.
+float3 lit_sky_map_direction(float3 world) {
+    return float3(world.x*lit_sky.x-world.z*lit_sky.y,world.y,world.x*lit_sky.y+world.z*lit_sky.x);
+}
+// Incident sky radiance along a world direction, at the cube's 4^2 resolution.
+float3 lit_sky_incident(float3 direction) {
+    if(lit_sky.w==0)return lit_environment.rgb;
+    return lit_sky_radiance.rgb*lit_sky_cube.SampleLevel(lit_linear_sampler,lit_sky_map_direction(direction),0).rgb;
+}
+float2 lit_sky_uv(float3 d) {return float2(.5+atan2(d.x,d.z)*(.5/LIT_PI),acos(clamp(d.y,-1,1))/LIT_PI);}
+// The sky seen behind a window pixel. Its footprint comes from the neighbouring
+// pixels' directions; the u difference wraps so the seam keeps the local level.
+float3 lit_sky_background_at(uint2 pixel) {
+    float2 pitch=1/float2(lit_size_frame.xy),uv=(pixel+.5)*pitch;
+    float2 t=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv)));
+    float2 dx=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv+float2(pitch.x,0))))-t;
+    float2 dy=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv+float2(0,pitch.y))))-t;
+    dx.x-=round(dx.x);dy.x-=round(dy.x);
+    return lit_sky_radiance.rgb*lit_sky.z*lit_sky_background.SampleGrad(lit_sky_sampler,t,dx,dy).rgb;
 }
 uint lit_hash(uint x) { x^=x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; return x^(x>>16); }
 float lit_random(inout uint seed) { seed=lit_hash(seed); return (seed>>8)*(1.0/16777216.0); }

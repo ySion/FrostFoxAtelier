@@ -1346,6 +1346,7 @@ void quality_ddgi(Fixture& f) {
 #include "scene_lit_audit.inl"
 #include "scene_lit_debug.inl"
 #include "scene_lit_stability.inl"
+#include "scene_lit_sky.inl"
 
 void quality_smaa_t2x_coverage(Fixture& f) {
     const auto meshes=f.room.meshes;
@@ -1489,7 +1490,7 @@ void quality_cases(Fixture& f) {
 
 int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& output, bool temporal_only, bool quality_only) {
     scene_lit_e2e::Fixture fixture(benchmark_mode,output);
-    if (benchmark_mode) scene_lit_e2e::benchmark(fixture);
+    if (benchmark_mode) {scene_lit_e2e::benchmark(fixture);scene_lit_e2e::sky_benchmark(fixture);}
     else if(quality_only) scene_lit_e2e::quality_cases(fixture);
     else if(temporal_only) scene_lit_e2e::temporal_isolation(fixture);
     else {

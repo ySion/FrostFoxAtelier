@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <crtdbg.h>
 #include <fstream>
+#include <iterator>
 #include <filesystem>
 #include <limits>
 #include <numbers>
@@ -442,8 +443,8 @@ int main(int argc, char** argv) try {
     if (argc > 1) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost" || mode == "--scene-lit-sky"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost|--scene-lit-sky [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
                                                      : std::filesystem::path{"out/scene-lit-20261008"};
         check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
@@ -454,6 +455,10 @@ int main(int argc, char** argv) try {
         if(mode=="--scene-lit-clustered") {
             scene_lit_e2e::Fixture fixture(false,output);
             scene_lit_e2e::clustered_cases(fixture);scene_lit_e2e::rectangle_cases(fixture);fixture.close();return 0;
+        }
+        if(mode=="--scene-lit-sky") {
+            scene_lit_e2e::Fixture fixture(false,output);
+            scene_lit_e2e::sky_cases(fixture);fixture.close();return 0;
         }
         if(mode=="--scene-lit-shadows") {
             scene_lit_e2e::Fixture fixture(false,output);

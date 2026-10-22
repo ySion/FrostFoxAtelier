@@ -203,6 +203,12 @@ struct SceneLit::State {
     std::array<float,16> view_projection{},inverse_view_projection{},previous_view_projection{},previous_inverse_view_projection{};
     std::array<float,16> camera_view{};
     std::array<float,4> viewport{},environment{},controls{},temporal{},jitter{},probe_history{},probe_controls{};
+    // Holding the map keeps its address from naming a newer map while these textures live.
+    rendering::SkyMapRef sky_source;
+    GfxTexture sky_background,sky_cube;
+    GfxSamplerState sky_sampler;
+    std::array<float,4> sky{},sky_radiance{}; // cos/sin of the yaw, 2^k, bound; sky_color * sky_intensity.
+    float sky_yaw{};
     std::array<float,4> probe_scene_min{},probe_scene_max{};
     std::array<std::uint32_t,4> size_frame{},source_counts{},probe_update_settings{};
     std::uint32_t hit_candidates{};
@@ -377,6 +383,8 @@ struct SceneLit::State {
     void resources() {
         if(sampler)return;
         sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_MIN_MAG_MIP_LINEAR);allocation(bool(sampler));
+        sky_sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_MIN_MAG_MIP_LINEAR,D3D12_TEXTURE_ADDRESS_MODE_WRAP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+        allocation(bool(sky_sampler));
         shadow_sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,D3D12_COMPARISON_FUNC_GREATER_EQUAL);
         allocation(bool(shadow_sampler));
         for(auto& query:queries){query=gfxCreateTimestampQuery(gfx);allocation(bool(query));}
@@ -586,6 +594,8 @@ struct SceneLit::State {
         bind(p,"lit_previous_inverse_view_projection",previous_inverse_view_projection);
         bind(p,"lit_camera_view",camera_view);bind(p,"lit_cluster_tiles",cluster_tiles);bind(p,"lit_cluster_origin",cluster_origin);
         bind(p,"lit_environment",environment);bind(p,"lit_controls",controls);
+        bind(p,"lit_sky",sky);bind(p,"lit_sky_radiance",sky_radiance);bind(p,"lit_sky_background",sky_background);
+        bind(p,"lit_sky_cube",sky_cube);bind(p,"lit_sky_sampler",sky_sampler);
         bind(p,"lit_temporal",temporal);bind(p,"lit_jitter",jitter);bind(p,"lit_effect_flags",effect_flags);
         bind(p,"lit_source_counts",source_counts);bind(p,"lit_hit_candidates",hit_candidates);
         bind(p,"lit_history_invalid",history_invalid);
@@ -753,7 +763,7 @@ struct SceneLit::State {
             for(std::uint32_t level=0;level<t.getMipLevels();++level)
                 result+=std::uint64_t(std::max(t.getWidth()>>level,1u))*std::max(t.getHeight()>>level,1u)*t.getDepth()*bytes;};
         for(auto t:gbuffer_textures)add_texture(t);
-        for(auto t:{indirect_half,hdr,indirect,ao_texture,ao_raw,ao_depth,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,probe_presentation,probe_response,probe_age,probe_sample_cursor,probe_debug_depth,shadow_static,shadow_dynamic})add_texture(t);
+        for(auto t:{indirect_half,hdr,indirect,ao_texture,ao_raw,ao_depth,reflection_trace,reflection_hit_trace,brdf_lut,tone_color,smaa_edges,smaa_weights,smaa_output,smaa_area,smaa_search,probe_presentation,probe_response,probe_age,probe_sample_cursor,probe_debug_depth,shadow_static,shadow_dynamic,sky_background,sky_cube})add_texture(t);
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&bloom,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(auto t:pyramid)add_texture(t);
         result+=instance_table.bytes();light_tables.each([&](const auto& table){result+=table.bytes();});
@@ -1054,11 +1064,15 @@ struct SceneLit::State {
         previous_antialiasing=settings.antialiasing;
         previous_effect_flags=flags;
         scene_identity=frame.scene_identity;enabled=true;
+        const bool sky_changed=prepare_sky(settings);
         probes(settings,frame.lighting_focus,stats);
         const bool transform_changed=acceleration(frame);lighting(frame);
         const bool visibility_changed=transform_changed||coverage_changed;
-        const std::array<float,4> next_environment{frame.environment[0],frame.environment[1],frame.environment[2],1};
-        const bool radiance_changed=light_changed||material_changed||emitter_changed||next_environment!=environment;
+        // Uniform consumers (DDGI-off composition, SSSR fallback) read the map's mean.
+        const auto mean=sky_source?sky_source->mean():std::array<float,3>{1,1,1};
+        const std::array<float,4> next_environment{frame.environment[0]*mean[0],frame.environment[1]*mean[1],frame.environment[2]*mean[2],1};
+        sky_radiance={frame.environment[0],frame.environment[1],frame.environment[2],0};
+        const bool radiance_changed=light_changed||material_changed||emitter_changed||sky_changed||next_environment!=environment;
         // The epoch describes an authored change, never stochastic radiance.
         // GPU directions keep their own progress even when sparsely scheduled.
         if(radiance_changed||transform_changed)
@@ -1352,7 +1366,41 @@ struct SceneLit::State {
         require(gfxCommandBindDepthStencilTarget(gfx,depth),"Restore scene editing depth");
         stats.scene_lit_resource_bytes=resource_bytes();
     }
+    // Returns whether the map or its yaw changed; tint changes reach the probes through environment.
+    bool prepare_sky(const SceneLitSettings& settings) {
+        const bool replaced=settings.sky_map!=sky_source,turned=settings.sky_map&&settings.sky_rotation!=sky_yaw;
+        sky_yaw=settings.sky_rotation;
+        if(replaced) {
+            retire(sky_background);retire(sky_cube);sky_source=settings.sky_map;
+            if(sky_source) {
+                const auto& map=*sky_source;
+                sky_background=gfxCreateTexture2D(gfx,map.width(),map.height(),DXGI_FORMAT_R16G16B16A16_FLOAT,gfxCalculateMipCount(map.width(),map.height()));
+                allocation(bool(sky_background));
+                const auto upload=[&](std::span<const std::byte> bytes,auto&& copy) {
+                    auto buffer=gfxCreateBuffer(gfx,bytes.size(),bytes.data(),kGfxCpuAccess_Write);allocation(bool(buffer));
+                    const auto copied=copy(buffer);const auto retired=gfxDestroyBuffer(gfx,buffer);
+                    require(copied,"Upload sky map");require(retired,"Retire sky map upload");
+                };
+                upload(std::as_bytes(map.pixels()),[&](GfxBuffer buffer){return gfxCommandCopyBufferToTexture(gfx,sky_background,buffer);});
+                require(gfxCommandGenerateMips(gfx,sky_background),"Generate sky map mipmaps");
+                sky_cube=gfxCreateTextureCube(gfx,rendering::SkyMap::cube_size,DXGI_FORMAT_R32G32B32A32_FLOAT);allocation(bool(sky_cube));
+                // gfx copies cube faces at the placed-footprint row pitch, so rows are padded to it.
+                constexpr std::size_t size=rendering::SkyMap::cube_size,row=size*4*sizeof(float);
+                constexpr std::size_t pitch=(row+D3D12_TEXTURE_DATA_PITCH_ALIGNMENT-1)/D3D12_TEXTURE_DATA_PITCH_ALIGNMENT*D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+                std::vector<std::byte> face(size*pitch);
+                const auto texels=std::as_bytes(map.cube());
+                for(std::uint32_t i=0;i<6;++i) {
+                    for(std::size_t y=0;y<size;++y)std::copy_n(texels.begin()+(i*size+y)*row,row,face.begin()+y*pitch);
+                    upload(face,[&](GfxBuffer buffer){return gfxCommandCopyBufferToCubeFace(gfx,sky_cube,buffer,i);});
+                }
+            }
+        }
+        const double radians=double(settings.sky_rotation)*std::numbers::pi/180;
+        sky=sky_source?std::array<float,4>{float(std::cos(radians)),float(std::sin(radians)),std::ldexp(1.f,sky_source->scale_exponent()),1}:std::array<float,4>{};
+        return replaced||turned;
+    }
     void retire_scene() {
+        retire(sky_background);retire(sky_cube);sky_source.reset();sky={};
         resolved.clear();resolved_complete=false;
         shadow_cache.invalidate();shadows_cached=false;shadow_casters.clear();shadow_changes.clear();
         retire(shadow_static);retire(shadow_dynamic);
@@ -1380,7 +1428,7 @@ struct SceneLit::State {
         retire_scene();retire(ray_counters);retire(ltc);
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
-        for(auto* s:{&sampler,&shadow_sampler})if(*s)require(gfxDestroySamplerState(gfx,std::exchange(*s,{})),"Retire Scene Lit sampler");
+        for(auto* s:{&sampler,&shadow_sampler,&sky_sampler})if(*s)require(gfxDestroySamplerState(gfx,std::exchange(*s,{})),"Retire Scene Lit sampler");
         for(auto* p:{&gbuffer,&cluster_build,&cluster_inspect,&shadow_depth,&compose,&sun_trace_prepare,&sun_trace,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
                     &ao,&ao_depth_reduce,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
                     &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&probe_debug_surface,&probe_debug_geometry,&inspect_pass,&inspect_update})*p={};
@@ -1400,6 +1448,7 @@ void SceneLit::validate(const Frame& frame) const {
     invalid(finite(s.exposure_ev)&&s.exposure_ev>=-16&&s.exposure_ev<=16&&finite(s.shadow_bias)&&s.shadow_bias>0&&s.shadow_bias<=.1f&&finite(s.ao_radius)&&s.ao_radius>0&&
         finite(s.reflection_distance)&&s.reflection_distance>0&&finite(s.reflection_roughness)&&s.reflection_roughness>=0&&s.reflection_roughness<=1&&s.probe_update_budget>0&&s.probe_rays>=1&&s.probe_rays<=256&&s.antialiasing<=Antialiasing::smaa_t2x&&s.probe_visualization<=ProbeVisualization::distance&&finite(s.probe_radius)&&s.probe_radius>=.01f&&s.probe_radius<=.45f,"Invalid Scene Lit settings");
     for(float radiance:frame.environment)invalid(finite(radiance)&&radiance>=0&&radiance<=65504,"Invalid Scene Lit sky radiance");
+    invalid(finite(s.sky_rotation)&&s.sky_rotation>=-180&&s.sky_rotation<=180,"Invalid Scene Lit sky rotation");
     if(const auto* error=probe_focus_error(s,frame.lighting_focus))invalid(false,error);
     std::unordered_set<std::uint64_t> mesh_keys,light_keys;
     for(const auto& mesh:frame.meshes)if(mesh.stable_key)

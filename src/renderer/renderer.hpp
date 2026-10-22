@@ -92,8 +92,9 @@ struct Frame {
     std::span<const Light> lights{};
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
     bool camera_cut{};
-    // Uniform sky radiance from the scene's environment (rendering::sky_radiance).
-    // Zero when the sky is off; this is not a viewport ambient-light setting.
+    // sky_color * sky_intensity from the scene's environment (rendering::sky_radiance);
+    // view.lit.sky_map and sky_rotation shape it by direction. Zero when the sky is
+    // off; this is not a viewport ambient-light setting.
     std::array<float, 3> environment{};
     std::array<float, 3> lighting_focus{}; // Receiver/play focus for following DDGI volumes; not camera eye.
     // Active rendering time since the last accepted frame, independent of Play.

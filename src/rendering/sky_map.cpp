@@ -64,9 +64,9 @@ SkyMap::SkyMap(std::uint32_t width,std::uint32_t height,std::span<const float> r
     }
     for(std::size_t c=0;c<3;++c) mean_[c]=static_cast<float>(sum[c]/total);
 
-    // Splat sub-texels of at most 0.5 degrees so every cube texel (at least ~3.4 degrees)
+    // Splat sub-texels of at most 0.5 degrees so every cube texel (at least ~16 degrees)
     // receives many samples. Normalizing by the sampled area reproduces constant maps
-    // exactly; a texel's sampled area differs from its solid angle by <2% at 4K.
+    // exactly; a texel's sampled area differs from its solid angle by <1%.
     const std::uint32_t split=std::max<std::uint32_t>(1,(720+width-1)/width),columns=width*split,rows=height*split;
     std::vector<double> splat(std::size_t(6)*cube_size*cube_size*4);
     std::vector<double> column_sin(columns),column_cos(columns);

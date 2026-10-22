@@ -64,7 +64,7 @@ CPU 在编码前复用数学模块计算一次 inverse view-projection。有限�
 
 Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用 Scene Lit。Scene Lit 消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
 
-Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSettings` 的 `sky_enabled`、`sky_color`、`sky_intensity`，写在 Environment 组件上）。宿主用 `rendering::sky_radiance` 求颜色乘强度，填入 `Frame.environment`；默认关闭，值为零。关闭天光、删除 Environment 或更换场景会更新该值，并沿既有信号历史处理收敛。该辐射参与 DDGI 和环境反射，但不自动绘制可见天空；当前 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI 字段的现状见 [Scene Lit](scene-lit.md)。带方向的环境贴图和可见天空资产尚未接入。
+Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSettings` 的 `sky_enabled`、`sky_color`、`sky_intensity`，以及方向性贴图 `sky_map` 与 `sky_rotation`，写在 Environment 组件上）。宿主用 `rendering::sky_radiance` 求颜色乘强度，填入 `Frame.environment`；贴图和旋转角随 `Frame::view.lit` 传入。默认关闭，值为零。关闭天光、删除 Environment、换贴图或更换场景会更新这些值，并沿既有信号历史处理收敛。天光参与 DDGI 和环境反射；只有设了贴图时背景才显示天空，否则 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI 字段的现状见 [Scene Lit](scene-lit.md)。天空贴图的约定与限制见 [Scene Lit](scene-lit.md)。
 
 每份共享 Mesh 首次使用时创建一个 GPU 三角形缓冲，包含顶点、边标记和面法线；切换显示方式复用同一份几何缓存。批次按资源在完整 `Frame::meshes` 中首次出现的顺序排列，批内保持 Frame 顺序；这个顺序只由成员表决定，不随可见性或选中状态变化。不同资源之间的绘制顺序不属于契约，但对同一份成员表稳定：完全共面且重叠的不同资源由谁覆盖、Lines: All 半透明边线在重叠处的混合，都取决于它，调用方和验收不能依赖原成员顺序。每个有可见实例的批次的每个材质分组在实体/叠线模式为一次 draw，在纯线模式为深度与边线两次 draw；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 

@@ -12,7 +12,8 @@ namespace atelier::rendering {
 // Map space: row 0 is +Y and rows run to -Y; u = 0.5 faces +Z and u = 0.75 faces +X.
 class SkyMap final {
 public:
-    static constexpr std::uint32_t source_width_limit = 8192, width_limit = 4096, cube_size = 16;
+    // A 4^2 cube keeps DDGI probes stable under an unextracted sun at 64 rays; 16^2 and 8^2 flickered.
+    static constexpr std::uint32_t source_width_limit = 8192, width_limit = 4096, cube_size = 4;
     // width * height RGB floats from row 0; width must be 2 * height. Sources wider than
     // width_limit are box-downsampled 2x2 once; mean, peak and cube use the full source.
     SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
