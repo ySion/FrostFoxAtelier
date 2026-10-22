@@ -170,6 +170,10 @@ Reply Session::input(const Event& event) {
                         if (control.kind==ControlKind::slider) {
                             const auto step=(control.maximum-control.minimum)/press.slider_span*(event.shift?.1:1.0);
                             press.value=std::clamp(press.value+(event.x-press.last_x)*step,control.minimum,control.maximum);
+                        } else if (control.kind==ControlKind::splitter) {
+                            // A divider stays under the pointer: travel past a limit is held, not dropped.
+                            const auto moved=control.drag_axis==DragAxis::horizontal?event.x-press.x:event.y-press.y;
+                            press.value=std::clamp(press.original+moved/self.surface.dpi_scale*control.drag_step,control.minimum,control.maximum);
                         } else {
                             const auto step=event.shift?control.fine_step:control.drag_step;
                             press.value=std::clamp(press.value+delta/self.surface.dpi_scale*step,control.minimum,control.maximum);

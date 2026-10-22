@@ -129,7 +129,7 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | `ParameterRow` | 共享标签＋内容区域，直接子节点进入统一的参数内容槽；保留单行尺寸和窄面板换行 |
 | `Viewport` | 原生视口挂载位置；相机、渲染和输入由既有宿主负责 |
 | `Tab` | 工作区可拖动页签，使用原生捕获、拖动、取消链；内容页签继续使用 ChoiceButton |
-| `Splitter` | 有界拖动控件，value/minimum/maximum/step 表达范围，vertical 选择拖动方向 |
+| `Splitter` | 有界拖动控件，value/minimum/maximum/step 表达范围，vertical 选择拖动方向；拖动值按从按下点起的总位移计算，越过范围的那段保留，指针回到范围内分割条才跟回，始终在指针下 |
 | `Popup` / `MenuItem` | 独立菜单根和菜单项；支持普通命令、checkbox、radio、子菜单分支 |
 | `Foldout` | 可激活的折叠标题叶；不接受子节点，展开内容由另一个 Column 的 collapsed 表达 |
 | `NumberRow` | 共享参数行；必填 EditBinding，0 个字段不产生控件，非空时接受 1–4 个数值字段 |
