@@ -18,7 +18,7 @@ function(atelier_add_world)
         src/presentation/materials.cpp
         src/presentation/scene.cpp)
     atelier_target(atelier_presentation)
-    target_link_libraries(atelier_presentation PUBLIC atelier_world atelier_geometry)
+    target_link_libraries(atelier_presentation PUBLIC atelier_world atelier_geometry atelier_rendering)
     atelier_reflect(atelier_presentation SOURCE src/presentation/objects.cpp
         HEADERS src/presentation/presentation.hpp src/material/resources.hpp)
 

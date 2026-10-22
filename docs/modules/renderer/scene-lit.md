@@ -15,7 +15,14 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 - 标准金属度/粗糙度材质支持基础色、roughness、metallic、切线空间法线、线性 HDR RGB 自发光与 Opaque/Mask。六个贴图输入及 UV/采样设置由统一材质表提供，自发光因子在曝光前保留大于 1 的值。
 - GBuffer、射线命中、发光采样、辅助深度和选择叠层消费同一表面；Mesh/MTL 默认材质与显式资产绑定走同一解析入口。颜色/发光图使用 sRGB，标量/法线图使用线性数据，详见[材质系统](materials.md)。
 - 点光源使用 candela，矩形面光源使用 cd/m²，方向光使用 lux。点光源半径以米表示，方向光角半径以弧度表示；矩形使用米制宽高与单面/双面设置。
-- 天光是同一作者值中的 `sky_enabled`、`sky_color` 与 `sky_intensity`（cd/m²），首版表示均匀入射辐射，宿主用 `rendering::sky_radiance` 求颜色乘强度写入 `Frame.environment`。天光关闭或没有 Environment 时该值为零；它不进入局部光源候选池，不依据空间变换改变照明，也不自动绘制天空。Scene Lit 背景固定为黑，工作室模式的渐变偏好单独保留。HDRI / 方向性天空尚未实现。
+- 天光是同一作者值中的 `sky_enabled`、`sky_color`、`sky_intensity`（cd/m²），以及方向性贴图 `sky_map`（`rendering::SkyMapRef`，空表示 map = 1）和 `sky_rotation`（度）。入射辐亮度为 L(ω) = sky_color × sky_intensity × map(R·ω)。宿主用 `rendering::sky_radiance` 求颜色乘强度写入 `Frame.environment`；天光关闭或没有 Environment 时该值为零。天光不进入局部光源候选池，也不自动绘制天空。Scene Lit 背景固定为黑，工作室模式的渐变偏好单独保留。Renderer 尚未读取 `sky_map` 与 `sky_rotation`，目前天光仍是均匀的。
+- `rendering::SkyMap`（[sky_map.hpp](../../../src/rendering/sky_map.hpp)）是不可变的等距柱状天空资源：
+  - 贴图空间：第 0 行是 +Y，行向 −Y 推进；u = 0.5 朝 +Z，u = 0.75 朝 +X，从球心看贴图不镜像。
+  - `sky_rotation` 让贴图绕 +Y 转动，方向与 Transform 绕 +Y 的正旋转相同：+X 转向 −Z，在本引擎的左手系里从 +Y 往下看是顺时针。所以方向光和天空转同一角度时，HDRI 里的太阳仍与光对齐。范围 [−180, 180]，±180 是同一方向。
+  - 输入：宽高 2:1，宽不超过 8192；辐亮度有限、非负，每通道不超过 2^32。宽于 4096 时按 2×2 平均降一次（高必须为偶数），所以 GPU 背景图最大 4096×2048。
+  - 存储为 RGBA16F。源峰值超过 65504 时整图乘 2^-k（k 记在资源里，着色时乘回），不裁掉能量；代价是很暗的纹素会落进 FP16 次正规数，精度下降。
+  - 以下派生量由完整的 float32 源图计算：按立体角加权的平均辐亮度、通道峰值、最亮纹素方向，以及 16²×6 按立体角盒滤的 radiance cube（RGBA float，未缩放，D3D 面序 +X −X +Y −Y +Z −Z）。cube 按不大于 0.5° 的子纹素累加，再除以落进每个纹素的采样面积，所以常量贴图逐纹素精确复原，也不受 2^-k 次正规数的影响。采样面积与纹素的几何立体角在 4K 源图上最多差 1.9%（均方根 0.66%），极低分辨率源图最多差 8%；集中在一个纹素里的亮点（如太阳）能量偏差与此同量级，整图总能量在 4K 实测 HDRI 上偏差约 0.01%。
+  - `rendering::decode_radiance_hdr` 读取 Radiance `.hdr`：只接受 `32-bit_rle_rgbe` 和 `-Y H +X W` 方向，支持新式 RLE、旧式 RLE 和平铺扫描线，来源上限 256 MiB。像素按 R × 2^(e−136) 还原，不加半步偏移（与 OIIO、stb_image 一致）；其他头部行（含 EXPOSURE）忽略。4K 源图解码并计算派生量约 0.7 s，每个资产只做一次。
 - World 唯一负责层级变换与灯的正交方向；Renderer 接收最终位置、传播方向和矩形切向轴。空间缩放不隐式改变灯的物理尺寸、范围或强度。权威数据约束见 [Presentation](../presentation/README.md)。
 - 点光和矩形光使用有界距离衰减；方向光覆盖全场景。直接光使用 GGX 表面响应。屏幕直接光用 LTC 对矩形光的立体角做确定积分；DDGI 探针命中点仍对矩形的真实发光面积采样。
 - Renderer 的灯光值域与 World 一致：方向光允许零 range，非矩形光允许零 width/height，方向光角半径小于 π/2。局部光源在共享贡献求值入口按真实采样位置检查距离衰减与侧向。
