@@ -3,6 +3,7 @@
 #include "shadow_cache.hpp"
 #include "ddgi_volume.hpp"
 #include "shader_source.hpp"
+#include "ltc_lut.hpp"
 #include "smaa_lut.hpp"
 #include "solid_geometry.hpp"
 #include "raster_viewport.hpp"
@@ -136,6 +137,7 @@ struct SceneLit::State {
     GfxBuffer rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments;
     LightFrame light_frame;
     GfxBuffer ray_counters;
+    GfxBuffer ltc; // Rectangle-light LTC table, ltc_lut::size squared cells.
     static constexpr std::size_t readback_count=32;
     std::array<GfxBuffer,readback_count> ray_readback{};
     std::array<std::uint64_t,readback_count> readback_sequences{},readback_frame_ids{};
@@ -384,6 +386,9 @@ struct SceneLit::State {
         };
         upload_lut(smaa_area,smaa_lut::area_width,smaa_lut::area_height,DXGI_FORMAT_R8G8_UNORM,smaa_lut::area_bytes());
         upload_lut(smaa_search,smaa_lut::search_width,smaa_lut::search_height,DXGI_FORMAT_R8_UNORM,smaa_lut::search_bytes());
+        struct LtcCell { float inverse[4],amplitude[2]; };
+        static_assert(sizeof(LtcCell)*ltc_lut::size*ltc_lut::size==sizeof(ltc_lut::table));
+        ltc=gfxCreateBuffer<LtcCell>(gfx,ltc_lut::size*ltc_lut::size,ltc_lut::table.data());allocation(bool(ltc));
     }
     void retire_targets() {
         retire(probe_visibility_cache);probe_visibility_valid=false;
@@ -728,7 +733,7 @@ struct SceneLit::State {
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&bloom,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(auto t:pyramid)add_texture(t);
         result+=instance_table.bytes();light_tables.each([&](const auto& table){result+=table.bytes();});
-        for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters})result+=b.getSize();
+        for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters,ltc})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
         result+=shadow_tables.face_table.bytes()+shadow_tables.light_table.bytes()+shadow_tables.instance_table.bytes();
         if(inspection) {result+=inspection->output.getSize()+inspection->rays.getSize();for(auto b:inspection->readback)result+=b.getSize();for(auto b:inspection->ray_readback)result+=b.getSize();}
@@ -1185,7 +1190,7 @@ struct SceneLit::State {
         begin(14);
         {const auto p=compose.program();
             bind(p,"lit_cluster_depth",cluster_depth);bind(p,"lit_cluster_count",cluster_count);bind(p,"lit_cluster_source",cluster_source);
-            bind_shadows(p);
+            bind_shadows(p);bind(p,"lit_ltc",ltc);
             bind(p,"lit_indirect_source",indirect);bind(p,"lit_ao",ao_texture);
             bind(p,"lit_indirect_gain",settings.indirect_gain);bind(p,"lit_hdr_output",hdr);}
         dispatch_window(compose,depth);
@@ -1341,7 +1346,7 @@ struct SceneLit::State {
         pending.clear();
         if(inspection){retire(inspection->output);retire(inspection->rays);for(auto& buffer:inspection->readback)retire(buffer);for(auto& buffer:inspection->ray_readback)retire(buffer);inspection.reset();}
         retire_targets();for(auto* pair:{&probe_irradiance,&probe_distance,&probe_offsets})for(auto& t:*pair)retire(t);retire(probe_presentation);retire(probe_response);retire(brdf_lut);retire(smaa_area);retire(smaa_search);retire(probe_age);retire(probe_sample_cursor);retire(probe_debug_depth);
-        retire_scene();retire(ray_counters);
+        retire_scene();retire(ray_counters);retire(ltc);
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
         for(auto* s:{&sampler,&shadow_sampler})if(*s)require(gfxDestroySamplerState(gfx,std::exchange(*s,{})),"Retire Scene Lit sampler");

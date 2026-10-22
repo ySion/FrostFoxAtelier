@@ -135,16 +135,105 @@ float lit_compose_visibility(LitLightSource light,uint source,LitLightingSurface
     if(cache.meta.x==0)return 0;
     return asfloat(cache.meta.w)*(cache.meta.x==2?lit_shadow_directional(cache,light,surface):lit_shadow_point(cache,light,surface));
 }
+// Linearly transformed cosines (Heitz et al. 2016) fitted to
+// lit_brdf_components by tools/ltc/fit.py. Cell (theta row, roughness column)
+// holds the inverse transform m00, m20, m02, m22 with m11 = 1, then the
+// specular albedo with F = 1 and its (1 - v.h)^5 moment.
+struct LitLtcCell { float4 inverse; float2 amplitude; };
+StructuredBuffer<LitLtcCell> lit_ltc;
+static const uint LIT_LTC_SIZE=64;
+void lit_ltc_lookup(float roughness,float nv,out float3x3 inverse,out float2 amplitude) {
+    float2 coordinate=float2(saturate(roughness),sqrt(saturate(1-nv)))*(LIT_LTC_SIZE-1);
+    uint2 base=min(uint2(coordinate),LIT_LTC_SIZE-2);
+    float2 f=coordinate-base;
+    LitLtcCell c00=lit_ltc[base.y*LIT_LTC_SIZE+base.x],c10=lit_ltc[base.y*LIT_LTC_SIZE+base.x+1];
+    LitLtcCell c01=lit_ltc[(base.y+1)*LIT_LTC_SIZE+base.x],c11=lit_ltc[(base.y+1)*LIT_LTC_SIZE+base.x+1];
+    float4 m=lerp(lerp(c00.inverse,c10.inverse,f.x),lerp(c01.inverse,c11.inverse,f.x),f.y);
+    amplitude=lerp(lerp(c00.amplitude,c10.amplitude,f.x),lerp(c01.amplitude,c11.amplitude,f.x),f.y);
+    inverse=float3x3(m.x,0,m.z, 0,1,0, m.y,0,m.w);
+}
+// Edge term of the polygon's vector form factor for corners c+a and c+b.
+// Expanding the cross product around the shared centre c avoids cancelling
+// nearly parallel corner vectors, which the near-cancelling edge sum of a
+// small, distant rectangle would amplify again. Scale-free; atan2 keeps the
+// small angles accurate.
+float3 lit_ltc_edge(float3 c,float3 a,float3 b) {
+    float3 n=cross(c,b-a)+cross(a,b);float s=length(n);
+    return s>0?n*(atan2(s,dot(c+a,c+b))/s):0;
+}
+// Vector form factor (times 2 pi) of the quad c+q[i] clipped to z > 0. A convex
+// quad leaves the horizon at most once, so one horizon edge closes the clip.
+float3 lit_ltc_quad(float3 c,float3 q[4]) {
+    float3 sum=0,leaving=0,entering=0;bool clipped=false;
+    [unroll] for(uint i=0;i<4;++i) {
+        float3 a=q[i],b=q[(i+1)&3];
+        float za=c.z+a.z,zb=c.z+b.z;
+        bool above_a=za>0,above_b=zb>0;
+        if(above_a&&above_b)sum+=lit_ltc_edge(c,a,b);
+        else if(above_a||above_b) {
+            float3 crossing=lerp(a,b,za/(za-zb));crossing.z=-c.z;clipped=true;
+            if(above_a){sum+=lit_ltc_edge(c,a,crossing);leaving=crossing;}
+            else {sum+=lit_ltc_edge(c,crossing,b);entering=crossing;}
+        }
+    }
+    if(clipped)sum+=lit_ltc_edge(c,leaving,entering);
+    return sum;
+}
+// Rectangle radiance integrated over its solid angle: the clamped-cosine
+// polygon integral gives the diffuse term, whose (1 - F) uses the half vector
+// of the polygon's mean incident direction; the fitted LTC gives the GGX term.
+// Both are exact for the point limit's direction. The range window starts at
+// the extent the cluster bound already includes. A one-sided rectangle lights
+// only the side its direction faces; a receiver whose geometric plane has every
+// corner behind it receives nothing. Visibility is separate.
+LitLightEvaluation lit_evaluate_rectangle_light(LitLightSource light,LitLightingSurface surface) {
+    LitLightEvaluation result=(LitLightEvaluation)0;
+    float3 delta=light.origin_range.xyz-surface.position;
+    float distance=length(delta);
+    float3 facing=lit_safe_normal(light.direction_radius.xyz);
+    float side=dot(facing,-delta);
+    // A receiver in the emitter's plane sees it edge-on, also when it is two-sided.
+    if(!(distance>0)||((light.meta.y&1u)!=0?abs(side):side)<=0)return result;
+    result.target=light.origin_range.xyz;result.distance=distance;result.direction=delta/distance;
+    float window=saturate(1-pow(max(distance-(lit_cluster_radius(light)-lit_local_range(light)),0)/lit_local_range(light),4));
+    window*=window;
+    float3 radiance=max(light.radiance.rgb,0)*window;
+    float3 half_width=.5*light.edge1_area.xyz,half_height=.5*light.edge2.xyz;
+    float3 offsets[4]={-half_width-half_height,half_width-half_height,half_width+half_height,half_height-half_width};
+    bool front=false;
+    [unroll] for(uint c=0;c<4;++c)front=front||dot(surface.geometric_normal,delta+offsets[c])>0;
+    if(!front||!any(radiance>0))return result;
+    float3 n=surface.normal,v=surface.view,t1=v-n*dot(n,v),t2;
+    if(dot(t1,t1)>1e-12){t1=normalize(t1);t2=cross(n,t1);}
+    else lit_basis(n,t1,t2);
+    float3 local[4],transformed[4];
+    float3x3 inverse;float2 amplitude;
+    float nv=max(saturate(dot(n,v)),1e-4);
+    lit_ltc_lookup(surface.roughness,nv,inverse,amplitude);
+    float3 centre=float3(dot(delta,t1),dot(delta,t2),dot(delta,n));
+    [unroll] for(uint i=0;i<4;++i) {
+        local[i]=float3(dot(offsets[i],t1),dot(offsets[i],t2),dot(offsets[i],n));
+        transformed[i]=mul(inverse,local[i]);
+    }
+    float3 form=lit_ltc_quad(centre,local);
+    float diffuse_integral=abs(form.z)/(2*LIT_PI);
+    float specular_integral=abs(lit_ltc_quad(mul(inverse,centre),transformed).z)/(2*LIT_PI);
+    float3 f0=lerp(.04.xxx,surface.base,surface.metallic);
+    if(diffuse_integral>0) {
+        float3 mean=lit_safe_normal(form*(form.z<0?-1:1));
+        float3 l=t1*mean.x+t2*mean.y+n*mean.z;
+        float schlick=pow(1-saturate(dot(v,lit_safe_normal(v+l))),5);
+        result.diffuse=(1-f0)*(1-schlick)*surface.base*(1-surface.metallic)*diffuse_integral*radiance;
+    }
+    result.specular=(f0*amplitude.x+(1-f0)*amplitude.y)*specular_integral*radiance;
+    return result;
+}
 // Deterministic radiance: spheres and suns use Karis' representative point;
-// rectangles are evaluated at their centre with the area-scaled cosine, and
-// their range window starts at the extent the cluster bound already includes.
+// rectangles integrate their solid angle with linearly transformed cosines.
 float3 lit_compose_light(LitLightSource light,uint source,LitLightingSurface surface,bool shadows) {
     LitLightEvaluation value;
-    if(light.meta.x==1) {
-        LitLightSample prepared=lit_prepare_light_sample(light,.5);
-        prepared.cutoff_offset=lit_cluster_radius(light)-lit_local_range(light);
-        value=lit_evaluate_light_sample(prepared,surface);
-    } else value=lit_evaluate_compact_light(light,surface);
+    if(light.meta.x==1)value=lit_evaluate_rectangle_light(light,surface);
+    else value=lit_evaluate_compact_light(light,surface);
     if(lit_light_target(value)<=0)return 0;
     return (value.diffuse+value.specular)*lit_compose_visibility(light,source,surface,shadows);
 }

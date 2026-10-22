@@ -453,7 +453,7 @@ int main(int argc, char** argv) try {
         }
         if(mode=="--scene-lit-clustered") {
             scene_lit_e2e::Fixture fixture(false,output);
-            scene_lit_e2e::clustered_cases(fixture);fixture.close();return 0;
+            scene_lit_e2e::clustered_cases(fixture);scene_lit_e2e::rectangle_cases(fixture);fixture.close();return 0;
         }
         if(mode=="--scene-lit-shadows") {
             scene_lit_e2e::Fixture fixture(false,output);

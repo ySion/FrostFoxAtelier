@@ -174,61 +174,134 @@ double percentile(std::vector<double> values, unsigned percent) {
     return values[(values.size()-1)*percent/100];
 }
 
-// Implementation-independent radiometry for one unshadowed point light (zero
-// radius) on the plane z=plane_z facing -z, seen through a translation-only view.
-// Radiance: color*I*window/max(d^2,0.0025) with window (1-(d/range)^4)^2, times
-// Lambert diffuse weighted by (1-F) plus GGX/height-correlated Smith/Schlick
-// specular (F0 0.04). Display: exposure 1, rational filmic curve, sRGB. Every
-// receiver pixel must lie within one 8-bit code (display dither) of the band
-// that two HDR half-precision roundings allow.
+// Implementation-independent radiometry on the plane z=plane_z facing -z, seen
+// through a translation-only view. Surface response per unit incident radiance
+// and solid angle: Lambert diffuse weighted by (1-F) plus GGX / separable Smith /
+// Schlick specular, F0 = lerp(0.04, base, metallic). Display: exposure 1,
+// rational filmic curve, sRGB. A receiver pixel must lie within one 8-bit code
+// (display dither) of the band that two HDR half-precision roundings allow.
+using Rgb3 = std::array<double,3>;
+struct PlaneResponse { Rgb3 diffuse{}, specular{}; };
+PlaneResponse plane_response(const Rgb3& v,const Rgb3& l,const Rgb3& base,double roughness,double metallic) {
+    PlaneResponse result;
+    const double nl=-l[2],nv=std::max(-v[2],1e-4);
+    if(nl<=0)return result;
+    const Rgb3 h{v[0]+l[0],v[1]+l[1],v[2]+l[2]};
+    const double hl=std::sqrt(h[0]*h[0]+h[1]*h[1]+h[2]*h[2]);
+    const double nh=std::max(-h[2]/hl,0.),vh=std::max((v[0]*h[0]+v[1]*h[1]+v[2]*h[2])/hl,0.);
+    const double a=std::max(roughness*roughness,.0025),a2=a*a;
+    const double distribution=a2/(std::numbers::pi*std::pow(nh*nh*(a2-1)+1,2));
+    const double gv=2*nv/(nv+std::sqrt(a2+(1-a2)*nv*nv)),gl=2*nl/(nl+std::sqrt(a2+(1-a2)*nl*nl));
+    for(unsigned channel=0;channel<3;++channel) {
+        const double f0=.04+(base[channel]-.04)*metallic,fresnel=f0+(1-f0)*std::pow(1-vh,5);
+        result.diffuse[channel]=(1-fresnel)*base[channel]*(1-metallic)/std::numbers::pi*nl;
+        result.specular[channel]=distribution*gv*gl*fresnel/std::max(4*nl*nv,1e-5)*nl;
+    }
+    return result;
+}
+double display_code(double radiance) {
+    const double x=std::max(radiance,0.);
+    const double mapped=std::clamp(x*(2.51*x+.03)/(x*(2.43*x+.59)+.14),0.,1.);
+    return 255*(mapped<=.0031308?mapped*12.92:1.055*std::pow(mapped,1/2.4)-.055);
+}
 struct Analytic { std::size_t pixels{}, failures{}; double max_error{}; };
-Analytic analytic_point_plane(const render::Frame& frame,const render::Capture& image,const render::Light& light,
-                              float plane_z,double base,double roughness) {
+// Visits each receiver pixel with its plane point p and unit view vector v.
+template<class Visit> void plane_pixels(const render::Frame& frame,const render::Capture& image,float plane_z,Visit&& visit) {
     const auto& view=frame.camera.view;const auto& projection=frame.camera.projection;
     const bool perspective=projection[11]!=0;
-    const std::array<double,3> eye{-view[12],-view[13],-view[14]};
-    const auto code=[](double radiance) {
-        const double x=std::max(radiance,0.);
-        const double mapped=std::clamp(x*(2.51*x+.03)/(x*(2.43*x+.59)+.14),0.,1.);
-        return 255*(mapped<=.0031308?mapped*12.92:1.055*std::pow(mapped,1/2.4)-.055);
-    };
-    Analytic result;
+    const Rgb3 eye{-view[12],-view[13],-view[14]};
     const auto& viewport=frame.scene_viewport;
     for(unsigned y=0;y<image.extent.height;++y) for(unsigned x=0;x<image.extent.width;++x) {
         if(depth(image,x,y)<=0)continue;
         const double nx=(x+.5-viewport.x)/viewport.width*2-1,ny=1-(y+.5-viewport.y)/viewport.height*2;
         const double view_z=plane_z+view[14],scale=perspective?view_z:1;
-        const std::array<double,3> p{nx*scale/projection[0]-view[12],ny*scale/projection[5]-view[13],plane_z};
-        std::array<double,3> v{0,0,-1},l{};
+        const Rgb3 p{nx*scale/projection[0]-view[12],ny*scale/projection[5]-view[13],plane_z};
+        Rgb3 v{0,0,-1};
         if(perspective) {
             double length=0;for(unsigned i=0;i<3;++i){v[i]=eye[i]-p[i];length+=v[i]*v[i];}
             for(auto& value:v)value/=std::sqrt(length);
         }
-        double d2=0;for(unsigned i=0;i<3;++i){l[i]=light.position[i]-p[i];d2+=l[i]*l[i];}
+        visit(x,y,p,v);
+    }
+}
+// Radiance from one unshadowed point light (zero radius): color*I*window/max(d^2,0.0025)
+// with window (1-(d/range)^4)^2.
+Analytic analytic_point_plane(const render::Frame& frame,const render::Capture& image,const render::Light& light,
+                              float plane_z,double base,double roughness) {
+    Analytic result;
+    plane_pixels(frame,image,plane_z,[&](unsigned x,unsigned y,const Rgb3& p,const Rgb3& v) {
+        Rgb3 l{};double d2=0;for(unsigned i=0;i<3;++i){l[i]=light.position[i]-p[i];d2+=l[i]*l[i];}
         const double d=std::sqrt(d2);for(auto& value:l)value/=d;
-        const double nl=-l[2],nv=std::max(-v[2],1e-4);
-        double radiance=0;
-        if(nl>0) {
-            const double window=std::pow(std::clamp(1-std::pow(d/light.range,4),0.,1.),2);
-            const double irradiance=light.intensity*window/std::max(d2,.0025);
-            std::array<double,3> h{v[0]+l[0],v[1]+l[1],v[2]+l[2]};
-            const double hl=std::sqrt(h[0]*h[0]+h[1]*h[1]+h[2]*h[2]);
-            const double nh=std::max(-h[2]/hl,0.),vh=std::max((v[0]*h[0]+v[1]*h[1]+v[2]*h[2])/hl,0.);
-            const double a=std::max(roughness*roughness,.0025),a2=a*a;
-            const double distribution=a2/(std::numbers::pi*std::pow(nh*nh*(a2-1)+1,2));
-            const double gv=2*nv/(nv+std::sqrt(a2+(1-a2)*nv*nv)),gl=2*nl/(nl+std::sqrt(a2+(1-a2)*nl*nl));
-            const double fresnel=.04+.96*std::pow(1-vh,5);
-            const double diffuse=(1-fresnel)*base/std::numbers::pi*nl;
-            const double specular=distribution*gv*gl*fresnel/std::max(4*nl*nv,1e-5)*nl;
-            radiance=irradiance*(diffuse+specular);
-        }
+        const double window=std::pow(std::clamp(1-std::pow(d/light.range,4),0.,1.),2);
+        const double irradiance=light.intensity*window/std::max(d2,.0025);
+        const auto response=plane_response(v,l,{base,base,base},roughness,0);
         ++result.pixels;
         for(unsigned channel=0;channel<3;++channel) {
-            const double expected=radiance*light.color[channel],observed=pixel(image,x,y)[channel];
-            const double low=code(expected*(1-1./1024))-1,high=code(expected*(1+1./1024))+1;
-            const double error=std::max({low-observed,observed-high,0.});
-            result.max_error=std::max(result.max_error,std::abs(observed-code(expected)));
-            if(error>0){++result.failures;break;}
+            const double expected=irradiance*(response.diffuse[channel]+response.specular[channel])*light.color[channel];
+            const double observed=pixel(image,x,y)[channel];
+            const double low=display_code(expected*(1-1./1024))-1,high=display_code(expected*(1+1./1024))+1;
+            result.max_error=std::max(result.max_error,std::abs(observed-display_code(expected)));
+            if(observed<low||observed>high){++result.failures;break;}
+        }
+    });
+    return result;
+}
+// Radiance from one unshadowed rectangle: its radiance color*I times the window
+// (1-((d-e)/range)^4)^2 at the centre distance d, e = (width+height)/2, integrated
+// over its area with cos_light*cos_receiver/r^2 (|cos_light| when two-sided) by
+// the midpoint rule. One sample is the point limit; otherwise each side takes at
+// least `samples` points and twelve per receiver distance to the rectangle, so
+// near receivers stay resolved. The band widens by `specular_slack` of the
+// expected specular part, which LTC approximates pointwise, and by `peak_slack`
+// of the brightest expected channel in the image.
+Analytic analytic_rectangle_plane(const render::Frame& frame,const render::Capture& image,const render::Light& light,
+                                  float plane_z,const Rgb3& base,double roughness,double metallic,unsigned samples,
+                                  double specular_slack,double peak_slack) {
+    struct Expected { unsigned x,y; Rgb3 total,specular; };
+    std::vector<Expected> expected;double peak=0;
+    const Rgb3 centre{light.position[0],light.position[1],light.position[2]};
+    const Rgb3 facing{light.direction[0],light.direction[1],light.direction[2]};
+    const Rgb3 right{light.right[0]*double(light.width),light.right[1]*double(light.width),light.right[2]*double(light.width)};
+    const Rgb3 up{light.up[0]*double(light.height),light.up[1]*double(light.height),light.up[2]*double(light.height)};
+    const double extent=.5*(double(light.width)+light.height),range=std::max(double(light.range),1e-3);
+    plane_pixels(frame,image,plane_z,[&](unsigned x,unsigned y,const Rgb3& p,const Rgb3& v) {
+        Rgb3 to_centre{};double d2=0,s=0,t=0;
+        for(unsigned i=0;i<3;++i){to_centre[i]=centre[i]-p[i];d2+=to_centre[i]*to_centre[i];}
+        for(unsigned i=0;i<3;++i){s-=to_centre[i]*right[i];t-=to_centre[i]*up[i];}
+        s=std::clamp(s/(light.width*double(light.width)),-.5,.5);t=std::clamp(t/(light.height*double(light.height)),-.5,.5);
+        double nearest=0;for(unsigned i=0;i<3;++i){const double q=to_centre[i]+s*right[i]+t*up[i];nearest+=q*q;}
+        const unsigned k=samples<=1?1:std::clamp(unsigned(std::ceil(12*std::max(light.width,light.height)/std::max(std::sqrt(nearest),1e-6))),samples,768u);
+        const double window=std::pow(std::clamp(1-std::pow(std::max(std::sqrt(d2)-extent,0.)/range,4),0.,1.),2);
+        const double area=double(light.width)*light.height/(double(k)*k);
+        Rgb3 diffuse{},specular{};
+        for(unsigned i=0;i<k;++i) for(unsigned j=0;j<k;++j) {
+            const double a=(i+.5)/k-.5,b=(j+.5)/k-.5;
+            Rgb3 l{};double r2=0;for(unsigned c=0;c<3;++c){l[c]=to_centre[c]+a*right[c]+b*up[c];r2+=l[c]*l[c];}
+            const double r=std::sqrt(r2);for(auto& value:l)value/=r;
+            double cosine=-(facing[0]*l[0]+facing[1]*l[1]+facing[2]*l[2]);
+            cosine=light.two_sided?std::abs(cosine):std::max(cosine,0.);
+            if(cosine<=0)continue;
+            const auto response=plane_response(v,l,base,roughness,metallic);
+            const double weight=cosine/r2*area;
+            for(unsigned c=0;c<3;++c){diffuse[c]+=response.diffuse[c]*weight;specular[c]+=response.specular[c]*weight;}
+        }
+        Expected value{x,y,{},{}};
+        for(unsigned c=0;c<3;++c) {
+            const double radiance=double(light.color[c])*light.intensity*window;
+            value.specular[c]=specular[c]*radiance;value.total[c]=(diffuse[c]+specular[c])*radiance;
+            peak=std::max(peak,value.total[c]);
+        }
+        expected.push_back(value);
+    });
+    Analytic result;result.pixels=expected.size();
+    for(const auto& value:expected) for(unsigned c=0;c<3;++c) {
+        const double slack=specular_slack*value.specular[c]+peak_slack*peak,observed=pixel(image,value.x,value.y)[c];
+        const double low=display_code(value.total[c]*(1-1./1024)-slack)-1,high=display_code(value.total[c]*(1+1./1024)+slack)+1;
+        result.max_error=std::max(result.max_error,std::abs(observed-display_code(value.total[c])));
+        if(observed<low||observed>high){
+            if(result.failures<4)std::fprintf(stderr,"rectangle truth miss pixel=(%u,%u) channel=%u observed=%.0f band=[%.2f,%.2f] expected=%.5f\n",
+                value.x,value.y,c,observed,low,high,value.total[c]);
+            ++result.failures;break;
         }
     }
     return result;
@@ -1222,6 +1295,7 @@ void quality_ddgi(Fixture& f) {
 #include "scene_lit_work.inl"
 #include "scene_lit_lights.inl"
 #include "scene_lit_clustered.inl"
+#include "scene_lit_rectangle.inl"
 #include "scene_lit_cost.inl"
 #include "scene_lit_shadow.inl"
 #include "scene_lit_contracts.inl"
