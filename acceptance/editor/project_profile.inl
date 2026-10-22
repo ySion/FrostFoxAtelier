@@ -8,7 +8,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
                        const std::filesystem::path& camera_report) {
     using Json=nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute CPU profile file.");
-    timing::install({world::phases::markers,physics::phases::markers,profile_markers});
+    application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     const auto milliseconds=[](std::chrono::nanoseconds value){return std::chrono::duration<double,std::milli>(value).count();};
     // Temporaries destroyed by the operation are part of its sample.
@@ -93,7 +93,9 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("render_items",[&]{take(document->presentation().render_items());});
     measure("light_items",[&]{take(document->presentation().light_items());});
     measure("material_surfaces",[&]{for(const auto& item:geometry) take(presentation::material_surfaces(document->world().runtime(),item.component));});
-    measure("scene_snapshot",[&]{take(snapshot.refresh(*document));});
+    // A refresh opens app.scene.extract, so timed refreshes run under their host phase.
+    const auto refresh=[&]{timing::Scope scene{application::phases::scene};take(snapshot.refresh(*document));};
+    measure("scene_snapshot",refresh);
     {
         // Changed frames: the positions of 1 or 50 leaf mesh Entities alternate through Runtime writes.
         auto& runtime=document->world().runtime();const auto& x=document->types().position_fields[0];
@@ -109,7 +111,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         const auto move=[&](std::size_t count) {
             moved=!moved;
             for(std::size_t i=0;i<count;++i) take(runtime.write(leaves[i].first,x,Scalar{moved?leaves[i].second+1:leaves[i].second}));
-            take(snapshot.refresh(*document));
+            refresh();
         };
         measure("scene_snapshot_changed",[&]{move(1);});
         measure("scene_snapshot_changed_50",[&]{move(50);});
@@ -157,8 +159,8 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
                 "play_update did not record each World and physics phase once per frame.");
             for(const auto* marker:timing::catalog()) phases[marker->index()].push_back(milliseconds(record.time(*marker)));
         });
-        for(const auto* marker:timing::catalog()) {
-            if(marker==&timing::frame || marker==&profile_calibration) continue;
+        for(const auto module:{std::span<timing::Marker* const>(world::phases::markers),std::span<timing::Marker* const>(physics::phases::markers)})
+        for(const auto* marker:module) {
             auto& values=phases[marker->index()];values.erase(values.begin(),values.begin()+20);std::ranges::sort(values);
             report["stages"]["play_update"]["phases"][std::string(marker->key())]={{"median_ms",values[60]},{"p95_ms",values[114]}};
         }

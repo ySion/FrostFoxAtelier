@@ -756,7 +756,6 @@ int wmain(int argc,wchar_t** argv) {
         std::cout<<"Editor Control: preparing cold Scene Lit pipelines\n"<<std::flush;
         auto prepared=d.wait(prepare_id,605s);require(prepared.at("status")=="ok",prepared.dump());
         require(prepared.at("result").at("phase")=="ready","Preparation did not report an accepted ready frame");
-        std::cout<<"Editor Control: preparation "<<prepared.at("result").at("preparation_ms")<<" ms\n"<<std::flush;
         d.inspect();
         auto pending=d.call("render.compare",{{"cases",Json::array({{{"name","baseline"},{"patch",Json::object()}},{{"name","scene_lit"},{"patch",{{"shading","scene_lit"},{"shadows",false},{"ddgi",false},{"gtao",false},{"ssil",false}}}}})},{"sample_frames",{1,3}}},compare_id);
         require(pending.at("status")=="pending",pending.dump());auto compared=d.wait(compare_id);require(compared.at("status")=="ok",compared.dump());
@@ -835,6 +834,10 @@ int wmain(int argc,wchar_t** argv) {
         Process cli_capture(std::filesystem::path(argv[1]).parent_path()/"atelier_control.exe",L"--directory "+quote(directory)+L" --instance "+wide(descriptor.at("instance_id").get<std::string>())+L" --request "+quote(root/"capture-request.json"),root/"cli-capture.json");
         require(WaitForSingleObject(cli_capture.process,30000)==WAIT_OBJECT_0,"CLI capture did not finish");
         const auto cli_result=read(root/"cli-capture.json");require(cli_result.at("status")=="ok" && cli_result.at("result").at("samples").size()==1,"CLI did not await its capture job");
+        // Every editor step of the run, Control captures included, kept the timing hierarchy.
+        d.client=std::make_unique<Client>(descriptor);
+        const auto cpu=d.inspect().at("performance").at("cpu");
+        require(cpu.at("structure_errors")==0 && cpu.at("first_structure_error").is_null(),"An editor step recorded a frame timing phase under the wrong parent: "+cpu.dump());
         editor.close();require(discover(directory).empty(),"Closed editor descriptor remained live");
         reject_nested_destination(argv[1],root);
         std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","legacy-lighting-repro","rejected-repro-preserves-camera-selection","schema3-scene7-reopen","schema3-scene6-sky","sky-world-setting","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);

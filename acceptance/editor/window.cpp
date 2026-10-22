@@ -45,7 +45,6 @@ struct EditorAcceptanceAccess {
     }
     static auto ui_revision(const Application& app) {return app.workspace_.ui_revision();}
     static auto ui_error(const Application& app) {return app.workspace_.ui_error();}
-    static auto ui_compile_milliseconds(const Application& app) {return app.workspace_.ui_compile_milliseconds();}
     static void mark_saved(Application& app) { app.effects(app.ui_.cancel_interaction()); app.document_->mark_saved(); }
     static Result<void> command(Application& app,editor::Command command,std::string_view argument={}) { return app.execute(command,argument); }
     static auto asset_key(const Application& app,std::string_view resource) {
@@ -110,7 +109,7 @@ struct EditorAcceptanceAccess {
     static const auto& accepted_view(const Application& app) {return app.accepted_view_;}
     static bool gpu_validation(const Application& app) {return app.gpu_validation_;}
     static bool vsync(const Application& app) {return app.vsync_;}
-    static bool frame_sampling(const Application& app) {return app.sampling_;}
+    static auto sampled_frame(const Application& app) {return app.sampled_frame_;}
     static auto render_retry_delay(const Application& app) {return app.render_retry_delay_;}
     static auto render_retry_deadline(const Application& app) {return app.render_retry_at_;}
     static void render_retry_deadline(Application& app,std::chrono::steady_clock::time_point value) {app.render_retry_at_=value;}
@@ -790,17 +789,22 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(app.set_style(initial_style).has_value(), "Could not restore the editor style.");
     tick(app, 1);
 }
+// Reads the product's frame timing record of the last step, which must have been accepted without capture.
 struct TimingSeries {
-    std::vector<double> prepare, render;
+    std::vector<double> layout, render;
     atelier::renderer::FrameStats total;
     std::uint64_t peak_live_coverages{}, peak_live_bytes{};
     atelier::ui::Statistics start, finish;
     explicit TimingSeries(const Application& app) : start(app.ui_statistics()) {}
     void record(const Application& app) {
-        const auto& sample = app.frame_timing();
-        require(sample.frame_id == app.presented()->drawing->id, "Timing did not describe the accepted frame.");
-        prepare.push_back(sample.prepare_us);
-        render.push_back(sample.render_us);
+        const auto& record = app.frame_record();
+        require(atelier::application::EditorAcceptanceAccess::sampled_frame(app) == app.presented()->drawing->id && record.structure_errors == 0 &&
+            record.count(atelier::renderer::phases::render) == 1, "Timing did not describe the accepted frame.");
+        const auto microseconds = [&](const atelier::timing::Marker& marker) {
+            return std::chrono::duration<double, std::micro>(record.time(marker)).count();
+        };
+        layout.push_back(microseconds(atelier::application::phases::layout));
+        render.push_back(microseconds(atelier::renderer::phases::render));
         const auto& stats = app.frame_statistics();
         total.ui_draw_calls += stats.ui_draw_calls;
         total.scene_draw_calls += stats.scene_draw_calls;
@@ -823,11 +827,11 @@ struct TimingSeries {
                    << std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size()) << ','
                    << values[values.size() / 2] << ',' << values[p95] << ',' << values.back() << '\n';
         };
-        distribution("prepare_cpu_us", prepare);
+        distribution("layout_cpu_us", layout);
         distribution("render_cpu_us", render);
     }
     void resources(std::ostream& report, const char* name) const {
-        report << name << ',' << prepare.size() << ',' << finish.prepares - start.prepares << ','
+        report << name << ',' << layout.size() << ',' << finish.prepares - start.prepares << ','
                << finish.rasterizations - start.rasterizations << ',' << finish.raster_bytes - start.raster_bytes << ','
                << finish.culled_text_controls - start.culled_text_controls << ','
                << total.ui_draw_calls << ',' << total.scene_draw_calls << ',' << total.viewport_draw_calls << ',' << total.coverage_upload_count << ','
@@ -1030,7 +1034,6 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     wheel(app,23,240);
 
     TimingSeries scroll(app);
-    app.sample_frames(true);
     for (unsigned frame = 0; frame < 48; ++frame) {
         wheel(app, 23, frame < 24 ? -8 : 8);
         scroll.record(app);
@@ -1051,7 +1054,6 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     mouse(app, WM_LBUTTONUP, point);
     require(x(app, last) != before && app.document().undo_count() == std::min(history + 1, std::size_t{128}),
         "Dense-scene drag did not keep the existing position/history behavior.");
-    app.sample_frames(false);
     const auto after = x(app, last);
     // A committed drag leaves passive focus, so document history owns Z/Y.
     key(app, 'Z', true);
@@ -1252,7 +1254,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     const auto item=app.menu_frame()->find(static_cast<ui::ControlKey>(editor::Command::erase_entities))->bounds;
     require(client.x-popup.left>=item.x && client.x-popup.left<item.x+item.width && client.y-popup.top>=item.y && client.y-popup.top<item.y+item.height,
         "Delete confirmation did not place its action under the invocation point.");
-    const auto popup_hwnd=app.menu_window();const auto first_open=app.menu_open_cpu_us();
+    const auto popup_hwnd=app.menu_window();
     key(VK_ESCAPE,ui::Key::escape);key(VK_ESCAPE,ui::Key::escape,false,false,true);tick(app);
     require(app.document().world().members()->size()==2 && !Access::menu_open(app),"Cancelling Delete changed the document.");
     const auto before_reopen=Access::menu_input_diagnostic(app);
@@ -1261,7 +1263,6 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
         std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd))+", new="+std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window()))+
         ", requested="+std::to_string(reopen_requested)+", menu="+std::to_string(Access::menu_open(app))+", status="+editor::utf8(app.status_text())+
         "; before=["+before_reopen+"]; after=["+Access::menu_input_diagnostic(app)+"].");
-    const auto warm_open=app.menu_open_cpu_us();
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x,.y=y});tick(app);
     require(app.document().world().members()->size()==1 && !Access::menu_open(app),"Delete confirmation click missed its command.");
     key('Z',ui::Key::z);key('Z',ui::Key::z,false,false,true);tick(app);
@@ -1303,9 +1304,9 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     require(!Access::menu_open(app) && !Access::tool_active(app) && app.document().undo_count()==text_history,
         "Viewport shortcuts escaped text focus.");
     verify_shortcut_input_boundaries(app);
+    require(Access::performance(app).structure_errors()==0,"A shortcut step recorded a frame timing phase under the wrong parent.");
     Access::mark_saved(app);app.close();
     std::ofstream(output/"acceptance.txt")<<"Viewport shortcut acceptance: PASS\nConfiguration: "<<build_info::configuration
-        <<"\nDelete menu CPU first/warm us: "<<first_open<<" / "<<warm_open
         <<"\nMenu transitions: queued replacement, top-level branch, command capture transfer."
         <<"\nReal Application input routing, World history, Source/JIT controls, native popup, GPU captures. No desktop input injection.\n";
     std::puts("Viewport shortcut acceptance: PASS");return 0;
@@ -1427,11 +1428,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
     require(entities(app).empty(),"The production editor did not start with an empty scene.");
     verify_viewport_fly(app,output);
     click(app,control::file_menu);
-    const auto first_open_us=app.menu_open_cpu_us(); const auto retained_popup=app.menu_window(); key(app,VK_ESCAPE);
+    const auto retained_popup=app.menu_window(); key(app,VK_ESCAPE);
     click(app,control::file_menu);
-    const auto warm_open_us=app.menu_open_cpu_us();
     require(app.menu_window()==retained_popup,"Warm open replaced the native popup window."); key(app,VK_ESCAPE);
-    std::ofstream(output/"popup-open.csv") << "path,cpu_us\nfirst," << first_open_us << "\nwarm," << warm_open_us << "\n";
     click(app,control::add_static_mesh);
     require(entities(app).size()==1 && app.document().undo_count()==1,"Static mesh creation was not a single document command.");
     require(model(app.document().world().runtime().type_of(app.document().selection().entity))==app.document().presentation_types().static_mesh_entity,
@@ -1687,7 +1686,10 @@ int verify_editor_window(Application& app, const char* output_directory) {
         require(quit_capture.frame_id!=0,"Quit acceptance did not render the native menu capture.");
         require(!quit_app.step(),"Native menu capture consumed the thread quit before the main window.");
         require(!quit_app.menu_window() && GetCapture()!=quit_app.window(),"Thread quit retained an interactive native menu.");
+        require(atelier::application::EditorAcceptanceAccess::performance(quit_app).structure_errors()==0,"A quit step recorded a frame timing phase under the wrong parent.");
     }
+    // Every step of the run, captures included, kept the timing hierarchy.
+    require(atelier::application::EditorAcceptanceAccess::performance(app).structure_errors()==0,"An editor step recorded a frame timing phase under the wrong parent.");
     std::ofstream report(output / "acceptance.txt");
     report << "Editor window acceptance: PASS\n"
            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
@@ -1706,7 +1708,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
            << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
-           << "Sampling: s1-performance.csv contains CPU call microseconds, including Present/waits in render; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
+           << "Sampling: s1-performance.csv contains app.layout and render phase microseconds from the product frame timing record of each sampled step; render includes Present/waits; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
            << "Sampling environment: this acceptance application enables hardware D3D12 debug/GBV and renderer vsync, including in release; results do not represent validation-disabled production frame time.\n"
            << "s1-resources.csv: UI cumulative counters use interval differences; renderer activity sums sampled render results. Resource peaks are sampled ownership counts, not total process memory or physical VRAM; R8 upload bytes exclude transfer padding.\n"
            << "DPI coverage: WM_DPICHANGED policy at the current monitor DPI; physical multi-monitor DPI migration not exercised.\n"

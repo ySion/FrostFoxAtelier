@@ -276,6 +276,8 @@ atelier_editor --run-project E:\ffa_testproj --preview-ui
 
 `--halt-on-fault` 改用首错即停：第一个对象失败照常写出诊断行，随后停止运行并返回非零退出码，供验收与 CI 使用。编辑器启动的 Play 使用默认的隔离策略。
 
+停止时输出帧性能报告，统计与编辑器 Performance 表的 CPU 段相同（见[帧性能](README.md#帧性能)）：`Performance: N frames (window n), frame mean … ms, p95 … ms, max … ms, … FPS` 是最后一个窗口的整步统计；`Performance phases (mean ms): …` 列出进入过的顶层阶段（`app.*`、`world.update`、`render`）和 unattributed 的均值；存在计时结构错误时另起一行给出数量和第一个出错的阶段。没有接受过画面时只输出 `Performance: N frames, none accepted`。数值只用于诊断，不作为验收条件。
+
 ### 项目 UI
 
 Project → New Project UI 创建 `.ui.source` 并写入 `Config/Project.json` 的 `ui_source`。Edit Project UI 打开该文件，Preview Project UI 使用独立预览窗口；游戏窗口也加载同一个入口：

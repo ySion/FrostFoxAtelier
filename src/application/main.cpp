@@ -30,6 +30,7 @@ void guard_acceptance_native_dialogs();
 
 int wmain(int argc, wchar_t** argv) {
     try {
+        atelier::application::install_frame_timing();
         std::printf("FrostFox Atelier | %s | %s\n",atelier::build_info::revision,atelier::build_info::configuration);
         if (argc==2 && std::wstring_view(argv[1])==L"--version") return 0;
         if (argc>=3 && std::wstring_view(argv[1])==L"--run-project")

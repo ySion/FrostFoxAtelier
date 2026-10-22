@@ -80,7 +80,7 @@ void verify_asset_ui_authoring_window(Application& app,const std::filesystem::pa
             std::abs((body.width-current->body.width)/dpi-4)<.1f,
             "Accepted shell/Table geometry did not follow the saved Source layout properties.");
     };
-    std::ofstream timings(output/"asset-ui-authoring.csv");timings<<"save,compile_ms,save_to_accepted_ms,revision\n";
+    std::ofstream timings(output/"asset-ui-authoring.csv");timings<<"save,save_to_accepted_ms,revision\n";
     const auto save=[&](const char* label,const std::string& text,bool valid) {
         require_input_focus(app);
         require(valid || Access::ui_error(app).empty(),"Asset authoring rejection check started from an unrecovered failed candidate.");
@@ -94,7 +94,7 @@ void verify_asset_ui_authoring_window(Application& app,const std::filesystem::pa
             (Access::ui_revision(app)==revision && !Access::ui_error(app).empty()),
             "Asset Source save did not accept or reject the complete real UI version.");
         verify_retained();
-        timings<<label<<','<<Access::ui_compile_milliseconds(app)<<','<<GetTickCount64()-start<<','<<Access::ui_revision(app)<<'\n';
+        timings<<label<<','<<GetTickCount64()-start<<','<<Access::ui_revision(app)<<'\n';
     };
     save("layout",changed,true);capture(app,output/"asset-ui-live-updated.png");
     save("syntax_error",changed+"\n?",false);capture(app,output/"asset-ui-live-error.png");
@@ -178,7 +178,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     const auto height=shell==changed.npos?changed.npos:changed.find("height: 32;",shell);
     require(height!=changed.npos,"Authoring fixture could not locate the Parameters path-bar height.");
     changed.replace(height,std::string_view("height: 32;").size(),"height: 36;");
-    std::ofstream timings(output/"ui-authoring.csv");timings<<"save,compile_ms,save_to_accepted_ms,revision\n";
+    std::ofstream timings(output/"ui-authoring.csv");timings<<"save,save_to_accepted_ms,revision\n";
     const auto save=[&](const char* label,const std::string& text,bool valid,float expected_height,const auto& verify_edit) {
         require_input_focus(app);
         const auto previous=Access::ui_revision(app),start=GetTickCount64();
@@ -199,7 +199,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
         require(tool && tool->key==tool_key && tool->incarnation==tool_incarnation &&
             std::abs(tool->bounds.width/app.presented()->drawing->dpi_scale-68)<.1f,
             "Saved tool layout lost its stable action identity or failed to retain the accepted layout.");
-        timings<<label<<','<<Access::ui_compile_milliseconds(app)<<','<<GetTickCount64()-start<<','<<Access::ui_revision(app)<<'\n';
+        timings<<label<<','<<GetTickCount64()-start<<','<<Access::ui_revision(app)<<'\n';
     };
     const auto verify_query=[&] {
         require(app.text_input() && app.text_input()->token==token && app.query()==L"position" &&
@@ -249,7 +249,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
         x(app,entity)==4.25f && app.document().undo_count()==field_history+1,
         "Restoring the surface did not prepare and publish the saved layout once while retaining scene values.");
     verify_hierarchy();
-    timings<<"minimized_restore,"<<Access::ui_compile_milliseconds(app)<<','<<GetTickCount64()-restored_start<<','<<Access::ui_revision(app)<<'\n';
+    timings<<"minimized_restore,"<<GetTickCount64()-restored_start<<','<<Access::ui_revision(app)<<'\n';
     capture(app,output/"ui-live-minimized-recovered.png");
     const auto count=entities(app).size(),history=app.document().undo_count();
     click(app,control::add_static_mesh);

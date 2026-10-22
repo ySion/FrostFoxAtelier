@@ -36,11 +36,9 @@ void LiveDocument::poll(Clock::time_point now) {
     }
     if (attempted_source_ && source==*attempted_source_) return;
     attempted_=true;attempted_source_=source;failed_region_.clear();submission_failed_=false;
-    const auto start=Clock::now();
     auto compile_source=std::string_view(source);
     if (compile_source.starts_with("\xef\xbb\xbf")) compile_source.remove_prefix(3);
     auto module=Module::compile(runtime_,utf8(path_.filename()),compile_source,active_.get());
-    compile_ms_=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
     if (!module) {diagnostic_=module.error().message;recover_initial();return;}
     candidate_=std::move(*module);candidate_source_=std::move(source);candidate_failed_=false;
     for (auto& [name,region]:regions_) {
