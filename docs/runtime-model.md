@@ -398,7 +398,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 工作量与时间预算
 
-`CollectionBudget::max_work` 必须为正；`max_time` 为零表示关闭时间限制，负数拒绝。`CollectionProgress` 返回本步阶段、`work_done`、`reclaimed` 和 `pending_reclamation`；只有设置时间上限时才读取时钟。宿主帧内的 GC 步耗时记入帧阶段计时，见[基础库](foundation.md#帧阶段计时)。
+`CollectionBudget::max_work` 必须为正；`max_time` 为零表示关闭时间限制，负数拒绝。`CollectionProgress` 返回本步阶段、`work_done`、`reclaimed` 和 `pending_reclamation`；只有设置时间上限时才读取时钟。
 
 一个工作单位是一次根登记项检查、一次队列取项、一个持有字段/内联记录进入或退出、一次清扫槽位检查，或一次阶段转换。空登记项和空槽也消耗工作量；检查到死亡槽位时，其完整析构和释放属于该单位。标记队列使用现有槽位/根登记项的链接，嵌套游标在开始前预留容量；收集步不为这些追踪结构逐项分配。
 
