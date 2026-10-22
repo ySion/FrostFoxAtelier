@@ -82,9 +82,9 @@ Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMi
 
 ## 环境
 
-`world.EnvironmentComponent : Component` 保存整个 World 的 Scene Lit 作者设置：阴影、效果、曝光、DDGI 传播、天光（`sky_enabled`、`sky_color`、`sky_intensity`）以及 4 个具名探针体积 `volume0..volume3`（`world.ProbeVolume`，探针数拆为 `count_x/y/z`）。字段、默认值和单字段硬边界与 `rendering::SceneLightingSettings` 一一对应，`environment_settings(component)` 给出对应的设置；跨字段规则（GTAO 与 Local GI 互斥、体积 min < max、间距精度、Follow Focus 内部格子、4096 探针共享预算、天光每通道 `color × intensity ≤ 65504`）是组件登记的类型校验器，直接复用 `scene_lighting_error`。它不是 SpatialComponent，不需要 owner Entity 的 Transform。
+`world.EnvironmentComponent : Component` 保存整个 World 的 Scene Lit 作者设置：阴影、效果、曝光、DDGI 传播、天光（`sky_enabled`、`sky_color`、`sky_intensity`、`sky_rotation` 和天空贴图）以及 4 个具名探针体积 `volume0..volume3`（`world.ProbeVolume`，探针数拆为 `count_x/y/z`）。字段、默认值和单字段硬边界与 `rendering::SceneLightingSettings` 一一对应，`environment_settings(component)` 给出对应的设置；跨字段规则（GTAO 与 Local GI 互斥、体积 min < max、间距精度、Follow Focus 内部格子、4096 探针共享预算、天光每通道 `color × intensity ≤ 65504`）是组件登记的类型校验器，直接复用 `scene_lighting_error`。它不是 SpatialComponent，不需要 owner Entity 的 Transform。
 
-天光首版是均匀天空入射辐射：`sky_enabled` 为假时环境辐射为零，颜色和强度保留；没有可见天空、HDRI 或方向性天空分布的隐式资源。宿主用 `rendering::sky_radiance(settings)` 求 `Frame.environment`，Renderer 接口不变。
+天光的辐亮度是 `sky_color × sky_intensity × map(旋转后的方向)`，没有天空贴图时 map = 1，即均匀天空；`sky_enabled` 为假时环境辐射为零，颜色、强度、贴图和旋转都保留。`sky_rotation` 是绕世界 +Y 的偏航角（度，硬边界 [−180, 180]，与 Transform 绕 +Y 的正旋转同向），原值进入 `SceneLightingSettings::sky_rotation`。天空贴图是一对隐藏数据：持久的资产键和解析出的 `rendering::SkyMapRef`，没有公开 FieldId，只能经 `set_sky_map_binding(runtime, component, {key, map})` 成对设置、`read_sky_map` 读取；有贴图必须有键，键不超过 4096 字节且不含 NUL，键解析不到时贴图为空，天空按 map = 1 渲染。它与其他编辑一样在 World 派发期间返回 busy。`environment_settings` 把贴图指针原样放进 `SceneLightingSettings::sky_map`，设置比较按指针，所以只有换了贴图对象才算变化。宿主仍用 `rendering::sky_radiance(settings)` 求 `Frame.environment`，Renderer 从 `frame.view.lit` 读贴图与旋转。
 
 每个 World 至多一个 EnvironmentComponent，停用的、派生类型的也计数；这是 Scene 登记的准入，创建 Scene 时也检查 World 里已有的内容，已有两个以上就拒绝创建（此时只留下可复用的环境登记）。`Scene::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](../world/README.md#编辑呈现与资源)。
 

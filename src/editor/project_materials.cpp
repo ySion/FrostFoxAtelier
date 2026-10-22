@@ -23,6 +23,26 @@ bool Project::is_texture_path(const std::filesystem::path& path) {
     auto extension=path.extension().wstring();for(auto& c:extension) c=static_cast<wchar_t>(std::towlower(c));
     return extension==L".png" || extension==L".jpg" || extension==L".jpeg" || extension==L".bmp" || extension==L".tif" || extension==L".tiff";
 }
+bool Project::is_sky_path(const std::filesystem::path& path) {
+    auto extension=path.extension().wstring();for(auto& c:extension) c=static_cast<wchar_t>(std::towlower(c));
+    return extension==L".hdr";
+}
+Result<SkyAsset> Project::sky_map(std::string_view key) {
+    const auto at=std::ranges::find(entries_,key,&ProjectEntry::key);
+    if(at==entries_.end() || at->kind!=AssetKind::sky)
+        return failure(std::runtime_error(at==entries_.end()?"Sky map key is not a Radiance .hdr asset of this project: "+std::string(key)
+            :"Sky map key names "+utf8(at->path.generic_wstring())+", which is not a Radiance .hdr asset."));
+    const auto relative=utf8(at->path.generic_wstring());
+    SkyAsset asset{at->key,at->path.stem().wstring(),{}};
+    if(const auto cached=sky_maps_.find(at->key);cached!=sky_maps_.end()) {asset.map=cached->second;return asset;}
+    auto path=resolve(at->path);
+    auto bytes=path?read_file(*path,std::size_t(256)<<20):Result<std::string>{std::unexpected(path.error())};
+    if(!bytes) return failure(std::runtime_error("Sky map "+relative+" could not be read: "+bytes.error().message));
+    try {asset.map=rendering::decode_radiance_hdr(*bytes);}
+    catch(const std::exception& error) {return failure(std::runtime_error("Sky map "+relative+" is not a valid Radiance HDR file: "+error.what()));}
+    sky_maps_.emplace(at->key,asset.map);
+    return asset;
+}
 Result<TextureAsset> Project::texture(std::string_view key) {
     try {
         const auto& item=entry(*this,key,AssetKind::texture);

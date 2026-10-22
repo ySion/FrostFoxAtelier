@@ -22,6 +22,10 @@ struct Access {
     static const auto& surfaces(const StaticMeshComponent& value) noexcept {return value.surfaces_;}
     static const auto& surface_geometry(const StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
     static const auto& surface_parameters(const StaticMeshComponent& value) noexcept {return value.surface_parameters_;}
+    static String& sky_map(EnvironmentComponent& value) noexcept {return value.sky_map_;}
+    static const String& sky_map(const EnvironmentComponent& value) noexcept {return value.sky_map_;}
+    static rendering::SkyMapRef& sky_map_resolved(EnvironmentComponent& value) noexcept {return value.sky_map_resolved_;}
+    static const rendering::SkyMapRef& sky_map_resolved(const EnvironmentComponent& value) noexcept {return value.sky_map_resolved_;}
 };
 
 inline std::unexpected<Error> error(ErrorCode code, std::string message) { return std::unexpected(Error{code, std::move(message)}); }

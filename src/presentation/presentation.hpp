@@ -166,12 +166,14 @@ public:
     float probe_bounce{.85f};
     AFIELD(Category="Propagation", HardMin="0", HardMax="8", DESC="最终合成时对间接漫反射应用的增益。DDGI 与 Local GI 合成后只乘一次，不回写探针，也不补出缺失的空间覆盖。")
     float indirect_gain{1.f};
-    AFIELD(Label="Sky", Category="Sky", DESC="启用均匀天光。关闭时环境照明为零；颜色和强度保留。")
+    AFIELD(Label="Sky", Category="Sky", DESC="启用天光。关闭时环境照明为零；颜色、强度、天空贴图和旋转都保留。")
     bool sky_enabled{};
-    AFIELD(Label="Sky color", Category="Sky", HardMin="0", DESC="非负线性 RGB，逐通道乘以 Sky intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
+    AFIELD(Label="Sky color", Category="Sky", HardMin="0", DESC="非负线性 RGB，逐通道乘以 Sky intensity；设了天空贴图时再乘贴图的值。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 sky_color{1.f, 1.f, 1.f};
-    AFIELD(Label="Sky intensity", Category="Sky", HardMin="0", DESC="均匀天光的辐亮度，单位 cd/m²，再由 Sky color 调制。每个通道的乘积不能超过 65504。")
+    AFIELD(Label="Sky intensity", Category="Sky", HardMin="0", DESC="天光的辐亮度，单位 cd/m²。没有天空贴图时是均匀天空的辐亮度；有贴图时是贴图值为 1 处的辐亮度，实际辐亮度再乘贴图的值和 Sky color。它与 Sky color 每个通道的乘积不能超过 65504；贴图里比这更亮的值（比如太阳）由渲染器另外处理。")
     float sky_intensity{.03f};
+    AFIELD(Label="Sky rotation (°)", Category="Sky", HardMin="-180", HardMax="180", DESC="天空贴图绕世界 +Y 的偏航角，单位度，与 Transform 绕 +Y 的正旋转同向，可用来把贴图里的太阳对到 Directional 光的方向。没有贴图时不起作用。±180 是同一方向。")
+    float sky_rotation{};
     AFIELD(Label="Volume 0", Category="DDGI Volume", DESC="DDGI Volume 槽位 0，优先级最高，适合最精细的局部覆盖。")
     ProbeVolume volume0{.enabled=true};
     AFIELD(Label="Volume 1", Category="DDGI Volume", DESC="DDGI Volume 槽位 1。")
@@ -180,6 +182,11 @@ public:
     ProbeVolume volume2;
     AFIELD(Label="Volume 3", Category="DDGI Volume", DESC="DDGI Volume 槽位 3，优先级最低，适合最粗的整体覆盖。")
     ProbeVolume volume3;
+private:
+    friend struct detail::Access;
+    AFIELD(Name="sky_map", Hidden)
+    String sky_map_;
+    rendering::SkyMapRef sky_map_resolved_;
 };
 // The renderer's view of an Environment's authored values.
 [[nodiscard]] rendering::SceneLightingSettings environment_settings(const EnvironmentComponent&) noexcept;
@@ -240,6 +247,12 @@ struct StaticMeshState { MeshBinding mesh; Material material; };
 // clears provenance. These snapshots also support detached and null-mesh data.
 [[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
 [[nodiscard]] Result<StaticMeshState> read_static_mesh(Runtime&, ObjectId);
+// An Environment's sky map: the persistent asset key and the map it resolved to, null when
+// the key is empty or did not resolve (the sky then renders as map = 1). Only this pair
+// changes the key; it is hidden from field paths.
+struct SkyMapBinding { std::string source; rendering::SkyMapRef resolved; };
+[[nodiscard]] Result<void> set_sky_map_binding(Runtime&, ObjectId environment_component, SkyMapBinding);
+[[nodiscard]] Result<SkyMapBinding> read_sky_map(Runtime&, ObjectId environment_component);
 struct MaterialBinding {
     std::string slot;
     ObjectRoot resource;

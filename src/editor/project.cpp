@@ -210,9 +210,10 @@ Result<void> Project::refresh() {
                 if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
                 auto kind=entry.is_directory()?AssetKind::folder:entry.path().extension()==L".obj"?AssetKind::mesh:
                     entry.path().extension()==L".material"?AssetKind::material:is_texture_path(entry.path())?AssetKind::texture:
+                    is_sky_path(entry.path())?AssetKind::sky:
                     entry.path().extension()==L".scene"?AssetKind::scene:std::wstring_view(directory)==L"Source"?AssetKind::source:AssetKind::file;
                 std::string key=utf8(relative.generic_wstring());
-                if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture) {
+                if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture || kind==AssetKind::sky) {
                     auto meta_relative=relative; meta_relative+=L".asset.json";
                     auto metadata=take(resolve(meta_relative));
                     if (!std::filesystem::exists(metadata)) {
@@ -239,6 +240,11 @@ Result<void> Project::refresh() {
         for(const auto& entry:entries_) previous_files.emplace(entry.path,&entry);
         for(const auto& entry:entries) next_files.emplace(entry.path,&entry);
         std::erase_if(textures_,[&](const auto& cached) {
+            const auto before=std::ranges::find(entries_,cached.first,&ProjectEntry::key);
+            const auto after=std::ranges::find(entries,cached.first,&ProjectEntry::key);
+            return before==entries_.end() || after==entries.end() || before->bytes!=after->bytes || before->modified!=after->modified;
+        });
+        std::erase_if(sky_maps_,[&](const auto& cached) {
             const auto before=std::ranges::find(entries_,cached.first,&ProjectEntry::key);
             const auto after=std::ranges::find(entries,cached.first,&ProjectEntry::key);
             return before==entries_.end() || after==entries.end() || before->bytes!=after->bytes || before->modified!=after->modified;

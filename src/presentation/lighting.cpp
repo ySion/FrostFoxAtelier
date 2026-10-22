@@ -45,6 +45,7 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
     result.probe_bounce=value.probe_bounce;result.indirect_gain=value.indirect_gain;
     result.sky_enabled=value.sky_enabled;result.sky_color={value.sky_color.x,value.sky_color.y,value.sky_color.z};
     result.sky_intensity=value.sky_intensity;
+    result.sky_map=detail::Access::sky_map_resolved(value);result.sky_rotation=value.sky_rotation;
     return result;
 }
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
@@ -106,6 +107,26 @@ Result<void> set_material(world::World& world,ObjectId object,Material value) {
 }
 Result<void> set_light(world::World& world,ObjectId object,LightSettings value) {
     return set_value<LightComponent>(world,object,"settings",value);
+}
+Result<void> set_sky_map_binding(Runtime& runtime,ObjectId object,SkyMapBinding binding) {
+    if(binding.source.size()>4096 || binding.source.find('\0')!=std::string::npos)
+        return error(ErrorCode::invalid_definition,"Invalid sky map key.");
+    // The key is what a scene saves; a map without one could not be saved.
+    if(binding.resolved && binding.source.empty()) return error(ErrorCode::invalid_definition,"A sky map needs its asset key.");
+    String source;
+    try { source=String(StringView(binding.source)); }
+    catch(const std::exception& failure) { return error(ErrorCode::invalid_definition,failure.what()); }
+    if(auto ready=runtime.check_code_publication();!ready) return ready;
+    if(auto owner=world::admit_component_edit(runtime,object);!owner) return std::unexpected(owner.error());
+    return runtime.with_native<EnvironmentComponent>(object,[&](EnvironmentComponent& component)->Result<void> {
+        detail::Access::sky_map(component)=std::move(source);
+        detail::Access::sky_map_resolved(component)=std::move(binding.resolved);return {};
+    });
+}
+Result<SkyMapBinding> read_sky_map(Runtime& runtime,ObjectId object) {
+    return runtime.with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& component)->Result<SkyMapBinding> {
+        return SkyMapBinding{std::string(detail::Access::sky_map(component).view().std_view()),detail::Access::sky_map_resolved(component)};
+    });
 }
 Result<std::vector<LightRenderItem>> Scene::light_items() const { return extract_lights(nullptr); }
 Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented,bool* failed,bool* moved) const {
