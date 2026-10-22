@@ -72,7 +72,7 @@ static_assert(sizeof(ProbeInspection::Ray)==96);
 struct SceneLit::State {
     rhi::Context& context;
     GfxContext gfx;
-    rhi::Pipeline gbuffer,compose,cluster_build,cluster_inspect,shadow_depth;
+    rhi::Pipeline gbuffer,compose,sun_trace_prepare,sun_trace,cluster_build,cluster_inspect,shadow_depth;
     rhi::Pipeline probe_copy,probe_trace,probe_update,probe_present,probe_resolve,probe_upsample,probe_exact,ao,ao_depth_reduce,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
     rhi::Pipeline reflection_resolve,reflection_filter,brdf,taa,bloom_downsample,bloom_blur,tone_map,tone;
     rhi::Pipeline smaa_edges_pass,smaa_weights_pass,smaa_neighborhood,smaa_resolve;
@@ -135,12 +135,16 @@ struct SceneLit::State {
     // This frame's light tables.
     GfxBuffer gpu_sources,gpu_proposals,gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots;
     GfxBuffer rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments;
+    GfxBuffer sun_trace_list,sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
     LightFrame light_frame;
     GfxBuffer ray_counters;
     GfxBuffer ltc; // Rectangle-light LTC table, ltc_lut::size squared cells.
     static constexpr std::size_t readback_count=32;
     std::array<GfxBuffer,readback_count> ray_readback{};
     std::array<std::uint64_t,readback_count> readback_sequences{},readback_frame_ids{};
+    // Receiver depth read back from another camera or scene must not fit cascades.
+    std::array<std::uint64_t,readback_count> readback_depth_epochs{};
+    std::uint64_t depth_epoch{};
     std::array<std::uint32_t,readback_count> readback_pass_masks{};
     std::array<ShadowSample,readback_count> readback_shadows{};
     struct InspectionState {
@@ -276,6 +280,8 @@ struct SceneLit::State {
         case group_base: {
             submit(group,probe_update,shaders::lit_ddgi,"DDGIUpdate","DDGI hit lighting and convolution");
             submit(group,compose,shaders::lit_clustered,"lit_compose_cs","Scene Lit direct lighting and HDR composition");
+            submit(group,sun_trace,shaders::lit_clustered,"lit_sun_trace_cs","Sun receivers beyond the cascades");
+            submit(group,sun_trace_prepare,shaders::lit_clustered,"lit_sun_trace_prepare_cs","Sun trace indirect arguments");
             submit(group,probe_trace,shaders::lit_ddgi,"DDGITrace","DDGI RT primary trace");
             submit(group,reflection_resolve,shaders::lit_post,"lit_reflection_resolve_cs","SSSR temporal resolve");
             const std::string vs=std::string(shaders::lit_gbuffer)+"\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
@@ -374,9 +380,10 @@ struct SceneLit::State {
         shadow_sampler=gfxCreateSamplerState(gfx,D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,D3D12_COMPARISON_FUNC_GREATER_EQUAL);
         allocation(bool(shadow_sampler));
         for(auto& query:queries){query=gfxCreateTimestampQuery(gfx);allocation(bool(query));}
-        // Rays[0..7], cluster statistics[8..10], optional histogram[11..77], shadow missing taps[78], plane fallbacks[81].
-        ray_counters=gfxCreateBuffer<std::uint32_t>(gfx,82);allocation(bool(ray_counters));
-        for(auto& readback:ray_readback){readback=gfxCreateBuffer(gfx,82*sizeof(std::uint32_t),nullptr,kGfxCpuAccess_Read);allocation(bool(readback));}
+        // Rays[0..7], cluster statistics[8..10], optional histogram[11..77], shadow missing taps[78], plane fallbacks[81],
+        // receiver view-Z minimum (complemented order) and maximum (order)[82..83], sun trace pixels[84].
+        ray_counters=gfxCreateBuffer<std::uint32_t>(gfx,85);allocation(bool(ray_counters));
+        for(auto& readback:ray_readback){readback=gfxCreateBuffer(gfx,85*sizeof(std::uint32_t),nullptr,kGfxCpuAccess_Read);allocation(bool(readback));}
         brdf_lut=texture(64,64,DXGI_FORMAT_R16G16_FLOAT,4);
         const auto upload_lut=[&](GfxTexture& target,std::uint32_t width,std::uint32_t height,DXGI_FORMAT format,std::span<const unsigned char> bytes) {
             target=texture(width,height,format,0);
@@ -396,7 +403,8 @@ struct SceneLit::State {
         for(auto* t:{&indirect_half,&hdr,&indirect,&ao_texture,&ao_raw,&ao_depth,&reflection_trace,&reflection_hit_trace,&tone_color,&smaa_edges,&smaa_weights,&smaa_output})retire(*t);
         for(auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&bloom,&smaa_spatial,&history_surface_id})for(auto& t:*pair)retire(t);
         for(auto& t:pyramid)retire(t);
-        for(auto* b:{&cluster_depth,&cluster_count,&cluster_source,&reflection_work,&reflection_counter,&reflection_arguments,&probe_fallback,&probe_fallback_arguments})retire(*b);
+        for(auto* b:{&cluster_depth,&cluster_count,&cluster_source,&reflection_work,&reflection_counter,&reflection_arguments,&probe_fallback,&probe_fallback_arguments,
+                     &sun_trace_list,&sun_trace_arguments})retire(*b);
     }
     void clusters() {
         cluster_origin={screen_dispatch[0],screen_dispatch[1]};
@@ -413,6 +421,20 @@ struct SceneLit::State {
             (!values.empty()&&std::memcmp(previous.data(),values.data(),values.size()*sizeof(T))!=0);
         if(changed)previous=values;
         return table.write(gfx,context.info().frames_in_flight,values,changed,"Shadow batch");
+    }
+    // The newest completed receiver depth of the current camera epoch. gfx
+    // records frame N only after frame N - frames_in_flight completed.
+    std::optional<ShadowReceiverDepth> receiver_depth() const {
+        const auto recording=gfxGetRecordingFrameSequence(gfx);const std::uint64_t in_flight=context.info().frames_in_flight;
+        if(recording<=in_flight)return {};
+        std::size_t newest=readback_count;
+        for(std::size_t slot=0;slot<readback_count;++slot)if(const auto s=readback_sequences[slot];s&&s<=recording-in_flight&&
+            (newest==readback_count||s>readback_sequences[newest]))newest=slot;
+        if(newest==readback_count||readback_depth_epochs[newest]!=depth_epoch)return {};
+        const auto* counter=gfxBufferGetData<std::uint32_t>(gfx,ray_readback[newest]);
+        if(!counter||!counter[82]||!counter[83])return {};
+        const auto decode=[](std::uint32_t v){return std::bit_cast<float>(v^((v&0x80000000u)!=0?0x80000000u:~0u));};
+        return ShadowReceiverDepth{decode(~counter[82]),decode(counter[83])};
     }
     void prepare_shadows() {
         if(!shadow_static||!shadow_dynamic) {
@@ -487,6 +509,8 @@ struct SceneLit::State {
         probe_fallback=gfxCreateBuffer<std::uint32_t>(gfx,std::uint64_t(probe_fallback_capacity)+1);
         probe_fallback_arguments=gfxCreateBuffer<std::uint32_t>(gfx,3);
         allocation(bool(probe_fallback)&&bool(probe_fallback_arguments));
+        sun_trace_list=gfxCreateBuffer<std::uint32_t>(gfx,std::uint64_t(w)*h);sun_trace_arguments=gfxCreateBuffer<std::uint32_t>(gfx,3);
+        allocation(bool(sun_trace_list)&&bool(sun_trace_arguments));
         reflection_hit_trace=texture(w,h,DXGI_FORMAT_R32G32_UINT,8);
         ao_texture=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
         ao_raw=texture(w,h,DXGI_FORMAT_R16_FLOAT,2);
@@ -733,7 +757,8 @@ struct SceneLit::State {
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&bloom,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(auto t:pyramid)add_texture(t);
         result+=instance_table.bytes();light_tables.each([&](const auto& table){result+=table.bytes();});
-        for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters,ltc})result+=b.getSize();
+        for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters,ltc,
+                    sun_trace_list,sun_trace_arguments})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
         result+=shadow_tables.face_table.bytes()+shadow_tables.light_table.bytes()+shadow_tables.instance_table.bytes();
         if(inspection) {result+=inspection->output.getSize()+inspection->rays.getSize();for(auto b:inspection->readback)result+=b.getSize();for(auto b:inspection->ray_readback)result+=b.getSize();}
@@ -995,6 +1020,7 @@ struct SceneLit::State {
             (stats.scene_lit_probe_inspection->scene_identity!=frame.scene_identity ||
              stats.scene_lit_probe_inspection->pixel!=settings.probe_inspect_pixel ||
              stats.scene_lit_probe_inspection->requested_probe!=settings.probe_inspect_source)))stats.scene_lit_probe_inspection.reset();
+        if(!enabled||scene_identity!=frame.scene_identity||frame.camera_cut)++depth_epoch;
         if(!enabled||scene_identity!=frame.scene_identity) {
             reset();shadow_cache.invalidate();
             for(auto& [key,object]:objects){(void)key;object.shadow_tracked=false;if(scene_identity!=frame.scene_identity)object.shadow_dynamic=false;}
@@ -1178,7 +1204,7 @@ struct SceneLit::State {
         }
         end(12);begin(13,false);
         if(shadows_cached) {
-            const auto& plan=shadow_cache.prepare(frame,light_frame,shadow_casters,shadow_changes,sequence);
+            const auto& plan=shadow_cache.prepare(frame,light_frame,shadow_casters,shadow_changes,receiver_depth(),sequence);
             shadow_sample.plan=plan.stats;
             if(!plan.updates.empty())encoded_pass_mask|=1u<<13;
             shadow_update(plan,scene_draws,shadow_sample);
@@ -1192,8 +1218,13 @@ struct SceneLit::State {
             bind(p,"lit_cluster_depth",cluster_depth);bind(p,"lit_cluster_count",cluster_count);bind(p,"lit_cluster_source",cluster_source);
             bind_shadows(p);bind(p,"lit_ltc",ltc);
             bind(p,"lit_indirect_source",indirect);bind(p,"lit_ao",ao_texture);
-            bind(p,"lit_indirect_gain",settings.indirect_gain);bind(p,"lit_hdr_output",hdr);}
+            bind(p,"lit_indirect_gain",settings.indirect_gain);bind(p,"lit_hdr_output",hdr);bind(p,"lit_sun_trace_list",sun_trace_list);}
         dispatch_window(compose,depth);
+        // Usually an empty list: an indirect dispatch of zero groups.
+        bind(sun_trace_prepare.program(),"lit_sun_trace_arguments",sun_trace_arguments);dispatch(sun_trace_prepare,depth,1);
+        {const auto p=sun_trace.program();bind_shadows(p);bind(p,"lit_sun_trace_list",sun_trace_list);bind(p,"lit_hdr_output",hdr);
+            common(p,depth);require(gfxCommandBindKernel(gfx,sun_trace.kernel()),"Bind sun trace kernel");
+            require(gfxCommandDispatchIndirect(gfx,sun_trace_arguments),"Dispatch sun receivers beyond the cascades");}
         if(shadows_cached)shadow_cache.commit();
         end(14);end(2);
         begin(5);
@@ -1263,7 +1294,7 @@ struct SceneLit::State {
         const auto readback_slot=sequence%readback_count;
         require(gfxCommandCopyBuffer(gfx,ray_readback[readback_slot],ray_counters),"Publish Scene Lit ray counters asynchronously");
         readback_sequences[readback_slot]=gfxGetRecordingFrameSequence(gfx);readback_frame_ids[readback_slot]=frame.ui_frame.id;
-        readback_pass_masks[readback_slot]=encoded_pass_mask;
+        readback_pass_masks[readback_slot]=encoded_pass_mask;readback_depth_epochs[readback_slot]=depth_epoch;
         readback_shadows[readback_slot]=shadow_sample;
         probe_visibility_valid=settings.ddgi&&!taa_enabled&&!smaa_temporal;
         stats.scene_lit_history_resets=reset_events;reset_events=0;previous_view_projection=view_projection;previous_inverse_view_projection=inverse_view_projection;history_valid=true;sequence++;parity=1-parity;
@@ -1350,7 +1381,7 @@ struct SceneLit::State {
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
         for(auto* s:{&sampler,&shadow_sampler})if(*s)require(gfxDestroySamplerState(gfx,std::exchange(*s,{})),"Retire Scene Lit sampler");
-        for(auto* p:{&gbuffer,&cluster_build,&cluster_inspect,&shadow_depth,&compose,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
+        for(auto* p:{&gbuffer,&cluster_build,&cluster_inspect,&shadow_depth,&compose,&sun_trace_prepare,&sun_trace,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
                     &ao,&ao_depth_reduce,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
                     &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&probe_debug_surface,&probe_debug_geometry,&inspect_pass,&inspect_update})*p={};
     }

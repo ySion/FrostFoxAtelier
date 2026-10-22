@@ -4,6 +4,7 @@
 #include "light_frame.hpp"
 
 #include <memory>
+#include <optional>
 
 namespace atelier::renderer::detail {
 
@@ -13,6 +14,10 @@ inline constexpr std::uint32_t shadow_high_tier_lights=16,shadow_face_redraw_bud
 inline constexpr float shadow_near_ratio=1e-6f;
 inline constexpr float shadow_maximum_near=1e-5f;
 
+// Camera view Z range of the GBuffer receivers, reduced on the GPU and read
+// back after its frame completed. Absent until a reading of the current
+// camera epoch (scene and camera cut) arrives.
+struct ShadowReceiverDepth { float minimum{},maximum{}; };
 struct ShadowBounds {
     std::array<float,3> minimum{},maximum{};
 };
@@ -112,7 +117,7 @@ public:
     ShadowCache(const ShadowCache&)=delete;
     ShadowCache& operator=(const ShadowCache&)=delete;
     const ShadowFramePlan& prepare(const Frame&,const LightFrame&,
-        std::span<const ShadowCaster>,std::span<const ShadowChange>,std::uint64_t sequence);
+        std::span<const ShadowCaster>,std::span<const ShadowChange>,std::optional<ShadowReceiverDepth>,std::uint64_t sequence);
     // Call only after every update and corresponding shade has been encoded.
     // No GPU wait is required: these resources stay on the existing queue.
     void commit() noexcept;

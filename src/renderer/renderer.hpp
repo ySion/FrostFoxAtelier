@@ -188,6 +188,8 @@ struct FrameStats {
     std::uint32_t scene_lit_shadow_cache_static_updates{},scene_lit_shadow_cache_dynamic_updates{},scene_lit_shadow_cache_draws{};
     // Dropped lights cast shadows but did not fit the atlas; they contribute no direct light.
     std::uint32_t scene_lit_shadow_cache_resolution_downgrades{},scene_lit_shadow_cache_dropped_lights{},scene_lit_shadow_cache_near_plane_faces{};
+    // Missing taps: point-light taps without a drawn face. A sun receiver beyond
+    // every cascade traces instead, counted in the direct part of shadow rays.
     std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_plane_fallbacks{};
     // Faces deferred by the per-frame redraw budget, their longest consecutive deferral
     // in frames, the 128² atlas cells held by requested faces, and lights withheld

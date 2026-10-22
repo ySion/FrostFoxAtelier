@@ -61,6 +61,8 @@ void lit_cluster_build(uint3 group,uint3 local,uint lane,bool inspect) {
     float z_min=lit_cluster_float(lit_cluster_z_min),z_max=lit_cluster_float(lit_cluster_z_max);
     float2 bounds=lit_cluster_z_min==~0u?0:float2(z_min,rcp(max(z_max-z_min,1e-5)));
     if(lane==0)lit_cluster_depth_output[tile]=bounds;
+    // Receiver view-Z range for cascade fitting; [82] holds the complement of the minimum.
+    if(lane==0&&lit_cluster_z_min!=~0u){InterlockedMax(lit_ray_counters[82],~lit_cluster_z_min);InterlockedMax(lit_ray_counters[83],lit_cluster_z_max);}
     if(valid) {
         uint slice=lit_cluster_slice(z,bounds);InterlockedAdd(lit_cluster_receivers[slice],1);
         [unroll] for(uint axis=0;axis<3;++axis) {
@@ -125,15 +127,18 @@ Texture2D<float4> lit_indirect_source;
 float lit_indirect_gain;
 Texture2D<float> lit_ao;
 RWTexture2D<float4> lit_hdr_output;
+RWStructuredBuffer<uint> lit_sun_trace_list;
 
 // Every shadow-casting light samples the atlas. A casting light the atlas
 // could not hold, or with a face not drawn yet, has no descriptor and
-// contributes nothing; meta.w fades in a light that waited.
+// contributes nothing; meta.w fades in a light that waited. Negative: a sun
+// receiver beyond every cascade, left to lit_sun_trace_cs.
 float lit_compose_visibility(LitLightSource light,uint source,LitLightingSurface surface,bool shadows) {
     if(!shadows||(light.meta.y&2u)==0)return 1;
     LitShadowLight cache=lit_shadow_lights[source];
     if(cache.meta.x==0)return 0;
-    return asfloat(cache.meta.w)*(cache.meta.x==2?lit_shadow_directional(cache,light,surface):lit_shadow_point(cache,light,surface));
+    float visibility=cache.meta.x==2?lit_shadow_directional(cache,surface):lit_shadow_point(cache,light,surface);
+    return visibility<0?-1:asfloat(cache.meta.w)*visibility;
 }
 // Linearly transformed cosines (Heitz et al. 2016) fitted to
 // lit_brdf_components by tools/ltc/fit.py. Cell (theta row, roughness column)
@@ -230,12 +235,14 @@ LitLightEvaluation lit_evaluate_rectangle_light(LitLightSource light,LitLighting
 }
 // Deterministic radiance: spheres and suns use Karis' representative point;
 // rectangles integrate their solid angle with linearly transformed cosines.
-float3 lit_compose_light(LitLightSource light,uint source,LitLightingSurface surface,bool shadows) {
+float3 lit_compose_light(LitLightSource light,uint source,LitLightingSurface surface,bool shadows,inout bool traced) {
     LitLightEvaluation value;
     if(light.meta.x==1)value=lit_evaluate_rectangle_light(light,surface);
     else value=lit_evaluate_compact_light(light,surface);
     if(lit_light_target(value)<=0)return 0;
-    return (value.diffuse+value.specular)*lit_compose_visibility(light,source,surface,shadows);
+    float visibility=lit_compose_visibility(light,source,surface,shadows);
+    if(visibility<0){traced=true;return 0;}
+    return (value.diffuse+value.specular)*visibility;
 }
 float3 lit_compose_direct(uint2 p) {
     LitLightingSurface surface=lit_direct_surface_data(p);
@@ -248,18 +255,20 @@ float3 lit_compose_direct(uint2 p) {
     uint count=lit_cluster_count[cluster];
     bool overflow=count>LIT_CLUSTER_CAPACITY;
     if(overflow)count=lit_source_counts.x;
-    float3 radiance=0;
+    float3 radiance=0;bool traced=false;
     [loop] for(uint i=0;i<count;++i) {
         uint source=overflow?i:lit_cluster_source[cluster*LIT_CLUSTER_CAPACITY+i];
         LitLightSource light=lit_sources[source];
         if(lit_cluster_intersects(light,surface.position,surface.position))
-            radiance+=lit_compose_light(light,source,surface,shadows);
+            radiance+=lit_compose_light(light,source,surface,shadows,traced);
     }
     [loop] for(uint j=0;j<lit_source_counts.y;++j) {
         uint source=lit_source_counts.x+j;
         LitLightSource light=lit_sources[source];light.meta.x=2;
-        radiance+=lit_compose_light(light,source,surface,shadows);
+        radiance+=lit_compose_light(light,source,surface,shadows,traced);
     }
+    // At most one entry per pixel; lit_sun_trace_list holds a whole target.
+    if(traced){uint slot;InterlockedAdd(lit_ray_counters[84],1,slot);lit_sun_trace_list[slot]=p.x|(p.y<<16);}
     return lit_direct_finite(radiance);
 }
 
@@ -275,4 +284,34 @@ void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
     float3 diffuse=bm.rgb*(1-bm.w)*irradiance/LIT_PI*ao*lit_indirect_gain;
     float3 direct=lit_direct_surface(int2(p))?lit_compose_direct(p):0;
     lit_hdr_output[p]=float4(min(direct+diffuse+lit_emissive[p].rgb,65504.xxx),1);
+}
+RWStructuredBuffer<uint> lit_sun_trace_arguments;
+// Rows of at most 65535 groups, the D3D12 limit per dimension; a 4K list needs two.
+static const uint lit_sun_trace_row=65535;
+[numthreads(1,1,1)]
+void lit_sun_trace_prepare_cs() {
+    uint groups=(lit_ray_counters[84]+63)/64;
+    lit_sun_trace_arguments[0]=min(groups,lit_sun_trace_row);lit_sun_trace_arguments[1]=max((groups+lit_sun_trace_row-1)/lit_sun_trace_row,1);
+    lit_sun_trace_arguments[2]=1;
+}
+// Adds the suns composition left out: for each listed pixel, every casting sun
+// no cascade holds is traced as far as cascade depth reaches, every caster.
+[numthreads(64,1,1)]
+void lit_sun_trace_cs(uint3 tid:SV_DispatchThreadID) {
+    uint entry=tid.y*lit_sun_trace_row*64+tid.x;
+    if(entry>=lit_ray_counters[84])return;
+    uint packed=lit_sun_trace_list[entry];uint2 p=uint2(packed&0xffffu,packed>>16);
+    LitLightingSurface surface=lit_direct_surface_data(p);
+    float3 radiance=0;
+    [loop] for(uint j=0;j<lit_source_counts.y;++j) {
+        uint source=lit_source_counts.x+j;
+        LitLightSource light=lit_sources[source];light.meta.x=2;
+        LitShadowLight cache=lit_shadow_lights[source];
+        if((light.meta.y&2u)==0||cache.meta.x!=2||lit_shadow_directional_covered(cache,surface))continue;
+        LitLightEvaluation value=lit_evaluate_compact_light(light,surface);
+        if(lit_light_target(value)<=0)continue;
+        if(lit_visible(surface.position,surface.geometric_normal,-lit_safe_normal(light.direction_radius.xyz),3.402823466e+38f))
+            radiance+=(value.diffuse+value.specular)*asfloat(cache.meta.w);
+    }
+    lit_hdr_output[p]=float4(min(lit_hdr_output[p].rgb+lit_direct_finite(radiance),65504.xxx),1);
 }

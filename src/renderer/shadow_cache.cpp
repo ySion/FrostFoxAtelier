@@ -18,6 +18,10 @@ constexpr std::uint32_t cell_size=128,grid_size=shadow_atlas_extent/cell_size;
 // the smallest face. The 3x3 filter footprint stays inside the guard texels.
 constexpr double normal_offset_ratio=2.0/(cell_size-2*shadow_tile_border);
 constexpr std::uint32_t no_slot=~0u;
+// Cascade fitting to the measured receiver depth; scene-lit.md gives the reasons.
+constexpr double fit_near_margin=.8,fit_far_margin=1.25;
+constexpr std::int32_t fit_shrink_quarters=2; // Quarter octaves.
+constexpr std::uint32_t fit_shrink_frames=32;
 void check(bool condition,const char* message) {
     if(!condition)throw Error{{rhi::ErrorCode::invalid_argument,kGfxResult_InvalidParameter,message},false};
 }
@@ -176,8 +180,10 @@ Request point_request(const Frame& frame,const GpuLightSource& source,std::span<
     request.importance=std::max(0.,radiance)*flux*solid_angle;
     return request;
 }
+// fit is the measured receiver range [near, far] in camera view Z. Without
+// it, splits are fixed fractions of the conservative receiver bound.
 Request directional_request(const Frame& frame,const GpuLightSource& source,std::span<const ShadowCaster> receivers,
-                            std::span<const ShadowCaster> casters,const M& camera_view) {
+                            std::span<const ShadowCaster> casters,const M& camera_view,std::optional<std::array<double,2>> fit) {
     Request request;request.kind=2;request.count=4;request.size=1024;
     if(receivers.empty())return request;
     const auto inverse_projection=math::try_inverse(matrix(frame.camera.projection));
@@ -207,6 +213,21 @@ Request directional_request(const Frame& frame,const GpuLightSource& source,std:
     if(receiver_limit<=camera_near)receiver_limit=ceil_power_two(std::max(std::abs(camera_near),1e-3)*2);
     const double far_z=std::min(camera_far,receiver_limit);
     check(far_z>camera_near,"Invalid shadow receiver depth interval");
+    // Fitted splits: cascade 0 ends at the first logarithmic split of the
+    // fitted range and the other three split the rest logarithmically; no
+    // split lies past the conservative one, so no cascade is coarser. Cascade
+    // 0 still starts at the camera near plane, so no receiver in front of the
+    // fitted range is missed.
+    double fit_near=0,fit_far=0;
+    if(fit&&camera_near>0){fit_near=std::max(camera_near,(*fit)[0]);fit_far=std::min(far_z,(*fit)[1]);}
+    const bool fitted=fit_far>fit_near;
+    constexpr std::array<double,4> fractions{1.0/64,1.0/16,1.0/4,1};
+    std::array<double,4> ends;
+    for(std::uint32_t face=0;face<4;++face)ends[face]=camera_near+(far_z-camera_near)*fractions[face];
+    if(fitted){
+        const double first=std::min(ends[0],fit_near*std::pow(fit_far/fit_near,.25));
+        for(std::uint32_t face=0;face<4;++face)ends[face]=face==3?fit_far:std::min(ends[face],first*std::pow(fit_far/first,face/3.0));
+    }
     request.axis_z=unit({source.direction_radius[0],source.direction_radius[1],source.direction_radius[2]});
     request.axis_x=unit(cross(std::abs(request.axis_z.y)<.95?V{0,1,0}:V{1,0,0},request.axis_z));
     request.axis_y=cross(request.axis_z,request.axis_x);
@@ -217,9 +238,8 @@ Request directional_request(const Frame& frame,const GpuLightSource& source,std:
         low=std::min(low,z);high=std::max(high,z);}
     const double step=ceil_power_two(std::max(high-low,1.0))/16;
     double previous=camera_near,offset=0;
-    constexpr std::array<double,4> fractions{1.0/64,1.0/16,1.0/4,1};
     for(std::uint32_t face=0;face<4;++face){
-        const double end=camera_near+(far_z-camera_near)*fractions[face];
+        const double end=ends[face];
         const double start=face==0?camera_near:previous-.1*(previous-camera_near);
         std::array<V,8> corners;V center{};
         for(std::uint32_t i=0;i<8;++i){const auto ray=rays[i%4];
@@ -272,6 +292,30 @@ struct ShadowCache::State {
     std::uint64_t scene{},sequence{},plan_serial{1};
     std::uint32_t next_generation{};
     bool initialized{},pending{},plan_ready{};
+    // Fitted cascade range in quarter octaves of camera view Z. Each end grows
+    // at once and shrinks on its own, to the envelope of fit_shrink_frames
+    // consecutive readings that all stayed at least fit_shrink_quarters inside it.
+    struct FitEnd {std::int32_t value{},envelope{};std::uint32_t frames{};};
+    struct Fit {FitEnd lower,upper;bool valid{};} fit;
+
+    void measure(const std::optional<ShadowReceiverDepth>& depth) {
+        if(!depth||!(depth->minimum>0)||!(depth->maximum>=depth->minimum)||!std::isfinite(depth->maximum)){fit={};return;}
+        const auto lower=static_cast<std::int32_t>(std::floor(4*std::log2(fit_near_margin*depth->minimum)));
+        const auto upper=static_cast<std::int32_t>(std::ceil(4*std::log2(fit_far_margin*depth->maximum)));
+        if(!fit.valid){fit={{lower,lower,0},{upper,upper,0},true};return;}
+        // outward is +1 for the far end and -1 for the near end.
+        const auto track=[](FitEnd& end,std::int32_t reading,std::int32_t outward){
+            if(outward*reading>outward*end.value){end.value=reading;end.frames=0;return;}
+            if(outward*reading>outward*end.value-fit_shrink_quarters){end.frames=0;return;}
+            end.envelope=end.frames&&outward*end.envelope>outward*reading?end.envelope:reading;
+            if(++end.frames==fit_shrink_frames){end.value=end.envelope;end.frames=0;}
+        };
+        track(fit.lower,lower,-1);track(fit.upper,upper,1);
+    }
+    std::optional<std::array<double,2>> fitted() const {
+        if(!fit.valid)return {};
+        return std::array{std::exp2(fit.lower.value/4.0),std::exp2(fit.upper.value/4.0)};
+    }
 
     std::uint32_t generation(){if(++next_generation==0)++next_generation;return next_generation;}
 
@@ -355,6 +399,9 @@ struct ShadowCache::State {
             ++plan.stats.requested_faces;plan.stats.atlas_cells+=(size/cell_size)*(size/cell_size);
             auto& face=lights[source].faces[i];
             if(face.drawn&&face.stationary_valid&&face.dynamic_valid&&face.projection==packed(request_projection(request,i,size))) {
+                // Equal cascade projections can follow different splits; the
+                // blend band reads the current cascade start.
+                if(request.kind==2)face.depth[3]=request.starts[i];
                 ++plan.stats.reused_faces;publish(gpu,face,source,i);continue;
             }
             redraws.push_back({source,i,static_cast<std::uint32_t>(plan.faces.size()-1),size,rank,exempt});
@@ -443,16 +490,19 @@ ShadowCache::~ShadowCache()=default;
 void ShadowCache::invalidate() noexcept {
     auto& s=*state_;s.lights.clear();s.previous_lights.clear();s.occupied.fill(false);
     s.plan.lights.clear();s.plan.faces.clear();s.plan.updates.clear();s.initialized=false;s.pending=false;s.plan_ready=false;
+    s.fit={};
 }
 void ShadowCache::commit() noexcept {if(state_->plan_ready)state_->pending=false;}
 const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame& sources,
-    std::span<const ShadowCaster> casters,std::span<const ShadowChange> changes,std::uint64_t sequence) {
+    std::span<const ShadowCaster> casters,std::span<const ShadowChange> changes,std::optional<ShadowReceiverDepth> depth,
+    std::uint64_t sequence) {
     auto& s=*state_;
     if(s.plan_ready&&s.initialized&&s.scene==frame.scene_identity&&s.sequence==sequence)return s.plan;
     // An unconsumed plan is never GPU-valid. It can be abandoned safely without
     // allowing its scheduled writes to masquerade as completed cache contents.
     if(s.pending||!s.initialized||s.scene!=frame.scene_identity)invalidate();
     s.scene=frame.scene_identity;s.sequence=sequence;s.initialized=true;s.pending=true;s.plan_ready=false;
+    s.measure(depth);
     s.previous_lights.swap(s.lights);auto& previous=s.previous_lights;
     s.lights.assign(sources.sources.size(),{});
     for(std::uint32_t i=0;i<s.lights.size();++i){
@@ -490,7 +540,7 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
         const auto& held=s.lights[index];
         const bool lagging=std::ranges::any_of(held.faces,[](const auto& face){return face.drawn;})&&
             held.origin!=std::array{light.origin_range[0],light.origin_range[1],light.origin_range[2]};
-        requests[index]=light.meta[0]==2?directional_request(frame,light,receivers,casters,camera_view):
+        requests[index]=light.meta[0]==2?directional_request(frame,light,receivers,casters,camera_view,s.fitted()):
             point_request(frame,light,receivers,camera_view,lagging?&held.origin:nullptr);
         if(requests[index].kind==1){
             auto& request=requests[index];const auto previous_size=s.lights[index].preferred_size;

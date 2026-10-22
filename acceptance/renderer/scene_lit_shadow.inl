@@ -199,33 +199,40 @@ void shadow_cases(Fixture& f) {
     truth("shadow-finite-point-truth",soft,{bounds(f.room.meshes[1])},.35,0);
     warm("shadow-finite-point-warm");
 
-    // Four disjoint receiver columns lie in all four camera-depth cascades.
-    // Only the far receiver has a deliberately offset occluder, so the camera
-    // sees the receiver probe rather than the cube's front face. The sun drifts
-    // along y only, so the x-disjoint columns never shadow one another.
-    f.room.meshes={receiver(11,-2.4f,-3.85f,1.1f,3),receiver(12,-.8f,-3.6f,1.1f,3),
-        receiver(13,.8f,-2.5f,1.1f,3),receiver(14,2.4f,2,1.1f,3)};
-    auto sun_blocker=blocker(15);sun_blocker.world=box(2.24f,0,1.2f,.16f,.3f,.08f);
-    f.room.meshes.push_back(sun_blocker);f.lights.assign(1,{});
+    // Four disjoint receiver columns at camera view Z .15, .5, 1.5 and 6 lie in
+    // the four cascades of the conservative fractions of [.1, 8] (ends .22,
+    // .59, 2.07, 8), outside every blend band. Fitting the measured [.15, 6]
+    // keeps these ends: its logarithmic splits all lie farther. Each column
+    // has its own blocker 1 m in front of it and .5 m lower; the sun rises .5
+    // per unit depth, so the camera sees each shadow on its column above the
+    // blocker's image. The sun drifts along y only, so the x-disjoint columns
+    // never shadow one another.
+    const std::array<Vec3,4> columns{{{-2.4f,0,-3.85f},{-.8f,0,-3.5f},{.8f,0,-2.5f},{2.4f,0,2}}};
+    f.room.meshes.clear();std::vector<Box> sun_blockers;
+    for(std::uint32_t i=0;i<4;++i){const auto [x,y,z]=columns[i];
+        f.room.meshes.push_back(receiver(11+i,x,z,1.1f,3));
+        auto column_blocker=blocker(15+i);column_blocker.world=box(x,-.5f,z-1,.6f,.4f,.1f);
+        sun_blockers.push_back(bounds(column_blocker));f.room.meshes.push_back(column_blocker);}
+    f.lights.assign(1,{});
     auto& sun=f.lights.front();sun.stable_key=200;sun.kind=render::LightKind::directional;
-    sun.direction=normalize({0,.2f,1});sun.intensity=2;
+    sun.direction=normalize({0,.5f,1});sun.intensity=2;
     ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();stats=submit("shadow-csm-cold");
     check(stats.scene_lit_shadow_cache_faces==4&&stats.scene_lit_shadow_cache_static_updates==4,
         "directional light renders four complete requested cascades");
     const auto cascades=f.capture("shadow-csm-settled",20);warm("shadow-csm-warm");
-    truth("shadow-csm-truth",cascades,{bounds(sun_blocker)},.03,4);
-    for(const Vec3 point:std::array<Vec3,3>{{{-2.4f,0,-3.85f},{-.8f,0,-3.6f},{.8f,0,-2.5f}}})
-        check(mean_rgb(cascades,project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,point,1))[0]>20,
-            "near/middle cascade receivers remain lit with current depth and identity");
-    const auto sun_shadow=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{2.24f,.24f,2},1);
-    check(mean_rgb(cascades,sun_shadow)[0]<15,"last cascade preserves the off-axis caster's real shadow");
-    sun.direction=normalize({.03f,.2f,1});f.edited();stats=submit("shadow-sun-moved");
+    truth("shadow-csm-truth",cascades,sun_blockers,.03,300);
+    for(const auto& [x,y,z]:columns){
+        const auto lit=mean_rgb(cascades,project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{x,1,z},1))[0];
+        check(lit>20&&mean_rgb(cascades,project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{x,0,z},1))[0]<lit*.1,
+            "every cascade shadows its own column under its blocker and leaves the rest lit");
+    }
+    sun.direction=normalize({.03f,.5f,1});f.edited();stats=submit("shadow-sun-moved");
     check(stats.scene_lit_shadow_cache_static_updates==4,"moving the sun invalidates every cascade projection");
     const auto moved_sun=f.capture("shadow-sun-moved-settled",16);
-    truth("shadow-sun-moved-truth",moved_sun,{bounds(sun_blocker)},.03,4);
+    truth("shadow-sun-moved-truth",moved_sun,sun_blockers,.03,300);
     f.frame.camera.view[12]=.35f;f.frame.camera_cut=true;submit("shadow-csm-camera-move");
     const auto moved_camera=f.capture("shadow-csm-camera-moved-settled",16);
-    truth("shadow-csm-camera-truth",moved_camera,{bounds(sun_blocker)},.03,4);warm("shadow-csm-camera-warm");
+    truth("shadow-csm-camera-truth",moved_camera,sun_blockers,.03,300);warm("shadow-csm-camera-warm");
 
     // Grazing sun, 70 degrees from the receiver normal, and a fin standing 1 cm
     // in front of the receiver. One interior texel (about 4.6 mm) of normal
@@ -577,6 +584,92 @@ void shadow_cases(Fixture& f) {
     truth("shadow-csm-infinite-perspective-truth",infinite_image,{},0,0);
     stats=warm("shadow-csm-infinite-perspective-warm");
     check(stats.scene_lit_shadow_cache_faces==4,"infinite-far perspective reuses all four complete cascades");
+
+    // Cascades fit the measured receiver depth. A wall 3 m away hides a far
+    // receiver at 1000 m, so the conservative receiver bound is 1024 m and its
+    // first cascade has about 3.7 cm texels at the wall; the fitted [2, 4] m
+    // range gives about 0.7 cm. A 10 cm bar 0.3 m in front of the wall casts a
+    // 12 cm shadow beside its own image. One fitted texel of filter and normal
+    // offset stays inside the 2.5 cm unjudged band; 3.7 cm texels do not.
+    f.frame.scene_viewport={0,0,float(f.drawing.extent.width),float(f.drawing.extent.height)};
+    const float fit_aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
+    f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    f.frame.camera.projection={2/fit_aspect,0,0,0, 0,2,0,0, 0,0,0,1, 0,0,.1f,0};
+    auto bar=blocker(702);bar.world=box(0,0,2.7f,.1f,1.2f,.06f);
+    const auto far_receiver=receiver(703,0,1000,4000,3000);
+    const auto fit_scene=[&]{return std::vector{receiver(701,0,3,8,5),far_receiver,bar};};
+    f.room.meshes=fit_scene();f.lights.assign(1,{});
+    f.lights[0].stable_key=60100;f.lights[0].kind=render::LightKind::directional;
+    f.lights[0].direction=normalize({.5f,0,1});f.lights[0].intensity=2;
+    ++f.frame.scene_identity;f.frame.camera_cut=true;f.edited();submit("shadow-fit-cold");
+    const auto fitted=f.capture("shadow-fit-settled",16);
+    truth("shadow-fit-truth",fitted,{bounds(bar)},.025,1000);
+    warm("shadow-fit-warm");
+    const auto fallback_rays=[](const Stats& sample){return sample.scene_lit_shadow_rays;}; // DDGI is off: direct rays only.
+    // A dynamic cube 1.4 to 1.6 m away is the nearest receiver; its quantized
+    // near bound alternates between two quarter octaves. The range holds the
+    // nearer one, so after the first cycle the static layer never redraws.
+    auto mover=blocker(704);
+    const auto place=[&](float z){mover.world=box(-1,-.5f,z,.2f,.2f,.2f);f.room.meshes=fit_scene();f.room.meshes.push_back(mover);f.edited();};
+    place(1.7f);f.capture("shadow-fit-mover-added",8);
+    constexpr std::array<float,8> path{1.5f,1.55f,1.6f,1.65f,1.7f,1.65f,1.6f,1.55f};
+    for(unsigned frame=0;frame<16;++frame){place(path[frame%8]);f.step();}
+    const auto hold=f.drawing.id+1;unsigned held=0;
+    for(unsigned frame=16;frame<64;++frame){
+        place(path[frame%8]);const auto result=f.step();const auto& sample=result.stats;
+        if(!sample.scene_lit_gpu_timing_valid||sample.scene_lit_gpu_sample_frame_id<hold)continue;
+        ++held;record("shadow-fit-mover",result.accepted_id,sample);
+        check(sample.scene_lit_shadow_cache_static_updates==0&&sample.scene_lit_shadow_cache_dynamic_updates>0&&fallback_rays(sample)==0,
+            "an oscillating nearest receiver redraws only the dynamic layer");
+    }
+    check(held>=32,"oscillating receiver observes completed samples");
+    // Removing the cube moves the near reading four quarter octaves inward.
+    // The range contracts once, after 32 plans of that reading, which arrives
+    // three frames late: one cascade redraw 32 to 40 frames after removal.
+    f.room.meshes=fit_scene();f.edited();
+    const auto removed=f.drawing.id+1;std::vector<std::uint64_t> contractions;
+    for(unsigned frame=0;frame<64;++frame){
+        const auto result=f.step();const auto& sample=result.stats;const auto id=sample.scene_lit_gpu_sample_frame_id;
+        if(!sample.scene_lit_gpu_timing_valid||id<removed)continue;
+        record("shadow-fit-contract",result.accepted_id,sample);
+        if(sample.scene_lit_shadow_cache_static_updates)contractions.push_back(id-removed);
+    }
+    check(contractions.size()==1&&contractions[0]>=32&&contractions[0]<=40,
+        "a receiver range moved inward contracts the cascades once, after 32 plans");
+    // A camera cut starts a new depth epoch. Until its own reading arrives the
+    // cascades use the conservative bound, never the previous view's [2, 4] m.
+    f.frame.camera.view[14]=20;f.frame.camera_cut=true;
+    const auto cut=f.drawing.id+1;unsigned after_cut=0;
+    for(unsigned frame=0;frame<16;++frame){
+        const auto result=f.step();const auto& sample=result.stats;
+        if(!sample.scene_lit_gpu_timing_valid||sample.scene_lit_gpu_sample_frame_id<cut)continue;
+        ++after_cut;record("shadow-fit-cut",result.accepted_id,sample);
+        check(fallback_rays(sample)==0,"after a camera cut every receiver lies inside the cascades");
+    }
+    check(after_cut>=8,"camera cut observes completed samples");
+    f.frame.camera.view[14]=0;f.frame.camera_cut=true;f.capture("shadow-fit-return",16);
+    // Removing the wall without a cut reveals the far receiver beyond the
+    // fitted range until a new reading arrives. It is traced, not left black.
+    f.room.meshes={far_receiver};f.edited();
+    render::Capture revealed;const auto revealed_id=f.step(&revealed).accepted_id;
+    png(revealed,f.output/"shadow-fit-reveal-first.png");
+    const auto reveal=completed(revealed_id);record("shadow-fit-reveal",revealed_id,reveal);
+    check(reveal.scene_lit_shadow_cache_missing_taps==0&&fallback_rays(reveal)>0,
+        "the revealed receiver beyond the fitted cascades traces its visibility");
+    // The range grows on the first reading of the revealed frame.
+    for(unsigned frame=0;frame<12;++frame){
+        const auto result=f.step();const auto& sample=result.stats;const auto id=sample.scene_lit_gpu_sample_frame_id;
+        if(!sample.scene_lit_gpu_timing_valid||id<=revealed_id)continue;
+        record("shadow-fit-grow",result.accepted_id,sample);
+        check(fallback_rays(sample)==0||id<=revealed_id+5,"cascades grow over a revealed receiver as soon as its reading arrives");
+    }
+    const auto far_region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{0,0,1000},8);
+    const auto revealed_settled=f.capture("shadow-fit-reveal-settled",64);
+    const auto first_far=mean_rgb(revealed,far_region)[0],settled_far=mean_rgb(revealed_settled,far_region)[0];
+    check(first_far>20&&std::abs(first_far-settled_far)<=2,"the revealed receiver is lit on its first frame");
+    truth("shadow-fit-reveal-truth",revealed_settled,{},0,0);
+    stats=warm("shadow-fit-reveal-warm");
+    check(fallback_rays(stats)==0,"settled cascades cover the revealed receiver without tracing");
     counters.flush();f.metrics.flush();
-    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades including infinite-far perspective, grazing near-caster normal offset, sixteen high-tier lamps, 24-face redraw budget with whole-lamp longest-waiting rotation, thirty arriving lights withheld until drawn then faded in, keyless lights outside the budget, deferred lights sampled from their drawn origin, unoccluded grazing receivers past their own horizon, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
+    std::puts("Renderer shadow cache: PASS (exact completed samples, cold/warm, static/dynamic motion and deletion, Mask, light edits, scene replacement, geometric visibility truth, four CSM cascades with one shadow each including infinite-far perspective, cascades fitted to the measured receiver depth with held growth and 32-plan contraction, per-epoch readings and traced receivers beyond them, grazing near-caster normal offset, sixteen high-tier lamps, 24-face redraw budget with whole-lamp longest-waiting rotation, thirty arriving lights withheld until drawn then faded in, keyless lights outside the budget, deferred lights sampled from their drawn origin, unoccluded grazing receivers past their own horizon, whole-light atlas drops, exact mixed accumulation, sphere-interior receivers)");
 }

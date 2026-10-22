@@ -93,35 +93,56 @@ float lit_shadow_point(LitShadowLight cache,LitLightSource light,LitLightingSurf
     if(!all(isfinite(reference.gradient))){lit_shadow_count(81);reference.gradient=0;}
     return lit_shadow_compare(face,uv,reference);
 }
-float lit_shadow_directional_cascade(LitShadowLight cache,uint cascade,LitLightSource light,LitLightingSurface surface) {
-    float3 normal=surface.geometric_normal,x,y,z;
-    LitShadowFace face=lit_shadow_faces[cache.meta.y+cascade];
-    lit_shadow_projection_axes(face,x,y,z);
+// The first cascade from `cascade` on that holds the receiver offset by one
+// interior texel of `cascade`; a larger cascade covers receivers just outside
+// the selected one. Returns the cascade count when none does.
+uint lit_shadow_directional_face(LitShadowLight cache,uint cascade,LitLightingSurface surface,out float2 uv,out float depth) {
+    float3 x,y,z;lit_shadow_projection_axes(lit_shadow_faces[cache.meta.y+cascade],x,y,z);
     // Orthographic columns scale by 1/radius: one interior texel in world units.
-    float3 position=surface.position+normal*(2*face.depth.z/max(length(x),1e-20));
-    float2 uv;LitShadowReference reference=(LitShadowReference)0;
-    bool projected=false;
-    // A larger cascade covers receivers just outside the selected one.
-    [loop] for(uint i=cascade;i<cache.meta.z&&!projected;++i) {
-        face=lit_shadow_faces[cache.meta.y+i];
-        projected=(face.meta.x&1u)!=0&&lit_shadow_project(face,position,uv,reference.depth);
+    float3 position=surface.position+surface.geometric_normal*(2*lit_shadow_faces[cache.meta.y+cascade].depth.z/max(length(x),1e-20));
+    uv=0;depth=0;
+    [loop] for(uint i=cascade;i<cache.meta.z;++i) {
+        LitShadowFace face=lit_shadow_faces[cache.meta.y+i];
+        if((face.meta.x&1u)!=0&&lit_shadow_project(face,position,uv,depth))return i;
     }
-    if(!projected){lit_shadow_count(78);return 0;}
+    return cache.meta.z;
+}
+uint lit_shadow_directional_cascade_at(LitShadowLight cache,float view_z) {
+    uint cascade=0;[unroll] for(uint i=0;i<3;++i)if(i+1<cache.meta.z&&view_z>cache.splits[i])cascade=i+1;
+    return cascade;
+}
+// Negative when no cascade from `cascade` on holds the receiver.
+float lit_shadow_directional_cascade(LitShadowLight cache,uint cascade,LitLightingSurface surface) {
+    float2 uv;LitShadowReference reference=(LitShadowReference)0;
+    uint found=lit_shadow_directional_face(cache,cascade,surface,uv,reference.depth);
+    if(found==cache.meta.z)return -1;
+    LitShadowFace face=lit_shadow_faces[cache.meta.y+found];
+    float3 normal=surface.geometric_normal,x,y,z;
     lit_shadow_projection_axes(face,x,y,z);
     float3 plane=float3(dot(normal,x)/dot(x,x),dot(normal,y)/dot(y,y),dot(normal,z)/dot(z,z));
     reference.gradient=float2(-2*plane.x,2*plane.y)/plane.z/(face.atlas.xy*float(lit_shadow_atlas_extent));
     if(!all(isfinite(reference.gradient))){lit_shadow_count(81);reference.gradient=0;}
     return lit_shadow_compare(face,uv,reference);
 }
-float lit_shadow_directional(LitShadowLight cache,LitLightSource light,LitLightingSurface surface) {
+// Cascades fit a receiver depth range read back a few frames late, so a newly
+// revealed receiver can lie beyond them. Then this is negative and the receiver
+// is traced by a separate pass (lit_sun_trace_cs), keeping ray queries out of
+// composition. In a blend band, a next cascade that misses keeps the current one.
+float lit_shadow_directional(LitShadowLight cache,LitLightingSurface surface) {
     float view_z=mul(float4(surface.position,1),lit_camera_view).z;
-    uint cascade=0;[unroll] for(uint i=0;i<3;++i)if(i+1<cache.meta.z&&view_z>cache.splits[i])cascade=i+1;
-    float visibility=lit_shadow_directional_cascade(cache,cascade,light,surface);
-    if(cascade+1<cache.meta.z) {
+    uint cascade=lit_shadow_directional_cascade_at(cache,view_z);
+    float visibility=lit_shadow_directional_cascade(cache,cascade,surface);
+    if(visibility>=0&&cascade+1<cache.meta.z) {
         LitShadowFace face=lit_shadow_faces[cache.meta.y+cascade];
         float width=max((cache.splits[cascade]-face.depth.w)*.1,1e-5);
         float blend=saturate((view_z-cache.splits[cascade]+width)/width);
-        if(blend>0)visibility=lerp(visibility,lit_shadow_directional_cascade(cache,cascade+1,light,surface),blend);
+        float next=blend>0?lit_shadow_directional_cascade(cache,cascade+1,surface):-1;
+        if(next>=0)visibility=lerp(visibility,next,blend);
     }
     return visibility;
+}
+bool lit_shadow_directional_covered(LitShadowLight cache,LitLightingSurface surface) {
+    float2 uv;float depth;
+    uint cascade=lit_shadow_directional_cascade_at(cache,mul(float4(surface.position,1),lit_camera_view).z);
+    return lit_shadow_directional_face(cache,cascade,surface,uv,depth)!=cache.meta.z;
 }
