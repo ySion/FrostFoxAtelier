@@ -1,4 +1,6 @@
+#include "procedural/evaluator.hpp"
 #include "procedural/instances.hpp"
+#include "procedural/nodes.hpp"
 #include "procedural/operations.hpp"
 
 #include <cmath>
@@ -329,6 +331,233 @@ void copy_to_points_and_publication() {
     reject(publish(instances, 0), "A zero chunk size was accepted.");
 }
 
+struct Meshes final : Resources {
+    std::map<std::string, geometry::MeshRef, std::less<>> meshes;
+    std::uint64_t version{1};
+    Result<geometry::MeshRef> mesh(StringView key) const override {
+        const auto found = meshes.find(key.std_view());
+        if (found == meshes.end()) return std::unexpected(Error{ErrorCode::invalid_member, "No mesh " + std::string{key.std_view()} + "."});
+        return found->second;
+    }
+    std::uint64_t revision() const noexcept override { return version; }
+};
+
+template<class T> TypeId type(Runtime& runtime) { return take(runtime.native_type<T>()); }
+FieldId field(Runtime& runtime, TypeId owner, const char* name) { return take(runtime.find_field(owner, name)); }
+
+struct Counts {
+    std::uint64_t evaluations, hits;
+    bool operator==(const Counts&) const = default;
+};
+void expect(const Evaluator& evaluator, std::initializer_list<std::pair<ObjectId, Counts>> nodes, const char* message) {
+    for (const auto& [node, counts] : nodes) {
+        const auto* status = evaluator.status(node);
+        require(status && Counts{status->evaluations, status->cache_hits} == counts, message);
+    }
+}
+bool failed(const Evaluator& evaluator, ObjectId node) { return evaluator.status(node)->error.has_value(); }
+
+bool same_instances(const Geometry* actual, const Geometry& expected) {
+    require(actual != nullptr, "The graph has no output.");
+    const auto& a = actual->instance_transforms();
+    const auto& b = expected.instance_transforms();
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(Matrix4)) == 0 &&
+        std::ranges::equal(actual->references(), expected.references());
+}
+
+// Grid -> Transform -> Merge <- Line, Merge -> Copy to Points, by direct calls.
+Geometry expected_output(Vector3 translate, Vector3 scale, std::uint32_t line_points, const geometry::MeshRef& mesh) {
+    auto moved = take(grid({3, 2}, 3, 4));
+    take(transform(moved, translate, {}, scale));
+    const std::array inputs{moved, take(line({0, 0, 0}, {0, 1, 0}, line_points))};
+    const std::vector<Reference> references{{String{"fixture/a"}, mesh}};
+    return take(copy_to_points(take(Geometry::merge(inputs)), references));
+}
+
+void graph_evaluation() {
+    Runtime runtime;
+    take(register_types(runtime));
+    const auto published = runtime.type_count();
+    take(register_types(runtime));
+    require(runtime.type_count() == published, "Registering twice published types again.");
+    const auto merge_ports = take(ports(runtime, type<Merge>(runtime)));
+    require(merge_ports.multiple == std::vector<bool>{true} && merge_ports.outputs == 1, "Merge ports were not read from evaluate.");
+    const auto scatter_ports = take(ports(runtime, type<Scatter>(runtime)));
+    require(scatter_ports.parameters == std::vector<Slot>{Slot::context, Slot::input, Slot::output}, "Scatter ports were not read in order.");
+    reject(ports(runtime, type<Graph>(runtime)), "A graph was accepted as a node type.");
+
+    Meshes resources;
+    auto cube = geometry::cube_mesh();
+    resources.meshes["fixture/a"] = cube;
+    const auto graph_root = take(runtime.create(type<Graph>(runtime)));
+    const auto graph = graph_root.id();
+    reject(add_node(runtime, graph, type<Graph>(runtime)), "A graph was added as a node.");
+    const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
+    const auto grid_root = add(type<Grid>(runtime)), moved_root = add(type<Transform>(runtime)), line_root = add(type<Line>(runtime)),
+        merged_root = add(type<Merge>(runtime)), copied_root = add(type<CopyToPoints>(runtime));
+    const auto grid_node = grid_root.id(), moved = moved_root.id(), line_node = line_root.id(), merged = merged_root.id(), copied = copied_root.id();
+    const auto vector2 = type<Vector2>(runtime), vector3 = type<Vector3>(runtime);
+    const auto translate = field(runtime, type<Transform>(runtime), "translate"), scale = field(runtime, type<Transform>(runtime), "scale");
+    const auto write_vector = [&](ObjectId node, FieldId at, Vector3 value) { take(runtime.write(node, at, ValueInput{vector3, &value})); };
+    const Vector2 size{3, 2};
+    take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "size"), ValueInput{vector2, &size}));
+    take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "rows"), Scalar{std::uint32_t{3}}));
+    take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "columns"), Scalar{std::uint32_t{4}}));
+    write_vector(moved, translate, {1, 0, 0});
+    take(runtime.with_native<CopyToPoints>(copied, [](CopyToPoints& node) -> Result<void> {
+        node.meshes.add(String{"fixture/a"});
+        return {};
+    }));
+    take(connect(runtime, graph, grid_node, 0, moved, 0));
+    take(connect(runtime, graph, moved, 0, merged, 0));
+    take(connect(runtime, graph, line_node, 0, merged, 0));
+    take(connect(runtime, graph, merged, 0, copied, 0));
+    take(set_display(runtime, graph, copied));
+    const auto merged_inputs = take(inputs(runtime, merged));
+    require(merged_inputs == std::vector<Input>{{moved, 0, 0}, {line_node, 0, 0}}, "A multiple input did not keep connection order.");
+
+    Evaluator evaluator{runtime, graph_root, resources};
+    auto cursor = take(runtime.change_cursor());
+    take(evaluator.evaluate());
+    std::vector<ObjectId> written;
+    runtime.changed_objects(cursor, written);
+    require(written.empty(), "Evaluation wrote the graph or its nodes.");
+    expect(evaluator, {{grid_node, {1, 0}}, {moved, {1, 0}}, {line_node, {1, 0}}, {merged, {1, 0}}, {copied, {1, 0}}},
+        "The first evaluation did not run each node once.");
+    require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 1, 1}, 2, cube)), "The graph output differs from direct calls.");
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {moved, {1, 0}}, {line_node, {1, 0}}, {merged, {1, 0}}, {copied, {1, 0}}},
+        "An unchanged graph was evaluated again.");
+
+    // A parameter write reruns the node and what reads it; undoing it finds the cached results.
+    write_vector(moved, translate, {2, 0, 0});
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {line_node, {1, 0}}, {moved, {2, 0}}, {merged, {2, 0}}, {copied, {2, 0}}},
+        "A Transform write did not rerun exactly Transform and its downstream nodes.");
+    require(same_instances(evaluator.output(), expected_output({2, 0, 0}, {1, 1, 1}, 2, cube)), "The rerun output is wrong.");
+    write_vector(moved, translate, {1, 0, 0});
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {line_node, {1, 0}}, {moved, {2, 1}}, {merged, {2, 1}}, {copied, {2, 1}}},
+        "Undoing a write did not reuse the cached results.");
+    require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 1, 1}, 2, cube)), "The undone output is wrong.");
+
+    // A writable borrow that changes nothing stamps the node, but its key filters it out.
+    cursor = take(runtime.change_cursor());
+    take(runtime.with_native<Transform>(moved, [](Transform&) -> Result<void> { return {}; }));
+    require(runtime.changed_since(moved, cursor), "A writable borrow did not stamp the node.");
+    take(evaluator.evaluate());
+    expect(evaluator, {{moved, {2, 1}}, {merged, {2, 1}}, {copied, {2, 1}}}, "An unchanged stamped node was evaluated.");
+    take(runtime.with_native<Transform>(moved, [](Transform& node) -> Result<void> { node.scale = {1, 2, 1}; return {}; }));
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {moved, {3, 1}}, {merged, {3, 1}}, {copied, {3, 1}}}, "A native write was not evaluated.");
+    take(runtime.write(line_node, field(runtime, type<Line>(runtime), "count"), Scalar{std::uint32_t{3}}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {moved, {3, 1}}, {line_node, {2, 0}}, {merged, {4, 1}}, {copied, {4, 1}}},
+        "A write on one branch reran the other branch.");
+    require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 2, 1}, 3, cube)), "The two-branch output is wrong.");
+    // The graph seed reaches only nodes that take the context.
+    take(runtime.write(graph, field(runtime, type<Graph>(runtime), "seed"), Scalar{std::uint32_t{9}}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {moved, {3, 1}}, {line_node, {2, 0}}, {merged, {4, 1}}, {copied, {5, 1}}},
+        "The graph seed did not rerun exactly the nodes taking the context.");
+
+    // A failing node blocks its downstream nodes and keeps the published output; it is not
+    // retried until its key changes, and restoring it finds the cache again.
+    const auto* shown = evaluator.output();
+    write_vector(moved, scale, {std::nanf(""), 1, 1});
+    take(evaluator.evaluate());
+    require(failed(evaluator, moved) && failed(evaluator, merged) && failed(evaluator, copied) && !failed(evaluator, line_node),
+        "A failure did not block exactly the downstream nodes.");
+    require(evaluator.output() == shown, "A failure replaced the published output.");
+    expect(evaluator, {{moved, {4, 1}}, {merged, {4, 1}}, {copied, {5, 1}}}, "Blocked nodes were evaluated.");
+    take(runtime.write(line_node, field(runtime, type<Line>(runtime), "count"), Scalar{std::uint32_t{4}}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{moved, {4, 1}}, {line_node, {3, 0}}, {merged, {4, 1}}}, "A failed node was retried with the same key.");
+    write_vector(moved, scale, {1, 2, 1});
+    take(evaluator.evaluate());
+    require(!failed(evaluator, moved) && !failed(evaluator, merged) && !failed(evaluator, copied), "Restoring the parameter left a failure.");
+    expect(evaluator, {{moved, {4, 2}}, {merged, {5, 1}}, {copied, {6, 1}}}, "The restored node did not hit the cache.");
+    require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 2, 1}, 4, cube)), "The recovered output is wrong.");
+
+    // Resources: a new revision that resolves the same mesh reruns nothing; another mesh reruns
+    // its readers; a missing mesh fails until it appears.
+    ++resources.version;
+    take(evaluator.evaluate());
+    expect(evaluator, {{copied, {6, 1}}}, "An unchanged resource reran its reader.");
+    const auto replacement = std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>(cube->vertices().begin(), cube->vertices().end()));
+    resources.meshes["fixture/a"] = replacement;
+    ++resources.version;
+    take(evaluator.evaluate());
+    expect(evaluator, {{merged, {5, 1}}, {copied, {7, 1}}}, "A changed resource did not rerun exactly its reader.");
+    require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 2, 1}, 4, replacement)), "The new mesh was not used.");
+    take(runtime.with_native<CopyToPoints>(copied, [](CopyToPoints& node) -> Result<void> {
+        node.meshes[0] = String{"fixture/later"};
+        return {};
+    }));
+    shown = evaluator.output();
+    take(evaluator.evaluate());
+    require(failed(evaluator, copied) && evaluator.output() == shown, "A missing mesh did not fail and keep the output.");
+    resources.meshes["fixture/later"] = cube;
+    ++resources.version;
+    take(evaluator.evaluate());
+    require(!failed(evaluator, copied) && evaluator.output() != shown, "A mesh that appeared was not picked up.");
+    expect(evaluator, {{copied, {9, 1}}}, "The failed reader was not retried once.");
+
+    // Results are cached by content, not node: an identical Grid finds the first one's result.
+    const auto twin_root = add(type<Grid>(runtime));
+    const auto twin = twin_root.id();
+    take(runtime.write(twin, field(runtime, type<Grid>(runtime), "size"), ValueInput{vector2, &size}));
+    take(runtime.write(twin, field(runtime, type<Grid>(runtime), "rows"), Scalar{std::uint32_t{3}}));
+    take(runtime.write(twin, field(runtime, type<Grid>(runtime), "columns"), Scalar{std::uint32_t{4}}));
+    take(set_display(runtime, graph, twin));
+    take(evaluator.evaluate());
+    expect(evaluator, {{twin, {0, 1}}}, "An identical node did not share the cached result.");
+    require(evaluator.output()->count(Layer::point) == 12, "The display node was not published.");
+    take(set_display(runtime, graph, copied));
+
+    // Edits: cycles, missing ports and foreign nodes fail; a single input replaces its connection.
+    reject(connect(runtime, graph, merged, 0, moved, 0), "A cycle was connected.");
+    reject(connect(runtime, graph, moved, 0, moved, 0), "A node was connected to itself.");
+    reject(connect(runtime, graph, grid_node, 1, moved, 0), "A missing output was connected.");
+    reject(connect(runtime, graph, grid_node, 0, moved, 1), "A missing input was connected.");
+    const auto other_root = take(runtime.create(type<Graph>(runtime)));
+    const auto stranger = take(add_node(runtime, other_root.id(), type<Grid>(runtime)));
+    reject(connect(runtime, graph, stranger.id(), 0, moved, 0), "A node of another graph was connected.");
+    reject(set_display(runtime, graph, stranger.id()), "A node of another graph was displayed.");
+    take(connect(runtime, graph, line_node, 0, moved, 0));
+    require(take(inputs(runtime, moved)) == std::vector<Input>{{line_node, 0, 0}}, "A single input kept its old connection.");
+    take(connect(runtime, graph, grid_node, 0, moved, 0));
+    take(disconnect(runtime, line_node, 0, merged, 0));
+    require(take(inputs(runtime, merged)) == std::vector<Input>{{moved, 0, 0}}, "Disconnecting removed the wrong connection.");
+    reject(disconnect(runtime, line_node, 0, merged, 0), "A missing connection was disconnected.");
+    take(evaluator.evaluate());
+    auto alone = take(grid({3, 2}, 3, 4));
+    take(transform(alone, {1, 0, 0}, {}, {1, 2, 1}));
+    const std::vector<Reference> later{{String{"fixture/later"}, cube}};
+    require(same_instances(evaluator.output(), take(copy_to_points(take(Geometry::merge({&alone, 1})), later))),
+        "The output after disconnecting is wrong.");
+
+    // Removing a node disconnects its outputs and clears the display.
+    take(remove_node(runtime, graph, grid_node));
+    require(take(inputs(runtime, moved)).empty(), "Removing a node left a connection to it.");
+    take(remove_node(runtime, graph, copied));
+    require(take(contents(runtime, graph)).display == ObjectId{}, "Removing the display node left it displayed.");
+    take(evaluator.evaluate());
+    require(evaluator.output() == nullptr && evaluator.status(copied) == nullptr, "A removed display node is still evaluated.");
+    take(set_display(runtime, graph, moved));
+    take(evaluator.evaluate());
+    require(evaluator.output() && evaluator.output()->count(Layer::point) == 0, "An unconnected input was not empty geometry.");
+
+    // A zero budget caches nothing, so undoing a write evaluates again.
+    Evaluator uncached{runtime, graph_root, resources, 0};
+    take(uncached.evaluate());
+    write_vector(moved, translate, {5, 0, 0});
+    take(uncached.evaluate());
+    write_vector(moved, translate, {1, 0, 0});
+    take(uncached.evaluate());
+    expect(uncached, {{moved, {3, 0}}}, "A zero cache budget kept results.");
+}
+
 }
 
 int main() {
@@ -337,6 +566,7 @@ int main() {
         transform_by_usage();
         removal_merge_and_promotion();
         copy_to_points_and_publication();
+        graph_evaluation();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "procedural acceptance failed: %s\n", error.what());
         return 1;

@@ -4,7 +4,7 @@
 #include "foundation/string.hpp"
 #include "geometry/mesh.hpp"
 #include "math/math.hpp"
-#include "runtime/runtime.hpp"
+#include "runtime/reflection.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -13,10 +13,15 @@
 #include <variant>
 #include <vector>
 
+#include "procedural/geometry.gen.hpp"
+
 namespace atelier::procedural {
 
 // Detail has exactly one element. Instances are their own layer, not points.
-enum class Layer : std::uint8_t { point, vertex, primitive, detail, instance };
+AENUM(Name="procedural.Layer", DESC="几何的一层：point 点，vertex 图元的角，primitive 图元，detail 整个几何（只有一个元素），instance 实例。")
+enum class Layer : std::uint32_t { point, vertex, primitive, detail, instance };
+AENUM(Name="procedural.Reduce", DESC="把多个元素的属性合成一个值：first 取第一个，sum 求和，average 求平均。")
+enum class Reduce : std::uint32_t { first, sum, average };
 // How a transform changes a float vector column; see transform().
 enum class Usage : std::uint8_t { none, point, vector, normal, color };
 
@@ -51,7 +56,9 @@ struct PrimitiveRange { std::uint32_t first, count; };
 // test reads owner counts, so make columns unique on one thread before parallel writers
 // use them. Point positions are the point attribute P, which always exists. Topology and
 // instance columns are reserved: attribute bindings cannot reach them.
+ASTRUCT(Name="procedural.Geometry", DESC="点、顶点、图元、实例及各层属性构成的几何值。复制共享各列，写入时才复制。")
 class Geometry {
+    AGENERATED_BODY(Geometry)
 public:
     Geometry();
     static Result<Geometry> points(Array<math::Vector3> positions);
@@ -129,6 +136,8 @@ public:
     static Result<Geometry> merge(std::span<const Geometry> inputs);
 
     [[nodiscard]] static Usage conventional_usage(StringView name) noexcept;
+    // Bytes of the columns and topology this value holds, counting shared columns in full.
+    [[nodiscard]] std::size_t bytes() const noexcept;
 private:
     Attribute* mutable_find(StringView name) noexcept;
     template<Element T> Result<void> check(const Attribute& attribute, Layer layer) const {
@@ -154,5 +163,6 @@ private:
     Column<std::uint32_t> instance_references_;
     Column<math::Matrix4> instance_transforms_;
 };
+using Geometries = Array<Geometry>;
 
 }

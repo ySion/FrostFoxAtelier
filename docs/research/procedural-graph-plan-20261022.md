@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），尚未实施。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、实例发布、图与求值器，当前行为以[程序化模块](../modules/procedural/README.md)为准；自有语言节点、规范化 JSON、BVH 查询和 `--profile-procedural` 待做。
 
 ## 0. 结论
 
@@ -64,9 +64,10 @@ procedural.Geometry   原生记录，C++ 实现：按值语义，列级写时复
 ## 3. 节点、端口和参数对应到 Runtime 类型体系
 
 ```text
-procedural.Graph   原生对象：图设置为 AFIELD；隐藏强引用序列 nodes；图级暴露参数（§5.3）
-procedural.Node    原生对象基类：隐藏 inputs 观察引用序列（每个输入端口一槽，null 表示未连接）+ 隐藏 Array<u32> input_outputs
-  ├─ procedural.GeometryNode   C++ 黑箱节点：evaluate(const procedural.Geometry& in…, procedural.Geometry& out…)
+procedural.Graph   原生对象：图设置为 AFIELD（seed）；隐藏的节点强引用序列与 display 强引用槽；图级暴露参数（§5.3）
+procedural.Node    原生对象基类：隐藏的 inputs 强引用序列，每个连接一项，按输入端口排序；平行的非反射 C++ 数组记录（输入端口，上游输出号）
+  ├─ C++ 黑箱节点直接派生：evaluate(const procedural.Context&, const procedural.Geometry& in…,
+  │                                  const procedural.Geometries& 多输入, procedural.Geometry& out…) const
   └─ procedural.PointNode / PrimitiveNode / DetailNode   自有语言属性节点（类似 Houdini Wrangle）：
         evaluate(const procedural.Context& context, Array<T>& 写入列…, const Array<T>& 读取列…)
         宿主按参数名绑定该层的属性列：可写引用是输出列（不存在就按默认值创建），只读引用是输入列（缺失时节点报错）
@@ -92,7 +93,7 @@ class geo.Jitter : procedural.PointNode {
 - **点数由宿主固定**。属性节点只改元素，不改长度，这符合现行可写借用规则。撒点、删除、复制、合并这类改变点数的基元由 C++ 实现，L3 落地后迁到自有语言。
 - **evaluate 只读 self**：节点状态保存在求值器里，节点方法不写自己的字段。
 - **端口名**：来自 L5，每个代码版本重新读取。Runtime 对象里的连接按端口序号存储，所以兼容更新改了端口名，现有连接仍然有效，下次保存时写出新名字。文件里的连接按名字保存：加载时名字解析不到的连接按宽容加载保留并原样写回。C++ 节点的参数名为空时，不能作为端口，注册时拒绝。
-- **连接存在下游节点的输入槽**，用观察引用。改连接只给下游节点盖章；撤销所需的保活由编辑器历史持有的根负责。
+- **连接存在下游节点的 inputs 强引用序列中**（Runtime 只有强引用序列）。改连接只给下游节点盖章；图持有节点、节点持有上游，被删除的节点由编辑器历史持有的根保活；环在建立连接时拒绝。
 - **调用路径**：C++ 节点经 `Runtime::call`，自有语言节点经 `Program` 的 `类名.evaluate`，每个节点每次求值调用一次。原生 `evaluate` 是 const 接收者，调用不盖章；源码方法读 `self` 走 `Runtime::read`，也不盖章。宿主不在持有节点对象可写 `with_native` 的期间调用 evaluate。
 - **种子与确定性**：节点种子 = hash(图种子, 节点 `seed` 参数, 元素 `id`)，不使用 ObjectId 等非持久身份。哈希与随机函数是 L6 引擎源码库中算法固定、有文档的函数，语言不为它们增加内建。同样的输入得到同样的结果，但不承诺跨 CPU 逐位一致。
 - **内置节点的分发**：内置节点用自有语言编写，随引擎源码模块进入每个工程快照（L6）。P1 的验收先用夹具快照。
@@ -118,17 +119,20 @@ class geo.Jitter : procedural.PointNode {
 ```text
 宿主边界（编辑器帧内，操作符和编辑处理完之后、渲染准备之前）
  1. cursor_now = runtime.change_cursor()                  先取游标，再读取
- 2. 候选 = 图 / 节点 / 生成器中 changed_since(x, cursor_prev) 的对象；图被盖章时重建拓扑
- 3. 候选节点用 with_native<const T> 或 read 读参数与连接，算出本地键；本地键没变的是误报，丢弃
- 4. 按拓扑序：完整键 = H(类型名, 代码版本, 本地键, 各输入的完整键, 图设置与暴露参数值)
-    完整键变化的节点 → 先查缓存，未命中才执行 evaluate
- 5. 本次求值完成后，所有输出一起发布；cursor_prev = cursor_now
+ 2. 图在 cursor_prev 之后被写过：重读节点列表、display 和种子
+ 3. 新节点和 changed_since(节点, cursor_prev) 的节点：用 const 借用和 read 读参数与连接，算出本地键；本地键和连接都没变的是误报
+ 4. 有变化（或资源版本变了）时，从 display 按上游在前的顺序：
+    键 = 本地键（类型身份 + 公开字段内容）+ 图种子（只对带上下文的节点）+ 各连接的（端口, 上游输出号, 上游结果序号）
+    当前结果的键不变就沿用；否则先查缓存，未命中才执行 evaluate，得到新的结果序号
+ 5. 发布 display 的输出；cursor_prev = cursor_now
 ```
 
-- **写代号**：节点就是对象，粒度合适。读取一律用 const 借用或 `read`，求值器不能给自己盖章。节点状态（错误、耗时、统计）保存在求值器侧，按 ObjectId 索引，不写回节点。代码发布不盖章，所以代码版本写进键里。写代号不持久化，持久缓存只用内容哈希。
-- **缓存**：内存缓存按完整键寻址，以列为单位在字节预算内 LRU 淘汰；撤销把参数改回旧值时直接命中旧键。
+- **写代号**：节点就是对象，粒度合适。读取一律用 const 借用或 `read`，求值器不能给自己盖章。节点状态（错误、求值与命中次数）保存在求值器侧，按 ObjectId 索引，不写回节点。代码发布不盖章，所以自有语言节点接入时把代码版本写进键里。写代号不持久化，持久缓存只用内容哈希。
+- **键**：键是精确的字节串，相等就是内容相等，没有哈希碰撞；类型身份用已发布 `TypeInfo` 的地址，只在本 Runtime 内有效。每次执行 evaluate 得到新的结果序号，上游结果一变下游的键就变；内容相同的节点共享同一个结果。
+- **缓存**：内存缓存按键寻址，以条目为单位在字节预算内按最近使用淘汰；撤销把参数改回旧值时直接命中旧键。
+- **资源**：节点经 Context 解析的网格连同解析结果记在结果上，宿主的资源版本变化后重新解析核对，结果不同才重算。
 - **调度**：Runtime 线程上同步执行，有每帧时间预算，节点是最小单元。C++ 节点只读不可变的求值计划，可以移到工作线程；源码节点留在 Runtime 线程。是否这样做由实测决定。
-- **错误**：建立连接时拒绝成环。节点失败时，下游不求值，已发布输出保留上一版本。
+- **错误**：建立连接时拒绝成环。节点失败时，下游不求值，已发布输出保留上一版本；同一个键在资源版本不变时不重试。
 - **测量**：P1 提供 `--profile-procedural`，规模数字以实测为准。
 
 ## 5. 接入场景、身份与保存
@@ -218,7 +222,7 @@ class geo.Jitter : procedural.PointNode {
 
 | 阶段 | 内容 | 端到端验收（必要项） | 本线程工作量 | 依赖 |
 | --- | --- | --- | --- | --- |
-| P1 图与几何核心 | Geometry、Graph/Node、求值器（写代号、键、列级 LRU）、规范化 JSON v1；C++ 黑箱：网格导入、Grid/Line 点、Scatter（含最小间距）、Transform、Attribute Promote、按 bool 列删除、Merge、Copy to Points、实例集合发布（分块、丢掉退化实例、逐块复用；矩阵判据从 renderer 提到 math 共用，渲染负责人审）、BVH 批量查询；自有语言节点：Jitter、属性随机、属性噪声、Remap、法线对齐；`--profile-procedural` | 新增无窗口目标 `procedural_acceptance`：①两个面积为 1 和 3 的三角形，密度取 4，使面积×密度为整数：两个三角形上的点数分别正好是 4 和 12，点都在各自的三角形内；同种子结果相同，换种子结果不同；只移动第二个三角形时，第一个三角形上的点不变；开启最小间距 d 后，任意两点距离都 ≥ d；②Grid(5×4)（带 N、Cd）→ Transform（旋转、非均匀缩放加平移）：P 与公式逐点一致，N 等于逆转置变换后归一化的结果（与只用线性部分的结果不同），Cd 不变；对导入的网格做镜像变换后，每个图元的顶点顺序反转；③按 bool 列删除后，点数与独立推导的结果一致；④Copy to Points：点带 orient、pscale 和非均匀 scale 时，实例矩阵等于 S·O·T；没有 orient 时按 N 与 up 对齐；`variant` 选择网格；按（网格，块）分组后，各组实例数正确，跨块边界的实例落在正确的块里；pscale = 0 和压扁成面的实例在发布时被丢掉并计数，点属性含 NaN 时 Copy to Points 失败、保留旧输出；只改变一个块内实例的参数修改，重新发布后其他块的 shared_ptr 不变；⑤分别经 `Runtime::write`、`with_native` 和源码 JIT 写入改 Jitter 参数，都只重算 Jitter 及其下游（核对调用次数），撤销后零次重算；⑥兼容热更 Jitter 方法体，只重算该类型的节点及下游；⑦保存后在新 Runtime 重开，输出相同，再次保存字节相同；未知节点类型被保留；⑧成环被拒绝，节点越界失败时保留旧输出 | 14–18 人日 | L5、L4、L1、L2 |
+| P1 图与几何核心 | Geometry、Graph/Node、求值器（写代号、精确内容键、条目级 LRU）、规范化 JSON v1；C++ 黑箱：网格导入、Grid/Line 点、Scatter（含最小间距）、Transform、Attribute Promote、按 bool 列删除、Merge、Copy to Points、实例集合发布（分块、丢掉退化实例、逐块复用；矩阵判据从 renderer 提到 math 共用，渲染负责人审）、BVH 批量查询；自有语言节点：Jitter、属性随机、属性噪声、Remap、法线对齐；`--profile-procedural` | 新增无窗口目标 `procedural_acceptance`：①两个面积为 1 和 3 的三角形，密度取 4，使面积×密度为整数：两个三角形上的点数分别正好是 4 和 12，点都在各自的三角形内；同种子结果相同，换种子结果不同；只移动第二个三角形时，第一个三角形上的点不变；开启最小间距 d 后，任意两点距离都 ≥ d；②Grid(5×4)（带 N、Cd）→ Transform（旋转、非均匀缩放加平移）：P 与公式逐点一致，N 等于逆转置变换后归一化的结果（与只用线性部分的结果不同），Cd 不变；对导入的网格做镜像变换后，每个图元的顶点顺序反转；③按 bool 列删除后，点数与独立推导的结果一致；④Copy to Points：点带 orient、pscale 和非均匀 scale 时，实例矩阵等于 S·O·T；没有 orient 时按 N 与 up 对齐；`variant` 选择网格；按（网格，块）分组后，各组实例数正确，跨块边界的实例落在正确的块里；pscale = 0 和压扁成面的实例在发布时被丢掉并计数，点属性含 NaN 时 Copy to Points 失败、保留旧输出；只改变一个块内实例的参数修改，重新发布后其他块的 shared_ptr 不变；⑤分别经 `Runtime::write`、`with_native` 和源码 JIT 写入改 Jitter 参数，都只重算 Jitter 及其下游（核对调用次数），撤销后零次重算；⑥兼容热更 Jitter 方法体，只重算该类型的节点及下游；⑦保存后在新 Runtime 重开，输出相同，再次保存字节相同；未知节点类型被保留；⑧成环被拒绝，节点越界失败时保留旧输出 | 14–18 人日 | L5、L4、L1、L2 |
 | P2 接入场景 | 生成器组件、presentation 输出实例集合、渲染器实例化（按 §5.1 的对齐结论）、暴露参数与实例覆盖（先交契约方案）、Cache、冻结、Bake、Play 加载 | 扩展 `world_acceptance` 或 `procedural_acceptance`：集合数与每实例世界矩阵正确（生成器 Entity 带旋转和非均匀缩放）；改覆盖值后集合更新、版本前进，静止时版本不变；保存场景后重开结果相同，删掉 Cache 后重新生成也相同；冻结后改图或改代码不影响输出；Bake 产生的 Entity 数量与矩阵一致且可撤销；渲染器 GPU 读回核对实例画面；含 pscale = 0 实例的生成器正常出图、不触发整帧拒绝；场景中其他项增删时，集合的常驻区段不重写；改一个只影响一个块的参数，其他块的 stable_key 不变、常驻区段不重写；附性能负责人确定的测量 | 生成器、格式与场景接入 6–9 人日；渲染器实例化（字段、常驻区段、shader 取法、阴影区间、历史 id、统计、拾取，TLAS a）8–12 人日；按实测追加：TLAS b 5–8 人日，逐实例 GPU 剔除与 LOD 6–10 人日 | 渲染、World、性能、编辑器负责人 |
 | P3 网络编辑器 | G1–G6、Geometry Spreadsheet、视口点显示 | 新增窗口目标 `editor_graph_acceptance`，持锁运行：经操作符和合成拖拽建图连线；在 Parameters 改参数；导出 PNG，核对连线中点像素和视口实例；核对表格行数；撤销/重做；保存后重开；`graph.inspect` 的统计正确 | 14–20 人日 | L6；编辑器与渲染负责人审 |
 | P4 封装与迁移 | 子图作为节点、从选中节点创建数字资产；L3 落地后把改变点数的基元迁到自有语言 | 扩展 `procedural_acceptance`：子图展开前后结果相同；迁移后输出与 C++ 版本一致 | 6–10 人日 | L3 |
@@ -242,4 +246,4 @@ class geo.Jitter : procedural.PointNode {
 
 ## 附：拟在 P1 交付时加入 CONTEXT.md 的术语
 
-**程序化图（Procedural Graph）**：一组节点及其连接，求值后产生几何或生成资源；图资产具有持久身份，节点是同一 Runtime 中的对象。**几何（Geometry）**：点、顶点、图元、实例与各层属性构成的值，属性列是 Runtime 数组；点和顶点不是对象，也不是 Entity。**节点（Node）**：类型来自原生注册或语言编译的图对象，公开字段是它的**参数（Parameter）**，`evaluate` 的引用参数是它的**端口**或属性列绑定。**连接（Connection）**：下游输入端口对上游节点某个输出的观察引用。**求值（Evaluation）**：按内容键判定并执行脏节点的过程，即 Houdini 的 cook。**生成器（Generator）**：挂在 Entity 上、引用图资产并保存暴露参数覆盖值的组件，持有最近发布的实例集合。**冻结（Freeze）**：固定生成结果，图与代码之后再变化也不重算，直到解冻。
+**程序化图（Procedural Graph）**：一组节点及其连接，求值后产生几何或生成资源；图资产具有持久身份，节点是同一 Runtime 中的对象。**几何（Geometry）**：点、顶点、图元、实例与各层属性构成的值，属性列是 Runtime 数组；点和顶点不是对象，也不是 Entity。**节点（Node）**：类型来自原生注册或语言编译的图对象，公开字段是它的**参数（Parameter）**，`evaluate` 的引用参数是它的**端口**或属性列绑定。**连接（Connection）**：下游输入端口对上游节点某个输出的引用，由下游节点持有。**求值（Evaluation）**：按内容键判定并执行脏节点的过程，即 Houdini 的 cook。**生成器（Generator）**：挂在 Entity 上、引用图资产并保存暴露参数覆盖值的组件，持有最近发布的实例集合。**冻结（Freeze）**：固定生成结果，图与代码之后再变化也不重算，直到解冻。

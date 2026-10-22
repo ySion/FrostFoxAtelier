@@ -108,6 +108,19 @@ Usage Geometry::conventional_usage(StringView name) noexcept {
     return Usage::none;
 }
 
+std::size_t Geometry::bytes() const noexcept {
+    std::size_t total = (vertex_points_->size() + (offsets_ ? offsets_->size() : 0) + instance_references_->size()) *
+        sizeof(std::uint32_t) + instance_transforms_->size() * sizeof(math::Matrix4) + references_.size() * sizeof(Reference);
+    for (const auto& attribute : attributes_)
+        total += std::visit([](const auto& column) {
+            using T = typename std::remove_cvref_t<decltype(*column)>::Value;
+            std::size_t size = column->size() * sizeof(T);
+            if constexpr (std::same_as<T, String>) for (const auto& text : *column) size += text.size();
+            return size;
+        }, attribute.data);
+    return total;
+}
+
 Result<void> Geometry::admit_name(StringView name) {
     const auto value = name.std_view();
     const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; };

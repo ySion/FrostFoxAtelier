@@ -38,7 +38,6 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
 // result is not finite; the geometry is then left partly transformed.
 Result<void> transform(Geometry& geometry, math::Vector3 translate, math::Quaternion rotation, math::Vector3 scale);
 
-enum class Reduce : std::uint8_t { first, sum, average };
 // Moves an attribute to another layer. Each target element combines the source
 // elements it touches (a point the vertices referring to it, a primitive its vertices or
 // their points, detail everything); an element touching none takes the default. Sum and

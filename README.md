@@ -16,6 +16,7 @@
 | Runtime / JIT 诊断 | 按需调用计数与计时、GC/拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
 | Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 10 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
+| 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、撒点/变换/Promote/Copy to Points 等 C++ 操作、实例按块发布；由 Runtime 对象构成的节点图与按内容键缓存的增量求值；尚未接入场景与编辑器 | [程序化模块](docs/modules/procedural/README.md) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -114,7 +115,7 @@ debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 
 
 CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单，总入口 `acceptance` 依赖两者，只供手动排查，不是交付或集成要求。直接运行 CMake 目标不取得跨工作树锁，也没有脚本的逐目标超时保护和验证级别设置；必要测试应使用脚本。
 
-- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、物理、布局、生产 UI、文档、恢复、材质、物理工程、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
+- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、程序化、物理、布局、生产 UI、文档、恢复、材质、物理工程、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
 - `acceptance_window`：RHI、Renderer、Control 与全部自动化编辑器窗口目标。先 CPU 后 GPU/窗口的混合目标整体归此层；Ninja console pool 保持串行，脚本也逐目标调用构建命令。Renderer 每个入口是一个目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，如 `renderer_acceptance_scene_lit_temporal`），各自一个进程和窗口，限时 1800 秒；`renderer_acceptance` 汇总全部入口，只供手动运行。
 
 无窗口目标通过 `atelier_headless_acceptance` 注册，自有临时文件使用 `out/<配置>/acceptance-headless/<目标>/temp/`，日志为同目录 `output.log`。原有工程证据和 Cache 保留各自专用目录；只读字体等仍从构建目录读取。`editor_physics_project_acceptance` 通过 `__FILE__` 找到源码夹具，加载可能写入其 Cache，无法只靠工作目录隔离，因此放入 `acceptance_source_fixture` 串行 job pool。job pool 不跨 Ninja 实例同步，脚本按配置依次执行无窗口层；不要对同一检出并发启动两个门禁或两个配置的该夹具验收。
