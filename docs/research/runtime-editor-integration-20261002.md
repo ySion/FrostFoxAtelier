@@ -31,7 +31,7 @@ cmake --build --preset release --target atelier_editor world_acceptance editor_d
 
 World 消费者覆盖真实 JIT 更新同一派生组件、依赖与 TRS、任务取消、对象身份撤销、GC 生命周期和失败边界。编辑器文档消费者覆盖名称/字段历史、成员关系、退役与关闭。这些场景覆盖本次类型注册/发布和源码执行链与现有消费者的结合点。
 
-新日志为 `out/runtime-editor-integration-20261002/dev.log` 和 `release.log`，产物与日志校验值见同目录 `manifest.json`。Runtime 冻结版本的 Source、Business/JIT、Reflection/CLI 完整验收复用交付证据；字段组合的原验收入口与证据说明见 [源码类型声明](../source-type-declarations.md#值组合增量)。
+新日志为 `out/runtime-editor-integration-20261002/dev.log` 和 `release.log`，产物与日志校验值见同目录 `manifest.json`。Runtime 冻结版本的 Source、Business/JIT、Reflection/CLI 完整验收复用交付证据；字段组合的原验收入口与证据说明见 [源码类型声明](../source-type-declarations.md#值字段组合)。
 
 ## 窗口验收边界
 

@@ -4,7 +4,7 @@
 
 状态：**已完成 Release 正式构建实测**，`ATELIER_BUILD_JIT_ACCEPTANCE=OFF`。程序退出码为 0，336 个时间样本、48 组汇总及 37 条资源记录均完成校验，末尾有 `complete` 记录，stderr 为空。
 
-证据：`out/review/runtime-stage-measurements/release.jsonl`、`out/review/runtime-stage-measurements/release.stderr.log`。JSONL SHA-256 为 `746DDB416D04E7D3665ACCA485E0CAABA9FFA816E6C351AAC97F6384052DC2B4`；测量源码 SHA-256 为 `11EF9881D72A38EFE1FEF7CFC7954BFEABE29E51DDC898A01C33A040A0C4DE42`。这份结果对应本次源码快照；后续重跑应另存证据，不能覆盖后仍沿用本页数字。
+这些数字对应 2026-09-28 的源码；代码变化后应重跑并替换本页数字，不沿用旧值。
 
 ## 实测结论
 

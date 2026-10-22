@@ -48,7 +48,7 @@ Runtime 对象字段可按值传给助手。对象字段借用需要 Runtime 原
 
 async 公开入口可调用同步助手，助手退出后才允许 yield。String/Array 和一般拥有型记录仍限定同步执行，不能通过内部调用进入 async 入口；数学局部可跨 yield，数学借用保持同步限制。取消挂起入口时，所有助手帧均已退出，只需清理持久入口帧及其保留的对象根。
 
-当前没有递归、跨模块调用、内部 async 调用、函数值、跨类动态分派、String/Array/资源记录按值返回或 async 聚合参数/结果；内建数学值与 plain record 支持同步按值返回。普通记录按值签名同时要求 Runtime `plain_value` 与保持借用安全的 `can_own` 资格；两者独立，编译时检查。公开结果沿同一 `invoke` 的 `ValueOutput` 交付，并要求准确 Runtime 类型身份。源码 enum/struct 已在[类型声明](source-type-declarations.md)阶段接入。递归需要按实际激活管理 GC 根帧，跨模块调用需要跨版本依赖契约；这些能力不由当前固定槽区间隐式授权。
+当前没有递归、跨模块调用、内部 async 调用、函数值、跨类动态分派、String/Array/资源记录按值返回或 async 聚合参数/结果；内建数学值与 plain record 支持同步按值返回。普通记录按值签名同时要求 Runtime `plain_value` 与保持借用安全的 `can_own` 资格；两者独立，编译时检查。公开结果沿同一 `invoke` 的 `ValueOutput` 交付，并要求准确 Runtime 类型身份。源码 enum/struct 见[类型声明](source-type-declarations.md)。递归需要按实际激活管理 GC 根帧，跨模块调用需要跨版本依赖契约；这些能力不由当前固定槽区间隐式授权。
 
 ## 项目快照与多个公开入口
 
@@ -87,6 +87,6 @@ auto tick = program.entry("game.Move.tick");
 - 入口显式选择、缺失/歧义入口拒绝、冻结入口拒绝切换、只读/结构修改/递归/async 调用拒绝、传递效果拒绝及未调用助手的隔离。
 - 私有助手名称/顺序/签名变化的整模块替换、旧租约执行，以及挂起入口恢复时继续调用旧助手。
 
-本阶段 dev/release 均已通过上述模块场景及原有源码、JIT 平台和业务验收；相关反射、World 和无窗口编辑器文档消费者也已使用同一工作树配套重建并通过。可通过 `jit_acceptance` 运行模块与 JIT 场景。日志为 `out/function-modules-final-dev.log` 与 `out/function-modules-final-release.log`。没有测量本阶段的业务吞吐收益。
+模块场景随 `source_acceptance` 和 `jit_acceptance` 运行。
 
 项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、具名多入口、原子更新、旧租约、入口重排、错误文件定位、无入口语义检查，以及混合借用入口对 GC 的影响。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。

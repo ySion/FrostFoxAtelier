@@ -111,5 +111,3 @@ cmake --build --preset dev --target atelier_source_minimal
 ```
 
 这些验收证明行为与计数契约；不提供诊断版本的性能提升结论。插桩会增加指令、分支和存储，也可能影响 LLVM 优化，应使用普通版本做最终性能测量。
-
-最近验收：2026-10-09，dev / release 的 Source 公共消费者（含本页诊断场景与连续会话）、JIT 贯通和 Runtime 端到端验收均通过。本机完整日志为 `out/diagnostics-{source,jit,runtime}-{dev,release}.log`。

@@ -1,6 +1,6 @@
-# 精悍自有 STL 阶段记录与后续方向
+# 精悍自有 STL：依据与后续方向
 
-研究及收口日期：2026-10-04。研究起点为 `bba15954ee53bd0e3f5203a86e55611267828536`；本记录确认的 STL 交付为已发布主线提交 `a57cb0ca5cd15aef61e79cef42513105b1c9bd3e`。状态：首片 Map/Set 与两个业务消费者已落地，并完成生命周期复核；第二、三段仍为后续方向。本文保存设计依据和阶段边界，现行接口唯一依据是[基础库文档](../foundation.md)，语言能力以最终集成基线的 [LANGUAGE.md](../../LANGUAGE.md) 为准。此次收口仅更新文档，复用已有验收证据，没有新增生产改动或性能采样。
+研究日期：2026-10-04。Map/Set 与两个业务消费者已落地；第二、三段是候选方向，没有排期。本文保存设计依据，现行接口以[基础库文档](../foundation.md)为准，语言能力以 [LANGUAGE.md](../../LANGUAGE.md) 为准。
 
 研究覆盖工业容器、哈希表、本地消费者与共享语言契约，并经 gpt-6.1-sol 专家复核。外部事实以一手文档、固定源码为依据；UE 完整官方源码未读取，所述 UE 行为来自公开官方文档/API。下文明确区分已交付范围与后续建议，外部基准不作为本项目性能证据；补充事实与取舍见[工业依据记录](foundation-stl-industrial-research.md)。
 
@@ -79,11 +79,9 @@ Hash 的首片可复用已选后端的成熟字节算法，通过项目的 Strin
 
 生命周期复核已修复四类问题：完整检查比较结果到 bool 的异常转换；非透明查询只接受实际键类型；有状态 Hash/Equal 移动后为源恢复默认策略；Array/Map/Set 移动赋值先接管来源再释放旧内容，避免来源由目标间接拥有时提前析构。[资源目录验收](../../acceptance/foundation/associative.cpp)与[生命周期验收](../../acceptance/foundation/lifecycle.cpp)保留了反例及幂等、边界和失败恢复场景。
 
-STL 交付在主目录的 Dev/Release Foundation、reflection（含 CLI）、source、World、editor_document 端到端验收均已通过，正式 atelier_editor 双配置构建通过。Dev editor_document 曾遇到一次目录 rename 访问拒绝，单独重跑通过，未修改生产逻辑规避。上述证据不等于 GPU/原生窗口验收；Project 窗口确认链和 Unicode 剪贴板偶发问题仍保留真实待验状态。最终阶段集成的额外验证由主持与应用记录，不由本研究稿推定完成。
-
 ankerl v5 最小索引为 4 组、352 字节，空表首插入才分配；大量很小的表需要观察实际内存。该数字为固定源码推导，尚未在本项目测量。只有首选候选表现明显不足才增加有针对性的 Boost flat 对照，不例行建立多后端基准工程。[最小索引源码](https://github.com/martinus/unordered_dense/blob/v5.3.0/include/ankerl/unordered_dense.h#L1942)
 
-### 第二段：逐个完整模块接管（候选，未包含于 a57cb0c）
+### 第二段：逐个完整模块接管（候选）
 
 | 完整迁移片 | 接管内容 | 保留的关键行为 |
 | --- | --- | --- |

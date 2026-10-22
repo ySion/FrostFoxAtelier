@@ -83,7 +83,7 @@ uint process(const gameplay.Batch& input) {
 - 准备时不发布类型、GC 忙状态重试、函数或定义失败、布局循环、只读拒绝、过期候选与外部目录变化。
 - 已发布定义冻结、声明重排、多个独立模块追加类型、创建对象后随代码更新追加新类型、删除已发布类型的拒绝、旧租约以及关闭代码后类型存活。
 
-### 值组合增量
+### 值字段组合
 
 [值字段消费者](../acceptance/source/value_fields.cpp)沿同一 `source_acceptance` 入口验证：
 
@@ -93,4 +93,4 @@ uint process(const gameplay.Batch& input) {
 - 借用结构修改、只读写入、含 GC 引用字段、缺少安全值操作能力、未注册数组及跨挂起拥有值的拒绝。
 - 创建对象后的兼容代码替换及旧代码租约对同一类型的继续使用。
 
-运行入口为 `source_acceptance`，也包含在 `jit_acceptance` 中。2026-10-02 的 dev/release 源码公共消费者、JIT 平台/业务及反射（含 CLI）端到端验收均通过；日志为 `out/value-fields-final-dev.log` 与 `out/value-fields-final-release.log`，新增场景输出 `Source value fields: PASS`。本增量没有改动 Runtime 的存储实现，也没有测量性能收益；图形窗口和 GPU 验收不在本次范围内。
+运行入口为 `source_acceptance`，也包含在 `jit_acceptance` 中；该场景输出 `Source value fields: PASS`。

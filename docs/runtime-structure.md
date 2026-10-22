@@ -6,7 +6,7 @@
 
 当前类型与对象身份、引用根和执行准入都归同一 Runtime；源码前端、LLVM 降低和宿主桥接承担不同转换职责。没有发现另建对象身份、协程 GC 或平行业务调度器的路径。
 
-完整源码执行链现在由正式宿主库 `atelier_source` 和隔离 DLL `atelier_source_backend` 提供。生成帧只预留接收者槽，不认识验收机器快照。公共接口使用 Runtime Scalar 值与 Argument 借用，编译分类和 DLL 位表示留在实现内。按调用诊断由消费者通过 `Diagnostics` 持有，计数、源码位置与产物遵循[诊断合同](source-diagnostics.md)。
+完整源码执行链由正式宿主库 `atelier_source` 和隔离 DLL `atelier_source_backend` 提供。生成帧只预留接收者槽，不认识验收机器快照。公共接口使用 Runtime Scalar 值与 Argument 借用，编译分类和 DLL 位表示留在实现内。按调用诊断由消费者通过 `Diagnostics` 持有，计数、源码位置与产物遵循[诊断合同](source-diagnostics.md)。
 
 ## 模块与实际构建归属
 
@@ -23,7 +23,7 @@
 | 调用诊断 | [diagnostics.hpp](../src/source/diagnostics.hpp)、[diagnostics.cpp](../src/source/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
 | 源码调试 | [debugger.hpp](../src/source/debugger.hpp)、[debugger.cpp](../src/source/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
 | 端到端消费者 | [公共最小消费者](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[连续会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 公共消费者使用正式接口，连续会话另读取分配器和 OS 统计；完整验收通过内部接缝检查 raw ABI 和故障路径，均使用同一正式实现 |
-| 阶段测量 | [measure.cpp](../acceptance/source/measure.cpp)：正式接口的有界时间与资源样本 | 显式目标 `atelier_source_measure`，不随普通构建或验收运行此专项目标；不向生产层加入统计状态 |
+| 测量 | [measure.cpp](../acceptance/source/measure.cpp)：正式接口的有界时间与资源样本 | 显式目标 `atelier_source_measure`，不随普通构建或验收运行此专项目标；不向生产层加入统计状态 |
 
 构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。`ATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收与后端故障注入，正式库及 `source_acceptance` 保持可用。
 
@@ -119,10 +119,10 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 - 显式根槽接入已有 GC、引用屏障和撤销协议；当前语言尚无通用记录值帧，不预先引入 statepoint 或另一个根表。
 - 每个发布 Version 独立拥有编译单元，活动调用、协程与租约保持该版本的恢复/清理入口及展开信息。共享 LLJIT 会改变符号空间、错误归属和独立退休责任，目前没有采用。
-- 发布检查 Runtime 静止，挂起帧保留旧版本；安全点推进 GC，不在轮询中暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移需由具体增量另行定义。
+- 发布检查 Runtime 静止，挂起帧保留旧版本；安全点推进 GC，不在轮询中暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
 - 原生异常在受控边界转成状态，生成代码显式清理后提交结果。Windows 展开表服务当前栈回溯与代码寿命，不授权 C++ 异常穿越任意生成帧。
 
-工业来源及历史对照见[JIT 研究](research/jit-industrial-research.md)、[协程研究](research/coroutine-runtime-research.md)和[早退清理实验](research/jit-cleanup-experiment.md)。这些材料不另维护执行合同。
+工业来源见 [JIT 研究](research/jit-industrial-research.md)和[协程研究](research/coroutine-runtime-research.md)，它们不另维护执行合同。
 
 ## 源码类型生产
 
@@ -144,18 +144,15 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 | 项目 | 现状与实际影响 | 处理时机与最小方向 |
 | --- | --- | --- |
-| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 以[阶段测量](research/runtime-stage-measurements.md)及连续运行证据评估消费者预算；当前没有已证明需要池化、根表替换或退休队列的负载 |
+| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 以[测量记录](research/runtime-stage-measurements.md)和连续会话验收评估消费者预算；当前没有已证明需要池化、根表替换或退休队列的负载 |
 | 源码调试宿主接入 | 核心已有源码断点、单步、只读局部值和源码调用栈；平台继续提供动态展开信息 | 编辑器面板与 Control 调试指令仍处于[接入方案](modules/editor/control.md#源码调试接入待实现)阶段；核心能力与 C++ 单步、变量写入等边界见[调试合同](source-debugger.md) |
 
-`await`、跨模块调用、递归、多对象类型环境、对象引用参数、资源记录/容器按值调用和布局迁移属于尚未实现的能力；plain record 同步按值参数/结果、原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务。MLIR、有栈协程和并发调度也没有因本次结构核查获得新增实施范围。
+`await`、跨模块调用、递归、多对象类型环境、对象引用参数、资源记录/容器按值调用和布局迁移属于尚未实现的能力；plain record 同步按值参数/结果、原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务；MLIR、有栈协程和并发调度没有实施计划。
 
-正式接口的成本也需保留可见性：公共 Scalar 参数最多八项时在栈上转码，更多参数按需分配；冷端 Candidate 为隐藏内部状态增加一份独立存储，Request 私有构造目前使用独立 shared_ptr 控制块。迁移没有证明吞吐提升，协程已有的固定拥有链仍保持原有分配职责。
+正式接口的成本也需保留可见性：公共 Scalar 参数最多八项时在栈上转码，更多参数按需分配；冷端 Candidate 为隐藏内部状态增加一份独立存储，Request 私有构造使用独立 shared_ptr 控制块。
 
-本次迁移调整了模块与构建归属、公共宿主接口及私有生成槽布局；类型身份、调用结果、取消、发布和版本清理语义保持原契约。内部 ABI 不承诺旧布局的二进制兼容，宿主与后端随同一次构建更新。
+内部 ABI 不承诺二进制兼容，宿主与后端随同一次构建更新。
 
-## 证据与维护入口
+## 维护入口
 
-- 模块迁移的历史验收见[阶段记录](research/runtime-stage-closeout.md#源码模块迁移的历史证据)。`out/review/runtime-structure/verification.json`保留迁移前的历史快照，不代表当前路径。
-- 2026-09-28 的关停、资源基线和验收结果见[历史阶段记录](research/runtime-stage-closeout.md)；可重跑的测量代码随源码维护，原始日志保存在本机 `out/review/`。
-- ABI 结果诊断与 async 绑定的[关闭记录](research/runtime-stage-closeout.md#已关闭的历史缺陷)保留原始证据；它们不再是现行缺陷。
 - 当前行为更新 `runtime-model.md`，语法统一更新根目录 `LANGUAGE.md`，本页维护结构与已知边界。研究文件不作为另一份当前实现清单。
