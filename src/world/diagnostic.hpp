@@ -18,7 +18,7 @@ enum class DiagnosticKind : std::uint8_t {
     behavior_failed, task_failed, invalid_value, degenerate_value, conflict,
     command_rejected, observer_failed,
     unknown_type, unknown_field, unknown_key, mismatch, converted,
-    reference_dropped, missing_resource, unreadable_resource,
+    reference_dropped, missing_resource, unreadable_resource, capacity_exceeded,
 };
 
 enum class DiagnosticPhase : std::uint8_t {
@@ -51,6 +51,7 @@ enum class DiagnosticPhase : std::uint8_t {
     case DiagnosticKind::reference_dropped: return "reference_dropped";
     case DiagnosticKind::missing_resource: return "missing_resource";
     case DiagnosticKind::unreadable_resource: return "unreadable_resource";
+    case DiagnosticKind::capacity_exceeded: return "capacity_exceeded";
     }
     return "unknown";
 }

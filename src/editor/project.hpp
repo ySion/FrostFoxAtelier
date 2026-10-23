@@ -29,6 +29,7 @@ public:
     static Result<Project> create(const std::filesystem::path&);
     static Result<Project> open(const std::filesystem::path&);
     static bool is_texture_path(const std::filesystem::path&);
+    static bool is_sky_path(const std::filesystem::path&);
     static bool is_scene_path(const std::filesystem::path& path) {
         return !path.empty() && path.extension()==L".scene" &&
             (*path.begin()==L"Content" || *path.begin()==L"Examples");
@@ -44,6 +45,8 @@ public:
     Result<MeshAsset> mesh(std::string_view);
     Result<std::string> import_mesh(const std::filesystem::path&);
     Result<TextureAsset> texture(std::string_view);
+    // A Radiance .hdr sky asset; the same key returns the same map until refresh sees the file change.
+    Result<SkyAsset> sky_map(std::string_view);
     Result<MaterialAsset> material(std::string_view);
     Result<std::string> import_texture(const std::filesystem::path&);
     Result<std::string> create_material(const std::filesystem::path&,const MaterialAsset& = {});
@@ -67,6 +70,7 @@ private:
     std::uint64_t revision_{};
     std::unordered_map<std::string,std::size_t> mesh_entries_;
     std::unordered_map<std::string,material::ImageRef> textures_;
+    std::unordered_map<std::string,rendering::SkyMapRef> sky_maps_;
     struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; };
     std::unordered_map<std::string,CachedMesh> meshes_;
     ObjImageCache images_;

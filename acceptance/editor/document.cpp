@@ -94,6 +94,9 @@ int main(int argc, char** argv) {
         if ((argc == 5 || argc == 6) && std::string_view(argv[1]) == "--profile-scene-cpu") {
             profile_scene_cpu(argv[2],argv[3],argv[4],argc==6?std::filesystem::path(argv[5]):std::filesystem::path{});return 0;
         }
+        if (argc == 5 && std::string_view(argv[1]) == "--profile-physics-cpu") {
+            profile_physics_cpu(argv[2],argv[3],argv[4]);return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "--profile-ui-reload") {
             profile_ui_reload(argv[2]);
             return 0;
@@ -104,7 +107,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         // Each check runs once in the acceptance gate: a mode run by its own target is not repeated here.
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --examples | --physics-examples | --physics-test-project | --textured-obj | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --examples | --physics-examples | --physics-test-project | --textured-obj | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json | --profile-ui-reload output.csv]");
         stage="project document";verify_project_document();
         stage="declarative parameters";verify_declarative_parameters();
         stage="tooltip DSL";verify_tooltip_dsl();

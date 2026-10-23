@@ -53,7 +53,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 参数和坐标
 
-材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v7、旧版兼容读取、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
+材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v8、旧版兼容读取、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
 
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
@@ -170,7 +170,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 `atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。性能表、Control 快照的结构验收由上文的 `--acceptance-surfaces` 承担。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此测量模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
 
-在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 同时记录文件中的 `source_world`（v6 的 `world` 段，v7 为 null）和经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null；报告 schema v4）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
+在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 同时记录文件中的 `source_world`（v6 的 `world` 段，v7 起为 null）和经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null；报告 schema v4）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
 
 普通启动中的 `--scene-lit-camera` 会为未保存探针体积的场景自动拟合 DDGI，因此普通窗口与此测量的 World 配置可能不同。需要保留保存参数的交互诊断时，正常打开工程和 Scene 后通过 Control `camera.look_at` 设置相机，并检查实际 World 值。
 
@@ -189,6 +189,8 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 ### 不创建 GPU 的场景 CPU 定位
 
 `atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量 World 几何/灯光提取、材质 Surface、SceneSnapshot 的静止帧（`scene_snapshot`，不重建条目）与变化帧（`scene_snapshot_changed` 与 `scene_snapshot_changed_50`，每个样本经 Runtime 写入交替移动 1 个或 50 个叶网格 Entity，计时包含这些写入），以及两种布局的 Workspace 描述与 DSL 提交。每项预热 20 次、采样 121 次，每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95；与 Play 进程一样，`play_start`/`play_update`/`play_stop` 在从同一源文件另行加载的副本上运行，含动态刚体的场景也不改变被测文档。报告（schema v2）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
+
+`atelier_editor_document_acceptance --profile-physics-cpu <工程目录> <相对Scene路径> <新建绝对输出.json>` 在 Play 副本上以 1/60 s 的帧逐帧推进（每帧一个固定步），直到连续 120 帧没有活动刚体或满 1800 帧，按帧结束时是否仍有活动刚体把帧分为 active / sleeping 两组，分别报告 `physics.step`、`physics.reconcile`、`physics.solve`、`physics.write_back` 和每帧之后 `SceneSnapshot::refresh` 的中位数与 P95；另报 Play 启动耗时 `start_ms`，以及前 5 帧各自的 step 与 solve（`first_frames`），开局建树这类只出现在前几帧的开销在中位数里看不到。它只是测量入口，数值不作为通过条件。
 
 报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 Image 身份和 sRGB 模式计数的纹理数；纹理表大小额外包含默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
 

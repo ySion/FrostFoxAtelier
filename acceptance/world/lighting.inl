@@ -349,6 +349,28 @@ void environment_and_group_writes() {
     take(world.set_failure_policy(w::FailurePolicy::isolate));
     take(world.write(environment.id(),admitted_paths[0],1.f));
     require(take(scene.environment()).sky_color==std::array{1.f,1.f,1.f},"Repairing the Environment did not restore its settings.");
+    // The sky map is a hidden key and the map it resolved to, set only as a pair.
+    require(!runtime.find_field(types.environment_component,"sky_map"),"The sky map key is addressable as a field.");
+    const std::array<float,6> texels{1.f,1.f,1.f,4.f,4.f,4.f};
+    const auto sky=std::make_shared<const atelier::rendering::SkyMap>(2u,1u,std::span<const float>(texels));
+    reject(p::set_sky_map_binding(runtime,environment.id(),{"",sky}),"A sky map without its asset key was accepted.");
+    reject(p::set_sky_map_binding(runtime,environment.id(),{std::string("sky\0key",7),{}}),"A sky map key holding NUL was accepted.");
+    take(p::set_sky_map_binding(runtime,environment.id(),{"project/sky",sky}));
+    take(world.write(environment.id(),path("sky_rotation"),200.f));
+    const auto bound=take(p::read_sky_map(runtime,environment.id()));const auto lit=take(scene.environment());
+    require(bound.source=="project/sky" && bound.resolved==sky && lit.sky_map==sky && lit.sky_rotation==180.f,
+        "The sky map binding or the clamped sky rotation did not reach the World settings.");
+    std::optional<Result<void>> nested_sky;
+    take(world.add_admission(types.environment_component,[&](const w::World&,std::span<const ObjectId> candidates)->Result<void> {
+        if(!nested_sky) nested_sky=p::set_sky_map_binding(runtime,candidates.front(),{});
+        return {};
+    }));
+    take(world.write(environment.id(),path("sky_rotation"),-90.f));
+    require(nested_sky && !*nested_sky && nested_sky->error().code==ErrorCode::busy && take(p::read_sky_map(runtime,environment.id())).resolved==sky,
+        "A sky map binding changed while the World ran an admission.");
+    take(p::set_sky_map_binding(runtime,environment.id(),{}));
+    require(take(p::read_sky_map(runtime,environment.id())).source.empty() && !take(scene.environment()).sky_map &&
+        take(scene.environment()).sky_rotation==-90.f,"Clearing the sky map left its key or map, or changed the rotation.");
     committed(world.close());
     // Content attached before a Scene exists is checked when it is created, disabled and derived Environments included.
     {
@@ -371,7 +393,7 @@ void environment_and_group_writes() {
             "A Scene over one disabled Environment was rejected or did not use the default settings.");
         committed(loaded.close());
     }
-    std::puts("[pass] Environment: defaults without one, uniqueness with disabled ones also for content before the Scene, invalid values fall back, atomic group writes with exact restore");
+    std::puts("[pass] Environment: defaults without one, uniqueness with disabled ones also for content before the Scene, invalid values fall back, atomic group writes with exact restore, the sky map set only as a key-and-map pair");
 }
 // Scene::update keeps one cached extraction: an unchanged update keeps the version;
 // every presented input advances it, values written past World included, and only
@@ -407,7 +429,10 @@ void presentation_cache() {
         return scene.mesh_slots()[std::size_t(std::ranges::find(members,component,&w::CapabilityMember::component)-members.begin())];
     };
     auto version=take(scene.update());
+    const auto still_cursor=take(runtime.change_cursor());
     for(int frame=0;frame<3;++frame) require(take(scene.update())==version,"An unchanged presentation advanced its version.");
+    std::vector<ObjectId> written;runtime.changed_objects(still_cursor,written);
+    require(written.empty(),"Updating an unchanged presentation wrote an object.");
     const auto advanced=[&](const char* message) {
         const auto next=take(scene.update());require(next!=version,message);
         require(take(scene.update())==next,"Updating a changed presentation again advanced its version.");
@@ -453,6 +478,12 @@ void presentation_cache() {
     take(runtime.write(parent.id(),x,Scalar{3.f}));advanced("Repairing an isolated space did not advance the version.");
     require(scene.light_snapshot().size()==1 && slot(mesh).item && take(scene.render_items()).size()==2 && world.take_diagnostics().empty(),
         "Repaired items did not return to the cache.");
+    // The lights are not extracted again here; the invalid Environment still counts every update.
+    const w::FieldPath sky{field(types.environment_component,"sky_intensity")};
+    take(runtime.write(environment.id(),sky,Scalar{1e6f}));
+    (void)take(scene.update());(void)take(scene.update());
+    reports=world.take_diagnostics();
+    require(reports.size()==1 && reports[0].repeats==2,"A persistent invalid Environment was not reported on each update.");
     committed(world.close());
-    std::puts("[pass] Presentation cache: unchanged updates keep the version; World, Runtime, Environment, TRS, enablement, composition, reparent and material resource edits advance it and rebuild only their slots; isolated items are reported on every update");
+    std::puts("[pass] Presentation cache: unchanged updates keep the version; World, Runtime, Environment, TRS, enablement, composition, reparent and material resource edits advance it and rebuild only their slots; isolated items and an invalid Environment are reported on every update");
 }

@@ -7,6 +7,8 @@
 #include <cstring>
 #include <optional>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include "presentation/presentation.gen.hpp"
 
 // Meshes, lights and the Environment: component types consumed by rendering,
@@ -164,12 +166,14 @@ public:
     float probe_bounce{.85f};
     AFIELD(Category="Propagation", HardMin="0", HardMax="8", DESC="最终合成时对间接漫反射应用的增益。DDGI 与 Local GI 合成后只乘一次，不回写探针，也不补出缺失的空间覆盖。")
     float indirect_gain{1.f};
-    AFIELD(Label="Sky", Category="Sky", DESC="启用均匀天光。关闭时环境照明为零；颜色和强度保留。")
+    AFIELD(Label="Sky", Category="Sky", DESC="启用天光。关闭时环境照明为零；颜色、强度、天空贴图和旋转都保留。")
     bool sky_enabled{};
-    AFIELD(Label="Sky color", Category="Sky", HardMin="0", DESC="非负线性 RGB，逐通道乘以 Sky intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
+    AFIELD(Label="Sky color", Category="Sky", HardMin="0", DESC="非负线性 RGB，逐通道乘以 Sky intensity；设了天空贴图时再乘贴图的值。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 sky_color{1.f, 1.f, 1.f};
-    AFIELD(Label="Sky intensity", Category="Sky", HardMin="0", DESC="均匀天光的辐亮度，单位 cd/m²，再由 Sky color 调制。每个通道的乘积不能超过 65504。")
+    AFIELD(Label="Sky intensity", Category="Sky", HardMin="0", DESC="天光的辐亮度，单位 cd/m²。没有天空贴图时是均匀天空的辐亮度；有贴图时是贴图值为 1 处的辐亮度，实际辐亮度再乘贴图的值和 Sky color。它与 Sky color 每个通道的乘积不能超过 65504；贴图里比这更亮的值（比如太阳）由渲染器另外处理。")
     float sky_intensity{.03f};
+    AFIELD(Label="Sky rotation (°)", Category="Sky", HardMin="-180", HardMax="180", DESC="天空贴图绕世界 +Y 的偏航角，单位度，与 Transform 绕 +Y 的正旋转同向，可用来把贴图里的太阳对到 Directional 光的方向。没有贴图时不起作用。±180 是同一方向。")
+    float sky_rotation{};
     AFIELD(Label="Volume 0", Category="DDGI Volume", DESC="DDGI Volume 槽位 0，优先级最高，适合最精细的局部覆盖。")
     ProbeVolume volume0{.enabled=true};
     AFIELD(Label="Volume 1", Category="DDGI Volume", DESC="DDGI Volume 槽位 1。")
@@ -178,6 +182,11 @@ public:
     ProbeVolume volume2;
     AFIELD(Label="Volume 3", Category="DDGI Volume", DESC="DDGI Volume 槽位 3，优先级最低，适合最粗的整体覆盖。")
     ProbeVolume volume3;
+private:
+    friend struct detail::Access;
+    AFIELD(Name="sky_map", Hidden)
+    String sky_map_;
+    rendering::SkyMapRef sky_map_resolved_;
 };
 // The renderer's view of an Environment's authored values.
 [[nodiscard]] rendering::SceneLightingSettings environment_settings(const EnvironmentComponent&) noexcept;
@@ -238,6 +247,12 @@ struct StaticMeshState { MeshBinding mesh; Material material; };
 // clears provenance. These snapshots also support detached and null-mesh data.
 [[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
 [[nodiscard]] Result<StaticMeshState> read_static_mesh(Runtime&, ObjectId);
+// An Environment's sky map: the persistent asset key and the map it resolved to, null when
+// the key is empty or did not resolve (the sky then renders as map = 1). Only this pair
+// changes the key; it is hidden from field paths.
+struct SkyMapBinding { std::string source; rendering::SkyMapRef resolved; };
+[[nodiscard]] Result<void> set_sky_map_binding(Runtime&, ObjectId environment_component, SkyMapBinding);
+[[nodiscard]] Result<SkyMapBinding> read_sky_map(Runtime&, ObjectId environment_component);
 struct MaterialBinding {
     std::string slot;
     ObjectRoot resource;
@@ -264,12 +279,25 @@ public:
     }
     void insert(std::size_t at, const T& value) noexcept { std::memcpy(&values_[at].emplace(), &value, sizeof(T)); }
 };
+class Presented;
 }
 
 // One position of the mesh bucket in the cached extraction.
 struct MeshSlot {
     std::optional<RenderItem> item; // Absent while isolated or degenerate.
-    std::uint64_t changed{};        // Scene::update serial that last changed `item`.
+    // Where `item` is drawn at the latest update when a presented pose moves it off item->world.
+    std::optional<math::Matrix4> presented;
+    std::uint64_t changed{};        // Scene::update serial that last changed `item` or `presented`.
+};
+
+// A simulated Entity drawn this frame at position/rotation instead of the World
+// pose it was simulated to (world_position/world_rotation).
+struct PresentedPose {
+    ObjectId entity;
+    math::Vector3 position;
+    math::Quaternion rotation;
+    math::Vector3 world_position;
+    math::Quaternion world_rotation;
 };
 
 // The presentation of one World; a World without a Scene created by its host is
@@ -292,16 +320,28 @@ public:
     // Brings the cached extraction up to date in one presentation pass and one
     // lighting pass, and returns the presentation version: the serial of the
     // latest update that changed a mesh slot, the mesh layout, the lights or the
-    // Environment settings. Every member's space and component are read again,
-    // so values written past World (Runtime::write, native code, JIT) are found;
-    // only changed meshes are validated and rebuilt. Failures are reported as by
-    // extraction on every update, so persistent ones keep counting repeats.
-    [[nodiscard]] Result<std::uint64_t> update() const;
+    // Environment settings. Runtime write stamps find every value written since
+    // the previous update, including past World (Runtime::write, native code, JIT):
+    // a mesh slot is read again when its component or an Entity on its spatial
+    // chain was written, the lights when any light or Entity on a light's chain
+    // was, and everything after World::revision advances; only changed meshes are
+    // validated and rebuilt. Slots whose surfaces come from material slots and
+    // slots not in the cache (isolated, degenerate) are read on every update, as
+    // are the lights while one is not drawn, so failures are reported as by
+    // extraction on every update and persistent ones keep counting repeats.
+    // Must be called at a host safe point (Runtime::change_cursor is busy otherwise).
+    // Each mesh and light is drawn relative to the nearest Entity of `presented`
+    // on its spatial chain, itself included: moved rigidly from that Entity's
+    // world pose to its presented pose, or left at its World matrix when the two
+    // are equal. Hosts list every simulated Entity below a moved one. Authoritative
+    // items and render_items() never include presented poses.
+    [[nodiscard]] Result<std::uint64_t> update(std::span<const PresentedPose> presented = {}) const;
     // The cache as of the latest update, by mesh bucket position.
     [[nodiscard]] std::span<const MeshSlot> mesh_slots() const noexcept { return mesh_slots_; }
     // Serial of the latest update that rebuilt every slot after the mesh bucket
     // changed (World::revision advanced); slot positions keep their component until then.
     [[nodiscard]] std::uint64_t mesh_layout() const noexcept { return mesh_layout_; }
+    // Lights as drawn at the latest update, presented poses applied.
     [[nodiscard]] std::span<const LightRenderItem> light_snapshot() const noexcept { return lights_cache_; }
     [[nodiscard]] std::uint64_t lights_changed() const noexcept { return lights_changed_; }
     // update(), then the drawn items in Entity/composition order.
@@ -315,10 +355,16 @@ public:
     [[nodiscard]] Result<rendering::SceneLightingSettings> environment() const;
 private:
     Scene(world::World& world, const Types& types) noexcept : world_(&world), types_(types) {}
-    // Re-reads the mesh bucket in one presentation pass; changed slots take `serial`.
-    Result<void> update_meshes(std::uint64_t serial) const;
+    // Re-reads the mesh slots whose sources were written since the latest update (all
+    // of them after a layout change) in one presentation pass; changed slots take `serial`.
+    // Without `presented` the slots keep their presented matrices.
+    Result<void> update_meshes(std::uint64_t serial, const detail::Presented* presented) const;
     // Re-reads one mesh slot; true when its item changed.
     Result<bool> update_mesh(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
+    // Rebuilds the spatial chains of the mesh slots and the light sources for a new layout.
+    Result<void> index_layout(world::World::SpatialPass&, std::span<const world::CapabilityMember> meshes) const;
+    // `failed`: an active light was not drawn. `moved`: a presented pose moved a light.
+    Result<std::vector<LightRenderItem>> extract_lights(const detail::Presented*, bool* failed = nullptr, bool* moved = nullptr) const;
     world::World* world_;
     Types types_;
     world::CapabilityId meshes_, lights_, environments_;
@@ -327,8 +373,25 @@ private:
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
     mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from material slots.
+    mutable std::size_t presented_slots_{}; // Slots with a presented matrix after the latest update.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
+    // Writes stamped after `cursor_` are not yet read; valid while `tracked_`.
+    mutable std::uint64_t cursor_{};
+    mutable bool tracked_{};
+    mutable std::vector<ObjectId> written_;
+    // Each Entity on a mesh's spatial chain, and its component, lead to that slot.
+    mutable std::unordered_map<ObjectId, std::vector<std::uint32_t>> mesh_dependents_;
+    mutable std::unordered_map<ObjectId, std::uint32_t> mesh_components_;
+    // Slot s's chain, its own Entity first, is chains_[chain_starts_[s], chain_starts_[s + 1]).
+    mutable std::vector<ObjectId> chains_;
+    mutable std::vector<std::uint32_t> chain_starts_;
+    // Light components and the Entities on their chains.
+    mutable std::unordered_set<ObjectId> light_sources_;
+    mutable std::vector<std::uint32_t> dirty_, volatile_, presented_list_;
+    mutable std::vector<bool> volatile_flags_;
+    mutable std::vector<std::uint64_t> marks_, presented_marks_; // Serial of the update that last listed each slot.
+    mutable bool lights_dirty_{true}, lights_failed_{}, lights_moved_{};
     std::uint64_t identity_{};
     mutable std::uint64_t serial_{}, version_{}, mesh_layout_{}, lights_changed_{}, layout_revision_{};
 };

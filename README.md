@@ -15,7 +15,7 @@
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、GC/拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
-| Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 10 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
+| Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 9 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -157,7 +157,7 @@ git submodule update --init --recursive third_party/jolt
 git submodule status third_party/jolt
 ```
 
-当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃/车辆基础场景 API 及对应组件；官方 [Physic](assets/examples/Examples/Physic/README.md) 提供 10 个可运行场景。原物理测试项目已迁为 [验收夹具](acceptance/editor/fixtures/physics-project/README.md)，保留 Body 场景加载与 Jolt 模拟检查。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
+当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃基础场景 API 及对应组件；官方 [Physic](assets/examples/Examples/Physic/README.md) 提供 9 个可运行场景。原物理测试项目已迁为 [验收夹具](acceptance/editor/fixtures/physics-project/README.md)，保留 Body 场景加载与 Jolt 模拟检查。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
 
 按上方准备工具链并配置后，独立验收入口如下；其中 `physics_examples_acceptance` 包含真实窗口，运行时需要窗口锁：
 
@@ -170,7 +170,7 @@ cmake --build --preset dev --target physics_examples_acceptance
 cmake --build --preset release --target physics_examples_acceptance
 ```
 
-`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查 Entity 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃/车辆；`--list` 列出可独立运行的场景，完成时输出逐项结果与总数。`editor_physics_project_acceptance` 保留旧 Body 工程迁移检查；`physics_examples_acceptance` 验证 10 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
+`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查 Entity 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃；`--list` 列出可独立运行的场景，完成时输出逐项结果与总数。`editor_physics_project_acceptance` 保留旧 Body 工程迁移检查；`physics_examples_acceptance` 验证 9 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 
@@ -362,6 +362,7 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - `read/write` 的 `Scalar` 重载要求终字段是标量，`ValueOutput/ValueInput` 重载整值读写 plain 值以及不含 GC 引用的 String、Array 和由它们组成的记录；非 plain 写入在夹值后的副本上交换提交，失败时字段保持原值。四个重载另有对调用方持有的记录存储 `(TypeId, storage, path)` 的版本，与对象目标共用路径解析和硬边界，详见[整值读写与调用方存储](docs/runtime-model.md#整值读写与调用方存储)。`restore(object, path, ValueOutput)` 用调用方写入前读出的值与字段交换，撤销调用方自己刚做的写入，不经硬边界和校验器，失败时两边都不变。`read_reference/write_reference` 操作引用字段；字段路径穿过内联记录和数组元素，不隐式解引用对象。引用写入检查目标类型和形式，弱引用不能直接写入持有字段；`try_acquire` 对活的观察目标交付根句柄，空或失效目标返回空结果。已定型的失效引用仍可复制，旧身份不自动清空，也不绑定复用槽位的新对象。
 - 字段可声明 UI 范围与硬边界（`FieldRange`）。Runtime 的标量、数学向量、数组元素和记录整值写入会把值夹到硬边界内，NaN/Inf 在改动任何字节之前被拒绝；`constrain` 用于无对象预演。受约束字段拒绝可写借用，可信的 C++ 直接访问不做检查。详见[字段范围与写入约束](docs/runtime-model.md#字段范围与写入约束)。
 - 记录和对象类型可以声明纯函数校验器。`validate` / `validate_value` 先检查硬边界，再按后序执行内联记录、数组元素和继承链上的校验器，返回第一个失败及其结构化字段路径；它从不在写入时自动运行。详见[类型校验](docs/runtime-model.md#类型校验)。
+- 每个对象带写代号：Runtime 的写入、元素和引用修改、`restore`、可变 `with_native`、可写接收者和可写字段实参的方法调用以及创建都会盖章，`with_native<const T>` 和读取不盖章。`change_cursor` 在宿主安全点取游标，`changed_since` 和 `changed_objects` 查询游标之后被写过的对象。详见[写代号与变化游标](docs/runtime-model.md#写代号与变化游标)。
 - `FieldId` 是成员选择子：记录和对象的成员是字段，Array 的成员是元素。`element` 构造元素选择子，`insert_element/remove_elements/move_element` 原子地改变内联 Array 字段的结构，回调和借用期间返回 busy。元素选择子是位置性的，结构变化后可能失效。详见[成员选择子与数组元素](docs/runtime-model.md#成员选择子与数组元素)。
 - `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根，异常转换为调用错误。
 - `begin_collection` 开始一轮非移动增量标记—清扫；宿主在同一运行时线程的安全点调用 `collect_step`，按根处理、标记、清扫分步推进。分配、普通值操作和撤根不隐式触发收集；编辑器与项目运行宿主在各自帧安全点推进收集。

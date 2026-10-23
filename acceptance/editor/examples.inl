@@ -21,7 +21,7 @@ void verify_official_examples() {
         auto document=take(editor::Session::deserialize(take(editor::read_file(scene_path)),project));
         const auto meshes=take(document->presentation().render_items());
         require(example.command==editor::Command::example_dungeons?meshes.size()==3425:
-            example.command==editor::Command::example_physic?meshes.size()==19:
+            example.command==editor::Command::example_physic?meshes.size()==14:
             meshes.size()==(example.command==editor::Command::example_sponza?1u:10u),"Official example lost geometry.");
         const auto fields=take(document->properties(meshes.front().component));
         const auto roughness=std::ranges::find(fields,"material.roughness",&editor::Property::name);
@@ -40,7 +40,7 @@ void verify_official_examples() {
     take(editor::write_file(existing,"user-owned scene marker"));
     take(editor::prepare_examples(legacy));
     require(take(editor::read_file(existing))=="user-owned scene marker" &&
-        fs::is_regular_file(legacy/"Examples/Physic/Scenes/Vehicle.scene"),"Adding newly shipped examples damaged an existing folder.");
+        fs::is_regular_file(legacy/"Examples/Physic/Scenes/Ragdoll.scene"),"Adding newly shipped examples damaged an existing folder.");
     take(editor::prepare_examples(legacy));
     require(take(editor::read_file(existing))=="user-owned scene marker","Repeated example hydration replaced user data.");
     const auto added="Examples/Another Scene/Custom.scene";

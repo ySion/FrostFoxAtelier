@@ -8,7 +8,7 @@ void verify_physics_examples() {
         for(const auto& entity:take(doc.world().members())) if(doc.name(entity.id())==name) return entity.id();
         throw std::runtime_error("Physics example Entity missing.");
     };
-    for(const auto* name:{"RigidBodies","Forces","Triggers","Queries","Character","Constraints","Ragdoll","Vehicle","Overview","Raycasts"}) {
+    for(const auto* name:{"RigidBodies","Forces","Triggers","Queries","Character","Constraints","Ragdoll","Overview","Raycasts"}) {
         const auto text=take(editor::read_file(folder/(std::string(name)+".scene")));
         auto doc=take(editor::Session::deserialize(text,project));
         const auto saved=take(doc->serialize());const auto path=evidence/"Content/Scenes"/(std::string(name)+".scene");
@@ -31,7 +31,6 @@ void verify_physics_examples() {
         const auto named=[&](std::wstring_view label){return entity_named(*doc,label);};
         const std::string_view which=name;
         if(which=="Ragdoll") old=take(scene->ragdoll_handle(named(L"Six part ragdoll")));
-        if(which=="Vehicle") old=take(scene->vehicle_handle(named(L"Four wheel vehicle")));
         if(which=="Character") old=take(scene->character_handle(named(L"Capsule character")));
         for(int step=0;step<180;++step) take(doc->update(1.f/60));
         const auto body=[&](std::wstring_view label){return take(scene->read_body_state(take(scene->body_handle(named(label)))));};
@@ -66,9 +65,6 @@ void verify_physics_examples() {
                 presented.insert(item.entity);
             }
             require(presented.size()==6,"Ragdoll example lost visual Entity parts.");
-        } else if(which=="Vehicle") {
-            const auto state=take(scene->read_vehicle_state(old));require(std::abs(state.position.z)>1,"Vehicle component did not accelerate.");
-            require(std::ranges::count(state.wheel_contact,true)>=2,"Vehicle wheels did not contact the floor.");
         } else if(which=="Raycasts") {
             unsigned checked{};auto& runtime=doc->world().runtime();
             const auto emitter=named(L"Scene query emitter");
@@ -95,10 +91,9 @@ void verify_physics_examples() {
         committed(doc->stop());require(!doc->physics_scene(),"Stopping the document retained its physics scene.");
         committed(doc->start());take(doc->update(0));
         if(which=="Ragdoll") require(!doc->physics_scene()->read_ragdoll_pose(old),"Ragdoll handle survived restart.");
-        if(which=="Vehicle") require(!doc->physics_scene()->read_vehicle_state(old),"Vehicle handle survived restart.");
         if(which=="Character") require(!doc->physics_scene()->read_character_state(old),"Character handle survived restart.");
         committed(doc->stop());committed(doc->close());
         std::printf("Physics example: %s PASS\n",name);
     }
-    std::puts("Physics examples acceptance: PASS (10 scenes, disk roundtrip, real simulation, queries, visual poses, pause/restart)");
+    std::puts("Physics examples acceptance: PASS (9 scenes, disk roundtrip, real simulation, queries, visual poses, pause/restart)");
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "presentation/presentation.hpp"
 #include "world/world.hpp"
 #include "geometry/mesh.hpp"
 #include <unordered_set>
@@ -19,8 +20,8 @@ using world::BodySettings;
 
 struct Types {
     TypeId character_component{}, ragdoll_component{}, ragdoll_part_component{},
-        vehicle_component{}, vehicle_wheel_component{}, distance_constraint_component{},
-        force_component{}, kinematic_motion_component{}, scene_query_component{};
+        distance_constraint_component{}, force_component{}, kinematic_motion_component{},
+        scene_query_component{};
 };
 [[nodiscard]] Result<Types> register_types(Runtime&);
 [[nodiscard]] Result<void> configure(Runtime&, ObjectId component, BodySettings);
@@ -82,24 +83,11 @@ struct RagdollPose {
     std::vector<math::Vector3> positions;
     std::vector<math::Quaternion> rotations;
 };
-struct VehicleSettings {
-    float half_width{.8f}, half_length{1.4f}, wheel_radius{.35f};
-    float suspension_length{.5f};
-    bool operator==(const VehicleSettings&) const = default;
-};
-struct VehicleState {
-    SpecialHandle handle;
-    std::uint64_t step_id{};
-    math::Vector3 position{}, velocity{};
-    std::array<bool, 4> wheel_contact{};
-    std::array<math::Vector3, 4> wheel_positions{};
-    std::array<math::Quaternion, 4> wheel_rotations{};
-};
 
 // Authoring components use the existing Runtime graph and scene properties.
 // Inputs are sampled per fixed step. Backend handles remain scene-owned.
 // Shape/constraint configuration is sampled on activation; disable/re-enable to
-// rebuild it. Parts/wheels explicitly bind spatial Entity children.
+// rebuild it. Ragdoll parts explicitly bind spatial Entity children.
 class CharacterComponent : public world::Component {
 public:
     CharacterSettings settings;
@@ -117,16 +105,6 @@ public:
     std::int32_t parent_index{-1};
     math::Vector3 rest_position{};
     float radius{.2f}, capsule_half_height{.25f};
-};
-class VehicleComponent : public world::Component {
-public:
-    ReferenceSequence wheels;
-    VehicleSettings settings;
-    float throttle{}, steering{}, brake{};
-};
-class VehicleWheelComponent : public world::Component {
-public:
-    std::uint32_t wheel_index{};
 };
 class DistanceConstraintComponent : public world::Component {
 public:
@@ -146,8 +124,6 @@ public:
 [[nodiscard]] Result<ObjectId> constraint_target(Runtime&, ObjectId component);
 [[nodiscard]] Result<void> set_ragdoll_parts(Runtime&, ObjectId component, std::span<const ObjectId> entities);
 [[nodiscard]] Result<std::vector<ObjectId>> ragdoll_parts(Runtime&, ObjectId component);
-[[nodiscard]] Result<void> set_vehicle_wheels(Runtime&, ObjectId component, std::span<const ObjectId> entities);
-[[nodiscard]] Result<std::vector<ObjectId>> vehicle_wheels(Runtime&, ObjectId component);
 // Persistent query exclusions may change while active and affect the next sample.
 [[nodiscard]] Result<void> set_query_ignored_entities(Runtime&, ObjectId component, std::span<const ObjectId> entities);
 [[nodiscard]] Result<std::vector<ObjectId>> query_ignored_entities(Runtime&, ObjectId component);
@@ -237,9 +213,19 @@ struct StepResult {
     std::uint32_t steps{}, rejected_commands{}, dropped_contact_notifications{};
     // Triangle shapes cooked at runtime since the previous step because a cooked shape no longer matched its scale or mesh.
     std::uint32_t runtime_cooks{};
+    // Fixed substeps whose solve ignored some contacts because a Capacity buffer
+    // was full; the simulation continues and each one reports a physics warning.
+    std::uint32_t contact_overflows{};
     float remaining{}, dropped{};
     std::uint64_t completed_step{};
     bool contacts_incomplete{};
+};
+
+// Jolt's solver buffers, fixed when a PhysicsScene is created. A zero field is
+// derived from the Primitives in the World at creation.
+struct Capacity {
+    std::uint32_t bodies{}, body_pairs{}, contact_constraints{};
+    bool operator==(const Capacity&) const = default;
 };
 
 // The host owns this beside a World and destroys it before that World/Runtime.
@@ -249,13 +235,21 @@ struct StepResult {
 // call World APIs; a failure there stops the World.
 class PhysicsScene final {
 public:
-    [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types);
+    [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types, Capacity = {});
     ~PhysicsScene();
     PhysicsScene(const PhysicsScene&) = delete;
     PhysicsScene& operator=(const PhysicsScene&) = delete;
 
+    // The buffers this scene was created with, derived fields filled in.
+    [[nodiscard]] Capacity capacity() const noexcept { return capacity_; }
     // The latest step World::update ran; completed_step is cumulative.
     [[nodiscard]] const StepResult& last_step() const noexcept { return last_step_; }
+    // Poses to draw this frame for the Entities the latest fixed step published, for
+    // presentation::Scene::update: each between its previous and its current simulated
+    // pose by the fraction of a step left over, so the image trails the simulation by
+    // up to one step. Empty while paused. Simulated Entities below a moved one are listed
+    // with equal poses. A created, teleported or relocated Entity starts again from its new pose.
+    [[nodiscard]] std::span<const presentation::PresentedPose> presented_poses() const noexcept { return presented_; }
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
     [[nodiscard]] Result<void> add_force(ObjectId entity, math::Vector3);
     [[nodiscard]] Result<void> add_impulse(ObjectId entity, math::Vector3);
@@ -284,13 +278,6 @@ public:
     [[nodiscard]] Result<SpecialHandle> ragdoll_handle(ObjectId entity) const;
     [[nodiscard]] Result<RagdollPose> read_ragdoll_pose(SpecialHandle) const;
     [[nodiscard]] Result<void> destroy_ragdoll(SpecialHandle);
-    [[nodiscard]] Result<SpecialHandle> create_vehicle(BodyHandle chassis,
-        VehicleSettings = {});
-    [[nodiscard]] Result<SpecialHandle> vehicle_handle(ObjectId entity) const;
-    [[nodiscard]] Result<void> set_vehicle_input(SpecialHandle, float throttle,
-        float steering, float brake);
-    [[nodiscard]] Result<VehicleState> read_vehicle_state(SpecialHandle) const;
-    [[nodiscard]] Result<void> destroy_vehicle(SpecialHandle);
     [[nodiscard]] Result<QueryResult> raycast(math::Vector3 start, math::Vector3 end,
         QueryFilter filter = {}) const;
     [[nodiscard]] Result<QueryResult> sweep_sphere(math::Vector3 start, math::Vector3 end,
@@ -305,7 +292,7 @@ public:
     // while paused. Returned snapshots own values, never the hit Entities/bodies.
     [[nodiscard]] Result<QueryResult> execute_query(ObjectId component, QueryIgnore = {});
     [[nodiscard]] Result<QueryResult> read_query_result(ObjectId component) const;
-    void set_paused(bool paused) noexcept { paused_ = paused; }
+    void set_paused(bool paused) noexcept;
     // Paused requests coalesce and a completed solve consumes them. A failed
     // step stops the World, which discards a pending request.
     void step_once() noexcept { single_step_ = true; }
@@ -314,11 +301,13 @@ public:
     void on_before_step(StepHandler handler) { before_step_ = std::move(handler); }
     void on_after_step(StepHandler handler) { after_step_ = std::move(handler); }
     [[nodiscard]] std::size_t body_count() const noexcept;
+    // Rigid bodies Jolt is simulating now; sleeping and static bodies are not counted.
+    [[nodiscard]] std::size_t active_body_count() const noexcept;
 
 private:
     friend class detail::ComponentSimulation;
     struct Impl;
-    explicit PhysicsScene(world::World&, Types);
+    explicit PhysicsScene(world::World&, Types, Capacity);
     [[nodiscard]] Result<void> step(float elapsed);
     // Lookup failures answer true, so an unknown Entity is never translated.
     [[nodiscard]] bool writes_pose(ObjectId entity) const;
@@ -330,8 +319,19 @@ private:
     [[nodiscard]] Result<bool> controller_transform_matches(ObjectId,math::Vector3,math::Quaternion) const;
     void remove(ObjectId component) noexcept;
     void remove_special(ObjectId entity) noexcept;
+    // Drops the interpolation of an Entity that physics no longer drives.
+    void forget_pose(ObjectId entity) noexcept;
+    // Draws created or relocated Entities at these World poses until a step publishes them;
+    // that step moves from here.
+    void hold_poses(std::span<const world::SimulationPose>);
+    // Rebuilds presented_ from the latest published step and the fraction of a step left over.
+    void present();
+    // Teleports the bodies at or below the Entities a step handler wrote whose pose changed,
+    // as set_transform would; every write is reconciled again by the next step.
+    [[nodiscard]] Result<void> follow_handler(std::uint64_t opened);
     world::World& world_;
     Types types_;
+    Capacity capacity_;
     std::unique_ptr<Impl> impl_;
     std::unique_ptr<detail::ComponentSimulation> components_;
     ContactHandler handler_;
@@ -340,10 +340,20 @@ private:
     // World buckets of the components that can claim an Entity's physics pose.
     world::CapabilityId primitives_, characters_, ragdolls_;
     StepResult last_step_{};
+    std::vector<presentation::PresentedPose> presented_;
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
+    // Writes stamped after cursor_ are reconciled by the next step while tracked_; a
+    // World::revision other than reconciled_ reconciles everything.
+    std::uint64_t cursor_{}, reconciled_{};
+    // Bodies and controllers removed; with next_revision_ it tells when the component
+    // controllers must be reconciled again (controlled_).
+    std::uint64_t edits_{}, controlled_{};
     std::uint32_t runtime_cooks_{};
-    bool paused_{}, single_step_{};
+    bool paused_{}, single_step_{}, tracked_{};
+    // Set at creation and whenever Jolt holds no body (ordinary or ragdoll part); the
+    // next step with bodies builds the broad phase once.
+    bool unbuilt_{true};
 };
 
 }

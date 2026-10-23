@@ -372,16 +372,20 @@ struct Runtime::Impl {
         struct SwapPart { std::size_t offset, size; void (*swap)(void*, void*) noexcept; };
         std::vector<SwapPart> swap_parts;
     };
+    // Ordered to stay at 64 bytes.
     struct Slot {
         TypeId type;
         void* storage{};
         std::uint64_t generation{1};
-        std::uint32_t next_free{no_slot};
+        // write_epoch of the latest write; see stamp().
+        std::uint64_t written{};
         std::uint64_t mark_epoch{};
+        std::uint32_t next_free{no_slot};
         std::uint32_t gray_next{no_slot};
         std::uint32_t gray_previous{no_slot};
         bool gray_queued{};
     };
+    static_assert(sizeof(Slot) == 64);
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
     std::vector<std::unique_ptr<Type>> types;
@@ -394,6 +398,15 @@ struct Runtime::Impl {
     // Published name -> types index. Keys view the immutable name inside each heap Type.
     Map<StringView, std::uint32_t> names;
     std::vector<Slot> slots;
+    // Write stamps. write_pages[i] is the newest stamp among slots [64i, 64i + 64), so
+    // changed_objects() skips unchanged pages. Sized with slots before creation commits.
+    static constexpr unsigned write_page_shift = 6;
+    std::uint64_t write_epoch{1};
+    std::vector<std::uint64_t> write_pages;
+    void stamp(std::uint32_t index) noexcept {
+        slots[index].written = write_epoch;
+        write_pages[index >> write_page_shift] = write_epoch;
+    }
     // Handles keep only this registry alive, never the Runtime or its objects.
     std::shared_ptr<detail::RootState> roots{std::make_shared<detail::RootState>()};
     std::uint32_t free_head{no_slot};
@@ -2027,7 +2040,8 @@ Runtime::NativeBorrow::~NativeBorrow() {
     if (runtime) { --runtime->impl_->native_borrows; --runtime->impl_->callbacks; }
 }
 
-Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation, std::span<const FieldId> path) {
+Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation, std::span<const FieldId> path,
+    bool write) {
     if (!impl_->roots->alive || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
     auto index = resolve_object(object);
@@ -2041,6 +2055,7 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
         if (field->value.form != ValueForm::inline_value || field->value.type != expected->info.id)
             return failure(ErrorCode::type_mismatch, "Field does not have the requested native value representation.");
         borrow.storage = field->data;
+        if (write) impl_->stamp(*index);
         return borrow;
     }
     const auto& slot = impl_->slots[*index];
@@ -2051,6 +2066,7 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
         return failure(ErrorCode::type_mismatch, "Object does not contain the requested native base.");
     NativeBorrow borrow{*this, nullptr};
     borrow.storage = Impl::base_storage(*actual, *expected, slot.storage);
+    if (write) impl_->stamp(*index);
     return borrow;
 }
 
@@ -2208,6 +2224,7 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
     // The intrusive queues and cursor cancellation allocate nothing. Identity
     // storage moves are noexcept; no user callback or validation occurs here.
     for (const auto& plan : prepared) {
+        impl_->stamp(plan.owner.index_);
         if (plan.address.value.form != ValueForm::strong_sequence) {
             commit_reference_write(plan.address, plan.reference);
             continue;
@@ -2370,6 +2387,7 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
         impl_->slots.reserve(std::min<std::size_t>(no_slot,
             std::max(impl_->slots.size() + 1, impl_->slots.capacity() * 2)));
     }
+    impl_->write_pages.resize(std::max(impl_->write_pages.size(), (impl_->slots.size() >> Impl::write_page_shift) + 1));
     impl_->prepare_walk(*type);
     CallbackScope scope{impl_->callbacks};
     void* storage = ::operator new(type->info.size, std::align_val_t{type->info.alignment});
@@ -2401,6 +2419,7 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     slot.storage = storage;
     slot.next_free = no_slot;
     slot.mark_epoch = 0;
+    impl_->stamp(index);
     ++impl_->live;
     if (impl_->phase == CollectionPhase::sweep) {
         slot.mark_epoch = impl_->epoch;
@@ -2432,6 +2451,32 @@ Result<TypeId> Runtime::type_of(ObjectId object) const {
     const auto index = resolve_object(object);
     if (!index) return std::unexpected(index.error());
     return impl_->slots[*index].type;
+}
+
+Result<std::uint64_t> Runtime::change_cursor() {
+    if (impl_->callbacks != 0 || impl_->roots->traversals != 0 || impl_->active_executions != 0)
+        return failure(ErrorCode::busy, "Change cursors are taken outside callbacks, native borrows, traversal and execution.");
+    return impl_->write_epoch++;
+}
+
+bool Runtime::changed_since(ObjectId object, std::uint64_t cursor) const noexcept {
+    if (!belongs_to_context(object) || object.index_ >= impl_->slots.size()) return true;
+    const auto& slot = impl_->slots[object.index_];
+    return !impl_->is_live(slot) || slot.generation != object.generation_ || slot.written > cursor;
+}
+
+void Runtime::changed_objects(std::uint64_t cursor, std::vector<ObjectId>& changed) const {
+    changed.clear();
+    constexpr std::size_t page_size = std::size_t{1} << Impl::write_page_shift;
+    for (std::size_t page = 0; page < impl_->write_pages.size(); ++page) {
+        if (impl_->write_pages[page] <= cursor) continue;
+        const auto end = std::min(impl_->slots.size(), (page + 1) * page_size);
+        for (auto index = page * page_size; index < end; ++index) {
+            const auto& slot = impl_->slots[index];
+            if (slot.written > cursor && impl_->is_live(slot))
+                changed.push_back(ObjectId{impl_->context, static_cast<std::uint32_t>(index), slot.generation});
+        }
+    }
 }
 
 Result<void> Runtime::validate_reference(const ObjectReference& reference) const {
@@ -2659,6 +2704,7 @@ Result<void> Runtime::write_reference(ObjectId object, std::span<const FieldId> 
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Reference mutation is not allowed during traversal.");
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
+    impl_->stamp(object.index_);
     return write_reference_at(*address, reference);
 }
 
@@ -2687,6 +2733,7 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
+    impl_->stamp(object.index_);
     return write_at(*address, value);
 }
 
@@ -2821,6 +2868,7 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
         return failure(ErrorCode::busy, "Array structure cannot change during callbacks, native borrows or traversal.");
     const auto address = resolve_array(object, path);
     if (!address) return std::unexpected(address.error());
+    impl_->stamp(object.index_);
     const auto& array = *impl_->lookup(address->value.type);
     if (!array.info.sequence_mutate) return failure(ErrorCode::unsupported_operation, "This Array type has no structural operations.");
     const auto& element = *impl_->lookup(*array.info.element);
@@ -2868,6 +2916,7 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Valu
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
+    impl_->stamp(object.index_);
     return write_at(*address, value, true);
 }
 
@@ -2927,6 +2976,7 @@ Result<void> Runtime::restore(ObjectId object, std::span<const FieldId> path, Va
     if (impl_->roots->traversals != 0) return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
     if (!address) return std::unexpected(address.error());
+    impl_->stamp(object.index_);
     const auto* type = impl_->lookup(address->value.type);
     if (address->value.form != ValueForm::inline_value || !whole_value(type->info) || previous.type != type->info.id)
         return failure(ErrorCode::type_mismatch, "Restore requires the field's exact Runtime type, without GC references.");
@@ -3003,6 +3053,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
             actual = impl_->lookup(address->value.type);
             if (parameter.passing == ParameterPassing::reference && (address->range || !actual->constrained_leaves.empty()))
                 return failure(ErrorCode::argument_mismatch, "Hard-bounded fields cannot be borrowed writably; write them through Runtime.");
+            if (parameter.passing == ParameterPassing::reference) impl_->stamp(argument.object_.index_);
             data = writable = address->data;
         } else if (argument.borrowed_) {
             if (!data) return failure(ErrorCode::invalid_storage, "Borrowed argument is null.");
@@ -3084,6 +3135,7 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span
     PreparedArguments prepared;
     auto checked = prepare_arguments(signature, arguments, prepared, true);
     if (!checked) return checked;
+    if (!signature.receiver->read_only) impl_->stamp(*index);
     const auto invoke = [&](ValueOutput staging) -> Result<void> {
         CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), prepared.values()};
         context.result_value = staging;

@@ -274,4 +274,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v7 保存；`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v8 保存；`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

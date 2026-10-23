@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -69,7 +70,6 @@ const Scenario scenarios[]{
     {"character", character},
     {"constraint", constraint},
     {"ragdoll", ragdoll},
-    {"vehicle", vehicle},
     {"special_integration", simulate_special_systems},
     {"components", component_lifecycle},
     {"entity_bindings", entity_physics_bindings},
@@ -79,6 +79,10 @@ const Scenario scenarios[]{
     {"primitive_composition", primitive_composition},
     {"primitive_authoring", primitive_authoring},
     {"mirrored_scale", mirrored_scale},
+    {"pose_publication", pose_publication},
+    {"solver_determinism", solver_determinism},
+    {"contact_capacity", contact_capacity},
+    {"render_interpolation", render_interpolation},
 };
 } // namespace
 

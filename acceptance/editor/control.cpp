@@ -237,8 +237,8 @@ Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities
 void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema")==4 && original_scene.at("version")==7 && !original_scene.contains("world"),
-        "Current repro export did not identify view schema 4 and Scene v7");
+    require(original.at("view_schema")==4 && original_scene.at("version")==8 && !original_scene.contains("world"),
+        "Current repro export did not identify view schema 4 and Scene v8");
     const auto legacy=root/"LegacyLightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(legacy),
         std::filesystem::copy_options::recursive);
@@ -359,7 +359,7 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
         const std::filesystem::path new_repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto saved=read(new_repro/"manifest.json");
         const auto saved_scene=read(new_repro/"Project"/wide(saved.at("scene").get<std::string>()));
-        require(saved.at("view_schema")==4 && saved.at("view")==expected_view && saved_scene.at("version")==7 &&
+        require(saved.at("view_schema")==4 && saved.at("view")==expected_view && saved_scene.at("version")==8 &&
             !saved_scene.contains("world") && authored(saved_scene.at("entities"))==expected_entities &&
             saved.at("selection_indices")==original.at("selection_indices"),
             "Migrated repro export lost author data or retained a legacy view/scene format");

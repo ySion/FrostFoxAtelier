@@ -10,7 +10,7 @@
 | --- | --- |
 | [Sponza](Examples/Sponza/README.md) | 完整建筑、三盏真实光源、动态 DDGI；默认启动场景 |
 | [Scene Lit Room](<Examples/Scene Lit Room/README.md>) | 材质、面光源、自发光和屏幕反射的紧凑观察场景 |
-| [Physic](Examples/Physic/README.md) | 10 个物理组件场景：刚体、力、触发/查询、角色、约束、布娃娃及车辆；`--physic` 可直接打开 |
+| [Physic](Examples/Physic/README.md) | 9 个物理组件场景：刚体、力、触发/查询、角色、约束及布娃娃；`--physic` 可直接打开 |
 | [Dungeons](Examples/Dungeons/README.md) | Synty 地牢 Demo 及两个资源总览，保留全部非脚本源资源；Smooth 显示颜色贴图，`--dungeons` 可直接打开 |
 
 工程目录中，`Config` 保存工程配置，`Source` 保存共享业务源码，`Content` 可存普通内容，`Examples/<场景名>/` 收纳每个示例的场景与资源。可在 Examples 下增加新的场景文件夹，刷新资源后通过资源浏览器打开；Save Scene As 支持保存到 Content 或 Examples。网格身份仍由原 `.asset.json` 保持，移动目录不修改场景中的资源身份。显示模式和相机由 Examples 菜单入口设置，不改变 Scene 文件格式。显式 `--project` / `--new-project` 保留原语义。

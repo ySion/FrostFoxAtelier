@@ -14,6 +14,8 @@ public:
     ComponentSimulation(world::World& world, PhysicsScene& scene) : world_(world), scene_(scene) {}
     ~ComponentSimulation();
     Result<void> reconcile();
+    // Whether the latest reconcile isolated a member or controller; it is tried again.
+    [[nodiscard]] bool contained() const noexcept { return contained_; }
     Result<void> before_step(float fixed);
     Result<void> append_poses(std::vector<world::SimulationPose>&);
     Result<void> after_step();
@@ -23,7 +25,7 @@ public:
     Result<QueryResult> execute_query(ObjectId,QueryIgnore = {});
     Result<QueryResult> read_query_result(ObjectId) const;
 private:
-    enum class Kind { character, ragdoll, vehicle, distance, force, kinematic, query };
+    enum class Kind { character, ragdoll, distance, force, kinematic, query };
     struct Entry {
         Kind kind;
         ObjectId entity, component, target{};
@@ -40,6 +42,7 @@ private:
     world::World& world_;
     PhysicsScene& scene_;
     std::unordered_map<ObjectId, Entry> entries_;
+    bool contained_{};
     void release(const Entry&) noexcept;
     void clear_query(ObjectId,bool clear_request) noexcept;
     Result<void> sample_query(ObjectId,QueryIgnore = {});

@@ -2115,6 +2115,7 @@ void verify_field_ranges();
 void verify_type_validation();
 void verify_array_elements();
 void verify_value_paths();
+void verify_write_stamps();
 
 int main() {
     try {
@@ -2145,6 +2146,7 @@ int main() {
         verify_type_validation();
         verify_array_elements();
         verify_value_paths();
+        verify_write_stamps();
         std::cout << "Runtime acceptance: PASS\n";
         return 0;
     } catch (const std::exception& error) {
