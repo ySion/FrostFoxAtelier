@@ -133,7 +133,7 @@ void verify_field_presentation(Runtime& runtime) {
             require(retained.fields[i].name == plain_info->fields[i].name &&
                 retained.fields[i].value == plain_info->fields[i].value &&
                 retained.fields[i].offset == plain_info->fields[i].offset &&
-                retained.fields[i].default_value == plain_info->fields[i].default_value,
+                retained.fields[i].default_leaves == plain_info->fields[i].default_leaves,
                 "Presentation changed a field's storage contract.");
         require(inherited.id == retained.fields[0].id && inherited.label == value.label && inherited.category == value.category &&
             inherited.description == "描述型 Field\n说明",

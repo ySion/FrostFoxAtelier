@@ -180,12 +180,13 @@ class game.Move : world.Component {
 }
 ```
 
-- 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段只能是 bool/float/double/int/uint。没有初始化器时取对应零值；初始化器支持不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查。原生基类仍由原生构造函数初始化。
-- 类字段暂不能声明范围；继承的原生字段照常遵守其硬边界。建议的后续语法（未实现）复用 AFIELD 的名字，写在字段前：`[Min = 0.0, Max = 10.0, LockMin, HardMax = 100.0, Label = "Speed"] float speed = 2.0f;`。边界用字段类型的常量字面量，编译器把它们写入同一个 `FieldDefinition::range`；范围属于已发布定义，修改时按默认值变化同样返回 `rebuild_required`。
+- 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段可以是 bool/float/double/int/uint、float 或 double 的 vector2/3/4（短名或 `math.*` 规范名），以及已注册或同快照声明的枚举；四元数、矩阵、记录、数组、String 和对象引用不能作类字段。原生基类仍由原生构造函数初始化。
+- 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；枚举写 `geo.Axis::z`。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。
+- 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
 - 类方法为同步函数。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
 - 全局函数导出为函数名，类方法导出为 `完整类名.方法名`。类方法始终要求当前类视图的活接收者，即使方法体为空。宿主从 `Program::entries/describe/entry/pin` 取得签名和代码。
 - 整份快照共用类型发布事务。每个接收者环境的所有入口和助手共用一个 LLVM 模块；无方法类及仅声明的文件也须通过语义检查，不生成占位函数。一个方法失败会保留整个旧版本。
-- 创建 Runtime 对象后仍可发布。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的方法（含生命周期入口）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类、默认值变化，以及已有入口的签名变化返回 `rebuild_required`，由宿主重建上下文。参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名，以及只在该入口所在编译单元的输入变化时才更换的 `code`；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。默认值按浮点位表示比较，区分正负零。
+- 创建 Runtime 对象后仍可发布。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的方法（含生命周期入口）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类，已有字段的默认值、范围、`Label`、`Category` 或 `DESC` 变化，以及已有入口的签名变化返回 `rebuild_required`，由宿主重建上下文；只改属性列表里的空白仍可兼容发布。参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名，以及只在该入口所在编译单元的输入变化时才更换的 `code`；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。默认值按浮点位表示比较，区分正负零。
 - `Entry` 跟随整个项目的新版本，`Lease` 固定旧入口及其模块。共享助手沿实际调用链传播借用保护，无关入口使用 String/Array 不会关闭普通循环的 GC 安全点。所有操作仍在 Runtime 线程执行。
 
 快照不能与同一 Program 的单源码入口模式混用。项目入口暂不支持 async；单源码请求继续支持既有 async/yield。宿主 API 和发布顺序见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
@@ -200,8 +201,10 @@ module_constant = "const", scalar_type, identifier, "=", expression, ";" ;
 type_declaration = struct_declaration | enum_declaration | class_declaration ;
 class_declaration = "class", qualified_name, ":", qualified_name, "{",
                     { class_field | function }, "}", [ ";" ] ; (* 仅项目快照；方法必须同步 *)
-class_field    = ( "bool" | "float" | "double" | "uint" | "int" ), identifier,
-                 [ "=", expression ], ";" ;
+class_field    = [ "[", field_attribute, { ",", field_attribute }, "]" ],
+                 ( scalar_type | math_type ), identifier, [ "=", expression ], ";" ; (* 数学类型限 float/double 向量 *)
+field_attribute = ( "Min" | "Max" | "HardMin" | "HardMax" ), "=", expression | "LockMin" | "LockMax"
+                | ( "Label" | "Category" | "DESC" ), "=", string_literal ;
 struct_declaration = "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
 field_declaration = ( scalar_type | aggregate_type ), identifier, ";" ;
 enum_declaration = "enum", qualified_name, [ ":", ( "int" | "uint" ) ], "{",

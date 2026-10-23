@@ -70,9 +70,9 @@ uint process(const gameplay.Batch& input) {
 
 ## 原生对象的源码派生类
 
-项目快照中的 class 使用同一 `TypePublication` 事务准备，继承检查只查询事务类型目录；预览 TypeId 不进入正式 Runtime 查询或对象操作。发布后 `Runtime::create` 直接构造原生基类并应用描述型标量字段的默认值，不需要宿主调用第二个初始化入口。`FieldInfo::default_value` 描述相同默认值，原生字段仍由 C++ 构造函数负责。
+项目快照中的 class 使用同一 `TypePublication` 事务准备，继承检查只查询事务类型目录；预览 TypeId 不进入正式 Runtime 查询或对象操作。发布后 `Runtime::create` 直接构造原生基类并写入描述型标量、向量和枚举字段的默认值，不需要宿主调用第二个初始化入口。`FieldInfo::default_leaves` 按分量描述相同默认值，`range/label/category/description` 来自字段属性；原生字段仍由 C++ 构造函数负责，规则见[字段默认值](runtime-model.md#字段默认值)。
 
-已发布 class 的字段默认值与布局冻结；后续版本可以追加 class 和已有 class 的新方法。热更新保留已创建对象的字段值、地址和身份；关闭源码 Program 不注销类型。语法、限制和具名生命周期入口见 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类)，宿主发布示例见[项目快照](source-function-modules.md#项目快照与多个公开入口)。
+已发布 class 的布局、字段默认值、范围和展示文本冻结；后续版本可以追加 class 和已有 class 的新方法。热更新保留已创建对象的字段值、地址和身份；关闭源码 Program 不注销类型。语法、限制和具名生命周期入口见 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类)，宿主发布示例见[项目快照](source-function-modules.md#项目快照与多个公开入口)。
 
 ## 验收
 

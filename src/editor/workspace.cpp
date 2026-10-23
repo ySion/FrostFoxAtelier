@@ -1079,7 +1079,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             for(const auto id:property.path) {
                 const auto info=take(runtime.describe(owner));const auto at=std::ranges::find(info->fields,id,&FieldInfo::id);
                 if(at==info->fields.end()) break;
-                default_value=at->default_value;owner=at->value.type;
+                default_value=at->default_leaves.size()==1?std::optional<Scalar>{at->default_leaves.front()}:std::nullopt;owner=at->value.type;
             }
             const bool boolean=std::holds_alternative<bool>(property.value);
             const auto* enumeration=std::get_if<EnumValue>(&property.value);

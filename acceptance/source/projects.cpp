@@ -45,16 +45,16 @@ void verify_declaration_only_project() {
     auto rejected = Program::prepare(take(program.request(input)));
     require(!rejected && rejected.error().source && rejected.error().source->path == "Data.source" &&
         !runtime.find_type("game.Settings"), "Declaration-only project bypassed typed validation or partially published.");
-    input.files[0].source = "const float __source_validate = 1.0f; class game.Settings : world.Component { float speed = -0.0f; double value = 0.0d / 0.0d; }";
+    input.files[0].source = "const float __source_validate = 1.0f; class game.Settings : world.Component { float speed = -0.0f; double value = 1.0d / 3.0d; }";
     publish(program, input);
     require(program.entries().empty() && program.classes().size() == 1, "Declaration-only project exported a synthetic entry.");
     const auto type = program.classes()[0].type;
     auto instance = take(runtime.create(type));
     const auto speed = take(runtime.find_field(type,"speed"));
     require(std::signbit(std::get<float>(take(runtime.read(instance.id(), speed)))) &&
-        std::isnan(std::get<double>(take(runtime.read(instance.id(), take(runtime.find_field(type,"value")))))),
+        std::get<double>(take(runtime.read(instance.id(), take(runtime.find_field(type,"value"))))) == 1.0 / 3.0,
         "Runtime scalar defaults lost their floating representation.");
-    publish(program, input); // Same NaN representation must remain compatible.
+    publish(program, input); // The same representation stays compatible.
     input.files[0].source.replace(input.files[0].source.find("-0.0f"), 5, "0.0f");
     rejected = Program::prepare(take(program.request(input)));
     require(!rejected && rejected.error().code == ErrorCode::rebuild_required, "Changed signed-zero default was silently ignored.");
@@ -346,6 +346,129 @@ void verify_project_self_reads() {
     require(runtime.changed_since(id, cursor), "The write-stamp control missed a host write.");
     run(-2.0f, Quality::low, {1.0f, 0.5f, 0.0f}, 0.25f, 0.0f);
 }
+// Source class fields hold scalars, float/double vectors and enums, with whole-value defaults and AFIELD
+// attributes. Defaults and bounds are finite constants; changing them or the presentation text needs a rebuild.
+void verify_project_class_fields() {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<float>(runtime, "project.Floats"),
+        NativeRegistration<Quality>(runtime, "project.Quality", TypeKind::enumeration)
+            .enumerator("low", Quality::low).enumerator("high", Quality::high).build(),
+        NativeRegistration<CodeBase>(runtime, "project.CodeBase", TypeKind::object).build()}));
+    const std::string enums = "enum geo.Axis : uint { x, y, z }\nenum geo.Falloff { linear, smooth, constant }\n";
+    const std::string jitter = R"(class geo.Jitter : project.CodeBase {
+    [Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "Jitter distance.\nPer point."]
+    float amount = 0.5f;
+    [Min = -1.0, Max = 1.0, LockMin, LockMax] vector3 offset = vector3(0.25, -0.5, 1.0 / 8.0);
+    [HardMin = 0.0d] vector2d size = vector2d(1.0d, 2.0d);
+    vector4 color;
+    vector2 span = vector2();
+    geo.Axis up_axis = geo.Axis::z;
+    geo.Falloff falloff;
+    project.Quality quality = project.Quality::high;
+    [Min = 1, Max = 64, LockMin] uint samples = 8;
+    [HardMin = -5, HardMax = 5] int shift = -2;
+    float pick(Array<float>& values) {
+        float sum = 0.0f;
+        if (self.up_axis == geo.Axis::z && self.quality == project.Quality::high) { sum = self.offset.x + self.offset.z + float(self.shift); }
+        values[0] = sum;
+        return sum + self.amount;
+    }
+    void flip() { self.up_axis = geo.Axis::x; self.offset = vector3(0.5, 3.0, -0.5); self.amount = 50.0f; }
+}
+)";
+    const auto snapshot = [&](std::string body, std::string extra = {}) {
+        source::SourceSnapshot input{"fields", 1, {{"Enums.source", 1, enums}, {"Jitter.source", 1, std::move(body)}}};
+        if (!extra.empty()) input.files.push_back({"Bad.source", 1, std::move(extra)});
+        return input;
+    };
+    Program program(runtime);
+    publish(program, snapshot(jitter));
+    const auto type = program.classes()[0].type;
+    const auto axis = take(runtime.find_type("geo.Axis")), falloff = take(runtime.find_type("geo.Falloff"));
+    const auto quality = take(runtime.native_type<Quality>());
+    const auto* info = take(runtime.describe(type));
+    const auto described = [&](std::string_view name) -> const FieldInfo& { return *std::ranges::find(info->fields, name, &FieldInfo::name); };
+    const auto& amount = described("amount");
+    require(amount.label == "Amount" && amount.category == "Noise" && amount.description == "Jitter distance.\nPer point." &&
+        amount.range == FieldRange{Scalar{0.0f}, Scalar{2.0f}, Scalar{0.0f}, Scalar{10.0f}} &&
+        described("offset").range == FieldRange{Scalar{-1.0f}, Scalar{1.0f}, Scalar{-1.0f}, Scalar{1.0f}} &&
+        described("size").range == FieldRange{.hard_min = Scalar{0.0}} &&
+        described("samples").range == FieldRange{Scalar{1u}, Scalar{64u}, Scalar{1u}, {}} &&
+        described("shift").range == FieldRange{.hard_min = Scalar{std::int32_t{-5}}, .hard_max = Scalar{std::int32_t{5}}},
+        "Source field attributes did not publish their presentation text or ranges.");
+    require(described("offset").default_leaves == std::vector<Scalar>{0.25f, -0.5f, 0.125f} &&
+        described("size").default_leaves == std::vector<Scalar>{1.0, 2.0} && described("color").default_leaves == std::vector<Scalar>(4, 0.0f) &&
+        described("span").default_leaves == std::vector<Scalar>(2, 0.0f) &&
+        described("up_axis").default_leaves == std::vector<Scalar>{EnumValue{axis, 2}} &&
+        described("falloff").default_leaves == std::vector<Scalar>{EnumValue{falloff, 0}} &&
+        described("quality").default_leaves == std::vector<Scalar>{EnumValue{quality, 7}} &&
+        described("shift").default_leaves == std::vector<Scalar>{std::int32_t{-2}},
+        "Source field defaults did not publish one leaf per component.");
+    auto object = take(runtime.create(type));
+    const auto id = object.id();
+    const auto field = [&](std::string_view name) { return std::array{take(runtime.find_field(type, name))}; };
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
+    math::Vector3 offset;
+    math::Vector2d size;
+    take(runtime.read(id, field("offset"), ValueOutput{vector3, &offset}));
+    take(runtime.read(id, field("size"), ValueOutput{take(runtime.native_type<math::Vector2d>()), &size}));
+    require(offset == math::Vector3{0.25f, -0.5f, 0.125f} && size == math::Vector2d{1.0, 2.0} &&
+        take(runtime.read(id, field("up_axis"))) == Scalar{EnumValue{axis, 2}} && take(runtime.read(id, field("quality"))) == Scalar{EnumValue{quality, 7}} &&
+        take(runtime.read(id, field("samples"))) == Scalar{8u} && take(runtime.read(id, field("shift"))) == Scalar{std::int32_t{-2}},
+        "Runtime create did not apply Source vector, enum or scalar defaults.");
+    // A value region reads the declared vector and enum fields; Source writes clamp to declared hard bounds.
+    Array<float> values;
+    values.add(0.0f);
+    const std::array args{Argument::borrow(values)};
+    const auto pick = take(program.entry("geo.Jitter.pick"));
+    require(std::get<float>(*take(pick.invoke(id, args))) == -1.125f && values[0] == -1.625f,
+        "A value region misread a Source vector or enum field.");
+    take(take(program.entry("geo.Jitter.flip")).invoke(id, {}));
+    take(runtime.read(id, field("offset"), ValueOutput{vector3, &offset}));
+    require(offset == math::Vector3{0.5f, 1.0f, -0.5f} && take(runtime.read(id, field("amount"))) == Scalar{10.0f} &&
+        take(runtime.read(id, field("up_axis"))) == Scalar{EnumValue{axis, 0}} && std::get<float>(*take(pick.invoke(id, args))) == 10.0f,
+        "Source writes ignored the hard bounds or enum values of Source fields.");
+    const auto edited = [&](std::string_view from, std::string_view to) {
+        auto text = jitter;
+        const auto at = text.find(from);
+        require(at != std::string::npos, "A field edit anchor is missing.");
+        return snapshot(text.replace(at, from.size(), to));
+    };
+    publish(program, edited("[Min = 0.0, Max = 2.0,", "[ Min=0.0,Max  =  2.0 ,"));
+    publish(program, edited("] vector3 offset", "] math.vector3 offset"));
+    require(program.classes()[0].type == type, "Spacing in a field attribute list or a vector's canonical name changed the published class.");
+    for (const auto& [from, to] : std::initializer_list<std::pair<std::string_view, std::string_view>>{
+            {"\"Amount\"", "\"Amount 2\""}, {"\"Noise\"", "\"Other\""}, {"Per point.", "Per item."}, {"HardMax = 10.0", "HardMax = 11.0"},
+            {"vector3(0.25, -0.5", "vector3(0.25, -0.75"}, {"geo.Axis::z;", "geo.Axis::y;"}, {"[HardMin = 0.0d] ", ""}}) {
+        const auto failed = Program::prepare(take(program.request(edited(from, to))));
+        if (failed || failed.error().code != ErrorCode::rebuild_required)
+            throw std::runtime_error("A Source field edit published without a rebuild: " + std::string(to));
+    }
+    // Each malformed field reports its own line in its own file.
+    for (const auto& [member, fragment] : std::initializer_list<std::pair<std::string_view, std::string_view>>{
+            {"float bad = 0.0f / 0.0f;", "must be finite"}, {"float bad = 1e30f * 1e30f;", "must be finite"},
+            {"vector3 bad = vector3(1.0, 0.0 / 0.0, 2.0);", "must be finite"},
+            {"vector3 bad = vector3(1.0, 2.0);", "one constant per component"},
+            {"vector3 bad = vector3(1.0, 2.0, 3.0) * 2.0;", "one constant per component"},
+            {"vector3d bad = vector3d(1.0d, 2.0, 3.0d);", ""}, {"quaternion bad;", "quaternions or matrices"},
+            {"project.CodeBase bad;", "Source object fields require"}, {"geo.Axis bad = geo.Falloff::linear;", "Enum field defaults name one item"},
+            {"geo.Axis bad = geo.Axis::w;", "Enum field defaults name one item"}, {"[Min = 0.0] bool bad;", "Field ranges require"},
+            {"[HardMax = 1] geo.Axis bad;", "Field ranges require"}, {"[LockMin] float bad;", "requires Min and excludes HardMin"},
+            {"[Min = 0.0, LockMin, HardMin = 1.0] float bad;", "requires Min and excludes HardMin"},
+            {"[Min = 2.0, Max = 1.0] float bad;", "minimum exceeds maximum"}, {"[HardMax = 1.0] float bad = 2.0f;", "default lies outside hard bounds"},
+            {"[HardMin = 0.0] vector3 bad = vector3(1.0, -1.0, 1.0);", "default lies outside hard bounds"},
+            {"[Min = 0.0d] float bad;", ""}, {"[Min = missing] float bad;", ""}, {"[Min = 1.0 +] float bad;", ""},
+            {"vector3 bad = vector3(1.0, 2.0, );", ""}, {"[Label = \"a\\nb\"] float bad;", "control characters"},
+            {"[DESC = \"a\\0b\"] float bad;", "Description requires valid UTF-8"}, {"[Label = 1.0] float bad;", "requires a string literal"},
+            {"[Shape = 1.0] float bad;", "Unknown field attribute"}, {"[Min = 0.0, Min = 1.0] float bad;", "Duplicate field attribute"},
+            {"[Min = 0.0] void bad() {}", "Attributes apply only to class fields"}}) {
+        const auto failed = Program::prepare(take(program.request(snapshot(jitter, "class game.Bad : project.CodeBase {\n    " + std::string(member) + "\n}\n"))));
+        if (failed || !failed.error().source || failed.error().source->path != "Bad.source" || failed.error().source->line != 2 ||
+            failed.error().message.find(fragment) == std::string::npos)
+            throw std::runtime_error("A malformed Source field was not rejected at its line: " + std::string(member) + " -> " +
+                (failed ? std::string("accepted") : failed.error().message));
+    }
+}
 struct EditorPanel { float x; };
 struct ProjectHost { float x; };
 // The editor registers its own types under editor. in the same Runtime before project Source
@@ -458,7 +581,7 @@ void verify_source_projects() {
         "Double, signed integer or bool field defaults were not applied.");
     const auto* info = take(runtime.describe(type));
     bool default_found = false;
-    for (const auto& field : info->fields) if (field.id == speed) default_found = field.default_value && std::get<float>(*field.default_value) == 2.f;
+    for (const auto& field : info->fields) if (field.id == speed) default_found = field.default_leaves == std::vector<Scalar>{2.f};
     require(default_found, "Runtime metadata did not describe the default.");
     const auto signature = take(program.describe("game.Move.tick"));
     require(signature.receiver && signature.receiver->type == type && signature.parameters.size() == 1,
@@ -566,8 +689,9 @@ void verify_source_projects() {
     verify_project_borrow_effects();
     verify_project_entry_codes();
     verify_project_self_reads();
+    verify_project_class_fields();
     verify_project_field_ranges();
     verify_editor_reserved_types();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, entry codes/revision, diagnostics, lifetime, "
-        "read-only self fields in value regions with borrow and GC rules unchanged)");
+        "read-only self fields in value regions with borrow and GC rules unchanged, vector/enum class fields with attributes)");
 }
