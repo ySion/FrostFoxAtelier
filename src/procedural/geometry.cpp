@@ -69,7 +69,7 @@ Result<Geometry> Geometry::polygons(Array<math::Vector3> positions, Array<std::u
         if (point >= point_count) return failure("A vertex refers to a missing point.");
     std::uint32_t uniform = offsets.size() > 1 ? offsets[1] : 0;
     for (std::size_t p = 1; p < offsets.size(); ++p) {
-        if (offsets[p] < offsets[p - 1] + 3) return failure("Each primitive needs at least three vertices.");
+        if (offsets[p] < offsets[p - 1] || offsets[p] - offsets[p - 1] < 3) return failure("Each primitive needs at least three vertices.");
         if (offsets[p] - offsets[p - 1] != uniform) uniform = 0;
     }
     result->vertices_ = static_cast<std::uint32_t>(vertex_points.size());
@@ -109,12 +109,12 @@ Usage Geometry::conventional_usage(StringView name) noexcept {
 }
 
 std::size_t Geometry::bytes() const noexcept {
-    std::size_t total = (vertex_points_->size() + (offsets_ ? offsets_->size() : 0) + instance_references_->size()) *
-        sizeof(std::uint32_t) + instance_transforms_->size() * sizeof(math::Matrix4) + references_.size() * sizeof(Reference);
+    std::size_t total = (vertex_points_->capacity() + (offsets_ ? offsets_->capacity() : 0) + instance_references_->capacity()) *
+        sizeof(std::uint32_t) + instance_transforms_->capacity() * sizeof(math::Matrix4) + references_.capacity() * sizeof(Reference);
     for (const auto& attribute : attributes_)
         total += std::visit([](const auto& column) {
             using T = typename std::remove_cvref_t<decltype(*column)>::Value;
-            std::size_t size = column->size() * sizeof(T);
+            std::size_t size = column->capacity() * sizeof(T);
             if constexpr (std::same_as<T, String>) for (const auto& text : *column) size += text.size();
             return size;
         }, attribute.data);

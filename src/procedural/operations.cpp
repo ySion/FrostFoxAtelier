@@ -36,7 +36,7 @@ Vector3 transform_normal(Vector3 n, const std::array<double, 9>& rows) {
                           n.x * rows[1] + n.y * rows[4] + n.z * rows[7],
                           n.x * rows[2] + n.y * rows[5] + n.z * rows[8]};
     const double length = math::length(result);
-    return length == 0 || !std::isfinite(length) ? Vector3{} : narrow(result / length);
+    return length == 0 ? Vector3{} : narrow(result / length); // Non-finite input stays non-finite for the caller's check.
 }
 
 // The shortest rotation taking +Z to the unit vector `z`.
@@ -162,8 +162,13 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         Array<std::uint32_t> kept;
         for (std::uint32_t i = 0; i < positions.size(); ++i) {
             const auto p = widen(positions[i]);
-            const std::array<std::int64_t, 3> c{static_cast<std::int64_t>(std::floor(p.x / cell)),
-                static_cast<std::int64_t>(std::floor(p.y / cell)), static_cast<std::int64_t>(std::floor(p.z / cell))};
+            std::array<std::int64_t, 3> c;
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                // Leaves room for the neighbour offsets below.
+                const double index = std::floor(p[axis] / cell);
+                if (!(std::abs(index) < 0x1p62)) return failure("Scatter minimum distance is too small for the point coordinates.");
+                c[axis] = static_cast<std::int64_t>(index);
+            }
             bool near = false;
             for (std::int64_t x = -1; x <= 1 && !near; ++x)
                 for (std::int64_t y = -1; y <= 1 && !near; ++y)
@@ -212,7 +217,10 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
         const auto view = StringView{name};
         if (std::holds_alternative<Column<Quaternion>>(attribute->data) && name == "orient") {
             auto& values = *value(geometry.write<Quaternion>(view, layer));
-            for (auto& q : values) q = *unit_rotation * q;
+            for (auto& q : values) {
+                q = *unit_rotation * q;
+                if (!math::is_finite(q)) return failure("Transformed orient is not finite.");
+            }
             continue;
         }
         if (!std::holds_alternative<Column<Vector3>>(attribute->data)) continue;

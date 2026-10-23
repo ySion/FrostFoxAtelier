@@ -119,6 +119,9 @@ void scatter_counts_and_stability() {
         for (std::size_t j = 0; j < i; ++j)
             require(math::length(kept[i] - kept[j]) >= 0.3f, "Two kept points are closer than the minimum distance.");
     require(column<std::uint32_t>(spaced, "id", Layer::point).size() == kept.size(), "Elimination left columns unequal.");
+    // Cell coordinates beyond the integer range fail instead of overflowing.
+    reject(scatter(triangles({{0, 0, 1}, {1, 0, 1}, {0, 1, 1}}), {.density = 2, .min_distance = 1e-20f}),
+        "A minimum distance past the cell range scattered.");
 }
 
 void transform_by_usage() {
@@ -151,6 +154,14 @@ void transform_by_usage() {
     take(transform(flat, {}, {}, {1, 1, 0}));
     const auto& flattened = column<Vector3>(flat, "N", Layer::point);
     require(near(flattened[0], {0, 0, 1}) && flattened[1] == Vector3{}, "Singular transforms broke plane normals.");
+    // A non-finite normal or orientation fails even under the identity.
+    for (const bool orientation : {false, true}) {
+        auto broken = take(line({0, 0, 0}, {1, 0, 0}, 2));
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        if (orientation) take(broken.add<Quaternion>("orient", Layer::point, {nan, 0, 0, 1}));
+        else take(broken.set(String{"N"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{nan, 0, 1}, {0, 0, 1}})));
+        reject(transform(broken, {}, {}, {1, 1, 1}), "A NaN normal or orientation was transformed.");
+    }
 
     // A reflection reverses each primitive with its vertex attributes.
     const auto cube = import_mesh(*geometry::cube_mesh());
@@ -204,6 +215,8 @@ void removal_merge_and_promotion() {
     face_flags[0] = face_flags[5] = true;
     const auto fewer = take(faces.remove_flagged(Layer::primitive, "cut"));
     require(fewer.count(Layer::primitive) == 10 && fewer.count(Layer::point) == 8, "Removing primitives removed points.");
+    // An offset whose step would wrap past 2^32 is not a primitive.
+    reject(Geometry::polygons({}, {}, Array<std::uint32_t>{0, 0xffff'fffdu, 0}), "Wrapping primitive offsets were accepted.");
 
     reject(Geometry::merge(std::vector{points, cube}), "Point N and vertex N merged.");
     const auto pair = take(Geometry::merge(std::vector{cube, cube}));
@@ -450,6 +463,19 @@ void bvh_queries() {
     const auto above = stacked.ray({1, 5, 1}, {0, -1, 0}, 10), below = stacked.ray({1, -5, 1}, {0, 1, 0}, 10);
     require(above && above->primitive == 0 && near(above->distance, 4) && below && below->primitive == 1 && near(below->distance, 5),
         "A ray did not keep the nearest of several hits.");
+    // A negative-zero direction component hits the box boundary like a positive one.
+    const auto edge = take(Bvh::build(triangles({{-1, 0, 0}, {0, -1, 0}, {0, 1, 0}})));
+    for (const auto direction : {Vector3{0, 0, -1}, -Vector3{0, 0, 1}}) {
+        const auto hit = edge.ray({0, 0, 1}, direction, 2);
+        require(hit && near(hit->distance, 1), "The sign of a zero direction component changed a hit.");
+    }
+    // Finite coordinates whose float products overflow give finite hits within the limit.
+    const auto huge = take(Bvh::build(triangles({{0, 0, 0}, {1e20f, 0, 0}, {0, 1e20f, 0}})));
+    const auto far_hit = huge.ray({2.5e19f, 2.5e19f, 1}, {0, 0, -1}, 2);
+    require(far_hit && far_hit->distance == 1 && math::is_finite(far_hit->uv) && near(far_hit->uv.x, 0.25f) &&
+        far_hit->position == Vector3{2.5e19f, 2.5e19f, 0}, "Overflowing products broke a ray hit.");
+    const auto distant = take(Bvh::build(triangles({{2e20f, 0, 0}, {2e20f, 1, 0}, {2e20f, 0, 1}})));
+    require(!distant.closest({0, 0, 0}, 1e20f) && distant.closest({0, 0, 0}, 3e20f), "Overflowing squares broke the closest range.");
 }
 
 void ray_node() {
@@ -770,10 +796,23 @@ void profile(const char* path) {
         take(transform(moved, {1, 2, 3}, axis_angle({0, 1, 0}, 30), {1, 2, 1}));
     }));
 
+    const auto terrain = terrain_mesh(128, 64);
+    const auto terrain_surface = import_mesh(*terrain);
+    std::optional<Bvh> bvh;
+    number("bvh_build_ms", median_ms(samples, [](int) {}, [&] { bvh.emplace(take(Bvh::build(terrain_surface))); }));
+    number("bvh_triangles", terrain_surface.count(Layer::primitive));
+    number("bvh_rays_ms", median_ms(samples, [](int) {}, [&] {
+        std::uint32_t hits = 0;
+        for (std::uint32_t r = 0; r < 224; ++r)
+            for (std::uint32_t c = 0; c < 224; ++c)
+                hits += bvh->ray({float(c) * 63.f / 223.f + 0.5f, 50.f, float(r) * 63.f / 223.f + 0.5f}, {0, -1, 0}, 1000.f).has_value();
+        require(hits == 224 * 224, "Every profile ray hits the terrain.");
+    }));
+
     Runtime runtime;
     take(register_types(runtime));
     Meshes resources;
-    resources.meshes["profile/terrain"] = terrain_mesh(128, 64);
+    resources.meshes["profile/terrain"] = terrain;
     resources.meshes["profile/rock"] = geometry::cube_mesh();
     const auto graph_root = take(runtime.create(type<Graph>(runtime)));
     const auto graph = graph_root.id();

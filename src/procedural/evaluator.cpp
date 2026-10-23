@@ -204,7 +204,8 @@ struct Evaluator::Impl {
         if (!called) return std::unexpected(called.error());
         entry->serial = ++serials;
         entry->revision = revision;
-        entry->bytes = sizeof(Entry) + entry->key.size();
+        // The cache map holds a second copy of the key.
+        entry->bytes = sizeof(Entry) + 2 * entry->key.capacity() + entry->dependencies.capacity() * sizeof(Reference);
         for (const auto& geometry : entry->outputs) entry->bytes += geometry.bytes();
         store(entry);
         return entry;
