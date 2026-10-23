@@ -142,6 +142,7 @@ struct Program {
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.
+// allow_declarations checks a module that selects no entry, with or without functions.
 [[nodiscard]] std::expected<Program, Diagnostic> compile_source(
     std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name = {},
     bool allow_declarations = false);

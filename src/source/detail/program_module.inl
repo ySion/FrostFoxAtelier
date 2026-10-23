@@ -219,8 +219,11 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         for (auto& field : cls.fields)
             for (const auto& value : state_->contract->binding.values)
                 if (value.math && field.type == math::short_name(value.math)) field.type = value.name;
-    auto values = language::collect_declarations(module.source.common.text);
-    if (!values) return fail(mapped_error(input, module.source.common, values.error().position, values.error().message));
+    language::MappedSource types;
+    for (const auto& declaration : module.source.declarations)
+        if (declaration.kind == language::TopLevel::Kind::type) types.append(declaration.source);
+    auto values = language::collect_declarations(types.text);
+    if (!values) return fail(mapped_error(input, types, values.error().position, values.error().message));
     module.value_types = std::move(*values);
     auto& runtime = *state_->contract->binding.runtime;
     // Functions and constants share dotted names with types: Class.method entries need both rules.
@@ -228,17 +231,16 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         return (!language::editor_reserved(name) && runtime.find_type(name)) ||
             find_named(module.source.classes, name) || find_named(module.value_types, name);
     };
-    const auto shared_name = [&](std::string_view name, std::uint32_t file, language::SourcePosition position) -> std::optional<Error> {
+    for (const auto& declaration : module.source.declarations) {
+        if (declaration.kind == language::TopLevel::Kind::type) continue;
+        const std::string_view name = declaration.name;
         if (type_named(name))
-            return source_error(input, file, position, "A source function or constant cannot share a name with a type: " + std::string(name));
+            return fail(source_error(input, declaration.file, declaration.position,
+                "A source function or constant cannot share a name with a type: " + declaration.name));
         if (const auto dot = name.rfind('.'); dot != std::string_view::npos && type_named(name.substr(0, dot)))
-            return source_error(input, file, position, "A source function or constant name cannot extend a type name: " + std::string(name));
-        return std::nullopt;
-    };
-    for (const auto& function : module.source.functions)
-        if (auto error = shared_name(function.name, function.file, function.position)) return fail(std::move(*error));
-    for (const auto& constant : module.source.constants)
-        if (auto error = shared_name(constant.name, constant.file, constant.position)) return fail(std::move(*error));
+            return fail(source_error(input, declaration.file, declaration.position,
+                "A source function or constant name cannot extend a type name: " + declaration.name));
+    }
     // A published module only grows: deleting, renaming or changing a published
     // export, type or class needs a rebuild; new ones publish compatibly.
     const ModuleRequest* published = state_->module ? state_->module->request.get() : nullptr;
@@ -309,13 +311,27 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     }
     const auto catalog = request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
     request->compilation_contract_ = std::make_shared<const Contract>(runtime, TypeId{}, catalog);
-    if (!module.source.functions.empty()) {
-        ModuleRequest::Unit unit{request->compilation_contract_, {}, {}, {}, {}};
+    // A unit compiles its own text with the closure of the declarations it spells. Every top-level
+    // declaration is checked in its home unit: the project's, whose functions are the global
+    // entries, or its engine module's, which only checks.
+    const auto home = [&](std::string_view engine) {
+        std::vector<std::uint32_t> roots;
+        for (std::uint32_t i = 0; i < module.source.declarations.size(); ++i)
+            if (module.source.declarations[i].engine == engine) roots.push_back(i);
+        return roots;
+    };
+    if (const auto roots = home({}); !roots.empty()) {
+        ModuleRequest::Unit unit{request->compilation_contract_, module.source.closure(roots), {}, {}, {}, false};
         for (const auto& function : module.source.functions) {
             unit.names.push_back(function.name); unit.parameter_names.push_back(function.parameters);
         }
         module.units.push_back(std::move(unit));
     }
+    std::vector<std::string_view> engines;
+    for (const auto& declaration : module.source.declarations)
+        if (!declaration.engine.empty() && std::ranges::find(engines, declaration.engine) == engines.end()) engines.push_back(declaration.engine);
+    for (const auto engine : engines)
+        module.units.push_back({request->compilation_contract_, module.source.closure(home(engine)), {}, "engine/" + std::string(engine), {}, false});
     for (const auto& cls : module.source.classes) {
         const TypeInfo* info{};
         if (catalog.empty()) { auto found = runtime.find_type(cls.name); if (found) info = take(runtime.describe(*found)); }
@@ -323,14 +339,12 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (!info || !info->base) return fail(source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
         module.classes.push_back({cls.name, info->id, *info->base});
         if (cls.methods.empty()) continue;
-        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog), {}, {}, cls.name, {}};
+        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog), module.source.closure(cls.uses), {}, cls.name, {}, true};
         for (const auto& method : cls.methods) {
             unit.source.append(method.source); unit.names.push_back(method.name); unit.parameter_names.push_back(method.parameters);
         }
         module.units.push_back(std::move(unit));
     }
-    // An empty export set still uses the same parser to check all declarations.
-    if (module.units.empty()) module.units.push_back({request->compilation_contract_, {}, {}, {}, {}});
     return request;
 }
 
@@ -351,33 +365,45 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
         }
     }
     for (const auto& unit : request->module_->units) {
-        auto text = request->module_->source.common;
-        text.append(unit.source);
-        // An entry keeps its published code only while its whole unit compiles from identical input.
+        const auto& text = unit.source;
+        // A unit whose input matches the published unit keeps its machine code and entry codes without
+        // being checked or compiled again; its Versions are rebuilt for this snapshot and sequence.
         const ModuleVersion* kept = nullptr;
         if (owner->module) {
             const auto& old = *owner->module->request;
             const auto found = std::ranges::find(old.units, unit.owner, &ModuleRequest::Unit::owner);
-            // Entry names derive from the unit text, so the text, options, snapshot name and catalog cover the input.
-            if (found != old.units.end() && found->source.text == unit.source.text &&
-                old.source.common.text == request->module_->source.common.text && old.snapshot->name == snapshot.name &&
+            // The unit text holds every declaration it compiles; a declaration moving between an engine and a
+            // project file keeps the text but changes the exports, so the names are compared as well.
+            if (found != old.units.end() && found->source.text == unit.source.text && found->names == unit.names &&
+                old.snapshot->name == snapshot.name &&
                 old.options == request->module_->options && found->contract->binding == unit.contract->binding)
                 kept = owner->module.get();
         }
-        const EnvironmentView storage(unit.contract->binding);
-        const auto environment = storage.view(unit.contract->type_name.c_str());
-        std::vector<const char*> names;
-        for (const auto& name : unit.names) names.push_back(name.c_str());
-        std::vector<BusinessCode*> output(names.size());
-        std::vector<CodeOwner> codes;
-        codes.reserve(names.size());
-        CompileLocation location{}; char diagnostic[2048]{};
-        const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
-            text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
-            names.data(), static_cast<std::uint32_t>(names.size()), !unit.owner.empty(), output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
-        for (auto* code : output) codes.emplace_back(code, &atelier_destroy_business);
-        if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
-            {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+        const auto entry_name = [&](const std::string& method) { return unit.receiver ? unit.owner + "." + method : method; };
+        const auto kept_index = [&](const std::string& name) {
+            return static_cast<std::size_t>(std::ranges::find(kept->entries, name, &EntryInfo::name) - kept->entries.begin());
+        };
+        std::vector<std::shared_ptr<BusinessCode>> codes;
+        codes.reserve(unit.names.size());
+        if (kept) {
+            for (const auto& method : unit.names) codes.push_back(kept->versions[kept_index(entry_name(method))]->code);
+        } else {
+            const EnvironmentView storage(unit.contract->binding);
+            const auto environment = storage.view(unit.contract->type_name.c_str());
+            std::vector<const char*> names;
+            for (const auto& name : unit.names) names.push_back(name.c_str());
+            std::vector<BusinessCode*> output(names.size());
+            std::vector<CodeOwner> owned;
+            owned.reserve(names.size());
+            CompileLocation location{}; char diagnostic[2048]{};
+            const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
+                text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
+                names.data(), static_cast<std::uint32_t>(names.size()), unit.receiver, output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
+            for (auto* code : output) owned.emplace_back(code, &atelier_destroy_business);
+            if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
+                {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+            for (auto& code : owned) codes.push_back(std::move(code));
+        }
         auto map = std::make_shared<const SourceMap>(SourceMap{request->module_->snapshot, text.pieces});
         std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
         std::shared_ptr<const DebugTables> debug_tables;
@@ -393,7 +419,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             auto signature = unit.contract->resolve_signature(info, request->type_publication_.get());
             if (!signature) return std::unexpected(signature.error());
             const auto& method = unit.names[i];
-            if (!unit.owner.empty()) {
+            if (unit.receiver) {
                 const bool tick = method == "tick" || method == "post_physics_tick" || method == "late_tick";
                 if ((tick || method == "begin" || method == "end") &&
                     (signature->result || signature->parameters.size() != (tick ? 1u : 0u) ||
@@ -403,9 +429,8 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                         "Lifecycle methods require void begin(), void tick(float), void post_physics_tick(float), "
                         "void late_tick(float), or void end()."});
             }
-            const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
-            const auto code = kept ? std::ranges::find(kept->entries, name, &EntryInfo::name)->code
-                : next_entry_code.fetch_add(1, std::memory_order_relaxed);
+            const auto name = entry_name(method);
+            const auto code = kept ? kept->entries[kept_index(name)].code : next_entry_code.fetch_add(1, std::memory_order_relaxed);
             module->entries.push_back({name, *signature, unit.parameter_names[i], code});
             auto declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,

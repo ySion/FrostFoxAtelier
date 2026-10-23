@@ -1856,10 +1856,8 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                     diagnostic.position.line, diagnostic.position.column, diagnostic.message.c_str());
             return 1;
         }
-        if (declarations_only) {
-            if (!program->functions.empty()) throw std::runtime_error("Source functions require declared exports.");
-            return 0;
-        }
+        // No exports: a check unit, whose declarations and bodies are type-checked without code.
+        if (declarations_only) return 0;
         if (entry_count) {
             std::vector<std::string_view> names;
             for (std::uint32_t i = 0; i < entry_count; ++i) names.emplace_back(entries[i]);

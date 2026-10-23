@@ -1,3 +1,4 @@
+#include "source/debugger.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
@@ -34,8 +35,8 @@ class game.Move : world.Component {
 }
 )"}}};
 }
-void publish(Program& program, source::SourceSnapshot snapshot) {
-    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot)))));
+void publish(Program& program, source::SourceSnapshot snapshot, source::CompileOptions options = {}) {
+    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot), options))));
     take(program.try_publish(candidate));
     require(!candidate, "Published project candidate retained an independently publishable result.");
 }
@@ -621,14 +622,14 @@ class mygame.Foo : procedural.Base {
     float run(float v) { return procedural.scaled(v) + float(procedural.SEED); }
 }
 uint project_hash(uint v) { return procedural.hash(v); }
+float project_scaled(float v) { return procedural.scaled(v); }
 float shadowed() { vector3 procedural = vector3(1.0, 2.0, 3.0); return procedural.y; }
 float unshadowed() { return procedural.y; }
 )"}}));
     const auto invoke = [&](std::string_view name, std::span<const Scalar> arguments) { return *take(take(program.entry(name)).invoke({}, arguments)); };
     const std::array five{Scalar{std::uint32_t{5}}}, half{Scalar{0.5f}};
-    require(std::get<std::uint32_t>(invoke("procedural.hash", five)) == 162 && std::get<std::uint32_t>(invoke("project_hash", five)) == 162 &&
-        std::get<float>(invoke("procedural.scaled", half)) == 34.5f && std::get<float>(invoke("shadowed", {})) == 2.0f &&
-        std::get<float>(invoke("unshadowed", {})) == 9.0f,
+    require(std::get<std::uint32_t>(invoke("project_hash", five)) == 162 && std::get<float>(invoke("project_scaled", half)) == 34.5f &&
+        std::get<float>(invoke("shadowed", {})) == 2.0f && std::get<float>(invoke("unshadowed", {})) == 9.0f,
         "Qualified engine functions, constants or local shadowing evaluated incorrectly.");
     const auto classes = program.classes();
     const auto base = take(runtime.find_type("procedural.Base"));
@@ -636,6 +637,125 @@ float unshadowed() { return procedural.y; }
         std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "procedural.Jitter.evaluate"; }) &&
         std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "mygame.Foo.run"; }),
         "Engine and project classes on the engine's native base did not publish.");
+}
+// A unit compiles its own text with the declarations it spells, so its code follows only them;
+// engine functions are internal, and each declaration is still checked in its home unit.
+void verify_project_compile_units() {
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    const auto snapshot = [](std::string_view inner, std::string_view unused, std::string_view b, std::string_view extra = {}) {
+        return source::SourceSnapshot{"units", 1, {
+            {"Source/Game.source", 1, "float twice(float x) { return x * 2.0; }\n"
+                "class game.A : procedural.Base { float run(float x) { return procedural.used(x); } }\n"
+                "class game.B : procedural.Base { float run(float x) { return twice(x) + " + std::string(b) + "; } }\n" + std::string(extra)},
+            {"engine/procedural/lib.source", 1, "const float procedural.K = 3.0;\n"
+                "float procedural.inner(float x) { return x + procedural.K * " + std::string(inner) + "; }\n"
+                "float procedural.used(float x) { return procedural.inner(x) * 2.0; }\n"
+                "float procedural.unused(float x) { return x - " + std::string(unused) + "; }\n"}}};
+    };
+    const auto codes = [&] {
+        std::vector<std::pair<std::string, std::uint64_t>> result;
+        for (const auto& entry : program.entries()) result.emplace_back(entry.name, entry.code);
+        std::ranges::sort(result);
+        return result;
+    };
+    const auto rejected = [&](source::SourceSnapshot input, std::string_view path, std::string_view expected, const char* message) {
+        auto failed = Program::prepare(take(program.request(std::move(input))));
+        if (failed || !failed.error().source || failed.error().source->path != path || failed.error().message.find(expected) == std::string::npos)
+            throw std::runtime_error(std::string(message) + (failed ? "" : " Got: " + failed.error().message));
+    };
+    rejected(snapshot("1.0", "true", "1.0"), "engine/procedural/lib.source", "", "An uncalled engine function skipped its type check.");
+    rejected(snapshot("1.0", "1.0", "1.0", "const uint BAD = 1.5;\n"), "Source/Game.source", "", "An unused project constant skipped its type check.");
+    rejected(snapshot("1.0", "1.0", "1.0", "float twice(float y) { return y; }\n"), "Source/Game.source",
+        "Duplicate source function name", "A repeated top-level name was accepted.");
+    rejected(snapshot("1.0", "1.0", "1.0", "class game.C : procedural.Base { float twice(float x) { return x; } }\n"), "Source/Game.source",
+        "Duplicate source function name", "A class method shared a global function's name.");
+    publish(program, snapshot("1.0", "1.0", "1.0"));
+    const auto first = codes();
+    require(first.size() == 3 && first[0].first == "game.A.run" && first[1].first == "game.B.run" && first[2].first == "twice" &&
+        !program.entry("procedural.used"), "Engine functions were published as entries.");
+    const auto a = take(runtime.create(program.classes()[0].type));
+    const std::array one{Scalar{1.0f}};
+    require(std::get<float>(*take(take(program.entry("game.A.run")).invoke(a.id(), one))) == 8.0f,
+        "A class did not compile the engine functions it reaches transitively.");
+    publish(program, snapshot("1.0", "2.0", "1.0"));
+    require(codes() == first, "Editing an uncalled engine function changed a code.");
+    publish(program, snapshot("2.0", "2.0", "1.0"));
+    const auto second = codes();
+    require(second[0].second != first[0].second && second[1] == first[1] && second[2] == first[2],
+        "Editing an engine function changed codes beyond the class that reaches it.");
+    require(std::get<float>(*take(take(program.entry("game.A.run")).invoke(a.id(), one))) == 14.0f,
+        "The class that reaches an edited engine function kept its old code.");
+    publish(program, snapshot("2.0", "2.0", "5.0"));
+    const auto third = codes();
+    require(third[0] == second[0] && third[1].second != second[1].second && third[2] == second[2],
+        "Editing one class changed another unit's code.");
+    // Moving an engine function into a project file keeps the project unit's text but adds an export.
+    Program moved(runtime);
+    publish(moved, {"moved", 1, {{"Source/a.source", 1, "float f() { return m.g(); }\n"}, {"engine/m/x.source", 1, "float m.g() { return 1.0; }\n"}}});
+    const auto before = moved.entries()[0].code;
+    publish(moved, {"moved", 1, {{"Source/a.source", 1, "float f() { return m.g(); }\n"}, {"Source/b.source", 1, "float m.g() { return 1.0; }\n"}}});
+    const auto after = moved.entries();
+    require(after.size() == 2 && after[0].code != after[1].code && after[0].code != before && after[1].code != before &&
+        std::get<float>(*take(take(moved.entry("m.g")).invoke({}, {}))) == 1.0f,
+        "A unit whose text stayed the same while its exports grew kept its old codes.");
+}
+// A unit compiled from unchanged input keeps its machine code; the new Version maps faults and
+// breakpoints through the current files and works once the module that compiled it is gone.
+void verify_project_code_reuse() {
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    const auto snapshot = [](std::size_t lines, std::string_view b, std::string_view extra = {}) {
+        return source::SourceSnapshot{"reuse", 1, {{"Source/Game.source", lines + 1, std::string(lines, '\n') +
+            "class game.A : procedural.Base {\n    int run(int x) {\n        return 10 / x;\n    }\n}\n"
+            "class game.B : procedural.Base { int run(int x) { return x + " + std::string(b) + "; } }\n" + std::string(extra)}}};
+    };
+    const std::array zero{Scalar{std::int32_t{0}}}, five{Scalar{std::int32_t{5}}};
+    const auto fault = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
+        const auto failed = lease.invoke(receiver, zero);
+        return !failed && failed.error().source && failed.error().source->path == "Source/Game.source" &&
+            failed.error().source->line == line && failed.error().source->version == version;
+    };
+    const auto stop_line = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
+        std::optional<source::DebugBreakpoint> at;
+        for (const auto& site : take(lease.debug_sites()))
+            if (site.source.line == line) at = source::DebugBreakpoint{site.source.path, site.source.version, line, 0};
+        if (!at || at->source_version != version) return false;
+        std::size_t stopped{};
+        source::Debugger debugger([&](const source::DebugSnapshot& stop) {
+            stopped = stop.frames[0].location.source.line;
+            return stop.command(source::DebugAction::continue_execution);
+        }, {.break_on_entry = false});
+        take(debugger.set_breakpoints({*at}));
+        return std::get<std::int32_t>(*take(lease.invoke(receiver, five, {1}, nullptr, &debugger))) == 2 && stopped == line;
+    };
+    publish(program, snapshot(0, "1"));
+    const auto a = take(runtime.create(program.classes()[0].type));
+    auto first = take(program.pin("game.A.run"));
+    require(fault(first, a.id(), 3, 1), "A fault lost its source location.");
+    publish(program, snapshot(2, "2"), {.debugging = true});
+    auto second = take(program.pin("game.A.run"));
+    require(second.address() != first.address() && stop_line(second, a.id(), 5, 3),
+        "Changed compile options reused code compiled without them.");
+    const auto code = program.entries()[0].code;
+    // A new class makes this request publish a type, so reuse also runs through the type-bound Contract.
+    publish(program, snapshot(4, "3", "class game.C : procedural.Base { int run(int x) { return x; } }\n"), {.debugging = true});
+    auto third = take(program.pin("game.A.run"));
+    require(program.classes().size() == 3 && third.address() == second.address() && program.entries()[0].code == code,
+        "An unchanged class unit was compiled again.");
+    require(fault(third, a.id(), 7, 5) && stop_line(third, a.id(), 7, 5),
+        "Reused code mapped faults or breakpoints through the files it was compiled from.");
+    require(fault(first, a.id(), 3, 1) && fault(second, a.id(), 5, 3) &&
+        std::get<std::int32_t>(*take(second.invoke(a.id(), five))) == 2, "Leases on older modules stopped working.");
+    // The second module and its Contract are released; the reused code must not refer to them.
+    first = {};
+    second = {};
+    third = {};
+    const auto entry = take(program.entry("game.A.run"));
+    require(std::get<std::int32_t>(*take(entry.invoke(a.id(), five))) == 2 && fault(take(program.pin("game.A.run")), a.id(), 7, 5),
+        "Reused code failed once the module that compiled it was released.");
 }
 }
 
@@ -803,7 +923,9 @@ void verify_source_projects() {
     verify_project_field_ranges();
     verify_editor_reserved_types();
     verify_project_engine_sources();
+    verify_project_compile_units();
+    verify_project_code_reuse();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, entry codes/revision, diagnostics, lifetime, "
         "read-only self fields in value regions with borrow and GC rules unchanged, vector/enum class fields with attributes, "
-        "engine sources with qualified names and reserved namespaces)");
+        "engine sources with qualified names and reserved namespaces, compile units that follow only what they reach, unchanged units that keep their code)");
 }

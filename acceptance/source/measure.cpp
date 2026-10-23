@@ -446,6 +446,70 @@ void dump_artifacts(const std::filesystem::path& directory) {
     require(take(program.entry().invoke({}, args)).has_value(), "Dense module preflight failed.");
 }
 
+// Republishing a project over a synthetic engine library of 5-line functions in call chains of 8;
+// class k calls the end of chain k mod (chains - 1), so the last chain is never called.
+void measure_compile_units() {
+    constexpr int samples = 5;
+    for (const int lines : {500, 3000})
+        for (const int classes : {1, 10, 50}) {
+            const int functions = lines / 5, chains = functions / 8;
+            const auto snapshot = [&](int class_edit, int called_edit, int uncalled_edit) {
+                const int called = 7, uncalled = (chains - 1) * 8;
+                std::string engine, project = "float game_probe(float x) { return x + 1.0; }\n";
+                for (int i = 0; i < functions; ++i) {
+                    const int edit = i == called ? called_edit : i == uncalled ? uncalled_edit : 0;
+                    engine += "float bench.f" + std::to_string(i) + "(float x) {\n    float a = x * 1." + std::to_string(i) + " + " +
+                        std::to_string(edit) + ".0;\n    float b = " +
+                        (i % 8 == 0 ? std::string("math.sin(a)") : "bench.f" + std::to_string(i - 1) + "(a)") +
+                        ";\n    return math.fract(b * 1.5) + a * 0.25;\n}\n";
+                }
+                for (int k = 0; k < classes; ++k)
+                    project += "class game.C" + std::to_string(k) + " : measure.NativeCounter {\n    float run(float x) { return bench.f" +
+                        std::to_string(k % (chains - 1) * 8 + 7) + "(x) + " + std::to_string(k == 0 ? class_edit : 0) +
+                        ".0; }\n    float scaled(float x) { return x * 2.0; }\n}\n";
+                return source::SourceSnapshot{"units", 1, {{"Source/Game.source", 1, project}, {"engine/bench/lib.source", 1, engine}}};
+            };
+            Runtime runtime;
+            counter_type(runtime, true);
+            Program program(runtime);
+            const auto republish = [&](source::SourceSnapshot input) {
+                const auto started = Clock::now();
+                auto candidate = take(Program::prepare(take(program.request(std::move(input)))));
+                take(program.try_publish(candidate));
+                return nanoseconds(started) / 1e6;
+            };
+            const auto codes = [&] {
+                std::vector<std::pair<std::string, std::uint64_t>> result;
+                for (const auto& entry : program.entries()) result.emplace_back(entry.name, entry.code);
+                std::ranges::sort(result);
+                return result;
+            };
+            republish(snapshot(0, 0, 0));
+            int edits[3]{};
+            const std::array scenarios{"edit_class", "edit_called_engine", "edit_uncalled_engine"};
+            for (std::size_t which = 0; which < scenarios.size(); ++which) {
+                std::vector<double> times;
+                std::size_t changed_class{}, changed_global{};
+                for (int sample = 0; sample < samples; ++sample) {
+                    const auto before = codes();
+                    ++edits[which];
+                    times.push_back(republish(snapshot(edits[0], edits[1], edits[2])));
+                    const auto after = codes();
+                    require(after.size() == before.size(), "Republishing changed the entry set.");
+                    changed_class = changed_global = 0;
+                    for (std::size_t i = 0; i < after.size(); ++i)
+                        if (after[i].second != before[i].second) ++(after[i].first.starts_with("game.C") ? changed_class : changed_global);
+                }
+                std::ranges::sort(times);
+                std::printf("{\"record\":\"compile_units\",\"engine_lines\":%d,\"engine_functions\":%d,\"classes\":%d,\"scenario\":\"%s\","
+                    "\"republish_median_ms\":%.1f,\"republish_min_ms\":%.1f,\"republish_max_ms\":%.1f,"
+                    "\"changed_class_codes\":%zu,\"changed_global_codes\":%zu,\"entries\":%zu}\n",
+                    lines, functions, classes, scenarios[which], times[samples / 2], times.front(), times.back(),
+                    changed_class, changed_global, program.entries().size());
+            }
+        }
+}
+
 void configuration(const Options& settings) {
     std::array<char, 49> cpu{};
     std::array<int, 4> registers{};
@@ -478,6 +542,11 @@ int main(int argc, char** argv) {
 #endif
         if (argc == 3 && std::string_view(argv[1]) == "--artifacts") {
             dump_artifacts(argv[2]);
+            std::puts("{\"record\":\"complete\",\"validated\":true}");
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--compile-units") {
+            measure_compile_units();
             std::puts("{\"record\":\"complete\",\"validated\":true}");
             return 0;
         }

@@ -2,6 +2,7 @@
 #include "language/lexer.hpp"
 #include "language/declarations.hpp"
 #include <algorithm>
+#include <unordered_map>
 
 namespace atelier::language {
 void MappedSource::append(const MappedSource& source) {
@@ -125,6 +126,43 @@ std::string_view engine_module(std::string_view path) {
 bool in_namespace(std::string_view name, std::string_view space) {
     return name.size() > space.size() && name.starts_with(space) && name[space.size()] == '.';
 }
+using Names = std::unordered_map<std::string_view, std::uint32_t>;
+// Every top-level name the text spells as an identifier or dotted chain, at each length of the chain.
+// A local that shares a name only adds that declaration; nothing reaches a declaration without its name.
+void spelled(std::string_view text, const Names& names, std::vector<std::uint32_t>& uses) {
+    Lexer lexer(text);
+    std::string chain;
+    bool dotted = false;
+    for (auto token = lexer.next(); token.kind != Token::Kind::end; token = lexer.next()) {
+        if (token.kind == Token::Kind::identifier) {
+            if (dotted) chain += '.'; else chain.clear();
+            chain += token.text;
+            dotted = false;
+            if (const auto found = names.find(chain); found != names.end()) uses.push_back(found->second);
+        } else {
+            dotted = token.text == "." && !chain.empty();
+            if (!dotted) chain.clear();
+        }
+    }
+    std::ranges::sort(uses);
+    const auto repeated = std::ranges::unique(uses);
+    uses.erase(repeated.begin(), repeated.end());
+}
+}
+MappedSource SourceModule::closure(std::span<const std::uint32_t> roots) const {
+    std::vector<bool> included(declarations.size());
+    std::vector<std::uint32_t> pending(roots.begin(), roots.end());
+    while (!pending.empty()) {
+        const auto index = pending.back();
+        pending.pop_back();
+        if (included[index]) continue;
+        included[index] = true;
+        pending.insert(pending.end(), declarations[index].uses.begin(), declarations[index].uses.end());
+    }
+    MappedSource text;
+    for (std::size_t i = 0; i < declarations.size(); ++i)
+        if (included[i]) text.append(declarations[i].source);
+    return text;
 }
 std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapshot& snapshot) {
     SourceModule result;
@@ -166,23 +204,26 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                 const auto begin = tokens.token_.position;
                 if (!tokens.accept("class")) {
                     // A top-level declaration ends at ';' or a complete body.
+                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}};
                     const bool function = tokens.token_.text != "struct" && tokens.token_.text != "enum" && tokens.token_.text != "const";
                     if (function) {
                         if (tokens.accept("async")) reject(begin, "Project exports must be synchronous.");
                         const auto type = tokens.accept("void") ? TypeName{"void"} : parse_type_name(tokens);
-                        const auto position = tokens.token_.position;
-                        FunctionDeclaration declaration{tokens.qualified_identifier(), {}, {}, file, position};
-                        declare(declaration.name, position);
-                        declaration.signature = function_signature(tokens, type, declaration.parameters);
-                        result.functions.push_back(std::move(declaration));
+                        declaration.position = tokens.token_.position;
+                        declaration.name = tokens.qualified_identifier();
+                        declare(declaration.name, declaration.position);
+                        FunctionDeclaration exported{declaration.name, {}, {}};
+                        exported.signature = function_signature(tokens, type, exported.parameters);
+                        // Engine functions serve Source calls only; project functions are the global entries.
+                        if (own.empty()) result.functions.push_back(std::move(exported));
                     } else {
                         const bool constant = tokens.accept("const");
                         if (constant) parse_type_name(tokens);
                         else tokens.consume();
-                        const auto position = tokens.token_.position;
-                        auto name = tokens.qualified_identifier();
-                        declare(name, position);
-                        if (constant) result.constants.push_back({std::move(name), file, position});
+                        declaration.kind = constant ? TopLevel::Kind::constant : TopLevel::Kind::type;
+                        declaration.position = tokens.token_.position;
+                        declaration.name = tokens.qualified_identifier();
+                        declare(declaration.name, declaration.position);
                         while (tokens.token_.text != ";" && tokens.token_.text != "{") {
                             if (tokens.token_.kind == Token::Kind::end) reject(begin, "Incomplete source declaration.");
                             tokens.consume();
@@ -190,7 +231,8 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     }
                     if (tokens.token_.text == "{") body(tokens);
                     tokens.accept(";");
-                    result.common.append(unit, file, begin.offset, tokens.token_.position.offset);
+                    declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
+                    result.declarations.push_back(std::move(declaration));
                     continue;
                 }
                 ClassDeclaration declaration;
@@ -250,6 +292,13 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             }
         } catch (const Rejected& error) { return std::unexpected(ModuleDiagnostic{file, error.diagnostic}); }
     }
+    Names names;
+    for (std::uint32_t i = 0; i < result.declarations.size(); ++i) names.emplace(result.declarations[i].name, i);
+    for (auto& declaration : result.declarations) spelled(declaration.source.text, names, declaration.uses);
+    // A method spells its own name, so a top-level declaration sharing it joins the class unit,
+    // where the parser rejects the clash as before.
+    for (auto& cls : result.classes)
+        for (const auto& method : cls.methods) spelled(method.source.text, names, cls.uses);
     std::ranges::sort(result.classes, {}, &ClassDeclaration::name);
     return result;
 }

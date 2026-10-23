@@ -5,8 +5,9 @@ struct Program::ModuleRequest {
         std::shared_ptr<const Contract> contract;
         language::MappedSource source;
         std::vector<std::string> names;
-        std::string owner;
+        std::string owner; // the class, "" for the project unit, or "engine/<module>"
         std::vector<std::vector<std::string>> parameter_names;
+        bool receiver{};
     };
     std::shared_ptr<const SourceSnapshot> snapshot;
     CompileOptions options;

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 
 namespace atelier::language {
 struct SourcePiece { std::size_t begin{}, end{}, offset{}; std::uint32_t file{}; };
@@ -28,22 +29,34 @@ struct ClassField {
 };
 // Signatures omit parameter names, so renaming a parameter stays compatible.
 struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; std::vector<std::string> parameters; };
-struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; std::uint32_t file{}; SourcePosition position; };
-struct ConstantDeclaration { std::string name; std::uint32_t file{}; SourcePosition position; };
+struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; };
+// A top-level struct, enum, constant or function. uses names every other top-level
+// declaration its text spells, so a compile unit needs only the closure of its own uses.
+struct TopLevel {
+    enum class Kind { type, constant, function } kind;
+    std::string name;
+    std::string engine; // the engine module of its file, empty in project files
+    std::uint32_t file{};
+    SourcePosition position;
+    MappedSource source;
+    std::vector<std::uint32_t> uses;
+};
 struct ClassDeclaration {
     std::string name, base;
     std::uint32_t file{};
     SourcePosition position;
     std::vector<ClassField> fields;
     std::vector<ClassMethod> methods;
+    std::vector<std::uint32_t> uses; // top-level declarations its methods spell
 };
 // File collection and class structure use the ordinary lexer. Function bodies,
 // signatures and constant expressions are checked by the one typed Source parser.
 struct SourceModule {
-    MappedSource common;
-    std::vector<FunctionDeclaration> functions;
-    std::vector<ConstantDeclaration> constants;
+    std::vector<TopLevel> declarations; // snapshot order
+    std::vector<FunctionDeclaration> functions; // project-file functions, the exported ones
     std::vector<ClassDeclaration> classes;
+    // The declarations reachable from roots through uses, in snapshot order.
+    [[nodiscard]] MappedSource closure(std::span<const std::uint32_t> roots) const;
 };
 // Files under engine/<module>/ declare only <module>.* names; other files declare none in a module present in the snapshot.
 [[nodiscard]] std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapshot&);
