@@ -170,15 +170,25 @@ void verify_associative_containers() {
 
     // The hash adapter reuses the Runtime's existing full identity contract.
     Runtime left, right;
-    auto first = left.create(*left.find_type("core.Object"));
+    const auto object = *left.find_type("core.Object");
+    auto first = left.create(object);
+    auto sibling = left.create(object);
     auto foreign = right.create(*right.find_type("core.Object"));
-    require(first.has_value() && foreign.has_value(), "Identity consumer could not create its objects.");
+    require(first.has_value() && sibling.has_value() && foreign.has_value(), "Identity consumer could not create its objects.");
     Set<ObjectId> objects;
     const auto old = first->id(); objects.add(old); objects.add(foreign->id());
     require(left.destroy(old).has_value(), "Identity consumer could not destroy its object.");
-    auto next = left.create(*left.find_type("core.Object"));
+    auto next = left.create(object);
     require(next.has_value() && next->id() != old && objects.add(next->id()) && objects.size() == 3 &&
         objects.contains(old) && objects.contains(foreign->id()), "Set lost Runtime context or generation identity.");
+    // Each pair differs in one identity field: Runtime context, slot index or slot generation.
+    const Hash<ObjectId> object_hash{}; const Hash<TypeId> type_hash{};
+    static_assert(requires { typename Hash<ObjectId>::is_avalanching; typename Hash<TypeId>::is_avalanching;
+        typename Hash<const void*>::is_avalanching; typename Hash<int>::is_avalanching; });
+    require(object_hash(old) != object_hash(foreign->id()) && object_hash(old) != object_hash(sibling->id()) &&
+        object_hash(old) != object_hash(next->id()), "ObjectId hash ignored a field of its identity.");
+    require(type_hash(object) != type_hash(*right.find_type("core.Object")) &&
+        type_hash(object) != type_hash(*left.find_type("core.u32")), "TypeId hash ignored a field of its identity.");
     const auto unrooted = next->id(); next->reset();
     require(left.begin_collection().has_value(), "Identity consumer could not start GC.");
     while (left.collection_phase() != CollectionPhase::idle)

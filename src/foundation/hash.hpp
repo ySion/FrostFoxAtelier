@@ -2,21 +2,46 @@
 
 #include "foundation/string.hpp"
 
+#include <ankerl/unordered_dense.h>
+
 #include <concepts>
+#include <cstdint>
 #include <functional>
+#include <tuple>
 #include <type_traits>
 
 namespace atelier {
 
+namespace detail {
+template<class T>
+struct HashAvalanche {};
+template<class T>
+    requires ankerl::unordered_dense::hash_is_avalanching_v<std::hash<T>>
+struct HashAvalanche<T> { using is_avalanching = void; };
+}
+
 // Hashes are process-side lookup aids, not persistent identities. Equal keys
 // must hash equally; custom policies must not depend on mutable table state.
+// is_avalanching lets the table use the result without mixing it again.
 template<class T>
-struct Hash {
+struct Hash : detail::HashAvalanche<T> {
     [[nodiscard]] std::size_t operator()(const T& value) const noexcept(noexcept(static_cast<std::size_t>(std::hash<T>{}(value))))
         requires requires { static_cast<std::size_t>(std::hash<T>{}(value)); } {
         return static_cast<std::size_t>(std::hash<T>{}(value));
     }
 };
+
+// The MSVC STL's std::hash folds integers byte by byte (FNV-1a); one 64-bit
+// multiply-mix is cheaper and already avalanching.
+template<class T>
+    requires (std::is_integral_v<T> || std::is_enum_v<T> || std::is_pointer_v<T>) && std::same_as<T, std::remove_cv_t<T>>
+struct Hash<T> : ankerl::unordered_dense::hash<T> {};
+
+// Avalanching hash over every field of a composite identity; one mix per field.
+template<std::integral... T>
+[[nodiscard]] std::size_t hash_fields(T... fields) noexcept {
+    return ankerl::unordered_dense::hash<std::tuple<T...>>{}(std::tuple<T...>{fields...});
+}
 
 template<class T>
 struct Equal {

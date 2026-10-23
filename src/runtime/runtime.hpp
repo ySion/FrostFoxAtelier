@@ -2,6 +2,7 @@
 
 #include "runtime/parameter.hpp"
 #include "runtime/value_storage.hpp"
+#include "foundation/hash.hpp"
 #include "math/type.hpp"
 #include <array>
 #include <ranges>
@@ -26,7 +27,6 @@
 
 namespace atelier {
 template<class T> class Span;
-class StringView;
 
 
 enum class ErrorCode {
@@ -902,15 +902,12 @@ private:
 }
 
 template<> struct std::hash<atelier::TypeId> {
-    std::size_t operator()(atelier::TypeId id) const noexcept {
-        const auto seed = std::hash<std::uint64_t>{}(id.context_);
-        return seed ^ (std::hash<std::uint32_t>{}(id.index_) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
-    }
+    using is_avalanching = void;
+    std::size_t operator()(atelier::TypeId id) const noexcept { return atelier::hash_fields(id.context_, id.index_); }
 };
 template<> struct std::hash<atelier::ObjectId> {
+    using is_avalanching = void;
     std::size_t operator()(atelier::ObjectId id) const noexcept {
-        auto seed = std::hash<std::uint64_t>{}(id.context_);
-        seed ^= std::hash<std::uint32_t>{}(id.index_) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
-        return seed ^ (std::hash<std::uint64_t>{}(id.generation_) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
+        return atelier::hash_fields(id.context_, id.index_, id.generation_);
     }
 };

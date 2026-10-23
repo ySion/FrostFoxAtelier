@@ -389,12 +389,8 @@ struct Runtime::Impl {
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
     std::vector<std::unique_ptr<Type>> types;
-    // The table mixes the address once; MSVC's std::hash would hash its bytes one at a time first.
-    struct AddressHash {
-        std::size_t operator()(const void* key) const noexcept { return reinterpret_cast<std::uintptr_t>(key); }
-    };
     // Published C++ representation -> types index; registration keeps representations unique.
-    Map<const void*, std::uint32_t, AddressHash> representations;
+    Map<const void*, std::uint32_t> representations;
     // Published name -> types index. Keys view the immutable name inside each heap Type.
     Map<StringView, std::uint32_t> names;
     std::vector<Slot> slots;

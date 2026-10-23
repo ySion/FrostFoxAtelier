@@ -99,7 +99,7 @@ seen.remove(7u);                            // 返回是否移除了成员
 
 ### Hash/Equal 与失败合同
 
-[Hash/Equal](../src/foundation/hash.hpp) 是共同入口。一般类型复用现有 `std::hash<T>` 与 `operator==`，因此 ObjectId 继续包含 Runtime 上下文、槽位和代际。自定义策略作为 Map/Set 的模板参数提供，当前由容器默认构造；策略本身的默认/复制/移动/交换/析构及 Hash/Equal 调用必须不抛，检查包含结果到 size_t/bool 的转换。移动容器时源获得新默认策略，不要求其已移空的旧策略仍可调用。元素必须具备不抛移动构造、移动赋值和析构，编译期拒绝不满足的类型。标准类型的相等运算若未声明 noexcept，也需提供满足该合同的比较策略。
+[Hash/Equal](../src/foundation/hash.hpp) 是共同入口。整数、枚举和指针使用锁定后端的整数哈希，即一次 64 位乘法混合，不读取这些类型的 `std::hash` 特化；MSVC STL 的 `std::hash` 对整数逐字节做 FNV-1a，因此不经过它。其他类型的哈希复用现有 `std::hash<T>`；相等仍使用 `operator==`（String/StringView 除外）。结果已充分混合的哈希声明 `is_avalanching`，表直接使用结果而不再混合一次；`std::hash<T>` 声明了该标记时，`Hash<T>` 随之声明。TypeId 与 ObjectId 的 `std::hash` 由 `hash_fields` 逐字段混合 Runtime 上下文、槽位以及 ObjectId 的代际，与各自的完整相等规则一致；`std::unordered_*` 与 Map/Set 因此得到同一哈希。自定义策略作为 Map/Set 的模板参数提供，当前由容器默认构造；策略本身的默认/复制/移动/交换/析构及 Hash/Equal 调用必须不抛，检查包含结果到 size_t/bool 的转换。移动容器时源获得新默认策略，不要求其已移空的旧策略仍可调用。元素必须具备不抛移动构造、移动赋值和析构，编译期拒绝不满足的类型。标准类型的相等运算若未声明 noexcept，也需提供满足该合同的比较策略。
 
 非透明策略只接受实际键类型，必要的类型转换在调用之前显式完成，例如 `Set<unsigned>::contains(1u)`。异构查询要求 Hash/Equal 同时声明 `is_transparent`，并且实际 Q→哈希结果、Q/K→相等结果的完整调用均不抛；不以策略中存在某个重载来推断后端会跳过键构造。这样查询不会在 noexcept 包装内部隐式执行可抛键转换。
 
@@ -193,7 +193,7 @@ cmake --build --preset dev --target foundation_acceptance reflection_acceptance
 cmake --build --preset release --target foundation_acceptance reflection_acceptance
 ```
 
-Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删和 ObjectId 跨上下文/代际及 GC 不保活。业务接入同时使用 `world_acceptance` 和 `editor_document_acceptance`；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。以上均在 dev/release 执行，不依赖 assert，也不新增单元测试框架。本片未测量性能收益；未执行 GPU/原生窗口或输入法验收，原有窗口待验与剪贴板问题不由此关闭。
+Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删、ObjectId 跨上下文/代际、ObjectId/TypeId 哈希覆盖每个身份字段及 GC 不保活。业务接入同时使用 `world_acceptance` 和 `editor_document_acceptance`；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。以上均在 dev/release 执行，不依赖 assert，也不新增单元测试框架。本片未测量性能收益；未执行 GPU/原生窗口或输入法验收，原有窗口待验与剪贴板问题不由此关闭。
 
 [生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。SharedArray 部分核对接管缓冲不复制、共享句柄写入后另一句柄不变、唯一句柄原地写入、空句柄与移动后的源、自操作、复制赋值与移动赋值放开被替换的块，以及 8 个线程对同一块并发复制、析构和写入后计数回到独占；const、move-only 和智能指针元素在编译期被拒绝。原子内存序在 x64 上不能由验收区分。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
 
