@@ -67,17 +67,17 @@ if (!published) return published;
 auto tick = program.entry("game.Move.tick");
 ```
 
-`classes()` 返回 `{name,type,base}`，`entries()` 返回 `{name,signature,parameter_names,code}`，`parameter_names` 按顺序给出源码声明的参数名，不含 `self`；`code` 是入口的代码身份：一个编译单元（某个 class 的全部方法，或全部全局函数）的编译输入——公共声明与该单元方法的文本、快照名、`CompileOptions` 和成员目录——与上次发布逐字节相同时沿用上次的值，否则取进程内从未用过的新值。它保守而不精确：改全局助手、struct、enum 或常量，以及 Runtime 新增值类型，会更换全部 code；改某个 class 的任一方法会更换该 class 的全部 code；撤销改动也得到新值，不跨进程稳定。`revision()` 是成功发布次数，首次发布前为 0，失败或被拒绝的发布不改变它；宿主可先比较它，再重读 `entries()`。视图在下一次成功发布或 close 后失效。`Candidate` 提供同名只读视图，供宿主在提交前检查业务约束；其预览类身份不可用于正式 Runtime 查询，base 已是注册的原生类型，视图在候选移动、销毁或成功发布后失效。请求拥有不可变快照，`Request::snapshot()` 可用于把诊断关联回原文件版本。`Error::source` 保存 UTF-8 字节定位。运行时错误继续由原执行协议返回。
+`classes()` 返回 `{name,type,base}`，`entries()` 返回 `{name,signature,parameter_names,code}`，`parameter_names` 按顺序给出源码声明的参数名，不含 `self`；`code` 是入口的代码身份：一个编译单元的编译输入——单元的组装文本、快照名、`CompileOptions` 和成员目录——与上次发布的同一单元逐字节相同时沿用上次的值，否则取进程内从未用过的新值。组装文本是单元自身的文本（某个 class 的全部方法，或工程文件的全部顶层声明），加上它按名字直接或间接写到的顶层声明，按快照顺序排列。它保守而不精确：改一个全局函数、struct、enum 或常量，只更换写到它的单元的 code，改工程文件的任一顶层声明会更换全部工程全局函数的 code；局部变量与声明同名也算写到；改某个 class 的任一方法会更换该 class 的全部 code；成员目录包含 Runtime 的整个值类型目录，所以 Runtime 新增值类型会更换全部 code；撤销改动也得到新值，不跨进程稳定。`revision()` 是成功发布次数，首次发布前为 0，失败或被拒绝的发布不改变它；宿主可先比较它，再重读 `entries()`。视图在下一次成功发布或 close 后失效。`Candidate` 提供同名只读视图，供宿主在提交前检查业务约束；其预览类身份不可用于正式 Runtime 查询，base 已是注册的原生类型，视图在候选移动、销毁或成功发布后失效。请求拥有不可变快照，`Request::snapshot()` 可用于把诊断关联回原文件版本。`Error::source` 保存 UTF-8 字节定位。运行时错误继续由原执行协议返回。
 
 类型布局、默认值和所有入口共同准备，实际 TypeId 与代码只在无回调提交时一起可见。某个编译单元失败会释放整组候选，旧代码继续使用。`busy` 不消费候选；旧请求、重复提交和关闭后的提交被拒绝。已发布模块只增长：新增 struct/enum、派生原生对象的 class、全局函数，以及已有或新增 class 上的方法（包括 begin/tick/post_physics_tick/late_tick/end）都可兼容发布，新类型在类型安全点（代码发布条件加 GC 空闲）与代码一起提交，已经创建的对象保留。删除或改名已发布的类型、字段、函数或方法，已有类型的字段、基类、默认值、范围、展示文本或定义变化，以及已有入口的签名、执行种类或接收者变化，返回 `ErrorCode::rebuild_required`，不会改写存量对象。参数名不属于签名：只改参数名是兼容发布，发布后 `entries()` 给出新名字。
 
-全局助手和每个类的接收者环境分别形成 LLVM 模块；同一环境的多个入口拥有共享 LLJIT 和展开表。所有入口复用既有 `Version → Invocation → Runtime` 执行与清理链。借用保护通过内部调用参数传播，同一个助手既可在值区间内运行，也可在普通入口中推进 GC。
+编译单元有三种：工程单元包含工程文件的全部顶层声明，导出其中的函数，没有函数时只做检查；每个有方法的 class 一个单元，导出它的方法；每个引擎模块一个只做检查的单元，包含该模块的全部顶层声明，不生成代码。每个单元只编译自身文本和它写到的顶层声明闭包，所以生成代码的量只随实际写到的声明增长；每个顶层声明仍在所属单元里通过一次语义检查，引擎模块的检查单元每次发布都做一遍解析和类型检查。方法名与工程全局函数同名、顶层名字重复都在所属单元里由解析器拒绝：方法写到了自己的名字，所以同名的全局声明会进入该类单元；重复的名字总在同一个工程单元或同一个引擎模块单元里。每个生成代码的单元形成一个 LLVM 模块，其中的多个入口共享 LLJIT 和展开表。所有入口复用既有 `Version → Invocation → Runtime` 执行与清理链。借用保护通过内部调用参数传播，同一个助手既可在值区间内运行，也可在普通入口中推进 GC。
 
 具名 `Entry` 只在绑定时解析名称，调用时直接按稳定槽位取得当前 Version；候选在提交前对齐已发布槽位，新入口追加在其后。代码租约保留实际使用的旧模块，关闭 Program 后仍可完成调用。Runtime、原生服务和后端 DLL 必须存活到所有租约/任务释放。
 
 语法与限制以 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类) 为准。项目文件、World 生命周期调度和上下文重建由宿主组织；当前没有后台编译或对象布局迁移。
 
-引擎附带的源码放在 `assets/engine/<模块>/**.source`。构建把这些文件原样复制到可执行文件旁的 `engine/`：每次重新配置先清空目标目录，增删或修改 `.source` 文件都会触发重新配置。`source::engine_sources(root)` 按路径排序读取 root 下的 `.source` 文件，快照路径为 `engine/<相对路径>`，root 不存在时没有文件；`source::default_engine_root()` 在源码树的 `assets/engine` 存在时返回它，否则返回可执行文件旁的 `engine/`。工程文件、UI 源码和引擎文件共用 `source::read_source_file`：单文件最多 1 MiB，必须是 UTF-8，版本是所存字节的 `source::content_hash`（FNV-1a 64），正文去掉 UTF-8 BOM。编辑器和 Play 的 `ProjectCode::snapshot` 在工程文件之后追加全部引擎文件，16 MiB 总上限一起计算，轮询也覆盖引擎文件；其他宿主直接调用同一组函数。引擎文件属于每个快照，改其中的全局函数会和改工程助手一样更换全部入口 code。
+引擎附带的源码放在 `assets/engine/<模块>/**.source`。构建把这些文件原样复制到可执行文件旁的 `engine/`：每次重新配置先清空目标目录，增删或修改 `.source` 文件都会触发重新配置。`source::engine_sources(root)` 按路径排序读取 root 下的 `.source` 文件，快照路径为 `engine/<相对路径>`，root 不存在时没有文件；`source::default_engine_root()` 在源码树的 `assets/engine` 存在时返回它，否则返回可执行文件旁的 `engine/`。工程文件、UI 源码和引擎文件共用 `source::read_source_file`：单文件最多 1 MiB，必须是 UTF-8，版本是所存字节的 `source::content_hash`（FNV-1a 64），正文去掉 UTF-8 BOM。编辑器和 Play 的 `ProjectCode::snapshot` 在工程文件之后追加全部引擎文件，16 MiB 总上限一起计算，轮询也覆盖引擎文件；其他宿主直接调用同一组函数。引擎文件属于每个快照；其中的全局函数和常量只供源码调用，不是入口。改一个引擎函数只更换写到它的单元的 code。
 
 ## 端到端验收
 
@@ -91,4 +91,4 @@ auto tick = program.entry("game.Move.tick");
 
 模块场景随 `source_acceptance` 和 `jit_acceptance` 运行。
 
-项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、向量与枚举类字段的默认值和属性（范围、展示文本、编辑后需要重建的边界、按字段定位的拒绝）、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，混合借用入口对 GC 的影响，入口 code 与 revision 随编译输入的变化，值区间内只读 `self` 字段且不改变借用与 GC 规则，以及引擎源码：从磁盘读出排序、带 `engine/` 前缀、去 BOM、版本只随所存字节变化的文件，可执行文件旁的 `engine/` 与 `assets/engine` 逐文件相同，限定名函数与常量的调用和局部遮蔽，工程类派生引擎命名空间里的原生基类，以及各条命名空间、路径和同名规则的拒绝位置。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。
+项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、向量与枚举类字段的默认值和属性（范围、展示文本、编辑后需要重建的边界、按字段定位的拒绝）、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，混合借用入口对 GC 的影响，入口 code 与 revision 随编译输入的变化，值区间内只读 `self` 字段且不改变借用与 GC 规则，以及引擎源码：从磁盘读出排序、带 `engine/` 前缀、去 BOM、版本只随所存字节变化的文件，可执行文件旁的 `engine/` 与 `assets/engine` 逐文件相同，限定名函数与常量的调用和局部遮蔽，工程类派生引擎命名空间里的原生基类，以及各条命名空间、路径和同名规则的拒绝位置；编译单元：引擎函数不是入口，类经引擎助手的传递调用，没被调用的引擎函数和没被使用的工程常量仍做类型检查，重复的顶层名字与方法和全局函数同名被拒绝，改没被调用的引擎函数不更换 code，改被调用的引擎函数只更换调用方的 code 并得到新结果，改一个类只更换该类的 code，引擎函数原样移入工程文件后，工程单元的文本不变、导出增多，全部入口取新 code。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。

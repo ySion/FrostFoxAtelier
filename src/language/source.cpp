@@ -113,7 +113,7 @@ public:
         }
         for (std::size_t i = 0; i < constants_.size(); ++i) resolve_constant(i);
         if (module_.functions.empty()) return std::move(module_);
-        if (entry_name.empty() && module_.functions.size() != 1)
+        if (entry_name.empty() && module_.functions.size() != 1 && !allow_declarations)
             reject({}, "A multi-function module requires an explicit host entry name.");
         bool found = entry_name.empty();
         for (std::size_t i = 0; i < module_.functions.size(); ++i) {
