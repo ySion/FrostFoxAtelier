@@ -969,12 +969,8 @@ struct Renderer::State {
                     const auto& geometry = *group.geometry;
                     require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
                     require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
-                    for(const auto& part:geometry.source->parts()) {
-                        require(gfxProgramSetParameter(gfx,program,"material_slot",part.material),"Set material slot");
-                        require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
-                        require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
-                        ++stats.scene_draw_calls;
-                    }
+                    require(gfxCommandDraw(gfx,static_cast<std::uint32_t>(geometry.source->vertices().size()),count),"Draw mesh batch");
+                    ++stats.scene_draw_calls;
                 }
             };
             if(lighting) {
