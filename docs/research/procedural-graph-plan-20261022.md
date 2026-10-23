@@ -246,6 +246,7 @@ class procedural.Jitter : procedural.PointNode {
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批；LOD 合约（与 meshlet、CPU 剔除对比一起考虑） | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
 | World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐。集成顺序：World 的 scene v9（基于 63de8635，删除 v1–v8 的读取与迁移，只读 v9）排在 335cb844 之前；P1 交付从集成结果开始合入，scene.cpp 和 project-scenes.md 的冲突由本线程在那次合并里解决，内联 Array 的编解码与文档段落在 v9 的代码上重新落位 |
+| 基础库与 STL | 共享不可变列 `SharedArray<T>`（C1）替代 `Column<T> = std::shared_ptr<Array<T>>`：读取只给 const，写时独占在任何线程上安全，空列代替 null 的 `offsets_`；实例集合的 `shared_ptr<const std::vector<Affine>>` 是渲染接口，不换；P1、P2 不需要 64 位列和 Map/Set；顺带需要 `resize(n, value)` 填充新列 | C1 在 foundation-stl 上以 main 为基线单独提交，交付后由本线程合进 `procedural`，P1 交付之后迁移，迁移 diff 交基础库负责人审；共享列的缓存记账暂按全额计，实测有淘汰压力再要缓冲身份 |
 | 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源）；导入时按 LOD 合约识别各级 LOD | 材质入口已交付（`Session::mesh_surfaces`，d2340350，见 §5.1）；共用属性编解码与内联 Array（335cb844）、图文件编解码（ed47199a）已审通过（§5.4）；其余 P2/P3 前对齐 |
 
 ## 9. 风险与未决
