@@ -117,7 +117,7 @@ class procedural.Jitter : procedural.PointNode {
 | L1 | `analyze_calls` 放行一种情况：接收者是 `self`、结果为标量/枚举/数学值的字段读取。写 self、取对象引用、调用非 BorrowSafe 方法照旧拒绝。读取走 `Runtime::read`，不盖章，值区间内也没有 GC 安全点。验收写明“只读、不改变借用与 GC 规则”。源码执行只在 Runtime 线程上进行 | 节点读参数 | 已交付（`runtime-self-reads` c5b6a47c，已合入 `procedural`，bdff0c02） |
 | 代码身份 | `EntryInfo::code` 与 `Program::revision()`，判定见 §3 的“代码身份”；仍然每次发布都重新编译，复用旧 Version 等实测需要再说 | 验收 ⑥ 只重算代码变了的类型 | 已交付（`runtime-entry-codes` 2b278be4，已合入 `procedural`，d9809d57） |
 | L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | 已交付（`runtime-class-fields` ed2b6e89，已合入 `procedural`，323e3cac） |
-| L4b | sin/cos/atan2/pow/exp/log，用纯 IR 多项式实现，可以内联和向量化；误差上界写进文档并实测，与 libm 不逐位相同。程序化提出的要求：float 的 sin/cos 在 \|x\| ≤ 10⁴ 内误差 ≤ 4 ULP，超出这个范围结果仍有限且绝对值不超过 1；atan2/exp/log/pow 在全 float 范围内误差 ≤ 4 ULP，特殊值按 IEEE 约定（log(0) = −∞，负数取 log 得 NaN，exp 溢出得 +∞；pow 的底数为负时返回 NaN） | 旋转、衰减、曲线 | P1 后段 |
+| L4b | float 的 sin/cos/exp/log、atan2(y, x)、pow(x, y)，参数为标量或 vector2/3/4，标量广播到每个分量，double 编译期拒绝。纯 IR 多项式，内联、可向量化，误差 ≤ 4 ULP（sin/cos 在 \|x\| ≤ 2²⁰ 内，超出后结果有限且绝对值不超过 1）；特殊值：log(0) = −∞，负数取 log 得 NaN，exp 溢出得 +∞，pow 底数为负得 NaN，pow(x, 0) = pow(1, y) = 1。所有 FMA3 主机逐位相同，标量与向量化循环逐位相同，与 `<cmath>` 不逐位相同；JIT 要求 FMA3。详见 [math.md](../math.md#超越函数) | 旋转、衰减、曲线 | 已交付（`runtime-math-transcendental` 701b9f0f，已合入 `procedural`，de359783） |
 | L6 | 宿主把引擎附带的文件放在保留路径前缀（如 `engine/procedural/…`）下，并入每个工程快照；工程不能占用这个前缀，也不能声明引擎命名空间的类型 | 内置节点、哈希与随机库 | P3 前 |
 | L3 | 倾向按值返回拥有型 Array，结果直接构造在调用方存储中；P4 前单独出方案，过 Oracle | 改变点数的节点迁到自有语言 | P4 |
 
@@ -241,7 +241,7 @@ class procedural.Jitter : procedural.PointNode {
 
 | 负责人 | 事项 | 状态 |
 | --- | --- | --- |
-| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份已交付并接上；L2 实施中；其余见 §3.1 |
+| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b 已交付并合入；L6 实施中；其余见 §3.1 |
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
 | World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐 |
@@ -249,7 +249,7 @@ class procedural.Jitter : procedural.PointNode {
 
 ## 9. 风险与未决
 
-- **语言能力的时间线**：P1 依赖 L1、L2、L4、L5，都已交付。L4b（sin/cos 等）在 P1 后段，用到旋转角度的节点随它写。
+- **语言能力的时间线**：P1 依赖的 L1、L2、L4（含 L4b 超越函数）、L5 都已交付；剩下 L6（引擎源码并入工程快照，P3 前）和 L3（P4 前）。
 - **Remap 与属性噪声的目标属性**：列按 `evaluate` 的参数名绑定，所以节点只能处理代码里写定的属性名；Houdini 的 Attribute Remap、Attribute Noise 在参数里选属性。建议加一个原生基类，带 String 参数 `attribute`，求值器按它的值绑定一个约定的列参数（源码 class 不能声明 String 字段，但能继承原生字段）。这扩展了节点契约，**待用户定方向，再交总负责人审**；另一种做法是保持写定属性名（Wrangle 式），由用户为每个属性写自己的节点。
 - **数字资产契约**：§5.3 的表示要在 P2 前定。如果改为让图资产发布 Runtime 类型，需要先解决类型版本与重建问题。
 - **实例渲染**：10 万实例在 120 FPS 下的 CPU/GPU 成本按 §5.1 实测。主要不确定项有两个：一是只要有物体在动，TLAS 每帧都按总实例数重写，Play 多半需要 TLAS b；二是没有逐实例剔除时 GBuffer 和阴影重绘的 GPU 开销。第二项取决于目标内容的三角形数，**待用户定**。
