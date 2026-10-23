@@ -78,6 +78,9 @@ Result<void> Session::validate_name(std::wstring_view name) {
         return invalid("Use a name with 1–256 visible characters.");
     return {};
 }
+namespace {
+// The EnvironmentComponent field names of a World Settings option (a view option
+// for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
 std::vector<std::string> environment_field(std::string_view option) {
     constexpr std::string_view volume="probe_volume_";
     if(option.starts_with(volume) && option.size()>volume.size()+2) {
@@ -90,6 +93,7 @@ std::vector<std::string> environment_field(std::string_view option) {
     }
     if(option.starts_with("sky_color_")) return {"sky_color",std::string(option.substr(10))};
     return {std::string(option)};
+}
 }
 ObjectId Session::environment() const {
     const auto found=world_.query(presentation_types_.environment_component);
@@ -188,19 +192,16 @@ Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath>
     return std::move(*entity);
 }
 Result<void> Session::initialize_environment(const rendering::SceneLightingSettings& settings) {
-    if(undo_count() || redo_count() || editing() || dirty()) return invalid("World settings initialize only a freshly opened document.");
+    if(undo_count() || redo_count() || editing() || dirty() || environment()!=ObjectId{})
+        return invalid("World settings initialize only a freshly opened document without an Environment.");
     auto edit=environment_edit(settings);if(!edit) return std::unexpected(edit.error());
     if(edit->paths.empty()) return {};
-    if(const auto existing=environment();existing!=ObjectId{}) {
-        if(auto written=world_.write(existing,edit->paths,edit->values);!written) return written;
-    } else {
-        auto created=create_environment(edit->paths,edit->values);if(!created) return std::unexpected(created.error());
-        const auto id=created->id();
-        auto attached=world_.attach(id);if(!attached) return std::unexpected(attached.error());
-        if(attached->notification_error) return std::unexpected(*attached->notification_error);
-        names_.emplace(id,L"Environment");
-    }
-    lighting_supplied_=true;++revision_;return {};
+    auto created=create_environment(edit->paths,edit->values);if(!created) return std::unexpected(created.error());
+    const auto id=created->id();
+    auto attached=world_.attach(id);if(!attached) return std::unexpected(attached.error());
+    if(attached->notification_error) return std::unexpected(*attached->notification_error);
+    names_.emplace(id,L"Environment");
+    ++revision_;return {};
 }
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     if (auto valid=validate_name(name);!valid) return valid;

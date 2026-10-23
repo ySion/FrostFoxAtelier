@@ -1,6 +1,6 @@
 # Dungeons 资源转换
 
-把用户提供的 `POLYGON - Dungeons Pack - Art by Synty 1.10.2.unitypackage` 转成现有 OBJ/MTL 和 Scene v6，使用引擎统一 Entity 场景格式。原包保持不变，导入目标为 `assets/examples/Examples/Dungeons/`。转换工具使用 Python 3、Pillow，以及本机 Unity Editor **6000.3.12f1**；这些仅为离线转换依赖，编辑器运行与普通构建不需要 Unity。
+把用户提供的 `POLYGON - Dungeons Pack - Art by Synty 1.10.2.unitypackage` 转成现有 OBJ/MTL 和 Scene v9，使用引擎统一 Entity 场景格式。原包保持不变，导入目标为 `assets/examples/Examples/Dungeons/`。转换工具使用 Python 3、Pillow，以及本机 Unity Editor **6000.3.12f1**；这些仅为离线转换依赖，编辑器运行与普通构建不需要 Unity。
 
 在仓库根目录执行，使用全新的临时转换目录。以下示例沿用本次导入目录；已有导出结果时应另选空目录，避免旧资源混入：
 

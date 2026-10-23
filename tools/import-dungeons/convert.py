@@ -138,7 +138,7 @@ def main():
                                    light['rotation'], [1, 1, 1], light['enabled']))
             next_id += 2
         file = source['name'].replace(' ','') + '.scene'
-        write_json(root/'Scenes'/file,dict(version=6, next_id=str(next_id), world={},
+        write_json(root/'Scenes'/file,dict(version=9, next_id=str(next_id),
                    roots=[e['id'] for e in entities], entities=entities))
         write_json(root/'Import'/ (source['name'].replace(' ','')+'-instances.json'),paths)
         scenes.append(dict(source=source['source'],file='Scenes/'+file,entities=len(entities),meshes=len(paths),visible_meshes=visible,

@@ -4,7 +4,7 @@
 
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
-光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v9 保存并进入 Session 撤销历史。旧版继续读取；v4 的 `shadow_light_budget` / `shadow_samples` 只在兼容读取边界严格校验后丢弃，新字段采用默认值，v1～v3 使用默认 World 配置。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
+光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v9 保存并进入 Session 撤销历史。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
 
 实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线。管线按视图设置分组，在 RHI 工作线程上准备，未就绪的帧返回 not_ready（见 [Renderer 合同](contract.md#场景和-ui)）；采样器、查询、读回与查找表在第一个编码的 Lit 帧创建。关闭与尺寸变化沿既有 gfx 退休机制处理。
 

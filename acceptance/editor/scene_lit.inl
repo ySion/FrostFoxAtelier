@@ -25,8 +25,9 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     application::SceneSnapshot scene;take(scene.refresh(*document));
     const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.presentation().environment()));};
     require(scene.meshes.size()==10 && scene.lights.size()==4 && sky(*document)==std::array{.025f,.035f,.055f} &&
-        document->environment()!=ObjectId{} && !document->lighting_supplied(),
-        "Scene Lit example did not load its ten meshes, four direct lights and the Sky Light merged into its Environment.");
+        take(document->world().members()).size()==15 && document->environment()!=ObjectId{} &&
+        take(document->presentation().environment()).probe_volumes[0].enabled,
+        "Scene Lit example did not load its ten meshes, four direct lights and an Environment with its sky and DDGI volume.");
     require(std::ranges::count(scene.lights,renderer::LightKind::directional,&renderer::Light::kind)==1 &&
         std::ranges::count(scene.lights,renderer::LightKind::point,&renderer::Light::kind)==2 &&
         std::ranges::count(scene.lights,renderer::LightKind::rectangle,&renderer::Light::kind)==1 &&
@@ -48,7 +49,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     auto reopened=take(Session::deserialize(take(read_file(saved_path)),project));
     application::SceneSnapshot restored;take(restored.refresh(*reopened));
     require(take(reopened->serialize())==saved && restored.meshes.size()==10 && restored.lights.size()==4 &&
-        restored.meshes.front().material.roughness==.71f && sky(*reopened)==sky(*document) && reopened->lighting_supplied(),
+        restored.meshes.front().material.roughness==.71f && sky(*reopened)==sky(*document),
         "Scene Lit example temporary save/reopen lost material or formal light data.");
     // Runtime presentation uses the same World snapshot contract. An editing
     // document's Parameters panel intentionally requires a stopped document.
@@ -148,7 +149,7 @@ void verify_environment_sky_application() {
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Sky.scene"));
     take(write_file(file,text,WriteMode::create));
     auto reopened=take(Session::deserialize(take(read_file(file)),project));snapshot.reset();take(snapshot.refresh(*reopened));
-    require(sky(*reopened)==radiance && reopened->lighting_supplied() && snapshot.lights.size()==1 && !nlohmann::json::parse(text).contains("world"),
+    require(sky(*reopened)==radiance && snapshot.lights.size()==1 && !nlohmann::json::parse(text).contains("world"),
         "The Environment sky changed after saved scene reopen.");
     std::puts("Environment sky application acceptance: PASS (first edit creates it, unique, enable/remove/undo, scene save/reopen)");
 }
@@ -258,11 +259,11 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/range"),"Invalid saved light range bypassed World validation.");
     data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["intensity"]=-1;
     kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/intensity"),"A saved light intensity outside its hard bound loaded without a diagnostic.");
-    data=nlohmann::json::parse(text);auto& old_material=data["entities"][0]["components"][0];
-    old_material.erase("roughness");old_material.erase("metallic");old_material.erase("emissive");
-    auto old=take(Session::deserialize(data.dump(),project));const auto old_items=take(old->presentation().render_items());
-    require(old_items[0].material.roughness==presentation::Material{}.roughness && old_items[0].material.emissive==math::Vector3{},
-        "Existing v2 scenes did not retain World material defaults.");
+    data=nlohmann::json::parse(text);auto& unsaved=data["entities"][0]["components"][0];
+    unsaved.erase("roughness");unsaved.erase("metallic");unsaved.erase("emissive");
+    auto defaulted=take(Session::deserialize(data.dump(),project));const auto defaulted_items=take(defaulted->presentation().render_items());
+    require(defaulted_items[0].material.roughness==presentation::Material{}.roughness && defaulted_items[0].material.emissive==math::Vector3{},
+        "Unsaved material fields did not keep World material defaults.");
     const auto identity=snapshot.identity;snapshot.reset();take(snapshot.refresh(*reopened));
     require(snapshot.identity!=identity,"Document replacement reused the previous renderer history domain.");
 
@@ -376,20 +377,6 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     // World Settings edits are Environment property edits; their Undo selects the Environment.
     const auto selected=document.selection().entity;
     const auto settings=[](const Session& session){return take(session.presentation().environment());};
-    // A version 6 world section: every World option under its saved name.
-    const auto world_keys=[](const rendering::SceneLightingSettings& lit) {
-        renderer::ViewSettings view;static_cast<rendering::SceneLightingSettings&>(view.lit)=lit;
-        auto result=nlohmann::json::object();
-        for(const auto& option:view_options()) {
-            if(!world_option(option.option) || option.name.starts_with("sky_")) continue;
-            const auto value=view_value(view,option.option);const std::string name(option.name);
-            if(option.kind==ViewValueKind::boolean) result[name]=value!=0;
-            else if(option.kind==ViewValueKind::enumeration) result[name]=option.choices[static_cast<std::size_t>(value)];
-            else if(option.kind==ViewValueKind::integer) result[name]=static_cast<std::int64_t>(value);
-            else result[name]=value;
-        }
-        return result;
-    };
     const auto environment_record=[](const nlohmann::json& scene)->const nlohmann::json& {
         for(const auto& entity:scene.at("entities")) for(const auto& part:entity.at("components"))
             if(part.at("type")=="world.EnvironmentComponent") return part.at("properties");
@@ -404,8 +391,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         "Undo did not restore World and the evaluated view together.");
     take(document.redo());workspace.sync_world(document);
     const auto saved=take(document.serialize());auto restored=take(Session::deserialize(saved,project));
-    require(settings(*restored)==candidate && take(restored->serialize())==saved && !restored->dirty() && restored->lighting_supplied(),
-        "Scene v7 did not round-trip World authoring values into a clean document.");
+    require(settings(*restored)==candidate && take(restored->serialize())==saved && !restored->dirty(),
+        "Scene v9 did not round-trip World authoring values into a clean document.");
     const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
     auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
     take(workspace.set_view_settings(document,diagnostic_view));
@@ -413,71 +400,20 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto saved_json=nlohmann::json::parse(saved);
     require(saved_json.at("version")==9 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
         !environment_record(saved_json).contains("probe_debug"),"Scene v9 kept a world section or saved viewport diagnostics.");
-    // Every version 6 World key reaches its Environment field; distinct volumes catch a slot or axis mix-up.
-    auto authored=candidate;
-    for(std::uint32_t i=0;i<4;++i) {
-        auto& volume=authored.probe_volumes[i];const auto f=static_cast<float>(i);
-        volume.enabled=i%2==0;volume.placement=i==3?renderer::ProbePlacement::follow_focus:renderer::ProbePlacement::fixed;volume.minimum={-6-f,-1-f*2,-6-f*3};volume.maximum={6+f*3,5+f,6+f*2};volume.counts={4+i,3+i*2,5+i};volume.blend_cells=.25f*f;
-    }
-    const nlohmann::json v6{{"version",6},{"next_id","1"},{"world",world_keys(authored)},{"roots",nlohmann::json::array()},{"entities",nlohmann::json::array()}};
-    {
-        auto upgraded=take(Session::deserialize(v6.dump(),project));
-        require(settings(*upgraded)==authored && upgraded->lighting_supplied() && upgraded->load_issues().empty() && !upgraded->dirty(),
-            "Scene v6 World settings did not reach the Environment field by field.");
-        const auto upgraded_saved=nlohmann::json::parse(take(upgraded->serialize()));
-        auto upgraded_reopened=take(Session::deserialize(upgraded_saved.dump(),project));
-        require(upgraded_saved.at("version")==9 && !upgraded_saved.contains("world") && settings(*upgraded_reopened)==authored,
-            "Scene v6 World settings did not save and reopen as a v9 Environment.");
-    }
-    auto v4=nlohmann::json{{"version",4},{"actors",nlohmann::json::array()},{"world",world_keys(candidate)}};v4["world"].erase("direct_candidates");
-    v4["world"]["shadow_light_budget"]=16;v4["world"]["shadow_samples"]=64;
-    auto migrated=take(Session::deserialize(v4.dump(),project));
-    auto migrated_settings=candidate;migrated_settings.direct_candidates=8;
-    require(settings(*migrated)==migrated_settings,
-        "Scene v4 migration failed to preserve author values and use eight direct candidates.");
-    const auto migrated_saved=take(migrated->serialize());
-    auto reopened=take(Session::deserialize(migrated_saved,project));
-    require(settings(*reopened)==migrated_settings && take(reopened->serialize())==migrated_saved &&
-        nlohmann::json::parse(migrated_saved).at("version")==9,
-        "Migrated v4 scene did not save and reopen through the current v9 author format.");
-    for(const auto key:{"shadow_light_budget","shadow_samples"}) {
-        for(const auto& bad:std::array<nlohmann::json,5>{-1,65,1.5,"8",true}) {
-            auto invalid_legacy=v4;invalid_legacy["world"][key]=bad;
-            require(!Session::deserialize(invalid_legacy.dump(),project,{},LoadPolicy::strict),
-                "Malformed legacy shadow value was accepted during v4 migration.");
-        }
-        auto retired=v6;retired["world"][key]=1;
-        require(!Session::deserialize(retired.dump(),project,{},LoadPolicy::strict),"Scene v6 accepted a retired shadow key.");
-        auto mixed=v4;mixed["world"]["direct_candidates"]=8;
-        require(!Session::deserialize(mixed.dump(),project,{},LoadPolicy::strict),"Scene v4 accepted mixed new and retired direct-light options.");
-    }
+    // Viewport diagnostics are not Environment fields: strict loading rejects them, tolerant loading keeps them as saved data.
     for(const auto key:{"probe_debug","direct_reference"}) {
-        auto diagnostic_json=v6;diagnostic_json["world"][key]=true;
-        require(!Session::deserialize(diagnostic_json.dump(),project,{},LoadPolicy::strict),"Viewport diagnostic was accepted as a World author option.");
-    }
-    auto bad_budget=v4;bad_budget["world"]["shadow_light_budget"]=17;
-    auto bad_samples=v4;bad_samples["world"]["shadow_samples"]=0;
-    require(!Session::deserialize(bad_budget.dump(),project,{},LoadPolicy::strict) && !Session::deserialize(bad_samples.dump(),project,{},LoadPolicy::strict),
-        "Scene v4 migration ignored the legacy budget or sample-count boundary.");
-    for(const auto bad:{0.,33.,1.5}) {
-        auto bad_candidates=v6;bad_candidates["world"]["direct_candidates"]=bad;
-        require(!Session::deserialize(bad_candidates.dump(),project,{},LoadPolicy::strict),"Scene v6 accepted invalid direct candidates.");
+        auto json=saved_json;
+        for(auto& entity:json.at("entities")) for(auto& part:entity.at("components"))
+            if(part.at("type")=="world.EnvironmentComponent") part.at("properties")[key]=true;
+        require(!Session::deserialize(json.dump(),project,{},LoadPolicy::strict),"Viewport diagnostic was accepted as a World author option.");
+        auto tolerated=take(Session::deserialize(json.dump(),project));
+        require(tolerated->load_issues().size()==1 && tolerated->load_issues().front().kind==world::DiagnosticKind::unknown_field &&
+            environment_record(nlohmann::json::parse(take(tolerated->serialize()))).at(key)==true,
+            "Tolerant loading did not keep an unknown World setting as saved Environment data.");
     }
     auto invalid=candidate;invalid.probe_volumes[0].maximum=invalid.probe_volumes[0].minimum;
     require(!document.set_environment(invalid) && settings(document)==candidate && document.undo_count()==stable_history,
         "Invalid World configuration partially published.");
-    auto json=v6;json["world"]["probe_debug"]=true;
-    require(!Session::deserialize(json.dump(),project,{},LoadPolicy::strict),"A diagnostic setting was accepted in persisted World configuration.");
-    {
-        auto tolerated=take(Session::deserialize(json.dump(),project));
-        require(tolerated->load_issues().size()==1 && tolerated->load_issues().front().kind==world::DiagnosticKind::unknown_field &&
-            environment_record(nlohmann::json::parse(take(tolerated->serialize()))).at("probe_debug")==true,
-            "Tolerant loading did not keep an unknown World setting as saved Environment data.");
-    }
-    json=nlohmann::json{{"version",3},{"actors",nlohmann::json::array()}};
-    auto legacy=take(Session::deserialize(json.dump(),project));
-    require(settings(*legacy)==rendering::SceneLightingSettings{} && legacy->environment()==ObjectId{} && !legacy->lighting_supplied(),
-        "An old scene inherited another document's World settings.");
     take(restored->start());
     require(restored->set_environment(candidate).has_value() && !restored->set_environment(before) && settings(*restored)==candidate,
         "A running World accepted a World settings edit.");take(restored->stop());

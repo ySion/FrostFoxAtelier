@@ -3,7 +3,6 @@
 #include "editor/json_format.hpp"
 #include "editor/fields.hpp"
 #include "editor/properties.hpp"
-#include "editor/view_options.hpp"
 #include "editor/material_format.hpp"
 #include "physics/physics.hpp"
 #include <limits>
@@ -31,110 +30,9 @@ template<class T> T take(Result<T> value) {
 void committed(Result<world::Commit> value) {
     auto result=take(std::move(value)); if (result.notification_error) throw std::runtime_error(result.notification_error->message);
 }
-// Persistence and UI/Control share the same author-option directory. Labels and
-// diagnostic preferences never become keys in a scene document.
-Json world_settings(const rendering::SceneLightingSettings& settings) {
-    renderer::ViewSettings view;static_cast<rendering::SceneLightingSettings&>(view.lit)=settings;
-    Json result=Json::object();
-    for(const auto& option:view_options()) if(world_option(option.option)) {
-        const auto value=view_value(view,option.option);
-        switch(option.kind) {
-        case ViewValueKind::boolean:result[option.name]=value!=0;break;
-        case ViewValueKind::enumeration:result[option.name]=option.choices[static_cast<std::size_t>(value)];break;
-        case ViewValueKind::integer:result[option.name]=static_cast<std::int64_t>(value);break;
-        case ViewValueKind::number:result[option.name]=value;break;
-        }
-    }
-    return result;
-}
-rendering::SceneLightingSettings world_settings(const Json& data,bool legacy_shadow_settings) {
-    if(!data.is_object()) throw std::runtime_error("Expected World settings object.");
-    renderer::ViewSettings candidate;
-    for(const auto& [name,value]:data.items()) {
-        if(legacy_shadow_settings && (name=="shadow_light_budget" || name=="shadow_samples")) {
-            // Version 4 described per-light tracing. Validate that old contract,
-            // then use the new candidate default; reference is never authoring data.
-            if(data.contains("direct_candidates")) throw std::runtime_error("Legacy shadow settings cannot be combined with direct_candidates.");
-            if(!value.is_number()) throw std::runtime_error("Expected a numeric legacy World option: "+name);
-            const auto number=value.get<double>();
-            const double minimum=name=="shadow_samples"?1:0,maximum=name=="shadow_samples"?64:16;
-            if(!std::isfinite(number) || number!=std::floor(number) || number<minimum || number>maximum)
-                throw std::runtime_error("Invalid legacy World option: "+name);
-            continue;
-        }
-        const auto* option=view_option(name);
-        if(!option || option->name!=name || !world_option(option->option))
-            throw std::runtime_error("Unknown World setting: "+name);
-        double number{};
-        if(option->kind==ViewValueKind::boolean) number=value.get<bool>()?1:0;
-        else if(option->kind==ViewValueKind::enumeration) {
-            const auto text=value.get<std::string>();const auto at=std::ranges::find(option->choices,text);
-            if(at==option->choices.end()) throw std::runtime_error("Unknown World option value: "+text);
-            number=static_cast<double>(at-option->choices.begin());
-        } else {
-            if(!value.is_number()) throw std::runtime_error("Expected a numeric World option.");
-            number=value.get<double>();
-        }
-        take(set_view_option(candidate,option->option,number));
-    }
-    if(const auto* error=rendering::scene_lighting_error(candidate.lit)) throw std::runtime_error(error);
-    return candidate.lit;
-}
 Json vector(math::Vector3 value) { return Json::array({value.x,value.y,value.z}); }
 math::Vector3 vector(const Json& value) {
     const auto v=json_format::vector<3>(value); return {v[0],v[1],v[2]};
-}
-physics::BodySettings body_settings(const Json& value,bool legacy) {
-    fields(value,{"shape","motion","half_extents","radius","capsule_half_height",
-        "category","responses","sensor","friction","restitution","enabled"});
-    if (legacy) for (const auto key:{"capsule_half_height","category","responses","sensor","friction","restitution"})
-        (void)value.at(key);
-    physics::BodySettings settings;
-    const auto enumeration=[&](const char* key,auto names) {
-        if (legacy) return json_format::identity(value.at(key));
-        const auto name=value.at(key).get<std::string>();
-        const auto found=std::ranges::find(names,name);
-        if (found==names.end()) throw std::runtime_error(std::string("Unknown physics ")+key);
-        return static_cast<std::size_t>(found-names.begin());
-    };
-    const auto shape=enumeration("shape",std::array{"box","sphere","triangle_mesh","capsule"});
-    const auto motion=enumeration("motion",std::array{"stationary","kinematic","dynamic"});
-    if (shape>static_cast<unsigned>(physics::ShapeKind::capsule) ||
-        motion>static_cast<unsigned>(physics::MotionKind::dynamic))
-        throw std::runtime_error("Invalid physics shape or motion.");
-    settings.shape=static_cast<physics::ShapeKind>(shape);
-    settings.motion=static_cast<physics::MotionKind>(motion);
-    settings.half_extents=vector(value.at("half_extents"));
-    const auto number=[&](const char* key,float fallback) {
-        const auto found=value.find(key);
-        if (found==value.end()) return fallback;
-        const auto& item=*found;
-        if (!item.is_number()) throw std::runtime_error(std::string("Expected numeric physics field: ")+key);
-        const auto number=item.get<float>();
-        if (!std::isfinite(number)) throw std::runtime_error(std::string("Physics field must be finite: ")+key);
-        return number;
-    };
-    if (!value.contains("radius")) throw std::runtime_error("Missing physics radius.");
-    settings.radius=number("radius",settings.radius);
-    settings.capsule_half_height=number("capsule_half_height",settings.capsule_half_height);
-    const auto category=value.contains("category")?json_format::identity(value.at("category")):settings.category;
-    if (category>=16) throw std::runtime_error("Invalid physics category.");
-    settings.category=static_cast<std::uint32_t>(category);
-    if (value.contains("responses")) {
-        const auto& responses=value.at("responses");
-        if (!responses.is_array() || responses.size()!=16)
-            throw std::runtime_error("Physics responses require 16 entries.");
-        for (std::size_t i=0;i<16;++i) {
-            const auto response=json_format::identity(responses[i]);
-            if (response>static_cast<unsigned>(physics::Response::block))
-                throw std::runtime_error("Invalid physics collision response.");
-            take(settings.set_response(static_cast<std::uint32_t>(i),static_cast<physics::Response>(response)));
-        }
-    }
-    settings.enabled=value.value("enabled",true);
-    settings.sensor=value.value("sensor",settings.sensor);
-    settings.material={number("friction",settings.material.friction),number("restitution",settings.material.restitution)};
-    return settings;
 }
 std::string type_name(Runtime& runtime,TypeId type) { return std::string(take(runtime.describe(type))->name); }
 auto failed(const std::exception& error) { return std::unexpected(Error{ErrorCode::invalid_storage,error.what()}); }
@@ -353,161 +251,6 @@ world::Trs json_trs(const Json& value) {
     const auto q=json_format::vector<4>(value.at("rotation"));
     return take(world::canonical_transform({vector(value.at("position")),{q[0],q[1],q[2],q[3]},vector(value.at("scale"))}));
 }
-Json body_properties(const physics::BodySettings& body) {
-    constexpr std::array shapes{"box","sphere","triangle_mesh","capsule"};
-    constexpr std::array motions{"stationary","kinematic","dynamic"};
-    return {{"enabled",body.enabled},{"shape",shapes[static_cast<std::size_t>(body.shape)]},{"motion",motions[static_cast<std::size_t>(body.motion)]},
-        {"half_extents",{{"x",body.half_extents.x},{"y",body.half_extents.y},{"z",body.half_extents.z}}},{"radius",body.radius},
-        {"capsule_half_height",body.capsule_half_height},{"category",body.category},{"ignore_categories",body.ignore_categories},
-        {"overlap_categories",body.overlap_categories},{"sensor",body.sensor},{"material",{{"friction",body.material.friction},{"restitution",body.material.restitution}}}};
-}
-std::string legacy_type(std::string name) {
-    if(name=="world.Actor") return "world.Entity";
-    if(name=="world.StaticMeshActor") return "world.StaticMeshEntity";
-    return name;
-}
-// Migration transforms descriptions before creating any Runtime objects.
-struct LegacyActorSelection {std::uint64_t entity{};std::vector<std::pair<std::uint64_t,std::uint64_t>> components;};
-Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nullptr) {
-    const auto version=json_format::identity(source.at("version"));
-    if(version>=6 && version<=9) return source;
-    if(version<1 || version>5) throw std::runtime_error("Unsupported scene format version.");
-    fields(source,{"version","actors","world"});
-    if(!source.contains("actors")) throw std::runtime_error("Legacy scene requires an Actor directory.");
-    if(version<4 && source.contains("world")) throw std::runtime_error("World settings require scene version 4.");
-    const auto& old=source.at("actors");
-    if(!old.is_array() || old.size()>Session::maximum_entities) throw std::runtime_error("Invalid legacy Actor count.");
-    std::uint64_t next=1;Json roots=Json::array(),entities=Json::array();std::vector<std::string> actor_ids;
-    for(std::size_t i=0;i<old.size();++i) actor_ids.push_back(std::to_string(next++));
-    const std::unordered_set<std::string> spatial_types{"world.SceneComponent","world.PrimitiveComponent","world.StaticMeshComponent","world.CollisionComponent","world.LightComponent","physics.RagdollPartComponent","physics.SceneQueryComponent"};
-    for(std::size_t a=0;a<old.size();++a) {
-        auto actor=old[a];fields(actor,{"type","name","enabled","root","components","properties"});
-        if(version==1 && actor.contains("properties")) throw std::runtime_error("Actor business properties require scene version 2.");
-        auto parts=actor.at("components");if(!parts.is_array() || parts.size()>Session::maximum_components) throw std::runtime_error("Invalid legacy Component count.");
-        std::vector<std::size_t> original_parts;
-        std::unordered_set<std::size_t> original_ids;
-        for(const auto& part:parts) {
-            const auto key=json_format::identity(part.at("id"));
-            if(!key || !original_ids.insert(key).second) throw std::runtime_error("Duplicate legacy Component identity.");
-            if(selections) original_parts.push_back(key);
-        }
-        std::unordered_map<std::size_t,std::pair<std::uint64_t,std::uint64_t>> migrated_parts;
-        std::optional<std::size_t> old_body;
-        const auto root_key=json_format::identity(actor.at("root"));
-        auto body=std::ranges::find_if(parts,[](const auto& part){return part.at("type")=="physics.BodyComponent";});
-        if(body!=parts.end()) {
-            old_body=json_format::identity(body->at("id"));
-            if(std::ranges::count_if(parts,[](const auto& part){return part.at("type")=="physics.BodyComponent";})!=1) throw std::runtime_error("Legacy multiple BodyComponents require explicit migration.");
-            fields(*body,{"id","type","enabled","physics","body","properties"});
-            if(body->contains("properties") && !body->at("properties").empty()) throw std::runtime_error("Legacy BodyComponent has unsupported business properties.");
-            auto spatial=std::ranges::find_if(parts,[&](const auto& part){return json_format::identity(part.at("id"))==root_key;});
-            if(spatial==parts.end()) throw std::runtime_error("Legacy BodyComponent has no spatial root.");
-            if(spatial->at("type")=="world.SceneComponent") (*spatial)["type"]="world.CollisionComponent";
-            const auto name=spatial->at("type").get<std::string>();
-            if(name!="world.CollisionComponent" && name!="world.StaticMeshComponent" && name!="world.PrimitiveComponent") throw std::runtime_error("Legacy physical root type requires explicit migration: "+name);
-            if(spatial->contains("body") || spatial->contains("physics") || spatial->value("properties",Json::object()).contains("body")) throw std::runtime_error("Legacy root has competing body definitions.");
-            (*spatial)[version==1?"physics":"body"]=body->at(version==1?"physics":"body");
-            (*spatial)[version==1?"physics":"body"]["enabled"]=body->at("enabled");parts.erase(body);
-        }
-        Json base={{"id",actor_ids[a]},{"type",legacy_type(actor.at("type").get<std::string>())},{"name",actor.at("name")},{"enabled",actor.at("enabled")},
-            {"space",nullptr},{"children",Json::array()},{"components",Json::array()},{"properties",actor.value("properties",Json::object())}};
-        std::unordered_map<std::size_t,std::size_t> positions;std::unordered_map<std::size_t,std::string> spaces;std::unordered_map<std::size_t,std::size_t> parents;
-        std::vector<Json> nodes{base};std::unordered_map<std::string,std::size_t> node_positions{{actor_ids[a],0}};
-        for(std::size_t i=0;i<parts.size();++i) {
-            const auto& part=parts[i];const auto key=json_format::identity(part.at("id"));
-            if(!key || !positions.emplace(key,i).second) throw std::runtime_error("Duplicate legacy Component identity.");
-            const auto name=part.at("type").get<std::string>();
-            if(part.contains("position") || part.contains("rotation") || part.contains("scale") || spatial_types.contains(name)) {
-                if(!spatial_types.contains(name)) throw std::runtime_error("Legacy spatial type "+name+" at Actor "+std::to_string(a+1)+", Component "+std::to_string(key)+" requires an explicit owner/space migration; fields cannot infer behavior intent.");
-                spaces.emplace(key,key==root_key?actor_ids[a]:std::to_string(next++));parents.emplace(key,json_format::identity(part.at("parent")));
-            }
-        }
-        if(!spaces.empty() && (!spaces.contains(root_key) || parents.at(root_key)!=0)) throw std::runtime_error("Legacy spatial tree requires an explicit unparented root.");
-        if(spaces.empty() && root_key!=0) throw std::runtime_error("Legacy root is not spatial.");
-        for(const auto& part:parts) {
-            const auto key=json_format::identity(part.at("id"));if(!spaces.contains(key)) continue;const auto& id=spaces.at(key);
-            auto node=key;std::unordered_set<std::size_t> seen;
-            while(node!=root_key) {if(!seen.insert(node).second || !parents.contains(node) || parents.at(node)==0) throw std::runtime_error("Legacy spatial hierarchy is cyclic or outside its Actor.");node=parents.at(node);}
-            auto space=Json{{"position",part.at("position")},{"rotation",part.at("rotation")},{"scale",part.at("scale")},{"origin",nullptr}};
-            if(key==root_key) nodes[0]["space"]=std::move(space);
-            else {
-                const auto name=part.at("type").get<std::string>();const auto label=name.substr(name.find_last_of('.')+1)+" "+std::to_string(key);
-                // The old spatial parent carried no enable gate for its peers or
-                // descendants. Only the capability retains its own enabled bit.
-                node_positions.emplace(id,nodes.size());nodes.push_back({{"id",id},{"type","world.Entity"},{"name",label},{"enabled",true},
-                    {"space",std::move(space)},{"children",Json::array()},{"components",Json::array()},{"properties",Json::object()}});
-            }
-        }
-        for(const auto& part:parts) {
-            const auto key=json_format::identity(part.at("id"));if(!spaces.contains(key) || key==root_key) continue;
-            nodes[node_positions.at(spaces.at(parents.at(key)))]["children"].push_back(spaces.at(key));
-        }
-        Json ignored=Json::array();std::unordered_set<std::string> ignored_ids;
-        for(const auto& part:parts) {
-            const auto type=part.at("type").get<std::string>();
-            if(type=="world.PrimitiveComponent" || type=="world.StaticMeshComponent" || type=="world.CollisionComponent" ||
-                type=="physics.RagdollPartComponent") {
-                const auto id=spaces.at(json_format::identity(part.at("id")));
-                if(ignored_ids.insert(id).second) ignored.push_back(ref_key(std::stoull(id)));
-            }
-        }
-        Json ragdoll=Json::array();
-        for(auto part:parts) {
-            const auto key=json_format::identity(part.at("id"));const auto name=part.at("type").get<std::string>();
-            fields(part,{"id","type","enabled","properties","position","rotation","scale","parent","mesh","base_color","roughness","metallic","emissive","materials","physics","body","constraint_target"});
-            auto props=part.value("properties",Json::object());
-            if(version==1 && part.contains("properties")) throw std::runtime_error("Component business properties require scene version 2.");
-            if(name=="physics.SceneQueryComponent" && props.value("ignore_self",true)) {
-                if(props.contains("ignored_entities")) throw std::runtime_error("Legacy query has competing self-ignore scopes.");
-                props["ignored_entities"]=ignored;
-            }
-            if(part.contains("body") || part.contains("physics")) {
-                if(props.contains("body")) throw std::runtime_error("Legacy body has competing definitions.");
-                props["body"]=body_properties(body_settings(part.at(version==1?"physics":"body"),version==1));
-            }
-            if(name=="physics.DistanceConstraintComponent") {
-                if(props.contains("target")) throw std::runtime_error("Legacy constraint has competing targets.");
-                const auto target=json_format::identity(part.at("constraint_target"));
-                if(target>actor_ids.size()) throw std::runtime_error("Legacy constraint target is outside the scene.");
-                props["target"]=target?ref_key(std::stoull(actor_ids[target-1])):Json(nullptr);
-            } else if(part.contains("constraint_target")) throw std::runtime_error("Constraint target requires a DistanceConstraintComponent.");
-            if(name=="world.SceneComponent") {
-                if(!props.empty()) throw std::runtime_error("Legacy SceneComponent has unsupported business fields.");
-                const auto entity=std::stoull(spaces.at(key));migrated_parts.emplace(key,std::pair{entity,entity});continue;
-            }
-            const auto owner=spaces.contains(key)?spaces.at(key):actor_ids[a];
-            const bool special=name=="physics.RagdollPartComponent";
-            Json payload={{"id",std::to_string(next++)},{"type",name},{"name",""},{"enabled",part.at("enabled")},{"properties",props}};
-            migrated_parts.emplace(key,std::pair<std::uint64_t,std::uint64_t>{std::stoull(owner),std::stoull(payload.at("id").get<std::string>())});
-            if(name=="world.StaticMeshComponent" || special) {
-                for(const auto field:{"mesh","base_color","roughness","metallic","emissive","materials"}) if(part.contains(field)) payload[field]=part.at(field);
-                if(!payload.contains("materials")) payload["materials"]=Json::array();
-            } else for(const auto field:{"mesh","base_color","roughness","metallic","emissive","materials"})
-                if(part.contains(field)) throw std::runtime_error("Legacy mesh payload requires an exact builtin mesh type: "+name);
-            if(special) {
-                if(key==root_key || parents.at(key)!=root_key) throw std::runtime_error("Legacy physics part must directly descend from its controller root.");
-                auto metadata=payload;metadata["properties"].erase("body");for(const auto field:{"mesh","base_color","roughness","metallic","emissive","materials"}) metadata.erase(field);
-                auto mesh=payload;mesh["id"]=std::to_string(next++);mesh["type"]="world.StaticMeshComponent";mesh["properties"]=Json::object();
-                if(props.contains("body")) {mesh["properties"]["body"]=props.at("body");if(props.at("body").value("enabled",false)) throw std::runtime_error("Legacy ragdoll part Primitive conflicts with its pose driver.");}
-                else mesh["properties"]["body"]={{"enabled",false}};
-                nodes[node_positions.at(owner)]["components"].push_back(std::move(metadata));nodes[node_positions.at(owner)]["components"].push_back(std::move(mesh));
-                ragdoll.push_back(ref_key(std::stoull(owner)));
-            } else nodes[node_positions.at(owner)]["components"].push_back(std::move(payload));
-        }
-        unsigned ragdoll_drivers{};
-        for(auto& component:nodes[0]["components"])
-            if(component.at("type")=="physics.RagdollComponent") {component["properties"]["parts"]=ragdoll;++ragdoll_drivers;}
-        if(ragdoll_drivers>1 || (!ragdoll.empty() && ragdoll_drivers!=1)) throw std::runtime_error("Legacy physics parts require one identifiable controller.");
-        if(selections) {
-            LegacyActorSelection selection;selection.entity=std::stoull(actor_ids[a]);selection.components.reserve(original_parts.size());
-            for(const auto key:original_parts) selection.components.push_back(migrated_parts.at(old_body && key==*old_body?root_key:key));
-            selections->push_back(std::move(selection));
-        }
-        roots.push_back(actor_ids[a]);for(auto& node:nodes) entities.push_back(std::move(node));
-    }
-    Json lighting=source.value("world",Json::object());if(version==4 && !(lighting.is_object() && lighting.empty())) lighting=world_settings(world_settings(lighting,true));
-    return {{"version",6},{"next_id",std::to_string(next)},{"world",std::move(lighting)},{"roots",std::move(roots)},{"entities",std::move(entities)}};
-}
 }
 
 
@@ -649,115 +392,6 @@ struct Session::GraphCodec {
         if(session.play_) throw std::runtime_error("A Play copy does not assign document identities.");
         if(session.next_local_id_==std::numeric_limits<std::uint64_t>::max()) throw std::runtime_error("Document object identity space is exhausted.");
         const auto id=session.next_local_id_++;session.local_ids_.emplace(object,id);return id;
-    }
-    // Version 6 kept World settings in a document "world" section and the sky in a Sky
-    // LightComponent; version 7 keeps both in one EnvironmentComponent. A document gains
-    // an "Environment" root Entity only when it had World settings or a Sky Light.
-    // Returns whether the file supplied World lighting: a version 6 world key or a saved
-    // Environment. One merged only from a Sky Light does not count. Version 8 adds the
-    // Environment's sky map key, empty for an Environment of an older version.
-    static bool upgrade(Session& session,Json& data,Load& load) {
-        auto& runtime=session.runtime_;
-        if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
-        const auto environment_type=type_name(runtime,session.presentation_types_.environment_component);
-        auto& entities=data.at("entities");
-        if(!entities.is_array()) throw std::runtime_error("Invalid Entity graph directory.");
-        // A registered type derived from EnvironmentComponent is one too; an unregistered type stays a placeholder.
-        const auto environment=[&](const Json& part) {
-            if(!part.is_object()) return false;
-            const auto type=runtime.find_type(part.value("type",std::string{}));
-            return type && derives(runtime,*type,session.presentation_types_.environment_component);
-        };
-        const auto sky_maps=[&] {
-            for(auto& entity:entities) if(entity.is_object())
-                if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
-                    for(auto& part:*parts) if(environment(part) && !part.contains("sky_map")) part["sky_map"]="";
-            data["version"]=9;
-        };
-        if(const auto version=json_format::identity(data.at("version"));version!=6) {
-            bool found{};
-            for(const auto& entity:entities) if(entity.is_object())
-                if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
-                    for(const auto& part:*parts) found|=environment(part);
-            if(version==7) sky_maps();
-            data["version"]=9;
-            return found;
-        }
-        Json settings=Json::object(),unknown=Json::object();bool supplied{};
-        if(const auto section=data.find("world");section==data.end()) {
-            if(load.document) load.report(world::Severity::warning,world::DiagnosticKind::mismatch,{},{"world"},nullptr,"World settings are missing; defaults are used.");
-        } else {
-            if(load.document && !section->is_object()) load.keep({},{"world"},*section,world::DiagnosticKind::mismatch,"Expected a World settings record. Defaults are used and the saved value is kept.");
-            else if(load.document) for(const auto& [name,value]:section->items()) {
-                supplied=true;
-                const auto* option=view_option(name);
-                if(!option || option->name!=name || !world_option(option->option)) {unknown[name]=value;continue;}
-                Json* at=&settings;for(const auto& part:environment_field(name)) at=&(*at)[part];
-                *at=value;
-            }
-            data.erase(section);
-        }
-        const auto enabled=[](const Json& record) {const auto at=record.find("enabled");return at==record.end() || !at->is_boolean() || at->get<bool>();};
-        const auto sky=[&](const Json& part) {
-            if(!part.is_object()) return false;
-            const auto type=part.find("type");if(type==part.end() || !type->is_string()) return false;
-            const auto found=runtime.find_type(type->get<std::string>());
-            if(!found || !derives(runtime,*found,session.presentation_types_.light_component)) return false;
-            const auto properties=part.find("properties");if(properties==part.end() || !properties->is_object()) return false;
-            const auto light=properties->find("settings");if(light==properties->end() || !light->is_object()) return false;
-            const auto kind=light->find("kind");return kind!=light->end() && *kind=="sky";
-        };
-        // Composition preorder, as the version 6 sky slot was assigned.
-        struct Sky {Json* entity;std::size_t index;bool enabled;};
-        std::vector<Sky> skies;std::unordered_map<std::uint64_t,Json*> by_key;std::unordered_set<std::uint64_t> visited;
-        for(auto& entity:entities) if(entity.is_object()) if(const auto id=entity.find("id");id!=entity.end()) by_key.emplace(local_key(*id),&entity);
-        const auto walk=[&](auto&& self,std::uint64_t key,bool active)->void {
-            const auto at=by_key.find(key);if(at==by_key.end() || !visited.insert(key).second) return;
-            auto& entity=*at->second;active=active && enabled(entity);
-            if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
-                for(std::size_t i=0;i<parts->size();++i) if(sky((*parts)[i])) skies.push_back({&entity,i,active && enabled((*parts)[i])});
-            if(const auto children=entity.find("children");children!=entity.end() && children->is_array())
-                for(const auto& child:*children) self(self,local_key(child),active);
-        };
-        if(const auto roots=data.find("roots");roots!=data.end() && roots->is_array()) for(const auto& root:*roots) walk(walk,local_key(root),true);
-        for(std::size_t i=0;i<skies.size();++i) {
-            const auto& part=skies[i].entity->at("components")[skies[i].index];
-            const std::vector<std::string> field{"entities",skies[i].entity->at("id").get<std::string>(),"components",part.at("id").get<std::string>()};
-            if(!load.document) {
-                load.report(world::Severity::warning,world::DiagnosticKind::conflict,{},field,nullptr,"A Sky Light is not imported; the sky is part of a document's Environment.");
-                continue;
-            }
-            if(i) {
-                load.report(world::Severity::warning,world::DiagnosticKind::conflict,{},field,nullptr,"A World has one sky; this additional Sky Light is removed.");
-                continue;
-            }
-            const auto& light=part.at("properties").at("settings");
-            settings["sky_enabled"]=skies[i].enabled;
-            settings["sky_color"]=light.value("color",Json{{"x",1},{"y",1},{"z",1}});
-            settings["sky_intensity"]=light.value("intensity",Json(1));
-        }
-        // Remove from the back so earlier indices of the same Entity stay valid.
-        for(auto sky=skies.rbegin();sky!=skies.rend();++sky) {
-            auto& parts=sky->entity->at("components");
-            parts.erase(parts.begin()+static_cast<std::ptrdiff_t>(sky->index));
-            if(parts.empty()) load.report(world::Severity::info,world::DiagnosticKind::converted,{},{"entities",sky->entity->at("id").get<std::string>()},nullptr,
-                load.document?"The Sky Light is now part of the Environment; this Entity has no components.":"The Sky Light was not imported; this Entity has no components.");
-        }
-        for(const auto& [name,value]:unknown.items()) {
-            // A field name the settings already use keeps its value with the document.
-            if(settings.contains(name)) load.keep({},{"world",name},value,world::DiagnosticKind::unknown_key,"Unknown World setting kept from the saved scene.");
-            else settings[name]=value;
-        }
-        if(load.document && (supplied || !skies.empty())) {
-            const auto next=local_key(data.at("next_id"));
-            if(next>std::numeric_limits<std::uint64_t>::max()-2) throw std::runtime_error("Document object identity space is exhausted.");
-            const auto entity=std::to_string(next),component=std::to_string(next+1);
-            entities.push_back({{"id",entity},{"type",type_name(runtime,session.types_.entity)},{"name","Environment"},{"enabled",true},{"space",nullptr},
-                {"children",Json::array()},{"components",Json::array({Json{{"id",component},{"type",environment_type},{"enabled",true},{"properties",std::move(settings)}}})}});
-            data.at("roots").push_back(entity);data["next_id"]=std::to_string(next+2);
-        }
-        sky_maps();
-        return supplied;
     }
     static Graph capture(const Session& session,std::span<const ObjectId> requested,bool persistent,bool document=false,bool live=false) {
         struct IdentityRollback {
@@ -1464,20 +1098,12 @@ struct Session::GraphCodec {
                                 if(!entry.is_object()) throw std::runtime_error("Expected a JSON record.");
                                 const auto slot=entry.at("slot").get<std::string>();
                                 for(const auto& [name,item]:entry.items())
-                                    if(name!="slot" && name!="resource" && name!="source" && name!="overridden" && name!="inline" && name!="parent" && name!="overrides")
+                                    if(name!="slot" && name!="resource" && name!="overridden")
                                         load.keep_slot(object,slot,name,item,world::DiagnosticKind::unknown_key,"Unknown binding key kept from the saved scene.");
-                                ObjectRoot resource;
-                                if(entry.contains("resource")) {
-                                    for(const auto name:{"source","inline","parent","overrides"})
-                                        if(entry.contains(name)) throw std::runtime_error(std::string("Unsupported field: ")+name);
-                                    const auto key=local_key(entry.at("resource"));
-                                    const auto at=material_ids.find(key);
-                                    if(at==material_ids.end()) throw std::runtime_error("Material binding references an unknown scene resource.");
-                                    used_materials.insert(key);resource=at->second;
-                                } else {
-                                    std::vector<MissingResource> missing;resource=restore_material(session,project,entry,&missing);
-                                    report_missing(object,{"materials",slot},entry,missing);
-                                }
+                                const auto key=local_key(entry.at("resource"));
+                                const auto at=material_ids.find(key);
+                                if(at==material_ids.end()) throw std::runtime_error("Material binding references an unknown scene resource.");
+                                used_materials.insert(key);ObjectRoot resource=at->second;
                                 bool overridden{};
                                 if(const auto flag=entry.find("overridden");flag==entry.end())
                                     load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"materials",slot,"overridden"},nullptr,"The override flag is missing; the slot is not overridden.");
@@ -2065,9 +1691,8 @@ Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text
 }
 Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text,Project& project,Prepare prepare,LoadPolicy policy,SessionRole role) {
     try {
-        GraphCodec::Graph graph;graph.data=migrate_scene(json_format::parse(text));auto session=std::make_unique<Session>(std::move(prepare),role);
+        GraphCodec::Graph graph;graph.data=json_format::parse(text);auto session=std::make_unique<Session>(std::move(prepare),role);
         GraphCodec::Load load;load.policy=policy;load.document=true;
-        session->lighting_supplied_=GraphCodec::upgrade(*session,graph.data,load);
         auto prepared=GraphCodec::construct(*session,graph,&project,true,load);
         for(const auto& [object,label]:prepared.labels) session->names_.emplace(object,label);
         if(!prepared.roots.empty()) {
@@ -2086,8 +1711,8 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text,Project
     try {
         if(editing() || world_.running()) throw std::runtime_error("Composition import requires a stopped document without an active edit.");
         if(parent!=ObjectId{}) take(admit_entity_edit(parent));
-        GraphCodec::Graph graph;graph.data=migrate_scene(json_format::parse(text));
-        GraphCodec::Load load;(void)GraphCodec::upgrade(*this,graph.data,load);
+        GraphCodec::Graph graph;graph.data=json_format::parse(text);
+        GraphCodec::Load load;
         auto prepared=GraphCodec::construct(*this,graph,&project,false,load);
         if(prepared.roots.empty()) return world::Commit{};return GraphCodec::publish(*this,prepared,graph,parent,false,load);
     } catch(const std::exception& error) {return failed(error);}
@@ -2216,11 +1841,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         // Descends into records the current schema still declares; anything else is one entry.
         const auto classify=[&](std::span<const std::string> path)->std::pair<bool,world::DiagnosticKind> {
             using enum world::DiagnosticKind;
-            if(document) {
-                if(path.front()!="world") return {false,unknown_key};
-                // A version 6 world value the Environment could not take.
-                return {path.size()==1,path.size()==1?mismatch:unknown_key};
-            }
+            if(document) return {false,unknown_key};
             if(material) return {false,unknown_key};
             if(path.front()=="properties") {
                 if(path.size()==1) return {true,mismatch};
@@ -2305,25 +1926,6 @@ std::vector<world::Diagnostic> Session::issues() const {
         report({},retained_document_,{});
     } catch(const std::exception&) {}
     return result;
-}
-Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> Session::legacy_selection(std::string_view text,
-    std::span<const std::pair<std::size_t,std::optional<std::size_t>>> requests) {
-    try {
-        auto data=json_format::parse(text);
-        if(json_format::identity(data.at("version"))>=6) throw std::runtime_error("Legacy selection requires scene version 1 through 5.");
-        std::vector<LegacyActorSelection> selections;
-        (void)migrate_scene(std::move(data),&selections);
-        std::vector<std::pair<std::uint64_t,std::uint64_t>> result;result.reserve(requests.size());
-        for(const auto& [actor,component]:requests) {
-            if(actor>=selections.size()) throw std::runtime_error("Legacy selection Actor index is outside the scene.");
-            const auto& selection=selections[actor];
-            if(component) {
-                if(*component>=selection.components.size()) throw std::runtime_error("Legacy inspection Component index is outside its Actor.");
-                result.push_back(selection.components[*component]);
-            } else result.emplace_back(selection.entity,selection.entity);
-        }
-        return result;
-    } catch(const std::exception& error) {return failed(error);}
 }
 Result<ObjectId> Session::local_object(std::uint64_t identity) const {
     try {

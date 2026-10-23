@@ -25,7 +25,7 @@ constexpr std::array<unsigned char,70> tiny_png{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x
 constexpr std::string_view published_code="class project.ControlProbe : world.Component { float speed = 1.0f; void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); } }\n";
 constexpr std::string_view published_ui="ui ProjectUI(in Text title, in double elapsed, in double entities) { Column hud { Text title { text: input.title; } } }\n";
 void project_fixture(const std::filesystem::path& project) {
-    write(project/"Content/Scenes/Main.scene",Json{{"version",2},{"actors",Json::array()}}.dump());
+    write(project/"Content/Scenes/Main.scene",Json{{"version",9},{"next_id","1"},{"roots",Json::array()},{"entities",Json::array()},{"materials",Json::array()}}.dump());
     write(project/"Source/Published.source",published_code);write(project/"Source/Published.ui.source",published_ui);
     std::filesystem::create_directories(project/"Cache");
     write(project/"Config/Project.json",Json{{"version",1},{"name","Control review"},{"startup_scene","Content/Scenes/Main.scene"},{"ui_source","Source/Published.ui.source"}}.dump());
@@ -238,185 +238,54 @@ Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities
         "Read-only object discovery changed the document or its state token");
     return first_cursor;
 }
-void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
+// A repro opens only in the current view schema and scene format, and its frozen view
+// must agree with the scene's Environment. Every rejection keeps the current document.
+void repro_lighting_agreement(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
     require(original.at("view_schema")==5 && original_scene.at("version")==9 && !original_scene.contains("world"),
         "Current repro export did not identify view schema 5 and Scene v9");
-    const auto legacy=root/"LegacyLightingRepro";
-    std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(legacy),
+    const auto copy=root/"LightingRepro";
+    std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(copy),
         std::filesystem::copy_options::recursive);
-    const auto scene_path=legacy/"Project"/wide(original.at("scene").get<std::string>());
-    // A view before schema 3 had no sky: the scene's Sky Light carried it.
-    auto old_manifest=original;old_manifest.erase("view_schema");
-    for(const auto* name:{"sky_enabled","sky_intensity","sky_color_x","sky_color_y","sky_color_z"}) old_manifest["view"].erase(name);
-    old_manifest["view"].erase("direct_candidates");
-    old_manifest["view"]["shadow_light_budget"]=16;old_manifest["view"]["shadow_samples"]=64;
-    // The legacy lighting repro contains one flat mesh Actor; its World settings created the Environment.
-    // Encode the real v4 Actor boundary instead of relabeling a v7 Entity directory as v4.
-    require(original_scene.at("entities").size()==2 && original_scene.at("roots").size()==2 &&
-        original_scene.at("entities")[1].at("components").size()==1 &&
-        original_scene.at("entities")[1].at("components")[0].at("type")=="world.EnvironmentComponent",
-        "Legacy lighting migration requires its single-mesh fixture with an Environment.");
-    const auto& current_entity=original_scene.at("entities")[0];
-    require(current_entity.at("type")=="world.StaticMeshEntity" && current_entity.at("children").empty() &&
-        current_entity.at("components").size()==1 && current_entity.at("components")[0].at("type")=="world.StaticMeshComponent" &&
-        current_entity.at("space").at("origin").is_null(),"Legacy lighting fixture acquired a modern-only composition relation.");
-    // A version 4-6 world section holds the frozen view's scene options other than the sky.
-    const auto options=d.ok("capabilities").at("display_options");
-    Json world_section=Json::object();
-    for(const auto& [name,value]:original.at("view").items())
-        if(options.at(name).at("scope")=="scene" && !name.starts_with("sky_")) world_section[name]=value;
-    auto old_component=current_entity.at("components")[0];old_component.erase("name");old_component["id"]=1;old_component["parent"]=0;
-    for(const auto* field:{"position","rotation","scale"}) old_component[field]=current_entity.at("space").at(field);
-    const Json old_actor{{"type","world.StaticMeshActor"},{"name",current_entity.at("name")},{"enabled",current_entity.at("enabled")},
-        {"root",1},{"components",Json::array({old_component})},{"properties",current_entity.at("properties")}};
-    Json old_scene{{"version",4},{"actors",Json::array({old_actor})},{"world",world_section}};
-    old_scene["world"].erase("direct_candidates");
-    old_scene["world"]["shadow_light_budget"]=16;old_scene["world"]["shadow_samples"]=64;
-    // The same document as version 6: the mesh Entity and a world section.
-    Json v6_scene{{"version",6},{"next_id",original_scene.at("next_id")},{"world",world_section},
-        {"roots",Json::array({original_scene.at("roots")[0]})},{"entities",Json::array({current_entity})},{"materials",original_scene.value("materials",Json::array())}};
+    const auto scene_path=copy/"Project"/wide(original.at("scene").get<std::string>());
     const auto publish=[&](Json manifest,const Json& scene) {
         write(scene_path,scene.dump(2));bool listed=false;
-        for(auto& file:manifest.at("files")) if(legacy/wide(file.at("path").get<std::string>())==scene_path) {
+        for(auto& file:manifest.at("files")) if(copy/wide(file.at("path").get<std::string>())==scene_path) {
             file["sha256"]=sha256_file(scene_path);
             file["bytes"]=std::filesystem::file_size(atelier::platform::windows_file_path(scene_path));listed=true;
         }
         require(listed,"Repro scene was absent from the dependency manifest");
-        write(legacy/"manifest.json",manifest.dump(2));
+        write(copy/"manifest.json",manifest.dump(2));
     };
     const auto rejected=[&](const Json& manifest,const Json& scene,std::string_view code="invalid_request") {
         publish(manifest,scene);const auto before=d.inspect();const auto token=d.token;
-        error(d.call("repro.open",{{"directory",utf8(legacy.wstring())}}),code);
+        error(d.call("repro.open",{{"directory",utf8(copy.wstring())}}),code);
         const auto after=d.inspect();
         for(const auto* field:{"project","scene_path","entities","selection","inspected_object","camera","view","dirty","undo","redo"})
             require(after.at(field)==before.at(field),std::string("Rejected lighting repro changed ")+field);
         require(d.token==token,"Rejected lighting repro changed the accepted editor state token");
     };
-    for(const auto* key:{"shadow_light_budget","shadow_samples"}) {
-        const bool samples=std::string_view(key)=="shadow_samples";
-        for(const auto& bad:Json::array({-1,samples?65:17,1.5,"8",true})) {
-            auto manifest=old_manifest;manifest["view"][key]=bad;rejected(manifest,old_scene);
-            auto scene=old_scene;scene["world"][key]=bad;rejected(old_manifest,scene);
-        }
-        auto current=original;current["view"][key]=1;rejected(current,original_scene);
-        auto current_scene=v6_scene;current_scene["world"][key]=1;rejected(original,current_scene);
-    }
-    auto zero_samples=old_manifest;zero_samples["view"]["shadow_samples"]=0;rejected(zero_samples,old_scene);
-    auto zero_scene=old_scene;zero_scene["world"]["shadow_samples"]=0;rejected(old_manifest,zero_scene);
-    auto mixed=old_manifest;mixed["view"]["direct_candidates"]=8;rejected(mixed,old_scene);
-    auto mixed_scene=old_scene;mixed_scene["world"]["direct_candidates"]=8;rejected(old_manifest,mixed_scene);
-    auto unknown=original;unknown["view_schema"]=6;rejected(unknown,original_scene);
-    // Schema 5 removed ssil and shadow_bias: a current view rejects the keys.
-    for(const auto& [name,value]:Json{{"ssil",false},{"shadow_bias",.002}}.items()) {
+    auto unmarked=original;unmarked.erase("view_schema");rejected(unmarked,original_scene);
+    for(unsigned schema:{4u,6u}) {auto other=original;other["view_schema"]=schema;rejected(other,original_scene);}
+    auto old_scene=original_scene;old_scene["version"]=8;rejected(original,old_scene,"operation_failed");
+    for(const auto& [name,value]:Json{{"ssil",false},{"shadow_bias",.002},{"shadow_light_budget",16},{"shadow_samples",64},
+        {"direct_reference",true},{"direct_clustered",false},{"direct_shadow_cache",true}}.items()) {
         auto retired=original;retired["view"][name]=value;rejected(retired,original_scene);
     }
-    auto disagrees=old_manifest;disagrees["view"]["exposure_ev"]=old_scene.at("world").at("exposure_ev").get<double>()+.25;
-    rejected(disagrees,old_scene,"dependency_mismatch");
-    // A schema 3 or later view carries the sky, and a v7 scene keeps it in the Environment: both must agree.
     auto drifted=original;drifted["view"]["exposure_ev"]=original.at("view").at("exposure_ev").get<double>()+.25;
     rejected(drifted,original_scene,"dependency_mismatch");
     auto sky_drifted=original;sky_drifted["view"]["sky_enabled"]=!original.at("view").at("sky_enabled").get<bool>();
     rejected(sky_drifted,original_scene,"dependency_mismatch");
-    // Schema 4 removed the direct-light diagnostics: a schema 3 view drops their boolean values; a current view rejects the keys.
-    for(const auto* name:{"direct_reference","direct_clustered","direct_shadow_cache"}) {
-        auto current=original;current["view"][name]=true;rejected(current,original_scene);
-        auto malformed=original;malformed["view_schema"]=3;malformed["view"][name]=1;rejected(malformed,original_scene);
-    }
-    auto schema3=original;schema3["view_schema"]=3;
-    schema3["view"]["direct_reference"]=true;schema3["view"]["direct_clustered"]=false;schema3["view"]["direct_shadow_cache"]=true;
-    publish(schema3,original_scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
-    require(d.inspect().at("view")==original.at("view"),"A schema 3 repro did not drop its removed direct-light diagnostics");
-    // A schema 3 or later view may also pair with a version 6 scene: its Sky Light, not its world section, carries the sky,
-    // and a disagreement keeps the current document.
-    auto sky_view=original;
-    for(const auto& [name,value]:Json{{"sky_enabled",true},{"sky_intensity",2},{"sky_color_x",.25},{"sky_color_y",.5},{"sky_color_z",.75}}.items()) sky_view["view"][name]=value;
-    const auto next=std::stoull(v6_scene.at("next_id").get<std::string>());
-    auto sky_scene=v6_scene;sky_scene["next_id"]=std::to_string(next+2);sky_scene["roots"].push_back(std::to_string(next));
-    sky_scene["entities"].push_back({{"id",std::to_string(next)},{"type","world.Entity"},{"name","Sky Light"},{"enabled",true},{"space",nullptr},
-        {"children",Json::array()},{"components",Json::array({Json{{"id",std::to_string(next+1)},{"type","world.LightComponent"},{"enabled",true},
-            {"properties",{{"settings",{{"kind","sky"},{"color",{{"x",.25},{"y",.5},{"z",.75}}},{"intensity",2}}}}}}})}});
-    auto sky_dimmer=sky_view;sky_dimmer["view"]["sky_intensity"]=1;rejected(sky_dimmer,sky_scene,"dependency_mismatch");
-    publish(sky_view,sky_scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
-    require(d.inspect().at("view")==sky_view.at("view"),"A current repro with a version 6 Sky Light did not open with its view's sky.");
-
-    auto expected_view=original.at("view");expected_view["direct_candidates"]=8;
-    auto expected_world=world_section;expected_world["direct_candidates"]=8;
-    const auto authored=[](Json entities) {
-        for(auto& entity:entities) {entity.erase("id");for(auto& component:entity.at("components")) component.erase("id");}
-        return entities;
-    };
-    auto expected_entities=authored(original_scene.at("entities"));
-    expected_entities[1]["components"][0]["properties"]["direct_candidates"]=8;
-    for(unsigned schema:{0u,1u}) {
-        auto manifest=old_manifest;auto scene=old_scene;
-        if(schema==1) {
-            manifest["view_schema"]=1;
-            // Both endpoints of the retired ranges migrate to the same defaults.
-            manifest["view"]["shadow_light_budget"]=0;manifest["view"]["shadow_samples"]=1;
-            scene["world"]["shadow_light_budget"]=0;scene["world"]["shadow_samples"]=1;
-        }
-        publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
-        const auto migrated=d.inspect();
-        require(migrated.at("view")==expected_view && migrated.at("camera")==original.at("camera") &&
-            !migrated.at("dirty").get<bool>() && migrated.at("selection").size()==original.at("selection_indices").size(),
-            "Legacy repro lost view/camera/selection, took its sky from elsewhere than the scene, or inferred reference mode from old shadow samples");
-        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Migrated repro export did not start");
-        const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
-        const std::filesystem::path new_repro=wide(exported.at("result").at("directory").get<std::string>());
-        const auto saved=read(new_repro/"manifest.json");
-        const auto saved_scene=read(new_repro/"Project"/wide(saved.at("scene").get<std::string>()));
-        require(saved.at("view_schema")==5 && saved.at("view")==expected_view && saved_scene.at("version")==9 &&
-            !saved_scene.contains("world") && authored(saved_scene.at("entities"))==expected_entities &&
-            saved.at("selection_indices")==original.at("selection_indices"),
-            "Migrated repro export lost author data or retained a legacy view/scene format");
-        require(!saved.at("view").contains("shadow_light_budget") && !saved.at("view").contains("shadow_samples") &&
-            !saved.at("view").contains("direct_reference"),"Migrated repro retained retired author options or removed diagnostics");
-        d.ok("repro.open",{{"directory",utf8(new_repro.wstring())}});
-        const auto reopened=d.inspect();
-        require(reopened.at("view")==expected_view && reopened.at("camera")==original.at("camera") &&
-            !reopened.at("dirty").get<bool>() && reopened.at("selection").size()==original.at("selection_indices").size(),
-            "New-schema export of the migrated repro did not reopen cleanly");
-    }
-    // Old Actor indices must survive inserted spatial Entities in the preceding Actor.
-    auto expanded_actor=old_actor;
-    expanded_actor["components"].push_back(Json{{"id",2},{"type","world.SceneComponent"},{"enabled",true},{"parent",1},
-        {"position",{2,3,4}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
-    expanded_actor["components"].push_back(Json{{"id",3},{"type","world.CollisionComponent"},{"enabled",true},{"parent",1},
-        {"position",{4,5,6}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}}});
-    auto other_actor=old_actor;other_actor["name"]="Legacy Other";
-    for(unsigned version=1;version<=5;++version) {
-        auto scene=old_scene;scene["version"]=version;scene["actors"]=Json::array({expanded_actor,other_actor});
-        if(version<4) scene.erase("world");
-        if(version==5) scene["world"]=expected_world;
-        if(version==1) for(auto& actor:scene["actors"]) {
-            actor.erase("properties");for(auto& part:actor["components"]) part.erase("properties");
-        }
-        auto manifest=old_manifest;manifest["selection_indices"]=Json::array({1});manifest.erase("inspection");
-        publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
-        const auto selected=d.inspect();const auto& entities=selected.at("entities");
-        // The Environment follows the migrated Actors: versions 4 and 5 bring it from their world section, and for older
-        // versions repro.open applies the frozen view's non-default World settings, which those formats could not store.
-        require(entities.size()==5 && entities[4].at("components")[0].at("type")=="world.EnvironmentComponent" && selected.at("selection")==Json::array({entities[3].at("handle")}) &&
-            entities[3].at("name")=="Legacy Other" && selected.at("inspected_object")==entities[3].at("handle"),
-            "Legacy repro Actor selection used expanded Entity indices instead of migrated identities");
-        if(version==5) for(unsigned component_index:{1u,2u}) {
-            manifest["selection_indices"]=Json::array({0});manifest["inspection"]={{"actor",0},{"component",component_index}};
-            publish(manifest,scene);d.ok("repro.open",{{"directory",utf8(legacy.wstring())}});
-            const auto inspected=d.inspect();const auto& owner=inspected.at("entities")[component_index];
-            require(inspected.at("selection")==Json::array({owner.at("handle")}) &&
-                owner.at("parent")==inspected.at("entities")[0].at("handle"),
-                "Legacy spatial component inspection lost its actual migrated owner Entity");
-            if(component_index==1) require(owner.at("components").empty() && inspected.at("inspected_object")==owner.at("handle") &&
-                owner.at("transform").at("position")==Json::array({2,3,4}),
-                "Legacy pure SceneComponent did not inspect its mapped spatial Entity");
-            else require(owner.at("components").size()==1 && owner.at("components")[0].at("type")=="world.CollisionComponent" &&
-                inspected.at("inspected_object")==owner.at("components")[0].at("handle"),
-                "Legacy Primitive inspection guessed the old Actor owner instead of the bound child Entity");
-        }
-    }
-    // Restore the caller's repro after exercising expanded legacy object graphs.
+    // Selection and inspection resolve against the loaded candidate's World members before it replaces the document.
+    auto beyond=original;beyond.erase("inspection");beyond["selection_indices"]=Json::array({original_scene.at("entities").size()});
+    rejected(beyond,original_scene,"dependency_mismatch");
+    auto absent_component=original;absent_component["selection_indices"]=Json::array({0});absent_component["inspection"]={{"entity",0},{"component",1000}};
+    rejected(absent_component,original_scene,"dependency_mismatch");
+    publish(original,original_scene);d.ok("repro.open",{{"directory",utf8(copy.wstring())}});
+    const auto reopened=d.inspect();
+    require(reopened.at("view")==original.at("view") && reopened.at("camera")==original.at("camera") && !reopened.at("dirty").get<bool>() &&
+        reopened.at("selection").size()==original.at("selection_indices").size(),"Current lighting repro did not reopen with its view, camera and selection");
     d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
 }
 // Only the scene records the sky map and its rotation; the frozen view holds view options.
@@ -503,12 +372,12 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
     d.ok("scene.save");const auto id=unique_id();
     require(d.call("repro.export",Json::object(),id).at("status")=="pending","Lighting repro export did not start");
     const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
-    repro_lighting_migration(d,wide(exported.at("result").at("directory").get<std::string>()),root);
+    repro_lighting_agreement(d,wide(exported.at("result").at("directory").get<std::string>()),root);
     repro_sky(d,project);
     repro_material_draft(d,project,root);
     d.client.reset();editor.close();
-    write(root/"result.json",Json{{"status","passed"},{"cases",{"legacy-shadow-ranges","legacy-view-and-world-agreement",
-        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema4-scene8-export-reopen","removed-direct-diagnostics","view-and-environment-agreement","sky-map-and-rotation","material-draft-dependencies"}}}.dump(2));
+    write(root/"result.json",Json{{"status","passed"},{"cases",{"current-schema-and-format-only","retired-view-keys-rejected",
+        "rejected-repro-preserves-state","view-and-environment-agreement","selection-resolved-before-replacement","current-repro-reopen","sky-map-and-rotation","material-draft-dependencies"}}}.dump(2));
     std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
@@ -708,7 +577,6 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
         stable=token==d.token&&!state.at("last_frame").empty()?stable+1:0;
     }
     require(stable==5,"DDGI diagnostic editor did not settle");
-    const auto default_view=state.at("view");
     const auto capabilities=d.ok("capabilities");
     verify_option_descriptions(capabilities);
     for(const char* name:{"probe_visualization","probe_volume","probe_relocation","probe_xray","probe_radius","probe_debug",
@@ -805,31 +673,10 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
     }
     write(repro/"manifest.json",manifest.dump(2));d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
     require(d.inspect().at("view")==repro_view,"Legacy slot-zero names changed canonical repro settings");
-    // A genuine older repro includes a v3 scene, not a v4 scene that disagrees with its snapshot.
-    const auto config=read(repro/"Project/Config/Project.json");
-    const auto legacy_scene_path=repro/"Project"/wide(config.at("startup_scene").get<std::string>());
-    auto legacy_scene=read(legacy_scene_path);legacy_scene["version"]=3;legacy_scene.erase("world");write(legacy_scene_path,legacy_scene.dump(2));
-    for(auto& file:manifest["files"]) if(repro/wide(file.at("path").get<std::string>())==legacy_scene_path) {
-        file["sha256"]=sha256_file(legacy_scene_path);file["bytes"]=std::filesystem::file_size(legacy_scene_path);
-    }
-    auto legacy_expected=repro_view;
-    for(unsigned slot=0;slot<4;++slot) for(const char* field:{"enabled","placement","min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z","blend_cells"}) {
-        const auto name="probe_volume_"+std::to_string(slot)+"_"+field;manifest["view"].erase(name);legacy_expected[name]=default_view.at(name);
-    }
-    for(const char* name:{"probe_bounce","indirect_gain","probe_feedback_visibility","probe_debug_volume","probe_coverage"}) {
-        manifest["view"].erase(name);legacy_expected[name]=default_view.at(name);
-    }
-    for(const char* field:{"min_x","min_y","min_z","max_x","max_y","max_z","count_x","count_y","count_z"}) {
-        const auto canonical=std::string("probe_volume_0_")+field;
-        manifest["view"][std::string("probe_")+field]=base_view.at(canonical);legacy_expected[canonical]=base_view.at(canonical);
-    }
-    manifest["view"]["probe_count_y"]=4;legacy_expected["probe_volume_0_count_y"]=4;
-    write(repro/"manifest.json",manifest.dump(2));d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
-    require(d.inspect().at("view")==legacy_expected,"A genuine old repro inherited current volume or propagation settings");
     d.client.reset();editor.close();
     require(read(project/"Content/Scenes/Main.scene").at("entities").empty(),"Diagnostic session changed the saved scene");
     write(root/"result.json",Json{{"status","passed"},{"cases",{"shared-schema","summary-inspection","idempotent-patch","atomic-rejection","real-render-compare",
-        "coverage-presets","rolling-focus-capture","focus-precision-atomicity","four-volume-repro","legacy-aliases","legacy-repro-defaults","history-and-scene-isolation","clean-close"}}}.dump(2));
+        "coverage-presets","rolling-focus-capture","focus-precision-atomicity","four-volume-repro","legacy-aliases","history-and-scene-isolation","clean-close"}}}.dump(2));
     std::cout<<"Editor DDGI Control E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 #include "client_size.inl"
@@ -893,7 +740,7 @@ int wmain(int argc,wchar_t** argv) {
                 restored.at("undo")==initial.at("undo") && restored.at("view")==initial.at("view"),
                 "Description inspection or cleanup changed saved document state.");
             // Placeholders report the saved type they stand in for and the data they keep.
-            write(project/"Content/Scenes/Placeholder.scene",Json{{"version",6},{"next_id","3"},{"roots",{"1"}},{"materials",Json::array()},{"world",Json::object()},
+            write(project/"Content/Scenes/Placeholder.scene",Json{{"version",9},{"next_id","3"},{"roots",{"1"}},{"materials",Json::array()},
                 {"entities",{{{"id","1"},{"type","world.Entity"},{"name","Holder"},{"enabled",true},{"properties",Json::object()},{"children",Json::array()},{"space",nullptr},
                     {"components",{{{"id","2"},{"type","project.Gone"},{"name",""},{"enabled",true},{"properties",{{"strength",3}}}}}}}}}}.dump());
             d.ok("scene.open",{{"path","Content/Scenes/Placeholder.scene"}});
@@ -1041,7 +888,7 @@ int wmain(int argc,wchar_t** argv) {
         d.ok("repro.open",{{"directory",utf8(repro.wstring())}});current=d.inspect();
         require(current.at("entities").size()==2 && current.at("entities")[0].at("name")=="Control cube" && !current.at("dirty").get<bool>(),"Repro reopen failed");
         error(d.call("scene.rename",{{"object",entity},{"name","Old handle"}}),"stale_object");
-        repro_lighting_migration(d,repro,root);
+        repro_lighting_agreement(d,repro,root);
         d.ok("scene.delete");
         const auto remaining=d.inspect().at("entities");
         require(remaining.size()==1 && remaining[0].at("components")[0].at("type")=="world.EnvironmentComponent","Delete command did not remove the selected entity");
@@ -1061,7 +908,7 @@ int wmain(int argc,wchar_t** argv) {
         require(cpu.at("structure_errors")==0 && cpu.at("first_structure_error").is_null(),"An editor step recorded a frame timing phase under the wrong parent: "+cpu.dump());
         editor.close();require(discover(directory).empty(),"Closed editor descriptor remained live");
         reject_nested_destination(argv[1],root);
-        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","legacy-lighting-repro","rejected-repro-preserves-camera-selection","schema3-scene7-reopen","schema3-scene6-sky","sky-world-setting","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
+        std::ofstream report(root/"result.json");report<<Json{{"status","passed"},{"cases",{"discovery","capabilities","idempotency","request-retention","job-retention","stale-token","create","select","property","transform","undo-redo","camera","display-policy","repro-dirty-scene","published-source-set","published-ui","repro-file-set","failed-open-preserves-document","nested-output","repro-reopen","current-lighting-repro","rejected-repro-preserves-camera-selection","sky-world-setting","multi-point-capture","cancel","invalid-edit-preserves-job","context-change","timeout","disconnect","clean-close"}},{"repro",utf8(repro.wstring())},{"comparison",compared.at("result").at("directory")}}.dump(2);
         std::cout<<"Editor Control E2E: PASS | "<<utf8(root.wstring())<<'\n';return 0;
     } catch(const std::exception& error) {std::cerr<<"Editor Control E2E: FAIL: "<<error.what()<<'\n';return 1;}
 }

@@ -298,9 +298,7 @@ try {
     New-Item -ItemType Directory -Force (Split-Path -Parent $lock) | Out-Null
     $windowRuns = [System.Collections.Generic.List[object]]::new()
     if ($ProbeWindowTarget) { Write-Gate 'PROBE ONLY: this run checks timeout cleanup and tests no change.' }
-    # The physics-project fixture uses an absolute source-tree Cache. A Ninja
-    # pool cannot coordinate two build trees, so configurations run in sequence.
-    # Within each configuration the requested headless targets remain parallel.
+    # Within each configuration the requested headless targets run in parallel.
     foreach ($config in $Configs) {
         if (-not $ProbeWindowTarget -and (Invoke-Build $config all) -ne 'PASS') { throw "Prebuild failed: $config" }
         # Prebuild may regenerate CMake after a pull. Never use a stale target list.

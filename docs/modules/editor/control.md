@@ -109,7 +109,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自 World 的天光设置；background 仍保存工作室模式偏好。天光是 scene 项 `sky_enabled`（bool）、`sky_intensity`（cd/m²）和 `sky_color_x/y/z`（线性 RGB 三个标量），与其他 World 选项一样经 `view.set` 写入 Environment 组件，第一次写入时创建 Environment，二者是同一条历史；`sky_enabled` 为 false 时环境辐射为零。
 
-作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制 DDGI 探针命中点每次挑选的局部光候选数，方向光独立评估，屏幕直接光不受它影响。视口诊断 `spatial_light_sampling` 默认 true，控制探针命中点是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。屏幕直接光只有一条路径（tile + depth-slice 的保守局部灯列表，逐盏确定求值，列表超过 64 项时回退完整枚举）。`direct_reference`、`direct_clustered` 与 `direct_shadow_cache` 已删除：`view.set` 和 `render.compare` 对这三个键返回 `invalid_request`，消息写明该选项已删除。`direct_cluster_inspect` 默认 false，按需统计 GBuffer 接收像素的局部解析灯支持数量；它不重置光照历史、不持久化，但其诊断工作计入列表构建，性能采样必须关闭。当前接口不接受旧阴影槽预算与单灯样本参数；它们只在 Scene v4 文件读取边界严格校验后丢弃。
+作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制 DDGI 探针命中点每次挑选的局部光候选数，方向光独立评估，屏幕直接光不受它影响。视口诊断 `spatial_light_sampling` 默认 true，控制探针命中点是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。屏幕直接光只有一条路径（tile + depth-slice 的保守局部灯列表，逐盏确定求值，列表超过 64 项时回退完整枚举）。`direct_reference`、`direct_clustered` 与 `direct_shadow_cache` 已删除：`view.set` 和 `render.compare` 对这三个键返回 `invalid_request`，消息写明该选项已删除。`direct_cluster_inspect` 默认 false，按需统计 GBuffer 接收像素的局部解析灯支持数量；它不重置光照历史、不持久化，但其诊断工作计入列表构建，性能采样必须关闭。当前接口不接受旧阴影槽预算与单灯样本参数。
 
 DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/state/update_age/distance）、`probe_volume`、`probe_relocation`、`probe_xray`、`probe_radius`（最小间距的 0.01～0.45 倍）。既有 `probe_debug` 改为真实八邻 Receiver Coverage，默认为 false。具体显示、年龄、资源和精度合同见 [Scene Lit](../renderer/scene-lit.md#ddgi-空间与接收面诊断)；关闭 DDGI 不会自动开启光照，灰色表示当前无数据。
 
@@ -217,9 +217,7 @@ Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录
 
 repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、额外文件或链接；运行时生成的 Project/Cache 不参与复现依赖。随后通过同一工程入口的严格加载策略编译源码并读取场景，全部成功才替换当前文档并恢复视图与选择。编译或反序列化失败保留当前工程和对象；常规 UI 的修复工程模式保持原有行为。有未保存场景或源码时拒绝替换。失败/取消可能留下诊断目录，未返回成功的任务不应当作成功交付。
 
-含 v1–v5 场景的旧包通过同一场景迁移器解析选择与检查目标，再按文档 ID 查找新对象。空间组件展开成子 Entity 后，旧序号仍对应原来的对象；不会用展开后的 World 成员下标猜测身份。旧纯空间组件的检查目标映射到相应 Entity，能力组件则保留其真实 owner。正式 Control 请求继续使用 Entity 命名。
-
-新产物的 manifest 标记 `view_schema: 5`。版本 3 起视图带天光的五个键；版本 4 删除了 `direct_reference`、`direct_clustered` 与 `direct_shadow_cache`：打开版本 1～3 的视图时，这三个键的布尔值被丢弃，非布尔值拒绝；版本 4 及以后的视图带这三个键时按已删除选项拒绝。版本 5 删除了对渲染没有作用的 `ssil` 与 `shadow_bias`，带这两个键的视图拒绝。版本 2 没有天光键，无标记或显式版本 1 视为更旧的视图快照，未知版本拒绝。打开版本 1、2 时，天光取自迁移后场景的 Environment（v6 的 Sky Light 已并入），视图里其余的 World 设置照旧与场景核对；版本 3 及以后的视图与场景（版本 4 及以后）迁移后的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment；这项核对在加载出的候选文档上进行，失败时保留当前文档。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4–6 的 `world` 段在一致性预校验中与视图比较（天光不在 `world` 段，由上面的 Environment 核对覆盖），版本 4 应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
+新产物的 manifest 标记 `view_schema: 5`，视图快照的键集合改变时加一。`repro.open` 只接受当前 `view_schema` 和当前格式的场景；缺少标记、其他版本、带已删除选项（例如 `ssil`、`shadow_bias`、`direct_reference`）的视图，以及旧格式场景都拒绝。视图里的 World 设置与加载出的候选文档的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment。选择按导出时的 World 成员序号、检查目标按该 Entity 上的组件序号，在候选文档替换当前文档之前解析；序号越界返回 `dependency_mismatch`。视图版本或已删除选项不合格返回 `invalid_request`，旧格式场景在严格加载时失败，返回 `operation_failed`。任何验证失败都保留当前文档。
 
 ## 生命周期和扩展
 
@@ -272,7 +270,7 @@ DDGI 接线专项沿同一驱动运行：
     ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/ddgi-control-dev --ddgi-debug
     ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/ddgi-control-release --ddgi-debug
 
-覆盖四体积共享 schema、summary 观察、原子拒绝和幂等、覆盖预设、相机目标滚动的真实捕获、世界坐标精度、完整复现及真正旧格式恢复。World 页的输入预览/提交/取消、关闭和槽位切换在既有 `--acceptance-surfaces` 窗口链中验收；`atelier_editor_document_acceptance --scene-lit` 验证正式 DSL 页面与文档交互边界。
+覆盖四体积共享 schema、summary 观察、原子拒绝和幂等、覆盖预设、相机目标滚动的真实捕获、世界坐标精度及完整复现。World 页的输入预览/提交/取消、关闭和槽位切换在既有 `--acceptance-surfaces` 窗口链中验收；`atelier_editor_document_acceptance --scene-lit` 验证正式 DSL 页面与文档交互边界。
 
 ### World 配置与字段显示元数据
 

@@ -61,7 +61,7 @@ Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMi
 
 `LightComponent : SpatialComponent` 是真实 Runtime 能力对象，它的 owner Entity 必须有 Transform。公开字段 `settings : world.LightSettings` 保存灯参数；空间来自 owner Entity，沿实体空间参考链、组合顺序、生命周期和派生类型查询运行。
 
-`world.LightKind` 是 uint32 枚举：point=0、rectangle=1、directional=2。天光不是灯，而是 [Environment](#环境) 的设置；v6 场景中的 Sky Light 在读取时并入 Environment。`LightSettings` 的反射字段如下：
+`world.LightKind` 是 uint32 枚举：point=0、rectangle=1、directional=2。天光不是灯，而是 [Environment](#环境) 的设置。`LightSettings` 的反射字段如下：
 
 | 字段 | 默认值 | 合同 |
 | --- | --- | --- |

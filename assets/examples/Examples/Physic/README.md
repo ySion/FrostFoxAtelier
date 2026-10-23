@@ -18,7 +18,7 @@
 
 ## 组件组合
 
-沿现有 Entity Structure 的 **Add Component** 添加组件，公开数值字段在 Parameters 编辑并由 Scene v6 保存。网格和碰撞组件的 `body` 配置沿 Parameters 编辑，并通过通用反射属性保存。
+沿现有 Entity Structure 的 **Add Component** 添加组件，公开数值字段在 Parameters 编辑并由 Scene 保存。网格和碰撞组件的 `body` 配置沿 Parameters 编辑，并通过通用反射属性保存。
 
 | 组件 | 职责和依赖 |
 | --- | --- |
@@ -35,7 +35,7 @@ Body、Character、Ragdoll 在同一 Entity 上只能启用一种。角色和布
 
 组件或依赖的 Entity/Body/可视部件停用、删除、离开 World 时释放对应后端对象；恢复后重新创建，旧句柄失效。重复 start/update 不重复创建。形状和关节设置在激活时读取，修改后停用再启用；实时输入每个固定步读取。停止整个 World 清理全部物理对象。
 
-距离约束使用 Runtime 的弱 Entity 引用，不延长目标生命周期。停止后通过 `set_constraint_target` 绑定；Scene v6 的 `properties.target` 为 null 或 `{"$ref":"文档ID"}`。保存拒绝场景外目标，加载先创建全部 Entity 再恢复引用；不保存 Runtime 身份或 Jolt 句柄。当前没有目标选择器 UI。
+距离约束使用 Runtime 的弱 Entity 引用，不延长目标生命周期。停止后通过 `set_constraint_target` 绑定；Scene 的 `properties.target` 为 null 或 `{"$ref":"文档ID"}`。保存拒绝场景外目标，加载先创建全部 Entity 再恢复引用；不保存 Runtime 身份或 Jolt 句柄。当前没有目标选择器 UI。
 
 查询组件的局部 start/end 随 owner Entity 的空间参考链转换，radius 使用世界单位；settings、automatic 和 ignore_self 在每次查询时读取。配置随场景保存，请求和命中结果不保存。API、脚本方法、过滤和生命周期合同见[场景查询](../../../../docs/modules/physics/scene-queries.md)。已有用户 Physic 文件夹不会自动合并新模板；可仅复制缺少的 `Raycasts.scene` 到用户工程同名 Scenes 目录，刷新后打开。
 

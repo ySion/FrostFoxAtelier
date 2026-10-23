@@ -7,8 +7,8 @@
 先按[根 README](../../../README.md#构建与端到端验收)准备锁定工具链并配置 dev/release。以下目标同时构建和执行，失败返回非零；所有检查在 Release 中仍生效。
 
 ```powershell
-cmake --build --preset dev --target physics_acceptance world_acceptance editor_document_acceptance editor_physics_project_acceptance
-cmake --build --preset release --target physics_acceptance world_acceptance editor_document_acceptance editor_physics_project_acceptance
+cmake --build --preset dev --target physics_acceptance world_acceptance editor_document_acceptance
+cmake --build --preset release --target physics_acceptance world_acceptance editor_document_acceptance
 cmake --build --preset dev --target physics_examples_acceptance project_scene_acceptance
 cmake --build --preset release --target physics_examples_acceptance project_scene_acceptance
 
@@ -63,6 +63,6 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 ## 边界
 
-底层场景是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)保留旧 Body 文档兼容性；`editor_physics_project_acceptance` 从该工程加载并检查重力、力、冲量、运动学目标和 Sensor 接触。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
+底层场景是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。

@@ -42,9 +42,9 @@ step 的 CPU 墙钟记为[帧阶段计时](../../foundation.md#帧阶段计时)�
 
 `cook_triangle_mesh` 将静态网格生成带格式版本、Jolt 版本、源身份、缩放和摘要的二进制形状；读取时验证原始网格与 Cook 数据一致。这段头部就是 `BodySettings.cooked_shape` 的输入键：物理在建三角网格刚体时校验，形状不是 Triangle Mesh 时忽略该缓存，因此编辑 body 字段不清除它。输入键与当前源网格或世界缩放不一致时（例如运行中缩放网格碰撞体），物理在内存中按当前缩放重新生成形状，不写缓存，并计入 `StepResult::runtime_cooks`；格式、Jolt 版本或摘要不符仍拒绝。`Project::cook_collision` 将工程 OBJ 的形状写入 `Cache/Physics`；`Project::collision` 校验并读取，缓存缺失或不一致（源网格、缩放或上游 Jolt 版本变化）时从源网格重新 Cook 并写回。编辑器场景文件持久化组件配置及网格来源，加载不要求缓存预先存在。内置网格可直接从 CPU 网格创建三角形状，不生成工程缓存。场景加载先恢复网格、局部 TRS 与空间关系，再按 Primitive owner Entity 世界缩放配置物理。
 
-编辑器沿 Entity Structure 的统一入口添加 `CollisionComponent`；网格已有物理能力，可直接编辑 Parameters 中的 `body.enabled`、形状、运动模式、尺寸、碰撞类别/掩码及材料。`BodySettings` 和 `PhysicsMaterial` 由头文件反射生成，Source/JIT 直接访问同一字段。单字段规则是反射硬边界（尺寸、摩擦非负，恢复系数 [0,1]，类别 [0,15]，掩码不超过 16 位），写入越界时夹到边界；跨字段规则是 BodySettings 的类型校验器：形状与运动类型必须是已声明值，尺寸为正，Ignore 与 Overlap 掩码不相交，Triangle Mesh 只能 Stationary。`configure`、逐步协调与场景加载经 Runtime 检查同一规则。Scene 沿通用 `properties.body` 保存配置，没有第二份物理配置记录；`Session::configure_body` 提供完整配置事务。旧 v1–v5 只在严格导入时恢复到 Entity + 能力组件图，旧独立 Body 配置合并到对应 Primitive，保存即采用当前格式；不保留旧运行组件。不能无损迁移的自定义非 Primitive 根或多 Body 旧文档明确报错。碰撞可视化及 Cook 管理页尚未实现。
+编辑器沿 Entity Structure 的统一入口添加 `CollisionComponent`；网格已有物理能力，可直接编辑 Parameters 中的 `body.enabled`、形状、运动模式、尺寸、碰撞类别/掩码及材料。`BodySettings` 和 `PhysicsMaterial` 由头文件反射生成，Source/JIT 直接访问同一字段。单字段规则是反射硬边界（尺寸、摩擦非负，恢复系数 [0,1]，类别 [0,15]，掩码不超过 16 位），写入越界时夹到边界；跨字段规则是 BodySettings 的类型校验器：形状与运动类型必须是已声明值，尺寸为正，Ignore 与 Overlap 掩码不相交，Triangle Mesh 只能 Stationary。`configure`、逐步协调与场景加载经 Runtime 检查同一规则。Scene 沿通用 `properties.body` 保存配置，没有第二份物理配置记录；`Session::configure_body` 提供完整配置事务。碰撞可视化及 Cook 管理页尚未实现。
 
-官方 [Examples/Physic](../../../assets/examples/Examples/Physic/README.md) 提供 9 个可保存、重开的组件场景。通过 Project → Examples → Physic 或 `atelier_editor --physic` 打开；编辑场景保持静止，Project → Run 从快照创建独立运行会话，经 Session 统一推进 World 和 Jolt。[物理验收夹具](../../../acceptance/editor/fixtures/physics-project/README.md)验证旧 Body 场景的导入。
+官方 [Examples/Physic](../../../assets/examples/Examples/Physic/README.md) 提供 9 个可保存、重开的组件场景。通过 Project → Examples → Physic 或 `atelier_editor --physic` 打开；编辑场景保持静止，Project → Run 从快照创建独立运行会话，经 Session 统一推进 World 和 Jolt。
 
 ## 生命周期与专用控制器
 
@@ -54,7 +54,7 @@ Character、Ragdoll/RagdollPart、DistanceConstraint、Force、KinematicMotion �
 
 布娃娃通过公开强 Entity 引用序列 `RagdollComponent.parts` 显式绑定目标。每个目标必须是控制器 owner 的直接组合子 Entity，空间参考指向同一 owner；`parts` 顺序决定后端部件索引。目标保存普通 RagdollPartComponent 元数据和独立 StaticMeshComponent；metadata 不继承网格、不拥有空间。目标显示缩放保留，控制器 owner 要求单位世界缩放，部件物理尺寸由配置决定。
 
-姿态整批写回目标 Entity，保留显示 scale；目标 mesh 的 body 关闭，避免重复姿态写入者。绑定变化、停用、删除、离场或元数据失效会撤销专用后端；不会从组件目录隐式猜测部件。距离约束 target 是 Runtime 弱 Entity 引用，停止后用 `set_constraint_target` 绑定；Scene 统一保存 `properties.target` 文档引用，旧场景序号只在导入边界处理。目标选择器和专用资产编辑面板尚未提供。
+姿态整批写回目标 Entity，保留显示 scale；目标 mesh 的 body 关闭，避免重复姿态写入者。绑定变化、停用、删除、离场或元数据失效会撤销专用后端；不会从组件目录隐式猜测部件。距离约束 target 是 Runtime 弱 Entity 引用，停止后用 `set_constraint_target` 绑定；Scene 统一保存 `properties.target` 文档引用。目标选择器和专用资产编辑面板尚未提供。
 
 专用场景 API 包含 `CharacterVirtual` 胶囊角色的移动、跳跃、坡道/台阶与移动平台，两个 Body 之间的距离约束，以及基于 Jolt Ragdoll 的多部件布娃娃。角色由场景每固定步调用 `ExtendedUpdate`，不以自由动态刚体代替角色控制。角色和布娃娃要求已启用、单位世界缩放的 owner Entity；布娃娃局部部件位置按 owner 旋转转换。owner Primitive 启用普通 body 时会撤销其角色或布娃娃，使同一 Entity 只有一个物理位姿写入者；旧专用句柄立即失效。布娃娃的专用句柄也带场景与代际，销毁、停用和 World 停止后失效。当前只提供这些玩法系统的基础配置与状态读取；骨骼动画映射、关节限位编辑器、专用资产持久格式与网络协议尚未建立。
 

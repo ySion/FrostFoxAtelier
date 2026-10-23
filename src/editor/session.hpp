@@ -52,9 +52,6 @@ struct ResourceLess {
     bool operator()(std::pair<AssetKind, std::string_view> a, std::pair<AssetKind, std::string_view> b) const noexcept { return a < b; }
 };
 using UnavailableResources = std::map<std::pair<AssetKind, std::string>, MissingResource, ResourceLess>;
-// The EnvironmentComponent field names of a World Settings option (a view option
-// for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
-std::vector<std::string> environment_field(std::string_view option);
 
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
@@ -96,14 +93,9 @@ public:
     // Binds the Environment's sky map to a resolved asset, as one history item; an empty
     // asset clears it. Creates the Environment like set_environment; a disabled one rejects.
     Result<void> set_sky_map(const SkyAsset&);
-    // Load initialization of a freshly opened document, before any history: writes the
-    // environment, creating it when absent, without an undo entry or a modified mark.
-    // The next save writes it.
+    // Load initialization of a freshly opened document without an Environment, before any
+    // history: creates it without an undo entry or a modified mark. The next save writes it.
     Result<void> initialize_environment(const rendering::SceneLightingSettings&);
-    // Whether the loaded file supplied World lighting, a version 6 world section with a
-    // key or a saved Environment, or initialize_environment has run. An Environment
-    // migrated only from a Sky Light does not count.
-    bool lighting_supplied() const noexcept { return lighting_supplied_; }
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
@@ -229,10 +221,6 @@ public:
     Result<void> discard_retained(ObjectId);
     std::size_t placeholder_count() const noexcept;
     std::optional<std::uint64_t> document_identity(ObjectId) const;
-    // Legacy control bundles refer to pre-migration Actor/Component indices.
-    // Resolve them through the scene importer, then select live document IDs.
-    static Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> legacy_selection(std::string_view,
-        std::span<const std::pair<std::size_t,std::optional<std::size_t>>>);
     Result<ObjectId> local_object(std::uint64_t) const;
     bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || group_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
     void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
@@ -333,7 +321,6 @@ private:
     mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
     mutable std::uint64_t next_local_id_{1};
     bool play_{};
-    bool lighting_supplied_{};
     // Play copy: document identity to object, including objects the game destroyed.
     std::unordered_map<std::uint64_t,ObjectId> live_objects_;
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
