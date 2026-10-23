@@ -64,6 +64,7 @@ struct Binding {
     std::vector<BoundEnum> enumerations{};
     std::vector<BoundValue> values{};
     TypeId f32{}, f64{}, u32{}, i32{}, boolean{};
+    bool operator==(const Binding&) const = default;
 };
 Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});
 BusinessType value_kind(const Binding&, TypeId);

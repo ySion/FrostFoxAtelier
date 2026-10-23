@@ -2,6 +2,7 @@
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
 #include "world/world.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -150,6 +151,105 @@ class game.Probe : project.Probe {
         runtime.collection_phase() == CollectionPhase::roots, "Shared helper advanced GC inside a borrowed-value entry.");
     require(!std::get<bool>(*take(take(program.entry("game.Probe.work")).invoke(id,{}))),
         "Unrelated borrowed entry suppressed an ordinary loop's GC progress.");
+}
+struct CodeBase { float scale{1.0f}; };
+// An entry keeps its code while its unit compiles from identical input; codes never repeat in the process.
+void verify_project_entry_codes() {
+    const auto snapshot = [](std::string_view helper, std::string_view b, std::string_view extra) {
+        source::SourceSnapshot input{"codes", 1, {
+            {"Helper.source", 1, "float helper(float x) { return x * " + std::string(helper) + "; }"},
+            {"A.source", 1, "class game.A : project.CodeBase { float run(float x) { return helper(x) + 1.0f; } }"},
+            {"B.source", 1, "class game.B : project.CodeBase { float run(float x) { return helper(x); } float other() { return " +
+                std::string(b) + "; } }"}}};
+        if (!extra.empty()) input.files.push_back({"Extra.source", 1, std::string(extra)});
+        return input;
+    };
+    const auto base = [](Runtime& runtime) {
+        take(runtime.register_type(NativeRegistration<CodeBase>(runtime, "project.CodeBase", TypeKind::object).build()));
+    };
+    const auto codes = [](const Program& program) {
+        std::vector<std::pair<std::string, std::uint64_t>> result;
+        for (const auto& entry : program.entries()) result.emplace_back(entry.name, entry.code);
+        std::ranges::sort(result);
+        return result;
+    };
+    const auto code = [](const std::vector<std::pair<std::string, std::uint64_t>>& values, std::string_view name) {
+        return std::ranges::find(values, name, &std::pair<std::string, std::uint64_t>::first)->second;
+    };
+    const std::string class_c = "class game.C : project.CodeBase { float run() { return 5.0f; } }";
+    Runtime runtime;
+    base(runtime);
+    Program program(runtime);
+    require(program.revision() == 0, "An unpublished Program reported a revision.");
+    publish(program, snapshot("2.0f", "1.0f", ""));
+    const auto first = codes(program);
+    std::vector<std::uint64_t> seen;
+    for (const auto& [name, value] : first) seen.push_back(value);
+    std::ranges::sort(seen);
+    require(program.revision() == 1 && first.size() == 4 && seen.front() != 0 && std::ranges::adjacent_find(seen) == seen.end(),
+        "The first publication did not give every entry its own code.");
+    publish(program, snapshot("2.0f", "3.0f", ""));
+    const auto second = codes(program);
+    require(program.revision() == 2 && code(second, "game.A.run") == code(first, "game.A.run") &&
+        code(second, "game.B.run") != code(first, "game.B.run") && code(second, "game.B.other") != code(first, "game.B.other") &&
+        code(second, "helper") == code(first, "helper"), "A class method edit did not change exactly that class's codes.");
+    publish(program, snapshot("4.0f", "3.0f", ""));
+    const auto third = codes(program);
+    for (const auto& [name, value] : third)
+        require(value != code(second, name), "A global helper edit kept a class or helper code.");
+    publish(program, snapshot("4.0f", "3.0f", class_c));
+    const auto fourth = codes(program);
+    for (const auto& [name, value] : third)
+        require(code(fourth, name) == value, "Adding a class changed the codes of unchanged classes.");
+    require(code(fourth, "game.C.run") > std::ranges::max_element(third, {}, &std::pair<std::string, std::uint64_t>::second)->second &&
+        program.revision() == 4, "A new class reused an earlier code.");
+    // A new Runtime value type changes every member catalog although no Source text changed.
+    TypeDefinition extra;
+    extra.name = "project.Extra";
+    extra.kind = TypeKind::record;
+    FieldDefinition x;
+    x.name = "x";
+    x.value = {TypeReference::native<float>()};
+    extra.fields.push_back(std::move(x));
+    take(runtime.register_type(std::move(extra)));
+    publish(program, snapshot("4.0f", "3.0f", class_c));
+    const auto fifth = codes(program);
+    for (const auto& [name, value] : fifth)
+        require(value != code(fourth, name), "A changed member catalog kept an entry code.");
+    const auto publish_with = [&](source::SourceSnapshot input, source::CompileOptions options) {
+        auto candidate = take(Program::prepare(take(program.request(std::move(input), options))));
+        take(program.try_publish(candidate));
+    };
+    publish_with(snapshot("4.0f", "3.0f", class_c), {.diagnostics = true});
+    const auto sixth = codes(program);
+    auto renamed = snapshot("4.0f", "3.0f", class_c);
+    renamed.name = "renamed";
+    publish_with(std::move(renamed), {.diagnostics = true});
+    const auto seventh = codes(program);
+    for (const auto& [name, value] : sixth)
+        require(value != code(fifth, name) && value != code(seventh, name), "Changed compile options or snapshot name kept an entry code.");
+    auto stale = take(Program::prepare(take(program.request(snapshot("5.0f", "3.0f", class_c)))));
+    auto latest = take(Program::prepare(take(program.request(snapshot("4.0f", "6.0f", class_c)))));
+    require(!program.try_publish(stale), "An older snapshot published.");
+    { auto execution = take(ExecutionScope::enter(runtime)); require(!program.try_publish(latest), "Busy publication succeeded."); }
+    require(program.revision() == 7 && codes(program) == seventh, "A rejected publication changed the revision or entry codes.");
+    take(program.try_publish(latest));
+    const auto eighth = codes(program);
+    require(!program.try_publish(latest) && program.revision() == 8 && codes(program) == eighth && eighth != seventh,
+        "A repeated publication changed the revision or entry codes.");
+    Program single(runtime);
+    auto single_candidate = take(Program::prepare(take(single.request("single", "float one() { return 1.0f; }"))));
+    take(single.try_publish(single_candidate));
+    require(single.revision() == 1 && !single.try_publish(single_candidate) && single.revision() == 1,
+        "A single-source publication did not count exactly once.");
+    Runtime other_runtime;
+    base(other_runtime);
+    Program other(other_runtime);
+    publish(other, snapshot("2.0f", "1.0f", ""));
+    for (const auto& [name, value] : codes(other))
+        for (const auto* values : {&first, &second, &third, &fourth, &fifth, &sixth, &seventh, &eighth})
+            for (const auto& [_, earlier] : *values)
+                require(value != earlier, "Two Programs published the same entry code.");
 }
 enum class Quality : std::uint32_t { low = 1, high = 7 };
 struct SelfReader {
@@ -464,9 +564,10 @@ void verify_source_projects() {
     require(!old.invoke(instance.id(),args), "Lease accepted a destroyed receiver.");
     verify_declaration_only_project();
     verify_project_borrow_effects();
+    verify_project_entry_codes();
     verify_project_self_reads();
     verify_project_field_ranges();
     verify_editor_reserved_types();
-    std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime, "
+    std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, entry codes/revision, diagnostics, lifetime, "
         "read-only self fields in value regions with borrow and GC rules unchanged)");
 }

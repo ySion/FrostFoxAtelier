@@ -27,6 +27,8 @@ std::uint64_t next_program_id() {
         if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) return value;
     }
 }
+// Entry codes are unique across every Program in the process, so caches may outlive a Program.
+std::atomic<std::uint64_t> next_entry_code{1};
 // Project units map combined-text offsets back to snapshot files on demand.
 struct SourceMap {
     std::shared_ptr<const SourceSnapshot> snapshot;
@@ -374,7 +376,7 @@ struct Program::State {
     std::shared_ptr<const Version> current;
     std::shared_ptr<const ModuleVersion> module;
     const std::uint64_t id{next_program_id()};
-    std::uint64_t latest_request{}, published_request{};
+    std::uint64_t latest_request{}, published_request{}, revision{};
     bool open{true};
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
     std::optional<std::size_t> find(std::string_view name) const {
@@ -848,6 +850,7 @@ Result<void> Program::try_publish(Candidate& candidate) {
     owner->contract = prepared.compilation_contract;
     owner->declaration = std::move(declaration);
     owner->published_request = prepared.sequence;
+    ++owner->revision;
     owner->current = std::move(version);
     return {};
 }
