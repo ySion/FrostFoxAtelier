@@ -207,7 +207,6 @@ int profile_editor_render_performance(Application& app,const char* output_direct
     const auto scene_file=project/scene;
     const auto file_hash=atelier::control::sha256_file(scene_file);
     // Lock authoring state before either a product frame or a diagnostic write.
-    const auto source_world=Json::parse(model(editor::read_file(scene_file))).value("world",Json(nullptr));
     const auto original_scene=model(app.document().serialize());
     const auto original_world=model(app.document().presentation().environment());
     const auto loaded_environment=[&] {
@@ -236,11 +235,10 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         model(Access::performance_view(app,candidate));
         unchanged_author();
     };
-    Json report{{"schema","atelier.editor.render-performance.v5"},{"status","preparing"},
+    Json report{{"schema","atelier.editor.render-performance.v6"},{"status","preparing"},
         {"revision",build_info::revision},{"configuration",build_info::configuration},
         {"project",editor::utf8(project.wstring())},{"scene",editor::utf8(scene.wstring())},{"scene_sha256",file_hash},
-        {"authoring_baseline",{{"source_world",source_world},
-            {"loaded_environment",loaded_environment},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
+        {"authoring_baseline",{{"loaded_environment",loaded_environment},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
         {"gpu_validation",Access::gpu_validation(app)},{"vsync",Access::vsync(app)},
         {"wall_semantics","Intervals between the frame timing ends of consecutive accepted Application steps; include skipped calls, waits and harness work between steps. GPU durations are not FPS."},
         {"cpu_semantics","CPU wall time in milliseconds of current accepted Application steps, read from the product's frame timing record of each step. frame is the whole step; app.* are host phases and app.scene contains app.scene.extract; render contains prepare, encode and frame; encode contains scene (materials, upload, draws, lit) and ui (upload); frame contains submit, present, wait and recycle. A phase sums every entry in the step and entries counts them; frame.unattributed is the frame minus its direct children. In studio modes only, render.encode.scene.draws divided by scene_draw_calls is the mean cost of one recorded scene draw; Scene Lit surface draws count in scene_draw_calls but are timed under render.encode.scene.lit. Do not sum parent and child stages. timing_sequence is the step's frame timing ordinal, separate from completed GPU sequence/frame_id."},
