@@ -62,11 +62,30 @@ double energy(const Array<vector3d>& values) {
 | `math.conjugate(q)`、`math.rotate(q, v)` | 共轭；单位四元数旋转同精度 vector3 |
 | `math.transpose(m)` | 矩阵转置 |
 | `math.transform_point(v, m)`、`math.transform_direction(v, m)` | 同精度 vector3、matrix4，参数顺序符合 `v * M` |
-| `math.sqrt(value)` | float/double 平方根；负数沿 IEEE 规则产生 NaN |
+| `math.sqrt`、`floor`、`ceil`、`trunc`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节 |
+
+### 逐分量函数
+
+参数和结果是 float、double 标量或它们的 vector2/3/4。结果类型取参数中的向量类型，没有向量时为标量；每个参数必须是结果类型或其分量标量，分量标量作用于每个分量，例如 `math.clamp(v, 0.0, 1.0)`、`math.lerp(a, b, t)`、`math.step(0.5, v)`。精度不隐式转换：不带后缀的浮点字面量是 float，double 向量要写 `0.0d`。四元数、矩阵、整数和 bool 编译期拒绝。以下定义按分量给出，x、y 为同类型分量：
+
+| 函数 | 定义与特殊值 |
+| --- | --- |
+| `sqrt(x)` | IEEE 平方根；负数得 NaN，`sqrt(-0) = -0` |
+| `floor(x)`、`ceil(x)`、`trunc(x)` | IEEE 取整；保留 ±0，NaN 与 ±∞ 原样返回 |
+| `fract(x)` | `min(x − floor(x), 1 的前一个浮点数)`，结果在 [0, 1)：极小负数不会得到 1.0，`fract(x) * n` 可直接作下标；NaN 和 ±∞ 得 NaN |
+| `abs(x)` | 清除符号位，含 −0 与 NaN |
+| `sign(x)` | `x > 0 ? 1 : (x < 0 ? −1 : x)`；±0 原样返回，NaN 得 NaN |
+| `min(x, y)`、`max(x, y)` | GLSL 定义：`y < x ? y : x`、`x < y ? y : x`；只有第一个参数为 NaN 时结果为 NaN |
+| `clamp(x, lo, hi)` | `max(lo, min(x, hi))`；x 为 NaN 得 lo，lo > hi 时得 lo |
+| `lerp(a, b, t)` | `a·(1 − t) + b·t`（GLSL mix）；有限值下 t = 0 精确得 a、t = 1 精确得 b；不保证单调，`lerp(a, a, t)` 可能差 1 ULP |
+| `step(edge, x)` | `x < edge ? 0 : 1`；NaN 得 1 |
+| `smoothstep(e0, e1, x)` | `t = clamp((x − e0) / (e1 − e0), 0, 1)`，返回 `t·t·(3 − 2t)`；e0、e1 是同一个有限值时为阶跃（x ≤ e0 得 0，x > e0 得 1；+0 与 −0 按公式算，不视为同一个值），e0 > e1 时方向相反；e0 ≠ e1 时 x 为 NaN 得 0 |
+
+这些函数在调用点内联为 LLVM 指令，不调用任何函数，也不加 fast-math 或乘加融合；数组循环由 O2 的循环向量化按主机 SIMD 宽度打包。x64 上 min/max/clamp 是 `minps`/`maxps`，floor 类是 `roundps`，后者需要 SSE4.1；主机缺少时编译报错并说明原因。
 
 字段可从变量、数组元素、借用记录及数学临时值读取，例如 `(a + b).x`。临时值不可赋值；修改需要真正的可写存储。矩阵源码使用 `.m00` 等字段，当前没有矩阵下标语法。对象目录同时提供完整数学字段与标量分量路径，支持 `self.position = self.position + self.velocity * delta;`；对象读写经过 Runtime 生命周期检查，整值读取不会暴露对象内存地址。
 
-原生 C++ 库还提供向量复合赋值、`lerp`、`is_finite`、返回 optional 的 `try_normalize`，以及矩阵加减、标量缩放、`vector4 * matrix4`、`rotation_matrix`、`trs_matrix`、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
+原生 C++ 库还提供向量复合赋值、`is_finite`、返回 optional 的 `try_normalize`，以及矩阵加减、标量缩放、`vector4 * matrix4`、`rotation_matrix`、`trs_matrix`、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
 
 ## 调用、生命周期与优化边界
 

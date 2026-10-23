@@ -4,6 +4,8 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/Module.h>
+#include <llvm/TargetParser/Host.h>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -76,6 +78,7 @@ public:
     llvm::Value* operation(language::MathOperation operation, std::span<llvm::Value* const> args,
         math::Type result_type) {
         using Op = language::MathOperation;
+        if (operation >= Op::square_root) return elementwise(operation, args);
         switch (operation) {
         case Op::dot: return dot(args[0], args[1]);
         case Op::cross: return cross(args[0], args[1]);
@@ -110,7 +113,7 @@ public:
             }
             return result;
         }
-        case Op::square_root: return intrinsic(llvm::Intrinsic::sqrt, args[0]);
+        default: break;
         }
         throw std::logic_error("Invalid mathematical intrinsic.");
     }
@@ -118,6 +121,52 @@ private:
     llvm::Value* lane(llvm::Value* value, unsigned index) { return ir_.CreateExtractElement(value, index); }
     llvm::Value* intrinsic(llvm::Intrinsic::ID id, llvm::Value* input) {
         return ir_.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(&module_, id, {input->getType()}), {input});
+    }
+    llvm::Value* rounding(llvm::Intrinsic::ID id, llvm::Value* input) {
+        // Without SSE4.1 these lower to CRT calls, which the JIT does not resolve.
+        static const bool supported = llvm::sys::getHostCPUFeatures().lookup("sse4.1");
+        if (!supported)
+            throw std::runtime_error("math.floor, math.ceil, math.trunc and math.fract require a host CPU with SSE4.1.");
+        return intrinsic(id, input);
+    }
+    // Scalar arguments apply to every lane of the vector argument's type.
+    llvm::Value* elementwise(language::MathOperation operation, std::span<llvm::Value* const> input) {
+        using Op = language::MathOperation;
+        llvm::Type* type = input[0]->getType();
+        for (auto* value : input) if (value->getType()->isVectorTy()) { type = value->getType(); break; }
+        llvm::SmallVector<llvm::Value*, 3> a;
+        for (auto* value : input) a.push_back(value->getType() == type ? value :
+            ir_.CreateVectorSplat(llvm::cast<llvm::FixedVectorType>(type)->getNumElements(), value));
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        // GLSL operand order: each select is one x64 minps/maxps, and only a NaN first argument propagates.
+        const auto min = [&](llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(y, x), y, x); };
+        const auto max = [&](llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(x, y), y, x); };
+        const auto clamp = [&](llvm::Value* x, llvm::Value* low, llvm::Value* high) { return max(low, min(x, high)); };
+        switch (operation) {
+        case Op::square_root: return intrinsic(llvm::Intrinsic::sqrt, a[0]);
+        case Op::floor: return rounding(llvm::Intrinsic::floor, a[0]);
+        case Op::ceil: return rounding(llvm::Intrinsic::ceil, a[0]);
+        case Op::trunc: return rounding(llvm::Intrinsic::trunc, a[0]);
+        case Op::fract: {
+            // Capped below one so fract(x) * n stays a valid index.
+            const double below_one = type->getScalarType()->isDoubleTy() ?
+                std::nextafter(1.0, 0.0) : static_cast<double>(std::nextafter(1.0f, 0.0f));
+            return min(ir_.CreateFSub(a[0], rounding(llvm::Intrinsic::floor, a[0])), constant(below_one));
+        }
+        case Op::abs: return intrinsic(llvm::Intrinsic::fabs, a[0]);
+        case Op::sign: return ir_.CreateSelect(ir_.CreateFCmpOGT(a[0], constant(0)), constant(1),
+            ir_.CreateSelect(ir_.CreateFCmpOLT(a[0], constant(0)), constant(-1), a[0]));
+        case Op::min: return min(a[0], a[1]);
+        case Op::max: return max(a[0], a[1]);
+        case Op::clamp: return clamp(a[0], a[1], a[2]);
+        case Op::lerp: return ir_.CreateFAdd(ir_.CreateFMul(a[0], ir_.CreateFSub(constant(1), a[2])), ir_.CreateFMul(a[1], a[2]));
+        case Op::step: return ir_.CreateSelect(ir_.CreateFCmpOLT(a[1], a[0]), constant(0), constant(1));
+        case Op::smoothstep: {
+            auto* t = clamp(ir_.CreateFDiv(ir_.CreateFSub(a[2], a[0]), ir_.CreateFSub(a[1], a[0])), constant(0), constant(1));
+            return ir_.CreateFMul(ir_.CreateFMul(t, t), ir_.CreateFSub(constant(3), ir_.CreateFMul(constant(2), t)));
+        }
+        default: throw std::logic_error("Invalid element-wise math operation.");
+        }
     }
     llvm::Value* dot(llvm::Value* a, llvm::Value* b) {
         auto* products = ir_.CreateFMul(a, b);

@@ -89,4 +89,4 @@ auto tick = program.entry("game.Move.tick");
 
 模块场景随 `source_acceptance` 和 `jit_acceptance` 运行。
 
-项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，以及混合借用入口对 GC 的影响。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。
+项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，混合借用入口对 GC 的影响，以及值区间内只读 `self` 字段且不改变借用与 GC 规则。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。

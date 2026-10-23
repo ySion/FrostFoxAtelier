@@ -245,10 +245,22 @@ private:
     void analyze_calls() {
         // Summarize direct effects before propagating callee effects bottom-up.
         for (auto& function : module_.functions) {
-            std::vector<bool> allowed(function.expressions.size());
+            // A self node preserves borrows only if every use is a BorrowSafe call or a by-value field
+            // read; `(self.v).x = 1` shares its self node with the unused `self.v` read it was projected from.
+            std::vector<bool> allowed(function.expressions.size()), blocked(function.expressions.size()),
+                stored(function.expressions.size());
             function.preserves_borrows = true;
-            for (const auto& node : function.expressions) {
+            for (const auto& statement : function.statements)
+                if (statement.kind == Statement::Kind::assign) stored[statement.target] = true;
+            for (const auto& node : function.expressions)
+                if (node.kind == Expression::Kind::call)
+                    for (std::size_t i = 0; i < node.arguments.size(); ++i)
+                        if (node.argument_passing[i] != ParameterPassing::value) stored[node.arguments[i]] = true;
+            for (std::size_t i = 0; i < function.expressions.size(); ++i) {
+                const auto& node = function.expressions[i];
                 if (node.kind == Expression::Kind::receiver) function.requires_receiver = true;
+                if (node.kind == Expression::Kind::field && function.expressions[node.receiver].kind == Expression::Kind::receiver)
+                    (stored[i] ? blocked : allowed)[node.receiver] = true;
                 if (node.kind != Expression::Kind::call) continue;
                 if (!environment_.methods[node.value].preserves_borrows ||
                     function.expressions[node.receiver].kind != Expression::Kind::receiver)
@@ -256,7 +268,7 @@ private:
                 else allowed[node.receiver] = true;
             }
             for (std::size_t i = 0; i < function.expressions.size(); ++i)
-                if (reference_type(function.expressions[i].type) && !allowed[i]) function.preserves_borrows = false;
+                if (reference_type(function.expressions[i].type) && (!allowed[i] || blocked[i])) function.preserves_borrows = false;
             for (const auto& local : function.locals)
                 if (reference_type(local.type)) function.preserves_borrows = false;
         }
@@ -287,7 +299,7 @@ private:
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
                         reject(function.position, "Scoped value execution in '" + function.function_name +
-                            "' reaches suspension, object operations or a native call without BorrowSafe.");
+                            "' reaches suspension, an object operation other than reading a self field, or a native call without BorrowSafe.");
                     states[cursor.function] = State::complete; stack.pop_back();
                 }
             }
@@ -1072,15 +1084,40 @@ private:
         else if (name == "math.transform_point") { operation = MathOperation::transform_point; arity = 2; }
         else if (name == "math.transform_direction") { operation = MathOperation::transform_direction; arity = 2; }
         else if (name == "math.sqrt") operation = MathOperation::square_root;
+        else if (name == "math.floor") operation = MathOperation::floor;
+        else if (name == "math.ceil") operation = MathOperation::ceil;
+        else if (name == "math.trunc") operation = MathOperation::trunc;
+        else if (name == "math.fract") operation = MathOperation::fract;
+        else if (name == "math.abs") operation = MathOperation::abs;
+        else if (name == "math.sign") operation = MathOperation::sign;
+        else if (name == "math.min") { operation = MathOperation::min; arity = 2; }
+        else if (name == "math.max") { operation = MathOperation::max; arity = 2; }
+        else if (name == "math.step") { operation = MathOperation::step; arity = 2; }
+        else if (name == "math.clamp") { operation = MathOperation::clamp; arity = 3; }
+        else if (name == "math.lerp") { operation = MathOperation::lerp; arity = 3; }
+        else if (name == "math.smoothstep") { operation = MathOperation::smoothstep; arity = 3; }
         else reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
         if (arguments.size() != arity) reject(position, "Math operation argument count mismatch.");
         const auto first = function_.expressions[arguments[0]].type;
         const auto descriptor = math_type(first);
         auto result_type = first;
-        switch (operation) {
-        case MathOperation::square_root:
-            if (!floating(first)) reject(position, "math.sqrt requires float or double.");
-            break;
+        if (operation >= MathOperation::square_root) {
+            // Element-wise: the result is the vector argument's type, or the scalar
+            // type when every argument is scalar; scalar arguments apply to every lane.
+            for (const auto argument : arguments) {
+                const auto type = function_.expressions[argument].type;
+                if (math_type(type).vector()) { result_type = type; break; }
+            }
+            const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
+            if (!floating(lane))
+                reject(position, std::string(name) + " requires float or double scalars or vectors.");
+            for (const auto argument : arguments) {
+                const auto type = function_.expressions[argument].type;
+                if (type != result_type && type != lane)
+                    reject(function_.expressions[argument].position, std::string(name) +
+                        " arguments must have the result type or its component type; numeric types and precision do not convert implicitly.");
+            }
+        } else switch (operation) {
         case MathOperation::dot:
         case MathOperation::cross:
             if (!descriptor.vector() || (operation == MathOperation::cross && descriptor.shape != math::Shape::vector3))
@@ -1116,6 +1153,7 @@ private:
                 reject(position, "Transform operations require a vector3 followed by a matrix4 of matching precision.");
             break;
         }
+        default: break;
         }
         Expression result{Expression::Kind::math_intrinsic, result_type, position};
         result.math_operation = operation;

@@ -147,9 +147,10 @@ template<Real T, std::size_t N>
     value /= scale;
     return value / std::sqrt(dot(value, value));
 }
+// Same formula as source math.lerp: exact at t = 0 and t = 1 for finite values, not monotonic.
 template<Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> lerp(BasicVector<T, N> a, BasicVector<T, N> b, std::type_identity_t<T> t) noexcept {
-    for (std::size_t i = 0; i < N; ++i) a[i] = std::lerp(a[i], b[i], t);
+    for (std::size_t i = 0; i < N; ++i) a[i] = a[i] * (T(1) - t) + b[i] * t;
     return a;
 }
 
