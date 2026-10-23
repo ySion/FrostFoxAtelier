@@ -2,11 +2,13 @@
 #include "shader_source.hpp"
 #include "math/math.hpp"
 #include "scene_lit.hpp"
+#include "scene_geometry.hpp"
 #include "frame_slots.hpp"
 #include "raster_viewport.hpp"
 #include "scene_visibility.hpp"
 #include "timing.hpp"
 
+#include <ankerl/unordered_dense.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
 
@@ -20,10 +22,54 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+
+namespace atelier::renderer::detail {
+WeldedMesh weld(const geometry::Mesh& mesh) {
+    // Merges only bitwise-identical corners: every vertex keeps its exact authored data.
+    struct Hash {
+        using is_transparent=void;using is_avalanching=void;
+        const std::vector<geometry::Vertex>* unique;
+        std::uint64_t operator()(const geometry::Vertex& v) const noexcept {
+            return ankerl::unordered_dense::hash<std::string_view>{}(std::string_view(reinterpret_cast<const char*>(&v),sizeof v));
+        }
+        std::uint64_t operator()(std::uint32_t i) const noexcept {return (*this)((*unique)[i]);}
+    };
+    struct Equal {
+        using is_transparent=void;
+        const std::vector<geometry::Vertex>* unique;
+        bool operator()(std::uint32_t a,std::uint32_t b) const noexcept {return a==b;}
+        bool operator()(const geometry::Vertex& v,std::uint32_t i) const noexcept {return std::memcmp(&v,&(*unique)[i],sizeof v)==0;}
+        bool operator()(std::uint32_t i,const geometry::Vertex& v) const noexcept {return (*this)(v,i);}
+    };
+    const auto source=mesh.vertices();
+    WeldedMesh result;result.indices.resize(source.size());result.faces.resize(source.size()/3);
+    ankerl::unordered_dense::set<std::uint32_t,Hash,Equal> seen(0,Hash{&result.vertices},Equal{&result.vertices});
+    for(std::size_t i=0;i<source.size();++i) {
+        if(const auto found=seen.find(source[i]);found!=seen.end()) {result.indices[i]=*found;continue;}
+        const auto index=static_cast<std::uint32_t>(result.vertices.size());
+        result.vertices.push_back(source[i]);seen.insert(index);result.indices[i]=index;
+    }
+    for(const auto& part:mesh.parts())for(std::uint32_t t=part.first_vertex/3;t<(part.first_vertex+part.vertex_count)/3;++t) {
+        const auto* v=source.data()+std::size_t(t)*3;
+        std::array<double,3> a{},b{};
+        for(std::size_t i=0;i<3;++i) {a[i]=double(v[1].position[i])-v[0].position[i];b[i]=double(v[2].position[i])-v[0].position[i];}
+        const std::array<double,3> normal{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
+        const double length=std::hypot(normal[0],normal[1],normal[2]);
+        double orientation=0;
+        for(std::size_t i=0;i<3;++i)orientation+=normal[i]*(double(v[0].normal[i])+v[1].normal[i]+v[2].normal[i]);
+        auto& face=result.faces[t];
+        for(std::size_t i=0;i<3;++i)
+            face.normal[i]=length==0?v[0].normal[i]:static_cast<float>(normal[i]/length*(orientation<0?-1:1));
+        face.slot_edges=part.material|std::uint32_t(mesh.edge_mask(t))<<face_slot_bits;
+    }
+    return result;
+}
+}
 
 namespace atelier::renderer {
 namespace {
@@ -198,6 +244,8 @@ void validate(const Frame &frame, MeshChecks &meshes) {
     std::uint64_t material_slots=0;
     good &= meshes.check(frame.meshes, material_slots);
     good &= material_slots<=std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface);
+    static_assert(std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface)<(1u<<detail::face_slot_bits),
+        "An accepted Frame's material slots fit GpuFace");
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
             finite(draw.border_width) && draw.border_width >= 0 && !(draw.coverage && draw.image);
@@ -391,7 +439,7 @@ struct Renderer::State {
     std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
     material::ImageRef white_image;
     // group is this frame's MeshGroup only while that group points back at the entry.
-    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; std::uint32_t group{}; };
+    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; detail::SceneGeometry gpu; bool used{}; std::uint32_t group{}; };
     // One per geometry in first-appearance order over the complete snapshot, so
     // visibility and selection never reorder draws. Ranges index draw_instances.
     struct MeshGroup { CachedGeometry* geometry; std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{}; };
@@ -508,10 +556,12 @@ struct Renderer::State {
         }
         for (auto& [key, geometry] : geometries) {
             (void)key;
-            if (!geometry.vertices) continue;
-            const auto r = gfxDestroyBuffer(gfx, geometry.vertices);
-            if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
-            geometry.vertices = {};
+            for (auto* buffer : {&geometry.vertices, &geometry.gpu.vertices, &geometry.gpu.indices, &geometry.gpu.faces}) {
+                if (!*buffer) continue;
+                const auto r = gfxDestroyBuffer(gfx, *buffer);
+                if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
+                *buffer = {};
+            }
         }
         geometries.clear(); mesh_groups.clear();
         for(const auto r:{draw_order_slots.retire(gfx),instance_slots.retire(gfx)})if(r)
@@ -922,6 +972,17 @@ struct Renderer::State {
                             static_cast<std::uint32_t>(triangles.size()), triangles.data());
                         allocation(bool(geometry.vertices));
                     }
+                    if (!geometry.gpu.vertices) {
+                        const auto welded = detail::weld(*geometry.source);
+                        auto& gpu = geometry.gpu;
+                        gpu.vertices = gfxCreateBuffer<geometry::Vertex>(gfx, static_cast<std::uint32_t>(welded.vertices.size()), welded.vertices.data());
+                        allocation(bool(gpu.vertices));
+                        gpu.indices = gfxCreateBuffer<std::uint32_t>(gfx, static_cast<std::uint32_t>(welded.indices.size()), welded.indices.data());
+                        allocation(bool(gpu.indices));
+                        gpu.faces = gfxCreateBuffer<detail::GpuFace>(gfx, static_cast<std::uint32_t>(welded.faces.size()), welded.faces.data());
+                        allocation(bool(gpu.faces));
+                        gpu.triangle_count = static_cast<std::uint32_t>(welded.faces.size());
+                    }
                     geometry.used = true;
                 }
                 if (!draw_instances.empty())
@@ -976,8 +1037,7 @@ struct Renderer::State {
             if(lighting) {
                 lit_draws.clear();lit_draws.reserve(mesh_groups.size());
                 for(const auto& group:mesh_groups)
-                    lit_draws.push_back({group.geometry->vertices,static_cast<std::uint32_t>(group.geometry->source->vertices().size()),
-                        group.visible_first,group.visible_count});
+                    lit_draws.push_back({group.geometry->gpu,group.visible_first,group.visible_count});
                 {
                     timing::Scope lit_stage{phases::encode_lit};
                     scene_lit->draw(frame,extent,depth,{lit_draws,instance_groups,order},materials,stats);
@@ -1027,7 +1087,8 @@ struct Renderer::State {
         stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
-            if (it->second.vertices) require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
+            for (const auto &buffer : {it->second.vertices, it->second.gpu.vertices, it->second.gpu.indices, it->second.gpu.faces})
+                if (buffer) require(gfxDestroyBuffer(gfx, buffer), "Retire unused mesh geometry");
             it = geometries.erase(it);
         }
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");

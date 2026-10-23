@@ -37,6 +37,9 @@ struct LitInstance {
 // Shares the uploaded geometry::Vertex layout with the studio raster path.
 // UV and slot lookup are identical in primary and secondary surface evaluation.
 struct LitVertex { float3 position; float3 normal; float2 uv; float4 tangent; };
+// Shared per-triangle record: oriented geometric normal; material slot in bits 0-28, polygon edge mask in bits 29-31.
+struct LitFace { float3 normal; uint slot_edges; };
+uint lit_face_slot(LitFace face) { return face.slot_edges&0x1fffffffu; }
 struct LitRayTriangle { LitVertex vertices[3]; float3 geometric_normal; uint closed; uint material_slot; uint closure_first,closure_count,reserved; };
 StructuredBuffer<LitInstance> lit_instances;
 StructuredBuffer<LitRayTriangle> lit_rt_triangles;

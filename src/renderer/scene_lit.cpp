@@ -291,7 +291,7 @@ struct SceneLit::State {
             submit(group,probe_trace,shaders::lit_ddgi,"DDGITrace","DDGI RT primary trace");
             submit(group,reflection_resolve,shaders::lit_post,"lit_reflection_resolve_cs","SSSR temporal resolve");
             const std::string vs=std::string(shaders::lit_gbuffer)+"\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
-            const std::string ps=std::string(shaders::lit_gbuffer)+"\nLitGBuffer main(LitRaster i){return lit_gbuffer_ps(i);}";
+            const std::string ps=std::string(shaders::lit_gbuffer)+"\nLitGBuffer main(LitRaster i,uint p:SV_PrimitiveID){return lit_gbuffer_ps(i,p);}";
             rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Scene Lit GBuffer";
             for(std::uint32_t i=0;i<4;i++)require(gfxDrawStateSetColorTarget(desc.draw_state,i,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set GBuffer format");
             require(gfxDrawStateSetColorTarget(desc.draw_state,4,DXGI_FORMAT_R32_FLOAT),"Set previous surface depth format");
@@ -337,7 +337,7 @@ struct SceneLit::State {
         }
         case group_shadow_cache: {
             const std::string vs=std::string(shaders::lit_shadow)+"\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}";
-            const std::string ps=std::string(shaders::lit_shadow)+"\nvoid main(LitShadowRaster i){lit_shadow_ps(i);}";
+            const std::string ps=std::string(shaders::lit_shadow)+"\nvoid main(LitShadowRaster i,uint p:SV_PrimitiveID){lit_shadow_ps(i,p);}";
             rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Cached shadow depth";
             require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set cached shadow precision");
             require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set shadow reversed depth");
@@ -490,8 +490,10 @@ struct SceneLit::State {
                 const auto draw_index=instance_draws[shadow_instance_indices[at]];
                 const auto& draw=scene_draws.draws[draw_index];std::size_t end=at+1;
                 while(end<last&&instance_draws[shadow_instance_indices[end]]==draw_index)++end;
-                bind(p,"lit_triangles",draw.triangles);bind(p,"lit_shadow_first_instance",static_cast<std::uint32_t>(at));
-                require(gfxCommandDraw(gfx,draw.vertex_count,static_cast<std::uint32_t>(end-at)),"Draw invalidated shadow casters");
+                bind(p,"lit_vertices",draw.geometry.vertices);bind(p,"lit_faces",draw.geometry.faces);bind(p,"lit_first_triangle",0u);
+                bind(p,"lit_shadow_first_instance",static_cast<std::uint32_t>(at));
+                require(gfxCommandBindIndexBuffer(gfx,draw.geometry.indices),"Bind shadow caster indices");
+                require(gfxCommandDrawIndexed(gfx,draw.geometry.triangle_count*3,static_cast<std::uint32_t>(end-at)),"Draw invalidated shadow casters");
                 ++sample.draws;at=end;
             }
             first=last;
@@ -1118,8 +1120,11 @@ struct SceneLit::State {
         bind(gbuffer.program(),"lit_draw_instances",scene_draws.draw_instances);
         for(const auto& draw:scene_draws.draws) {
             if(!draw.count)continue;
-            bind(gbuffer.program(),"lit_triangles",draw.triangles);bind(gbuffer.program(),"lit_first_instance",draw.first);
-            require(gfxCommandDraw(gfx,draw.vertex_count,draw.count),"Draw Scene Lit surface geometry");++stats.scene_draw_calls;
+            const auto p=gbuffer.program();
+            bind(p,"lit_vertices",draw.geometry.vertices);bind(p,"lit_faces",draw.geometry.faces);bind(p,"lit_first_triangle",0u);
+            bind(p,"lit_first_instance",draw.first);
+            require(gfxCommandBindIndexBuffer(gfx,draw.geometry.indices),"Bind Scene Lit surface indices");
+            require(gfxCommandDrawIndexed(gfx,draw.geometry.triangle_count*3,draw.count),"Draw Scene Lit surface geometry");++stats.scene_draw_calls;
         }
         for(std::uint32_t i=0;i<gbuffer_textures.size();i++)require(gfxCommandBindColorTarget(gfx,i,{}),"Unbind Scene Lit GBuffer");
         require(gfxCommandBindDepthStencilTarget(gfx,{}),"Unbind Scene Lit primary depth");end(0);
