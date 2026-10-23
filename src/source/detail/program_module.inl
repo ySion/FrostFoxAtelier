@@ -222,6 +222,23 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     auto values = language::collect_declarations(module.source.common.text);
     if (!values) return fail(mapped_error(input, module.source.common, values.error().position, values.error().message));
     module.value_types = std::move(*values);
+    auto& runtime = *state_->contract->binding.runtime;
+    // Functions and constants share dotted names with types: Class.method entries need both rules.
+    const auto type_named = [&](std::string_view name) {
+        return (!language::editor_reserved(name) && runtime.find_type(name)) ||
+            find_named(module.source.classes, name) || find_named(module.value_types, name);
+    };
+    const auto shared_name = [&](std::string_view name, std::uint32_t file, language::SourcePosition position) -> std::optional<Error> {
+        if (type_named(name))
+            return source_error(input, file, position, "A source function or constant cannot share a name with a type: " + std::string(name));
+        if (const auto dot = name.rfind('.'); dot != std::string_view::npos && type_named(name.substr(0, dot)))
+            return source_error(input, file, position, "A source function or constant name cannot extend a type name: " + std::string(name));
+        return std::nullopt;
+    };
+    for (const auto& function : module.source.functions)
+        if (auto error = shared_name(function.name, function.file, function.position)) return fail(std::move(*error));
+    for (const auto& constant : module.source.constants)
+        if (auto error = shared_name(constant.name, constant.file, constant.position)) return fail(std::move(*error));
     // A published module only grows: deleting, renaming or changing a published
     // export, type or class needs a rebuild; new ones publish compatibly.
     const ModuleRequest* published = state_->module ? state_->module->request.get() : nullptr;
@@ -246,7 +263,6 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     if (!definitions) return fail(definitions.error());
     // Existing source types stay published; new ones still reference them by name.
     if (published) std::erase_if(*definitions, [&](const auto& definition) { return find_named(published->value_types, definition.name); });
-    auto& runtime = *state_->contract->binding.runtime;
     for (const auto& cls : module.source.classes) {
         if (std::ranges::any_of(state_->contract->binding.values, [&](const auto& value) {
             return value.math && cls.name == math::short_name(value.math);

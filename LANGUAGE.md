@@ -167,6 +167,8 @@ uint process(combat.DamageInfo& damage) {
 
 宿主向同一个 `Program` 提交 `SourceSnapshot{name, version, files}`。每个文件拥有项目相对路径、版本和完整正文；路径用 `/`，拒绝绝对路径、重复路径、空段及 `.`/`..` 段。文件身份区分大小写，文件系统扫描与路径归一化由宿主负责。快照允许空文件集合，最多 1024 个文件、1024 个类、32 MiB 正文。空集合发布无类型、无入口的模块；后续版本可以兼容地追加类型和入口。诊断包含原文件路径、版本、字节偏移和行列。
 
+路径以 `engine/` 开头的文件是引擎源码，路径必须是 `engine/<模块>/<文件>`，模块是 core、math、editor 以外的标识符。快照里出现的模块就是引擎命名空间：`engine/<模块>/` 下的文件声明的每个名字（class、struct、enum、函数、常量）都必须在 `<模块>.` 下，其他文件不能在任何引擎命名空间下声明名字。规则只管声明出来的名字，不管基类、字段类型和调用：工程里可以写 `class mygame.Foo : procedural.PointNode`，也可以调用 `procedural.hash(x)`。规则在 `Program::request` 收集快照时检查，与宿主无关；引擎文件的来源见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+
 ```cpp
 // Source/Math.source
 float distance(float speed, float dt) { return speed * dt; }
@@ -293,6 +295,8 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 ## 同模块函数与入口
 
 函数使用 `sum(values)` 形式直接调用同一模块中的函数，允许调用在后面声明的函数。函数名唯一，当前没有重载或函数值。所有函数体均须通过类型检查；机器码只包含公开入口可达的函数。
+
+顶层函数和常量的名字可以带点限定，例如 `uint procedural.hash(uint x)`、`const uint procedural.SEED = 7;`。调用和引用都写全名，`procedural.hash(x)`、`procedural.SEED`，入口名也是全名；没有短名查找。`math.` 保留给内建。表达式里的点号名字按顺序解析：带 `::` 的是枚举项，`math.` 开头且后面跟 `(` 的是内建调用；其余点号名字，首段是可见局部时按成员访问，局部因此遮蔽首段同名的限定函数和常量；否则后面跟 `(` 的是限定函数，不跟的是限定常量。项目快照里，函数或常量不能与类型（已注册的类型，或同快照声明的 class、struct、enum）同名；名字去掉最后一段后也不能是类型名，所以不会与 `类名.方法名` 入口冲突。
 
 宿主使用 `program.request(source_name, source, "process")` 选定入口。首次发布前只有一个函数时可省略名称；多个函数必须明确选择。首次发布后，省略名称沿用已冻结的入口，不依赖声明顺序。入口名称、参数/结果、接收者要求和同步/async 种类沿原发布契约固定；私有助手可随整模块版本改变名称、顺序及签名。
 

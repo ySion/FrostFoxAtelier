@@ -77,6 +77,8 @@ auto tick = program.entry("game.Move.tick");
 
 语法与限制以 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类) 为准。项目文件、World 生命周期调度和上下文重建由宿主组织；当前没有后台编译或对象布局迁移。
 
+引擎附带的源码放在 `assets/engine/<模块>/**.source`。构建把这些文件原样复制到可执行文件旁的 `engine/`：每次重新配置先清空目标目录，增删或修改 `.source` 文件都会触发重新配置。`source::engine_sources(root)` 按路径排序读取 root 下的 `.source` 文件，快照路径为 `engine/<相对路径>`，root 不存在时没有文件；`source::default_engine_root()` 在源码树的 `assets/engine` 存在时返回它，否则返回可执行文件旁的 `engine/`。工程文件、UI 源码和引擎文件共用 `source::read_source_file`：单文件最多 1 MiB，必须是 UTF-8，版本是所存字节的 `source::content_hash`（FNV-1a 64），正文去掉 UTF-8 BOM。编辑器和 Play 的 `ProjectCode::snapshot` 在工程文件之后追加全部引擎文件，16 MiB 总上限一起计算，轮询也覆盖引擎文件；其他宿主直接调用同一组函数。引擎文件属于每个快照，改其中的全局函数会和改工程助手一样更换全部入口 code。
+
 ## 端到端验收
 
 [正式消费者](../acceptance/source/modules.cpp)通过公共 Program 接口覆盖：
@@ -89,4 +91,4 @@ auto tick = program.entry("game.Move.tick");
 
 模块场景随 `source_acceptance` 和 `jit_acceptance` 运行。
 
-项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、向量与枚举类字段的默认值和属性（范围、展示文本、编辑后需要重建的边界、按字段定位的拒绝）、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，混合借用入口对 GC 的影响，入口 code 与 revision 随编译输入的变化，以及值区间内只读 `self` 字段且不改变借用与 GC 规则。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。
+项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、向量与枚举类字段的默认值和属性（范围、展示文本、编辑后需要重建的边界、按字段定位的拒绝）、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，混合借用入口对 GC 的影响，入口 code 与 revision 随编译输入的变化，值区间内只读 `self` 字段且不改变借用与 GC 规则，以及引擎源码：从磁盘读出排序、带 `engine/` 前缀、去 BOM、版本只随所存字节变化的文件，可执行文件旁的 `engine/` 与 `assets/engine` 逐文件相同，限定名函数与常量的调用和局部遮蔽，工程类派生引擎命名空间里的原生基类，以及各条命名空间、路径和同名规则的拒绝位置。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。

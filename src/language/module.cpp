@@ -111,11 +111,29 @@ std::string function_signature(Tokens& tokens, const TypeName& type, std::vector
     }
     return signature;
 }
+// The <module> of a well-formed engine/<module>/<file> path; empty for every other path.
+std::string_view engine_module(std::string_view path) {
+    constexpr std::string_view prefix = "engine/";
+    if (!path.starts_with(prefix)) return {};
+    const auto rest = path.substr(prefix.size());
+    const auto name = rest.substr(0, rest.find('/'));
+    if (name.empty() || name.size() == rest.size() || !letter(name.front()) || reserved(name) ||
+        !std::ranges::all_of(name, [](char c) { return letter(c) || digit(c); }) ||
+        name == "core" || name == "math" || name == "editor") return {};
+    return name;
+}
+bool in_namespace(std::string_view name, std::string_view space) {
+    return name.size() > space.size() && name.starts_with(space) && name[space.size()] == '.';
+}
 }
 std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapshot& snapshot) {
     SourceModule result;
     if (snapshot.files.size() > 1024)
         return std::unexpected(ModuleDiagnostic{0, {{}, "A source snapshot supports at most 1024 files."}});
+    std::vector<std::string_view> engine_modules;
+    for (const auto& unit : snapshot.files)
+        if (const auto name = engine_module(unit.path); !name.empty() && std::ranges::find(engine_modules, name) == engine_modules.end())
+            engine_modules.push_back(name);
     for (std::uint32_t file = 0; file < snapshot.files.size(); ++file) {
         const auto& unit = snapshot.files[file];
         try {
@@ -130,6 +148,19 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             }
             for (std::uint32_t previous = 0; previous < file; ++previous)
                 if (snapshot.files[previous].path == unit.path) reject({}, "Duplicate source file path.");
+            const auto own = engine_module(unit.path);
+            if (own.empty() && unit.path.starts_with("engine/"))
+                reject({}, "Engine source paths must be engine/<module>/<file>, where <module> is an identifier other than core, math or editor.");
+            const auto declare = [&](const std::string& name, SourcePosition position) {
+                if (!own.empty() && !in_namespace(name, own))
+                    reject(position, "Engine sources under engine/" + std::string(own) + "/ may only declare names in the " +
+                        std::string(own) + ". namespace: " + name);
+                if (own.empty())
+                    for (const auto space : engine_modules)
+                        if (in_namespace(name, space))
+                            reject(position, "Only engine sources under engine/" + std::string(space) + "/ may declare names in the " +
+                                std::string(space) + ". namespace: " + name);
+            };
             Tokens tokens(unit.source);
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
@@ -139,13 +170,23 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     if (function) {
                         if (tokens.accept("async")) reject(begin, "Project exports must be synchronous.");
                         const auto type = tokens.accept("void") ? TypeName{"void"} : parse_type_name(tokens);
-                        const auto name = tokens.identifier();
-                        FunctionDeclaration declaration{std::string(name.text), {}, {}};
+                        const auto position = tokens.token_.position;
+                        FunctionDeclaration declaration{tokens.qualified_identifier(), {}, {}, file, position};
+                        declare(declaration.name, position);
                         declaration.signature = function_signature(tokens, type, declaration.parameters);
                         result.functions.push_back(std::move(declaration));
-                    } else while (tokens.token_.text != ";" && tokens.token_.text != "{") {
-                        if (tokens.token_.kind == Token::Kind::end) reject(begin, "Incomplete source declaration.");
-                        tokens.consume();
+                    } else {
+                        const bool constant = tokens.accept("const");
+                        if (constant) parse_type_name(tokens);
+                        else tokens.consume();
+                        const auto position = tokens.token_.position;
+                        auto name = tokens.qualified_identifier();
+                        declare(name, position);
+                        if (constant) result.constants.push_back({std::move(name), file, position});
+                        while (tokens.token_.text != ";" && tokens.token_.text != "{") {
+                            if (tokens.token_.kind == Token::Kind::end) reject(begin, "Incomplete source declaration.");
+                            tokens.consume();
+                        }
                     }
                     if (tokens.token_.text == "{") body(tokens);
                     tokens.accept(";");
@@ -154,7 +195,9 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                 }
                 ClassDeclaration declaration;
                 declaration.position = begin; declaration.file = file;
+                const auto name_position = tokens.token_.position;
                 declaration.name = tokens.qualified_identifier();
+                declare(declaration.name, name_position);
                 if (declaration.name == "String" || declaration.name == "Array" || declaration.name.starts_with("core.") ||
                     declaration.name.starts_with("math.") || declaration.name.starts_with("__source_"))
                     reject(begin, "Source classes cannot replace reserved types.");
