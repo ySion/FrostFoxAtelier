@@ -41,10 +41,19 @@ public:
     const std::wstring& name() const noexcept { return name_; }
     std::span<const ProjectEntry> entries() const noexcept { return entries_; }
     const ProjectEntry* entry(std::string_view key) const;
+    // The top-level folders the catalogue scans: Content, Source, Config, and Examples when present.
+    std::span<const std::filesystem::path> roots() const noexcept { return roots_; }
     std::uint64_t revision() const noexcept { return revision_; }
     Result<void> refresh();
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
     Result<MeshAsset> mesh(std::string_view);
+    // Project-relative files of one asset and of every asset it references (a mesh's source
+    // dependencies and slot default materials, a material's textures), each with its
+    // .asset.json identity, in the catalogue's spelling and without duplicates. Loads a mesh
+    // to learn its references; builtin keys and missing or wrong-kind referenced assets have
+    // no files, and an asset that cannot be read keeps only its own. A commit that adds a
+    // reference between assets extends this.
+    Result<std::vector<std::filesystem::path>> asset_files(std::string_view key);
     // glTF imports also publish one material asset per slot, which the mesh names as its slot defaults.
     Result<std::string> import_mesh(const std::filesystem::path&);
     // Source content the loaded mesh left out (see MeshImport::notes); empty until mesh() loads it.
@@ -72,6 +81,7 @@ private:
     std::filesystem::path root_, startup_, ui_source_;
     std::wstring name_;
     std::vector<ProjectEntry> entries_;
+    std::vector<std::filesystem::path> roots_;
     std::uint64_t revision_{};
     struct KeyHash {
         using is_transparent=void;

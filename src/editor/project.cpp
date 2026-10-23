@@ -12,7 +12,10 @@
 #include <bit>
 #include <cwctype>
 #include <fstream>
+#include <functional>
 #include <map>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <unordered_set>
 
@@ -218,11 +221,13 @@ Result<void> Project::refresh() {
         std::vector<ProjectEntry> entries;
         std::unordered_set<std::string> keys;
         const auto native_root=platform::windows_file_path(root_);
-        for (const auto* directory:{L"Content",L"Source",L"Config",L"Examples"}) {
+        std::vector<std::filesystem::path> roots;
+        for (const auto* directory:{L"Content",L"Source",L"Config",L"Examples"})
+            if(std::wstring_view(directory)!=L"Examples" || std::filesystem::exists(platform::windows_file_path(take(resolve(directory))))) roots.emplace_back(directory);
+        for (const auto& directory:roots) {
             const auto root=platform::windows_file_path(take(resolve(directory)));
-            if(std::wstring_view(directory)==L"Examples" && !std::filesystem::exists(root)) continue;
             if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
-            entries.push_back({directory,utf8(directory),AssetKind::folder});
+            entries.push_back({directory,utf8(directory.generic_wstring()),AssetKind::folder});
             for (const auto& entry:std::filesystem::recursive_directory_iterator(root)) {
                 if (entry.is_symlink()) continue;
                 const auto relative=entry.path().lexically_relative(native_root);
@@ -233,7 +238,7 @@ Result<void> Project::refresh() {
                 auto kind=entry.is_directory()?AssetKind::folder:is_mesh_path(entry.path())?AssetKind::mesh:
                     entry.path().extension()==L".material"?AssetKind::material:is_texture_path(entry.path())?AssetKind::texture:
                     is_sky_path(entry.path())?AssetKind::sky:
-                    entry.path().extension()==L".scene"?AssetKind::scene:std::wstring_view(directory)==L"Source"?AssetKind::source:AssetKind::file;
+                    entry.path().extension()==L".scene"?AssetKind::scene:directory==L"Source"?AssetKind::source:AssetKind::file;
                 std::string key=utf8(relative.generic_wstring());std::vector<SlotMaterial> materials;
                 if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture || kind==AssetKind::sky) {
                     auto meta_relative=relative; meta_relative+=L".asset.json";
@@ -263,6 +268,7 @@ Result<void> Project::refresh() {
             }
         }
         std::sort(entries.begin(),entries.end(),[](const auto& a,const auto& b) { return a.path<b.path; });
+        roots_=std::move(roots);
         if (entries==entries_) return {};
         decltype(entry_index_) index;index.reserve(entries.size());
         for (std::size_t i=0;i<entries.size();++i) index.emplace(entries[i].key,i);
@@ -329,6 +335,48 @@ Result<MeshAsset> Project::mesh(std::string_view key) {
 std::span<const std::string> Project::mesh_notes(std::string_view key) const {
     const auto found=meshes_.find(std::string(key));
     return found==meshes_.end()?std::span<const std::string>{}:std::span<const std::string>(found->second.notes);
+}
+Result<std::vector<std::filesystem::path>> Project::asset_files(std::string_view key) {
+    try {
+        std::vector<std::filesystem::path> files;std::set<std::filesystem::path> listed;std::set<std::string,std::less<>> visited;
+        const auto add=[&](const std::filesystem::path& named) {
+            // A dependency keeps its source file's spelling; list the catalogue's, which a
+            // texture asset reached by key also uses, so case aliases are one file.
+            const auto text=named.generic_wstring();
+            const auto at=std::ranges::find_if(entries_,[&](const ProjectEntry& entry) {
+                const auto other=entry.path.generic_wstring();
+                return CompareStringOrdinal(text.data(),int(text.size()),other.data(),int(other.size()),TRUE)==CSTR_EQUAL;
+            });
+            if(at==entries_.end()) throw std::runtime_error("Asset file is not in the project catalogue: "+utf8(text));
+            if(!listed.insert(at->path).second) return;
+            files.push_back(at->path);
+            // Without its identity file a copy would get a new key from refresh.
+            if(at->kind==AssetKind::mesh || at->kind==AssetKind::material || at->kind==AssetKind::texture || at->kind==AssetKind::sky) {
+                auto identity=at->path;identity+=L".asset.json";
+                if(!std::filesystem::exists(platform::windows_file_path(take(resolve(identity))))) throw std::runtime_error("Asset identity file is missing: "+utf8(identity.generic_wstring()));
+                listed.insert(identity);files.push_back(std::move(identity));
+            }
+        };
+        // A referenced asset that is missing or of another kind has no files: the asset referring
+        // to it reports it when it loads, and a caller's in-memory draft may no longer refer to it.
+        // An asset that cannot be read keeps its own files; what it references is unknown.
+        const std::function<void(std::string_view,std::optional<AssetKind>)> visit=[&](std::string_view asset,std::optional<AssetKind> kind) {
+            if(asset.empty() || asset.starts_with("builtin/")) return;
+            const auto* at=entry(asset);
+            if(!at) {if(!kind) throw std::runtime_error("Missing project asset: "+std::string(asset));return;}
+            if((kind && at->kind!=*kind) || !visited.emplace(asset).second) return;
+            add(at->path);
+            if(at->kind==AssetKind::mesh) {
+                if(const auto loaded=mesh(asset)) {
+                    for(const auto& dependency:meshes_.at(std::string(asset)).dependencies) add(dependency);
+                    for(const auto& slot:loaded->materials) visit(slot.key,AssetKind::material);
+                }
+            } else if(at->kind==AssetKind::material) {
+                if(const auto loaded=material(asset)) for(const auto& texture:loaded->textures) visit(texture,AssetKind::texture);
+            }
+        };
+        visit(key,std::nullopt);return files;
+    } catch (const std::exception& error) { return failure(error.what()); }
 }
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
     std::vector<std::filesystem::path> created;

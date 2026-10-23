@@ -201,6 +201,15 @@ void verify_gltf_import() {
         listed(project,leaf_key).path==fs::path("Content/Meshes/scene/Materials/leaf.material"),
         "Import Mesh did not publish one material per slot as the mesh's defaults.");
     {
+        // The mesh's file closure reaches its slot default materials, each with its identity file, and
+        // lists a texture that is both a glTF dependency and a material texture once.
+        const auto files=take(project.asset_files(key));
+        const auto once=[&](const fs::path& file){return std::ranges::count(files,fs::path("Content/Meshes/scene")/file)==1;};
+        for(const auto* file:{L"scene.gltf",L"scene.gltf.asset.json",L"scene.bin",L"textures/color map.bmp",L"textures/color map.bmp.asset.json",
+            L"Materials/opaque.material",L"Materials/opaque.material.asset.json",L"Materials/leaf.material",L"Materials/leaf.material.asset.json"})
+            require(once(file),("A glTF mesh's asset files miss or repeat "+editor::utf8(file)).c_str());
+    }
+    {
         using mat::Input;const auto opaque=take(project.material(opaque_key)),leaf=take(project.material(leaf_key));
         const auto file=[&](const std::string& texture){return listed(project,texture).path.filename();};
         const auto slot=[&](const editor::MaterialAsset& m,Input input){return m.textures[static_cast<std::size_t>(input)];};

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
 #include <thread>
 #include <cmath>
 #include <array>
@@ -18,6 +20,8 @@ void write(const std::filesystem::path& path,std::string_view text) {
     std::ofstream stream(atelier::platform::windows_file_path(path),std::ios::binary|std::ios::trunc);stream.write(text.data(),static_cast<std::streamsize>(text.size()));
     require(bool(stream),"Cannot write E2E fixture");
 }
+// A 1x1 RGBA PNG.
+constexpr std::array<unsigned char,70> tiny_png{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x00,0x00,0x0d,0x49,0x48,0x44,0x52,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0x08,0x06,0x00,0x00,0x00,0x1f,0x15,0xc4,0x89,0x00,0x00,0x00,0x0d,0x49,0x44,0x41,0x54,0x78,0xda,0x63,0x64,0xf8,0xcf,0x50,0x0f,0x00,0x03,0x86,0x01,0x80,0x5a,0x34,0x7d,0x6b,0x00,0x00,0x00,0x00,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
 constexpr std::string_view published_code="class project.ControlProbe : world.Component { float speed = 1.0f; void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); } }\n";
 constexpr std::string_view published_ui="ui ProjectUI(in Text title, in double elapsed, in double entities) { Column hud { Text title { text: input.title; } } }\n";
 void project_fixture(const std::filesystem::path& project) {
@@ -449,6 +453,40 @@ void repro_sky(Driver& d,const std::filesystem::path& project) {
     require(d.inspect().at("view")==manifest.at("view"),"A sky repro did not open with its frozen view");
     exported();
 }
+// The export copies what the scene references, with the in-memory draft of a referenced material
+// rather than what its saved file names: a draft that cleared a texture which has since gone
+// missing still exports, the copy holds the draft and reopens strictly, and the source asset stays
+// unchanged. A material the session loaded but the scene does not reference stays out.
+void repro_material_draft(Driver& d,const std::filesystem::path& project,const std::filesystem::path& root) {
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    write(root/"Draft.png",std::string(tiny_png.begin(),tiny_png.end()));
+    const auto texture=d.ok("texture.import",{{"path",utf8((root/"Draft.png").wstring())}}).at("asset").get<std::string>();
+    const auto asset=d.ok("material.create",{{"path","Content/Materials/Draft.material"}}).at("asset").get<std::string>();
+    const auto unused=d.ok("material.create",{{"path","Content/Materials/Unused.material"}}).at("asset").get<std::string>();
+    d.ok("material.set_texture",{{"object",d.ok("material.inspect",{{"asset",asset}}).at("handle")},{"input","base_color"},{"texture",texture}});
+    d.ok("material.save",{{"asset",asset}});
+    const auto entity=d.ok("scene.create",{{"kind","mesh"}}).at("object");Json component;
+    for(const auto& item:d.inspect().at("entities")) if(item.at("handle")==entity) component=item.at("components")[0].at("handle");
+    d.ok("material.assign",{{"component",component},{"slot","slot/0"},{"asset",asset}});d.ok("scene.save");
+    const auto saved=project/"Content/Materials/Draft.material";const auto saved_text=read(saved).dump();
+    for(const auto* file:{L"Content/Textures/Draft.png",L"Content/Textures/Draft.png.asset.json"}) std::filesystem::remove(atelier::platform::windows_file_path(project/file));
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    const auto opened=d.ok("material.inspect",{{"asset",asset}});
+    require(opened.at("missing_textures")==Json::array({texture}),"The draft fixture did not lose its texture: "+opened.dump());
+    d.ok("material.inspect",{{"asset",unused}});
+    d.ok("material.set_texture",{{"object",opened.at("handle")},{"input","base_color"},{"texture",""}});
+    const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Draft repro export did not start");
+    const auto done=d.wait(id);require(done.at("status")=="ok","A material draft without its missing texture did not export: "+done.dump());
+    const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
+    require(read(bundle/"Project/Content/Materials/Draft.material").at("textures").at("base_color").at("source")=="" && read(saved).dump()==saved_text,
+        "A draft repro did not carry the draft, or changed the saved material");
+    require(!std::filesystem::exists(atelier::platform::windows_file_path(bundle/"Project/Content/Materials/Unused.material")) &&
+        std::ranges::none_of(read(bundle/"manifest.json").at("input_files"),[](const Json& file){return file.at("path").get<std::string>().starts_with("Content/Materials/Unused");}),
+        "A repro copied a material the session loaded but the scene does not reference");
+    d.ok("material.undo",{{"asset",asset}});
+    d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+    require(d.ok("material.inspect",{{"asset",asset}}).at("missing_textures").empty(),"A draft repro did not reopen without the missing texture");
+}
 void repro_lighting(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"Project",directory=root/"Control";project_fixture(project);
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
@@ -463,9 +501,10 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
     const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
     repro_lighting_migration(d,wide(exported.at("result").at("directory").get<std::string>()),root);
     repro_sky(d,project);
+    repro_material_draft(d,project,root);
     d.client.reset();editor.close();
     write(root/"result.json",Json{{"status","passed"},{"cases",{"legacy-shadow-ranges","legacy-view-and-world-agreement",
-        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema4-scene8-export-reopen","removed-direct-diagnostics","view-and-environment-agreement","sky-map-and-rotation"}}}.dump(2));
+        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema4-scene8-export-reopen","removed-direct-diagnostics","view-and-environment-agreement","sky-map-and-rotation","material-draft-dependencies"}}}.dump(2));
     std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
@@ -477,14 +516,140 @@ void reject_nested_destination(const std::filesystem::path& executable,const std
     require(std::filesystem::is_empty(atelier::platform::windows_file_path(directory/"artifacts"/wide(d.descriptor.at("instance_id").get<std::string>()))),"Rejected nested export left a recursive output");
     d.client.reset();editor.close();
 }
+// An Official Examples scene keeps its assets under Examples/, which holds far more files
+// than a repro may copy. The repro carries only what the Sponza scene references: its two glTF
+// meshes with their buffers and images, each slot's default material, and the sun-removed sky
+// map; not the unused original HDRI, the unrelated Physic example or the READMEs.
+void repro_examples(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto shipped=executable.parent_path()/"examples",project=root/"Examples",directory=root/"Control";
+    for(const auto* folder:{L"Config",L"Content",L"Source",L"Examples/Sponza",L"Examples/Physic"}) {
+        std::filesystem::create_directories(atelier::platform::windows_file_path((project/folder).parent_path()));
+        std::filesystem::copy(atelier::platform::windows_file_path(shipped/folder),atelier::platform::windows_file_path(project/folder),std::filesystem::copy_options::recursive);
+    }
+    const std::string sponza="Examples/Sponza/",building=sponza+"NewSponza/NewSponza_Main_glTF_003.gltf",curtains=sponza+"SponzaExtend/NewSponza_Curtains_glTF.gltf";
+    // A mesh may spell an image in another case than its file; the repro copies the catalogue's file once.
+    const std::string image="textures/arch_stone_wall_01_BaseColor.png",alias="Textures/Arch_Stone_Wall_01_BaseColor.png";
+    {
+        std::ifstream stream(atelier::platform::windows_file_path(project/building),std::ios::binary);
+        std::string text(std::istreambuf_iterator<char>(stream),{});const auto at=text.find("\""+image+"\"");
+        require(at!=std::string::npos,"The New Sponza glTF fixture changed");text.replace(at+1,image.size(),alias);write(project/building,text);
+    }
+    // Every slot default the two mesh sidecars name, by the material file that holds its identity.
+    std::map<std::string,std::string> material_files;std::set<std::string> defaults;
+    for(const auto& entry:std::filesystem::recursive_directory_iterator(atelier::platform::windows_file_path(project/sponza)))
+        if(auto path=utf8(entry.path().lexically_relative(atelier::platform::windows_file_path(project)).generic_wstring());path.ends_with(".material.asset.json")) {
+            const auto key="project/"+read(entry.path()).at("id").get<std::string>();path.resize(path.size()-11);material_files[key]=std::move(path);
+        }
+    for(const auto& mesh:{building,curtains}) for(const auto& [slot,key]:read(project/(mesh+".asset.json")).at("materials").items()) defaults.insert(material_files.at(key.get<std::string>()));
+    require(defaults.size()==31,"The New Sponza meshes no longer name 31 slot default materials");
+    const std::string sky_file=sponza+"Sky/kloppenheim_05_4k_nosun.hdr";
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+    Driver d(discover_editor(editor,directory));d.settle();
+    Json resources;std::set<std::string> inputs;
+    const auto exported=[&] {
+        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Examples repro export did not start");
+        const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+        const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
+        const auto manifest=read(bundle/"manifest.json");
+        std::set<std::string> copied;std::map<std::string,std::string> hashes;
+        for(const auto& file:manifest.at("input_files")) {copied.insert(file.at("path").get<std::string>());hashes[file.at("path").get<std::string>()]=file.at("sha256").get<std::string>();}
+        // Each asset arrives with the identity file the source project gave it.
+        const auto asset=[&](const std::string& path) {
+            return copied.contains(path) && hashes.contains(path+".asset.json") && hashes.at(path+".asset.json")==sha256_file(project/(path+".asset.json"));
+        };
+        for(const auto& path:copied) if(path.find("/textures/")!=std::string::npos && !path.ends_with(".asset.json"))
+            require(asset(path),"An Examples repro copied a texture without its identity file: "+path);
+        require(asset(building) && asset(curtains) && copied.contains(sponza+"NewSponza/NewSponza_Main_glTF_003.bin") &&
+            copied.contains(sponza+"SponzaExtend/NewSponza_Curtains_glTF.bin") && asset(sponza+"NewSponza/"+image) && asset(sky_file),
+            "An Examples repro left out the scene's meshes, their dependencies or its sky map");
+        for(const auto& material:defaults) require(asset(material),"An Examples repro left out the slot default material "+material);
+        require(std::ranges::none_of(copied,[&](const std::string& path){return path.starts_with("Examples/Physic/") || path.starts_with(sponza+"Scenes/") ||
+            path.starts_with(sponza+"Sky/kloppenheim_05_4k.hdr") || path.ends_with("README.md");}),
+            "An Examples repro copied files the scene does not use");
+        if(inputs.empty()) {inputs=copied;resources=manifest.at("resources");}
+        require(copied==inputs && manifest.at("resources")==resources,"A reopened Examples repro carried different assets");
+        return std::pair{bundle,manifest};
+    };
+    const auto [bundle,manifest]=exported();
+    require(manifest.at("resources").size()==3,"An Examples repro did not check Sponza's two meshes and its sky map: "+manifest.at("resources").dump());
+    d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+    require(d.inspect().at("view")==manifest.at("view"),"An Examples repro did not open with its frozen view");
+    exported();
+    d.client.reset();editor.close();
+}
+// A glTF import publishes one material per slot as the mesh's default, which the scene does not
+// name. The repro carries the default material, its texture and their identity files, reopens
+// strictly and exports the same files again.
+void repro_gltf_defaults(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto project=root/"Project",directory=root/"Control",source=root/"source";project_fixture(project);
+    write(source/"textures/color.png",std::string(tiny_png.begin(),tiny_png.end()));
+    std::string bin;
+    const auto put=[&](std::initializer_list<float> values) {for(const float v:values) bin.append(reinterpret_cast<const char*>(&v),4);};
+    put({0,0,0,1,0,0,0,1,0});put({0,0,-1,0,0,-1,0,0,-1});put({0,1,1,1,0,0});
+    for(const std::uint16_t i:{0,1,2,0}) bin.append(reinterpret_cast<const char*>(&i),2);
+    write(source/"scene.bin",bin);
+    const auto view=[](int offset,int length){return Json{{"buffer",0},{"byteOffset",offset},{"byteLength",length}};};
+    const auto accessor=[](int index,const char* type,int component){return Json{{"bufferView",index},{"type",type},{"componentType",component},{"count",3}};};
+    write(source/"scene.gltf",Json{{"asset",{{"version","2.0"}}},{"scenes",{{{"nodes",{0}}}}},{"nodes",{{{"mesh",0}}}},
+        {"meshes",{{{"primitives",{{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",0}}}}}}},
+        {"materials",{{{"name","paint"},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}}}},
+        {"textures",{{{"source",0}}}},{"images",{{{"uri","textures/color.png"}}}},{"buffers",{{{"uri","scene.bin"},{"byteLength",bin.size()}}}},
+        {"bufferViews",{view(0,36),view(36,36),view(72,24),view(96,6)}},
+        {"accessors",{accessor(0,"VEC3",5126),accessor(1,"VEC3",5126),accessor(2,"VEC2",5126),accessor(3,"SCALAR",5123)}}}.dump());
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+    Driver d(discover_editor(editor,directory));d.settle();
+    const auto mesh=d.ok("mesh.import",{{"path",utf8((source/"scene.gltf").wstring())}}).at("asset").get<std::string>();
+    d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}});
+    const std::string folder="Content/Meshes/scene/",material=folder+"Materials/paint.material";
+    const auto defaults=read(project/(folder+"scene.gltf.asset.json")).at("materials");
+    require(defaults.size()==1 && defaults.begin()->get<std::string>()=="project/"+read(project/(material+".asset.json")).at("id").get<std::string>(),
+        "The glTF import did not name its generated material as the slot default: "+defaults.dump());
+    std::set<std::string> inputs;
+    const auto exported=[&] {
+        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","glTF repro export did not start");
+        const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+        const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
+        std::set<std::string> copied;
+        for(const auto& file:read(bundle/"manifest.json").at("input_files")) copied.insert(file.at("path").get<std::string>());
+        for(const auto& file:{folder+"scene.gltf",folder+"scene.bin",folder+"textures/color.png",material})
+            require(copied.contains(file) && (file.ends_with(".bin") || copied.contains(file+".asset.json")),"A glTF repro left out "+file+" or its identity file");
+        if(inputs.empty()) inputs=copied;
+        require(copied==inputs,"A reopened glTF repro carried different files");
+        return bundle;
+    };
+    const auto bundle=exported();
+    // The export froze the unsaved mesh; undoing it leaves the source scene clean so the repro may replace it.
+    d.op("edit.undo");require(!d.inspect().at("dirty").get<bool>(),"Undoing the placed glTF mesh did not restore the saved scene");
+    d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+    exported();
+    // A component keeps its material bindings while its mesh is missing. Only the scene names the
+    // bound material then, and the repro still carries it.
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    const auto bound=d.ok("material.create",{{"path","Content/Materials/Bound.material"}}).at("asset").get<std::string>();
+    const auto entity=d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}}).at("object");Json component;
+    for(const auto& item:d.inspect().at("entities")) if(item.at("handle")==entity) component=item.at("components")[0].at("handle");
+    d.ok("material.assign",{{"component",component},{"slot","paint"},{"asset",bound}});d.ok("scene.save");
+    std::filesystem::remove(atelier::platform::windows_file_path(project/(folder+"scene.gltf")));
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Missing-mesh repro export did not start");
+    const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+    std::set<std::string> copied;
+    for(const auto& file:read(std::filesystem::path(wide(done.at("result").at("directory").get<std::string>()))/"manifest.json").at("input_files")) copied.insert(file.at("path").get<std::string>());
+    require(copied.contains("Content/Materials/Bound.material") && copied.contains("Content/Materials/Bound.material.asset.json") && !copied.contains(material),
+        "A repro of a component whose mesh is missing lost its bound material, or copied the mesh's default");
+    d.client.reset();editor.close();
+}
 void repro_paths(const std::filesystem::path& executable,const std::filesystem::path& root,bool deep_control) {
     const auto project=root/"Project";
     const auto directory=deep_control?root/"Control"/std::wstring(100,L'x'):root/"Control";
     project_fixture(project);
-    // The frozen copy is always named Control-<id>.scene. With a short control directory the
-    // long-name source scene is what crosses MAX_PATH ("Project/Content/Scenes/" plus 247
-    // characters); with the deep control directory the frozen copy itself does.
+    // The frozen copy is always named Control-<id>.scene. With a short control directory a
+    // long-name Source file, copied whole, is what crosses MAX_PATH ("Project/Source/" plus
+    // 230 characters); with the deep control directory the frozen copy itself does. The
+    // long-name startup scene is read, not copied.
     const auto scene=std::filesystem::path("Content/Scenes")/("Control-"+unique_id()+(deep_control?"":"-"+std::string(200,'n'))+".scene");
+    const auto long_source=std::filesystem::path("Source")/(std::string(226,'l')+".txt");
+    write(project/long_source,"copied whole");
     std::filesystem::rename(atelier::platform::windows_file_path(project/"Content/Scenes/Main.scene"),atelier::platform::windows_file_path(project/scene));
     const auto bytes=[](const std::filesystem::path& path) {
         std::ifstream stream(atelier::platform::windows_file_path(path),std::ios::binary);require(bool(stream),"Cannot read E2E artifact: "+utf8(path.wstring()));
@@ -506,8 +671,9 @@ void repro_paths(const std::filesystem::path& executable,const std::filesystem::
         const auto manifest=read(repro/"manifest.json");const auto frozen=repro/"Project"/wide(manifest.at("scene").get<std::string>());
         if(deep_control) require(frozen.wstring().size()>260,"Deep-control export did not place the frozen scene past MAX_PATH");
         else {
-            const auto copied=repro/"Project"/scene;
-            require(copied.wstring().size()>260 && bytes(copied)==source_scene,"Short-control export did not copy the long-name scene unchanged");
+            const auto copied=repro/"Project"/long_source;
+            require(copied.wstring().size()>260 && bytes(copied)=="copied whole","Short-control export did not copy the long-name Source file unchanged");
+            if(pass==0) require(bytes(project/scene)==source_scene,"Export changed the long-name source scene");
         }
         require(read(frozen).at("entities").size()==1,"Deep-path export did not preserve the scene");
         if(pass==0) require(std::filesystem::exists(atelier::platform::windows_file_path(repro/"unpublished"/unpublished)),"Deep-path source archive is missing");
@@ -678,7 +844,8 @@ int wmain(int argc,wchar_t** argv) {
         if(argc==4 && !descriptions) {
             repro_paths(argv[1],root/"exports",false);repro_paths(argv[1],root/"deep-control",true);
             reject_nested_destination(argv[1],root);
-            write(root/"result.json",Json{{"status","passed"},{"cases",{"nested-exports","deep-control","nested-destination-rejected"}}}.dump(2));
+            repro_examples(argv[1],root/"examples");repro_gltf_defaults(argv[1],root/"gltf");
+            write(root/"result.json",Json{{"status","passed"},{"cases",{"nested-exports","deep-control","nested-destination-rejected","examples-scene-assets","gltf-default-materials","missing-mesh-bound-material"}}}.dump(2));
             return 0;
         }
         const auto directory=root/"Control";const auto project=root/"Project";

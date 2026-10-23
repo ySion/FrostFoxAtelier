@@ -8,6 +8,8 @@
 namespace atelier::application::control_artifacts {
 struct Repro {
     std::filesystem::path project;
+    // The project's folders, and the project-relative files of the assets the scene uses.
+    std::vector<std::filesystem::path> roots, files;
     std::string scene;
     std::shared_ptr<const language::SourceSnapshot> sources;
     std::optional<language::SourceFile> ui_source;

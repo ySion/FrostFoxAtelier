@@ -228,6 +228,7 @@ const std::vector<Operation>& operations() {
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
         {"texture.import","Import a texture with a Project GUID",true,{{"path",str}},{"path"}},
+        {"mesh.import","Import an OBJ or glTF mesh with a Project GUID; glTF also publishes one default material per slot",true,{{"path",str}},{"path"}},
         {"material.inspect","Read a shared asset or instance object and its resolved reflected parameters",false,{{"asset",str},{"object",str}},{}},
         {"material.set_property","Edit one reflected shared or instance material parameter",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.set_texture","Assign a texture asset to one shared material input",true,{{"object",str},{"input",str},{"texture",str}},{"object","input","texture"}},
@@ -623,6 +624,58 @@ struct EditorControl::Impl {
                 if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.first==mesh->mesh.source;})) data.meshes.emplace_back(mesh->mesh.source,mesh->mesh.resolved);
             } else if(auto sky=presentation::read_sky_map(app.document_->world().runtime(),component.id());sky && sky->resolved)
                 if(std::ranges::none_of(data.skies,[&](const auto& entry){return entry.first==sky->source;})) data.skies.emplace_back(sky->source,sky->resolved);
+        if(app.project_) {
+            data.roots.assign(app.project_->roots().begin(),app.project_->roots().end());
+            // The repro holds what the scene references, whatever else this session loaded: the
+            // components' meshes and sky maps and every material the frozen scene defines (bound
+            // ones, instance parents and inline textures), and the keys a component keeps while it
+            // cannot resolve them. Project gives each the files of everything it references in turn.
+            // A live reference the catalogue lost fails the export; the key of a stand-in or of
+            // retained data is copied when the catalogue still has it, and otherwise stays in the
+            // scene without files.
+            const auto& doc=*app.document_;
+            std::set<std::filesystem::path> listed;
+            const auto add=[&](const std::string& key) {
+                for(auto& file:take(app.project_->asset_files(key))) if(listed.insert(file).second) data.files.push_back(std::move(file));
+            };
+            const auto optional=[&](editor::AssetKind kind,const std::string& key) {
+                if(const auto* entry=key.empty()?nullptr:app.project_->entry(key);entry && entry->kind==kind) add(key);
+            };
+            const auto live=[&](editor::AssetKind kind,const std::string& key) {
+                if(doc.unavailable(kind,key)) optional(kind,key);else if(!key.empty()) add(key);
+            };
+            const auto string_field=[](const Json& object,const char* name) {
+                const auto at=object.find(name);return at!=object.end() && at->is_string()?at->get<std::string>():std::string{};
+            };
+            const auto material_keys=[&](const Json& definition,const auto& reference) {
+                reference(editor::AssetKind::material,string_field(definition,"source"));reference(editor::AssetKind::material,string_field(definition,"parent"));
+                if(const auto value=definition.find("inline");value!=definition.end() && value->is_object())
+                    if(const auto textures=value->find("textures");textures!=value->end() && textures->is_object())
+                        for(const auto& texture:*textures) if(texture.is_object()) reference(editor::AssetKind::texture,string_field(texture,"source"));
+            };
+            for(const auto& [key,mesh]:data.meshes) add(key);
+            for(const auto& [key,map]:data.skies) add(key);
+            const auto scene=editor::json_format::parse(data.scene);
+            if(const auto materials=scene.find("materials");materials!=scene.end()) for(const auto& definition:*materials) material_keys(definition,live);
+            if(const auto entities=scene.find("entities");entities!=scene.end()) for(const auto& entity:*entities) for(const auto& component:entity.at("components")) {
+                optional(editor::AssetKind::mesh,string_field(component,"mesh"));optional(editor::AssetKind::sky,string_field(component,"sky_map"));
+                if(const auto bindings=component.find("materials");bindings!=component.end() && bindings->is_array())
+                    for(const auto& binding:*bindings) if(binding.is_object()) material_keys(binding,optional);
+            }
+            // A mesh's slot defaults are not in the scene; asset_files reaches them through the mesh.
+            auto& runtime=app.document_->world().runtime();
+            for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(runtime,entity.id())))
+                if(auto mesh=presentation::read_static_mesh(runtime,component.id())) for(const auto& binding:mesh->mesh.defaults) {
+                    const auto source=take(material::read_material(runtime,binding.resource.id())).source;const auto* entry=app.project_->entry(source);
+                    if(!doc.unavailable(editor::AssetKind::material,source) && (!entry || !listed.contains(entry->path)))
+                        throw Failure("dependency_mismatch","A mesh's default material is no longer in the project: "+source);
+                }
+            // A referenced material exports its live draft, whose textures may differ from the saved file's.
+            std::erase_if(data.materials,[&](const editor::MaterialAsset& asset) {
+                const auto* entry=app.project_->entry(asset.key);return !entry || !listed.contains(entry->path);
+            });
+            for(const auto& asset:data.materials) for(const auto& texture:asset.textures) live(editor::AssetKind::texture,texture);
+        }
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
         data.manifest["selection_indices"]=Json::array();const auto members=take(app.document_->world().members());
@@ -759,11 +812,12 @@ struct EditorControl::Impl {
         }
         idle();
         if(op=="op.call") return call_operator(args);
-        if(op.starts_with("material.") || op=="texture.import") {
+        if(op.starts_with("material.") || op=="texture.import" || op=="mesh.import") {
             if(!app.project_) throw Failure("not_ready","No project is open");
             auto& project=*app.project_;
             if(op=="material.create") return {{"asset",take(project.create_material(control::wide(text(args.at("path")))))}};
             if(op=="texture.import") return {{"asset",take(project.import_texture(control::wide(text(args.at("path")))))}};
+            if(op=="mesh.import") return {{"asset",take(project.import_mesh(control::wide(text(args.at("path")))))}};
             if(op=="material.save") {
                 take(doc.save_material(project,text(args.at("asset"))));const auto refreshed=project.refresh();
                 Json result{{"saved",true}};if(!refreshed) result["catalog_warning"]=refreshed.error().message;return result;

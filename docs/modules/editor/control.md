@@ -56,7 +56,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | scene.remove_transform | 移除指定 Entity 的内联空间，一次撤销 |
 | scene.reparent | 调整 Entity 组合 parent；支持 keep_world 和组成 index，一次撤销 |
 | scene.set_space_reference | 设置 Entity 空间参考：继承组合祖先、世界或另一个 Entity；支持 keep_world，一次撤销 |
-| material.create、texture.import | Project 创建 `.material` 或导入图片，沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
+| material.create、texture.import、mesh.import | Project 创建 `.material`，或导入图片、OBJ/glTF 网格（glTF 同时为每个槽发布材质并记为网格的默认材质），沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
 | material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
 | material.set_property、material.set_texture | 通过 Session 编辑材质对象；参数使用发现到的字段名/标量/枚举，贴图使用 input 名与 Texture GUID |
 | material.assign | 按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
@@ -103,7 +103,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 2026-10-16 的 Dev／Release 均通过，日志为 `out/direct-clustered-20261016/control-inspection-{dev,release}.log`。真实 3572 实体地牢另验证了 objects → object → 临时修改太阳属性 → render.compare → undo；最终 dirty=false、undo=0，源 Scene 哈希不变。
 
-材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存实际材质草稿并核对已载入贴图内容，原工程不变。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
+材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存场景引用到的材质（含网格的默认材质）的实际草稿，并核对已载入贴图内容，原工程不变；会话里载入过但场景没有引用的材质不进入副本。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
 
 坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left，原有 0–3 编码不变；yaw/pitch 为弧度，distance 为 0.5–2000 米，恢复时验证相机基底。视图命令与 UI 使用同一六向相机入口，`camera.set` 仍恢复完整状态。
 
@@ -207,11 +207,11 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 ## 复现工程
 
-repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。复制 Config、Content、Source，排除 Cache；没有工程时创建独立工程容器。副本 startup scene 指向当前内存场景。
+repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根（Content，以及存在时的 Examples）只复制场景引用的资产及其引用闭包：根是组件的网格、Environment 的天空贴图、导出场景定义的每个材质（绑定的材质、实例的父材质和内联贴图），以及组件无法解析时保留的键（网格缺失时的材质绑定、占位组件的网格和天空贴图）；网格带上依赖文件和槽的默认材质，材质带上贴图，每个资产连同 `.asset.json` 身份。文档仍在使用、但目录里已经没有的资源（包括网格的默认材质）使导出失败；占位资源和保留数据里的键，目录里还有同类资产就复制，没有就只把键留在场景里；无法读取的资产只复制它自己的文件。引用闭包由 `Project::asset_files` 给出，新增资产间引用的提交同时扩展它。工程里只有这四类资产会按路径读取；字体、样式和着色器来自编辑器安装目录，Cache 是派生数据，均不进入复现包。没有工程时创建独立工程容器。副本 startup scene 指向当前内存场景。
 
 保存相机、显示偏好、Entity 选择顺序和检查的 Component、构建身份及资源指纹。publication_version 标识完整已发布构建，source_version 标识游戏源码集，ui_source_version 标识 UI 输入。副本 Source 只包含该成功构建的游戏和 UI 源码；磁盘上新增或修改但未发布的源码移入 unpublished/，内存 Code 草稿另存 drafts.json。没有可用场景或成功发布构建的工程返回 not_ready。这是场景与代码复现，不保存整个桌面、编辑器布局或 GPU 历史。
 
-复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹以及天空贴图的纹素、2^k 缩放、均值和 cube 比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的 Config、Content 或 Source 内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
+复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹以及天空贴图的纹素、2^k 缩放、均值和 cube 比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的任何根（`Project::roots`）内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
 
 Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录身份比较、实例发现与清理以及 CLI 请求文件。路径拼接和 canonical 解析后，在文件操作边界使用现有 windows_file_path 统一转换；协议中的绝对路径、工程相对路径和资源身份保持原格式。深目录副本可以重开、保存并再次导出。
 
