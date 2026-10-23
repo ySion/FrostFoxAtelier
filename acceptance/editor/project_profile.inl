@@ -9,13 +9,15 @@ constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
 void profile_physics_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output) {
     using Json=nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute physics profile file.");
-    timing::install({world::phases::markers,physics::phases::markers,profile_markers});
+    application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     auto project=take(editor::Project::open(root));
     auto play=take(editor::Session::deserialize(take(editor::read_file(take(project.resolve(scene)))),project));
-    const auto starting=std::chrono::steady_clock::now();
-    changed(play->start());
-    const std::chrono::duration<double,std::milli> started=std::chrono::steady_clock::now()-starting;
+    {
+        timing::Recorder::Frame frame{recorder};changed(play->start());
+        require(frame.finish().structure_errors==0,"Physics profile recorded a misplaced or unregistered phase in Play start.");
+    }
+    const std::chrono::duration<double,std::milli> started=recorder.last().time(timing::frame);
     const auto& physics=*play->physics_scene();
     const std::array phases{&physics::phases::step,&physics::phases::reconcile,&physics::phases::solve,&physics::phases::write_back};
     std::array<std::vector<double>,5> active,sleeping;
@@ -26,10 +28,9 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
     for(;frames<1800 && quiet<120;++frames) {
         {
             timing::Recorder::Frame frame{recorder};take(play->update(1.f/60));
+            {timing::Scope refreshing{application::phases::scene};take(snapshot.refresh(*play));}
             require(frame.finish().structure_errors==0,"Physics profile recorded a misplaced or unregistered phase.");
         }
-        const auto refresh_start=std::chrono::steady_clock::now();take(snapshot.refresh(*play));
-        const std::chrono::duration<double,std::milli> refreshed=std::chrono::steady_clock::now()-refresh_start;
         steps+=physics.last_step().steps;
         if(frames<5) first_frames.push_back({{"step_ms",std::chrono::duration<double,std::milli>(recorder.last().time(physics::phases::step)).count()},
             {"solve_ms",std::chrono::duration<double,std::milli>(recorder.last().time(physics::phases::solve)).count()}});
@@ -37,7 +38,7 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
         auto& bucket=awake?active:sleeping;
         for(std::size_t i=0;i<phases.size();++i)
             bucket[i].push_back(std::chrono::duration<double,std::milli>(recorder.last().time(*phases[i])).count());
-        bucket[4].push_back(refreshed.count());
+        bucket[4].push_back(std::chrono::duration<double,std::milli>(recorder.last().time(application::phases::scene)).count());
         quiet=awake?0:quiet+1;
     }
     Json report{{"schema","atelier.editor.physics-cpu.v1"},{"project",editor::utf8(root.wstring())},{"scene",scene},
