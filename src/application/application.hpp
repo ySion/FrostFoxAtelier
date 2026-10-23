@@ -6,6 +6,7 @@
 #include "application/popup.hpp"
 #include "application/play_process.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/timing.hpp"
 #include "application/recovery.hpp"
 #include "editor/camera.hpp"
 #include "editor/operators.hpp"
@@ -17,12 +18,6 @@
 namespace atelier::application {
 class EditorControl;
 enum class ProjectOpenPolicy { allow_repair, require_scene };
-struct FrameTiming {
-    std::uint64_t frame_id{}; // Zero when the last step was not sampled/accepted.
-    double prepare_us{}, render_us{}; // CPU wall time; render includes Present/waits.
-    double controls_us{}, scene_us{}, step_us{}; // Disjoint stages; step is the enclosing Application call.
-    double events_us{}, gc_us{};
-};
 class Application final : private editor::OperatorHost {
 public:
     explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {},
@@ -50,7 +45,6 @@ public:
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
     HWND menu_window() const noexcept { const auto* host=menu_host(); return host?host->window():nullptr; }
     const ui::UiFrame* menu_frame() const noexcept { const auto* host=menu_host(); return host?host->presented().get():nullptr; }
-    double menu_open_cpu_us() const noexcept { const auto* host=menu_host(); return host?host->open_cpu_us():0; }
     void capture_menu(renderer::Capture& capture) { if (auto* host=menu_host()) host->render(&capture); }
     ui::ControlKey object_control(ObjectId entity) const noexcept { return workspace_.object_control(entity); }
     ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
@@ -72,9 +66,8 @@ public:
     std::optional<ui::TextInputState> text_input() const noexcept { return ui_.text_input(); }
     const NativeInputStatistics& input_statistics() const noexcept { return window_.input_statistics(); }
     std::uint64_t accepted_frames() const noexcept { return accepted_frames_; }
-    // Explicit diagnostics only; capture frames are excluded because readback stalls.
-    void sample_frames(bool enabled) noexcept { sampling_ = enabled; frame_timing_ = {}; }
-    const FrameTiming& frame_timing() const noexcept { return frame_timing_; }
+    // The frame timing record of the most recent step, sampled or not.
+    const timing::FrameRecord& frame_record() const noexcept { return recorder_.last(); }
     ui::Result<void> set_style(const ui::Style& style) { return ui_.set_style(style); }
     const ui::Style& style() const noexcept { return ui_.style(); }
     ui::Statistics ui_statistics() const noexcept { return ui_.statistics(); }
@@ -132,7 +125,7 @@ private:
     std::vector<renderer::OverlayShape> overlay_;
     ui::Surface surface_;
     std::uint64_t surface_revision_{1}, accepted_frames_{};
-    bool closed_{}, sampling_{};
+    bool closed_{};
     struct CameraDrag {
         ui::PointerButton button;
         bool pan;
@@ -151,15 +144,15 @@ private:
     void finish_camera_fly(bool accept);
     void update_camera_fly();
     void look_camera_fly(float dx,float dy);
-    FrameTiming frame_timing_;
+    timing::Recorder recorder_;
+    std::optional<std::uint64_t> sampled_frame_; // The UI frame of a step accepted without capture.
+    double fps_interval_{}; // The frame interval the FPS text was formatted from.
+    bool run_step(renderer::Capture*);
     std::chrono::steady_clock::time_point render_retry_at_{};
     std::chrono::milliseconds render_retry_delay_{};
-    std::chrono::steady_clock::time_point fps_start_{};
     RenderClock lighting_clock_;
     LitFallback lit_fallback_;
     bool fallback_presented_{}; // The last accepted frame drew a fallback for an unprepared Lit view.
-    std::uint64_t fps_frames_{};
-    void update_viewport_fps(bool accepted);
     renderer::FrameStats frame_statistics_;
     PopupHost* menu_host() const noexcept {
         if (!menu_path_.empty() && submenus_.size()>=menu_path_.size() && submenus_[menu_path_.size()-1]->visible())

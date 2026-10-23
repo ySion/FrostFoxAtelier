@@ -80,6 +80,7 @@ add_executable(atelier_runtime_acceptance
     acceptance/runtime/validation.cpp
     acceptance/runtime/arrays.cpp
     acceptance/runtime/value_paths.cpp
+    acceptance/runtime/write_stamps.cpp
     acceptance/memory/acceptance.cpp)
 atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)
@@ -112,6 +113,9 @@ include(cmake/reflection.cmake)
 include(cmake/foundation.cmake)
 
 include(cmake/geometry.cmake)
+add_library(atelier_rendering STATIC src/rendering/sky_map.cpp)
+atelier_target(atelier_rendering)
+target_include_directories(atelier_rendering PUBLIC src)
 
 include(cmake/world.cmake)
 atelier_add_world()

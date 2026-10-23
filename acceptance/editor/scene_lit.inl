@@ -121,6 +121,7 @@ void verify_environment_sky_application() {
     const auto disabled=document.set_environment(refused);
     require(!disabled && disabled.error().message.find("enable it in Parameters")!=std::string::npos && document.undo_count()==disabled_history,
         "A disabled Environment accepted a World Settings edit or did not name the fix.");
+    require(!document.set_sky_map({}) && document.undo_count()==disabled_history,"A disabled Environment accepted a sky map.");
     require(!document.add_component(document.presentation_types().environment_component),"A disabled Environment did not keep the only Environment slot.");
     changed(sky_world->set_enabled(environment,true));
     changed(sky_world->set_enabled(entity,false));require(sky(document)==dark,"A disabled Environment Entity kept its sky.");
@@ -418,12 +419,11 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         "Scene v7 did not round-trip World authoring values into a clean document.");
     const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
     auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
-    diagnostic_view.lit.direct_reference=true;
     take(workspace.set_view_settings(document,diagnostic_view));
     require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
     const auto saved_json=nlohmann::json::parse(saved);
-    require(saved_json.at("version")==7 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
-        !environment_record(saved_json).contains("probe_debug"),"Scene v7 kept a world section or saved viewport diagnostics.");
+    require(saved_json.at("version")==8 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
+        !environment_record(saved_json).contains("probe_debug"),"Scene v8 kept a world section or saved viewport diagnostics.");
     // Every version 6 World key reaches its Environment field; distinct volumes catch a slot or axis mix-up.
     auto authored=candidate;
     for(std::uint32_t i=0;i<4;++i) {
@@ -437,8 +437,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
             "Scene v6 World settings did not reach the Environment field by field.");
         const auto upgraded_saved=nlohmann::json::parse(take(upgraded->serialize()));
         auto upgraded_reopened=take(Session::deserialize(upgraded_saved.dump(),project));
-        require(upgraded_saved.at("version")==7 && !upgraded_saved.contains("world") && settings(*upgraded_reopened)==authored,
-            "Scene v6 World settings did not save and reopen as a v7 Environment.");
+        require(upgraded_saved.at("version")==8 && !upgraded_saved.contains("world") && settings(*upgraded_reopened)==authored,
+            "Scene v6 World settings did not save and reopen as a v8 Environment.");
     }
     auto v4=nlohmann::json{{"version",4},{"actors",nlohmann::json::array()},{"world",world_keys(candidate)}};v4["world"].erase("direct_candidates");
     v4["world"]["shadow_light_budget"]=16;v4["world"]["shadow_samples"]=64;
@@ -449,11 +449,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto migrated_saved=take(migrated->serialize());
     auto reopened=take(Session::deserialize(migrated_saved,project));
     require(settings(*reopened)==migrated_settings && take(reopened->serialize())==migrated_saved &&
-        nlohmann::json::parse(migrated_saved).at("version")==7,
-        "Migrated v4 scene did not save and reopen through the current v7 author format.");
-    Workspace migrated_workspace;migrated_workspace.sync_world(*reopened);
-    require(!migrated_workspace.view.lit.direct_reference,
-        "Legacy 64 shadow samples silently enabled the viewport reference diagnostic.");
+        nlohmann::json::parse(migrated_saved).at("version")==8,
+        "Migrated v4 scene did not save and reopen through the current v8 author format.");
     for(const auto key:{"shadow_light_budget","shadow_samples"}) {
         for(const auto& bad:std::array<nlohmann::json,5>{-1,65,1.5,"8",true}) {
             auto invalid_legacy=v4;invalid_legacy["world"][key]=bad;

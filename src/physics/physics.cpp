@@ -6,10 +6,11 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemSingleThreaded.h>
+#include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Core/StreamWrapper.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Body/BodyLockMulti.h>
@@ -29,8 +30,6 @@
 #include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/Constraints/PointConstraint.h>
 #include <Jolt/Physics/Ragdoll/Ragdoll.h>
-#include <Jolt/Physics/Vehicle/VehicleConstraint.h>
-#include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <algorithm>
 #include <atomic>
@@ -43,6 +42,8 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -51,7 +52,14 @@ namespace {
 using JPH::uint64;
 std::mutex registration_mutex;
 std::size_t scene_count{};
+// One solver pool serves every scene in the process and lives while any scene does.
+// The host thread of a step also runs jobs; each concurrent step uses one barrier.
+JPH::JobSystemThreadPool* solver_jobs{};
 std::atomic<std::uint64_t> next_scene_id{1};
+// Derived Capacity buffers per body slot, the ratios of Jolt's Samples (10240 bodies,
+// 65536 body pairs, 20480 contact constraints).
+constexpr std::size_t body_pairs_per_body = 8, contacts_per_body = 2;
+constexpr float fixed_step = 1.f / 60.f;
 
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
     return std::unexpected(Error{code, message});
@@ -78,8 +86,20 @@ Result<void> acquire_jolt() {
     if (scene_count == 0) {
         if (JPH::Factory::sInstance) return failure(ErrorCode::busy, "Jolt has another process owner.");
         JPH::RegisterDefaultAllocator();
+#ifdef JPH_ENABLE_ASSERTS
+        // Jolt PhysicsSystem.cpp:679 asserts on every Update error; recheck this match when Jolt is upgraded.
+        // step() reports those errors as warnings; every other assert still breaks.
+        JPH::AssertFailed = [](const char* expression, const char*, const char* file, JPH::uint) {
+            return !(std::string_view(expression) == "errors == EPhysicsUpdateError::None" &&
+                std::string_view(file).ends_with("PhysicsSystem.cpp"));
+        };
+#endif
         JPH::Factory::sInstance = new JPH::Factory();
         JPH::RegisterTypes();
+        const auto cores = std::thread::hardware_concurrency();
+        // On 500 active boxes 3 workers solved faster than 1, 7 or 15.
+        solver_jobs = new JPH::JobSystemThreadPool(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
+            int(std::clamp(cores > 1 ? cores - 1 : 1u, 1u, 3u)));
     }
     ++scene_count;
     return {};
@@ -87,6 +107,8 @@ Result<void> acquire_jolt() {
 void release_jolt() noexcept {
     std::lock_guard lock(registration_mutex);
     if (--scene_count == 0) {
+        delete solver_jobs;
+        solver_jobs = nullptr;
         JPH::UnregisterTypes();
         delete JPH::Factory::sInstance;
         JPH::Factory::sInstance = nullptr;
@@ -282,8 +304,17 @@ struct PhysicsScene::Impl {
     JPH::BroadPhaseLayerInterfaceTable broad_phase{2, 2};
     JPH::ObjectLayerPairFilterTable pairs{2};
     std::optional<JPH::ObjectVsBroadPhaseLayerFilterTable> broad_phase_filter;
+    // Bodies Jolt puts to sleep during a step; solver threads report them.
+    struct Activation final : JPH::BodyActivationListener {
+        std::mutex mutex;
+        std::vector<JPH::BodyID> deactivated;
+        void OnBodyActivated(const JPH::BodyID&, JPH::uint64) override {}
+        void OnBodyDeactivated(const JPH::BodyID& id, JPH::uint64) override {
+            std::lock_guard lock(mutex);
+            deactivated.push_back(id);
+        }
+    } activation;
     JPH::TempAllocatorImplWithMallocFallback temporary{4 * 1024 * 1024};
-    JPH::JobSystemSingleThreaded jobs{JPH::cMaxPhysicsJobs};
     JPH::PhysicsSystem system;
     struct Body {
         JPH::BodyID id;
@@ -294,8 +325,21 @@ struct PhysicsScene::Impl {
         std::uint64_t revision;
         math::Vector3 shape_scale;
         world::Trs target;
+        // The owner's local TRS as this scene last created, teleported or published it;
+        // any other value was written past physics and relocates the body.
+        world::Trs local;
         std::vector<ObjectId> ancestors;
+        // The owner's world pose as this scene last created, teleported or published it; a
+        // different one with the same local TRS means an ancestor moved, which relocates the body.
+        world::Trs held;
     };
+    // Whether two world poses agree within the float error of a TRS round trip.
+    static bool near(const world::Trs& a, const world::Trs& b) noexcept {
+        for (std::size_t i=0;i<3;++i) if (std::abs(a.position[i]-b.position[i])>1e-5f*std::max(1.f,std::abs(b.position[i]))) return false;
+        const auto& [ax,ay,az,aw]=a.rotation;const auto& [bx,by,bz,bw]=b.rotation;
+        const float sign=ax*bx+ay*by+az*bz+aw*bw<0?-1.f:1.f;
+        return std::abs(ax-sign*bx)<=1e-5f && std::abs(ay-sign*by)<=1e-5f && std::abs(az-sign*bz)<=1e-5f && std::abs(aw-sign*bw)<=1e-5f;
+    }
     enum class CommandKind { force, impulse, kinematic_target, teleport };
     struct Command {
         CommandKind kind;
@@ -306,6 +350,45 @@ struct PhysicsScene::Impl {
     };
     std::vector<Command> commands;
     std::vector<world::SimulationPose> poses;
+    // The body each pose of `poses` publishes, null for controllers and bound parts.
+    std::vector<Body*> posed;
+    std::vector<std::pair<ObjectId, world::Trs>> written;
+    struct Pose { math::Vector3 position; math::Quaternion rotation; };
+    // Where each simulated Entity was last published, created or teleported; its next
+    // published step is drawn moving from there.
+    std::unordered_map<ObjectId, Pose> history;
+    // The poses the latest step published and the World accepted, with their history.
+    struct Interpolated { ObjectId entity; Pose from, to; };
+    std::vector<Interpolated> interpolated;
+    // Bodies whose pose this step publishes: moved by Jolt or teleported.
+    JPH::BodyIDVector moved, active;
+    // A spatial ancestor as one reconcile pass reads it; each part is read on first use.
+    struct Ancestor {
+        std::optional<bool> member, active, moving_body;
+        std::optional<world::Trs> local;
+        std::optional<ObjectId> parent;
+    };
+    // Shared by every body checked in the current step's reconcile pass, then discarded:
+    // a later write can change an ancestor.
+    std::unordered_map<ObjectId, Ancestor> ancestry;
+    bool ancestry_pass{};
+    // The body components at or below each Entity, a body's own Entity included; rebuilt when stale.
+    std::unordered_map<ObjectId, std::vector<ObjectId>> dependents;
+    bool dependents_stale{true};
+    // Bucket component -> owner Entity as of the latest full reconcile.
+    std::unordered_map<ObjectId, ObjectId> component_owners;
+    // Entities a failure or a degenerate space left without a body; every step tries them again.
+    std::vector<ObjectId> retry;
+    // Written objects to reconcile: since the cursor, and those step handlers wrote.
+    std::vector<ObjectId> changed, pending, handler_writes;
+    std::unordered_map<ObjectId, std::vector<ObjectId>>& below() {
+        if (dependents_stale) {
+            dependents.clear();
+            for (const auto& [component, body] : bodies) for (const auto node : body.ancestors) dependents[node].push_back(component);
+            dependents_stale = false;
+        }
+        return dependents;
+    }
     std::unordered_map<ObjectId, Body> bodies;
     std::unordered_map<ObjectId, ObjectId> entity_bodies;
     Body* resolve(BodyHandle handle, std::uint64_t scene) {
@@ -333,13 +416,6 @@ struct PhysicsScene::Impl {
     };
     std::unordered_map<ObjectId, Ragdoll> ragdolls;
     std::unordered_set<JPH::BodyID> ragdoll_ids;
-    struct Vehicle {
-        BodyHandle chassis;
-        std::uint64_t revision;
-        JPH::Ref<JPH::VehicleConstraint> constraint;
-        JPH::Ref<JPH::VehicleCollisionTesterRay> tester;
-    };
-    std::unordered_map<ObjectId, Vehicle> vehicles;
     struct PairState { std::uint32_t contacts{}; ContactEvent event; };
     std::map<std::uint64_t, PairState> active_pairs;
     std::vector<ContactEvent> ready_events;
@@ -389,6 +465,11 @@ struct PhysicsScene::Impl {
         }
         for (auto it = active_pairs.begin(); it != active_pairs.end();) {
             auto& state = it->second;
+            // When the contact buffer is full Jolt reports a cached manifold removed but keeps it,
+            // and then only persists it, so a count that reaches zero is checked against Jolt.
+            if (state.contacts == 0 && system.WereBodiesInContact(JPH::BodyID(std::uint32_t(it->first >> 32)),
+                    JPH::BodyID(std::uint32_t(it->first))))
+                state.contacts = 1;
             if (state.contacts == 0) {
                 if (previous.contains(it->first)) {
                     auto event = state.event;
@@ -473,31 +554,51 @@ struct PhysicsScene::Impl {
             sub_shape, body.settings.sensor, initial, blocking, body.settings.material};
     }
 
-    Impl() {
+    explicit Impl(Capacity capacity) {
         contacts.owner = this;
         broad_phase.MapObjectToBroadPhaseLayer(stationary_layer, JPH::BroadPhaseLayer(0));
         broad_phase.MapObjectToBroadPhaseLayer(moving_layer, JPH::BroadPhaseLayer(1));
         pairs.EnableCollision(stationary_layer, moving_layer);
         pairs.EnableCollision(moving_layer, moving_layer);
         broad_phase_filter.emplace(broad_phase, 2, pairs, 2);
-        system.Init(4096, 0, 4096, 4096, broad_phase, *broad_phase_filter, pairs);
+        system.Init(capacity.bodies, 0, capacity.body_pairs, capacity.contact_constraints, broad_phase, *broad_phase_filter, pairs);
         system.SetContactListener(&contacts);
+        system.SetBodyActivationListener(&activation);
         system.SetGravity(JPH::Vec3(0, -9.81f, 0));
     }
 };
 
-PhysicsScene::PhysicsScene(world::World& world, Types types)
-    : world_(world), types_(types), impl_(std::make_unique<Impl>()),
+PhysicsScene::PhysicsScene(world::World& world, Types types, Capacity capacity)
+    : world_(world), types_(types), capacity_(capacity), impl_(std::make_unique<Impl>(capacity)),
       components_(std::make_unique<detail::ComponentSimulation>(world,*this)), scene_id_(next_scene_id++) {}
-Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types) {
+Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types, Capacity capacity) {
     if (world.closed()) return failure(ErrorCode::unsupported_operation, "Cannot attach physics to a closed World.");
     auto actual = world.runtime().native_type<CharacterComponent>();
     if (!actual) return std::unexpected(actual.error());
     if (*actual != types.character_component) return failure(ErrorCode::type_mismatch, "Physics types belong to another Runtime.");
+    if (capacity.bodies > JPH::PhysicsSystem::cMaxBodiesLimit || capacity.body_pairs > JPH::PhysicsSystem::cMaxBodyPairsLimit ||
+        capacity.contact_constraints > JPH::PhysicsSystem::cMaxContactConstraintsLimit)
+        return failure(ErrorCode::argument_mismatch, "Physics capacity exceeds Jolt's limits.");
+    {
+        auto registered = world.register_capability(world.types().primitive_component);
+        if (!registered) return std::unexpected(registered.error());
+        auto primitives = world.members(*registered);
+        if (!primitives) return std::unexpected(primitives.error());
+        // Room for as many bodies again as the World holds now; Jolt cannot grow these later.
+        const auto bodies = std::clamp<std::size_t>(std::bit_ceil(std::max<std::size_t>(2 * primitives->size(), 4096)),
+            4096, JPH::PhysicsSystem::cMaxBodiesLimit);
+        if (!capacity.bodies) capacity.bodies = std::uint32_t(bodies);
+        if (!capacity.body_pairs) capacity.body_pairs = std::uint32_t(std::min<std::size_t>(body_pairs_per_body * bodies, JPH::PhysicsSystem::cMaxBodyPairsLimit));
+        if (!capacity.contact_constraints)
+            capacity.contact_constraints = std::uint32_t(std::min<std::size_t>(contacts_per_body * bodies, JPH::PhysicsSystem::cMaxContactConstraintsLimit));
+        // Jolt raises both to at least 4 so that its hash maps get 4 buckets.
+        capacity.body_pairs = std::max(capacity.body_pairs, 4u);
+        capacity.contact_constraints = std::max(capacity.contact_constraints, 4u);
+    }
     if (auto acquired = acquire_jolt(); !acquired) return std::unexpected(acquired.error());
     std::unique_ptr<PhysicsScene> result;
     try {
-        result.reset(new PhysicsScene(world, types));
+        result.reset(new PhysicsScene(world, types, capacity));
     } catch (...) {
         release_jolt();
         throw;
@@ -531,7 +632,6 @@ PhysicsScene::~PhysicsScene() {
     components_.reset();
     while (!impl_->characters.empty()) remove_special(impl_->characters.begin()->first);
     while (!impl_->ragdolls.empty()) remove_special(impl_->ragdolls.begin()->first);
-    while (!impl_->vehicles.empty()) remove_special(impl_->vehicles.begin()->first);
     while (!impl_->distances.empty()) {
         auto found = impl_->distances.begin();
         impl_->system.RemoveConstraint(found->second.constraint);
@@ -545,8 +645,6 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     auto found = impl_->bodies.find(component);
     if (found == impl_->bodies.end()) return;
     const auto entity=found->second.entity;
-    if (auto vehicle=impl_->vehicles.find(entity);vehicle!=impl_->vehicles.end() && vehicle->second.chassis.component==component)
-        remove_special(entity);
     for (auto it = impl_->distances.begin(); it != impl_->distances.end();) {
         if (it->second.first.component == component || it->second.second.component == component) {
             const auto revision = it->first;
@@ -562,18 +660,115 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     impl_->body_components.erase(id);
     impl_->entity_bodies.erase(entity);
     impl_->bodies.erase(found);
+    unbuilt_ |= impl_->system.GetNumBodies() == 0;
+    ++edits_;
+    impl_->dependents_stale = true;
+    forget_pose(entity);
+}
+void PhysicsScene::forget_pose(ObjectId entity) noexcept {
+    // Every interpolated and presented Entity has a history entry.
+    if (!impl_->history.erase(entity)) return;
+    std::erase_if(impl_->interpolated, [&](const Impl::Interpolated& item) { return item.entity == entity; });
+    std::erase_if(presented_, [&](const presentation::PresentedPose& item) { return item.entity == entity; });
+}
+void PhysicsScene::hold_poses(std::span<const world::SimulationPose> poses) {
+    // One compaction for the whole batch; every interpolated and presented Entity has a history entry.
+    std::unordered_set<ObjectId> held;
+    for (const auto& pose : poses) if (impl_->history.erase(pose.entity)) held.insert(pose.entity);
+    if (!held.empty()) {
+        std::erase_if(impl_->interpolated, [&](const Impl::Interpolated& item) { return held.contains(item.entity); });
+        std::erase_if(presented_, [&](const presentation::PresentedPose& item) { return held.contains(item.entity); });
+    }
+    for (const auto& [entity, where, orientation] : poses) {
+        const Impl::Pose pose{where, orientation};
+        impl_->history.insert_or_assign(entity, pose);
+        // An equal pair keeps the Entity's descendants from following a moving ancestor.
+        impl_->interpolated.push_back({entity, pose, pose});
+        if (!paused_) presented_.push_back({entity, where, orientation, where, orientation});
+    }
+}
+void PhysicsScene::set_paused(bool paused) noexcept {
+    paused_ = paused;
+    if (paused) present();
+}
+void PhysicsScene::present() {
+    presented_.clear();
+    if (paused_) {
+        // Resuming starts from the World pose shown while paused, not from an older one.
+        for (auto& item : impl_->interpolated) item.from = item.to;
+        return;
+    }
+    const float alpha = std::clamp(remaining_ / fixed_step, 0.f, 1.f);
+    presented_.reserve(impl_->interpolated.size());
+    for (const auto& [entity, from, to] : impl_->interpolated) {
+        auto where = to.position;
+        auto orientation = to.rotation;
+        if (std::memcmp(&from, &to, sizeof from) != 0) {
+            where = math::lerp(from.position, to.position, alpha);
+            // Normalized lerp along the shorter arc.
+            const auto& [ax, ay, az, aw] = from.rotation;
+            const auto& [bx, by, bz, bw] = to.rotation;
+            const float side = ax * bx + ay * by + az * bz + aw * bw < 0 ? -1.f : 1.f;
+            const auto blend = [&](float a, float b) { return std::lerp(side * a, b, alpha); };
+            if (const auto unit = math::try_normalize(math::Quaternion{blend(ax, bx), blend(ay, by), blend(az, bz), blend(aw, bw)}))
+                orientation = *unit;
+        }
+        presented_.push_back({entity, where, orientation, to.position, to.rotation});
+    }
+}
+Result<void> PhysicsScene::follow_handler(std::uint64_t opened) {
+    auto& runtime = world_.runtime();
+    auto& written = impl_->handler_writes;
+    runtime.changed_objects(opened, written);
+    impl_->pending.insert(impl_->pending.end(), written.begin(), written.end());
+    std::unordered_set<ObjectId> moved;
+    if (world_.revision() == reconciled_) {
+        auto& below = impl_->below();
+        for (const auto object : written)
+            if (const auto found = below.find(object); found != below.end())
+                for (const auto component : found->second) moved.insert(impl_->bodies.at(component).entity);
+    } else {
+        // A structural edit since this step's reconcile leaves Body::ancestors behind; walk the current chains.
+        const std::unordered_set<ObjectId> touched(written.begin(), written.end());
+        for (const auto& [component, body] : impl_->bodies) {
+            (void)component;
+            if (!world_.contains(body.entity)) continue;
+            for (auto node = body.entity; node != ObjectId{};) {
+                if (touched.contains(node)) { moved.insert(body.entity); break; }
+                auto parent = world::spatial_parent(runtime, node);
+                if (!parent) break;
+                node = *parent;
+            }
+        }
+    }
+    for (const auto entity : moved) {
+        const auto& body = impl_->bodies.at(impl_->entity_bodies.at(entity));
+        auto relocated = [&]() -> Result<void> {
+            auto local = world::read_transform(runtime, entity);
+            if (!local) return std::unexpected(local.error());
+            auto matrix = world::world_matrix(runtime, entity);
+            if (!matrix) return std::unexpected(matrix.error());
+            auto pose = world::relative_transform(*matrix, world::transform_matrix({}));
+            // A degenerate space keeps its body until the next step's reconcile drops it.
+            if (!pose) return {};
+            if (std::memcmp(&*local, &body.local, sizeof body.local) == 0 && Impl::near(*pose, body.held)) return {};
+            return relocate(std::span<const ObjectId>{&entity, 1});
+        }();
+        if (!relocated && !detail::contain(world_, relocated.error(), entity, entity)) return relocated;
+    }
+    return {};
 }
 void PhysicsScene::remove_special(ObjectId entity) noexcept {
-    if (auto found = impl_->vehicles.find(entity); found != impl_->vehicles.end()) {
-        impl_->system.RemoveStepListener(found->second.constraint);
-        impl_->system.RemoveConstraint(found->second.constraint);
-        impl_->vehicles.erase(found);
+    if (impl_->characters.contains(entity) || impl_->ragdolls.contains(entity)) {
+        forget_pose(entity);
+        ++edits_;
     }
     impl_->characters.erase(entity);
     if (auto found = impl_->ragdolls.find(entity); found != impl_->ragdolls.end()) {
         for (const auto id : found->second.ragdoll->GetBodyIDs()) impl_->ragdoll_ids.erase(id);
         found->second.ragdoll->RemoveFromPhysicsSystem();
         impl_->ragdolls.erase(found);
+        unbuilt_ |= impl_->system.GetNumBodies() == 0;
     }
 }
 Result<void> PhysicsScene::reconcile(ObjectId entity) {
@@ -613,29 +808,50 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     // A zero scale axis anywhere in the chain is reported once, on the topmost such node.
     ObjectId degenerate;
     std::optional<Error> hierarchy;
+    world::Trs owner_local;
     for(auto node=entity;node!=ObjectId{};) {
-        if(!world_.contains(node)) return failure(ErrorCode::invalid_member,"Physics spatial origin belongs to another World or is detached.");
+        // Within a step's reconcile pass each node is read once; otherwise every call reads it.
+        Impl::Ancestor scratch;
+        auto& checked=impl_->ancestry_pass?impl_->ancestry[node]:scratch;
+        if(!checked.member) checked.member=world_.contains(node);
+        if(!*checked.member) return failure(ErrorCode::invalid_member,"Physics spatial origin belongs to another World or is detached.");
         ancestors.push_back(node);
-        auto status=world::inspect_entity(runtime,node);if(!status) return std::unexpected(status.error());
-        if(node==entity && status->state!=world::EntityState::active) {remove(component);return {};}
-        auto local=world::read_transform(runtime,node);if(!local) return std::unexpected(local.error());
-        if(local->scale.x==0 || local->scale.y==0 || local->scale.z==0) degenerate=node;
-        const auto size=[](float value){return std::abs(value);};
+        if(!checked.active) {
+            auto status=world::inspect_entity(runtime,node);if(!status) return std::unexpected(status.error());
+            checked.active=status->state==world::EntityState::active;
+        }
+        if(node==entity && !*checked.active) {remove(component);return {};}
+        if(!checked.local) {
+            auto local=world::read_transform(runtime,node);if(!local) return std::unexpected(local.error());
+            checked.local=*local;
+        }
+        const auto& scale=checked.local->scale;
+        if(node==entity) owner_local=*checked.local;
+        if(scale.x==0 || scale.y==0 || scale.z==0) degenerate=node;
         if(!hierarchy && node!=entity && settings->motion!=MotionKind::stationary &&
-            (std::abs(size(local->scale.x)-size(local->scale.y))>1e-5f || std::abs(size(local->scale.x)-size(local->scale.z))>1e-5f))
+            (std::abs(std::abs(scale.x)-std::abs(scale.y))>1e-5f || std::abs(std::abs(scale.x)-std::abs(scale.z))>1e-5f))
             hierarchy=Error{ErrorCode::argument_mismatch,"Moving Primitive ancestors require uniform scale for lossless pose writeback."};
         if(!hierarchy && node!=entity && settings->motion!=MotionKind::dynamic) {
-            auto group=world::components(runtime,node);if(!group) return std::unexpected(group.error());
-            for(const auto& ancestor:*group) {
-                auto state=world::inspect_component(runtime,ancestor.id());if(!state) return std::unexpected(state.error());
-                auto primitive=runtime.is_a(state->type,world_.types().primitive_component);if(!primitive) return std::unexpected(primitive.error());
-                if(!*primitive || !state->active) continue;
-                auto body=read_settings(runtime,ancestor.id());if(!body) return std::unexpected(body.error());
-                if(body->enabled && body->motion!=MotionKind::stationary)
-                    hierarchy=Error{ErrorCode::unsupported_operation,"Independent static or kinematic bodies cannot follow a moving physical ancestor; use an independent spatial branch."};
+            if(!checked.moving_body) {
+                auto group=world::components(runtime,node);if(!group) return std::unexpected(group.error());
+                bool moving=false;
+                for(const auto& ancestor:*group) {
+                    auto state=world::inspect_component(runtime,ancestor.id());if(!state) return std::unexpected(state.error());
+                    auto primitive=runtime.is_a(state->type,world_.types().primitive_component);if(!primitive) return std::unexpected(primitive.error());
+                    if(!*primitive || !state->active) continue;
+                    auto body=read_settings(runtime,ancestor.id());if(!body) return std::unexpected(body.error());
+                    moving|=body->enabled && body->motion!=MotionKind::stationary;
+                }
+                checked.moving_body=moving;
             }
+            if(*checked.moving_body)
+                hierarchy=Error{ErrorCode::unsupported_operation,"Independent static or kinematic bodies cannot follow a moving physical ancestor; use an independent spatial branch."};
         }
-        auto parent=world::spatial_parent(runtime,node);if(!parent) return std::unexpected(parent.error());node=*parent;
+        if(!checked.parent) {
+            auto parent=world::spatial_parent(runtime,node);if(!parent) return std::unexpected(parent.error());
+            checked.parent=*parent;
+        }
+        node=*checked.parent;
     }
     auto matrix=world::world_matrix(runtime,entity);if(!matrix) return std::unexpected(matrix.error());
     if(degenerate!=ObjectId{} || world::singular(*matrix)) {
@@ -646,6 +862,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         diagnostic.object=diagnostic.entity=degenerate!=ObjectId{}?degenerate:entity;diagnostic.field={"scale"};
         diagnostic.message="A zero scale axis makes this space degenerate; Primitives in it have no physical body.";
         world_.report(std::move(diagnostic));
+        impl_->retry.push_back(entity);
         return {};
     }
     if(hierarchy) return std::unexpected(std::move(*hierarchy));
@@ -675,7 +892,14 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     };
     if (current!=impl_->bodies.end() && current->second.entity==entity && current->second.mesh==mesh &&
         current->second.settings==*settings && same_scale(current->second.shape_scale,scale)) {
-        if (current->second.ancestors==ancestors) return {};
+        if (current->second.ancestors==ancestors) {
+            // A TRS written past physics (Runtime, Source), on the owner or an ancestor, moves
+            // the body as set_transform does.
+            static_assert(sizeof(world::Trs)==10*sizeof(float));
+            if (std::memcmp(&current->second.local,&owner_local,sizeof owner_local)==0 && Impl::near(*canonical,current->second.held)) return {};
+            current->second.local=owner_local;
+            return relocate(std::span<const ObjectId>{&entity,1});
+        }
         // A keep-world hierarchy edit changes dependency metadata, not the body or its constraints.
         JPH::RVec3 where;JPH::Quat orientation;
         impl_->system.GetBodyInterface().GetPositionAndRotation(current->second.id,where,orientation);
@@ -691,6 +915,11 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
             std::abs(orientation.GetW()-sign*expected.GetW())<=1e-5f;
         if(same_position && same_rotation) {
             current->second.ancestors=std::move(ancestors);
+            current->second.local=owner_local;
+            current->second.held=*canonical;
+            impl_->dependents_stale=true;
+            // Until a step publishes it, its listing keeps it off a moving new ancestor's interpolation.
+            hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
             return {};
         }
     }
@@ -725,12 +954,14 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     remove(component);
     remove_special(entity);
     try {
-        impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,std::move(ancestors)});
+        impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,owner_local,std::move(ancestors),*canonical});
+        impl_->dependents_stale=true;
         impl_->entity_bodies.emplace(entity,component);
         impl_->body_components.emplace(id,component);
+        hold_poses(std::array{world::SimulationPose{entity,canonical->position,canonical->rotation}});
     } catch(...) {
         if(impl_->bodies.contains(component)) remove(component);
-        else {bodies.RemoveBody(id);bodies.DestroyBody(id);}
+        else {bodies.RemoveBody(id);bodies.DestroyBody(id);unbuilt_ |= impl_->system.GetNumBodies() == 0;}
         throw;
     }
     return {};
@@ -742,8 +973,14 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
     if (!entity) return std::unexpected(entity.error());
     if (phase == world::Lifecycle::deactivated || phase == world::Lifecycle::detached) {
         if (!world_.running()) {
-            // A stopped World steps nothing; the next start begins from an empty accumulator.
+            // A stopped World steps nothing; the next start begins from an empty accumulator
+            // and reconciles everything.
+            tracked_ = false;
+            impl_->pending.clear();
             impl_->commands.clear();
+            impl_->history.clear();
+            impl_->interpolated.clear();
+            presented_.clear();
             remaining_ = 0;
             single_step_ = false;
         }
@@ -770,37 +1007,66 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
 Result<void> PhysicsScene::step(float elapsed) {
     timing::Scope timed{phases::step};
     std::optional<timing::Scope> reconciling{std::in_place, phases::reconcile};
-    // Body settings are sampled every frame, including direct field writes.
-    // Other members hold no body or pose driver, so reconcile is a no-op for them.
     auto& runtime = world_.runtime();
-    std::unordered_set<ObjectId> candidates;
-    for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
-    for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
-    for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
-    // World keeps these buckets with composition and enablement. Body settings
-    // are still sampled every frame because direct field writes do not notify.
-    // Existing bodies and controllers stay candidates so that leaving removes them.
-    const auto add_owners = [&](world::CapabilityId id, bool body) -> Result<void> {
-        auto found = world_.members(id);
-        if (!found) return std::unexpected(found.error());
-        for (const auto& item : *found) {
-            if (!item.active) continue;
-            if (body) {
-                auto enabled = runtime.with_native<const world::PrimitiveComponent>(item.component,
-                    [](const world::PrimitiveComponent& value) -> Result<bool> { return value.body.enabled; });
-                if (!enabled) return std::unexpected(enabled.error());
-                if (!*enabled) continue;
+    // Runtime write stamps name what changed since the previous step's write-back, and
+    // pending holds what its step handlers wrote; only those Entities, the owners of those
+    // components and the bodies below those Entities are reconciled. A structural edit
+    // (World::revision) or a stopped World reconciles every body owner and controller.
+    // Other members hold no body or pose driver, so reconcile is a no-op for them.
+    const bool full = !tracked_ || reconciled_ != world_.revision();
+    reconciled_ = world_.revision();
+    auto& changed = impl_->changed;
+    changed.clear();
+    if (!full) runtime.changed_objects(cursor_, changed);
+    changed.insert(changed.end(), impl_->pending.begin(), impl_->pending.end());
+    impl_->pending.clear();
+    std::unordered_set<ObjectId> candidates(impl_->retry.begin(), impl_->retry.end());
+    impl_->retry.clear();
+    if (full) {
+        for (const auto& [entity, component] : impl_->entity_bodies) { (void)component; candidates.insert(entity); }
+        for (const auto& [entity, character] : impl_->characters) { (void)character; candidates.insert(entity); }
+        for (const auto& [entity, ragdoll] : impl_->ragdolls) { (void)ragdoll; candidates.insert(entity); }
+        impl_->component_owners.clear();
+        // World keeps these buckets with composition and enablement.
+        // Existing bodies and controllers stay candidates so that leaving removes them.
+        const auto add_owners = [&](world::CapabilityId id, bool body) -> Result<void> {
+            auto found = world_.members(id);
+            if (!found) return std::unexpected(found.error());
+            for (const auto& item : *found) {
+                impl_->component_owners.insert_or_assign(item.component, item.entity);
+                if (!item.active) continue;
+                if (body) {
+                    auto enabled = runtime.with_native<const world::PrimitiveComponent>(item.component,
+                        [](const world::PrimitiveComponent& value) -> Result<bool> { return value.body.enabled; });
+                    if (!enabled) return std::unexpected(enabled.error());
+                    if (!*enabled) continue;
+                }
+                candidates.insert(item.entity);
             }
-            candidates.insert(item.entity);
+            return {};
+        };
+        if (auto added = add_owners(primitives_, true); !added) return std::unexpected(added.error());
+        if (auto added = add_owners(characters_, false); !added) return std::unexpected(added.error());
+        if (auto added = add_owners(ragdolls_, false); !added) return std::unexpected(added.error());
+    } else {
+        auto& below = impl_->below();
+        for (const auto object : changed) {
+            // A written component stands for its owner; bodies below an owner depend on its settings too.
+            const auto owner = impl_->component_owners.find(object);
+            const auto entity = owner != impl_->component_owners.end() ? owner->second : object;
+            if (owner != impl_->component_owners.end() || impl_->entity_bodies.contains(entity) ||
+                impl_->characters.contains(entity) || impl_->ragdolls.contains(entity))
+                candidates.insert(entity);
+            if (const auto found = below.find(entity); found != below.end())
+                for (const auto component : found->second) candidates.insert(impl_->bodies.at(component).entity);
         }
-        return {};
-    };
-    if (auto added = add_owners(primitives_, true); !added) return std::unexpected(added.error());
-    if (auto added = add_owners(characters_, false); !added) return std::unexpected(added.error());
-    if (auto added = add_owners(ragdolls_, false); !added) return std::unexpected(added.error());
+    }
     if (!candidates.empty()) {
         auto members = world_.members();
         if (!members) return std::unexpected(members.error());
+        impl_->ancestry.clear();
+        impl_->ancestry_pass = true;
+        struct PassEnd { Impl& impl; ~PassEnd() { impl.ancestry_pass = false; } } pass_end{*impl_};
         for (const auto& member : *members) {
             if (!candidates.contains(member.id())) continue;
             auto found = reconcile(member.id());
@@ -808,11 +1074,23 @@ Result<void> PhysicsScene::step(float elapsed) {
             // An isolated Entity keeps no ordinary body until its configuration is valid again.
             if (!detail::contain(world_, found.error(), member.id(), member.id())) return std::unexpected(found.error());
             if (auto body = impl_->entity_bodies.find(member.id()); body != impl_->entity_bodies.end()) remove(body->second);
+            impl_->retry.push_back(member.id());
         }
     }
-    if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
+    // Controllers bind Entities, components and bodies: any write, or a body or controller
+    // created or removed since, reconciles them again, as does a failure they contained.
+    if (full || !changed.empty() || controlled_ != next_revision_ + edits_ || components_->contained()) {
+        if(auto synced=components_->reconcile(); !synced) return std::unexpected(synced.error());
+        controlled_ = next_revision_ + edits_;
+    }
     reconciling.reset();
-    constexpr float fixed = 1.f / 60.f;
+    // Bodies added to an empty broad phase, as every run start does, would otherwise be
+    // rebalanced by Jolt during the first solves.
+    if (unbuilt_ && impl_->system.GetNumBodies() != 0) {
+        impl_->system.OptimizeBroadPhase();
+        unbuilt_ = false;
+    }
+    constexpr float fixed = fixed_step;
     constexpr std::uint32_t maximum_steps = 8;
     StepResult result{.runtime_cooks = std::exchange(runtime_cooks_, 0), .completed_step = completed_step_};
     if (!paused_) {
@@ -827,6 +1105,8 @@ Result<void> PhysicsScene::step(float elapsed) {
         (!paused_ && remaining_ + 1e-7f >= fixed)) && result.steps < maximum_steps) {
         timing::Scope substep{phases::substep};
         if (before_step_) {
+            auto opened = runtime.change_cursor();
+            if (!opened) return std::unexpected(opened.error());
             try {
                 auto called = before_step_(completed_step_ + 1, fixed);
                 if (!called) return std::unexpected(called.error());
@@ -835,8 +1115,11 @@ Result<void> PhysicsScene::step(float elapsed) {
             } catch (...) {
                 return failure(ErrorCode::invocation_failed, "Before-step handler threw an unknown exception.");
             }
+            if (auto followed = follow_handler(*opened); !followed) return followed;
         }
         if(auto input=components_->before_step(fixed); !input) return std::unexpected(input.error());
+        auto& moved=impl_->moved;
+        moved.clear();
         std::vector<Impl::Command> commands;
         commands.swap(impl_->commands);
         for (const auto& command : commands) {
@@ -860,8 +1143,11 @@ Result<void> PhysicsScene::step(float elapsed) {
             case Impl::CommandKind::teleport:
                 body.target.position=command.value;
                 body.target.rotation=command.rotation;
+                // The step starts from the teleported pose, so it draws no trail from the old one.
+                impl_->history.insert_or_assign(body.entity, Impl::Pose{command.value, command.rotation});
                 bodies.SetPositionAndRotation(body.id, position(command.value), rotation(command.rotation),
                     body.motion == MotionKind::dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
+                moved.push_back(body.id);
                 if (!command.preserve_velocity)
                     bodies.SetLinearAndAngularVelocity(body.id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
                 break;
@@ -895,27 +1181,95 @@ Result<void> PhysicsScene::step(float elapsed) {
         }
         {
             timing::Scope solving{phases::solve};
-            if (impl_->system.Update(fixed, 1, &impl_->temporary, &impl_->jobs) != JPH::EPhysicsUpdateError::None)
-                return failure(ErrorCode::invocation_failed, "Jolt physics step failed.");
+            impl_->activation.deactivated.clear();
+            // Full body pair or contact buffers only drop contacts; Jolt keeps simulating.
+            const auto updated = impl_->system.Update(fixed, 1, &impl_->temporary, solver_jobs);
+            if (updated != JPH::EPhysicsUpdateError::None) {
+                ++result.contact_overflows;
+                const auto report = [&](JPH::EPhysicsUpdateError bits, const char* field, const char* message) {
+                    if ((updated & bits) == JPH::EPhysicsUpdateError::None) return;
+                    world::Diagnostic diagnostic;
+                    diagnostic.severity = world::Severity::warning; diagnostic.kind = world::DiagnosticKind::capacity_exceeded;
+                    diagnostic.phase = world::DiagnosticPhase::physics; diagnostic.field = {field}; diagnostic.message = message;
+                    world_.report(std::move(diagnostic));
+                };
+                report(JPH::EPhysicsUpdateError::BodyPairCacheFull, "body_pairs",
+                    "The physics body pair buffer is full; some contacts were ignored. Raise Capacity::body_pairs.");
+                report(JPH::EPhysicsUpdateError::ManifoldCacheFull | JPH::EPhysicsUpdateError::ContactConstraintsFull, "contact_constraints",
+                    "The physics contact buffer is full; some contacts were ignored. Raise Capacity::contact_constraints.");
+            }
         }
         std::optional<timing::Scope> writing{std::in_place, phases::write_back};
+        // Only bodies this step moved publish a pose: active ones, those that fell asleep
+        // during it and teleported ones. Sleeping and static bodies keep the World pose.
+        impl_->system.GetActiveBodies(JPH::EBodyType::RigidBody,impl_->active);
+        moved.insert(moved.end(),impl_->active.begin(),impl_->active.end());
+        moved.insert(moved.end(),impl_->activation.deactivated.begin(),impl_->activation.deactivated.end());
+        // Solver threads list bodies in any order; the batch must not depend on it.
+        std::sort(moved.begin(),moved.end());
+        moved.erase(std::unique(moved.begin(),moved.end()),moved.end());
+        // Update has returned and only this thread uses the system, so reads need no body lock.
+        auto& reader=impl_->system.GetBodyInterfaceNoLock();
         auto& poses=impl_->poses;
-        poses.clear();poses.reserve(impl_->bodies.size()+impl_->characters.size());
-        for(const auto& [component,body]:impl_->bodies) {
-            (void)component;JPH::RVec3 where;JPH::Quat orientation;
-            bodies.GetPositionAndRotation(body.id,where,orientation);
+        auto& posed=impl_->posed;
+        poses.clear();
+        posed.clear();
+        const auto publish=[&](Impl::Body& body) {
+            JPH::RVec3 where;JPH::Quat orientation;
+            reader.GetPositionAndRotation(body.id,where,orientation);
             poses.push_back({body.entity,vector(where),rotation(orientation)});
-        }
+            posed.push_back(&body);
+        };
+        for(const auto id:moved)
+            if(const auto owner=impl_->body_components.find(id);owner!=impl_->body_components.end()) publish(impl_->bodies.at(owner->second));
         for(const auto& [entity,controlled]:impl_->characters)
             poses.push_back({entity,vector(controlled.character->GetPosition()),rotation(controlled.character->GetRotation())});
         // Manual native ragdolls have no authoring Entry but still publish their owner pose.
         for(const auto& [entity,controlled]:impl_->ragdolls) {
             JPH::RVec3 where;JPH::Quat orientation;
-            bodies.GetPositionAndRotation(controlled.ragdoll->GetBodyIDs().front(),where,orientation);
+            reader.GetPositionAndRotation(controlled.ragdoll->GetBodyIDs().front(),where,orientation);
             poses.push_back({entity,vector(where),rotation(orientation)});
         }
         if(auto children=components_->append_poses(poses);!children) return std::unexpected(children.error());
-        if(auto written=world_.apply_simulation_transforms(poses);!written) return std::unexpected(written.error());
+        posed.resize(poses.size());
+        // A body below a published Entity is published too, so that its local pose keeps
+        // the world pose Jolt holds for it.
+        if(!poses.empty() && std::ranges::any_of(impl_->bodies,[](const auto& item){return item.second.ancestors.size()>1;})) {
+            std::unordered_set<ObjectId> published;
+            for(const auto& pose:poses) published.insert(pose.entity);
+            for(auto& [component,body]:impl_->bodies) {
+                (void)component;
+                if(body.ancestors.size()>1 && !published.contains(body.entity) &&
+                    std::any_of(body.ancestors.begin()+1,body.ancestors.end(),[&](ObjectId node){return published.contains(node);}))
+                    publish(body);
+            }
+        }
+        if(auto written=world_.apply_simulation_transforms(poses,&impl_->written);!written) return std::unexpected(written.error());
+        // `written` keeps the order of `poses` and omits rejected ones.
+        auto& interpolated=impl_->interpolated;
+        interpolated.clear();
+        for(std::size_t i=0,j=0;i<poses.size() && j<impl_->written.size();++i) {
+            if(poses[i].entity!=impl_->written[j].first) continue;
+            const auto& local=impl_->written[j++].second;
+            // A bound part can also own a body until the next reconcile rejects one of them.
+            auto* body=posed[i];
+            if(!body)
+                if(const auto owner=impl_->entity_bodies.find(poses[i].entity);owner!=impl_->entity_bodies.end()) body=&impl_->bodies.at(owner->second);
+            if(body) {
+                auto& published=*body;
+                published.local=local;
+                published.held={poses[i].position,poses[i].rotation,{1,1,1}};
+                // Below an ancestor the local TRS rounds the pose; reconcile compares against that rounding.
+                // A structural edit since this step's reconcile can have given a root body an ancestor.
+                if(published.ancestors.size()>1 || world_.revision()!=reconciled_)
+                    if(auto matrix=world::world_matrix(runtime,poses[i].entity))
+                        if(auto authored=world::relative_transform(*matrix,world::transform_matrix({}))) published.held=*authored;
+            }
+            const Impl::Pose to{poses[i].position,poses[i].rotation};
+            auto& from=impl_->history.try_emplace(poses[i].entity,to).first->second;
+            interpolated.push_back({poses[i].entity,from,to});
+            from=to;
+        }
         writing.reset();
         if (!stepping_once) remaining_ = std::max(0.f, remaining_ - fixed);
         else single_step_ = false;
@@ -924,6 +1278,8 @@ Result<void> PhysicsScene::step(float elapsed) {
         if(auto visuals=components_->after_step(); !visuals) return std::unexpected(visuals.error());
         impl_->collect_contacts(completed_step_, scene_id_, result);
         if (after_step_) {
+            auto opened = runtime.change_cursor();
+            if (!opened) return std::unexpected(opened.error());
             try {
                 auto called = after_step_(completed_step_, fixed);
                 if (!called) return std::unexpected(called.error());
@@ -932,9 +1288,17 @@ Result<void> PhysicsScene::step(float elapsed) {
             } catch (...) {
                 return failure(ErrorCode::invocation_failed, "After-step handler threw an unknown exception.");
             }
+            if (auto followed = follow_handler(*opened); !followed) return followed;
         }
     }
     result.remaining = remaining_;
+    present();
+    // Every write since this step's reconcile was physics' own or a step handler's (pending);
+    // later ones, contact handlers' included, are found by the next step.
+    auto cursor = runtime.change_cursor();
+    if (!cursor) return std::unexpected(cursor.error());
+    cursor_ = *cursor;
+    tracked_ = true;
     timing::Scope dispatching{phases::events};
     std::vector<ContactEvent> events;
     events.swap(impl_->ready_events);
@@ -1009,13 +1373,13 @@ bool PhysicsScene::writes_pose(ObjectId entity) const {
 // An authored pose replaces the simulated one at the next step; velocities are kept.
 // Everything is resolved first, so a refusal leaves the simulation untouched.
 Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
-    struct Target { ObjectId entity; std::optional<BodyHandle> body; world::Trs pose; };
+    struct Target { ObjectId entity; std::optional<BodyHandle> body; world::Trs pose, local; };
     std::vector<Target> targets;
     targets.reserve(entities.size());
     for (const auto entity : entities) {
         if (impl_->ragdolls.contains(entity) || components_->bound_pose_writer(entity) != ObjectId{})
             return failure(ErrorCode::unsupported_operation,
-                "A Ragdoll or Vehicle part follows its controller; an authored transform applies after a restart.");
+                "A Ragdoll and its parts follow their controller; an authored transform applies after a restart.");
         auto matrix = world::world_matrix(world_.runtime(), entity);
         if (!matrix) return std::unexpected(matrix.error());
         // A degenerate space has no body; the next reconcile drops it.
@@ -1030,11 +1394,25 @@ Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
             if (!handle) continue;
             body = *handle;
         }
-        targets.push_back({entity, body, *pose});
+        world::Trs local{};
+        if (body) {
+            auto authored = world::read_transform(world_.runtime(), entity);
+            if (!authored) return std::unexpected(authored.error());
+            local = *authored;
+        }
+        targets.push_back({entity, body, *pose, local});
     }
+    // Relocated Entities are drawn at their new World pose; their next step moves from there.
+    std::vector<world::SimulationPose> held;
+    held.reserve(targets.size());
+    for (const auto& target : targets) held.push_back({target.entity, target.pose.position, target.pose.rotation});
+    hold_poses(held);
     for (const auto& target : targets) {
         if (target.body) {
             impl_->commands.push_back({Impl::CommandKind::teleport, *target.body, target.pose.position, target.pose.rotation, true});
+            auto& body = impl_->bodies.at(target.body->component);
+            body.local = target.local;
+            body.held = target.pose;
             continue;
         }
         auto& character = *impl_->characters.at(target.entity).character;
@@ -1166,6 +1544,7 @@ Result<SpecialHandle> PhysicsScene::create_character(ObjectId entity, CharacterS
         position(trs->position), rotation(trs->rotation), 0, &impl_->system);
     const auto revision = next_revision_++;
     impl_->characters.emplace(entity, Impl::Character{revision, settings, character});
+    hold_poses(std::array{world::SimulationPose{entity, trs->position, trs->rotation}});
     return SpecialHandle{entity, scene_id_, revision};
 }
 Result<void> PhysicsScene::set_character_input(SpecialHandle handle,
@@ -1190,11 +1569,6 @@ Result<SpecialHandle> PhysicsScene::ragdoll_handle(ObjectId entity) const {
     if(found==impl_->ragdolls.end()) return failure(ErrorCode::invalid_member,"Entity has no active ragdoll.");
     return SpecialHandle{entity,scene_id_,found->second.revision};
 }
-Result<SpecialHandle> PhysicsScene::vehicle_handle(ObjectId entity) const {
-    const auto found=impl_->vehicles.find(entity);
-    if(found==impl_->vehicles.end()) return failure(ErrorCode::invalid_member,"Entity has no active vehicle.");
-    return SpecialHandle{entity,scene_id_,found->second.revision};
-}
 Result<CharacterState> PhysicsScene::read_character_state(SpecialHandle handle) const {
     auto found = impl_->characters.find(handle.entity);
     if (handle.scene != scene_id_ || found == impl_->characters.end() ||
@@ -1208,7 +1582,9 @@ Result<CharacterState> PhysicsScene::read_character_state(SpecialHandle handle) 
 }
 Result<void> PhysicsScene::destroy_character(SpecialHandle handle) {
     if (auto state = read_character_state(handle); !state) return std::unexpected(state.error());
+    forget_pose(handle.entity);
     impl_->characters.erase(handle.entity);
+    ++edits_;
     return {};
 }
 Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity,
@@ -1264,6 +1640,7 @@ Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity,
     for (const auto id : ragdoll->GetBodyIDs()) impl_->ragdoll_ids.insert(id);
     const auto revision = next_revision_++;
     impl_->ragdolls.emplace(entity, Impl::Ragdoll{revision, ragdoll});
+    hold_poses(std::array{world::SimulationPose{entity, trs->position, trs->rotation}});
     return SpecialHandle{entity, scene_id_, revision};
 }
 Result<RagdollPose> PhysicsScene::read_ragdoll_pose(SpecialHandle handle) const {
@@ -1284,80 +1661,6 @@ Result<RagdollPose> PhysicsScene::read_ragdoll_pose(SpecialHandle handle) const 
 }
 Result<void> PhysicsScene::destroy_ragdoll(SpecialHandle handle) {
     if (auto pose = read_ragdoll_pose(handle); !pose) return std::unexpected(pose.error());
-    remove_special(handle.entity);
-    return {};
-}
-Result<SpecialHandle> PhysicsScene::create_vehicle(BodyHandle chassis, VehicleSettings settings) {
-    if (auto state = read_body_state(chassis); !state) return std::unexpected(state.error());
-    if (impl_->bodies.at(chassis.component).motion != MotionKind::dynamic ||
-        impl_->vehicles.contains(chassis.entity) || !std::isfinite(settings.half_width) ||
-        settings.half_width <= 0 || !std::isfinite(settings.half_length) ||
-        settings.half_length <= settings.wheel_radius || !std::isfinite(settings.wheel_radius) ||
-        settings.wheel_radius <= 0 || !std::isfinite(settings.suspension_length) ||
-        settings.suspension_length <= 0)
-        return failure(ErrorCode::argument_mismatch, "Vehicle requires a dynamic chassis and positive wheel dimensions.");
-    const auto id = impl_->bodies.at(chassis.component).id;
-    JPH::BodyLockWrite lock(impl_->system.GetBodyLockInterface(), id);
-    if (!lock.Succeeded()) return failure(ErrorCode::busy, "Could not lock vehicle chassis.");
-    JPH::VehicleConstraintSettings vehicle;
-    for (int wheel = 0; wheel < 4; ++wheel) {
-        JPH::Ref<JPH::WheelSettingsWV> item = new JPH::WheelSettingsWV();
-        item->mPosition = JPH::Vec3(wheel % 2 == 0 ? settings.half_width : -settings.half_width,
-            -.25f, wheel < 2 ? settings.half_length : -settings.half_length);
-        item->mRadius = settings.wheel_radius;
-        item->mWidth = settings.wheel_radius * .4f;
-        item->mSuspensionMinLength = 0;
-        item->mSuspensionMaxLength = settings.suspension_length;
-        item->mMaxSteerAngle = wheel < 2 ? .6f : 0.f;
-        vehicle.mWheels.push_back(JPH::Ref<JPH::WheelSettings>(item.GetPtr()));
-    }
-    JPH::Ref<JPH::WheeledVehicleControllerSettings> controller = new JPH::WheeledVehicleControllerSettings();
-    controller->mDifferentials.resize(1);
-    controller->mDifferentials[0].mLeftWheel = 2;
-    controller->mDifferentials[0].mRightWheel = 3;
-    vehicle.mController = controller;
-    JPH::Ref<JPH::VehicleConstraint> constraint = new JPH::VehicleConstraint(lock.GetBody(), vehicle);
-    JPH::Ref<JPH::VehicleCollisionTesterRay> tester =
-        new JPH::VehicleCollisionTesterRay(Impl::moving_layer);
-    constraint->SetVehicleCollisionTester(tester);
-    impl_->system.AddConstraint(constraint);
-    impl_->system.AddStepListener(constraint);
-    const auto revision = next_revision_++;
-    impl_->vehicles.emplace(chassis.entity, Impl::Vehicle{chassis, revision, constraint, tester});
-    return SpecialHandle{chassis.entity, scene_id_, revision};
-}
-Result<void> PhysicsScene::set_vehicle_input(SpecialHandle handle,
-    float throttle, float steering, float brake) {
-    auto found = impl_->vehicles.find(handle.entity);
-    if (handle.scene != scene_id_ || found == impl_->vehicles.end() ||
-        found->second.revision != handle.revision)
-        return failure(ErrorCode::invalid_member, "Vehicle handle is stale.");
-    if (!std::isfinite(throttle) || std::abs(throttle) > 1 || !std::isfinite(steering) ||
-        std::abs(steering) > 1 || !std::isfinite(brake) || brake < 0 || brake > 1)
-        return failure(ErrorCode::argument_mismatch, "Vehicle controls are out of range.");
-    auto* controller = static_cast<JPH::WheeledVehicleController*>(found->second.constraint->GetController());
-    controller->SetDriverInput(throttle, steering, brake, 0);
-    impl_->system.GetBodyInterface().ActivateBody(impl_->bodies.at(found->second.chassis.component).id);
-    return {};
-}
-Result<VehicleState> PhysicsScene::read_vehicle_state(SpecialHandle handle) const {
-    auto found = impl_->vehicles.find(handle.entity);
-    if (handle.scene != scene_id_ || found == impl_->vehicles.end() ||
-        found->second.revision != handle.revision)
-        return failure(ErrorCode::invalid_member, "Vehicle handle is stale.");
-    auto chassis = read_body_state(found->second.chassis);
-    if (!chassis) return std::unexpected(chassis.error());
-    VehicleState state{handle, completed_step_, chassis->position, chassis->linear_velocity};
-    for (int i = 0; i < 4; ++i) {
-        state.wheel_contact[i] = found->second.constraint->GetWheel(i)->HasContact();
-        const auto transform=found->second.constraint->GetWheelWorldTransform(i,JPH::Vec3::sAxisX(),JPH::Vec3::sAxisY());
-        state.wheel_positions[i]=vector(transform.GetTranslation());
-        state.wheel_rotations[i]=rotation(transform.GetRotation().GetQuaternion());
-    }
-    return state;
-}
-Result<void> PhysicsScene::destroy_vehicle(SpecialHandle handle) {
-    if (auto state = read_vehicle_state(handle); !state) return std::unexpected(state.error());
     remove_special(handle.entity);
     return {};
 }
@@ -1487,6 +1790,7 @@ Result<QueryResult> PhysicsScene::overlap_sphere(math::Vector3 center, float rad
     return result;
 }
 std::size_t PhysicsScene::body_count() const noexcept { return impl_->bodies.size(); }
+std::size_t PhysicsScene::active_body_count() const noexcept { return impl_->system.GetNumActiveBodies(JPH::EBodyType::RigidBody); }
 
 Result<QueryResult> PhysicsScene::trace(math::Vector3 start,math::Vector3 end,
     const TraceSettings& settings,QueryIgnore ignore) const {

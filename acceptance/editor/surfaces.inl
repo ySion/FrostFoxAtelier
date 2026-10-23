@@ -15,11 +15,11 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     const auto pointer=[&](ui::EventKind kind,math::Vector2 p) {Access::input(app,{.kind=kind,.x=p.x,.y=p.y,.button=ui::PointerButton::primary});};
     const auto escape=[&] {Access::input(app,{.kind=ui::EventKind::key_down,.key=ui::Key::escape},VK_ESCAPE);
         Access::input(app,{.kind=ui::EventKind::key_up,.key=ui::Key::escape},VK_ESCAPE);};
-    std::ofstream report(output/"surfaces.csv");report<<"menu,open,presents,cpu_us,wall_us\n";
+    std::ofstream report(output/"surfaces.csv");report<<"menu,open,presents\n";
     unsigned redundant_presents{};HWND retained{};
     for(unsigned run=0;run<6;++run) {
         const auto menu=run%2?control::scene_shading:control::viewport_camera;
-        const auto p=point(menu);const auto start=std::chrono::steady_clock::now();
+        const auto p=point(menu);
         pointer(ui::EventKind::pointer_move,p);pointer(ui::EventKind::pointer_down,p);pointer(ui::EventKind::pointer_up,p);
         tick(app,1);
         require(app.menu_frame()!=nullptr,"Surface menu was not ready after its opening frame.");
@@ -32,8 +32,7 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
         retained=app.menu_window();
         const auto presents=Access::menu_presents(app);
         if(run && presents!=1) ++redundant_presents;
-        const auto wall=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
-        report<<menu<<','<<run<<','<<presents<<','<<app.menu_open_cpu_us()<<','<<wall<<'\n';report.flush();
+        report<<menu<<','<<run<<','<<presents<<'\n';report.flush();
         escape();tick(app,1);
     }
     // A monitor/DPI change must remeasure a retained popup without leaving its

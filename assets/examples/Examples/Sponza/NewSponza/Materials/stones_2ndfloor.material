@@ -1,0 +1,108 @@
+{
+  "alpha_cutoff": 0.5,
+  "base_color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "coverage": "opaque",
+  "double_sided": false,
+  "emission_two_sided": false,
+  "emissive": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "metallic": 1.0,
+  "normal_scale": 1.0,
+  "normal_y_sign": 1.0,
+  "roughness": 1.0,
+  "textures": {
+    "base_color": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{BE74A1F5-1D77-4F03-8322-6D50E529E5B4}"
+    },
+    "emissive": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": ""
+    },
+    "metallic": {
+      "address": 0,
+      "channel": 2,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{5071B6B9-7340-41D8-800E-8CC857D73DED}"
+    },
+    "normal": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{AF1B94A8-5D2A-4EBD-B0A4-8CF3DE974D3D}"
+    },
+    "opacity": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": ""
+    },
+    "roughness": {
+      "address": 0,
+      "channel": 1,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{5071B6B9-7340-41D8-800E-8CC857D73DED}"
+    }
+  },
+  "version": 1
+}

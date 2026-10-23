@@ -45,6 +45,7 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
     result.probe_bounce=value.probe_bounce;result.indirect_gain=value.indirect_gain;
     result.sky_enabled=value.sky_enabled;result.sky_color={value.sky_color.x,value.sky_color.y,value.sky_color.z};
     result.sky_intensity=value.sky_intensity;
+    result.sky_map=detail::Access::sky_map_resolved(value);result.sky_rotation=value.sky_rotation;
     return result;
 }
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
@@ -107,7 +108,31 @@ Result<void> set_material(world::World& world,ObjectId object,Material value) {
 Result<void> set_light(world::World& world,ObjectId object,LightSettings value) {
     return set_value<LightComponent>(world,object,"settings",value);
 }
-Result<std::vector<LightRenderItem>> Scene::light_items() const {
+Result<void> set_sky_map_binding(Runtime& runtime,ObjectId object,SkyMapBinding binding) {
+    if(binding.source.size()>4096 || binding.source.find('\0')!=std::string::npos)
+        return error(ErrorCode::invalid_definition,"Invalid sky map key.");
+    // The key is what a scene saves; a map without one could not be saved.
+    if(binding.resolved && binding.source.empty()) return error(ErrorCode::invalid_definition,"A sky map needs its asset key.");
+    String source;
+    try { source=String(StringView(binding.source)); }
+    catch(const std::exception& failure) { return error(ErrorCode::invalid_definition,failure.what()); }
+    if(auto ready=runtime.check_code_publication();!ready) return ready;
+    if(auto owner=world::admit_component_edit(runtime,object);!owner) return std::unexpected(owner.error());
+    return runtime.with_native<EnvironmentComponent>(object,[&](EnvironmentComponent& component)->Result<void> {
+        detail::Access::sky_map(component)=std::move(source);
+        detail::Access::sky_map_resolved(component)=std::move(binding.resolved);return {};
+    });
+}
+Result<SkyMapBinding> read_sky_map(Runtime& runtime,ObjectId object) {
+    return runtime.with_native<const EnvironmentComponent>(object,[](const EnvironmentComponent& component)->Result<SkyMapBinding> {
+        return SkyMapBinding{std::string(detail::Access::sky_map(component).view().std_view()),detail::Access::sky_map_resolved(component)};
+    });
+}
+Result<std::vector<LightRenderItem>> Scene::light_items() const { return extract_lights(nullptr); }
+Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented,bool* failed,bool* moved) const {
+    bool unused{};
+    if (!failed) failed=&unused;
+    if (!moved) moved=&unused;
     auto pass=world_->spatial_pass(DiagnosticPhase::lighting);
     if (!pass) return std::unexpected(pass.error());
     auto& runtime=world_->runtime();
@@ -123,7 +148,7 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
             auto settings=read_light(runtime,object);
             if (!settings) {
                 if (!world_->contain(settings.error(),detail::diagnostic(DiagnosticKind::invalid_value,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(settings.error());
-                continue;
+                *failed=true;continue;
             }
             if (!valid_lights_.contains(slot,*settings)) {
                 auto invalid=runtime.validate_value(types_.light_settings,std::as_bytes(std::span{&*settings,1}));
@@ -131,16 +156,16 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
                 if (*invalid) {
                     const auto& failure=**invalid;
                     if (!world_->contain(failure.error,world::validation_diagnostic(failure,DiagnosticPhase::lighting,object,owner,{"settings"}))) return std::unexpected(failure.error);
-                    continue;
+                    *failed=true;continue;
                 }
                 valid_lights_.insert(slot,*settings);
             }
             auto matrix=pass->matrix(owner);
             if (!matrix) return std::unexpected(matrix.error());
-            if (!*matrix) continue;
+            if (!*matrix) {*failed=true;continue;}
             auto frame=pass->orientation(owner);
             if (!frame) return std::unexpected(frame.error());
-            if (!*frame) continue;
+            if (!*frame) {*failed=true;continue;}
             // A mirrored frame is -R; negating its right axis keeps it right-handed.
             const double sign=(*frame)->mirrored?-1:1;
             const auto axis=[&](math::Vector3d local) {
@@ -148,8 +173,18 @@ Result<std::vector<LightRenderItem>> Scene::light_items() const {
                 return math::Vector3{float(value.x),float(value.y),float(value.z)};
             };
             const auto& world=**matrix;
-            result.push_back({owner,object,{world[12],world[13],world[14]},
-                axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings});
+            LightRenderItem item{owner,object,{world[12],world[13],world[14]},axis({0,0,sign}),axis({1,0,0}),axis({0,sign,0}),*settings};
+            if (presented && !presented->empty()) {
+                auto offset=presented->find(*pass,owner);
+                if (!offset) return std::unexpected(offset.error());
+                if (*offset) {
+                    *moved=true;
+                    const auto& [shift,turn]=**offset;
+                    item.position=math::transform_point(item.position,shift);
+                    item.direction=math::rotate(turn,item.direction);item.right=math::rotate(turn,item.right);item.up=math::rotate(turn,item.up);
+                }
+            }
+            result.push_back(item);
         }
     }
     return result;

@@ -82,14 +82,12 @@ Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project
     return source::SourceFile{utf8(project.ui_source().generic_wstring()),version,std::move(*content)};
 }
 Result<void> ProjectCode::build(const Project& project) {
-    const auto start=std::chrono::steady_clock::now();
     auto next=std::make_shared<ProjectBuild>();next->published_version=report_->published_version;
     const auto reject=[&](Error error)->Result<void> {
         if(error.source && !error.message.starts_with(error.source->path+":"))
             error.message=error.source->path+":"+std::to_string(error.source->line)+":"+std::to_string(error.source->column)+": "+error.message;
         next->state=error.code==ErrorCode::rebuild_required?BuildState::rebuild_required:BuildState::failed;
         next->error=std::move(error);
-        next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         report_=next;return std::unexpected(*next->error);
     };
     auto input=snapshot(project);if (!input) return reject(input.error());
@@ -123,7 +121,6 @@ Result<void> ProjectCode::build(const Project& project) {
         if (world_.running()) if (auto cleared=world_.clear_faults();!cleared) return reject(cleared.error());
     }
     next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
-    next->milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     published_=next;report_=std::move(next);return {};
 }
 // Compatible publications may add classes or lifecycle methods; those need a

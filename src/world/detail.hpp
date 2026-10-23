@@ -39,6 +39,19 @@ struct Access {
     static bool& enabled(Entity& value) noexcept { return value.enabled_; }
     static bool& enabled(Component& value) noexcept { return value.enabled_; }
     static bool& transitioning(Entity& value) noexcept { return value.transitioning_; }
+    // Read-only borrows (with_native<const T>) leave the object's write stamp alone.
+    static const ReferenceSequence& sequence(const Entity& value) noexcept { return value.components_; }
+    static const ReferenceSlot& owner(const Component& value) noexcept { return value.owner_; }
+    static const ReferenceSequence& children(const Entity& value) noexcept { return value.children_; }
+    static const ReferenceSlot& parent(const Entity& value) noexcept { return value.parent_; }
+    static const ReferenceSlot& origin(const Entity& value) noexcept { return value.origin_; }
+    static bool spatial(const Entity& value) noexcept { return value.spatial_; }
+    static bool explicit_origin(const Entity& value) noexcept { return value.explicit_origin_; }
+    static bool world_origin(const Entity& value) noexcept { return value.world_origin_; }
+    static World* member_world(const Entity& value) noexcept { return value.member_world_; }
+    static bool enabled(const Entity& value) noexcept { return value.enabled_; }
+    static bool enabled(const Component& value) noexcept { return value.enabled_; }
+    static bool transitioning(const Entity& value) noexcept { return value.transitioning_; }
 };
 
 inline std::unexpected<Error> error(ErrorCode code, std::string message) { return std::unexpected(Error{code, std::move(message)}); }
@@ -193,7 +206,9 @@ struct World::Impl {
     struct TranslationChange { ObjectId entity; Trs value; };
     std::vector<TranslationChange> translation_changes;
     Result<void> apply_translations();
-    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase);
+    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase, std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
+    Map<ObjectId, Trs> pose_targets;
+    std::vector<std::pair<ObjectId, Trs>> pose_locals;
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
     struct Binding { TypeId type; Behavior behavior; };

@@ -55,8 +55,7 @@ float3 ddgi_illumination_direction(uint ray_index,uint ray_count,float4 rotation
 }
 
 float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,bool inspect,uint ray_index,float hit_distance) {
-    // Camera-surface NEE owns direct mesh emission. This field stores the
-    // environment and light that has scattered at least once before the probe.
+    // Light reflected at the hit. Its own emission is added by the trace.
     LitLightingSurface receiver;
     receiver.position=surface.position;receiver.normal=surface.normal;receiver.geometric_normal=surface.geometric_normal;
     receiver.view=toward_probe;receiver.base=surface.base;receiver.metallic=surface.metallic;
@@ -71,8 +70,8 @@ float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,
     float3 diffuse,specular,sun_diffuse,sun_specular;
     uint sun_seed=lit_hash(seed^0xb5297a4du);
     float proposal_probability;
-    LitReservoir local=lit_local_initial(receiver,true,lit_di_settings.x,true,seed,proposal_probability);
-    lit_reservoir_lighting(receiver,local,true,true,diffuse,specular);
+    LitReservoir local=lit_local_initial(receiver,lit_hit_candidates,true,seed,proposal_probability);
+    lit_reservoir_lighting(receiver,local,true,diffuse,specular);
     // Independent random domains keep sun samples unchanged when the local
     // candidate count or proposal changes.
     lit_directional_lighting(receiver,1,true,sun_seed,sun_diffuse,sun_specular);
@@ -81,8 +80,8 @@ float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,
     if (lit_probe_pool.w != 0 && lit_probe_controls.x > 0) {
         // Only diffuse history feeds back. Bounded reflectance and the authored
         // transport factor make this iteration a contraction even in a closed
-        // white room. Analytic and mesh NEE above inject reflected direct
-        // light once at the actual hit, without the feedback attenuation.
+        // white room. Analytic NEE above injects reflected direct light once
+        // at the actual hit, without the feedback attenuation.
         float3 reflectance = saturate(surface.base) * (1 - saturate(surface.metallic));
         if(any(reflectance>0))feedback = ddgi_irradiance(surface.position, surface.normal,
             surface.geometric_normal, lit_probe_controls.y!=0) * reflectance * (lit_probe_controls.x / LIT_PI);
@@ -104,7 +103,7 @@ float3 ddgi_hit_radiance(LitSurface surface,float3 toward_probe,inout uint seed,
             if(prepared.kind!=~0u) {
                 record.endpoint_distance=float4(prepared.position,length(prepared.position-surface.position));
                 record.source_parameters=float4(source.direction_radius.w,source.origin_range.w,prepared.area,
-                    prepared.kind==3?0:prepared.minimum_distance_squared);
+                    prepared.minimum_distance_squared);
             }
         }
         lit_probe_inspected_rays[ray_index]=record;
@@ -131,7 +130,7 @@ DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, 
     query.TraceRayInline(lit_scene, 0, 255, ray);
     while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
         lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
-    hit.radiance_distance = float4(record_surface ? ddgi_finite_radiance(lit_environment.rgb) : 0, ray.TMax);
+    hit.radiance_distance = float4(record_surface ? ddgi_finite_radiance(lit_sky_incident(direction)) : 0, ray.TMax);
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return hit;
     float distance = query.CommittedRayT();
     hit.radiance_distance = float4(0, 0, 0, distance);
@@ -147,10 +146,15 @@ DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, 
     // An open sheet still blocks this ray. Preserve its existing shading side
     // without treating the entire half-space behind it as a solid volume.
     if (dot(surface.geometric_normal, direction) > 0) {
-        if(surface.double_sided) {surface.normal=-surface.normal;surface.geometric_normal=-surface.geometric_normal;}
-        else return hit;
+        if(surface.double_sided) {
+            surface.normal=-surface.normal;surface.geometric_normal=-surface.geometric_normal;
+            if(!surface.emission_two_sided)surface.emissive=0;
+        } else return hit;
     }
     if (record_surface) {
+        // Mesh emission reaches the scene only through probes, as the camera
+        // sees it: single-sided backs never emit, two-sided ones by material.
+        hit.radiance_distance.rgb = ddgi_finite_radiance(surface.emissive);
         hit.base_roughness = float4(surface.base, surface.roughness);
         hit.normal_metallic = float4(surface.normal, surface.metallic);
         hit.geometric_normal = surface.geometric_normal;
@@ -296,7 +300,8 @@ void ddgi_update(uint3 group_id,uint lane,bool inspect) {
             surface.metallic = hit.normal_metallic.w;
             surface.geometric_normal = hit.geometric_normal;
             uint seed = lit_hash(probe ^ lit_hash(i + DDGI_MAX_RAYS * lit_probe_sequence));
-            radiance = ddgi_hit_radiance(surface,-direction,seed,inspect && probe==lit_probe_inspect_source,i,hit.radiance_distance.w);
+            radiance = ddgi_finite_radiance(radiance+ddgi_hit_radiance(surface,-direction,seed,
+                inspect && probe==lit_probe_inspect_source,i,hit.radiance_distance.w));
         }
         ddgi_ray_distances[i] = hit.radiance_distance.w;
         ddgi_ray_directions[i] = direction;
@@ -445,9 +450,8 @@ bool ddgi_receiver(uint2 pixel) {
     return all(pixel<lit_screen_dispatch.zw) && lit_inside(pixel) && !lit_is_background_depth(lit_depth.Load(int3(pixel,0)));
 }
 // Compose cannot consume diffuse irradiance at exactly zero material
-// response. Local GI retains its full input; debug gathers separately.
+// response; debug gathers separately.
 bool ddgi_diffuse_consumer(uint2 pixel) {
-    if ((lit_effect_flags & 64) != 0) return true;
     float4 material = lit_base_metallic.Load(int3(pixel, 0));
     return any(material.rgb * (1 - material.w) != 0);
 }

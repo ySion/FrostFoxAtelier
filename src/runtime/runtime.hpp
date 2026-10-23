@@ -635,6 +635,7 @@ public:
     // Trusted synchronous native storage access. Callback returns Result<R>;
     // R must own its data. Capturing/returning hidden borrowed addresses is also
     // forbidden by contract. The scope blocks object lifecycle, GC and JIT entry.
+    // A mutable T stamps the object as written; a const T does not and must not write.
     template<class T, class F>
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
     [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, F&& callback) {
@@ -645,7 +646,7 @@ public:
     template<class T, class F>
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
     [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, std::span<const FieldId> path, F&& callback) {
-        auto borrowed = borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path);
+        auto borrowed = borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path, !std::is_const_v<T>);
         if (!borrowed) return std::unexpected(borrowed.error());
         try {
             return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
@@ -712,6 +713,18 @@ public:
     // Null and foreign identities return false. Does not validate or root an object.
     [[nodiscard]] bool belongs_to_context(ObjectId object) const noexcept;
     [[nodiscard]] Result<TypeId> type_of(ObjectId object) const;
+
+    // Every write entry point stamps its object with the current epoch, and granting writable
+    // access counts as a write (see runtime-model.md, write stamps). change_cursor() returns the
+    // current epoch and starts the next one. It is busy during callbacks, native borrows, traversal
+    // and generated execution, whose writes carry the stamp taken when they began. Consumers take
+    // the cursor before reading; one that also writes may take it right after its own writes.
+    [[nodiscard]] Result<std::uint64_t> change_cursor();
+    // True if stamped after `cursor`, or if `object` is no longer this live object.
+    [[nodiscard]] bool changed_since(ObjectId object, std::uint64_t cursor) const noexcept;
+    // Replaces `changed` with the live objects stamped after `cursor`, in slot order. Destroyed
+    // and collected objects are absent; changed_since reports their stale identities.
+    void changed_objects(std::uint64_t cursor, std::vector<ObjectId>& changed) const;
 
     // A field path traverses inline records and Array elements. Scalar and plain record
     // fields share the same path resolution and exact-type checks.
@@ -857,7 +870,7 @@ private:
         NativeBorrow(const NativeBorrow&) = delete;
     };
     std::unique_ptr<Impl> impl_;
-    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation, std::span<const FieldId>);
+    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation, std::span<const FieldId>, bool write);
     [[nodiscard]] Result<ReferenceField> native_reference_field(ObjectId, const void*, bool sequence) const;
     [[nodiscard]] Result<Address> resolve_reference_field(const ReferenceField&) const;
     [[nodiscard]] Result<TypeId> find_representation(const void* representation) const;

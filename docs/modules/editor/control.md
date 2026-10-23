@@ -56,11 +56,11 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | scene.remove_transform | 移除指定 Entity 的内联空间，一次撤销 |
 | scene.reparent | 调整 Entity 组合 parent；支持 keep_world 和组成 index，一次撤销 |
 | scene.set_space_reference | 设置 Entity 空间参考：继承组合祖先、世界或另一个 Entity；支持 keep_world，一次撤销 |
-| material.create、texture.import | Project 创建 `.material` 或导入图片，沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
+| material.create、texture.import、mesh.import | Project 创建 `.material`，或导入图片、OBJ/glTF 网格（glTF 同时为每个槽发布材质并记为网格的默认材质），沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
 | material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
 | material.set_property、material.set_texture | 通过 Session 编辑材质对象；参数使用发现到的字段名/标量/枚举，贴图使用 input 名与 Texture GUID |
 | material.assign | 按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
-| material.override | 按真实参数字段名启用/取消实例覆盖；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
+| material.override | 按真实参数字段名启用/取消实例覆盖；只显示网格默认材质的槽同样可用，启用时绑定一个以该默认材质为父的实例；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
 | material.save、material.undo、material.redo | 共享资产独立保存和历史；实例覆盖使用场景历史（`op.call edit.undo / edit.redo`）。保存后目录刷新失败返回 saved 与 catalog_warning |
 | camera.set、camera.look_at | 公共 Camera 状态和观察目标 |
 | view.set | 原子应用显示 patch，与菜单共用 ViewOption 规则 |
@@ -103,13 +103,13 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 2026-10-16 的 Dev／Release 均通过，日志为 `out/direct-clustered-20261016/control-inspection-{dev,release}.log`。真实 3572 实体地牢另验证了 objects → object → 临时修改太阳属性 → render.compare → undo；最终 dirty=false、undo=0，源 Scene 哈希不变。
 
-材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存实际材质草稿并核对已载入贴图内容，原工程不变。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
+材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存场景引用到的材质（含网格的默认材质）的实际草稿，并核对已载入贴图内容，原工程不变；会话里载入过但场景没有引用的材质不进入副本。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
 
 坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left，原有 0–3 编码不变；yaw/pitch 为弧度，distance 为 0.5–2000 米，恢复时验证相机基底。视图命令与 UI 使用同一六向相机入口，`camera.set` 仍恢复完整状态。
 
 启用 GTAO 或 Local GI/SSIL 会关闭另一项；同一个 patch 同时请求两者为 true 会失败。持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自 World 的天光设置；background 仍保存工作室模式偏好。天光是 scene 项 `sky_enabled`（bool）、`sky_intensity`（cd/m²）和 `sky_color_x/y/z`（线性 RGB 三个标量），与其他 World 选项一样经 `view.set` 写入 Environment 组件，第一次写入时创建 Environment，二者是同一条历史；`sky_enabled` 为 false 时环境辐射为零。
 
-直接光作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制统一局部光源池的初始候选数，方向光独立评估。视口诊断 `direct_reference` 固定平均 64 次独立估计，每次保留当前候选预算，关闭 reservoir 复用和直接光颜色降噪，并强制屏幕直接光使用全局光源提议作独立参考，不改写 DDGI 的提议设置。视口诊断 `spatial_light_sampling` 默认 true，控制 DI 与 DDGI hit 是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。视口设置 `direct_clustered` 默认 true（A）；false 回退 ReSTIR 直接光，仅作诊断对照。A 使用 tile + depth-slice 的保守局部灯列表并精确枚举，列表超过 64 项时回退完整枚举；不写 World 或 Undo，不进入正式渲染模式菜单。`direct_reference=true` 优先执行旧的 64 次参考估计，两个开关的记录值仍各自保留；DDGI 不受该开关影响。`direct_cluster_inspect` 默认 false，仅 clustered 且非 reference 路径生效，按需统计 GBuffer 接收像素的局部解析灯支持数量；它不重置光照历史、不持久化，但其诊断工作计入列表构建，性能采样必须关闭。当前接口不接受旧阴影槽预算与单灯样本参数；它们只在 Scene v4 文件读取边界严格校验后丢弃。
+作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制 DDGI 探针命中点每次挑选的局部光候选数，方向光独立评估，屏幕直接光不受它影响。视口诊断 `spatial_light_sampling` 默认 true，控制探针命中点是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。屏幕直接光只有一条路径（tile + depth-slice 的保守局部灯列表，逐盏确定求值，列表超过 64 项时回退完整枚举）。`direct_reference`、`direct_clustered` 与 `direct_shadow_cache` 已删除：`view.set` 和 `render.compare` 对这三个键返回 `invalid_request`，消息写明该选项已删除。`direct_cluster_inspect` 默认 false，按需统计 GBuffer 接收像素的局部解析灯支持数量；它不重置光照历史、不持久化，但其诊断工作计入列表构建，性能采样必须关闭。当前接口不接受旧阴影槽预算与单灯样本参数；它们只在 Scene v4 文件读取边界严格校验后丢弃。
 
 DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/state/update_age/distance）、`probe_volume`、`probe_relocation`、`probe_xray`、`probe_radius`（最小间距的 0.01～0.45 倍）。既有 `probe_debug` 改为真实八邻 Receiver Coverage，默认为 false。具体显示、年龄、资源和精度合同见 [Scene Lit](../renderer/scene-lit.md#ddgi-空间与接收面诊断)；关闭 DDGI 不会自动开启光照，灰色表示当前无数据。
 
@@ -146,11 +146,11 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 ## 渲染对照
 
-冷启动先调用 render.prepare，等待 phase=ready，再重新观察状态并发起正式对照。准备需要可绘制视口和网格实例，默认临时使用 Scene Lit 填充模式，不改变基础显示。管线在工作线程上准备，编辑器在此期间画回退帧（见[编辑器](README.md)中的 Scene View 说明）；回退帧不计入任务的接受帧，也不成为 last_frame，任务在第一个真正画出该视图的接受帧完成。进行中的 job.status 附带 compiled/total，即该视图需要的管线中已完成的数量和总数；total 随视图启用的管线组变化，不保证不变。准备默认期限 600000 毫秒，CLI 也应指定 --timeout-ms 600000；成功的 preparation_ms 是请求到接受帧的墙钟时间，包含 UI、管线准备和绘制，不是独立的 shader 编译计时。
+冷启动先调用 render.prepare，等待 phase=ready，再重新观察状态并发起正式对照。准备需要可绘制视口和网格实例，默认临时使用 Scene Lit 填充模式，不改变基础显示。管线在工作线程上准备，编辑器在此期间画回退帧（见[编辑器](README.md)中的 Scene View 说明）；回退帧不计入任务的接受帧，也不成为 last_frame，任务在第一个真正画出该视图的接受帧完成。进行中的 job.status 附带 compiled/total，即该视图需要的管线中已完成的数量和总数；total 随视图启用的管线组变化，不保证不变。准备默认期限 600000 毫秒，CLI 也应指定 --timeout-ms 600000；成功结果为 phase=ready 和该接受帧。
 
     {"op":"render.prepare","state_token":"INSTANCE_ID:VERSION","args":{}}
 
-视口诊断 `direct_shadow_cache` 默认 false，与 `direct_clustered` 独立记录：仅 Clustered 开启时，false 使用精确枚举与 RT 可见性 A，true 使用缓存阴影 B；`direct_reference` 优先。两个开关都不写入 World、Scene 或 Undo，不进入正式渲染模式菜单。普通 view 快照与 Performance 的 `configuration` 同时记录该开关，区分历史 B 与当前 A 的测量；`direct_clustered` 默认 true。
+Shadows 开启时，投影光源的可见性一律来自阴影 atlas；普通 view 快照与 Performance 的 `configuration` 不再记录直接光路径。
 
 当前 Renderer 首次 Scene Lit 绘制同步准备相关管线，同实例可复用；目前没有公开的异步准备入口。同步调用期间主线程无法及时处理状态查询和取消，取消在下一个宿主边界执行。准备阶段与正式采样分开，避免把冷启动混进等待帧；渐进准备和跨进程 shader 缓存由 Renderer/RHI 后续演进。准备进程的 CPU 时长或工作集不能作为 GPU 帧时。
 
@@ -197,19 +197,21 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 ### 性能观测
 
-`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、直接光/AA/DDGI 配置，以及 23 行层级统计（八个主阶段、十四个子阶段、一个合计）。直接光 temporal resolve 与 filter step 1/2/4 位于 Radiance resolve / filter 父行之下；新增 `direct_cluster`（Light list construction）位于 Direct lighting 之下。原有 0～19 项索引与语义不变，局部灯列表为 20，阴影 atlas 更新 `shadow_cache` 为 21，合计为 22，消费者应按稳定 `id` 识别行。`configuration.direct_clustered` 保留诊断请求值；同时开启 reference 时，列表构建显示 Skipped。`current_ms`、`mean_ms`、`p95_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
+`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、候选数/AA/DDGI 配置，以及 16 行层级统计（八个主阶段、七个子阶段、一个合计）。索引 0～7 为主阶段，8～9 为 DDGI update/gather，10～11 为 DDGI update 的主射线与命中照明，12～14 为 Direct lighting 之下的 `direct_cluster`（Light list construction）、`shadow_cache`（Shadow atlas updates）与 `direct_shading`（Shading / HDR composition），合计为 15；消费者应按稳定 `id` 识别行。`current_ms`、`mean_ms`、`p95_ms`、`max_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
 
-`logical_resource_bytes` 是当前 CPU 所知的 Scene Lit 逻辑资源分配，和异步计时样本不是同一时刻的物理显存统计。`total_semantics` 明确只合计八个主区间；子项通过 `parent` 关联，`included_in_total` 防止重复累加。生命周期与统计范围以[性能表](README.md#gpu-pass-耗时)为准。
+`performance.cpu` 是同一快照的 CPU 段：`state`（waiting / ready）、`window_capacity`、`samples`、最新样本的帧计时序号 `sequence` 与接受 UI 帧 `frame_id`、相邻采样步之间的 `frame_interval_ms`（mean / p95 / max）及其均值的倒数 `frames_per_second`、自启动以来所有步（不论是否采样）累计的 `structure_errors` 与 `first_structure_error`，以及 `phases`。`phases` 按目录顺序列出全部已安装阶段，包括本域从未进入的阶段（`state` 为 unavailable，统计为 null），最后是 `frame.unattributed`；每项带 `id`、`title`、`parent`、`depth`、`current_entries`（最新样本中的进入次数，unattributed 为 null）和与上文各行相同的统计字段。消费者按 `id` 识别阶段，不依赖数组下标；行与统计范围以[帧性能](README.md#帧性能)为准。
 
-原始 `last_frame.gpu_sample` 保留八项 `pass_ms`、两项 `ddgi_pass_ms`、四项 `direct_pass_ms`、两项 `ddgi_update_pass_ms` 及 `pass_mask`。新增 `direct_reconstruction_pass_ms` 四项，依次为 temporal resolve、filter step 1/2/4，属于 `direct_pass_ms[3]` 的子区间。mask 位 0～7 为主阶段、8～9 为 DDGI update/gather、10～13 为 direct 子阶段、14～15 为 DDGI update 子阶段、16～19 为重建子阶段，20 为 `direct_cluster_ms`（Light list construction）；这些数组、耗时和 mask 共用完成 sequence。`direct_cluster` 返回 `cells`、`overflows`、`max_sources` 三个 uint32 完成帧统计，分别为有接收面的非空 cluster 数、候选数超过 64 而回退完整枚举的 cluster 数、单个 cluster 的最大保守候选数；它们不是每像素实际灯数。三个计数与耗时共用外层 `valid`、`sequence`、`frame_id`，不能作为当前 CPU 编码帧的数据。 `direct_cluster.receiver_histogram` 为 66 项 uint32：bin 0–64 是精确计数，bin 65 是超过 64 的接收像素数；`receiver_max_sources` 是最大支持数。仅统计有效 GBuffer 接收面通过支持球裁剪后的解析局部灯，不含太阳/发光网格，也不表示遮挡后的灯数；诊断关闭时 histogram 与 max 均为零。这些值同样属于该完成帧，不新增 Performance 行。精确局部光路径将 reservoir bits 10/11 标记为 Skipped；旧路径不产生 bit 20。参考模式或无光源时 resolve 仍有效、三个 filter 位不置位；bit 21 的 `shadow_cache_ms` 仅包含 atlas 更新；shading 仍在 bit 12，GPU mask 不包含性能表内部的合计位 22。`shadow_cache` 返回 faces、reused_faces、static_updates、dynamic_updates、draws、resolution_downgrades、pressure_batches、near_plane_faces、missing_taps、clamped_taps、rt_fallbacks、plane_fallbacks，均与外层完成帧 sequence/frame_id 对齐；不是 CPU 当前帧数值。Renderer B（缓存阴影）候选已接入，原生 1440p 性能对照已完成；其性能及 CSM 图像正确性尚未达到默认启用门槛，`direct_shadow_cache` 保持默认 false。A 已成为默认路径（`direct_clustered` 默认 true）。数值、质量归因与候选状态统一见 [Renderer 验收记录](../renderer/acceptance.md)。`resource_bytes_source: current_cpu_logical` 说明旧 `resource_bytes` 字段的来源，不能把它当作采样帧物理驻留量。
+`logical_resource_bytes` 是当前 CPU 所知的 Scene Lit 逻辑资源分配，和异步计时样本不是同一时刻的物理显存统计。`total_semantics` 明确只合计八个主区间；子项通过 `parent` 关联，`included_in_total` 防止重复累加。生命周期与统计范围以[性能表](README.md#帧性能)为准。
+
+原始 `last_frame.gpu_sample` 包含八项 `pass_ms`、两项 `ddgi_pass_ms`、两项 `ddgi_update_pass_ms`、`direct_cluster_ms`、`shadow_cache_ms`、`direct_shading_ms` 及 `pass_mask`；`direct_pass_ms` 与 `direct_reconstruction_pass_ms` 已删除。mask 位 0～7 为主阶段、8～9 为 DDGI update/gather、10～11 为 DDGI update 子阶段、12 为灯列表、13 为阴影 atlas 更新（本帧有面重绘时才置位）、14 为着色与 HDR 合成；这些数组、耗时和 mask 共用完成 sequence。`direct_cluster` 返回 `cells`、`overflows`、`max_sources` 三个 uint32 完成帧统计，分别为有接收面的非空 cluster 数、候选数超过 64 而回退完整枚举的 cluster 数、单个 cluster 的最大保守候选数；它们不是每像素实际灯数。三个计数与耗时共用外层 `valid`、`sequence`、`frame_id`，不能作为当前 CPU 编码帧的数据。 `direct_cluster.receiver_histogram` 为 66 项 uint32：bin 0–64 是精确计数，bin 65 是超过 64 的接收像素数；`receiver_max_sources` 是最大支持数。仅统计有效 GBuffer 接收面通过支持球裁剪后的解析局部灯，不含太阳，也不表示遮挡后的灯数；诊断关闭时 histogram 与 max 均为零。这些值同样属于该完成帧，不新增 Performance 行。`shadow_cache_ms` 仅包含 atlas 更新，GPU mask 不包含性能表内部的合计位 15。`shadow_cache` 返回 faces、reused_faces、static_updates、dynamic_updates、draws、resolution_downgrades、dropped_lights、near_plane_faces、missing_taps、plane_fallbacks、deferred_faces、deferral_frames、atlas_cells、pending_lights，均与外层完成帧 sequence/frame_id 对齐；不是 CPU 当前帧数值。`dropped_lights` 是 atlas 最低分辨率也放不下、本帧整盏不贡献直接光的投影光源数；`deferred_faces` 是本帧因重绘预算沿用上一次投影与内容的过期 face 数，`deferral_frames` 是被延后的光连续等待的最长帧数，`atlas_cells` 是全部请求 face 占用的 128² 格数，`pending_lights` 是驻留但仍有 face 没画、本帧不贡献直接光的投影光源数；`pressure_batches`、`rt_fallbacks` 与 `clamped_taps` 已删除。`frame_stats` 不再有 `di_candidates`。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。`resource_bytes_source: current_cpu_logical` 说明旧 `resource_bytes` 字段的来源，不能把它当作采样帧物理驻留量。
 
 ## 复现工程
 
-repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。复制 Config、Content、Source，排除 Cache；没有工程时创建独立工程容器。副本 startup scene 指向当前内存场景。
+repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根（Content，以及存在时的 Examples）只复制场景引用的资产及其引用闭包：根是组件的网格、Environment 的天空贴图、导出场景定义的每个材质（绑定的材质、实例的父材质和内联贴图），以及组件无法解析时保留的键（网格缺失时的材质绑定、占位组件的网格和天空贴图）；网格带上依赖文件和槽的默认材质，材质带上贴图，每个资产连同 `.asset.json` 身份。文档仍在使用、但目录里已经没有的资源（包括网格的默认材质）使导出失败；占位资源和保留数据里的键，目录里还有同类资产就复制，没有就只把键留在场景里；无法读取的资产只复制它自己的文件。引用闭包由 `Project::asset_files` 给出，新增资产间引用的提交同时扩展它。工程里只有这四类资产会按路径读取；字体、样式和着色器来自编辑器安装目录，Cache 是派生数据，均不进入复现包。没有工程时创建独立工程容器。副本 startup scene 指向当前内存场景。
 
 保存相机、显示偏好、Entity 选择顺序和检查的 Component、构建身份及资源指纹。publication_version 标识完整已发布构建，source_version 标识游戏源码集，ui_source_version 标识 UI 输入。副本 Source 只包含该成功构建的游戏和 UI 源码；磁盘上新增或修改但未发布的源码移入 unpublished/，内存 Code 草稿另存 drafts.json。没有可用场景或成功发布构建的工程返回 not_ready。这是场景与代码复现，不保存整个桌面、编辑器布局或 GPU 历史。
 
-复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的 Config、Content 或 Source 内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
+复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹以及天空贴图的纹素、2^k 缩放、均值和 cube 比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的任何根（`Project::roots`）内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
 
 Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录身份比较、实例发现与清理以及 CLI 请求文件。路径拼接和 canonical 解析后，在文件操作边界使用现有 windows_file_path 统一转换；协议中的绝对路径、工程相对路径和资源身份保持原格式。深目录副本可以重开、保存并再次导出。
 
@@ -217,7 +219,7 @@ repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、
 
 含 v1–v5 场景的旧包通过同一场景迁移器解析选择与检查目标，再按文档 ID 查找新对象。空间组件展开成子 Entity 后，旧序号仍对应原来的对象；不会用展开后的 World 成员下标猜测身份。旧纯空间组件的检查目标映射到相应 Entity，能力组件则保留其真实 owner。正式 Control 请求继续使用 Entity 命名。
 
-新产物的 manifest 标记 `view_schema: 3`，视图带上天光的五个键；版本 2 没有天光键，无标记或显式版本 1 视为更旧的视图快照，未知版本拒绝。打开版本 1、2 时，天光取自迁移后场景的 Environment（v6 的 Sky Light 已并入），视图里其余的 World 设置照旧与场景核对；版本 3 的视图与场景（版本 4 及以后）迁移后的 Environment 不一致时返回 `dependency_mismatch`；这项核对在加载出的候选文档上进行，失败时保留当前文档。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`；旧值 64 不开启 `direct_reference`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4–6 的 `world` 段在一致性预校验中与视图比较（天光不在 `world` 段，由上面的 Environment 核对覆盖），版本 4 应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
+新产物的 manifest 标记 `view_schema: 4`。版本 3 起视图带天光的五个键；版本 4 删除了 `direct_reference`、`direct_clustered` 与 `direct_shadow_cache`：打开版本 1～3 的视图时，这三个键的布尔值被丢弃，非布尔值拒绝；版本 4 的视图带这三个键时按已删除选项拒绝。版本 2 没有天光键，无标记或显式版本 1 视为更旧的视图快照，未知版本拒绝。打开版本 1、2 时，天光取自迁移后场景的 Environment（v6 的 Sky Light 已并入），视图里其余的 World 设置照旧与场景核对；版本 3 及以后的视图与场景（版本 4 及以后）迁移后的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment；这项核对在加载出的候选文档上进行，失败时保留当前文档。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4–6 的 `world` 段在一致性预校验中与视图比较（天光不在 `world` 段，由上面的 Environment 核对覆盖），版本 4 应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
 
 ## 生命周期和扩展
 
@@ -274,4 +276,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v7 保存；`direct_reference`、`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v8 保存；`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

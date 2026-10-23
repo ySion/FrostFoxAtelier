@@ -1,0 +1,108 @@
+{
+  "alpha_cutoff": 0.5,
+  "base_color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "coverage": "opaque",
+  "double_sided": false,
+  "emission_two_sided": false,
+  "emissive": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "metallic": 1.0,
+  "normal_scale": 0.5,
+  "normal_y_sign": 1.0,
+  "roughness": 1.0,
+  "textures": {
+    "base_color": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{62689727-3CD1-4364-B5EA-B48D5C4544CA}"
+    },
+    "emissive": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": ""
+    },
+    "metallic": {
+      "address": 0,
+      "channel": 2,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{DEB2616D-4857-4175-9439-1DF5163D6677}"
+    },
+    "normal": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{0C4235F8-FE4A-47A7-A0E5-3C7FAA5C71EE}"
+    },
+    "opacity": {
+      "address": 0,
+      "channel": 0,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": ""
+    },
+    "roughness": {
+      "address": 0,
+      "channel": 1,
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ],
+      "source": "project/{DEB2616D-4857-4175-9439-1DF5163D6677}"
+    }
+  },
+  "version": 1
+}

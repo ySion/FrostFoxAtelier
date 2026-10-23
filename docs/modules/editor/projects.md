@@ -92,7 +92,7 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 目录树与结果区之间使用 DSL Splitter，可拖动调整目录宽度；两边分别保留至少 96/64 DIP。Esc、失焦、捕获丢失或关闭正在编辑的区域会取消本次调整；临时缩窄整个面板只限制显示宽度，不抹掉用户此前选择的宽度。目录宽度沿现有工作区状态保留，不进入场景撤销，不触发 viewport 渲染目标缩放。
 
-单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；Import OBJ、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
+单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；Import Mesh、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
 查询或类型过滤排除当前资源时立即清空选择，并禁用对应 Open/Add；仍匹配的选择保留。清除过滤不恢复先前的隐藏选择。目录导航使用共享 Tree 的展开、选择与键盘行为；从路径或内容进入目录时显露对应树行。视图和类型菜单使用互斥单选标记。目录刷新淘汰失效导航记录，当前目录消失时回到有效来源根。
 
@@ -100,16 +100,24 @@ Details 使用共享 Table 的 Name / Type / Size 列，列头显示排序方向
 
 工具行、目录树、内容槽和状态行由 `AssetBrowserShell` 声明，List/Details/Tiles 均由 `AssetResults` 的同一个 Table 节点声明，均位于 [editor.ui.source](../../../assets/editor.ui.source)。保存可更新这些区域的布局，同时保留兼容的控件身份、选择、排序列宽和搜索草稿。浏览器只提供目录/资源快照和既有命令；目录模板按实际变化缓存。全部结果由共享 Table 按当前视图虚拟绘制，原浏览器虚拟列表、合成资源按钮与逐项菜单选择路径已移除。
 
-Import OBJ 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Entity 使用白色实例颜色，避免默认蓝色染色。
+Import Mesh 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。新增带材质的 Entity 使用白色实例颜色，避免默认蓝色染色。
 
 MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与 DDGI 消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
 依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录，再独占创建依赖、网格与身份文件；已有同名文件不覆盖。发布后目录检查失败时仅删除本轮创建的文件，允许修复后重试；空目录可能保留，清理失败明确报告。
 
-Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。已有 Entity 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。Project 内多个 OBJ 引用规范路径与内容一致的贴图时共享不可变解码图像；缓存保留源字节和图像弱引用，刷新清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
+Import Mesh 也接受 glTF 2.0 的 `.gltf`，buffer 与图片为外部文件，图片须为 Project 可登记为贴图的 PNG、JPEG、BMP 或 TIFF 文件；GLB、data URI 和存放在 buffer 里的图片不支持。默认场景中带 mesh 的节点按文件顺序深度优先展开，节点 TRS 或矩阵烘焙进同一个 Mesh，每个 primitive 一个材质分段；同一 mesh 被多个节点引用时各自展开。glTF 是右手系，引擎是左手系，两者都以 +Y 向上、以米为单位（[renderer 合同](../renderer/contract.md#场景和-ui)），所以导入时镜像 X 轴：位置和切线经矩阵变换，法线经余因子矩阵，作者切线的 w 在行列式为负时取反。缺少 NORMAL 时按 glTF 正面生成面法线；缺少 TANGENT 时由 MikkTSpace 生成，并统一到 glTF 法线贴图 +Y 指向 V 减小方向的约定。UV 不翻转。
+
+glTF 材质映射：baseColorFactor 乘 sRGB 的 baseColorTexture；metallicRoughnessTexture 的 G 通道作粗糙度、B 通道作金属度，两个因子缺省为 1；normalTexture 及其 scale；emissiveFactor 乘 emissiveTexture；MASK 与 alphaCutoff（缺省 0.5）；doubleSided 同时决定背面裁弃和单面发光，缺省为单面。采样器的 wrapS 与 wrapT 必须相同（Repeat、Clamp 或 Mirror），过滤方式由渲染器决定。BLEND 材质的 primitive 不导入，导入时在 Output 记一条说明；occlusion 贴图、TEXCOORD_1、COLOR_0、KHR_lights_punctual、相机和其他非必需扩展被忽略。extensionsRequired 非空、非三角形列表、sparse 或 normalized accessor、蒙皮、贴图引用 texCoord 非 0、节点图不是树时明确报错。只读取被导入材质引用的图片。
+
+场景按槽名绑定材质，所以 glTF 的槽名唯一：无名材质叫 `material <序号>`，重名的材质以及与无材质 primitive 所用的 `default` 重名时，后者依次加 ` (2)`、` (3)`。Import Mesh 为每个槽生成一份 `.material`，放在 `Content/Meshes/<模型名>/Materials/<槽名>.material`：文件名里 Windows 不允许的字符换成 `_`，设备名（CON、NUL、COM1 等，带扩展名也算）前加 `_`，按文件系统的规则不区分大小写重名时加 ` (2)` 等后缀。被引用的图片各自得到贴图身份（内容相同的两个文件仍是两个贴图），生成的材质按文件引用它们。网格的 `.asset.json` 用 `materials` 把槽名映射到材质键，作为[网格默认材质](#材质与贴图资源)。材质、贴图与网格的全部身份在写盘前确定，任何一个文件写入失败都删除本次写出的文件。OBJ 的槽名与导入结果不变，不生成材质。
+
+glTF 上限：文档 16 MiB，buffer 合计 512 MiB，单个图片文件 64 MiB，最多 256 张图片，解码像素合计 2 GiB，最多 800 万个三角形、65536 个节点。依赖规则与 OBJ 相同：URI 百分号解码后必须是源目录内的相对路径。上限按官方 Sponza 的 2K 数据留约一倍余量：其中最大的主体文件约 375 万个三角形、134 MiB buffer、72 张图、1.1 GiB 解码像素。图片在最多 8 个线程（不超过逻辑核数的一半）上并行解码；任一张失败时停止其余解码，报告第一个错误。
+
+Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。网格元数据只改 `materials` 时 revision 照样提升、几何缓存保留，之后加载的场景取新映射。已有 Entity 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。网格默认材质与其他材质资源一样由当前会话共享：外部改写它的贴图后，再次添加网格得到新几何，默认材质仍是会话中已打开的版本，重开工程才读取新贴图（见[材质系统](../renderer/materials.md)）。Project 内的网格（OBJ 与 glTF）和贴图资源引用 SHA-256 相同的图片时共享不可变解码图像，所以 glTF 网格与它生成的材质只解码一次；缓存只保存摘要到图像的弱引用，刷新时清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
 
 
-每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
+每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID；网格的元数据还可以有 `materials`（槽名到材质键），每个键必须对应网格中唯一的槽，否则网格无法加载。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
 
 ## 材质与贴图资源
 
@@ -117,7 +125,7 @@ File 或 Asset Browser 菜单中的 New Material 创建 `Content/**/*.material`�
 
 选择 Material 后，Parameters 使用 Runtime `material.Material` 的实际反射字段：颜色/向量共用 NumberRow，开关和枚举使用既有控件，贴图由资源菜单选择。标量/颜色和采样设置沿 Session 的 begin/preview/commit/cancel 编辑链；菜单赋纹理也记录完整事务。每个材质资产拥有独立撤销历史与保存点，Ctrl+S 保存当前材质；Save All 保存材质、源码和场景。运行与重建类型先提交并保存材质草稿，避免新 Runtime 或独立进程读取旧文件。关闭、切换文档处理所有未保存资产；Control 替换文档直接拒绝未保存资产。
 
-Entity/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提供赋予共享 Material、Edit Shared Material 和 Use Mesh Default。已有资源绑定时不再显示会被覆盖的旧组件颜色/粗糙度字段。绑定的参数行旁有覆盖复选框：勾选后在同一 Runtime 惰性创建具有父材质强引用的实例；只记录被勾选参数的覆盖位，未覆盖参数继续继承。取消某项覆盖立即恢复父值。当前支持一层继承，覆盖颜色、透明度、粗糙度、金属度、发光、法线强度/Y 约定及覆盖/双面标志；纹理及采样设置从共享材质继承，未提供实例纹理覆盖。
+Entity/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提供赋予共享 Material、Edit Shared Material 和 Use Mesh Default。槽的材质按顺序取：显式绑定、网格默认材质（网格元数据 `materials` 指定的 `.material`，与 UE 的 Static Mesh 材质槽相同）、网格自带表面乘组件颜色。默认材质在运行时随网格解析，不写入 Scene；编辑它会同时改变所有显示它的网格。没有显式绑定而有默认材质的槽显示 `Mesh Default · 材质名`，Edit Shared Material 打开该默认材质，Use Mesh Default 删除显式绑定。显式绑定或默认材质覆盖全部绘制槽时，不再显示不生效的组件颜色/粗糙度字段；只覆盖部分槽时这些字段标 `(Unbound)`。绑定或默认材质的参数行旁有覆盖复选框：勾选后在同一 Runtime 惰性创建以该材质为父、具有强引用的实例并绑定到槽；只记录被勾选参数的覆盖位，未覆盖参数继续继承。取消某项覆盖立即恢复父值。当前支持一层继承，覆盖颜色、透明度、粗糙度、金属度、发光、法线强度/Y 约定及覆盖/双面标志；纹理及采样设置从共享材质继承，未提供实例纹理覆盖。
 
 例如两根柱子引用同一材质，仅 A 覆盖 roughness 后，修改父材质 base_color 会同时更新 A/B；A 保留自己的 roughness。资产修改不污染场景历史；槽赋予、实例参数及覆盖开关进入场景历史。复制 Entity 共享资产但复制其可变材质实例。更换网格保留名称唯一匹配的绑定，丢失/歧义槽被移除；清空网格清空材质引用。没有名称的槽使用 `slot/<index>`，命名槽按名称持久对应。
 
@@ -127,7 +135,7 @@ Entity/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提
 
 外部图片改写目前不会自动替换已载入 Runtime 中的 Texture 对象。Project Refresh 更新目录及解析缓存；已有会话保留既有图片版本，重新打开工程/场景重新解析。替换为其他 Texture GUID 会立即使用对应资源。本轮没有接入 UI Image 控件的 Runtime Texture 资源。
 
-Scene 统一写出 v7：顶层 `materials` 按文档 ID 保存材质定义，StaticMeshComponent 的槽绑定引用同一 ID 并保留赋予意图；实例保存父 GUID、显式覆盖名称和值。共享匿名材质往返后仍是同一个对象。旧逐槽 payload 仅在读取边界兼容，完整格式见[项目场景](../world/project-scenes.md#scene-v7)。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
+Scene 统一写出 v8：顶层 `materials` 按文档 ID 保存材质定义，StaticMeshComponent 的槽绑定引用同一 ID 并保留赋予意图；实例保存父 GUID、显式覆盖名称和值。共享匿名材质往返后仍是同一个对象。旧逐槽 payload 仅在读取边界兼容，完整格式见[项目场景](../world/project-scenes.md#scene-v8)。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
 
 新增 `editor_material_acceptance` 是真实 Project → Runtime → World → Session → SceneSnapshot/DSL → 文件重开的端到端消费者；同时应运行原 document/project scene 消费者和 renderer GPU 材质验收。新增用例不等于已验收通过，实际结果以本次集成日志为准。
 
@@ -135,15 +143,15 @@ Scene 统一写出 v7：顶层 `materials` 按文档 ID 保存材质定义，Sta
 
 - Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 5`，继续读取 v1/v2/v3/v4。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
-- Scene v7 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
-- World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。v6 的根 `world` 段与 Sky Light 在读取时并入 Environment，见[项目场景](../world/project-scenes.md#v6--v7-迁移)；v1–v3 使用默认值。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5/v6 不接受这两个旧字段；`direct_reference` 始终是视口诊断，不进入 Scene。
+- Scene v8 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
+- World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。天空贴图不是 World 选项，由 `Session::set_sky_map(SkyAsset)` 单独设置：资产来自 `Project::sky_map`，空资产表示清除；同样记一条历史，没有 Environment 时在同一历史项里创建它，停用时拒绝，无变化为空操作。撤销和重做恢复历史里保存的那个指针，不重新解析键。`sky_rotation` 是普通属性。v6 的根 `world` 段与 Sky Light 在读取时并入 Environment，见[项目场景](../world/project-scenes.md#v6--v7-迁移)；v1–v3 使用默认值。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5/v6 不接受这两个旧字段；视口诊断从不进入 Scene。
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质与灯光；天光由宿主按 Environment 求出 `Frame.environment`，没有 Environment 或天光关闭时为零。探针滚动位置、历史、统计、可视化与相机不写入 Scene。
-- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。旧 Scene v1–v5 经严格导入进入 Entity 模型，保存统一写出 v7，旧 `actors` 目录与 world.Actor / world.StaticMeshActor / world.SceneComponent 名称只在严格导入边界解释，不作为现行 Runtime 或 Control 别名。
+- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。旧 Scene v1–v5 经严格导入进入 Entity 模型，保存统一写出 v8，旧 `actors` 目录与 world.Actor / world.StaticMeshActor / world.SceneComponent 名称只在严格导入边界解释，不作为现行 Runtime 或 Control 别名。
 - Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
-- 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）遇到任何诊断都拒绝。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing`，材质槽带 `missing`。v6 中未知或不符的 World 设置随迁移成为 Environment 组件的保留数据，显示在它的 Saved Data。当前限制：无法并入 Environment 的部分（`world` 段整体不是对象，或未知键与 Environment 已用的字段名相同）作为文档级保留数据，只在 Project Output 报告，面板中没有对应显示。
-- 物理角色、布娃娃/部件、车辆/车轮、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts / VehicleComponent.wheels 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。旧 constraint_target 序号仅在 v1–v5 导入时解析。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
-- SceneQueryComponent 复用 Scene v7 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
-- StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源和解析内容，`read_static_mesh` 覆盖 Detached 与空网格。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
+- 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data；网格的默认材质或其贴图不可用时以替代品显示，诊断记在该组件的 `mesh` 字段。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）遇到任何诊断都拒绝。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing` 与 `mesh.default_materials`（每个默认槽的 `slot`、`object`、`source`、`missing`），材质槽带 `missing`。v6 中未知或不符的 World 设置随迁移成为 Environment 组件的保留数据，显示在它的 Saved Data。当前限制：无法并入 Environment 的部分（`world` 段整体不是对象，或未知键与 Environment 已用的字段名相同）作为文档级保留数据，只在 Project Output 报告，面板中没有对应显示。
+- 物理角色、布娃娃/部件、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。旧 constraint_target 序号仅在 v1–v5 导入时解析。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
+- SceneQueryComponent 复用 Scene v8 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
+- StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源、解析内容和不持久化的槽默认材质（编辑器按网格资产解析，`Session::mesh_defaults`），`read_static_mesh` 覆盖 Detached 与空网格。没有组件的消费者用 `Session::mesh_surfaces` 取同一份默认材质下每个槽的表面。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
 - 重建先创建全部真实 Entity/Component，恢复值、资源与普通引用，再恢复有序组合和 Entity 空间参考，完整 forest 经统一批次注册；无效关系拒绝候选。加载 StaticMeshEntity 不重复调用带默认组成的快捷工厂。
 - 保存先完成有效文本草稿，经同目录临时文件、FlushFileBuffers 和替换发布。写入失败保留旧文件；这不是跨文件事务或断电恢复保证。工程标记最后创建，未完成创建不会伪装成可打开工程。存档提交与目录刷新结果分开：成功保存后即更新保存点，资源刷新失败显示警告，不将成功写入误报为保存失败。
 - 场景撤销回到保存位置后恢复干净状态；历史分叉或裁剪使旧保存位置不可达时保持未保存状态。浏览、过滤和面板布局不进入场景历史。
@@ -151,6 +159,8 @@ Scene 统一写出 v7：顶层 `materials` 按文档 ID 保存材质定义，Sta
 ## 验收
 
 `editor_document_acceptance` 还直接运行真实 Project → Workspace → UI 布局/绘制/命中链，在两种逻辑窗口尺寸与 1/1.5/2 DPI 下切换三种视图和滚动选择，不创建桌面窗口。文件链覆盖真实目录创建/打开、中文名、OBJ 导入、元数据身份、组件和空网格往返、保存点撤销、坏版本/坏 JSON、写入失败、资源改名、工程搬移、Cache 删除及无来源网格拒绝保存。
+
+`editor_gltf_acceptance`（`--gltf`）用自建的 glTF 夹具检查节点变换和左手系转换、作者与生成切线、PBR 通道与因子缺省值、MASK 与单双面、BLEND 说明、按内容共享图片、拒绝条件和并行解码失败、唯一槽名；经 Import Mesh 发布后检查每槽生成的材质与贴图引用、文件名、写入失败的回滚，以及网格默认材质：放置后取代组件参数、保存不写入并在重开时重新解析、编辑传播、覆盖与撤销/重做/清除、元数据改映射、缺失时以替代品报告。
 
 同一验收还覆盖非法数值身份、向量长度、重复键、过深/超限输入、独占发布、坏目录导致的导入重试，以及 10000 项目录导致发布后失败时的文件回滚。刷新无变化、文件改名和真实内容改写分别验证缓存复用、旧版本生命周期与新版本解析。
 
@@ -211,7 +221,7 @@ class project.Move : world.Component {
 Project 配置 + Source 文件快照
   → Session::Prepare 注册原生 World / Physics 类型
   → ProjectCode → Source Program 准备并发布项目类型、行为
-  → Scene v7 解析类型名、属性、资源和关系
+  → Scene v8 解析类型名、属性、资源和关系
   → 停止的编辑文档
   → Run：序列化当前场景到 Cache/Play，启动同一可执行文件的运行入口
   → 独立 Session → start → update → stop
@@ -234,10 +244,10 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 | `add` | `parent`（身份或 null）、`index`、`graph` | 一个根 Entity 及其子树，graph 由 `serialize_live_subtree` 生成：保留身份，graph 外的引用写作 `{"$ref":身份}`。新对象按运行中插入的规则立即 Begin。 |
 | `attach` | `entity`、`index`、`graph` | 给已有 Entity 增加组件。graph 中该 Entity 的记录为 `{"id","existing":true,"children":[],"components":[...]}`，由 `serialize_live_components` 生成。 |
 | `remove` | `id` | 经 World 退出链销毁 Entity（连同子树）或 Component，End 照常执行；之后可以用同一身份再次 `add`（撤销删除）。 |
-| `set` | `id`，可选 `name`、`enabled`、`space`、`properties`、`base_color`/`roughness`/`metallic`/`emissive`、`materials` | `properties` 是稀疏记录，只写出现的叶，游戏写过的其他字段不受影响；标量叶作为一次组写入经过 `World::write` 的夹值、校验和准入，跨字段规则（例如整体平移一个探针体积）只对最终组合检查；String 叶逐个整值写入。World 设置是 Environment 组件的属性，同样走 `set`；首次编辑时编辑器转发一条带完整组件的 `add`，撤销它转发 `remove`。`space` 为 null 时移除空间；记录中缺省的叶保持当前值，`origin` 取 `"0"`（世界）、null（继承）或身份。物理接管的 Entity 改位姿时由模拟系统瞬移。`materials` 是完整绑定表。 |
+| `set` | `id`，可选 `name`、`enabled`、`space`、`properties`、`base_color`/`roughness`/`metallic`/`emissive`、`materials`、`sky_map` | `properties` 是稀疏记录，只写出现的叶，游戏写过的其他字段不受影响；标量叶作为一次组写入经过 `World::write` 的夹值、校验和准入，跨字段规则（例如整体平移一个探针体积）只对最终组合检查；String 叶逐个整值写入。World 设置是 Environment 组件的属性，同样走 `set`；首次编辑时编辑器转发一条带完整组件的 `add`，撤销它转发 `remove`。`space` 为 null 时移除空间；记录中缺省的叶保持当前值，`origin` 取 `"0"`（世界）、null（继承）或身份。物理接管的 Entity 改位姿时由模拟系统瞬移。`materials` 是完整绑定表。`sky_map` 是 Environment 的天空贴图键，Play 在自己的 Project 中解析；目录里还没有这个键时先刷新一次 Project（文件可能是 Play 打开之后才加入的），仍解析不到时以对应资源种类的 warning 报告，键照常写入、天空没有贴图，与文档一侧相同，不算分歧。`add` 中的天空贴图键即使之前在 Play 里解析失败过也重新读取，因为编辑器可能在文件恢复之后才发来它。 |
 | `move` | `id`、`parent`、`index`、`space` | 以 keep-world 改父级和顺序，再写入最终局部 TRS。 |
-| `materials` | `materials`（Scene 材质定义列表） | 已有身份按定义更新值；新身份创建后登记。绑定新材质前先发送它的定义。 |
-| `resource` | `key`、`material`（`.material` 资产内容） | Play 已加载的同键材质原地更新，引用它的实例随之变化；未加载的键只登记，供之后的 `add` 使用。新导入的 Mesh / Texture 由 `add` 按需从磁盘读取。 |
+| `materials` | `materials`（Scene 材质定义列表） | 已有身份按定义更新值；新身份创建后登记。绑定新材质前先发送它的定义。Play 读不到的来源、父材质或贴图与宽容加载一样以替代品应用，并报告警告。 |
+| `resource` | `key`、`material`（`.material` 资产内容） | Play 已加载的同键材质原地更新，引用它的实例随之变化；未加载的键只登记，供之后的 `add` 使用。新导入的 Mesh / Texture / 天空贴图由 `add` 按需从磁盘读取。 |
 
 `index` 是对象在目标列表中的最终序号，null 表示末尾。`add`/`move` 的目标列表是父级的子级，`parent` 为 null 时是根列表；`attach` 的目标列表是该 Entity 的组件列表；`move` 计数时不含被移动的对象本身。游戏生成或销毁对象会让 Play 的列表合法地不同于文档，所以超出范围的序号夹到末尾，不报诊断。同一批中的多个 `add` 按（父级，序号）升序发送；Play 的列表与文档相同时，顺序与文档一致。
 
@@ -246,9 +256,10 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 返回值是未完全应用的项的诊断，phase 为 `command`，消息以 `Play change <序号> #<身份>` 开头：
 
 - warning `reference_dropped`：目标已被游戏销毁，该项跳过；或某个引用的目标已被销毁，该引用写为 null，其余照常应用。
-- warning `command_rejected`：Play 无法跟随这项修改，该项不生效，例如移动 Ragdoll 部件或 Vehicle 车轮的祖先（见[物理](../physics/README.md)）。
+- warning `command_rejected`：Play 无法跟随这项修改，该项不生效，例如移动 Ragdoll 部件的祖先（见[物理](../physics/README.md)）。
 - error `command_rejected`：应用失败，Play 已与文档分歧，需要重启 Play。`add`/`attach` 要么整项生效，要么不留下对象；`set` 在中途失败时已写入的部分不回滚。
 - `add`/`attach` 携带文档本身的保留数据（占位类型、缺失资源等）时，按加载诊断的种类以 warning 报告，不算分歧。
+- Play 不监听外部资源改写。`add`/`attach` 遇到缺失资源时刷新目录并重试一次，`resource` 的材质引用未登记的贴图时也刷新目录，以接上运行中新导入的资源。运行中在外部改写已登记的资源（包括网格元数据里的默认材质映射）不保证在本轮 Play 生效：按需刷新之后加载的网格可能已经取到新映射，已经打开的材质与贴图仍沿用会话中的版本。重启 Play 保证重新读取。
 
 批次格式错误，或对编辑文档调用时，整次调用返回错误。
 
@@ -275,6 +286,8 @@ atelier_editor --run-project E:\ffa_testproj --preview-ui
 ```
 
 `--halt-on-fault` 改用首错即停：第一个对象失败照常写出诊断行，随后停止运行并返回非零退出码，供验收与 CI 使用。编辑器启动的 Play 使用默认的隔离策略。
+
+停止时输出帧性能报告，统计与编辑器 Performance 表的 CPU 段相同（见[帧性能](README.md#帧性能)）：`Performance: N frames (window n), frame mean … ms, p95 … ms, max … ms, … FPS` 是最后一个窗口的整步统计；`Performance phases (mean ms): …` 列出进入过的顶层阶段（`app.*`、`world.update`、`render`）和 unattributed 的均值；存在计时结构错误时另起一行给出数量和第一个出错的阶段。没有接受过画面时只输出 `Performance: N frames, none accepted`。数值只用于诊断，不作为验收条件。
 
 ### 项目 UI
 

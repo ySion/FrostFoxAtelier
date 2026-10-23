@@ -25,6 +25,7 @@ struct Spatial : world::Component { float offset{4}; };
 struct QueryProbe : physics::SceneQueryComponent { bool observed{};std::uint32_t count{};float distance{};math::Vector3 point{}; };
 struct Caption { String text; float size{1}; std::uint32_t lines{1}; };
 struct Label : world::Component { String title; Caption caption; };
+struct DerivedEnvironment : presentation::EnvironmentComponent {};
 struct Evidence { unsigned prepared{},destroyed{},begins{},ends{}; bool fail_tick{},fail_begin{},fail_end{},live_runtime_on_release{true}; };
 struct Code {
     Runtime& runtime;
@@ -45,6 +46,7 @@ editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
             .field<&Caption::size>("size").range({.hard_min=Scalar{0.f},.hard_max=Scalar{10.f}}).field<&Caption::lines>("lines").publish());
         take(NativeRegistration<Label>{runtime,"game.Label",TypeKind::object}.base<world::Component>()
             .field<&Label::title>("title").field<&Label::caption>("caption").publish());
+        take(NativeRegistration<DerivedEnvironment>{runtime,"game.Environment",TypeKind::object}.base<presentation::EnvironmentComponent>().publish());
         auto code=std::make_shared<Code>(runtime,move,evidence);
         auto candidate=take(source::Program::prepare(take(code->program.request("Move.source",
             "void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); }"))));
@@ -69,6 +71,20 @@ ObjectId member(editor::Session& session,TypeId type) {
     throw std::runtime_error("Missing component");
 }
 world::FieldPath field(editor::Session& session,TypeId type,std::string_view name) { return {take(session.world().runtime().find_field(type,name))}; }
+// A flat Radiance RGBE sky map, 2 * height by height texels of radiance 2^(exponent - 129).
+std::string radiance(std::uint32_t height,char exponent) {
+    auto bytes="#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y "+std::to_string(height)+" +X "+std::to_string(2*height)+"\n";
+    for(std::uint32_t i=0;i<2*height*height;++i) bytes+=std::string{char(128),char(128),char(128),exponent};
+    return bytes;
+}
+// Writes a sky map into the project's Content and returns its catalog key.
+std::string sky_asset(editor::Project& project,const std::filesystem::path& relative,const std::string& bytes) {
+    std::filesystem::create_directories((project.root()/relative).parent_path());
+    take(editor::write_file(project.root()/relative,bytes));take(project.refresh());
+    const auto at=std::ranges::find_if(project.entries(),[&](const auto& entry){return entry.path.filename()==relative.filename();});
+    require(at!=project.entries().end() && at->kind==editor::AssetKind::sky,"A .hdr file was not catalogued as a sky asset.");
+    return at->key;
+}
 void verify_primitive_source(editor::Project& project) {
     acceptance_phase="Primitive Source reflection and persistence";
     editor::Session document;
@@ -461,7 +477,7 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     rejects(damaged,"A duplicate document identity was accepted.");
     damaged=scene;damaged["entities"][1]["children"]=Json::array({gone_id});
     rejects(damaged,"A composition cycle was accepted.");
-    damaged=scene;damaged["version"]=8;
+    damaged=scene;damaged["version"]=9;
     rejects(damaged,"A newer scene version was accepted.");
 }
 // String leaves use the scene codec's shared leaf decoder, which also decodes operator parameters strictly.
@@ -827,6 +843,37 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     lighting.exposure_ev=2.5f;lighting.probe_volumes[0].minimum[0]=7;lighting.probe_volumes[0].maximum[0]=9;
     each("World settings",[&]{take(a.set_environment(lighting));});
     require(take(b->presentation().environment())==lighting,"A later World Settings edit did not reach Play.");
+    // A sky map reaches Play as its key, which Play resolves in its own Project, refreshed for a file added after Play opened it.
+    const auto sky_key=sky_asset(project,"Content/Sky/Forwarded.hdr",radiance(1,char(130)));
+    const auto play_sky=[&]{return take(b->presentation().environment()).sky_map;};
+    each("Sky map",[&]{take(a.set_sky_map(take(project.sky_map(sky_key))));});
+    require(play_sky() && play_sky()==take(play_project.sky_map(sky_key)).map,"A sky map did not reach Play through its own Project.");
+    const auto environment_entity=take(world::inspect_component(ra,a.environment())).owner;
+    take(a.select(environment_entity));changed(a.erase_selected());sync("Environment removal");
+    changed(a.undo());sync("Environment restoration");
+    require(play_sky()==take(play_project.sky_map(sky_key)).map,"An added Environment did not carry its sky map key to Play.");
+    // A key Play cannot resolve only warns, as the document keeps it unresolved too; a malformed one is rejected.
+    const auto environment_id=std::to_string(*a.document_identity(a.environment()));
+    const auto set_play_sky=[&](Json value) {
+        return take(b->apply_live(Json{{"ops",Json::array({Json{{"op","set"},{"id",environment_id},{"sky_map",std::move(value)}}})}}.dump(),play_project));
+    };
+    const auto missing_sky=set_play_sky("project/{00000000-0000-0000-0000-000000000000}");
+    require(missing_sky.size()==1 && missing_sky[0].severity==world::Severity::warning && missing_sky[0].kind==world::DiagnosticKind::missing_resource &&
+        !play_sky() && take(presentation::read_sky_map(rb,b->environment())).source=="project/{00000000-0000-0000-0000-000000000000}",
+        "An unresolvable Play sky map was not one warning that keeps its key.");
+    const auto malformed_sky=set_play_sky(5);
+    require(malformed_sky.size()==1 && malformed_sky[0].severity==world::Severity::error && malformed_sky[0].kind==world::DiagnosticKind::command_rejected,
+        "A malformed Play sky map key was not rejected.");
+    require(set_play_sky(sky_key).empty() && scene(a)==scene(*b) && play_sky(),"Play did not return to the document's sky map.");
+    // An add reads a key Play failed to read before again: the editor may send it once the file is restored.
+    const auto late_key=sky_asset(project,"Content/Sky/Late.hdr","broken\n");
+    require(set_play_sky(late_key).size()==1 && b->unavailable(editor::AssetKind::sky,late_key),"Play resolved a corrupt sky map.");
+    take(a.select(environment_entity));changed(a.erase_selected());sync("Environment removal before a restored sky map");
+    take(editor::write_file(project.root()/"Content/Sky/Late.hdr",radiance(1,char(131))));take(project.refresh());
+    take(a.set_sky_map(take(project.sky_map(late_key))));sync("Environment creation with a restored sky map");
+    require(play_sky() && play_sky()==take(play_project.sky_map(late_key)).map,"Play kept an earlier failure for a restored sky map.");
+    changed(a.undo());sync("Restored sky map undo");changed(a.undo());sync("Environment removal undo");
+    require(play_sky()==take(play_project.sky_map(sky_key)).map,"Undoing back to the original Environment lost its sky map in Play.");
     each("Name",[&]{take(a.rename(first,L"Runner"));});
     each("Field",[&]{edit(a,move,speed,Scalar{5.f},201);});
     each("Field group",[&]{
@@ -942,10 +989,63 @@ void verify_environment_migration(editor::Project& project) {
     }
     // A saved Environment supplies World lighting on the next open.
     const auto saved=Json::parse(take(sky->serialize()));
-    require(saved.at("version")==7 && !saved.contains("world"),"A migrated scene did not save as version 7 without a world section.");
+    require(saved.at("version")==8 && !saved.contains("world"),"A migrated scene did not save as version 8 without a world section.");
     auto reopened=load(saved);
     require(reopened->lighting_supplied() && settings(*reopened)==lit && reopened->load_issues().empty(),
         "A saved Environment did not reopen as supplied World lighting with the same sky.");
+    {
+        // Version 8 adds the Environment's sky map key; a version 7 Environment gains an empty one.
+        acceptance_phase="Environment sky map";
+        const auto environment_record=[](Json& data,const std::string& type="world.EnvironmentComponent")->Json& {
+            for(auto& node:data.at("entities")) for(auto& part:node.at("components")) if(part.at("type")==type) return part;
+            throw std::runtime_error("The scene has no Environment record.");
+        };
+        auto current=saved;
+        require(environment_record(current).at("sky_map")=="","A saved Environment did not write an empty sky map key.");
+        auto v7=current;v7["version"]=7;environment_record(v7).erase("sky_map");
+        auto upgraded=load(v7);
+        require(upgraded->load_issues().empty() && !settings(*upgraded).sky_map && Json::parse(take(upgraded->serialize()))==current,
+            "A version 7 Environment did not open without a sky map and save as version 8.");
+        auto derived=v7;environment_record(derived)["type"]="game.Environment";
+        auto derived_document=take(editor::Session::deserialize(derived.dump(),project,prepare(std::make_shared<Evidence>()),editor::LoadPolicy::strict));
+        auto derived_saved=Json::parse(take(derived_document->serialize()));
+        require(environment_record(derived_saved,"game.Environment").at("sky_map")=="" && derived_document->lighting_supplied(),
+            "A version 7 Environment of a derived type did not gain an empty sky map key or did not supply World lighting.");
+        // A key resolves through the Project's cache; a missing one renders without its map and is saved unchanged.
+        const auto key=sky_asset(project,"Content/Sky/Scene.hdr",radiance(1,char(129)));const auto map=take(project.sky_map(key)).map;
+        auto mapped=current;environment_record(mapped)["sky_map"]=key;
+        auto bound=load(mapped);
+        require(map && settings(*bound).sky_map==map && bound->load_issues().empty() && Json::parse(take(bound->serialize()))==mapped,
+            "A sky map key did not resolve to the Project's map or did not save unchanged.");
+        auto missing=current;environment_record(missing)["sky_map"]="project/{00000000-0000-0000-0000-000000000000}";
+        require(!editor::Session::deserialize(missing.dump(),project,{},editor::LoadPolicy::strict),"Strict loading accepted a missing sky map.");
+        auto unresolved=load(missing);const auto& issues=unresolved->load_issues();
+        require(issues.size()==1 && issues[0].kind==missing_resource && issues[0].severity==world::Severity::warning &&
+            issues[0].field==std::vector<std::string>{"sky_map"} && !settings(*unresolved).sky_map && Json::parse(take(unresolved->serialize()))==missing,
+            "A missing sky map was not one warning, or its key did not save unchanged.");
+        auto malformed=current;environment_record(malformed)["sky_map"]=5;
+        auto kept=load(malformed);
+        require(kept->load_issues().size()==1 && kept->load_issues()[0].kind==mismatch && Json::parse(take(kept->serialize()))==malformed &&
+            take(kept->retained(kept->environment())).entries.at(0).kind==mismatch,"A malformed sky map key was not reported and kept as a mismatch.");
+        // set_sky_map is one history item that releases the kept value; undo and redo restore the stored map.
+        const auto asset=take(project.sky_map(key));
+        take(kept->set_sky_map(asset));
+        require(settings(*kept).sky_map==map && kept->undo_count()==1 && Json::parse(take(kept->serialize()))==mapped,
+            "Setting a sky map did not bind it as one history item or kept the malformed value.");
+        changed(kept->undo());require(!settings(*kept).sky_map && Json::parse(take(kept->serialize()))==malformed,"Undoing a sky map did not restore the kept value.");
+        changed(kept->redo());require(settings(*kept).sky_map==map,"Redoing a sky map did not restore the same map.");
+        take(kept->set_sky_map({}));auto cleared=Json::parse(take(kept->serialize()));
+        require(!settings(*kept).sky_map && environment_record(cleared).at("sky_map")=="" && kept->undo_count()==2,"An empty sky asset did not clear the sky map.");
+        changed(kept->undo());require(settings(*kept).sky_map==map,"Undoing a cleared sky map did not restore the same map.");
+        take(kept->set_sky_map(asset));require(kept->undo_count()==1 && kept->redo_count()==1,"An unchanged sky map created history.");
+        // Without an Environment the first sky map creates one in the same history item.
+        auto empty=load(scene(Json::object(),Json::array(),Json::array(),"1"));
+        take(empty->set_sky_map({}));require(empty->environment()==ObjectId{} && empty->undo_count()==0,"Clearing an absent sky map created an Environment.");
+        take(empty->set_sky_map(asset));
+        require(empty->environment()!=ObjectId{} && settings(*empty).sky_map==map && empty->undo_count()==1,"The first sky map did not create its Environment.");
+        changed(empty->undo());require(empty->environment()==ObjectId{} && take(empty->world().members()).empty(),"Undoing the first sky map left an Environment.");
+    }
+    acceptance_phase="Environment migration";
     // Load initialization, as an example opens: it creates or writes the Environment without history or a modified mark.
     for(const auto& source:{scene(Json::object(),Json::array(),Json::array(),"1"),sky_only}) {
         auto opened=load(source);const bool had=opened->environment()!=ObjectId{};
@@ -984,7 +1084,7 @@ void run() {
     take(document.preview_edit(13,6.f)); take(document.cancel_edit()); take(document.cancel_edit());
     require(std::get<float>(take(document.read_property(move,speed)))==4,"Cancel failed to restore scalar value.");
     const auto saved=take(document.serialize()); const auto saved_json=Json::parse(saved);
-    require(saved_json["version"]==7 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
+    require(saved_json["version"]==8 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     require(Json::parse(take(reopened->serialize()))==saved_json,"Derived scene roundtrip changed type, fields or composition.");
     auto defaults=saved_json; defaults["entities"][0]["components"][1]["properties"].erase("speed");
@@ -1042,7 +1142,7 @@ void run() {
     upgraded["actors"][0]["components"][0]["roughness"]=presentation::Material{}.roughness;
     upgraded["actors"][0]["components"][0]["metallic"]=0.f;
     upgraded["actors"][0]["components"][0]["emissive"]=Json::array({0.f,0.f,0.f});
-    require(migrated_json["version"]==7 && migrated_json["entities"][0]["components"][0]["properties"]["body"]["enabled"]==false,
+    require(migrated_json["version"]==8 && migrated_json["entities"][0]["components"][0]["properties"]["body"]["enabled"]==false,
         "Legacy visual mesh unexpectedly enabled physics or failed to migrate to the Entity graph.");
     auto upgraded_document=take(editor::Session::deserialize(upgraded.dump(),project));
     require(take(upgraded_document->serialize())==take(migrated->serialize()),"Legacy v1/v3 migration disagreed on complete authored values.");

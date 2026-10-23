@@ -2,13 +2,75 @@
 constinit timing::Marker profile_calibration{"profile.calibration","Scope cost calibration",&timing::frame};
 constexpr std::array<timing::Marker*,1> profile_markers{&profile_calibration};
 
+// Steps a Play copy of the scene at 60 Hz, one fixed step per frame, until no rigid
+// body has been active for 120 frames (at most 1800 frames), and reports the physics
+// phases of frames that end with and without active bodies, the SceneSnapshot refresh after each frame,
+// the Play start and each of the first five frames.
+void profile_physics_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output) {
+    using Json=nlohmann::json;
+    require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute physics profile file.");
+    application::install_frame_timing(profile_markers);
+    timing::Recorder recorder;
+    auto project=take(editor::Project::open(root));
+    auto play=take(editor::Session::deserialize(take(editor::read_file(take(project.resolve(scene)))),project));
+    {
+        timing::Recorder::Frame frame{recorder};changed(play->start());
+        require(frame.finish().structure_errors==0,"Physics profile recorded a misplaced or unregistered phase in Play start.");
+    }
+    const std::chrono::duration<double,std::milli> started=recorder.last().time(timing::frame);
+    const auto& physics=*play->physics_scene();
+    const std::array phases{&physics::phases::step,&physics::phases::reconcile,&physics::phases::solve,&physics::phases::write_back};
+    std::array<std::vector<double>,5> active,sleeping;
+    // Costs that only the first steps pay, such as building the broad phase, vanish in the medians.
+    Json first_frames=Json::array();
+    application::SceneSnapshot snapshot;
+    std::size_t steps{},quiet{},frames{};
+    for(;frames<1800 && quiet<120;++frames) {
+        {
+            timing::Recorder::Frame frame{recorder};take(play->update(1.f/60));
+            {timing::Scope refreshing{application::phases::scene};take(snapshot.refresh(*play));}
+            require(frame.finish().structure_errors==0,"Physics profile recorded a misplaced or unregistered phase.");
+        }
+        steps+=physics.last_step().steps;
+        if(frames<5) first_frames.push_back({{"step_ms",std::chrono::duration<double,std::milli>(recorder.last().time(physics::phases::step)).count()},
+            {"solve_ms",std::chrono::duration<double,std::milli>(recorder.last().time(physics::phases::solve)).count()}});
+        const bool awake=physics.active_body_count()!=0;
+        auto& bucket=awake?active:sleeping;
+        for(std::size_t i=0;i<phases.size();++i)
+            bucket[i].push_back(std::chrono::duration<double,std::milli>(recorder.last().time(*phases[i])).count());
+        bucket[4].push_back(std::chrono::duration<double,std::milli>(recorder.last().time(application::phases::scene)).count());
+        quiet=awake?0:quiet+1;
+    }
+    Json report{{"schema","atelier.editor.physics-cpu.v1"},{"project",editor::utf8(root.wstring())},{"scene",scene},
+        {"bodies",physics.body_count()},{"frames",frames},{"steps",steps},{"active_frames",active[0].size()},{"sleeping_frames",sleeping[0].size()},
+        {"start_ms",started.count()},{"first_frames",first_frames}};
+#ifdef NDEBUG
+    report["configuration"]="release";
+#else
+    report["configuration"]="dev";
+#endif
+    for(const auto& [name,bucket]:{std::pair{"active",&active},std::pair{"sleeping",&sleeping}}) {
+        if((*bucket)[0].empty()) continue;
+        for(std::size_t i=0;i<phases.size();++i) {
+            auto values=(*bucket)[i];std::ranges::sort(values);
+            report[name][std::string(phases[i]->key())]={{"median_ms",values[values.size()/2]},{"p95_ms",values[values.size()*95/100]}};
+        }
+        auto refreshes=(*bucket)[4];std::ranges::sort(refreshes);
+        report[name]["snapshot.refresh"]={{"median_ms",refreshes[refreshes.size()/2]},{"p95_ms",refreshes[refreshes.size()*95/100]}};
+        std::printf("Physics CPU %s frames %zu: reconcile %.3f, solve %.3f, write_back %.3f, snapshot %.3f ms median\n",name,(*bucket)[0].size(),
+            report[name]["physics.reconcile"]["median_ms"].get<double>(),report[name]["physics.solve"]["median_ms"].get<double>(),
+            report[name]["physics.write_back"]["median_ms"].get<double>(),report[name]["snapshot.refresh"]["median_ms"].get<double>());
+    }
+    changed(play->stop());
+    take(editor::write_file(output,report.dump(2)+"\n"));
+}
 // Loads the real project through Session and measures existing CPU consumers.
 // No window, graphics device or author edits; only the Play stages use a second World.
 void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,const std::filesystem::path& output,
                        const std::filesystem::path& camera_report) {
     using Json=nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output),"Choose a new absolute CPU profile file.");
-    timing::install({world::phases::markers,physics::phases::markers,profile_markers});
+    application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     const auto milliseconds=[](std::chrono::nanoseconds value){return std::chrono::duration<double,std::milli>(value).count();};
     // Temporaries destroyed by the operation are part of its sample.
@@ -93,7 +155,9 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     measure("render_items",[&]{take(document->presentation().render_items());});
     measure("light_items",[&]{take(document->presentation().light_items());});
     measure("material_surfaces",[&]{for(const auto& item:geometry) take(presentation::material_surfaces(document->world().runtime(),item.component));});
-    measure("scene_snapshot",[&]{take(snapshot.refresh(*document));});
+    // A refresh opens app.scene.extract, so timed refreshes run under their host phase.
+    const auto refresh=[&]{timing::Scope scene{application::phases::scene};take(snapshot.refresh(*document));};
+    measure("scene_snapshot",refresh);
     {
         // Changed frames: the positions of 1 or 50 leaf mesh Entities alternate through Runtime writes.
         auto& runtime=document->world().runtime();const auto& x=document->types().position_fields[0];
@@ -109,7 +173,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         const auto move=[&](std::size_t count) {
             moved=!moved;
             for(std::size_t i=0;i<count;++i) take(runtime.write(leaves[i].first,x,Scalar{moved?leaves[i].second+1:leaves[i].second}));
-            take(snapshot.refresh(*document));
+            refresh();
         };
         measure("scene_snapshot_changed",[&]{move(1);});
         measure("scene_snapshot_changed_50",[&]{move(50);});
@@ -157,8 +221,8 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
                 "play_update did not record each World and physics phase once per frame.");
             for(const auto* marker:timing::catalog()) phases[marker->index()].push_back(milliseconds(record.time(*marker)));
         });
-        for(const auto* marker:timing::catalog()) {
-            if(marker==&timing::frame || marker==&profile_calibration) continue;
+        for(const auto module:{std::span<timing::Marker* const>(world::phases::markers),std::span<timing::Marker* const>(physics::phases::markers)})
+        for(const auto* marker:module) {
             auto& values=phases[marker->index()];values.erase(values.begin(),values.begin()+20);std::ranges::sort(values);
             report["stages"]["play_update"]["phases"][std::string(marker->key())]={{"median_ms",values[60]},{"p95_ms",values[114]}};
         }

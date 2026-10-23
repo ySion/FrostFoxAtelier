@@ -227,3 +227,280 @@ void mirrored_scale() {
         require(bool(f.scene->body_handle(body)),"A Primitive did not regain its body once its space was no longer degenerate.");
     committed(f.world.stop());
 }
+
+// Any TRS write moves its body as set_transform does: a write past World is read at the
+// next step and teleports the body. A step publishes only the poses it moved (active
+// bodies, bodies that fell asleep in it, teleported bodies and bodies below a published
+// Entity), so it never reverts a write it did not see. Ancestors are read on every step.
+void pose_publication() {
+    PhysicsFixture f;take(f.world.set_failure_policy(w::FailurePolicy::isolate));
+    auto floor=f.ground();
+    auto resting=f.make({0,.5f,0},dynamic_body());
+    auto falling=f.make({4,60,0},dynamic_body());
+    auto carried=f.make({8,.5f,0},dynamic_body());
+    committed(f.world.reparent(carried.id(),falling.id(),w::ReparentRule::keep_world));
+    auto holder=take(w::create_entity(f.runtime));take(f.world.set_transform(holder.id(),{{20,0,0},{0,0,0,1},{1,1,1}}));
+    committed(f.world.attach(holder.id()));
+    auto held=f.make({20,.5f,0},dynamic_body());
+    committed(f.world.reparent(held.id(),holder.id(),w::ReparentRule::keep_world));
+    // Below a distant ancestor the local TRS rounds a published pose by millimetres; it falls, so it is published.
+    auto distant=take(w::create_entity(f.runtime));take(f.world.set_transform(distant.id(),{{0,100000,0},{0,0,0,1},{1,1,1}}));
+    committed(f.world.attach(distant.id()));
+    auto perched=f.make({-4,1.3f,0},dynamic_body());
+    committed(f.world.reparent(perched.id(),distant.id(),w::ReparentRule::keep_world));
+    f.start();
+    for(unsigned frame=0;frame<240 && !(f.state(resting).sleeping && f.state(carried).sleeping && f.state(perched).sleeping);++frame) f.advance(1);
+    require(f.state(resting).sleeping && f.state(carried).sleeping && f.state(perched).sleeping && !f.state(falling).sleeping,
+        "The fixture did not settle its resting bodies while another still falls.");
+    require(take(w::read_transform(f.runtime,resting.id())).position==f.state(resting).position,
+        "A body that fell asleep kept a pose from before its last step.");
+    // A structural edit reconciles every body; that rounding is not taken for an ancestor move.
+    auto unrelated=take(w::create_entity(f.runtime));committed(f.world.attach(unrelated.id()));f.advance(1);
+    require(f.state(perched).sleeping,"A structural edit woke a resting body below a distant ancestor.");
+    const auto& x=f.world_types.position_fields[0];
+    const auto& z=f.world_types.position_fields[2];
+    const auto local=[&](const auto& entity){return take(w::read_transform(f.runtime,entity.id()));};
+    const auto rest_x=f.state(resting).position.x+.25f;
+    take(f.runtime.write(floor.id(),x,atelier::Scalar{.25f}));
+    take(f.runtime.write(resting.id(),x,atelier::Scalar{rest_x}));
+    f.advance(1);
+    require(near(f.state(floor).position.x,.25f,1e-6f) && local(floor).position==f.state(floor).position,
+        "A TRS written past World did not move its static body.");
+    require(near(f.state(resting).position.x,rest_x,1e-3f) && local(resting).position==f.state(resting).position,
+        "A TRS written past World did not move its sleeping body.");
+    require(local(falling).position==f.state(falling).position,"A step did not publish a falling body.");
+    const auto carried_state=f.state(carried);const auto carried_matrix=take(w::world_matrix(f.runtime,carried.id()));
+    require(near(carried_matrix[12],carried_state.position.x,1e-4f) && near(carried_matrix[13],carried_state.position.y,1e-4f),
+        "A sleeping body below a moving one did not keep its world pose.");
+    f.scene->on_before_step([&](std::uint64_t,float)->atelier::Result<void> {
+        if(auto moved=f.runtime.write(floor.id(),z,atelier::Scalar{1.5f});!moved) return moved;
+        return f.runtime.write(falling.id(),z,atelier::Scalar{3.f});
+    });
+    f.advance(1);
+    f.scene->on_before_step({});
+    require(local(floor).position.z==1.5f && f.state(floor).position.z==1.5f &&
+        near(local(falling).position.z,3,1e-4f) && near(f.state(falling).position.z,3,1e-4f),
+        "A TRS a step handler wrote did not move its body, static or moving, within that step.");
+    take(f.scene->teleport(f.handle(floor),{0,-.5f,2},{0,0,0,1}));f.advance(1);
+    require(local(floor).position.z==2,"A teleported static body did not publish its pose.");
+    require(f.world.take_diagnostics().empty() && bool(f.scene->body_handle(held.id())),"The fixture reported an unexpected physics failure.");
+    // Writes past World to a non-physical ancestor reach the bodies below it.
+    const auto placed=f.handle(held);
+    take(f.runtime.write(holder.id(),x,atelier::Scalar{25.f}));f.advance(1);
+    require(near(f.state(held).position.x,25,1e-4f) && f.handle(held)==placed,"An ancestor moved past World did not teleport the body below it.");
+    for(const auto& axis:f.world_types.scale_fields) take(f.runtime.write(holder.id(),axis,atelier::Scalar{2.f}));
+    f.advance(1);
+    require(f.handle(held)!=placed && near(f.state(held).position.y,1,1e-3f) && f.world.take_diagnostics().empty(),
+        "An ancestor scale changed past World did not rebuild the body below it.");
+    take(f.runtime.write(holder.id(),f.world_types.scale_fields[1],atelier::Scalar{3.f}));f.advance(1);
+    const auto reports=f.world.take_diagnostics();
+    require(!f.scene->body_handle(held.id()) && reports.size()==1 && reports[0].entity==held.id() && reports[0].phase==w::DiagnosticPhase::physics,
+        "An ancestor scale made nonuniform past World was not checked again on the next step.");
+    // One substep's handler moves a body under a new ancestor, the next substep's moves that ancestor.
+    auto twin=take(w::create_entity(f.runtime));take(f.world.set_transform(twin.id(),{{0,100000,0},{0,0,0,1},{1,1,1}}));
+    committed(f.world.attach(twin.id()));f.advance(1);
+    const auto perched_handle=f.handle(perched);const auto perched_z=f.state(perched).position.z;
+    unsigned calls=0;
+    f.scene->on_before_step([&](std::uint64_t,float)->atelier::Result<void> {
+        if(calls++) return f.runtime.write(twin.id(),z,atelier::Scalar{10.f});
+        if(auto moved=f.world.reparent(perched.id(),twin.id(),w::ReparentRule::keep_world);!moved) return std::unexpected(moved.error());
+        return {};
+    });
+    step(f.world,*f.scene,2*fixed_delta);
+    f.scene->on_before_step({});
+    require(calls==2 && near(f.state(perched).position.z,perched_z+10,1e-3f) && f.handle(perched)==perched_handle,
+        "A body a step handler moved under a new ancestor did not follow that ancestor written in the same step.");
+    committed(f.world.stop());
+}
+
+// The solver pool runs on several threads; the same input still gives the same poses bit for bit.
+void solver_determinism() {
+    const auto run=[] {
+        PhysicsFixture f;f.ground();
+        std::vector<PhysicsFixture::Entity> boxes;
+        for(unsigned i=0;i<160;++i) {
+            const auto layer=i/40,cell=i%40;
+            const float offset=layer%2?.35f:0.f;
+            boxes.push_back(f.make({float(cell%8)*1.15f-4+offset,1.5f+float(layer)*1.6f,float(cell/8)*1.15f-2+offset},dynamic_body()));
+        }
+        f.start();
+        std::vector<float> poses;
+        for(unsigned frame=0;frame<120;++frame) {
+            f.advance(1);
+            for(const auto& box:boxes) {
+                const auto state=f.state(box);const auto local=take(w::read_transform(f.runtime,box.id()));
+                for(const auto* value:{&state.position,&local.position}) poses.insert(poses.end(),{value->x,value->y,value->z});
+                for(const auto* value:{&state.rotation,&local.rotation}) poses.insert(poses.end(),{value->x,value->y,value->z,value->w});
+            }
+        }
+        committed(f.world.stop());
+        return poses;
+    };
+    const auto first=run(),second=run();
+    require(first.size()==second.size() && std::memcmp(first.data(),second.data(),first.size()*sizeof(float))==0,
+        "The same physics input produced different poses on the solver pool.");
+}
+
+// A full body pair or contact buffer only drops contacts: the simulation runs on, even under
+// the halt policy, and every overflowing step reports one coalesced physics warning.
+void contact_capacity() {
+    {
+        PhysicsFixture f;f.scene.reset();
+        require(!p::PhysicsScene::create(f.world,f.physics_types,{.bodies=~0u}),"A capacity above Jolt's limits was accepted.");
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types));
+        const auto derived=f.scene->capacity();
+        require(derived.bodies==4096 && derived.body_pairs==8*4096 && derived.contact_constraints==2*4096,
+            "A small World did not derive the default physics capacity.");
+        f.scene.reset();
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types,{.body_pairs=1,.contact_constraints=3}));
+        require(f.scene->capacity().body_pairs==4 && f.scene->capacity().contact_constraints==4,
+            "capacity() did not report Jolt's minimum buffers.");
+    }
+    // Jolt's body pairs share one buffer with the contact manifolds, so a full contact buffer is the reliable case.
+    {
+        PhysicsFixture f;f.scene.reset();
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types,{.contact_constraints=8}));
+        require(f.scene->capacity().contact_constraints==8 && f.scene->capacity().body_pairs==8*4096,"An explicit physics capacity was not kept.");
+        take(f.world.set_failure_policy(w::FailurePolicy::halt));
+        f.ground();
+        for(unsigned i=0;i<32;++i) f.make({float(i%8)*1.2f-4,.5f,float(i/8)*1.2f-2},dynamic_body());
+        f.start();
+        std::uint32_t overflows=0;
+        for(unsigned frame=0;frame<30;++frame) overflows+=step(f.world,*f.scene,fixed_delta).contact_overflows;
+        const auto reports=f.world.take_diagnostics();
+        require(f.world.running() && f.scene->last_step().completed_step==30 && overflows==30,
+            "A full physics buffer stopped the simulation or was not counted on every step.");
+        require(reports.size()==1 && reports[0].kind==w::DiagnosticKind::capacity_exceeded && reports[0].severity==w::Severity::warning &&
+            reports[0].phase==w::DiagnosticPhase::physics && reports[0].field==std::vector<std::string>{"contact_constraints"} && reports[0].repeats==30,
+            "A full physics buffer was not reported as one coalesced warning on its buffer.");
+        committed(f.world.stop());
+    }
+    // A resting contact whose cached solve was dropped while the buffer was full is reported again once
+    // there is room. The falling boxes are created first, so Jolt's active list puts them before the
+    // resting boxes and the resting contacts are the ones left without a constraint.
+    {
+        PhysicsFixture f;f.scene.reset();
+        f.scene=take(p::PhysicsScene::create(f.world,f.physics_types,{.contact_constraints=4}));
+        auto floor=f.ground();
+        std::vector<PhysicsFixture::Entity> falling,resting;
+        for(unsigned i=0;i<28;++i) falling.push_back(f.make({10+float(i%7)*1.5f,.59f,float(i/7)*1.5f},dynamic_body()));
+        for(unsigned i=0;i<4;++i) resting.push_back(f.make({-10+float(i)*1.5f,.5f,0},dynamic_body()));
+        std::vector<atelier::ObjectId> touching;
+        f.scene->on_contact([&](const p::ContactEvent& event)->atelier::Result<void>{
+            if(event.phase!=p::ContactPhase::ended && (event.first.entity==floor.id() || event.second.entity==floor.id()))
+                touching.push_back(event.first.entity==floor.id()?event.second.entity:event.first.entity);
+            return {};
+        });
+        f.start();
+        unsigned quiet=0;
+        while(quiet<15 && !step(f.world,*f.scene,fixed_delta).contact_overflows) ++quiet;
+        require(quiet>=3 && quiet<15,"The resting contacts did not settle before the falling boxes filled the contact buffer.");
+        f.advance(2);
+        for(const auto& box:falling) committed(f.world.set_enabled(box.id(),false));
+        f.advance(4);
+        touching.clear();
+        require(!step(f.world,*f.scene,fixed_delta).contact_overflows,"The contact buffer stayed full after the falling boxes left.");
+        for(const auto& box:resting)
+            require(std::ranges::find(touching,box.id())!=touching.end() && near(f.state(box).position.y,.5f,.05f),
+                "A resting contact dropped while the buffer was full was not reported again once there was room.");
+        committed(f.world.stop());
+    }
+}
+
+// A fixed 60 Hz step drawn at 120 frames per second: the World keeps the simulated pose while
+// presentation draws each simulated Entity between its previous and current step.
+void render_interpolation() {
+    PhysicsFixture f;
+    f.ground();
+    auto falling=f.make({4,60,0},dynamic_body());
+    auto carried=f.make({8,.5f,0},dynamic_body());
+    committed(f.world.reparent(carried.id(),falling.id(),w::ReparentRule::keep_world));
+    const auto visual=[&](atelier::ObjectId parent) {
+        auto entity=take(pr::create_static_mesh_entity(f.world,{atelier::geometry::cube_mesh(),{{0,2,0},{0,0,0,1},{1,1,1}}}));
+        committed(f.world.attach(entity.id()));
+        committed(f.world.reparent(entity.id(),parent,w::ReparentRule::keep_local));
+        return entity;
+    };
+    auto above=visual(falling.id()),below=visual(carried.id());
+    auto resting=f.make({-8,.5f,0},dynamic_body());
+    auto rested=visual(resting.id());
+    f.start();
+    for(unsigned frame=0;frame<240 && !(f.state(carried).sleeping && f.state(resting).sleeping);++frame) f.advance(1);
+    require(f.state(carried).sleeping && f.state(resting).sleeping && !f.state(falling).sleeping,
+        "The resting bodies did not sleep while the falling body falls.");
+    const auto slot=[&](const atelier::ObjectRoot& entity) -> const pr::MeshSlot& {
+        for(const auto& value:f.shown.mesh_slots()) if(value.item && value.item->entity==entity.id()) return value;
+        throw std::runtime_error("A mesh lost its presentation.");
+    };
+    const auto drawn=[&](const atelier::ObjectRoot& entity) { const auto& value=slot(entity);return value.presented?*value.presented:value.item->world; };
+    const auto frame=[&](float elapsed) {
+        const auto result=step(f.world,*f.scene,elapsed);
+        take(f.shown.update(f.scene->presented_poses()));
+        return result.steps;
+    };
+    constexpr float half=1.f/120;
+    frame(half);
+    float older=slot(above).item->world[13];
+    frame(half);
+    float newer=slot(above).item->world[13],last=drawn(above)[13];
+    unsigned stepped=0;
+    for(unsigned i=0;i<8;++i) {
+        const auto steps=frame(half);
+        stepped+=steps;
+        const auto& simulated=slot(above).item->world;
+        const auto shown=drawn(above)[13];
+        require(simulated==take(w::world_matrix(f.runtime,above.id())),"Presentation changed the World pose of a descendant.");
+        require(steps<=1 && (steps!=0)==(simulated[13]!=newer),"The World pose of a falling body did not change with its steps only.");
+        if(steps) {older=newer;newer=simulated[13];}
+        require(shown<last && shown>=newer-1e-4f && shown<=older+1e-4f,
+            "A falling body's descendant was not drawn between its previous and current step on every frame.");
+        require(!slot(below).presented,"A sleeping body below a moving body followed it on screen.");
+        last=shown;
+    }
+    require(stepped==4,"Eight 120 Hz frames did not run four 60 Hz steps.");
+    // No step has published a sleeping body reparented between steps, nor a ragdoll created
+    // between them; their World poses must bound the search.
+    committed(f.world.reparent(resting.id(),falling.id(),w::ReparentRule::keep_world));
+    require(frame(0)==0 && slot(above).presented && !slot(rested).presented,
+        "A body reparented below a moving body between steps followed it on screen.");
+    committed(f.world.reparent(resting.id(),{},w::ReparentRule::keep_world));
+    auto doll=take(w::create_entity(f.runtime));
+    take(f.world.set_transform(doll.id(),{{0,4,0},{0,0,0,1},{1,1,1}}));
+    committed(f.world.attach(doll.id(),w::append,falling.id()));
+    auto posed=visual(doll.id());
+    const auto ragdoll=take(f.scene->create_ragdoll(doll.id(),std::array{p::RagdollPart{"root"}}));
+    require(frame(0)==0 && slot(above).presented && !slot(posed).presented,
+        "A ragdoll created below a moving body followed it on screen before its first step.");
+    take(f.scene->destroy_ragdoll(ragdoll));
+    const auto dropped=take(f.world.detach(doll.id()));
+    frame(0);
+    const auto authoritative=take(f.shown.render_items());
+    require(std::ranges::all_of(authoritative,[&](const pr::RenderItem& item){return item.world==take(w::world_matrix(f.runtime,item.entity));}),
+        "render_items() drew a presented pose.");
+    // A horizontal move keeps the carried body on the floor.
+    const auto height=take(w::read_transform(f.runtime,falling.id())).position.y;
+    take(f.world.set_transform(falling.id(),{{-20,height,0},{0,0,0,1},{1,1,1}}));
+    take(f.shown.update(f.scene->presented_poses()));
+    require(!slot(above).presented && !slot(below).presented,"A relocated body was not drawn at its new pose at once.");
+    for(unsigned i=0;i<3;++i) {
+        frame(half);
+        require(std::abs(drawn(above)[12]+20)<1e-3f && std::abs(drawn(above)[13]-slot(above).item->world[13])<.5f,
+            "A relocated body was drawn trailing from its old pose.");
+    }
+    take(f.runtime.write(falling.id(),f.world_types.position_fields[0],atelier::Scalar{-40.f}));
+    frame(fixed_delta);
+    require(std::abs(drawn(above)[12]+40)<1e-3f,"A body moved past World was drawn trailing from its old pose.");
+    for(unsigned i=0;i<2400 && !(f.state(falling).sleeping && f.state(carried).sleeping);++i) frame(half);
+    require(f.state(falling).sleeping && f.state(carried).sleeping,"The bodies did not settle.");
+    frame(half);frame(half);
+    const auto version=take(f.shown.update(f.scene->presented_poses()));
+    const auto still=take(f.runtime.change_cursor());
+    frame(half);frame(half);
+    std::vector<atelier::ObjectId> written;
+    f.runtime.changed_objects(still,written);
+    require(written.empty(),"A still frame of World, physics and presentation wrote an object.");
+    require(f.scene->presented_poses().empty() && take(f.shown.update(f.scene->presented_poses()))==version &&
+        std::ranges::none_of(f.shown.mesh_slots(),[](const pr::MeshSlot& value){return value.presented.has_value();}),
+        "A sleeping scene kept presented poses or a changing version.");
+    committed(f.world.stop());
+}

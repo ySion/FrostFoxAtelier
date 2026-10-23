@@ -373,7 +373,7 @@ std::string legacy_type(std::string name) {
 struct LegacyActorSelection {std::uint64_t entity{};std::vector<std::pair<std::uint64_t,std::uint64_t>> components;};
 Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nullptr) {
     const auto version=json_format::identity(source.at("version"));
-    if(version==6 || version==7) return source;
+    if(version>=6 && version<=8) return source;
     if(version<1 || version>5) throw std::runtime_error("Unsupported scene format version.");
     fields(source,{"version","actors","world"});
     if(!source.contains("actors")) throw std::runtime_error("Legacy scene requires an Actor directory.");
@@ -382,7 +382,7 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
     if(!old.is_array() || old.size()>Session::maximum_entities) throw std::runtime_error("Invalid legacy Actor count.");
     std::uint64_t next=1;Json roots=Json::array(),entities=Json::array();std::vector<std::string> actor_ids;
     for(std::size_t i=0;i<old.size();++i) actor_ids.push_back(std::to_string(next++));
-    const std::unordered_set<std::string> spatial_types{"world.SceneComponent","world.PrimitiveComponent","world.StaticMeshComponent","world.CollisionComponent","world.LightComponent","physics.RagdollPartComponent","physics.VehicleWheelComponent","physics.SceneQueryComponent"};
+    const std::unordered_set<std::string> spatial_types{"world.SceneComponent","world.PrimitiveComponent","world.StaticMeshComponent","world.CollisionComponent","world.LightComponent","physics.RagdollPartComponent","physics.SceneQueryComponent"};
     for(std::size_t a=0;a<old.size();++a) {
         auto actor=old[a];fields(actor,{"type","name","enabled","root","components","properties"});
         if(version==1 && actor.contains("properties")) throw std::runtime_error("Actor business properties require scene version 2.");
@@ -449,12 +449,12 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
         for(const auto& part:parts) {
             const auto type=part.at("type").get<std::string>();
             if(type=="world.PrimitiveComponent" || type=="world.StaticMeshComponent" || type=="world.CollisionComponent" ||
-                type=="physics.RagdollPartComponent" || type=="physics.VehicleWheelComponent") {
+                type=="physics.RagdollPartComponent") {
                 const auto id=spaces.at(json_format::identity(part.at("id")));
                 if(ignored_ids.insert(id).second) ignored.push_back(ref_key(std::stoull(id)));
             }
         }
-        Json ragdoll=Json::array(),wheels=Json::array();
+        Json ragdoll=Json::array();
         for(auto part:parts) {
             const auto key=json_format::identity(part.at("id"));const auto name=part.at("type").get<std::string>();
             fields(part,{"id","type","enabled","properties","position","rotation","scale","parent","mesh","base_color","roughness","metallic","emissive","materials","physics","body","constraint_target"});
@@ -479,7 +479,7 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
                 const auto entity=std::stoull(spaces.at(key));migrated_parts.emplace(key,std::pair{entity,entity});continue;
             }
             const auto owner=spaces.contains(key)?spaces.at(key):actor_ids[a];
-            const bool special=name=="physics.RagdollPartComponent" || name=="physics.VehicleWheelComponent";
+            const bool special=name=="physics.RagdollPartComponent";
             Json payload={{"id",std::to_string(next++)},{"type",name},{"name",""},{"enabled",part.at("enabled")},{"properties",props}};
             migrated_parts.emplace(key,std::pair<std::uint64_t,std::uint64_t>{std::stoull(owner),std::stoull(payload.at("id").get<std::string>())});
             if(name=="world.StaticMeshComponent" || special) {
@@ -491,18 +491,16 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
                 if(key==root_key || parents.at(key)!=root_key) throw std::runtime_error("Legacy physics part must directly descend from its controller root.");
                 auto metadata=payload;metadata["properties"].erase("body");for(const auto field:{"mesh","base_color","roughness","metallic","emissive","materials"}) metadata.erase(field);
                 auto mesh=payload;mesh["id"]=std::to_string(next++);mesh["type"]="world.StaticMeshComponent";mesh["properties"]=Json::object();
-                if(props.contains("body")) {mesh["properties"]["body"]=props.at("body");if(props.at("body").value("enabled",false)) throw std::runtime_error("Legacy ragdoll/wheel Primitive conflicts with its pose driver.");}
+                if(props.contains("body")) {mesh["properties"]["body"]=props.at("body");if(props.at("body").value("enabled",false)) throw std::runtime_error("Legacy ragdoll part Primitive conflicts with its pose driver.");}
                 else mesh["properties"]["body"]={{"enabled",false}};
                 nodes[node_positions.at(owner)]["components"].push_back(std::move(metadata));nodes[node_positions.at(owner)]["components"].push_back(std::move(mesh));
-                (name=="physics.RagdollPartComponent"?ragdoll:wheels).push_back(ref_key(std::stoull(owner)));
+                ragdoll.push_back(ref_key(std::stoull(owner)));
             } else nodes[node_positions.at(owner)]["components"].push_back(std::move(payload));
         }
-        unsigned ragdoll_drivers{},vehicle_drivers{};
-        for(auto& component:nodes[0]["components"]) {
+        unsigned ragdoll_drivers{};
+        for(auto& component:nodes[0]["components"])
             if(component.at("type")=="physics.RagdollComponent") {component["properties"]["parts"]=ragdoll;++ragdoll_drivers;}
-            if(component.at("type")=="physics.VehicleComponent") {component["properties"]["wheels"]=wheels;++vehicle_drivers;}
-        }
-        if(ragdoll_drivers>1 || vehicle_drivers>1 || (!ragdoll.empty() && ragdoll_drivers!=1) || (!wheels.empty() && vehicle_drivers!=1)) throw std::runtime_error("Legacy physics parts require one identifiable controller.");
+        if(ragdoll_drivers>1 || (!ragdoll.empty() && ragdoll_drivers!=1)) throw std::runtime_error("Legacy physics parts require one identifiable controller.");
         if(selections) {
             LegacyActorSelection selection;selection.entity=std::stoull(actor_ids[a]);selection.components.reserve(original_parts.size());
             for(const auto key:original_parts) selection.components.push_back(migrated_parts.at(old_body && key==*old_body?root_key:key));
@@ -540,6 +538,8 @@ struct Session::GraphCodec {
     struct Graph {
         Json data;
         std::unordered_map<std::string,MeshCopy> meshes;
+        // An in-memory copy keeps the sky map it resolved, not only the key.
+        std::unordered_map<std::string,presentation::SkyMapBinding> skies;
         std::unordered_map<std::string,physics::BodySettings> bodies;
         std::unordered_map<std::string,ObjectRoot> materials;
         std::unordered_map<std::string,ObjectRoot> external;
@@ -657,18 +657,33 @@ struct Session::GraphCodec {
     // LightComponent; version 7 keeps both in one EnvironmentComponent. A document gains
     // an "Environment" root Entity only when it had World settings or a Sky Light.
     // Returns whether the file supplied World lighting: a version 6 world key or a saved
-    // Environment. One merged only from a Sky Light does not count.
+    // Environment. One merged only from a Sky Light does not count. Version 8 adds the
+    // Environment's sky map key, empty for an Environment of an older version.
     static bool upgrade(Session& session,Json& data,Load& load) {
         auto& runtime=session.runtime_;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
         const auto environment_type=type_name(runtime,session.presentation_types_.environment_component);
         auto& entities=data.at("entities");
         if(!entities.is_array()) throw std::runtime_error("Invalid Entity graph directory.");
-        if(json_format::identity(data.at("version"))!=6) {
+        // A registered type derived from EnvironmentComponent is one too; an unregistered type stays a placeholder.
+        const auto environment=[&](const Json& part) {
+            if(!part.is_object()) return false;
+            const auto type=runtime.find_type(part.value("type",std::string{}));
+            return type && derives(runtime,*type,session.presentation_types_.environment_component);
+        };
+        const auto sky_maps=[&] {
+            for(auto& entity:entities) if(entity.is_object())
+                if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
+                    for(auto& part:*parts) if(environment(part) && !part.contains("sky_map")) part["sky_map"]="";
+            data["version"]=8;
+        };
+        if(const auto version=json_format::identity(data.at("version"));version!=6) {
+            bool found{};
             for(const auto& entity:entities) if(entity.is_object())
                 if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
-                    for(const auto& part:*parts) if(part.is_object() && part.value("type",std::string{})==environment_type) return true;
-            return false;
+                    for(const auto& part:*parts) found|=environment(part);
+            if(version==7) sky_maps();
+            return found;
         }
         Json settings=Json::object(),unknown=Json::object();bool supplied{};
         if(const auto section=data.find("world");section==data.end()) {
@@ -743,7 +758,7 @@ struct Session::GraphCodec {
                 {"children",Json::array()},{"components",Json::array({Json{{"id",component},{"type",environment_type},{"enabled",true},{"properties",std::move(settings)}}})}});
             data.at("roots").push_back(entity);data["next_id"]=std::to_string(next+2);
         }
-        data["version"]=7;
+        sky_maps();
         return supplied;
     }
     static Graph capture(const Session& session,std::span<const ObjectId> requested,bool persistent,bool document=false,bool live=false) {
@@ -889,6 +904,10 @@ struct Session::GraphCodec {
                     }
                     value["materials"]=std::move(entries);
                 }
+                if(derives(runtime,state.type,session.presentation_types_.environment_component)) {
+                    auto sky=take(presentation::read_sky_map(runtime,part.id()));
+                    value["sky_map"]=sky.source;graph.skies.emplace(key,std::move(sky));
+                }
                 merge_retained(value,part.id());
                 parts.push_back(std::move(value));
             }
@@ -899,7 +918,7 @@ struct Session::GraphCodec {
             merge_retained(value,object);
             values.push_back(std::move(value));
         }
-        graph.data={{"version",7},{"next_id",std::to_string(session.next_local_id_)},
+        graph.data={{"version",8},{"next_id",std::to_string(session.next_local_id_)},
             {"roots",std::move(root_keys)},{"entities",std::move(values)},{"materials",std::move(material_values)}};
         if(document && !session.retained_document_.record.empty())
             overlay(graph.data,restore_references(Json::parse(session.retained_document_.record)));
@@ -1081,10 +1100,24 @@ struct Session::GraphCodec {
         return *object;
     }
 
+    // A document load does not read a key that already failed again for each Environment that
+    // names it; Play reads it again, since the editor may send it after the file was restored.
+    static rendering::SkyMapRef resolve_sky(Session& session,Project* project,const std::string& source,Load& load,ObjectId object) {
+        if(source.empty()) return {};
+        if(!project) throw std::runtime_error("Sky map restoration requires a Project.");
+        const auto* item=load.live?nullptr:session.unavailable(AssetKind::sky,source);
+        if(!item) {
+            if(auto loaded=project->sky_map(source)) {session.unavailable_.erase(std::pair{AssetKind::sky,source});return loaded->map;}
+            else item=&session.remember_unavailable(*project,AssetKind::sky,source,loaded.error());
+        }
+        const Json value=source;
+        load.report(world::Severity::warning,item->kind,object,{"sky_map"},&value,item->reason+" The sky renders without its map; the key is saved unchanged.");
+        return {};
+    }
     static Prepared construct(Session& session,const Graph& graph,Project* project,bool keep_ids,Load& load) {
         const auto& data=graph.data;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
-        if(json_format::identity(data.at("version"))!=7) throw std::runtime_error("Object graph requires scene format version 7.");
+        if(json_format::identity(data.at("version"))!=8) throw std::runtime_error("Object graph requires scene format version 8.");
         for(const auto& [name,value]:data.items())
             if(name!="version" && name!="next_id" && name!="roots" && name!="entities" && name!="materials") {
                 if(load.document) load.keep({},{name},value,world::DiagnosticKind::unknown_key,"Unknown scene key kept from the saved scene.");
@@ -1161,8 +1194,11 @@ struct Session::GraphCodec {
             if(!parts.is_array() || parts.size()>maximum_components) throw std::runtime_error("Invalid Component count.");
             for(const auto& part:parts) {
                 const auto component=create(part,false,object);
-                if(derives(runtime,take(runtime.type_of(component)),session.presentation_types_.static_mesh_component))
+                const auto component_type=take(runtime.type_of(component));
+                if(derives(runtime,component_type,session.presentation_types_.static_mesh_component))
                     load.extra(component,part,{"id","type","name","enabled","properties","mesh","base_color","roughness","metallic","emissive","materials"});
+                else if(derives(runtime,component_type,session.presentation_types_.environment_component))
+                    load.extra(component,part,{"id","type","name","enabled","properties","sky_map"});
                 else load.extra(component,part,{"id","type","name","enabled","properties"});
             }
         }
@@ -1377,13 +1413,20 @@ struct Session::GraphCodec {
                             load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"mesh"},nullptr,"The mesh source is missing; the component has no mesh.");
                         else if(!mesh_at->is_string()) load.keep(object,{"mesh"},*mesh_at,world::DiagnosticKind::mismatch,"Expected a mesh source key. The component has no mesh and the saved value is kept.");
                         else source=mesh_at->get<std::string>();
-                        geometry::MeshRef mesh;
+                        geometry::MeshRef mesh;std::vector<presentation::MaterialBinding> defaults;
                         if(!source.empty()) {
                             // A source that already failed is not read again for each component that uses it.
                             const auto* item=session.unavailable(AssetKind::mesh,source);
                             if(!item) {
-                                if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
-                                else item=&session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());
+                                if(auto loaded=project->mesh(source)) {
+                                    mesh=loaded->mesh;std::vector<MissingResource> missing;
+                                    defaults=take(session.mesh_defaults(*project,*loaded,&missing));
+                                    for(const auto& absent:missing) {
+                                        const Json value=absent.key;
+                                        load.report(world::Severity::warning,absent.kind,object,{"mesh"},&value,absent.reason+(absent.input?
+                                            " A default material of the mesh has no texture for this input.":" A default material of the mesh stands in."));
+                                    }
+                                } else item=&session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());
                             }
                             if(item) {
                                 const Json value=source;
@@ -1392,7 +1435,7 @@ struct Session::GraphCodec {
                             }
                         }
                         const bool unresolved=!source.empty() && !mesh;
-                        take(presentation::set_mesh_binding(runtime,object,{source,std::move(mesh)}));
+                        take(presentation::set_mesh_binding(runtime,object,{source,std::move(mesh),std::move(defaults)}));
                         presentation::Material material;std::vector<std::string> applied;
                         const auto vector_value=[&](const char* name,math::Vector3& target) {
                             const auto found=part.find(name);if(found==part.end()) return;
@@ -1448,6 +1491,17 @@ struct Session::GraphCodec {
                         take(presentation::set_material_bindings(runtime,object,bindings));
                     }
                 }
+                if(environment) {
+                    if(auto at=graph.skies.find(part.at("id").get<std::string>());at!=graph.skies.end()) take(presentation::set_sky_map_binding(runtime,object,at->second));
+                    else {
+                        std::string source;
+                        if(const auto sky_at=part.find("sky_map");sky_at==part.end())
+                            load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"sky_map"},nullptr,"The sky map key is missing; the sky has no map.");
+                        else if(!sky_at->is_string()) load.keep(object,{"sky_map"},*sky_at,world::DiagnosticKind::mismatch,"Expected a sky map key. The sky has no map and the saved value is kept.");
+                        else source=sky_at->get<std::string>();
+                        take(presentation::set_sky_map_binding(runtime,object,{source,resolve_sky(session,project,source,load,object)}));
+                    }
+                }
                 if(light) if(auto valid=presentation::validate_light(runtime,take(presentation::read_light(runtime,object)));!valid)
                     invalid_record(object,"settings",light_defaults,valid.error().message);
                 // The Environment's rules span its fields, so a record that breaks them returns whole to the defaults.
@@ -1490,8 +1544,6 @@ struct Session::GraphCodec {
             const auto object=root.id();const auto type=take(runtime.type_of(object));
             if(derives(runtime,type,session.physics_types_.ragdoll_component))
                 bound(object,"parts",physics::set_ragdoll_parts(runtime,object,take(physics::ragdoll_parts(runtime,object))),[&]{return physics::set_ragdoll_parts(runtime,object,{});});
-            if(derives(runtime,type,session.physics_types_.vehicle_component))
-                bound(object,"wheels",physics::set_vehicle_wheels(runtime,object,take(physics::vehicle_wheels(runtime,object))),[&]{return physics::set_vehicle_wheels(runtime,object,{});});
             if(derives(runtime,type,session.physics_types_.scene_query_component))
                 bound(object,"ignored_entities",physics::set_query_ignored_entities(runtime,object,take(physics::query_ignored_entities(runtime,object))),
                     [&]{return physics::set_query_ignored_entities(runtime,object,{});});
@@ -1711,7 +1763,7 @@ struct Session::GraphCodec {
                 else if(derives(runtime,type,session.types_.component)) commit(world::destroy_component(runtime,removed));
                 else throw std::runtime_error("Only an Entity or Component can be removed.");
             } else if(kind=="set") {
-                fields(op,{"op","id","name","enabled","space","properties","base_color","roughness","metallic","emissive","materials"});
+                fields(op,{"op","id","name","enabled","space","properties","base_color","roughness","metallic","emissive","materials","sky_map"});
                 const auto edited=target(op.at("id"));const auto type=take(runtime.type_of(edited));
                 const bool entity=derives(runtime,type,session.types_.entity);
                 load.policy=LoadPolicy::strict;
@@ -1763,6 +1815,20 @@ struct Session::GraphCodec {
                     }
                     take(presentation::set_material_bindings(runtime,edited,bindings));
                 }
+                if(const auto at=op.find("sky_map");at!=op.end()) {
+                    if(!at->is_string()) throw std::runtime_error("Expected a sky map key.");
+                    const auto source=at->get<std::string>();rendering::SkyMapRef map;const MissingResource* missing{};
+                    if(!source.empty()) {
+                        auto loaded=project.sky_map(source);
+                        // A sky map imported after Play opened its Project is not catalogued yet.
+                        if(!loaded && !project.entry(source)) {take(project.refresh());loaded=project.sky_map(source);}
+                        if(loaded) {map=loaded->map;session.unavailable_.erase(std::pair{AssetKind::sky,source});}
+                        else missing=&session.remember_unavailable(project,AssetKind::sky,source,loaded.error());
+                    }
+                    take(presentation::set_sky_map_binding(runtime,edited,{source,std::move(map)}));
+                    // The document keeps the same key unresolved; Play reports it without diverging.
+                    if(missing) note(world::Severity::warning,missing->kind,missing->reason+" The sky renders without its map.");
+                }
                 if(const auto at=op.find("space");at!=op.end()) {
                     if(!entity) throw std::runtime_error("Only an Entity has a space.");
                     if(at->is_null()) take(world.remove_transform(edited));
@@ -1799,7 +1865,10 @@ struct Session::GraphCodec {
                 for(const auto& definition:definitions) {
                     fields(definition,{"id","source","inline","parent","overrides"});
                     const auto key=local_key(definition.at("id"));
-                    auto restored=restore_material(session,&project,definition);
+                    // As in a tolerant load: an unavailable source, parent or texture stands in with a warning.
+                    std::vector<MissingResource> missing;auto restored=restore_material(session,&project,definition,&missing);
+                    for(const auto& item:missing) note(world::Severity::warning,item.kind,"#"+std::to_string(key)+": "+item.reason+
+                        (item.input?" The input has no texture.":" A default material stands in."));
                     if(const auto live=live_object(session,key);live && *live!=ObjectId{}) {
                         if(!session.is_material(*live)) throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
                         if(restored.id()!=*live) take(material::update_material(runtime,*live,take(material::read_material(runtime,restored.id()))));
@@ -1812,7 +1881,7 @@ struct Session::GraphCodec {
                 fields(op,{"op","key","material"});
                 const auto key=op.at("key").get<std::string>();subject+=" "+key;
                 auto asset=material_format::decode(op.at("material"));asset.key=key;
-                const auto catalogued=[&](const std::string& texture){return std::ranges::find(project.entries(),texture,&ProjectEntry::key)!=project.entries().end();};
+                const auto catalogued=[&](const std::string& texture){return project.entry(texture)!=nullptr;};
                 if(std::ranges::any_of(asset.textures,[&](const auto& texture){return !texture.empty() && !catalogued(texture);})) take(project.refresh());
                 if(const auto at=session.materials_.find(key);at!=session.materials_.end()) {
                     material::State state;state.source=key;state.description=asset.description;
@@ -1939,6 +2008,7 @@ void Session::forward_change(const Change& change,bool forward) {
                 if(!definitions.empty()) push({{"op","materials"},{"materials",std::move(definitions)}});
                 push(set(component,"materials",std::move(table)));
             } else if constexpr(std::is_same_v<T,MaterialValueChange>) forward_material(item.root.id());
+            else if constexpr(std::is_same_v<T,SkyMapChange>) push(set(item.root.id(),"sky_map",take(presentation::read_sky_map(runtime_,item.root.id())).source));
             else static_assert(std::is_same_v<T,RetainedChange>,"Every change kind is forwarded to Play or explicitly not.");
         },change);
     } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
@@ -2076,7 +2146,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         if(mesh && *mesh && names[1]=="material" && names.size()>2) drop(object,std::span(names).subspan(2,1));
         else drop(object,names);
     };
-    static const std::array<std::string,1> space{"space"},name{"name"};
+    static const std::array<std::string,1> space{"space"},name{"name"},sky{"sky_map"};
     static const std::array<std::string,2> body{"properties","body"};
     std::visit([&](const auto& item) {
         using T=std::decay_t<decltype(item)>;
@@ -2089,6 +2159,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         else if constexpr(std::is_same_v<T,ReparentChange>) {drop(item.root.id(),space);for(const auto& entry:item.transforms) drop(entry.root.id(),space);}
         else if constexpr(std::is_same_v<T,TransformPresenceChange> || std::is_same_v<T,SpaceReferenceChange>) drop(item.root.id(),space);
         else if constexpr(std::is_same_v<T,MaterialBindingChange>) drop_slots(item.root.id());
+        else if constexpr(std::is_same_v<T,SkyMapChange>) drop(item.root.id(),sky);
     },change);
     return swaps;
 }
@@ -2167,7 +2238,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                 return {false,path[1]=="position" || path[1]=="rotation" || path[1]=="scale" || path[1]=="origin"?mismatch:unknown_key};
             }
             if(path.front()=="materials" && mesh_unavailable) return {false,mesh_unavailable->kind};
-            constexpr std::array known{"name","enabled","mesh","base_color","roughness","metallic","emissive","materials"};
+            constexpr std::array known{"name","enabled","mesh","base_color","roughness","metallic","emissive","materials","sky_map"};
             return {false,std::ranges::find(known,path.front())!=known.end()?mismatch:unknown_key};
         };
         std::vector<std::string> path;

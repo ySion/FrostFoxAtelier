@@ -1,7 +1,7 @@
 #include "application/popup.hpp"
+#include "foundation/frame_timing.hpp"
 #include <algorithm>
 #include <cmath>
-#include <chrono>
 #include <stdexcept>
 
 namespace atelier::application {
@@ -34,7 +34,6 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     if (!component) {reject("PopupMenu is missing from the accepted UI authoring module.");return;}
     const bool continuing=visible_ && source_==source;
     const auto previous_focus=continuing?ui_.focused_control():0;
-    const auto start=std::chrono::steady_clock::now();
     const auto monitor_handle=MonitorFromRect(&anchor,MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
     if (!GetMonitorInfoW(monitor_handle,&monitor))
@@ -145,7 +144,6 @@ void PopupHost::update(ui::ControlKey source,RECT anchor,bool below,std::span<co
     } else if(measure) take(ui_.set_controls(controls_));
     if(!continuing) {
         window_.show();opening_=true;open_present_count_=0;
-        open_cpu_us_=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
     }
     visible_=true;dirty_|=measure || resize_surface;
 }
@@ -166,7 +164,8 @@ void PopupHost::render(renderer::Capture* capture) {
         if (event.message==WM_SIZE || event.message==WM_DPICHANGED) dirty_=true;
     });
     if (!dirty_ && !capture) return;
-    const auto start=std::chrono::steady_clock::now();
+    // The popup surface is part of whichever host phase opened or updated it.
+    timing::Suspend whole;
     const auto target=graphics(renderer_.sync_window_target());
     if (!target.drawable) return;
     if (target.extent!=extent_) retarget(target.extent);
@@ -175,7 +174,6 @@ void PopupHost::render(renderer::Capture* capture) {
     if(opening_) ++open_present_count_;
     if (result.status==renderer::FrameStatus::accepted) {
         if (!ui_.accept(candidate)) throw std::runtime_error("Popup rejected its accepted GPU frame.");
-        if (opening_) open_cpu_us_+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();
         opening_=dirty_=false;
         if(restore_focus_) {
             dirty_|=ui_.focus(restore_focus_).redraw;

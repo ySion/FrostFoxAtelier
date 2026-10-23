@@ -9,7 +9,7 @@ using detail::Access;
 using detail::error;
 
 Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<std::vector<ObjectRoot>> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::vector<ObjectRoot>> {
         if (Access::transitioning(entity)) return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity))
             if (auto ready = Access::state(*world).admit(false); !ready) return std::unexpected(ready.error());
@@ -30,7 +30,7 @@ Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
     });
 }
 Result<ObjectId> parent_entity(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<ObjectId> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<ObjectId> {
         const auto parent = Access::parent(entity).id();
         if (parent == ObjectId{}) return parent;
         // A detached leaf's weak parent does not keep an abandoned graph alive.
@@ -41,7 +41,7 @@ Result<ObjectId> parent_entity(Runtime& runtime, ObjectId object) {
     });
 }
 Result<bool> has_transform(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<bool> { return Access::spatial(entity); });
+    return runtime.with_native<const Entity>(object, [](const Entity& entity) -> Result<bool> { return Access::spatial(entity); });
 }
 Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
     auto component = runtime.native_type<Component>();
@@ -73,7 +73,7 @@ Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     return true;
 }
 Result<std::optional<ObjectId>> space_reference(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<std::optional<ObjectId>> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::optional<ObjectId>> {
         if (!Access::explicit_origin(entity)) return std::optional<ObjectId>{};
         if (Access::world_origin(entity)) return std::optional<ObjectId>{ObjectId{}};
         const auto target = Access::origin(entity).id();
@@ -89,7 +89,7 @@ Result<SpaceNode*> SpaceGraph::node(ObjectId object) {
     if (!parent_id) return std::unexpected(parent_id.error());
     auto origin = space_reference(runtime, object);
     if (!origin) return std::unexpected(origin.error());
-    auto value = runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<SpaceNode> {
+    auto value = runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<SpaceNode> {
         return SpaceNode{*parent_id, *origin, Access::spatial(entity),
             {entity.position, entity.rotation, entity.scale}, Access::member_world(entity)};
     });
@@ -206,7 +206,6 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
             return std::unexpected(*failures.find(failed));
         }
         path.push_back(id);
-        if (path.size() > relations.nodes.size()) return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
         if ((*entry)->parent == ObjectId{}) break;
         id = (*entry)->parent;
     }
@@ -229,7 +228,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     };
     for (auto it = path.rbegin(); it != path.rend(); ++it) {
         failed = *it;
-        auto local = relations.runtime.with_native<Entity>(*it, [](Entity& entity) -> Result<Trs> {
+        auto local = relations.runtime.with_native<const Entity>(*it, [](const Entity& entity) -> Result<Trs> {
             return Trs{entity.position, entity.rotation, entity.scale};
         });
         if (!local) return fail(it, std::move(local.error()));
@@ -401,6 +400,13 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
 }
 Result<void> publish_transforms(Runtime& runtime, const std::vector<std::pair<ObjectId, Trs>>& values) {
     for (const auto& [id, value] : values) {
+        // An unchanged pose keeps the Entity's write stamp, so change consumers skip it.
+        auto same = runtime.with_native<const Entity>(id, [&](const Entity& entity) -> Result<bool> {
+            const Trs current{entity.position, entity.rotation, entity.scale};
+            return std::memcmp(&current, &value, sizeof current) == 0;
+        });
+        if (!same) return std::unexpected(same.error());
+        if (*same) continue;
         auto written = runtime.with_native<Entity>(id, [&](Entity& entity) -> Result<void> {
             entity.position = value.position; entity.rotation = value.rotation; entity.scale = value.scale;
             return {};
@@ -548,7 +554,7 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
     auto parent = parent_entity(runtime(), object);
     if (!parent) return std::unexpected(parent.error());
     // Rebinding can repair an expired weak origin without evaluating its old space.
-    auto node = runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<detail::SpaceNode> {
+    auto node = runtime().with_native<const Entity>(object, [&](const Entity& entity) -> Result<detail::SpaceNode> {
         return detail::SpaceNode{*parent, origin, Access::spatial(entity),
             {entity.position, entity.rotation, entity.scale}, Access::member_world(entity)};
     });
@@ -586,10 +592,10 @@ Result<void> World::apply_simulation_transform(ObjectId entity, math::Vector3 po
     const SimulationPose pose{entity, position, rotation};
     return apply_simulation_transforms({&pose, 1});
 }
-Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses) {
-    return impl_->apply_poses(poses, DiagnosticPhase::physics);
+Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses, std::vector<std::pair<ObjectId, Trs>>* written) {
+    return impl_->apply_poses(poses, DiagnosticPhase::physics, written);
 }
-Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase) {
+Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase, std::vector<std::pair<ObjectId, Trs>>* written) {
     if (auto ready = admit(); !ready) return ready;
     if (!running) return error(ErrorCode::busy, "Simulation writes require a running World.");
     // A rejected pose is reported and excluded; conversion then restarts so no
@@ -600,50 +606,70 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
         return contain(failure, DiagnosticKind::command_rejected, phase, poses[i].entity, poses[i].entity, {}, Severity::warning);
     };
     for (;;) {
-        detail::SpaceGraph before{runtime}, candidate{runtime};
-        std::unordered_map<ObjectId, Trs> desired;
+        space.begin_pass();
+        auto& desired = pose_targets;
+        desired.clear();
         for (std::size_t i = 0; i < poses.size(); ++i) {
             if (rejected[i]) continue;
             const auto& pose = poses[i];
             auto value = [&]() -> Result<Trs> {
                 if (auto at = member(pose.entity); !at) return std::unexpected(at.error());
                 if (desired.contains(pose.entity)) return error(ErrorCode::invalid_member, "An Entity has multiple simulation pose writers.");
-                auto matrix = before.matrix(pose.entity);
+                auto matrix = space.matrix(pose.entity);
                 if (!matrix) return std::unexpected(matrix.error());
                 auto original = relative_transform(*matrix, math::Matrix4::identity());
                 if (!original) return std::unexpected(original.error());
                 return canonical_transform({pose.position, pose.rotation, original->scale});
             }();
             if (!value) { if (!reject(i, value.error())) return std::unexpected(value.error()); continue; }
-            desired.emplace(pose.entity, *value);
+            desired.try_emplace(pose.entity, *value);
         }
-        // Desired world matrices make conversion independent of hash/container order.
-        for (const auto& [id, value] : desired) candidate.matrices.emplace(id, transform_matrix(value));
-        std::vector<std::pair<ObjectId, Trs>> locals;
+        // Only a pose below another pose of this batch needs that one's target as
+        // its origin; the others use the current parent matrix of this pass.
+        std::optional<detail::SpaceGraph> candidate;
+        auto& locals = pose_locals;
+        locals.clear();
         locals.reserve(poses.size());
         bool restart = false;
         for (std::size_t i = 0; i < poses.size() && !restart; ++i) {
             if (rejected[i]) continue;
             const auto& pose = poses[i];
             auto local = [&]() -> Result<Trs> {
-                auto parent = candidate.parent(pose.entity);
+                auto parent = space.parent(pose.entity);
                 if (!parent) return std::unexpected(parent.error());
-                auto origin = candidate.matrix(*parent);
+                // matrix() composed this chain in the first loop, so the walk ends.
+                bool below_target = false;
+                for (auto node = *parent; node != ObjectId{} && !below_target;) {
+                    below_target = desired.contains(node);
+                    auto next = space.parent(node);
+                    if (!next) return std::unexpected(next.error());
+                    node = *next;
+                }
+                if (below_target && !candidate) {
+                    // Desired world matrices make conversion independent of hash/container order.
+                    candidate.emplace(runtime);
+                    for (const auto [id, value] : desired) candidate->matrices.emplace(id, transform_matrix(value));
+                }
+                auto origin = *parent == ObjectId{} ? Result<math::Matrix4>{math::Matrix4::identity()}
+                    : below_target ? candidate->matrix(*parent) : space.matrix(*parent);
                 if (!origin) return std::unexpected(origin.error());
-                auto authored = before.node(pose.entity);
-                if (!authored) return std::unexpected(authored.error());
-                auto value = relative_transform(transform_matrix(desired.at(pose.entity)), *origin, (*authored)->local.scale);
+                const auto& authored = space.entry(pose.entity)->local;
+                auto value = relative_transform(transform_matrix(*desired.find(pose.entity)), *origin, authored.scale);
                 if (!value) return std::unexpected(value.error());
                 for (std::size_t axis = 0; axis < 3; ++axis)
-                    if (std::abs(value->scale[axis] - (*authored)->local.scale[axis]) > 1e-5f * std::max(1.f, std::abs((*authored)->local.scale[axis])))
+                    if (std::abs(value->scale[axis] - authored.scale[axis]) > 1e-5f * std::max(1.f, std::abs(authored.scale[axis])))
                         return error(ErrorCode::argument_mismatch, "Simulation pose would change authored local scale.");
-                value->scale = (*authored)->local.scale;
+                value->scale = authored.scale;
                 return value;
             }();
             if (!local) { if (!reject(i, local.error())) return std::unexpected(local.error()); restart = true; continue; }
             locals.emplace_back(pose.entity, *local);
         }
-        if (!restart) return publish_transforms(runtime, locals);
+        if (!restart) {
+            if (auto published = publish_transforms(runtime, locals); !published) return published;
+            if (written) written->swap(locals);
+            return {};
+        }
     }
 }
 
@@ -834,7 +860,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world,
                 if (!existing) return std::unexpected(existing.error());
                 origin = *existing;
             }
-            auto node = runtime.with_native<Entity>(root.id(), [&](Entity& entity) -> Result<detail::SpaceNode> {
+            auto node = runtime.with_native<const Entity>(root.id(), [&](const Entity& entity) -> Result<detail::SpaceNode> {
                 return detail::SpaceNode{root.id() == attachment.entity ? attachment.parent : *parent,
                     origin, Access::spatial(entity), {entity.position, entity.rotation, entity.scale}, &world};
             });

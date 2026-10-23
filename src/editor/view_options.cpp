@@ -50,11 +50,11 @@ constexpr std::array options{
     FIELD(gtao,boolean,0,1,"GTAO","Effects","用屏幕上的几何信息估计附近遮挡，突出接触与凹角。与 Local GI (SSIL) 互斥，启用其中一个会关闭另一个。"),
     FIELD(sssr,boolean,0,1,"Reflections (SSSR)","Effects","启用屏幕空间反射，沿当前画面中的表面信息寻找反射命中。屏幕外或被遮住的表面信息有限。"),
     FIELD(bloom,boolean,0,1,"Bloom","Effects","让画面中的高亮部分向周围扩散，形成光晕。它改变显示效果，不会把光照写回 DDGI 探针。"),
-    FIELD(ssil,boolean,0,1,"Local GI (SSIL)","Effects","使用屏幕上的表面信息补充附近的间接光变化。它与 GTAO 互斥，不替代 DDGI 的空间覆盖。"),
+    FIELD(ssil,boolean,0,1,"Local GI (SSIL)","Effects","旧的屏幕空间近场间接光。渲染器已不再使用这个设置；它仍与 GTAO 互斥，开启时 GTAO 关闭。"),
     ENUM(antialiasing,aa,"Antialiasing","Effects","选择抗锯齿方式。SMAA 处理当前画面的边缘；TAA 和 SMAA T2x 还利用跨帧信息；Off 关闭抗锯齿。"),
     FIELD(exposure_ev,number,-16,16,"Exposure (EV)","Lighting","控制最终显示的曝光。每增加 1 EV，曝光倍率翻倍；不改变场景线性 HDR 历史中的光照能量。"),
     FIELD(shadow_bias,number,.000001f,.1f,"Shadow bias (m)","Lighting","阴影射线的起点偏移，单位 m，用于减少表面对自己的误遮挡。过大可能让接触处的阴影脱离表面。"),
-    FIELD(direct_candidates,integer,1,32,"Direct candidates","Lighting","每个接收点初始挑选的局部光候选数量。增加候选会增加直接光采样工作量；它不是场景允许存在的灯光数量。"),
+    FIELD(direct_candidates,integer,1,32,"Direct candidates","Lighting","DDGI 探针射线命中点每次挑选的局部光候选数量。增加候选会增加探针更新的采样工作量；它不是场景允许存在的灯光数量，也不影响屏幕上的直接光。"),
     FIELD(ao_radius,number,.001f,100,"AO radius (m)","Effects","GTAO 与 Local GI (SSIL) 观察附近表面的半径，单位 m。应结合场景的实际尺度调整。"),
     FIELD(reflection_distance,number,.001f,10000,"Trace distance (m)","Effects","屏幕空间反射允许追踪的最大距离，单位 m。增加距离不能补出画面外缺失的表面信息。"),
     FIELD(reflection_roughness,number,0,1,"Max roughness","Effects","允许进行屏幕空间反射的最大表面粗糙度。超过此值的表面不执行该反射追踪。"),
@@ -71,11 +71,8 @@ constexpr std::array options{
     FIELD(probe_radius,number,.01f,.45f,"Sphere size","Diagnostics","探针球半径相对于最小网格间距的比例。只改变诊断球的显示尺寸，不改变光照采样范围。"),
     ENUM(probe_coverage,coverage,"Coverage metric","Diagnostics","选择 Receiver Coverage 的着色依据：状态、主导 Volume、实际贡献邻居数或最大归一化贡献占比。需打开 Receiver Coverage 才显示。"),
     FIELD(probe_debug_volume,integer,-1,3,"Debug volume","Diagnostics","选择显示诊断几何的 Volume 槽位。All volumes（-1）显示所有槽位；不会关闭其他 Volume 的光照贡献。"),
-    FIELD(direct_reference,boolean,0,1,"Direct reference","Diagnostics","直接光诊断参考：平均 64 次独立 RIS 估计，不使用跨帧复用或降噪。GPU 开销明显增加，适合对照采样偏差。"),
-    FIELD(spatial_light_sampling,boolean,0,1,"Spatial light sampling","Diagnostics","DI 与 DDGI 共同使用附近光源提议，并保留全局光源采样支持。关闭后只使用全局提议，已有采样表仍保留，便于同场景对照。"),
-    FIELD(direct_clustered,boolean,0,1,"Clustered direct lighting","Diagnostics","默认开启：按屏幕 tile 与深度分层保守收集局部灯，再精确枚举；紧凑光源确定求值，面光、软阴影半影和发光网格仍为随机估计。列表超过 64 项时回退完整枚举，不丢灯。关闭后回退 ReSTIR 直接光，仅作诊断对照。Direct Reference 优先；此开关不改变 DDGI，也不保存进 Scene。"),
-    FIELD(direct_shadow_cache,boolean,0,1,"Cached direct shadows","Diagnostics","临时阴影诊断：仅 Clustered Direct 开启且 Reference 关闭时使用缓存阴影 B；关闭时使用精确 RT 可见性 A。默认关闭，不改变 World、Scene 或撤销历史。"),
-    FIELD(direct_cluster_inspect,boolean,0,1,"Inspect receiver lights","Diagnostics","按需统计有效 GBuffer 接收像素落入解析局部灯支持球的数量；不含太阳和发光网格，也不是遮挡后的灯数。仅 Clustered 且非 Reference 路径有效。诊断耗时计入光源列表构建，性能对比时必须关闭。"),
+    FIELD(spatial_light_sampling,boolean,0,1,"Spatial light sampling","Diagnostics","DDGI 探针命中点使用附近光源提议，并保留全局光源采样支持。关闭后只使用全局提议，已有采样表仍保留，便于同场景对照。"),
+    FIELD(direct_cluster_inspect,boolean,0,1,"Inspect receiver lights","Diagnostics","按需统计有效 GBuffer 接收像素落入解析局部灯支持球的数量；不含太阳，也不是遮挡后的灯数。诊断耗时计入光源列表构建，性能对比时必须关闭。"),
     ENUM(probe_history,probe_history,"Probe history","Diagnostics","Live 正常更新；Hold Irradiance 冻结辐照度历史；Hold Distance 冻结距离历史。用于定位 DDGI 波动来源，不修改 Scene。"),
     FIELD(probe_inspect,boolean,0,1,"Inspect receiver","Diagnostics","读取指定屏幕像素的 DDGI 接收面与探针贡献，供 Control 诊断使用。启用会增加少量诊断工作。"),
     FIELD(probe_inspect_x,integer,0,65535,"Receiver X (px)","Diagnostics","待检查接收面的屏幕 X 坐标，单位为物理像素。配合 Inspect Receiver 使用。"),
@@ -149,9 +146,7 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
     VALUE(probe_history,lit.probe_history);VALUE(probe_inspect,lit.probe_inspect);
     VALUE(probe_inspect_x,lit.probe_inspect_pixel[0]);VALUE(probe_inspect_y,lit.probe_inspect_pixel[1]);
     VALUE(probe_inspect_source,lit.probe_inspect_source);
-    VALUE(direct_reference,lit.direct_reference);VALUE(spatial_light_sampling,lit.spatial_light_sampling);
-    VALUE(direct_clustered,lit.direct_clustered);
-    VALUE(direct_shadow_cache,lit.direct_shadow_cache);
+    VALUE(spatial_light_sampling,lit.spatial_light_sampling);
     VALUE(direct_cluster_inspect,lit.direct_cluster_inspect);
     VALUE(cavity,cavity.enabled);VALUE(cavity_ridge,cavity.ridge);VALUE(cavity_valley,cavity.valley);VALUE(cavity_radius,cavity.radius);
     VALUE(sky_enabled,lit.sky_enabled);VALUE(sky_intensity,lit.sky_intensity);
@@ -193,9 +188,7 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     SET(probe_history,lit.probe_history);SET(probe_inspect,lit.probe_inspect);
     SET(probe_inspect_x,lit.probe_inspect_pixel[0]);SET(probe_inspect_y,lit.probe_inspect_pixel[1]);
     SET(probe_inspect_source,lit.probe_inspect_source);
-    SET(direct_reference,lit.direct_reference);SET(spatial_light_sampling,lit.spatial_light_sampling);
-    SET(direct_clustered,lit.direct_clustered);
-    SET(direct_shadow_cache,lit.direct_shadow_cache);
+    SET(spatial_light_sampling,lit.spatial_light_sampling);
     SET(direct_cluster_inspect,lit.direct_cluster_inspect);
     SET(cavity,cavity.enabled);SET(cavity_ridge,cavity.ridge);SET(cavity_valley,cavity.valley);SET(cavity_radius,cavity.radius);
     SET(sky_enabled,lit.sky_enabled);SET(sky_intensity,lit.sky_intensity);

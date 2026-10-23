@@ -1,16 +1,21 @@
 #include "editor/project.hpp"
 #include "editor/session.hpp"
 #include "platform/windows_path.hpp"
-#include "editor/obj_import.hpp"
+#include "editor/mesh_import.hpp"
 #include "editor/json_format.hpp"
+#include "editor/material_format.hpp"
 #include "physics/physics.hpp"
 #include <Windows.h>
 #include <objbase.h>
 #include <algorithm>
 #include <charconv>
 #include <bit>
+#include <cwctype>
 #include <fstream>
+#include <functional>
 #include <map>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <unordered_set>
 
@@ -30,6 +35,26 @@ Json read_json(const std::filesystem::path& path) { return json_format::parse(ta
 bool within(const std::filesystem::path& root,const std::filesystem::path& path) {
     const auto relative=path.lexically_relative(root);
     return !relative.empty() && !relative.is_absolute() && *relative.begin()!=L"..";
+}
+// A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
+std::wstring material_file(std::string_view slot,std::vector<std::wstring>& taken) {
+    auto name=wide(slot);
+    for(auto& c:name) if(c<32 || std::wstring_view(L"\\/:*?\"<>|").find(c)!=std::wstring_view::npos) c=L'_';
+    while(!name.empty() && (name.back()==L'.' || name.back()==L' ')) name.pop_back();
+    if(name.empty()) name=L"material";
+    // Device names stay reserved with any extension, and with spaces before it, so the prefix goes first.
+    auto device=name.substr(0,name.find(L'.'));while(!device.empty() && device.back()==L' ') device.pop_back();
+    for(auto& c:device) c=static_cast<wchar_t>(std::towupper(c));
+    const auto numbered=device.size()==4 && (device.starts_with(L"COM") || device.starts_with(L"LPT")) &&
+        ((device[3]>=L'1' && device[3]<=L'9') || device[3]==L'\u00B9' || device[3]==L'\u00B2' || device[3]==L'\u00B3');
+    if(numbered || device==L"CON" || device==L"PRN" || device==L"AUX" || device==L"NUL" || device==L"CONIN$" || device==L"CONOUT$") name.insert(0,1,L'_');
+    auto candidate=name;
+    for(std::size_t n=2;;++n) {
+        const auto file=candidate+L".material";
+        if(std::ranges::none_of(taken,[&](const std::wstring& other) {
+            return CompareStringOrdinal(other.c_str(),-1,file.c_str(),-1,TRUE)==CSTR_EQUAL;})) {taken.push_back(file);return file;}
+        candidate=name+L" ("+std::to_wstring(n)+L")";
+    }
 }
 
 }
@@ -196,11 +221,13 @@ Result<void> Project::refresh() {
         std::vector<ProjectEntry> entries;
         std::unordered_set<std::string> keys;
         const auto native_root=platform::windows_file_path(root_);
-        for (const auto* directory:{L"Content",L"Source",L"Config",L"Examples"}) {
+        std::vector<std::filesystem::path> roots;
+        for (const auto* directory:{L"Content",L"Source",L"Config",L"Examples"})
+            if(std::wstring_view(directory)!=L"Examples" || std::filesystem::exists(platform::windows_file_path(take(resolve(directory))))) roots.emplace_back(directory);
+        for (const auto& directory:roots) {
             const auto root=platform::windows_file_path(take(resolve(directory)));
-            if(std::wstring_view(directory)==L"Examples" && !std::filesystem::exists(root)) continue;
             if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
-            entries.push_back({directory,utf8(directory),AssetKind::folder});
+            entries.push_back({directory,utf8(directory.generic_wstring()),AssetKind::folder});
             for (const auto& entry:std::filesystem::recursive_directory_iterator(root)) {
                 if (entry.is_symlink()) continue;
                 const auto relative=entry.path().lexically_relative(native_root);
@@ -208,47 +235,63 @@ Result<void> Project::refresh() {
                 const auto filename=entry.path().filename().wstring();
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp")) continue;
                 if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
-                auto kind=entry.is_directory()?AssetKind::folder:entry.path().extension()==L".obj"?AssetKind::mesh:
+                auto kind=entry.is_directory()?AssetKind::folder:is_mesh_path(entry.path())?AssetKind::mesh:
                     entry.path().extension()==L".material"?AssetKind::material:is_texture_path(entry.path())?AssetKind::texture:
-                    entry.path().extension()==L".scene"?AssetKind::scene:std::wstring_view(directory)==L"Source"?AssetKind::source:AssetKind::file;
-                std::string key=utf8(relative.generic_wstring());
-                if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture) {
+                    is_sky_path(entry.path())?AssetKind::sky:
+                    entry.path().extension()==L".scene"?AssetKind::scene:directory==L"Source"?AssetKind::source:AssetKind::file;
+                std::string key=utf8(relative.generic_wstring());std::vector<SlotMaterial> materials;
+                if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture || kind==AssetKind::sky) {
                     auto meta_relative=relative; meta_relative+=L".asset.json";
                     auto metadata=take(resolve(meta_relative));
                     if (!std::filesystem::exists(metadata)) {
                         const auto created=write_file(metadata,Json{{"version",1},{"id",identity()}}.dump(2)+"\n",WriteMode::create);
                         if (!created && !std::filesystem::exists(metadata)) return created;
                     }
-                    const auto info=read_json(metadata);json_format::fields(info,{"version","id"});
+                    const auto info=read_json(metadata);json_format::fields(info,{"version","id","materials"});
                     if (json_format::identity(info.at("version"))!=1) return failure("Unsupported resource metadata version.");
                     const auto raw=wide(info.at("id").get<std::string>());GUID id{};
                     if (raw.size()!=38 || raw.front()!=L'{' || raw.back()!=L'}' || FAILED(CLSIDFromString(raw.c_str(),&id)))
                         return failure("Invalid resource identity metadata.");
                     wchar_t canonical[40]{};StringFromGUID2(id,canonical,40);key="project/"+utf8(canonical);
                     if (!keys.insert(key).second) return failure("Duplicate resource identity; import or create an independent asset.");
+                    if (const auto mapping=info.find("materials");mapping!=info.end()) {
+                        if (kind!=AssetKind::mesh || !mapping->is_object())
+                            return failure("Only mesh metadata lists default materials, as slot names to material keys: "+utf8(meta_relative.generic_wstring()));
+                        for (const auto& [slot,material]:mapping->items()) {
+                            if (slot.empty() || !material.is_string()) return failure("Invalid default material in "+utf8(meta_relative.generic_wstring()));
+                            materials.push_back({slot,material.get<std::string>()});
+                        }
+                    }
                 }
                 entries.push_back({relative,std::move(key),kind,kind==AssetKind::folder?0:entry.file_size(),
-                    kind!=AssetKind::folder?entry.last_write_time():std::filesystem::file_time_type{}});
+                    kind!=AssetKind::folder?entry.last_write_time():std::filesystem::file_time_type{},std::move(materials)});
             }
         }
         std::sort(entries.begin(),entries.end(),[](const auto& a,const auto& b) { return a.path<b.path; });
+        roots_=std::move(roots);
         if (entries==entries_) return {};
-        std::unordered_map<std::string,std::size_t> mesh_entries;
-        for (std::size_t i=0;i<entries.size();++i) if (entries[i].kind==AssetKind::mesh) mesh_entries.emplace(entries[i].key,i);
+        decltype(entry_index_) index;index.reserve(entries.size());
+        for (std::size_t i=0;i<entries.size();++i) index.emplace(entries[i].key,i);
+        const auto find=[](const std::vector<ProjectEntry>& list,const decltype(entry_index_)& positions,std::string_view key)->const ProjectEntry* {
+            const auto at=positions.find(key);return at==positions.end()?nullptr:&list[at->second];
+        };
         std::map<std::filesystem::path,const ProjectEntry*> previous_files,next_files;
         for(const auto& entry:entries_) previous_files.emplace(entry.path,&entry);
         for(const auto& entry:entries) next_files.emplace(entry.path,&entry);
         std::erase_if(textures_,[&](const auto& cached) {
-            const auto before=std::ranges::find(entries_,cached.first,&ProjectEntry::key);
-            const auto after=std::ranges::find(entries,cached.first,&ProjectEntry::key);
-            return before==entries_.end() || after==entries.end() || before->bytes!=after->bytes || before->modified!=after->modified;
+            const auto* before=find(entries_,entry_index_,cached.first);const auto* after=find(entries,index,cached.first);
+            return !before || !after || before->bytes!=after->bytes || before->modified!=after->modified;
+        });
+        std::erase_if(sky_maps_,[&](const auto& cached) {
+            const auto* before=find(entries_,entry_index_,cached.first);const auto* after=find(entries,index,cached.first);
+            return !before || !after || before->bytes!=after->bytes || before->modified!=after->modified;
         });
         std::erase_if(meshes_,[&](const auto& cached) {
-            const auto before=mesh_entries_.find(cached.first),after=mesh_entries.find(cached.first);
-            if (after==mesh_entries.end()) return true;
-            if (before==mesh_entries_.end()) return false; // Prepared, newly published import.
-            const auto& old=entries_[before->second];const auto& next=entries[after->second];
-            if(old.bytes!=next.bytes || old.modified!=next.modified) return true;
+            const auto* next=find(entries,index,cached.first);
+            if (!next || next->kind!=AssetKind::mesh) return true;
+            const auto* old=find(entries_,entry_index_,cached.first);
+            if (!old) return false; // Prepared, newly published import.
+            if(old->bytes!=next->bytes || old->modified!=next->modified) return true;
             for(const auto& path:cached.second.dependencies) {
                 const auto a=previous_files.find(path),b=next_files.find(path);
                 if(a==previous_files.end() || b==next_files.end() || a->second->bytes!=b->second->bytes ||
@@ -256,31 +299,91 @@ Result<void> Project::refresh() {
             }
             return false;
         });
-        std::erase_if(images_.entries,[](const auto& entry){return entry.second.image.expired();});
-        entries_=std::move(entries);mesh_entries_=std::move(mesh_entries);++revision_;return {};
+        std::erase_if(images_.entries,[](const auto& entry){return entry.second.expired();});
+        entries_=std::move(entries);entry_index_=std::move(index);++revision_;return {};
     } catch (const std::exception& error) { return failure(error.what()); }
+}
+const ProjectEntry* Project::entry(std::string_view key) const {
+    const auto at=entry_index_.find(key);return at==entry_index_.end()?nullptr:&entries_[at->second];
 }
 Result<MeshAsset> Project::mesh(std::string_view key) {
     if (const auto* builtin=mesh_asset(key)) return *builtin;
     try {
-        const auto found=mesh_entries_.find(std::string(key));
-        if (found==mesh_entries_.end()) return failure("Missing mesh resource: "+std::string(key));
-        const auto& entry=entries_[found->second];
+        const auto* item=entry(key);
+        if (!item || item->kind!=AssetKind::mesh) return failure("Missing mesh resource: "+std::string(key));
+        const auto& entry=*item;
         auto found_mesh=meshes_.find(entry.key);
         if(found_mesh==meshes_.end()) {
-            auto loaded=load_obj(take(resolve(entry.path)),&images_);CachedMesh cached{loaded.mesh,{}};
+            auto loaded=load_mesh(take(resolve(entry.path)),&images_);CachedMesh cached{loaded.mesh,{},std::move(loaded.notes)};
             for(const auto& file:loaded.files) if(file.relative!=entry.path.filename()) cached.dependencies.push_back(entry.path.parent_path()/file.relative);
             found_mesh=meshes_.emplace(entry.key,std::move(cached)).first;
         }
-        return MeshAsset{entry.key,entry.path.stem().wstring(),found_mesh->second.mesh};
+        // In slot order, so every consumer lists the defaults as the mesh lists its slots.
+        const auto& mesh=*found_mesh->second.mesh;std::vector<std::pair<std::size_t,SlotMaterial>> ordered;
+        for(const auto& binding:entry.materials) {
+            std::size_t matches{},index{};
+            for(std::size_t i=0;i<mesh.materials().size();++i) if(presentation::material_slot_name(mesh,i)==binding.slot) {++matches;index=i;}
+            if(matches!=1) return failure("Mesh metadata names a default material for a missing or ambiguous slot: "+binding.slot);
+            ordered.emplace_back(index,binding);
+        }
+        std::ranges::sort(ordered,{},&std::pair<std::size_t,SlotMaterial>::first);
+        MeshAsset result{entry.key,entry.path.stem().wstring(),found_mesh->second.mesh};
+        for(auto& [index,binding]:ordered) result.materials.push_back(std::move(binding));
+        return result;
+    } catch (const std::exception& error) { return failure(error.what()); }
+}
+std::span<const std::string> Project::mesh_notes(std::string_view key) const {
+    const auto found=meshes_.find(std::string(key));
+    return found==meshes_.end()?std::span<const std::string>{}:std::span<const std::string>(found->second.notes);
+}
+Result<std::vector<std::filesystem::path>> Project::asset_files(std::string_view key) {
+    try {
+        std::vector<std::filesystem::path> files;std::set<std::filesystem::path> listed;std::set<std::string,std::less<>> visited;
+        const auto add=[&](const std::filesystem::path& named) {
+            // A dependency keeps its source file's spelling; list the catalogue's, which a
+            // texture asset reached by key also uses, so case aliases are one file.
+            const auto text=named.generic_wstring();
+            const auto at=std::ranges::find_if(entries_,[&](const ProjectEntry& entry) {
+                const auto other=entry.path.generic_wstring();
+                return CompareStringOrdinal(text.data(),int(text.size()),other.data(),int(other.size()),TRUE)==CSTR_EQUAL;
+            });
+            if(at==entries_.end()) throw std::runtime_error("Asset file is not in the project catalogue: "+utf8(text));
+            if(!listed.insert(at->path).second) return;
+            files.push_back(at->path);
+            // Without its identity file a copy would get a new key from refresh.
+            if(at->kind==AssetKind::mesh || at->kind==AssetKind::material || at->kind==AssetKind::texture || at->kind==AssetKind::sky) {
+                auto identity=at->path;identity+=L".asset.json";
+                if(!std::filesystem::exists(platform::windows_file_path(take(resolve(identity))))) throw std::runtime_error("Asset identity file is missing: "+utf8(identity.generic_wstring()));
+                listed.insert(identity);files.push_back(std::move(identity));
+            }
+        };
+        // A referenced asset that is missing or of another kind has no files: the asset referring
+        // to it reports it when it loads, and a caller's in-memory draft may no longer refer to it.
+        // An asset that cannot be read keeps its own files; what it references is unknown.
+        const std::function<void(std::string_view,std::optional<AssetKind>)> visit=[&](std::string_view asset,std::optional<AssetKind> kind) {
+            if(asset.empty() || asset.starts_with("builtin/")) return;
+            const auto* at=entry(asset);
+            if(!at) {if(!kind) throw std::runtime_error("Missing project asset: "+std::string(asset));return;}
+            if((kind && at->kind!=*kind) || !visited.emplace(asset).second) return;
+            add(at->path);
+            if(at->kind==AssetKind::mesh) {
+                if(const auto loaded=mesh(asset)) {
+                    for(const auto& dependency:meshes_.at(std::string(asset)).dependencies) add(dependency);
+                    for(const auto& slot:loaded->materials) visit(slot.key,AssetKind::material);
+                }
+            } else if(at->kind==AssetKind::material) {
+                if(const auto loaded=material(asset)) for(const auto& texture:loaded->textures) visit(texture,AssetKind::texture);
+            }
+        };
+        visit(key,std::nullopt);return files;
     } catch (const std::exception& error) { return failure(error.what()); }
 }
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
     std::vector<std::filesystem::path> created;
     std::string resource;
     try {
-        if (source.extension()!=L".obj") return failure("Import Mesh accepts Wavefront OBJ geometry and its material dependencies.");
-        auto loaded=load_obj(std::filesystem::absolute(source));
+        if (!is_mesh_path(source)) return failure("Import Mesh accepts Wavefront OBJ or glTF 2.0 (.gltf) geometry and its dependencies.");
+        auto loaded=load_mesh(std::filesystem::absolute(source),&images_);
         take(refresh());
         // A dependency bundle gets its own namespace. Existing single-file OBJ
         // imports retain their established location and exclusive-create contract.
@@ -292,14 +395,41 @@ Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
         if(std::filesystem::exists(metadata)) return failure("Mesh metadata already exists at the import destination.");
         for(const auto& file:loaded.files) if(std::filesystem::exists(take(resolve(relative/file.relative))))
             return failure("A file already exists at the import destination; no files were changed.");
-        resource="project/"+identity();CachedMesh cached{loaded.mesh,{}};
+        const auto identity_file=[](const std::string& key,Json extra) {
+            extra["version"]=1;extra["id"]=key.substr(8);return extra.dump(2)+"\n";
+        };
+        const auto sidecar=[](std::filesystem::path path) {path+=L".asset.json";return path;};
+        // A glTF mesh names one generated material per slot as its defaults; each references its
+        // texture files by identities assigned here, so all metadata is known before the first write.
+        std::vector<std::pair<std::filesystem::path,std::string>> generated;Json defaults=Json::object();
+        if(!loaded.textures.empty()) {
+            std::map<std::filesystem::path,std::string> texture_keys;
+            for(const auto& inputs:loaded.textures) for(const auto& file:inputs) if(!file.empty() && !texture_keys.contains(file)) {
+                auto key="project/"+identity();generated.push_back({sidecar(relative/file),identity_file(key,Json::object())});texture_keys.emplace(file,std::move(key));
+            }
+            std::vector<std::wstring> names;const auto& slots=loaded.mesh->materials();
+            for(std::size_t i=0;i<slots.size();++i) {
+                MaterialAsset asset;asset.description=slots[i].surface->description();
+                for(std::size_t input=0;input<material::input_count;++input)
+                    if(const auto& file=loaded.textures[i][input];!file.empty()) asset.textures[input]=texture_keys.at(file);
+                const auto path=relative/"Materials"/material_file(slots[i].name,names);const auto key="project/"+identity();
+                generated.push_back({path,material_format::encode(asset).dump(2)+"\n"});generated.push_back({sidecar(path),identity_file(key,Json::object())});
+                defaults[presentation::material_slot_name(*loaded.mesh,i)]=key;
+            }
+        }
+        for(const auto& [path,text]:generated) if(std::filesystem::exists(take(resolve(path))))
+            return failure("A file already exists at the import destination; no files were changed.");
+        resource="project/"+identity();CachedMesh cached{loaded.mesh,{},std::move(loaded.notes)};
         for(const auto& file:loaded.files) if(file.relative!=source.filename()) cached.dependencies.push_back(relative/file.relative);
         meshes_.emplace(resource,std::move(cached));
-        created.reserve(loaded.files.size()+1);
+        created.reserve(loaded.files.size()+generated.size()+1);
         for(const auto& file:loaded.files) {
             auto path=take(resolve(relative/file.relative));take(write_file(path,file.bytes,WriteMode::create));created.push_back(std::move(path));
         }
-        take(write_file(metadata,Json{{"version",1},{"id",resource.substr(8)}}.dump(2)+"\n",WriteMode::create));created.push_back(std::move(metadata));
+        for(const auto& [path,text]:generated) {
+            auto native=take(resolve(path));take(write_file(native,text,WriteMode::create));created.push_back(std::move(native));
+        }
+        take(write_file(metadata,identity_file(resource,defaults.empty()?Json::object():Json{{"materials",defaults}}),WriteMode::create));created.push_back(std::move(metadata));
         take(refresh());return resource;
     } catch (const std::exception& error) {
         if(!resource.empty()) meshes_.erase(resource);

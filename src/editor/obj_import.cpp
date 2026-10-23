@@ -1,4 +1,4 @@
-#include "editor/obj_import.hpp"
+#include "editor/mesh_import.hpp"
 #include "editor/project.hpp"
 #include "editor/image_decode.hpp"
 #include <charconv>
@@ -64,8 +64,8 @@ std::vector<std::array<unsigned,3>> triangulate(const std::vector<geometry::Vert
     triangles.push_back({remaining[0],remaining[1],remaining[2]});return triangles;
 }
 }
-ObjImport load_obj(const std::filesystem::path& source,ObjImageCache* shared_images) {
-    ObjImport result;
+MeshImport load_obj(const std::filesystem::path& source,ImageCache* shared_images) {
+    MeshImport result;
     const auto root=std::filesystem::canonical(source.parent_path());
     std::unordered_map<std::string,std::size_t> files;
     std::unordered_map<std::string,material::ImageRef> images;
@@ -84,17 +84,8 @@ ObjImport load_obj(const std::filesystem::path& source,ObjImageCache* shared_ima
     const auto image=[&](const std::filesystem::path& relative) {
         const auto key=utf8(relative.generic_wstring());
         if(const auto found=images.find(key);found!=images.end()) return found->second;
-        const auto slot=read(relative);const auto& bytes=result.files[slot].bytes;
-        material::ImageRef loaded;
-        const auto path=std::filesystem::weakly_canonical(root/relative);
-        if(shared_images) {
-            const auto found=shared_images->entries.find(path);
-            if(found!=shared_images->entries.end() && found->second.bytes==bytes) loaded=found->second.image.lock();
-        }
-        if(!loaded) {
-            loaded=decode_image(bytes);
-            if(shared_images) shared_images->entries.insert_or_assign(path,ObjImageCache::Entry{bytes,loaded});
-        }
+        const auto slot=read(relative);const std::string_view bytes=result.files[slot].bytes;
+        auto loaded=decode_images(std::span(&bytes,1),shared_images).front();
         require(image_bytes+loaded->pixels().size()<=768ull*1024*1024,"Decoded OBJ textures exceed 768 MiB.");
         image_bytes+=loaded->pixels().size();images.emplace(key,loaded);return loaded;
     };

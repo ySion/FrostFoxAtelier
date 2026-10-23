@@ -120,16 +120,19 @@ Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::Scen
     }
     return edit;
 }
+Result<ObjectId> Session::admit_environment_edit(ObjectId existing) const {
+    // The World Settings show a disabled Environment's defaults, which an edit would silently diff against.
+    auto status=world::inspect_component(world_.runtime(),existing);if(!status) return std::unexpected(status.error());
+    auto owner=world::effective_enabled(world_.runtime(),status->owner);if(!owner) return std::unexpected(owner.error());
+    if(!status->enabled || !*owner) return invalid("The Environment is disabled; enable it in Parameters before changing World settings.");
+    return admit_property_edit(existing);
+}
 Result<void> Session::set_environment(const rendering::SceneLightingSettings& settings) {
     auto edit=environment_edit(settings);if(!edit) return std::unexpected(edit.error());
     if(edit->paths.empty()) return {};
     if(editing()) return invalid("Finish the current property edit before changing World settings.");
     if(const auto existing=environment();existing!=ObjectId{}) {
-        // The World Settings show a disabled Environment's defaults, which an edit would silently diff against.
-        auto status=world::inspect_component(runtime_,existing);if(!status) return std::unexpected(status.error());
-        auto owner=world::effective_enabled(runtime_,status->owner);if(!owner) return std::unexpected(owner.error());
-        if(!status->enabled || !*owner) return invalid("The Environment is disabled; enable it in Parameters before changing World settings.");
-        auto entity=admit_property_edit(existing);if(!entity) return std::unexpected(entity.error());
+        auto entity=admit_environment_edit(existing);if(!entity) return std::unexpected(entity.error());
         auto root=runtime_.hold(existing);if(!root) return std::unexpected(root.error());
         FieldGroupChange change{std::move(*root),*entity,edit->paths,0,{},edit->values};
         for(const auto& path:edit->paths) {
@@ -151,12 +154,35 @@ Result<void> Session::set_environment(const rendering::SceneLightingSettings& se
     if(attached->notification_error) return std::unexpected(*attached->notification_error);
     return {};
 }
-Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath> paths,std::span<const Scalar> values) {
+Result<void> Session::set_sky_map(const SkyAsset& asset) {
+    if(editing()) return invalid("Finish the current property edit before changing World settings.");
+    presentation::SkyMapBinding after{asset.key,asset.map};
+    if(const auto existing=environment();existing!=ObjectId{}) {
+        auto entity=admit_environment_edit(existing);if(!entity) return std::unexpected(entity.error());
+        auto before=presentation::read_sky_map(runtime_,existing);if(!before) return std::unexpected(before.error());
+        if(before->source==after.source && before->resolved==after.resolved) return {};
+        auto root=runtime_.hold(existing);if(!root) return std::unexpected(root.error());
+        if(auto set=presentation::set_sky_map_binding(runtime_,existing,after);!set) return set;
+        remember(SkyMapChange{std::move(*root),*entity,std::move(*before),std::move(after)});return {};
+    }
+    if(after.source.empty() && !after.resolved) return {};
+    auto created=create_environment({},{},&after);if(!created) return std::unexpected(created.error());
+    EntityChange change;change.added=true;change.removals.emplace_back().root=std::move(*created);
+    const auto id=change.removals.front().id();
+    names_.emplace(id,L"Environment");
+    auto attached=world_.attach(id);
+    if(!attached) {names_.erase(id);return std::unexpected(attached.error());}
+    remember(std::move(change));
+    if(attached->notification_error) return std::unexpected(*attached->notification_error);
+    return {};
+}
+Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath> paths,std::span<const Scalar> values,const presentation::SkyMapBinding* sky) {
     auto members=world_.members();if(!members) return std::unexpected(members.error());
     if(members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
     auto entity=world::create_entity(runtime_);if(!entity) return std::unexpected(entity.error());
     auto component=world::create_component(runtime_,presentation_types_.environment_component);if(!component) return std::unexpected(component.error());
     if(!paths.empty()) if(auto written=world_.write(component->id(),paths,values);!written) return std::unexpected(written.error());
+    if(sky) if(auto set=presentation::set_sky_map_binding(runtime_,component->id(),*sky);!set) return std::unexpected(set.error());
     const std::array parts{world::Attachment{component->id()}};
     auto composed=world_.attach_components(entity->id(),parts);if(!composed) return std::unexpected(composed.error());
     return std::move(*entity);
@@ -315,7 +341,7 @@ Result<world::Commit> Session::reparent(ObjectId entity,ObjectId parent,world::R
     }
     return changed;
 }
-Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset, math::Vector3 position) {
+Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset, math::Vector3 position, Project* project) {
     auto cancelled=cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     auto members=world_.members();
@@ -323,7 +349,9 @@ Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset, math::
     if (members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
     presentation::Material material;
     if(asset.mesh && asset.mesh->has_materials()) material.base_color={1,1,1};
-    auto root=presentation::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},material,asset.key});
+    std::vector<presentation::MaterialBinding> defaults;
+    if(project) {auto resolved=mesh_defaults(*project,asset);if(!resolved) return std::unexpected(resolved.error());defaults=std::move(*resolved);}
+    auto root=presentation::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},material,asset.key,std::move(defaults)});
     if (!root) return std::unexpected(root.error());
     return attach_created(std::move(*root),asset.name);
 }
@@ -861,6 +889,12 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             auto state=admit_component_edit(item.root.id());if(!state) return std::unexpected(state.error());
             if(state->owner!=item.entity) return invalid("The material binding's owning Entity changed.");
             auto changed=presentation::set_material_bindings(runtime_,item.root.id(),forward?item.after:item.before);
+            if(!changed) return std::unexpected(changed.error());
+            set_selection({item.entity,item.root.id()});return world::Commit{true,{}};
+        } else if constexpr (std::is_same_v<T, SkyMapChange>) {
+            auto state=admit_component_edit(item.root.id());if(!state) return std::unexpected(state.error());
+            if(state->owner!=item.entity) return invalid("The sky map's owning Entity changed.");
+            auto changed=presentation::set_sky_map_binding(runtime_,item.root.id(),forward?item.after:item.before);
             if(!changed) return std::unexpected(changed.error());
             set_selection({item.entity,item.root.id()});return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, BodyChange>) {

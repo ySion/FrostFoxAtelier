@@ -447,9 +447,12 @@ public:
     [[nodiscard]] Result<void> remove_transform(ObjectId entity);
     // Writes Entity world poses between dispatch phases. The batch is validated
     // and converted parent-first before any TRS is published; scale is retained.
+    // `written`, when given, receives the exact local TRS published per Entity;
+    // poses rejected under the isolate policy are not listed.
     [[nodiscard]] Result<void> apply_simulation_transform(ObjectId entity, math::Vector3 position,
         math::Quaternion rotation);
-    [[nodiscard]] Result<void> apply_simulation_transforms(std::span<const SimulationPose>);
+    [[nodiscard]] Result<void> apply_simulation_transforms(std::span<const SimulationPose>,
+        std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
     // Domains (presentation, simulation) register the component types they
     // consume. Member components of `type` (or derived) for which `predicate`
     // holds are kept in that registration's bucket, maintained with every
@@ -489,6 +492,8 @@ public:
         // zero-scale node. Degenerate spaces are not object failures under any policy.
         [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
         [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
+        // Spatial parent of a member Entity, null for world space; read from the same cache as matrix().
+        [[nodiscard]] Result<ObjectId> parent(ObjectId entity);
     private:
         friend class World;
         SpatialPass(Impl& impl, DiagnosticPhase phase) noexcept : impl_(&impl), phase_(phase) {}

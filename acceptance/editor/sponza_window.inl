@@ -3,14 +3,14 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     namespace render=atelier::renderer;
     namespace world=atelier::world;
     namespace presentation=atelier::presentation;
-    // Fitting the DDGI volume writes World lighting; the dynamic checks below must restore this fitted state.
-    model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit,true));
+    // The scene's Environment supplies the probe volume; the dynamic checks below must restore that authored state.
+    model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit));
     const auto authored=model(app.document().serialize());
     tick(app,128);
     auto settings=Access::scene_lit_view(app).lit;
     const auto& meshes=Access::scene_snapshot(app).meshes;
-    require(meshes.size()==1 && Access::scene_snapshot(app).lights.size()==3,
-        "Sponza Scene Lit did not consume the complete model and three World lights.");
+    require(meshes.size()==2 && Access::scene_snapshot(app).lights.size()==3,
+        "Sponza Scene Lit did not consume the building, its curtains and three World lights.");
     for(const auto& item:model(app.document().presentation().render_items())) for(const auto& vertex:item.geometry->vertices()) {
         const auto p=atelier::math::transform_point(atelier::math::Vector3{vertex.position[0],vertex.position[1],vertex.position[2]},item.world);
         for(unsigned axis=0;axis<3;++axis) require(p[axis]>=settings.probe_volumes[0].minimum[axis] && p[axis]<=settings.probe_volumes[0].maximum[axis],
@@ -50,24 +50,26 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     require(app.frame_statistics().scene_lit_probe_rays>0 && app.frame_statistics().scene_lit_shadow_rays>0,
         "Sponza did not execute hardware probe and visibility rays.");
     std::ofstream report(output/"ddgi.txt");
-    report<<"Sponza DDGI: 262267 triangles, 3 World lights; real D3D12 GPU validation.\n"
+    std::size_t triangles{};for(const auto& item:model(app.document().presentation().render_items())) triangles+=item.geometry->vertices().size()/3;
+    report<<"Sponza DDGI: "<<triangles<<" triangles, 3 World lights; real D3D12 GPU validation.\n"
         <<"Volume min="<<settings.probe_volumes[0].minimum[0]<<','<<settings.probe_volumes[0].minimum[1]<<','<<settings.probe_volumes[0].minimum[2]
         <<" max="<<settings.probe_volumes[0].maximum[0]<<','<<settings.probe_volumes[0].maximum[1]<<','<<settings.probe_volumes[0].maximum[2]
         <<" grid="<<settings.probe_volumes[0].counts[0]<<'x'<<settings.probe_volumes[0].counts[1]<<'x'<<settings.probe_volumes[0].counts[2]
         <<" budget="<<settings.probe_update_budget<<" rays/probe="<<settings.probe_rays<<'\n';
-    // Sponza has no sky; isolate indirect diffuse from AO, screen reflections and bloom. Opening it fitted the probe
-    // volume into a new Environment without marking the document modified.
-    require(atelier::rendering::sky_radiance(model(app.document().presentation().environment()))==std::array<float,3>{} &&
-        app.document().environment()!=atelier::ObjectId{} && !app.document().dirty(),"Sponza unexpectedly has environment radiance, or its fitted Environment is missing or modified.");
+    // Isolate indirect diffuse from AO, screen reflections, bloom and Sponza's sky. The scene supplies its Environment
+    // (sky map and fitted probe volume), so opening it neither fits nor marks the document modified.
+    require(model(app.document().presentation().environment()).sky_map && app.document().environment()!=atelier::ObjectId{} && !app.document().dirty(),
+        "Sponza lost its sky map, or its Environment is missing or modified.");
     // These are World-authored settings; the test edits them like the World panel and restores them below.
     const auto authored_lighting=settings;
-    settings.gtao=false;settings.sssr=false;settings.bloom=false;
+    settings.gtao=false;settings.sssr=false;settings.bloom=false;settings.sky_enabled=false;
     model(Access::scene_lit_settings(app,settings));
     auto on=shot("sponza-ddgi-on",128);
     const auto stable=shot("sponza-ddgi-stable",32);
     settings.ddgi=false;model(Access::scene_lit_settings(app,settings));
     const auto off=shot("sponza-ddgi-off",64);
-    require(app.frame_statistics().scene_lit_shadow_rays>0 && app.frame_statistics().scene_lit_probe_rays==0,
+    // Fitted sun cascades cover every converged receiver, so a static frame traces no direct rays.
+    require(app.frame_statistics().scene_lit_gpu_timing_valid && app.frame_statistics().scene_lit_probe_rays==0,
         "Sponza DDGI Off did not reach the renderer.");
     const auto contribution=difference(on,off),noise=difference(on,stable);
     report<<"Static mean absolute RGB difference (0..255): DDGI="<<contribution<<" temporal="<<noise<<'\n';report.flush();
@@ -86,8 +88,9 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     const auto original=model(world::read_transform(runtime,moving->entity));
     std::ofstream motion(output/"ddgi-motion.csv");motion<<"frame,x,y,z,history_resets\n";
     for(unsigned frame=1;frame<=32;++frame) {
-        auto transform=original;transform.position.x+=8.f*static_cast<float>(frame)/32.f;
-        edit(moving->entity,"position.x",transform.position.x);tick(app,1);
+        // Slide from its side aisle onto the nave axis, which the camera looks along.
+        auto transform=original;transform.position.z*=1.f-static_cast<float>(frame)/32.f;
+        edit(moving->entity,"position.z",transform.position.z);tick(app,1);
         const auto resets=app.frame_statistics().scene_lit_history_resets;
         motion<<frame<<','<<transform.position.x<<','<<transform.position.y<<','<<transform.position.z<<','<<resets<<'\n';
         require(resets==0,"Moving a Sponza light reset the DDGI history domain.");
@@ -123,7 +126,7 @@ void verify_sponza_ddgi(atelier::application::Application& app,const std::filesy
     report<<"Lights off luminance (0..255): early="<<luminance(dark_early)<<" settled="<<luminance(dark_late)<<" unlit overlay floor="<<unlit<<'\n';report.flush();
     require(early>.5 && late<early*.3,"Sponza retained stale probe lighting after lights were switched off.");
     for(const auto& item:light_items) edit(item.component,"settings.intensity",item.settings.intensity);
-    edit(moving->entity,"position.x",original.position.x);
+    edit(moving->entity,"position.z",original.position.z);
     model(Access::scene_lit_settings(app,authored_lighting));
     require(model(app.document().serialize())==authored,"Sponza dynamic acceptance did not restore authored World data.");
     model(app.configure_view({8,2,0},{-6,3,0},render::Shading::scene_lit));
@@ -139,7 +142,7 @@ int verify_sponza_window(atelier::application::Application& app,const char* outp
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     const auto root=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
     model(app.open_project(root/"assets/examples"));model(app.open_scene("Examples/Sponza/Scenes/Sponza.scene"));
-    require(model(app.document().presentation().render_items()).front().geometry->vertices().size()==786801,"Sponza viewport lost model geometry.");
+    require(model(app.document().presentation().render_items()).front().geometry->vertices().size()==11216634,"Sponza viewport lost model geometry.");
     model(app.configure_view({8,2,0},{-6,3,0},atelier::renderer::Shading::smooth));tick(app,3);
     atelier::renderer::Capture image;require(app.step(&image) && image.frame_id,"Sponza frame was not accepted.");
     const auto view=app.presented()->find(atelier::editor::control::viewport);require(view!=nullptr,"Sponza viewport is absent.");
@@ -159,7 +162,7 @@ int verify_sponza_window(atelier::application::Application& app,const char* outp
     model(app.configure_view({42,32,-34},{0,4,0},atelier::renderer::Shading::smooth));tick(app,2);capture(app,output/"sponza-overview.png");
     model(app.configure_view({8,2,0},{-6,3,0},atelier::renderer::Shading::matcap));tick(app,2);capture(app,output/"sponza-matcap.png");
     verify_sponza_ddgi(app,output);
-    std::ofstream report(output/"acceptance.txt");report<<"Sponza window acceptance: PASS\n262267 triangles; full model; Smooth diffuse textures; MatCap; Scene Lit/DDGI on-off, moving light and lights-off decay; real D3D12 GPU validation. See ddgi.txt and ddgi-motion.csv.\n";
+    std::ofstream report(output/"acceptance.txt");report<<"Sponza window acceptance: PASS\nBuilding and curtains; Smooth diffuse textures; MatCap; Scene Lit/DDGI on-off, moving light and lights-off decay; real D3D12 GPU validation. See ddgi.txt and ddgi-motion.csv.\n";
     require(report.good(),"Cannot write Sponza acceptance report.");app.close();
     std::puts("Sponza window acceptance: PASS");return 0;
 } catch(const std::exception& error) {std::fprintf(stderr,"Sponza window acceptance: FAIL: %s\n",error.what());return 1;}
