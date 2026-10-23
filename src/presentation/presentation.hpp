@@ -54,6 +54,10 @@ private:
     ReferenceSequence materials_;
     std::vector<std::string> material_slots_;
     std::vector<bool> material_overrides_;
+    // The mesh asset's default material per slot, resolved with the mesh and never saved.
+    AFIELD(Name="default_materials", Hidden, Sequence="material.Material")
+    ReferenceSequence default_materials_;
+    std::vector<std::string> default_slots_;
     std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces_;
     geometry::MeshRef surface_geometry_;
     Material surface_parameters_;
@@ -208,11 +212,17 @@ struct Types {
 // Call once per Runtime, after world::register_types.
 [[nodiscard]] Result<Types> register_types(Runtime&);
 
+struct MaterialBinding {
+    std::string slot;
+    ObjectRoot resource;
+    bool overridden{true}; // Explicit instance assignment; false is a mesh default.
+};
 struct StaticMeshEntityDesc {
     geometry::MeshRef mesh;
     world::Trs transform{};
     Material material{};
     std::string_view mesh_source{};
+    std::vector<MaterialBinding> default_materials{}; // See MeshBinding::defaults.
 };
 // Returns a complete Detached spatial Entity with one StaticMeshComponent.
 // A null mesh is valid and produces no presentation. No World registration,
@@ -241,7 +251,9 @@ struct LightRenderItem {
 // Configure detached objects before attachment, or replace a member's immutable
 // mesh resource at a host boundary. No callback/dispatch reentry is permitted.
 [[nodiscard]] Result<void> set_geometry(Runtime&, ObjectId static_mesh_component, geometry::MeshRef);
-struct MeshBinding { std::string source; geometry::MeshRef resolved; };
+// `defaults` are the mesh asset's slot materials (overridden false). They are not saved: hosts
+// resolve them from the mesh source wherever they resolve the mesh. An explicit binding wins.
+struct MeshBinding { std::string source; geometry::MeshRef resolved; std::vector<MaterialBinding> defaults{}; };
 struct StaticMeshState { MeshBinding mesh; Material material; };
 // Source and resolved immutable content change together. Bare set_geometry
 // clears provenance. These snapshots also support detached and null-mesh data.
@@ -253,11 +265,6 @@ struct StaticMeshState { MeshBinding mesh; Material material; };
 struct SkyMapBinding { std::string source; rendering::SkyMapRef resolved; };
 [[nodiscard]] Result<void> set_sky_map_binding(Runtime&, ObjectId environment_component, SkyMapBinding);
 [[nodiscard]] Result<SkyMapBinding> read_sky_map(Runtime&, ObjectId environment_component);
-struct MaterialBinding {
-    std::string slot;
-    ObjectRoot resource;
-    bool overridden{true}; // Explicit instance assignment; false is a mesh default.
-};
 // Names, not slot positions, are the persistent correspondence. Empty imported
 // names use the reserved slot/<index> spelling until assigned a named asset.
 [[nodiscard]] std::string material_slot_name(const geometry::Mesh&,std::size_t);
@@ -325,7 +332,7 @@ public:
     // a mesh slot is read again when its component or an Entity on its spatial
     // chain was written, the lights when any light or Entity on a light's chain
     // was, and everything after World::revision advances; only changed meshes are
-    // validated and rebuilt. Slots whose surfaces come from material slots and
+    // validated and rebuilt. Slots whose surfaces come from bound or default materials and
     // slots not in the cache (isolated, degenerate) are read on every update, as
     // are the lights while one is not drawn, so failures are reported as by
     // extraction on every update and persistent ones keep counting repeats.
@@ -372,7 +379,7 @@ private:
     mutable detail::PassedValues<Material> valid_materials_;
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
-    mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from material slots.
+    mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from bound or default materials.
     mutable std::size_t presented_slots_{}; // Slots with a presented matrix after the latest update.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;

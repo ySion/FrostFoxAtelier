@@ -955,15 +955,21 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         const auto material_state=resource?std::optional(take(material::read_material(runtime,object))):std::nullopt;
         const auto material_bindings=resource?atelier::Result<std::vector<presentation::MaterialBinding>>{std::vector<presentation::MaterialBinding>{}}:presentation::read_material_bindings(runtime,object);
         const auto mesh=!resource && material_bindings?std::optional(take(presentation::read_static_mesh(runtime,object))):std::nullopt;
-        const bool all_slots_bound=mesh && mesh->mesh.resolved && !material_bindings->empty() &&
-            std::ranges::all_of(mesh->mesh.resolved->parts(),[&](const auto& part) {
-                return std::ranges::find(*material_bindings,presentation::material_slot_name(*mesh->mesh.resolved,part.material),
-                    &presentation::MaterialBinding::slot)!=material_bindings->end();
-            });
+        // A slot is bound by an explicit material or its mesh default; the component's base parameters reach only the others.
+        const auto bound_slot=[&](const std::string& name) {
+            return std::ranges::find(*material_bindings,name,&presentation::MaterialBinding::slot)!=material_bindings->end() ||
+                std::ranges::find(mesh->mesh.defaults,name,&presentation::MaterialBinding::slot)!=mesh->mesh.defaults.end();
+        };
+        const bool any_slot_bound=mesh && (!material_bindings->empty() || !mesh->mesh.defaults.empty());
+        const bool all_slots_bound=any_slot_bound && mesh->mesh.resolved &&
+            std::ranges::all_of(mesh->mesh.resolved->parts(),[&](const auto& part) {return bound_slot(presentation::material_slot_name(*mesh->mesh.resolved,part.material));});
+        const auto asset_name=[&](const std::string& key) {
+            if(const auto* entry=project?project->entry(key):nullptr) return entry->path.stem().wstring();
+            return wide(key);
+        };
         const auto property_caption=[&](std::string_view name,std::string_view declared) {
             auto label=declared.empty()?parameter_label(name):wide(declared);
-            if(!resource && material_bindings && !material_bindings->empty() && !all_slots_bound && name.starts_with("material."))
-                label+=L" (Unbound)";
+            if(any_slot_bound && !all_slots_bound && name.starts_with("material.")) label+=L" (Unbound)";
             return label;
         };
         const auto property_key=[&](std::span<const FieldId> path,Binding::Kind kind=Binding::Kind::field) {
@@ -1119,8 +1125,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             const auto asset=take(session.material_asset(object));
             constexpr std::array names{L"Base Color Texture",L"Roughness Texture",L"Metallic Texture",L"Normal Texture",L"Emissive Texture",L"Opacity Texture"};
             for(std::size_t i=0;i<names.size();++i) {
-                auto name=asset.textures[i].empty()?std::wstring(L"None"):wide(asset.textures[i]);
-                if(project) for(const auto& entry:project->entries()) if(entry.key==asset.textures[i]) {name=entry.path.stem().wstring();break;}
+                auto name=asset.textures[i].empty()?std::wstring(L"None"):asset_name(asset.textures[i]);
                 mark_unavailable(AssetKind::texture,asset.textures[i],name);
                 selector(bind_material(object,{},Binding::Kind::material_texture,{}, {},i),names[i],std::move(name),"选择材质输入使用的 Texture 资源。None 清除该输入的贴图；修改参与材质撤销与保存。");
             }
@@ -1140,9 +1145,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 if(at!=material_bindings->end()) {
                     auto state=take(material::read_material(runtime,at->resource.id()));
                     if(state.parent.registered()) state=take(material::read_material(runtime,state.parent.id()));
-                    choice=wide(state.source);
-                    if(project) for(const auto& entry:project->entries()) if(entry.key==state.source) {choice=entry.path.stem().wstring();break;}
-                    mark_unavailable(AssetKind::material,state.source,choice);
+                    choice=asset_name(state.source);mark_unavailable(AssetKind::material,state.source,choice);
+                } else if(const auto fallback=std::ranges::find(mesh->mesh.defaults,slot_name,&presentation::MaterialBinding::slot);fallback!=mesh->mesh.defaults.end()) {
+                    const auto source=take(material::read_material(runtime,fallback->resource.id())).source;
+                    auto name=asset_name(source);mark_unavailable(AssetKind::material,source,name);choice+=L" · "+name;
                 }
                 selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+wide(slot_name),std::move(choice),"为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
             }
@@ -1172,7 +1178,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     if(material_object!=ObjectId{}) {
         append_properties(material_object);
         std::wstring name=wide(material_inspection);
-        if(project) for(const auto& entry:project->entries()) if(entry.key==material_inspection) {name=entry.path.stem().wstring();break;}
+        if(const auto* entry=project?project->entry(material_inspection):nullptr) name=entry->path.stem().wstring();
         const std::array<ui_language::InputValue,7> inputs{name,session.material_dirty(material_inspection),ui_language::ItemList{std::move(groups)},
             parameter_search_visible,ui_language::TextEditBinding{control::parameter_search,query},
             ui_language::ActionBinding{control::parameter_search_toggle},double(ui::ControlIcon::search)};
@@ -1180,8 +1186,19 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     }
     const auto append_object=[&](ObjectId object) {
         append_properties(object);
-        const auto bindings=presentation::read_material_bindings(runtime,object);
-        if(bindings) for(const auto& binding:*bindings) append_properties(binding.resource.id(),object,binding.slot);
+        const auto bindings=presentation::read_material_bindings(runtime,object);if(!bindings) return;
+        // Groups follow the mesh's slots. A slot showing its mesh default offers the same overrides; enabling
+        // one binds an instance of the default. Bindings kept for an unavailable mesh follow.
+        const auto mesh=take(presentation::read_static_mesh(runtime,object)).mesh;
+        std::vector<const presentation::MaterialBinding*> shown;
+        if(mesh.resolved) for(std::size_t i=0;i<mesh.resolved->materials().size();++i) {
+            const auto name=presentation::material_slot_name(*mesh.resolved,i);
+            if(const auto at=std::ranges::find(*bindings,name,&presentation::MaterialBinding::slot);at!=bindings->end()) shown.push_back(&*at);
+            else if(const auto fallback=std::ranges::find(mesh.defaults,name,&presentation::MaterialBinding::slot);fallback!=mesh.defaults.end())
+                shown.push_back(&*fallback);
+        }
+        for(const auto& binding:*bindings) if(std::ranges::find(shown,&binding)==shown.end()) shown.push_back(&binding);
+        for(const auto* binding:shown) append_properties(binding->resource.id(),object,binding->slot);
     };
     if(inspected!=ObjectId{}) {
         append_object(inspected);

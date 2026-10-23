@@ -9,7 +9,7 @@ std::string material_slot_name(const geometry::Mesh& mesh,std::size_t index) {
     return slot.name.empty()?"slot/"+std::to_string(index):slot.name;
 }
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime,ObjectId id) {
-    return runtime.with_native<const StaticMeshComponent>(id,[&](const auto& value)->Result<std::vector<MaterialBinding>> {
+    return runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value)->Result<std::vector<MaterialBinding>> {
         auto field=runtime.reference_field(id,Access::materials(value));if(!field) return std::unexpected(field.error());
         std::vector<MaterialBinding> result;result.reserve(Access::material_slots(value).size());
         for(std::size_t i=0;i<Access::material_slots(value).size();++i) {
@@ -68,11 +68,16 @@ Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::materia
     const auto& mesh=Access::geometry(value);if(!mesh) return Snapshot{};
     const auto& cached=Access::surfaces(value);
     const bool base_changed=!cached || Access::surface_geometry(value)!=mesh || Access::surface_parameters(value)!=value.material;
-    if(!base_changed && Access::material_slots(value).empty()) return cached;
-    std::optional<ReferenceField> field;
-    if(!Access::material_slots(value).empty()) {
+    const auto& slots=Access::material_slots(value);const auto& defaults=Access::default_slots(value);
+    if(!base_changed && slots.empty() && defaults.empty()) return cached;
+    std::optional<ReferenceField> explicit_field,default_field;
+    if(!slots.empty()) {
         auto references=runtime.reference_field(id,Access::materials(value));if(!references) return std::unexpected(references.error());
-        field=std::move(*references);
+        explicit_field=std::move(*references);
+    }
+    if(!defaults.empty()) {
+        auto references=runtime.reference_field(id,Access::default_materials(value));if(!references) return std::unexpected(references.error());
+        default_field=std::move(*references);
     }
     std::shared_ptr<std::vector<material::SurfaceRef>> next;
     const auto writable=[&]() -> auto& {
@@ -80,14 +85,18 @@ Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::materia
             std::make_shared<std::vector<material::SurfaceRef>>(*cached);
         return *next;
     };
+    const auto capture=[&](const ReferenceField& sequence,std::size_t index)->Result<material::SurfaceRef> {
+        auto reference=runtime.sequence_read(sequence,index);if(!reference) return std::unexpected(reference.error());
+        return material::capture(runtime,reference->id());
+    };
     for(std::size_t i=0;i<mesh->materials().size();++i) {
         material::SurfaceRef surface;
         const auto name=material_slot_name(*mesh,i);
-        const auto at=std::ranges::find(Access::material_slots(value),name);
-        if(at!=Access::material_slots(value).end()) {
-            const auto index=static_cast<std::size_t>(at-Access::material_slots(value).begin());
-            auto reference=runtime.sequence_read(*field,index);if(!reference) return std::unexpected(reference.error());
-            auto captured=material::capture(runtime,reference->id());if(!captured) return std::unexpected(captured.error());
+        if(const auto at=std::ranges::find(slots,name);at!=slots.end()) {
+            auto captured=capture(*explicit_field,static_cast<std::size_t>(at-slots.begin()));if(!captured) return std::unexpected(captured.error());
+            surface=*captured;
+        } else if(const auto at=std::ranges::find(defaults,name);at!=defaults.end()) {
+            auto captured=capture(*default_field,static_cast<std::size_t>(at-defaults.begin()));if(!captured) return std::unexpected(captured.error());
             surface=*captured;
         } else if(base_changed) {
             auto description=mesh->materials()[i].surface->description();

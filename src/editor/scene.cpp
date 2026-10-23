@@ -1413,13 +1413,20 @@ struct Session::GraphCodec {
                             load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"mesh"},nullptr,"The mesh source is missing; the component has no mesh.");
                         else if(!mesh_at->is_string()) load.keep(object,{"mesh"},*mesh_at,world::DiagnosticKind::mismatch,"Expected a mesh source key. The component has no mesh and the saved value is kept.");
                         else source=mesh_at->get<std::string>();
-                        geometry::MeshRef mesh;
+                        geometry::MeshRef mesh;std::vector<presentation::MaterialBinding> defaults;
                         if(!source.empty()) {
                             // A source that already failed is not read again for each component that uses it.
                             const auto* item=session.unavailable(AssetKind::mesh,source);
                             if(!item) {
-                                if(auto loaded=project->mesh(source)) mesh=loaded->mesh;
-                                else item=&session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());
+                                if(auto loaded=project->mesh(source)) {
+                                    mesh=loaded->mesh;std::vector<MissingResource> missing;
+                                    defaults=take(session.mesh_defaults(*project,*loaded,&missing));
+                                    for(const auto& absent:missing) {
+                                        const Json value=absent.key;
+                                        load.report(world::Severity::warning,absent.kind,object,{"mesh"},&value,absent.reason+(absent.input?
+                                            " A default material of the mesh has no texture for this input.":" A default material of the mesh stands in."));
+                                    }
+                                } else item=&session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());
                             }
                             if(item) {
                                 const Json value=source;
@@ -1428,7 +1435,7 @@ struct Session::GraphCodec {
                             }
                         }
                         const bool unresolved=!source.empty() && !mesh;
-                        take(presentation::set_mesh_binding(runtime,object,{source,std::move(mesh)}));
+                        take(presentation::set_mesh_binding(runtime,object,{source,std::move(mesh),std::move(defaults)}));
                         presentation::Material material;std::vector<std::string> applied;
                         const auto vector_value=[&](const char* name,math::Vector3& target) {
                             const auto found=part.find(name);if(found==part.end()) return;
@@ -1814,7 +1821,7 @@ struct Session::GraphCodec {
                     if(!source.empty()) {
                         auto loaded=project.sky_map(source);
                         // A sky map imported after Play opened its Project is not catalogued yet.
-                        if(!loaded && std::ranges::find(project.entries(),source,&ProjectEntry::key)==project.entries().end()) {take(project.refresh());loaded=project.sky_map(source);}
+                        if(!loaded && !project.entry(source)) {take(project.refresh());loaded=project.sky_map(source);}
                         if(loaded) {map=loaded->map;session.unavailable_.erase(std::pair{AssetKind::sky,source});}
                         else missing=&session.remember_unavailable(project,AssetKind::sky,source,loaded.error());
                     }
@@ -1858,7 +1865,10 @@ struct Session::GraphCodec {
                 for(const auto& definition:definitions) {
                     fields(definition,{"id","source","inline","parent","overrides"});
                     const auto key=local_key(definition.at("id"));
-                    auto restored=restore_material(session,&project,definition);
+                    // As in a tolerant load: an unavailable source, parent or texture stands in with a warning.
+                    std::vector<MissingResource> missing;auto restored=restore_material(session,&project,definition,&missing);
+                    for(const auto& item:missing) note(world::Severity::warning,item.kind,"#"+std::to_string(key)+": "+item.reason+
+                        (item.input?" The input has no texture.":" A default material stands in."));
                     if(const auto live=live_object(session,key);live && *live!=ObjectId{}) {
                         if(!session.is_material(*live)) throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
                         if(restored.id()!=*live) take(material::update_material(runtime,*live,take(material::read_material(runtime,restored.id()))));
@@ -1871,7 +1881,7 @@ struct Session::GraphCodec {
                 fields(op,{"op","key","material"});
                 const auto key=op.at("key").get<std::string>();subject+=" "+key;
                 auto asset=material_format::decode(op.at("material"));asset.key=key;
-                const auto catalogued=[&](const std::string& texture){return std::ranges::find(project.entries(),texture,&ProjectEntry::key)!=project.entries().end();};
+                const auto catalogued=[&](const std::string& texture){return project.entry(texture)!=nullptr;};
                 if(std::ranges::any_of(asset.textures,[&](const auto& texture){return !texture.empty() && !catalogued(texture);})) take(project.refresh());
                 if(const auto at=session.materials_.find(key);at!=session.materials_.end()) {
                     material::State state;state.source=key;state.description=asset.description;

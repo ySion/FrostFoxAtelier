@@ -494,8 +494,15 @@ struct EditorControl::Impl {
         if(auto transform=world::read_transform(runtime,id)) result["transform"]={{"position",vector3(transform->position)},
             {"rotation",{transform->rotation.x,transform->rotation.y,transform->rotation.z,transform->rotation.w}},{"scale",vector3(transform->scale)}};
         if(auto bindings=presentation::read_material_bindings(runtime,id);bindings) {
-            if(const auto mesh=presentation::read_static_mesh(runtime,id))
-                result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()}};
+            if(const auto mesh=presentation::read_static_mesh(runtime,id)) {
+                auto defaults=Json::array();
+                for(const auto& binding:mesh->mesh.defaults) {
+                    const auto source=take(material::read_material(runtime,binding.resource.id())).source;
+                    defaults.push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",source},
+                        {"missing",app.document_->unavailable(editor::AssetKind::material,source)!=nullptr}});
+                }
+                result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()},{"default_materials",std::move(defaults)}};
+            }
             result["materials"]=Json::array();
             for(const auto& binding:*bindings) {
                 const auto state=take(material::read_material(runtime,binding.resource.id()));
@@ -775,8 +782,15 @@ struct EditorControl::Impl {
             ObjectId component;std::string slot;
             if(op=="material.override") {
                 component=object(args.at("component"));slot=text(args.at("slot"));
+                // As in Parameters: a slot showing its mesh default overrides an instance of that default.
                 const auto bindings=take(presentation::read_material_bindings(runtime,component));const auto at=std::ranges::find(bindings,slot,&presentation::MaterialBinding::slot);
-                if(at==bindings.end()) throw Failure("invalid_request","Assign a material to this slot first");target=at->resource.id();
+                if(at!=bindings.end()) target=at->resource.id();
+                else {
+                    const auto mesh=take(presentation::read_static_mesh(runtime,component));
+                    const auto fallback=std::ranges::find(mesh.mesh.defaults,slot,&presentation::MaterialBinding::slot);
+                    if(fallback==mesh.mesh.defaults.end()) throw Failure("invalid_request","Assign a material to this slot first");
+                    target=fallback->resource.id();
+                }
             }
             if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
             const auto properties=take(doc.properties(target));const auto name=text(args.at("property"));const auto found=std::ranges::find(properties,name,&editor::Property::name);

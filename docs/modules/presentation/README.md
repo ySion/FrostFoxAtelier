@@ -16,12 +16,12 @@ Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只�
 
 - 缓存内容：网格桶每个位置一个 `MeshSlot`，`item` 是该位置的 RenderItem（隔离或退化时为空），`changed` 是最后改变它的更新序号；上一次更新的灯光结果；上一次的 Environment 设置。
 - 布局：`World::revision()` 前进时，网格槽全部清空重建，`mesh_layout()` 记下这次更新的序号。在此之前，每个槽位都对应同一个组件，消费者可以按槽位保留自己的派生数据。
-- 每次更新：`update()` 先取 Runtime 的[写代号](../../runtime-model.md#写代号与变化游标)游标，在一次 presentation 遍历中只重新读取上次游标之后被写过的网格：布局建立时为每个槽记下空间链（自身 Entity 在前），链上每个 Entity 和网格组件都指向该槽，任一被写过就重读该槽，所以只改父 Entity 时重读的正是它之下的槽；经 `Runtime::write`、`with_native` 或 JIT 绕过 World 的写入同样盖章。重读的槽与缓存逐字节比较，只对变化的网格校验 Material、重算 surfaces；带材质槽的网格和不在缓存中的槽每次都重读，带材质槽的按指针比较 surfaces，所以共享材质资源的编辑也能发现。灯光组件或灯光链上的 Entity 被写过、有灯未被绘制、或呈现位姿移动了灯时，灯光整体重新提取并与缓存比较；Environment 每次读取。提取只用只读借用，不给读到的对象盖章。`update()` 必须在宿主安全点调用：在 Runtime 回调、原生借用或执行期间取游标返回 busy，更新以此失败。
+- 每次更新：`update()` 先取 Runtime 的[写代号](../../runtime-model.md#写代号与变化游标)游标，在一次 presentation 遍历中只重新读取上次游标之后被写过的网格：布局建立时为每个槽记下空间链（自身 Entity 在前），链上每个 Entity 和网格组件都指向该槽，任一被写过就重读该槽，所以只改父 Entity 时重读的正是它之下的槽；经 `Runtime::write`、`with_native` 或 JIT 绕过 World 的写入同样盖章。重读的槽与缓存逐字节比较，只对变化的网格校验 Material、重算 surfaces；带材质槽或默认材质的网格和不在缓存中的槽每次都重读，带材质槽或默认材质的按指针比较 surfaces，所以共享材质资源的编辑也能发现。灯光组件或灯光链上的 Entity 被写过、有灯未被绘制、或呈现位姿移动了灯时，灯光整体重新提取并与缓存比较；Environment 每次读取。提取只用只读借用，不给读到的对象盖章。`update()` 必须在宿主安全点调用：在 Runtime 回调、原生借用或执行期间取游标返回 busy，更新以此失败。
 - 版本号：`update()` 返回最近一次改变了某个网格槽、网格布局、灯光或 Environment 设置的更新序号。它单调、只在内容变化时前进；消费者保存上次同步的版本号，版本号相同时整帧跳过，否则只处理 `changed`、`mesh_layout()`、`lights_changed()` 大于该值的部分。版本号只在同一个 Scene 内可比；`identity()` 在进程内唯一、不被之后的 Scene 复用，消费者用它识别换了的 Scene。`render_items()` 也推进缓存，序号与 `update()` 共用，所以其他调用方插入的提取不会让消费者漏掉变化。
 - 所有权：缓存的 RenderItem 共享持有网格几何与 surfaces，组件被销毁或换了网格、材质后，旧内容保留到下一次更新。Scene 析构时释放全部缓存，它总是先于 World 析构。
 - 失败隔离：隔离或退化的网格不留在缓存中，每次更新都重新读取并报告，持续的失败和零缩放警告按更新次数累计 `repeats`；修复后在下一次更新回到缓存。调用失败（halt 策略或 World 级错误）时返回错误，失败前已更新的槽保留新值和序号；下一次成功的更新返回的版本号不小于这些序号，消费者不会漏掉它们。
 
-静止帧不读任何网格或灯光成员，开销与成员数无关，只剩取游标、列举被写对象和 Environment 的读取与校验；带材质槽的网格是例外，每次更新都重读。
+静止帧不读任何网格或灯光成员，开销与成员数无关，只剩取游标、列举被写对象和 Environment 的读取与校验；带材质槽或默认材质的网格是例外，每次更新都重读。
 
 ### 呈现位姿
 
@@ -36,9 +36,9 @@ Renderer 用上一帧 Frame 里的矩阵算运动向量（`scene_lit.cpp` 中 `p
 
 ## 网格
 
-`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform 与 mesh_source；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
+`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform、mesh_source 与网格资产的槽默认材质；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
 
-`set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照，见[项目场景](../world/project-scenes.md)。
+`set_mesh_binding` 同时设置持久来源键、不可变 MeshRef 与该网格的槽默认材质（`MeshBinding::defaults`，不持久化，宿主随网格解析），清理不匹配材质槽；`set_geometry` 清除来源键和默认材质。每个默认材质必须对应新网格中唯一的槽。材质表面按槽依次取显式绑定、默认材质、网格表面乘组件参数。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照，见[项目场景](../world/project-scenes.md)。
 
 `render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。空间不可求值时诊断记在失败的 Entity 上，材质记在组件上，该项跳过；零缩放空间中的网格不绘制，报告 `degenerate_value` 警告。
 

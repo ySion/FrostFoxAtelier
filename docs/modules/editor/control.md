@@ -60,7 +60,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
 | material.set_property、material.set_texture | 通过 Session 编辑材质对象；参数使用发现到的字段名/标量/枚举，贴图使用 input 名与 Texture GUID |
 | material.assign | 按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
-| material.override | 按真实参数字段名启用/取消实例覆盖；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
+| material.override | 按真实参数字段名启用/取消实例覆盖；只显示网格默认材质的槽同样可用，启用时绑定一个以该默认材质为父的实例；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
 | material.save、material.undo、material.redo | 共享资产独立保存和历史；实例覆盖使用场景历史（`op.call edit.undo / edit.redo`）。保存后目录刷新失败返回 saved 与 catalog_warning |
 | camera.set、camera.look_at | 公共 Camera 状态和观察目标 |
 | view.set | 原子应用显示 patch，与菜单共用 ViewOption 规则 |
