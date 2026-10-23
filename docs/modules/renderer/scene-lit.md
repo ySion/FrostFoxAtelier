@@ -246,7 +246,7 @@ SSSR 不以全局几何变化统一降低历史支持。它比较接收面及反
 
 GTAO、最终 TAA 以及 SSSR 接收面/来源见证的表面历史共同检查完整 64 位身份与当前 motion 有效位，再应用各自几何容差；低 32 位相同的不同对象不能共享历史。SMAA T2x 的覆盖样本合成保留自己的轮廓规则，不把这种表面照明身份门槛机械套在互补 AA 样本上。
 
-`FrameStats::scene_lit_gpu_ms` 为八个阶段的原始 GPU 完成样本：GBuffer、AS/上传、直接光（含 HDR 合成）、DDGI、GTAO、反射（SSSR）、HDR resolve/表面历史、Bloom/色调映射/SMAA/显示合成。`scene_lit_ddgi_gpu_ms` 再分为 update/transfer 与 receiver gather（包含半分辨率代表点 gather、全分辨率上采样和回退列表的精确 gather），`scene_lit_ddgi_visibility_rays` 分为 probe-hit shading 与 receiver gather；两个数组均长 2，属于既有 DDGI 时间和 visibility 总计数的子集，不重复加总。只有主阶段、细分 timestamp 与射线读回都对应同一个完成的 RHI 录制序号时，`scene_lit_gpu_timing_valid` 才为 true；`scene_lit_gpu_sample_sequence` 与 `scene_lit_gpu_sample_frame_id` 标识样本。完成结果可能滞后或重复，统计分位数时必须去重；没有用平滑时长计算 p95。
+`FrameStats::scene_lit_gpu_ms` 为八个阶段的原始 GPU 完成样本：GBuffer、AS/上传、直接光（含 HDR 合成）、DDGI、GTAO、反射（SSSR）、HDR resolve/表面历史、Bloom/色调映射/SMAA/显示合成。`scene_lit_ddgi_gpu_ms` 再分为 update/transfer 与 receiver gather（包含半分辨率代表点 gather、全分辨率上采样和回退列表的精确 gather），`scene_lit_ddgi_visibility_rays` 分为 probe-hit shading 与 receiver gather；两个数组均长 2，属于既有 DDGI 时间和 visibility 总计数的子集，不重复加总。`scene_lit_reflection_work_items` 是同一完成帧中 SSSR 分类出、送去层级追踪的像素数，SSSR 关闭时为 0。只有主阶段、细分 timestamp 与射线读回都对应同一个完成的 RHI 录制序号时，`scene_lit_gpu_timing_valid` 才为 true；`scene_lit_gpu_sample_sequence` 与 `scene_lit_gpu_sample_frame_id` 标识样本。完成结果可能滞后或重复，统计分位数时必须去重；没有用平滑时长计算 p95。
 
 `scene_lit_direct_cluster_gpu_ms`、`scene_lit_shadow_cache_gpu_ms` 与 `scene_lit_direct_shading_gpu_ms` 依次细分直接光父阶段：灯列表构建、阴影 atlas 更新、着色与 HDR 合成。`scene_lit_ddgi_update_gpu_ms[2]` 细分 update/transfer：主射线（含分类/重定位）与命中照明/反馈/卷积；copy/transfer 仍只计入父阶段。细分之和不能替代其父阶段，更不能重复加入八阶段合计。
 

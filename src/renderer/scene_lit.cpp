@@ -152,6 +152,8 @@ struct SceneLit::State {
     GfxBuffer sun_trace_list,sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
     LightFrame light_frame;
     GfxBuffer ray_counters;
+    // Word 85 is a copy of the SSSR work counter; the shaders own words 0..84.
+    static constexpr std::uint32_t ray_counter_count=86,reflection_work_counter=85;
     GfxBuffer ltc; // Rectangle-light LTC table, ltc_lut::size squared cells.
     static constexpr std::size_t readback_count=32;
     std::array<GfxBuffer,readback_count> ray_readback{};
@@ -404,8 +406,8 @@ struct SceneLit::State {
         for(auto& query:queries){query=gfxCreateTimestampQuery(gfx);allocation(bool(query));}
         // Rays[0..7], cluster statistics[8..10], optional histogram[11..77], shadow missing taps[78], plane fallbacks[81],
         // receiver view-Z minimum (complemented order) and maximum (order)[82..83], sun trace pixels[84].
-        ray_counters=gfxCreateBuffer<std::uint32_t>(gfx,85);allocation(bool(ray_counters));
-        for(auto& readback:ray_readback){readback=gfxCreateBuffer(gfx,85*sizeof(std::uint32_t),nullptr,kGfxCpuAccess_Read);allocation(bool(readback));}
+        ray_counters=gfxCreateBuffer<std::uint32_t>(gfx,ray_counter_count);allocation(bool(ray_counters));
+        for(auto& readback:ray_readback){readback=gfxCreateBuffer(gfx,ray_counter_count*sizeof(std::uint32_t),nullptr,kGfxCpuAccess_Read);allocation(bool(readback));}
         brdf_lut=texture(64,64,DXGI_FORMAT_R16G16_FLOAT,4);
         const auto upload_lut=[&](GfxTexture& target,std::uint32_t width,std::uint32_t height,DXGI_FORMAT format,std::span<const unsigned char> bytes) {
             target=texture(width,height,format,0);
@@ -706,6 +708,7 @@ struct SceneLit::State {
             stats.scene_lit_shadow_rays=ray_count(0);
             for(std::size_t i=0;i<ddgi_timings.size();++i){stats.scene_lit_ddgi_visibility_rays[i]=ray_count(i+2);stats.scene_lit_shadow_rays+=ray_count(i+2);}
             stats.scene_lit_probe_rays=ray_count(1);
+            stats.scene_lit_reflection_work_items=counter[reflection_work_counter];
             stats.scene_lit_gpu_timing_valid=true;
             completed_sequence=std::max(completed_sequence,sample.frame_sequence);
             if(inspection && inspection->metadata[slot].sequence==sample.frame_sequence) {
@@ -1274,7 +1277,10 @@ struct SceneLit::State {
         }
         if(settings.sssr)dispatch(ssr_reset,depth,1);
         dispatch_window(ssr_classify,depth);
-        if(settings.sssr)dispatch(ssr_prepare,depth,1);
+        if(settings.sssr) {
+            dispatch(ssr_prepare,depth,1);
+            require(gfxCommandCopyBuffer(gfx,ray_counters,reflection_work_counter*sizeof(std::uint32_t),reflection_counter,0,sizeof(std::uint32_t)),"Count SSSR work");
+        }
         if(settings.sssr){common(ssr_trace.program(),depth);require(gfxCommandBindKernel(gfx,ssr_trace.kernel()),"Bind SSSR work kernel");require(gfxCommandDispatchIndirect(gfx,reflection_arguments),"Dispatch SSSR classified work");}
         bind(reflection_resolve.program(),"lit_reflection_trace",reflection_trace);bind(reflection_resolve.program(),"lit_reflection_hit_trace",reflection_hit_trace);
         bind(reflection_resolve.program(),"lit_reflection_previous",reflection_history[1-parity]);bind(reflection_resolve.program(),"lit_reflection_hit_previous",reflection_hit_history[1-parity]);

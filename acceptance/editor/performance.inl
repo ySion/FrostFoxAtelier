@@ -236,7 +236,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         model(Access::performance_view(app,candidate));
         unchanged_author();
     };
-    Json report{{"schema","atelier.editor.render-performance.v5"},{"status","preparing"},
+    Json report{{"schema","atelier.editor.render-performance.v7"},{"status","preparing"},
         {"revision",build_info::revision},{"configuration",build_info::configuration},
         {"project",editor::utf8(project.wstring())},{"scene",editor::utf8(scene.wstring())},{"scene_sha256",file_hash},
         {"authoring_baseline",{{"source_world",source_world},
@@ -466,6 +466,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             std::array<std::uint32_t,14> shadows{};
             std::uint64_t probe_rays{},shadow_rays{};
             std::array<std::uint64_t,2> ddgi_visibility_rays{};
+            std::uint32_t reflection_work_items{};
         };
         const auto distribution=[](std::vector<double> values) {
             require(!values.empty(),"Performance distribution has no observations.");
@@ -543,6 +544,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 sample.ms[14]=s.scene_lit_direct_shading_gpu_ms;
                 sample.probe_rays=s.scene_lit_probe_rays;sample.shadow_rays=s.scene_lit_shadow_rays;
                 sample.ddgi_visibility_rays=s.scene_lit_ddgi_visibility_rays;
+                sample.reflection_work_items=s.scene_lit_reflection_work_items;
                 sample.shadows={s.scene_lit_shadow_cache_faces,s.scene_lit_shadow_cache_reused_faces,
                     s.scene_lit_shadow_cache_static_updates,s.scene_lit_shadow_cache_dynamic_updates,s.scene_lit_shadow_cache_draws,
                     s.scene_lit_shadow_cache_resolution_downgrades,s.scene_lit_shadow_cache_dropped_lights,s.scene_lit_shadow_cache_near_plane_faces,
@@ -572,7 +574,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                 result["samples"].push_back({{"sequence",sample.sequence},{"frame_id",sample.frame},{"observed_at_frame",sample.observed_frame},
                     {"pass_mask",sample.mask},{"pass_ms",sample.ms},{"logical_resource_bytes",sample.resources},
                     {"probe_rays",sample.probe_rays},{"shadow_rays",sample.shadow_rays},
-                    {"ddgi_visibility_rays",sample.ddgi_visibility_rays},
+                    {"ddgi_visibility_rays",sample.ddgi_visibility_rays},{"reflection_work_items",sample.reflection_work_items},
                     {"shadow_cache",{{"faces",sample.shadows[0]},{"reused_faces",sample.shadows[1]},
                         {"static_updates",sample.shadows[2]},{"dynamic_updates",sample.shadows[3]},{"draws",sample.shadows[4]},
                         {"resolution_downgrades",sample.shadows[5]},{"dropped_lights",sample.shadows[6]},{"near_plane_faces",sample.shadows[7]},
