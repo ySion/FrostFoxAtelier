@@ -162,7 +162,7 @@ struct Evaluator::Impl {
     Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, std::string key) {
         auto entry = std::make_shared<Entry>();
         entry->key = std::move(key);
-        entry->outputs.resize(state.ports->outputs);
+        entry->outputs.resize(state.ports->outputs.size());
         Context context;
         context.seed = seed;
         context.resources_ = &resources;

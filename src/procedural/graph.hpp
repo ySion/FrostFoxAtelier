@@ -4,6 +4,7 @@
 #include "runtime/reflection.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "procedural/graph.gen.hpp"
@@ -80,13 +81,15 @@ private:
 Result<void> register_types(Runtime& runtime);
 
 enum class Slot : std::uint8_t { context, input, inputs, output };
+// Port names are evaluate's parameter names, read again for every published version.
 struct Ports {
     MethodId evaluate;
-    std::vector<Slot> parameters; // Of evaluate, in order.
-    std::vector<bool> multiple;   // Per input port: takes any number of connections.
-    std::uint32_t outputs{};
+    std::vector<Slot> parameters;     // Of evaluate, in order.
+    std::vector<std::string> inputs;  // Input port names.
+    std::vector<bool> multiple;       // Per input port: takes any number of connections.
+    std::vector<std::string> outputs; // Output port names.
 };
-// The ports of a node type, or why it cannot be a node.
+// The ports of a node type, or why it cannot be a node; an unnamed port parameter fails.
 Result<Ports> ports(Runtime& runtime, TypeId node);
 
 struct Input {

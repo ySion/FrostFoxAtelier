@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；自有语言节点和规范化 JSON 等语言能力就绪后做。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码放在 editor，与编辑器负责人对齐接口后做；自有语言节点等 L4a、L1、L2 就绪后做。
 
 ## 0. 结论
 
@@ -92,7 +92,7 @@ class geo.Jitter : procedural.PointNode {
 
 - **点数由宿主固定**。属性节点只改元素，不改长度，这符合现行可写借用规则。撒点、删除、复制、合并这类改变点数的基元由 C++ 实现，L3 落地后迁到自有语言。
 - **evaluate 只读 self**：节点状态保存在求值器里，节点方法不写自己的字段。
-- **端口名**：来自 L5，每个代码版本重新读取。Runtime 对象里的连接按端口序号存储，所以兼容更新改了端口名，现有连接仍然有效，下次保存时写出新名字。文件里的连接按名字保存：加载时名字解析不到的连接按宽容加载保留并原样写回。C++ 节点的参数名为空时，不能作为端口，注册时拒绝。
+- **端口名**：来自 L5，每个代码版本重新读取。Runtime 对象里的连接按端口序号存储，所以兼容更新改了端口名，现有连接仍然有效，下次保存时写出新名字。文件里的连接按名字保存：加载时名字解析不到的连接按宽容加载保留并原样写回。输入或输出参数没有名字的类型不能作为节点，读端口时拒绝。
 - **连接存在下游节点的 inputs 强引用序列中**（Runtime 只有强引用序列）。改连接只给下游节点盖章；图持有节点、节点持有上游，被删除的节点由编辑器历史持有的根保活；环在建立连接时拒绝。
 - **调用路径**：C++ 节点经 `Runtime::call`，自有语言节点经 `Program` 的 `类名.evaluate`，每个节点每次求值调用一次。原生 `evaluate` 是 const 接收者，调用不盖章；源码方法读 `self` 走 `Runtime::read`，也不盖章。宿主不在持有节点对象可写 `with_native` 的期间调用 evaluate。
 - **种子与确定性**：节点种子 = hash(图种子, 节点 `seed` 参数, 元素 `id`)，不使用 ObjectId 等非持久身份。哈希与随机函数是 L6 引擎源码库中算法固定、有文档的函数，语言不为它们增加内建。同样的输入得到同样的结果，但不承诺跨 CPU 逐位一致。
@@ -104,7 +104,7 @@ class geo.Jitter : procedural.PointNode {
 
 | 编号 | 能力与表示 | 用途 | 需要的时间点 |
 | --- | --- | --- | --- |
-| L5 | 参数名放在签名旁边，不放进 `FunctionSignature`，兼容比较不变：原生方法用 `MethodDefinition/MethodInfo::parameter_names`，由反射生成器从 C++ 声明取名；源码入口用 `EntryInfo`。改参数名算兼容更新 | 端口名；按参数名绑定属性列 | P1 |
+| L5 | 参数名放在签名旁边，不放进 `FunctionSignature`，兼容比较不变：原生方法用 `MethodDefinition/MethodInfo::parameter_names`，由反射生成器从 C++ 声明取名；源码入口用 `EntryInfo`。改参数名算兼容更新 | 端口名；按参数名绑定属性列 | 已交付（`runtime-param-names` 37872568，已合入 `procedural`），端口名已接上 |
 | L4a | 逐元素函数 floor/ceil/trunc/fract/abs/min/max/clamp/lerp/smoothstep/step/sign（另有已有的 sqrt），支持 float 标量和 float vector2/3/4，按分量计算，降为 intrinsic 或 select 后内联，不开 fast-math，可以向量化。min/max 按 GLSL 定义（min(x,y) = y < x ? y : x），所以 clamp 遇到 NaN 输入会返回下界 | 噪声、重映射 | P1 |
 | L1 | `analyze_calls` 放行一种情况：接收者是 `self`、结果为标量/枚举/数学值的字段读取。写 self、取对象引用、调用非 BorrowSafe 方法照旧拒绝。读取走 `Runtime::read`，不盖章，值区间内也没有 GC 安全点。验收写明“只读、不改变借用与 GC 规则” | 节点读参数 | P1；过 Oracle |
 | L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | P1 |
@@ -112,7 +112,7 @@ class geo.Jitter : procedural.PointNode {
 | L6 | 宿主把引擎附带的文件放在保留路径前缀（如 `engine/procedural/…`）下，并入每个工程快照；工程不能占用这个前缀，也不能声明引擎命名空间的类型 | 内置节点、哈希与随机库 | P3 前 |
 | L3 | 倾向按值返回拥有型 Array，结果直接构造在调用方存储中；P4 前单独出方案，过 Oracle | 改变点数的节点迁到自有语言 | P4 |
 
-依据：带聚合借用的函数里，[`analyze_calls`](../../src/language/source.cpp#L245-L292) 只允许 `self` 作为 BorrowSafe 调用的接收者（第 259 行）；类字段只能是五种标量（[LANGUAGE.md](../../LANGUAGE.md#项目快照与原生派生类)）；数学内建没有 floor/sin 等（[math.md](../math.md#源码运算)）；`FunctionSignature` 不带参数名（[runtime.hpp](../../src/runtime/runtime.hpp#L108-L140)）。
+依据：带聚合借用的函数里，[`analyze_calls`](../../src/language/source.cpp#L245-L292) 只允许 `self` 作为 BorrowSafe 调用的接收者（第 259 行）；类字段只能是五种标量（[LANGUAGE.md](../../LANGUAGE.md#项目快照与原生派生类)）；数学内建没有 floor/sin 等（[math.md](../math.md#源码运算)）。
 
 ## 4. 求值模型
 

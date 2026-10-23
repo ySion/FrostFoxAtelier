@@ -4,6 +4,7 @@
 #include "procedural/nodes.hpp"
 #include "procedural/operations.hpp"
 #include "procedural/random.hpp"
+#include "runtime/native.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -526,6 +527,12 @@ struct Meshes final : Resources {
 template<class T> TypeId type(Runtime& runtime) { return take(runtime.native_type<T>()); }
 FieldId field(Runtime& runtime, TypeId owner, const char* name) { return take(runtime.find_field(owner, name)); }
 
+// A node registered by hand, without parameter names.
+class Unnamed : public Node {
+public:
+    void evaluate(Geometry&) const {}
+};
+
 struct Counts {
     std::uint64_t evaluations, hits;
     bool operator==(const Counts&) const = default;
@@ -562,10 +569,18 @@ void graph_evaluation() {
     take(register_types(runtime));
     require(runtime.type_count() == published, "Registering twice published types again.");
     const auto merge_ports = take(ports(runtime, type<Merge>(runtime)));
-    require(merge_ports.multiple == std::vector<bool>{true} && merge_ports.outputs == 1, "Merge ports were not read from evaluate.");
+    require(merge_ports.multiple == std::vector<bool>{true} && merge_ports.inputs == std::vector<std::string>{"inputs"} &&
+        merge_ports.outputs == std::vector<std::string>{"output"}, "Merge ports were not read from evaluate.");
+    // Port names skip the context parameter but keep evaluate's names.
     const auto scatter_ports = take(ports(runtime, type<Scatter>(runtime)));
-    require(scatter_ports.parameters == std::vector<Slot>{Slot::context, Slot::input, Slot::output}, "Scatter ports were not read in order.");
+    require(scatter_ports.parameters == std::vector<Slot>{Slot::context, Slot::input, Slot::output} &&
+        scatter_ports.inputs == std::vector<std::string>{"surface"} && scatter_ports.outputs == std::vector<std::string>{"points"},
+        "Scatter ports were not read in order.");
+    require(take(ports(runtime, type<Ray>(runtime))).inputs == std::vector<std::string>{"points", "surface"}, "Ray input names are wrong.");
     reject(ports(runtime, type<Graph>(runtime)), "A graph was accepted as a node type.");
+    const auto unnamed = take(NativeRegistration<Unnamed>{runtime, "proceduralAcceptance.Unnamed", TypeKind::object}
+        .base<Node>().method<&Unnamed::evaluate>("evaluate").publish());
+    reject(ports(runtime, unnamed), "An unnamed output was accepted as a port.");
 
     Meshes resources;
     auto cube = geometry::cube_mesh();

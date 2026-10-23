@@ -102,7 +102,8 @@ Result<Ports> ports(Runtime& runtime, TypeId type) {
     if (!context || !geometry || !geometries) return error(ErrorCode::invalid_type, "Register the procedural types first.");
     Ports result;
     result.evaluate = *method;
-    for (const auto& parameter : signature.parameters) {
+    for (std::size_t i = 0; i < signature.parameters.size(); ++i) {
+        const auto& parameter = signature.parameters[i];
         const bool inline_value = parameter.form == ValueForm::inline_value;
         const bool read = inline_value && parameter.passing == ParameterPassing::read_only;
         const bool context_seen = std::ranges::find(result.parameters, Slot::context) != result.parameters.end();
@@ -112,13 +113,20 @@ Result<Ports> ports(Runtime& runtime, TypeId type) {
         else if (parameter.type == *geometries && read) slot = Slot::inputs;
         else if (parameter.type == *geometry && inline_value && parameter.passing == ParameterPassing::reference) slot = Slot::output;
         if (!slot)
-            return error(ErrorCode::invalid_definition, name + ".evaluate parameter " + std::to_string(result.parameters.size()) +
+            return error(ErrorCode::invalid_definition, name + ".evaluate parameter " + std::to_string(i) +
                 " is not a context, geometry input or geometry output.");
         result.parameters.push_back(*slot);
-        if (*slot == Slot::input || *slot == Slot::inputs) result.multiple.push_back(*slot == Slot::inputs);
-        if (*slot == Slot::output) ++result.outputs;
+        if (*slot == Slot::context) continue;
+        const auto& port = found->parameter_names[i];
+        if (port.empty()) return error(ErrorCode::invalid_definition, name + ".evaluate parameter " + std::to_string(i) + " needs a name to be a port.");
+        if (*slot == Slot::output) {
+            result.outputs.push_back(port);
+            continue;
+        }
+        result.inputs.push_back(port);
+        result.multiple.push_back(*slot == Slot::inputs);
     }
-    if (!result.outputs) return error(ErrorCode::invalid_definition, name + ".evaluate has no output.");
+    if (result.outputs.empty()) return error(ErrorCode::invalid_definition, name + ".evaluate has no output.");
     return result;
 }
 
@@ -234,8 +242,8 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
     if (!source) return std::unexpected(source.error());
     auto target = ports(runtime, *to_type);
     if (!target) return std::unexpected(target.error());
-    if (output >= source->outputs) return error(ErrorCode::argument_mismatch, "The upstream node has no output " + std::to_string(output) + ".");
-    if (input >= target->multiple.size()) return error(ErrorCode::argument_mismatch, "The downstream node has no input " + std::to_string(input) + ".");
+    if (output >= source->outputs.size()) return error(ErrorCode::argument_mismatch, "The upstream node has no output " + std::to_string(output) + ".");
+    if (input >= target->inputs.size()) return error(ErrorCode::argument_mismatch, "The downstream node has no input " + std::to_string(input) + ".");
     auto cycle = upstream(runtime, from, to);
     if (!cycle) return std::unexpected(cycle.error());
     if (*cycle) return error(ErrorCode::argument_mismatch, "The connection would form a cycle.");

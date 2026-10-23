@@ -53,7 +53,7 @@
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
 - **Node**（`procedural.Node`）：节点类型的公开字段就是参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。
-- **端口**：`ports(runtime, type)` 从 const 同步方法 `evaluate` 的签名按参数顺序读出端口：`const procedural.Context&` 是上下文，`const procedural.Geometry&` 是输入端口，`const procedural.Geometries&` 是可接多个连接的输入端口，`procedural.Geometry&` 是输出端口。至少要有一个输出；其他参数形式使类型不能作为节点。端口目前按序号标识，端口名等语言能力 L5 提供参数名后再加入。
+- **端口**：`ports(runtime, type)` 从 const 同步方法 `evaluate` 的签名按参数顺序读出端口：`const procedural.Context&` 是上下文，`const procedural.Geometry&` 是输入端口，`const procedural.Geometries&` 是可接多个连接的输入端口，`procedural.Geometry&` 是输出端口。至少要有一个输出；其他参数形式使类型不能作为节点。端口名就是 `evaluate` 的参数名（`MethodInfo::parameter_names`），每个发布版本重新读取；输入、输出端口的参数没有名字时类型不能作为节点，上下文参数可以不命名。图中的连接按端口序号存储，所以兼容更新只改参数名时现有连接仍然有效。
 - **Context**（`procedural.Context`）：公开字段 `seed` 是图的种子；`mesh(key)` 经宿主的 `Resources` 解析网格，并记为当前节点结果的依赖。
 - **编辑**：`add_node`（类型必须能读出端口）、`remove_node`（同时断开它的下游连接，它是 display 时清除 display）、`connect`（两端都在图内，端口存在，不成环；单输入端口替换已有连接，多输入端口追加到末尾）、`disconnect`、`set_display`（null 清除）。每个入口只写它改变的对象：节点列表和 display 写图，连接写下游节点。读取用 `contents` 和 `inputs`，都是 const 借用。图持有节点、节点持有上游，被删除的节点由别的根（例如编辑历史）保活。
 
