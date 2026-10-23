@@ -2,6 +2,9 @@
 #include "language/source.hpp"
 #include "language/snapshot.hpp"
 
+#include <array>
+#include <optional>
+
 namespace atelier::language {
 struct SourcePiece { std::size_t begin{}, end{}, offset{}; std::uint32_t file{}; };
 struct MappedSource {
@@ -11,7 +14,18 @@ struct MappedSource {
     void append(const SourceFile&, std::uint32_t file, std::size_t begin, std::size_t end);
 };
 struct ModuleDiagnostic { std::uint32_t file{}; Diagnostic diagnostic; };
-struct ClassField { std::string name, type; MappedSource initializer; SourcePosition position; };
+// Syntax only; types, defaults and bounds resolve when the snapshot is prepared.
+struct ClassField {
+    std::string name, type; MappedSource initializer; SourcePosition position;
+    // An initializer spelled exactly `name(arguments)` or `name::item` also keeps that shape:
+    // math vector and enum fields require it, scalar fields fold the whole initializer.
+    std::string initializer_name, initializer_item;
+    std::vector<MappedSource> initializer_arguments;
+    // Attributes. LockMin/LockMax already copy their UI bound to the hard side.
+    std::string label, category, description;
+    std::array<MappedSource, 4> bounds; // ui_min, ui_max, hard_min, hard_max
+    std::optional<SourcePosition> range; // the first range attribute
+};
 // Signatures omit parameter names, so renaming a parameter stays compatible.
 struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; std::vector<std::string> parameters; };
 struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; };

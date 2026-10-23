@@ -323,7 +323,7 @@ struct Runtime::Impl {
         void* (*address)(void*) noexcept{};
         ValueDescription value;
         const Type* type{};
-        std::optional<Scalar> default_value{};
+        std::vector<Scalar> default_leaves{};
         // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
         std::unique_ptr<const FieldRange> hard{};
     };
@@ -1122,10 +1122,13 @@ struct Runtime::Impl {
                         walk_stack.push_back({field.type, destination, origin});
                         continue;
                     }
-                    if (!origin && field.default_value) std::visit([&](const auto& value) {
-                        using T = std::remove_cvref_t<decltype(value)>;
-                        if constexpr (!std::same_as<T, EnumValue>) *reinterpret_cast<T*>(destination) = value;
-                    }, *field.default_value);
+                    if (!origin) {
+                        auto* leaf = destination;
+                        for (const auto& value : field.default_leaves) std::visit([&](const auto& scalar) {
+                            using T = std::remove_cvref_t<decltype(scalar)>;
+                            if constexpr (!std::same_as<T, EnumValue>) { std::memcpy(leaf, &scalar, sizeof(T)); leaf += sizeof(T); }
+                        }, value);
+                    }
                 } else if (field.value.form == ValueForm::strong_sequence) {
                     std::construct_at(reinterpret_cast<ReferenceSequence*>(destination));
                 } else if (origin) {
@@ -1714,10 +1717,32 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
             const auto index = static_cast<std::uint32_t>(type.fields.size());
             const ValueDescription value{target->info.id, form};
-            if (field.default_value && (is_native || type.info.kind != TypeKind::object ||
-                form != ValueForm::inline_value || target->info.kind != TypeKind::scalar ||
-                std::holds_alternative<EnumValue>(*field.default_value) || impl_->scalar_type(*field.default_value) != target->info.id))
-                return failure(ErrorCode::invalid_definition, "Default value requires a described object's exact scalar field type.");
+            auto published_leaves = field.default_leaves;
+            if (!field.default_leaves.empty()) {
+                TypeId leaf{};
+                std::size_t components = 1;
+                if (target->info.kind == TypeKind::scalar) leaf = target->info.id;
+                else if (target->info.kind == TypeKind::enumeration) {
+                    // A later batch entry has not resolved its underlying type yet.
+                    const auto* underlying = target->info.enumeration ? resolved_type(target->info.enumeration->underlying)
+                        : resolve(definitions[target->info.id.index_ - first_index].enumeration->underlying);
+                    if (underlying && (underlying->info.id == impl_->i32 || underlying->info.id == impl_->u32)) leaf = underlying->info.id;
+                } else if (target->info.math.vector()) {
+                    leaf = target->info.math.precision == math::Precision::f64 ? impl_->f64 : impl_->f32;
+                    components = target->info.math.components();
+                }
+                if (is_native || type.info.kind != TypeKind::object || form != ValueForm::inline_value || leaf == TypeId{} ||
+                    field.default_leaves.size() != components || std::ranges::any_of(field.default_leaves, [&](const Scalar& item) {
+                        return std::holds_alternative<EnumValue>(item) || impl_->scalar_type(item) != leaf;
+                    }))
+                    return failure(ErrorCode::invalid_definition, "Default leaves require a described object's scalar, enum or math vector "
+                        "field, with one leaf of the exact scalar or underlying type per component: " + type.info.name + "." + field.name);
+                if (target->info.kind == TypeKind::enumeration) {
+                    const auto& bits = field.default_leaves.front();
+                    published_leaves = {EnumValue{target->info.id, std::holds_alternative<std::int32_t>(bits)
+                        ? std::bit_cast<std::uint32_t>(std::get<std::int32_t>(bits)) : std::get<std::uint32_t>(bits)}};
+                }
+            }
             if (const auto& range = field.range; range.ui_min || range.ui_max || range.hard_min || range.hard_max) {
                 const auto invalid = [&](std::string_view reason) {
                     return failure(ErrorCode::invalid_definition, "Field range " + std::string(reason) + ": " + type.info.name + "." + field.name);
@@ -1743,14 +1768,16 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     return invalid("minimum exceeds maximum");
                 for (const auto* ui : {&range.ui_min, &range.ui_max})
                     if (above(range.hard_min, *ui) || above(*ui, range.hard_max)) return invalid("UI bounds must lie within hard bounds");
-                if (field.default_value && range.constrains() && (!std::isfinite(range_value(*field.default_value)) ||
-                    above(range.hard_min, field.default_value) || above(field.default_value, range.hard_max)))
-                    return invalid("default lies outside hard bounds");
+                if (range.constrains()) for (const auto& leaf : field.default_leaves) {
+                    const std::optional<Scalar> item{leaf};
+                    if (!std::isfinite(range_value(leaf)) || above(range.hard_min, item) || above(item, range.hard_max))
+                        return invalid("default lies outside hard bounds");
+                }
             }
-            type.fields.push_back({0, field.native_address, value, nullptr, field.default_value,
+            type.fields.push_back({0, field.native_address, value, nullptr, std::move(field.default_leaves),
                 field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr});
             if (field.exposed) type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value,
-                field.native_offset, field.default_value, std::move(field.label), std::move(field.category), std::move(field.description),
+                field.native_offset, std::move(published_leaves), std::move(field.label), std::move(field.category), std::move(field.description),
                 field.range});
         }
         type.info.methods.reserve(definition.methods.size());
@@ -1922,7 +1949,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     const auto* scalar = type.fields.front().type->scalar_leaf;
                     std::size_t end = 0;
                     for (const auto& field : type.fields) {
-                        if (!scalar || field.default_value || field.value.form != ValueForm::inline_value ||
+                        if (!scalar || !field.default_leaves.empty() || field.value.form != ValueForm::inline_value ||
                             field.type->scalar_leaf != scalar || field.offset != end) {
                             scalar = nullptr;
                             break;

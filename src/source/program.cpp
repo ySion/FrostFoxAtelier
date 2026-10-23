@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 
 #include <limits>
@@ -74,17 +75,18 @@ template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
-bool same_default(const std::optional<Scalar>& a, const std::optional<Scalar>& b) {
-    if (!a || !b) return a.has_value() == b.has_value();
+// Floating leaves compare by representation, so signed zeros differ.
+bool same_scalar(const Scalar& a, const Scalar& b) {
     return std::visit([&](const auto& value) {
         using T = std::remove_cvref_t<decltype(value)>;
-        const auto* other = std::get_if<T>(&*b);
+        const auto* other = std::get_if<T>(&b);
         if (!other) return false;
         if constexpr (std::same_as<T, float>) return std::bit_cast<std::uint32_t>(value) == std::bit_cast<std::uint32_t>(*other);
         else if constexpr (std::same_as<T, double>) return std::bit_cast<std::uint64_t>(value) == std::bit_cast<std::uint64_t>(*other);
         else return value == *other;
-    }, *a);
+    }, a);
 }
+bool same_leaves(const std::vector<Scalar>& a, const std::vector<Scalar>& b) { return std::ranges::equal(a, b, same_scalar); }
 }
 namespace {
 Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations, const Binding& binding) {
@@ -156,7 +158,7 @@ struct Program::Metadata {
         for (std::size_t i = 0; i < value.fields.size(); ++i) {
             const auto& a = actual.fields[i];
             const auto& b = value.fields[i];
-            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset || !same_default(a.default_value, b.default_value)) return false;
+            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset || !same_leaves(a.default_leaves, b.default_leaves)) return false;
         }
         for (std::size_t i = 0; i < value.methods.size(); ++i) {
             const auto& a = actual.methods[i];

@@ -12,7 +12,8 @@ struct Program::ModuleRequest {
     CompileOptions options;
     language::SourceModule source;
     std::vector<language::TypeDeclaration> value_types;
-    std::vector<std::vector<std::optional<Scalar>>> defaults;
+    // Per class, the resolved field definitions that a published class must keep.
+    std::vector<std::vector<FieldDefinition>> class_fields;
     std::vector<ClassInfo> classes;
     std::vector<Unit> units;
 };

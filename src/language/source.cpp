@@ -1169,22 +1169,7 @@ private:
         }
         if (token.kind == Token::Kind::string) {
             consume();
-            std::string value;
-            for (std::size_t i = 1; i + 1 < token.text.size(); ++i) {
-                char c = token.text[i];
-                if (c == '\\') {
-                    c = token.text[++i];
-                    switch (c) {
-                    case '\\': case '"': break;
-                    case 'n': c = '\n'; break;
-                    case 'r': c = '\r'; break;
-                    case 't': c = '\t'; break;
-                    case '0': c = '\0'; break;
-                    default: reject(token.position, "Unsupported string escape.");
-                    }
-                }
-                value.push_back(c);
-            }
+            auto value = string_value(token);
             for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
                 if (environment_.values[i].kind != ValueType::string || !environment_.values[i].can_own || !environment_.values[i].can_mutate) continue;
                 function_.uses_scoped_values = true;

@@ -27,8 +27,75 @@ void body(Tokens& tokens) {
         else tokens.consume();
     }
 }
-bool scalar(std::string_view name) {
-    return name == "bool" || name == "int" || name == "uint" || name == "float" || name == "double";
+// Consumes one expression up to a top-level ',' or `close`, which stay unconsumed.
+void expression_until(Tokens& tokens, std::string_view close, SourcePosition owner, const char* message) {
+    std::size_t depth = 0;
+    while (depth || (tokens.token_.text != "," && tokens.token_.text != close)) {
+        const auto text = tokens.token_.text;
+        if (tokens.token_.kind == Token::Kind::end || text == ";" || text == "{" || text == "}") reject(owner, message);
+        if (text == "(" || text == "[") ++depth;
+        else if (text == ")" || text == "]") { if (!depth) reject(owner, message); --depth; }
+        tokens.consume();
+    }
+}
+// [Min = e, Max = e, LockMin, LockMax, HardMin = e, HardMax = e, Label = "...", Category = "...", DESC = "..."]
+void field_attributes(Tokens& tokens, const SourceFile& unit, std::uint32_t file, ClassField& field) {
+    constexpr std::array<std::string_view, 4> bounds{"Min", "Max", "HardMin", "HardMax"};
+    std::vector<Token> seen;
+    const auto find = [&](std::string_view name) { return std::ranges::find(seen, name, &Token::text); };
+    do {
+        const auto option = tokens.identifier();
+        if (find(option.text) != seen.end()) reject(option.position, "Duplicate field attribute: " + std::string(option.text));
+        seen.push_back(option);
+        const auto bound = std::ranges::find(bounds, option.text);
+        const bool lock = option.text == "LockMin" || option.text == "LockMax";
+        if ((lock || bound != bounds.end()) && !field.range) field.range = option.position;
+        if (lock) {
+            if (tokens.token_.text == "=") reject(option.position, std::string(option.text) + " is a flag without a value.");
+        } else if (option.text == "Label" || option.text == "Category" || option.text == "DESC") {
+            tokens.expect("=");
+            if (tokens.token_.kind != Token::Kind::string) reject(tokens.token_.position, std::string(option.text) + " requires a string literal.");
+            auto text = string_value(tokens.consume());
+            if (option.text != "DESC" && std::ranges::any_of(text, [](unsigned char c) { return c < 32; }))
+                reject(option.position, std::string(option.text) + " must not contain control characters.");
+            (option.text == "Label" ? field.label : option.text == "Category" ? field.category : field.description) = std::move(text);
+        } else if (bound != bounds.end()) {
+            tokens.expect("=");
+            const auto begin = tokens.token_.position;
+            expression_until(tokens, "]", option.position, "Expected ']' to close field attributes.");
+            if (tokens.token_.position.offset == begin.offset) reject(option.position, std::string(option.text) + " requires a value.");
+            field.bounds[static_cast<std::size_t>(bound - bounds.begin())].append(unit, file, begin.offset, tokens.token_.position.offset);
+        } else reject(option.position, "Unknown field attribute: " + std::string(option.text));
+    } while (tokens.accept(","));
+    tokens.expect("]");
+    // A locked side uses its UI bound as the hard bound too (Houdini strict range).
+    for (std::size_t side = 0; side < 2; ++side) {
+        const auto lock = find(side ? "LockMax" : "LockMin");
+        if (lock == seen.end()) continue;
+        if (find(bounds[side]) == seen.end() || find(bounds[side + 2]) != seen.end())
+            reject(lock->position, std::string(lock->text) + " requires " + std::string(bounds[side]) + " and excludes " + std::string(bounds[side + 2]) + ".");
+        field.bounds[side + 2] = field.bounds[side];
+    }
+}
+// Records `name(arguments)` or `name::item` when that spelling is the whole initializer.
+void initializer_shape(Tokens& tokens, const SourceFile& unit, std::uint32_t file, ClassField& field) {
+    auto name = tokens.qualified_identifier();
+    if (tokens.accept("::")) {
+        if (tokens.token_.kind != Token::Kind::identifier) return;
+        auto item = std::string(tokens.consume().text);
+        if (tokens.token_.text == ";") { field.initializer_name = std::move(name); field.initializer_item = std::move(item); }
+        return;
+    }
+    if (!tokens.accept("(")) return;
+    std::vector<MappedSource> arguments;
+    if (!tokens.accept(")")) for (;;) {
+        const auto begin = tokens.token_.position;
+        expression_until(tokens, ")", begin, "Expected ')' to close a field default.");
+        arguments.emplace_back().append(unit, file, begin.offset, tokens.token_.position.offset);
+        if (tokens.accept(")")) break;
+        tokens.expect(",");
+    }
+    if (tokens.token_.text == ";") { field.initializer_name = std::move(name); field.initializer_arguments = std::move(arguments); }
 }
 std::string function_signature(Tokens& tokens, const TypeName& type, std::vector<std::string>& parameters) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
@@ -97,6 +164,10 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     reject(begin, "Duplicate source class name.");
                 tokens.expect(":"); declaration.base = tokens.qualified_identifier(); tokens.expect("{");
                 while (!tokens.accept("}")) {
+                    ClassField field;
+                    const auto attributes = tokens.token_.position;
+                    const bool attributed = tokens.accept("[");
+                    if (attributed) field_attributes(tokens, unit, file, field);
                     const auto start = tokens.token_.position;
                     if (tokens.accept("async")) reject(start, "Source class methods must be synchronous.");
                     const auto type = tokens.accept("void") ? TypeName{"void"} : parse_type_name(tokens);
@@ -106,16 +177,20 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         std::ranges::any_of(declaration.methods, [&](const auto& m) { return m.name == name.text; }))
                         reject(name.position, "Duplicate source class member.");
                     if (tokens.token_.text == "(") {
+                        if (attributed) reject(attributes, "Attributes apply only to class fields.");
                         ClassMethod method{std::string(name.text), {}, start, {}, {}};
                         method.signature = function_signature(tokens, type, method.parameters);
                         body(tokens);
                         method.source.append(unit, file, start.offset, tokens.token_.position.offset);
                         declaration.methods.push_back(std::move(method));
                     } else {
-                        if (type.array_depth || !scalar(type.name)) reject(start, "Source object fields currently require bool, int, uint, float or double.");
-                        ClassField field{std::string(name.text), type.name, {}, start};
+                        if (type.array_depth || type.name == "void")
+                            reject(start, "Source object fields require bool, int, uint, float, double, a float or double vector, or an enum.");
+                        field.name = name.text; field.type = type.name; field.position = start;
                         if (tokens.accept("=")) {
                             const auto expression = tokens.token_.position;
+                            if (tokens.token_.kind == Token::Kind::identifier && !reserved(tokens.token_.text))
+                                initializer_shape(tokens, unit, file, field);
                             while (tokens.token_.text != ";") {
                                 if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" || tokens.token_.text == "}")
                                     reject(start, "Expected ';' after a field initializer.");

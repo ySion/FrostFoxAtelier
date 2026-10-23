@@ -58,7 +58,7 @@ math::Vector3 read_position() const;
 
 说明是 UTF-8 纯文本，可中英文混排，支持 `\n`、`\t`、引号和反斜杠等普通 C++ 转义。省略或显式空字符串表示没有说明，不自动填充字段名。发布时将 CRLF 和 CR 统一为 LF；NUL、其他 C0 控制字符、DEL、C1 控制字符及无效 UTF-8 会拒绝。只接受 `DESC`，不提供其他大小写或缩写。`Name / Label / Category` 原有的单行校验保持不变。说明不是 Markdown，也不解释链接或执行指令。
 
-生成器将文字写入现有 `TypeDefinition / FieldDefinition / MethodDefinition::description`；Runtime 的同一批次发布入口完成校验和换行归一，然后由 `TypeInfo / FieldInfo / MethodInfo::description` 拥有。手写原生注册和描述型生产者遵守同一规则，失败不会发布部分类型。未来 Source 声明说明时只需填充这些字段；当前没有新增 Source 语法或编辑器专用说明注册表。
+生成器将文字写入现有 `TypeDefinition / FieldDefinition / MethodDefinition::description`；Runtime 的同一批次发布入口完成校验和换行归一，然后由 `TypeInfo / FieldInfo / MethodInfo::description` 拥有。手写原生注册和描述型生产者遵守同一规则，失败不会发布部分类型。`.source` 类字段用同名的 `DESC` 属性填写同一字段，见[语言规则](../LANGUAGE.md#项目快照与原生派生类)；没有编辑器专用说明注册表。
 
 手写 `NativeRegistration<T>` 的构造器在 `kind` 后接受说明；自动推导类型的 `field(name, description)` 与 `hidden_field(name, description)` 直接传入说明，完整字段重载则在 `label, category` 后接受说明。`method` 在 `preserves_borrows` 后接受说明。也可以直接填写 `TypeDefinition` 及其成员的 `description`。
 
@@ -78,7 +78,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 - 适用于 float、double、int32、uint32 字段、float/double 数学向量以及这些类型的 `Array<T>`；向量的范围逐分量生效，数组的范围逐元素生效。bool、枚举、四元数、矩阵、记录和引用字段报错。值按字段叶标量的精确类型解析：浮点接受有限的十进制写法，整数拒绝小数、负 uint 和溢出。生成代码用十六进制浮点保持位精确。
 - 大小顺序、UI 边界须落在硬边界内、描述型默认值须满足硬边界等语义检查由 Runtime 发布统一执行，规则见[字段范围与写入约束](runtime-model.md#字段范围与写入约束)。
 
-生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义；`.source` 类字段暂不能声明范围，建议语法见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
+生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义。`.source` 类字段用同名属性 `[Min = 0.0, LockMin, HardMax = 10.0]` 写在字段前，边界是字段叶类型的常量表达式而不是字符串，其余规则相同，见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
 
 跨字段规则由类型校验器表达，目前只能通过手写注册的 `.validate<&F>()` 或 `TypeDefinition::validate` 声明，生成器还没有对应的宏。生成的类型可以在发布前，对 `Definition<T>::build` 返回的定义设置 `validate`，例如 `definition.validate = [](const void* p) { return check(*static_cast<const T*>(p)); };`。语义见[类型校验](runtime-model.md#类型校验)。
 

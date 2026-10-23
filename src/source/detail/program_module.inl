@@ -20,28 +20,36 @@ Error mapped_error(const SourceSnapshot& snapshot, const language::MappedSource&
     }
     return source_error(snapshot, 0, {}, std::move(message));
 }
-Result<Scalar> field_default(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner, const language::ClassField& field) {
-    if (field.initializer.text.empty()) {
-        if (field.type == "bool") return Scalar{false};
-        if (field.type == "float") return Scalar{0.0f};
-        if (field.type == "double") return Scalar{0.0};
-        if (field.type == "int") return Scalar{std::int32_t{}};
-        return Scalar{std::uint32_t{}};
-    }
+// Folds one constant scalar expression with the typed Source parser; floating results must be finite.
+Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::MappedSource& expression, std::string_view type) {
     language::MappedSource text;
-    text.text = "const " + field.type + " __source_default = "; text.append(field.initializer);
-    text.text += "; " + field.type + " __source_value() { return __source_default; }";
+    text.text = "const " + std::string(type) + " __source_default = "; text.append(expression);
+    text.text += "; " + std::string(type) + " __source_value() { return __source_default; }";
     auto parsed = language::compile_source(snapshot.name, text.text, {}, "__source_value");
-    if (!parsed) return std::unexpected(mapped_error(snapshot, text, parsed.error().position, parsed.error().message));
+    if (!parsed) {
+        // A position in the generated wrapper, such as the ';' after `1.0 +`, reports at the expression.
+        const auto offset = parsed.error().position.offset;
+        const bool inside = std::ranges::any_of(text.pieces, [&](const auto& piece) { return offset >= piece.begin && offset <= piece.end; });
+        return std::unexpected(inside ? mapped_error(snapshot, text, parsed.error().position, parsed.error().message)
+            : mapped_error(snapshot, expression, {}, parsed.error().message));
+    }
     const auto& function = parsed->functions[parsed->entry];
     const auto& value = function.expressions[function.statements[function.statements[function.body].children[0]].expression];
-    if (value.kind != language::Expression::Kind::literal)
-        return std::unexpected(source_error(snapshot, owner.file, field.position, "Field defaults require a constant scalar expression."));
-    if (field.type == "bool") return Scalar{value.bits != 0};
-    if (field.type == "float") return Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))};
-    if (field.type == "double") return Scalar{std::bit_cast<double>(value.bits)};
-    if (field.type == "int") return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits))};
-    return Scalar{static_cast<std::uint32_t>(value.bits)};
+    const auto at = [&](std::string message) { return std::unexpected(mapped_error(snapshot, expression, {}, std::move(message))); };
+    if (value.kind != language::Expression::Kind::literal) return at("Field defaults and bounds require constant scalar expressions.");
+    if (type == "bool") return Scalar{value.bits != 0};
+    if (type == "int") return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits))};
+    if (type == "uint") return Scalar{static_cast<std::uint32_t>(value.bits)};
+    const auto number = type == "float" ? double{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))} : std::bit_cast<double>(value.bits);
+    if (!std::isfinite(number)) return at("Field defaults and bounds must be finite.");
+    return type == "float" ? Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))} : Scalar{number};
+}
+Scalar zero_leaf(std::string_view type) {
+    if (type == "bool") return false;
+    if (type == "float") return 0.0f;
+    if (type == "double") return 0.0;
+    if (type == "int") return std::int32_t{};
+    return std::uint32_t{};
 }
 // Published classes keep their layout, defaults and methods; new methods may follow.
 bool keeps_class(const language::ClassDeclaration& published, const language::ClassDeclaration& updated) {
@@ -58,6 +66,100 @@ template<class T>
 const T* find_named(const std::vector<T>& values, std::string_view name) {
     const auto found = std::ranges::find(values, name, &T::name);
     return found == values.end() ? nullptr : &*found;
+}
+// A class field's Runtime definition. Defaults and bounds fold against the field's leaf type: each
+// component of a vector; an enum default names one item and becomes its underlying integer.
+Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner, const language::ClassField& field,
+    const std::vector<language::TypeDeclaration>& declarations, const Binding& binding, Runtime& runtime) {
+    const auto at = [&](language::SourcePosition position, std::string message) {
+        return std::unexpected(source_error(snapshot, owner.file, position, std::move(message)));
+    };
+    const auto unsupported = [&] {
+        return at(field.position, "Source object fields require bool, int, uint, float, double, a float or double vector, or an enum: " + field.type);
+    };
+    FieldDefinition result;
+    result.name = field.name;
+    std::string_view leaf; // empty for an enum
+    const BoundValue* vector{};
+    const std::vector<std::pair<std::string, std::uint32_t>>* items{};
+    bool signed_items{};
+    const auto names_vector = [&](std::string_view name) {
+        return vector && (name == vector->name || name == math::short_name(vector->math));
+    };
+    if (field.type == "bool" || field.type == "int" || field.type == "uint" || field.type == "float" || field.type == "double") {
+        leaf = field.type;
+        result.value = {leaf == "bool" ? binding.boolean : leaf == "int" ? binding.i32 : leaf == "uint" ? binding.u32 : leaf == "float" ? binding.f32 : binding.f64};
+    } else if (const auto* declared = find_named(declarations, field.type)) {
+        if (!declared->enumeration) return unsupported();
+        result.value = {TypeReference{field.type}};
+        items = &declared->enumerators;
+        signed_items = declared->signed_enum;
+    } else if (const auto found = std::ranges::find_if(binding.values, [&](const BoundValue& value) {
+        return value.math && field.type == value.name;
+    }); found != binding.values.end()) {
+        if (!found->math.vector()) return at(field.position, "Source object fields cannot hold quaternions or matrices: " + field.type);
+        vector = &*found;
+        result.value = {vector->type};
+        leaf = vector->math.precision == math::Precision::f64 ? "double" : "float";
+    } else if (const auto type = runtime.find_type(field.type); type && !language::editor_reserved(field.type)) {
+        const auto* info = take(runtime.describe(*type));
+        if (!info->enumeration) return unsupported();
+        result.value = {*type};
+        items = &info->enumeration->values;
+        signed_items = info->enumeration->underlying == binding.i32;
+    } else return unsupported();
+    const auto& initializer = field.initializer;
+    if (items) {
+        std::uint32_t bits = 0;
+        if (!initializer.text.empty()) {
+            const auto item = std::ranges::find(*items, field.initializer_item, &std::pair<std::string, std::uint32_t>::first);
+            if (field.initializer_item.empty() || field.initializer_name != field.type || item == items->end())
+                return std::unexpected(mapped_error(snapshot, initializer, {}, "Enum field defaults name one item: " + field.type + "::item."));
+            bits = item->second;
+        }
+        result.default_leaves = {signed_items ? Scalar{std::bit_cast<std::int32_t>(bits)} : Scalar{bits}};
+    } else if (vector) {
+        const auto components = vector->math.components();
+        if (!initializer.text.empty()) {
+            const auto& arguments = field.initializer_arguments;
+            if (!field.initializer_item.empty() || !names_vector(field.initializer_name) || (!arguments.empty() && arguments.size() != components))
+                return std::unexpected(mapped_error(snapshot, initializer, {}, "Vector field defaults are " + field.type + "() or " +
+                    field.type + " with one constant per component."));
+            for (const auto& argument : arguments) {
+                auto value = fold_scalar(snapshot, argument, leaf);
+                if (!value) return std::unexpected(value.error());
+                result.default_leaves.push_back(*value);
+            }
+        }
+        if (result.default_leaves.empty()) result.default_leaves.assign(components, zero_leaf(leaf));
+    } else {
+        auto value = initializer.text.empty() ? Result<Scalar>{zero_leaf(leaf)} : fold_scalar(snapshot, initializer, leaf);
+        if (!value) return std::unexpected(value.error());
+        result.default_leaves = {*value};
+    }
+    if (field.range) {
+        if (leaf.empty() || leaf == "bool") return at(*field.range, "Field ranges require an int, uint, float or double field, or a float or double vector.");
+        const std::array sides{&result.range.ui_min, &result.range.ui_max, &result.range.hard_min, &result.range.hard_max};
+        for (std::size_t side = 0; side < sides.size(); ++side) {
+            if (field.bounds[side].text.empty()) continue;
+            auto bound = fold_scalar(snapshot, field.bounds[side], leaf);
+            if (!bound) return std::unexpected(bound.error());
+            *sides[side] = *bound;
+        }
+    }
+    result.label = field.label;
+    result.category = field.category;
+    result.description = field.description;
+    return result;
+}
+// A published field keeps its exact default leaves, bounds and presentation text; source spacing is not part of them.
+bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
+    const auto same = [](const std::optional<Scalar>& x, const std::optional<Scalar>& y) {
+        return x && y ? same_scalar(*x, *y) : x.has_value() == y.has_value();
+    };
+    return same_leaves(a.default_leaves, b.default_leaves) && same(a.range.ui_min, b.range.ui_min) && same(a.range.ui_max, b.range.ui_max) &&
+        same(a.range.hard_min, b.range.hard_min) && same(a.range.hard_max, b.range.hard_max) &&
+        a.label == b.label && a.category == b.category && a.description == b.description;
 }
 }
 
@@ -112,6 +214,11 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     auto collected = language::collect_module(input);
     if (!collected) return fail(source_error(input, collected.error().file, collected.error().diagnostic.position, collected.error().diagnostic.message));
     module.source = std::move(*collected);
+    // A math short name and its canonical name are one type, so a published field keeps it under either spelling.
+    for (auto& cls : module.source.classes)
+        for (auto& field : cls.fields)
+            for (const auto& value : state_->contract->binding.values)
+                if (value.math && field.type == math::short_name(value.math)) field.type = value.name;
     auto values = language::collect_declarations(module.source.common.text);
     if (!values) return fail(mapped_error(input, module.source.common, values.error().position, values.error().message));
     module.value_types = std::move(*values);
@@ -152,30 +259,36 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (!info || (*info)->kind != TypeKind::object || !(*info)->native_storage)
             return fail(source_error(input, cls.file, cls.position, "Source classes require an existing native object base."));
         TypeDefinition definition; definition.kind = TypeKind::object; definition.name = cls.name; definition.base = *base;
-        std::vector<std::optional<Scalar>> defaults;
+        std::vector<FieldDefinition> fields;
         for (const auto& field : cls.fields) {
-            auto value = field_default(input, cls, field);
-            if (!value) return fail(value.error());
-            TypeId type;
-            if (field.type == "float") type = state_->contract->binding.f32;
-            else if (field.type == "double") type = state_->contract->binding.f64;
-            else if (field.type == "int") type = state_->contract->binding.i32;
-            else if (field.type == "uint") type = state_->contract->binding.u32;
-            else type = state_->contract->binding.boolean;
-            FieldDefinition declared; declared.name = field.name; declared.value = {type}; declared.default_value = *value;
-            definition.fields.push_back(std::move(declared)); defaults.emplace_back(std::move(*value));
+            auto declared = class_field(input, cls, field, module.value_types, state_->contract->binding, runtime);
+            if (!declared) return fail(declared.error());
+            fields.push_back(std::move(*declared));
         }
         const auto* kept = published ? find_named(published->source.classes, cls.name) : nullptr;
         if (kept) {
-            const auto& before = published->defaults[static_cast<std::size_t>(kept - published->source.classes.data())];
-            if (!std::equal(before.begin(), before.end(), defaults.begin(), defaults.end(), same_default))
-                return fail({ErrorCode::rebuild_required, "Published source class defaults changed; rebuild the Runtime context: " + cls.name});
-        } else definitions->push_back(std::move(definition));
-        module.defaults.push_back(std::move(defaults));
+            const auto& before = published->class_fields[static_cast<std::size_t>(kept - published->source.classes.data())];
+            for (std::size_t i = 0; i < fields.size(); ++i)
+                if (!same_field(before[i], fields[i]))
+                    return fail({ErrorCode::rebuild_required, "Published source class field changed its default, range or presentation; "
+                        "rebuild the Runtime context: " + cls.name + "." + fields[i].name});
+        } else {
+            definition.fields = fields;
+            definitions->push_back(std::move(definition));
+        }
+        module.class_fields.push_back(std::move(fields));
     }
     if (!definitions->empty()) {
         auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
-        if (!publication) return fail(publication.error());
+        if (!publication) {
+            // Runtime field rules end with `Class.field`; report them at that field.
+            const auto& error = publication.error();
+            for (const auto& cls : module.source.classes)
+                for (const auto& field : cls.fields)
+                    if (error.message.ends_with(": " + cls.name + "." + field.name))
+                        return fail(source_error(input, cls.file, field.position, error.message, error.code));
+            return fail(error);
+        }
         request->type_publication_ = *publication;
     }
     const auto catalog = request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
