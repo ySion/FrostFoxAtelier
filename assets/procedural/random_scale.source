@@ -1,8 +1,11 @@
 // Sets pscale to a random value between minimum and maximum, from the graph seed, the node's
 // seed and the point's id.
 class procedural.RandomScale : procedural.PointNode {
+    [Min = 0.0, Max = 4.0, LockMin, Label = "Minimum", DESC = "pscale 的下限。"]
     float minimum = 0.5f;
+    [Min = 0.0, Max = 4.0, LockMin, Label = "Maximum", DESC = "pscale 的上限。"]
     float maximum = 1.5f;
+    [Label = "Seed", DESC = "与图的种子混合后得到本节点的随机种子。"]
     uint seed = 0;
 
     void evaluate(const procedural.Context& context, Array<float>& pscale, const Array<uint>& id) {

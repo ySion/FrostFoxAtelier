@@ -94,8 +94,12 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 | 文件 | 内容 |
 | --- | --- |
 | random.source | 全局函数 `hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../src/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
-| jitter.source | `procedural.Jitter`：amount、seed；P 加上 `random_vector(hash2(hash2(图种子, seed), id))` × amount，读 `id`，所以偏移跟随点 |
+| orient.source | 全局函数 `frame_rotation`（三根正交轴构成的旋转，按 `math.rotation_matrix` 的行约定）、`shortest_arc`（+Z 到给定单位向量的最短旋转，正对 −Z 时绕 X 转半圈）和 `align_to_normal`（Copy to Points 从 N 与 up 推出的朝向：+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或不是有限值时取最短旋转；N 为零时不旋转，不是有限值时结果也不是有限值） |
+| jitter.source | `procedural.Jitter`：amount、axis_scale（按轴缩放）、seed；P 的每个分量加上 `random_vector(hash2(hash2(图种子, seed), id))` 的对应分量 × amount × axis_scale，读 `id`，所以偏移跟随点 |
 | random_scale.source | `procedural.RandomScale`：minimum、maximum、seed；pscale 取 lerp(minimum, maximum, unit(hash2(hash2(图种子, seed), id)))，读 `id` |
+| normal_align.source | `procedural.NormalAlign`：up；按 `align_to_normal(N, up)` 写 orient，所以 NormalAlign 之后的 Copy to Points 与直接用 N 和同值 up 列的结果相同，中间可以再改 orient |
+
+参数用源码字段的元数据（Label、DESC、Min/Max、LockMin）声明，Parameters 面板经 `FieldInfo` 读取。
 
 ## 求值器
 
@@ -141,9 +145,10 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 自有语言节点部分从 assets/procedural 的文件和一个夹具文件组成项目快照，构建 MeshImport → Scatter → Jitter（两个，amount 不同）/ RandomScale，Grid → 夹具 Lift（不带上下文）和夹具 Shift（只读上下文的种子），五路 Merge，并按文档公式和 random.hpp 的哈希独立算出期望值：
 
 - 源码的 `hash`、`hash2` 与 random.hpp 逐位相同，`unit` 精确等于 (x >> 8) · 2⁻²⁴，最大输入得到 1 − 2⁻²⁴ 而不是 1；
-- 输出的 P 和 pscale 与期望一致，与 Jitter 同读 Scatter 结果的 RandomScale 看到未改动的 P（Jitter 写的是副本）；求值不盖章；
+- 输出的 P 和 pscale 与期望一致（一个 Jitter 的 axis_scale 为 (1, 0, 2)），与 Jitter 同读 Scatter 结果的 RandomScale 看到未改动的 P（Jitter 写的是副本）；求值不盖章；
 - 经 `Runtime::write` 和源码方法写 `self` 改参数，都只重算该节点及下游，撤销后命中缓存；图种子经 Context 到达 Jitter、RandomScale 和 Shift（Shift 的输入与种子无关，所以重算只能来自它自己的键），不重算不带上下文的 Lift；
 - 兼容发布：改 Jitter 方法体只重算两个 Jitter 节点和下游，输出用上新方法体；内容不变的发布不重算任何节点；只改 RandomScale 的空白只重算它和下游；改全局助手重算所有自有语言节点；
+- 立方体上撒点 → 夹具把偶数点的 N 置零 → NormalAlign → CopyToPoints，up 依次取 +Y、+Z、−Y 和零：实例矩阵与 C++ CopyToPoints 直接使用 N 和同值 up 列的结果一致。立方体的面法线沿坐标轴，这几个 up 覆盖四元数的四个分支、平行时的最短旋转和正对 −Z 的半圈；改 up 只重算 NormalAlign 和下游；
 - 输入缺少读取的列、按值参数、列类型与已有列不符、没有 evaluate、evaluate 没有参数（因而可以写 `self`）的类型各自失败，只阻断下游；没有 Program 的求值器里自有语言节点失败，C++ 节点照常求值。
 
 ```powershell

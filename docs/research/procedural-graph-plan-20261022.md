@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1 和代码身份已交付并合入），Jitter 与 RandomScale 已用自有语言写成，Remap、属性噪声和法线对齐随 L2 的向量与枚举参数写。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1、代码身份和 L2 已交付并合入），Jitter、RandomScale 和 NormalAlign 已用自有语言写成，参数带 L2 的元数据；Remap 和属性噪声要能在参数里选择目标属性，选择方式待定（§9）。
 
 ## 0. 结论
 
@@ -75,17 +75,23 @@ procedural.Node    原生对象基类：隐藏的 inputs 强引用序列，每�
 参数 = 节点类的公开字段（Label/Category/Min/Max/DESC 等元数据）；端口与列绑定来自 evaluate 签名；节点实例 = Runtime 对象
 ```
 
-自有语言节点示例（assets/procedural/jitter.source；向量与枚举参数依赖 L2，哈希与随机库 L6 之前由使用方放进快照）：
+自有语言节点示例（assets/procedural/jitter.source；哈希与随机库 L6 之前由使用方放进快照）：
 
 ```source
 class procedural.Jitter : procedural.PointNode {
+    [Min = 0.0, Max = 1.0, LockMin, Label = "Amount", DESC = "每个轴上偏移的最大距离，单位 m。"]
     float amount = 0.1f;
+    [Min = 0.0, Max = 1.0, LockMin, Label = "Axis Scale", DESC = "按轴缩放偏移；某一分量为 0 时不沿该轴移动。"]
+    vector3 axis_scale = vector3(1.0, 1.0, 1.0);
+    [Label = "Seed", DESC = "与图的种子混合后得到本节点的随机种子。"]
     uint seed = 0;
+
     void evaluate(const procedural.Context& context, Array<vector3>& P, const Array<uint>& id) {
-        const float scale = self.amount;            // 每次读 self 都是一次宿主调用，循环外先存到局部
+        const vector3 reach = self.axis_scale * self.amount;   // 每次读 self 都是一次宿主调用，循环外先存到局部
         const uint node_seed = hash2(context.seed, self.seed);
         for (uint i = 0; i < P.size(); i = i + 1) {
-            P[i] = P[i] + random_vector(hash2(node_seed, id[i])) * scale;   // 来自 random.source
+            const vector3 r = random_vector(hash2(node_seed, id[i]));   // 来自 random.source
+            P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
         }
     }
 }
@@ -110,7 +116,7 @@ class procedural.Jitter : procedural.PointNode {
 | L4a | 逐元素函数 floor/ceil/trunc/fract/abs/min/max/clamp/lerp/smoothstep/step/sign（另有已有的 sqrt），支持 float 标量和 float vector2/3/4，按分量计算，降为 intrinsic 或 select 后内联，不开 fast-math，可以向量化。min/max 按 GLSL 定义（min(x,y) = y < x ? y : x），所以 clamp 遇到 NaN 输入会返回下界；fract 结果在 [0,1)；没有整数版本 | 噪声、重映射 | 已交付（`runtime-math-builtins` 5707ca53，已合入 `procedural`） |
 | L1 | `analyze_calls` 放行一种情况：接收者是 `self`、结果为标量/枚举/数学值的字段读取。写 self、取对象引用、调用非 BorrowSafe 方法照旧拒绝。读取走 `Runtime::read`，不盖章，值区间内也没有 GC 安全点。验收写明“只读、不改变借用与 GC 规则”。源码执行只在 Runtime 线程上进行 | 节点读参数 | 已交付（`runtime-self-reads` c5b6a47c，已合入 `procedural`，bdff0c02） |
 | 代码身份 | `EntryInfo::code` 与 `Program::revision()`，判定见 §3 的“代码身份”；仍然每次发布都重新编译，复用旧 Version 等实测需要再说 | 验收 ⑥ 只重算代码变了的类型 | 已交付（`runtime-entry-codes` 2b278be4，已合入 `procedural`，d9809d57） |
-| L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | P1 |
+| L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | 已交付（`runtime-class-fields` ed2b6e89，已合入 `procedural`，323e3cac） |
 | L4b | sin/cos/atan2/pow/exp/log，用纯 IR 多项式实现，可以内联和向量化；误差上界写进文档并实测，与 libm 不逐位相同。程序化提出的要求：float 的 sin/cos 在 \|x\| ≤ 10⁴ 内误差 ≤ 4 ULP，超出这个范围结果仍有限且绝对值不超过 1；atan2/exp/log/pow 在全 float 范围内误差 ≤ 4 ULP，特殊值按 IEEE 约定（log(0) = −∞，负数取 log 得 NaN，exp 溢出得 +∞；pow 的底数为负时返回 NaN） | 旋转、衰减、曲线 | P1 后段 |
 | L6 | 宿主把引擎附带的文件放在保留路径前缀（如 `engine/procedural/…`）下，并入每个工程快照；工程不能占用这个前缀，也不能声明引擎命名空间的类型 | 内置节点、哈希与随机库 | P3 前 |
 | L3 | 倾向按值返回拥有型 Array，结果直接构造在调用方存储中；P4 前单独出方案，过 Oracle | 改变点数的节点迁到自有语言 | P4 |
@@ -243,7 +249,8 @@ class procedural.Jitter : procedural.PointNode {
 
 ## 9. 风险与未决
 
-- **语言能力的时间线**：P1 依赖 L1、L2、L4、L5。排期晚于 P1 的 C++ 部分时，先完成 C++ 黑箱节点和求值器，自有语言节点随语言能力合入，不另写过渡实现。
+- **语言能力的时间线**：P1 依赖 L1、L2、L4、L5，都已交付。L4b（sin/cos 等）在 P1 后段，用到旋转角度的节点随它写。
+- **Remap 与属性噪声的目标属性**：列按 `evaluate` 的参数名绑定，所以节点只能处理代码里写定的属性名；Houdini 的 Attribute Remap、Attribute Noise 在参数里选属性。建议加一个原生基类，带 String 参数 `attribute`，求值器按它的值绑定一个约定的列参数（源码 class 不能声明 String 字段，但能继承原生字段）。这扩展了节点契约，**待用户定方向，再交总负责人审**；另一种做法是保持写定属性名（Wrangle 式），由用户为每个属性写自己的节点。
 - **数字资产契约**：§5.3 的表示要在 P2 前定。如果改为让图资产发布 Runtime 类型，需要先解决类型版本与重建问题。
 - **实例渲染**：10 万实例在 120 FPS 下的 CPU/GPU 成本按 §5.1 实测。主要不确定项有两个：一是只要有物体在动，TLAS 每帧都按总实例数重写，Play 多半需要 TLAS b；二是没有逐实例剔除时 GBuffer 和阴影重绘的 GPU 开销。第二项取决于目标内容的三角形数，**待用户定**。
 

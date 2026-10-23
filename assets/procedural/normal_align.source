@@ -1,0 +1,13 @@
+// Writes orient from N and the up vector, the same orientation Copy to Points would derive, so
+// later nodes can change it before copying.
+class procedural.NormalAlign : procedural.PointNode {
+    [Min = -1.0, Max = 1.0, Label = "Up", DESC = "实例的 +Y 尽量朝向的方向。为零或与 N 平行时取 +Z 到 N 的最短旋转。"]
+    vector3 up = vector3(0.0, 1.0, 0.0);
+
+    void evaluate(Array<quaternion>& orient, const Array<vector3>& N) {
+        const vector3 upward = self.up;
+        for (uint i = 0; i < orient.size(); i = i + 1) {
+            orient[i] = align_to_normal(N[i], upward);
+        }
+    }
+}

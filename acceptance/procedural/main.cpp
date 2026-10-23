@@ -805,6 +805,11 @@ class fixture.Counter : procedural.PointNode {
     uint count = 0;
     void evaluate() { self.count = self.count + 1; }
 }
+class fixture.ZeroEven : procedural.PointNode {
+    void evaluate(Array<vector3>& N) {
+        for (uint i = 0; i < N.size(); i = i + 2) { N[i] = vector3(); }
+    }
+}
 class fixture.ByValue : procedural.PointNode {
     void evaluate(float x) { }
 }
@@ -846,6 +851,8 @@ void source_nodes() {
         scale_text = read_text(directory / "random_scale.source");
     Project project;
     project.set("procedural/random.source", random_text);
+    project.set("procedural/orient.source", read_text(directory / "orient.source"));
+    project.set("procedural/normal_align.source", read_text(directory / "normal_align.source"));
     project.set("procedural/jitter.source", jitter_text);
     project.set("procedural/random_scale.source", scale_text);
     project.set("fixture.source", std::string{fixture_source});
@@ -893,6 +900,9 @@ void source_nodes() {
     const auto amount = field(runtime, jitter_type, "amount");
     take(runtime.write(jittered, amount, Scalar{0.25f}));
     take(runtime.write(twin, amount, Scalar{0.5f}));
+    // Unequal axes, one of them zero, show Jitter scales each axis by its own component.
+    const Vector3 axes{1, 0, 2};
+    take(runtime.write(jittered, field(runtime, jitter_type, "axis_scale"), ValueInput{type<Vector3>(runtime), &axes}));
     take(connect(runtime, graph, imported, 0, scattered, 0));
     for (const auto node : {jittered, twin, scaled}) take(connect(runtime, graph, scattered, 0, node, 0));
     for (const auto node : {lifted, shifted}) take(connect(runtime, graph, grid_node, 0, node, 0));
@@ -905,11 +915,14 @@ void source_nodes() {
         const auto points = take(scatter(import_mesh(*geometry::cube_mesh()), {.density = 4, .seed = hash(settings.seed, 3u)}));
         const auto& ids = column<std::uint32_t>(points, "id", Layer::point);
         const auto node_seed = hash(settings.seed, 0u);
-        const auto jitter = [&](float scale) {
+        const auto jitter = [&](float scale, Vector3 axis) {
             auto moved = points;
             auto& positions = *take(moved.write<Vector3>("P", Layer::point));
-            for (std::uint32_t i = 0; i < positions.size(); ++i)
-                positions[i] = positions[i] + random_vector(hash(node_seed, ids[i])) * scale * settings.factor;
+            const auto reach = axis * (scale * settings.factor);
+            for (std::uint32_t i = 0; i < positions.size(); ++i) {
+                const auto r = random_vector(hash(node_seed, ids[i]));
+                positions[i] = positions[i] + Vector3{r.x * reach.x, r.y * reach.y, r.z * reach.z};
+            }
             return moved;
         };
         auto sized = points;
@@ -922,7 +935,7 @@ void source_nodes() {
         take(transform(raised, {0, settings.height, 0}, {}, {1, 1, 1}));
         auto moved = take(grid({10, 10}, 10, 10));
         take(transform(moved, {static_cast<float>(settings.seed), 0, 0}, {}, {1, 1, 1}));
-        const std::array parts{jitter(settings.amount), jitter(0.5f), sized, raised, moved};
+        const std::array parts{jitter(settings.amount, axes), jitter(0.5f, {1, 1, 1}), sized, raised, moved};
         return take(Geometry::merge(parts));
     };
 
@@ -969,7 +982,7 @@ void source_nodes() {
 
     // Publications: Jitter's new body reruns both Jitter nodes only; unchanged code reruns nothing;
     // RandomScale's whitespace edit reruns it only; a helper edit reruns every Source node.
-    project.set("procedural/jitter.source", replaced(jitter_text, "* scale;", "* scale * 2.0f;"));
+    project.set("procedural/jitter.source", replaced(jitter_text, "self.axis_scale * self.amount;", "self.axis_scale * (self.amount * 2.0f);"));
     project.publish(program);
     take(evaluator.evaluate());
     expect(evaluator, {{scattered, {2, 0}}, {scaled, {2, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {jittered, {4, 1}}, {twin, {3, 0}}, {merged, {5, 2}}},
@@ -990,6 +1003,42 @@ void source_nodes() {
     expect(evaluator, {{scattered, {2, 0}}, {grid_node, {1, 0}}, {jittered, {5, 1}}, {twin, {4, 0}}, {scaled, {4, 0}}, {lifted, {3, 1}}, {shifted, {3, 0}}},
         "A helper publication did not rerun every Source node.");
     require(same_points(evaluator.output(), expected({.seed = 9, .factor = 2.f})), "An equivalent helper changed the output.");
+
+    // NormalAlign writes the orient Copy to Points would derive from N and an up column. On a cube
+    // every face normal is axis-aligned, so the up vectors reach the frame's four quaternion
+    // branches, the parallel fallback and the half turn; ZeroEven adds zero normals.
+    const auto aligned_root = take(runtime.create(type<Graph>(runtime)));
+    const auto aligned = aligned_root.id();
+    const auto surface = add(aligned, type<MeshImport>(runtime)), spread = add(aligned, type<Scatter>(runtime)),
+        zeroed = add(aligned, source_type("fixture.ZeroEven")), oriented = add(aligned, source_type("procedural.NormalAlign")),
+        copies = add(aligned, type<CopyToPoints>(runtime));
+    take(runtime.with_native<MeshImport>(surface, [](MeshImport& node) -> Result<void> { node.mesh = String{"fixture/a"}; return {}; }));
+    take(runtime.with_native<CopyToPoints>(copies, [](CopyToPoints& node) -> Result<void> { node.meshes.add(String{"fixture/a"}); return {}; }));
+    take(runtime.write(spread, field(runtime, type<Scatter>(runtime), "density"), Scalar{4.f}));
+    const std::array chain{surface, spread, zeroed, oriented, copies};
+    for (std::size_t i = 1; i < chain.size(); ++i) take(connect(runtime, aligned, chain[i - 1], 0, chain[i], 0));
+    take(set_display(runtime, aligned, copies));
+    Evaluator aligning{runtime, aligned_root, resources, &program};
+    const auto up = field(runtime, source_type("procedural.NormalAlign"), "up");
+    for (const Vector3 upward : {Vector3{0, 1, 0}, Vector3{0, 0, 1}, Vector3{0, -1, 0}, Vector3{}}) {
+        take(runtime.write(oriented, up, ValueInput{type<Vector3>(runtime), &upward}));
+        take(aligning.evaluate());
+        auto points = take(scatter(import_mesh(*geometry::cube_mesh()), {.density = 4, .seed = hash(0u, 0u)}));
+        auto& normals = *take(points.write<Vector3>("N", Layer::point));
+        for (std::uint32_t i = 0; i < normals.size(); i += 2) normals[i] = {};
+        take(points.add<Vector3>("up", Layer::point, upward));
+        const std::vector<Reference> references{{String{"fixture/a"}, geometry::cube_mesh()}};
+        const auto wanted = take(copy_to_points(points, references));
+        const auto* actual = aligning.output();
+        require(actual && actual->instance_transforms().size() == 24 && actual->instance_transforms().size() == wanted.instance_transforms().size(),
+            "NormalAlign changed the instance count.");
+        for (std::size_t i = 0; i < wanted.instance_transforms().size(); ++i)
+            for (std::size_t e = 0; e < 16; ++e)
+                require(near(actual->instance_transforms()[i][e], wanted.instance_transforms()[i][e], 1e-5f),
+                    "NormalAlign differs from the orientation Copy to Points derives.");
+    }
+    expect(aligning, {{spread, {1, 0}}, {zeroed, {1, 0}}, {oriented, {4, 0}}, {copies, {4, 0}}},
+        "An up write did not rerun exactly NormalAlign and its downstream node.");
 
     // Types that cannot bind, or input without the columns a node reads, fail only themselves.
     const auto faults_root = take(runtime.create(type<Graph>(runtime)));
