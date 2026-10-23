@@ -583,8 +583,10 @@ struct EditorControl::Impl {
         data.drafts=Json::array();for(const auto& file:app.workspace_.source_editor.files()) if(file->dirty())
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
         for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id())))
-            if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved)
+            if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved) {
                 if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.first==mesh->mesh.source;})) data.meshes.emplace_back(mesh->mesh.source,mesh->mesh.resolved);
+            } else if(auto sky=presentation::read_sky_map(app.document_->world().runtime(),component.id());sky && sky->resolved)
+                if(std::ranges::none_of(data.skies,[&](const auto& entry){return entry.first==sky->source;})) data.skies.emplace_back(sky->source,sky->resolved);
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
         data.manifest["selection_indices"]=Json::array();const auto members=take(app.document_->world().members());
@@ -848,6 +850,8 @@ struct EditorControl::Impl {
             bool disagrees=false;
             const auto opened=app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene,[&](const editor::Session& candidate)->Result<void> {
                 const auto environment=candidate.presentation().environment();if(!environment) return std::unexpected(environment.error());
+                // Only the scene records the sky map and its rotation; the view snapshot holds view options.
+                view.lit.sky_map=environment->sky_map;view.lit.sky_rotation=environment->sky_rotation;
                 // Before schema 3 the view had no sky; the scene's Sky Light, now part of its Environment, supplies it.
                 if(view_schema<3) {view.lit.sky_enabled=environment->sky_enabled;view.lit.sky_color=environment->sky_color;view.lit.sky_intensity=environment->sky_intensity;}
                 else if(scene_version>=4 && static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) {

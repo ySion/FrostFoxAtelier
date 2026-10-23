@@ -411,6 +411,44 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
     // Restore the caller's repro after exercising expanded legacy object graphs.
     d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
 }
+// Only the scene records the sky map and its rotation; the frozen view holds view options.
+// A repro of a scene with both opens, its copied map equals the loaded one, and the
+// reopened repro still binds the same map content.
+void repro_sky(Driver& d,const std::filesystem::path& project) {
+    const std::string key="project/{6F1D2C3B-4A5E-4F60-8B7C-9D0E1F2A3B4C}";
+    std::string hdr="#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 4 +X 8\n";
+    for(unsigned i=0;i<32;++i) hdr+=std::string{char(64+4*i),char(128),char(32),char(129)};
+    write(project/"Content/Sky/Repro.hdr",hdr);
+    write(project/"Content/Sky/Repro.hdr.asset.json",Json{{"id",key.substr(8)},{"version",1}}.dump());
+    const auto environment_of=[](Json& scene)->Json& {
+        for(auto& entity:scene.at("entities")) for(auto& component:entity.at("components"))
+            if(component.at("type")=="world.EnvironmentComponent") return component;
+        throw std::runtime_error("The repro lighting scene has no Environment.");
+    };
+    auto scene=read(project/"Content/Scenes/Main.scene");
+    environment_of(scene)["sky_map"]=key;environment_of(scene)["properties"]["sky_rotation"]=30;
+    write(project/"Content/Scenes/Main.scene",scene.dump(2));
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    std::string content;
+    const auto exported=[&] {
+        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Sky repro export did not start");
+        const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+        const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
+        const auto manifest=read(bundle/"manifest.json");
+        auto frozen=read(bundle/"Project"/wide(manifest.at("scene").get<std::string>()));
+        const auto& sky=environment_of(frozen);
+        require(sky.at("sky_map")==key && sky.at("properties").at("sky_rotation")==30,"A sky repro lost its scene's sky map key or rotation");
+        const auto resource=std::ranges::find_if(manifest.at("resources"),[&](const Json& entry){return entry.at("key")==key;});
+        require(resource!=manifest.at("resources").end(),"A sky repro did not check its copied sky map against the loaded one");
+        if(content.empty()) content=resource->at("content_sha256").get<std::string>();
+        require(resource->at("content_sha256")==content,"A reopened sky repro bound different sky map content");
+        return std::pair{bundle,manifest};
+    };
+    const auto [bundle,manifest]=exported();
+    d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+    require(d.inspect().at("view")==manifest.at("view"),"A sky repro did not open with its frozen view");
+    exported();
+}
 void repro_lighting(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"Project",directory=root/"Control";project_fixture(project);
     Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
@@ -424,9 +462,10 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
     require(d.call("repro.export",Json::object(),id).at("status")=="pending","Lighting repro export did not start");
     const auto exported=d.wait(id);require(exported.at("status")=="ok",exported.dump());
     repro_lighting_migration(d,wide(exported.at("result").at("directory").get<std::string>()),root);
+    repro_sky(d,project);
     d.client.reset();editor.close();
     write(root/"result.json",Json{{"status","passed"},{"cases",{"legacy-shadow-ranges","legacy-view-and-world-agreement",
-        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema4-scene7-export-reopen","removed-direct-diagnostics","view-and-environment-agreement"}}}.dump(2));
+        "rejected-repro-preserves-state","unmarked-and-schema1-migration","schema4-scene8-export-reopen","removed-direct-diagnostics","view-and-environment-agreement","sky-map-and-rotation"}}}.dump(2));
     std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {

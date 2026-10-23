@@ -45,6 +45,11 @@ std::string mesh_hash(const geometry::Mesh& mesh) {
     }
     const auto bytes=shape.dump();return control::sha256(std::as_bytes(std::span(bytes)));
 }
+std::string sky_hash(const rendering::SkyMap& map) {
+    const auto bytes=Json{{"width",map.width()},{"height",map.height()},{"scale_exponent",map.scale_exponent()},{"mean",map.mean()},
+        {"pixels",control::sha256(std::as_bytes(map.pixels()))},{"cube",control::sha256(std::as_bytes(map.cube()))}}.dump();
+    return control::sha256(std::as_bytes(std::span(bytes)));
+}
 struct Com {
     Com() {if(FAILED(CoInitializeEx(nullptr,COINIT_MULTITHREADED))) throw Failure("storage_error","Cannot initialize image encoder");}
     ~Com() {CoUninitialize();}
@@ -172,6 +177,12 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
         checkpoint(cancel);auto loaded=take(clone.mesh(key));
         const auto expected=mesh_hash(*mesh);
         if(!loaded.mesh || mesh_hash(*loaded.mesh)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded mesh: "+key);
+        resources.push_back({{"key",key},{"content_sha256",expected}});
+    }
+    for(const auto& [key,map]:data.skies) {
+        checkpoint(cancel);const auto loaded=take(clone.sky_map(key)).map;
+        const auto expected=sky_hash(*map);
+        if(!loaded || sky_hash(*loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded sky map: "+key);
         resources.push_back({{"key",key},{"content_sha256",expected}});
     }
     data.manifest["resources"]=std::move(resources);data.manifest["project"]="Project";data.manifest["scene"]=path_text(scene_path);

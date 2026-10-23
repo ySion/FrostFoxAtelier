@@ -209,7 +209,7 @@ repro.export 读取 Session::serialize() 的内存场景，保留原路径、dir
 
 保存相机、显示偏好、Entity 选择顺序和检查的 Component、构建身份及资源指纹。publication_version 标识完整已发布构建，source_version 标识游戏源码集，ui_source_version 标识 UI 输入。副本 Source 只包含该成功构建的游戏和 UI 源码；磁盘上新增或修改但未发布的源码移入 unpublished/，内存 Code 草稿另存 drafts.json。没有可用场景或成功发布构建的工程返回 not_ready。这是场景与代码复现，不保存整个桌面、编辑器布局或 GPU 历史。
 
-复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的 Config、Content 或 Source 内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
+复制期间复核文件集合和内容。在副本中重新加载资源，与内存 Mesh 的顶点、边、分段、材质和图像指纹以及天空贴图的纹素、2^k 缩放、均值和 cube 比较；不一致返回 dependency_mismatch。不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的 Config、Content 或 Source 内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
 
 Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录身份比较、实例发现与清理以及 CLI 请求文件。路径拼接和 canonical 解析后，在文件操作边界使用现有 windows_file_path 统一转换；协议中的绝对路径、工程相对路径和资源身份保持原格式。深目录副本可以重开、保存并再次导出。
 
@@ -217,7 +217,7 @@ repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、
 
 含 v1–v5 场景的旧包通过同一场景迁移器解析选择与检查目标，再按文档 ID 查找新对象。空间组件展开成子 Entity 后，旧序号仍对应原来的对象；不会用展开后的 World 成员下标猜测身份。旧纯空间组件的检查目标映射到相应 Entity，能力组件则保留其真实 owner。正式 Control 请求继续使用 Entity 命名。
 
-新产物的 manifest 标记 `view_schema: 4`。版本 3 起视图带天光的五个键；版本 4 删除了 `direct_reference`、`direct_clustered` 与 `direct_shadow_cache`：打开版本 1～3 的视图时，这三个键的布尔值被丢弃，非布尔值拒绝；版本 4 的视图带这三个键时按已删除选项拒绝。版本 2 没有天光键，无标记或显式版本 1 视为更旧的视图快照，未知版本拒绝。打开版本 1、2 时，天光取自迁移后场景的 Environment（v6 的 Sky Light 已并入），视图里其余的 World 设置照旧与场景核对；版本 3 及以后的视图与场景（版本 4 及以后）迁移后的 Environment 不一致时返回 `dependency_mismatch`；这项核对在加载出的候选文档上进行，失败时保留当前文档。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4–6 的 `world` 段在一致性预校验中与视图比较（天光不在 `world` 段，由上面的 Environment 核对覆盖），版本 4 应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
+新产物的 manifest 标记 `view_schema: 4`。版本 3 起视图带天光的五个键；版本 4 删除了 `direct_reference`、`direct_clustered` 与 `direct_shadow_cache`：打开版本 1～3 的视图时，这三个键的布尔值被丢弃，非布尔值拒绝；版本 4 的视图带这三个键时按已删除选项拒绝。版本 2 没有天光键，无标记或显式版本 1 视为更旧的视图快照，未知版本拒绝。打开版本 1、2 时，天光取自迁移后场景的 Environment（v6 的 Sky Light 已并入），视图里其余的 World 设置照旧与场景核对；版本 3 及以后的视图与场景（版本 4 及以后）迁移后的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment；这项核对在加载出的候选文档上进行，失败时保留当前文档。`repro.open` 对旧 `shadow_light_budget`（整数 0..16）和 `shadow_samples`（整数 1..64）先严格验证，再迁移到默认 `direct_candidates: 8`。新旧候选字段混用、版本 2 中的退休字段及非法旧值均拒绝。嵌入场景版本 4–6 的 `world` 段在一致性预校验中与视图比较（天光不在 `world` 段，由上面的 Environment 核对覆盖），版本 4 应用同一迁移，正式加载仍由场景版本迁移负责；验证失败保留当前文档。此兼容仅用于复现包读取，`view.set` 不接受退休字段。
 
 ## 生命周期和扩展
 
