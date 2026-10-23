@@ -171,7 +171,7 @@ D3D12 debug layer。同一 Renderer 上依次跑 DDGI 读回诊断、上一节�
 
 - 静止时 wall 15.44 ms，约 65 帧/秒。目标是 RX 6800 XT 上 1440p 120 帧/秒，即 8.33 ms。
 - 相机环绕时 GPU 合计 23.73 ms，其中 shadow_cache 6.14 ms（级联每帧重画整个网格）、ddgi_gather 4.27 ms。
-- Smooth / MatCap 整帧 4.73 / 4.25 ms，没有 GPU 计时；444 个 draw，CPU `render.encode.scene.draws` 2.18 ms。
+- Smooth / MatCap 每个几何批次一次 draw，与按 part 绘制的 63de8635 交替测量：wall 4.70 / 4.23 ms（按 part 时 5.01 / 4.47），没有 GPU 计时；draw 由 444 降到 2，CPU `render.encode.scene.draws` 由约 1.56 ms 降到 0.026 ms。CPU 节省大于 wall 的下降，说明这两种模式在 Sponza 上主要受 GPU 限制。Scene Lit 与 Room、Dungeon 两场景没有可分辨的变化。
 - gbuffer 的成本来自非索引光栅：顶点着色器按顶点从 176 B 的三角形记录取数，每个 pass 约 1720 万次顶点着色、约 1 GB 读取，而场景只有 310 万个唯一顶点。反射比旧 Sponza 多出的约 1.86 ms 是推断，还没有测 SSSR 的工作项数。
 
 ## 未覆盖
