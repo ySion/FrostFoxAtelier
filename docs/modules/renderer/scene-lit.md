@@ -256,7 +256,7 @@ GTAO、最终 TAA 以及 SSSR 接收面/来源见证的表面历史共同检查�
 
 `scene_lit_shadow_cache_*` 发布请求/复用面、静态/动态更新、实际 draw、分辨率降级、整盏放弃的光源数（`dropped_lights`）、近裁剪面投影者、缺失 tap、平面校正回退、因重绘预算延后的 face 数及其最长连续延后帧数、请求 face 占用的 128² 格数，以及因 face 没画齐而不贡献直接光的光源数。所有这些统计对应同一完成帧，不将当前 CPU 请求混入异步耗时。临时 `direct_cluster_inspect` 的 66 档直方图也按同一身份发布；关闭时归零。
 
-阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联；屏幕直接光不发射线，阴影射线只来自 DDGI。`scene_lit_light_sources`、`scene_lit_shadow_sources` 与历史重置数描述当前编码帧，分别为解析光源总数和启用 Shadows 时投影的光源数；后者包含本帧因 atlas 放不下而被放弃的光（见 `dropped_lights`）。`scene_lit_resource_bytes` 是资源逻辑字节加 AS 数据量，包含射线命中引用的 Renderer 共享索引几何（顶点、索引和每三角形记录，光栅 pass 也用这一份）和每份几何的闭合缓冲，不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
+阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联；屏幕直接光不发射线，阴影射线只来自 DDGI。`scene_lit_light_sources`、`scene_lit_shadow_sources` 与历史重置数描述当前编码帧，分别为解析光源总数和启用 Shadows 时投影的光源数；后者包含本帧因 atlas 放不下而被放弃的光（见 `dropped_lights`）。`scene_lit_resource_bytes` 是 Scene Lit 资源的逻辑字节加 AS 数据量。Scene Lit 为其建了 BLAS 的每份几何，都计入它引用的 Renderer 共享索引几何（顶点、索引和每三角形记录；光栅 pass 用的是同一份，只计一次）和该几何的闭合缓冲。总数不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
 
 空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码这些表的内容是否变化或首次建立）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 
