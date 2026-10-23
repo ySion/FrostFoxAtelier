@@ -94,7 +94,7 @@ Shadows 开启且场景有投影光源时，`ShadowCache` 为每盏投影点光�
 ## 同一帧的执行链
 
 1. 光栅 GBuffer 写入着色法线/粗糙度、基础色/金属度、HDR 自发光、运动信息、独立 R32_FLOAT 预期前帧设备深度与 RG16_FLOAT 八面体几何法线。法线贴图只改变着色法线；偏移、支持平面和历史深度梯度使用几何法线。当前 D32_FLOAT 深度、前帧 R32_FLOAT 深度与 RG32_FLOAT min/max Hi-Z 都遵循有限 Reversed-Z；方向和背景约定见 [Renderer 合同](contract.md#场景和-ui)。屏幕坐标使用整个窗口，`scene_viewport` 处理物理像素偏移，支持透视与正交投影。
-2. 共享不可变网格缓存 BLAS，稳定实例更新 TLAS。每个快照索引记住上一次完整编码时对应的对象和网格；对象和网格不变时不查哈希表。材质表修订号不变、对象仍在原索引上时，不逐槽比较材质。成员、网格和材质都没变的帧跳过覆盖扫描与退休扫描，未变且已稳定的对象只重新登记阴影投射者。内联 RayQuery 完成灯光可见性和 DDGI 探针射线；RHI 只在支持 DXR 1.1 的硬件上打开 Context，Renderer 不另做能力判断。
+2. 共享不可变网格缓存 BLAS，由 Renderer 的共享索引几何构建；命中着色按实例的几何槽读同一份顶点、索引和每三角形记录，Scene Lit 只另存每三角形 4 字节的闭合信息。稳定实例更新 TLAS。每个快照索引记住上一次完整编码时对应的对象和网格；对象和网格不变时不查哈希表。材质表修订号不变、对象仍在原索引上时，不逐槽比较材质。成员、网格和材质都没变的帧跳过覆盖扫描与退休扫描，未变且已稳定的对象只重新登记阴影投射者。内联 RayQuery 完成灯光可见性和 DDGI 探针射线；RHI 只在支持 DXR 1.1 的硬件上打开 Context，Renderer 不另做能力判断。
 3. 有限体积 DDGI：规则 XYZ 探针格、八面体方向辐照度与距离矩、背面分类、受限位置修正、分帧采样与逐帧照明过渡，以及有界上一轮间接反弹。屏幕接收点用实际射线可见性选择八探针贡献，直接输出间接辐照度。
 4. GTAO 基于深度重建与地平线积分，使用独立历史，只调制间接项。一次派发先写出 R32_FLOAT 视空间深度及其四个缩减层级；缩减层级只平均足迹内接近最远表面的深度（XeGTAO 的深度 MIP 思路），空像素不当作遮挡者。地平线 tap 按距离选层：约 14 px 内用全分辨率，之后每倍距离升一级。视空间位置由带 jitter 的投影系数经乘加重建，透视与正交投影通用。积分、切线、偏置和衰减按世界空间公式计算。resolve 由 8×8 工作组把 12×12 邻域的世界位置、法线和原始 AO 一次性载入组共享内存，再做 5×5 空间支持和时间重投影。
 5. 直接光：保守灯列表 → 阴影 atlas 更新 → 融合 compose，逐盏确定求值解析局部灯与方向光（GGX 全项），乘 atlas 可见性，与 DDGI/环境漫反射、AO 和自发光一起写 HDR。
@@ -256,7 +256,7 @@ GTAO、最终 TAA 以及 SSSR 接收面/来源见证的表面历史共同检查�
 
 `scene_lit_shadow_cache_*` 发布请求/复用面、静态/动态更新、实际 draw、分辨率降级、整盏放弃的光源数（`dropped_lights`）、近裁剪面投影者、缺失 tap、平面校正回退、因重绘预算延后的 face 数及其最长连续延后帧数、请求 face 占用的 128² 格数，以及因 face 没画齐而不贡献直接光的光源数。所有这些统计对应同一完成帧，不将当前 CPU 请求混入异步耗时。临时 `direct_cluster_inspect` 的 66 档直方图也按同一身份发布；关闭时归零。
 
-阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联；屏幕直接光不发射线，阴影射线只来自 DDGI。`scene_lit_light_sources`、`scene_lit_shadow_sources` 与历史重置数描述当前编码帧，分别为解析光源总数和启用 Shadows 时投影的光源数；后者包含本帧因 atlas 放不下而被放弃的光（见 `dropped_lights`）。`scene_lit_resource_bytes` 是资源逻辑字节加 AS 数据量，不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
+阴影和探针射线数来自 GPU 实际执行计数，与上述完成样本关联；屏幕直接光不发射线，阴影射线只来自 DDGI。`scene_lit_light_sources`、`scene_lit_shadow_sources` 与历史重置数描述当前编码帧，分别为解析光源总数和启用 Shadows 时投影的光源数；后者包含本帧因 atlas 放不下而被放弃的光（见 `dropped_lights`）。`scene_lit_resource_bytes` 是资源逻辑字节加 AS 数据量，包含射线命中引用的 Renderer 共享索引几何（顶点、索引和每三角形记录，光栅 pass 也用这一份）和每份几何的闭合缓冲，不包含 GPU 驱动分配开销、AS scratch 和待退休资源，不能称为显卡实际总显存。
 
 空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码这些表的内容是否变化或首次建立）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 

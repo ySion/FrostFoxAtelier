@@ -50,21 +50,34 @@ float halton(std::uint32_t index,std::uint32_t base) {
 struct GpuInstance {
     std::array<float,16> world,previous_world;
     std::array<float,4> normal_x,normal_y,normal_z;
-    std::array<std::uint32_t,4> geometry; // RT offset, stable key low, history valid, stable key high.
+    std::array<std::uint32_t,4> geometry; // RT geometry slot, stable key low, history valid, stable key high.
     bool operator==(const GpuInstance&) const=default;
-};
-struct GpuRayTriangle {
-    std::array<geometry::Vertex,3> vertices;
-    TriangleVolume volume;
-    std::uint32_t material_slot{};
-    std::uint32_t closure_first{},closure_count{},reserved{};
 };
 // DDGIRayHit in lit_ddgi_common.hlsl. Per-dispatch scratch, never history.
 struct ProbeRayHitStorage { std::array<std::uint32_t,16> words; };
 static_assert(sizeof(GpuInstance)==192);
-static_assert(sizeof(GpuRayTriangle)==176);
 static_assert(sizeof(ProbeRayHitStorage)==64);
 static_assert(sizeof(ProbeContribution)==96);
+// lit_geometry_closure: per triangle 0 on an open surface, else the offset of
+// its closed component's [count, material slots...] list after the triangle
+// words. A single-slot component needs only the hit material's coverage flag
+// and shares the empty list at the end of the triangle words.
+std::vector<std::uint32_t> closure_words(const geometry::Mesh& mesh) {
+    const auto volumes=triangle_volumes(mesh);
+    std::map<std::uint32_t,std::vector<std::uint32_t>> components;
+    for(std::size_t i=0;i<volumes.size();++i)if(volumes[i].closed)components[volumes[i].closed].push_back(mesh.material_slot(i));
+    std::vector<std::uint32_t> words(volumes.size()+1);
+    const auto empty=static_cast<std::uint32_t>(volumes.size());
+    std::map<std::uint32_t,std::uint32_t> lists;
+    for(auto& [component,slots]:components) {
+        std::sort(slots.begin(),slots.end());slots.erase(std::unique(slots.begin(),slots.end()),slots.end());
+        if(slots.size()<2){lists[component]=empty;continue;}
+        lists[component]=static_cast<std::uint32_t>(words.size());
+        words.push_back(static_cast<std::uint32_t>(slots.size()));words.insert(words.end(),slots.begin(),slots.end());
+    }
+    for(std::size_t i=0;i<volumes.size();++i)if(volumes[i].closed)words[i]=lists[volumes[i].closed];
+    return words;
+}
 static_assert(sizeof(ProbeInspection::Ray)==96);
 }
 
@@ -133,7 +146,9 @@ struct SceneLit::State {
     } light_tables;
     // This frame's light tables.
     GfxBuffer gpu_sources,gpu_proposals,gpu_light_cells,gpu_spatial_proposals,gpu_spatial_source_slots;
-    GfxBuffer rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments;
+    GfxBuffer reflection_work,reflection_counter,reflection_arguments;
+    // Ray hit views by RT geometry slot: Geometry::vertices, indices, faces and closure.
+    std::vector<GfxBuffer> rt_vertices,rt_indices,rt_faces,rt_closure;
     GfxBuffer sun_trace_list,sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
     LightFrame light_frame;
     GfxBuffer ray_counters;
@@ -158,12 +173,14 @@ struct SceneLit::State {
     GfxTopLevelAccelerationStructure tlas;
     struct Geometry {
         geometry::MeshRef source;
-        GfxBuffer positions;
+        // The Renderer upload these views reference, and the one this pass found.
+        SceneGeometry shared,current;
+        // Views of the shared buffers; geometry owns vertices and indices as BLAS input.
+        GfxBuffer vertices,indices,faces;
+        GfxBuffer closure; // closure_words of source.
         GfxGeometry geometry;
         GfxBottomLevelAccelerationStructure blas;
-        std::vector<TriangleVolume> volumes;
-        std::map<std::uint32_t,std::vector<std::uint32_t>> component_slots;
-        std::uint32_t offset{};
+        std::uint32_t slot{};
         bool used{},opaque{true},next_opaque{true};
     };
     struct Object {
@@ -197,8 +214,6 @@ struct SceneLit::State {
     bool resolved_complete{};
     std::uint64_t material_revision{}; // MaterialFrame revision the complete pass compared surfaces against.
     std::vector<GpuInstance> instances;
-    std::vector<GpuRayTriangle> packed_triangles;
-    std::vector<std::uint32_t> packed_closed_slots;
     std::array<float,16> view_projection{},inverse_view_projection{},previous_view_projection{},previous_inverse_view_projection{};
     std::array<float,16> camera_view{};
     std::array<float,4> viewport{},environment{},controls{},temporal{},jitter{},probe_history{},probe_controls{};
@@ -600,7 +615,12 @@ struct SceneLit::State {
         bind(p,"lit_temporal",temporal);bind(p,"lit_jitter",jitter);bind(p,"lit_effect_flags",effect_flags);
         bind(p,"lit_source_counts",source_counts);bind(p,"lit_hit_candidates",hit_candidates);
         bind(p,"lit_history_invalid",history_invalid);
-        bind(p,"lit_instances",gpu_instances);bind(p,"lit_rt_triangles",rt_triangles);bind(p,"lit_closed_slots",rt_closed_slots);
+        bind(p,"lit_instances",gpu_instances);
+        for(const auto& [name,views]:{std::pair{"lit_geometry_vertices",&rt_vertices},{"lit_geometry_indices",&rt_indices},
+                                     {"lit_geometry_faces",&rt_faces},{"lit_geometry_closure",&rt_closure}}) {
+            static const GfxBuffer none{}; // An empty scene binds one null view; no ray hits it.
+            require(gfxProgramSetBuffers(gfx,p,name,views->empty()?&none:views->data(),views->empty()?1u:static_cast<std::uint32_t>(views->size())),name);
+        }
         bind(p,"lit_sources",gpu_sources);bind(p,"lit_light_proposals",gpu_proposals);
         bind(p,"lit_light_cells",gpu_light_cells);bind(p,"lit_spatial_light_proposals",gpu_spatial_proposals);
         bind(p,"lit_spatial_source_slots",gpu_spatial_source_slots);bind(p,"lit_light_grid_origin",light_frame.spatial_origin);
@@ -768,23 +788,25 @@ struct SceneLit::State {
         for(const auto* pair:{&history_depth,&history_normal,&history_geometry_normal,&taa_history,&reflection_history,&reflection_hit_history,&reflection_moments,&reflection_scratch,&ao_history,&smaa_spatial,&bloom,&history_surface_id,&probe_irradiance,&probe_distance,&probe_offsets})for(auto t:*pair)add_texture(t);
         for(auto t:pyramid)add_texture(t);
         result+=instance_table.bytes();light_tables.each([&](const auto& table){result+=table.bytes();});
-        for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,rt_triangles,rt_closed_slots,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters,ltc,
+        for(auto b:{cluster_depth,cluster_count,cluster_source,probe_fallback,probe_fallback_arguments,reflection_work,reflection_counter,reflection_arguments,probe_ray_hits,probe_visibility_cache,ray_counters,ltc,
                     sun_trace_list,sun_trace_arguments})result+=b.getSize();
         for(auto b:ray_readback)result+=b.getSize();
         result+=shadow_tables.face_table.bytes()+shadow_tables.light_table.bytes()+shadow_tables.instance_table.bytes();
         if(inspection) {result+=inspection->output.getSize()+inspection->rays.getSize();for(auto b:inspection->readback)result+=b.getSize();for(auto b:inspection->ray_readback)result+=b.getSize();}
-        for(const auto& [key,g]:geometries){(void)key;result+=g.positions.getSize()+gfxBottomLevelAccelerationStructureGetDataSize(gfx,g.blas);}
+        // Includes the shared indexed geometry the RT views reference.
+        for(const auto& [key,g]:geometries){(void)key;result+=g.vertices.getSize()+g.indices.getSize()+g.faces.getSize()+g.closure.getSize()+
+            gfxBottomLevelAccelerationStructureGetDataSize(gfx,g.blas);}
         if(tlas)result+=gfxTopLevelAccelerationStructureGetDataSize(gfx,tlas);
         return result;
     }
 
-    bool acceleration(const Frame& frame) {
+    bool acceleration(const Frame& frame,const SceneLitDraws& scene_draws) {
         const auto count=frame.meshes.size();
         shadow_casters.clear();shadow_changes.clear();
         if(shadows_cached)shadow_casters.reserve(count);
         material_changed=false;coverage_changed=false;
         emitter_changed=false;
-        bool geometry_changed=false,topology_changed=false,transform_changed=false;
+        bool geometry_changed=false,topology_changed=false,transform_changed=false,views_changed=false;
         // Indices whose GpuInstance changed; only this range is copied to the GPU.
         std::size_t dirty_first=instances.size()!=count?0:count,dirty_last=instances.size()!=count?count:0;
         const auto dirty=[&](std::size_t index){dirty_first=std::min(dirty_first,index);dirty_last=std::max(dirty_last,index+1);};
@@ -818,22 +840,27 @@ struct SceneLit::State {
                 for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
                     opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
                 slot.geometry->used=true;slot.geometry->next_opaque &= opaque;
+                slot.geometry->current=scene_draws.draws[scene_draws.instance_draws[i]].geometry;
             }
         }
         // Aggregate coverage in the owning geometry cache. Repeated frames and
         // instances share it without allocating a second per-frame hash table.
         if(!steady)for(auto& [key,g]:geometries) {
             (void)key;if(!g.used)continue;
+            // Ranges keep the shared resources alive for BLAS rebuilds and ray hits.
+            const auto view=[&](GfxBuffer buffer) {auto range=gfxCreateBufferRange(gfx,buffer,0,buffer.getSize());allocation(bool(range));return range;};
+            if(g.blas&&g.shared.generation!=g.current.generation) {
+                // The Renderer uploaded this Mesh again: move the views to the live copy. A re-upload
+                // changes the Renderer's material keys, so it always reaches this non-steady pass.
+                g.shared=g.current;g.vertices=view(g.shared.vertices);g.indices=view(g.shared.indices);
+                require(gfxGeometryTrianglesUpdate(gfx,g.geometry,g.indices,g.vertices,sizeof(geometry::Vertex)),"Move RT geometry to the current upload");
+                retire(g.faces);g.faces=view(g.shared.faces);views_changed=true;
+            }
             if(!g.blas) {
-                g.volumes=triangle_volumes(*g.source);const auto vertices=g.source->vertices();
-                for(std::size_t i=0;i<g.volumes.size();++i)if(g.volumes[i].closed)
-                    g.component_slots[g.volumes[i].closed].push_back(g.source->material_slot(i));
-                for(auto& [component,slots]:g.component_slots) {
-                    (void)component;std::sort(slots.begin(),slots.end());slots.erase(std::unique(slots.begin(),slots.end()),slots.end());
-                }
-                g.positions=gfxCreateBuffer<geometry::Vertex>(gfx,static_cast<std::uint32_t>(vertices.size()),vertices.data());allocation(bool(g.positions));
-                auto range=gfxCreateBufferRange(gfx,g.positions,0,g.positions.getSize());allocation(bool(range));
-                g.geometry=gfxCreateGeometryTriangles(gfx,range,sizeof(geometry::Vertex));allocation(bool(g.geometry));
+                const auto words=closure_words(*g.source);
+                g.closure=gfxCreateBuffer<std::uint32_t>(gfx,static_cast<std::uint32_t>(words.size()),words.data());allocation(bool(g.closure));
+                g.shared=g.current;g.vertices=view(g.shared.vertices);g.indices=view(g.shared.indices);g.faces=view(g.shared.faces);
+                g.geometry=gfxCreateGeometryTriangles(gfx,g.indices,g.vertices,sizeof(geometry::Vertex));allocation(bool(g.geometry));
                 g.opaque=g.next_opaque;
                 require(gfxGeometrySetOpaque(gfx,g.geometry,g.opaque),"Set RT material coverage");
                 g.blas=gfxCreateBottomLevelAccelerationStructure(gfx);allocation(bool(g.blas));
@@ -926,7 +953,7 @@ struct SceneLit::State {
             object.emitting=emitting;
             // Keep geometric motion, but edited material/radiance has no valid
             // previous shading observation, including when seen through SSR.
-            instance.geometry={g.offset,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
+            instance.geometry={g.slot,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
             if(instances[index]!=instance){instances[index]=instance;dirty(index);}
             if(inserted){object.instance=gfxCreateTopLevelAccelerationStructureInstance(gfx);allocation(bool(object.instance));
                 require(gfxTopLevelAccelerationStructureAddInstance(gfx,tlas,object.instance),"Attach RT scene instance");topology_changed=true;}
@@ -951,35 +978,19 @@ struct SceneLit::State {
         if(!steady)for(auto it=geometries.begin();it!=geometries.end();) {
             if(it->second.used){++it;continue;}auto& g=it->second;
             require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire unused static BLAS");
-            require(gfxDestroyGeometry(gfx,g.geometry),"Retire unused RT geometry");retire(g.positions);it=geometries.erase(it);geometry_changed=true;
+            require(gfxDestroyGeometry(gfx,g.geometry),"Retire unused RT geometry");retire(g.faces);retire(g.closure);
+            it=geometries.erase(it);geometry_changed=true;
         }
-        if(geometry_changed) {
-            packed_triangles.clear();packed_closed_slots.clear();
+        if(geometry_changed||views_changed) {
+            for(auto* views:{&rt_vertices,&rt_indices,&rt_faces,&rt_closure})views->clear();
             for(auto& [key,g]:geometries) {
-                (void)key;g.offset=static_cast<std::uint32_t>(packed_triangles.size());
-                std::map<std::uint32_t,std::array<std::uint32_t,2>> ranges;
-                for(const auto& [component,slots]:g.component_slots) {
-                    // A single-slot component needs only the hit material's
-                    // coverage flag. Multi-slot shells inspect their other slots.
-                    if(slots.size()>1) {
-                        ranges[component]={static_cast<std::uint32_t>(packed_closed_slots.size()),static_cast<std::uint32_t>(slots.size())};
-                        packed_closed_slots.insert(packed_closed_slots.end(),slots.begin(),slots.end());
-                    }
-                }
-                const auto vertices=g.source->vertices();
-                for(std::size_t i=0;i<g.volumes.size();++i) {
-                    const auto at=ranges.find(g.volumes[i].closed);
-                    const auto range=at==ranges.end()?std::array<std::uint32_t,2>{}:at->second;
-                    packed_triangles.push_back({{vertices[i*3],vertices[i*3+1],vertices[i*3+2]},g.volumes[i],g.source->material_slot(i),range[0],range[1],0});
-                }
+                (void)key;g.slot=static_cast<std::uint32_t>(rt_vertices.size());
+                rt_vertices.push_back(g.vertices);rt_indices.push_back(g.indices);rt_faces.push_back(g.faces);rt_closure.push_back(g.closure);
             }
-            retire(rt_closed_slots);
-            rt_closed_slots=gfxCreateBuffer<std::uint32_t>(gfx,std::max(1u,static_cast<std::uint32_t>(packed_closed_slots.size())),packed_closed_slots.empty()?nullptr:packed_closed_slots.data());allocation(bool(rt_closed_slots));
-            retire(rt_triangles);rt_triangles=gfxCreateBuffer<GpuRayTriangle>(gfx,static_cast<std::uint32_t>(packed_triangles.size()),packed_triangles.data());allocation(bool(rt_triangles));
         }
         if(!steady)for(std::size_t i=0;i<count;i++) {
-            const auto offset=resolved[i].geometry->offset;
-            if(instances[i].geometry[0]!=offset){instances[i].geometry[0]=offset;dirty(i);}
+            const auto slot=resolved[i].geometry->slot;
+            if(instances[i].geometry[0]!=slot){instances[i].geometry[0]=slot;dirty(i);}
         }
         // Membership/order changes do not change the world-space probe domain.
         // New/replaced objects already have no surface correspondence above;
@@ -1067,7 +1078,7 @@ struct SceneLit::State {
         scene_identity=frame.scene_identity;enabled=true;
         const bool sky_changed=prepare_sky(settings);
         probes(settings,frame.lighting_focus,stats);
-        const bool transform_changed=acceleration(frame);lighting(frame);
+        const bool transform_changed=acceleration(frame,scene_draws);lighting(frame);
         const bool visibility_changed=transform_changed||coverage_changed;
         // Uniform consumers (DDGI-off composition, SSSR fallback) read the map's mean.
         const auto mean=sky_source?sky_source->mean():std::array<float,3>{1,1,1};
@@ -1418,13 +1429,13 @@ struct SceneLit::State {
         for(auto& [key,o]:objects){(void)key;if(tlas)require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,o.instance),"Detach Scene Lit instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,o.instance),"Retire Scene Lit instance");}objects.clear();
         if(tlas)require(gfxDestroyTopLevelAccelerationStructure(gfx,std::exchange(tlas,{})),"Retire Scene Lit TLAS");
-        for(auto& [key,g]:geometries){(void)key;require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire Scene Lit BLAS");require(gfxDestroyGeometry(gfx,g.geometry),"Retire Scene Lit geometry");retire(g.positions);}geometries.clear();
-        for(auto* b:{&rt_triangles,&rt_closed_slots,&probe_ray_hits})retire(*b);
+        for(auto& [key,g]:geometries){(void)key;require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire Scene Lit BLAS");require(gfxDestroyGeometry(gfx,g.geometry),"Retire Scene Lit geometry");retire(g.faces);retire(g.closure);}geometries.clear();
+        for(auto* views:{&rt_vertices,&rt_indices,&rt_faces,&rt_closure})std::vector<GfxBuffer>{}.swap(*views);
+        retire(probe_ray_hits);
         require(instance_table.retire(gfx),"Retire Scene Lit instance table");
         light_tables.each([&](auto& table){require(table.retire(gfx),"Retire Scene Lit light tables");});
         for(auto* b:{&gpu_instances,&gpu_light_cells,&gpu_spatial_proposals,&gpu_spatial_source_slots,&gpu_sources,&gpu_proposals})*b={};
         std::vector<GpuInstance>{}.swap(instances);light_frame.clear();
-        std::vector<GpuRayTriangle>{}.swap(packed_triangles);std::vector<std::uint32_t>{}.swap(packed_closed_slots);
         tlas_built=false;
     }
     void close() {

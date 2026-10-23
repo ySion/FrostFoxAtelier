@@ -32,7 +32,7 @@ struct LitInstance {
     row_major float4x4 world;
     row_major float4x4 previous_world;
     float4 normal_x, normal_y, normal_z;
-    uint4 geometry; // RT face offset, stable key low, history valid, stable key high; zero key has no correspondence.
+    uint4 geometry; // RT geometry slot, stable key low, history valid, stable key high; zero key has no correspondence.
 };
 // Shares the uploaded geometry::Vertex layout with the studio raster path.
 // UV and slot lookup are identical in primary and secondary surface evaluation.
@@ -40,10 +40,22 @@ struct LitVertex { float3 position; float3 normal; float2 uv; float4 tangent; };
 // Shared per-triangle record: oriented geometric normal; material slot in bits 0-28, polygon edge mask in bits 29-31.
 struct LitFace { float3 normal; uint slot_edges; };
 uint lit_face_slot(LitFace face) { return face.slot_edges&0x1fffffffu; }
-struct LitRayTriangle { LitVertex vertices[3]; float3 geometric_normal; uint closed; uint material_slot; uint closure_first,closure_count,reserved; };
 StructuredBuffer<LitInstance> lit_instances;
-StructuredBuffer<LitRayTriangle> lit_rt_triangles;
-StructuredBuffer<uint> lit_closed_slots;
+// Ray hits read the same indexed mesh, one array element per RT geometry slot.
+StructuredBuffer<LitVertex> lit_geometry_vertices[] : register(t0, space2);
+StructuredBuffer<uint> lit_geometry_indices[] : register(t0, space3);
+StructuredBuffer<LitFace> lit_geometry_faces[] : register(t0, space4);
+// Per triangle: 0 on an open surface, else the offset of its closed component's
+// [count, material slots...] list later in the same buffer.
+StructuredBuffer<uint> lit_geometry_closure[] : register(t0, space5);
+struct LitRayTriangle { LitVertex vertices[3]; LitFace face; uint geometry, primitive; };
+LitRayTriangle lit_ray_triangle(uint instance_id,uint primitive) {
+    LitRayTriangle t; t.geometry=lit_instances[instance_id].geometry.x; t.primitive=primitive;
+    [unroll] for(uint i=0;i<3;++i)
+        t.vertices[i]=lit_geometry_vertices[NonUniformResourceIndex(t.geometry)][lit_geometry_indices[NonUniformResourceIndex(t.geometry)][primitive*3+i]];
+    t.face=lit_geometry_faces[NonUniformResourceIndex(t.geometry)][primitive];
+    return t;
+}
 RaytracingAccelerationStructure lit_scene;
 RWStructuredBuffer<uint> lit_ray_counters; // Four low words followed by their four high words.
 Texture2D<float> lit_depth;
@@ -185,10 +197,10 @@ float2 lit_triangle_uv(LitRayTriangle face,float2 bary) {
     return face.vertices[0].uv*(1-bary.x-bary.y)+face.vertices[1].uv*bary.x+face.vertices[2].uv*bary.y;
 }
 MaterialSurface lit_ray_material(uint instance_id,LitRayTriangle face) {
-    return material_surfaces[material_indices[material_offsets[instance_id]+face.material_slot]];
+    return material_surfaces[material_indices[material_offsets[instance_id]+lit_face_slot(face.face)]];
 }
 bool lit_accept_candidate(uint instance_id,uint primitive,float2 bary) {
-    LitRayTriangle face=lit_rt_triangles[lit_instances[instance_id].geometry.x+primitive];
+    LitRayTriangle face=lit_ray_triangle(instance_id,primitive);
     return material_covered(lit_ray_material(instance_id,face),lit_triangle_uv(face,bary),0,0,0,false);
 }
 bool lit_visible(float3 p,float3 n,float3 l,float distance) {
@@ -221,19 +233,23 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
 struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed,double_sided,emission_two_sided; };
 LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float footprint) {
     LitInstance instance=lit_instances[instance_id];
-    LitRayTriangle face=lit_rt_triangles[instance.geometry.x+primitive];
+    LitRayTriangle face=lit_ray_triangle(instance_id,primitive);
     LitVertex a=face.vertices[0],b=face.vertices[1],c=face.vertices[2];
     float3 n=a.normal*(1-bary.x-bary.y)+b.normal*bary.x+c.normal*bary.y;
     LitSurface s; s.position=position;
     s.normal=lit_safe_normal(n.x*instance.normal_x.xyz+n.y*instance.normal_y.xyz+n.z*instance.normal_z.xyz);
-    float3 gn=face.geometric_normal;
+    float3 gn=face.face.normal;
     s.geometric_normal=lit_safe_normal(gn.x*instance.normal_x.xyz+gn.y*instance.normal_y.xyz+gn.z*instance.normal_z.xyz);
     MaterialSurface surface=lit_ray_material(instance_id,face);
-    s.closed=face.closed!=0&&surface.flags.x==0;
-    if(s.closed) [loop] for(uint i=0;i<face.closure_count;++i) {
-        uint slot=lit_closed_slots[face.closure_first+i];
-        if(slot==face.material_slot)continue;
-        if(material_surfaces[material_indices[material_offsets[instance_id]+slot]].flags.x!=0) {s.closed=false;break;}
+    uint closure=lit_geometry_closure[NonUniformResourceIndex(face.geometry)][primitive];
+    s.closed=closure!=0&&surface.flags.x==0;
+    if(s.closed) {
+        uint count=lit_geometry_closure[NonUniformResourceIndex(face.geometry)][closure];
+        [loop] for(uint i=1;i<=count;++i) {
+            uint slot=lit_geometry_closure[NonUniformResourceIndex(face.geometry)][closure+i];
+            if(slot==lit_face_slot(face.face))continue;
+            if(material_surfaces[material_indices[material_offsets[instance_id]+slot]].flags.x!=0) {s.closed=false;break;}
+        }
     }
     float3 edge1=mul(float4(b.position-a.position,0),instance.world).xyz;
     float3 edge2=mul(float4(c.position-a.position,0),instance.world).xyz;

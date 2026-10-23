@@ -414,6 +414,7 @@ struct Renderer::State {
     material::ImageRef white_image;
     // group is this frame's MeshGroup only while that group points back at the entry.
     struct CachedGeometry { geometry::MeshRef source; detail::SceneGeometry gpu; bool used{}; std::uint32_t group{}; };
+    std::uint64_t geometry_uploads{};
     // One per geometry in first-appearance order over the complete snapshot, so
     // visibility and selection never reorder draws. Ranges index draw_instances.
     struct MeshGroup { CachedGeometry* geometry; std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{}; };
@@ -946,6 +947,7 @@ struct Renderer::State {
                         gpu.faces = gfxCreateBuffer<detail::GpuFace>(gfx, static_cast<std::uint32_t>(welded.faces.size()), welded.faces.data());
                         allocation(bool(gpu.faces));
                         gpu.triangle_count = static_cast<std::uint32_t>(welded.faces.size());
+                        gpu.generation = ++geometry_uploads;
                     }
                     geometry.used = true;
                 }

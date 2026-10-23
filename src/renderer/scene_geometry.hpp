@@ -23,6 +23,7 @@ struct SceneGeometry {
     GfxBuffer indices;  // uint32, three per triangle.
     GfxBuffer faces;    // GpuFace per triangle.
     std::uint32_t triangle_count{};
+    std::uint64_t generation{}; // Distinct per upload; Scene Lit compares it to rebind its range views.
 };
 
 struct WeldedMesh {
