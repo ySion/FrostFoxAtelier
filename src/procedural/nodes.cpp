@@ -28,7 +28,7 @@ void Grid::evaluate(Geometry& output) const { output = take(grid(size, rows, col
 void Line::evaluate(Geometry& output) const { output = take(line(start, end, count)); }
 
 void Scatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const {
-    points = take(scatter(surface, {.density = density, .seed = hash(context.seed, seed), .min_distance = min_distance}));
+    points = take(scatter(surface, {.density = density, .seed = hash(context.seed(), seed), .min_distance = min_distance}));
 }
 
 void Transform::evaluate(const Geometry& input, Geometry& output) const {

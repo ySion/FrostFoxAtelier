@@ -1,4 +1,5 @@
 #include "procedural/evaluator.hpp"
+#include "source/program.hpp"
 
 #include <list>
 #include <string>
@@ -13,6 +14,40 @@ std::unexpected<Error> error(ErrorCode code, std::string message) { return std::
 template<class T> void append(std::string& key, const T& value) {
     key.append(reinterpret_cast<const char*>(&value), sizeof value);
 }
+
+// A PointNode type's Source evaluate, bound for one program revision.
+struct Code {
+    enum class Use : std::uint8_t { context, read, write };
+    struct Parameter {
+        Use use;
+        String name;              // The point column, unless the context.
+        std::size_t column{};     // ColumnData alternative.
+    };
+    source::Program::Entry entry;
+    std::uint64_t identity{};     // Changes whenever the compiled code may behave differently.
+    bool context{};
+    std::vector<Parameter> parameters;
+};
+
+template<std::size_t I> using ColumnArray = typename std::variant_alternative_t<I, ColumnData>::element_type;
+
+template<std::size_t I> Result<Argument> borrow_column(Geometry& geometry, const Code::Parameter& parameter) {
+    using T = typename ColumnArray<I>::Value;
+    if (parameter.use == Code::Use::write) {
+        auto column = geometry.add<T>(parameter.name, Layer::point);
+        if (!column) return std::unexpected(column.error());
+        return Argument::borrow(**column);
+    }
+    auto column = geometry.read<T>(parameter.name, Layer::point);
+    if (!column) return std::unexpected(column.error());
+    if (!*column) return failure("The input has no point attribute " + std::string{parameter.name.view().std_view()} + ".");
+    return Argument::borrow(**column);
+}
+using BorrowColumn = Result<Argument> (*)(Geometry&, const Code::Parameter&);
+template<std::size_t... I> constexpr std::array<BorrowColumn, sizeof...(I)> column_borrowers(std::index_sequence<I...>) {
+    return {&borrow_column<I>...};
+}
+constexpr auto borrowers = column_borrowers(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
 
 // One evaluation of one node. Keys are exact byte strings, so equal keys mean equal contents.
 struct Entry {
@@ -30,6 +65,7 @@ struct Entry {
 
 struct Evaluator::Impl {
     struct State {
+        TypeId type;
         const Ports* ports{};
         std::string local;                // Type and public field contents.
         std::vector<Input> inputs;
@@ -44,23 +80,38 @@ struct Evaluator::Impl {
     Runtime& runtime;
     ObjectRoot graph;
     const Resources& resources;
+    const source::Program* program;
     std::size_t budget;
     const Geometry empty;
     std::optional<std::uint64_t> cursor;
     std::uint64_t revision{};
+    std::uint64_t code_revision{};        // Of the program, when `sources` was bound.
     std::uint32_t seed{};
     ObjectId display;
     std::vector<ObjectId> members;
     std::unordered_map<ObjectId, State> nodes;
     std::unordered_map<TypeId, Result<Ports>> types;
+    std::unordered_map<TypeId, Result<Code>> sources; // PointNode types.
+    std::array<TypeId, std::variant_size_v<ColumnData>> columns{}; // Array type per column alternative; null for String.
     std::unordered_map<std::string, std::shared_ptr<Entry>> cache;
     std::list<Entry*> recent;             // Most recently used first.
     std::size_t cached_bytes{};
     std::uint64_t serials{};
     std::shared_ptr<Entry> published;
 
-    Impl(Runtime& owner, ObjectRoot root, const Resources& source, std::size_t bytes)
-        : runtime(owner), graph(std::move(root)), resources(source), budget(bytes) {}
+    Impl(Runtime& owner, ObjectRoot root, const Resources& host, const source::Program* code, std::size_t bytes)
+        : runtime(owner), graph(std::move(root)), resources(host), program(code), budget(bytes),
+          code_revision(code ? code->revision() : 0) {
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+            ((columns[I] = [&]() -> TypeId {
+                if constexpr (std::same_as<typename ColumnArray<I>::Value, String>) return {};
+                else {
+                    auto type = runtime.native_type<ColumnArray<I>>();
+                    return type ? *type : TypeId{};
+                }
+            }()), ...);
+        }(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
+    }
 
     Result<void> append_value(std::string& key, const TypeInfo& info, const void* data) const {
         if (info.kind == TypeKind::scalar || info.kind == TypeKind::enumeration || info.plain_value) {
@@ -123,6 +174,7 @@ struct Evaluator::Impl {
             if (auto added = append_field(local, id, field); !added) return added;
         auto into = inputs(runtime, id);
         if (!into) return std::unexpected(into.error());
+        state.type = *type;
         state.ports = &*known->second;
         state.local = std::move(local);
         state.inputs = std::move(*into);
@@ -159,14 +211,79 @@ struct Evaluator::Impl {
         while (cached_bytes > budget) uncache(*recent.back());
     }
 
-    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, std::string key) {
-        auto entry = std::make_shared<Entry>();
-        entry->key = std::move(key);
-        entry->outputs.resize(state.ports->outputs.size());
+    // Resolves `<type name>.evaluate` in the program and maps its parameters to the context and
+    // point columns by name.
+    Result<Code> bind(TypeId type) const {
+        auto info = runtime.describe(type);
+        if (!info) return std::unexpected(info.error());
+        const auto& name = (*info)->name;
+        if (!program) return error(ErrorCode::unsupported_operation, "Source node " + name + " needs a program.");
+        const auto entries = program->entries();
+        const auto found = std::ranges::find(entries, name + ".evaluate", &source::EntryInfo::name);
+        if (found == entries.end()) return error(ErrorCode::invalid_definition, "Source node " + name + " has no evaluate method.");
+        const auto& signature = found->signature;
+        if (signature.result || signature.execution != FunctionExecution::synchronous)
+            return error(ErrorCode::invalid_definition, name + ".evaluate must be synchronous without a result.");
+        // Borrowing makes evaluate a value region, where the compiler rejects writes to self.
+        if (signature.parameters.empty())
+            return error(ErrorCode::invalid_definition, name + ".evaluate must borrow the context or a point column.");
+        auto context = runtime.native_type<Context>();
+        if (!context) return std::unexpected(context.error());
+        Code code;
+        code.identity = found->code;
+        for (std::size_t i = 0; i < signature.parameters.size(); ++i) {
+            const auto& parameter = signature.parameters[i];
+            const auto& parameter_name = found->parameter_names[i];
+            if (parameter.form == ValueForm::inline_value && parameter.passing != ParameterPassing::value) {
+                const bool read = parameter.passing == ParameterPassing::read_only;
+                if (parameter.type == *context && read && !code.context) {
+                    code.context = true;
+                    code.parameters.push_back({Code::Use::context, {}, 0});
+                    continue;
+                }
+                if (const auto column = std::ranges::find(columns, parameter.type); column != columns.end()) {
+                    code.parameters.push_back({read ? Code::Use::read : Code::Use::write, String{StringView{parameter_name}},
+                        static_cast<std::size_t>(column - columns.begin())});
+                    continue;
+                }
+            }
+            return error(ErrorCode::invalid_definition, name + ".evaluate parameter " + parameter_name +
+                " is not a const procedural.Context& or a borrowed point column.");
+        }
+        auto entry = program->entry(found->name);
+        if (!entry) return std::unexpected(entry.error());
+        code.entry = std::move(*entry);
+        return code;
+    }
+
+    // The input geometry with its point columns rewritten by the Source evaluate.
+    Result<void> run_source(ObjectId id, const State& state, const Code& code, Geometry& output) const {
+        output = empty;
+        for (const auto& connection : state.inputs) output = nodes.at(connection.from).entry->outputs[connection.output];
         Context context;
-        context.seed = seed;
+        context.seed_ = seed;
+        std::vector<Argument> arguments;
+        arguments.reserve(code.parameters.size());
+        for (const auto& parameter : code.parameters) {
+            if (parameter.use == Code::Use::context) {
+                arguments.push_back(Argument::borrow(std::as_const(context)));
+                continue;
+            }
+            auto borrowed = borrowers[parameter.column](output, parameter);
+            if (!borrowed) return std::unexpected(borrowed.error());
+            arguments.push_back(std::move(*borrowed));
+        }
+        auto called = code.entry.invoke(id, arguments);
+        if (!called) return std::unexpected(called.error());
+        return {};
+    }
+
+    // Calls the native evaluate with its ports in parameter order.
+    Result<void> run_native(ObjectId id, const State& state, Entry& entry) {
+        Context context;
+        context.seed_ = seed;
         context.resources_ = &resources;
-        context.dependencies_ = &entry->dependencies;
+        context.dependencies_ = &entry.dependencies;
         std::vector<Geometries> lists;
         lists.reserve(state.ports->multiple.size()); // Borrowed below; must not move.
         std::vector<Argument> arguments;
@@ -194,14 +311,21 @@ struct Evaluator::Impl {
                 ++input;
                 break;
             }
-            case Slot::output: arguments.push_back(Argument::borrow(entry->outputs[output++])); break;
+            case Slot::output: arguments.push_back(Argument::borrow(entry.outputs[output++])); break;
             }
         }
+        return runtime.call(id, state.ports->evaluate, arguments);
+    }
+
+    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const Code* code, std::string key) {
+        auto entry = std::make_shared<Entry>();
+        entry->key = std::move(key);
+        entry->outputs.resize(state.ports->outputs.size());
         ++state.status.evaluations;
         const auto start = std::chrono::steady_clock::now();
-        auto called = runtime.call(id, state.ports->evaluate, arguments);
+        auto ran = code ? run_source(id, state, *code, entry->outputs.front()) : run_native(id, state, *entry);
         state.status.time = std::chrono::steady_clock::now() - start;
-        if (!called) return std::unexpected(called.error());
+        if (!ran) return std::unexpected(ran.error());
         entry->serial = ++serials;
         entry->revision = revision;
         // The cache map holds a second copy of the key.
@@ -217,7 +341,18 @@ struct Evaluator::Impl {
             return;
         }
         std::string key = state.local;
-        if (std::ranges::find(state.ports->parameters, Slot::context) != state.ports->parameters.end()) append(key, seed);
+        const Code* code{};
+        if (state.ports->evaluate == MethodId{}) {
+            auto bound = sources.find(state.type);
+            if (bound == sources.end()) bound = sources.emplace(state.type, bind(state.type)).first;
+            if (!bound->second) {
+                state.status.error = bound->second.error();
+                return;
+            }
+            code = &*bound->second;
+            append(key, code->identity);
+            if (code->context) append(key, seed);
+        } else if (std::ranges::find(state.ports->parameters, Slot::context) != state.ports->parameters.end()) append(key, seed);
         for (const auto& connection : state.inputs) {
             const auto& upstream = nodes.at(connection.from);
             if (upstream.status.error || !upstream.entry) {
@@ -244,7 +379,7 @@ struct Evaluator::Impl {
             state.status.error.reset();
             return;
         }
-        auto evaluated = run(id, state, key);
+        auto evaluated = run(id, state, code, key);
         if (!evaluated) {
             state.entry.reset();
             state.failed = std::move(key);
@@ -289,6 +424,12 @@ struct Evaluator::Impl {
         if (!now) return std::unexpected(now.error());
         const auto id = graph.id();
         bool dirty = !cursor || resources.revision() != revision;
+        // A publication may change any Source node's code; rebinding finds which did.
+        if (program && program->revision() != code_revision) {
+            code_revision = program->revision();
+            sources.clear();
+            dirty = true;
+        }
         if (!cursor || runtime.changed_since(id, *cursor)) {
             auto listed = contents(runtime, id);
             if (!listed) return std::unexpected(listed.error());
@@ -327,8 +468,9 @@ struct Evaluator::Impl {
     }
 };
 
-Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, std::size_t cache_bytes)
-    : impl_(std::make_unique<Impl>(runtime, std::move(graph), resources, cache_bytes)) {}
+Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program,
+    std::size_t cache_bytes)
+    : impl_(std::make_unique<Impl>(runtime, std::move(graph), resources, program, cache_bytes)) {}
 Evaluator::~Evaluator() = default;
 
 Result<void> Evaluator::evaluate() { return impl_->evaluate(); }

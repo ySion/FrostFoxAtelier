@@ -5,14 +5,17 @@
 #include "procedural/operations.hpp"
 #include "procedural/random.hpp"
 #include "runtime/native.hpp"
+#include "source/program.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <numbers>
@@ -745,13 +748,279 @@ void graph_evaluation() {
     require(evaluator.output() && evaluator.output()->count(Layer::point) == 0, "An unconnected input was not empty geometry.");
 
     // A zero budget caches nothing, so undoing a write evaluates again.
-    Evaluator uncached{runtime, graph_root, resources, 0};
+    Evaluator uncached{runtime, graph_root, resources, nullptr, 0};
     take(uncached.evaluate());
     write_vector(moved, translate, {5, 0, 0});
     take(uncached.evaluate());
     write_vector(moved, translate, {1, 0, 0});
     take(uncached.evaluate());
     expect(uncached, {{moved, {3, 0}}}, "A zero cache budget kept results.");
+}
+
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream file{path, std::ios::binary};
+    require(static_cast<bool>(file), "A procedural Source file cannot be read.");
+    return {std::istreambuf_iterator<char>{file}, {}};
+}
+std::string replaced(std::string text, std::string_view from, std::string_view to) {
+    const auto at = text.find(from);
+    require(at != std::string::npos, "A fixture edit did not find its text.");
+    return text.replace(at, from.size(), to);
+}
+
+// A project snapshot whose files keep their own versions.
+struct Project {
+    std::map<std::string, std::pair<std::uint64_t, std::string>> files;
+    std::uint64_t version{};
+    void set(const std::string& path, std::string text) {
+        auto& file = files[path];
+        file = {file.first + 1, std::move(text)};
+    }
+    void publish(source::Program& program) {
+        source::SourceSnapshot snapshot{"procedural", ++version, {}};
+        for (const auto& [path, file] : files) snapshot.files.push_back({path, file.first, file.second});
+        auto candidate = take(source::Program::prepare(take(program.request(std::move(snapshot)))));
+        take(program.try_publish(candidate));
+    }
+};
+
+// Beside the engine's Source nodes: Lift takes no context and has a Source setter, Shift reads
+// only the context; the others cannot bind, and Counter would write self if it could.
+constexpr std::string_view fixture_source = R"(
+class fixture.Lift : procedural.PointNode {
+    float height = 1.0f;
+    void set_height(float value) { self.height = value; }
+    void evaluate(Array<vector3>& P) {
+        const float lift = self.height;
+        for (uint i = 0; i < P.size(); i = i + 1) { P[i] = P[i] + vector3(0.0f, lift, 0.0f); }
+    }
+}
+class fixture.Shift : procedural.PointNode {
+    void evaluate(const procedural.Context& context, Array<vector3>& P) {
+        const float shift = float(context.seed);
+        for (uint i = 0; i < P.size(); i = i + 1) { P[i] = P[i] + vector3(shift, 0.0f, 0.0f); }
+    }
+}
+class fixture.Counter : procedural.PointNode {
+    uint count = 0;
+    void evaluate() { self.count = self.count + 1; }
+}
+class fixture.ByValue : procedural.PointNode {
+    void evaluate(float x) { }
+}
+class fixture.WrongColumn : procedural.PointNode {
+    void evaluate(Array<float>& P) { }
+}
+class fixture.Unbound : procedural.PointNode {
+    float value = 0.0f;
+}
+)";
+
+Vector3 random_vector(std::uint32_t x) {
+    const auto a = hash(x), b = hash(a), c = hash(b);
+    return Vector3{unit(a), unit(b), unit(c)} * 2.f - Vector3{1, 1, 1};
+}
+
+// Positions and pscale agree within float rounding, so a differently contracted product passes
+// and a wrong hash, seed or parameter does not.
+bool same_points(const Geometry* actual, const Geometry& expected) {
+    require(actual != nullptr, "The graph has no output.");
+    const auto count = expected.count(Layer::point);
+    if (actual->count(Layer::point) != count) return false;
+    const auto& scales = column<float>(*actual, "pscale", Layer::point);
+    const auto& wanted = column<float>(expected, "pscale", Layer::point);
+    for (std::uint32_t i = 0; i < count; ++i)
+        if (!near(actual->positions()[i], expected.positions()[i], 1e-6f) || !near(scales[i], wanted[i], 1e-6f)) return false;
+    return true;
+}
+
+// Source PointNode types from the engine's files and a fixture snapshot: results match the C++
+// formulas, a parameter written by Runtime::write or by Source reruns only that node and its
+// downstream nodes, a compatible publication reruns only nodes of the types whose code changed,
+// and unbindable types fail without blocking anything else.
+void source_nodes() {
+    Runtime runtime;
+    take(register_types(runtime));
+    const std::filesystem::path directory{ATELIER_PROCEDURAL_SOURCE};
+    const auto jitter_text = read_text(directory / "jitter.source"), random_text = read_text(directory / "random.source"),
+        scale_text = read_text(directory / "random_scale.source");
+    Project project;
+    project.set("procedural/random.source", random_text);
+    project.set("procedural/jitter.source", jitter_text);
+    project.set("procedural/random_scale.source", scale_text);
+    project.set("fixture.source", std::string{fixture_source});
+    source::Program program{runtime};
+    project.publish(program);
+    const auto source_type = [&](std::string_view name) {
+        const auto classes = program.classes();
+        const auto found = std::ranges::find(classes, name, &source::ClassInfo::name);
+        require(found != classes.end(), "A Source node class was not published.");
+        return found->type;
+    };
+    const auto jitter_type = source_type("procedural.Jitter"), scale_type = source_type("procedural.RandomScale"),
+        lift_type = source_type("fixture.Lift"), shift_type = source_type("fixture.Shift");
+    const auto point_ports = take(ports(runtime, jitter_type));
+    require(point_ports.evaluate == MethodId{} && point_ports.parameters.empty() && point_ports.inputs == std::vector<std::string>{"input"} &&
+        point_ports.multiple == std::vector<bool>{false} && point_ports.outputs == std::vector<std::string>{"output"},
+        "A PointNode type did not get the fixed ports.");
+    reject(ports(runtime, type<PointNode>(runtime)), "The PointNode base was accepted as a node.");
+    // Source draws exactly the C++ values: the same integer hashes, and units below 1 even for
+    // the largest top 24 bits.
+    const auto source_hash = take(program.entry("hash")), source_hash2 = take(program.entry("hash2")),
+        source_unit = take(program.entry("unit"));
+    const auto call = [](const source::Program::Entry& entry, auto... values) {
+        return *take(entry.invoke({}, std::array{Scalar{values}...}));
+    };
+    for (const std::uint32_t x : {0u, 1u, 0x9e3779b9u, 0xffffffffu})
+        require(std::get<std::uint32_t>(call(source_hash, x)) == hash(x) && std::get<std::uint32_t>(call(source_hash2, x, 7u)) == hash(x, 7u),
+            "The Source hash differs from random.hpp.");
+    for (const std::uint32_t x : {0u, 0x100u, 0x80000000u})
+        require(std::get<float>(call(source_unit, x)) == static_cast<float>(x >> 8) * 0x1p-24f, "The Source unit differs from random.hpp.");
+    require(std::get<float>(call(source_unit, 0xffffffffu)) == 0x1.fffffep-1f, "The Source unit reached 1.");
+
+    Meshes resources;
+    resources.meshes["fixture/a"] = geometry::cube_mesh();
+    const auto graph_root = take(runtime.create(type<Graph>(runtime)));
+    const auto graph = graph_root.id();
+    std::vector<ObjectRoot> roots;
+    const auto add = [&](ObjectId owner, TypeId node_type) { return roots.emplace_back(take(add_node(runtime, owner, node_type))).id(); };
+    const auto imported = add(graph, type<MeshImport>(runtime)), scattered = add(graph, type<Scatter>(runtime)),
+        grid_node = add(graph, type<Grid>(runtime)), jittered = add(graph, jitter_type), twin = add(graph, jitter_type),
+        scaled = add(graph, scale_type), lifted = add(graph, lift_type), shifted = add(graph, shift_type), merged = add(graph, type<Merge>(runtime));
+    take(runtime.with_native<MeshImport>(imported, [](MeshImport& node) -> Result<void> { node.mesh = String{"fixture/a"}; return {}; }));
+    take(runtime.write(scattered, field(runtime, type<Scatter>(runtime), "density"), Scalar{4.f}));
+    take(runtime.write(scattered, field(runtime, type<Scatter>(runtime), "seed"), Scalar{std::uint32_t{3}}));
+    const auto amount = field(runtime, jitter_type, "amount");
+    take(runtime.write(jittered, amount, Scalar{0.25f}));
+    take(runtime.write(twin, amount, Scalar{0.5f}));
+    take(connect(runtime, graph, imported, 0, scattered, 0));
+    for (const auto node : {jittered, twin, scaled}) take(connect(runtime, graph, scattered, 0, node, 0));
+    for (const auto node : {lifted, shifted}) take(connect(runtime, graph, grid_node, 0, node, 0));
+    for (const auto node : {jittered, twin, scaled, lifted, shifted}) take(connect(runtime, graph, node, 0, merged, 0));
+    take(set_display(runtime, graph, merged));
+
+    // The same graph by direct calls and the documented hash; `factor` scales Jitter's offsets.
+    struct Settings { std::uint32_t seed{}; float amount{0.25f}, height{1.f}, factor{1.f}; };
+    const auto expected = [&](Settings settings) {
+        const auto points = take(scatter(import_mesh(*geometry::cube_mesh()), {.density = 4, .seed = hash(settings.seed, 3u)}));
+        const auto& ids = column<std::uint32_t>(points, "id", Layer::point);
+        const auto node_seed = hash(settings.seed, 0u);
+        const auto jitter = [&](float scale) {
+            auto moved = points;
+            auto& positions = *take(moved.write<Vector3>("P", Layer::point));
+            for (std::uint32_t i = 0; i < positions.size(); ++i)
+                positions[i] = positions[i] + random_vector(hash(node_seed, ids[i])) * scale * settings.factor;
+            return moved;
+        };
+        auto sized = points;
+        auto& scales = *take(sized.add<float>("pscale", Layer::point));
+        for (std::uint32_t i = 0; i < scales.size(); ++i) {
+            const float t = unit(hash(node_seed, ids[i]));
+            scales[i] = 0.5f * (1.f - t) + 1.5f * t;
+        }
+        auto raised = take(grid({10, 10}, 10, 10));
+        take(transform(raised, {0, settings.height, 0}, {}, {1, 1, 1}));
+        auto moved = take(grid({10, 10}, 10, 10));
+        take(transform(moved, {static_cast<float>(settings.seed), 0, 0}, {}, {1, 1, 1}));
+        const std::array parts{jitter(settings.amount), jitter(0.5f), sized, raised, moved};
+        return take(Geometry::merge(parts));
+    };
+
+    Evaluator evaluator{runtime, graph_root, resources, &program};
+    auto cursor = take(runtime.change_cursor());
+    take(evaluator.evaluate());
+    std::vector<ObjectId> written;
+    runtime.changed_objects(cursor, written);
+    require(written.empty(), "Evaluating Source nodes wrote the graph or its nodes.");
+    expect(evaluator, {{imported, {1, 0}}, {scattered, {1, 0}}, {grid_node, {1, 0}}, {jittered, {1, 0}}, {twin, {1, 0}},
+        {scaled, {1, 0}}, {lifted, {1, 0}}, {shifted, {1, 0}}, {merged, {1, 0}}}, "The first evaluation did not run each node once.");
+    // RandomScale reads the P that Jitter writes in a sibling; equal positions show Jitter wrote a copy.
+    require(same_points(evaluator.output(), expected({})), "Source nodes differ from the documented formulas.");
+
+    // A Runtime write, and a Source method writing self, rerun the node and its downstream nodes;
+    // undoing them finds the cache.
+    take(runtime.write(jittered, amount, Scalar{0.75f}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{scattered, {1, 0}}, {twin, {1, 0}}, {scaled, {1, 0}}, {lifted, {1, 0}}, {shifted, {1, 0}}, {jittered, {2, 0}}, {merged, {2, 0}}},
+        "A Runtime write on a Source node did not rerun exactly it and its downstream nodes.");
+    require(same_points(evaluator.output(), expected({.amount = 0.75f})), "The rewritten Jitter output is wrong.");
+    take(runtime.write(jittered, amount, Scalar{0.25f}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{jittered, {2, 1}}, {merged, {2, 1}}}, "Undoing a Source node parameter did not reuse the cache.");
+    const auto set_height = take(program.entry("fixture.Lift.set_height"));
+    cursor = take(runtime.change_cursor());
+    (void)take(set_height.invoke(lifted, std::array{Scalar{2.f}}));
+    require(runtime.changed_since(lifted, cursor), "A Source write did not stamp the node.");
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {jittered, {2, 1}}, {shifted, {1, 0}}, {lifted, {2, 0}}, {merged, {3, 1}}},
+        "A Source write did not rerun exactly the node and its downstream nodes.");
+    require(same_points(evaluator.output(), expected({.height = 2.f})), "The Source-written Lift output is wrong.");
+    (void)take(set_height.invoke(lifted, std::array{Scalar{1.f}}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{lifted, {2, 1}}, {merged, {3, 2}}}, "Undoing a Source write did not reuse the cache.");
+
+    // The graph seed reaches Source nodes through the context; Lift takes none. Shift's input does not
+    // depend on the seed, so only its own key can rerun it.
+    take(runtime.write(graph, field(runtime, type<Graph>(runtime), "seed"), Scalar{std::uint32_t{9}}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{grid_node, {1, 0}}, {lifted, {2, 1}}, {scattered, {2, 0}}, {jittered, {3, 1}}, {scaled, {2, 0}}, {shifted, {2, 0}}, {merged, {4, 2}}},
+        "The graph seed did not rerun exactly the nodes reading it.");
+    require(same_points(evaluator.output(), expected({.seed = 9})), "Source nodes did not read the graph seed.");
+
+    // Publications: Jitter's new body reruns both Jitter nodes only; unchanged code reruns nothing;
+    // RandomScale's whitespace edit reruns it only; a helper edit reruns every Source node.
+    project.set("procedural/jitter.source", replaced(jitter_text, "* scale;", "* scale * 2.0f;"));
+    project.publish(program);
+    take(evaluator.evaluate());
+    expect(evaluator, {{scattered, {2, 0}}, {scaled, {2, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {jittered, {4, 1}}, {twin, {3, 0}}, {merged, {5, 2}}},
+        "A Jitter publication did not rerun exactly the Jitter nodes and their downstream nodes.");
+    require(same_points(evaluator.output(), expected({.seed = 9, .factor = 2.f})), "The published Jitter body was not used.");
+    project.publish(program);
+    take(evaluator.evaluate());
+    expect(evaluator, {{jittered, {4, 1}}, {twin, {3, 0}}, {scaled, {2, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {merged, {5, 2}}},
+        "A publication without code changes reran a node.");
+    project.set("procedural/random_scale.source", replaced(scale_text, "const float low", "const  float low"));
+    project.publish(program);
+    take(evaluator.evaluate());
+    expect(evaluator, {{jittered, {4, 1}}, {twin, {3, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {scaled, {3, 0}}, {merged, {6, 2}}},
+        "A RandomScale publication did not rerun exactly RandomScale and its downstream nodes.");
+    project.set("procedural/random.source", replaced(random_text, "uint x = value;", "uint x = value + 0;"));
+    project.publish(program);
+    take(evaluator.evaluate());
+    expect(evaluator, {{scattered, {2, 0}}, {grid_node, {1, 0}}, {jittered, {5, 1}}, {twin, {4, 0}}, {scaled, {4, 0}}, {lifted, {3, 1}}, {shifted, {3, 0}}},
+        "A helper publication did not rerun every Source node.");
+    require(same_points(evaluator.output(), expected({.seed = 9, .factor = 2.f})), "An equivalent helper changed the output.");
+
+    // Types that cannot bind, or input without the columns a node reads, fail only themselves.
+    const auto faults_root = take(runtime.create(type<Graph>(runtime)));
+    const auto faults = faults_root.id();
+    const auto points = add(faults, type<Grid>(runtime)), unread = add(faults, jitter_type),
+        by_value = add(faults, source_type("fixture.ByValue")), retyped = add(faults, source_type("fixture.WrongColumn")),
+        unbound = add(faults, source_type("fixture.Unbound")), counter = add(faults, source_type("fixture.Counter")),
+        gathered = add(faults, type<Merge>(runtime));
+    for (const auto node : {unread, by_value, retyped, unbound, counter}) {
+        take(connect(runtime, faults, points, 0, node, 0));
+        take(connect(runtime, faults, node, 0, gathered, 0));
+    }
+    take(set_display(runtime, faults, gathered));
+    Evaluator checking{runtime, faults_root, resources, &program};
+    take(checking.evaluate());
+    const auto failure_of = [&](const Evaluator& owner, ObjectId node, ErrorCode code, std::string_view text) {
+        const auto& error = owner.status(node)->error;
+        return error && error->code == code && error->message.find(text) != std::string::npos;
+    };
+    require(failure_of(checking, unread, ErrorCode::argument_mismatch, "no point attribute id"), "A missing read column did not fail.");
+    require(failure_of(checking, by_value, ErrorCode::invalid_definition, "parameter x"), "A by-value parameter was bound.");
+    require(failure_of(checking, retyped, ErrorCode::argument_mismatch, "another layer or type"), "A column of another type was bound.");
+    require(failure_of(checking, unbound, ErrorCode::invalid_definition, "no evaluate"), "A type without evaluate was bound.");
+    // Without a borrow evaluate is no value region, so it could write self.
+    require(failure_of(checking, counter, ErrorCode::invalid_definition, "must borrow"), "An evaluate without borrows was bound.");
+    require(!failed(checking, points) && failed(checking, gathered) && checking.output() == nullptr,
+        "Unbindable nodes did not fail alone and block their downstream node.");
+    Evaluator unprogrammed{runtime, graph_root, resources};
+    take(unprogrammed.evaluate());
+    require(failure_of(unprogrammed, jittered, ErrorCode::unsupported_operation, "needs a program") && !failed(unprogrammed, scattered),
+        "A Source node ran without a program.");
 }
 
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
@@ -902,6 +1171,7 @@ int main(int argc, char** argv) {
         bvh_queries();
         ray_node();
         graph_evaluation();
+        source_nodes();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "procedural acceptance failed: %s\n", error.what());
         return 1;

@@ -1,0 +1,16 @@
+// Sets pscale to a random value between minimum and maximum, from the graph seed, the node's
+// seed and the point's id.
+class procedural.RandomScale : procedural.PointNode {
+    float minimum = 0.5f;
+    float maximum = 1.5f;
+    uint seed = 0;
+
+    void evaluate(const procedural.Context& context, Array<float>& pscale, const Array<uint>& id) {
+        const float low = self.minimum;
+        const float high = self.maximum;
+        const uint node_seed = hash2(context.seed, self.seed);
+        for (uint i = 0; i < pscale.size(); i = i + 1) {
+            pscale[i] = math.lerp(low, high, unit(hash2(node_seed, id[i])));
+        }
+    }
+}

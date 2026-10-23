@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点等 L4a、L1、L2 就绪后做。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1 和代码身份已交付并合入），Jitter 与 RandomScale 已用自有语言写成，Remap、属性噪声和法线对齐随 L2 的向量与枚举参数写。
 
 ## 0. 结论
 
@@ -68,23 +68,24 @@ procedural.Graph   原生对象：图设置为 AFIELD（seed）；隐藏的节�
 procedural.Node    原生对象基类：隐藏的 inputs 强引用序列，每个连接一项，按输入端口排序；平行的非反射 C++ 数组记录（输入端口，上游输出号）
   ├─ C++ 黑箱节点直接派生：evaluate(const procedural.Context&, const procedural.Geometry& in…,
   │                                  const procedural.Geometries& 多输入, procedural.Geometry& out…) const
-  └─ procedural.PointNode / PrimitiveNode / DetailNode   自有语言属性节点（类似 Houdini Wrangle）：
+  └─ procedural.PointNode   自有语言属性节点（类似 Houdini Wrangle）。端口固定为 input → output，不经 Program 就能读出：
         evaluate(const procedural.Context& context, Array<T>& 写入列…, const Array<T>& 读取列…)
-        宿主按参数名绑定该层的属性列：可写引用是输出列（不存在就按默认值创建），只读引用是输入列（缺失时节点报错）
+        宿主按参数名绑定 point 层的属性列：可写引用是输出列（不存在就按默认值创建），只读引用是输入列（缺失时节点报错）
+        改 primitive、detail 层的 PrimitiveNode / DetailNode 等有真实节点需要时再加
 参数 = 节点类的公开字段（Label/Category/Min/Max/DESC 等元数据）；端口与列绑定来自 evaluate 签名；节点实例 = Runtime 对象
 ```
 
-自有语言节点示例（依赖 §3.1 的 L1、L2、L4、L5、L6）：
+自有语言节点示例（assets/procedural/jitter.source；向量与枚举参数依赖 L2，哈希与随机库 L6 之前由使用方放进快照）：
 
 ```source
-class geo.Jitter : procedural.PointNode {
-    [Min = 0.0, Max = 1.0, Label = "Amount"] float amount = 0.1f;
+class procedural.Jitter : procedural.PointNode {
+    float amount = 0.1f;
     uint seed = 0;
-    void evaluate(const procedural.Context& context, Array<vector3>& P) {
-        const float amount = self.amount;            // 每次读 self 都是一次宿主调用，循环外先存到局部
-        const uint seed = context.seed + self.seed;
+    void evaluate(const procedural.Context& context, Array<vector3>& P, const Array<uint>& id) {
+        const float scale = self.amount;            // 每次读 self 都是一次宿主调用，循环外先存到局部
+        const uint node_seed = hash2(context.seed, self.seed);
         for (uint i = 0; i < P.size(); i = i + 1) {
-            P[i] = P[i] + random_vector(seed, i) * amount;   // random_vector 来自 L6 的引擎源码库
+            P[i] = P[i] + random_vector(hash2(node_seed, id[i])) * scale;   // 来自 random.source
         }
     }
 }
@@ -94,19 +95,21 @@ class geo.Jitter : procedural.PointNode {
 - **evaluate 只读 self**：节点状态保存在求值器里，节点方法不写自己的字段。
 - **端口名**：来自 L5，每个代码版本重新读取。Runtime 对象里的连接按端口序号存储，所以兼容更新改了端口名，现有连接仍然有效，下次保存时写出新名字。文件里的连接按名字保存：加载时名字解析不到的连接按宽容加载保留并原样写回。输入或输出参数没有名字的类型不能作为节点，读端口时拒绝。
 - **连接存在下游节点的 inputs 强引用序列中**（Runtime 只有强引用序列）。改连接只给下游节点盖章；图持有节点、节点持有上游，被删除的节点由编辑器历史持有的根保活；环在建立连接时拒绝。
-- **调用路径**：C++ 节点经 `Runtime::call`，自有语言节点经 `Program` 的 `类名.evaluate`，每个节点每次求值调用一次。原生 `evaluate` 是 const 接收者，调用不盖章；源码方法读 `self` 走 `Runtime::read`，也不盖章。宿主不在持有节点对象可写 `with_native` 的期间调用 evaluate。
+- **调用路径**：C++ 节点经 `Runtime::call`，自有语言节点经 `Program` 的 `类名.evaluate`，每个节点每次求值调用一次。原生 `evaluate` 是 const 接收者，调用不盖章；源码方法读 `self` 走 `Runtime::read`，也不盖章。宿主不在持有节点对象可写 `with_native` 的期间调用 evaluate。求值器构造时接收宿主的 `const source::Program*`，所以 procedural 链接 atelier_source；读端口、建图和图文件都不需要 Program。
+- **代码身份**：自有语言节点的键加上入口的 `EntryInfo::code`。运行时按 unit（一个类的全部方法，或全局函数那一组）比较实际编译输入，相同就沿用上次的值，不同才换新值；`Program::revision()` 是成功发布的次数，求值器看到它变了才重新绑定入口。判定是保守的：改某个类的方法（含空白）只换这个类的 code，改全局助手、struct、enum、常量，或 Runtime 新注册了值类型，换掉所有 code，新增类不影响别的类；撤销改动拿到新值，不回到旧值。code 在整个进程内唯一，不同 Program、Runtime 之间不会撞值。这满足验收 ⑥。`evaluate` 必须至少借用上下文或一列：这样它才是同步值区间，编译器拒绝写 `self`，结果只取决于键里的内容。
 - **种子与确定性**：节点种子 = hash(图种子, 节点 `seed` 参数, 元素 `id`)，不使用 ObjectId 等非持久身份。哈希与随机函数是 L6 引擎源码库中算法固定、有文档的函数，语言不为它们增加内建。同样的输入得到同样的结果，但不承诺跨 CPU 逐位一致。
 - **内置节点的分发**：内置节点用自有语言编写，随引擎源码模块进入每个工程快照（L6）。P1 的验收先用夹具快照。
 
 ### 3.1 语言能力（运行时负责人已接，按此顺序逐项交付）
 
-顺序：L5 → L4a → L1 → L2 → L4b → L6，L3 最后。每项单独提交、过 Oracle。涉及语义的 L1、L3 和 L4 的 NaN/精度，先由运行时负责人交总负责人审。
+顺序：L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后。每项单独提交、过 Oracle。涉及语义的 L1、L3 和 L4 的 NaN/精度，先由运行时负责人交总负责人审。
 
 | 编号 | 能力与表示 | 用途 | 需要的时间点 |
 | --- | --- | --- | --- |
 | L5 | 参数名放在签名旁边，不放进 `FunctionSignature`，兼容比较不变：原生方法用 `MethodDefinition/MethodInfo::parameter_names`，由反射生成器从 C++ 声明取名；源码入口用 `EntryInfo`。改参数名算兼容更新 | 端口名；按参数名绑定属性列 | 已交付（`runtime-param-names` 37872568，已合入 `procedural`），端口名已接上 |
-| L4a | 逐元素函数 floor/ceil/trunc/fract/abs/min/max/clamp/lerp/smoothstep/step/sign（另有已有的 sqrt），支持 float 标量和 float vector2/3/4，按分量计算，降为 intrinsic 或 select 后内联，不开 fast-math，可以向量化。min/max 按 GLSL 定义（min(x,y) = y < x ? y : x），所以 clamp 遇到 NaN 输入会返回下界 | 噪声、重映射 | P1 |
-| L1 | `analyze_calls` 放行一种情况：接收者是 `self`、结果为标量/枚举/数学值的字段读取。写 self、取对象引用、调用非 BorrowSafe 方法照旧拒绝。读取走 `Runtime::read`，不盖章，值区间内也没有 GC 安全点。验收写明“只读、不改变借用与 GC 规则” | 节点读参数 | P1；过 Oracle |
+| L4a | 逐元素函数 floor/ceil/trunc/fract/abs/min/max/clamp/lerp/smoothstep/step/sign（另有已有的 sqrt），支持 float 标量和 float vector2/3/4，按分量计算，降为 intrinsic 或 select 后内联，不开 fast-math，可以向量化。min/max 按 GLSL 定义（min(x,y) = y < x ? y : x），所以 clamp 遇到 NaN 输入会返回下界；fract 结果在 [0,1)；没有整数版本 | 噪声、重映射 | 已交付（`runtime-math-builtins` 5707ca53，已合入 `procedural`） |
+| L1 | `analyze_calls` 放行一种情况：接收者是 `self`、结果为标量/枚举/数学值的字段读取。写 self、取对象引用、调用非 BorrowSafe 方法照旧拒绝。读取走 `Runtime::read`，不盖章，值区间内也没有 GC 安全点。验收写明“只读、不改变借用与 GC 规则”。源码执行只在 Runtime 线程上进行 | 节点读参数 | 已交付（`runtime-self-reads` c5b6a47c，已合入 `procedural`，bdff0c02） |
+| 代码身份 | `EntryInfo::code` 与 `Program::revision()`，判定见 §3 的“代码身份”；仍然每次发布都重新编译，复用旧 Version 等实测需要再说 | 验收 ⑥ 只重算代码变了的类型 | 已交付（`runtime-entry-codes` 2b278be4，已合入 `procedural`，d9809d57） |
 | L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | P1 |
 | L4b | sin/cos/atan2/pow/exp/log，用纯 IR 多项式实现，可以内联和向量化；误差上界写进文档并实测，与 libm 不逐位相同。程序化提出的要求：float 的 sin/cos 在 \|x\| ≤ 10⁴ 内误差 ≤ 4 ULP，超出这个范围结果仍有限且绝对值不超过 1；atan2/exp/log/pow 在全 float 范围内误差 ≤ 4 ULP，特殊值按 IEEE 约定（log(0) = −∞，负数取 log 得 NaN，exp 溢出得 +∞；pow 的底数为负时返回 NaN） | 旋转、衰减、曲线 | P1 后段 |
 | L6 | 宿主把引擎附带的文件放在保留路径前缀（如 `engine/procedural/…`）下，并入每个工程快照；工程不能占用这个前缀，也不能声明引擎命名空间的类型 | 内置节点、哈希与随机库 | P3 前 |
@@ -222,7 +225,7 @@ class geo.Jitter : procedural.PointNode {
 
 | 阶段 | 内容 | 端到端验收（必要项） | 本线程工作量 | 依赖 |
 | --- | --- | --- | --- | --- |
-| P1 图与几何核心 | Geometry、Graph/Node、求值器（写代号、精确内容键、条目级 LRU）、规范化 JSON v1；C++ 黑箱：网格导入、Grid/Line 点、Scatter（含最小间距）、Transform、Attribute Promote、按 bool 列删除、Merge、Copy to Points、实例集合发布（分块、丢掉退化实例、逐块复用；矩阵判据从 renderer 提到 math 共用，渲染负责人审）、BVH 批量查询；自有语言节点：Jitter、属性随机、属性噪声、Remap、法线对齐；`--profile-procedural` | 新增无窗口目标 `procedural_acceptance`：①两个面积为 1 和 3 的三角形，密度取 4，使面积×密度为整数：两个三角形上的点数分别正好是 4 和 12，点都在各自的三角形内；同种子结果相同，换种子结果不同；只移动第二个三角形时，第一个三角形上的点不变；开启最小间距 d 后，任意两点距离都 ≥ d；②Grid(5×4)（带 N、Cd）→ Transform（旋转、非均匀缩放加平移）：P 与公式逐点一致，N 等于逆转置变换后归一化的结果（与只用线性部分的结果不同），Cd 不变；对导入的网格做镜像变换后，每个图元的顶点顺序反转；③按 bool 列删除后，点数与独立推导的结果一致；④Copy to Points：点带 orient、pscale 和非均匀 scale 时，实例矩阵等于 S·O·T；没有 orient 时按 N 与 up 对齐；`variant` 选择网格；按（网格，块）分组后，各组实例数正确，跨块边界的实例落在正确的块里；pscale = 0 和压扁成面的实例在发布时被丢掉并计数，点属性含 NaN 时 Copy to Points 失败、保留旧输出；只改变一个块内实例的参数修改，重新发布后其他块的 shared_ptr 不变；⑤分别经 `Runtime::write`、`with_native` 和源码 JIT 写入改 Jitter 参数，都只重算 Jitter 及其下游（核对调用次数），撤销后零次重算；⑥兼容热更 Jitter 方法体，只重算该类型的节点及下游；⑦（放在 `editor_document_acceptance --procedural-graph`，配同名 CMake 目标）保存后在新 Runtime 重开，输出相同，再次保存字节相同；未知节点类型、解析不了的参数叶和指向未知节点的连接原样写回；共用属性编解码的数组经测试类型（Array<String>、带范围的 Array<float>）做 Scene 保存、重开和 live set 往返，严格解码拒绝元素类型不符，宽容加载把整个数组作为保留值写回；⑧成环被拒绝，节点越界失败时保留旧输出 | 14–18 人日 | L5、L4、L1、L2 |
+| P1 图与几何核心 | Geometry、Graph/Node、求值器（写代号、精确内容键、条目级 LRU）、规范化 JSON v1；C++ 黑箱：网格导入、Grid/Line 点、Scatter（含最小间距）、Transform、Attribute Promote、按 bool 列删除、Merge、Copy to Points、实例集合发布（分块、丢掉退化实例、逐块复用；矩阵判据从 renderer 提到 math 共用，渲染负责人审）、BVH 批量查询；自有语言节点：Jitter、属性随机、属性噪声、Remap、法线对齐；`--profile-procedural` | 新增无窗口目标 `procedural_acceptance`：①两个面积为 1 和 3 的三角形，密度取 4，使面积×密度为整数：两个三角形上的点数分别正好是 4 和 12，点都在各自的三角形内；同种子结果相同，换种子结果不同；只移动第二个三角形时，第一个三角形上的点不变；开启最小间距 d 后，任意两点距离都 ≥ d；②Grid(5×4)（带 N、Cd）→ Transform（旋转、非均匀缩放加平移）：P 与公式逐点一致，N 等于逆转置变换后归一化的结果（与只用线性部分的结果不同），Cd 不变；对导入的网格做镜像变换后，每个图元的顶点顺序反转；③按 bool 列删除后，点数与独立推导的结果一致；④Copy to Points：点带 orient、pscale 和非均匀 scale 时，实例矩阵等于 S·O·T；没有 orient 时按 N 与 up 对齐；`variant` 选择网格；按（网格，块）分组后，各组实例数正确，跨块边界的实例落在正确的块里；pscale = 0 和压扁成面的实例在发布时被丢掉并计数，点属性含 NaN 时 Copy to Points 失败、保留旧输出；只改变一个块内实例的参数修改，重新发布后其他块的 shared_ptr 不变；⑤经 `Runtime::write` 改参数、经 `with_native` 改 C++ 节点参数、经源码方法写 `self` 改自有语言节点参数，都只重算该节点及其下游（核对调用次数），撤销后零次重算；⑥兼容热更 Jitter 方法体，只重算该类型的节点及下游；⑦（放在 `editor_document_acceptance --procedural-graph`，配同名 CMake 目标）保存后在新 Runtime 重开，输出相同，再次保存字节相同；未知节点类型、解析不了的参数叶和指向未知节点的连接原样写回；共用属性编解码的数组经测试类型（Array<String>、带范围的 Array<float>）做 Scene 保存、重开和 live set 往返，严格解码拒绝元素类型不符，宽容加载把整个数组作为保留值写回；⑧成环被拒绝，节点越界失败时保留旧输出 | 14–18 人日 | L5、L4、L1、L2 |
 | P2 接入场景 | 生成器组件、presentation 输出实例集合、渲染器实例化（按 §5.1 的对齐结论）、暴露参数与实例覆盖（先交契约方案）、Cache、冻结、Bake、Play 加载 | 扩展 `world_acceptance` 或 `procedural_acceptance`：集合数与每实例世界矩阵正确（生成器 Entity 带旋转和非均匀缩放）；改覆盖值后集合更新、版本前进，静止时版本不变；保存场景后重开结果相同，删掉 Cache 后重新生成也相同；冻结后改图或改代码不影响输出；Bake 产生的 Entity 数量与矩阵一致且可撤销；渲染器 GPU 读回核对实例画面；含 pscale = 0 实例的生成器正常出图、不触发整帧拒绝；场景中其他项增删时，集合的常驻区段不重写；改一个只影响一个块的参数，其他块的 stable_key 不变、常驻区段不重写；附性能负责人确定的测量 | 生成器、格式与场景接入 6–9 人日；渲染器实例化（字段、常驻区段、shader 取法、阴影区间、历史 id、统计、拾取，TLAS a）8–12 人日；按实测追加：TLAS b 5–8 人日，逐实例 GPU 剔除与 LOD 6–10 人日 | 渲染、World、性能、编辑器负责人 |
 | P3 网络编辑器 | G1–G6、Geometry Spreadsheet、视口点显示 | 新增窗口目标 `editor_graph_acceptance`，持锁运行：经操作符和合成拖拽建图连线；在 Parameters 改参数；导出 PNG，核对连线中点像素和视口实例；核对表格行数；撤销/重做；保存后重开；`graph.inspect` 的统计正确 | 14–20 人日 | L6；编辑器与渲染负责人审 |
 | P4 封装与迁移 | 子图作为节点、从选中节点创建数字资产；L3 落地后把改变点数的基元迁到自有语言 | 扩展 `procedural_acceptance`：子图展开前后结果相同；迁移后输出与 C++ 版本一致 | 6–10 人日 | L3 |
@@ -232,11 +235,11 @@ class geo.Jitter : procedural.PointNode {
 
 | 负责人 | 事项 | 状态 |
 | --- | --- | --- |
-| 运行时和语言 | L5 → L4a → L1 → L2 → L4b → L6，L3 最后 | L5 已交付并接上；L4a 已批准、实施中（不含整数版 min/max/abs/clamp，P1 不需要）；其余见 §3.1 |
+| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份已交付并接上；L2 实施中；其余见 §3.1 |
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
 | World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐 |
-| 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源） | 材质入口已交付（`Session::mesh_surfaces`，d2340350，见 §5.1）；共用属性编解码与内联 Array 已提交待审（§5.4）；其余 P2/P3 前对齐 |
+| 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源） | 材质入口已交付（`Session::mesh_surfaces`，d2340350，见 §5.1）；共用属性编解码与内联 Array（335cb844）、图文件编解码（ed47199a）已审通过（§5.4）；其余 P2/P3 前对齐 |
 
 ## 9. 风险与未决
 

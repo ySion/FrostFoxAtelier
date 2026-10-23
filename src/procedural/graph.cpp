@@ -58,12 +58,26 @@ Result<void> register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;
     if (!runtime.native_type<String>()) definitions.push_back(string_definition(runtime));
     if (!runtime.native_type<Array<String>>()) definitions.push_back(array_definition<String>(runtime, "procedural.Strings"));
+    // Every point column type, so Source nodes can borrow columns.
+    const auto column = [&]<class T>(std::type_identity<T>, const char* name) {
+        if (!runtime.native_type<Array<T>>()) definitions.push_back(array_definition<T>(runtime, name));
+    };
+    column(std::type_identity<bool>{}, "procedural.Bools");
+    column(std::type_identity<std::int32_t>{}, "procedural.Ints");
+    column(std::type_identity<std::uint32_t>{}, "procedural.Uints");
+    column(std::type_identity<float>{}, "procedural.Floats");
+    column(std::type_identity<math::Vector2>{}, "procedural.Vector2s");
+    column(std::type_identity<math::Vector3>{}, "procedural.Vector3s");
+    column(std::type_identity<math::Vector4>{}, "procedural.Vector4s");
+    column(std::type_identity<math::Quaternion>{}, "procedural.Quaternions");
+    column(std::type_identity<math::Matrix4>{}, "procedural.Matrix4s");
     definitions.push_back(reflection::Definition<Layer>::build(runtime));
     definitions.push_back(reflection::Definition<Reduce>::build(runtime));
     definitions.push_back(reflection::Definition<Geometry>::build(runtime));
     definitions.push_back(array_definition<Geometry>(runtime, "procedural.Geometries"));
     definitions.push_back(reflection::Definition<Context>::build(runtime));
     definitions.push_back(reflection::Definition<Node>::build(runtime));
+    definitions.push_back(reflection::Definition<PointNode>::build(runtime));
     definitions.push_back(reflection::Definition<Graph>::build(runtime));
     definitions.push_back(reflection::Definition<MeshImport>::build(runtime));
     definitions.push_back(reflection::Definition<Grid>::build(runtime));
@@ -90,6 +104,14 @@ Result<Ports> ports(Runtime& runtime, TypeId type) {
     if (!info) return std::unexpected(info.error());
     const auto& name = (*info)->name;
     if (!*derived) return error(ErrorCode::invalid_type, name + " is not a procedural.Node.");
+    auto point = runtime.native_type<PointNode>();
+    if (!point) return std::unexpected(point.error());
+    auto attribute = runtime.is_a(type, *point);
+    if (!attribute) return std::unexpected(attribute.error());
+    if (*attribute) {
+        if (type == *point) return error(ErrorCode::invalid_type, "procedural.PointNode is the base of Source nodes, not a node.");
+        return Ports{{}, {}, {"input"}, {false}, {"output"}};
+    }
     auto method = runtime.find_method(type, "evaluate");
     if (!method) return error(ErrorCode::invalid_definition, "Node type " + name + " has no evaluate method.");
     const auto found = std::ranges::find((*info)->methods, *method, &MethodInfo::id);

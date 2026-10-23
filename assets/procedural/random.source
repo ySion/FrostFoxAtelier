@@ -1,0 +1,31 @@
+// Fixed integer hashes and uniform numbers for procedural nodes. Results are part of the
+// generated content, so the algorithms never change silently. They are the ones in
+// src/procedural/random.hpp, so Source and C++ nodes draw the same values: lowbias32 by
+// Chris Wellons (public domain), combined as hash(a ^ hash(b)).
+
+uint hash(uint value) {
+    uint x = value;
+    x = x ^ (x >> 16);
+    x = x * 2146121005;
+    x = x ^ (x >> 15);
+    x = x * 2221713035;
+    x = x ^ (x >> 16);
+    return x;
+}
+
+uint hash2(uint a, uint b) {
+    return hash(a ^ hash(b));
+}
+
+// Uniform in [0, 1) from the top 24 bits, exact in float.
+float unit(uint x) {
+    return float(x >> 8) * 0.000000059604644775390625f;
+}
+
+// Uniform in [-1, 1) per component, from three successive hashes of x.
+vector3 random_vector(uint x) {
+    const uint a = hash(x);
+    const uint b = hash(a);
+    const uint c = hash(b);
+    return vector3(unit(a), unit(b), unit(c)) * 2.0f - vector3(1.0f, 1.0f, 1.0f);
+}

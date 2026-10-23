@@ -23,16 +23,19 @@ public:
     [[nodiscard]] virtual std::uint64_t revision() const noexcept = 0;
 };
 
+// Every member shares one access level, so the type stays standard layout and Source reads
+// `seed` at its published offset.
 ASTRUCT(Name="procedural.Context", DESC="一次求值交给节点的上下文：图的随机种子，以及按键解析资源的入口。")
 struct Context {
     AGENERATED_BODY(Context)
 public:
-    AFIELD(DESC="图的随机种子。节点把它与自己的 seed 参数混合。")
-    std::uint32_t seed{};
+    [[nodiscard]] std::uint32_t seed() const noexcept { return seed_; }
     // Resolves a mesh and records it as something the evaluating node's result depends on.
     [[nodiscard]] Result<Reference> mesh(StringView key) const;
 private:
     friend class Evaluator;
+    AFIELD(Name="seed", DESC="图的随机种子。节点把它与自己的 seed 参数混合。")
+    std::uint32_t seed_{};
     const Resources* resources_{};
     std::vector<Reference>* dependencies_{};
 };
@@ -60,6 +63,17 @@ private:
     std::vector<Connection> connections_;   // Parallel to inputs_.
 };
 
+// The base of Source attribute nodes, which rewrite point columns of their input `input` into
+// their output `output`. A Source subclass declares a synchronous `void evaluate(...)`: a
+// `const procedural.Context&` parameter takes the context, `Array<T>& name` writes the point
+// column `name` (added with T's default value, zero or the identity rotation, when missing) and
+// `const Array<T>& name` reads one that must exist. Borrowed columns keep their length, so the
+// point count is the input's.
+ACLASS(Name="procedural.PointNode", DESC="自有语言属性节点的基类：按 evaluate 的参数名读写输入几何的点属性列，点数不变。")
+class PointNode : public Node {
+    AGENERATED_BODY(PointNode)
+};
+
 ACLASS(Name="procedural.Graph", DESC="程序化图：一组节点及其连接，display 节点的输出是图的结果。")
 class Graph {
     AGENERATED_BODY(Graph)
@@ -81,7 +95,9 @@ private:
 Result<void> register_types(Runtime& runtime);
 
 enum class Slot : std::uint8_t { context, input, inputs, output };
-// Port names are evaluate's parameter names, read again for every published version.
+// Port names are evaluate's parameter names, read again for every published version. A
+// PointNode type has the fixed ports `input` and `output`; its evaluate is Source code, bound
+// by the evaluator, so `evaluate` is null and `parameters` empty.
 struct Ports {
     MethodId evaluate;
     std::vector<Slot> parameters;     // Of evaluate, in order.

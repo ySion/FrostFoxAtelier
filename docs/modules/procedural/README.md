@@ -13,7 +13,9 @@
 | [evaluator.hpp](../../../src/procedural/evaluator.hpp) | 增量求值与结果缓存 |
 | [random.hpp](../../../src/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
 
-方向、分阶段计划与跨模块约定见[程序化节点图方案](../../research/procedural-graph-plan-20261022.md)。生成器组件、渲染器实例化、自有语言节点和网络编辑器尚未实施。
+引擎附带的自有语言节点与随机库在 [assets/procedural](../../../assets/procedural)。
+
+方向、分阶段计划与跨模块约定见[程序化节点图方案](../../research/procedural-graph-plan-20261022.md)。生成器组件、渲染器实例化和网络编辑器尚未实施。
 
 ## Geometry
 
@@ -49,12 +51,12 @@
 
 ## 程序化图
 
-`procedural::register_types(Runtime&)` 发布 Layer、Reduce、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、Node、Graph 和内置节点；String 与 `Array<String>` 不存在时一并发布。重复调用不做任何事。
+`procedural::register_types(Runtime&)` 发布 Layer、Reduce、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、Node、PointNode、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
 - **Node**（`procedural.Node`）：节点类型的公开字段就是参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。
-- **端口**：`ports(runtime, type)` 从 const 同步方法 `evaluate` 的签名按参数顺序读出端口：`const procedural.Context&` 是上下文，`const procedural.Geometry&` 是输入端口，`const procedural.Geometries&` 是可接多个连接的输入端口，`procedural.Geometry&` 是输出端口。至少要有一个输出；其他参数形式使类型不能作为节点。端口名就是 `evaluate` 的参数名（`MethodInfo::parameter_names`），每个发布版本重新读取；输入、输出端口的参数没有名字时类型不能作为节点，上下文参数可以不命名。图中的连接按端口序号存储，所以兼容更新只改参数名时现有连接仍然有效。
-- **Context**（`procedural.Context`）：公开字段 `seed` 是图的种子；`mesh(key)` 经宿主的 `Resources` 解析网格，并记为当前节点结果的依赖。
+- **端口**：`ports(runtime, type)` 从 const 同步方法 `evaluate` 的签名按参数顺序读出端口：`const procedural.Context&` 是上下文，`const procedural.Geometry&` 是输入端口，`const procedural.Geometries&` 是可接多个连接的输入端口，`procedural.Geometry&` 是输出端口。至少要有一个输出；其他参数形式使类型不能作为节点。端口名就是 `evaluate` 的参数名（`MethodInfo::parameter_names`），每个发布版本重新读取；输入、输出端口的参数没有名字时类型不能作为节点，上下文参数可以不命名。图中的连接按端口序号存储，所以兼容更新只改参数名时现有连接仍然有效。PointNode 的子类型端口固定为 `input` → `output`，读端口不需要 Program；PointNode 本身不能作为节点。
+- **Context**（`procedural.Context`）：字段 `seed` 是图的种子，C++ 节点用 `seed()` 读取；`mesh(key)` 经宿主的 `Resources` 解析网格，并记为当前节点结果的依赖。全部成员同一访问级别，类型保持标准布局，所以 `seed` 有生成器给出的偏移，源码按偏移直接读 `context.seed`；`mesh` 不是 Runtime 方法，源码不能调用。
 - **编辑**：`add_node`（类型必须能读出端口）、`remove_node`（同时断开它的下游连接，它是 display 时清除 display）、`connect`（两端都在图内，端口存在，不成环；单输入端口替换已有连接，多输入端口追加到末尾）、`disconnect`、`set_display`（null 清除）。每个入口只写它改变的对象：节点列表和 display 写图，连接写下游节点。读取用 `contents` 和 `inputs`，都是 const 借用。图持有节点、节点持有上游，被删除的节点由别的根（例如编辑历史）保活。
 
 内置节点：
@@ -76,12 +78,31 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 
 节点失败时抛出异常，Runtime 把它转成 `invocation_failed`，消息就是失败原因。未连接的单输入端口收到空几何。
 
+### 自有语言节点
+
+自有语言的属性节点（类似 Houdini 的 Wrangle）是派生自 `procedural.PointNode` 的源码 class，参数是 class 的字段，算法是同步方法 `void evaluate(...)`。求值器从 Program 取入口 `<类名>.evaluate`，按参数名把参数绑定到输入几何的点属性列：
+
+- `const procedural.Context&`（最多一个）是上下文；
+- `Array<T>& name` 是输出列：输入有 point 层的同名同类型列就写它的独占副本，没有就按 T 的默认值（零，四元数为单位旋转）新建，新列按约定名取用途，所以用途与类型不符（例如 `Array<float>& N`）时失败；
+- `const Array<T>& name` 是输入列，借用共享的列本身，不复制；没有这一列时失败。
+- 其他参数形式、没有参数、没有 `evaluate` 方法、带结果或不是同步方法的类型，求值时失败（`invalid_definition`），它的下游被阻断，其他节点照常求值。至少借用上下文或一列，`evaluate` 才是同步值区间，编译器在值区间里拒绝写 `self`。
+
+输出就是输入几何加上改写过的列。借用的列不能改变长度，所以点数与输入相同；改变点数的操作仍由 C++ 节点完成。`evaluate` 读 `self` 的字段（每次读取都是一次 Runtime 调用，循环外先存到局部），不写 `self`，也不给节点盖章。调用在 Runtime 线程上串行执行。
+
+[assets/procedural](../../../assets/procedural) 里的文件随引擎附带，P1 由使用方放进自己的项目快照（L6 之后由宿主并入每个工程）：
+
+| 文件 | 内容 |
+| --- | --- |
+| random.source | 全局函数 `hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../src/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
+| jitter.source | `procedural.Jitter`：amount、seed；P 加上 `random_vector(hash2(hash2(图种子, seed), id))` × amount，读 `id`，所以偏移跟随点 |
+| random_scale.source | `procedural.RandomScale`：minimum、maximum、seed；pscale 取 lerp(minimum, maximum, unit(hash2(hash2(图种子, seed), id)))，读 `id` |
+
 ## 求值器
 
-`Evaluator(runtime, graph, resources, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游，`evaluate()` 之后 `output()` 是 display 节点的第一个输出，`status(node)` 给出每个节点的错误、求值次数、缓存命中次数和最近一次 evaluate 的耗时。
+`Evaluator(runtime, graph, resources, program, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游，`evaluate()` 之后 `output()` 是 display 节点的第一个输出，`status(node)` 给出每个节点的错误、求值次数、缓存命中次数和最近一次 evaluate 的耗时（含参数准备）。`program` 提供自有语言节点的代码，可以为空，这时自有语言节点失败（`unsupported_operation`）；它要比求值器活得久。
 
-- **发现变化**：先取 `change_cursor()`，再读取。图在游标之后被写过时重读节点列表、display 和种子；节点是新的或被写过时，重读它的参数和连接，算出本地键。本地键和连接都没变的写入（例如什么也没改的可写借用）不触发求值；什么都没变、资源版本也没变时直接返回。求值器只用 const 借用、`read` 和 const 接收者的 `evaluate`，不给图和节点盖章。
-- **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 evaluate 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。参数可以是标量、枚举、数学值和普通记录、String，以及这些类型的 Array，其他字段类型使节点失败。键只在本进程、本 Runtime 内有效，不能持久化。
+- **发现变化**：先取 `change_cursor()`，再读取。图在游标之后被写过时重读节点列表、display 和种子；节点是新的或被写过时，重读它的参数和连接，算出本地键。本地键和连接都没变的写入（例如什么也没改的可写借用）不触发求值；什么都没变、资源版本和 `Program::revision()` 也没变时直接返回。`Program::revision()` 变了就重新绑定自有语言节点的入口，代码身份没变的节点键也不变，不会重算。求值器只用 const 借用、`read` 和 const 接收者的 `evaluate`，不给图和节点盖章。
+- **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`：类的方法、全局函数、类型声明或常量的编译输入变了才换新值，所以只改 Jitter 的方法体只重算 Jitter 节点和下游），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 evaluate 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。参数可以是标量、枚举、数学值和普通记录、String，以及这些类型的 Array，其他字段类型使节点失败。键只在本进程、本 Runtime 和本 Program 内有效，不能持久化。
 - **缓存**：按键查找结果，以条目为单位按最近使用淘汰，条目大小为输出的 `bytes()` 加两份键（条目与查找表各一份）、依赖表和条目开销，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值；节点持有的当前结果不受淘汰影响。
 - **资源**：节点经 Context 读到的网格连同解析结果记在结果上。`Resources::revision()` 变化后，复用结果之前重新解析这些键；解析结果不同就重新求值，相同就继续复用。
 - **失败**：节点失败时它的下游不求值，状态记为输入失败，`output()` 保留上一次的结果。失败的键在资源版本不变时不再重试，键变化（例如参数改回）或资源版本变化后再试。
@@ -116,6 +137,14 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 - 节点失败阻断下游并保留输出，同键不重试，参数改回后命中缓存；
 - 资源版本变化但解析结果相同不重算，换了网格只重算读取它的节点，缺失的网格出现后重试；
 - 内容相同的两个节点共享结果；成环、端口越界、图外节点被拒绝；单输入端口替换连接；删除节点断开下游并清除 display；缓存预算为 0 时撤销也要重算。
+
+自有语言节点部分从 assets/procedural 的文件和一个夹具文件组成项目快照，构建 MeshImport → Scatter → Jitter（两个，amount 不同）/ RandomScale，Grid → 夹具 Lift（不带上下文）和夹具 Shift（只读上下文的种子），五路 Merge，并按文档公式和 random.hpp 的哈希独立算出期望值：
+
+- 源码的 `hash`、`hash2` 与 random.hpp 逐位相同，`unit` 精确等于 (x >> 8) · 2⁻²⁴，最大输入得到 1 − 2⁻²⁴ 而不是 1；
+- 输出的 P 和 pscale 与期望一致，与 Jitter 同读 Scatter 结果的 RandomScale 看到未改动的 P（Jitter 写的是副本）；求值不盖章；
+- 经 `Runtime::write` 和源码方法写 `self` 改参数，都只重算该节点及下游，撤销后命中缓存；图种子经 Context 到达 Jitter、RandomScale 和 Shift（Shift 的输入与种子无关，所以重算只能来自它自己的键），不重算不带上下文的 Lift；
+- 兼容发布：改 Jitter 方法体只重算两个 Jitter 节点和下游，输出用上新方法体；内容不变的发布不重算任何节点；只改 RandomScale 的空白只重算它和下游；改全局助手重算所有自有语言节点；
+- 输入缺少读取的列、按值参数、列类型与已有列不符、没有 evaluate、evaluate 没有参数（因而可以写 `self`）的类型各自失败，只阻断下游；没有 Program 的求值器里自有语言节点失败，C++ 节点照常求值。
 
 ```powershell
 . ./tools/enter-dev.ps1
