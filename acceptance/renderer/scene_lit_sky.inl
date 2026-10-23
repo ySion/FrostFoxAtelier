@@ -202,6 +202,136 @@ void sky_background_geometry(Fixture& f) {
     check(lit_background == 0 && released.expired(), "removing the sky map blackens the background at once and releases the map");
 }
 
+// The sky behind the scene moves with the camera's rotation only. The camera turns
+// 1.5 degrees and circles 0.5 m around the origin by 0.22 m every frame, so a
+// reprojection that kept the translation would misplace the history by tens of
+// degrees. Under SMAA T2x and TAA the marker stays where its direction projects,
+// without a trailing copy and with the energy of a still camera's frame. The
+// background samples the unjittered grid, so under TAA a still camera sees a steady sky.
+void sky_background_temporal(Fixture& f) {
+    f.restore();
+    auto& options = f.frame.view.lit; sky_flat_options(options);
+    sky_anchor(f);
+    const float aspect = f.frame.scene_viewport.width/f.frame.scene_viewport.height;
+    f.frame.environment = {1,1,1};
+    const auto marker = sky_direction(0, 10);
+    std::vector<SkyDirection> marker_texels;
+    options.sky_map = sky_map(2048, [&](const SkyDirection& d) {
+        const bool on = d[0]*marker[0]+d[1]*marker[1]+d[2]*marker[2] > std::cos(.8*std::numbers::pi/180);
+        if (on) marker_texels.push_back(d);
+        return on ? Vec3{4,4,4} : Vec3{};
+    });
+    const auto turn = [&](unsigned frame) {
+        const double yaw = (1.5*frame-18)*std::numbers::pi/180, orbit = 25.*frame*std::numbers::pi/180;
+        f.frame.camera = sky_look({float(.5*std::cos(orbit)), 0, float(.5*std::sin(orbit))}, {float(std::sin(yaw)), 0, float(std::cos(yaw))}, {0,1,0}, aspect, 1.8f);
+    };
+    struct Marker { double dx, dy, energy, trail; };
+    const auto measure = [&](const render::Capture& image) {
+        double ex = 0, ey = 0;
+        for (const auto& d : marker_texels) {const auto q = sky_pixel(f.frame, d); ex += q[0]; ey += q[1];}
+        ex /= double(marker_texels.size()); ey /= double(marker_texels.size());
+        double radius = 0;
+        for (const auto& d : marker_texels) {const auto q = sky_pixel(f.frame, d); radius = std::max(radius, std::hypot(q[0]-ex, q[1]-ey));}
+        radius += 3;
+        double weight = 0, outside = 0, ox = 0, oy = 0;
+        for (unsigned y = 0; y < image.extent.height; ++y) for (unsigned x = 0; x < image.extent.width; ++x) {
+            const unsigned code = pixel(image, x, y)[1];
+            if (!sky_inside(f.frame, x, y) || code <= 8) continue;
+            weight += code; ox += code*(x+.5); oy += code*(y+.5);
+            if (std::hypot(x+.5-ex, y+.5-ey) > radius) outside += code;
+        }
+        return weight > 0 ? Marker{ox/weight-ex, oy/weight-ey, weight, outside/weight} : Marker{1e9, 1e9, 0, 1};
+    };
+    for (const auto aa : {render::Antialiasing::smaa_t2x, render::Antialiasing::taa}) {
+        const bool t2x = aa == render::Antialiasing::smaa_t2x;
+        options.antialiasing = aa; ++f.frame.scene_identity; f.frame.camera_cut = true;
+        turn(24);
+        const auto reference = measure(f.capture(t2x ? "sky-still-t2x" : "sky-still-taa", 8));
+        ++f.frame.scene_identity; f.frame.camera_cut = true;
+        for (unsigned frame = 0; frame < 24; ++frame) {turn(frame); f.step();}
+        turn(24);
+        const auto image = f.capture(t2x ? "sky-turning-t2x" : "sky-turning-taa", 1);
+        const auto observed = measure(image);
+        const double energy = observed.energy/reference.energy;
+        if (t2x) {
+            // Captured motion against the rotation-only reprojection between the
+            // unjittered frame-23 and frame-24 cameras, computed here.
+            auto previous = f.frame; turn(23); previous.camera = f.frame.camera; turn(24);
+            const double yaw = (1.5*24-18)*std::numbers::pi/180;
+            const SkyDirection x_axis{std::cos(yaw), 0, -std::sin(yaw)}, z_axis{std::sin(yaw), 0, std::cos(yaw)};
+            const auto& v = f.frame.scene_viewport;
+            double motion_error = 0; std::size_t nonfinite = 0;
+            for (unsigned y = 0; y < image.extent.height; ++y) for (unsigned x = 0; x < image.extent.width; ++x) {
+                if (!sky_inside(f.frame, x, y)) continue;
+                const double a = ((x+.5-v.x)/v.width*2-1)*aspect/1.8, b = (1-(y+.5-v.y)/v.height*2)/1.8;
+                const SkyDirection d{a*x_axis[0]+z_axis[0], b, a*x_axis[2]+z_axis[2]};
+                const auto q = sky_pixel(previous, d);
+                const auto i = (std::size_t(y)*image.extent.width+x)*2;
+                if (!std::isfinite(image.motion[i]) || !std::isfinite(image.motion[i+1])) {++nonfinite; continue;}
+                motion_error = std::max({motion_error, std::abs(image.motion[i]*image.extent.width-(q[0]-x-.5)),
+                                         std::abs(image.motion[i+1]*image.extent.height-(q[1]-y-.5))});
+            }
+            std::printf("SceneLit sky background motion: max_error=%.3f px nonfinite=%zu\n", motion_error, nonfinite);
+            check(nonfinite == 0 && motion_error <= .1, "background motion is the rotation-only reprojection on the unjittered grid");
+        }
+        std::printf("SceneLit sky turning %s: offset=(%.2f,%.2f) energy=%.3f trail=%.4f\n", t2x ? "t2x" : "taa", observed.dx, observed.dy, energy, observed.trail);
+        check(std::abs(observed.dx) <= 1 && std::abs(observed.dy) <= 1 && std::abs(energy-1) <= .05 && observed.trail <= .02,
+              "a turning, moving camera keeps the sky background registered without a trail");
+    }
+    // Flipping 180 degrees every frame without a cut, the camera sees only sky that
+    // was behind the previous one. Projecting it there would mirror the marker into
+    // the opposite view at a matching speed, which T2x would blend in at half weight.
+    options.antialiasing = render::Antialiasing::smaa_t2x; ++f.frame.scene_identity; f.frame.camera_cut = true;
+    const auto flip = [&](bool back) {f.frame.camera = sky_look({0,0,0}, {0,0,back ? -1.f : 1.f}, {0,1,0}, aspect, 1.8f);};
+    flip(false);
+    for (unsigned frame = 0; frame < 8; ++frame) f.step();
+    for (unsigned frame = 0; frame < 8; ++frame) {flip(frame%2 == 0); f.step();}
+    flip(true);
+    const auto flipped = f.capture("sky-flipped-t2x", 1);
+    double ghost = 0;
+    for (unsigned y = 0; y < flipped.extent.height; ++y) for (unsigned x = 0; x < flipped.extent.width; ++x)
+        if (sky_inside(f.frame, x, y)) ghost += pixel(flipped, x, y)[1];
+    std::printf("SceneLit sky flipped t2x: background_energy=%.0f\n", ghost);
+    check(ghost == 0, "sky behind the previous camera takes no T2x history");
+    // Parallel rays see one sky direction in every pixel: the background keeps its place.
+    options.antialiasing = render::Antialiasing::smaa_t2x; ++f.frame.scene_identity; f.frame.camera_cut = true;
+    f.frame.camera = sky_look({0,0,0}, {0,0,1}, {0,1,0}, aspect, 1.8f);
+    f.frame.camera.projection = {1/(3.8f*aspect),0,0,0, 0,1/3.8f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
+    const auto parallel = f.capture("sky-orthographic-t2x", 4);
+    std::size_t background = 0, moving = 0;
+    for (unsigned y = 0; y < parallel.extent.height; ++y) for (unsigned x = 0; x < parallel.extent.width; ++x) {
+        if (!sky_inside(f.frame, x, y) || depth(parallel, x, y) > 0) continue;
+        const auto i = (std::size_t(y)*parallel.extent.width+x)*2;
+        ++background;
+        if (!(parallel.motion[i] == 0 && parallel.motion[i+1] == 0)) ++moving;
+    }
+    std::printf("SceneLit sky orthographic t2x: background=%zu moving_or_nonfinite=%zu\n", background, moving);
+    check(background > 1000 && moving == 0, "an orthographic camera's sky background keeps its place, with finite motion");
+    options.antialiasing = render::Antialiasing::taa; ++f.frame.scene_identity; f.frame.camera_cut = true;
+    f.frame.camera = sky_look({0,0,0}, {0,0,1}, {0,1,0}, aspect, 1.8f);
+    for (unsigned frame = 0; frame < 32; ++frame) f.step();
+    std::vector<render::Capture> still(16);
+    for (auto& frame : still) f.step(&frame);
+    double worst = 0; std::vector<double> varying;
+    for (unsigned y = 0; y < still[0].extent.height; ++y) for (unsigned x = 0; x < still[0].extent.width; ++x) {
+        if (!sky_inside(f.frame, x, y) || depth(still[0], x, y) > 0) continue;
+        double pixel_worst = 0;
+        for (unsigned c = 0; c < 3; ++c) {
+            double sum = 0, squares = 0;
+            for (const auto& frame : still) {const double v = pixel(frame, x, y)[c]; sum += v; squares += v*v;}
+            const double mean = sum/still.size();
+            pixel_worst = std::max(pixel_worst, std::sqrt(std::max(0., squares/still.size()-mean*mean)));
+        }
+        worst = std::max(worst, pixel_worst);
+        if (pixel_worst > .5) varying.push_back(pixel_worst);
+    }
+    double varying_sum = 0; for (double v : varying) varying_sum += v;
+    std::printf("SceneLit sky still TAA: max_temporal_deviation=%.2f p90=%.2f mean=%.2f over %zu varying pixels\n", worst,
+                varying.empty() ? 0. : percentile(varying, 90), varying.empty() ? 0. : varying_sum/varying.size(), varying.size());
+    check(worst <= 1, "a still camera under TAA sees a steady sky background");
+    options.sky_map = {}; options.antialiasing = render::Antialiasing::none;
+}
+
 // DDGI probe misses read the map: tilted Lambert boards under a half-space sky
 // receive (1 + n.a)/2 of their uniform-sky irradiance. Each channel is its own
 // half-space, along +X, +Y and +Z, with its own tint, so a swapped map or tint
@@ -391,8 +521,9 @@ void sky_benchmark(Fixture& f) {
 void sky_cases(Fixture& f) {
     sky_uniform_equivalence(f);
     sky_background_geometry(f);
+    sky_background_temporal(f);
     sky_probe_misses(f);
     sky_real_stability(f, sky_real_map());
     f.restore();
-    std::puts("Renderer SceneLit sky: PASS (constant map and 2^k background, solid-angle mean, marker under two yaws, u seam, minified mean, same-frame removal, per-channel DDGI half-space ratios, same-map turn response, real HDRI stability)");
+    std::puts("Renderer SceneLit sky: PASS (constant map and 2^k background, solid-angle mean, marker under two yaws, u seam, minified mean, same-frame removal, turning-camera registration under T2x and TAA, no history from behind the previous camera, orthographic background motion, steady sky under a still TAA camera, per-channel DDGI half-space ratios, same-map turn response, real HDRI stability)");
 }

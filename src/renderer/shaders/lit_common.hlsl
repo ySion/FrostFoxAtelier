@@ -114,15 +114,31 @@ float3 lit_sky_incident(float3 direction) {
     return lit_sky_radiance.rgb*lit_sky_cube.SampleLevel(lit_linear_sampler,lit_sky_map_direction(direction),0).rgb;
 }
 float2 lit_sky_uv(float3 d) {return float2(.5+atan2(d.x,d.z)*(.5/LIT_PI),acos(clamp(d.y,-1,1))/LIT_PI);}
-// The sky seen behind a window pixel. Its footprint comes from the neighbouring
-// pixels' directions; the u difference wraps so the seam keeps the local level.
+// The sky seen behind a window pixel, on the unjittered pixel grid: the map is
+// already filtered, so jittering it would only make it shimmer. Its footprint
+// comes from the neighbouring pixels' directions; the u difference wraps so the
+// seam keeps the local level.
 float3 lit_sky_background_at(uint2 pixel) {
-    float2 pitch=1/float2(lit_size_frame.xy),uv=(pixel+.5)*pitch;
+    float2 pitch=1/float2(lit_size_frame.xy),uv=(pixel+.5+lit_jitter.xy)*pitch;
     float2 t=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv)));
     float2 dx=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv+float2(pitch.x,0))))-t;
     float2 dy=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv+float2(0,pitch.y))))-t;
     dx.x-=round(dx.x);dy.x-=round(dy.x);
     return lit_sky_radiance.rgb*lit_sky.z*lit_sky_background.SampleGrad(lit_sky_sampler,t,dx,dy).rgb;
+}
+// Motion of a background pixel on the unjittered grid, so z (jitter coverage) is 0.
+// The sky lies at infinity: its previous position is the same direction under the
+// previous view-projection with w = 0, which drops the camera translation.
+// Parallel (orthographic) rays see one direction in every pixel, so a pixel keeps
+// its place. A direction behind the previous camera was not on screen: its
+// position is outside the window, kept finite for FP16 like far-off positions.
+float4 lit_background_motion(uint2 pixel) {
+    float2 pitch=1/float2(lit_size_frame.xy),uv=(pixel+.5)*pitch;
+    float valid=lit_size_frame.w!=0?1:0;
+    if(all(lit_previous_view_projection._m03_m13_m23==0))return float4(0,0,0,valid);
+    float4 previous=mul(float4(-lit_view_direction(uv+lit_jitter.xy*pitch),0),lit_previous_view_projection);
+    if(!(previous.w>0))return float4(-1-uv,0,0);
+    return float4(clamp(lit_window_uv(previous)-lit_jitter.zw*pitch,-1,2)-uv,0,valid);
 }
 uint lit_hash(uint x) { x^=x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; return x^(x>>16); }
 float lit_random(inout uint seed) { seed=lit_hash(seed); return (seed>>8)*(1.0/16777216.0); }

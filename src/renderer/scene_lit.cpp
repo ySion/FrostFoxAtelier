@@ -1232,7 +1232,7 @@ struct SceneLit::State {
             bind(p,"lit_cluster_depth",cluster_depth);bind(p,"lit_cluster_count",cluster_count);bind(p,"lit_cluster_source",cluster_source);
             bind_shadows(p);bind(p,"lit_ltc",ltc);
             bind(p,"lit_indirect_source",indirect);bind(p,"lit_ao",ao_texture);
-            bind(p,"lit_indirect_gain",settings.indirect_gain);bind(p,"lit_hdr_output",hdr);bind(p,"lit_sun_trace_list",sun_trace_list);}
+            bind(p,"lit_indirect_gain",settings.indirect_gain);bind(p,"lit_hdr_output",hdr);bind(p,"lit_motion_output",gbuffer_textures[3]);bind(p,"lit_sun_trace_list",sun_trace_list);}
         dispatch_window(compose,depth);
         // Usually an empty list: an indirect dispatch of zero groups.
         bind(sun_trace_prepare.program(),"lit_sun_trace_arguments",sun_trace_arguments);dispatch(sun_trace_prepare,depth,1);
@@ -1374,7 +1374,9 @@ struct SceneLit::State {
             retire(sky_background);retire(sky_cube);sky_source=settings.sky_map;
             if(sky_source) {
                 const auto& map=*sky_source;
-                sky_background=gfxCreateTexture2D(gfx,map.width(),map.height(),DXGI_FORMAT_R16G16B16A16_FLOAT,gfxCalculateMipCount(map.width(),map.height()));
+                // Mip generation writes the levels as UAVs; without the flag gfx re-creates and copies the whole texture first.
+                sky_background=gfxCreateTexture2D(gfx,map.width(),map.height(),DXGI_FORMAT_R16G16B16A16_FLOAT,gfxCalculateMipCount(map.width(),map.height()),
+                    nullptr,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 allocation(bool(sky_background));
                 const auto upload=[&](std::span<const std::byte> bytes,auto&& copy) {
                     auto buffer=gfxCreateBuffer(gfx,bytes.size(),bytes.data(),kGfxCpuAccess_Write);allocation(bool(buffer));

@@ -17,10 +17,11 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 - 点光源使用 candela，矩形面光源使用 cd/m²，方向光使用 lux。点光源半径以米表示，方向光角半径以弧度表示；矩形使用米制宽高与单面/双面设置。
 - 天光是同一作者值中的 `sky_enabled`、`sky_color`、`sky_intensity`（cd/m²），以及方向性贴图 `sky_map`（`rendering::SkyMapRef`，空表示 map = 1）和 `sky_rotation`（度）。入射辐亮度为 L(ω) = sky_color × sky_intensity × map(R·ω)。宿主用 `rendering::sky_radiance` 求颜色乘强度写入 `Frame.environment`；天光关闭或没有 Environment 时该值为零。天光不进入局部光源候选池。Renderer 从 `Frame::view.lit` 读取 `sky_map` 与 `sky_rotation`：
   - DDGI 探针射线 miss 读贴图的低分辨率 radiance cube。
-  - 背景像素只在设了贴图时显示天空，按相邻像素方向的跨度选 mip，u 接缝处按环绕计算跨度；没有贴图时 Scene Lit 背景仍为黑，工作室模式的渐变偏好单独保留。背景像素没有运动向量，TAA 和 SMAA T2x 下转动相机时天空会拖影。
+  - 背景像素只在设了贴图时显示天空，按相邻像素方向的跨度选 mip，u 接缝处按环绕计算跨度；没有贴图时 Scene Lit 背景仍为黑，工作室模式的渐变偏好单独保留。背景在未抖动的像素网格上采样：贴图已经按 mip 预滤波，抖动只会让它闪烁。
+  - 设了贴图时，compose 给背景像素写运动向量：天空在无穷远，取同一方向在上一帧 view-projection 下的位置（w = 0，自然去掉相机平移），按未抖动网格计（jitter coverage z = 0）。上一帧是正交相机时，所有像素看到同一方向，背景运动为零；方向在上一帧相机背后时，前帧位置记在窗口外，远离窗口的位置也夹在窗口外的有限范围内，FP16 不会溢出。SMAA T2x 据此重投影背景，窗口外的位置不取历史；TAA 对背景不取历史。没有贴图时背景为黑，compose 不写 motion，GBuffer 的清除值（零运动）保持不变。
   - 其余读均匀天光的地方（DDGI 关闭时的合成、SSSR 的环境回退）改读贴图按立体角的平均辐亮度，即 `Frame.environment` 乘贴图均值。
   - 换贴图、改旋转角或改颜色强度都会增加探针纪元；旋转角逐帧变化时探针历史逐帧重置。
-  - GPU 缓存项持有 `SkyMapRef`，不拿地址当键，旧贴图释放后新贴图即使分配在同一地址也不会命中过期资源。换贴图时旧纹理经 gfx 按在途帧退休；4K 贴图约 85 MiB（RGBA16F 加 mip），cube 1.5 KiB，都计入 `scene_lit_resource_bytes`。上传与 mip 生成计入 AS/uploads 时段，在一帧内完成：4K 贴图的上传帧 CPU 约 50–85 ms（mip 生成 12–25 ms、64 MiB 上传缓冲 14–17 ms、建纹理 5 ms，其余是六个 cube 面的小缓冲），GPU 约 4.2 ms。1440p benchmark room 里设了贴图后 compose 中位数从 0.497 ms 变为 0.564 ms，DDGI 主追踪不变。
+  - GPU 缓存项持有 `SkyMapRef`，不拿地址当键，旧贴图释放后新贴图即使分配在同一地址也不会命中过期资源。换贴图时旧纹理经 gfx 按在途帧退休；4K 贴图约 85 MiB（RGBA16F 加 mip），cube 1.5 KiB，都计入 `scene_lit_resource_bytes`。上传与 mip 生成计入 AS/uploads 时段，在一帧内完成：4K 贴图的上传帧 CPU 约 34 ms（主要是 64 MiB 上传缓冲 14–17 ms 和建纹理约 5 ms），GPU 约 3.4–3.7 ms。背景纹理创建时就带 UAV 标志，mip 生成只是一次录制（约 0.03 ms）；不带这个标志时 gfx 会在第一次生成 mip 前重建并整张拷贝纹理，多花 12–25 ms。1440p benchmark room 里设了贴图后 compose 中位数从 0.498 ms 变为 0.576 ms（其中背景 motion 约 0.012 ms），DDGI 主追踪不变。
   - 天空里的太阳不提取：它只经 DDGI 和反射照亮场景，没有清晰阴影。需要清晰阴影时，用不带太阳的 HDRI 加一盏 Directional 光，用 `sky_rotation` 对齐。
 - `rendering::SkyMap`（[sky_map.hpp](../../../src/rendering/sky_map.hpp)）是不可变的等距柱状天空资源：
   - 贴图空间：第 0 行是 +Y，行向 −Y 推进；u = 0.5 朝 +Z，u = 0.75 朝 +X，从球心看贴图不镜像。
@@ -271,7 +272,7 @@ Renderer 的常规验收是 `renderer_acceptance` 目标。它在各自的进程
 | `--scene-lit-temporal` | 信号编辑、移动历史、时间隔离、刚体运动响应、停止后首帧运动向量与静止参考一致 |
 | `--scene-lit-quality` | 四种 AA、灯光编辑与收敛、直接光逐帧一致与编辑当帧生效、深度、DDGI 质量与发光网格经 DDGI 照明、contracts |
 | `--scene-lit-stability` | 稳定性、DDGI 质量、多体积 |
-| `--scene-lit-sky` | 天空贴图：常量贴图与均匀天空逐像素相同及背景的 2^k 缩放，极冠贴图的立体角均值，标记点在两个旋转角下的背景位置，u 接缝连续，缩小的单纹素棋盘格背景等于均值，同场景移除贴图当帧背景变黑并释放贴图，倾斜朗伯板在三通道各自半空间天空下的逐通道 DDGI 辐照度比，同一贴图转 90° 后 48 帧内到位，真实 HDRI 下的时间稳定性 |
+| `--scene-lit-sky` | 天空贴图：常量贴图与均匀天空逐像素相同及背景的 2^k 缩放，极冠贴图的立体角均值，标记点在两个旋转角下的背景位置，u 接缝连续，缩小的单纹素棋盘格背景等于均值，同场景移除贴图当帧背景变黑并释放贴图，相机边转边移时 T2x 与 TAA 下背景对齐、无拖尾，静止 TAA 下背景逐帧不变，倾斜朗伯板在三通道各自半空间天空下的逐通道 DDGI 辐照度比，同一贴图转 90° 后 48 帧内到位，真实 HDRI 下的时间稳定性 |
 | `--scene-lit-clustered`、`--scene-lit-shadows`、`--scene-lit-cost` | 解析真值（点光照朗伯平面，正交与透视）与灯列表支持；阴影 atlas 的几何真值、压力下整盏放弃、混合光源叠加；编辑当帧生效与工作量 |
 
 各入口也可单独运行并追加 `--output <绝对目录>`；同步图像读回耗时不作为性能结果。菜单与工程入口由 `editor_scene_lit_acceptance` 验证。

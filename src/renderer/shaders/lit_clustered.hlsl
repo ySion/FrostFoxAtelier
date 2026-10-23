@@ -127,6 +127,7 @@ Texture2D<float4> lit_indirect_source;
 float lit_indirect_gain;
 Texture2D<float> lit_ao;
 RWTexture2D<float4> lit_hdr_output;
+RWTexture2D<float4> lit_motion_output; // The GBuffer motion target; compose fills its sky-map background pixels.
 RWStructuredBuffer<uint> lit_sun_trace_list;
 
 // Every shadow-casting light samples the atlas. A casting light the atlas
@@ -278,7 +279,10 @@ void lit_compose_cs(uint3 tid:SV_DispatchThreadID) {
     if(!lit_inside(p)||lit_is_background_depth(lit_depth[p])) {
         // The Sky Light is incident radiance; only a sky map is also seen behind the scene.
         float3 sky=0;
-        if(lit_inside(p)&&lit_sky.w!=0)sky=min(lit_sky_background_at(p),65504.xxx);
+        if(lit_inside(p)&&lit_sky.w!=0) {
+            sky=min(lit_sky_background_at(p),65504.xxx);
+            lit_motion_output[p]=lit_background_motion(p);
+        }
         lit_hdr_output[p]=float4(sky,1);return;
     }
     float4 bm=lit_base_metallic[p]; float ao=(lit_effect_flags&4)!=0?lit_ao[p]:1;
