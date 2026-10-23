@@ -349,6 +349,94 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     check(empty.stats.scene_draw_calls==0 && replacement_observer.expired(), "unused geometry CPU/GPU cache ownership retires");
     std::puts("Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
 }
+// The Renderer rechecks only positions whose content changed since an accepted
+// check. Each case edits one position of a steady snapshot in place.
+void instance_check_cases(render::Renderer& renderer, ui::PixelExtent extent) {
+    ui::Frame drawing{.id = 3000, .extent = extent, .draws = {}};
+    render::Camera camera;
+    camera.projection[10] = -.1f;
+    std::array<render::MeshInstance, 3> meshes{};
+    for (std::size_t i = 0; i < meshes.size(); ++i) {
+        meshes[i].geometry = atelier::geometry::cube_mesh();
+        meshes[i].world = translation(-1.5f + 1.5f * float(i), 0, 4);
+        meshes[i].stable_key = 11 + i;
+    }
+    render::Frame frame{drawing, camera, {40, 40, float(extent.width) - 80, float(extent.height) - 80}, meshes};
+    frame.view.shading = render::Shading::scene_lit;
+    frame.scene_identity = 3000;
+    render::Capture capture;
+    const auto accept = [&](const char* message) {
+        ++drawing.id;
+        const auto result = take(prepared_render(renderer, frame, &capture));
+        check(result.status == render::FrameStatus::accepted && capture.frame_id == drawing.id, message);
+    };
+    const auto reject = [&](const char* message) {
+        const auto previous = capture.frame_id;
+        ++drawing.id;
+        const auto result = prepared_render(renderer, frame, &capture);
+        check(!result && !result.error().terminal && result.error().cause.code == atelier::rhi::ErrorCode::invalid_argument &&
+                  capture.frame_id == previous, message);
+    };
+    accept("a valid Lit snapshot is accepted");
+    accept("the unchanged snapshot is accepted again");
+    const auto original = meshes[1];
+    using Edit = void (*)(render::MeshInstance&);
+    const std::array<std::pair<Edit, const char*>, 5> edits{{
+        {[](render::MeshInstance& m) { m.world[13] = std::numeric_limits<float>::quiet_NaN(); }, "NaN world"},
+        {[](render::MeshInstance& m) { m.color.a = 2; }, "color above one"},
+        {[](render::MeshInstance& m) { m.material.emissive[0] = 1e30f; }, "emission above the limit"},
+        {[](render::MeshInstance& m) {
+             m.surfaces = std::make_shared<const std::vector<atelier::material::SurfaceRef>>(2, atelier::material::default_surface());
+         }, "surface count unlike the geometry"},
+        {[](render::MeshInstance& m) { m.world[0] = 0; }, "singular world"},
+    }};
+    for (const auto& [edit, name] : edits) {
+        edit(meshes[1]);
+        std::printf("Renderer instance check: %s\n", name);
+        reject("an invalid edit at a steady position rejects the next frame");
+        reject("the same invalid content stays rejected while it persists");
+        meshes[1] = original;
+        accept("restoring the accepted content is accepted");
+    }
+    meshes[1].stable_key = meshes[0].stable_key;
+    reject("a key edited to duplicate another position is rejected in Lit");
+    meshes[1].stable_key = original.stable_key;
+    accept("restoring the key releases the duplicate");
+    std::swap(meshes[0].stable_key, meshes[1].stable_key);
+    accept("two positions may exchange their keys in one frame");
+    std::swap(meshes[0].stable_key, meshes[1].stable_key);
+    accept("and exchange them back");
+    frame.view.shading = render::Shading::smooth;
+    meshes[1].stable_key = meshes[0].stable_key;
+    accept("Studio accepts duplicate stable keys");
+    frame.view.shading = render::Shading::scene_lit;
+    reject("unchanged instances holding a duplicate key are rejected once the view is Lit");
+    frame.view.shading = render::Shading::smooth;
+    accept("Studio accepts them again");
+    meshes[1].stable_key = original.stable_key;
+    accept("Studio accepts the restored key");
+    frame.view.shading = render::Shading::scene_lit;
+    accept("Lit accepts the restored keys");
+    // A changed position is prepared again; studio depth is deterministic.
+    frame.view.shading = render::Shading::smooth;
+    accept("Studio reference");
+    const auto reference = capture.depth;
+    meshes[0].world[12] += .5f;
+    accept("a moved instance is accepted");
+    check(capture.depth != reference, "a moved instance draws at its new transform");
+    meshes[0].world[12] -= .5f;
+    accept("the instance moved back is accepted");
+    check(capture.depth == reference, "an instance moved back draws exactly as before");
+    // Color lives in the material tables, which are rebuilt only when committed material content changes.
+    const auto colors = capture.rgba;
+    meshes[1].color = {1, 0, 0, 1};
+    accept("a recolored instance is accepted");
+    check(capture.rgba != colors, "a recolored instance draws in its new color");
+    meshes[1].color = original.color;
+    accept("the original color is accepted");
+    check(capture.rgba == colors, "a restored color draws exactly as before");
+    std::puts("Renderer instance checks: PASS (steady-position edits rejected and recovered, persistent key uses across Lit and Studio, changed transforms and colors prepared again)");
+}
 void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     ui::Frame drawing{.id=2500,.extent=extent,.draws={}};
     render::Camera camera;camera.projection[10]=-.1f;
@@ -645,6 +733,7 @@ int main(int argc, char** argv) try {
     transform_cases(renderer, ui_frame.extent);
     mesh_cases(renderer, ui_frame.extent);
     visibility_cases(renderer, ui_frame.extent);
+    instance_check_cases(renderer, ui_frame.extent);
     ui_shape_cases(renderer, ui_frame.extent);
     selection_depth_cases(renderer,ui_frame.extent);
     selection_clipping_cases(renderer, ui_frame.extent);
