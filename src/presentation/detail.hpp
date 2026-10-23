@@ -12,6 +12,8 @@ struct Access {
     static ReferenceSequence& materials(StaticMeshComponent& value) noexcept {return value.materials_;}
     static std::vector<std::string>& material_slots(StaticMeshComponent& value) noexcept {return value.material_slots_;}
     static std::vector<bool>& material_overrides(StaticMeshComponent& value) noexcept {return value.material_overrides_;}
+    static ReferenceSequence& default_materials(StaticMeshComponent& value) noexcept {return value.default_materials_;}
+    static std::vector<std::string>& default_slots(StaticMeshComponent& value) noexcept {return value.default_slots_;}
     static auto& surfaces(StaticMeshComponent& value) noexcept {return value.surfaces_;}
     static auto& surface_geometry(StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
     static auto& surface_parameters(StaticMeshComponent& value) noexcept {return value.surface_parameters_;}

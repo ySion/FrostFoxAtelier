@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace atelier::editor {
 namespace {
@@ -119,7 +120,10 @@ std::string alpha_mode(const Json& material) {
     auto mode=material.value("alphaMode",std::string("OPAQUE"));
     require(mode=="OPAQUE" || mode=="MASK" || mode=="BLEND","invalid alphaMode.");return mode;
 }
-std::string material_name(const Json& material,std::size_t index) {return material.value("name","material "+std::to_string(index));}
+std::string material_name(const Json& material,std::size_t index) {
+    auto name=material.value("name",std::string{});
+    return name.empty()?"material "+std::to_string(index):name;
+}
 }
 
 MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_images) {
@@ -206,7 +210,10 @@ MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_imag
             if(slot==no_slot) {
                 require(image_files.size()<maximum_images,"too many images.");
                 require(!image.contains("bufferView"),"images stored in buffers are not supported.");
-                slot=image_files.size();image_files.push_back(read(dependency(member(image,"uri")),maximum_image_file));
+                const auto path=dependency(member(image,"uri"));
+                // Generated materials reference the image as a Project texture asset.
+                require(Project::is_texture_path(path),"images must be PNG, JPEG, BMP or TIFF files.");
+                slot=image_files.size();image_files.push_back(read(path,maximum_image_file));
             }
             return slot;
         };
@@ -221,11 +228,11 @@ MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_imag
         for(const auto file:image_files) image_sources.push_back(result.files[file].bytes);
         const auto decoded=decode_images(image_sources,shared_images,maximum_decoded);
         // An empty object is the glTF default material, used by primitives without one.
-        const auto surface=[&](const Json& source_material) {
+        const auto surface=[&](const Json& source_material,std::array<std::filesystem::path,material::input_count>& files) {
             material::Description description;auto& p=description.parameters;
             const auto texture=[&](material::Input input,const Json& info,std::uint32_t channel) {
-                auto& target=description.texture(input);
-                target.image=decoded[texture_image(info)];target.channel=channel;
+                auto& target=description.texture(input);const auto image=texture_image(info);
+                target.image=decoded[image];target.channel=channel;files[static_cast<std::size_t>(input)]=result.files[image_files[image]].relative;
                 const auto& source_texture=element(gltf,"textures",info["index"]);
                 const auto& sampler=source_texture.contains("sampler")?element(gltf,"samplers",source_texture["sampler"]):empty_object;
                 const auto wrap=sampler.value("wrapS",10497);
@@ -252,12 +259,15 @@ MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_imag
             p.double_sided=p.emission_two_sided=source_material.value("doubleSided",false);
             return std::make_shared<const material::Surface>(std::move(description));
         };
-        std::vector<material::Slot> slots;std::vector<std::size_t> slot_of(materials.size(),no_slot);
-        for(std::size_t m=0;m<materials.size();++m) if(used[m]) {
-            slot_of[m]=slots.size();slots.push_back({material_name(materials[m],m),surface(materials[m])});
-        }
+        // Slot names are unique: scenes bind materials to slots by name.
+        std::vector<material::Slot> slots;std::vector<std::size_t> slot_of(materials.size(),no_slot);std::unordered_set<std::string> names;
+        const auto add_slot=[&](const std::string& name,const Json& source_material) {
+            auto unique=name;for(std::size_t n=2;!names.insert(unique).second;++n) unique=name+" ("+std::to_string(n)+")";
+            slots.push_back({std::move(unique),surface(source_material,result.textures.emplace_back())});
+        };
+        for(std::size_t m=0;m<materials.size();++m) if(used[m]) {slot_of[m]=slots.size();add_slot(material_name(materials[m],m),materials[m]);}
         const auto default_slot=slots.size();
-        if(default_used) slots.push_back({"default",surface(empty_object)});
+        if(default_used) add_slot("default",empty_object);
         std::vector<geometry::Vertex> vertices;vertices.reserve(corners);std::vector<geometry::MeshPart> parts;
         for(const auto& [index,world]:placed) {
             const std::array<double,9> linear{world[0],world[1],world[2],world[4],world[5],world[6],world[8],world[9],world[10]};

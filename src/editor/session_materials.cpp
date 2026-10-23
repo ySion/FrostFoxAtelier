@@ -14,7 +14,7 @@ bool same(const material::State& a,const material::State& b) {
 }
 }
 const MissingResource& Session::remember_unavailable(const Project& project,AssetKind kind,std::string_view key,const Error& error) {
-    const bool listed=std::ranges::find(project.entries(),key,&ProjectEntry::key)!=project.entries().end();
+    const bool listed=project.entry(key)!=nullptr;
     return unavailable_.insert_or_assign({kind,std::string(key)},MissingResource{std::string(key),(listed?"The file cannot be read: ":"")+error.message,std::nullopt,
         listed?world::DiagnosticKind::unreadable_resource:world::DiagnosticKind::missing_resource}).first->second;
 }
@@ -71,6 +71,25 @@ Result<ObjectRoot> Session::material_resource(Project& project,const MaterialAss
     auto root=material::create_material(runtime_,state);if(!root) return std::unexpected(root.error());
     if(!asset.key.empty()) materials_.emplace(asset.key,MaterialDocument{*root,state,{state},0});
     return std::move(*root);
+}
+Result<std::vector<presentation::MaterialBinding>> Session::mesh_defaults(Project& project,const MeshAsset& asset,std::vector<MissingResource>* missing) {
+    std::vector<MissingResource> unreported;std::vector<presentation::MaterialBinding> result;result.reserve(asset.materials.size());
+    for(const auto& item:asset.materials) {
+        auto root=material_resource(project,item.key,missing?missing:&unreported);if(!root) return std::unexpected(root.error());
+        result.push_back({item.slot,std::move(*root),false});
+    }
+    return result;
+}
+Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> Session::mesh_surfaces(Project& project,const MeshAsset& asset) {
+    auto defaults=mesh_defaults(project,asset);if(!defaults) return std::unexpected(defaults.error());
+    auto result=std::make_shared<std::vector<material::SurfaceRef>>();if(!asset.mesh) return result;
+    for(std::size_t i=0;i<asset.mesh->materials().size();++i) {
+        const auto at=std::ranges::find(*defaults,presentation::material_slot_name(*asset.mesh,i),&presentation::MaterialBinding::slot);
+        if(at==defaults->end()) {result->push_back(asset.mesh->materials()[i].surface);continue;}
+        auto surface=material::capture(runtime_,at->resource.id());if(!surface) return std::unexpected(surface.error());
+        result->push_back(std::move(*surface));
+    }
+    return result;
 }
 Result<MaterialAsset> Session::material_asset(ObjectId object) const {
     auto& runtime=world_.runtime();auto state=material::read_material(runtime,object);if(!state) return std::unexpected(state.error());
@@ -228,8 +247,15 @@ Result<void> Session::clear_material(ObjectId object,std::string_view slot) {
 Result<void> Session::set_material_override(ObjectId component,std::string_view slot,std::span<const FieldId> path,bool enabled) {
     if(auto cancelled=cancel_edit();!cancelled) return cancelled;
     auto bindings=presentation::read_material_bindings(runtime_,component);if(!bindings) return std::unexpected(bindings.error());
-    const auto at=std::ranges::find(*bindings,slot,&presentation::MaterialBinding::slot);
-    if(at==bindings->end()) return failure("Assign a shared material before creating parameter overrides.");
+    auto at=std::ranges::find(*bindings,slot,&presentation::MaterialBinding::slot);
+    if(at==bindings->end()) {
+        // A slot showing its mesh default overrides an instance of that default.
+        auto mesh=presentation::read_static_mesh(runtime_,component);if(!mesh) return std::unexpected(mesh.error());
+        const auto fallback=std::ranges::find(mesh->mesh.defaults,slot,&presentation::MaterialBinding::slot);
+        if(fallback==mesh->mesh.defaults.end()) return failure("Assign a shared material before creating parameter overrides.");
+        if(!enabled) return {};
+        bindings->push_back({std::string(slot),fallback->resource,true});at=std::prev(bindings->end());
+    }
     auto state=material::read_material(runtime_,at->resource.id());if(!state) return std::unexpected(state.error());
     auto bit=material::override_bit(runtime_,path);if(!bit) return std::unexpected(bit.error());
     if(!state->parent.registered()) {

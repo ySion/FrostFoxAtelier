@@ -14,6 +14,14 @@ void verify_official_examples() {
         require(std::ranges::any_of(project.entries(),[&](const auto& entry){
             return entry.path==folder && entry.kind==editor::AssetKind::folder;
         }),"Official examples are absent from the shared Project directory catalog.");
+    // Every shipped mesh default names a material asset whose textures are catalogued.
+    for(const auto& entry:project.entries()) for(const auto& binding:entry.materials) {
+        const auto* listed=project.entry(binding.key);
+        require(listed && listed->kind==editor::AssetKind::material,"An official mesh names a missing default material.");
+        for(const auto& texture:take(project.material(binding.key)).textures)
+            require(texture.empty() || (project.entry(texture) && project.entry(texture)->kind==editor::AssetKind::texture),
+                "An official default material names a missing texture.");
+    }
     for(const auto& example:editor::official_examples) {
         const auto source_scene=take(shipped.resolve(example.scene));
         const auto original=take(editor::read_file(source_scene));
@@ -23,6 +31,14 @@ void verify_official_examples() {
         require(example.command==editor::Command::example_dungeons?meshes.size()==3425:
             example.command==editor::Command::example_physic?meshes.size()==19:
             meshes.size()==(example.command==editor::Command::example_sponza?1u:10u),"Official example lost geometry.");
+        // Scenes bind materials by slot name: every saved binding must still find its slot.
+        std::size_t saved_bindings{},loaded_bindings{};
+        for(const auto& entity:nlohmann::json::parse(original)["entities"]) for(const auto& part:entity["components"])
+            if(const auto at=part.find("materials");at!=part.end()) saved_bindings+=at->size();
+        for(const auto& item:meshes) loaded_bindings+=take(presentation::read_material_bindings(document->world().runtime(),item.component)).size();
+        require(loaded_bindings==saved_bindings && std::ranges::none_of(document->load_issues(),[](const auto& issue) {
+            return issue.kind==world::DiagnosticKind::missing_resource || issue.kind==world::DiagnosticKind::unreadable_resource;}),
+            "An official example lost a material binding or references an unavailable resource.");
         const auto fields=take(document->properties(meshes.front().component));
         const auto roughness=std::ranges::find(fields,"material.roughness",&editor::Property::name);
         require(roughness!=fields.end(),"Official example has no editable material.");

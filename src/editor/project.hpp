@@ -20,6 +20,7 @@ struct ProjectEntry {
     AssetKind kind{};
     std::uintmax_t bytes{};
     std::filesystem::file_time_type modified{};
+    std::vector<SlotMaterial> materials{}; // A mesh sidecar's default material per slot, by slot name.
     bool operator==(const ProjectEntry&) const = default;
 };
 // The folder is the project. Config/Project.json identifies it; all persisted
@@ -38,10 +39,12 @@ public:
     const std::filesystem::path& ui_source() const noexcept { return ui_source_; }
     const std::wstring& name() const noexcept { return name_; }
     std::span<const ProjectEntry> entries() const noexcept { return entries_; }
+    const ProjectEntry* entry(std::string_view key) const;
     std::uint64_t revision() const noexcept { return revision_; }
     Result<void> refresh();
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
     Result<MeshAsset> mesh(std::string_view);
+    // glTF imports also publish one material asset per slot, which the mesh names as its slot defaults.
     Result<std::string> import_mesh(const std::filesystem::path&);
     // Source content the loaded mesh left out (see MeshImport::notes); empty until mesh() loads it.
     std::span<const std::string> mesh_notes(std::string_view key) const;
@@ -67,7 +70,11 @@ private:
     std::wstring name_;
     std::vector<ProjectEntry> entries_;
     std::uint64_t revision_{};
-    std::unordered_map<std::string,std::size_t> mesh_entries_;
+    struct KeyHash {
+        using is_transparent=void;
+        std::size_t operator()(std::string_view key) const noexcept {return std::hash<std::string_view>{}(key);}
+    };
+    std::unordered_map<std::string,std::size_t,KeyHash,std::equal_to<>> entry_index_; // Key to entries_ position.
     std::unordered_map<std::string,material::ImageRef> textures_;
     struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; std::vector<std::string> notes; };
     std::unordered_map<std::string,CachedMesh> meshes_;

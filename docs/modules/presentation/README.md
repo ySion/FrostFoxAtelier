@@ -25,9 +25,9 @@ Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只�
 
 ## 网格
 
-`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform 与 mesh_source；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
+`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform、mesh_source 与网格资产的槽默认材质；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
 
-`set_mesh_binding` 同时设置持久来源键与不可变 MeshRef，清理不匹配材质槽；`set_geometry` 清除来源键。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照，见[项目场景](../world/project-scenes.md)。
+`set_mesh_binding` 同时设置持久来源键、不可变 MeshRef 与该网格的槽默认材质（`MeshBinding::defaults`，不持久化，宿主随网格解析），清理不匹配材质槽；`set_geometry` 清除来源键和默认材质。每个默认材质必须对应新网格中唯一的槽。材质表面按槽依次取显式绑定、默认材质、网格表面乘组件参数。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照，见[项目场景](../world/project-scenes.md)。
 
 `render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。空间不可求值时诊断记在失败的 Entity 上，材质记在组件上，该项跳过；零缩放空间中的网格不绘制，报告 `degenerate_value` 警告。
 

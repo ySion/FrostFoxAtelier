@@ -52,6 +52,10 @@ private:
     ReferenceSequence materials_;
     std::vector<std::string> material_slots_;
     std::vector<bool> material_overrides_;
+    // The mesh asset's default material per slot, resolved with the mesh and never saved.
+    AFIELD(Name="default_materials", Hidden, Sequence="material.Material")
+    ReferenceSequence default_materials_;
+    std::vector<std::string> default_slots_;
     std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces_;
     geometry::MeshRef surface_geometry_;
     Material surface_parameters_;
@@ -199,11 +203,17 @@ struct Types {
 // Call once per Runtime, after world::register_types.
 [[nodiscard]] Result<Types> register_types(Runtime&);
 
+struct MaterialBinding {
+    std::string slot;
+    ObjectRoot resource;
+    bool overridden{true}; // Explicit instance assignment; false is a mesh default.
+};
 struct StaticMeshEntityDesc {
     geometry::MeshRef mesh;
     world::Trs transform{};
     Material material{};
     std::string_view mesh_source{};
+    std::vector<MaterialBinding> default_materials{}; // See MeshBinding::defaults.
 };
 // Returns a complete Detached spatial Entity with one StaticMeshComponent.
 // A null mesh is valid and produces no presentation. No World registration,
@@ -232,17 +242,14 @@ struct LightRenderItem {
 // Configure detached objects before attachment, or replace a member's immutable
 // mesh resource at a host boundary. No callback/dispatch reentry is permitted.
 [[nodiscard]] Result<void> set_geometry(Runtime&, ObjectId static_mesh_component, geometry::MeshRef);
-struct MeshBinding { std::string source; geometry::MeshRef resolved; };
+// `defaults` are the mesh asset's slot materials (overridden false). They are not saved: hosts
+// resolve them from the mesh source wherever they resolve the mesh. An explicit binding wins.
+struct MeshBinding { std::string source; geometry::MeshRef resolved; std::vector<MaterialBinding> defaults{}; };
 struct StaticMeshState { MeshBinding mesh; Material material; };
 // Source and resolved immutable content change together. Bare set_geometry
 // clears provenance. These snapshots also support detached and null-mesh data.
 [[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
 [[nodiscard]] Result<StaticMeshState> read_static_mesh(Runtime&, ObjectId);
-struct MaterialBinding {
-    std::string slot;
-    ObjectRoot resource;
-    bool overridden{true}; // Explicit instance assignment; false is a mesh default.
-};
 // Names, not slot positions, are the persistent correspondence. Empty imported
 // names use the reserved slot/<index> spelling until assigned a named asset.
 [[nodiscard]] std::string material_slot_name(const geometry::Mesh&,std::size_t);

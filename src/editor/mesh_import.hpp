@@ -13,6 +13,9 @@ struct MeshImport {
     // Import publishes these exact bytes; project refresh tracks the same paths.
     std::vector<ImportedFile> files;
     std::vector<std::string> notes; // Source content the import left out, one line each.
+    // glTF only: per material slot and input, the file in `files` that supplied the texture image.
+    // Import Mesh generates one material asset per slot from it; OBJ imports leave it empty.
+    std::vector<std::array<std::filesystem::path,material::input_count>> textures;
 };
 // Wavefront OBJ/MTL or glTF 2.0 (.gltf with external buffers and images).
 bool is_mesh_path(const std::filesystem::path&);

@@ -101,7 +101,7 @@ public:
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
     Result<world::Commit> add_entity(TypeId actual = {});
-    Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {});
+    Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
     Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
     Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
@@ -143,6 +143,12 @@ public:
     // edited or saved as assets.
     Result<ObjectRoot> material_resource(Project&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
     Result<ObjectRoot> material_resource(Project&,const MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
+    // The mesh asset's default material per slot, as this document's shared material assets.
+    // Unavailable ones always stand in and are reported in `missing` when given.
+    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(Project&,const MeshAsset&,std::vector<MissingResource>* missing = nullptr);
+    // What each slot shows where no component binds it: the default material, else the imported surface.
+    // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
+    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(Project&,const MeshAsset&);
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
     Result<ObjectRoot> open_material(Project&,std::string_view key);
