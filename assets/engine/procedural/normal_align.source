@@ -7,7 +7,7 @@ class procedural.NormalAlign : procedural.PointNode {
     void evaluate(Array<quaternion>& orient, const Array<vector3>& N) {
         const vector3 upward = self.up;
         for (uint i = 0; i < orient.size(); i = i + 1) {
-            orient[i] = align_to_normal(N[i], upward);
+            orient[i] = procedural.align_to_normal(N[i], upward);
         }
     }
 }

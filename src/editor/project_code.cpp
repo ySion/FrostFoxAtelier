@@ -1,5 +1,6 @@
 #include "editor/project_code.hpp"
 #include "platform/windows_path.hpp"
+#include "procedural/graph.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
@@ -105,7 +106,11 @@ Result<void> ProjectCode::build(const Project& project) {
         while (world_.runtime().collection_phase()!=CollectionPhase::idle) {
             auto step=world_.runtime().collect_step({1024});if (!step) return reject(step.error());
         }
-        if (!program_) program_=std::make_unique<source::Program>(world_.runtime());
+        if (!program_) {
+            // The engine Source in every snapshot declares procedural nodes.
+            if (auto registered=procedural::register_types(world_.runtime());!registered) return reject(registered.error());
+            program_=std::make_unique<source::Program>(world_.runtime());
+        }
         // Request through publish runs synchronously here, and this is the Runtime's only
         // Program, so no other producer can invalidate the candidate; an asynchronous
         // build would need to re-request once when publication reports a stale catalog.

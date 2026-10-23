@@ -15,7 +15,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <numbers>
@@ -757,36 +756,40 @@ void graph_evaluation() {
     expect(uncached, {{moved, {3, 0}}}, "A zero cache budget kept results.");
 }
 
-std::string read_text(const std::filesystem::path& path) {
-    std::ifstream file{path, std::ios::binary};
-    require(static_cast<bool>(file), "A procedural Source file cannot be read.");
-    return {std::istreambuf_iterator<char>{file}, {}};
-}
 std::string replaced(std::string text, std::string_view from, std::string_view to) {
     const auto at = text.find(from);
     require(at != std::string::npos, "A fixture edit did not find its text.");
     return text.replace(at, from.size(), to);
 }
 
-// A project snapshot whose files keep their own versions.
+// The engine's Source files, as every project gets them, plus fixtures; files are edited by
+// snapshot path and versioned by content, like project files.
 struct Project {
-    std::map<std::string, std::pair<std::uint64_t, std::string>> files;
+    std::map<std::string, std::string> files;
     std::uint64_t version{};
-    void set(const std::string& path, std::string text) {
-        auto& file = files[path];
-        file = {file.first + 1, std::move(text)};
+    Project() {
+        for (auto& file : take(source::engine_sources(source::default_engine_root()))) files[file.path] = std::move(file.source);
+    }
+    const std::string& text(const std::string& path) const {
+        const auto found = files.find(path);
+        require(found != files.end(), "An engine Source file is missing.");
+        return found->second;
     }
     void publish(source::Program& program) {
         source::SourceSnapshot snapshot{"procedural", ++version, {}};
-        for (const auto& [path, file] : files) snapshot.files.push_back({path, file.first, file.second});
+        for (const auto& [path, text] : files) snapshot.files.push_back({path, source::content_hash(text), text});
         auto candidate = take(source::Program::prepare(take(program.request(std::move(snapshot)))));
         take(program.try_publish(candidate));
     }
 };
 
-// Beside the engine's Source nodes: Lift takes no context and has a Source setter, Shift reads
-// only the context; the others cannot bind, and Counter would write self if it could.
+// Beside the engine's Source nodes: entries for the engine's internal random functions; Lift takes
+// no context and has a Source setter, Shift reads only the context; the others cannot bind, and
+// Counter would write self if it could.
 constexpr std::string_view fixture_source = R"(
+uint test_hash(uint x) { return procedural.hash(x); }
+uint test_hash2(uint a, uint b) { return procedural.hash2(a, b); }
+float test_unit(uint x) { return procedural.unit(x); }
 class fixture.Lift : procedural.PointNode {
     float height = 1.0f;
     void set_height(float value) { self.height = value; }
@@ -846,16 +849,11 @@ bool same_points(const Geometry* actual, const Geometry& expected) {
 void source_nodes() {
     Runtime runtime;
     take(register_types(runtime));
-    const std::filesystem::path directory{ATELIER_PROCEDURAL_SOURCE};
-    const auto jitter_text = read_text(directory / "jitter.source"), random_text = read_text(directory / "random.source"),
-        scale_text = read_text(directory / "random_scale.source");
     Project project;
-    project.set("procedural/random.source", random_text);
-    project.set("procedural/orient.source", read_text(directory / "orient.source"));
-    project.set("procedural/normal_align.source", read_text(directory / "normal_align.source"));
-    project.set("procedural/jitter.source", jitter_text);
-    project.set("procedural/random_scale.source", scale_text);
-    project.set("fixture.source", std::string{fixture_source});
+    const std::string jitter_path = "engine/procedural/jitter.source", random_path = "engine/procedural/random.source",
+        scale_path = "engine/procedural/random_scale.source";
+    const auto jitter_text = project.text(jitter_path), random_text = project.text(random_path), scale_text = project.text(scale_path);
+    project.files["fixture.source"] = std::string{fixture_source};
     source::Program program{runtime};
     project.publish(program);
     const auto source_type = [&](std::string_view name) {
@@ -873,8 +871,8 @@ void source_nodes() {
     reject(ports(runtime, type<PointNode>(runtime)), "The PointNode base was accepted as a node.");
     // Source draws exactly the C++ values: the same integer hashes, and units below 1 even for
     // the largest top 24 bits.
-    const auto source_hash = take(program.entry("hash")), source_hash2 = take(program.entry("hash2")),
-        source_unit = take(program.entry("unit"));
+    const auto source_hash = take(program.entry("test_hash")), source_hash2 = take(program.entry("test_hash2")),
+        source_unit = take(program.entry("test_unit"));
     const auto call = [](const source::Program::Entry& entry, auto... values) {
         return *take(entry.invoke({}, std::array{Scalar{values}...}));
     };
@@ -982,7 +980,7 @@ void source_nodes() {
 
     // Publications: Jitter's new body reruns both Jitter nodes only; unchanged code reruns nothing;
     // RandomScale's whitespace edit reruns it only; a helper edit reruns every Source node.
-    project.set("procedural/jitter.source", replaced(jitter_text, "self.axis_scale * self.amount;", "self.axis_scale * (self.amount * 2.0f);"));
+    project.files[jitter_path] = replaced(jitter_text, "self.axis_scale * self.amount;", "self.axis_scale * (self.amount * 2.0f);");
     project.publish(program);
     take(evaluator.evaluate());
     expect(evaluator, {{scattered, {2, 0}}, {scaled, {2, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {jittered, {4, 1}}, {twin, {3, 0}}, {merged, {5, 2}}},
@@ -992,12 +990,12 @@ void source_nodes() {
     take(evaluator.evaluate());
     expect(evaluator, {{jittered, {4, 1}}, {twin, {3, 0}}, {scaled, {2, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {merged, {5, 2}}},
         "A publication without code changes reran a node.");
-    project.set("procedural/random_scale.source", replaced(scale_text, "const float low", "const  float low"));
+    project.files[scale_path] = replaced(scale_text, "const float low", "const  float low");
     project.publish(program);
     take(evaluator.evaluate());
     expect(evaluator, {{jittered, {4, 1}}, {twin, {3, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {scaled, {3, 0}}, {merged, {6, 2}}},
         "A RandomScale publication did not rerun exactly RandomScale and its downstream nodes.");
-    project.set("procedural/random.source", replaced(random_text, "uint x = value;", "uint x = value + 0;"));
+    project.files[random_path] = replaced(random_text, "uint x = value;", "uint x = value + 0;");
     project.publish(program);
     take(evaluator.evaluate());
     expect(evaluator, {{scattered, {2, 0}}, {grid_node, {1, 0}}, {jittered, {5, 1}}, {twin, {4, 0}}, {scaled, {4, 0}}, {lifted, {3, 1}}, {shifted, {3, 0}}},

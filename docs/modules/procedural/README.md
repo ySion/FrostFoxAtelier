@@ -13,7 +13,7 @@
 | [evaluator.hpp](../../../src/procedural/evaluator.hpp) | 增量求值与结果缓存 |
 | [random.hpp](../../../src/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
 
-引擎附带的自有语言节点与随机库在 [assets/procedural](../../../assets/procedural)。
+引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
 方向、分阶段计划与跨模块约定见[程序化节点图方案](../../research/procedural-graph-plan-20261022.md)。生成器组件、渲染器实例化和网络编辑器尚未实施。
 
@@ -89,12 +89,12 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 
 输出就是输入几何加上改写过的列。借用的列不能改变长度，所以点数与输入相同；改变点数的操作仍由 C++ 节点完成。`evaluate` 读 `self` 的字段（每次读取都是一次 Runtime 调用，循环外先存到局部），不写 `self`，也不给节点盖章。调用在 Runtime 线程上串行执行。
 
-[assets/procedural](../../../assets/procedural) 里的文件随引擎附带，P1 由使用方放进自己的项目快照（L6 之后由宿主并入每个工程）：
+[assets/engine/procedural](../../../assets/engine/procedural) 里的文件是引擎源码模块，`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），快照路径带 `engine/` 前缀；`ProjectCode` 第一次构建时在工程的 Runtime 中注册本模块的原生类型，因为这些文件里的类派生自 `procedural.PointNode`。这里只能声明 `procedural.` 下的名字，工程文件不能在 `procedural.` 下声明；函数声明和调用都写全名，工程源码也可以调用，例如 `procedural.hash(x)`：
 
 | 文件 | 内容 |
 | --- | --- |
-| random.source | 全局函数 `hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../src/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
-| orient.source | 全局函数 `frame_rotation`（三根正交轴构成的旋转，按 `math.rotation_matrix` 的行约定）、`shortest_arc`（+Z 到给定单位向量的最短旋转，正对 −Z 时绕 X 转半圈）和 `align_to_normal`（Copy to Points 从 N 与 up 推出的朝向：+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或不是有限值时取最短旋转；N 为零时不旋转，不是有限值时结果也不是有限值） |
+| random.source | 全局函数 `procedural.hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../src/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
+| orient.source | 全局函数 `procedural.frame_rotation`（三根正交轴构成的旋转，按 `math.rotation_matrix` 的行约定）、`shortest_arc`（+Z 到给定单位向量的最短旋转，正对 −Z 时绕 X 转半圈）和 `align_to_normal`（Copy to Points 从 N 与 up 推出的朝向：+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或不是有限值时取最短旋转；N 为零时不旋转，不是有限值时结果也不是有限值） |
 | jitter.source | `procedural.Jitter`：amount、axis_scale（按轴缩放）、seed；P 的每个分量加上 `random_vector(hash2(hash2(图种子, seed), id))` 的对应分量 × amount × axis_scale，读 `id`，所以偏移跟随点 |
 | random_scale.source | `procedural.RandomScale`：minimum、maximum、seed；pscale 取 lerp(minimum, maximum, unit(hash2(hash2(图种子, seed), id)))，读 `id` |
 | normal_align.source | `procedural.NormalAlign`：up；按 `align_to_normal(N, up)` 写 orient，所以 NormalAlign 之后的 Copy to Points 与直接用 N 和同值 up 列的结果相同，中间可以再改 orient |
@@ -142,9 +142,9 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 - 资源版本变化但解析结果相同不重算，换了网格只重算读取它的节点，缺失的网格出现后重试；
 - 内容相同的两个节点共享结果；成环、端口越界、图外节点被拒绝；单输入端口替换连接；删除节点断开下游并清除 display；缓存预算为 0 时撤销也要重算。
 
-自有语言节点部分从 assets/procedural 的文件和一个夹具文件组成项目快照，构建 MeshImport → Scatter → Jitter（两个，amount 不同）/ RandomScale，Grid → 夹具 Lift（不带上下文）和夹具 Shift（只读上下文的种子），五路 Merge，并按文档公式和 random.hpp 的哈希独立算出期望值：
+自有语言节点部分用工程共用的加载函数 `source::engine_sources` 读取引擎文件，再加一个夹具文件组成项目快照，构建 MeshImport → Scatter → Jitter（两个，amount 不同）/ RandomScale，Grid → 夹具 Lift（不带上下文）和夹具 Shift（只读上下文的种子），五路 Merge，并按文档公式和 random.hpp 的哈希独立算出期望值：
 
-- 源码的 `hash`、`hash2` 与 random.hpp 逐位相同，`unit` 精确等于 (x >> 8) · 2⁻²⁴，最大输入得到 1 − 2⁻²⁴ 而不是 1；
+- 源码的 `procedural.hash`、`hash2`（经夹具里的包装函数调用）与 random.hpp 逐位相同，`unit` 精确等于 (x >> 8) · 2⁻²⁴，最大输入得到 1 − 2⁻²⁴ 而不是 1；
 - 输出的 P 和 pscale 与期望一致（一个 Jitter 的 axis_scale 为 (1, 0, 2)），与 Jitter 同读 Scatter 结果的 RandomScale 看到未改动的 P（Jitter 写的是副本）；求值不盖章；
 - 经 `Runtime::write` 和源码方法写 `self` 改参数，都只重算该节点及下游，撤销后命中缓存；图种子经 Context 到达 Jitter、RandomScale 和 Shift（Shift 的输入与种子无关，所以重算只能来自它自己的键），不重算不带上下文的 Lift；
 - 兼容发布：改 Jitter 方法体只重算两个 Jitter 节点和下游，输出用上新方法体；内容不变的发布不重算任何节点；只改 RandomScale 的空白只重算它和下游；改全局助手重算所有自有语言节点；

@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1、代码身份和 L2 已交付并合入），Jitter、RandomScale 和 NormalAlign 已用自有语言写成，参数带 L2 的元数据；Remap 和属性噪声要能在参数里选择目标属性，选择方式待定（§9）。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1、代码身份、L2 和 L6 已交付并合入），Jitter、RandomScale 和 NormalAlign 已用自有语言写成，参数带 L2 的元数据；Remap 和属性噪声要能在参数里选择目标属性，选择方式待定（§9）。
 
 ## 0. 结论
 
@@ -75,7 +75,7 @@ procedural.Node    原生对象基类：隐藏的 inputs 强引用序列，每�
 参数 = 节点类的公开字段（Label/Category/Min/Max/DESC 等元数据）；端口与列绑定来自 evaluate 签名；节点实例 = Runtime 对象
 ```
 
-自有语言节点示例（assets/procedural/jitter.source；哈希与随机库 L6 之前由使用方放进快照）：
+自有语言节点示例（assets/engine/procedural/jitter.source，哈希与随机库在同目录的 random.source）：
 
 ```source
 class procedural.Jitter : procedural.PointNode {
@@ -88,9 +88,9 @@ class procedural.Jitter : procedural.PointNode {
 
     void evaluate(const procedural.Context& context, Array<vector3>& P, const Array<uint>& id) {
         const vector3 reach = self.axis_scale * self.amount;   // 每次读 self 都是一次宿主调用，循环外先存到局部
-        const uint node_seed = hash2(context.seed, self.seed);
+        const uint node_seed = procedural.hash2(context.seed, self.seed);
         for (uint i = 0; i < P.size(); i = i + 1) {
-            const vector3 r = random_vector(hash2(node_seed, id[i]));   // 来自 random.source
+            const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
             P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
         }
     }
@@ -104,7 +104,7 @@ class procedural.Jitter : procedural.PointNode {
 - **调用路径**：C++ 节点经 `Runtime::call`，自有语言节点经 `Program` 的 `类名.evaluate`，每个节点每次求值调用一次。原生 `evaluate` 是 const 接收者，调用不盖章；源码方法读 `self` 走 `Runtime::read`，也不盖章。宿主不在持有节点对象可写 `with_native` 的期间调用 evaluate。求值器构造时接收宿主的 `const source::Program*`，所以 procedural 链接 atelier_source；读端口、建图和图文件都不需要 Program。
 - **代码身份**：自有语言节点的键加上入口的 `EntryInfo::code`。运行时按 unit（一个类的全部方法，或全局函数那一组）比较实际编译输入，相同就沿用上次的值，不同才换新值；`Program::revision()` 是成功发布的次数，求值器看到它变了才重新绑定入口。判定是保守的：改某个类的方法（含空白）只换这个类的 code，改全局助手、struct、enum、常量，或 Runtime 新注册了值类型，换掉所有 code，新增类不影响别的类；撤销改动拿到新值，不回到旧值。code 在整个进程内唯一，不同 Program、Runtime 之间不会撞值。这满足验收 ⑥。`evaluate` 必须至少借用上下文或一列：这样它才是同步值区间，编译器拒绝写 `self`，结果只取决于键里的内容。
 - **种子与确定性**：节点种子 = hash(图种子, 节点 `seed` 参数, 元素 `id`)，不使用 ObjectId 等非持久身份。哈希与随机函数是 L6 引擎源码库中算法固定、有文档的函数，语言不为它们增加内建。同样的输入得到同样的结果，但不承诺跨 CPU 逐位一致。
-- **内置节点的分发**：内置节点用自有语言编写，随引擎源码模块进入每个工程快照（L6）。P1 的验收先用夹具快照。
+- **内置节点的分发**：内置节点用自有语言编写，随引擎源码模块进入每个工程快照（L6）；`ProjectCode` 第一次构建时在工程的 Runtime 中注册 procedural 的原生类型。`procedural_acceptance` 用同一加载函数读引擎文件，再加夹具。宿主只通过 `类名.evaluate` 入口调用节点，不直接调用引擎全局函数，所以编译结构改造后引擎全局函数可以只作内部函数。
 
 ### 3.1 语言能力（运行时负责人已接，按此顺序逐项交付）
 
@@ -118,7 +118,7 @@ class procedural.Jitter : procedural.PointNode {
 | 代码身份 | `EntryInfo::code` 与 `Program::revision()`，判定见 §3 的“代码身份”；仍然每次发布都重新编译，复用旧 Version 等实测需要再说 | 验收 ⑥ 只重算代码变了的类型 | 已交付（`runtime-entry-codes` 2b278be4，已合入 `procedural`，d9809d57） |
 | L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | 已交付（`runtime-class-fields` ed2b6e89，已合入 `procedural`，323e3cac） |
 | L4b | float 的 sin/cos/exp/log、atan2(y, x)、pow(x, y)，参数为标量或 vector2/3/4，标量广播到每个分量，double 编译期拒绝。纯 IR 多项式，内联、可向量化，误差 ≤ 4 ULP（sin/cos 在 \|x\| ≤ 2²⁰ 内，超出后结果有限且绝对值不超过 1）；特殊值：log(0) = −∞，负数取 log 得 NaN，exp 溢出得 +∞，pow 底数为负得 NaN，pow(x, 0) = pow(1, y) = 1。所有 FMA3 主机逐位相同，标量与向量化循环逐位相同，与 `<cmath>` 不逐位相同；JIT 要求 FMA3。详见 [math.md](../math.md#超越函数) | 旋转、衰减、曲线 | 已交付（`runtime-math-transcendental` 701b9f0f，已合入 `procedural`，de359783） |
-| L6 | 引擎文件在仓库 `assets/engine/procedural/*.source`，构建时复制到可执行文件旁的 `engine/procedural/`，开发树构建直接读源码树。`atelier_source` 提供共用加载函数：给出引擎根目录（默认是 exe 旁的 `engine/`，开发树构建用源码树），返回带 `engine/` 前缀路径、按内容哈希定版本的文件；`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），`procedural_acceptance` 用同一函数再追加夹具。全部引擎模块固定带上，不按需启用。命名空间由目录决定：`engine/procedural/` 下的文件只能声明 `procedural.` 下的类型和函数，其他文件不能在 `procedural.` 下声明任何东西；只看声明出来的名字，不看基类，所以 `class mygame.Foo : procedural.PointNode` 允许。这条规则在 `Program::request(SourceSnapshot)` 收集快照时检查，发布前就失败，所以所有宿主走同一条规则。全局函数支持限定名，引擎函数必须带限定名，声明与调用都写全名（`uint procedural.hash(uint x)`、`procedural.hash(x)`），工程函数照旧可用短名；同一个限定名不能既是类型又是函数。L6 合入后由本线程把 `assets/procedural/` 的文件搬到 `assets/engine/procedural/`，改成限定名，验收改用共用加载函数 | 内置节点、哈希与随机库 | P3 前；形状已与运行时负责人对齐，方案待总负责人审 |
+| L6 | 引擎文件在仓库 `assets/engine/procedural/*.source`，构建时复制到可执行文件旁的 `engine/procedural/`，开发树构建直接读源码树。`atelier_source` 提供共用加载函数：给出引擎根目录（默认是 exe 旁的 `engine/`，开发树构建用源码树），返回带 `engine/` 前缀路径、按内容哈希定版本的文件；`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），`procedural_acceptance` 用同一函数再追加夹具。全部引擎模块固定带上，不按需启用。命名空间由目录决定：`engine/procedural/` 下的文件只能声明 `procedural.` 下的类型和函数，其他文件不能在 `procedural.` 下声明任何东西；只看声明出来的名字，不看基类，所以 `class mygame.Foo : procedural.PointNode` 允许。这条规则在 `Program::request(SourceSnapshot)` 收集快照时检查，发布前就失败，所以所有宿主走同一条规则。全局函数支持限定名，引擎函数必须带限定名，声明与调用都写全名（`uint procedural.hash(uint x)`、`procedural.hash(x)`），工程函数照旧可用短名；同一个限定名不能既是类型又是函数。本线程已把文件搬到 `assets/engine/procedural/`、改成限定名，验收改用共用加载函数，project_integration 验收工程源码调用 `procedural.unit`。后续由运行时负责人改编译结构：引擎模块只编译一次，类单元只为实际调用的引擎函数付出编译开销，入口的 code 只取决于实际调用到的函数，引擎全局函数不再导出为入口（本线程的产品代码不需要它们作为入口）；落地后验收里“改全局助手重算所有自有语言节点”改为只重算调用了它的节点 | 内置节点、哈希与随机库 | 已交付（`runtime-engine-sources` 737377bc，已合入 `procedural`，ed1e89ca） |
 | L3 | 倾向按值返回拥有型 Array，结果直接构造在调用方存储中；P4 前单独出方案，过 Oracle | 改变点数的节点迁到自有语言 | P4 |
 
 依据：带聚合借用的函数里，[`analyze_calls`](../../src/language/source.cpp#L245-L292) 只允许 `self` 作为 BorrowSafe 调用的接收者（第 259 行）；类字段只能是五种标量（[LANGUAGE.md](../../LANGUAGE.md#项目快照与原生派生类)）；数学内建没有 floor/sin 等（[math.md](../math.md#源码运算)）。
@@ -241,7 +241,7 @@ class procedural.Jitter : procedural.PointNode {
 
 | 负责人 | 事项 | 状态 |
 | --- | --- | --- |
-| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b 已交付并合入；L6 形状已对齐、方案待总负责人审；`math.is_finite` 排在 L6 之后；其余见 §3.1 |
+| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b、L6 已交付并合入；下一项是引擎模块的编译结构改造，然后是 `math.is_finite`；其余见 §3.1 |
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
 | World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐。集成顺序：World 的 scene v9（基于 63de8635，删除 v1–v8 的读取与迁移，只读 v9）排在 335cb844 之前；P1 交付从集成结果开始合入，scene.cpp 和 project-scenes.md 的冲突由本线程在那次合并里解决，内联 Array 的编解码与文档段落在 v9 的代码上重新落位 |
@@ -249,7 +249,7 @@ class procedural.Jitter : procedural.PointNode {
 
 ## 9. 风险与未决
 
-- **语言能力的时间线**：P1 依赖的 L1、L2、L4（含 L4b 超越函数）、L5 都已交付；剩下 L6（引擎源码并入工程快照，P3 前）和 L3（P4 前）。
+- **语言能力的时间线**：P1 依赖的 L1、L2、L4（含 L4b 超越函数）、L5 和 L6 都已交付；剩下 L3（P4 前）。引擎源码让每次发布变慢（500 行的合成库使单类工程从 12 ms 涨到 392 ms），编译结构改造之前，引擎库保持现在的规模（5 个文件约 130 行）。
 - **Remap 与属性噪声的目标属性**：列按 `evaluate` 的参数名绑定，所以节点只能处理代码里写定的属性名；Houdini 的 Attribute Remap、Attribute Noise 在参数里选属性。建议加一个原生基类，带 String 参数 `attribute`，求值器按它的值绑定一个约定的列参数（源码 class 不能声明 String 字段，但能继承原生字段）。这扩展了节点契约，**待用户定方向，再交总负责人审**；另一种做法是保持写定属性名（Wrangle 式），由用户为每个属性写自己的节点。
 - **数字资产契约**：§5.3 的表示要在 P2 前定。如果改为让图资产发布 Runtime 类型，需要先解决类型版本与重建问题。
 - **实例渲染**：10 万实例在 120 FPS 下的 CPU/GPU 成本按 §5.1 实测。主要不确定项有两个：一是只要有物体在动，TLAS 每帧都按总实例数重写，Play 多半需要 TLAS b；二是没有逐实例剔除时 GBuffer 和阴影重绘的 GPU 开销。第二项取决于目标内容的三角形数，**待用户定**。

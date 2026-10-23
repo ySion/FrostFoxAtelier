@@ -16,8 +16,6 @@ function(atelier_add_procedural)
     add_executable(atelier_procedural_acceptance acceptance/procedural/main.cpp)
     atelier_target(atelier_procedural_acceptance)
     target_link_libraries(atelier_procedural_acceptance PRIVATE atelier_procedural)
-    target_compile_definitions(atelier_procedural_acceptance PRIVATE
-        "ATELIER_PROCEDURAL_SOURCE=\"${PROJECT_SOURCE_DIR}/assets/procedural\"")
     atelier_headless_acceptance(procedural_acceptance
         COMMAND $<TARGET_FILE:atelier_procedural_acceptance>
         DEPENDS atelier_procedural_acceptance)

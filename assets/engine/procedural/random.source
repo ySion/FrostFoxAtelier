@@ -3,7 +3,7 @@
 // src/procedural/random.hpp, so Source and C++ nodes draw the same values: lowbias32 by
 // Chris Wellons (public domain), combined as hash(a ^ hash(b)).
 
-uint hash(uint value) {
+uint procedural.hash(uint value) {
     uint x = value;
     x = x ^ (x >> 16);
     x = x * 2146121005;
@@ -13,19 +13,19 @@ uint hash(uint value) {
     return x;
 }
 
-uint hash2(uint a, uint b) {
-    return hash(a ^ hash(b));
+uint procedural.hash2(uint a, uint b) {
+    return procedural.hash(a ^ procedural.hash(b));
 }
 
 // Uniform in [0, 1) from the top 24 bits, exact in float.
-float unit(uint x) {
+float procedural.unit(uint x) {
     return float(x >> 8) * 0.000000059604644775390625f;
 }
 
 // Uniform in [-1, 1) per component, from three successive hashes of x.
-vector3 random_vector(uint x) {
-    const uint a = hash(x);
-    const uint b = hash(a);
-    const uint c = hash(b);
-    return vector3(unit(a), unit(b), unit(c)) * 2.0f - vector3(1.0f, 1.0f, 1.0f);
+vector3 procedural.random_vector(uint x) {
+    const uint a = procedural.hash(x);
+    const uint b = procedural.hash(a);
+    const uint c = procedural.hash(b);
+    return vector3(procedural.unit(a), procedural.unit(b), procedural.unit(c)) * 2.0f - vector3(1.0f, 1.0f, 1.0f);
 }
