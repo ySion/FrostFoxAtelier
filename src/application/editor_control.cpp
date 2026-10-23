@@ -88,11 +88,11 @@ Json probe_inspection_json(const std::shared_ptr<const renderer::ProbeInspection
         {"light_endpoint_distance",ray.endpoint_distance},{"source_radius_range_area_min_distance_squared",ray.source_parameters}});
     return result;
 }
-Json performance_json(const editor::RenderPerformance& performance) {
+Json performance_json(const editor::FramePerformance& performance) {
     const auto& sample=performance.snapshot();
     constexpr std::array states{"unavailable","waiting","ready"};
     constexpr std::array aa_names{"off","taa","smaa","smaa_t2x"};
-    Json result{{"state",states[static_cast<unsigned>(sample.state)]},{"window_capacity",editor::RenderPerformance::window_size},
+    Json result{{"state",states[static_cast<unsigned>(sample.state)]},{"window_capacity",editor::FramePerformance::window_size},
         {"publish_interval_ms",250},{"samples",sample.samples},{"sequence",sample.sequence},{"frame_id",sample.frame_id},
         {"scene_identity",sample.scene_identity},{"domain_first_frame",sample.first_frame},
         {"extent",{sample.extent.width,sample.extent.height}},
@@ -103,17 +103,46 @@ Json performance_json(const editor::RenderPerformance& performance) {
         {"resource_semantics","Current logical Scene Lit allocation; excludes retired resources and physical residency"},
         {"total_semantics","Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present"},
         {"passes",Json::array()}};
-    const auto definitions=editor::RenderPerformance::passes();
-    for(std::size_t i=0;i<definitions.size();++i) {
-        const auto& pass=definitions[i];const auto& timing=sample.timings[i];const bool active=timing && timing->active_samples;
-        result["passes"].push_back({{"id",pass.key},{"title",pass.title},{"parent",pass.parent<0?Json(nullptr):Json(definitions[pass.parent].key)},
-            {"depth",pass.depth},{"included_in_total",pass.in_total},
-            {"state",!timing?"unavailable":timing->current_active?"measured":"skipped"},
+    // One row of either section; values without an observation are null.
+    const auto statistics=[](const std::optional<editor::FramePerformance::Timing>& timing) {
+        const bool active=timing && timing->active_samples;
+        return Json{{"state",!timing?"unavailable":timing->current_active?"measured":"skipped"},
             {"active_samples",timing?timing->active_samples:0},
             {"current_ms",timing && timing->current_active?Json(timing->current):Json(nullptr)},
             {"mean_ms",active?Json(timing->mean):Json(nullptr)},{"p95_ms",active?Json(timing->p95):Json(nullptr)},
-            {"share_percent",active && timing->share?Json(*timing->share):Json(nullptr)}});
+            {"max_ms",active?Json(timing->max):Json(nullptr)},{"share_percent",active && timing->share?Json(*timing->share):Json(nullptr)}};
+    };
+    const auto definitions=editor::FramePerformance::passes();
+    for(std::size_t i=0;i<definitions.size();++i) {
+        const auto& pass=definitions[i];auto row=statistics(sample.timings[i]);
+        row["id"]=pass.key;row["title"]=pass.title;row["parent"]=pass.parent<0?Json(nullptr):Json(definitions[pass.parent].key);
+        row["depth"]=pass.depth;row["included_in_total"]=pass.in_total;
+        result["passes"].push_back(std::move(row));
     }
+    const auto& cpu=sample.cpu;
+    Json phases=Json::array();
+    for(const auto* marker:timing::catalog()) {
+        auto phase=statistics(cpu.phases[marker->index()]);
+        phase["id"]=std::string(marker->key());phase["title"]=std::string(marker->title());
+        phase["parent"]=marker->parent()?Json(std::string(marker->parent()->key())):Json(nullptr);
+        phase["depth"]=timing::depth(*marker);phase["current_entries"]=cpu.current_entries[marker->index()];
+        phases.push_back(std::move(phase));
+    }
+    auto unattributed=statistics(cpu.unattributed);
+    unattributed["id"]="frame.unattributed";unattributed["title"]="Unattributed";unattributed["parent"]="frame";
+    unattributed["depth"]=1;unattributed["current_entries"]=nullptr;
+    phases.push_back(std::move(unattributed));
+    const auto* first=performance.first_structure_error();
+    result["cpu"]={{"state",cpu.samples?"ready":"waiting"},{"window_capacity",editor::FramePerformance::window_size},
+        {"samples",cpu.samples},{"sequence",cpu.sequence},{"frame_id",cpu.frame_id},
+        {"frame_interval_ms",cpu.interval?Json{{"mean",cpu.interval->mean},{"p95",cpu.interval->p95},{"max",cpu.interval->max}}:Json(nullptr)},
+        {"frames_per_second",cpu.interval?Json(1000/cpu.interval->mean):Json(nullptr)},
+        {"structure_errors",performance.structure_errors()},
+        {"first_structure_error",first?Json(std::string(first->key())):Json(nullptr)},
+        {"semantics","CPU wall time in milliseconds of accepted editor steps without capture, read from frame timing records. "
+            "Phases are inclusive and sum every entry in the step; frame.unattributed is the frame minus its direct children. "
+            "frame_interval_ms is between the begins of consecutive sampled steps. structure_errors counts every step since start, sampled or not."},
+        {"phases",std::move(phases)}};
     return result;
 }
 renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch,std::array<float,3> focus) {
@@ -931,8 +960,7 @@ void EditorControl::rendered(const renderer::Frame& frame,const renderer::FrameR
     ++job->accepted;
     if(job->preparing) {
         job->rendering=false;job->preparing=false;job->complete=true;
-        job->response={{"status","ok"},{"job_id",job->id},{"result",{{"phase","ready"},{"frame",state.frame_json()},
-            {"preparation_ms",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-job->started).count()}}}};
+        job->response={{"status","ok"},{"job_id",job->id},{"result",{{"phase","ready"},{"frame",state.frame_json()}}}};
         return;
     }
     if(job->accepted!=job->points[job->point_index]) return;

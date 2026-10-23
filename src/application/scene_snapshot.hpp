@@ -1,5 +1,6 @@
 #pragma once
 
+#include "application/timing.hpp"
 #include "editor/session.hpp"
 #include "renderer/renderer.hpp"
 #include <algorithm>
@@ -32,7 +33,8 @@ public:
         // The slot map below indexes the synchronized Scene's cache; another one needs reset().
         if(synced_ && synced_->scene!=scene.identity())
             return std::unexpected(Error{ErrorCode::argument_mismatch,"A scene snapshot was refreshed from another document without reset()."});
-        auto version=scene.update(document.presented_poses());if(!version) return std::unexpected(version.error());
+        auto version=[&]{timing::Scope extracting{phases::extract};return scene.update(document.presented_poses());}();
+        if(!version) return std::unexpected(version.error());
         const auto selection=document.selected_entities();
         const bool reselect=!synced_ || !std::ranges::equal(synced_->selection,selection);
         if(synced_ && synced_->version==*version && !reselect) return {};

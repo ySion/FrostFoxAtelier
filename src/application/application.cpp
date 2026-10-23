@@ -70,6 +70,7 @@ ui::PixelExtent client_extent(HWND window) {
 }
 Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace,std::optional<ui::PixelExtent> initial_client,bool vsync)
     : window_(nullptr,initial_client),examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation),vsync_(vsync) {
+    require_frame_timing();
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
     style_sheet_=editor_styles();
@@ -274,10 +275,7 @@ Result<void> Application::action(const ui::Action& source) {
     if (event.kind==ui::ActionKind::activate && event.key==command_key(editor::Command::show_fps)) {
         const auto* checked=std::get_if<bool>(&event.value);
         if (!checked) return invalid();
-        if (workspace_.show_fps!=*checked) {
-            workspace_.show_fps=*checked;
-            update_viewport_fps(false);
-        }
+        workspace_.show_fps=*checked;
         return {};
     }
     if (event.kind==ui::ActionKind::activate && (event.key==menu_bar_handle || event.key==shelf_handle)) {
@@ -1183,41 +1181,39 @@ void Application::input(const ui::Event& event,WPARAM native_key) {
 void Application::enable_control(const std::filesystem::path& directory) {
     if(!control_) control_=std::make_unique<EditorControl>(*this,directory);
 }
-void Application::update_viewport_fps(bool accepted) {
-    if (!accepted) {fps_start_={};fps_frames_=0;workspace_.viewport_fps.clear();return;}
-    const auto now=std::chrono::steady_clock::now();
-    if (fps_start_==std::chrono::steady_clock::time_point{}) {fps_start_=now;return;}
-    ++fps_frames_;
-    const auto seconds=std::chrono::duration<double>(now-fps_start_).count();
-    if (seconds<.5) return;
-    workspace_.viewport_fps=std::format(L"{:.1f} FPS  ·  {:.1f} ms",fps_frames_/seconds,seconds*1000/fps_frames_);
-    fps_start_=now;fps_frames_=0;
+bool Application::step(renderer::Capture* capture) {
+    // The frame closes after run_step, so the retirement of its frame-local containers is included.
+    timing::Recorder::Frame frame{recorder_};
+    sampled_frame_.reset();
+    const bool running=run_step(capture);
+    auto& performance=workspace_.lighting.performance();
+    performance.observe(frame.finish(),sampled_frame_);
+    // Only a sampled step shows a reading, so readback and stalls never appear as the live FPS.
+    const auto& recent=performance.snapshot().cpu.recent_interval;
+    if(!sampled_frame_ || !workspace_.show_fps || !workspace_.dock.visible(editor::control::scene_tab) || !recent || *recent<=0)
+        workspace_.viewport_fps.clear();
+    else if(workspace_.viewport_fps.empty() || *recent!=fps_interval_) {
+        fps_interval_=*recent;
+        workspace_.viewport_fps=std::format(L"{:.1f} FPS  ·  {:.1f} ms",1000/ *recent,*recent);
+    }
+    return running;
 }
-bool Application::step(renderer::Capture* capture) try {
+bool Application::run_step(renderer::Capture* capture) try {
     using Clock = std::chrono::steady_clock;
-    const bool sample = sampling_ && !capture;
-    const auto step_start = sample ? Clock::now() : Clock::time_point{};
-    frame_timing_ = {};
-    struct StepTiming {
-        FrameTiming& timing;bool enabled;Clock::time_point start;
-        ~StepTiming() {
-            // Created before frame-local containers, so their retirement is included.
-            if(enabled && timing.frame_id)
-                timing.step_us=std::chrono::duration<double,std::micro>(Clock::now()-start).count();
-        }
-    } step_timing{frame_timing_,sample,step_start};
     frame_statistics_ = {};
     if (closed_) return false;
     // Everything this step changed reaches Play as one batch, whichever way the step ends.
     struct ForwardLive {Application& app;~ForwardLive(){app.forward_live();}} forward_live{*this};
-    window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
-    if (window_.closing()) {
-        if (confirm_discard()) {close();return false;}
-        window_.cancel_close();
+    {
+        timing::Scope input{phases::input};
+        window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
+        if (window_.closing()) {
+            if (confirm_discard()) {close();return false;}
+            window_.cancel_close();
+        }
     }
-    poll_project();
-    if(control_) control_->poll();
-    const auto events_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - step_start).count() : 0;
+    {timing::Scope project{phases::project};poll_project();}
+    if(control_) {timing::Scope control{phases::control};control_->poll();}
     const auto title=(project_?project_->name():L"No project")+L" — "+(scene_path_.empty()?L"Untitled":scene_path_.filename().wstring())+
         (document_->dirty()?L" *":L"")+L" — FrostFox Atelier";
     if (title!=window_title_) { SetWindowTextW(window(),title.c_str());window_title_=title; }
@@ -1227,13 +1223,14 @@ bool Application::step(renderer::Capture* capture) try {
     auto updated = ui_.set_surface(surface_);
     if (!updated) throw std::runtime_error("UI rejected the window surface.");
     effects(*updated);
-    const auto gc_start = sample ? Clock::now() : Clock::time_point{};
-    auto gc = document_->collect_step();
-    const auto gc_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - gc_start).count() : 0;
-    if (!gc) throw std::runtime_error(gc.error().message);
+    {
+        timing::Scope collecting{phases::gc};
+        auto gc = document_->collect_step();
+        if (!gc) throw std::runtime_error(gc.error().message);
+    }
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
-    if (!target.drawable) { lighting_clock_.reset();update_viewport_fps(false);MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
+    if (!target.drawable) { lighting_clock_.reset();MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE); return true; }
     // Only recoverable render failures enter this gate. Service work above
     // remains live, while input wakeups cannot turn a persistent error into
     // repeated UI/scene preparation. Normal successful frames have no cap.
@@ -1243,7 +1240,6 @@ bool Application::step(renderer::Capture* capture) try {
         return true;
     }
     update_camera_fly();
-    if (!workspace_.show_fps || !workspace_.dock.visible(editor::control::scene_tab)) update_viewport_fps(false);
     const ui_layout::Size view_size{static_cast<float>(extent.width)/surface_.dpi_scale,static_cast<float>(extent.height)/surface_.dpi_scale};
     workspace_.camera_flying=camera_fly_.has_value();
     workspace_.viewport_mode=viewport_tool_.displayed_tool(workspace_.viewport_settings);
@@ -1271,7 +1267,7 @@ bool Application::step(renderer::Capture* capture) try {
         }
         return controls;
     };
-    const auto controls_start = sample ? Clock::now() : Clock::time_point{};
+    std::optional<timing::Scope> stage{std::in_place,phases::ui};
     auto controls = describe();
     auto described = ui_.set_controls(controls);
     if (!described && workspace_.reject_ui_controls("UI candidate rejected at control "+std::to_string(described.error().key))) {
@@ -1281,8 +1277,7 @@ bool Application::step(renderer::Capture* capture) try {
     if (!described) throw std::runtime_error("UI rejected editor controls (key " + std::to_string(described.error().key) + ").");
     effects(*described);
     if (workspace_.pie_menu()) effects(ui_.focus(pie_hot_));
-    const auto controls_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - controls_start).count() : 0;
-    const auto prepare_start = sample ? Clock::now() : Clock::time_point{};
+    stage.emplace(phases::layout);
     auto prepared = ui_.prepare();
     if (!prepared && workspace_.reject_ui_controls("Editor layout candidate rejected at control "+std::to_string(prepared.error().key))) {
         controls=describe();
@@ -1291,10 +1286,9 @@ bool Application::step(renderer::Capture* capture) try {
         effects(*described);
         prepared=ui_.prepare();
     }
-    const auto prepare_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - prepare_start).count() : 0;
     if (!prepared) {
+        stage.reset();
         lighting_clock_.reset();
-        update_viewport_fps(false);
         if (!ui_.presented()) throw std::runtime_error("Initial editor frame preparation failed (UI code " + std::to_string(static_cast<int>(prepared.error().code)) + ").");
         workspace_.status = L"Frame preparation failed; previous frame retained";
         MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
@@ -1307,7 +1301,7 @@ bool Application::step(renderer::Capture* capture) try {
         if ((*prepared)->tooltip) {
             prepared=ui_.prepare();
             if (!prepared) {
-                update_viewport_fps(false);
+                stage.reset();
                 workspace_.status=L"Frame preparation failed; previous frame retained";
                 MsgWaitForMultipleObjectsEx(0,nullptr,20,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
                 return true;
@@ -1317,7 +1311,8 @@ bool Application::step(renderer::Capture* capture) try {
     // Native popups render on their retained surface before scene submission /
     // Present can block. Their anchor still comes from accepted owner geometry.
     // A pending keyboard reveal waits for this frame's acceptance; closing here would drop it.
-    if (!workspace_.pie_menu() && !pending_menu_) update_menu();
+    stage.reset();
+    if (!workspace_.pie_menu() && !pending_menu_) {timing::Scope menus{phases::popup};update_menu();}
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds=viewport?viewport->bounds:ui::Rect{};
@@ -1327,12 +1322,13 @@ bool Application::step(renderer::Capture* capture) try {
         status(viewport_tool_.cancel(*document_),L"Viewport changed; edit cancelled");
     viewport_tool_.forget(*document_);
     if(had_viewport_gesture && !viewport_tool_.active()) window_.capture(false);
-    const auto scene_start = sample ? Clock::now() : Clock::time_point{};
-    if(viewport) take(scene_.refresh(*document_));
-    // Any edit of the Environment (Parameters, deletion, Play) reaches the evaluated view before rendering;
-    // only such a change re-anchors the lighting focus.
-    if(workspace_.sync_world(*document_)) sync_world_view();
-    const auto scene_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - scene_start).count() : 0;
+    {
+        timing::Scope snapshot{phases::scene};
+        if(viewport) take(scene_.refresh(*document_));
+        // Any edit of the Environment (Parameters, deletion, Play) reaches the evaluated view before rendering;
+        // only such a change re-anchors the lighting focus.
+        if(workspace_.sync_world(*document_)) sync_world_view();
+    }
     for(const auto& item:document_->take_diagnostics()) workspace_.log_repeated(editor::describe_diagnostic(*document_,item));
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
     const auto viewport_view=editor::ViewportView::make(camera_,scene_bounds,window_.dpi_scale());
@@ -1352,12 +1348,9 @@ bool Application::step(renderer::Capture* capture) try {
     const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&
         effective_view.shading==renderer::Shading::scene_lit && effective_view.wireframe!=renderer::Wireframe::only && effective_view.lit.ddgi;
     render_frame.render_delta_seconds=lighting_clock_.delta(lighting_start,lighting_active);
-    const auto render_start = sample ? Clock::now() : Clock::time_point{};
     auto drawn = lit_fallback_.render(renderer_, render_frame, frame_capture);
-    const auto render_us = sample ? std::chrono::duration<double, std::micro>(Clock::now() - render_start).count() : 0;
     if (!drawn) {
         lighting_clock_.reset();
-        update_viewport_fps(false);
         if(control_) control_->render_failed(drawn.error().cause.message);
         if (drawn.error().terminal) throw std::runtime_error("Renderer stopped: " + drawn.error().cause.message);
         render_retry_delay_=std::min(render_retry_delay_.count()?render_retry_delay_*2:std::chrono::milliseconds(20),std::chrono::milliseconds(250));
@@ -1384,7 +1377,7 @@ bool Application::step(renderer::Capture* capture) try {
         workspace_.lighting.observe(rendered.stats);
         if(viewport) camera_cut_=false;
         ++accepted_frames_;
-        update_viewport_fps(workspace_.show_fps && viewport && !frame_capture);
+        if(!frame_capture) sampled_frame_=rendered.accepted_id;
         if(control_ && !drawn->fallback) {
             if(capture && capturing_control) {control_capture=*capture;control_->rendered(render_frame,rendered,&control_capture);}
             else control_->rendered(render_frame,rendered,frame_capture);
@@ -1408,15 +1401,13 @@ bool Application::step(renderer::Capture* capture) try {
             if (workspace_.parameter_search_visible) effects(ui_.focus(editor::control::parameter_search));
         }
         sync_text_input();
+        timing::Scope menus{phases::popup};
         if (pending_menu_) {
             const auto menu=pending_menu_; pending_menu_=0;
             effects(ui_.focus(menu)); request_menu({menu,0,0,0});
         } else update_menu();
-        if (sample) frame_timing_ = {rendered.accepted_id, prepare_us, render_us, controls_us, scene_us,
-            0,events_us,gc_us};
     } else {
         lighting_clock_.reset();
-        update_viewport_fps(false);
         if(control_ && !drawn->fallback) control_->rendered(render_frame,rendered,nullptr);
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }

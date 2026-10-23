@@ -16,7 +16,7 @@ void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> repo
     if(!report || workspace_.project_build==report) return;
     workspace_.project_build=std::move(report);
     if(workspace_.project_build->error) workspace_.status=editor::wide(workspace_.project_build->error->message);
-    else workspace_.status=L"Project build ready ("+std::to_wstring(static_cast<unsigned>(workspace_.project_build->milliseconds))+L" ms)";
+    else workspace_.status=L"Project build ready";
     workspace_.log(workspace_.status);
 }
 Result<void> Application::build_project(bool rebuild) {

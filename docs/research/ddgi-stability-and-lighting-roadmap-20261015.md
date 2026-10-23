@@ -208,7 +208,7 @@ RHI 负责人核对 `3932b31` 的具体边界：现有 compute→readback、32 �
 
 3D texture SRV/UAV、compute、indirect dispatch 和资源退休已有。状态跟踪仍以整张纹理为单位，不允许同一纹理同时以 SRV/UAV 使用不同 mip；按阶段/双资源发布即可。多队列 async compute不是此方案前置条件。若未来需要运行时选择 SDF 格式，再由 RHI 增补 3D SRV/UAV 格式能力查询；当前接口存在不等于 SDF 工作负载已验收。
 
-GPU timestamp 只提供耗时，GPU 完成、成功提交和 Renderer accepted 是不同事件。当前 Frame 没有渲染时间字段，Application FrameTiming 只是 CPU prepare/render 测量；不能把它或 UI frame id 当作估计器时间。暂停不产生观测，大 delta 不应覆盖历史，后台模拟若真实变化应由场景变化链唤醒。
+GPU timestamp 只提供耗时，GPU 完成、成功提交和 Renderer accepted 是不同事件。当前 Frame 没有渲染时间字段，Application 的帧阶段计时只是 CPU 测量；不能把它或 UI frame id 当作估计器时间。暂停不产生观测，大 delta 不应覆盖历史，后台模拟若真实变化应由场景变化链唤醒。
 
 ## 8. 下一批里程碑与停止条件
 

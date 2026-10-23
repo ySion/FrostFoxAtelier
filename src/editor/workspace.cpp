@@ -179,8 +179,7 @@ void Workspace::commit_ui_controls() {
     if (!ui_document_) return;
     const auto revision=ui_document_->revision();ui_document_->commit_controls();
     if (ui_document_->revision()!=revision && revision)
-        status=L"UI updated: revision "+std::to_wstring(ui_document_->revision())+L" ("+
-            std::to_wstring(static_cast<unsigned>(ui_document_->compile_milliseconds()))+L" ms compile)";
+        status=L"UI updated: revision "+std::to_wstring(ui_document_->revision());
     if (ui_runtime_.collection_phase()==CollectionPhase::idle) {
         const auto started=ui_runtime_.begin_collection();
         if (!started) throw std::runtime_error(started.error().message);

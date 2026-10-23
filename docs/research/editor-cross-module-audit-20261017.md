@@ -45,8 +45,8 @@ U4 的 DSL 变化片段复用、U5 的真正范围化，以及 F2–F5 的帧率
 
 ### 计数含义
 
-- HUD 每约 0.5 秒显示接受帧之间的墙钟平均频率；截图、skipped、不可绘制时清空采样。它不是 GPU 计时倒数，也不证明每个接受帧都被屏幕扫描显示。依据：`Application::update_viewport_fps`，`application.cpp:1164–1172,1337`。
-- `FrameTiming` 仅为当前成功接受且启用采样的 step 记录，包含其局部对象析构；失败/跳过调用不形成同类 CPU row。性能验收的相邻接受步墙钟间隔仍包含中间等待、跳过调用和验收开销。依据：`application.hpp:17–22`、`application.cpp:1177–1188,1360`、`acceptance/editor/performance.inl:448–466,479,544–553`。
+- HUD 显示最近 0.5 秒内相邻采样步（接受且无截图）的墙钟平均间隔及其频率；截图、skipped、不可绘制的步打断相邻关系。它不是 GPU 计时倒数，也不证明每个接受帧都被屏幕扫描显示。依据：`Application::step` 与 `editor::FramePerformance`。
+- 每个 step 都有帧阶段计时记录，包含其局部对象析构；只有接受且无截图的 step 进入 CPU 统计窗口。性能验收的相邻接受步墙钟间隔仍包含中间等待、跳过调用和验收开销。依据：`Application::step`、`acceptance/editor/performance.inl` 的 `next_frame`。
 - Renderer/RHI 的子阶段嵌套在 Application render 时间内。Popup 的准备/提交可能落在事件处理或其他应用阶段，不能只看主 Surface 的 RHI 数值评价整个菜单响应。
 - 独立 `Project Run` 的日志 frame 是循环步数，最小化也递增；这不等同于编辑器的 accepted_frames。依据：`project_runner.cpp:184–188`。
 

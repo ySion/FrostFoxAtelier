@@ -13,7 +13,6 @@ struct ProjectBuild {
     BuildState state{BuildState::ready};
     std::optional<Error> error;
     std::uint64_t published_version{};
-    double milliseconds{};
 };
 
 // One project compilation unit in one World/Runtime. Session retains this owner
