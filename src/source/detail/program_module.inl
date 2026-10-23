@@ -68,6 +68,7 @@ std::span<const ClassInfo> Program::classes() const noexcept {
 std::span<const EntryInfo> Program::entries() const noexcept {
     return state_->module ? std::span<const EntryInfo>{state_->module->entries} : std::span<const EntryInfo>{};
 }
+std::uint64_t Program::revision() const noexcept { return state_->revision; }
 Result<Program::Entry> Program::entry(std::string_view name) const {
     if (!state_->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     const auto index = state_->find(name);
@@ -99,6 +100,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     request->module_ = std::make_shared<ModuleRequest>();
     auto& module = *request->module_;
     module.snapshot = std::make_shared<const SourceSnapshot>(std::move(snapshot));
+    module.options = options;
     const auto& input = *module.snapshot;
     const auto fail = [&](Error error) -> Result<Request> { request->declaration_error_ = std::move(error); return request; };
     std::size_t bytes = 0;
@@ -222,6 +224,17 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
     for (const auto& unit : request->module_->units) {
         auto text = request->module_->source.common;
         text.append(unit.source);
+        // An entry keeps its published code only while its whole unit compiles from identical input.
+        const ModuleVersion* kept = nullptr;
+        if (owner->module) {
+            const auto& old = *owner->module->request;
+            const auto found = std::ranges::find(old.units, unit.owner, &ModuleRequest::Unit::owner);
+            // Entry names derive from the unit text, so the text, options, snapshot name and catalog cover the input.
+            if (found != old.units.end() && found->source.text == unit.source.text &&
+                old.source.common.text == request->module_->source.common.text && old.snapshot->name == snapshot.name &&
+                old.options == request->module_->options && found->contract->binding == unit.contract->binding)
+                kept = owner->module.get();
+        }
         const EnvironmentView storage(unit.contract->binding);
         const auto environment = storage.view(unit.contract->type_name.c_str());
         std::vector<const char*> names;
@@ -262,7 +275,9 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                         "void late_tick(float), or void end()."});
             }
             const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
-            module->entries.push_back({name, *signature, unit.parameter_names[i]});
+            const auto code = kept ? std::ranges::find(kept->entries, name, &EntryInfo::name)->code
+                : next_entry_code.fetch_add(1, std::memory_order_relaxed);
+            module->entries.push_back({name, *signature, unit.parameter_names[i], code});
             auto declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,
                 name, request->source_name, locations});
@@ -303,6 +318,7 @@ Result<void> Program::publish_module(Candidate& candidate) {
     }
     state_->contract = prepared.compilation_contract;
     state_->published_request = prepared.sequence;
+    ++state_->revision;
     state_->module = std::move(prepared.module);
     return {};
 }

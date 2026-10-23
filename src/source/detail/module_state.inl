@@ -9,6 +9,7 @@ struct Program::ModuleRequest {
         std::vector<std::vector<std::string>> parameter_names;
     };
     std::shared_ptr<const SourceSnapshot> snapshot;
+    CompileOptions options;
     language::SourceModule source;
     std::vector<language::TypeDeclaration> value_types;
     std::vector<std::vector<std::optional<Scalar>>> defaults;
