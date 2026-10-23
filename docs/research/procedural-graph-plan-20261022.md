@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1、代码身份、L2 和 L6 已交付并合入），Jitter、RandomScale 和 NormalAlign 已用自有语言写成，参数带 L2 的元数据；Remap 和属性噪声要能在参数里选择目标属性，选择方式待定（§9）。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数，用户给的是原则而不是数字：程序化过程中没有隐式决策（§1 的“显式合约”），LOD 由显式合约决定。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点的基类 PointNode、按参数名的列绑定和按代码身份的重算已接上（L4a、L1、代码身份、L2 和 L6 已交付并合入），Jitter、RandomScale 和 NormalAlign 已用自有语言写成，参数带 L2 的元数据；Remap 和属性噪声要能在参数里选择目标属性，选择方式待定（§9）。
 
 ## 0. 结论
 
@@ -27,6 +27,7 @@
 | 归属与审阅 | `src/material` 的数据和 API 归编辑器负责人，涉及 Surface 与捕获语义时渲染负责人也审；跨模块的依赖工作由本线程实现，对应负责人审 diff，动手前先对齐接口 |
 | 语言能力 | 直接找运行时负责人排期，L5、L4 先做；L1 要过 Oracle，验收写明“只读、不改变借用与 GC 规则” |
 | 机器 | 构建与窗口验收都守 GPU/窗口锁 |
+| 显式合约 | 程序化过程中不应有隐式决策和变化。程序化与引擎之间的约定写成显式参数或成文的合约，例如 LOD 合约（网格按尾缀 `_LOD0`–`_LOD5` 提供各级 LOD），引擎不按三角形数之类自动推断。合约要能被将来的语言服务直接读取并给出提示（注册的元数据或文档里的结构化条目），不只写成散文。合约清单在 P2 方案之前交总负责人审（§9） |
 
 ## 2. Geometry 核心
 
@@ -175,9 +176,9 @@ class procedural.Jitter : procedural.PointNode {
 | 以后 | 逐实例属性做成与变换数组平行、等长的属性流，shader 侧新增实例属性输入，届时单独提方案 |
 
 - **显存**：10 万实例约 37 MB（光栅 108 B、Lit 192 B、材质偏移 4 B、TLAS 描述 64 B，再加上 gfx 每个实例句柄的 CPU 对象）。
-- **GPU 成本与目标内容**：没有逐实例剔除时，块的包围盒只要可见，GBuffer 就画块内全部实例，阴影 face 或级联每次重绘也一样，所以 10 万实例的主要成本可能在 GPU。目标内容（每个实例的三角形数）由用户定（§9），用它实测。超过几百个三角形时，逐实例 GPU 剔除和 LOD 是 P2 的必需项。
+- **GPU 成本与目标内容**：没有逐实例剔除时，块的包围盒只要可见，GBuffer 就画块内全部实例，阴影 face 或级联每次重绘也一样，所以 10 万实例的主要成本可能在 GPU。实例的 LOD 按显式的 LOD 合约（§1）选用，引擎不按三角形数推断；合约形式由本线程和渲染负责人（与 P2 的 meshlet 和 CPU 剔除对比一起考虑）、编辑器负责人（导入时识别 LOD）共同设计，交总负责人审。超过几百个三角形时，逐实例 GPU 剔除和 LOD 是 P2 的必需项。
 - **测量口径（性能负责人确定）**：
-  - 场景：工程副本里三个只差生成器的场景：Dungeon 原样、Dungeon_10k、Dungeon_100k。两个生成器用同一个网格，三角形数按用户定的目标内容选（优先用 Dungeon 现成的道具），报告单实例与总三角形数。实例撒在可走区域，镜头内只看到一部分。相机统一为 `--scene-lit-camera 6.927793 -0.362655 24.410025 3.6086 -1.3809 33.7881`。
+  - 场景：工程副本里三个只差生成器的场景：Dungeon 原样、Dungeon_10k、Dungeon_100k。两个生成器用同一个网格（优先用 Dungeon 现成的道具，有 LOD 时按 LOD 合约提供），报告单实例与总三角形数。实例撒在可走区域，镜头内只看到一部分。相机统一为 `--scene-lit-camera 6.927793 -0.362655 24.410025 3.6086 -1.3809 33.7881`。
   - 入口一：`atelier_editor --profile-render-performance`（release，有窗口，持锁），用例 clustered、clustered_orbit、docked_smooth，以及性能负责人在 P2 时添加的 clustered_motion。clustered_motion 分别移动生成器 Entity 和一个普通 Entity；后者等同于 Play 里有一个刚体在动，覆盖 TLAS 每帧 update 的开销。CPU 看 render.prepare、render.encode.scene.lit、render、application_step_ms；GPU 看 gpu_passes 中的 acceleration、gbuffer、shadow_cache、ddgi_trace/ddgi_update、direct_visibility/direct、hdr_reflections，以及 measured_main_total_ms。
   - 入口二：`atelier_editor_document_acceptance --profile-scene-cpu`，看 render_items、light_items、scene_snapshot、scene_snapshot_changed，并由本线程新增 scene_snapshot_generator_moved 与 scene_snapshot_generator_replaced 两个 stage，配合 `--profile-procedural`。
   - 规则：基线版和改动版交替各跑 2 次，取中位数；持锁，机器空闲（没有构建，负载低于 30%）。Acceleration 的 CPU 包含在 .lit 里，按与 Dungeon 的差值比较。不往产品里加 marker。
@@ -232,7 +233,7 @@ class procedural.Jitter : procedural.PointNode {
 | 阶段 | 内容 | 端到端验收（必要项） | 本线程工作量 | 依赖 |
 | --- | --- | --- | --- | --- |
 | P1 图与几何核心 | Geometry、Graph/Node、求值器（写代号、精确内容键、条目级 LRU）、规范化 JSON v1；C++ 黑箱：网格导入、Grid/Line 点、Scatter（含最小间距）、Transform、Attribute Promote、按 bool 列删除、Merge、Copy to Points、实例集合发布（分块、丢掉退化实例、逐块复用；矩阵判据从 renderer 提到 math 共用，渲染负责人审）、BVH 批量查询；自有语言节点：Jitter、属性随机、属性噪声、Remap、法线对齐；`--profile-procedural` | 新增无窗口目标 `procedural_acceptance`：①两个面积为 1 和 3 的三角形，密度取 4，使面积×密度为整数：两个三角形上的点数分别正好是 4 和 12，点都在各自的三角形内；同种子结果相同，换种子结果不同；只移动第二个三角形时，第一个三角形上的点不变；开启最小间距 d 后，任意两点距离都 ≥ d；②Grid(5×4)（带 N、Cd）→ Transform（旋转、非均匀缩放加平移）：P 与公式逐点一致，N 等于逆转置变换后归一化的结果（与只用线性部分的结果不同），Cd 不变；对导入的网格做镜像变换后，每个图元的顶点顺序反转；③按 bool 列删除后，点数与独立推导的结果一致；④Copy to Points：点带 orient、pscale 和非均匀 scale 时，实例矩阵等于 S·O·T；没有 orient 时按 N 与 up 对齐；`variant` 选择网格；按（网格，块）分组后，各组实例数正确，跨块边界的实例落在正确的块里；pscale = 0 和压扁成面的实例在发布时被丢掉并计数，点属性含 NaN 时 Copy to Points 失败、保留旧输出；只改变一个块内实例的参数修改，重新发布后其他块的 shared_ptr 不变；⑤经 `Runtime::write` 改参数、经 `with_native` 改 C++ 节点参数、经源码方法写 `self` 改自有语言节点参数，都只重算该节点及其下游（核对调用次数），撤销后零次重算；⑥兼容热更 Jitter 方法体，只重算该类型的节点及下游；⑦（放在 `editor_document_acceptance --procedural-graph`，配同名 CMake 目标）保存后在新 Runtime 重开，输出相同，再次保存字节相同；未知节点类型、解析不了的参数叶和指向未知节点的连接原样写回；共用属性编解码的数组经测试类型（Array<String>、带范围的 Array<float>）做 Scene 保存、重开和 live set 往返，严格解码拒绝元素类型不符，宽容加载把整个数组作为保留值写回；⑧成环被拒绝，节点越界失败时保留旧输出 | 14–18 人日 | L5、L4、L1、L2 |
-| P2 接入场景 | 生成器组件、presentation 输出实例集合、渲染器实例化（按 §5.1 的对齐结论）、暴露参数与实例覆盖（先交契约方案）、Cache、冻结、Bake、Play 加载 | 扩展 `world_acceptance` 或 `procedural_acceptance`：集合数与每实例世界矩阵正确（生成器 Entity 带旋转和非均匀缩放）；改覆盖值后集合更新、版本前进，静止时版本不变；保存场景后重开结果相同，删掉 Cache 后重新生成也相同；冻结后改图或改代码不影响输出；Bake 产生的 Entity 数量与矩阵一致且可撤销；渲染器 GPU 读回核对实例画面；含 pscale = 0 实例的生成器正常出图、不触发整帧拒绝；场景中其他项增删时，集合的常驻区段不重写；改一个只影响一个块的参数，其他块的 stable_key 不变、常驻区段不重写；附性能负责人确定的测量 | 生成器、格式与场景接入 6–9 人日；渲染器实例化（字段、常驻区段、shader 取法、阴影区间、历史 id、统计、拾取，TLAS a）8–12 人日；按实测追加：TLAS b 5–8 人日，逐实例 GPU 剔除与 LOD 6–10 人日 | 渲染、World、性能、编辑器负责人 |
+| P2 接入场景 | 生成器组件、presentation 输出实例集合、渲染器实例化（按 §5.1 的对齐结论）、暴露参数与实例覆盖（先交契约方案）、Cache、冻结、Bake、Play 加载 | 扩展 `world_acceptance` 或 `procedural_acceptance`：集合数与每实例世界矩阵正确（生成器 Entity 带旋转和非均匀缩放）；改覆盖值后集合更新、版本前进，静止时版本不变；保存场景后重开结果相同，删掉 Cache 后重新生成也相同；冻结后改图或改代码不影响输出；Bake 产生的 Entity 数量与矩阵一致且可撤销；渲染器 GPU 读回核对实例画面；含 pscale = 0 实例的生成器正常出图、不触发整帧拒绝；场景中其他项增删时，集合的常驻区段不重写；改一个只影响一个块的参数，其他块的 stable_key 不变、常驻区段不重写；附性能负责人确定的测量 | 生成器、格式与场景接入 6–9 人日；渲染器实例化（字段、常驻区段、shader 取法、阴影区间、历史 id、统计、拾取，TLAS a）8–12 人日；按实测追加：TLAS b 5–8 人日，逐实例 GPU 剔除与按合约的 LOD 6–10 人日 | 渲染、World、性能、编辑器负责人 |
 | P3 网络编辑器 | G1–G6、Geometry Spreadsheet、视口点显示 | 新增窗口目标 `editor_graph_acceptance`，持锁运行：经操作符和合成拖拽建图连线；在 Parameters 改参数；导出 PNG，核对连线中点像素和视口实例；核对表格行数；撤销/重做；保存后重开；`graph.inspect` 的统计正确 | 14–20 人日 | L6；编辑器与渲染负责人审 |
 | P4 封装与迁移 | 子图作为节点、从选中节点创建数字资产；L3 落地后把改变点数的基元迁到自有语言 | 扩展 `procedural_acceptance`：子图展开前后结果相同；迁移后输出与 C++ 版本一致 | 6–10 人日 | L3 |
 | P5 多边形构造 | 1 层算子、Mesh 输出键、碰撞缓存；2 层逐项决定 | 届时另立方案 | 20–30 人日起 | World、渲染负责人 |
@@ -241,18 +242,19 @@ class procedural.Jitter : procedural.PointNode {
 
 | 负责人 | 事项 | 状态 |
 | --- | --- | --- |
-| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b、L6 已交付并合入；下一项是引擎模块的编译结构改造，然后是 `math.is_finite`；其余见 §3.1 |
-| 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
+| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后；合约清单能被将来的语言服务读取的形式 | L5、L4a、L1、代码身份、L2、L4b、L6 已交付并合入；下一项是引擎模块的编译结构改造，然后是 `math.is_finite`；其余见 §3.1 |
+| 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批；LOD 合约（与 meshlet、CPU 剔除对比一起考虑） | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
 | World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐。集成顺序：World 的 scene v9（基于 63de8635，删除 v1–v8 的读取与迁移，只读 v9）排在 335cb844 之前；P1 交付从集成结果开始合入，scene.cpp 和 project-scenes.md 的冲突由本线程在那次合并里解决，内联 Array 的编解码与文档段落在 v9 的代码上重新落位 |
-| 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源） | 材质入口已交付（`Session::mesh_surfaces`，d2340350，见 §5.1）；共用属性编解码与内联 Array（335cb844）、图文件编解码（ed47199a）已审通过（§5.4）；其余 P2/P3 前对齐 |
+| 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源）；导入时按 LOD 合约识别各级 LOD | 材质入口已交付（`Session::mesh_surfaces`，d2340350，见 §5.1）；共用属性编解码与内联 Array（335cb844）、图文件编解码（ed47199a）已审通过（§5.4）；其余 P2/P3 前对齐 |
 
 ## 9. 风险与未决
 
 - **语言能力的时间线**：P1 依赖的 L1、L2、L4（含 L4b 超越函数）、L5 和 L6 都已交付；剩下 L3（P4 前）。引擎源码让每次发布变慢（500 行的合成库使单类工程从 12 ms 涨到 392 ms），编译结构改造之前，引擎库保持现在的规模（5 个文件约 130 行）。
 - **Remap 与属性噪声的目标属性**：列按 `evaluate` 的参数名绑定，所以节点只能处理代码里写定的属性名；Houdini 的 Attribute Remap、Attribute Noise 在参数里选属性。建议加一个原生基类，带 String 参数 `attribute`，求值器按它的值绑定一个约定的列参数（源码 class 不能声明 String 字段，但能继承原生字段）。这扩展了节点契约，**待用户定方向，再交总负责人审**；另一种做法是保持写定属性名（Wrangle 式），由用户为每个属性写自己的节点。
 - **数字资产契约**：§5.3 的表示要在 P2 前定。如果改为让图资产发布 Runtime 类型，需要先解决类型版本与重建问题。
-- **实例渲染**：10 万实例在 120 FPS 下的 CPU/GPU 成本按 §5.1 实测。主要不确定项有两个：一是只要有物体在动，TLAS 每帧都按总实例数重写，Play 多半需要 TLAS b；二是没有逐实例剔除时 GBuffer 和阴影重绘的 GPU 开销。第二项取决于目标内容的三角形数，**待用户定**。
+- **实例渲染**：10 万实例在 120 FPS 下的 CPU/GPU 成本按 §5.1 实测。主要不确定项有两个：一是只要有物体在动，TLAS 每帧都按总实例数重写，Play 多半需要 TLAS b；二是没有逐实例剔除时 GBuffer 和阴影重绘的 GPU 开销，按 LOD 合约提供的网格实测。
+- **程序化与引擎的合约清单**（P2 方案之前交）：逐条写明名字、含义、谁读谁写、违反时怎么报错，形式要能被将来的语言服务读取，形式与运行时负责人（语言服务将来归他）对齐。至少覆盖：LOD 合约；`variant` 缺失时取 0；实例集合分块的默认 32 m；`id` 的生成方式；按用途变换时从属性名推出的用途；P、N、pscale、orient 等约定名的含义。凡是现在靠隐式默认或推断的，改成显式参数，或写进合约。
 
 ## 附：拟在 P1 交付时加入 CONTEXT.md 的术语
 
