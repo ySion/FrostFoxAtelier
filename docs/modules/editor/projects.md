@@ -217,7 +217,7 @@ Project 配置 + Source 文件快照
   → 独立 Session → start → update → stop
 ```
 
-Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路径排序。每份文件保留正文和版本；上限为 256 份、单份 1 MiB、总计 16 MiB。源码编译是同步、整工程候选发布；没有逐文件混合发布或磁盘机器码缓存。未改变内容不会重复编译。轮询依赖修改时间和大小，显式 Build 会重新读取内容。
+Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路径排序，其后追加引擎附带的 `engine/` 源码（见[项目快照](../../source-function-modules.md#项目快照与多个公开入口)）。每份文件保留正文和版本；工程文件上限为 256 份，单份 1 MiB，工程与引擎文件总计 16 MiB。源码编译是同步、整工程候选发布；没有逐文件混合发布或磁盘机器码缓存。未改变内容不会重复编译。轮询依赖工程文件和引擎文件的修改时间和大小，显式 Build 会重新读取内容。
 
 Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有者。退出顺序保证 End 能访问行为代码，World 先于代码释放，Runtime 最后销毁。PhysicsScene 是 World 登记的模拟系统，Session::update 只调用 `World::update`，物理子步在其中推进。编辑器 UI Runtime 由 Workspace 独立拥有，场景替换不会让 UI 借用失效的运行时。
 

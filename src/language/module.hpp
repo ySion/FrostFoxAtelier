@@ -28,7 +28,8 @@ struct ClassField {
 };
 // Signatures omit parameter names, so renaming a parameter stays compatible.
 struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; std::vector<std::string> parameters; };
-struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; };
+struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; std::uint32_t file{}; SourcePosition position; };
+struct ConstantDeclaration { std::string name; std::uint32_t file{}; SourcePosition position; };
 struct ClassDeclaration {
     std::string name, base;
     std::uint32_t file{};
@@ -41,7 +42,9 @@ struct ClassDeclaration {
 struct SourceModule {
     MappedSource common;
     std::vector<FunctionDeclaration> functions;
+    std::vector<ConstantDeclaration> constants;
     std::vector<ClassDeclaration> classes;
 };
+// Files under engine/<module>/ declare only <module>.* names; other files declare none in a module present in the snapshot.
 [[nodiscard]] std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapshot&);
 }

@@ -6,7 +6,10 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <windows.h>
 
 namespace {
 using namespace atelier;
@@ -527,6 +530,113 @@ class game.Panel : project.Host { float speed = 1.0f; }
         std::get<bool>(*take(take(program.entry("pick")).invoke({}, {}))) && program.classes().size() == 1,
         "Registered project types did not bind beside hidden editor. types.");
 }
+struct EngineBase { float x; };
+std::filesystem::path executable_directory() {
+    std::wstring path(32768, L'\0');
+    path.resize(GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size())));
+    return std::filesystem::path(path).parent_path();
+}
+// Engine Source files load from disk with engine/ paths and declare only their module's names;
+// project files use them but cannot declare in that namespace.
+void verify_project_engine_sources() {
+    const auto root = std::filesystem::temp_directory_path() / ("atelier-engine-sources-" + std::to_string(GetCurrentProcessId()));
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{root};
+    const auto write = [&](const std::filesystem::path& relative, std::string_view text) {
+        std::filesystem::create_directories((root / relative).parent_path());
+        std::ofstream(root / relative, std::ios::binary) << text;
+    };
+    const std::string random = "const uint procedural.SEED = 7;\nuint procedural.hash(uint x) { return x * 31 + procedural.SEED; }\n";
+    write("procedural/random.source", "\xef\xbb\xbf" + random);
+    write("procedural/nested/orient.source", R"(
+enum procedural.Axis : uint { x, y, z }
+const float procedural.y = 9.0;
+float procedural.scaled(float v) { return v * float(procedural.hash(2)); }
+class procedural.Jitter : procedural.Base { float amount = 0.5f; float evaluate(float v) { return v + self.amount * float(procedural.hash(1)); } }
+)");
+    write("procedural/notes.txt", "not source");
+    write("copy/random.source", random);
+    const auto paths = take(source::engine_source_paths(root));
+    require(paths.size() == 3 && paths[0] == std::filesystem::path("copy/random.source") &&
+        paths[1] == std::filesystem::path("procedural/nested/orient.source") && paths[2] == std::filesystem::path("procedural/random.source"),
+        "Engine source paths were not the sorted .source files under the root.");
+    auto loaded = take(source::engine_sources(root));
+    require(loaded.size() == 3 && loaded[0].path == "engine/copy/random.source" && loaded[1].path == "engine/procedural/nested/orient.source" &&
+        loaded[2].path == "engine/procedural/random.source" && loaded[2].source == random && loaded[0].source == random &&
+        loaded[0].version != loaded[2].version, "Engine sources lost their engine/ path, dropped text or hashed the BOM away.");
+    write("copy/random.source", "\xef\xbb\xbf" + random);
+    const auto copied = take(source::engine_sources(root))[0].version;
+    write("copy/random.source", "\xef\xbb\xbf" + random + " ");
+    require(copied == loaded[2].version && take(source::engine_sources(root))[0].version != copied,
+        "Engine source versions did not follow the saved bytes alone.");
+    require(take(source::engine_sources(root / "missing")).empty(), "A missing engine root produced sources.");
+    // The build copies assets/engine beside the executable exactly; development builds read the tree.
+    const std::filesystem::path tree{ATELIER_ENGINE_SOURCE_TREE};
+    const auto tree_files = take(source::engine_sources(tree)), copy_files = take(source::engine_sources(executable_directory() / "engine"));
+    require(tree_files.size() == copy_files.size() && std::ranges::equal(tree_files, copy_files, [](const auto& a, const auto& b) {
+        return a.path == b.path && a.version == b.version && a.source == b.source;
+    }), "engine/ beside the executable differs from assets/engine.");
+    require(source::default_engine_root() == (std::filesystem::is_directory(tree) ? tree : executable_directory() / "engine"),
+        "The default engine root did not prefer the source tree.");
+
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    std::vector<source::SourceFile> engine(loaded.begin() + 1, loaded.end());
+    const auto with = [&](std::vector<source::SourceFile> files) {
+        source::SourceSnapshot snapshot{"engine", 1, engine};
+        snapshot.files.insert(snapshot.files.end(), files.begin(), files.end());
+        return snapshot;
+    };
+    const auto rejected = [&](std::vector<source::SourceFile> files, std::string_view expected, const char* message) {
+        const auto path = files.front().path;
+        auto failed = Program::prepare(take(program.request(with(std::move(files)))));
+        if (failed || failed.error().message.find(expected) == std::string::npos || !failed.error().source || failed.error().source->path != path)
+            throw std::runtime_error(std::string(message) + (failed ? "" : " Got: " + failed.error().message));
+    };
+    const auto project = [](std::string text) { return std::vector<source::SourceFile>{{"Source/Bad.source", 1, std::move(text)}}; };
+    const auto engine_file = [](std::string text) { return std::vector<source::SourceFile>{{"engine/procedural/bad.source", 1, std::move(text)}}; };
+    const std::string_view reserved = "Only engine sources under engine/procedural/ may declare names in the procedural. namespace";
+    rejected(project("class procedural.Mine : procedural.Base { }"), reserved, "A project file declared an engine class.");
+    rejected(project("struct procedural.Mine { float a; };"), reserved, "A project file declared an engine struct.");
+    rejected(project("enum procedural.Mine { a }"), reserved, "A project file declared an engine enum.");
+    rejected(project("float procedural.mine() { return 1.0; }"), reserved, "A project file declared an engine function.");
+    rejected(project("const uint procedural.MINE = 1;"), reserved, "A project file declared an engine constant.");
+    const std::string_view own = "Engine sources under engine/procedural/ may only declare names in the procedural. namespace";
+    rejected(engine_file("float other.f() { return 1.0; }"), own, "An engine file declared outside its module.");
+    rejected(engine_file("float f() { return 1.0; }"), own, "An engine file declared an unqualified name.");
+    rejected({{"engine/loose.source", 1, ""}}, "Engine source paths must be engine/<module>/<file>", "An engine file had no module.");
+    rejected({{"engine/math/x.source", 1, ""}}, "Engine source paths must be engine/<module>/<file>", "An engine module used math.");
+    rejected(engine_file("float procedural.Base() { return 1.0; }"), "cannot share a name with a type: procedural.Base",
+        "A function took a registered type's name.");
+    rejected(engine_file("const uint procedural.Jitter = 1;"), "cannot share a name with a type: procedural.Jitter",
+        "A constant took a source class's name.");
+    rejected(project("class mygame.Twin : procedural.Base { float run() { return 1.0; } }\nfloat mygame.Twin.run() { return 2.0; }"),
+        "cannot extend a type name: mygame.Twin.run", "A function took a class method's entry name.");
+    rejected(engine_file("uint procedural.twice(uint v) { return hash(v); }"), "Unknown source function 'hash'",
+        "An engine file called a qualified function by its short name.");
+    require(!runtime.find_type("procedural.Jitter") && program.classes().empty(), "A rejected engine snapshot published a type.");
+    publish(program, with({{"Source/Game.source", 1, R"(
+class mygame.Foo : procedural.Base {
+    procedural.Axis axis = procedural.Axis::z;
+    float run(float v) { return procedural.scaled(v) + float(procedural.SEED); }
+}
+uint project_hash(uint v) { return procedural.hash(v); }
+float shadowed() { vector3 procedural = vector3(1.0, 2.0, 3.0); return procedural.y; }
+float unshadowed() { return procedural.y; }
+)"}}));
+    const auto invoke = [&](std::string_view name, std::span<const Scalar> arguments) { return *take(take(program.entry(name)).invoke({}, arguments)); };
+    const std::array five{Scalar{std::uint32_t{5}}}, half{Scalar{0.5f}};
+    require(std::get<std::uint32_t>(invoke("procedural.hash", five)) == 162 && std::get<std::uint32_t>(invoke("project_hash", five)) == 162 &&
+        std::get<float>(invoke("procedural.scaled", half)) == 34.5f && std::get<float>(invoke("shadowed", {})) == 2.0f &&
+        std::get<float>(invoke("unshadowed", {})) == 9.0f,
+        "Qualified engine functions, constants or local shadowing evaluated incorrectly.");
+    const auto classes = program.classes();
+    const auto base = take(runtime.find_type("procedural.Base"));
+    require(classes.size() == 2 && std::ranges::all_of(classes, [&](const auto& c) { return c.base == base; }) &&
+        std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "procedural.Jitter.evaluate"; }) &&
+        std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "mygame.Foo.run"; }),
+        "Engine and project classes on the engine's native base did not publish.");
+}
 }
 
 void verify_source_projects() {
@@ -692,6 +802,8 @@ void verify_source_projects() {
     verify_project_class_fields();
     verify_project_field_ranges();
     verify_editor_reserved_types();
+    verify_project_engine_sources();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, entry codes/revision, diagnostics, lifetime, "
-        "read-only self fields in value regions with borrow and GC rules unchanged, vector/enum class fields with attributes)");
+        "read-only self fields in value regions with borrow and GC rules unchanged, vector/enum class fields with attributes, "
+        "engine sources with qualified names and reserved namespaces)");
 }
