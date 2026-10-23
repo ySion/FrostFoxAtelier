@@ -20,6 +20,8 @@ namespace atelier::editor {
 namespace {
 using json_format::Json;
 using json_format::fields;
+using json_format::overlay;
+using json_format::preview;
 // A failed Runtime or World result; callers that report error codes keep its code.
 struct Failure : std::runtime_error {
     ErrorCode code;
@@ -201,15 +203,6 @@ Scalar decode_scalar(Runtime& runtime,const Scalar& prototype,const Json& value,
         }
     },prototype);
 }
-// Retained records are sparse scene JSON. On save a retained leaf replaces the
-// emitted value at its path; retained records merge into emitted records.
-void overlay(Json& target,const Json& retained) {
-    if(!target.is_object() || !retained.is_object()) {target=retained;return;}
-    for(const auto& [key,value]:retained.items()) {
-        if(auto at=target.find(key);at!=target.end()) overlay(*at,value);
-        else target[key]=value;
-    }
-}
 // Removes the retained subtree at path, or a retained leaf on its prefix.
 bool erase_path(Json& record,std::span<const std::string> path) {
     std::vector<Json*> trail{&record};
@@ -229,14 +222,6 @@ bool reference_value(const Json& value) {return value.is_object() && (value.cont
 template<class F> void each_reference(Json& value,F&& visit) {
     if(reference_value(value)) {visit(value);return;}
     if(value.is_object() || value.is_array()) for(auto& item:value) each_reference(item,visit);
-}
-std::string preview(const Json& value) {
-    auto text=value.dump(-1,' ',false,Json::error_handler_t::replace);
-    if(text.size()>96) {
-        std::size_t cut=93;while(cut && (static_cast<unsigned char>(text[cut])&0xC0)==0x80) --cut;
-        text.resize(cut);text+="...";
-    }
-    return text;
 }
 std::string dotted(std::span<const std::string> path) {
     std::string text;

@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <string>
 #include <unordered_set>
 
-// On-disk rules shared by Project and Scene; the DOM stays out of their interfaces.
+// On-disk rules shared by Project, Scene and graph files; the DOM stays out of their interfaces.
 namespace atelier::editor::json_format {
 using Json = nlohmann::json;
 inline constexpr std::size_t maximum_bytes = 16 * 1024 * 1024;
@@ -44,5 +45,25 @@ template<std::size_t Count> std::array<float, Count> vector(const Json& value) {
         if (!std::isfinite(result[i])) throw std::runtime_error("Vector components must be finite.");
     }
     return result;
+}
+// Kept saved JSON is sparse: on save a kept leaf replaces the emitted value at its path, and kept
+// records merge into emitted records.
+inline void overlay(Json& target, const Json& kept) {
+    if (!target.is_object() || !kept.is_object()) { target = kept; return; }
+    for (const auto& [key, value] : kept.items()) {
+        if (auto at = target.find(key); at != target.end()) overlay(*at, value);
+        else target[key] = value;
+    }
+}
+// A saved value shortened for diagnostics, cut at a UTF-8 boundary.
+inline std::string preview(const Json& value) {
+    auto text = value.dump(-1, ' ', false, Json::error_handler_t::replace);
+    if (text.size() > 96) {
+        std::size_t cut = 93;
+        while (cut && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
+        text.resize(cut);
+        text += "...";
+    }
+    return text;
 }
 }

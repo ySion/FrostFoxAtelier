@@ -3,6 +3,7 @@
 #include "runtime/foundation.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace atelier::procedural {
 namespace detail {
@@ -26,13 +27,13 @@ Result<bool> member(Runtime& runtime, ObjectId graph, ObjectId node) {
 
 // True when `target` is `from` or feeds it through any path of connections.
 Result<bool> upstream(Runtime& runtime, ObjectId from, ObjectId target) {
-    std::vector<ObjectId> pending{from}, seen;
+    std::vector<ObjectId> pending{from};
+    std::unordered_set<ObjectId> seen;
     while (!pending.empty()) {
         const auto node = pending.back();
         pending.pop_back();
         if (node == target) return true;
-        if (std::ranges::find(seen, node) != seen.end()) continue;
-        seen.push_back(node);
+        if (!seen.insert(node).second) continue;
         auto into = inputs(runtime, node);
         if (!into) return std::unexpected(into.error());
         for (const auto& input : *into) pending.push_back(input.from);

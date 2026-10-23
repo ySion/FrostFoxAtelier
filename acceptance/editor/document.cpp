@@ -6,6 +6,11 @@
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
 #include "editor/material_format.hpp"
+#include "editor/graph_format.hpp"
+#include "procedural/evaluator.hpp"
+#include "procedural/nodes.hpp"
+#include "geometry/mesh.hpp"
+#include "runtime/native.hpp"
 #include "application/scene_snapshot.hpp"
 #include "renderer/scene_visibility.hpp"
 #include "application/recovery.hpp"
@@ -14,6 +19,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <numeric>
 #include <numbers>
@@ -73,6 +79,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "color_edits.inl"
 #include "recovery.inl"
 #include "operator_parameters.inl"
+#include "procedural_graph.inl"
 }
 int main(int argc, char** argv) {
     std::string_view stage=argc>1?argv[1]:"document history";
@@ -80,6 +87,7 @@ int main(int argc, char** argv) {
         if(argc==2 && std::string_view(argv[1])=="--recovery") {verify_scene_recovery();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();verify_missing_resources();verify_color_edits();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--procedural-graph") {verify_procedural_graph();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}
@@ -104,7 +112,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         // Each check runs once in the acceptance gate: a mode run by its own target is not repeated here.
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --examples | --physics-examples | --physics-test-project | --textured-obj | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --procedural-graph | --examples | --physics-examples | --physics-test-project | --textured-obj | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
         stage="project document";verify_project_document();
         stage="declarative parameters";verify_declarative_parameters();
         stage="tooltip DSL";verify_tooltip_dsl();

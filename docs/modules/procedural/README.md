@@ -13,7 +13,7 @@
 | [evaluator.hpp](../../../src/procedural/evaluator.hpp) | 增量求值与结果缓存 |
 | [random.hpp](../../../src/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
 
-方向、分阶段计划与跨模块约定见[程序化节点图方案](../../research/procedural-graph-plan-20261022.md)。生成器组件、渲染器实例化、图文件格式、自有语言节点和网络编辑器尚未实施。
+方向、分阶段计划与跨模块约定见[程序化节点图方案](../../research/procedural-graph-plan-20261022.md)。生成器组件、渲染器实例化、自有语言节点和网络编辑器尚未实施。
 
 ## Geometry
 
@@ -87,6 +87,26 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 - **失败**：节点失败时它的下游不求值，状态记为输入失败，`output()` 保留上一次的结果。失败的键在资源版本不变时不再重试，键变化（例如参数改回）或资源版本变化后再试。
 - **调度**：每个需要的节点每次求值最多调用一次 evaluate，按上游在前的顺序执行。环在建立连接时就被拒绝，求值时遇到环或指向图外的连接返回错误。
 
+## 图文件
+
+图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../src/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text)` 把 version 1 的图文件打开到已注册 procedural 类型的 Runtime 中，得到 `GraphDocument`：图的根、每个节点的 `GraphNode`（名字、节点根、画布位置、保留的原始 JSON）、保留的 settings 和加载诊断（`world::Diagnostic`，field 是从文件根算起的路径）。`save_graph(runtime, document)` 写出规范文本。名字和位置是文档数据，不放进节点对象，所以移动节点不盖章；保存只做 const 读取。
+
+```json
+{
+  "nodes": {
+    "grid":   {"inputs": {}, "position": [0.0, 0.0], "properties": {"columns": 4, "rows": 3, "size": {"x": 3.0, "y": 2.0}}, "type": "procedural.Grid"},
+    "merged": {"inputs": {"inputs": ["moved.output", "line.output"]}, "position": [400.0, 60.0], "properties": {}, "type": "procedural.Merge"}
+  },
+  "settings": {"display": "merged", "seed": 7},
+  "version": 1
+}
+```
+
+- **规范形式**：`nodes` 以名字为键，名字符合 `[A-Za-z_][A-Za-z0-9_]*`，`json_format::parse` 拒绝重复键。每个节点写 `type`（Runtime 限定类型名）、`position`、`properties`（全部公开字段，与 Scene 共用 `encode_properties`，所以节点默认值以后改变也不改变旧图的含义）和 `inputs`（总是写出；未连接的端口不出现；单输入端口写 `"上游.输出名"`，多输入端口写数组并保留连接顺序）。`settings` 是图的公开字段加 `display`（节点名，没有 display 时不写）。键按名字排序，`dump(2)` 后加换行，所以未改动的文档再次保存逐字节相同。节点的连接、图的节点列表和 display 是隐藏字段，不出现在属性里。
+- **宽容加载**：与 Scene 相同，放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点（读不出端口）的节点整项保留（`unknown_type`），它的位置仍可移动；已知节点和 settings 中解析不了的参数叶经带 `PropertyReport` 的 `decode_properties` 保留（`mismatch`、`unknown_field`，可无损转换的整数报 `converted`）；端口名或上游节点、输出名解析不了的连接按端口保留（`reference_dropped`），多输入端口中能解析的连接照常建立，原数组整体保留，所以顺序不变；会成环的连接同样保留，按节点名顺序先建立的一侧成立；display 指向没有加载的节点时同样保留。保存时保留的 JSON 覆盖在写出的值上。其他 Runtime 失败（例如节点构造失败）使加载失败，保留原错误码。
+- **结构错误**直接失败：版本不是 1、未知键、`nodes` 或 `settings` 不是对象、节点名非法、缺少 `type`、`position` 不是两个有限数、`properties` 不是对象、`inputs` 不是以端口名为键的对象或连接不是 `"节点.输出"` 形式、display 不是节点名。保存时每个图节点必须恰有一个条目，名字合法且不重复，位置有限。
+- 保留的值在文档中一直覆盖写出的值；网络编辑器接入时，编辑一个保留了值的参数或端口要先丢弃这份保留，与 Scene 的规则相同；改名或删除节点时，还要改写或删除保留的连接、display 和保留节点里指向它的名字。
+
 ## 验收
 
 `procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）覆盖：撒点的精确点数、确定性、三角形之间互不影响、概率取整和最小间距；按用途变换（逆转置法线、奇异变换下的平面法线、镜像时图元反转与 vertex 列重排）；删除、合并冲突、Promote、写时复制；Copy to Points 的 S·O·T 与 N/up 对齐、NaN 与越界变体；发布的分块、丢弃与逐块复用。BVH 在 3200 个三角形的起伏高度场上，用向下、向上、近水平和受距离限制的射线以及最近点查询，与按另一套公式写成的 double 暴力解比较命中、距离和命中点；同一叶中叠放的两个三角形从两侧都取到较近的一个。Ray 节点核对最近的抬高三角形、重心坐标、命中法线、背后和范围外的未命中、删除未命中点，以及 minimum 模式取到比正下方更近的角点。图与求值器部分构建 Grid → Transform → Merge ← Line → CopyToPoints，与直接调用操作的结果逐字节比较，并核对每个节点的求值与命中次数：
@@ -100,6 +120,12 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 ```powershell
 . ./tools/enter-dev.ps1
 cmake --build --preset release --target procedural_acceptance
+```
+
+`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）用同一张图核对图文件：保存不盖章且文本是规范 JSON；连接按端口名和输出名、按连接顺序写出，参数含向量、四元数、枚举、String 和 `Array<String>`，隐藏的连接列表不进属性；在另一个 Runtime 中重开，求值输出逐字节相同，再次保存字节相同，名字和位置不变；加入未知节点、指向它的多输入连接、不存在的端口、类型不符和未知的参数叶后宽容加载，每项恰好报告一次，能解析的连接照常建立，保存结果与改过的文本逐字节相同，保留的节点移动后保存新位置；settings 中不符的种子和指向未加载节点的 display 保留并写回；会成环的连接保留并写回，构造失败的节点使加载失败；九种结构错误被拒绝；重名或缺少条目的文档不能保存。
+
+```powershell
+cmake --build --preset release --target procedural_graph_acceptance
 ```
 
 ## 测量
