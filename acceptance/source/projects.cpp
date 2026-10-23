@@ -233,6 +233,13 @@ void verify_source_projects() {
         require(entry.signature.receiver && entry.signature.receiver->type == candidate.classes()[0].type &&
             !entry.signature.result && entry.signature.parameters.size() == 1,
             "Candidate lifecycle signature did not use the prepared class identity.");
+    const auto parameter_names = [](std::span<const source::EntryInfo> entries, std::string_view name) {
+        return std::ranges::find(entries, name, &source::EntryInfo::name)->parameter_names;
+    };
+    require(parameter_names(candidate.entries(), "distance") == std::vector<std::string>{"speed", "dt"} &&
+        parameter_names(candidate.entries(), "game.Move.tick") == std::vector<std::string>{"dt"} &&
+        parameter_names(candidate.entries(), "game.Move.begin").empty(),
+        "Project entries did not carry their declared parameter names.");
     take(program.try_publish(candidate));
     require(candidate.classes().empty() && candidate.entries().empty(), "Consumed candidate retained a second published metadata view.");
     require(program.classes().size() == 1 && program.entries().size() == 4, "Project discovery lost a class or typed entry.");
@@ -294,7 +301,12 @@ void verify_source_projects() {
     const std::string begin_method = "    void begin() { self.begins = self.begins + 1; }\n";
     body.erase(body.find(begin_method), begin_method.size());
     body.insert(body.rfind('}'),begin_method);
+    // Renaming a parameter is compatible and republishes the new name.
+    const std::string tick_method = "void tick(float dt) { self.translate_owner(distance(self.speed,dt),";
+    body.replace(body.find(tick_method), tick_method.size(), "void tick(float step) { self.translate_owner(distance(self.speed,step),");
     publish(program,reordered);
+    require(parameter_names(program.entries(), "game.Move.tick") == std::vector<std::string>{"step"},
+        "A parameter rename did not publish compatibly with the new name.");
     take(begin.invoke(instance.id(),{}));
     require(std::get<std::uint32_t>(take(runtime.read(instance.id(),begins))) == 2, "Declaration reordering changed a bound entry's stable slot.");
     auto changed = sources(); const auto at = changed.files[1].source.find("float speed"); changed.files[1].source.replace(at,5,"double");

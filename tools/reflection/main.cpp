@@ -99,7 +99,7 @@ struct Field {
     // Designated FieldRange initializers, empty when the field declares no range.
     std::string range{};
 };
-struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; std::string description{}; };
+struct Method { std::string cpp_name, name, pointer; unsigned line{}; bool preserves_borrows{}; std::string description{}; std::vector<std::string> parameters{}; };
 struct Type {
     const CXXRecordDecl* declaration{};
     std::size_t header{};
@@ -655,6 +655,7 @@ void members(State& state, Type& type, ASTContext& context) {
             if (!parameter) { state.error(method->getParamDecl(i)->getLocation(), "Reflected parameters require scalar/enum/plain record values or const T&/T& borrows."); valid = false; break; }
             if (i) value.pointer += ", ";
             value.pointer += *parameter;
+            value.parameters.push_back(method->getParamDecl(i)->getName().str());
         }
         if (!valid) continue;
         value.pointer += ")";
@@ -770,6 +771,11 @@ void emit(const State& state) {
             if (method.preserves_borrows || !method.description.empty()) cpp += method.preserves_borrows ? ", true" : ", false";
             if (!method.description.empty()) cpp += ", " + quote(method.description);
             cpp += ")";
+            if (!method.parameters.empty()) {
+                cpp += "\n        .parameter_names({";
+                for (std::size_t i = 0; i < method.parameters.size(); ++i) cpp += (i ? ", " : "") + quote(method.parameters[i]);
+                cpp += "})";
+            }
         }
         cpp += "\n        .build();\n}\n";
     }

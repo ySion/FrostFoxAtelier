@@ -89,4 +89,4 @@ cmake --build --preset dev --target atelier_source_minimal
 
 发布配置使用相同入口，将 `dev` 替换为 `release`。
 
-2026-10-10 验收：dev/release 的 Source、JIT、Runtime 端到端验收均通过；结构规范审查与 Astra 的语义、生命周期复核均已完成。验收覆盖跨 `yield` 的参数和局部值读取，确认调试表位于协程帧内；未传入 Debugger 的调用也不复制调试元数据的共享指针。
+验收还覆盖跨 `yield` 的参数和局部值读取，确认调试表位于协程帧内；未传入 Debugger 的调用不复制调试元数据的共享指针。

@@ -22,7 +22,7 @@ AFUNCTION(BorrowSafe)
 std::uint32_t process(Array<float>& values, const String& label);
 ```
 
-方法体可以读取标签、原地处理元素并返回数量；必须保持调用期间已有借用有效。当前阶段不允许此方法重分配、清空或替换所借容器，因为其他参数可能是它的元素或字段别名。
+方法体可以读取标签、原地处理元素并返回数量；必须保持调用期间已有借用有效。此方法不能重分配、清空或替换所借容器，因为其他参数可能是它的元素或字段别名。
 
 ## 统一执行链
 
@@ -35,7 +35,7 @@ std::uint32_t process(Array<float>& values, const String& label);
 
 String 字面量直接用于声明、赋值或追加时，生成代码直接传递文本字节，不建立未使用的临时拥有值及清理分支；真正作为值使用的字面量仍提前分配清理槽，覆盖全部返回路径。
 
-拥有型对象放在生成栈上，String 的短文本仍使用既有 SSO，长文本和 Array 缓冲仍由基础库分配。复制使用真实值语义；这里不把深复制描述为零拷贝。外部借用及传给原生方法的引用继续访问原存储。没有测量本阶段的业务吞吐收益。
+拥有型对象放在生成栈上，String 的短文本仍使用既有 SSO，长文本和 Array 缓冲仍由基础库分配。复制使用真实值语义；这里不把深复制描述为零拷贝。外部借用及传给原生方法的引用继续访问原存储。
 
 ## 借用与值操作契约
 
@@ -53,7 +53,7 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 - 外部借用容器禁止结构修改；源码入口的 String 参数仍只允许 `const String&`，字符索引只读。BorrowSafe 原生方法须遵守全部实参的只读性与别名约束。
 - 字面量支持 UTF-8、反斜线、引号、换行/回车/tab/零字节转义；未知转义在编译时拒绝，非法 UTF-8 在基础 String 构造或修改时报告执行错误。
 - String/Array 和一般拥有型记录暂不跨 async/yield；数学局部可以跨挂起。现有标量（含 double）与对象协程沿原协议执行。
-- 一般记录/容器按值参数与结果、借用逃逸与返回和源码 class 仍属于后续增量；内建数学值已支持同步按值参数与结果。[源码 enum/struct](source-type-declarations.md)已接通记录拥有型局部；[同模块多函数](source-function-modules.md)已沿用这些值生命周期与借用契约。
+- 一般记录/容器按值参数与结果、借用逃逸与返回尚未开放；内建数学值和 plain record 支持同步按值参数与结果。[源码 enum/struct](source-type-declarations.md)与[同模块多函数](source-function-modules.md)沿用这些值生命周期与借用契约。
 
 ## 端到端验收
 
@@ -65,6 +65,4 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 - 字面量临时值和转义、兼容方法体替换、旧租约执行。
 - 未声明安全值操作、未知原生调用、借用结构修改、跨挂起、String 字节写入的拒绝；同批前向 GC 记录参数不能绕过共享签名验证。
 
-本阶段 dev/release 均已通过上述消费者及下列相关验收；阶段复核日志为 `out/stage-review-source-dev.log`、`out/stage-review-dev.log` 和 `out/stage-review-release.log`。
-
-入口仍是 `source_acceptance`，也包含在 `jit_acceptance` 中。开发与发布配置执行同一套检查，不依赖 assert。相关基础库、反射 CLI、JIT、Runtime、World 与无窗口编辑器文档验收一并覆盖；图形窗口不在本次修改范围内。
+入口是 `source_acceptance`，也包含在 `jit_acceptance` 中。开发与发布配置执行同一套检查，不依赖 assert。

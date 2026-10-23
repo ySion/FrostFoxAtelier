@@ -173,6 +173,11 @@ void verify_descriptions(Runtime& runtime) {
         method_info(runtime, counter, "scale").description.empty() &&
         field_info(runtime, probe, "before").description.empty() && field_info(runtime, probe, "after").description.empty(),
         "Description changed BorrowSafe or empty/omitted metadata defaults.");
+    // Names come from the declaration, not the Name alias; an unnamed C++ parameter stays empty.
+    require(method_info(runtime, counter, "count").parameter_names == std::vector<std::string>{"amount"} &&
+        method_info(runtime, probe, "observe_after").parameter_names == std::vector<std::string>{"read", ""} &&
+        method_info(runtime, probe, "record_alias").parameter_names == std::vector<std::string>{"copy", "target"} &&
+        read.parameter_names.empty(), "Generated method lost or reordered its declared parameter names.");
 
     struct Manual {
         float value{};

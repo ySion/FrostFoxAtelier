@@ -1,6 +1,6 @@
 # 第 1 轮语言基础：运算边界调研
 
-2026-10-04；实现基线 `bba1595`。本记录核对官方 LLVM LangRef 与 Microsoft C# 规范，给出本轮建议；实现行为以项目当前语言文档为准。范围为 `bool`、32 位 `int/uint` 运算、四种数值类型的显式转换、标量常量及 `for/break/continue`。
+2026-10-04；实现基线 `bba1595`。本记录核对官方 LLVM LangRef 与 Microsoft C# 规范，作为现行运算规则的依据；实现行为以 [LANGUAGE.md](../../LANGUAGE.md) 为准。范围为 `bool`、32 位 `int/uint` 运算、四种数值类型的显式转换、标量常量及 `for/break/continue`。
 
 ## 布尔表示与短路
 

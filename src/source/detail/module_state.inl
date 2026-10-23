@@ -6,6 +6,7 @@ struct Program::ModuleRequest {
         language::MappedSource source;
         std::vector<std::string> names;
         std::string owner;
+        std::vector<std::vector<std::string>> parameter_names;
     };
     std::shared_ptr<const SourceSnapshot> snapshot;
     language::SourceModule source;

@@ -8,8 +8,7 @@
 #define ATELIER_SOURCE_VERIFICATION __declspec(dllimport)
 #endif
 
-// Available only when ATELIER_BUILD_JIT_ACCEPTANCE is enabled. These entry
-// points run inside the same DLL that owns all source-backend code handles.
+// Acceptance entry points that run inside the same DLL that owns all source-backend code handles.
 // They exercise the real source compiler/linker with business_poll omitted;
 // failed compilation leaves *output, including an existing handle, untouched.
 extern "C" ATELIER_SOURCE_VERIFICATION std::uint32_t atelier_compile_business_without_poll_for_verification(

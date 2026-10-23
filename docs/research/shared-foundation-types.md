@@ -1,18 +1,10 @@
 # 共享基础类型与调用契约
 
-状态：第 1 步已获授权并实施，dev/release 端到端验收通过。原生字符串、视图与数组首片已实施，当前合同见[基础库](../foundation.md)；现行调用合同以 [Runtime 协议](../runtime-model.md#共享函数签名与结果)、[自动反射](../reflection.md)及 [LANGUAGE](../../LANGUAGE.md) 为准。
-
-## 调研起点与本次落地
-
-调研基线 `519c072` 的原生反射调用仅支持 `float`、`std::uint32_t` 按值传参，以及对应的标量或 `void` 返回；语言与 JIT 调用桥也采用这个有限集合。`TypeKind` 只有 scalar、record、object。`ValueForm` 描述内联值、强弱引用及引用序列，不能拿它代替 C++ 参数的借用方式。
-
-相关入口是 `src/runtime/native.hpp`、`src/runtime/runtime.hpp`、`src/language/source.hpp`、`src/jit/source_backend.hpp` 和 `src/source/detail/bridge.hpp`。生成器只是这些契约的生产者；放宽宏检查不会自动打通语言和执行链。
-
-现有记录类型已经具备初始化、复制、赋值、销毁及包含对象引用时的追踪机制，应沿这条链扩展。现有 `with_native` 提供受限原生借用范围，但不能自动保证任意动态容器的元素地址稳定。
+本文记录参数传递模式与原生 String/Array/视图契约的工业依据和取舍。当前合同见[基础库](../foundation.md)；调用合同以 [Runtime 协议](../runtime-model.md#共享函数签名与结果)、[自动反射](../reflection.md)及 [LANGUAGE](../../LANGUAGE.md) 为准。
 
 ## 工业依据
 
-资料核对：2026-09-30。以下区分官方事实与项目推断；以下前期论证保留调研时的语境；原生首片的实际取舍见文末。
+资料核对：2026-09-30。以下区分官方事实与项目推断。
 
 1. **String 是运行时定义的类型。** .NET `System.String` 是不可变的 UTF-16 码元序列。CoreCLR v10 的 `StringObject` 继承 `Object`，包含长度与字符存储；CoreLib 与运行时共同实现基础类型。这能说明统一语言基础库的做法，不能证明它与 `std::string` 同布局，内部布局也不是跨运行时稳定 ABI。[String 契约](https://learn.microsoft.com/en-us/dotnet/api/system.string?view=net-10.0)、[CoreCLR v10 实现](https://github.com/dotnet/runtime/blob/v10.0.0/src/coreclr/vm/object.h)、[CoreLib](https://github.com/dotnet/runtime/blob/v10.0.0/docs/design/coreclr/botr/corelib.md)
 
@@ -30,9 +22,9 @@
 
 8. **引擎基础库和反射绑定有成熟实践。** UnrealEngine-AngelScript 使用 Unreal 反射自动绑定 C++ 类型、属性和函数。Unreal 将可变字符串、名称标识和本地化文本分别建模；EASTL 提供面向游戏运行时和工具的容器，官方仓库列出 Frostbite 的使用。这些案例支持控制引擎基础类型，但不意味着现在需要实现完整容器库或复制 Unreal 的所有文本类型。[自动绑定](https://angelscript.hazelight.se/cpp-bindings/automatic-bindings/)、[Unreal 字符串类型](https://dev.epicgames.com/documentation/unreal-engine/string-handling-in-unreal-engine)、[EASTL](https://github.com/electronicarts/EASTL)
 
-本次已增加 i32、独立枚举身份、AENUM、三种参数传递模式及对应语言/JIT 调用。i32/u32 底层枚举、宿主变量和字段别名、只读临时值、错误后的写入、协程局部同步借用及热更新签名检查，由[真实生成消费者](../../acceptance/reflection/calls.cpp)覆盖；该步骤当时未引入 String、StringView 或通用 Array；后续原生首片见文末。首版枚举保留数值别名及未命名底层值；async 签名禁止借用参数。
+参数传递支持 i32、独立枚举身份、AENUM 和三种传递模式，并贯通语言/JIT 调用。i32/u32 底层枚举、宿主变量和字段别名、只读临时值、错误后的写入、协程局部同步借用及热更新签名检查由[真实生成消费者](../../acceptance/reflection/calls.cpp)覆盖。枚举保留数值别名及未命名底层值；async 签名禁止借用参数。
 
-## 本轮形成的统一模型
+## 统一模型
 
 同一份类型定义回答“是什么类型”；值布局与生命周期操作回答“如何存放和管理”；函数参数再独立说明“如何传递”。原生注册、反射生成器和语言编译器共同生产这些信息，保留类型化的直接调用路径。
 
@@ -43,7 +35,7 @@
 | `T` | 按值参数 | 非平凡类型沿用已登记的生命周期操作 |
 | `const T&` | 调用期间只读借用 | 可以按语言规则绑定临时值；只读限制作用于此访问路径 |
 | `T&` | 调用期间可写借用 | 必须绑定可赋值存储，不能自动解释为 out |
-| `StringView` / `Span<T>` | 不拥有存储的视图 | 单独规定有效期与失效条件；首版不允许逃逸 |
+| `StringView` / `Span<T>` | 不拥有存储的视图 | 单独规定有效期与失效条件；不允许逃逸 |
 
 ### 可写引用的不变量
 
@@ -65,22 +57,13 @@ JIT 可以通过权威布局信息分配值槽，通过宿主操作构造和访�
 
 语言持有字符串和容器后，正常返回、错误退出、取消与协程挂起都必须正确执行值生命周期。`Array<ObjectRef>` 还需接入现有动态引用存储的追踪与写屏障机制，不能建立独立的 GC 世界。
 
-## 后续顺序与待定项
-
-1. **已完成**：明确参数传递模式，打通 i32、`AENUM` 和标量/枚举借用的注册、生成、语言类型检查及 JIT 调用；先覆盖实际业务使用的签名与枚举底层类型。端到端验收包括同一变量多次传参、混合只读/可写别名、非法临时值和跨挂起借用的诊断。
-2. 选定 `String` / `StringView` 的契约，贯通非平凡值调用和协程帧清理。验证原生与语言双向调用、非 ASCII 文本、错误与取消路径。
-3. 有实际调用场景后引入 `Array<T>` / `Span<T>`，同时完成元素生命周期、对象引用追踪与借用失效约束。按需求增加 map/set 等能力。
-
-原生基础库首片已经明确字符串编码与索引单位、可变性、复制语义及视图有效期，现行合同见[基础库](../foundation.md)。枚举未命名数值已允许，源码 flags 运算尚未提供。未来若支持可跨挂起的借用，需要明确其所有者、追踪和失效机制。
-
-
 ## 对按需自有基础库的判断
 
 用户确认的总体方向是引擎与语言共用自有基础类型，按需实现，不引入 EASTL。这个方向契合本项目控制布局、分配和生命周期的目标。建议将目标限定为小型核心库；编译工具内部现有 STL 不需要随之迁移。
 
 - **Array<T> 与 Span<T>**：优先完成连续存储、容量管理、追加、构造、删除和切片。明确扩容、插入和删除何时使元素地址失效。非平凡元素必须按构造/移动/销毁契约处理，不能把任何 T 都当成可 memcpy 搬迁。UE TArray 是动态、可调整容量的值容器，其文档也强调元素与分配策略。[TArray 官方说明](https://dev.epicgames.com/documentation/en-us/unreal-engine/array-containers-in-unreal-engine)
 - **String 与 StringView**：拥有字符的值与借用字符的视图分别表达。可变、拥有存储的 UTF-8 String 是候选；编码单位、结尾零、嵌入零、复制与移动、非法 UTF-8 的处理要明确。字符串可复用适合的缓冲区机制，但不宜直接公开可任意修改字符的 Array 接口而破坏字符串不变量。
-- **视图按值传递仍然借用数据**：Qt QAnyStringView 是不拥有存储的字符视图，主要作为按值传递的接口参数；底层字符串必须覆盖视图使用期。故本次参数模式只能解决 T&，后续还需识别 StringView/Span 内部的借用，不能因外层传值就允许无条件保存或跨 await。[Qt QAnyStringView](https://doc.qt.io/qt-6/qanystringview.html)
+- **视图按值传递仍然借用数据**：Qt QAnyStringView 是不拥有存储的字符视图，主要作为按值传递的接口参数；底层字符串必须覆盖视图使用期。所以参数模式只解决 T&，StringView/Span 内部的借用需要另行识别，不能因外层传值就允许无条件保存或跨 await。[Qt QAnyStringView](https://doc.qt.io/qt-6/qanystringview.html)
 - **共享布局还需要共享操作**：原生与语言应使用同一已注册值类型及其生命周期机制。泛型容器的每个实例化类型还需权威类型身份；包含对象引用的元素必须接入既有根、追踪和写屏障协议。统一外壳大小不代表这些责任已自动完成。
 - **按收益选择优化**：先明确并完成语义与真实消费链，再决定小字符串优化、内联容量、写时复制或特殊分配策略。复用当前分配设施，避免一轮同时重做分配器、容器、Unicode 算法和完整标准库。
 
@@ -100,12 +83,10 @@ JIT 可以通过权威布局信息分配值槽，通过宿主操作构造和访�
 
 **不能连同限制一起照抄。** 上述 TArray 文档假定元素可按原始字节搬迁；“搬迁”不等于复制出两个可分别析构的有效值。自引用地址、外部登记等元素需要另外判断。FString API 暴露的是 `TCHAR` 数组，并区分 UTF-8 字符输入；这不替我们决定 UTF-8、索引单位或 Unicode 合法性。不能将 UE 的字符索引直接视作完整 Unicode 字符语义。
 
-**现在应收口的事项（本项目判断）：** 确定拥有值的复制、移动和失败清理；确定视图失效、只读深度及跨挂起限制；确定字符串编码、长度单位、嵌入零与非法输入规则。主代理已核对当前标量/枚举参数模式与 const 语法，因此下一步缺口是非平凡值的调用、局部和结果存储、错误/取消清理，以及含对象引用元素的追踪，不需重新设计引用语法。该审计时点未新增生产实现；后续获授权的原生基础库落地见下一节。
-
-下一阶段建议先贯通拥有型非平凡值及其生命周期，再接入 String、Array 和视图。自有语言固定 `const Type& name` 顺序是本项目的语法选择；原生 C++ 声明由 Clang 归一化，不因 `const T&` 与 `T const&` 的拼写差异建立两种签名。本轮仅完成设计审计。
+自有语言固定 `const Type& name` 顺序是本项目的语法选择；原生 C++ 声明由 Clang 归一化，不因 `const T&` 与 `T const&` 的拼写差异建立两种签名。
 
 
-## Qt/UE 接口取舍与原生基础库首片
+## Qt/UE 接口取舍
 
 资料补查：2026-09-30。以下采用官方合同作为依据，实现为本项目独立编写，未复制上游容器源代码。
 
@@ -113,4 +94,4 @@ JIT 可以通过权威布局信息分配值槽，通过宿主操作构造和访�
 - UE 区分保序移除与末尾填洞的 RemoveAtSwap；默认允许容量收缩。Qt QList 区分 reserve、clear 和 squeeze。项目保留 `remove_at/remove_at_swap` 的语义区分，删除不自动缩容，容量由 `reserve/clear/squeeze/release` 明确控制。[UE RemoveAtSwap](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/TArray/RemoveAtSwap)、[Qt QList](https://doc.qt.io/qt-6/qlist.html)
 - QString 按 UTF-16 码元存储，不能把其长度或索引语义原样搬到 UTF-8。Qt 的 UTF-8 视图与多编码视图说明视图的借用性质及码元长度。项目 String 使用有效 UTF-8、尾部零字符并保留嵌入零；StringView 明确按字节切片，外部或切片输入需在建立拥有 String 时校验。[QString](https://doc.qt.io/qt-6/qstring.html)、[QUtf8StringView](https://doc.qt.io/qt-6/qutf8stringview.html)、[编码单位](https://doc.qt.io/qt-6/qanystringview.html#sizes-and-sub-strings)
 
-上述取舍旨在明确所有权与使用成本，尚无比较基准证明其快于 Qt、UE 或 STL。首片实际接入同一 Runtime 的类型、字段、复制及析构机制，反射数组只接受无 GC 引用的值元素。源码容器操作、非平凡值传参及挂起时的值清理仍是后续工作，不由原生类型存在而自动获得。
+上述取舍旨在明确所有权与使用成本，没有比较基准证明其快于 Qt、UE 或 STL。

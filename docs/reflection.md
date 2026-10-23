@@ -39,9 +39,9 @@ AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
 
 该字段仍以 `position` 查找和保存；`Label` 不改变字段名称，`Category` 不创建类型或命名空间。两项支持普通 UTF-8 字符串及 C++ 转义，允许显式空字符串；省略或为空时，由消费者回退到字段名或未分类。控制字符、重复参数和未知参数仍报错，只接受标准拼写 `Category`。
 
-生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。`.source` 生产者本轮保持空值，不增加语法。
+生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。源码类字段目前不填写展示文本。
 
-标记紧邻一个声明，可隔空白和注释；每个字段独立标记、独立声明。标记必须直接写在源码中，不再包在另一层宏内。模板、局部类、匿名命名空间和嵌套类型不在首片支持范围。前向声明可以存在，最终必须在本生成组中找到完整定义；重复标注必须一致。
+标记紧邻一个声明，可隔空白和注释；每个字段独立标记、独立声明。标记必须直接写在源码中，不再包在另一层宏内。不支持模板、局部类、匿名命名空间和嵌套类型。前向声明可以存在，最终必须在本生成组中找到完整定义；重复标注必须一致。
 
 ### 类型与成员说明
 
@@ -91,6 +91,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 - 对象支持一个 public、非 virtual 的原生反射基类；记录不支持继承。基类可以在本组中，也可以来自另一个生成组：生成器凭基类的 `AGENERATED_BODY` 识别（类模板特化不在此列），使用方必须在基类所在组之后注册。组内基类的反射成员重名由生成器报错；跨组时，基类是否为对象类型、成员是否重名，由 Runtime 注册时检查（`Object base must resolve to an object type`、`Member hides an inherited declaration`），不在生成时报。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。
 - 方法支持 void、标量（含 bool）/枚举、内建数学值或 plain struct 结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数。静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值与递归 plain struct 支持同步按值参数/结果；资源记录与容器按值参数/结果与借用视图参数尚未开放。生成的定型 C++ thunk 负责实际平台 ABI。生成器使用完整成员指针类型和完全限定的原生类型名消除重载与命名空间歧义。
 - `AFUNCTION(BorrowSafe)` 发布 `MethodInfo::preserves_borrows`，允许同步原生值区间调用该方法。它是开发者对完整调用链的保证，不是自动效果分析；具体约束见[语言规则](../LANGUAGE.md#拥有型-stringarray-与原生算法)。普通方法无需此标记，已有调用行为保持。
+- 方法的参数名取自带 `AFUNCTION` 的那个 C++ 声明，生成为 `.method<...>(...)` 之后的 `.parameter_names({...})`，发布到 `MethodInfo::parameter_names`；未命名的 C++ 参数得到空字符串。手写注册在 `method` 后调用同一个 `NativeRegistration::parameter_names`，规则见[运行时模型](runtime-model.md)。
 - 满足自然对齐的标准布局类型中，公开反射字段额外生成 `offsetof`，由同一 Runtime 发布并校验，供源码借用直接访问。隐藏、非标准布局或不能保证自然对齐的字段继续使用既有成员访问器，不推测偏移；这一限制不影响原有反射能力。详见[原生值借用](native-value-borrows.md)。
 - 构造、析构和记录复制能力沿用 `NativeRegistration`。生成代码带原头文件的 `#line`，编译器继续验证默认构造及不抛异常析构等约束。
 

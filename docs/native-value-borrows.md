@@ -60,4 +60,4 @@ cmake --build --preset dev --target source_acceptance
 cmake --build --preset release --target source_acceptance
 ```
 
-本次 dev/release 均通过上述消费者及基础库、反射（含 15 项 CLI 失败场景）、JIT、Runtime、World 和编辑器文档端到端验收。没有执行图形窗口验收。本次证明共享存储和零元素复制，不以此宣称特定吞吐提升或零调用开销。
+这些场景证明共享存储和零元素复制，不证明特定吞吐提升或零调用开销。
