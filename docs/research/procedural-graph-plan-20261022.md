@@ -191,7 +191,7 @@ class procedural.Jitter : procedural.PointNode {
 | --- | --- | --- |
 | 实时 | 参数或代码变化就重算 | 内存 |
 | Cache（默认） | 加载时按完整键查找，命中就不求值 | `Cache/Procedural/<图 GUID>/<键哈希>.bin`，可以重建 |
-| 冻结 | 固定当前输出，图或代码之后再变也不重算，直到解冻 | Content 中场景旁的二进制边车，是作者数据；格式在 P2 定，涉及场景格式版本时报总负责人 |
+| 冻结 | 固定当前输出，图或代码之后再变也不重算，直到解冻 | Content 中场景旁的二进制边车，是作者数据；格式在 P2 定，涉及场景格式版本时报总负责人，升版本不写迁移代码 |
 | Bake | 操作符：把输出转成普通 StaticMeshEntity；第二刀起也可以转成 Mesh 资产，可撤销 | 普通场景数据 |
 
 ### 5.3 封装与暴露参数（数字资产）
@@ -204,7 +204,7 @@ class procedural.Jitter : procedural.PointNode {
 | --- | --- |
 | 图资产 | P2 与生成器一起做：新资源种类 `Content/**/*.procgraph`（AssetKind 加在枚举末尾）+ 现有 `.asset.json` GUID 边车；Project 的边车规则由编辑器负责人审 |
 | 图文件 | 格式 v1，规范化 JSON：`version`、`settings`（`seed`、`display`）、`nodes`。`nodes` 以名字为键（按名字排序，名字符合 `[A-Za-z_][A-Za-z0-9_]*`，`json_format::parse` 拒绝重复键），每项含 `type`（Runtime 限定类型名）、`position`、`properties`（写全部参数，节点默认值以后改变也不改变旧图的含义）和 `inputs`（总是写出，可以是 `{}`；未连接的端口不出现；单输入写 `"scatter_floor.points"`，多输入写数组并保留连接顺序）。`dump(2)` 后加换行，重新保存时字节不变。v1 不写暴露参数，P2 的契约方案再加 `parameters` 并决定是否升到 v2。名字和画布位置是文档数据（editor 的 GraphDocument），不放进节点对象，所以移动节点不盖章。宽容加载：未知节点类型原样保留并写回；指向它或从它出发的连接，以及端口名解析不到的连接，留在下游节点的 `inputs` 里写回；已知节点解析不了的参数叶（例如热重载改了字段名）作为保留值留在 GraphDocument 里，报诊断，保存时写回。只有结构错误严格拒绝：版本、`nodes` 不是对象、名字非法、`inputs` 形状错 |
-| 场景 | 生成器是一种新组件类型，经现有 `properties` 保存；需要新增载荷时再报总负责人定格式版本 |
+| 场景 | 生成器是一种新组件类型，经现有 `properties` 保存；需要新增载荷时再报总负责人定格式版本。场景格式升版本不写迁移代码，新程序只读最新版本 |
 | Runtime 类型与计数 | 新增 `procedural.*` 类型、组件类型、标签页和 Control 键；实施时按旧数字搜索 acceptance/，把命中的断言列入必要测试 |
 | 第二刀网格 | `mesh_source` 用 `<图 GUID>#<输出名>` 键，经 `set_mesh_binding` 绑定；物理碰撞缓存键加入内容哈希 |
 
@@ -244,7 +244,7 @@ class procedural.Jitter : procedural.PointNode {
 | 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b 已交付并合入；L6 形状已对齐、方案待总负责人审；`math.is_finite` 排在 L6 之后；其余见 §3.1 |
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
-| World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐 |
+| World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐。集成顺序：World 的 scene v9（基于 63de8635，删除 v1–v8 的读取与迁移，只读 v9）排在 335cb844 之前；P1 交付从集成结果开始合入，scene.cpp 和 project-scenes.md 的冲突由本线程在那次合并里解决，内联 Array 的编解码与文档段落在 v9 的代码上重新落位 |
 | 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源） | 材质入口已交付（`Session::mesh_surfaces`，d2340350，见 §5.1）；共用属性编解码与内联 Array（335cb844）、图文件编解码（ed47199a）已审通过（§5.4）；其余 P2/P3 前对齐 |
 
 ## 9. 风险与未决
