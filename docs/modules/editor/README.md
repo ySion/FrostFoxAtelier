@@ -293,8 +293,6 @@ PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则�
 
 颜色色片打开同一 DSL 的 ColorEditor。RGB 与 HSV 的 V 沿用原属性范围，灯光与 emissive 可编辑 HDR；Hex 和色块展示按 0–1 范围表示，不能把它们当作 HDR 原值。弹窗内可键入、粘贴、按 Tab 切换字段，键盘导航不离开弹窗。颜色分组复用 Session 的 World 或材质事务：成功预览才更新显示，拒绝时还原所有通道与 override；Done、普通 Escape 或点击外部只提交一次历史，Revert 恢复打开时的颜色。失焦、外部捕获丢失、尺寸/DPI 改变和业务失败先回滚整组颜色，再消费字段与弹窗的清理通知；重复通知不提交历史。关闭确认和保存会先完成活动颜色事务；弹窗挂载失败取消事务，避免留下看不见的编辑。
 
-本批 Dev／Release 的材质、颜色、Tooltip 与 Control 端到端结果见[集成与审查记录](../../research/stage-merge-20261015.md)。
-
 
 参数说明沿同一展示链路进入界面：原生类型与字段的 `DESC` 经 Runtime 进入 `Session::Property`；World 使用已有 `ViewOptionInfo` 的 label/category/description。两种生产者都适配成 `PropertyRow`，经同一 DSL 参数行和原生 Tooltip 显示，不建立另一份帮助登记表。World 保留整组候选校验、场景保存与撤销；诊断项保持视口归属。
 
