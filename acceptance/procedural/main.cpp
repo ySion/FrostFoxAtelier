@@ -979,7 +979,9 @@ void source_nodes() {
     require(same_points(evaluator.output(), expected({.seed = 9})), "Source nodes did not read the graph seed.");
 
     // Publications: Jitter's new body reruns both Jitter nodes only; unchanged code reruns nothing;
-    // RandomScale's whitespace edit reruns it only; a helper edit reruns every Source node.
+    // RandomScale's whitespace edit reruns it only; a helper edit reruns only the nodes whose code
+    // reaches it, directly or through other helpers: random_vector only Jitter, hash also
+    // RandomScale, neither Lift nor Shift.
     project.files[jitter_path] = replaced(jitter_text, "self.axis_scale * self.amount;", "self.axis_scale * (self.amount * 2.0f);");
     project.publish(program);
     take(evaluator.evaluate());
@@ -995,11 +997,16 @@ void source_nodes() {
     take(evaluator.evaluate());
     expect(evaluator, {{jittered, {4, 1}}, {twin, {3, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {scaled, {3, 0}}, {merged, {6, 2}}},
         "A RandomScale publication did not rerun exactly RandomScale and its downstream nodes.");
-    project.files[random_path] = replaced(random_text, "uint x = value;", "uint x = value + 0;");
+    project.files[random_path] = replaced(random_text, "const uint a = procedural.hash(x);", "const uint a = procedural.hash(x + 0);");
     project.publish(program);
     take(evaluator.evaluate());
-    expect(evaluator, {{scattered, {2, 0}}, {grid_node, {1, 0}}, {jittered, {5, 1}}, {twin, {4, 0}}, {scaled, {4, 0}}, {lifted, {3, 1}}, {shifted, {3, 0}}},
-        "A helper publication did not rerun every Source node.");
+    expect(evaluator, {{jittered, {5, 1}}, {twin, {4, 0}}, {scaled, {3, 0}}, {lifted, {2, 1}}, {shifted, {2, 0}}, {merged, {7, 2}}},
+        "A random_vector publication did not rerun exactly the Jitter nodes, which call it, and their downstream nodes.");
+    project.files[random_path] = replaced(project.files[random_path], "uint x = value;", "uint x = value + 0;");
+    project.publish(program);
+    take(evaluator.evaluate());
+    expect(evaluator, {{scattered, {2, 0}}, {grid_node, {1, 0}}, {jittered, {6, 1}}, {twin, {5, 0}}, {scaled, {4, 0}}, {lifted, {2, 1}},
+        {shifted, {2, 0}}, {merged, {8, 2}}}, "A hash publication did not rerun exactly the nodes reaching hash and their downstream nodes.");
     require(same_points(evaluator.output(), expected({.seed = 9, .factor = 2.f})), "An equivalent helper changed the output.");
 
     // NormalAlign writes the orient Copy to Points would derive from N and an up column. On a cube
