@@ -29,7 +29,7 @@
 - 矩阵使用行向量约定 `v * M`，变换组合为 `S * R * T`，平移位于第 4 行。`transform_point(v, m)` 按齐次分量 1 计算，`transform_direction(v, m)` 按 0 计算；它们用于仿射变换，不做透视除法。
 - 四元数乘法使用 Hamilton 乘积。`rotate(q, v)` 要求调用者提供单位四元数，不在每次旋转中隐式归一化。四元数相等比较分量，因此 `q` 与 `-q` 可以表示相同旋转但比较不相等。
 - World 对缩放、有效变换和生命周期的限制由 World 维护，通用数学值本身不禁止负缩放或非有限计算结果。
-- 源码使用严格浮点语义和普通 LLVM O2 优化，不开启全面 fast-math。结果允许 IEEE 无穷和 NaN；不承诺跨 CPU、平台或编译器版本逐位一致。精度策略与 SIMD 使用不能替代确定性协议。
+- 源码使用严格浮点语义和普通 LLVM O2 优化，不开启全面 fast-math。结果允许 IEEE 无穷和 NaN；除[超越函数](#超越函数)在支持 FMA3 的主机之间逐位相同外，不承诺跨 CPU、平台或编译器版本逐位一致。精度策略与 SIMD 使用不能替代确定性协议。
 
 `float` 对应 `core.f32`，`double` 对应 `core.f64`。无后缀小数/指数仍是 float，例如 `1.0`、`1e2`；`1f`、`1.0F` 显式表示 float，`1d`、`1.0D` 表示 double。浮点字面量必须有限且在转换范围内。已定型 float/double 不隐式混合；`float(value)` 与 `double(value)` 显式转换 float、double、int 或 uint，窄化由调用者选择。
 
@@ -63,6 +63,7 @@ double energy(const Array<vector3d>& values) {
 | `math.transpose(m)` | 矩阵转置 |
 | `math.transform_point(v, m)`、`math.transform_direction(v, m)` | 同精度 vector3、matrix4，参数顺序符合 `v * M` |
 | `math.sqrt`、`floor`、`ceil`、`trunc`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节 |
+| `math.sin`、`cos`、`atan2`、`exp`、`log`、`pow` | float 标量与向量的逐分量超越函数，见[超越函数](#超越函数) |
 
 ### 逐分量函数
 
@@ -81,11 +82,44 @@ double energy(const Array<vector3d>& values) {
 | `step(edge, x)` | `x < edge ? 0 : 1`；NaN 得 1 |
 | `smoothstep(e0, e1, x)` | `t = clamp((x − e0) / (e1 − e0), 0, 1)`，返回 `t·t·(3 − 2t)`；e0、e1 是同一个有限值时为阶跃（x ≤ e0 得 0，x > e0 得 1；+0 与 −0 按公式算，不视为同一个值），e0 > e1 时方向相反；e0 ≠ e1 时 x 为 NaN 得 0 |
 
-这些函数在调用点内联为 LLVM 指令，不调用任何函数，也不加 fast-math 或乘加融合；数组循环由 O2 的循环向量化按主机 SIMD 宽度打包。x64 上 min/max/clamp 是 `minps`/`maxps`，floor 类是 `roundps`，后者需要 SSE4.1；主机缺少时编译报错并说明原因。
+这些函数在调用点内联为 LLVM 指令，不调用任何函数，也不加 fast-math，编译器不会自动把乘加融合；数组循环由 O2 的循环向量化按主机 SIMD 宽度打包。x64 上 min/max/clamp 是 `minps`/`maxps`，floor 类是 `roundps`。源码 JIT 要求主机 CPU 支持 FMA3（这类主机都有 floor 类所需的 SSE4.1）：创建 JIT 后端时检查，缺少时编译失败并写明原因。
 
 字段可从变量、数组元素、借用记录及数学临时值读取，例如 `(a + b).x`。临时值不可赋值；修改需要真正的可写存储。矩阵源码使用 `.m00` 等字段，当前没有矩阵下标语法。对象目录同时提供完整数学字段与标量分量路径，支持 `self.position = self.position + self.velocity * delta;`；对象读写经过 Runtime 生命周期检查，整值读取不会暴露对象内存地址。
 
 原生 C++ 库还提供向量复合赋值、`is_finite`、返回 optional 的 `try_normalize`，以及矩阵加减、标量缩放、`vector4 * matrix4`、`rotation_matrix`、`trs_matrix`、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
+
+### 超越函数
+
+`math.sin(x)`、`math.cos(x)`、`math.exp(x)`、`math.log(x)`、`math.atan2(y, x)`、`math.pow(x, y)` 只接受 float 标量和 vector2/3/4，标量参数作用于每个分量，其余类型规则同上；double、整数、四元数和矩阵在编译期拒绝。
+
+精度契约：与精确值相差不超过 4 ULP。sin、cos 的准确区间是 |x| ≤ 2^20；超出后结果仍有限且绝对值不超过 1，但不再近似正弦、余弦。下表是当前实现的实测最大误差（release；sin、cos、exp、log 穷举全部 2^32 个 float，atan2、pow 各约 10.4 亿组随机参数，另加 111 万组边界网格）：
+
+| 函数 | 实测最大误差 |
+| --- | --- |
+| `sin` | 1.669 ULP（\|x\| ≤ 1e5 内 1.570） |
+| `cos` | 1.807 ULP（\|x\| ≤ 1e5 内 1.572） |
+| `exp` | 1.009 ULP |
+| `log` | 1.162 ULP |
+| `atan2` | 1.867 ULP |
+| `pow` | 0.565 ULP |
+
+特殊值按 IEEE 约定，pow 的负底数例外：
+
+- `sin(±0) = ±0`，`cos(±0) = 1`；±∞ 与 NaN 得 NaN。
+- `exp(−∞) = +0`，`exp(+∞) = +∞`；x 大于约 88.72 时溢出为 +∞，下溢先变为次正规数再到 +0。
+- `log(±0) = −∞`；负数与 −∞ 得 NaN；`log(+∞) = +∞`，`log(1) = +0`。
+- `atan2` 按 C 标准附录 F，例如 `atan2(±0, −0) = ±π`、`atan2(±0, +0) = ±0`、`atan2(±∞, −∞) = ±3π/4`、`atan2(±∞, +∞) = ±π/4`；结果在 [−float(π), float(π)] 内，float(π) 比 π 略大。任一参数为 NaN 得 NaN。
+- `pow(x, ±0) = 1` 与 `pow(1, y) = 1` 对任意 x、y 成立，含 NaN。x < 0（含 −∞）时得 NaN，即使 y 是整数。±0 都按 +0 处理：`pow(0, y > 0) = +0`，`pow(0, y < 0) = +∞`。底数或指数为 ±∞ 时取极限值；其余情况 NaN 原样传播。
+
+实现全部是调用点上没有函数调用的 IR，使用 FMA，与其他逐分量函数一样随循环向量化，AVX2 主机上一次处理 8 个 float：
+
+- sin、cos：用 FMA 的三段 Cody-Waite 归约 r = x − q·π/2，在 |r| ≤ 0.83 上用 minimax 多项式，按象限选择正弦或余弦多项式及符号。
+- exp：归约为 2^k·e^r，2^k 分两次相乘，次正规结果只舍入一次。
+- log：x = 2^e·m，m ∈ [√½, √2)，对 log(1 + f) 用 minimax 多项式。
+- atan2：交换参数使比值 u/v ≤ 1；比值大于 1/2 时用 π/4 + atan((u − v)/(u + v))，此时 u − v 是精确的。
+- pow：在 double 中计算 exp2(y·log2|x|)，最后舍入到 float 一次。
+
+结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令，所以同一实现在所有支持 FMA3 的主机上逐位相同，标量调用与任意宽度的向量化循环也逐位相同；NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
 
 ## 调用、生命周期与优化边界
 

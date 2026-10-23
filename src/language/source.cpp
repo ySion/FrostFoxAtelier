@@ -1096,6 +1096,12 @@ private:
         else if (name == "math.clamp") { operation = MathOperation::clamp; arity = 3; }
         else if (name == "math.lerp") { operation = MathOperation::lerp; arity = 3; }
         else if (name == "math.smoothstep") { operation = MathOperation::smoothstep; arity = 3; }
+        else if (name == "math.sin") operation = MathOperation::sin;
+        else if (name == "math.cos") operation = MathOperation::cos;
+        else if (name == "math.atan2") { operation = MathOperation::atan2; arity = 2; }
+        else if (name == "math.exp") operation = MathOperation::exp;
+        else if (name == "math.log") operation = MathOperation::log;
+        else if (name == "math.pow") { operation = MathOperation::pow; arity = 2; }
         else reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
         if (arguments.size() != arity) reject(position, "Math operation argument count mismatch.");
         const auto first = function_.expressions[arguments[0]].type;
@@ -1109,6 +1115,8 @@ private:
                 if (math_type(type).vector()) { result_type = type; break; }
             }
             const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
+            if (operation >= MathOperation::sin && lane != ValueType::f32)
+                reject(position, std::string(name) + " requires float scalars or vectors.");
             if (!floating(lane))
                 reject(position, std::string(name) + " requires float or double scalars or vectors.");
             for (const auto argument : arguments) {

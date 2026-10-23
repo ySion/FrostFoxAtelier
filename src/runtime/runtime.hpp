@@ -473,7 +473,7 @@ struct FieldDefinition {
     // Optional direct access to standard-layout native fields, supplied by
     // generated offsetof expressions. Native bindings are trusted producers.
     std::optional<std::size_t> native_offset{};
-    // Described object fields only: one leaf per scalar component in storage order, of the exact
+    // Described object fields only: one finite leaf per scalar component in storage order, of the exact
     // scalar type; an enum gives its underlying integer. Construction writes them after the field's
     // own construction; copy construction copies the source instead. Native constructors own defaults.
     std::vector<Scalar> default_leaves{};

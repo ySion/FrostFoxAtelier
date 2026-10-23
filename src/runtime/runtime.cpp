@@ -1737,6 +1737,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     }))
                     return failure(ErrorCode::invalid_definition, "Default leaves require a described object's scalar, enum or math vector "
                         "field, with one leaf of the exact scalar or underlying type per component: " + type.info.name + "." + field.name);
+                if (std::ranges::any_of(field.default_leaves, [](const Scalar& item) { return !std::isfinite(range_value(item)); }))
+                    return failure(ErrorCode::invalid_definition, "Default leaves must be finite: " + type.info.name + "." + field.name);
                 if (target->info.kind == TypeKind::enumeration) {
                     const auto& bits = field.default_leaves.front();
                     published_leaves = {EnumValue{target->info.id, std::holds_alternative<std::int32_t>(bits)
@@ -1770,7 +1772,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     if (above(range.hard_min, *ui) || above(*ui, range.hard_max)) return invalid("UI bounds must lie within hard bounds");
                 if (range.constrains()) for (const auto& leaf : field.default_leaves) {
                     const std::optional<Scalar> item{leaf};
-                    if (!std::isfinite(range_value(leaf)) || above(range.hard_min, item) || above(item, range.hard_max))
+                    if (above(range.hard_min, item) || above(item, range.hard_max))
                         return invalid("default lies outside hard bounds");
                 }
             }
