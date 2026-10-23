@@ -5,9 +5,9 @@
       "components": [
         {
           "base_color": [
-            0.18000000715255737,
-            0.2199999988079071,
-            0.27000001072883606
+            0.18,
+            0.22,
+            0.27
           ],
           "emissive": [
             0.0,
@@ -32,8 +32,8 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.4000000059604645,
-                "restitution": 0.10000000149011612
+                "friction": 0.4,
+                "restitution": 0.1
               },
               "motion": "stationary",
               "overlap_categories": 0,
@@ -42,7 +42,7 @@
               "shape": "triangle_mesh"
             }
           },
-          "roughness": 0.699999988079071,
+          "roughness": 0.7,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -92,8 +92,8 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.4000000059604645,
-                "restitution": 0.10000000149011612
+                "friction": 0.4,
+                "restitution": 0.1
               },
               "motion": "stationary",
               "overlap_categories": 0,
@@ -135,9 +135,9 @@
       "components": [
         {
           "base_color": [
-            0.20000000298023224,
-            0.6000000238418579,
-            0.8999999761581421
+            0.2,
+            0.6,
+            0.9
           ],
           "emissive": [
             0.0,
@@ -162,7 +162,7 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.20000000298023224,
+                "friction": 0.2,
                 "restitution": 0.0
               },
               "motion": "stationary",
@@ -172,7 +172,7 @@
               "shape": "box"
             }
           },
-          "roughness": 0.699999988079071,
+          "roughness": 0.7,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -222,8 +222,8 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.4000000059604645,
-                "restitution": 0.10000000149011612
+                "friction": 0.4,
+                "restitution": 0.1
               },
               "motion": "stationary",
               "overlap_categories": 0,
@@ -265,9 +265,9 @@
       "components": [
         {
           "base_color": [
-            0.8999999761581421,
-            0.4000000059604645,
-            0.20000000298023224
+            0.9,
+            0.4,
+            0.2
           ],
           "emissive": [
             0.0,
@@ -292,7 +292,7 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.20000000298023224,
+                "friction": 0.2,
                 "restitution": 0.0
               },
               "motion": "stationary",
@@ -302,7 +302,7 @@
               "shape": "box"
             }
           },
-          "roughness": 0.699999988079071,
+          "roughness": 0.7,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -352,8 +352,8 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.4000000059604645,
-                "restitution": 0.10000000149011612
+                "friction": 0.4,
+                "restitution": 0.1
               },
               "motion": "kinematic",
               "overlap_categories": 0,
@@ -395,9 +395,9 @@
       "components": [
         {
           "base_color": [
-            0.20000000298023224,
-            0.800000011920929,
-            0.30000001192092896
+            0.2,
+            0.8,
+            0.3
           ],
           "emissive": [
             0.0,
@@ -422,7 +422,7 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.20000000298023224,
+                "friction": 0.2,
                 "restitution": 0.0
               },
               "motion": "stationary",
@@ -432,7 +432,7 @@
               "shape": "box"
             }
           },
-          "roughness": 0.699999988079071,
+          "roughness": 0.7,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -473,14 +473,14 @@
               "casts_shadow": true,
               "color": {
                 "x": 1.0,
-                "y": 0.8700000047683716,
-                "z": 0.699999988079071
+                "y": 0.87,
+                "z": 0.7
               },
               "height": 2.0,
-              "intensity": 1.7999999523162842,
+              "intensity": 1.8,
               "kind": "directional",
               "range": 12.0,
-              "source_radius": 0.017999999225139618,
+              "source_radius": 0.018,
               "two_sided": false,
               "width": 2.0
             }
@@ -500,10 +500,10 @@
           -2.0
         ],
         "rotation": [
-          0.5367523431777954,
-          0.1878633201122284,
+          0.53675234,
+          0.18786332,
           0.0,
-          0.8225595951080322
+          0.8225596
         ],
         "scale": [
           1.0,

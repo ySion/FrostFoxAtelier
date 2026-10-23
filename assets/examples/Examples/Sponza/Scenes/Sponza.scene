@@ -32,7 +32,7 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.20000000298023224,
+                "friction": 0.2,
                 "restitution": 0.0
               },
               "motion": "stationary",
@@ -42,7 +42,7 @@
               "shape": "box"
             }
           },
-          "roughness": 0.6499999761581421,
+          "roughness": 0.65,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -103,7 +103,7 @@
               },
               "ignore_categories": 0,
               "material": {
-                "friction": 0.20000000298023224,
+                "friction": 0.2,
                 "restitution": 0.0
               },
               "motion": "stationary",
@@ -113,7 +113,7 @@
               "shape": "box"
             }
           },
-          "roughness": 0.6499999761581421,
+          "roughness": 0.65,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -154,14 +154,14 @@
               "casts_shadow": true,
               "color": {
                 "x": 1.0,
-                "y": 0.8700000047683716,
-                "z": 0.699999988079071
+                "y": 0.87,
+                "z": 0.7
               },
               "height": 2.0,
               "intensity": 3.5,
               "kind": "directional",
               "range": 12.0,
-              "source_radius": 0.017999999225139618,
+              "source_radius": 0.018,
               "two_sided": false,
               "width": 2.0
             }
@@ -181,10 +181,10 @@
           0.0
         ],
         "rotation": [
-          0.5569754242897034,
-          -0.3705836236476898,
+          0.5569754,
+          -0.37058362,
           0.0,
-          0.7432672381401062
+          0.74326724
         ],
         "scale": [
           1.0,
@@ -206,14 +206,14 @@
               "casts_shadow": true,
               "color": {
                 "x": 1.0,
-                "y": 0.4560000002384186,
-                "z": 0.11400000005960464
+                "y": 0.456,
+                "z": 0.114
               },
               "height": 2.0,
               "intensity": 60.0,
               "kind": "point",
               "range": 12.0,
-              "source_radius": 0.10000000149011612,
+              "source_radius": 0.1,
               "two_sided": false,
               "width": 2.0
             }
@@ -228,9 +228,9 @@
       "space": {
         "origin": null,
         "position": [
-          -6.142000198364258,
-          4.171000003814697,
-          -4.806000232696533
+          -6.142,
+          4.171,
+          -4.806
         ],
         "rotation": [
           0.0,
@@ -258,14 +258,14 @@
               "casts_shadow": true,
               "color": {
                 "x": 1.0,
-                "y": 0.4560000002384186,
-                "z": 0.11400000005960464
+                "y": 0.456,
+                "z": 0.114
               },
               "height": 2.0,
               "intensity": 60.0,
               "kind": "point",
               "range": 12.0,
-              "source_radius": 0.10000000149011612,
+              "source_radius": 0.1,
               "two_sided": false,
               "width": 2.0
             }
@@ -280,9 +280,9 @@
       "space": {
         "origin": null,
         "position": [
-          -2.1619999408721924,
-          9.28499984741211,
-          4.664999961853027
+          -2.162,
+          9.285,
+          4.665
         ],
         "rotation": [
           0.0,
@@ -307,18 +307,18 @@
           "name": "",
           "properties": {
             "antialiasing": "smaa",
-            "ao_radius": 0.3499999940395355,
+            "ao_radius": 0.35,
             "bloom": true,
             "ddgi": true,
             "direct_candidates": 8,
             "exposure_ev": 0.0,
             "gtao": true,
             "indirect_gain": 1.0,
-            "probe_bounce": 0.8500000238418579,
+            "probe_bounce": 0.85,
             "probe_rays": 128,
             "probe_update_budget": 672,
             "reflection_distance": 30.0,
-            "reflection_roughness": 0.6000000238418579,
+            "reflection_roughness": 0.6,
             "shadows": true,
             "sky_color": {
               "x": 1.0,

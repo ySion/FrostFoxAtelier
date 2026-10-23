@@ -6,8 +6,10 @@
 #include "source/program.hpp"
 #include "physics/physics.hpp"
 #include <nlohmann/json.hpp>
+#include <bit>
 #include <chrono>
 #include <fstream>
+#include <limits>
 #include <cstdio>
 #include <stdexcept>
 
@@ -236,7 +238,7 @@ void verify_codec_graph(editor::Project& project) {
         require(!editor::Session::deserialize(invalid.dump(),project),"The final origin transaction accepted an actual spatial cycle.");
         auto extreme=Json::parse(saved);
         for(auto& entity:extreme["entities"]) {
-            entity["space"]["origin"]="0";entity["space"]["scale"]=Json::array({1e30f,1e30f,1e30f});
+            entity["space"]["origin"]="0";entity["space"]["scale"]=Json::array({1e30,1e30,1e30});
         }
         auto independent=take(editor::Session::deserialize(extreme.dump(),project));
         for(const auto& entity:take(independent->world().members())) require(take(world::world_matrix(independent->world().runtime(),entity.id()))[0]==1e30f,
@@ -1021,6 +1023,24 @@ void run() {
     require(saved_json["version"]==9 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     require(Json::parse(take(reopened->serialize()))==saved_json,"Derived scene roundtrip changed type, fields or composition.");
+    {
+        // A float field is written as its shortest decimal and reads back bit for bit; a double keeps its full value.
+        const auto mass=field(document,move_type,"mass");
+        const std::array values{std::bit_cast<float>(1u),std::numeric_limits<float>::max(),.1f,-0.f,16777215.f,16777216.f,16777218.f,std::bit_cast<float>(0x15ae43fdu)};
+        for(const float value:values) {
+            take(runtime.write(move,speed,Scalar{value}));take(runtime.write(move,mass,Scalar{double(.1f)}));
+            const auto text=take(document.serialize());const auto written=Json::parse(text).at("entities").at(0).at("components").at(1).at("properties");
+            auto loaded=take(editor::Session::deserialize(text,project,prepare(evidence)));
+            take(loaded->select(take(loaded->world().members()).front().id()));
+            const auto loaded_type=take(loaded->world().runtime().find_type("game.Move"));const auto loaded_move=member(*loaded,loaded_type);
+            const auto back=std::get<float>(take(loaded->read_property(loaded_move,field(*loaded,loaded_type,"speed"))));
+            require(std::bit_cast<std::uint32_t>(back)==std::bit_cast<std::uint32_t>(value) &&
+                std::get<double>(take(loaded->read_property(loaded_move,field(*loaded,loaded_type,"mass"))))==double(.1f) &&
+                (value!=.1f || (written["speed"].dump()=="0.1" && written["mass"].dump()=="0.10000000149011612")),
+                "A float field was not saved as its shortest decimal, or a float or double field changed across save and reload.");
+        }
+        take(runtime.write(move,speed,Scalar{4.f}));take(runtime.write(move,mass,Scalar{3.5}));
+    }
     auto defaults=saved_json; defaults["entities"][0]["components"][1]["properties"].erase("speed");
     auto defaulted=take(editor::Session::deserialize(defaults.dump(),project,prepare(evidence)));
     const auto default_entity=take(defaulted->world().members()).front().id(); take(defaulted->select(default_entity));

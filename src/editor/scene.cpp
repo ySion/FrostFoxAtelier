@@ -30,7 +30,7 @@ template<class T> T take(Result<T> value) {
 void committed(Result<world::Commit> value) {
     auto result=take(std::move(value)); if (result.notification_error) throw std::runtime_error(result.notification_error->message);
 }
-Json vector(math::Vector3 value) { return Json::array({value.x,value.y,value.z}); }
+Json vector(math::Vector3 value) { return json_format::numbers(std::array{value.x,value.y,value.z}); }
 math::Vector3 vector(const Json& value) {
     const auto v=json_format::vector<3>(value); return {v[0],v[1],v[2]};
 }
@@ -48,7 +48,8 @@ Json encode_scalar(Runtime& runtime,const Scalar& value) {
             const auto info=take(runtime.describe(v.type));
             for (const auto& [name,bits]:info->enumeration->values) if (bits==v.bits) return name;
             throw std::runtime_error("Scene enum value has no declared name.");
-        } else return v;
+        } else if constexpr (std::same_as<std::decay_t<decltype(v)>,float>) return json_format::number(v);
+        else return v;
     },value);
 }
 // A saved value that does not fit the current schema. Unlike other exceptions it
@@ -245,7 +246,7 @@ std::uint64_t local_key(const Json& value,bool allow_null=false) {
 Json ref_key(std::uint64_t id) {return Json{{"$ref",std::to_string(id)}};}
 Json trs_json(world::Trs value) {
     value=take(world::canonical_transform(value));
-    return {{"position",vector(value.position)},{"rotation",Json::array({value.rotation.x,value.rotation.y,value.rotation.z,value.rotation.w})},{"scale",vector(value.scale)},{"origin",nullptr}};
+    return {{"position",vector(value.position)},{"rotation",json_format::numbers(std::array{value.rotation.x,value.rotation.y,value.rotation.z,value.rotation.w})},{"scale",vector(value.scale)},{"origin",nullptr}};
 }
 world::Trs json_trs(const Json& value) {
     const auto q=json_format::vector<4>(value.at("rotation"));
@@ -528,8 +529,8 @@ struct Session::GraphCodec {
                     auto mesh=take(presentation::read_static_mesh(runtime,part.id()));take(presentation::validate_material(runtime,mesh.material));
                     if(persistent && mesh.mesh.resolved && mesh.mesh.source.empty()) throw std::runtime_error("A procedural mesh has no persistent source; save/import it before archiving.");
                     auto bindings=take(presentation::read_material_bindings(runtime,part.id()));graph.meshes.emplace(key,MeshCopy{mesh,bindings});
-                    value["mesh"]=mesh.mesh.source;value["base_color"]=vector(mesh.material.base_color);value["roughness"]=mesh.material.roughness;
-                    value["metallic"]=mesh.material.metallic;value["emissive"]=vector(mesh.material.emissive);auto entries=Json::array();
+                    value["mesh"]=mesh.mesh.source;value["base_color"]=vector(mesh.material.base_color);value["roughness"]=json_format::number(mesh.material.roughness);
+                    value["metallic"]=json_format::number(mesh.material.metallic);value["emissive"]=vector(mesh.material.emissive);auto entries=Json::array();
                     for(const auto& binding:bindings) {
                         Json entry={{"slot",binding.slot},{"resource",std::to_string(ids.at(binding.resource.id()))},{"overridden",binding.overridden}};
                         entries.push_back(std::move(entry));
@@ -654,8 +655,8 @@ struct Session::GraphCodec {
                 const auto& name=field->names.at(1);
                 if(name=="base_color") op[name]=vector(material->base_color);
                 else if(name=="emissive") op[name]=vector(material->emissive);
-                else if(name=="roughness") op[name]=material->roughness;
-                else if(name=="metallic") op[name]=material->metallic;
+                else if(name=="roughness") op[name]=json_format::number(material->roughness);
+                else if(name=="metallic") op[name]=json_format::number(material->metallic);
                 else throw std::runtime_error("Play cannot follow the field "+dotted(field->names)+".");
                 continue;
             }
