@@ -6,6 +6,7 @@
 #include "editor/view_options.hpp"
 #include "editor/material_format.hpp"
 #include "physics/physics.hpp"
+#include "runtime/value_storage.hpp"
 #include <limits>
 #include <charconv>
 #include <utility>
@@ -256,24 +257,35 @@ Json encode_string(Runtime& runtime,ObjectId object,const detail::ScalarField& f
     String value;take(runtime.read(object,field.path,ValueOutput{field.type,&value}));
     return std::string{value.c_str(),value.size()};
 }
-// How a tolerant decode reports a saved leaf it does not apply as saved. Strict decodes fail instead.
-struct LeafReport {
-    std::function<void(std::vector<std::string>,const Json&,world::DiagnosticKind,const std::string&)> keep;
-    std::function<void(std::vector<std::string>,const Json&)> converted;
-};
+// A whole Array leaf as a JSON array of its element leaves.
+Json encode_array(Runtime& runtime,ObjectId object,const detail::ScalarField& field) {
+    const auto element=*take(runtime.describe(field.type))->element;
+    const bool text=take(runtime.describe(element))->kind==TypeKind::string;
+    auto path=field.path;path.emplace_back();
+    Json result=Json::array();
+    for(std::size_t i=0,count=take(runtime.element_count(object,field.path));i<count;++i) {
+        path.back()=take(runtime.element(field.type,static_cast<std::uint32_t>(i)));
+        if(!text) {result.push_back(encode_scalar(runtime,take(runtime.read(object,path))));continue;}
+        String value;take(runtime.read(object,path,ValueOutput{element,&value}));result.push_back(std::string{value.c_str(),value.size()});
+    }
+    return result;
+}
 // Decodes a properties record leaf by leaf: the one path for scene loads, Play changes and operator
 // parameters. Tolerant decodes write a clamped leaf and then keep the saved value; strict decodes
 // (no report) throw at the first leaf they cannot apply as saved and never clamp.
 void read_record(Runtime& runtime,const PropertyTarget& target,std::span<const detail::ScalarField> schema,const Json& record,
-                 const std::vector<std::string>& prefix,const ResolveReference& resolve,const WriteLeaf& write,const LeafReport* report) {
+                 const std::vector<std::string>& prefix,const ResolveReference& resolve,const WriteLeaf& write,const PropertyReport* report) {
     const auto object=target.object!=ObjectId{};
     const auto store=[&](std::span<const FieldId> path,const PropertyLeaf& leaf)->Result<void> {
         if(write) return write(path,leaf);
         return std::visit([&](const auto& value)->Result<void> {
-            if constexpr(std::same_as<std::decay_t<decltype(value)>,Scalar>)
+            using T=std::decay_t<decltype(value)>;
+            if constexpr(std::same_as<T,Scalar>)
                 return object?runtime.write(target.object,path,value):runtime.write(target.type,target.storage,path,value);
             else {
-                const ValueInput input{take(runtime.native_type<String>()),&value};
+                ValueInput input;
+                if constexpr(std::same_as<T,String>) input={take(runtime.native_type<String>()),&value};
+                else input=value.input();
                 return object?runtime.write(target.object,path,input):runtime.write(target.type,target.storage,path,input);
             }
         },leaf);
@@ -301,6 +313,42 @@ void read_record(Runtime& runtime,const PropertyTarget& target,std::span<const d
                     const auto& text=item.get_ref<const std::string&>();
                     if(!StringView{text}.is_valid_utf8()) throw Mismatch("Expected UTF-8 text.");
                     if(auto written=store(field->path,String{StringView{text}});!written) throw Mismatch(written.error().message);
+                } else if(field->form==ValueForm::inline_value && field->kind==TypeKind::array) {
+                    // The whole Array is built aside and stored as one leaf, so a rejected write leaves the field as it was.
+                    if(!item.is_array()) throw Mismatch("Expected an array property.");
+                    const auto leaf=take(ArrayLeaf::create(runtime,field->type));
+                    const auto element=*take(runtime.describe(field->type))->element;
+                    const bool text=take(runtime.describe(element))->kind==TypeKind::string;
+                    take(runtime.mutate_sequence(field->type,leaf.storage(),SequenceMutation::resize,{},{},item.size()));
+                    // Every element takes the field's hard bounds, which constrain() reads through any element selector.
+                    auto bounded=field->path;bounded.push_back(take(runtime.element(field->type,0)));
+                    bool clamped_elements{};
+                    for(std::size_t i=0;i<item.size();++i) {
+                        const std::array selector{take(runtime.element(field->type,static_cast<std::uint32_t>(i)))};
+                        const auto& value=item[i];
+                        if(text) {
+                            if(!value.is_string() || !StringView{value.get_ref<const std::string&>()}.is_valid_utf8())
+                                throw Mismatch("Expected an array of UTF-8 strings.");
+                            const String stored{StringView{value.get_ref<const std::string&>()}};
+                            take(runtime.write(field->type,leaf.storage(),selector,ValueInput{element,&stored}));
+                            continue;
+                        }
+                        const auto scalar=decode_scalar(runtime,take(runtime.read(field->type,leaf.storage(),selector)),value,&converted);
+                        auto stored=runtime.constrain(target.type,bounded,scalar);if(!stored) throw Mismatch(stored.error().message);
+                        if(*stored!=scalar) {
+                            if(!report) throw Mismatch("An element is outside the field's hard bounds.");
+                            clamped_elements=true;
+                        }
+                        take(runtime.write(field->type,leaf.storage(),selector,*stored));
+                    }
+                    // Reported before the store: a strict report (a Play change) rejects the clamp with the field unchanged.
+                    // As for a scalar, the clamp is the one report, whatever elements converted.
+                    if(clamped_elements) {
+                        issue(at,item,world::DiagnosticKind::mismatch,{},
+                            "An element is outside the field's hard bounds; the clamped Array is used and the saved value is kept.");
+                        converted=false;
+                    }
+                    if(auto written=store(field->path,leaf);!written) throw Mismatch(written.error().message);
                 } else if(field->form==ValueForm::inline_value) {
                     const auto current=object?runtime.read(target.object,field->path):runtime.read(target.type,target.storage,field->path);
                     const auto scalar=decode_scalar(runtime,take(current),item,&converted);
@@ -516,6 +564,50 @@ Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nul
 }
 
 
+struct ArrayLeaf::Value {
+    Runtime& runtime;
+    TypeId type;
+    atelier::detail::ValueStorage bytes;
+    std::span<std::byte> storage;
+    bool live{};
+    Value(Runtime& owner,TypeId array):runtime(owner),type(array) {}
+    Value(const Value&)=delete;
+    Value& operator=(const Value&)=delete;
+    ~Value() {if(live) static_cast<void>(runtime.destroy_value(type,storage));}
+};
+Result<ArrayLeaf> ArrayLeaf::create(Runtime& runtime,TypeId type) {
+    const auto info=runtime.describe(type);if(!info) return std::unexpected(info.error());
+    if((*info)->kind!=TypeKind::array) return std::unexpected(Error{ErrorCode::invalid_type,"An Array leaf requires an Array type."});
+    ArrayLeaf result;result.value_=std::make_shared<Value>(runtime,type);auto& value=*result.value_;
+    value.storage={value.bytes.prepare((*info)->size,(*info)->alignment),(*info)->size};
+    if(auto made=runtime.initialize_value(type,value.storage);!made) return std::unexpected(made.error());
+    value.live=true;return result;
+}
+TypeId ArrayLeaf::type() const noexcept {return value_->type;}
+std::span<std::byte> ArrayLeaf::storage() const noexcept {return value_->storage;}
+ValueInput ArrayLeaf::input() const noexcept {return {value_->type,value_->storage.data()};}
+ValueOutput ArrayLeaf::output() const noexcept {return {value_->type,value_->storage.data()};}
+
+Result<Json> encode_properties(Runtime& runtime,ObjectId object,std::span<const detail::ScalarField> fields,const EncodeReference& reference) {
+    try {
+        Json result=Json::object();
+        for(const auto& field:fields) {
+            Json value;
+            if(field.form==ValueForm::inline_value)
+                value=field.kind==TypeKind::string?encode_string(runtime,object,field):field.kind==TypeKind::array?encode_array(runtime,object,field):
+                    encode_scalar(runtime,take(runtime.read(object,field.path)));
+            else if(field.form==ValueForm::strong_sequence) {
+                value=Json::array();const auto locator=take(runtime.reference_field(object,field.path));const auto count=take(runtime.sequence_size(locator));
+                for(std::size_t i=0;i<count;++i) value.push_back(reference(take(runtime.sequence_read(locator,i)).id()));
+            } else value=reference(take(runtime.read_reference(object,field.path)).id());
+            auto* at=&result;for(const auto& name:field.names) at=&(*at)[name];*at=std::move(value);
+        }
+        return result;
+    } catch(const Failure& error) {
+        return std::unexpected(Error{error.code,error.what()});
+    } catch(const std::exception& error) {return failed(error);}
+}
+
 Result<void> decode_properties(Runtime& runtime,const PropertyTarget& target,const Json& record,const ResolveReference& resolve,const WriteLeaf& write) {
     try {
         if((target.object==ObjectId{})==target.storage.empty())
@@ -530,6 +622,20 @@ Result<void> decode_properties(Runtime& runtime,const PropertyTarget& target,con
         return {};
     } catch(const Rejected& error) {
         return std::unexpected(Error{ErrorCode::argument_mismatch,error.what()});
+    } catch(const Failure& error) {
+        return std::unexpected(Error{error.code,error.what()});
+    } catch(const std::exception& error) {return failed(error);}
+}
+Result<void> decode_properties(Runtime& runtime,const PropertyTarget& target,std::span<const detail::ScalarField> fields,const Json& record,
+                               const PropertyReport& report,const ResolveReference& resolve) {
+    try {
+        if((target.object==ObjectId{})==target.storage.empty())
+            return std::unexpected(Error{ErrorCode::argument_mismatch,"A properties target is either an object or a record value."});
+        if(target.object!=ObjectId{} && take(runtime.type_of(target.object))!=target.type)
+            return std::unexpected(Error{ErrorCode::type_mismatch,"A properties target object must have the target type."});
+        if(!record.is_object()) return std::unexpected(Error{ErrorCode::argument_mismatch,"Expected a property record."});
+        read_record(runtime,target,fields,record,{},resolve,{},&report);
+        return {};
     } catch(const Failure& error) {
         return std::unexpected(Error{error.code,error.what()});
     } catch(const std::exception& error) {return failed(error);}
@@ -841,18 +947,7 @@ struct Session::GraphCodec {
         if(document) for(const auto& material:session.retained_document_.materials)
             if(runtime.type_of(material.id())) static_cast<void>(archive_material(material.id()));
         const auto properties=[&](ObjectId object,TypeId type) {
-            Json result=Json::object();
-            for(const auto& field:business_fields(runtime,session.types_,session.presentation_types_,type)) {
-                Json value;
-                if(field.form==ValueForm::inline_value)
-                    value=field.kind==TypeKind::string?encode_string(runtime,object,field):encode_scalar(runtime,take(runtime.read(object,field.path)));
-                else if(field.form==ValueForm::strong_sequence) {
-                    value=Json::array();const auto locator=take(runtime.reference_field(object,field.path));const auto count=take(runtime.sequence_size(locator));
-                    for(std::size_t i=0;i<count;++i) value.push_back(reference(take(runtime.sequence_read(locator,i)).id()));
-                } else value=reference(take(runtime.read_reference(object,field.path)).id());
-                auto* at=&result;for(const auto& name:field.names) at=&(*at)[name];*at=std::move(value);
-            }
-            return result;
+            return take(encode_properties(runtime,object,business_fields(runtime,session.types_,session.presentation_types_,type),reference));
         };
         Json values=Json::array(),root_keys=Json::array();
         for(auto object:roots) {
@@ -1027,7 +1122,7 @@ struct Session::GraphCodec {
     // Scene and Play changes decode a properties record leaf by leaf through the shared decoder.
     static void read_properties(Session& session,ObjectId object,const Json& record,Load& load,const ResolveReference& resolve,const WriteLeaf& write={}) {
         auto& runtime=session.runtime_;const auto type=take(runtime.type_of(object));
-        const LeafReport report{
+        const PropertyReport report{
             [&](std::vector<std::string> at,const Json& item,world::DiagnosticKind kind,const std::string& detail) {load.keep(object,std::move(at),item,kind,detail);},
             [&](std::vector<std::string> at,const Json& item) {
                 load.report(world::Severity::info,world::DiagnosticKind::converted,object,std::move(at),&item,"Integral number converted exactly to the field's integer type.");
@@ -1312,6 +1407,10 @@ struct Session::GraphCodec {
             Defaults values;
             for(const auto& field:business_fields(runtime,session.types_,session.presentation_types_,take(runtime.type_of(object))))
                 if(field.form==ValueForm::inline_value && !field.names.empty() && (prefix.empty() || field.names.front()==prefix)) {
+                    if(field.kind==TypeKind::array) {
+                        const auto array=take(ArrayLeaf::create(runtime,field.type));take(runtime.read(object,field.path,array.output()));
+                        values.emplace_back(field.path,array);continue;
+                    }
                     if(field.kind!=TypeKind::string) {values.emplace_back(field.path,take(runtime.read(object,field.path)));continue;}
                     String text;take(runtime.read(object,field.path,ValueOutput{field.type,&text}));values.emplace_back(field.path,std::move(text));
                 }
@@ -1330,6 +1429,7 @@ struct Session::GraphCodec {
             else load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,path,nullptr,problem+" Defaults are used.");
             for(const auto& [path,value]:defaults) {
                 if(const auto* scalar=std::get_if<Scalar>(&value)) take(runtime.write(object,path,*scalar));
+                else if(const auto* array=std::get_if<ArrayLeaf>(&value)) take(runtime.write(object,path,array->input()));
                 else take(runtime.write(object,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(value)}));
             }
         };
@@ -1739,6 +1839,7 @@ struct Session::GraphCodec {
                     std::vector<world::FieldPath> paths;std::vector<Scalar> values;
                     read_properties(session,edited,*at,load,resolve,[&](std::span<const FieldId> path,const PropertyLeaf& leaf)->Result<void> {
                         if(const auto* scalar=std::get_if<Scalar>(&leaf)) {paths.emplace_back(path.begin(),path.end());values.push_back(*scalar);return {};}
+                        if(const auto* array=std::get_if<ArrayLeaf>(&leaf)) return world.write(edited,path,array->input());
                         return world.write(edited,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(leaf)});
                     });
                     if(!paths.empty()) take(world.write(edited,std::span<const world::FieldPath>(paths),std::span<const Scalar>(values)));

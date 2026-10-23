@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "editor/material_format.hpp"
 #include "editor/properties.hpp"
+#include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 #include "physics/physics.hpp"
@@ -25,6 +26,7 @@ struct Spatial : world::Component { float offset{4}; };
 struct QueryProbe : physics::SceneQueryComponent { bool observed{};std::uint32_t count{};float distance{};math::Vector3 point{}; };
 struct Caption { String text; float size{1}; std::uint32_t lines{1}; };
 struct Label : world::Component { String title; Caption caption; };
+struct Tags : world::Component { Array<String> names; Array<float> weights; Array<std::uint32_t> counts; };
 struct Evidence { unsigned prepared{},destroyed{},begins{},ends{}; bool fail_tick{},fail_begin{},fail_end{},live_runtime_on_release{true}; };
 struct Code {
     Runtime& runtime;
@@ -61,6 +63,19 @@ editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
             [evidence](Runtime&,ObjectId)->Result<void>{++evidence->ends; if (evidence->fail_end) return std::unexpected(Error{ErrorCode::invocation_failed,"end failed"}); return {};}
         }));
         return std::static_pointer_cast<void>(code);
+    };
+}
+// The scene types plus a component of inline Arrays whose weights and counts are bounded per element.
+editor::Session::Prepare prepare_tags(std::shared_ptr<Evidence> evidence) {
+    return [base=prepare(std::move(evidence))](world::World& world)->Result<std::shared_ptr<void>> {
+        auto code=base(world);if(!code) return code;
+        auto& runtime=world.runtime();
+        take(runtime.register_types({array_definition<String>(runtime,"game.Strings"),array_definition<float>(runtime,"game.Floats"),
+            array_definition<std::uint32_t>(runtime,"game.Counts")}));
+        take(NativeRegistration<Tags>{runtime,"game.Tags",TypeKind::object}.base<world::Component>().field<&Tags::names>("names")
+            .field<&Tags::weights>("weights").range({.hard_min=Scalar{0.f},.hard_max=Scalar{1.f}})
+            .field<&Tags::counts>("counts").range({.hard_min=Scalar{std::uint32_t{0}},.hard_max=Scalar{std::uint32_t{3}}}).publish());
+        return code;
     };
 }
 ObjectId member(editor::Session& session,TypeId type) {
@@ -565,6 +580,123 @@ void verify_string_properties(editor::Project& project,const std::shared_ptr<Evi
     require(duplicate!=entity && copied!=ObjectId{} && get(document,copied,"title")==gate && get(document,copied,"text")=="line\nbreak",
         "A duplicate did not copy its String fields.");
 }
+// Inline Arrays save as JSON arrays and decode into a value of their own, stored as one whole leaf.
+void verify_array_properties(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
+    acceptance_phase="Array properties";
+    using enum world::DiagnosticKind;
+    // Each session owns a Runtime with its own identities, so types and fields resolve by name per session.
+    struct Fields {TypeId tags,strings,floats;world::FieldPath names,weights;};
+    const auto fields=[](const Runtime& runtime) {
+        const auto tags=take(runtime.find_type("game.Tags"));
+        return Fields{tags,take(runtime.find_type("game.Strings")),take(runtime.find_type("game.Floats")),
+            {take(runtime.find_field(tags,"names"))},{take(runtime.find_field(tags,"weights"))}};
+    };
+    const auto names_of=[&](const Runtime& runtime,ObjectId object) {
+        const auto f=fields(runtime);Array<String> value;take(runtime.read(object,f.names,ValueOutput{f.strings,&value}));
+        std::vector<std::string> result;for(const auto& text:value) result.emplace_back(text.c_str(),text.size());
+        return result;
+    };
+    const auto weights_of=[&](const Runtime& runtime,ObjectId object) {
+        const auto f=fields(runtime);Array<float> value;take(runtime.read(object,f.weights,ValueOutput{f.floats,&value}));
+        return std::vector<float>(value.begin(),value.end());
+    };
+    const auto counts_of=[](const Runtime& runtime,ObjectId object) {
+        const auto tags=take(runtime.find_type("game.Tags"));const world::FieldPath counts{take(runtime.find_field(tags,"counts"))};Array<std::uint32_t> value;
+        take(runtime.read(object,counts,ValueOutput{take(runtime.find_type("game.Counts")),&value}));
+        return std::vector<std::uint32_t>(value.begin(),value.end());
+    };
+    const auto tags_json=[](Json& scene)->Json& {
+        for(auto& part:scene["entities"][0]["components"]) if(part["type"]=="game.Tags") return part;
+        throw std::runtime_error("The saved scene lost its Tags component.");
+    };
+    editor::Session document(prepare_tags(evidence));auto& runtime=document.world().runtime();const auto f=fields(runtime);
+    changed(document.add_entity());changed(document.add_component(f.tags));const auto tags=member(document,f.tags);
+    const std::vector<std::string> names{"north","\xE5\x8C\x97"};const std::vector<float> weights{.25f,1.f,.5f};
+    {
+        const Array<String> stored{String{StringView{names[0]}},String{StringView{names[1]}}};const Array<float> bounded{.25f,1.f,.5f};
+        take(runtime.write(tags,f.names,ValueInput{f.strings,&stored}));take(runtime.write(tags,f.weights,ValueInput{f.floats,&bounded}));
+    }
+    auto saved=Json::parse(take(document.serialize()));
+    const auto tags_id=std::stoull(tags_json(saved)["id"].get<std::string>());
+    require(subset(tags_json(saved)["properties"],{{"names",Json::array({names[0],names[1]})},{"weights",Json::array({.25,1.0,.5})}}),
+        "Inline Arrays were not saved as JSON arrays of their elements.");
+    {
+        auto reopened=take(editor::Session::deserialize(saved.dump(),project,prepare_tags(evidence)));
+        const auto copy=take(reopened->local_object(tags_id));auto& owner=reopened->world().runtime();
+        require(reopened->load_issues().empty() && names_of(owner,copy)==names && weights_of(owner,copy)==weights &&
+            Json::parse(take(reopened->serialize()))==saved,"Inline Arrays did not round-trip through a scene load.");
+    }
+    {
+        auto damaged=saved;auto& properties=tags_json(damaged)["properties"];
+        properties["names"]=Json::array({"kept",5});properties["weights"]=Json::array({.5,2.0,-1.0});properties["counts"]=Json::array({2.0,5.0});
+        require(!editor::Session::deserialize(damaged.dump(),project,prepare_tags(evidence),editor::LoadPolicy::strict),
+            "Strict load accepted a mistyped element or clamped an Array.");
+        auto tolerant=take(editor::Session::deserialize(damaged.dump(),project,prepare_tags(evidence)));
+        const auto copy=take(tolerant->local_object(tags_id));const auto issues=tolerant->load_issues();auto& owner=tolerant->world().runtime();
+        // A clamped Array is reported once, as a mismatch, even when its elements also converted.
+        require(issues.size()==3 && count(issues,mismatch)==3 && names_of(owner,copy).empty() && weights_of(owner,copy)==std::vector<float>{.5f,1.f,0.f} &&
+            counts_of(owner,copy)==std::vector<std::uint32_t>{2,3},
+            "A mistyped element did not leave its Array at the default, or elements outside the hard bounds were not clamped once.");
+        require(Json::parse(take(tolerant->serialize()))==damaged,"The saved values of mismatched Arrays were not written back unchanged.");
+    }
+
+    acceptance_phase="Array properties decoding";
+    const auto unchanged=[&]{return names_of(runtime,tags)==names && weights_of(runtime,tags)==weights;};
+    const auto rejects=[&](const Json& record,std::string_view message) {
+        const auto result=editor::decode_properties(runtime,{f.tags,tags},record);
+        require(!result && result.error().code==ErrorCode::argument_mismatch && result.error().message.starts_with(message) && unchanged(),
+            "Strict decoding accepted, misreported or partly wrote an invalid Array.");
+    };
+    rejects({{"weights",Json::array({.5,2.0})}},"weights: An element is outside the field's hard bounds.");
+    rejects({{"names",Json::array({"a",1})}},"names: Expected an array of UTF-8 strings.");
+    rejects({{"weights",.5}},"weights: Expected an array property.");
+    // A write hook receives each Array as one whole leaf and leaves the object as it was.
+    std::vector<std::pair<world::FieldPath,editor::PropertyLeaf>> patch;
+    take(editor::decode_properties(runtime,{f.tags,tags},{{"names",Json::array({"patched"})},{"weights",Json::array({.75})}},{},
+        [&](std::span<const FieldId> path,const editor::PropertyLeaf& leaf)->Result<void> {patch.emplace_back(world::FieldPath(path.begin(),path.end()),leaf);return {};}));
+    const auto leaf=[&](const world::FieldPath& path)->const editor::ArrayLeaf* {
+        const auto at=std::ranges::find(patch,path,&std::pair<world::FieldPath,editor::PropertyLeaf>::first);
+        return at==patch.end()?nullptr:std::get_if<editor::ArrayLeaf>(&at->second);
+    };
+    const auto* patched_names=leaf(f.names);const auto* patched_weights=leaf(f.weights);
+    require(patch.size()==2 && patched_names && patched_weights && patched_names->type()==f.strings && patched_weights->type()==f.floats &&
+        std::ranges::equal(*reinterpret_cast<const Array<String>*>(patched_names->storage().data()),std::array{String{StringView{"patched"}}}) &&
+        std::ranges::equal(*reinterpret_cast<const Array<float>*>(patched_weights->storage().data()),std::array{.75f}) && unchanged(),
+        "A collecting write hook did not receive whole Array leaves, or the object changed.");
+    // A tolerant decode reports from the record, applies the clamped Array and reports an exact conversion.
+    std::vector<std::vector<std::string>> kept,conversions;
+    const editor::PropertyReport report{
+        [&](std::vector<std::string> at,const Json&,world::DiagnosticKind kind,const std::string&) {if(kind==mismatch) kept.push_back(std::move(at));},
+        [&](std::vector<std::string> at,const Json&) {conversions.push_back(std::move(at));}};
+    take(editor::decode_properties(runtime,{f.tags,tags},take(editor::detail::author_fields(runtime,f.tags)),
+        {{"names",Json::array({"a",3})},{"weights",Json::array({.75,2.0})},{"counts",Json::array({1.0})}},report));
+    require(kept==std::vector<std::vector<std::string>>{{"names"},{"weights"}} && conversions==std::vector<std::vector<std::string>>{{"counts"}} &&
+        names_of(runtime,tags)==names && weights_of(runtime,tags)==std::vector<float>{.75f,1.f} && counts_of(runtime,tags)==std::vector<std::uint32_t>{1},
+        "A tolerant decode did not report its leaves from the record, or did not apply the clamped and converted Arrays.");
+
+    acceptance_phase="Array properties in Play";
+    auto play_project=take(editor::Project::open(project.root()));
+    auto b=take(editor::Session::deserialize(saved.dump(),play_project,prepare_tags(evidence)));b->enter_play();
+    auto& rb=b->world().runtime();const auto b_tags=take(b->local_object(tags_id));
+    const auto apply=[&](Json properties) {
+        const Json op={{"op","set"},{"id",std::to_string(tags_id)},{"properties",std::move(properties)}};
+        return take(b->apply_live(Json{{"ops",Json::array({op})}}.dump(),play_project));
+    };
+    require(apply({{"weights",Json::array({.5})}}).empty() && weights_of(rb,b_tags)==std::vector<float>{.5f},
+        "A Play set did not shorten an Array to its one element.");
+    take(const_cast<world::World&>(b->world()).add_admission(fields(rb).tags,[&](const world::World& world,std::span<const ObjectId> candidates)->Result<void> {
+        for(const auto object:candidates)
+            if(std::ranges::contains(names_of(world.runtime(),object),std::string{"Closed"})) return std::unexpected(Error{ErrorCode::invalid_member,"Tags cannot name Closed."});
+        return {};
+    }));
+    const auto rejected=apply({{"names",Json::array({"open","Closed"})}});
+    require(rejected.size()==1 && rejected[0].severity==world::Severity::error && rejected[0].kind==command_rejected && names_of(rb,b_tags)==names,
+        "A Play Array change the type's rules reject did not keep the whole previous Array.");
+    const auto clamped=apply({{"weights",Json::array({.25,2.0})}});
+    require(clamped.size()==1 && clamped[0].kind==command_rejected && weights_of(rb,b_tags)==std::vector<float>{.5f},
+        "A Play Array change outside the hard bounds was clamped and applied.");
+    std::puts("Array properties: PASS (save/reopen, strict and tolerant elements, clamp, write hook, Play shorten and rejected sets)");
+}
 // Editor document A authors; its Play copy B follows A's changes while it runs.
 void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase="Play change batches";
@@ -1004,6 +1136,7 @@ void run() {
     verify_retained_data(project,saved_json,evidence);
     verify_play_changes(project,evidence);
     verify_string_properties(project,evidence);
+    verify_array_properties(project,evidence);
     verify_live_forwarding(project,evidence);
     verify_environment_migration(project);
     acceptance_phase="Source play and stop lifecycle";

@@ -8,9 +8,9 @@
 
 ## 真实类型与编辑
 
-Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 校验。参数发现和编辑沿同一 FieldPath；显示名称不充当身份。标量、String 与内联 record 递归编辑，枚举保存声明成员名，String 保存为 JSON 字符串，整数严格检查符号与范围，浮点必须有限。TRS 历史保存完整组；移除对象可由历史保活，但保活不授予文档成员资格。
+Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 校验。参数发现和编辑沿同一 FieldPath；显示名称不充当身份。标量、枚举、String 与内联 Array 是叶，内联 record 递归保存；Array 保存为 JSON 数组，元素只能是标量、枚举或 String，元素是 record 或数组的类型不能保存或加载（`unsupported_operation`）。Parameters 编辑标量与枚举，不编辑 String 和 Array。枚举保存声明成员名，String 保存为 JSON 字符串，整数严格检查符号与范围，浮点必须有限。TRS 历史保存完整组；移除对象可由历史保活，但保活不授予文档成员资格。
 
-属性记录由一个共用的叶解码器逐叶解码，场景加载、Play 增量和编辑器操作符参数都经过它。`editor::decode_properties`（[properties.hpp](../../../src/editor/properties.hpp)）是严格模式入口：目标是对象或调用方持有的记录值，未知字段、类型不符、越过硬边界都报错，不夹值；整数字段中可无损转换的浮点值照常接受；记录中缺省的字段保持原值。传入写入钩子时，内联叶交给钩子（例如收集成补丁），不写入目标；钩子不接收引用叶，所以不能与引用解析同时传入。Play 增量对已存在对象的 String 字段经 `World::write(ValueInput)` 整值写入，与标量叶一样经过类型规则与准入检查，被拒时整值恢复并以 error 级 `command_rejected` 报告。
+属性记录由一个共用的叶解码器逐叶解码，场景加载、Play 增量和编辑器操作符参数都经过它。`editor::decode_properties`（[properties.hpp](../../../src/editor/properties.hpp)）是严格模式入口：目标是对象或调用方持有的记录值，未知字段、类型不符、越过硬边界和目标拒绝写入都报 `argument_mismatch`，不夹值，其他 Runtime 失败保留原错误码；整数字段中可无损转换的浮点值照常接受；记录中缺省的字段保持原值。带字段表和 `PropertyReport` 的重载是宽容入口，与场景加载相同：放不进字段的叶交给 report，越界的叶用夹值，只有 Runtime 失败才报错；`encode_properties` 是对应的编码入口，与场景保存共用叶编码。传入写入钩子时，内联叶交给钩子（例如收集成补丁），不写入目标；钩子不接收引用叶，所以不能与引用解析同时传入。Array 在调用方的存储里整体构造成一个值，作为一个叶写入或交给钩子，硬边界按元素检查。Play 增量对已存在对象的 String 与 Array 字段经 `World::write(ValueInput)` 整值写入，与标量叶一样经过类型规则与准入检查，被拒时整值恢复并以 error 级 `command_rejected` 报告。Play 增量按严格规则解码：越过硬边界的标量和 Array 元素都被拒，不夹值。
 
 ## Scene v7
 
@@ -31,7 +31,7 @@ Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字�
 
 - 未注册类型（`unknown_type`）：按原生基类创建占位对象——Entity 用 `world.Entity`，带 `mesh` 的组件用 `world.StaticMeshComponent`，其余用 `world.Component`。占位对象记录原类型名和全部数据，没有行为绑定，原生部分照常参与；保存按原类型写回。
 - 未知已保存字段或键（`unknown_field` / `unknown_key`）：原值保留并写回。
-- 类型不符（`mismatch`）：引用目标存在但类型不符、未通过共享 canonical TRS 检查的空间值、World 或组件校验拒绝的设置等，字段使用类型默认值，原值保留并写回。越过字段硬边界的值同样报告 `mismatch`，字段采用 `Runtime::constrain` 夹到边界后的值，原值保留并写回。整数字段中可无损转换的浮点值（如 `3.0`）直接应用并报告 `converted`。
+- 类型不符（`mismatch`）：引用目标存在但类型不符、未通过共享 canonical TRS 检查的空间值、World 或组件校验拒绝的设置等，字段使用类型默认值，原值保留并写回。越过字段硬边界的值同样报告 `mismatch`，字段采用 `Runtime::constrain` 夹到边界后的值，原值保留并写回。整数字段中可无损转换的浮点值（如 `3.0`）直接应用并报告 `converted`。Array 按整值处理：任一元素类型不符时字段使用类型默认值；越界元素夹值后应用；两种情况都保留并写回整个原数组。
 - 缺失或无法读取的资源（`missing_resource` / `unreadable_resource`）：工程目录中已不存在的 Mesh、Material、Texture 报告 `missing_resource`；目录中仍列出但读不出来（文件损坏、类型不符）的报告 `unreadable_resource`，消息带读取错误。两者都由占位资源代替，引用键原样写回，资源文件本身不被改写。缺失 Texture 只让该输入没有贴图，材质的其他参数照常；缺失 Material（含实例的父材质）用默认参数代替，实例覆盖照常；缺失 Mesh 的组件不绘制、没有材质槽，`materials` 绑定表作为保留数据原样写回，表中引用的场景材质随之保活。缺失 Mesh 的三角形碰撞跳过 Cook 并另报一条诊断，运行时该刚体按 World 失败策略处理。占位资源不能作为工程资产编辑、保存或指派；在 Asset Browser 或 Control 中直接打开无法读取的资产仍然报错。恢复文件后重新打开场景生效。
 - 保留数据中的引用与活引用规则相同：子树导出拒绝图外目标，同一 Session 内复制继续指向原目标；目标在文档中被删除时写为 null 并报告 `reference_dropped`，撤销删除后恢复。
 - 编辑某字段会释放它的保留值；`Session::discard_retained` 丢弃一个对象的全部保留值，占位对象仍保留原类型。两者都进入 Undo/Redo。

@@ -1,6 +1,6 @@
 # 程序化节点图：首阶段方案
 
-状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），数组部分等 World 负责人同意；自有语言节点等 L4a、L1、L2 就绪后做。
+状态：**已批准**（2026-10-22），P1 实施中。方向与产品取舍由用户确定，技术方案经总负责人审阅。§2 Geometry 核心（参考 Houdini、Lagrange、Blender 细化）和 §5.1 实例集合（已与渲染、性能负责人对齐）经总负责人批准；目标内容的三角形数待用户定（§9）。分支 `procedural` 基于 a0d3441c，即运行时 ec-8 栈的 tip（5badb653 写代号 → a0d3441c）。P1 已完成 Geometry 核心、C++ 操作、BVH 与 Ray 节点、实例发布、图与求值器（端口名来自 L5）和 `--profile-procedural`，当前行为以[程序化模块](../modules/procedural/README.md)为准；规范化 JSON v1 的编解码接口已与编辑器负责人对齐（§5.4），内联数组经 World 负责人同意、不算场景格式版本变化；自有语言节点等 L4a、L1、L2 就绪后做。
 
 ## 0. 结论
 
@@ -199,7 +199,7 @@ class geo.Jitter : procedural.PointNode {
 | Runtime 类型与计数 | 新增 `procedural.*` 类型、组件类型、标签页和 Control 键；实施时按旧数字搜索 acceptance/，把命中的断言列入必要测试 |
 | 第二刀网格 | `mesh_source` 用 `<图 GUID>#<输出名>` 键，经 `set_mesh_binding` 绑定；物理碰撞缓存键加入内容哈希 |
 
-模块落点：新建静态库 `src/procedural/`（`atelier_procedural`），包含 Geometry、Graph/Node 类型、C++ 黑箱节点、求值器，依赖 runtime、math、geometry。生成器组件放在 presentation，World 负责人审。图文件编解码是 `editor/graph_format.hpp/.cpp`，放在 `atelier_editor_core`，这个库链接 `atelier_procedural`，procedural 不依赖 editor；编辑器负责人审。它与 Scene 共用属性编解码：`properties.hpp` 声明 `encode_properties`（引用经 `std::function<Json(ObjectId)>` 编码，分配 id、归档材质等副作用留在调用方的回调里）和带诊断报告的宽容 `decode_properties`，定义在 `scene.cpp` 的 `decode_properties` 旁边；图编解码按 FieldId 滤掉 Node 的 `inputs` 和 Graph 的 `nodes`、`display`，再交给它们。共用编解码新增元素为标量、枚举或字符串的内联 Array，写成 JSON 数组，解码时整体替换，硬范围按元素检查；`author_fields` 输出数组条目，Parameters 暂不编辑数组（留给 G4）。这给 Scene 的 properties 加了一种值形状，须先经 World 负责人同意，是否算格式版本变化由他定。
+模块落点：新建静态库 `src/procedural/`（`atelier_procedural`），包含 Geometry、Graph/Node 类型、C++ 黑箱节点、求值器，依赖 runtime、math、geometry。生成器组件放在 presentation，World 负责人审。图文件编解码是 `editor/graph_format.hpp/.cpp`，放在 `atelier_editor_core`，这个库链接 `atelier_procedural`，procedural 不依赖 editor；编辑器负责人审。它与 Scene 共用属性编解码：`properties.hpp` 声明 `encode_properties`（引用经 `std::function<Json(ObjectId)>` 编码，分配 id、归档材质等副作用留在调用方的回调里）和带诊断报告的宽容 `decode_properties`，定义在 `scene.cpp` 的 `decode_properties` 旁边；图编解码按 FieldId 滤掉 Node 的 `inputs` 和 Graph 的 `nodes`、`display`，再交给它们。共用编解码新增元素为标量、枚举或字符串的内联 Array（不嵌 record，也不嵌数组），写成 JSON 数组。解码时在调用方的存储里把整个数组构造成一个值，作为一个叶整体写入：对象经 `Runtime::write`，Play 的 live set 经 `World::write`（类型规则和准入一起检查，被拒时整值恢复），写入钩子也只收到这一个叶。硬范围按元素检查：严格解码遇到越界或元素类型不符就报错，不夹值；宽容加载时元素越界用夹值后的数组，元素类型不符则字段取默认值（空数组），两种情况都保留原数组并原样写回。`author_fields` 输出数组条目，Parameters 不编辑数组（G4 再做）。World 负责人已同意这种值形状，并判定不算场景格式版本变化：此前 `author_fields` 遇到数组就报错，含数组字段的类型既不能保存也不能加载，所以现有文件里不可能有内联数组；新程序读现有文件结果不变，不含数组字段的文件写出来逐字节相同；旧程序打开含数组的新文件，无论版本号是多少都会失败，升版本反而让旧程序连不含数组的新文件也拒绝；用户已定只保留最新版本，为一个空迁移升版本，过后还要再删一次。编解码按字段的 form 和 kind 分派，不靠 JSON 形状判断（引用序列本来就是 JSON 数组）。
 
 ## 6. 编辑器：Houdini 式网络编辑器
 
@@ -235,7 +235,7 @@ class geo.Jitter : procedural.PointNode {
 | 运行时和语言 | L5 → L4a → L1 → L2 → L4b → L6，L3 最后 | L5 已交付并接上；L4a 已批准、实施中（不含整数版 min/max/abs/clamp，P1 不需要）；其余见 §3.1 |
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
-| World 和物理 | Scene properties 新增内联数组的值形状（是否算格式版本由其决定）；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已发出请求，待同意；其余 P2 前对齐 |
+| World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐 |
 | 编辑器 | G1–G6、图文件编解码落点、数字资产契约方案（同时交总负责人）；生成器从网格资产解析槽位默认材质的接口（与新材质方案同一来源） | 材质入口已定（`Session::mesh_surfaces`，见 §5.1，随材质 A 提交交付）；图文件编解码已对齐（§5.4）；其余 P2/P3 前对齐 |
 
 ## 9. 风险与未决
