@@ -30,7 +30,7 @@ void verify_official_examples() {
         const auto meshes=take(document->presentation().render_items());
         require(example.command==editor::Command::example_dungeons?meshes.size()==3425:
             example.command==editor::Command::example_physic?meshes.size()==14:
-            meshes.size()==(example.command==editor::Command::example_sponza?1u:10u),"Official example lost geometry.");
+            meshes.size()==(example.command==editor::Command::example_sponza?2u:10u),"Official example lost geometry.");
         // Scenes bind materials by slot name: every saved binding must still find its slot.
         std::size_t saved_bindings{},loaded_bindings{};
         for(const auto& entity:nlohmann::json::parse(original)["entities"]) for(const auto& part:entity["components"])

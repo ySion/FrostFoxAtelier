@@ -40,7 +40,7 @@
 | 选中边线 | `a7ab99f`：Dev／Release 原生 Renderer 裁剪矩阵；另有独立 Release 官方 Sponza 编辑器集成捕获，见[选中修复](#跨相机平面的选中边线铺黄2026-10-10) |
 | 材质／设置变更和无效工作 | `ca4af33`：Dev 时间响应／contracts、Release 质量矩阵、双配置场景文档链，见[Review 补强](#提交后-review-补强2026-10-10) |
 | 移动物体与 T2x | `c8293e9`：移动阴影、反射、Local GI、无关运动与 T2x 来源稳定性，见[移动历史](#smaa-下移动物体的光照拖尾2026-10-10)和 [T2x 对照](#smaa-t2x-静态抖动与反射对照2026-10-10) |
-| 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙与大场景接入，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10)和 [Sponza DDGI](#sponza-ddgi-场景接入2026-10-10) |
+| 发光面／DDGI | 发光主动采样、成本拆分、墙角／薄隔墙，见[主动采样](#发光面主动采样与-ddgi-重建成本2026-10-10) |
 
 这些入口验证的范围不同，不合并称为“所有场景已经验收”。本机 `out/` 证据不随源码提交；不同工作树的来源在对应段落标明。当前重复运行命令沿 README 与各专项入口，不使用旧交接文档中的临时头、补丁注入或待验安排。
 
@@ -1172,30 +1172,6 @@ Release 完整 `--scene-lit-quality` 通过 GPU validation，覆盖四种 AA、�
 
 最终修改没有新增 GPU 资源或射线，保留 8×8 方向图与 RG32_FLOAT 距离矩，只增加逐 tap 的可见性算术；本轮未测量常规帧的性能差值。当前实现与有限角分辨率边界见 [DDGI 探针场](scene-lit.md#ddgi-探针场)。原工程没有被本轮诊断写回；修正版编辑器打开独立的 `UserAdjustedProject`，可通过正常场景命令继续编辑、保存。
 
-## Sponza DDGI 场景接入（2026-10-10）
-
-基于 `17996cee07bcb234860848e31d6717fac3dec335` 加本轮工作树修改，在 Windows x64 / AMD Radeon RX 6800 XT 验证。复用现有 Scene Lit/DDGI shader，新增场景灯光、启动配置及真实编辑器验收。该轮的 `Open-Sponza.ps1` 默认进入 Scene Lit（该历史入口现已由编辑器默认启动及 Project → Examples 替代），方向光、暖色可移动点光和冷色点光均来自实际 World；建筑使用线性基础色 .55、粗糙度 .85。
-
-启动时按完整建筑拟合的探针体积为 `[-20,-2,-13]`～`[19,15,12]` 米，`16×10×14 = 2240` 个探针，每帧更新 560 个，每次更新 128 条照明射线加 32 条固定几何射线。验收逐顶点检查覆盖范围；普通相机配置保留已有体积。整个模型仍为 262,267 个三角形、103 个材质组，24 个漫反射贴图材质的基础显示与场景序列化往返继续通过。
-
-Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文档链、正式窗口验收均通过；两个窗口运行都启用 D3D12 GPU validation，日志无 warning/error/fail。两份最终 `ddgi.txt` 指标逐字一致。最终图像分别保留默认完整 Scene Lit、关闭 AO/SSSR/Bloom/环境后的 DDGI 开关、暖灯从 x=-4 到 x=4 的 32 步真实字段编辑、移动停止后的开关对照，以及所有灯强度归零后的消退。移动步骤的 `history_resets` 全为 0；完成后恢复原始场景值，不保存验收编辑。
-
-| 最终中性材质场景的图像指标，0～255 | Dev / Release |
-| --- | ---: |
-| 原位 DDGI 开关平均 RGB 绝对差 | 49.8709 |
-| 静态两次捕获的平均 RGB 绝对差 | .371414 |
-| 移动后 DDGI 开关平均 RGB 绝对差 | 35.4786 |
-| 移动前后开关差的再差分 | 26.4249 |
-| 关灯初期 / 389 个接受帧后的平均显示亮度 | 123.362 / 2.47939 |
-
-指标取相同视口内有几何深度的像素，属于色调映射后的显示空间差异，包含其上的编辑辅助叠层；不是线性间接辐照度真值，也不是帧率测量。静态噪声对照的两次捕获之间推进 32 个预热帧及一次捕获帧；关灯后的最终捕获包含三段各 128 个预热帧和中间捕获。固定检查要求 DDGI 开关差大于 .5 且超过静态差两倍、移动后的再差分大于同一门槛、关灯末期亮度低于初期的 30% 或 2；没有随实测放宽阈值。
-
-2026-10-18 补注：上表是中性 .55 无贴图材质的值。自 `60edfab0` 把 DDGI/GTAO/SSSR/Bloom 改为 World 作者设置后，验收直接写视口设置，每帧被 World 值覆盖，开关从未到达渲染器，ec-2 门禁因此在开关差 .94、静态差 .64 上失败。编辑器验收改走 World 作者路径后（编辑器负责人的修复链），rendering 工作树（A 直接光）在贴图材质下实测：Dev／Release 开关差 3.686／3.684、静态差 .144／.141，移动后开关差 3.63、再差分 2.18。下降幅度是推断，没有做中性材质对照：有效反照率为组件 .55 乘贴图线性均值（建筑约 .20～.39，布料 .07～.14），相机所见间接光近似与接收面和反弹面反照率之积成比例，估计为 10-10 的 3%～9%，即 1.5～4.5。关灯消退原判据把编辑器叠层亮度（3.680）计入，现扣除同相机关灯且关 DDGI 的底数：Dev 初期 7.343、稳定 0.000，稳定帧与无光底数逐值相同。证据在 `out/accept-20261018/sponza-{dev-base,dev-fix,release-fix,dev-floor}/`。
-
-首次沿用基础显示的纯白实例色 1 时，DDGI 使画面偏亮；关灯初期 / 末期亮度为 218.154 / 107.381，未通过消退检查。最终默认改成 .55 是场景材质设定，本轮没有修正这个高反射率下的慢消退问题，不能将最终通过外推到所有材质。该轮 Scene Lit 尚不读取 Sponza 漫反射/opacity 图，植物与铁链按不透明处理；此历史限制已由 2026-10-11 的标准材质接入替代。
-
-本轮证据位于 `out/sponza-ddgi-20261010/`：`{dev,release}-final/` 保存最终截图、`ddgi.txt`、`ddgi-motion.csv` 和 `acceptance.txt`，`{dev,release}-window-final.log` 为窗口运行记录；`{dev,release}-document-final.log` 保存最终场景往返结果。首次纯白失败的图像与指标保留在 `dev/` 和 `dev-window.log`。构建使用锁文件版本；本机环境脚本选中的已安装 CMake 版本不同，实际使用既有 `.tools/setup/cmake18.5/` 内与锁文件相符的 CMake/Ninja，未修改锁文件或全局安装。
-
 ## 单一天光、Lit 黑背景与中键方向（2026-10-09）
 
 在阶段集成基线 `17996cee` 上修正中键水平环绕方向。Scene Lit 始终使用黑背景，工作室模式保留渐变偏好，网格与轴线仍独立；黑背景上的底部操作提示改用浅色。均匀环境辐射从 ViewSettings 移到场景快照，只由 World 中唯一的 Sky Light 提供，缺失或停用时为零。示例房间显式包含一个 Sky Light，替代此前的隐式环境值。
@@ -1229,27 +1205,6 @@ Dev / Release 的正式编辑器及文档消费者构建、完整 Sponza/OBJ 文
 两个配置的 `image-metrics.csv` 均为 323 行且逐字节一致，也与合并前 Renderer 分支的完整质量记录一致。DDGI 墙脚比值 p10 为 .8068；静态整墙最大帧差均值 / p95 为 .2089 / 1，自发光移动为 .7222 / 4；隔墙暗侧 / 亮侧红通道均值为 0 / 236.2149。四份最终运行日志均无 warning、error 或 failed 记录。
 
 证据根目录为 `out/stage-sync-20261009/`：构建记录为 `{dev,release}-renderer-final-build.log`，运行记录为 `{dev,release}-renderer-final.log` 与 `{dev,release}-quality-final.log`；材质图像在 `{dev,release}-renderer-final/`，完整质量图像和指标在 `{dev,release}-quality-final/`。这些结果覆盖阶段合并后的 Renderer，不代替集成负责人执行的其他模块或编辑器交互验收。
-
-## Sponza 完整模型与材质（2026-10-08）
-
-本次增量基于 `402fab075bb2aa6605b51fdb767387ebd0e08869`，在 Windows x64 / AMD Radeon RX 6800 XT 完成以下真实端到端验收；基线 SHA 不包含本次 Sponza 实现。
-
-| 验证 | Dev | Release |
-| --- | --- | --- |
-| 正式 editor、document、renderer、physics、World 构建 | PASS | PASS |
-| 完整 editor_document 链，含原工程导入回滚和物理示例 | PASS | PASS |
-| Textured OBJ 与完整 Sponza 资源、场景序列化往返 | PASS | PASS |
-| renderer_acceptance：材质像素/深度及全部既有 GPU 场景 | PASS | PASS |
-| 正式 editor 的 Sponza 内庭、外观全景与 MatCap 捕获 | PASS | PASS |
-| Physics 15 个场景 / World 8 个场景 | PASS | PASS |
-
-源资产逐文件 SHA-256 验证通过：57 个原始文件、95,882,276 字节，与 [source.json](../../../assets/examples/Examples/Sponza/Sponza/source.json) 一致。解析结果为 262,267 个三角形、103 个连续材质组、25 个命名材质及 24 个漫反射贴图材质；源文件未改动，Scene 保持相对资源引用与 0.01 实例比例。
-
-真实导入链验证凹多边形面积、负索引/负 UV、共享 WIC 图像、重复导入拒绝、刷新幂等、图片/MTL 改写和删除、旧 Mesh/图像 owner 保持，以及缺依赖和目录逃逸拒绝。GPU 像素读回区分两组几何，验证顶点起点、sRGB 漫反射、UV 重复与左上原点、漫反射 alpha 和独立线性透明遮罩、背景深度、线框/MatCap 轮廓、暖帧零上传、替换与移除后的 owner 释放。完整窗口开启 D3D12 debug/GBV，捕获实际场景颜色与深度；最终渲染器和窗口日志未报告 D3D12 warning/error。
-
-可重复入口为 `editor_sponza_acceptance` 与 `renderer_acceptance`，使用现有 dev/release presets。证据为 `out/<配置>/sponza-{document,import,renderer,window,physics}.log`；图片和窗口报告在 `out/<配置>/sponza-evidence/`，包括 `sponza-interior.png`、`sponza-overview.png`、`sponza-matcap.png` 和 `acceptance.txt`。正式打开方式见 [Sponza 默认场景](../../../assets/examples/Examples/Sponza/README.md)。
-
-该次 Sponza 验收使用完整几何、漫反射/遮罩、mip 和基础方向光，不覆盖 Scene Lit 的贴图、DDGI、阴影或 PBR，也没有附加 Sponza 物理 Body。未测量 GPU 帧耗时或显存性能收益。OBJ/MTL 来源贴图中暂未使用的凹凸/高光数据仍保留。
 
 ## DDGI 接缝与自发光连续更新（2026-10-09）
 

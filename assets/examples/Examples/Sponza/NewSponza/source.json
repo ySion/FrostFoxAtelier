@@ -1,0 +1,616 @@
+{
+  "source": "Intel New Sponza (2022), https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-research/samples.html",
+  "license": "CC BY 4.0; see credits_license.txt",
+  "command": "python tools/downscale-sponza/downscale.py <source.gltf> <destination> --flip-normal-green",
+  "filter": "2x2 box, 4096 to 2048: srgb in linear light, linear values directly, normals renormalized",
+  "normal_green": "flipped (DirectX to glTF +Y up)",
+  "tools": {
+    "python": "3.14.0",
+    "numpy": "2.4.6",
+    "pillow": "12.2.0",
+    "zlib": "1.3.1.zlib-ng",
+    "png_compress_level": 9
+  },
+  "files": [
+    {
+      "path": "NewSponza_Main_glTF_003.gltf",
+      "role": "verbatim",
+      "source_bytes": 691352,
+      "source_sha256": "e04c4c540c74bdddcbd3f590a85c14119bfd5839702246a23b3a737c0cce2400",
+      "output_bytes": 691352,
+      "output_sha256": "e04c4c540c74bdddcbd3f590a85c14119bfd5839702246a23b3a737c0cce2400"
+    },
+    {
+      "path": "NewSponza_Main_glTF_003.bin",
+      "role": "verbatim",
+      "source_bytes": 139973456,
+      "source_sha256": "903d443b46b51c8397c25b65286d9f9e111121f12a3e0e303f19019982568d6b",
+      "output_bytes": 139973456,
+      "output_sha256": "903d443b46b51c8397c25b65286d9f9e111121f12a3e0e303f19019982568d6b"
+    },
+    {
+      "path": "credits_license.txt",
+      "role": "verbatim",
+      "source_bytes": 15921,
+      "source_sha256": "3f981e31f8de04f3754e63d7c259a0a78f71db8f01b5155c58cac52fb79cc2b9",
+      "output_bytes": 15921,
+      "output_sha256": "3f981e31f8de04f3754e63d7c259a0a78f71db8f01b5155c58cac52fb79cc2b9"
+    },
+    {
+      "path": "textures/arch_stone_wall_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 42110440,
+      "source_sha256": "b29aed67732fe1817c70e8b74d60a47b6d5269e157c5ac1bb975a282bd2cd560",
+      "output_bytes": 11002600,
+      "output_sha256": "687214307a2c112c749ff0ec68576984a09ff66217e598d41fb3948fadcc3d8f"
+    },
+    {
+      "path": "textures/arch_stone_wall_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 35737734,
+      "source_sha256": "61a34f79b8485262fc8253f9965d042a3f0a1437bddf97de854777981d19ac61",
+      "output_bytes": 8469891,
+      "output_sha256": "40ad9529931e45bec39dd846f35b6321fc5fec5e69aeec135cd4e422fe797e07"
+    },
+    {
+      "path": "textures/arch_stone_wall_01_Roughnessarch_stone_wall_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 34742458,
+      "source_sha256": "c0c9565c93dd57dd917f6a4b9e6652c5e1673c288a0bc1753ddce8323b54fd1d",
+      "output_bytes": 7989183,
+      "output_sha256": "accd986a4f9d7a6cfbec0283846807dd77036ce68203a4e1d4e941befffa6329"
+    },
+    {
+      "path": "textures/stone_trims_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 32550555,
+      "source_sha256": "07bccadd4e7f5510ddbdfef02ed4bd97ce333b6fd920cb052c27a7e1638db73c",
+      "output_bytes": 8563229,
+      "output_sha256": "d7eebe20389beaad8e03b2a3413d9723a66b7c42bddbeaff8bcbbe078f9f9519"
+    },
+    {
+      "path": "textures/stone_trims_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 27305064,
+      "source_sha256": "bc276c7c84e46dcda5001dfe5c09d10b98ca6dcdbab3f0f65227f650f7af0ca8",
+      "output_bytes": 6649766,
+      "output_sha256": "e11f79e9b3250b9708c1e6fca8d65abd25089fe98259a9b90aa18d81eced8c23"
+    },
+    {
+      "path": "textures/stone_trims_01_Roughnessstone_trims_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 27287773,
+      "source_sha256": "3789e7710017bc24b2ab89327097eb3d551bb03b72f496d7b37cecf6bcbd81a2",
+      "output_bytes": 6138497,
+      "output_sha256": "f83c6c17002119f1c2cd05d5809bea34701999beb649a052d77340b27bdf688e"
+    },
+    {
+      "path": "textures/metal_door_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 30755637,
+      "source_sha256": "05a9ba86641e1e8abb3b0ac8f8eeaf6e332734d0d7caa8ca2f0bd953aa8b91f9",
+      "output_bytes": 8066087,
+      "output_sha256": "2180389f3ecba08e428d157c2f31de1a193848b76c70fc5168207155b346b89c"
+    },
+    {
+      "path": "textures/metal_door_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 11159561,
+      "source_sha256": "b87e0c482d153b7adb7b113b612cb7695c0f9f42a94bfaec7d533726094ba331",
+      "output_bytes": 2922479,
+      "output_sha256": "5c8a23279745dda054ef7794aacfab68dbca4ab50a10af25c4aa52921e8a1579"
+    },
+    {
+      "path": "textures/metal_door_01_Roughnessmetal_door_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 27828983,
+      "source_sha256": "b5123a6db0ebc505adfd01372cf4ba31fb05f14e7f445232a1355e5e08868962",
+      "output_bytes": 6134998,
+      "output_sha256": "50de230812b69be79bbf4bd34f049eb2d0906e6a8ca1949a7979e6d475d57bdd"
+    },
+    {
+      "path": "textures/brickwall_02_Normal.png",
+      "role": "normal",
+      "source_bytes": 39535404,
+      "source_sha256": "02a761f7e55d6295eb7a443185e5831e6d4b6d83d76404c2f08b2c6243660c81",
+      "output_bytes": 10611170,
+      "output_sha256": "cd0af1e9d5316d199feec2c3e2f5e1ff284a4d8236813e416b7be921dccc1e5f"
+    },
+    {
+      "path": "textures/brickwall_02_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 26862892,
+      "source_sha256": "151ed7a0aba6706be294d237724b8ba4b2ff985df7f7e6098afbe13b3a07d1d1",
+      "output_bytes": 7092981,
+      "output_sha256": "3b3c02d8772236da6332258c37997cfef26ff7632c4a51e26d091647787abc2b"
+    },
+    {
+      "path": "textures/brickwall_02_Roughnessbrickwall_02_Metalness.png",
+      "role": "linear",
+      "source_bytes": 32147114,
+      "source_sha256": "0042fc6c6e39274ad536de97a26a4221844b6cf4a3371f208a72f8af7b4a307c",
+      "output_bytes": 7798293,
+      "output_sha256": "de9842b6b84124ce4c27df907fb2c5e906ba4d1a619e69bad158a80696268f7d"
+    },
+    {
+      "path": "textures/stones_2ndfloor_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 34937509,
+      "source_sha256": "cdffc711a0df454908e2773386d92b2fa6651958665e1058509710dcdfbda66b",
+      "output_bytes": 9295642,
+      "output_sha256": "8814173d7643b7e8cd45287fcf30cf1114b08153487e7cd94ed8e94a1cb4353e"
+    },
+    {
+      "path": "textures/stones_2ndfloor_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 33443827,
+      "source_sha256": "a07df76e5b18af060e48ecafbcf9c17e691da96f2d1a627bdc7a8b3d11d14fc0",
+      "output_bytes": 8000420,
+      "output_sha256": "b2e030e1a21f4f3411d400f17722aaa1e8298ffb580ee4225afdfc0f63b4b342"
+    },
+    {
+      "path": "textures/stones_2ndfloor_01_Roughnessstones_2ndfloor_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 29434189,
+      "source_sha256": "795a355a740a96f6a9d01af8f7a1d58c5d71767bc75dff21e620a66e0f5ad9ac",
+      "output_bytes": 6726833,
+      "output_sha256": "81d978350d245f8a78f3d41b4422ea46eeeb415fcfed3e8abb44cc82a8a69819"
+    },
+    {
+      "path": "textures/stone_trims_02_Normal.png",
+      "role": "normal",
+      "source_bytes": 37892205,
+      "source_sha256": "34ae39f63c0515b966cc74ef3f0fe31c2b0c5d1b3363f1139ee03641fe40ab3b",
+      "output_bytes": 10097832,
+      "output_sha256": "2ed72d5949447cd193cc5031a5b9568ecff1323abb6667604b45d40fca522f0f"
+    },
+    {
+      "path": "textures/stone_trims_02_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 36495875,
+      "source_sha256": "d2275ed38589952af8972da830a3f66eaf6214677d2e4d3ff7bd9b0c580bd864",
+      "output_bytes": 8567551,
+      "output_sha256": "aaa1ae5b9c06824d2c29e9f22c6bd54d9ba1e343ee8f41eabe740c142b3f04ba"
+    },
+    {
+      "path": "textures/stone_trims_02_Roughnessstone_trims_02_Metalness.png",
+      "role": "linear",
+      "source_bytes": 28139741,
+      "source_sha256": "6ac5252dd527729e30a9ded7b3658f3cc1a37b87ab9a9021cad2c5261166ee77",
+      "output_bytes": 6800101,
+      "output_sha256": "70f2b69471eb891a5987de8a3ba1d89ee85f914415bcfeeb62574010870f6431"
+    },
+    {
+      "path": "textures/ceiling_plaster_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 32803563,
+      "source_sha256": "78edc1059f6239d5ca756613dd0a2d0d458d33c30d5de11ec76b7942b2a29727",
+      "output_bytes": 8281021,
+      "output_sha256": "965d0635adf92a3f06c3a00fcfef400ce7c99ef36153c9b148b3c6bb374b8a3a"
+    },
+    {
+      "path": "textures/ceiling_plaster_02_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 19215255,
+      "source_sha256": "1002691be7f95b374120860b5e17cf5cac37fd909b96d27fd701b0dbb69a0e03",
+      "output_bytes": 5372999,
+      "output_sha256": "455cbf8019e91133ee4e1f5fde26c994d429eded99ccc6d22c04a87fb62f05a1"
+    },
+    {
+      "path": "textures/ceiling_plaster_02_Roughnessceiling_plaster_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 15614161,
+      "source_sha256": "64a10e86c72e078c1d37c6be823f06da5abbb7ae6dd08b1a2ed2a7ee9b6e9a4e",
+      "output_bytes": 3456449,
+      "output_sha256": "95f3eacb1e1d452e7cc62a6dd6e76b868b5bb4f76870a1917343b82fdd1ea17e"
+    },
+    {
+      "path": "textures/window_frame_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 26902854,
+      "source_sha256": "3272fccb95461f82be978fe9a7a77cf89a5c7fcd91966d670f956b0201288987",
+      "output_bytes": 7433655,
+      "output_sha256": "e218976057963afe6a793040c8a6a6dbbe61fa464a21315956798081ba656660"
+    },
+    {
+      "path": "textures/window_frame_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 23746260,
+      "source_sha256": "b7247bf0ba8f9226a00319bb9d493edd19e6033ca0824a58e6edcdbfb0ff133a",
+      "output_bytes": 5878043,
+      "output_sha256": "15c735ed51b395dcd7efad0ac29871b1206b90a034e4cd1a929fc445c715b8f4"
+    },
+    {
+      "path": "textures/window_frame_01_Roughnesswindow_frame_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 24755110,
+      "source_sha256": "3739ec622316b1480d3b6f0889c64690d31ec30f57fbfbdda381401d4e5118de",
+      "output_bytes": 5733111,
+      "output_sha256": "7d47aeaa5fedc40904cf86438db69b2608682daa2eb266027564d183757b8031"
+    },
+    {
+      "path": "textures/stone_01_tile_Normal.png",
+      "role": "normal",
+      "source_bytes": 43351777,
+      "source_sha256": "cfe8e849c51fd863ed2239c8fc2f7c0f71b5c19cd06ac5536aa547ca1246f253",
+      "output_bytes": 11439271,
+      "output_sha256": "a4ed75e89ea259bdbdfb3cf7b28323fe257fd791e4a27a3ec09c57ab30d5e56c"
+    },
+    {
+      "path": "textures/stone_01_tile_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 34744042,
+      "source_sha256": "1cbccc0e08994ab43ae9e32b6c2be1eff3d790748e2d8fa35e36d2e56ae8b9f4",
+      "output_bytes": 7959600,
+      "output_sha256": "c26031f4ae669489877798504f8ef161a9b9adcda47df99204333d01e3654c29"
+    },
+    {
+      "path": "textures/stone_01_tile_Roughnessstone_01_tile_Metalness.png",
+      "role": "linear",
+      "source_bytes": 30831478,
+      "source_sha256": "17f2a4afac1e759ba1cd3b88f3a076b4d89a9808b4468707e92f2e68981fa6c5",
+      "output_bytes": 7552999,
+      "output_sha256": "6a70b93aaf749263a8a0dae691e8a6fe6bd7835aa232a9f471a0ac3cff50aec4"
+    },
+    {
+      "path": "textures/col_1stfloor_Normal.png",
+      "role": "normal",
+      "source_bytes": 41534760,
+      "source_sha256": "5badcadb1d80411bfa29fd84b4479080139a0424b6ead762242f3e2ee19bc2df",
+      "output_bytes": 10838376,
+      "output_sha256": "2e1a5df3bad12a56dedf4c477840131278eea9573d9c28c8417191835eaa05ad"
+    },
+    {
+      "path": "textures/col_1stfloor_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 34891146,
+      "source_sha256": "27e2901a976c250529fd3cda673bd6060effa67a2f2e4b07a94cf6ca0b5a56f3",
+      "output_bytes": 8387836,
+      "output_sha256": "d2543caa9d808d26662f4aa34fd012774bc8f1545f7acfe38331740cb286f579"
+    },
+    {
+      "path": "textures/col_1stfloor_Roughnesscol_1stfloor_Metalness.png",
+      "role": "linear",
+      "source_bytes": 32047927,
+      "source_sha256": "02562f29c5066234f3a8c217ec1daad904c1b8cea0fd9a005e8b37f4c9638608",
+      "output_bytes": 7458549,
+      "output_sha256": "52c353cc66a8908091b4589f243965dafb9363d6097b87d6dd4b7588bd6e31b5"
+    },
+    {
+      "path": "textures/col_head_1stfloor_Normal.png",
+      "role": "normal",
+      "source_bytes": 26736777,
+      "source_sha256": "5990dfae5608cfd5bc93e6b045dec8196e4d3eaeacb7abf0d63aa5929d1e8cb3",
+      "output_bytes": 7034480,
+      "output_sha256": "bef59ac32d9804668795742ed98b5af62439368809a607a9c48cb652bbe35745"
+    },
+    {
+      "path": "textures/col_head_1stfloor_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 23570912,
+      "source_sha256": "f05f193a2adcc1ab8d62c2444301890605ac0ea67c3ab43893976f4f9f8e2c64",
+      "output_bytes": 6231449,
+      "output_sha256": "05644b3e9702b990b71e561927e1df427c2339a4a89020bb42a1b34f899fd111"
+    },
+    {
+      "path": "textures/col_head_1stfloor_Roughnesscol_head_1stfloor_Metalness.png",
+      "role": "linear",
+      "source_bytes": 20208981,
+      "source_sha256": "846654bda0801839cc0a60ad03c12a713fcab03c3adeabe898aa611edf4ca708",
+      "output_bytes": 5172451,
+      "output_sha256": "df6ca5db5b88b52bcc3cedc3dccac197c613af64061c1cd09c433f4469189ed7"
+    },
+    {
+      "path": "textures/door_stoneframe_02_Normal.png",
+      "role": "normal",
+      "source_bytes": 30916761,
+      "source_sha256": "d568eafb6dc9218f2301543b95202b1b9b9e59c2f47d905742c2faa87ea0c446",
+      "output_bytes": 8207027,
+      "output_sha256": "bbe423ad4d3d108fd10156afc666c9e07a708e2dd813eec4c79881f7026003f3"
+    },
+    {
+      "path": "textures/door_stoneframe_02_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 23413335,
+      "source_sha256": "b94bd19b543f54873d582cc7774b8eecd3affb323c7566927ad284c587b16576",
+      "output_bytes": 6005862,
+      "output_sha256": "8845e8950fb468929c44ab5165509c92dd6f942c65948936e0be36bb400d31b8"
+    },
+    {
+      "path": "textures/door_stoneframe_02_Roughnessdoor_stoneframe_02_Metalness.png",
+      "role": "linear",
+      "source_bytes": 19433242,
+      "source_sha256": "9d9aa73edf18d1af63161353541a84356653f909e3bcb6121476cfc0812cd7c0",
+      "output_bytes": 4627911,
+      "output_sha256": "8dcafa39765056f1598a286ba10e0aa4f9c0e619d2d4f071b07150fa61a02c22"
+    },
+    {
+      "path": "textures/door_stoneframe_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 33853371,
+      "source_sha256": "577d59df35802e8165fc99747ee5b1ef6dce9ee598dc5d14e58407de0fb9d118",
+      "output_bytes": 8968850,
+      "output_sha256": "1f4b9882957ea4934096d80e78f110b3cb1cacba309e6ee88adeab3b9657b95d"
+    },
+    {
+      "path": "textures/door_stoneframe_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 25845899,
+      "source_sha256": "71304dc830cd3c36a2710a1ee612ed9c561a1268086578723852b7ebd4644af7",
+      "output_bytes": 6395925,
+      "output_sha256": "94ce06c41e6c36f71c2b64c05bfb53c7f38e1f2f9b34780996771526ac7bede7"
+    },
+    {
+      "path": "textures/door_stoneframe_01_Roughnessdoor_stoneframe_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 26735989,
+      "source_sha256": "dd46e911c5a840862fdb5f8189791853d5febb74e4ea9dacb81009b83619ea68",
+      "output_bytes": 5788389,
+      "output_sha256": "b5fc6685d6e61cb0dac1eeb14d8a5028c66f43733c2ae48db9208b32b8831696"
+    },
+    {
+      "path": "textures/brickwall_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 26797469,
+      "source_sha256": "9d15c9c3c761d4e96323fc89990086c41a7b29154ae42d4afcc786891b3b89dc",
+      "output_bytes": 7595780,
+      "output_sha256": "2c701d2b6d656e895b128ee20d937d585ae456e390c3c575db9cc10e15313c0e"
+    },
+    {
+      "path": "textures/brickwall_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 38692304,
+      "source_sha256": "45b77509983b55fb20884cdd9535dfe7655b4bcd9ef6889486164bbc48078373",
+      "output_bytes": 8876306,
+      "output_sha256": "4c2a5a50331c3900f9ccd2e183744e3ed5b43bc8bdd485ba38de0e3cc2d10451"
+    },
+    {
+      "path": "textures/brickwall_01_Roughnessbrickwall_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 32871501,
+      "source_sha256": "c3e81274de0fd9d8c7350d74d09f28a63ab5ad7a323cbe9aa7df20612e9e07cb",
+      "output_bytes": 7683687,
+      "output_sha256": "24071f56e021602938b5d5936a1b6a1c6b1450e096f61012a4054513d612c88b"
+    },
+    {
+      "path": "textures/wood_door_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 24843384,
+      "source_sha256": "44dbcb4fdc30cedb13be03053a4b8544956210e673ddc5c3166318ecb633a140",
+      "output_bytes": 6156941,
+      "output_sha256": "3ca7365c1af4f7d2a2a2079937faf5173b12681b187ecaeb76a079827b10d9c2"
+    },
+    {
+      "path": "textures/wood_door_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 15731270,
+      "source_sha256": "fcbc484ebf6e707701ee1fec35c4840f8c00f400270210150d2a05dda8a8a22c",
+      "output_bytes": 3886183,
+      "output_sha256": "69dbfb96fcf06256023bc04430d6d07d4602ac67759e38cdf69e9aca7068d6f4"
+    },
+    {
+      "path": "textures/wood_door_01_Roughnesswood_door_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 15146782,
+      "source_sha256": "4fe0c71901e18ca48d148f11d9aa090c8531d030dee6b1f8accb5e75d1b8b358",
+      "output_bytes": 3105266,
+      "output_sha256": "449308c343541ed76b98b1c285db604f39a2726b12d4976adef08a75f904a3f3"
+    },
+    {
+      "path": "textures/wood_tile_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 32443840,
+      "source_sha256": "67a3fad9dba914099374c3c2ddb61d25a610140193d0a70e917f44d1502eb56b",
+      "output_bytes": 8860147,
+      "output_sha256": "7c7b2610c57fa22fdd6dcce8d12b3f74eead3455d7911f096cdbcb83e87d8220"
+    },
+    {
+      "path": "textures/wood_tile_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 27421348,
+      "source_sha256": "72f382ab0b4c82d83a2cefee9a6215b5b1bae4c9437e0ae765b5859623eb1998",
+      "output_bytes": 6314253,
+      "output_sha256": "be9a7beebba5ecb47918613e448c1de148e8d7caad1923ce940f9d53988e0ebf"
+    },
+    {
+      "path": "textures/wood_tile_01_Roughnesswood_tile_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 18366778,
+      "source_sha256": "00288a65379887b75a3641330c43f4f78fccc8ea40cab603c90b2c605257ac69",
+      "output_bytes": 3374307,
+      "output_sha256": "847dcd5ee1e4c621ef8c4509a207442daa9e9d01c8048aaff3f520c47b34780b"
+    },
+    {
+      "path": "textures/floor_tiles_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 28292581,
+      "source_sha256": "239ee8ba53340f0ef43c8349e2335a3deb0675c25bfc1ede8e4ed9ccab532710",
+      "output_bytes": 7775663,
+      "output_sha256": "17457f08d7a6a7e93557cf906e2354c4875b0431cdf53d3b790a69f5b1486ad5"
+    },
+    {
+      "path": "textures/floor_tiles_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 28032361,
+      "source_sha256": "803484416f5db14596e2e9d8ae5405cf983ee0e4a5c13203c2bf2b8febddaaa4",
+      "output_bytes": 6678525,
+      "output_sha256": "bb2d8a9a5ac829df90509df27674277c764d286e64358e0f9fe20fba5d57c0af"
+    },
+    {
+      "path": "textures/floor_tiles_01_Roughnessfloor_tiles_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 25837532,
+      "source_sha256": "44f30dfa6c8fa9b098911455b94e3baed9ce58c8f7997869e7c1b399af7f97e9",
+      "output_bytes": 5419384,
+      "output_sha256": "0206703c545e94baa3addc137d7a6609d010ce85f8b2601182fcab1bf7c5d46a"
+    },
+    {
+      "path": "textures/lionhead_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 33399781,
+      "source_sha256": "d525ccd8d3137265180be5dce8fb201dce45441e4b4690ea4617e04f712bbdc5",
+      "output_bytes": 8853315,
+      "output_sha256": "a99faa35db30b43bd1423e565018b5244f9b8ef49e1597153e2985f9b428b4fa"
+    },
+    {
+      "path": "textures/lionhead_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 21273971,
+      "source_sha256": "b2297d1e079dfdf449aaebccf144b6077966093474c9be3b62512d72cd30f86b",
+      "output_bytes": 5233877,
+      "output_sha256": "6b16829b4ac01c4fa80497a664393db0318fbad99b110e27d060d52db9fd38eb"
+    },
+    {
+      "path": "textures/lionhead_01_Roughnesslionhead_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 24807157,
+      "source_sha256": "85b00baa60c96672f46faeb3c69ffe4d25c84e00cb4f50041072e78ea3e9a8f6",
+      "output_bytes": 4925488,
+      "output_sha256": "187f2dc9de01da3bf7be116507eff1ef3bb52c5ec635f76711c271d0e5cca14e"
+    },
+    {
+      "path": "textures/dirt_decal_01_dirt_decal_01_mask_gltf_alpha_dirt_decal_Opacity.png",
+      "role": "srgb",
+      "source_bytes": 34601463,
+      "source_sha256": "37f9653b25e5cf3300ae4c2a05850a89ddca64a5be66a1ab91f53be634581f09",
+      "output_bytes": 8076898,
+      "output_sha256": "cf0e1835a517e67396d43b498a6366f922f7c96aa8026fee7a42575f335376c5"
+    },
+    {
+      "path": "textures/col_head_2ndfloor_02_Normal.png",
+      "role": "normal",
+      "source_bytes": 31716684,
+      "source_sha256": "d5b1835f18bdc02c7c1b0c63a0cc1b0f9a28d5c1750fd91b3bb41523a507c1d4",
+      "output_bytes": 8122855,
+      "output_sha256": "e6f0c2807370c832463c59bae825ca148992cfecf9eea02ee28afb7af0b35789"
+    },
+    {
+      "path": "textures/col_head_2ndfloor_02_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 24197215,
+      "source_sha256": "8db34c7a193cd5e7c0f2bd8421d80df3ef6f57a5ef94d296df24942623388cf1",
+      "output_bytes": 5924338,
+      "output_sha256": "b22da14236c7ae99a50dead0d784c06482e96b5293836adf696ed6ee7cf07684"
+    },
+    {
+      "path": "textures/col_head_2ndfloor_02_Roughnesscol_head_2ndfloor_02_Metalness.png",
+      "role": "linear",
+      "source_bytes": 21411341,
+      "source_sha256": "12e4a23aba5cc6a1b3832e4382d9a0c0be3989917398de221c1af9dbca3053a4",
+      "output_bytes": 5097128,
+      "output_sha256": "6bfea74fbe3cca5651e9d1849e3a2fee6937178a4e448306c82bb0da348dae78"
+    },
+    {
+      "path": "textures/col_brickwall_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 24056073,
+      "source_sha256": "abfa77fd113ccadc19a308e247d682f668de17efd3b8c061aaa0ce659a9c3879",
+      "output_bytes": 6763869,
+      "output_sha256": "fafd6b4e8a6732de1a78a1983acb62f183d30658826c9ffd177f11822b4f2fd0"
+    },
+    {
+      "path": "textures/col_brickwall_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 31362090,
+      "source_sha256": "b153506c7fbd3fe8c79f1bf7560171a7e228d7d830e0cf8100c3e7c7902f2860",
+      "output_bytes": 7708162,
+      "output_sha256": "1e5bd9e6d6f30134115624cfb1b9570a4b7e8dbb51d6db185cef90111da4bf59"
+    },
+    {
+      "path": "textures/col_brickwall_01_Roughnesscol_brickwall_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 32114234,
+      "source_sha256": "544bc2b8d42cfac282e23e00322a844a257a7334ede24d7ebb22223f5b525b3c",
+      "output_bytes": 7192530,
+      "output_sha256": "cbf40235aabd800ac2d07a34824eb2aa82ed2163a13fd7c1304f1a5d911c3a09"
+    },
+    {
+      "path": "textures/col_head_2ndfloor_03_Normal.png",
+      "role": "normal",
+      "source_bytes": 32266281,
+      "source_sha256": "5b2e76e76d711fd8232355fe120ec1a670a2f7998f55552ed8e3ea33edf58faf",
+      "output_bytes": 7635881,
+      "output_sha256": "56aaf6e05b1a5f09cd1cf762697b766ff74550e419b69d64ee402433d8030435"
+    },
+    {
+      "path": "textures/col_head_2ndfloor_03_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 19200795,
+      "source_sha256": "51912aadb380a04d2c2428ac8953c9bc1f7c8178dd4e486adde59e6f40446bb7",
+      "output_bytes": 4893282,
+      "output_sha256": "e87ad284c4225e27602d44f58a8d561f7ef538714efc6422f641e1184da5dbc9"
+    },
+    {
+      "path": "textures/col_head_2ndfloor_03_Roughnesscol_head_2ndfloor_03_Metalness.png",
+      "role": "linear",
+      "source_bytes": 18343731,
+      "source_sha256": "4c1b0a6a93b42b2f39c07695dc811e8165dc006cee7e6efd34e81332e9f76f46",
+      "output_bytes": 4422800,
+      "output_sha256": "fcafeab36ea52162ad31282d202573f47cdd232d8acf79933b5cd9ff75f2ec89"
+    },
+    {
+      "path": "textures/ceiling_plaster_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 21568178,
+      "source_sha256": "daf6e0cb4bf2a3bed93ec25c8c633c85946cf31fcf235b0a65fff305f624324a",
+      "output_bytes": 6442909,
+      "output_sha256": "f31088e2a65a53dd24359cb93c3217eaa787b8618878d28beafaaa41d62e1d6b"
+    },
+    {
+      "path": "textures/ceiling_plaster_01_Roughnessceiling_plaster_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 13877096,
+      "source_sha256": "cac9b07016c6f40f679197fcf989eeebbaad34ee5b7bb8f479d35d1c5bfee665",
+      "output_bytes": 3295838,
+      "output_sha256": "51063239dc022723efd9d79d8d97aabae339a334b52243880880802dbe69fc58"
+    },
+    {
+      "path": "textures/roof_tiles_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 34828471,
+      "source_sha256": "b53ced4773abee823cc79a9b69b36ee30536a0d75dbd356eab31f0cc46bda2d8",
+      "output_bytes": 9345193,
+      "output_sha256": "9f8c4e61eede74a689ca0cd555b75405a4a2761a8892d699f21974c34323aa44"
+    },
+    {
+      "path": "textures/roof_tiles_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 29975234,
+      "source_sha256": "3310a7cd14ed82f56bc00cf88d36289a73d743e4594a0e72d4e21f68c2110cf8",
+      "output_bytes": 7612024,
+      "output_sha256": "d0d717231413de7aba64215b0184ee7ab3b9eec452b9116a2352e870c1ea5e9b"
+    },
+    {
+      "path": "textures/roof_tiles_01_Roughnessroof_tiles_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 18053456,
+      "source_sha256": "9903f3399804b1dc43d95d51fce58f2fcd3e13aa463335b7445d649beb6c3bba",
+      "output_bytes": 3723459,
+      "output_sha256": "d671bdf82e039f20851836b921967ff40233d8365850ea851ac0105c2d79218c"
+    },
+    {
+      "path": "textures/ornament_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 36536810,
+      "source_sha256": "1f50c1f03dce342b8c90f8aa71b0259891376558d21ffa29648bb19a3082fad5",
+      "output_bytes": 9606669,
+      "output_sha256": "26c6e5c43001fd97e13ee283eeac176c612ee989af5f552edc291a4cdcb6d343"
+    },
+    {
+      "path": "textures/ornament_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 23755809,
+      "source_sha256": "2d38691430aa98b24d20b740d1038591d7c0afa2e7662a752f5e5235b95cb522",
+      "output_bytes": 5889814,
+      "output_sha256": "fb2e70c0b4639097437b78d194e751ade14ae3af0da59d0529d43ea70f1196a5"
+    },
+    {
+      "path": "textures/ornament_01_Roughnessornament_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 29821854,
+      "source_sha256": "831636eab731cabd5c08b24630e331d091a520401007bd58f3b05aed0467134a",
+      "output_bytes": 6897748,
+      "output_sha256": "e22f697e78bf91a5ce81963908ec198a161e19211c9ea47779395c70bed8107a"
+    }
+  ]
+}

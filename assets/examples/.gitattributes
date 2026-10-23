@@ -1,9 +1,9 @@
-Examples/Sponza/Sponza/*.obj filter=lfs diff=lfs merge=lfs -text
-Examples/Sponza/Sponza/textures/*.png filter=lfs diff=lfs merge=lfs -text
+Examples/Sponza/*/*.bin filter=lfs diff=lfs merge=lfs -text
+Examples/Sponza/*/textures/*.png filter=lfs diff=lfs merge=lfs -text
 *.hdr filter=lfs diff=lfs merge=lfs -text
-# Preserve upstream material and license bytes, including original whitespace.
-Examples/Sponza/Sponza/*.mtl -text -whitespace
-Examples/Sponza/Sponza/copyright.txt -text
+# Preserve upstream glTF and license bytes, including original whitespace.
+Examples/Sponza/*/*.gltf -text -whitespace
+Examples/Sponza/*/credits_license.txt -text -whitespace
 Examples/Dungeons/**/*.fbx filter=lfs diff=lfs merge=lfs -text
 Examples/Dungeons/**/*.obj filter=lfs diff=lfs merge=lfs -text
 Examples/Dungeons/**/*.png filter=lfs diff=lfs merge=lfs -text
