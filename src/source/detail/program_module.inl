@@ -179,8 +179,10 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     const auto catalog = request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
     request->compilation_contract_ = std::make_shared<const Contract>(runtime, TypeId{}, catalog);
     if (!module.source.functions.empty()) {
-        ModuleRequest::Unit unit{request->compilation_contract_, {}, {}, {}};
-        for (const auto& function : module.source.functions) unit.names.push_back(function.name);
+        ModuleRequest::Unit unit{request->compilation_contract_, {}, {}, {}, {}};
+        for (const auto& function : module.source.functions) {
+            unit.names.push_back(function.name); unit.parameter_names.push_back(function.parameters);
+        }
         module.units.push_back(std::move(unit));
     }
     for (const auto& cls : module.source.classes) {
@@ -190,12 +192,14 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (!info || !info->base) return fail(source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
         module.classes.push_back({cls.name, info->id, *info->base});
         if (cls.methods.empty()) continue;
-        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog), {}, {}, cls.name};
-        for (const auto& method : cls.methods) { unit.source.append(method.source); unit.names.push_back(method.name); }
+        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog), {}, {}, cls.name, {}};
+        for (const auto& method : cls.methods) {
+            unit.source.append(method.source); unit.names.push_back(method.name); unit.parameter_names.push_back(method.parameters);
+        }
         module.units.push_back(std::move(unit));
     }
     // An empty export set still uses the same parser to check all declarations.
-    if (module.units.empty()) module.units.push_back({request->compilation_contract_, {}, {}, {}});
+    if (module.units.empty()) module.units.push_back({request->compilation_contract_, {}, {}, {}, {}});
     return request;
 }
 
@@ -258,7 +262,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                         "void late_tick(float), or void end()."});
             }
             const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
-            module->entries.push_back({name, *signature});
+            module->entries.push_back({name, *signature, unit.parameter_names[i]});
             auto declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,
                 name, request->source_name, locations});

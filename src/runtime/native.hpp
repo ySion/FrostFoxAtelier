@@ -211,6 +211,12 @@ public:
         return *this;
     }
 
+    // Applies to the most recently declared method; one name per parameter.
+    NativeRegistration& parameter_names(std::vector<std::string> names) {
+        definition_.methods.back().parameter_names = std::move(names);
+        return *this;
+    }
+
     // Consumes the producer; validation belongs to Runtime, including batch lookup.
     [[nodiscard]] TypeDefinition build() { return std::move(definition_); }
 

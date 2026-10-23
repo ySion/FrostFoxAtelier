@@ -30,14 +30,14 @@ void body(Tokens& tokens) {
 bool scalar(std::string_view name) {
     return name == "bool" || name == "int" || name == "uint" || name == "float" || name == "double";
 }
-std::string function_signature(Tokens& tokens, const TypeName& type) {
+std::string function_signature(Tokens& tokens, const TypeName& type, std::vector<std::string>& parameters) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
     tokens.expect("(");
     if (!tokens.accept(")")) for (;;) {
         const bool constant = tokens.accept("const");
         auto parameter = parse_type_name(tokens);
         const bool reference = tokens.accept("&");
-        tokens.identifier();
+        parameters.emplace_back(tokens.identifier().text);
         signature += (constant ? "const " : "") + parameter.name + ":" + std::to_string(parameter.array_depth) + (reference ? "&;" : ";");
         if (tokens.accept(")")) break;
         tokens.expect(",");
@@ -73,7 +73,9 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         if (tokens.accept("async")) reject(begin, "Project exports must be synchronous.");
                         const auto type = tokens.accept("void") ? TypeName{"void"} : parse_type_name(tokens);
                         const auto name = tokens.identifier();
-                        result.functions.push_back({std::string(name.text), function_signature(tokens, type)});
+                        FunctionDeclaration declaration{std::string(name.text), {}, {}};
+                        declaration.signature = function_signature(tokens, type, declaration.parameters);
+                        result.functions.push_back(std::move(declaration));
                     } else while (tokens.token_.text != ";" && tokens.token_.text != "{") {
                         if (tokens.token_.kind == Token::Kind::end) reject(begin, "Incomplete source declaration.");
                         tokens.consume();
@@ -104,9 +106,9 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         std::ranges::any_of(declaration.methods, [&](const auto& m) { return m.name == name.text; }))
                         reject(name.position, "Duplicate source class member.");
                     if (tokens.token_.text == "(") {
-                        auto signature = function_signature(tokens, type);
+                        ClassMethod method{std::string(name.text), {}, start, {}, {}};
+                        method.signature = function_signature(tokens, type, method.parameters);
                         body(tokens);
-                        ClassMethod method{std::string(name.text), {}, start, std::move(signature)};
                         method.source.append(unit, file, start.offset, tokens.token_.position.offset);
                         declaration.methods.push_back(std::move(method));
                     } else {

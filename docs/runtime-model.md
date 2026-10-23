@@ -42,6 +42,8 @@
 
 原生成员的权威签名归 `MethodInfo::signature`，源码入口的权威签名归既有程序所有者的不可变声明。AST 分类、LLVM 类型和私有 DLL 参数描述是经核对的转换表示，不是另立业务类型身份或独立手填的声明。调用暂存归当前作用域，不拥有程序或执行代码；没有新增函数注册表。
 
+参数名是签名旁的元数据，不在 `FunctionSignature` 里，所以不参与任何签名比较或兼容检查。`MethodDefinition::parameter_names` 为空或每个参数一个，空字符串表示未命名；非空名字在同一方法内不得重复（`duplicate_name`），数量不符返回 `invalid_definition`。发布后 `MethodInfo::parameter_names` 总是与参数一一对应，生产者没给名字的位置为空字符串；继承的方法连同名字一起复制。源码入口的参数名见[源码函数模块](source-function-modules.md)的 `EntryInfo`。
+
 `NativeRegistration::method` 推导实际成员指针的签名。支持 bool/float/double/u32/i32 及底层 i32/u32 的独立枚举，参数使用 `ParameterPassing::value/read_only/reference`。参数模式、接收者只读性和 `ValueForm` 分别表达。C++ 记录/Array/String 还支持同步借用；原生成员适配要求实际 C++ 表示，共享签名解析器也接受不含 GC 引用的描述型记录。非 void 结果按值返回；内建数学记录与 plain struct 支持同步按值调用；资源记录与容器按值调用、对象引用、右值/volatile 引用和借用返回尚不支持。
 
 `Scalar` 保存 bool/float/double/u32/i32 或带 TypeId 与 32 位数值的 `EnumValue`。`TypeInfo::enumeration` 保留底层类型及名称/数值，允许数值别名和未命名值，拒绝类型混用。`Runtime::types()` 返回当前类型 ID 快照；源码捕获枚举目录并记录依赖。

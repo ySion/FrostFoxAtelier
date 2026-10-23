@@ -1762,8 +1762,16 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
             auto signature = impl_->resolve_signature(method.signature, id, staged);
             if (!signature) return std::unexpected(std::move(signature.error()));
+            auto& names = method.parameter_names;
+            if (!names.empty() && names.size() != signature->parameters.size())
+                return failure(ErrorCode::invalid_definition, "Parameter names must match the parameters of method: " + method.name);
+            for (std::size_t i = 0; i < names.size(); ++i)
+                if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
+                    return failure(ErrorCode::duplicate_name, "Duplicate parameter " + names[i] + " in method: " + method.name);
+            names.resize(signature->parameters.size());
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
-                std::move(method.name), std::move(*signature), method.preserves_borrows, std::move(method.description)});
+                std::move(method.name), std::move(*signature), method.preserves_borrows, std::move(method.description),
+                std::move(names)});
             type.methods.push_back(method.invoke);
         }
     }
