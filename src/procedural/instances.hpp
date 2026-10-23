@@ -26,7 +26,7 @@ struct Publication {
 
 // Groups the instance layer by reference and chunk (floor(translation / chunk_size)).
 // An instance whose linear part fails math::normal_transform (zero scale, flattened) is
-// dropped, so published content never makes the renderer reject a frame. A collection
+// dropped, so a degenerate local transform never makes the renderer reject a frame. A collection
 // whose bytes equal the previous publication's for the same reference and chunk reuses
 // its transforms pointer, so consumers keyed by that pointer keep their state. Fails for
 // a chunk size that is not finite and positive, or a chunk index outside int32.
