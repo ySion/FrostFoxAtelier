@@ -90,6 +90,8 @@ void verify_field_ranges() {
         "A default above the hard maximum was accepted.");
     rejected(described("bad.DefaultNaN", TypeKind::object, {described_field("value", {f32}, {.hard_min = Scalar{0.0f}}, {Scalar{nan}})}),
         "A NaN default was accepted under a hard bound.");
+    rejected(described("bad.DefaultUnboundedNaN", TypeKind::object, {described_field("value", {f32}, {}, {Scalar{nan}})}),
+        "A NaN default was accepted on a field without bounds.");
     rejected(described("bad.DefaultComponent", TypeKind::object, {described_field("value", {vector3}, hard(0.0f, 1.0f),
         {Scalar{0.5f}, Scalar{2.0f}, Scalar{0.5f}})}), "A vector default component above the hard maximum was accepted.");
     rejected(described("bad.LeafCount", TypeKind::object, {described_field("value", {vector3}, {}, {Scalar{1.0f}, Scalar{2.0f}})}),
