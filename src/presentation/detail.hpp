@@ -10,10 +10,15 @@ struct Access {
     static String& mesh_source(StaticMeshComponent& value) noexcept { return value.mesh_source_; }
     static const String& mesh_source(const StaticMeshComponent& value) noexcept { return value.mesh_source_; }
     static ReferenceSequence& materials(StaticMeshComponent& value) noexcept {return value.materials_;}
+    static const ReferenceSequence& materials(const StaticMeshComponent& value) noexcept {return value.materials_;}
     static std::vector<std::string>& material_slots(StaticMeshComponent& value) noexcept {return value.material_slots_;}
+    static const std::vector<std::string>& material_slots(const StaticMeshComponent& value) noexcept {return value.material_slots_;}
     static std::vector<bool>& material_overrides(StaticMeshComponent& value) noexcept {return value.material_overrides_;}
+    static const std::vector<bool>& material_overrides(const StaticMeshComponent& value) noexcept {return value.material_overrides_;}
     static ReferenceSequence& default_materials(StaticMeshComponent& value) noexcept {return value.default_materials_;}
+    static const ReferenceSequence& default_materials(const StaticMeshComponent& value) noexcept {return value.default_materials_;}
     static std::vector<std::string>& default_slots(StaticMeshComponent& value) noexcept {return value.default_slots_;}
+    static const std::vector<std::string>& default_slots(const StaticMeshComponent& value) noexcept {return value.default_slots_;}
     static auto& surfaces(StaticMeshComponent& value) noexcept {return value.surfaces_;}
     static auto& surface_geometry(StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
     static auto& surface_parameters(StaticMeshComponent& value) noexcept {return value.surface_parameters_;}

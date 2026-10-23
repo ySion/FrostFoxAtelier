@@ -333,7 +333,7 @@ private:
     mutable detail::PassedValues<Material> valid_materials_;
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
-    mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from material slots.
+    mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from bound or default materials.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
     std::uint64_t identity_{};

@@ -264,9 +264,16 @@ void verify_gltf_import() {
         const auto properties=take(document.properties(opaque_root.id()));
         return std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name)->path;
     }();
+    // The extraction cache, not only a fresh capture, must see edits to a default material.
+    const auto drawn=[&] {
+        const auto items=take(document.presentation().render_items());require(items.size()==1,"The placed glTF mesh is not drawn.");
+        return (*items.front().surfaces)[opaque_slot]->description().parameters.roughness;
+    };
+    require(drawn()==.5f,"The drawn mesh does not show its default material.");
     take(document.set_property(opaque_root.id(),roughness_field,Scalar{.2f},301));
-    require(surfaces(document,part)[opaque_slot]->description().parameters.roughness==.2f,"Editing a default material did not reach the mesh that shows it.");
+    require(surfaces(document,part)[opaque_slot]->description().parameters.roughness==.2f && drawn()==.2f,"Editing a default material did not reach the mesh that shows it.");
     take(document.material_undo(opaque_key));
+    require(drawn()==.5f,"Undoing a default material edit did not reach the drawn mesh.");
     const auto saved=take(document.serialize());const auto scene=nlohmann::json::parse(saved);
     require(scene["materials"].empty() && scene["entities"][0]["components"][0]["materials"].empty(),"Saving wrote mesh default materials into the scene.");
     {

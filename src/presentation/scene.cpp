@@ -64,7 +64,7 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
     std::optional<Error> unusable;
     auto read = runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& value) -> Result<bool> {
         const auto& geometry = Access::geometry(value);
-        const bool slotted = !Access::material_slots(value).empty();
+        const bool slotted = !Access::material_slots(value).empty() || !Access::default_slots(value).empty();
         const bool same_base = cached && cached->geometry == geometry && same_bytes(cached->material, value.material);
         if (!same_base && !valid_materials_.contains(slot, value.material)) {
             auto invalid = runtime.validate_value(types_.material, std::as_bytes(std::span{&value.material, 1}));
@@ -72,8 +72,8 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
             if (*invalid) { rejected = std::move(**invalid); return false; }
             valid_materials_.insert(slot, value.material);
         }
-        // Unslotted surfaces follow from geometry and Material; slotted ones
-        // capture their resources on every update.
+        // Unslotted surfaces follow from geometry and Material; slots with a bound
+        // or default material capture their resources on every update.
         if (same_base && !slotted && !slotted_[slot]) return moved;
         auto surfaces = detail::material_surfaces(runtime, object, value);
         if (!surfaces) { unusable = std::move(surfaces.error()); return false; }

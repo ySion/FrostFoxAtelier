@@ -9,7 +9,7 @@ std::string material_slot_name(const geometry::Mesh& mesh,std::size_t index) {
     return slot.name.empty()?"slot/"+std::to_string(index):slot.name;
 }
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime,ObjectId id) {
-    return runtime.with_native<StaticMeshComponent>(id,[&](auto& value)->Result<std::vector<MaterialBinding>> {
+    return runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value)->Result<std::vector<MaterialBinding>> {
         auto field=runtime.reference_field(id,Access::materials(value));if(!field) return std::unexpected(field.error());
         std::vector<MaterialBinding> result;result.reserve(Access::material_slots(value).size());
         for(std::size_t i=0;i<Access::material_slots(value).size();++i) {
