@@ -62,7 +62,6 @@ struct GpuRayTriangle {
 // DDGIRayHit in lit_ddgi_common.hlsl. Per-dispatch scratch, never history.
 struct ProbeRayHitStorage { std::array<std::uint32_t,16> words; };
 static_assert(sizeof(GpuInstance)==192);
-static_assert(sizeof(geometry::Vertex)==48 && sizeof(SceneTriangle)==176);
 static_assert(sizeof(GpuRayTriangle)==176);
 static_assert(sizeof(ProbeRayHitStorage)==64);
 static_assert(sizeof(ProbeContribution)==96);

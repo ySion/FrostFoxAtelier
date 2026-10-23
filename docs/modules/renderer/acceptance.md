@@ -7,7 +7,7 @@
 - `renderer_acceptance` 目标依次运行下面 10 个入口，每个入口一个独立进程，使用真实窗口，限时 1800 s，任一失败即整体失败。每个入口另有单独目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口是 `renderer_acceptance_default`），按改动只跑相关入口时用它。日志写在构建目录的 `renderer-acceptance-<入口>.log`；Scene Lit 入口的图像与 CSV 证据写在 `renderer-evidence/<入口>/`，默认入口的截图直接写在可执行文件目录。也可以直接运行 `atelier_renderer_acceptance --<入口> --output <绝对目录>`，默认入口不带参数。
 - 验证层：默认入口和 Scene Lit 入口都请求 GPU-based validation，`--scene-lit-stability` 请求 D3D12 debug layer，`--scene-lit-benchmark` 关闭验证，计时采样期间不读回图像。环境变量 `ATELIER_GPU_VALIDATION=debug` 把进程内的 GBV 请求降为 debug layer。[验收门禁](../../../tools/acceptance-gate.ps1)只对默认入口和 `--scene-lit` 保留 GBV，其余入口用 debug layer。GBV 下第一次准备 Lit 管线要两分钟左右，所以这两个入口每次要几分钟；其余入口在 debug layer 下多为 5–30 s。
 - 检查不依赖 `assert`，Dev 和 Release 中同样生效。改动核心运行时或构建链时两种配置都要跑。
-- 硬件：RHI 要求同时支持 Mesh Shader 和 DXR 1.1 inline RayQuery 的 GPU。阈值和下文读数来自 RX 6800 XT，其他 GPU 没有跑过。窗口必须可见，运行期间桌面不能被其他全屏程序占用。
+- 硬件：RHI 要求同时支持 Mesh Shader、DXR 1.1 inline RayQuery 和 SV_Barycentrics 的 GPU。阈值和下文读数来自 RX 6800 XT，其他 GPU 没有跑过。窗口必须可见，运行期间桌面不能被其他全屏程序占用。
 - 期望值由独立真值或参考帧得出：解析或数值积分的真值、同一场景清历史后收敛的终点、关闭被测效果的对照帧，不取自被测实现。帧间比较用 RGB8 最大通道差，mean/p95 在实际几何像素或指定 ROI 上统计。
 
 ## 默认入口

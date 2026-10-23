@@ -265,13 +265,6 @@ void validate(const Frame &frame, MeshChecks &meshes) {
     }
     meshes.commit(frame.meshes);
 }
-struct SceneTriangle {
-    std::array<geometry::Vertex, 3> vertices;
-    std::uint32_t edge_mask;
-    std::array<float, 3> face_normal;
-    std::uint32_t material_slot{};
-    std::array<std::uint32_t,3> reserved{};
-};
 struct GridCamera {
     std::array<float, 16> view_projection, inverse;
 };
@@ -309,25 +302,6 @@ std::optional<std::array<float,16>> prepare_cavity_projection(const Frame& frame
     return result;
 }
 enum class PipelineStyle { ui, surface, cavity_surface, depth, visible_lines, all_lines, background, grid, grid_depth };
-static_assert(sizeof(SceneTriangle) == 176);
-SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
-    const auto vertices = mesh.vertices().subspan(index * 3, 3);
-    SceneTriangle result{{vertices[0], vertices[1], vertices[2]}, mesh.edge_mask(index), {}, mesh.material_slot(index), {}};
-    std::array<double, 3> a{}, b{}, normal{};
-    for (std::size_t i = 0; i < 3; ++i) {
-        a[i] = double(vertices[1].position[i]) - vertices[0].position[i];
-        b[i] = double(vertices[2].position[i]) - vertices[0].position[i];
-    }
-    normal = {a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]};
-    const double length = std::hypot(normal[0], normal[1], normal[2]);
-    double orientation = 0;
-    for (std::size_t i = 0; i < 3; ++i)
-        orientation += normal[i] * (double(vertices[0].normal[i]) + vertices[1].normal[i] + vertices[2].normal[i]);
-    for (std::size_t i = 0; i < 3; ++i)
-        result.face_normal[i] = length == 0 ? vertices[0].normal[i] :
-            static_cast<float>(normal[i] / length * (orientation < 0 ? -1 : 1));
-    return result;
-}
 Instance prepare_instance(const MeshInstance &mesh) {
     const auto &m = mesh.world;
     const double a = m[0], b = m[1], c = m[2];
@@ -439,7 +413,7 @@ struct Renderer::State {
     std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
     material::ImageRef white_image;
     // group is this frame's MeshGroup only while that group points back at the entry.
-    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; detail::SceneGeometry gpu; bool used{}; std::uint32_t group{}; };
+    struct CachedGeometry { geometry::MeshRef source; detail::SceneGeometry gpu; bool used{}; std::uint32_t group{}; };
     // One per geometry in first-appearance order over the complete snapshot, so
     // visibility and selection never reorder draws. Ranges index draw_instances.
     struct MeshGroup { CachedGeometry* geometry; std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{}; };
@@ -556,7 +530,7 @@ struct Renderer::State {
         }
         for (auto& [key, geometry] : geometries) {
             (void)key;
-            for (auto* buffer : {&geometry.vertices, &geometry.gpu.vertices, &geometry.gpu.indices, &geometry.gpu.faces}) {
+            for (auto* buffer : {&geometry.gpu.vertices, &geometry.gpu.indices, &geometry.gpu.faces}) {
                 if (!*buffer) continue;
                 const auto r = gfxDestroyBuffer(gfx, *buffer);
                 if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
@@ -962,16 +936,6 @@ struct Renderer::State {
                 timing::Scope upload_stage{phases::encode_scene_upload};
                 for (const auto& group : mesh_groups) {
                     auto& geometry = *group.geometry;
-                    if (!geometry.vertices) {
-                        const auto vertices = geometry.source->vertices();
-                        std::vector<SceneTriangle> triangles;
-                        triangles.reserve(vertices.size() / 3);
-                        for (std::size_t i = 0; i < vertices.size() / 3; ++i)
-                            triangles.push_back(prepare_triangle(*geometry.source, i));
-                        geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
-                            static_cast<std::uint32_t>(triangles.size()), triangles.data());
-                        allocation(bool(geometry.vertices));
-                    }
                     if (!geometry.gpu.vertices) {
                         const auto welded = detail::weld(*geometry.source);
                         auto& gpu = geometry.gpu;
@@ -1028,9 +992,12 @@ struct Renderer::State {
                     const auto count=selected_only?group.selected_count:group.visible_count;
                     if(!count)continue;
                     const auto& geometry = *group.geometry;
-                    require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
+                    require(gfxProgramSetParameter(gfx, program, "vertices", geometry.gpu.vertices), "Bind mesh vertices");
+                    require(gfxProgramSetParameter(gfx, program, "faces", geometry.gpu.faces), "Bind mesh triangle records");
+                    require(gfxProgramSetParameter(gfx, program, "first_triangle", 0u), "Set mesh triangle offset");
                     require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
-                    require(gfxCommandDraw(gfx,static_cast<std::uint32_t>(geometry.source->vertices().size()),count),"Draw mesh batch");
+                    require(gfxCommandBindIndexBuffer(gfx, geometry.gpu.indices), "Bind mesh indices");
+                    require(gfxCommandDrawIndexed(gfx,geometry.gpu.triangle_count*3,count),"Draw mesh batch");
                     ++stats.scene_draw_calls;
                 }
             };
@@ -1087,7 +1054,7 @@ struct Renderer::State {
         stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
-            for (const auto &buffer : {it->second.vertices, it->second.gpu.vertices, it->second.gpu.indices, it->second.gpu.faces})
+            for (const auto &buffer : {it->second.gpu.vertices, it->second.gpu.indices, it->second.gpu.faces})
                 if (buffer) require(gfxDestroyBuffer(gfx, buffer), "Retire unused mesh geometry");
             it = geometries.erase(it);
         }

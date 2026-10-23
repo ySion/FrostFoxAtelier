@@ -4,7 +4,7 @@
 
 ## 执行域与所有权
 
-- `Context::open` 按高性能顺序筛选同时支持 FL12_1、Mesh Shader、DXR 1.1 与 Shader Model 6.5 的硬件 adapter，跳过不合格候选；无合格硬件，或创建后的 gfx 设备拿不到 DXR 接口，都返回 unsupported，没有 WARP 或无光追回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
+- `Context::open` 按高性能顺序筛选同时支持 FL12_1、Mesh Shader、DXR 1.1、SV_Barycentrics 与 Shader Model 6.5 的硬件 adapter，跳过不合格候选；无合格硬件，或创建后的 gfx 设备拿不到 DXR 接口，都返回 unsupported，没有 WARP 或无光追回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
 - 一个 Context 对应一个 owned gfx context、一个 owner 线程、一条 DIRECT queue。`frame` 异步推进 gfx 帧槽；`finish` 提交当前工作并等待完成。
 - `Context`、`Pipeline` 不可复制，可移动。Pipeline 持有 Program/Kernel 和执行域；Context 外壳消失不提前销毁仍被 Pipeline 持有的执行域。最后一个所有者负责有限排空与释放。
 - 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
