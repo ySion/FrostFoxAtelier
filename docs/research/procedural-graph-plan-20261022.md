@@ -118,7 +118,7 @@ class procedural.Jitter : procedural.PointNode {
 | 代码身份 | `EntryInfo::code` 与 `Program::revision()`，判定见 §3 的“代码身份”；仍然每次发布都重新编译，复用旧 Version 等实测需要再说 | 验收 ⑥ 只重算代码变了的类型 | 已交付（`runtime-entry-codes` 2b278be4，已合入 `procedural`，d9809d57） |
 | L2 | 源码类字段支持 float vector2/3/4 与已注册的枚举，元数据 `[Min, Max, LockMin, HardMax, Label, Category, DESC]` 写进已有的 `FieldDefinition`；向量的范围按分量生效；默认值用常量构造（如 `vector3(0.0f, 1.0f, 0.0f)`），按字节比较，范围或默认值变化返回 `rebuild_required` | 向量/颜色/枚举参数与面板范围 | 已交付（`runtime-class-fields` ed2b6e89，已合入 `procedural`，323e3cac） |
 | L4b | float 的 sin/cos/exp/log、atan2(y, x)、pow(x, y)，参数为标量或 vector2/3/4，标量广播到每个分量，double 编译期拒绝。纯 IR 多项式，内联、可向量化，误差 ≤ 4 ULP（sin/cos 在 \|x\| ≤ 2²⁰ 内，超出后结果有限且绝对值不超过 1）；特殊值：log(0) = −∞，负数取 log 得 NaN，exp 溢出得 +∞，pow 底数为负得 NaN，pow(x, 0) = pow(1, y) = 1。所有 FMA3 主机逐位相同，标量与向量化循环逐位相同，与 `<cmath>` 不逐位相同；JIT 要求 FMA3。详见 [math.md](../math.md#超越函数) | 旋转、衰减、曲线 | 已交付（`runtime-math-transcendental` 701b9f0f，已合入 `procedural`，de359783） |
-| L6 | 宿主把引擎附带的文件放在保留路径前缀（如 `engine/procedural/…`）下，并入每个工程快照；工程不能占用这个前缀，也不能声明引擎命名空间的类型 | 内置节点、哈希与随机库 | P3 前 |
+| L6 | 引擎文件在仓库 `assets/engine/procedural/*.source`，构建时复制到可执行文件旁的 `engine/procedural/`，开发树构建直接读源码树。`atelier_source` 提供共用加载函数：给出引擎根目录（默认是 exe 旁的 `engine/`，开发树构建用源码树），返回带 `engine/` 前缀路径、按内容哈希定版本的文件；`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），`procedural_acceptance` 用同一函数再追加夹具。全部引擎模块固定带上，不按需启用。命名空间由目录决定：`engine/procedural/` 下的文件只能声明 `procedural.` 下的类型和函数，其他文件不能在 `procedural.` 下声明任何东西；只看声明出来的名字，不看基类，所以 `class mygame.Foo : procedural.PointNode` 允许。这条规则在 `Program::request(SourceSnapshot)` 收集快照时检查，发布前就失败，所以所有宿主走同一条规则。全局函数支持限定名，引擎函数必须带限定名，声明与调用都写全名（`uint procedural.hash(uint x)`、`procedural.hash(x)`），工程函数照旧可用短名；同一个限定名不能既是类型又是函数。L6 合入后由本线程把 `assets/procedural/` 的文件搬到 `assets/engine/procedural/`，改成限定名，验收改用共用加载函数 | 内置节点、哈希与随机库 | P3 前；形状已与运行时负责人对齐，方案待总负责人审 |
 | L3 | 倾向按值返回拥有型 Array，结果直接构造在调用方存储中；P4 前单独出方案，过 Oracle | 改变点数的节点迁到自有语言 | P4 |
 
 依据：带聚合借用的函数里，[`analyze_calls`](../../src/language/source.cpp#L245-L292) 只允许 `self` 作为 BorrowSafe 调用的接收者（第 259 行）；类字段只能是五种标量（[LANGUAGE.md](../../LANGUAGE.md#项目快照与原生派生类)）；数学内建没有 floor/sin 等（[math.md](../math.md#源码运算)）。
@@ -241,7 +241,7 @@ class procedural.Jitter : procedural.PointNode {
 
 | 负责人 | 事项 | 状态 |
 | --- | --- | --- |
-| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b 已交付并合入；L6 实施中；其余见 §3.1 |
+| 运行时和语言 | L5 → L4a → L1 → 代码身份 → L2 → L4b → L6，L3 最后 | L5、L4a、L1、代码身份、L2、L4b 已交付并合入；L6 形状已对齐、方案待总负责人审；`math.is_finite` 排在 L6 之后；其余见 §3.1 |
 | 渲染 | 实例集合接口、TLAS 路径、阴影 caster 粒度、自发光与逐实例属性；矩阵判据提到 math；G1 着色与合批 | 实例部分已对齐，见 §5.1；矩阵判据（fab31153）已审通过；G1 在 P3 前对齐 |
 | 性能 | 120 FPS 下实例场景的测量口径与交付对照；P2 时请其添加 clustered_motion 用例 | 已对齐，见 §5.1 |
 | World 和物理 | Scene properties 新增内联数组的值形状；生成器组件与 presentation 的接口；以后的生成碰撞体 | 数组已同意，不算格式版本变化（§5.4），文档段落由其审；其余 P2 前对齐 |
