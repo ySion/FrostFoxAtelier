@@ -2,6 +2,8 @@
 
 面向 Windows x64 游戏的精简引擎工具包。C++ 与自有业务语言共享 Runtime 的类型、对象身份和生命周期；业务语言经 JIT 编译成本机代码后执行。
 
+硬件基线：CPU 为支持 FMA3 的 x64（源码 JIT 创建后端时检查，缺少时编译失败并写明原因）；GPU 需同时支持 Mesh Shader 与 DXR 1.1 inline RayQuery（DX12 Ultimate 一档，见 [RHI 图形验收](#rhi-图形验收)）。两者都不保留旧硬件回退路径。
+
 项目协作入口为 [AGENTS.md](AGENTS.md)，工程约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。以下概览描述当前源码树的能力；具体语法、合同和验收证据由对应模块文档维护。
 
 ## 当前能力与文档入口

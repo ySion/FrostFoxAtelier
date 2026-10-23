@@ -4,7 +4,6 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/Module.h>
-#include <llvm/TargetParser/Host.h>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -122,13 +121,30 @@ private:
     llvm::Value* intrinsic(llvm::Intrinsic::ID id, llvm::Value* input) {
         return ir_.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(&module_, id, {input->getType()}), {input});
     }
-    llvm::Value* rounding(llvm::Intrinsic::ID id, llvm::Value* input) {
-        // Without SSE4.1 these lower to CRT calls, which the JIT does not resolve.
-        static const bool supported = llvm::sys::getHostCPUFeatures().lookup("sse4.1");
-        if (!supported)
-            throw std::runtime_error("math.floor, math.ceil, math.trunc and math.fract require a host CPU with SSE4.1.");
-        return intrinsic(id, input);
+    llvm::Value* fma(llvm::Value* a, llvm::Value* b, llvm::Value* c) {
+        return ir_.CreateIntrinsic(llvm::Intrinsic::fma, {a->getType()}, {a, b, c});
     }
+    // Horner evaluation, highest coefficient last.
+    llvm::Value* polynomial(llvm::Value* x, std::span<const double> coefficients) {
+        llvm::Value* result = llvm::ConstantFP::get(x->getType(), coefficients.back());
+        for (auto i = coefficients.size() - 1; i-- > 0;)
+            result = fma(x, result, llvm::ConstantFP::get(x->getType(), coefficients[i]));
+        return result;
+    }
+    // Estrin evaluation: the same polynomial with a dependency chain of log2(n) FMAs, for latency-bound double paths.
+    llvm::Value* estrin(llvm::Value* x, std::span<const double> coefficients) {
+        llvm::SmallVector<llvm::Value*, 8> terms;
+        for (std::size_t i = 0; i < coefficients.size(); ++i) terms.push_back(llvm::ConstantFP::get(x->getType(), coefficients[i]));
+        for (llvm::Value* power = x;; power = ir_.CreateFMul(power, power)) {
+            llvm::SmallVector<llvm::Value*, 8> pairs;
+            for (std::size_t i = 0; i < terms.size(); i += 2) pairs.push_back(i + 1 < terms.size() ? fma(power, terms[i + 1], terms[i]) : terms[i]);
+            terms = std::move(pairs);
+            if (terms.size() == 1) return terms[0];
+        }
+    }
+    // GLSL operand order: each select is one x64 minps/maxps, and only a NaN first argument propagates.
+    llvm::Value* minimum(llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(y, x), y, x); }
+    llvm::Value* maximum(llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(x, y), y, x); }
     // Scalar arguments apply to every lane of the vector argument's type.
     llvm::Value* elementwise(language::MathOperation operation, std::span<llvm::Value* const> input) {
         using Op = language::MathOperation;
@@ -138,26 +154,23 @@ private:
         for (auto* value : input) a.push_back(value->getType() == type ? value :
             ir_.CreateVectorSplat(llvm::cast<llvm::FixedVectorType>(type)->getNumElements(), value));
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
-        // GLSL operand order: each select is one x64 minps/maxps, and only a NaN first argument propagates.
-        const auto min = [&](llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(y, x), y, x); };
-        const auto max = [&](llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(x, y), y, x); };
-        const auto clamp = [&](llvm::Value* x, llvm::Value* low, llvm::Value* high) { return max(low, min(x, high)); };
+        const auto clamp = [&](llvm::Value* x, llvm::Value* low, llvm::Value* high) { return maximum(low, minimum(x, high)); };
         switch (operation) {
         case Op::square_root: return intrinsic(llvm::Intrinsic::sqrt, a[0]);
-        case Op::floor: return rounding(llvm::Intrinsic::floor, a[0]);
-        case Op::ceil: return rounding(llvm::Intrinsic::ceil, a[0]);
-        case Op::trunc: return rounding(llvm::Intrinsic::trunc, a[0]);
+        case Op::floor: return intrinsic(llvm::Intrinsic::floor, a[0]);
+        case Op::ceil: return intrinsic(llvm::Intrinsic::ceil, a[0]);
+        case Op::trunc: return intrinsic(llvm::Intrinsic::trunc, a[0]);
         case Op::fract: {
             // Capped below one so fract(x) * n stays a valid index.
             const double below_one = type->getScalarType()->isDoubleTy() ?
                 std::nextafter(1.0, 0.0) : static_cast<double>(std::nextafter(1.0f, 0.0f));
-            return min(ir_.CreateFSub(a[0], rounding(llvm::Intrinsic::floor, a[0])), constant(below_one));
+            return minimum(ir_.CreateFSub(a[0], intrinsic(llvm::Intrinsic::floor, a[0])), constant(below_one));
         }
         case Op::abs: return intrinsic(llvm::Intrinsic::fabs, a[0]);
         case Op::sign: return ir_.CreateSelect(ir_.CreateFCmpOGT(a[0], constant(0)), constant(1),
             ir_.CreateSelect(ir_.CreateFCmpOLT(a[0], constant(0)), constant(-1), a[0]));
-        case Op::min: return min(a[0], a[1]);
-        case Op::max: return max(a[0], a[1]);
+        case Op::min: return minimum(a[0], a[1]);
+        case Op::max: return maximum(a[0], a[1]);
         case Op::clamp: return clamp(a[0], a[1], a[2]);
         case Op::lerp: return ir_.CreateFAdd(ir_.CreateFMul(a[0], ir_.CreateFSub(constant(1), a[2])), ir_.CreateFMul(a[1], a[2]));
         case Op::step: return ir_.CreateSelect(ir_.CreateFCmpOLT(a[1], a[0]), constant(0), constant(1));
@@ -165,8 +178,141 @@ private:
             auto* t = clamp(ir_.CreateFDiv(ir_.CreateFSub(a[2], a[0]), ir_.CreateFSub(a[1], a[0])), constant(0), constant(1));
             return ir_.CreateFMul(ir_.CreateFMul(t, t), ir_.CreateFSub(constant(3), ir_.CreateFMul(constant(2), t)));
         }
+        case Op::sin: return sine(a[0], false);
+        case Op::cos: return sine(a[0], true);
+        case Op::atan2: return arctangent(a[0], a[1]);
+        case Op::exp: return exponential(a[0]);
+        case Op::log: return logarithm(a[0]);
+        case Op::pow: return power(a[0], a[1]);
         default: throw std::logic_error("Invalid element-wise math operation.");
         }
+    }
+    // Float transcendental functions: minimax polynomials over Cody-Waite reduced arguments, FMA throughout.
+    // Rounding to an integer adds 1.5·2^23 (2^52 for double): the sum's low mantissa bits hold that integer.
+    llvm::Value* integers(llvm::Type* type, std::int64_t value, unsigned bits = 32) {
+        return llvm::ConstantInt::getSigned(type->getWithNewType(ir_.getIntNTy(bits)), value);
+    }
+    llvm::Value* as_integers(llvm::Value* value) {
+        return ir_.CreateBitCast(value, value->getType()->getWithNewType(ir_.getIntNTy(value->getType()->getScalarSizeInBits())));
+    }
+    llvm::Value* sine(llvm::Value* x, bool cosine) {
+        auto* type = x->getType();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        // Coefficient fits cover |r| <= 0.83: pi/4 plus the quadrant rounding slack up to |x| = 2^20.
+        static constexpr double sin_terms[] = {-0x1.55553ep-3, 0x1.1104cap-7, -0x1.9877dp-13};
+        static constexpr double cos_terms[] = {0x1.555546p-5, -0x1.6c098cp-10, 0x1.9930d4p-16};
+        auto* t = fma(x, constant(0x1.45f306p-1), constant(0x1.8p23));
+        auto* q = ir_.CreateFSub(t, constant(0x1.8p23));
+        llvm::Value* quadrant = as_integers(t);
+        if (cosine) quadrant = ir_.CreateAdd(quadrant, integers(type, 1));
+        auto* r = fma(q, constant(-0x1.921fb6p+0), x);
+        r = fma(q, constant(0x1.777a5cp-25), r);
+        r = fma(q, constant(0x1.ee59dap-50), r);
+        // Beyond 2^20 the reduction is meaningless; the clamp keeps the result finite. NaN passes through.
+        r = minimum(maximum(r, constant(-0.83)), constant(0.83));
+        auto* z = ir_.CreateFMul(r, r);
+        // The leading sine coefficient is negative, so r + r^3 * P turns -0 into +0; zero returns x itself.
+        auto* s = ir_.CreateSelect(ir_.CreateFCmpOEQ(x, constant(0)), x, fma(ir_.CreateFMul(r, z), polynomial(z, sin_terms), r));
+        auto* c = fma(z, fma(z, polynomial(z, cos_terms), constant(-0.5)), constant(1));
+        auto* odd = ir_.CreateICmpNE(ir_.CreateAnd(quadrant, integers(type, 1)), integers(type, 0));
+        auto* sign = ir_.CreateShl(ir_.CreateAnd(quadrant, integers(type, 2)), integers(type, 30));
+        return ir_.CreateBitCast(ir_.CreateXor(as_integers(ir_.CreateSelect(odd, c, s)), sign), type);
+    }
+    llvm::Value* exponential(llvm::Value* x) {
+        auto* type = x->getType();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        static constexpr double terms[] = {0x1.fffffcp-2, 0x1.555492p-3, 0x1.5558f2p-5, 0x1.1239ep-7, 0x1.6a243ap-10};
+        // exp(89) overflows and exp(-104) rounds to zero; NaN passes through.
+        x = minimum(maximum(x, constant(-104)), constant(89));
+        auto* t = fma(x, constant(0x1.715476p+0), constant(0x1.8p23));
+        auto* n = ir_.CreateFSub(t, constant(0x1.8p23));
+        auto* k = ir_.CreateSub(as_integers(t), integers(type, 0x4b400000));
+        auto* r = fma(n, constant(-0x1.62e43p-1), x);
+        r = fma(n, constant(0x1.05c61p-29), r);
+        auto* p = ir_.CreateFAdd(constant(1), fma(ir_.CreateFMul(r, r), polynomial(r, terms), r));
+        // 2^k in two exact factors, so subnormal results round once.
+        auto* half = ir_.CreateAShr(k, integers(type, 1));
+        const auto power_of_two = [&](llvm::Value* e) {
+            return ir_.CreateBitCast(ir_.CreateShl(ir_.CreateAdd(e, integers(type, 127)), integers(type, 23)), type);
+        };
+        return ir_.CreateFMul(ir_.CreateFMul(p, power_of_two(half)), power_of_two(ir_.CreateSub(k, half)));
+    }
+    llvm::Value* logarithm(llvm::Value* x) {
+        auto* type = x->getType();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        static constexpr double terms[] = {0x1.5556d8p-2, -0x1.000382p-2, 0x1.98d7f2p-3, -0x1.53824ap-3, 0x1.317456p-3, -0x1.2432bap-3, 0x1.645eb4p-4};
+        // x = 2^e * m with m in [sqrt(1/2), sqrt(2)); subnormals are scaled into the normal range first.
+        auto* subnormal = ir_.CreateFCmpOLT(x, constant(0x1p-126));
+        auto* bits = ir_.CreateSub(as_integers(ir_.CreateSelect(subnormal, ir_.CreateFMul(x, constant(0x1p23)), x)), integers(type, 0x3f3504f3));
+        auto* e = ir_.CreateSIToFP(ir_.CreateSub(ir_.CreateAShr(bits, integers(type, 23)),
+            ir_.CreateSelect(subnormal, integers(type, 23), integers(type, 0))), type);
+        auto* m = ir_.CreateBitCast(ir_.CreateAdd(ir_.CreateAnd(bits, integers(type, 0x7fffff)), integers(type, 0x3f3504f3)), type);
+        auto* f = ir_.CreateFSub(m, constant(1));
+        auto* w = fma(ir_.CreateFMul(f, f), fma(f, polynomial(f, terms), constant(-0.5)), f);
+        auto* result = fma(e, constant(0x1.62e43p-1), fma(e, constant(-0x1.05c61p-29), w));
+        auto* special = ir_.CreateSelect(ir_.CreateFCmpOEQ(x, constant(0)), constant(-INFINITY),
+            ir_.CreateSelect(ir_.CreateFCmpOLT(x, constant(0)), constant(NAN), x));
+        return ir_.CreateSelect(ir_.CreateAnd(ir_.CreateFCmpOGT(x, constant(0)), ir_.CreateFCmpOLT(x, constant(INFINITY))), result, special);
+    }
+    llvm::Value* arctangent(llvm::Value* y, llvm::Value* x) {
+        auto* type = x->getType();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        static constexpr double terms[] = {-0x1.555512p-2, 0x1.997b54p-3, -0x1.224de2p-3, 0x1.a0277ep-4, -0x1.a47668p-5};
+        // atan(u / v) with u <= v; infinities and zeros reduce to the same ratio's limit.
+        auto* ay = intrinsic(llvm::Intrinsic::fabs, y);
+        auto* ax = intrinsic(llvm::Intrinsic::fabs, x);
+        auto* swap = ir_.CreateFCmpOGT(ay, ax);
+        llvm::Value* u = ir_.CreateSelect(swap, ax, ay);
+        llvm::Value* v = ir_.CreateSelect(swap, ay, ax);
+        auto* infinite = ir_.CreateFCmpOEQ(v, constant(INFINITY));
+        u = ir_.CreateSelect(infinite, ir_.CreateSelect(ir_.CreateFCmpOEQ(u, constant(INFINITY)), constant(1), constant(0)), u);
+        v = ir_.CreateSelect(ir_.CreateOr(infinite, ir_.CreateFCmpOEQ(v, constant(0))), constant(1), v);
+        auto* scale = ir_.CreateSelect(ir_.CreateFCmpOGT(v, constant(0x1p126)), constant(0.25), constant(1));
+        u = ir_.CreateFMul(u, scale);
+        v = ir_.CreateFMul(v, scale);
+        // Above a ratio of 1/2, atan(u/v) = pi/4 + atan((u - v)/(u + v)); u - v is then exact. 2u is exact where v/2 may round.
+        auto* upper = ir_.CreateFCmpOGT(ir_.CreateFMul(u, constant(2)), v);
+        auto* t = ir_.CreateFDiv(ir_.CreateSelect(upper, ir_.CreateFSub(u, v), u), ir_.CreateSelect(upper, ir_.CreateFAdd(u, v), v));
+        auto* z = ir_.CreateFMul(t, t);
+        auto* a = fma(ir_.CreateFMul(t, z), polynomial(z, terms), t);
+        // The angle is k*pi/4 +- a for the swap, the sign of x and the upper range.
+        auto* negative = ir_.CreateICmpSLT(as_integers(x), integers(type, 0));
+        auto* flip = ir_.CreateXor(swap, negative);
+        auto* base = ir_.CreateSelect(swap, constant(2), ir_.CreateSelect(negative, constant(4), constant(0)));
+        auto* step = ir_.CreateSelect(upper, constant(1), constant(0));
+        auto* k = ir_.CreateSelect(flip, ir_.CreateFSub(base, step), ir_.CreateFAdd(base, step));
+        auto* angle = fma(k, constant(0x1.921fb6p-1), fma(k, constant(-0x1.777a5cp-26), ir_.CreateSelect(flip, ir_.CreateFNeg(a), a)));
+        auto* result = ir_.CreateIntrinsic(llvm::Intrinsic::copysign, {type}, {angle, y});
+        return ir_.CreateSelect(ir_.CreateFCmpUNO(x, y), ir_.CreateFAdd(x, y), result);
+    }
+    // exp2(y * log2|x|) in double, rounded to float once.
+    llvm::Value* power(llvm::Value* x, llvm::Value* y) {
+        auto* type = x->getType();
+        auto* wide = type->getWithNewType(ir_.getDoubleTy());
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        const auto precise = [&](double value) { return llvm::ConstantFP::get(wide, value); };
+        // Truncation errors: 5e-11 relative in log2 and 2e-10 in exp2, both far below half a float ULP after |t| <= 152.
+        static constexpr double log_terms[] = {2.0, 2.0 / 3, 2.0 / 5, 2.0 / 7, 2.0 / 9, 2.0 / 11};
+        static constexpr double exp2_terms[] = {1.0, 0x1.62e42fefa39efp-1, 0x1.ebfbdff82c58fp-3, 0x1.c6b08d704a0c0p-5, 0x1.3b2ab6fba4e77p-7,
+            0x1.5d87fe78a6731p-10, 0x1.430912f86c787p-13, 0x1.ffcbfc588b0c7p-17, 0x1.62c0223a5c824p-20};
+        constexpr std::int64_t sqrt_half = 0x3fe6a09e667f3bcd;
+        auto* a = ir_.CreateFPExt(intrinsic(llvm::Intrinsic::fabs, x), wide);
+        auto* bits = ir_.CreateSub(as_integers(a), integers(wide, sqrt_half, 64));
+        auto* e = ir_.CreateSIToFP(ir_.CreateTrunc(ir_.CreateAShr(bits, integers(wide, 52, 64)), wide->getWithNewType(ir_.getInt32Ty())), wide);
+        auto* m = ir_.CreateBitCast(ir_.CreateAdd(ir_.CreateAnd(bits, integers(wide, 0xfffffffffffff, 64)), integers(wide, sqrt_half, 64)), wide);
+        auto* s = ir_.CreateFDiv(ir_.CreateFSub(m, precise(1)), ir_.CreateFAdd(m, precise(1)));
+        llvm::Value* log2 = fma(ir_.CreateFMul(s, estrin(ir_.CreateFMul(s, s), log_terms)), precise(0x1.71547652b82fep+0), e);
+        log2 = ir_.CreateSelect(ir_.CreateFCmpOEQ(a, precise(0)), precise(-INFINITY),
+            ir_.CreateSelect(ir_.CreateFCmpOEQ(a, precise(INFINITY)), a, log2));
+        // 2^129 overflows float and 2^-152 rounds to zero; NaN passes through.
+        auto* t = minimum(maximum(ir_.CreateFMul(ir_.CreateFPExt(y, wide), log2), precise(-152)), precise(129));
+        auto* rounded = ir_.CreateFAdd(t, precise(0x1.8p52));
+        auto* f = ir_.CreateFSub(t, ir_.CreateFSub(rounded, precise(0x1.8p52)));
+        auto* n = ir_.CreateSub(as_integers(rounded), integers(wide, 0x4338000000000000, 64));
+        auto* scale = ir_.CreateBitCast(ir_.CreateShl(ir_.CreateAdd(n, integers(wide, 1023, 64)), integers(wide, 52, 64)), wide);
+        llvm::Value* result = ir_.CreateFPTrunc(ir_.CreateFMul(estrin(f, exp2_terms), scale), type);
+        result = ir_.CreateSelect(ir_.CreateOr(ir_.CreateFCmpOLT(x, constant(0)), ir_.CreateFCmpUNO(x, y)), constant(NAN), result);
+        return ir_.CreateSelect(ir_.CreateOr(ir_.CreateFCmpOEQ(y, constant(0)), ir_.CreateFCmpOEQ(x, constant(1))), constant(1), result);
     }
     llvm::Value* dot(llvm::Value* a, llvm::Value* b) {
         auto* products = ir_.CreateFMul(a, b);

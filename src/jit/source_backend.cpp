@@ -1620,6 +1620,10 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter())
             throw std::runtime_error("LLVM native target initialization failed.");
         auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+        // Source math lowers to FMA and SSE4.1 instructions; without them LLVM would emit CRT calls the JIT does not resolve.
+        const auto& features = target.getFeatures().getFeatures();
+        if (std::find(features.begin(), features.end(), "+fma") == features.end())
+            throw std::runtime_error("The source JIT requires an x64 host CPU with FMA3.");
         target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
         target.setCodeModel(llvm::CodeModel::Large);
         target.setRelocationModel(llvm::Reloc::PIC_);
