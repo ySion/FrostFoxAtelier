@@ -279,14 +279,15 @@ struct Program::Version {
     std::shared_ptr<const Contract> contract;
     std::shared_ptr<const Declaration> declaration;
     std::uint64_t sequence;
-    CodeOwner code;
+    // Shared: a project unit compiled from identical input reuses its code in the next Version.
+    std::shared_ptr<BusinessCode> code;
     BusinessCodeInfo info;
     BusinessFrameLayout layout;
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
     std::shared_ptr<const DebugMetadata> debug;
     std::shared_ptr<const SourceMap> map;
     Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared,
-        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, CodeOwner owner,
+        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, std::shared_ptr<BusinessCode> owner,
         std::shared_ptr<const SourceMap> source_map = {}) noexcept
         : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())), diagnostic(std::move(capture)),

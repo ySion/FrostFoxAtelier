@@ -366,7 +366,8 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
     }
     for (const auto& unit : request->module_->units) {
         const auto& text = unit.source;
-        // An entry keeps its published code only while its whole unit compiles from identical input.
+        // A unit whose input matches the published unit keeps its machine code and entry codes without
+        // being checked or compiled again; its Versions are rebuilt for this snapshot and sequence.
         const ModuleVersion* kept = nullptr;
         if (owner->module) {
             const auto& old = *owner->module->request;
@@ -378,20 +379,31 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                 old.options == request->module_->options && found->contract->binding == unit.contract->binding)
                 kept = owner->module.get();
         }
-        const EnvironmentView storage(unit.contract->binding);
-        const auto environment = storage.view(unit.contract->type_name.c_str());
-        std::vector<const char*> names;
-        for (const auto& name : unit.names) names.push_back(name.c_str());
-        std::vector<BusinessCode*> output(names.size());
-        std::vector<CodeOwner> codes;
-        codes.reserve(names.size());
-        CompileLocation location{}; char diagnostic[2048]{};
-        const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
-            text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
-            names.data(), static_cast<std::uint32_t>(names.size()), unit.receiver, output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
-        for (auto* code : output) codes.emplace_back(code, &atelier_destroy_business);
-        if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
-            {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+        const auto entry_name = [&](const std::string& method) { return unit.receiver ? unit.owner + "." + method : method; };
+        const auto kept_index = [&](const std::string& name) {
+            return static_cast<std::size_t>(std::ranges::find(kept->entries, name, &EntryInfo::name) - kept->entries.begin());
+        };
+        std::vector<std::shared_ptr<BusinessCode>> codes;
+        codes.reserve(unit.names.size());
+        if (kept) {
+            for (const auto& method : unit.names) codes.push_back(kept->versions[kept_index(entry_name(method))]->code);
+        } else {
+            const EnvironmentView storage(unit.contract->binding);
+            const auto environment = storage.view(unit.contract->type_name.c_str());
+            std::vector<const char*> names;
+            for (const auto& name : unit.names) names.push_back(name.c_str());
+            std::vector<BusinessCode*> output(names.size());
+            std::vector<CodeOwner> owned;
+            owned.reserve(names.size());
+            CompileLocation location{}; char diagnostic[2048]{};
+            const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
+                text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
+                names.data(), static_cast<std::uint32_t>(names.size()), unit.receiver, output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
+            for (auto* code : output) owned.emplace_back(code, &atelier_destroy_business);
+            if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
+                {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+            for (auto& code : owned) codes.push_back(std::move(code));
+        }
         auto map = std::make_shared<const SourceMap>(SourceMap{request->module_->snapshot, text.pieces});
         std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
         std::shared_ptr<const DebugTables> debug_tables;
@@ -417,9 +429,8 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                         "Lifecycle methods require void begin(), void tick(float), void post_physics_tick(float), "
                         "void late_tick(float), or void end()."});
             }
-            const auto name = unit.receiver ? unit.owner + "." + method : method;
-            const auto code = kept ? std::ranges::find(kept->entries, name, &EntryInfo::name)->code
-                : next_entry_code.fetch_add(1, std::memory_order_relaxed);
+            const auto name = entry_name(method);
+            const auto code = kept ? kept->entries[kept_index(name)].code : next_entry_code.fetch_add(1, std::memory_order_relaxed);
             module->entries.push_back({name, *signature, unit.parameter_names[i], code});
             auto declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,

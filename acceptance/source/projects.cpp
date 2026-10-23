@@ -1,3 +1,4 @@
+#include "source/debugger.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
@@ -34,8 +35,8 @@ class game.Move : world.Component {
 }
 )"}}};
 }
-void publish(Program& program, source::SourceSnapshot snapshot) {
-    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot)))));
+void publish(Program& program, source::SourceSnapshot snapshot, source::CompileOptions options = {}) {
+    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot), options))));
     take(program.try_publish(candidate));
     require(!candidate, "Published project candidate retained an independently publishable result.");
 }
@@ -700,6 +701,62 @@ void verify_project_compile_units() {
         std::get<float>(*take(take(moved.entry("m.g")).invoke({}, {}))) == 1.0f,
         "A unit whose text stayed the same while its exports grew kept its old codes.");
 }
+// A unit compiled from unchanged input keeps its machine code; the new Version maps faults and
+// breakpoints through the current files and works once the module that compiled it is gone.
+void verify_project_code_reuse() {
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    const auto snapshot = [](std::size_t lines, std::string_view b, std::string_view extra = {}) {
+        return source::SourceSnapshot{"reuse", 1, {{"Source/Game.source", lines + 1, std::string(lines, '\n') +
+            "class game.A : procedural.Base {\n    int run(int x) {\n        return 10 / x;\n    }\n}\n"
+            "class game.B : procedural.Base { int run(int x) { return x + " + std::string(b) + "; } }\n" + std::string(extra)}}};
+    };
+    const std::array zero{Scalar{std::int32_t{0}}}, five{Scalar{std::int32_t{5}}};
+    const auto fault = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
+        const auto failed = lease.invoke(receiver, zero);
+        return !failed && failed.error().source && failed.error().source->path == "Source/Game.source" &&
+            failed.error().source->line == line && failed.error().source->version == version;
+    };
+    const auto stop_line = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
+        std::optional<source::DebugBreakpoint> at;
+        for (const auto& site : take(lease.debug_sites()))
+            if (site.source.line == line) at = source::DebugBreakpoint{site.source.path, site.source.version, line, 0};
+        if (!at || at->source_version != version) return false;
+        std::size_t stopped{};
+        source::Debugger debugger([&](const source::DebugSnapshot& stop) {
+            stopped = stop.frames[0].location.source.line;
+            return stop.command(source::DebugAction::continue_execution);
+        }, {.break_on_entry = false});
+        take(debugger.set_breakpoints({*at}));
+        return std::get<std::int32_t>(*take(lease.invoke(receiver, five, {1}, nullptr, &debugger))) == 2 && stopped == line;
+    };
+    publish(program, snapshot(0, "1"));
+    const auto a = take(runtime.create(program.classes()[0].type));
+    auto first = take(program.pin("game.A.run"));
+    require(fault(first, a.id(), 3, 1), "A fault lost its source location.");
+    publish(program, snapshot(2, "2"), {.debugging = true});
+    auto second = take(program.pin("game.A.run"));
+    require(second.address() != first.address() && stop_line(second, a.id(), 5, 3),
+        "Changed compile options reused code compiled without them.");
+    const auto code = program.entries()[0].code;
+    // A new class makes this request publish a type, so reuse also runs through the type-bound Contract.
+    publish(program, snapshot(4, "3", "class game.C : procedural.Base { int run(int x) { return x; } }\n"), {.debugging = true});
+    auto third = take(program.pin("game.A.run"));
+    require(program.classes().size() == 3 && third.address() == second.address() && program.entries()[0].code == code,
+        "An unchanged class unit was compiled again.");
+    require(fault(third, a.id(), 7, 5) && stop_line(third, a.id(), 7, 5),
+        "Reused code mapped faults or breakpoints through the files it was compiled from.");
+    require(fault(first, a.id(), 3, 1) && fault(second, a.id(), 5, 3) &&
+        std::get<std::int32_t>(*take(second.invoke(a.id(), five))) == 2, "Leases on older modules stopped working.");
+    // The second module and its Contract are released; the reused code must not refer to them.
+    first = {};
+    second = {};
+    third = {};
+    const auto entry = take(program.entry("game.A.run"));
+    require(std::get<std::int32_t>(*take(entry.invoke(a.id(), five))) == 2 && fault(take(program.pin("game.A.run")), a.id(), 7, 5),
+        "Reused code failed once the module that compiled it was released.");
+}
 }
 
 void verify_source_projects() {
@@ -867,7 +924,8 @@ void verify_source_projects() {
     verify_editor_reserved_types();
     verify_project_engine_sources();
     verify_project_compile_units();
+    verify_project_code_reuse();
     std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, entry codes/revision, diagnostics, lifetime, "
         "read-only self fields in value regions with borrow and GC rules unchanged, vector/enum class fields with attributes, "
-        "engine sources with qualified names and reserved namespaces, compile units that follow only what they reach)");
+        "engine sources with qualified names and reserved namespaces, compile units that follow only what they reach, unchanged units that keep their code)");
 }

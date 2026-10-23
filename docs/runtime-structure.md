@@ -108,7 +108,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 | source::Program / State | 不可变 Contract/Declaration、当前 Version | 幂等 close 关闭新请求、准备、发布和 Entry，释放 current；已有租约和帧保留其版本 |
 | Entry | 弱程序身份 | 每次调用只选取一次当前版本；本身不保活代码或接收者 |
 | Lease | 一个固定 Version | 释放最后一个代码持有者前，旧版本仍可调用 |
-| Version | 编译代码及对应签名、布局和绑定依赖 | 保持该版本的代码与调用描述一致；不拥有 Runtime |
+| Version | 编译代码（工程模块里可与旧 Version 共同持有）及对应签名、布局和绑定依赖 | 保持该版本的代码与调用描述一致；代码在最后一个持有它的 Version 释放后回收；不拥有 Runtime |
 | Coroutine / Control | 稳定 CoroutineFrame、状态、完成结果/错误 | 外层拥有者析构等价于取消；活动恢复局部保活，终态释放帧 |
 | 宿主 Frame | Version、Invocation、DLL 协程句柄 | 先销毁 DLL 帧，再销毁 Invocation，最后释放 Version |
 | DLL BusinessCoroutineState | CompiledBusiness、参数副本、LLVM 帧和状态 | 先调用本版本 destroy，再释放代码拥有者；恢复期间局部保活允许外壳被回调销毁 |
@@ -118,7 +118,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 ## 当前取舍
 
 - 显式根槽接入已有 GC、引用屏障和撤销协议；当前语言尚无通用记录值帧，不预先引入 statepoint 或另一个根表。
-- 每个发布 Version 独立拥有编译单元，活动调用、协程与租约保持该版本的恢复/清理入口及展开信息。共享 LLJIT 会改变符号空间、错误归属和独立退休责任，目前没有采用。
+- 单源 Program 的每个 Version 独立拥有编译代码。工程模块里，一个编译单元的入口共享该单元的 LLJIT；输入未变的单元沿用已发布的代码，新旧 Version 共同持有，最后一个持有者释放时回收。活动调用、协程与租约保持所在 Version 的恢复/清理入口及展开信息。不同单元之间不共享 LLJIT：共享会改变符号空间、错误归属和独立退休责任，目前没有采用。
 - 发布检查 Runtime 静止，挂起帧保留旧版本；安全点推进 GC，不在轮询中暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
 - 原生异常在受控边界转成状态，生成代码显式清理后提交结果。Windows 展开表服务当前栈回溯与代码寿命，不授权 C++ 异常穿越任意生成帧。
 
