@@ -245,10 +245,22 @@ private:
     void analyze_calls() {
         // Summarize direct effects before propagating callee effects bottom-up.
         for (auto& function : module_.functions) {
-            std::vector<bool> allowed(function.expressions.size());
+            // A self node preserves borrows only if every use is a BorrowSafe call or a by-value field
+            // read; `(self.v).x = 1` shares its self node with the unused `self.v` read it was projected from.
+            std::vector<bool> allowed(function.expressions.size()), blocked(function.expressions.size()),
+                stored(function.expressions.size());
             function.preserves_borrows = true;
-            for (const auto& node : function.expressions) {
+            for (const auto& statement : function.statements)
+                if (statement.kind == Statement::Kind::assign) stored[statement.target] = true;
+            for (const auto& node : function.expressions)
+                if (node.kind == Expression::Kind::call)
+                    for (std::size_t i = 0; i < node.arguments.size(); ++i)
+                        if (node.argument_passing[i] != ParameterPassing::value) stored[node.arguments[i]] = true;
+            for (std::size_t i = 0; i < function.expressions.size(); ++i) {
+                const auto& node = function.expressions[i];
                 if (node.kind == Expression::Kind::receiver) function.requires_receiver = true;
+                if (node.kind == Expression::Kind::field && function.expressions[node.receiver].kind == Expression::Kind::receiver)
+                    (stored[i] ? blocked : allowed)[node.receiver] = true;
                 if (node.kind != Expression::Kind::call) continue;
                 if (!environment_.methods[node.value].preserves_borrows ||
                     function.expressions[node.receiver].kind != Expression::Kind::receiver)
@@ -256,7 +268,7 @@ private:
                 else allowed[node.receiver] = true;
             }
             for (std::size_t i = 0; i < function.expressions.size(); ++i)
-                if (reference_type(function.expressions[i].type) && !allowed[i]) function.preserves_borrows = false;
+                if (reference_type(function.expressions[i].type) && (!allowed[i] || blocked[i])) function.preserves_borrows = false;
             for (const auto& local : function.locals)
                 if (reference_type(local.type)) function.preserves_borrows = false;
         }
@@ -287,7 +299,7 @@ private:
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
                         reject(function.position, "Scoped value execution in '" + function.function_name +
-                            "' reaches suspension, object operations or a native call without BorrowSafe.");
+                            "' reaches suspension, an object operation other than reading a self field, or a native call without BorrowSafe.");
                     states[cursor.function] = State::complete; stack.pop_back();
                 }
             }

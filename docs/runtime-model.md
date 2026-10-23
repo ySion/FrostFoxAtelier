@@ -58,7 +58,7 @@
 
 直接访问的权威信息归 `TypeInfo`：`native_storage` 标识原生表示，大小/对齐和数组 `element` 决定布局，`FieldInfo::offset` 表示相对声明类型的字段偏移。生成器为满足自然对齐的标准布局字段提交 `offsetof`，Runtime 发布前校验范围和对齐；没有偏移的字段保留既有访问器。`NativeLayout::sequence_view` 发布读取连续缓冲和长度的原语，基础库适配器实现 Array/String 的投影；它不得分配、修改存储、调用用户代码或重入 Runtime。
 
-源码编译从上述元数据捕获可投影的值目录，数组按元素可用性接入；没有投影的类型及其参数方法保留为原生能力，不阻断无关源码。目录绑定代码版本并在发布时核对依赖。生成代码按字段偏移/元素步长直接访问原生存储，序列访问先检查长度、对齐和边界。含聚合值借用、拥有型局部或 String 字面量的源码只允许同步执行，原生调用限于 `self` 上声明 `MethodInfo::preserves_borrows` 的方法；其他对象操作被拒绝，且跳过 `begin/poll/finish`，让 GC 留给返回后的宿主；清理与结果提交仍走既有入口。调用方负责存储存续期和结构稳定，不允许将 Runtime 对象内部地址伪装成自有存储。完整边界见[原生值借用](native-value-borrows.md)和[语言规则](../LANGUAGE.md#原生值借用)。
+源码编译从上述元数据捕获可投影的值目录，数组按元素可用性接入；没有投影的类型及其参数方法保留为原生能力，不阻断无关源码。目录绑定代码版本并在发布时核对依赖。生成代码按字段偏移/元素步长直接访问原生存储，序列访问先检查长度、对齐和边界。含聚合值借用、拥有型局部或 String 字面量的源码只允许同步执行，原生调用限于 `self` 上声明 `MethodInfo::preserves_borrows` 的方法，对象访问限于按值读取 `self` 字段；其他对象操作被拒绝，且跳过 `begin/poll/finish`，让 GC 留给返回后的宿主；清理与结果提交仍走既有入口。调用方负责存储存续期和结构稳定，不允许将 Runtime 对象内部地址伪装成自有存储。完整边界见[原生值借用](native-value-borrows.md)和[语言规则](../LANGUAGE.md#原生值借用)。
 
 源码一般拥有型记录/String/Array 的值本体放在生成栈上，构造、复制、赋值、销毁使用同一 Runtime 值操作。`NativeLayout::value_operations_preserve_borrows` 表达操作不保留输入地址、不重入源码、不使其他仍使用的借用失效；平凡原生类型自动具备此能力，Array 依元素、描述型记录依字段递归组合。`sequence_mutate` 提供结构修改原语，`Runtime::mutate_sequence` 统一校验目标、输入类型和操作，再在原生回调保护下执行。前端只向本函数拥有的序列开放结构修改；按值调用和跨挂起生命周期不在此能力内。详见[拥有型基础值](source-owned-values.md)和[源码值字段组合](source-type-declarations.md#值与借用)。
 

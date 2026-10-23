@@ -151,6 +151,101 @@ class game.Probe : project.Probe {
     require(!std::get<bool>(*take(take(program.entry("game.Probe.work")).invoke(id,{}))),
         "Unrelated borrowed entry suppressed an ordinary loop's GC progress.");
 }
+enum class Quality : std::uint32_t { low = 1, high = 7 };
+struct SelfReader {
+    float gain{};
+    Quality quality{Quality::low};
+    math::Vector3 offset{};
+    std::uint32_t twice(std::uint32_t value) const noexcept { return value * 2; }
+    float peek(const float& value) const noexcept { return value; }
+};
+struct SelfReadRetired {
+    static inline int destroyed{};
+    ~SelfReadRetired() { ++destroyed; }
+};
+// A value region reads inherited native and declared Source fields of self only: the reads do not
+// stamp self, advance GC or move the borrowed storage, and every other self access stays rejected.
+void verify_project_self_reads() {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<float>(runtime, "project.Floats"),
+        NativeRegistration<Quality>(runtime, "project.Quality", TypeKind::enumeration)
+            .enumerator("low", Quality::low).enumerator("high", Quality::high).build(),
+        NativeRegistration<SelfReader>(runtime, "project.Reader", TypeKind::object)
+            .field<&SelfReader::gain>("gain").field<&SelfReader::quality>("quality").field<&SelfReader::offset>("offset")
+            .method<&SelfReader::twice>("twice", true).method<&SelfReader::peek>("peek", true).build(),
+        NativeRegistration<SelfReadRetired>(runtime, "project.Retired", TypeKind::object).build()}));
+    const auto snapshot = [](std::string_view methods) {
+        return source::SourceSnapshot{"reads", 1, {{"Node.source", 1, "class game.Node : project.Reader {\n"
+            "    float bias = 0.75f;\n    uint seed = 5;\n    int shift = -3;\n    bool enabled = true;\n"
+            "    void store() { self.bias = 2.0f; }\n" + std::string(methods) + "}\n"}}};
+    };
+    Program program(runtime);
+    // Each body compiles in an ordinary method; a borrowed Array parameter makes the method a value region.
+    for (const std::string body : {"self.bias = 2.0f;", "self.offset.x = 1.0f;", "(self.offset).x = 1.0f;", "float x = self.peek(self.gain);",
+        "store();", "float x = (new game.Node()).bias;"}) {
+        require(static_cast<bool>(Program::prepare(take(program.request(snapshot("    void probe() { " + body + " }\n"))))),
+            "A self access control did not compile outside a value region.");
+        const auto failed = Program::prepare(take(program.request(snapshot("    void probe(Array<float>& values) { " + body + " }\n"))));
+        require(!failed && failed.error().message.find("Scoped value execution in 'probe'") != std::string::npos,
+            "A value region admitted a self write, a self field borrow or another object's field.");
+    }
+    publish(program, snapshot(R"(
+    float scaled(float x) { return x * self.gain + self.bias; }
+    uint evaluate(Array<float>& values, const Array<float>& input) {
+        const vector3 offset = self.offset;
+        const float lift = self.offset.y;
+        uint i = 0;
+        while (i < values.size()) {
+            float value = scaled(input[i]) + offset.x + lift;
+            if (self.enabled && self.quality == project.Quality::high) { value = value + float(self.shift); }
+            values[i] = value;
+            i = i + 1;
+        }
+        return self.twice(self.seed);
+    }
+)"));
+    const auto base = take(runtime.native_type<SelfReader>());
+    const auto type = program.classes()[0].type;
+    const auto node = take(runtime.create(type));
+    const auto id = node.id();
+    const std::array gain{take(runtime.find_field(base, "gain"))}, quality{take(runtime.find_field(base, "quality"))},
+        offset{take(runtime.find_field(base, "offset"))}, bias{take(runtime.find_field(type, "bias"))};
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
+    const auto quality_type = take(runtime.native_type<Quality>());
+    Array<float> values, input;
+    for (int i = 0; i < 8; ++i) { input.add(static_cast<float>(i) * 0.5f - 3.0f); values.add(0.0f); }
+    const auto* storage = values.data();
+    const auto entry = take(program.entry("game.Node.evaluate"));
+    const std::array args{Argument::borrow(values), Argument::borrow(std::as_const(input))};
+    // Exact dyadic values keep the expected results independent of rounding order.
+    const auto run = [&](float g, Quality q, math::Vector3 o, float b, float shift) {
+        take(runtime.write(id, gain, Scalar{g}));
+        take(runtime.write(id, quality, Scalar{EnumValue{quality_type, static_cast<std::uint32_t>(q)}}));
+        take(runtime.write(id, offset, ValueInput{vector3, &o}));
+        take(runtime.write(id, bias, Scalar{b}));
+        auto retired = take(runtime.create(take(runtime.native_type<SelfReadRetired>())));
+        retired.reset();
+        const auto destroyed = SelfReadRetired::destroyed;
+        take(runtime.begin_collection());
+        const auto phase = runtime.collection_phase();
+        const auto cursor = take(runtime.change_cursor());
+        // A large budget makes any stray safe point leave the roots phase or destroy the retired object.
+        require(std::get<std::uint32_t>(*take(entry.invoke(id, args, CollectionBudget{1024}))) == 10,
+            "A value region misread a self field through a BorrowSafe call.");
+        require(runtime.collection_phase() == phase && SelfReadRetired::destroyed == destroyed, "Self field reads advanced GC inside a value region.");
+        require(!runtime.changed_since(id, cursor), "A self field read stamped its object.");
+        require(values.data() == storage, "Self field reads moved the borrowed storage.");
+        for (std::size_t i = 0; i < values.size(); ++i)
+            require(values[i] == input[i] * g + b + o.x + o.y + shift, "A value region misread an inherited or declared self field.");
+        while (runtime.collection_phase() != CollectionPhase::idle) (void)take(runtime.collect_step({1}));
+        require(SelfReadRetired::destroyed == destroyed + 1, "The host could not collect after the value region returned.");
+        return cursor;
+    };
+    const auto cursor = run(1.5f, Quality::high, {0.25f, -2.0f, 7.0f}, 0.75f, -3.0f);
+    take(runtime.write(id, bias, Scalar{0.25f}));
+    require(runtime.changed_since(id, cursor), "The write-stamp control missed a host write.");
+    run(-2.0f, Quality::low, {1.0f, 0.5f, 0.0f}, 0.25f, 0.0f);
+}
 struct EditorPanel { float x; };
 struct ProjectHost { float x; };
 // The editor registers its own types under editor. in the same Runtime before project Source
@@ -369,7 +464,9 @@ void verify_source_projects() {
     require(!old.invoke(instance.id(),args), "Lease accepted a destroyed receiver.");
     verify_declaration_only_project();
     verify_project_borrow_effects();
+    verify_project_self_reads();
     verify_project_field_ranges();
     verify_editor_reserved_types();
-    std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime)");
+    std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime, "
+        "read-only self fields in value regions with borrow and GC rules unchanged)");
 }
