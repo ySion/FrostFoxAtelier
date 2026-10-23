@@ -60,7 +60,7 @@ cmake --build --preset release --target rhi_acceptance
 - 运行：Release `rhi_acceptance`（主进程与三个回归），退出码均为 0，主进程输出 `RHI acceptance: PASS`，D3D12 InfoQueue 的 warning/error 为 0。新增场景在 [preparation_cases.cpp](../../../acceptance/rhi/preparation_cases.cpp)，全部在 GPU-based validation 下运行。
 - 日志中的一批 `Live ID3D12RootSignature/PipelineState` 警告来自阳性对照：故意在 Pipeline 仍存在时调用 `ReportLiveDeviceObjects`，证明泄漏检查能看到对象；关闭后的同一检查计数为 0。
 - Dev 未在本批运行：按分层门禁规则，改到 RHI 的集成轮次由门禁加跑 Dev 窗口层。
-- 准备期间 GBV 预热的成本与收益在 Renderer 层测量，见 [Renderer 验收](../renderer/acceptance.md#异步准备与-gbv-预热2026-10-19)。
+- 准备期间 GBV 预热的成本与收益在 Renderer 层测量，见 [Renderer 验收](../renderer/acceptance.md#运行)。
 
 ## 绘制前窗口同步
 

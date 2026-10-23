@@ -370,7 +370,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 本轮集成的 Dev / Release 编译、World、场景/JIT、材质及原生窗口快捷键/弹窗尺寸端到端均通过；包含 FPS 开关、采样、重复设置、被动文字绘制与关闭清理。发布版完整编辑器文档链及地牢的 2332 个模型、30 张共享图集、三个场景保存重开也通过。日志为 `out/stage-{dev,release}-{world,scene,materials,shortcuts,surfaces}.log`，发布版完整链为 `out/stage-release-{documents,dungeons}.log`；FPS 截图与逐移动记录在 `out/stage-{dev,release}-shortcuts/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 `editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口且仅需一次 Present、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；`surface-evidence/surfaces.csv` 按菜单和打开序号记录每次打开的 Present 次数，PNG 保存拖动预览和提交后的画面。菜单打开的 CPU 耗时计入[帧性能](#帧性能)中打开它的宿主阶段。
 
-2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门复现与验证见[渲染验收](../renderer/acceptance.md#选中边线深度一致性2026-10-11)。
+2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门验证见[渲染验收](../renderer/acceptance.md#默认入口)。
 
 2026-10-11 的 DDGI 整合验收通过当时的 Scene Lighting → DDGI Debug 菜单点击 Probe Spheres 互斥项与 Volume Bounds 勾选项（当前入口已迁至 World → Diagnostics），确认显示设置生效且不写场景历史。Dev 与独立 Release 均通过，菜单截图和日志在 `out/ddgi-integration-20261011/surfaces-{dev,release}/` 及对应 `.log`。
 

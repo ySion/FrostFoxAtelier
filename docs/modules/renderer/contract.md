@@ -1,6 +1,6 @@
 # 编辑器 renderer 当前契约
 
-本页维护当前执行、显示和资源合同；光照算法、默认值与限制统一见 [Scene Lit](scene-lit.md)，已验证的配置和证据见[验收记录](acceptance.md)，尚未实施的方向见[后续演进](../../research/scene-lit-next-evolution-20261010.md)。研究文档中的历史参数不覆盖这些当前合同。
+本页维护当前执行、显示和资源合同；光照算法、默认值与限制统一见 [Scene Lit](scene-lit.md)，已验证的配置和证据见[验收记录](acceptance.md)，尚未实施的方向见[后续方向](../../research/scene-lit-next-evolution.md)。
 
 入口：[renderer.hpp](../../../src/renderer/renderer.hpp)，目标 `atelier_renderer`，由 [cmake/renderer.cmake](../../../cmake/renderer.cmake) 的 `atelier_add_renderer()` 创建。调用前由应用根构建创建 `atelier_rhi` 和 `atelier_ui_protocol`；可执行目标调用 `atelier_deploy_rhi_runtime(target)` 部署同一套 DXC、Agility 与 PIX DLL。shader 在配置时嵌入库，不依赖启动目录或另一 worktree。
 
@@ -15,25 +15,25 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 - `MeshInstance` 提供完整 local-to-world 矩阵、线性基础色、选中标记与共享不可变 Geometry；Scene Lit 还消费粗糙度、金属度、HDR 自发光及稳定组件键。`geometry::Mesh` 是经构造验证的连续三角形顶点资源，`geometry::cube_mesh()` 只是一个内置资源。引用同一资源的可见实例合为一个批次，每个材质分组一次 instanced draw，不同资源分批；批次的划分与顺序见[运行状态与着色模式的独立性](#运行状态与着色模式的独立性)。GPU 缓存保有对应 CPU 资源，未使用项沿 gfx 机制退休；没有另一套业务对象身份。全部表面路径消费同一标准材质和 Opaque/Mask 覆盖；具体范围见[材质系统](materials.md)和 [Scene Lit](scene-lit.md)。
 - 主视图采用不可变 Mesh 构造时计算的局部包围盒，按当前 world/view/projection 做保守齐次视锥剔除。六个裁剪面包含浮点误差余量，XY 另留一个像素覆盖时间抖动与小数视口；不作透视除法，跨眼点/近平面、镜像和非均匀变换仍按包围盒支持范围处理。可见实例写入按资源分组的绘制索引表，着色器经该表读取原 Frame 索引上的实例、材质偏移与身份，Frame 本身不重排；GBuffer、工作室、深度和选中边线共用这张表，选中边线只读其中可见且选中的一段。完整 Frame、材质表、TLAS、发光域、DDGI 与阴影投影者仍保留屏幕外物体，缓存也不随相机进出逐帧退休。不可表示的浮点裁剪范围保守保留；非法 world 变换仍在剔除前拒绝整帧。当前尚无物体遮挡剔除、LOD 或网格簇剔除。
 - 场景管线和深度纹理在首次绘制非空场景且 viewport 非零时创建；后续按原生命周期复用，深度尺寸在实际场景绘制时跟随目标更新。纯 UI 窗口仍使用同一 Renderer/Context，无场景管线创建、深度分配或清除。UI 管线在 `open` 时准备，应用可提前创建并保留隐藏的弹出窗口以移出首次点击的初始化成本。
-- Scene Lit 管线按使用条件分组，在 RHI Context 的工作线程上准备；Renderer 的 owner 线程从不等待编译、PSO 创建或 GBV 预热。基础组 31 条，任何 Lit 视图都需要；其余组只在视图设置用到时提交：Shadows 开启时阴影深度光栅 1 条、接收面统计 1 条、DDGI 检视 2 条、DDGI 覆盖诊断 1 条、探针叠层 1 条。`preparation(view)` 启动该视图缺少的组，收集已完成的管线，并按该视图所需的组报告 done/total；不画 Lit 的视图总是 ready。done/total 只描述当前视图：设置改变后需要新的组时，total 随之变大，已经 ready 的进度会回到未就绪，直到新组完成。进度显示和作业状态不能假设 total 固定不变。`render` 对画 Lit 的帧做同样的检查。准备失败（例如编译错误）不是终止错误，之后的 Lit 视图都返回同一错误，工作室着色不受影响。`Options::shader_cache` 是交给 RHI 的 DXIL 缓存目录，空路径表示不用缓存，见 [RHI 合同](../rhi/contract.md#异步准备与-dxil-磁盘缓存)。
+- Scene Lit 管线按使用条件分组，在 RHI Context 的工作线程上准备；Renderer 的 owner 线程从不等待编译、PSO 创建或 GBV 预热。基础组 33 条，任何 Lit 视图都需要；其余组只在视图设置用到时提交：Shadows 开启时阴影深度光栅 1 条、接收面统计 1 条、DDGI 检视 2 条、DDGI 覆盖诊断 1 条、探针叠层 1 条。`preparation(view)` 启动该视图缺少的组，收集已完成的管线，并按该视图所需的组报告 done/total；不画 Lit 的视图总是 ready。done/total 只描述当前视图：设置改变后需要新的组时，total 随之变大，已经 ready 的进度会回到未就绪，直到新组完成。进度显示和作业状态不能假设 total 固定不变。`render` 对画 Lit 的帧做同样的检查。准备失败（例如编译错误）不是终止错误，之后的 Lit 视图都返回同一错误，工作室着色不受影响。`Options::shader_cache` 是交给 RHI 的 DXIL 缓存目录，空路径表示不用缓存，见 [RHI 合同](../rhi/contract.md#异步准备与-dxil-磁盘缓存)。
 - 相机为左手系，+Y 向上，使用有限 Reversed-Z：D3D 深度近端为 1、远端为 0，背景清除值为 0。矩阵为 row-major，行向量按 `p * world * view * projection` 执行；透视和正交都遵循同一深度约定。renderer 不维护相机控制状态。
 - `Frame::lighting_focus` 由宿主提供光照关注点，默认世界原点，与相机眼点及 Edit/Play 独立；编辑器使用观察 target，游戏可提供其接收区域关注点。DDGI 跟随体积与有界近源选灯网格消费该点，分别维护自己的布局。宿主发布 camera/view 前共用 `probe_focus_error` 校验实际世界精度；Renderer 编码前再次校验。近源网格无法保持 8 米格边精度时退回全局 proposal，不为这个可选采样加速结构额外收紧合法 Frame；原有 DDGI 体积、focus 与 World 作者值校验继续适用。体积组织、历史与预算合同见 [Scene Lit](scene-lit.md#ddgi-探针场)。
 - World/应用负责矩阵求值，renderer 只消费最终数学值；不依赖 World/Runtime，不重做 TRS 分解。World 已提供空间树，renderer 只接收其最终仿射矩阵。仿射矩阵平移位于索引 12/13/14，索引 3/7/11 为 0、15 为 1。非有限、非仿射或奇异矩阵使整帧在编码前返回 invalid_argument、terminal=false；保留旧 capture 和执行域，不用单位矩阵兜底，也不静默略过对象。Renderer 按 `Frame::meshes` 位置保存上一次通过检查的实例内容与准备结果，逐字段按位比较（Geometry 与 surfaces 以所有权比较，其内容发布后不可变），只重新检查和准备变化的位置；非法内容持续存在的每一帧都被拒绝。非零 `stable_key` 的使用计数跨帧维护、在所有着色模式下更新，Lit 帧中出现重复即拒绝。
 - 法线按 world 的 3×3 逆转置计算。CPU 用 double 计算余因子，整个矩阵共用一个缩放因子，保留任意法线所需的行间比例；pixel shader 先按最大分量缩放再规范化。镜像输入保留作者朝向，默认双面；显式单面材质在共享表面路径中裁弃背面。正反面由逆转置几何法线判定，不依赖三角形绕序；将来启用光栅背面剔除或 RayQuery/TLAS 剔除标志时，镜像实例必须按行列式符号翻转正面约定，或按符号分批。CPU 同时检查实际上传的 FP32 矩阵，极小数清零后失去秩的输入在编码前拒绝。统一极小/极大缩放继续支持；这不承诺任意病态非均匀矩阵的数值精度。World 局部 scale 可为负（镜像）或零；World 不提交奇异 world 矩阵的网格，零缩放空间在 World 侧按退化跳过并诊断。
 - 场景 viewport 与 UI 坐标均为窗口物理像素，左上原点；DPI 已由 UI 应用。场景覆盖按像素中心处于逻辑视口半开区间判断。`RasterViewport` 统一导出整数外包硬件视口、像素中心 scissor 与最终 clip 补偿，避免 D3D 对小数 viewport 的隐式向下取整漏掉末列/末行；场景表面、深度、线框、辅助显示和 Lit 诊断复用同一转换。逻辑相机、运动、深度 Z/W 和屏幕重建矩阵不变，整数视口直接保留原 clip。先画场景，再按 UI 数组顺序绘制；应用/UI 应给场景 viewport 留出可见区域。
 - UI 支持半开像素裁剪、实色矩形、R8 覆盖图、RGBA 图片与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。裁剪逐实例进行：clip 收紧到目标范围后打包进实例，pixel shader 按像素中心落在半开区间内判断，与同一整数 scissor 逐像素一致；空 clip、零尺寸、透明以及与 clip 不相交的项在 CPU 侧剔除，不上传实例或贴图。全部 UI 实例共用一次上传、一条管线和一次 draw，视口叠加层另占一次，两者都只依赖 D3D 在同一次 draw 内按图元提交顺序混合来保持数组顺序，不重排、不按 clip 或贴图切批。本帧用到的 Coverage 与 Image 按首次出现的顺序去重成一张贴图表，作为无界纹理数组绑定，实例携带表内下标；表的内容和顺序与上一帧相同时 gfx 不重写描述符，任何变化都会让 gfx 重写整张表的描述符。
-- renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。RHI 未指定该选项的旧调用仍采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
+- renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。未指定该选项的 RHI 调用采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
 - Coverage 的非零 identity 与 revision 一起标识不可变内容，renderer 缓存同时保有 `shared_ptr<const Coverage>`。CPU 行可有 padding；上传时收紧行。每个实际使用的版本只上传一次，无用缓存释放 CPU owner，GPU 资源沿 gfx 原有机制退休。当前没有字体图集、显存预算或资源管理器。
 
 ## 视口显示策略
 
 应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
-World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v8 保存；它只控制 DDGI 探针命中点每次挑选的局部光候选数，屏幕直接光不随机选灯。`spatial_light_sampling` 是视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换探针命中点 fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史。旧四灯阴影槽与单灯样本参数已退出当前接口；Scene v4 只在读取边界严格校验旧字段并丢弃。屏幕直接光对 cluster 列表中的解析灯逐盏确定求值，方向光独立评估，没有历史；发光网格只经 DDGI 照明。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
+World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v8 保存；它只控制 DDGI 探针命中点每次挑选的局部光候选数，屏幕直接光不随机选灯。`spatial_light_sampling` 是视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换探针命中点 fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史。Scene v4 的 `shadow_light_budget` / `shadow_samples` 只在读取边界严格校验并丢弃。屏幕直接光对 cluster 列表中的解析灯逐盏确定求值，方向光独立评估，没有历史；发光网格只经 DDGI 照明。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
 
-`LightFrame` 消费已验证的低层 Frame 与对应 MaterialFrame，在 CPU 派生统一光源快照及当前近源 proposal；它不持有 World 或创建 GPU 资源。Scene Lit 仍是上传、绑定、统计与退休的唯一拥有者。近源网格只改变抽样概率，候选批次按确定性近源/全局配额生成，并以实际整数配额组成的完整概率求权重；单候选或无有效局部域时全部使用全局 proposal，远源与溢出源保留全局支持。网格滚动不作为辐射变化清历史，也不要求第二份旧网格。当前编码帧的保留源数、非空 cell 数、逻辑字节及上传标记，与异步 GPU 完成统计分开，具体口径见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
+`LightFrame` 消费已验证的低层 Frame，在 CPU 从 `frame.lights` 派生统一的解析光源快照及当前近源 proposal；它不持有 World 或创建 GPU 资源。Scene Lit 仍是上传、绑定、统计与退休的唯一拥有者。近源网格只改变抽样概率，候选批次按确定性近源/全局配额生成，并以实际整数配额组成的完整概率求权重；单候选或无有效局部域时全部使用全局 proposal，远源与溢出源保留全局支持。网格滚动不作为辐射变化清历史，也不要求第二份旧网格。当前编码帧的保留源数、非空 cell 数、逻辑字节及上传标记，与异步 GPU 完成统计分开，具体口径见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-直接光只有一条路径：保守灯列表、阴影 atlas 与融合 compose，没有视口开关；`direct_reference`、`direct_clustered` 与 `direct_shadow_cache` 已删除。可选 `direct_cluster_inspect` 是默认关闭的视口诊断，不创建第二套 World 光源或作者配置入口。灯列表和 `ShadowCache` 只消费既有 Frame、LightFrame、Geometry/Object 缓存；阴影通过同一 RHI 的 D32 深度、矩形 clear、viewport/scissor 与延迟退休执行。缓存缺页不得默认为无阴影；atlas 放不下的投影光源整盏不贡献直接光；完整场景投影者与屏幕接收需求分开。投射阴影的光没有 stable_key 时每帧重绘，不受每帧 24 个 face 的预算；需要预算的生产方必须给光源非零键。DDGI 仅复用几何与端点都未改变的精确屏幕 LOS，细节与当前限制见 [Scene Lit](scene-lit.md)。
+直接光只有一条路径：保守灯列表、阴影 atlas 与融合 compose，没有视口开关。可选 `direct_cluster_inspect` 是默认关闭的视口诊断，不创建第二套 World 光源或作者配置入口。灯列表和 `ShadowCache` 只消费既有 Frame、LightFrame、Geometry/Object 缓存；阴影通过同一 RHI 的 D32 深度、矩形 clear、viewport/scissor 与延迟退休执行。缓存缺页不得默认为无阴影；atlas 放不下的投影光源整盏不贡献直接光；完整场景投影者与屏幕接收需求分开。投射阴影的光没有 stable_key 时每帧重绘，不受每帧 24 个 face 的预算；需要预算的生产方必须给光源非零键。DDGI 仅复用几何与端点都未改变的精确屏幕 LOS，细节与当前限制见 [Scene Lit](scene-lit.md)。
 
 探针检查的 `probe_inspect_source` 为视口诊断选项，`-1` 默认自动选择，非负值选择全局物理 probe 槽位。typed ViewOption 与低层 Frame 共同校验最大探针池范围；合法索引超过本帧驻留池时返回明确的无选择结果，不因此拒绝 Frame 或回退另一个探针。检查不改变调度、运输或 World 作者配置，异步样本保留请求与完成帧身份；字段语义见 [Scene Lit 探针检查](scene-lit.md#ddgi-探针场)。
 
@@ -50,7 +50,7 @@ World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），
 
 ### 背景与参考辅助显示
 
-`ViewSettings.background` 保存 MatCap / Smooth / Flat 工作室模式的背景偏好，正式编辑器默认蓝灰渐变；Scene Lit 始终使用黑背景，包括空场景与纯线框显示。Guides 中的 Gradient Background 在 Scene Lit 下禁用，切回工作室模式恢复原偏好。`reference_grid`、`origin_axes` 仍独立于着色模式；正式编辑器默认开启 XZ 平面 Y=0 参考网格及 X/Z 原点轴线，直接 Renderer 调用默认关闭。辅助显示不创建 Entity，也不改变几何、材质、场景序列化、选择或撤销历史。
+`ViewSettings.background` 保存 MatCap / Smooth / Flat 工作室模式的背景偏好，正式编辑器默认蓝灰渐变；Scene Lit 没有天空贴图时背景为黑，设了天空贴图时 Lit 合成在背景显示天空，空场景与纯线框显示仍为黑背景。Guides 中的 Gradient Background 在 Scene Lit 下禁用，切回工作室模式恢复原偏好。`reference_grid`、`origin_axes` 仍独立于着色模式；正式编辑器默认开启 XZ 平面 Y=0 参考网格及 X/Z 原点轴线，直接 Renderer 调用默认关闭。辅助显示不创建 Entity，也不改变几何、材质、场景序列化、选择或撤销历史。
 
 背景只绘制 scene viewport；网格与轴线通过程序化全屏三角形生成，没有网格顶点缓冲或贴图。网格基准为 0.2 米细格、每五格主线，根据投影像素密度在十倍尺度之间交叉渐变，并在接近地平线和远处淡出。颜色输入为线性值，由既有 sRGB RTV 编码；线宽以物理像素计算。
 
@@ -134,8 +134,8 @@ TAA / SMAA T2x 的采样深度只用于内部光照重建与历史。需要编�
 
 标准表面的权威合同见[材质系统](materials.md)。Mesh 保存 UV、MikkTSpace 切线、命名材质槽及覆盖全部三角形的连续 MeshPart；World 捕获按槽解析后的不可变 Surface。材质、贴图沿现有 Runtime 对象身份与 Project 资源身份，渲染帧只拥有 CPU 内容，不持有业务对象或磁盘路径。
 
-颜色与发光图使用 sRGB，粗糙度、金属度、法线及透明度图使用线性采样。共享材质表供工作室、Scene Lit GBuffer、射线命中、发光采样与编辑深度使用；Mask 在这些路径使用同一覆盖公式。MatCap 继续以几何法线选择 MatCap 颜色，同时遵循表面覆盖；显示模式不改写资产。
+颜色与发光图使用 sRGB，粗糙度、金属度、法线及透明度图使用线性采样。共享材质表供工作室、Scene Lit GBuffer、射线命中与编辑深度使用；Mask 在这些路径使用同一覆盖公式。MatCap 继续以几何法线选择 MatCap 颜色，同时遵循表面覆盖；显示模式不改写资产。
 
 GPU 图像缓存以不可变 Image owner 与颜色空间为键并持有 CPU 所有者；未使用版本随帧退休，关闭时沿原 Context 合同释放。稳定帧复用材质表与纹理，材质参数修改不重建网格；Opaque/Mask 变化重新核对 BLAS 透明性。`material_upload_count` 为本帧新增图片上传数（包括首次白图），`cached_material_images` 为当前场景图片缓存项数；不含 gfx 等待退休的资源。不增加原生设备/队列或帧内磁盘读取。
 
-源顶点为 48 字节，光栅与射线派生三角形均为 176 字节：前者携带编辑边信息，后者携带连通分量闭合信息及材质槽。法线图不改变几何闭合、深度或射线起点偏移。原先无资产绑定的实例颜色与标量参数通过同一材质表解析，既有场景保持可读。
+源顶点为 48 字节，光栅与射线派生三角形均为 176 字节：前者携带编辑边信息，后者携带连通分量闭合信息及材质槽。法线图不改变几何闭合、深度或射线起点偏移。没有绑定材质、也没有网格默认材质的槽，组件颜色与标量参数通过同一材质表解析。
