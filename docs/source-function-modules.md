@@ -48,7 +48,7 @@ Runtime 对象字段可按值传给助手。对象字段借用需要 Runtime 原
 
 async 公开入口可调用同步助手，助手退出后才允许 yield。String/Array 和一般拥有型记录仍限定同步执行，不能通过内部调用进入 async 入口；数学局部可跨 yield，数学借用保持同步限制。取消挂起入口时，所有助手帧均已退出，只需清理持久入口帧及其保留的对象根。
 
-当前没有递归、跨模块调用、内部 async 调用、函数值、跨类动态分派、String/Array/资源记录按值返回或 async 聚合参数/结果；内建数学值与 plain record 支持同步按值返回。普通记录按值签名同时要求 Runtime `plain_value` 与保持借用安全的 `can_own` 资格；两者独立，编译时检查。公开结果沿同一 `invoke` 的 `ValueOutput` 交付，并要求准确 Runtime 类型身份。源码 enum/struct 已在[类型声明](source-type-declarations.md)阶段接入。递归需要按实际激活管理 GC 根帧，跨模块调用需要跨版本依赖契约；这些能力不由当前固定槽区间隐式授权。
+当前没有递归、跨模块调用、内部 async 调用、函数值、跨类动态分派、String/Array/资源记录按值返回或 async 聚合参数/结果；内建数学值与 plain record 支持同步按值返回。普通记录按值签名同时要求 Runtime `plain_value` 与保持借用安全的 `can_own` 资格；两者独立，编译时检查。公开结果沿同一 `invoke` 的 `ValueOutput` 交付，并要求准确 Runtime 类型身份。源码 enum/struct 见[类型声明](source-type-declarations.md)。递归需要按实际激活管理 GC 根帧，跨模块调用需要跨版本依赖契约；这些能力不由当前固定槽区间隐式授权。
 
 ## 项目快照与多个公开入口
 
@@ -67,9 +67,9 @@ if (!published) return published;
 auto tick = program.entry("game.Move.tick");
 ```
 
-`classes()` 返回 `{name,type,base}`，`entries()` 返回 `{name,signature}`；视图在下一次成功发布或 close 后失效。`Candidate` 提供同名只读视图，供宿主在提交前检查业务约束；其预览类身份不可用于正式 Runtime 查询，base 已是注册的原生类型，视图在候选移动、销毁或成功发布后失效。请求拥有不可变快照，`Request::snapshot()` 可用于把诊断关联回原文件版本。`Error::source` 保存 UTF-8 字节定位。运行时错误继续由原执行协议返回。
+`classes()` 返回 `{name,type,base}`，`entries()` 返回 `{name,signature,parameter_names}`，`parameter_names` 按顺序给出源码声明的参数名，不含 `self`；视图在下一次成功发布或 close 后失效。`Candidate` 提供同名只读视图，供宿主在提交前检查业务约束；其预览类身份不可用于正式 Runtime 查询，base 已是注册的原生类型，视图在候选移动、销毁或成功发布后失效。请求拥有不可变快照，`Request::snapshot()` 可用于把诊断关联回原文件版本。`Error::source` 保存 UTF-8 字节定位。运行时错误继续由原执行协议返回。
 
-类型布局、默认值和所有入口共同准备，实际 TypeId 与代码只在无回调提交时一起可见。某个编译单元失败会释放整组候选，旧代码继续使用。`busy` 不消费候选；旧请求、重复提交和关闭后的提交被拒绝。已发布模块只增长：新增 struct/enum、派生原生对象的 class、全局函数，以及已有或新增 class 上的方法（包括 begin/tick/post_physics_tick/late_tick/end）都可兼容发布，新类型在类型安全点（代码发布条件加 GC 空闲）与代码一起提交，已经创建的对象保留。删除或改名已发布的类型、字段、函数或方法，已有类型的字段、基类、默认值或定义变化，以及已有入口的签名、执行种类或接收者变化，返回 `ErrorCode::rebuild_required`，不会改写存量对象。
+类型布局、默认值和所有入口共同准备，实际 TypeId 与代码只在无回调提交时一起可见。某个编译单元失败会释放整组候选，旧代码继续使用。`busy` 不消费候选；旧请求、重复提交和关闭后的提交被拒绝。已发布模块只增长：新增 struct/enum、派生原生对象的 class、全局函数，以及已有或新增 class 上的方法（包括 begin/tick/post_physics_tick/late_tick/end）都可兼容发布，新类型在类型安全点（代码发布条件加 GC 空闲）与代码一起提交，已经创建的对象保留。删除或改名已发布的类型、字段、函数或方法，已有类型的字段、基类、默认值或定义变化，以及已有入口的签名、执行种类或接收者变化，返回 `ErrorCode::rebuild_required`，不会改写存量对象。参数名不属于签名：只改参数名是兼容发布，发布后 `entries()` 给出新名字。
 
 全局助手和每个类的接收者环境分别形成 LLVM 模块；同一环境的多个入口拥有共享 LLJIT 和展开表。所有入口复用既有 `Version → Invocation → Runtime` 执行与清理链。借用保护通过内部调用参数传播，同一个助手既可在值区间内运行，也可在普通入口中推进 GC。
 
@@ -87,6 +87,6 @@ auto tick = program.entry("game.Move.tick");
 - 入口显式选择、缺失/歧义入口拒绝、冻结入口拒绝切换、只读/结构修改/递归/async 调用拒绝、传递效果拒绝及未调用助手的隔离。
 - 私有助手名称/顺序/签名变化的整模块替换、旧租约执行，以及挂起入口恢复时继续调用旧助手。
 
-本阶段 dev/release 均已通过上述模块场景及原有源码、JIT 平台和业务验收；相关反射、World 和无窗口编辑器文档消费者也已使用同一工作树配套重建并通过。可通过 `jit_acceptance` 运行模块与 JIT 场景。日志为 `out/function-modules-final-dev.log` 与 `out/function-modules-final-release.log`。没有测量本阶段的业务吞吐收益。
+模块场景随 `source_acceptance` 和 `jit_acceptance` 运行。
 
-项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、具名多入口、原子更新、旧租约、入口重排、错误文件定位、无入口语义检查，以及混合借用入口对 GC 的影响。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。
+项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。它覆盖跨文件 helper、原生派生类与标量默认值、具名多入口及其参数名、原子更新、只改参数名的兼容发布、旧租约、入口重排、错误文件定位、无入口语义检查，以及混合借用入口对 GC 的影响。可单独运行 `atelier_source_minimal.exe --projects`；完整覆盖仍在 `source_acceptance` / `jit_acceptance`。

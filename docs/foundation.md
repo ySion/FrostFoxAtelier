@@ -166,11 +166,11 @@ Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包�
 
 [生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
 
-[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 增量覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)覆盖目录组装的拒绝与回滚、行序、包含式计数、同帧累加、父项不符与未登记标记、`record`、`Suspend` 和嵌套帧。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
+[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 的验收覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)覆盖目录组装的拒绝与回滚、行序、包含式计数、同帧累加、父项不符与未登记标记、`record`、`Suspend` 和嵌套帧。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
 
 [源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
 
-设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍与原生基础库首片)。
+设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。
 
 本片 dev/release 已通过上述消费者、15 项反射 CLI 拒绝场景，以及 Runtime、源码公共消费者、JIT 和 World 端到端验收。未执行 UI/图形窗口验收，本片未改动对应模块。
 

@@ -853,7 +853,6 @@ Result<void> Program::try_publish(Candidate& candidate) {
 }
 #include "source/detail/program_module.inl"
 
-#if defined(ATELIER_BUILD_JIT_ACCEPTANCE)
 Result<void> ProgramAccess::compatible(const Program& program, BusinessCode* code, std::string_view source_name) {
     return program.state_->contract->compatible(code, source_name);
 }
@@ -862,5 +861,4 @@ void ProgramAccess::set_request_sequence(Program& program, std::uint64_t sequenc
     program.state_->latest_request = sequence;
 }
 std::uint64_t ProgramAccess::published_sequence(const Program& program) noexcept { return program.state_->published_request; }
-#endif
 }

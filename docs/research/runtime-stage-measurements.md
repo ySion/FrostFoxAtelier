@@ -2,9 +2,9 @@
 
 日期：2026-09-28。范围：正式源码消费链的首次资源基线。测量入口为 [measure.cpp](../../acceptance/source/measure.cpp)，只使用 `source/program.hpp`、Runtime 公共对象接口和分配器/操作系统统计接口。
 
-状态：**已完成 Release 正式构建实测**，`ATELIER_BUILD_JIT_ACCEPTANCE=OFF`。程序退出码为 0，336 个时间样本、48 组汇总及 37 条资源记录均完成校验，末尾有 `complete` 记录，stderr 为空。
+状态：**已完成 Release 正式构建实测**。测量时的构建关闭了 JIT 验收选项；该选项现已删除，验收入口始终编译进后端，但只在编译与链接路径上，不在测量的执行路径上。程序退出码为 0，336 个时间样本、48 组汇总及 37 条资源记录均完成校验，末尾有 `complete` 记录，stderr 为空。
 
-证据：`out/review/runtime-stage-measurements/release.jsonl`、`out/review/runtime-stage-measurements/release.stderr.log`。JSONL SHA-256 为 `746DDB416D04E7D3665ACCA485E0CAABA9FFA816E6C351AAC97F6384052DC2B4`；测量源码 SHA-256 为 `11EF9881D72A38EFE1FEF7CFC7954BFEABE29E51DDC898A01C33A040A0C4DE42`。这份结果对应本次源码快照；后续重跑应另存证据，不能覆盖后仍沿用本页数字。
+这些数字对应 2026-09-28 的源码；代码变化后应重跑并替换本页数字，不沿用旧值。
 
 ## 实测结论
 
@@ -86,7 +86,7 @@ Entry 与 Lease 在这次固定顺序运行中的相对快慢随场景变化。�
 
 ```powershell
 . .\tools\enter-dev.ps1
-cmake --preset release -DATELIER_BUILD_JIT_ACCEPTANCE=OFF
+cmake --preset release
 cmake --build --preset release --target atelier_source_measure
 & .\out\release\atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
 ```

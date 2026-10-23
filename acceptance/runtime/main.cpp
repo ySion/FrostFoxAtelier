@@ -328,6 +328,9 @@ Types register_types(Runtime& runtime) {
         {"raise_native_error", {}, raise_native_error}
     };
     const auto described_machine = take(runtime.register_type(std::move(machine)));
+    const auto& advance_info = *std::ranges::find(take(runtime.describe(described_machine))->methods, "advance", &MethodInfo::name);
+    require(advance_info.parameter_names == std::vector<std::string>{""},
+        "A method registered without parameter names did not publish one empty name per parameter.");
 
     const auto fallible = take(NativeRegistration<FallibleRecord>{runtime, "acceptance.FallibleRecord", TypeKind::record}.publish());
     TypeDefinition failing;
@@ -1636,6 +1639,16 @@ void verify_publication_failures() {
     definitions[0].kind = TypeKind::object;
     definitions[0].methods = {{"missing_implementation", {}, nullptr}};
     rejected(std::move(definitions), ErrorCode::invalid_definition);
+    definitions = batch();
+    definitions[0].kind = TypeKind::object;
+    definitions[0].methods = {{"named", {{{f32}}}, advance_described}};
+    definitions[0].methods[0].parameter_names = {"a", "b"};
+    rejected(std::move(definitions), ErrorCode::invalid_definition);
+    definitions = batch();
+    definitions[0].kind = TypeKind::object;
+    definitions[0].methods = {{"named", {{{f32}, {f32}}}, advance_described}};
+    definitions[0].methods[0].parameter_names = {"a", "a"};
+    rejected(std::move(definitions), ErrorCode::duplicate_name);
     definitions = batch();
     definitions[1].fields.push_back(definitions[1].fields[0]);
     rejected(std::move(definitions), ErrorCode::duplicate_name);

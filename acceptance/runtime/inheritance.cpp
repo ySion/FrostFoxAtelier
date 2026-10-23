@@ -24,11 +24,20 @@ void publication_failures() {
     native.base = plain_type;
     reject(runtime.register_type(std::move(native)), ErrorCode::invalid_definition);
     const auto types = register_types(runtime);
+    // The message names the deriving type and the ancestor that declares the member, not the direct base.
+    const auto hides = [&](TypeDefinition definition, const std::string& expected) {
+        auto result = runtime.register_type(std::move(definition));
+        require(!result && result.error().code == ErrorCode::invalid_definition &&
+            result.error().message == "Member hides an inherited declaration: " + expected, "A hidden member was reported without its owners.");
+    };
     TypeDefinition shadow{"bad.Shadow", TypeKind::object, {}, {}, {}}; shadow.base = types.base;
     shadow.fields = {{"hidden", {TypeReference::native<float>()}}};
-    reject(runtime.register_type(shadow), ErrorCode::invalid_definition);
+    hides(shadow, "bad.Shadow.hidden hides inheritance.Base.hidden");
     shadow.fields.clear(); shadow.methods = {{"bump", {}, [](CallContext&) -> Result<void> { return {}; }}};
-    reject(runtime.register_type(shadow), ErrorCode::invalid_definition);
+    hides(shadow, "bad.Shadow.bump hides inheritance.Base.bump");
+    TypeDefinition grand{"bad.Grand", TypeKind::object, {}, {}, {}}; grand.base = types.derived;
+    grand.fields = {{"value", {TypeReference::native<float>()}}};
+    hides(grand, "bad.Grand.value hides inheritance.Base.value");
     Failing::fail = true;
     const auto before = Base::destroyed;
     reject(runtime.create(types.failing), ErrorCode::construction_failed);

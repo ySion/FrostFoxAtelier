@@ -2,7 +2,7 @@
 
 历史快照：本目录保留第一次并行审查时的源码依据、反方意见与本机实验结果。输入以 [baseline.json](baseline.json) 的文件哈希为准；正文中的“当前”“未实现”、旧文件名和行号均指当轮，不是现行合同或待办。
 
-当时的 A-F1/C-D1 随后已修复，证据见 `out/review/wave1-fixes/verification.json`；之后的共同构建验收见[首次三线集成](../wave1-integration.md)。ABI 结果诊断与 async 绑定问题的后续关闭见[运行时阶段记录](../runtime-stage-closeout.md#已关闭的历史缺陷)。
+当时的 A-F1/C-D1 随后已修复，证据见 `out/review/wave1-fixes/verification.json`；之后的共同构建验收见[首次三线集成](../wave1-integration.md)。ABI 结果诊断与 async 绑定问题随后已修复。
 
 现行能力从[项目 README](../../../README.md)、[运行时结构](../../runtime-structure.md)、[布局模块](../../modules/ui-layout/README.md)和[RHI 模块](../../modules/rhi/README.md)进入。本目录不再承担下一任务交接或实施调度。布局旧交接已退役，现行合同与验收由模块 README 导航。
 

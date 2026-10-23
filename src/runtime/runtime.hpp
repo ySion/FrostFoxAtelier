@@ -494,6 +494,8 @@ struct MethodDefinition {
     // Runtime's existing callback scope also rejects GC/lifecycle reentry.
     bool preserves_borrows{};
     std::string description{};
+    // Empty, or one per parameter; an empty name is unnamed. Not part of the signature.
+    std::vector<std::string> parameter_names{};
 };
 
 struct TypeDefinition {
@@ -533,6 +535,8 @@ struct MethodInfo {
     FunctionSignature signature;
     bool preserves_borrows{};
     std::string description{};
+    // One per signature parameter; empty when the producer gave no name.
+    std::vector<std::string> parameter_names{};
 };
 
 struct TypeInfo {

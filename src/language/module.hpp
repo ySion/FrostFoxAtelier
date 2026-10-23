@@ -12,8 +12,9 @@ struct MappedSource {
 };
 struct ModuleDiagnostic { std::uint32_t file{}; Diagnostic diagnostic; };
 struct ClassField { std::string name, type; MappedSource initializer; SourcePosition position; };
-struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; };
-struct FunctionDeclaration { std::string name, signature; };
+// Signatures omit parameter names, so renaming a parameter stays compatible.
+struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; std::vector<std::string> parameters; };
+struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; };
 struct ClassDeclaration {
     std::string name, base;
     std::uint32_t file{};

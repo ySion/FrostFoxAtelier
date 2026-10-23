@@ -222,7 +222,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## Windows JIT 平台验收
 
-[acceptance/jit](acceptance/jit) 同时包含真实本机平台实验和最小源码业务验收；两者范围分别说明。开发与发布配置均通过运行时、JIT 平台及业务源码验收。构建接入见 [cmake/jit.cmake](cmake/jit.cmake)。
+[acceptance/jit](acceptance/jit) 同时包含真实本机平台实验和最小源码业务验收；两者范围分别说明。构建接入见 [cmake/jit.cmake](cmake/jit.cmake)。
 
 - 宿主 EXE → JIT → 宿主/独立 DLL 的混合整型、浮点、八参数、64 位值及 32 字节对齐记录互调；原生异常在 DLL 内转换成明确错误，失败不覆盖结果，清理恰好一次。
 - Windows 动态函数表登记及 `RtlLookupFunctionEntry` / `RtlVirtualUnwind` 回溯，跨过实际栈重对齐、四层递归及不同生成单元，并确认回到原生调用者；覆盖 3.5/4/4.5/32 KiB 生成栈。当前机器上的 `CaptureStackBackTrace` 在这些动态帧处停止，故验收不依赖它。
@@ -236,7 +236,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 预编译 LLVM 的 Release 静态 CRT ABI 分别隔离在正式源码后端 `atelier_source_backend.dll` 和平台验收 `atelier_jit_probe.dll`；宿主与 `atelier_jit_native_client.dll` 保留原有开发/发布 CRT 配置。两个 LLVM DLL 共用构建中的展开支持与修复对象，LLVM/STL 对象、异常和分配所有权不跨隔离接口。运行完整 JIT 验收需保留上述 DLL 及本配置的 mimalloc/重定向 DLL；输出目录保留 LLVM、zlib、zstd 的许可证副本。
 
-已完成长会话反复物化/退休、最多 512 个同时存活单元及定型成功调用的本机测量，方法、数据与限制见[二次验收记录](docs/research/jit-industrial-research.md#二次验收记录2026-09-24)。这只是平台微型样例，不替代真实业务负载的编译延迟、稳态吞吐或行为热重载验收。
+长会话反复物化/退休、最多 512 个同时存活单元及定型成功调用的本机测量见[平台测量记录](docs/research/jit-industrial-research.md#平台测量2026-09-24)。这只是平台微型样例，不替代真实业务负载的编译延迟、稳态吞吐或行为热重载验收。
 
 **平台范围限制**：只验证受控、已定型 LLVM IR 的进程内同步执行，不支持任意 C++ 目标文件、C++ 静态构造/TLS 初始化或 C++ 异常跨 JIT 帧。平台探针只证明机器码执行、展开和退休路径。源码位置、断点/变量查看及兼容方法体更新由正式 Source 模块提供，分别见[源码调试](docs/source-debugger.md)与下节业务闭环；PDB 和原生调试器集成尚未接入。
 
@@ -256,11 +256,11 @@ cmake --build --preset release --target ui_layout_acceptance
 
 同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
 
-单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。配置时设置 `-DATELIER_BUILD_JIT_ACCEPTANCE=OFF` 可关闭平台/JIT 完整验收及后端故障注入，正式源码库和该最小消费者仍可构建；默认 ON 保留既有完整验收入口。
+单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。
 
-同一入口包含[连续会话验收](acceptance/source/session.cpp)：原生与描述型对象各在同一个 Runtime 中交错运行任务、取消、分步 GC 和兼容更新，核对预热后的资源变化、旧版本集中退休及最后关停。工作负载和实际结果见[阶段收尾](docs/research/runtime-stage-closeout.md#连续运行补充验收)。
+同一入口包含[连续会话验收](acceptance/source/session.cpp)：原生与描述型对象各用一个 Runtime 和一个 Program，预热 4 轮后采样 32 轮；每轮 32 个 tick，每 tick 启动 8 个跨 2～12 个 yield 的协程任务，每 8 个 tick 兼容更新一次，部分任务在 ready 或 suspended 状态取消，宿主交错推进分步 GC。每轮结束时只剩接收者的一个对象和一个根，四个旧版本集中退休、代码页回到 `MEM_FREE`，预热后的活跃分配增长不超过 64 KiB；最后关闭入口并取消剩余任务，对象、根和代码全部释放。
 
-本阶段的正式接口性能与资源基线见[测量记录](docs/research/runtime-stage-measurements.md)。测量不随普通构建或验收执行；复跑命令：
+正式接口的性能与资源基线（2026-09-28 的实现）见[测量记录](docs/research/runtime-stage-measurements.md)。测量不随普通构建或验收执行；复跑命令：
 
 ```powershell
 cmake --build --preset release --target atelier_source_measure
@@ -269,7 +269,7 @@ cmake --build --preset release --target atelier_source_measure
 ./out/release/atelier_source_measure.exe --artifacts out/codegen
 ```
 
-[机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定，不再由固定手写业务 IR 决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。
+[机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。
 
 - [ExecutionFrame](src/runtime/execution.hpp)沿用 `ObjectRoot` 及共享屏障/撤销机制。生成帧只预留接收者槽；机器验收自行持有快照根，源码引用局部和临时值按编译布局准备额外稳定强槽与不保活的观察存储。持有局部跨完整新 GC 周期存活，块退出后只剩观察则可回收，循环/早退/错误均显式清理。
 - 顶层以 `ExecutionScope` 覆盖入场至帧清理，内部准入检查拒绝原生借用或遍历内重入；同一 Runtime 的活动调用统一计数。真正原生调用仍保留 `Runtime::call` 的保护；普通函数的生成安全点按宿主请求与单步预算推进同一个 GC；原生聚合借用及拥有值区间把收集留到返回宿主后，不引入另一个收集器或 Tick 调度器。
@@ -279,19 +279,15 @@ cmake --build --preset release --target atelier_source_measure
 - 成员名称、字段路径和原生方法签名来自同一 Runtime 的元数据；前端/后端只使用宿主绑定表索引，不知道机器字段名字。机器快照的创建、轮询后刷新与结果根交接归宿主验收适配器；不访问对象的标量或原生值借用入口无需接收者、快照或登记对象根。
 - 原生注册和源码发布共用 `FunctionSignature` 及 Runtime 解析规则；原生 void 或标量/枚举值结果已经贯通动态调用、源码表达式和 LLVM 降低，保留原生成员的 const 接收者信息。嵌套实参先顺序求值再打包，原生失败、漏写或错误种类的结果不提交给源码调用方。
 
-开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单源码选定入口、项目快照的多个同步入口与模块内函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/for/break/continue/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#已实现的最小业务执行协议)。新增引用在原生/描述型对象上各执行 12 个独立场景；其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。旧数值、错误、GC、展开和代码退休验收继续通过。
+开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单源码选定入口、项目快照的多个同步入口与模块内函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/for/break/continue/return`，以及单绑定对象类型的持有/观察局部、`null/new/observe/try_acquire`、身份比较与词法根清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#业务执行协议)。引用场景在原生/描述型对象上各执行 12 个，其中多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查发布前撤根、词法 GC 与部分副作用。
 
 语言基础沿同一 Runtime/source/JIT 入口支持 `core.bool`、短路逻辑、受检查的整数除余/移位、四种数值类型的显式转换、局部只读 const 与编译期模块常量，以及带作用域清理的 for/break/continue。[语言基础消费者](acceptance/source/foundations.cpp)通过 `source_acceptance` 覆盖这些执行与拒绝场景；[bool 调用边界消费者](acceptance/jit/bool_abi.cpp)通过 `jit_acceptance` 覆盖布尔值、借用及结果契约。运行入口为 `cmake --build --preset dev --target source_acceptance jit_acceptance`，release 使用同名目标；语义以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
 构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。编译错误的位置与运行停点分别维护：实际断点、单步和局部值通过[调试接口](docs/source-debugger.md)使用；编辑器磁盘检测沿[源码工作流](docs/modules/editor/source-editor.md)执行，PDB 和任意机器指令源码映射尚未接入。
 
-当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移或业务吞吐优化的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用缓存路径与 ID，既有描述型回调的动态查找仍保留。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
+当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用绑定时缓存的路径与 ID。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
 
-前端与源码执行链已完成一轮[专项审查及真实机器批量基线](docs/research/jit-industrial-research.md#v001-源码专项审查与真实机器基线)：修复业务链接根因诊断丢失，补充 owner 撤销后原生异常的组合验收，执行固定种子源码变异/数值对照，并分别测量编译、批量调用和回收。已有基线不等于完成业务吞吐优化或全面安全审计。
-
-保持语义的[快照、字段桥接与安全点单因素实验](docs/research/jit-industrial-research.md#快照字段桥接与安全点单因素实验)已完成，三个变体未因不稳定的收益进入正式路径。随后源码引用局部与[单入口兼容方法体发布](docs/runtime-model.md#单入口兼容方法体发布)均通过双配置验收。这两个增量没有重新测量吞吐，不沿用旧基线宣称提速。
-
-早退路径现在共用按需发射的用户槽清理块，避免每个 `return` 重复生成整份清理 IR；仍在快照复制与发布之前结束用户引用。该窄优化已通过[小输入交错对照与开发/发布验收](docs/research/jit-cleanup-experiment.md#92-小输入交错对照与清理共享晋升)，改善多早退源码的编译成本，不改变槽数量、安全点或清理行为，也不据此宣称业务执行/GC 提速。槽复用仍未加入。
+早退路径共用按需发射的用户槽清理块，每个 `return` 不重复生成整份清理 IR，并在快照复制与发布之前结束用户引用。槽复用尚未加入。快照、字段桥接与安全点的三个保持语义的变体因收益不稳定没有采用，数据见 [JIT 研究](docs/research/jit-industrial-research.md#快照字段桥接与安全点单因素实验)。
 
 ### 单入口兼容方法体热更新
 
@@ -301,8 +297,8 @@ cmake --build --preset release --target atelier_source_measure
 - 最新请求一经接受，旧候选不能再提交；最新源码的解析、类型检查或真实链接失败，均保留上次已发布版本，不回退发布过期候选。重复提交及不兼容入口/签名/接收者/服务表明确拒绝。
 - 模拟 Tick 与长期工具事件通过稳定弱入口选择当前版本，不保活接收者；显式 `Lease` 固定旧版本并保留其代码和展开信息。程序所有者在回调中销毁也不损坏本次调用，但后续稳定入口立即关闭；最后一个代码持有者释放后才能退休。
 - 首次声明固定接收者要求：无 self 的入口不能在兼容替换中新增 self；已有接收者即使新版不再读取，也仍需提供。`describe()` 返回共同签名，`bind<R,Args...>(expected_execution)` 冷端核对宿主期望并返回原入口；执行种类默认同步，协程传入 `FunctionExecution::coroutine` 后通过同一入口的 `start()` 创建实例。
-- Version 保存自己的已验证元数据和实际调用/引用槽需求。发布后的调用不再比较整份成员目录；原始未绑定入口仍完整检查。每次 Invocation 独占暂存空间，同目录下不用九参方法的入口不再因此扩展缓冲。0→9→1 需求变化及旧租约各自存储已通过验收，不据此宣称吞吐或帧时提升。
-- 原生/描述型对象各执行 12 个隔离场景，开发/发布配置均通过。覆盖短名、2100/8192字节及UTF-8长源名的请求诊断与失败保旧，完整源名成功发布，原对象身份、地址和存量状态保留，引用槽需求改变，乱序完成，作用域退出，暂停 GC，以及 `RtlLookupFunctionEntry` / `VirtualQuery` 观察到的旧展开表撤销和代码页释放。
+- Version 保存自己的已验证元数据和实际调用/引用槽需求；发布后的调用不比较整份成员目录，原始未绑定入口仍完整检查。每次 Invocation 独占按本版本需求准备的暂存空间，验收覆盖 0→9→1 的需求变化及旧租约各自的存储。
+- 原生/描述型对象各执行 12 个隔离场景，覆盖短名、2100/8192字节及UTF-8长源名的请求诊断与失败保旧，完整源名成功发布，原对象身份、地址和存量状态保留，引用槽需求改变，乱序完成，作用域退出，暂停 GC，以及 `RtlLookupFunctionEntry` / `VirtualQuery` 观察到的旧展开表撤销和代码页释放。
 
 没有加入后台编译线程、文件监视、活动帧迁移、跨发布单元源码调用/内联失效或对象布局迁移；Runtime、宿主回调与 DLL 仍须活得比使用它们的调用/租约长。具体发布与退休协议见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
 
@@ -372,7 +368,7 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 初始化/复制构造失败会清理已构造部分，不留下半成品；赋值失败保证可销毁、基本不变量成立，允许部分更新，不自动回滚。原生操作必须遵守这些保证，方法异常转换为调用错误。回调中抛出的 `std::bad_alloc` 同样由这些异常边界转换；运行时自身存储、元数据、根登记和错误信息的分配失败可能继续向外传播分配异常，当前不提供完整的内存耗尽恢复保证。
 - 原生绑定属于可信代码，必须提供正确的布局和生命周期操作，并声明全部对象引用，包括不公开的原生成员；析构不得抛出异常。原生引用槽通过 Runtime 的引用接口修改，整条原生记录复制走值操作；不能绕过这些入口任意覆盖引用存储。C++ 表示标记只验证原生字段兼容性，不是语言类型身份。
 - 普通回调（包括原生字段定位器）期间禁止创建、销毁对象、注册类型或启动/推进 GC；允许访问有效字段、同步方法调用，以及合法的引用写入和根登记。`CallContext::storage` 只在本次同步调用期间有效，不能缓存；只读引用遍历另行禁止这些修改操作。
-- 首个 JIT 业务切片通过定型 thunk 使用已有 `read/write/call`，不把 C++ `Scalar`、`Result` 或私有身份布局暴露给生成代码；尚未实现描述型字段的直接偏移访问或通用语言调用 ABI。
+- JIT 业务代码通过定型 thunk 使用 `read/write/call`，不把 C++ `Scalar`、`Result` 或私有身份布局暴露给生成代码；尚未实现描述型字段的直接偏移访问或通用语言调用 ABI。
 
 ## 已验收场景
 
@@ -399,10 +395,10 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 10,000 层混合内联记录的构造、复制、赋值、逆序失败清理、引用遍历、GC、显式销毁及 Runtime 退出；原生值操作和只读遍历的重入不破坏外层工作栈。
 - 同质标量块初始化、复制和赋值保持值、存储范围与重叠约束；标量外形的自定义原生回调不会被批处理或平凡析构优化绕过。
 - 调用期间的生命周期保护、原生异常报告与运行时最终清理。
-- 原生/描述型标量返回、const 接收者元数据、共享签名解析、嵌套实参次序、第二次 ABI 回调漏写/错种类、结果不提交与显式清根；源码首次声明、宿主期望核验、接收者要求固定及各版本实际调用存储。开发/发布完整日志见 `out/review/function-contract-meeting/dev-acceptance-corrected.log` 和 `release-acceptance.log`。
+- 原生/描述型标量返回、const 接收者元数据、共享签名解析、嵌套实参次序、第二次 ABI 回调漏写/错种类、结果不提交与显式清根；源码首次声明、宿主期望核验、接收者要求固定及各版本实际调用存储。
 - mimalloc 实际覆盖：C++/标准容器、对齐分配、DLL 初始化期及跨 DLL CRT 分配/扩容/释放、线程退出后的释放、分配失败的 C++ 语义。独立验收 DLL 不链接 mimalloc，用于确认 CRT 路径的实际重定向。
 
-首阶段的历史目标与取舍见[第一步记录](docs/first-step.md)。当前源码引用局部与临时值根、兼容方法体更新和显式协程均已贯通，实际合同与已验收范围见[运行时协议](docs/runtime-model.md#已实现的最小业务执行协议)。下一增量按真实消费者需求选择，尚未实现的范围见[当前能力边界](docs/runtime-structure.md#已知成本与能力边界)。
+首阶段的目标与取舍见[第一步记录](docs/first-step.md)。执行合同与验收范围见[运行时协议](docs/runtime-model.md#业务执行协议)，尚未实现的范围见[当前能力边界](docs/runtime-structure.md#已知成本与能力边界)。
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
 
