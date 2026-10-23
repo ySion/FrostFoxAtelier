@@ -64,7 +64,9 @@ enum class Operation {
     remainder, bitwise_and, bitwise_or, bitwise_xor, bitwise_not, shift_left, shift_right,
     logical_not, logical_and, logical_or
 };
-enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root };
+// square_root and every later operation are element-wise over float/double scalars and vectors.
+enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root,
+    floor, ceil, trunc, fract, abs, sign, min, max, clamp, lerp, step, smoothstep };
 struct Expression {
     enum class Kind {
         literal, local, field, call, unary, binary,
