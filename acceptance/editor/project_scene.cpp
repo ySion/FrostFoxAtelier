@@ -477,7 +477,7 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     rejects(damaged,"A duplicate document identity was accepted.");
     damaged=scene;damaged["entities"][1]["children"]=Json::array({gone_id});
     rejects(damaged,"A composition cycle was accepted.");
-    damaged=scene;damaged["version"]=9;
+    damaged=scene;damaged["version"]=10;
     rejects(damaged,"A newer scene version was accepted.");
 }
 // String leaves use the scene codec's shared leaf decoder, which also decodes operator parameters strictly.
@@ -989,7 +989,7 @@ void verify_environment_migration(editor::Project& project) {
     }
     // A saved Environment supplies World lighting on the next open.
     const auto saved=Json::parse(take(sky->serialize()));
-    require(saved.at("version")==8 && !saved.contains("world"),"A migrated scene did not save as version 8 without a world section.");
+    require(saved.at("version")==9 && !saved.contains("world"),"A migrated scene did not save as version 9 without a world section.");
     auto reopened=load(saved);
     require(reopened->lighting_supplied() && settings(*reopened)==lit && reopened->load_issues().empty(),
         "A saved Environment did not reopen as supplied World lighting with the same sky.");
@@ -1005,7 +1005,7 @@ void verify_environment_migration(editor::Project& project) {
         auto v7=current;v7["version"]=7;environment_record(v7).erase("sky_map");
         auto upgraded=load(v7);
         require(upgraded->load_issues().empty() && !settings(*upgraded).sky_map && Json::parse(take(upgraded->serialize()))==current,
-            "A version 7 Environment did not open without a sky map and save as version 8.");
+            "A version 7 Environment did not open without a sky map and save as version 9.");
         auto derived=v7;environment_record(derived)["type"]="game.Environment";
         auto derived_document=take(editor::Session::deserialize(derived.dump(),project,prepare(std::make_shared<Evidence>()),editor::LoadPolicy::strict));
         auto derived_saved=Json::parse(take(derived_document->serialize()));
@@ -1084,7 +1084,7 @@ void run() {
     take(document.preview_edit(13,6.f)); take(document.cancel_edit()); take(document.cancel_edit());
     require(std::get<float>(take(document.read_property(move,speed)))==4,"Cancel failed to restore scalar value.");
     const auto saved=take(document.serialize()); const auto saved_json=Json::parse(saved);
-    require(saved_json["version"]==8 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
+    require(saved_json["version"]==9 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     require(Json::parse(take(reopened->serialize()))==saved_json,"Derived scene roundtrip changed type, fields or composition.");
     auto defaults=saved_json; defaults["entities"][0]["components"][1]["properties"].erase("speed");
@@ -1142,7 +1142,7 @@ void run() {
     upgraded["actors"][0]["components"][0]["roughness"]=presentation::Material{}.roughness;
     upgraded["actors"][0]["components"][0]["metallic"]=0.f;
     upgraded["actors"][0]["components"][0]["emissive"]=Json::array({0.f,0.f,0.f});
-    require(migrated_json["version"]==8 && migrated_json["entities"][0]["components"][0]["properties"]["body"]["enabled"]==false,
+    require(migrated_json["version"]==9 && migrated_json["entities"][0]["components"][0]["properties"]["body"]["enabled"]==false,
         "Legacy visual mesh unexpectedly enabled physics or failed to migrate to the Entity graph.");
     auto upgraded_document=take(editor::Session::deserialize(upgraded.dump(),project));
     require(take(upgraded_document->serialize())==take(migrated->serialize()),"Legacy v1/v3 migration disagreed on complete authored values.");

@@ -17,7 +17,7 @@ void light_set_cases(Fixture& f) {
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     f.frame.lighting_focus={};
     auto& options=f.frame.view.lit;options={};
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     options.shadows=true;options.antialiasing=render::Antialiasing::none;
     f.room.meshes.assign(1,{});
     auto& plane=f.room.meshes.front();plane.stable_key=1;plane.world=box(0,0,0,1,1,1);
@@ -149,7 +149,7 @@ void light_set_cases(Fixture& f) {
     f.room=Room{};f.lights={room_lights()[0]};f.lights[0].source_radius=0;
     f.room.meshes[0].material={.roughness=1};f.room.meshes[7].material.emissive={};
     f.frame.camera=camera({320,180});options={};
-    options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.gtao=options.sssr=options.bloom=false;
     options.antialiasing=render::Antialiasing::none;
     options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};
     options.probe_volumes[0].counts={8,5,8};options.probe_update_budget=320;options.probe_rays=64;

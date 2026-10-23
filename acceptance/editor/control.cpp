@@ -241,8 +241,8 @@ Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities
 void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema")==4 && original_scene.at("version")==8 && !original_scene.contains("world"),
-        "Current repro export did not identify view schema 4 and Scene v8");
+    require(original.at("view_schema")==5 && original_scene.at("version")==9 && !original_scene.contains("world"),
+        "Current repro export did not identify view schema 5 and Scene v9");
     const auto legacy=root/"LegacyLightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(legacy),
         std::filesystem::copy_options::recursive);
@@ -307,7 +307,11 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
     auto zero_scene=old_scene;zero_scene["world"]["shadow_samples"]=0;rejected(old_manifest,zero_scene);
     auto mixed=old_manifest;mixed["view"]["direct_candidates"]=8;rejected(mixed,old_scene);
     auto mixed_scene=old_scene;mixed_scene["world"]["direct_candidates"]=8;rejected(old_manifest,mixed_scene);
-    auto unknown=original;unknown["view_schema"]=5;rejected(unknown,original_scene);
+    auto unknown=original;unknown["view_schema"]=6;rejected(unknown,original_scene);
+    // Schema 5 removed ssil and shadow_bias: a current view rejects the keys.
+    for(const auto& [name,value]:Json{{"ssil",false},{"shadow_bias",.002}}.items()) {
+        auto retired=original;retired["view"][name]=value;rejected(retired,original_scene);
+    }
     auto disagrees=old_manifest;disagrees["view"]["exposure_ev"]=old_scene.at("world").at("exposure_ev").get<double>()+.25;
     rejected(disagrees,old_scene,"dependency_mismatch");
     // A schema 3 or later view carries the sky, and a v7 scene keeps it in the Environment: both must agree.
@@ -363,7 +367,7 @@ void repro_lighting_migration(Driver& d,const std::filesystem::path& repro,const
         const std::filesystem::path new_repro=wide(exported.at("result").at("directory").get<std::string>());
         const auto saved=read(new_repro/"manifest.json");
         const auto saved_scene=read(new_repro/"Project"/wide(saved.at("scene").get<std::string>()));
-        require(saved.at("view_schema")==4 && saved.at("view")==expected_view && saved_scene.at("version")==8 &&
+        require(saved.at("view_schema")==5 && saved.at("view")==expected_view && saved_scene.at("version")==9 &&
             !saved_scene.contains("world") && authored(saved_scene.at("entities"))==expected_entities &&
             saved.at("selection_indices")==original.at("selection_indices"),
             "Migrated repro export lost author data or retained a legacy view/scene format");
@@ -717,7 +721,7 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
         summary.at("view")==state.at("view") && summary.contains("last_frame"),"Summary inspection enumerated the document or omitted view state");
     d.ok("scene.create",{{"kind","mesh"}});
     d.ok("camera.look_at",{{"eye",{5,4,-7}},{"target",{0,0,0}}});
-    Json patch{{"shading","scene_lit"},{"ddgi",true},{"gtao",false},{"ssil",false},{"sssr",false},{"bloom",false},
+    Json patch{{"shading","scene_lit"},{"ddgi",true},{"gtao",false},{"sssr",false},{"bloom",false},
         {"probe_count_x",3},{"probe_count_y",3},{"probe_count_z",3},{"probe_update_budget",27},{"probe_rays",32},
         {"probe_min_x",-2},{"probe_min_y",-2},{"probe_min_z",-2},{"probe_max_x",2},{"probe_max_y",2},{"probe_max_z",2},
         {"probe_visualization","state"},{"probe_volume",true},{"probe_relocation",true},{"probe_xray",true},{"probe_radius",.12}};
@@ -942,9 +946,9 @@ int wmain(int argc,wchar_t** argv) {
             current.at("entities")[1].at("components")[0].at("type")=="world.EnvironmentComponent","The sky settings did not create the Environment");
         d.op("edit.undo");current=d.inspect();
         require(current.at("view").at("sky_enabled")==false && current.at("entities").size()==1,"Undoing the first sky edit did not remove the Environment");
-        error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
-        d.ok("view.set",{{"patch",{{"ssil",true}}}});current=d.inspect();require(current.at("view").at("ssil")==true && current.at("view").at("gtao")==false,"Display policy did not normalize GTAO / Local GI");
-        d.ok("view.set",{{"patch",{{"ssil",false},{"shadow_bias",0.1}}}});
+        for(const auto* removed:{"ssil","shadow_bias"}) error(d.call("view.set",{{"patch",{{removed,true}}}}),"invalid_request");
+        d.ok("view.set",{{"patch",{{"gtao",false}}}});current=d.inspect();
+        require(current.at("view").at("gtao")==false && current.at("entities").size()==2,"A World setting did not create the Environment");
         error(d.call("view.set",{{"patch",{{"shadows","wrong"}}}}),"invalid_request");
         error(d.call("scene.rename",{{"object","stale/999"},{"name","No"}}),"stale_object");
         error(d.call("project.open",{{"path",utf8(project.wstring())}}),"unsaved_changes");
@@ -974,7 +978,7 @@ int wmain(int argc,wchar_t** argv) {
         auto prepared=d.wait(prepare_id,605s);require(prepared.at("status")=="ok",prepared.dump());
         require(prepared.at("result").at("phase")=="ready","Preparation did not report an accepted ready frame");
         d.inspect();
-        auto pending=d.call("render.compare",{{"cases",Json::array({{{"name","baseline"},{"patch",Json::object()}},{{"name","scene_lit"},{"patch",{{"shading","scene_lit"},{"shadows",false},{"ddgi",false},{"gtao",false},{"ssil",false}}}}})},{"sample_frames",{1,3}}},compare_id);
+        auto pending=d.call("render.compare",{{"cases",Json::array({{{"name","baseline"},{"patch",Json::object()}},{{"name","scene_lit"},{"patch",{{"shading","scene_lit"},{"shadows",false},{"ddgi",false},{"gtao",false}}}}})},{"sample_frames",{1,3}}},compare_id);
         require(pending.at("status")=="pending",pending.dump());auto compared=d.wait(compare_id);require(compared.at("status")=="ok",compared.dump());
         const auto& samples=compared.at("result").at("samples");require(samples.size()==4,"Comparison sample count is incorrect");
         require(samples[0].at("accepted_ordinal")==1 && samples[1].at("accepted_ordinal")==3 && samples[2].at("accepted_ordinal")==1,"Accepted frame ordinals are incorrect");
@@ -996,7 +1000,7 @@ int wmain(int argc,wchar_t** argv) {
         const auto unchanged=d.token;
         error(d.call("scene.transform",{{"object",entity},{"position",{4,2,3}},{"rotation",{0,0,0,0}},{"scale",{1,1,1}}}),"operation_failed");
         error(d.call("scene.set_property",{{"object",entity},{"property","rotation.w"},{"value",0}}),"operation_failed");
-        error(d.call("view.set",{{"patch",{{"gtao",true},{"ssil",true}}}}),"invalid_request");
+        error(d.call("view.set",{{"patch",{{"ssil",true}}}}),"invalid_request");
         d.ok("camera.set",{{"state",d.inspect().at("camera")}});d.ok("view.set",{{"patch",Json::object()}});
         require(d.token==unchanged && d.call("job.status",{{"job_id",cancelled_id}}).at("status")=="pending","Rejected or no-op requests cancelled unchanged rendering");
         error(d.call("job.cancel",{{"job_id",cancelled_id}}),"cancelled");error(d.call("job.cancel",{{"job_id",cancelled_id}}),"cancelled");

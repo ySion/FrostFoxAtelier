@@ -1447,7 +1447,7 @@ void SceneLit::validate(const Frame& frame,bool duplicate_mesh_keys) const {
         invalid(std::isfinite(element)&&std::abs(element)<=std::numeric_limits<float>::max(),"Scene Lit camera exceeds GPU float representation");
     const auto& s=frame.view.lit;invalid(frame.lights.size()<no_light_source&&s.direct_candidates>=1&&s.direct_candidates<=32,"Invalid Scene Lit light count or candidate budget");
     const auto finite=[](float v){return std::isfinite(v);};
-    invalid(finite(s.exposure_ev)&&s.exposure_ev>=-16&&s.exposure_ev<=16&&finite(s.shadow_bias)&&s.shadow_bias>0&&s.shadow_bias<=.1f&&finite(s.ao_radius)&&s.ao_radius>0&&
+    invalid(finite(s.exposure_ev)&&s.exposure_ev>=-16&&s.exposure_ev<=16&&finite(s.ao_radius)&&s.ao_radius>0&&
         finite(s.reflection_distance)&&s.reflection_distance>0&&finite(s.reflection_roughness)&&s.reflection_roughness>=0&&s.reflection_roughness<=1&&s.probe_update_budget>0&&s.probe_rays>=1&&s.probe_rays<=256&&s.antialiasing<=Antialiasing::smaa_t2x&&s.probe_visualization<=ProbeVisualization::distance&&finite(s.probe_radius)&&s.probe_radius>=.01f&&s.probe_radius<=.45f,"Invalid Scene Lit settings");
     for(float radiance:frame.environment)invalid(finite(radiance)&&radiance>=0&&radiance<=65504,"Invalid Scene Lit sky radiance");
     invalid(finite(s.sky_rotation)&&s.sky_rotation>=-180&&s.sky_rotation<=180,"Invalid Scene Lit sky rotation");

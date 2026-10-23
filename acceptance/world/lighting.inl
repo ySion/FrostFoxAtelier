@@ -292,12 +292,6 @@ void environment_and_group_writes() {
     take(world.write(environment.id(),paths,values));
     auto moved=Settings{};moved.probe_volumes[0].minimum={20,21,22};moved.probe_volumes[0].maximum={32,33,34};
     require(take(scene.environment())==moved,"A group write did not move the volume as one edit.");
-    // gtao and ssil exclude each other; a swap is only valid as a whole.
-    reject(world.write(environment.id(),path("ssil"),true),"Local GI was enabled alongside GTAO.");
-    const std::array swap_paths{path("ssil"),path("gtao")};const std::array<Scalar,2> swap_values{true,false};
-    take(world.write(environment.id(),swap_paths,swap_values));
-    moved.ssil=true;moved.gtao=false;
-    require(take(scene.environment())==moved,"A group write did not swap GTAO for Local GI.");
     const std::array sky_paths{path("sky_enabled"),path("sky_intensity")};
     const std::array<Scalar,2> too_bright{true,65504.5f},sky_values{true,2.f};
     reject(world.write(environment.id(),sky_paths,too_bright),"Sky radiance above the HDR scene range was accepted.");

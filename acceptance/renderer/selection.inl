@@ -13,7 +13,7 @@ void selection_depth_cases(render::Renderer& renderer,ui::PixelExtent extent) {
         0,0,-.1f/99.9f,1, 0,0,10.f/99.9f,0};
     frame.view.cavity.enabled=false;
     frame.view.lit.shadows=frame.view.lit.ddgi=frame.view.lit.gtao=false;
-    frame.view.lit.sssr=frame.view.lit.ssil=frame.view.lit.bloom=false;
+    frame.view.lit.sssr=frame.view.lit.bloom=false;
     const auto yellow=[](const std::uint8_t* p){return p[0]>225 && p[1]>150 && p[2]<80;};
     render::Capture capture;
     const auto draw=[&] {++drawing.id;check(take(prepared_render(renderer,frame,&capture)).status==render::FrameStatus::accepted,"selection depth frame accepted");};
@@ -90,7 +90,7 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
         0,1.5f,0,0, 0,0,-near_plane/(far_plane-near_plane),1,
         0,0,near_plane*far_plane/(far_plane-near_plane),0}};
     frame.view.lit.shadows=frame.view.lit.ddgi=frame.view.lit.gtao=false;
-    frame.view.lit.sssr=frame.view.lit.ssil=frame.view.lit.bloom=false;
+    frame.view.lit.sssr=frame.view.lit.bloom=false;
     render::Capture capture;
     const auto draw=[&] {
         ++drawing.id;

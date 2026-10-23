@@ -296,31 +296,20 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(!take(workspace.apply_view(document,{ui::ActionKind::activate,control::guide_background,true})) &&
         workspace.view.background==renderer::Background::gradient,"Scene Lit can enable a studio gradient or destroys the stored studio preference.");
     const auto antialiasing=workspace.view.lit.antialiasing;
-    constexpr std::array effects{ViewOption::shadows,ViewOption::ddgi,ViewOption::gtao,ViewOption::sssr,ViewOption::bloom,ViewOption::ssil};
+    constexpr std::array effects{ViewOption::shadows,ViewOption::ddgi,ViewOption::gtao,ViewOption::sssr,ViewOption::bloom};
     for(const auto effect:effects) {
         require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(effect),false})),"Scene Lit effect toggle was not routed.");
         require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(effect),false})),"Repeated Scene Lit toggle was rejected.");
     }
     require(!workspace.view.lit.shadows && !workspace.view.lit.ddgi && !workspace.view.lit.gtao && !workspace.view.lit.sssr &&
-        !workspace.view.lit.bloom && !workspace.view.lit.ssil && workspace.view.lit.antialiasing==antialiasing,
+        !workspace.view.lit.bloom && workspace.view.lit.antialiasing==antialiasing,
         "Scene Lit effect toggles were coupled, changed AA policy or were non-idempotent.");
     require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::gtao),true})) &&
-        workspace.view.lit.gtao && !workspace.view.lit.ssil,
-        "Enabling GTAO did not choose the independent occlusion policy.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::ssil),true})) &&
-        workspace.view.lit.ssil && !workspace.view.lit.gtao,
-        "Local GI did not replace GTAO through the formal view action.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::ssil),false})) &&
-        !workspace.view.lit.ssil && !workspace.view.lit.gtao,
-        "Disabling Local GI unexpectedly enabled GTAO.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::ssil),true})),
-        "Local GI could not be enabled after disabling the shared local policy.");
-    require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::gtao),true})) &&
-        workspace.view.lit.gtao && !workspace.view.lit.ssil,
-        "GTAO did not replace Local GI through the formal view action.");
+        workspace.view.lit.gtao && !workspace.view.lit.sssr && !workspace.view.lit.bloom,
+        "Enabling GTAO did not change only GTAO through the formal view action.");
     require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::field(ViewOption::gtao),false})) &&
-        !workspace.view.lit.gtao && !workspace.view.lit.ssil && document.undo_count()>history,
-        "Disabling the chosen local policy enabled another effect or changed scene history.");
+        !workspace.view.lit.gtao && document.undo_count()>history,
+        "Disabling GTAO enabled another effect or did not enter scene history.");
     for(std::uint64_t i=0;i<4;++i) {
         require(take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::choice(ViewOption::antialiasing,static_cast<unsigned>(i)),{}})) &&
             take(workspace.apply_view(document,{ui::ActionKind::activate,world_control::choice(ViewOption::antialiasing,static_cast<unsigned>(i)),{}})) &&
@@ -422,8 +411,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(workspace.set_view_settings(document,diagnostic_view));
     require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
     const auto saved_json=nlohmann::json::parse(saved);
-    require(saved_json.at("version")==8 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
-        !environment_record(saved_json).contains("probe_debug"),"Scene v8 kept a world section or saved viewport diagnostics.");
+    require(saved_json.at("version")==9 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
+        !environment_record(saved_json).contains("probe_debug"),"Scene v9 kept a world section or saved viewport diagnostics.");
     // Every version 6 World key reaches its Environment field; distinct volumes catch a slot or axis mix-up.
     auto authored=candidate;
     for(std::uint32_t i=0;i<4;++i) {
@@ -437,8 +426,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
             "Scene v6 World settings did not reach the Environment field by field.");
         const auto upgraded_saved=nlohmann::json::parse(take(upgraded->serialize()));
         auto upgraded_reopened=take(Session::deserialize(upgraded_saved.dump(),project));
-        require(upgraded_saved.at("version")==8 && !upgraded_saved.contains("world") && settings(*upgraded_reopened)==authored,
-            "Scene v6 World settings did not save and reopen as a v8 Environment.");
+        require(upgraded_saved.at("version")==9 && !upgraded_saved.contains("world") && settings(*upgraded_reopened)==authored,
+            "Scene v6 World settings did not save and reopen as a v9 Environment.");
     }
     auto v4=nlohmann::json{{"version",4},{"actors",nlohmann::json::array()},{"world",world_keys(candidate)}};v4["world"].erase("direct_candidates");
     v4["world"]["shadow_light_budget"]=16;v4["world"]["shadow_samples"]=64;
@@ -449,8 +438,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto migrated_saved=take(migrated->serialize());
     auto reopened=take(Session::deserialize(migrated_saved,project));
     require(settings(*reopened)==migrated_settings && take(reopened->serialize())==migrated_saved &&
-        nlohmann::json::parse(migrated_saved).at("version")==8,
-        "Migrated v4 scene did not save and reopen through the current v8 author format.");
+        nlohmann::json::parse(migrated_saved).at("version")==9,
+        "Migrated v4 scene did not save and reopen through the current v9 author format.");
     for(const auto key:{"shadow_light_budget","shadow_samples"}) {
         for(const auto& bad:std::array<nlohmann::json,5>{-1,65,1.5,"8",true}) {
             auto invalid_legacy=v4;invalid_legacy["world"][key]=bad;

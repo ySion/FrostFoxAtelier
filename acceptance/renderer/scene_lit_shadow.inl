@@ -14,7 +14,7 @@ void shadow_cases(Fixture& f) {
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;options={};
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     options.shadows=true;options.antialiasing=render::Antialiasing::none;
     const auto quad=std::make_shared<const Mesh>(std::vector<Vertex>{
         {{-.5f,-.5f,0},{0,0,-1}},{{.5f,-.5f,0},{0,0,-1}},{{.5f,.5f,0},{0,0,-1}},

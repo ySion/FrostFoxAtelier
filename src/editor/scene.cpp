@@ -77,9 +77,6 @@ rendering::SceneLightingSettings world_settings(const Json& data,bool legacy_sha
         }
         take(set_view_option(candidate,option->option,number));
     }
-    // Reject contradictory input instead of letting the interactive mutual-
-    // exclusion setter choose according to JSON object iteration order.
-    if(data.value("gtao",true) && data.value("ssil",false)) throw std::runtime_error("GTAO and Local GI are mutually exclusive.");
     if(const auto* error=rendering::scene_lighting_error(candidate.lit)) throw std::runtime_error(error);
     return candidate.lit;
 }
@@ -373,7 +370,7 @@ std::string legacy_type(std::string name) {
 struct LegacyActorSelection {std::uint64_t entity{};std::vector<std::pair<std::uint64_t,std::uint64_t>> components;};
 Json migrate_scene(Json source,std::vector<LegacyActorSelection>* selections=nullptr) {
     const auto version=json_format::identity(source.at("version"));
-    if(version>=6 && version<=8) return source;
+    if(version>=6 && version<=9) return source;
     if(version<1 || version>5) throw std::runtime_error("Unsupported scene format version.");
     fields(source,{"version","actors","world"});
     if(!source.contains("actors")) throw std::runtime_error("Legacy scene requires an Actor directory.");
@@ -675,7 +672,7 @@ struct Session::GraphCodec {
             for(auto& entity:entities) if(entity.is_object())
                 if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
                     for(auto& part:*parts) if(environment(part) && !part.contains("sky_map")) part["sky_map"]="";
-            data["version"]=8;
+            data["version"]=9;
         };
         if(const auto version=json_format::identity(data.at("version"));version!=6) {
             bool found{};
@@ -683,6 +680,7 @@ struct Session::GraphCodec {
                 if(const auto parts=entity.find("components");parts!=entity.end() && parts->is_array())
                     for(const auto& part:*parts) found|=environment(part);
             if(version==7) sky_maps();
+            data["version"]=9;
             return found;
         }
         Json settings=Json::object(),unknown=Json::object();bool supplied{};
@@ -918,7 +916,7 @@ struct Session::GraphCodec {
             merge_retained(value,object);
             values.push_back(std::move(value));
         }
-        graph.data={{"version",8},{"next_id",std::to_string(session.next_local_id_)},
+        graph.data={{"version",9},{"next_id",std::to_string(session.next_local_id_)},
             {"roots",std::move(root_keys)},{"entities",std::move(values)},{"materials",std::move(material_values)}};
         if(document && !session.retained_document_.record.empty())
             overlay(graph.data,restore_references(Json::parse(session.retained_document_.record)));
@@ -1117,7 +1115,7 @@ struct Session::GraphCodec {
     static Prepared construct(Session& session,const Graph& graph,Project* project,bool keep_ids,Load& load) {
         const auto& data=graph.data;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
-        if(json_format::identity(data.at("version"))!=8) throw std::runtime_error("Object graph requires scene format version 8.");
+        if(json_format::identity(data.at("version"))!=9) throw std::runtime_error("Object graph requires scene format version 9.");
         for(const auto& [name,value]:data.items())
             if(name!="version" && name!="next_id" && name!="roots" && name!="entities" && name!="materials") {
                 if(load.document) load.keep({},{name},value,world::DiagnosticKind::unknown_key,"Unknown scene key kept from the saved scene.");

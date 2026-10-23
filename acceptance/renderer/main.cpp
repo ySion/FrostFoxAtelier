@@ -499,7 +499,7 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
     meshes[1].world=translation(8,0,2);
     frame.view.shading=render::Shading::scene_lit;frame.scene_identity=drawing.id;
     auto& lit=frame.view.lit;
-    lit.ddgi=lit.gtao=lit.sssr=lit.ssil=lit.bloom=false;
+    lit.ddgi=lit.gtao=lit.sssr=lit.bloom=false;
     lit.antialiasing=render::Antialiasing::none;
     stats=capture();
     check(stats.scene_instances==3 && stats.scene_culled_instances==1 && stats.scene_draw_calls==1 &&

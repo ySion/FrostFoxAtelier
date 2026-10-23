@@ -9,7 +9,7 @@ void clustered_cases(Fixture& f) {
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;options={};
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=options.shadows=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=options.shadows=false;
     options.antialiasing=render::Antialiasing::none;options.direct_cluster_inspect=true;
     f.room.meshes.assign(1,{});
     auto& plane=f.room.meshes.front();plane.stable_key=1;plane.world=box(0,0,0,1,1,1);

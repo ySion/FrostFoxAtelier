@@ -135,7 +135,7 @@ Entity/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提
 
 外部图片改写目前不会自动替换已载入 Runtime 中的 Texture 对象。Project Refresh 更新目录及解析缓存；已有会话保留既有图片版本，重新打开工程/场景重新解析。替换为其他 Texture GUID 会立即使用对应资源。本轮没有接入 UI Image 控件的 Runtime Texture 资源。
 
-Scene 统一写出 v8：顶层 `materials` 按文档 ID 保存材质定义，StaticMeshComponent 的槽绑定引用同一 ID 并保留赋予意图；实例保存父 GUID、显式覆盖名称和值。共享匿名材质往返后仍是同一个对象。旧逐槽 payload 仅在读取边界兼容，完整格式见[项目场景](../world/project-scenes.md#scene-v8)。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
+Scene 统一写出 v9：顶层 `materials` 按文档 ID 保存材质定义，StaticMeshComponent 的槽绑定引用同一 ID 并保留赋予意图；实例保存父 GUID、显式覆盖名称和值。共享匿名材质往返后仍是同一个对象。旧逐槽 payload 仅在读取边界兼容，完整格式见[项目场景](../world/project-scenes.md#scene-v9)。Runtime ObjectId、CPU/GPU 地址不进入文件。Control 复现导出在独立副本中写入已载入材质的实际草稿，验证贴图与当前载入内容一致，不保存原工程。
 
 新增 `editor_material_acceptance` 是真实 Project → Runtime → World → Session → SceneSnapshot/DSL → 文件重开的端到端消费者；同时应运行原 document/project scene 消费者和 renderer GPU 材质验收。新增用例不等于已验收通过，实际结果以本次集成日志为准。
 
@@ -143,14 +143,14 @@ Scene 统一写出 v8：顶层 `materials` 按文档 ID 保存材质定义，Sta
 
 - Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 写出 `version: 5`，继续读取 v1/v2/v3/v4。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
-- Scene v8 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
+- Scene v9 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
 - World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。天空贴图不是 World 选项，由 `Session::set_sky_map(SkyAsset)` 单独设置：资产来自 `Project::sky_map`，空资产表示清除；同样记一条历史，没有 Environment 时在同一历史项里创建它，停用时拒绝，无变化为空操作。撤销和重做恢复历史里保存的那个指针，不重新解析键。`sky_rotation` 是普通属性。v6 的根 `world` 段与 Sky Light 在读取时并入 Environment，见[项目场景](../world/project-scenes.md#v6--v7-迁移)；v1–v3 使用默认值。v4 的 `shadow_light_budget` / `shadow_samples` 仅在兼容读取边界严格校验后丢弃，v5/v6 不接受这两个旧字段；视口诊断从不进入 Scene。
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质与灯光；天光由宿主按 Environment 求出 `Frame.environment`，没有 Environment 或天光关闭时为零。探针滚动位置、历史、统计、可视化与相机不写入 Scene。
-- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。旧 Scene v1–v5 经严格导入进入 Entity 模型，保存统一写出 v8，旧 `actors` 目录与 world.Actor / world.StaticMeshActor / world.SceneComponent 名称只在严格导入边界解释，不作为现行 Runtime 或 Control 别名。
+- TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。旧 Scene v1–v5 经严格导入进入 Entity 模型，保存统一写出 v9，旧 `actors` 目录与 world.Actor / world.StaticMeshActor / world.SceneComponent 名称只在严格导入边界解释，不作为现行 Runtime 或 Control 别名。
 - Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
 - 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data；网格的默认材质或其贴图不可用时以替代品显示，诊断记在该组件的 `mesh` 字段。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）遇到任何诊断都拒绝。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing` 与 `mesh.default_materials`（每个默认槽的 `slot`、`object`、`source`、`missing`），材质槽带 `missing`。v6 中未知或不符的 World 设置随迁移成为 Environment 组件的保留数据，显示在它的 Saved Data。当前限制：无法并入 Environment 的部分（`world` 段整体不是对象，或未知键与 Environment 已用的字段名相同）作为文档级保留数据，只在 Project Output 报告，面板中没有对应显示。
 - 物理角色、布娃娃/部件、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。旧 constraint_target 序号仅在 v1–v5 导入时解析。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
-- SceneQueryComponent 复用 Scene v8 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
+- SceneQueryComponent 复用 Scene v9 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源、解析内容和不持久化的槽默认材质（编辑器按网格资产解析，`Session::mesh_defaults`），`read_static_mesh` 覆盖 Detached 与空网格。没有组件的消费者用 `Session::mesh_surfaces` 取同一份默认材质下每个槽的表面。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
 - 重建先创建全部真实 Entity/Component，恢复值、资源与普通引用，再恢复有序组合和 Entity 空间参考，完整 forest 经统一批次注册；无效关系拒绝候选。加载 StaticMeshEntity 不重复调用带默认组成的快捷工厂。
 - 保存先完成有效文本草稿，经同目录临时文件、FlushFileBuffers 和替换发布。写入失败保留旧文件；这不是跨文件事务或断电恢复保证。工程标记最后创建，未完成创建不会伪装成可打开工程。存档提交与目录刷新结果分开：成功保存后即更新保存点，资源刷新失败显示警告，不将成功写入误报为保存失败。
@@ -221,7 +221,7 @@ class project.Move : world.Component {
 Project 配置 + Source 文件快照
   → Session::Prepare 注册原生 World / Physics 类型
   → ProjectCode → Source Program 准备并发布项目类型、行为
-  → Scene v8 解析类型名、属性、资源和关系
+  → Scene v9 解析类型名、属性、资源和关系
   → 停止的编辑文档
   → Run：序列化当前场景到 Cache/Play，启动同一可执行文件的运行入口
   → 独立 Session → start → update → stop

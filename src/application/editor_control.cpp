@@ -18,7 +18,8 @@ using control::Json;using control::Failure;
 // 3: the view carries the sky (sky_enabled, sky_intensity, sky_color_x/y/z).
 // 4: direct_reference, direct_clustered and direct_shadow_cache are removed; direct
 //    light has one clustered path with cached shadows.
-constexpr unsigned repro_view_schema=4;
+// 5: ssil and shadow_bias are removed; neither had a renderer effect.
+constexpr unsigned repro_view_schema=5;
 constexpr std::array<std::string_view,3> removed_view_options{"direct_reference","direct_clustered","direct_shadow_cache"};
 constexpr unsigned inspect_page_items=256;
 constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
@@ -147,7 +148,6 @@ Json performance_json(const editor::FramePerformance& performance) {
 }
 renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch,std::array<float,3> focus) {
     if(!patch.is_object()) throw Failure("invalid_request","Display patch must be an object");
-    if(patch.value("gtao",false) && patch.value("ssil",false)) throw Failure("invalid_request","GTAO and Local GI are mutually exclusive");
     std::set<editor::ViewOption> assigned;
     for(const auto& [name,value]:patch.items()) {
         if(std::ranges::find(removed_view_options,name)!=removed_view_options.end())

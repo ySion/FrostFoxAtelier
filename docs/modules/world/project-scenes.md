@@ -12,11 +12,11 @@ Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 
 
 属性记录由一个共用的叶解码器逐叶解码，场景加载、Play 增量和编辑器操作符参数都经过它。`editor::decode_properties`（[properties.hpp](../../../src/editor/properties.hpp)）是严格模式入口：目标是对象或调用方持有的记录值，未知字段、类型不符、越过硬边界都报错，不夹值；整数字段中可无损转换的浮点值照常接受；记录中缺省的字段保持原值。传入写入钩子时，内联叶交给钩子（例如收集成补丁），不写入目标；钩子不接收引用叶，所以不能与引用解析同时传入。Play 增量对已存在对象的 String 字段经 `World::write(ValueInput)` 整值写入，与标量叶一样经过类型规则与准入检查，被拒时整值恢复并以 error 级 `command_rejected` 报告。
 
-## Scene v8
+## Scene v9
 
-统一写出 v8，旧 v1–v7 读取时迁移，再按 v8 保存。顶层包含：
+统一写出 v9，旧 v1–v8 读取时迁移，再按 v9 保存。顶层包含：
 
-- `version: 8`、十进制字符串 `next_id`。World 设置是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，见下文 v6 迁移。
+- `version: 9`、十进制字符串 `next_id`。World 设置是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，见下文 v6 迁移。
 - `roots`：有序顶层 Entity 文档 ID。
 - `entities`：Entity 记录，每个包含 `id / type / name / enabled / properties / children / components / space`。
 - `space`：null 表示无空间；否则保存 position、rotation、scale 和 origin。origin 为 null 时继承组合祖先，为字符串 `"0"` 时使用世界，为 Entity ID 字符串时使用显式空间参考。
@@ -36,9 +36,13 @@ Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字�
 - 保留数据中的引用与活引用规则相同：子树导出拒绝图外目标，同一 Session 内复制继续指向原目标；目标在文档中被删除时写为 null 并报告 `reference_dropped`，撤销删除后恢复。
 - 编辑某字段会释放它的保留值；`Session::discard_retained` 丢弃一个对象的全部保留值，占位对象仍保留原类型。两者都进入 Undo/Redo。
 
+### v8 → v9
+
+v9 删除 EnvironmentComponent 的 `shadow_bias` 与 `ssil`。读取 v8 只把版本改为 9；仍带这两个键的记录按未知字段保留。
+
 ### v7 → v8 迁移
 
-v8 只给 EnvironmentComponent 增加 `sky_map`。读取 v7 时，没有该键的 Environment 记录补上空字符串，其余不变，保存写为 v8。v8 记录缺少 `sky_map` 时报告 `mismatch` warning，天空没有贴图；值不是字符串时同样报告 `mismatch`，原值保留并写回。
+v8 给 EnvironmentComponent 增加 `sky_map`。读取 v7 时，没有该键的 Environment 记录补上空字符串，其余不变。记录缺少 `sky_map` 时报告 `mismatch` warning，天空没有贴图；值不是字符串时同样报告 `mismatch`，原值保留并写回。
 
 `sky_map` 是隐藏字段，没有公开 FieldId，`World::write` 和属性记录都碰不到它；只能经 `presentation::set_sky_map_binding` 与解析出的 `rendering::SkyMapRef` 成对设置。加载经 `Project::sky_map` 解析键：同一个键在 Project 刷新看到文件变化之前返回同一个指针，所以重新打开或撤销都不会让 SceneSnapshot 误判天空变了。
 
@@ -46,12 +50,12 @@ v8 只给 EnvironmentComponent 增加 `sky_map`。读取 v7 时，没有该键�
 
 v6 把 World 设置存在顶层 `world` 段（键名来自与 World Settings、Control 共用的 ViewOption 目录），天光是 kind 为 sky 的 LightComponent。读取 v6 文档时：
 
-- `world` 段的每个键写到 EnvironmentComponent 的对应字段：`probe_volume_N_min_x` 写到 `volumeN.minimum.x`，`probe_volume_N_count_x` 写到 `volumeN.count_x`，其余同名。未知键、类型不符或越界的值与普通属性一样按上文的加载策略处理，保留在该组件上；违反跨字段规则（例如 GTAO 与 Local GI 同时开启）时整个组件取默认值，原记录整体保留。`world` 不是对象时按 `mismatch` 保留在文档级；缺少 `world` 段时报告 warning。
+- `world` 段的每个键写到 EnvironmentComponent 的对应字段：`probe_volume_N_min_x` 写到 `volumeN.minimum.x`，`probe_volume_N_count_x` 写到 `volumeN.count_x`，其余同名。未知键、类型不符或越界的值与普通属性一样按上文的加载策略处理，保留在该组件上；违反跨字段规则（例如体积的 minimum 不小于 maximum）时整个组件取默认值，原记录整体保留。`world` 不是对象时按 `mismatch` 保留在文档级；缺少 `world` 段时报告 warning。
 - 按组合前序的第一个 Sky Light 提供 `sky_color`、`sky_intensity`（缺省分别为 (1,1,1) 和 1），`sky_enabled` 为该组件、所属 Entity 及全部祖先都启用。其余字段对天光本来无效，直接丢弃。之后的 Sky Light 各报一条 `conflict` warning 并移除，数据不保留。所有 Sky 组件都从原 Entity 上移除，Entity 保留名称、空间和其他组件；变空的 Entity 报一条 info 级 `converted`。
 - 只有 `world` 段至少有一个键或存在 Sky Light 时才生成 Environment：一个名为 Environment、没有空间的根 Entity，追加在 `roots` 末尾，Entity 与组件的 ID 依次取 `next_id` 和 `next_id+1`，`next_id` 增加 2。仓库里的示例都是 `world: {}`：Scene Lit Room 因 Sky Light 生成 Environment，其余不生成。
 - 子树导入（`instantiate_subtree`）不是文档：v6 的 `world` 段被忽略，Sky Light 不导入并报 `conflict` warning。
 
-v1–v5 先按严格导入升到 v6（v4 的旧阴影字段在这一步校验后丢弃），再走上面的迁移，然后经 v7 → v8。仓库里的示例场景保持 v6，打开时迁移，保存后写为 v8。
+v1–v5 先按严格导入升到 v6（v4 的旧阴影字段在这一步校验后丢弃），再走上面的迁移，然后经 v7 → v8 → v9。仓库里的示例场景保持 v6，打开时迁移，保存后写为 v9。
 
 `Session::lighting_supplied()` 表示文件是否提供了 World 光照：v6 的 `world` 段至少有一个键，或 v7 及以后的文件中有 EnvironmentComponent；只因 Sky Light 生成的 Environment 不算。示例入口与 `--scene-lit-camera` 只在未提供时拟合 DDGI 体积（`initialize_environment`：没有 Environment 时创建它，不进历史、不标脏，下次保存写出），之后该标志为真。
 

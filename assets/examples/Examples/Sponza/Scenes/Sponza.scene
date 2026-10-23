@@ -319,7 +319,6 @@
             "probe_update_budget": 672,
             "reflection_distance": 30.0,
             "reflection_roughness": 0.6000000238418579,
-            "shadow_bias": 0.0020000000949949026,
             "shadows": true,
             "sky_color": {
               "x": 1.0,
@@ -329,7 +328,6 @@
             "sky_enabled": true,
             "sky_intensity": 0.5,
             "sky_rotation": 65.0,
-            "ssil": false,
             "sssr": true,
             "volume0": {
               "blend_cells": 0.0,

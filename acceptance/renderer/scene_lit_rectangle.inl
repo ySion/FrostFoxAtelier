@@ -22,7 +22,7 @@ void rectangle_cases(Fixture& f) {
         f.frame.camera_cut=true;
     };
     f.frame.environment={};
-    options={};options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=options.shadows=false;
+    options={};options.ddgi=options.gtao=options.sssr=options.bloom=options.shadows=false;
     options.antialiasing=render::Antialiasing::none;
     f.room.meshes.assign(1,{});
     auto& plane=f.room.meshes.front();plane.stable_key=1;plane.world=box(0,0,0,1,1,1);
