@@ -62,7 +62,7 @@ for (const auto& hit : result->hits) {
 
 这是 Runtime 注册的真实 `physics.SceneQueryComponent : world.Component`，可通过 Entity Structure → Add Component 添加；同一个 Entity 可有多个查询。它只描述和执行查询，不拥有刚体，也不占用 Entity 位姿写入权。
 
-公开配置随 Scene v6 保存：settings、局部 start/end、automatic、ignore_self，以及公开持有 Entity 引用序列 `ignored_entities`。枚举按名称保存；请求和结果为私有运行状态，不参与序列化、复制文档或存档。查询使用 owner Entity 的完整世界矩阵变换端点，支持空间链组合产生的有限剪切，不要求分解为 TRS；需要独立摆放时将查询组件放在子 Entity。球半径使用世界单位，不随 Entity 缩放变化。配置每次采样读取，配置错误在执行时返回，不沿用旧成功结果。
+公开配置随场景保存：settings、局部 start/end、automatic、ignore_self，以及公开持有 Entity 引用序列 `ignored_entities`。枚举按名称保存；请求和结果为私有运行状态，不参与序列化、复制文档或存档。查询使用 owner Entity 的完整世界矩阵变换端点，支持空间链组合产生的有限剪切，不要求分解为 TRS；需要独立摆放时将查询组件放在子 Entity。球半径使用世界单位，不随 Entity 缩放变化。配置每次采样读取，配置错误在执行时返回，不沿用旧成功结果。
 
 - 默认 automatic=true：每个已完成物理步、所有模拟位姿回写后采样，在外部 `on_after_step` 之前发布。
 - automatic=false：调用 `request_query()`，在下一个实际固定步采样；重复请求合并，成功消费一次。没有子步或处于暂停时不自动更新。
@@ -83,16 +83,16 @@ void tick(float dt) {
 }
 ```
 
-Scene v6 在 `properties.ignored_entities` 中保存 `{"$ref":"Entity文档ID"}` 的引用数组，持有语义由 Runtime schema 决定；通用引用编码允许 null，但本查询绑定合同拒绝空目标。旧 Actor 中 ignore_self=true 的查询经严格导入时，将该 Actor 内所有 Primitive 的实际新 owner Entity 写入显式排除集合，保留原自组忽略范围；query owner 与旧 Actor 组不是同一范围。
+场景在 `properties.ignored_entities` 中保存 `{"$ref":"Entity文档ID"}` 的引用数组，持有语义由 Runtime schema 决定；通用引用编码允许 null，但本查询绑定合同拒绝空目标。
 
 完整命中列表与对象身份目前由 C++ 场景接口消费；没有为脚本新增对象引用返回 ABI 或一套对象包装。
 
 ## 场景与边界
 
-[Raycasts.scene](../../../assets/examples/Examples/Physic/Scenes/Raycasts.scene) 包含绿色 Overlap 目标、红色首个 Block、蓝色遮挡后目标、黄色通道 Ignore 对象、青色 Sensor，以及包含六个查询子 Entity 的发射器组合。六个查询都显式排除发射器碰撞 Entity 和视觉网格 Entity，保留旧 Actor 分组的自忽略行为。通道使用 7，对象掩码选择类别 1/2；球重叠单独选择类别 3 Sensor。官方场景验收检查身份、命中数、步号、保存重开和模拟后的真实 GPU 画面。视口尚无射线绘制和命中面板，查询结果通过 API/脚本及自动验收读取。
+[Raycasts.scene](../../../assets/examples/Examples/Physic/Scenes/Raycasts.scene) 包含绿色 Overlap 目标、红色首个 Block、蓝色遮挡后目标、黄色通道 Ignore 对象、青色 Sensor，以及包含六个查询子 Entity 的发射器组合。六个查询都显式排除发射器碰撞 Entity 和视觉网格 Entity。通道使用 7，对象掩码选择类别 1/2；球重叠单独选择类别 3 Sensor。官方场景验收检查身份、命中数、步号、保存重开和模拟后的真实 GPU 画面。视口尚无射线绘制和命中面板，查询结果通过 API/脚本及自动验收读取。
 
 已有用户副本的 Physic 目录不会被模板更新覆盖。缺少新场景时，可把此新文件复制到用户工程的 `Examples/Physic/Scenes/`，再刷新并打开；不要替换已编辑的场景。
 
-当前查询返回已登记的 Primitive 物理体（含车辆底盘和静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。
+当前查询返回已登记的 Primitive 物理体（含静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。
 
 设计参考：[UE Trace 概览](https://dev.epicgames.com/documentation/unreal-engine/traces-in-unreal-engine---overview)、[Raycast 使用](https://dev.epicgames.com/documentation/unreal-engine/traces-with-raycasts-in-unreal-engine)、[FCollisionQueryParams](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/FCollisionQueryParams)。后端细节以仓库固定版本的 [Jolt ShapeCast](../../../third_party/jolt/Jolt/Physics/Collision/ShapeCast.h) 为准。实际覆盖与证据见[物理验收](acceptance.md)。

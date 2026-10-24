@@ -58,10 +58,11 @@ void verify_procedural_graph() {
         nodes.at("moved").at("inputs")==Json{{"input","grid.output"}} && nodes.at("grid").at("inputs")==Json::object() &&
         nodes.at("promote").at("position")==Json::array({100.5,-40.25}),
         "Connections were not saved by port and output name in connection order, or a position was lost.");
+    // Scene properties write the shortest decimal that restores the float, not its widened double.
     require(nodes.at("promote").at("type")=="procedural.Promote" &&
         nodes.at("promote").at("properties")==Json{{"name","Cd"},{"to","primitive"},{"reduce","sum"}} &&
         nodes.at("copied").at("properties").at("meshes")==Json::array({"fixture/cube"}) &&
-        nodes.at("moved").at("properties").at("rotate")==Json{{"x",0.0},{"y",.70710677f},{"z",0.0},{"w",.70710677f}} &&
+        nodes.at("moved").at("properties").at("rotate")==Json{{"x",0.0},{"y",.70710677},{"z",0.0},{"w",.70710677}} &&
         !nodes.at("merged").at("properties").contains("inputs"),
         "Node parameters were not saved as Scene properties, or the hidden connection list leaked into them.");
 

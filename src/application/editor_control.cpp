@@ -15,8 +15,9 @@
 namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
-// 3: the view carries the sky (sky_enabled, sky_intensity, sky_color_x/y/z).
-constexpr unsigned repro_view_schema=3;
+// Bumped whenever the frozen view's key set changes; repro.open accepts only this schema.
+constexpr unsigned repro_view_schema=5;
+constexpr std::array<std::string_view,3> removed_view_options{"direct_reference","direct_clustered","direct_shadow_cache"};
 constexpr unsigned inspect_page_items=256;
 constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
 template<class T> T take(Result<T> value) {if(!value) throw Failure("operation_failed",value.error().message);return std::move(*value);}
@@ -85,40 +86,69 @@ Json probe_inspection_json(const std::shared_ptr<const renderer::ProbeInspection
         {"light_endpoint_distance",ray.endpoint_distance},{"source_radius_range_area_min_distance_squared",ray.source_parameters}});
     return result;
 }
-Json performance_json(const editor::RenderPerformance& performance) {
+Json performance_json(const editor::FramePerformance& performance) {
     const auto& sample=performance.snapshot();
     constexpr std::array states{"unavailable","waiting","ready"};
     constexpr std::array aa_names{"off","taa","smaa","smaa_t2x"};
-    Json result{{"state",states[static_cast<unsigned>(sample.state)]},{"window_capacity",editor::RenderPerformance::window_size},
+    Json result{{"state",states[static_cast<unsigned>(sample.state)]},{"window_capacity",editor::FramePerformance::window_size},
         {"publish_interval_ms",250},{"samples",sample.samples},{"sequence",sample.sequence},{"frame_id",sample.frame_id},
         {"scene_identity",sample.scene_identity},{"domain_first_frame",sample.first_frame},
         {"extent",{sample.extent.width,sample.extent.height}},
         {"viewport",{sample.viewport.x,sample.viewport.y,sample.viewport.width,sample.viewport.height}},
         {"configuration",{{"antialiasing",aa_names[static_cast<unsigned>(sample.antialiasing)]},{"direct_candidates",sample.direct_candidates},
-            {"direct_reference",sample.direct_reference},{"direct_clustered",sample.direct_clustered},
-            {"direct_shadow_cache",sample.direct_shadow_cache},{"ddgi",sample.ddgi}}},
+            {"ddgi",sample.ddgi}}},
         {"logical_resource_bytes",sample.resource_bytes?Json(*sample.resource_bytes):Json(nullptr)},
         {"resource_semantics","Current logical Scene Lit allocation; excludes retired resources and physical residency"},
         {"total_semantics","Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present"},
         {"passes",Json::array()}};
-    const auto definitions=editor::RenderPerformance::passes();
-    for(std::size_t i=0;i<definitions.size();++i) {
-        const auto& pass=definitions[i];const auto& timing=sample.timings[i];const bool active=timing && timing->active_samples;
-        result["passes"].push_back({{"id",pass.key},{"title",pass.title},{"parent",pass.parent<0?Json(nullptr):Json(definitions[pass.parent].key)},
-            {"depth",pass.depth},{"included_in_total",pass.in_total},
-            {"state",!timing?"unavailable":timing->current_active?"measured":"skipped"},
+    // One row of either section; values without an observation are null.
+    const auto statistics=[](const std::optional<editor::FramePerformance::Timing>& timing) {
+        const bool active=timing && timing->active_samples;
+        return Json{{"state",!timing?"unavailable":timing->current_active?"measured":"skipped"},
             {"active_samples",timing?timing->active_samples:0},
             {"current_ms",timing && timing->current_active?Json(timing->current):Json(nullptr)},
             {"mean_ms",active?Json(timing->mean):Json(nullptr)},{"p95_ms",active?Json(timing->p95):Json(nullptr)},
-            {"share_percent",active && timing->share?Json(*timing->share):Json(nullptr)}});
+            {"max_ms",active?Json(timing->max):Json(nullptr)},{"share_percent",active && timing->share?Json(*timing->share):Json(nullptr)}};
+    };
+    const auto definitions=editor::FramePerformance::passes();
+    for(std::size_t i=0;i<definitions.size();++i) {
+        const auto& pass=definitions[i];auto row=statistics(sample.timings[i]);
+        row["id"]=pass.key;row["title"]=pass.title;row["parent"]=pass.parent<0?Json(nullptr):Json(definitions[pass.parent].key);
+        row["depth"]=pass.depth;row["included_in_total"]=pass.in_total;
+        result["passes"].push_back(std::move(row));
     }
+    const auto& cpu=sample.cpu;
+    Json phases=Json::array();
+    for(const auto* marker:timing::catalog()) {
+        auto phase=statistics(cpu.phases[marker->index()]);
+        phase["id"]=std::string(marker->key());phase["title"]=std::string(marker->title());
+        phase["parent"]=marker->parent()?Json(std::string(marker->parent()->key())):Json(nullptr);
+        phase["depth"]=timing::depth(*marker);phase["current_entries"]=cpu.current_entries[marker->index()];
+        phases.push_back(std::move(phase));
+    }
+    auto unattributed=statistics(cpu.unattributed);
+    unattributed["id"]="frame.unattributed";unattributed["title"]="Unattributed";unattributed["parent"]="frame";
+    unattributed["depth"]=1;unattributed["current_entries"]=nullptr;
+    phases.push_back(std::move(unattributed));
+    const auto* first=performance.first_structure_error();
+    result["cpu"]={{"state",cpu.samples?"ready":"waiting"},{"window_capacity",editor::FramePerformance::window_size},
+        {"samples",cpu.samples},{"sequence",cpu.sequence},{"frame_id",cpu.frame_id},
+        {"frame_interval_ms",cpu.interval?Json{{"mean",cpu.interval->mean},{"p95",cpu.interval->p95},{"max",cpu.interval->max}}:Json(nullptr)},
+        {"frames_per_second",cpu.interval?Json(1000/cpu.interval->mean):Json(nullptr)},
+        {"structure_errors",performance.structure_errors()},
+        {"first_structure_error",first?Json(std::string(first->key())):Json(nullptr)},
+        {"semantics","CPU wall time in milliseconds of accepted editor steps without capture, read from frame timing records. "
+            "Phases are inclusive and sum every entry in the step; frame.unattributed is the frame minus its direct children. "
+            "frame_interval_ms is between the begins of consecutive sampled steps. structure_errors counts every step since start, sampled or not."},
+        {"phases",std::move(phases)}};
     return result;
 }
 renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch,std::array<float,3> focus) {
     if(!patch.is_object()) throw Failure("invalid_request","Display patch must be an object");
-    if(patch.value("gtao",false) && patch.value("ssil",false)) throw Failure("invalid_request","GTAO and Local GI are mutually exclusive");
     std::set<editor::ViewOption> assigned;
     for(const auto& [name,value]:patch.items()) {
+        if(std::ranges::find(removed_view_options,name)!=removed_view_options.end())
+            throw Failure("invalid_request","Display option was removed: "+name+"; direct light always uses clustered light lists with cached shadows");
         const auto* option=editor::view_option(name);if(!option) throw Failure("invalid_request","Unknown display option: "+name);
         if(!assigned.insert(option->option).second) throw Failure("invalid_request","Display option specified through multiple names: "+name);
         double scalar{};
@@ -132,20 +162,6 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patc
         take(editor::set_view_option(view,option->option,scalar));
     }
     take(editor::validate_view_options(view,focus));return view;
-}
-renderer::ViewSettings repro_view(const Json& snapshot,bool legacy_shadow_settings,std::array<float,3> focus) {
-    if(!legacy_shadow_settings || !snapshot.is_object())return patched_view({},snapshot,focus);
-    auto migrated=snapshot;
-    // Only persisted repro input accepts retired settings. Validate the old
-    // authoring ranges, then retain today's defaults rather than infer reference mode.
-    for(const auto* name:{"shadow_light_budget","shadow_samples"}) {
-        const auto found=migrated.find(name);if(found==migrated.end())continue;
-        if(migrated.contains("direct_candidates"))throw Failure("invalid_request","Legacy shadow settings cannot be combined with direct_candidates");
-        const bool samples=std::string_view(name)=="shadow_samples";
-        static_cast<void>(integer(*found,samples?1u:0u,samples?64u:16u));
-        migrated.erase(found);
-    }
-    return patched_view({},migrated,focus);
 }
 Json scalar_json(const Scalar& scalar,const Runtime& runtime) {
     return std::visit([&](const auto& value)->Json {
@@ -190,6 +206,7 @@ const std::vector<Operation>& operations() {
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
         {"texture.import","Import a texture with a Project GUID",true,{{"path",str}},{"path"}},
+        {"mesh.import","Import an OBJ or glTF mesh with a Project GUID; glTF also publishes one default material per slot",true,{{"path",str}},{"path"}},
         {"material.inspect","Read a shared asset or instance object and its resolved reflected parameters",false,{{"asset",str},{"object",str}},{}},
         {"material.set_property","Edit one reflected shared or instance material parameter",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
         {"material.set_texture","Assign a texture asset to one shared material input",true,{{"object",str},{"input",str},{"texture",str}},{"object","input","texture"}},
@@ -284,21 +301,22 @@ struct EditorControl::Impl {
             {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
             {"frame_stats",{{"scene_draw_calls",s.scene_draw_calls},{"scene_instances",s.scene_instances},{"scene_culled_instances",s.scene_culled_instances},
-                {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},{"di_candidates",s.scene_lit_di_candidates},
+                {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},
                 {"spatial_light_sampling",{{"retained_sources",s.scene_lit_spatial_sources},{"nonempty_cells",s.scene_lit_spatial_cells},{"resource_bytes",s.scene_lit_spatial_bytes},{"uploaded",s.scene_lit_spatial_changed}}},
                 {"probe_volumes",probe_volumes_json(s.scene_lit_probe_volumes)},{"probe_volumes_source","cpu_layout_and_schedule"},
                 {"probe_inspection",probe_inspection_json(s.scene_lit_probe_inspection)}}},
             {"gpu_sample",{{"valid",s.scene_lit_gpu_timing_valid},{"frame_id",s.scene_lit_gpu_sample_frame_id},{"sequence",s.scene_lit_gpu_sample_sequence},{"pass_ms",s.scene_lit_gpu_ms},
-            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"direct_pass_ms",s.scene_lit_direct_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
-            {"direct_reconstruction_pass_ms",s.scene_lit_direct_reconstruction_gpu_ms},
-            {"direct_cluster_ms",s.scene_lit_direct_cluster_gpu_ms},
+            {"ddgi_pass_ms",s.scene_lit_ddgi_gpu_ms},{"ddgi_update_pass_ms",s.scene_lit_ddgi_update_gpu_ms},
+            {"direct_cluster_ms",s.scene_lit_direct_cluster_gpu_ms},{"direct_shading_ms",s.scene_lit_direct_shading_gpu_ms},
             {"shadow_cache_ms",s.scene_lit_shadow_cache_gpu_ms},
             {"shadow_cache",{{"faces",s.scene_lit_shadow_cache_faces},{"reused_faces",s.scene_lit_shadow_cache_reused_faces},
                 {"static_updates",s.scene_lit_shadow_cache_static_updates},{"dynamic_updates",s.scene_lit_shadow_cache_dynamic_updates},
                 {"draws",s.scene_lit_shadow_cache_draws},{"resolution_downgrades",s.scene_lit_shadow_cache_resolution_downgrades},
-                {"pressure_batches",s.scene_lit_shadow_cache_pressure_batches},{"near_plane_faces",s.scene_lit_shadow_cache_near_plane_faces},
-                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},{"clamped_taps",s.scene_lit_shadow_cache_clamped_taps},
-                {"rt_fallbacks",s.scene_lit_shadow_cache_rt_fallbacks},{"plane_fallbacks",s.scene_lit_shadow_cache_plane_fallbacks}}},
+                {"dropped_lights",s.scene_lit_shadow_cache_dropped_lights},{"near_plane_faces",s.scene_lit_shadow_cache_near_plane_faces},
+                {"missing_taps",s.scene_lit_shadow_cache_missing_taps},
+                {"plane_fallbacks",s.scene_lit_shadow_cache_plane_fallbacks},{"deferred_faces",s.scene_lit_shadow_cache_deferred_faces},
+                {"deferral_frames",s.scene_lit_shadow_cache_deferral_frames},{"atlas_cells",s.scene_lit_shadow_cache_atlas_cells},
+                {"pending_lights",s.scene_lit_shadow_cache_pending_lights}}},
             {"direct_cluster",{{"cells",s.scene_lit_direct_cluster_cells},{"overflows",s.scene_lit_direct_cluster_overflows},
                 {"max_sources",s.scene_lit_direct_cluster_max_sources},{"receiver_histogram",s.scene_lit_direct_receiver_histogram},
                 {"receiver_max_sources",s.scene_lit_direct_receiver_max_sources}}},
@@ -455,8 +473,15 @@ struct EditorControl::Impl {
         if(auto transform=world::read_transform(runtime,id)) result["transform"]={{"position",vector3(transform->position)},
             {"rotation",{transform->rotation.x,transform->rotation.y,transform->rotation.z,transform->rotation.w}},{"scale",vector3(transform->scale)}};
         if(auto bindings=presentation::read_material_bindings(runtime,id);bindings) {
-            if(const auto mesh=presentation::read_static_mesh(runtime,id))
-                result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()}};
+            if(const auto mesh=presentation::read_static_mesh(runtime,id)) {
+                auto defaults=Json::array();
+                for(const auto& binding:mesh->mesh.defaults) {
+                    const auto source=take(material::read_material(runtime,binding.resource.id())).source;
+                    defaults.push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",source},
+                        {"missing",app.document_->unavailable(editor::AssetKind::material,source)!=nullptr}});
+                }
+                result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()},{"default_materials",std::move(defaults)}};
+            }
             result["materials"]=Json::array();
             for(const auto& binding:*bindings) {
                 const auto state=take(material::read_material(runtime,binding.resource.id()));
@@ -573,8 +598,62 @@ struct EditorControl::Impl {
         data.drafts=Json::array();for(const auto& file:app.workspace_.source_editor.files()) if(file->dirty())
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
         for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id())))
-            if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved)
+            if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved) {
                 if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.first==mesh->mesh.source;})) data.meshes.emplace_back(mesh->mesh.source,mesh->mesh.resolved);
+            } else if(auto sky=presentation::read_sky_map(app.document_->world().runtime(),component.id());sky && sky->resolved)
+                if(std::ranges::none_of(data.skies,[&](const auto& entry){return entry.first==sky->source;})) data.skies.emplace_back(sky->source,sky->resolved);
+        if(app.project_) {
+            data.roots.assign(app.project_->roots().begin(),app.project_->roots().end());
+            // The repro holds what the scene references, whatever else this session loaded: the
+            // components' meshes and sky maps and every material the frozen scene defines (bound
+            // ones, instance parents and inline textures), and the keys a component keeps while it
+            // cannot resolve them. Project gives each the files of everything it references in turn.
+            // A live reference the catalogue lost fails the export; the key of a stand-in or of
+            // retained data is copied when the catalogue still has it, and otherwise stays in the
+            // scene without files.
+            const auto& doc=*app.document_;
+            std::set<std::filesystem::path> listed;
+            const auto add=[&](const std::string& key) {
+                for(auto& file:take(app.project_->asset_files(key))) if(listed.insert(file).second) data.files.push_back(std::move(file));
+            };
+            const auto optional=[&](editor::AssetKind kind,const std::string& key) {
+                if(const auto* entry=key.empty()?nullptr:app.project_->entry(key);entry && entry->kind==kind) add(key);
+            };
+            const auto live=[&](editor::AssetKind kind,const std::string& key) {
+                if(doc.unavailable(kind,key)) optional(kind,key);else if(!key.empty()) add(key);
+            };
+            const auto string_field=[](const Json& object,const char* name) {
+                const auto at=object.find(name);return at!=object.end() && at->is_string()?at->get<std::string>():std::string{};
+            };
+            const auto material_keys=[&](const Json& definition,const auto& reference) {
+                reference(editor::AssetKind::material,string_field(definition,"source"));reference(editor::AssetKind::material,string_field(definition,"parent"));
+                if(const auto value=definition.find("inline");value!=definition.end() && value->is_object())
+                    if(const auto textures=value->find("textures");textures!=value->end() && textures->is_object())
+                        for(const auto& texture:*textures) if(texture.is_object()) reference(editor::AssetKind::texture,string_field(texture,"source"));
+            };
+            for(const auto& [key,mesh]:data.meshes) add(key);
+            for(const auto& [key,map]:data.skies) add(key);
+            const auto scene=editor::json_format::parse(data.scene);
+            if(const auto materials=scene.find("materials");materials!=scene.end()) for(const auto& definition:*materials) material_keys(definition,live);
+            if(const auto entities=scene.find("entities");entities!=scene.end()) for(const auto& entity:*entities) for(const auto& component:entity.at("components")) {
+                optional(editor::AssetKind::mesh,string_field(component,"mesh"));optional(editor::AssetKind::sky,string_field(component,"sky_map"));
+                if(const auto bindings=component.find("materials");bindings!=component.end() && bindings->is_array())
+                    for(const auto& binding:*bindings) if(binding.is_object()) material_keys(binding,optional);
+            }
+            // A mesh's slot defaults are not in the scene; asset_files reaches them through the mesh.
+            auto& runtime=app.document_->world().runtime();
+            for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(runtime,entity.id())))
+                if(auto mesh=presentation::read_static_mesh(runtime,component.id())) for(const auto& binding:mesh->mesh.defaults) {
+                    const auto source=take(material::read_material(runtime,binding.resource.id())).source;const auto* entry=app.project_->entry(source);
+                    if(!doc.unavailable(editor::AssetKind::material,source) && (!entry || !listed.contains(entry->path)))
+                        throw Failure("dependency_mismatch","A mesh's default material is no longer in the project: "+source);
+                }
+            // A referenced material exports its live draft, whose textures may differ from the saved file's.
+            std::erase_if(data.materials,[&](const editor::MaterialAsset& asset) {
+                const auto* entry=app.project_->entry(asset.key);return !entry || !listed.contains(entry->path);
+            });
+            for(const auto& asset:data.materials) for(const auto& texture:asset.textures) live(editor::AssetKind::texture,texture);
+        }
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
         data.manifest["selection_indices"]=Json::array();const auto members=take(app.document_->world().members());
@@ -711,11 +790,12 @@ struct EditorControl::Impl {
         }
         idle();
         if(op=="op.call") return call_operator(args);
-        if(op.starts_with("material.") || op=="texture.import") {
+        if(op.starts_with("material.") || op=="texture.import" || op=="mesh.import") {
             if(!app.project_) throw Failure("not_ready","No project is open");
             auto& project=*app.project_;
             if(op=="material.create") return {{"asset",take(project.create_material(control::wide(text(args.at("path")))))}};
             if(op=="texture.import") return {{"asset",take(project.import_texture(control::wide(text(args.at("path")))))}};
+            if(op=="mesh.import") return {{"asset",take(project.import_mesh(control::wide(text(args.at("path")))))}};
             if(op=="material.save") {
                 take(doc.save_material(project,text(args.at("asset"))));const auto refreshed=project.refresh();
                 Json result{{"saved",true}};if(!refreshed) result["catalog_warning"]=refreshed.error().message;return result;
@@ -734,8 +814,15 @@ struct EditorControl::Impl {
             ObjectId component;std::string slot;
             if(op=="material.override") {
                 component=object(args.at("component"));slot=text(args.at("slot"));
+                // As in Parameters: a slot showing its mesh default overrides an instance of that default.
                 const auto bindings=take(presentation::read_material_bindings(runtime,component));const auto at=std::ranges::find(bindings,slot,&presentation::MaterialBinding::slot);
-                if(at==bindings.end()) throw Failure("invalid_request","Assign a material to this slot first");target=at->resource.id();
+                if(at!=bindings.end()) target=at->resource.id();
+                else {
+                    const auto mesh=take(presentation::read_static_mesh(runtime,component));
+                    const auto fallback=std::ranges::find(mesh.mesh.defaults,slot,&presentation::MaterialBinding::slot);
+                    if(fallback==mesh.mesh.defaults.end()) throw Failure("invalid_request","Assign a material to this slot first");
+                    target=fallback->resource.id();
+                }
             }
             if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
             const auto properties=take(doc.properties(target));const auto name=text(args.at("property"));const auto found=std::ranges::find(properties,name,&editor::Property::name);
@@ -799,64 +886,42 @@ struct EditorControl::Impl {
         else if(op=="repro.open") {
             replaceable();const std::filesystem::path root=control::wide(text(args.at("directory")));
             const auto manifest=control_artifacts::validate_repro(root);
-            const auto view_schema=manifest.contains("view_schema")?integer(manifest.at("view_schema"),1,repro_view_schema):1u;
+            if(manifest.value("view_schema",Json())!=repro_view_schema) throw Failure("invalid_request","Repro view schema is not current; export the repro again");
             auto camera=app.camera_;if(!camera.set_state(camera_state(manifest.at("camera")))) throw Failure("invalid_request","Invalid repro camera");
             const auto focus=camera.state().target;
-            auto view=repro_view(manifest.at("view"),view_schema==1,{focus.x,focus.y,focus.z});
-            auto project=take(editor::Project::open(root/"Project"));
-            const auto scene_text=take(editor::read_file(take(project.resolve(project.startup_scene()))));
-            const auto scene=editor::json_format::parse(scene_text);
-            const auto scene_version=editor::json_format::identity(scene.at("version"));
-            if(scene_version>=4 && scene_version<7) {
-                auto authored=repro_view(scene.at("world"),scene_version==4,{focus.x,focus.y,focus.z});
-                // These versions kept the sky in a Sky Light, not the world section; the Environment check below covers it.
-                authored.lit.sky_enabled=view.lit.sky_enabled;authored.lit.sky_color=view.lit.sky_color;authored.lit.sky_intensity=view.lit.sky_intensity;
-                if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))
-                    throw Failure("dependency_mismatch","Repro frame snapshot disagrees with its Scene World settings");
-            }
-            const bool legacy_scene=scene_version<6;
-            const auto& frozen_entities=scene.at(legacy_scene?"actors":"entities");std::vector<unsigned> indices;
+            auto view=patched_view({},manifest.at("view"),{focus.x,focus.y,focus.z});
+            std::vector<unsigned> indices;
             for(const auto& index:manifest.at("selection_indices")) {
                 const auto i=integer(index,0,editor::Session::maximum_entities);
-                if(i>=frozen_entities.size() || std::ranges::find(indices,i)!=indices.end()) throw Failure("dependency_mismatch","Invalid repro selection");indices.push_back(i);
+                if(std::ranges::find(indices,i)!=indices.end()) throw Failure("dependency_mismatch","Invalid repro selection");indices.push_back(i);
             }
-            std::optional<std::pair<unsigned,unsigned>> inspection;
+            std::optional<unsigned> inspection;
             if(manifest.contains("inspection")) {
-                const auto& value=manifest["inspection"];
-                if(legacy_scene) control::fields(value,{"actor","component"});else control::fields(value,{"entity","component"});
-                auto a=integer(value.at(legacy_scene?"actor":"entity"),0,editor::Session::maximum_entities),c=integer(value.at("component"),0,editor::Session::maximum_components);
-                if(indices.size()!=1 || indices[0]!=a || c>=frozen_entities[a].at("components").size()) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection={{a,c}};
+                const auto& value=manifest["inspection"];control::fields(value,{"entity","component"});
+                const auto a=integer(value.at("entity"),0,editor::Session::maximum_entities),c=integer(value.at("component"),0,editor::Session::maximum_components);
+                if(indices.size()!=1 || indices[0]!=a) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection=c;
             }
-            std::vector<std::pair<std::uint64_t,std::uint64_t>> legacy_objects;
-            if(legacy_scene) {
-                std::vector<std::pair<std::size_t,std::optional<std::size_t>>> requests;
-                for(const auto index:indices) requests.emplace_back(index,std::nullopt);
-                if(inspection) requests.emplace_back(inspection->first,inspection->second);
-                // Validate and resolve all old identities before replacing the current document.
-                legacy_objects=take(editor::Session::legacy_selection(scene_text,requests));
-            }
-            bool disagrees=false;
+            std::vector<ObjectId> selected;ObjectId inspected{};bool mismatch=false;
             const auto opened=app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene,[&](const editor::Session& candidate)->Result<void> {
+                const auto reject=[&](std::string message)->Result<void> {mismatch=true;return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)});};
                 const auto environment=candidate.presentation().environment();if(!environment) return std::unexpected(environment.error());
-                // Before schema 3 the view had no sky; the scene's Sky Light, now part of its Environment, supplies it.
-                if(view_schema<3) {view.lit.sky_enabled=environment->sky_enabled;view.lit.sky_color=environment->sky_color;view.lit.sky_intensity=environment->sky_intensity;}
-                else if(scene_version>=4 && static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) {
-                    disagrees=true;return std::unexpected(Error{ErrorCode::invalid_definition,"Repro frame snapshot disagrees with its Scene Environment"});
+                // Only the scene records the sky map and its rotation; the view snapshot holds view options.
+                view.lit.sky_map=environment->sky_map;view.lit.sky_rotation=environment->sky_rotation;
+                if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) return reject("Repro frame snapshot disagrees with its Scene Environment");
+                // Indices refer to World members, as written by repro.export; resolve them before the candidate replaces the document.
+                const auto members=candidate.world().members();if(!members) return std::unexpected(members.error());
+                for(const auto i:indices) {if(i>=members->size()) return reject("Repro selection exceeds scene size");selected.push_back((*members)[i].id());}
+                if(inspection) {
+                    const auto components=world::components(candidate.world().runtime(),selected.front());if(!components) return std::unexpected(components.error());
+                    if(*inspection>=components->size()) return reject("Invalid repro component inspection");
+                    inspected=(*components)[*inspection].id();
                 }
                 return {};
             });
-            if(!opened) throw Failure(disagrees?"dependency_mismatch":"operation_failed",opened.error().message);
+            if(!opened) throw Failure(mismatch?"dependency_mismatch":"operation_failed",opened.error().message);
             take(app.workspace_.set_view_settings(*app.document_,view,{focus.x,focus.y,focus.z}));app.document_->mark_saved();app.camera_=camera;app.camera_cut_=true;app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
-            const auto members=take(app.document_->world().members());std::vector<ObjectId> selected;
-            for(std::size_t index=0;index<indices.size();++index) {
-                if(legacy_scene) selected.push_back(take(app.document_->local_object(legacy_objects[index].first)));
-                else {const auto i=indices[index];if(i>=members.size()) throw Failure("dependency_mismatch","Repro selection exceeds scene size");selected.push_back(members[i].id());}
-            }
             take(app.document_->select_entities(selected,selected.empty()?ObjectId{}:selected.back()));
-            if(inspection) {
-                if(legacy_scene) take(app.document_->select(take(app.document_->local_object(legacy_objects.back().second))));
-                else {const auto components=take(world::components(app.document_->world().runtime(),members[inspection->first].id()));take(app.document_->select(components.at(inspection->second).id()));}
-            }
+            if(inspection) take(app.document_->select(inspected));
         } else throw Failure("unknown_operation","Operation has no implementation");
         return Json::object();
     }
@@ -917,8 +982,7 @@ void EditorControl::rendered(const renderer::Frame& frame,const renderer::FrameR
     ++job->accepted;
     if(job->preparing) {
         job->rendering=false;job->preparing=false;job->complete=true;
-        job->response={{"status","ok"},{"job_id",job->id},{"result",{{"phase","ready"},{"frame",state.frame_json()},
-            {"preparation_ms",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-job->started).count()}}}};
+        job->response={{"status","ok"},{"job_id",job->id},{"result",{{"phase","ready"},{"frame",state.frame_json()}}}};
         return;
     }
     if(job->accepted!=job->points[job->point_index]) return;

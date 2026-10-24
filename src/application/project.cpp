@@ -23,8 +23,8 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner,Pick kind,const std
     if (kind==Pick::folder) {options|=FOS_PICKFOLDERS;dialog->SetTitle(L"Choose a project folder");}
     else {
         const bool source=kind==Pick::source || kind==Pick::source_save;
-        const COMDLG_FILTERSPEC type{source?L"Source and text files":kind==Pick::mesh?L"OBJ models and materials":kind==Pick::texture?L"Textures":kind==Pick::material_save?L"Material":L"Atelier scene",
-            source?L"*.source;*.ss;*.txt;*.json":kind==Pick::mesh?L"*.obj":kind==Pick::texture?L"*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff":kind==Pick::material_save?L"*.material":L"*.scene"};
+        const COMDLG_FILTERSPEC type{source?L"Source and text files":kind==Pick::mesh?L"OBJ or glTF models":kind==Pick::texture?L"Textures":kind==Pick::material_save?L"Material":L"Atelier scene",
+            source?L"*.source;*.ss;*.txt;*.json":kind==Pick::mesh?L"*.obj;*.gltf":kind==Pick::texture?L"*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff":kind==Pick::material_save?L"*.material":L"*.scene"};
         dialog->SetFileTypes(1,&type);dialog->SetDefaultExtension(source?L"source":kind==Pick::mesh?L"obj":kind==Pick::texture?L"png":kind==Pick::material_save?L"material":L"scene");
         if (!save) options|=FOS_FILEMUSTEXIST;
         if(kind==Pick::source_save) dialog->SetFileName(filename);
@@ -188,8 +188,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
         Result<std::string> created=command==create_material?
             project_->create_material(path.is_absolute()?path.lexically_relative(project_->root()):path):project_->import_texture(path);
         if(!created) return std::unexpected(created.error());
-        const auto at=std::ranges::find(project_->entries(),*created,&editor::ProjectEntry::key);
-        if(at!=project_->entries().end()) workspace_.assets.navigate(at->path.parent_path());
+        if(const auto* at=project_->entry(*created)) workspace_.assets.navigate(at->path.parent_path());
         if(command==create_material) {
             auto root=document_->material_resource(*project_,*created);if(!root) return std::unexpected(root.error());
             workspace_.material_inspection=*created;workspace_.inspecting_asset=true;
@@ -209,6 +208,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     if (!project_) return failed("Open a project folder first.");
     if (command==import_mesh) {
         auto imported=project_->import_mesh(*path);if (!imported) return std::unexpected(imported.error());
+        for(const auto& note:project_->mesh_notes(*imported)) workspace_.log(L"Import Mesh: "+editor::wide(note));
         workspace_.assets.reset(true);workspace_.assets.navigate(L"Content/Meshes");return {};
     }
     auto relative=path->is_absolute()?path->lexically_relative(project_->root()):*path;

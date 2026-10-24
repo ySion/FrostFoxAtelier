@@ -1,5 +1,4 @@
 #include "light_frame.hpp"
-#include "math/math.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -25,12 +24,6 @@ void source_capacity(std::size_t count) {
 double luminance(const std::array<float,4>& value) {
     return .2126*value[0]+.7152*value[1]+.0722*value[2];
 }
-double emission_luminance(const material::Description& surface) {
-    const auto& image=surface.texture(material::Input::emissive).image;
-    const auto mean=image?image->mean_linear():std::array<float,3>{1,1,1};
-    const auto& emission=surface.parameters.emissive;
-    return .2126*emission[0]*mean[0]+.7152*emission[1]*mean[1]+.0722*emission[2]*mean[2];
-}
 GpuLightSource analytic_source(const Light& light) {
     GpuLightSource result;
     result.origin_range={light.position[0],light.position[1],light.position[2],light.range};
@@ -43,7 +36,7 @@ GpuLightSource analytic_source(const Light& light) {
         }
     }
     result.edge1_area[3]=light.kind==LightKind::rectangle?gpu_float(double(light.width)*light.height):0;
-    result.meta={static_cast<std::uint32_t>(light.kind),(light.two_sided?1u:0u)|(light.casts_shadow?2u:0u),no_light_source,0};
+    result.meta={static_cast<std::uint32_t>(light.kind),(light.two_sided?1u:0u)|(light.casts_shadow?2u:0u),0,0};
     return result;
 }
 double analytic_power(const GpuLightSource& source) {
@@ -79,36 +72,28 @@ bool light_grid_origin(const std::array<float,3>& focus,std::array<float,4>& ori
 }
 }
 
-std::size_t LightFrame::KeyHash::operator()(const ObjectKey& key) const noexcept {
-    return mix_hash(std::hash<std::uint64_t>{}(key.value),key.legacy);
-}
 std::size_t LightFrame::KeyHash::operator()(const SourceKey& key) const noexcept {
-    auto hash=std::hash<std::uint64_t>{}(key.owner);
-    hash=mix_hash(hash,std::hash<const geometry::Mesh*>{}(key.geometry));
-    return mix_hash(mix_hash(hash,key.primitive),key.kind);
+    return mix_hash(std::hash<std::uint64_t>{}(key.owner),key.kind);
 }
 
 void LightFrame::clear() {
-    sources.clear();previous_sources.clear();proposals.clear();
-    current_to_previous.clear();previous_to_current.clear();
-    objects_.clear();object_order_.clear();next_object_order_.clear();
+    sources.clear();previous_sources_.clear();proposals.clear();current_to_previous.clear();
     analytic_.clear();next_analytic_.clear();analytic_keys_.clear();next_analytic_keys_.clear();
-    identities_.clear();previous_identities_.clear();descriptions_.clear();previous_descriptions_.clear();
-    geometry_owners_.clear();previous_geometry_owners_.clear();previous_lookup_.clear();
+    keys_.clear();previous_keys_.clear();previous_lookup_.clear();
     powers_.clear();scaled_.clear();actual_.clear();below_.clear();above_.clear();
     spatial_origin={};spatial_cells.clear();spatial_proposals.clear();spatial_source_slots.clear();spatial_bins_.clear();
-    local_count=directional_count=emitter_count=0;scene_identity_=frame_id_=0;
+    local_count=directional_count=0;scene_identity_=frame_id_=0;
     source_revision_=spatial_source_revision_=spatial_frame_id_=0;spatial_nonempty_cells=0;
     spatial_initialized_=spatial_changed=false;
     valid_=advance_previous_=changed=radiance_changed=false;
 }
 
-void LightFrame::update(const Frame& frame,const MaterialFrame& materials,std::uint64_t sequence) {
-    try {update_impl(frame,materials,sequence);update_spatial(frame.lighting_focus,sequence);}
+void LightFrame::update(const Frame& frame,std::uint64_t sequence) {
+    try {update_impl(frame,sequence);update_spatial(frame.lighting_focus,sequence);}
     catch(...) {clear();throw;}
 }
 
-void LightFrame::update_impl(const Frame& frame,const MaterialFrame& materials,std::uint64_t sequence) {
+void LightFrame::update_impl(const Frame& frame,std::uint64_t sequence) {
     if(valid_&&scene_identity_!=frame.scene_identity)clear();
     source_capacity(frame.lights.size());
     bool rebuild=!valid_;
@@ -118,146 +103,46 @@ void LightFrame::update_impl(const Frame& frame,const MaterialFrame& materials,s
     for(bool directional:{false,true})for(const auto& light:frame.lights) {
         if((light.kind==LightKind::directional)!=directional)continue;
         next_analytic_.push_back(analytic_source(light));
-        next_analytic_keys_.push_back({light.stable_key,nullptr,0,static_cast<std::uint32_t>(light.kind)});
+        next_analytic_keys_.push_back({light.stable_key,static_cast<std::uint32_t>(light.kind)});
     }
-    rebuild|=next_analytic_!=analytic_ || next_analytic_keys_!=analytic_keys_;
+    const bool rebuild_sources=rebuild||next_analytic_!=analytic_||next_analytic_keys_!=analytic_keys_;
     analytic_.swap(next_analytic_);analytic_keys_.swap(next_analytic_keys_);
-
-    for(auto& [key,object]:objects_){(void)key;object.used=false;}
-    next_object_order_.clear();
-    check(materials.offsets.size()>=frame.meshes.size(),"Light snapshot has no matching material frame");
-    for(std::size_t index=0;index<frame.meshes.size();++index) {
-        const auto& mesh=frame.meshes[index];
-        const auto slots=mesh.geometry->materials().size();
-        const auto first=std::size_t(materials.offsets[index]);
-        check(first<=materials.descriptions.size() && slots<=materials.descriptions.size()-first &&
-              first<=materials.indices.size() && slots<=materials.indices.size()-first,
-              "Light snapshot material range is invalid");
-        bool emitting=false;
-        for(std::size_t slot=0;slot<slots;++slot)emitting|=emission_luminance(materials.surface(index,slot))>0;
-        if(!emitting)continue;
-        const ObjectKey key{mesh.stable_key?mesh.stable_key:static_cast<std::uint64_t>(index),mesh.stable_key==0};
-        auto [at,added]=objects_.try_emplace(key);auto& object=at->second;
-        check(!object.used,"Duplicate emissive object identity");object.used=true;
-        next_object_order_.push_back(key);
-        bool object_changed=added||object.geometry!=mesh.geometry||object.world!=mesh.world||object.descriptions.size()!=slots;
-        if(!object_changed)for(std::size_t slot=0;slot<slots;++slot) {
-            object_changed|=object.descriptions[slot]!=materials.surface(index,slot)||
-                object.material_indices[slot]!=materials.indices[first+slot];
-        }
-        if(object_changed){rebuild_object(object,mesh,materials,index);rebuild=true;}
-    }
-    for(auto it=objects_.begin();it!=objects_.end();) {
-        if(it->second.used){++it;continue;}it=objects_.erase(it);rebuild=true;
-    }
-    rebuild|=object_order_!=next_object_order_;object_order_.swap(next_object_order_);
     // Several passes may request the same immutable frame snapshot. Preserve
-    // both its previous-frame data and its publication flag on repeated calls.
-    if(!rebuild && sequence==frame_id_)return;
-    changed=rebuild||advance_previous_;
+    // both its correspondence and its publication flag on repeated calls.
+    if(!rebuild_sources && sequence==frame_id_)return;
+    changed=rebuild_sources;
     radiance_changed=false;
-    if(!rebuild) {
+    if(!rebuild_sources) {
         frame_id_=sequence;
         if(advance_previous_) {
-            previous_sources=sources;
-            current_to_previous.resize(sources.size());previous_to_current.resize(sources.size());
-            for(std::size_t i=0;i<sources.size();++i) {
-                const auto index=identities_[i].key.owner?static_cast<std::uint32_t>(i):no_light_source;
-                current_to_previous[i]=previous_to_current[i]=index;
-            }
-            previous_geometry_owners_.clear();previous_descriptions_.clear();previous_identities_.clear();
+            for(std::size_t i=0;i<sources.size();++i)
+                current_to_previous[i]=keys_[i].owner?static_cast<std::uint32_t>(i):no_light_source;
             advance_previous_=false;
         }
         return;
     }
 
-    previous_sources.swap(sources);sources.clear();
-    previous_identities_.swap(identities_);identities_.clear();
-    previous_descriptions_.swap(descriptions_);descriptions_.clear();
-    previous_geometry_owners_.swap(geometry_owners_);geometry_owners_.clear();
-    powers_.clear();emitter_count=directional_count=0;
-    const auto append=[&](const GpuLightSource& source,Identity identity,double power) {
-        source_capacity(sources.size()+1);sources.push_back(source);identities_.push_back(identity);
-        if(source.meta[0]!=2)powers_.push_back(power);
+    previous_sources_.swap(sources);sources.clear();
+    previous_keys_.swap(keys_);keys_.clear();
+    powers_.clear();directional_count=0;
+    const auto append=[&](std::size_t i) {
+        source_capacity(sources.size()+1);sources.push_back(analytic_[i]);keys_.push_back(analytic_keys_[i]);
     };
-    for(std::size_t i=0;i<analytic_.size();++i)if(analytic_[i].meta[0]!=2)
-        append(analytic_[i],{analytic_keys_[i]},analytic_power(analytic_[i]));
-    for(const auto& key:object_order_) {
-        const auto& object=objects_.at(key);const auto first=descriptions_.size();
-        check(first+object.descriptions.size()<no_light_source,"Light material snapshot exceeds addressable storage");
-        descriptions_.insert(descriptions_.end(),object.descriptions.begin(),object.descriptions.end());
-        geometry_owners_.push_back(object.geometry);
-        for(const auto& emitter:object.emitters) {
-            append(emitter.source,{{key.legacy?0:key.value,object.geometry.get(),emitter.primitive,3},
-                static_cast<std::uint32_t>(first+emitter.material_slot)},emitter.power);
-            ++emitter_count;
-        }
+    for(std::size_t i=0;i<analytic_.size();++i)if(analytic_[i].meta[0]!=2) {
+        append(i);powers_.push_back(analytic_power(analytic_[i]));
     }
     local_count=static_cast<std::uint32_t>(sources.size());
-    for(std::size_t i=0;i<analytic_.size();++i)if(analytic_[i].meta[0]==2) {
-        append(analytic_[i],{analytic_keys_[i]},0);++directional_count;
-    }
+    for(std::size_t i=0;i<analytic_.size();++i)if(analytic_[i].meta[0]==2){append(i);++directional_count;}
     build_proposals();map_previous();++source_revision_;
-    // Remapping already checks the effective emitter material description and
-    // translates its previous GPU material index to the current index. Compare
-    // source content in that identity domain, not packed source/material slots.
-    // A publication-only previous-frame advance never reaches this branch.
-    radiance_changed=!valid_ || sources.size()!=previous_sources.size();
+    radiance_changed=!valid_ || sources.size()!=previous_sources_.size();
     if(!radiance_changed)for(std::size_t i=0;i<sources.size();++i) {
         const auto previous=current_to_previous[i];
-        if(previous==no_light_source || sources[i]!=previous_sources[previous]) {
+        if(previous==no_light_source || sources[i]!=previous_sources_[previous]) {
             radiance_changed=true;
             break;
         }
     }
     scene_identity_=frame.scene_identity;frame_id_=sequence;valid_=true;advance_previous_=true;
-}
-
-void LightFrame::rebuild_object(CachedObject& object,const MeshInstance& mesh,const MaterialFrame& materials,std::size_t index) {
-    object.geometry=mesh.geometry;object.world=mesh.world;
-    const auto slots=mesh.geometry->materials().size();object.descriptions.resize(slots);object.material_indices.resize(slots);
-    for(std::size_t slot=0;slot<slots;++slot) {
-        object.descriptions[slot]=materials.surface(index,slot);
-        object.material_indices[slot]=materials.indices[materials.offsets[index]+slot];
-        check(object.material_indices[slot]<materials.surfaces.size(),"Emissive source material index is invalid");
-    }
-    math::Matrix4d world;for(std::size_t i=0;i<16;++i)world.elements[i]=mesh.world[i];
-    const auto inverse=math::try_inverse(world);check(bool(inverse),"Emissive source transform is singular");
-    object.emitters.clear();const auto vertices=mesh.geometry->vertices();
-    for(std::size_t first=0;first<vertices.size();first+=3) {
-        const auto slot=mesh.geometry->material_slot(first/3);const auto& surface=object.descriptions[slot];
-        const double emission=emission_luminance(surface);if(emission<=0)continue;
-        const auto* vertex=vertices.data()+first;
-        const auto position=[&](std::size_t i) {return math::Vector3d{vertex[i].position[0],vertex[i].position[1],vertex[i].position[2]};};
-        const auto a=math::transform_point(position(0),world),b=math::transform_point(position(1),world),c=math::transform_point(position(2),world);
-        const auto edge1=b-a,edge2=c-a;const double area=.5*math::length(math::cross(edge1,edge2));
-        if(area==0)continue;
-        const float gpu_area=gpu_float(area);if(gpu_area==0)continue;
-        auto normal=math::cross(position(1)-position(0),position(2)-position(0));
-        const math::Vector3d authored{double(vertex[0].normal[0])+vertex[1].normal[0]+vertex[2].normal[0],
-            double(vertex[0].normal[1])+vertex[1].normal[1]+vertex[2].normal[1],double(vertex[0].normal[2])+vertex[1].normal[2]+vertex[2].normal[2]};
-        if(math::dot(normal,authored)<0)normal=normal*-1.;
-        const double local_length=math::length(normal);if(local_length==0)continue;normal=normal/local_length;
-        // The inverse transpose preserves the authored emitting front under
-        // mirrors. A cross of world edges alone would reverse that front.
-        std::array<double,3> transformed{};
-        for(std::size_t axis=0;axis<3;++axis)transformed[axis]=normal.x*inverse->elements[axis*4]+
-            normal.y*inverse->elements[axis*4+1]+normal.z*inverse->elements[axis*4+2];
-        const double normal_length=std::hypot(transformed[0],transformed[1],transformed[2]);
-        check(std::isfinite(normal_length)&&normal_length>0,"Emissive source normal is invalid");
-        CachedEmitter emitter;emitter.primitive=static_cast<std::uint32_t>(first/3);emitter.material_slot=slot;
-        auto& source=emitter.source;
-        source.origin_range={gpu_float(a.x),gpu_float(a.y),gpu_float(a.z),0};
-        source.edge1_area={gpu_float(edge1.x),gpu_float(edge1.y),gpu_float(edge1.z),gpu_area};
-        source.edge2={gpu_float(edge2.x),gpu_float(edge2.y),gpu_float(edge2.z),0};
-        for(std::size_t axis=0;axis<3;++axis){source.direction_radius[axis]=gpu_float(transformed[axis]/normal_length);
-            source.radiance[axis]=surface.parameters.emissive[axis];}
-        source.uv01={vertex[0].uv[0],vertex[0].uv[1],vertex[1].uv[0],vertex[1].uv[1]};
-        source.uv2={vertex[2].uv[0],vertex[2].uv[1],0,0};
-        source.meta={3,(surface.parameters.emission_two_sided?1u:0u)|2u,object.material_indices[slot],0};
-        emitter.power=area*emission*std::numbers::pi*(surface.parameters.emission_two_sided?2:1);
-        object.emitters.push_back(emitter);
-    }
 }
 
 void LightFrame::build_proposals() {
@@ -303,11 +188,9 @@ void LightFrame::update_spatial(const std::array<float,3>& focus,std::uint64_t s
     const auto better=[&](std::uint32_t a,std::uint32_t b) {
         const float pa=proposals[a].probability,pb=proposals[b].probability;
         if(pa!=pb)return pa>pb;
-        const auto& ka=identities_[a].key;const auto& kb=identities_[b].key;
+        const auto& ka=keys_[a];const auto& kb=keys_[b];
         if(ka.owner!=kb.owner)return ka.owner<kb.owner;
         if(ka.kind!=kb.kind)return ka.kind<kb.kind;
-        if(ka.geometry!=kb.geometry)return std::less<const geometry::Mesh*>{}(ka.geometry,kb.geometry);
-        if(ka.primitive!=kb.primitive)return ka.primitive<kb.primitive;
         return a<b;
     };
     for(std::uint32_t source=0;source<local_count;++source) {
@@ -315,9 +198,7 @@ void LightFrame::update_spatial(const std::array<float,3>& focus,std::uint64_t s
         std::array<std::uint32_t,3> cell{};
         bool inside=true;
         for(std::size_t axis=0;axis<3;++axis) {
-            double anchor=light.origin_range[axis];
-            if(light.meta[0]==3)anchor+=(double(light.edge1_area[axis])+double(light.edge2[axis]))/3.;
-            const double coordinate=(anchor-double(origin[axis]))/light_grid_spacing;
+            const double coordinate=(double(light.origin_range[axis])-double(origin[axis]))/light_grid_spacing;
             if(!std::isfinite(coordinate)||coordinate<0||coordinate>=light_grid_counts[axis]) {inside=false;break;}
             cell[axis]=static_cast<std::uint32_t>(std::floor(coordinate));
         }
@@ -378,26 +259,16 @@ void LightFrame::update_spatial(const std::array<float,3>& focus,std::uint64_t s
 }
 
 void LightFrame::map_previous() {
-    current_to_previous.assign(sources.size(),no_light_source);previous_to_current.assign(previous_sources.size(),no_light_source);
-    previous_lookup_.clear();previous_lookup_.reserve(previous_identities_.size());
-    for(std::size_t i=0;i<previous_identities_.size();++i) {
-        const auto& key=previous_identities_[i].key;if(!key.owner)continue;
-        const auto [at,inserted]=previous_lookup_.try_emplace(key,static_cast<std::uint32_t>(i));
-        if(!inserted)at->second=no_light_source; // Ambiguous producer identity cannot be reused.
+    current_to_previous.assign(sources.size(),no_light_source);
+    previous_lookup_.clear();previous_lookup_.reserve(previous_keys_.size());
+    // Frame validation keeps nonzero light identities unique; zero has none.
+    for(std::size_t i=0;i<previous_keys_.size();++i)
+        if(previous_keys_[i].owner)previous_lookup_.emplace(previous_keys_[i],static_cast<std::uint32_t>(i));
+    for(std::size_t i=0;i<keys_.size();++i) {
+        if(!keys_[i].owner)continue;
+        const auto at=previous_lookup_.find(keys_[i]);
+        if(at!=previous_lookup_.end())current_to_previous[i]=at->second;
     }
-    for(std::size_t i=0;i<identities_.size();++i) {
-        const auto& identity=identities_[i];if(!identity.key.owner)continue;
-        const auto at=previous_lookup_.find(identity.key);if(at==previous_lookup_.end()||at->second==no_light_source)continue;
-        const auto previous=at->second;const auto& old=previous_identities_[previous];
-        if(identity.key.kind==3 && descriptions_[identity.material]!=previous_descriptions_[old.material])continue;
-        check(previous_to_current[previous]==no_light_source,"Duplicate light source identity");
-        current_to_previous[i]=previous;previous_to_current[previous]=static_cast<std::uint32_t>(i);
-        if(identity.key.kind==3)previous_sources[previous].meta[2]=sources[i].meta[2];
-    }
-    // Unmapped previous materials are not resident in this frame. Callers must
-    // reject their invalid translation before evaluating a previous sample.
-    for(std::size_t i=0;i<previous_sources.size();++i)
-        if(previous_sources[i].meta[0]==3 && previous_to_current[i]==no_light_source)previous_sources[i].meta[2]=no_light_source;
 }
 
 } // namespace atelier::renderer::detail

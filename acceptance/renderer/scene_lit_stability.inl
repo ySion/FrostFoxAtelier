@@ -37,7 +37,7 @@ void stability_cases(Fixture& f) {
     f.frame.environment={.005f,.007f,.01f};f.frame.lighting_focus={};
     f.frame.render_delta_seconds=1.f/60.f;
     auto& options=f.frame.view.lit;
-    options.ddgi=true;options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=true;options.gtao=options.sssr=options.bloom=false;
     options.antialiasing=render::Antialiasing::smaa;
     options.indirect_gain=5;options.probe_bounce=.85f;
     for(auto& volume:options.probe_volumes)volume.enabled=false;

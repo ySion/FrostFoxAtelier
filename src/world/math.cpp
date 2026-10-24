@@ -8,6 +8,10 @@ Result<Trs> canonical_transform(Trs value) {
     const auto& q = value.rotation;
     if (!math::is_finite(value.position) || !math::is_finite(value.scale) || !math::is_finite(q))
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Transform requires finite values."});
+    // Rounding each component of a unit quaternion to float moves norm² (summed in double) by about 2·2^-24 = 2^-23;
+    // 2^-22 doubles that. A value within it stays: normalizing it again can move a component by an ulp on every call.
+    const double squared = double(q.x) * q.x + double(q.y) * q.y + double(q.z) * q.z + double(q.w) * q.w;
+    if (std::abs(squared - 1.) <= 0x1p-22) return value;
     const auto unit = math::try_normalize(math::Quaterniond{q.x, q.y, q.z, q.w});
     if (!unit)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Transform rotation must be a nonzero quaternion."});

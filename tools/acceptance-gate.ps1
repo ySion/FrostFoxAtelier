@@ -24,10 +24,9 @@ foreach ($item in @($Targets | ForEach-Object { $_ -split ',' } | ForEach-Object
     if ($target -notin $requested[$config]) { $requested[$config].Add($target) }
 }
 if ($ProbeWindowTarget -and $Targets.Count) { throw '-ProbeWindowTarget cannot be combined with -Targets.' }
-# Default GPU validation scope: GBV only for RHI and three Renderer entries; every other
+# Default GPU validation scope: GBV only for RHI and two Renderer entries; every other
 # window target runs with ATELIER_GPU_VALIDATION=debug (the D3D12 debug layer).
-$gbvTargets = @('rhi_acceptance', 'renderer_acceptance_default', 'renderer_acceptance_scene_lit',
-    'renderer_acceptance_scene_lit_restir_suite')
+$gbvTargets = @('rhi_acceptance', 'renderer_acceptance_default', 'renderer_acceptance_scene_lit')
 $results = [System.Collections.Generic.List[object]]::new()
 $lockOwned = $false
 $activator = $null
@@ -299,9 +298,7 @@ try {
     New-Item -ItemType Directory -Force (Split-Path -Parent $lock) | Out-Null
     $windowRuns = [System.Collections.Generic.List[object]]::new()
     if ($ProbeWindowTarget) { Write-Gate 'PROBE ONLY: this run checks timeout cleanup and tests no change.' }
-    # The physics-project fixture uses an absolute source-tree Cache. A Ninja
-    # pool cannot coordinate two build trees, so configurations run in sequence.
-    # Within each configuration the requested headless targets remain parallel.
+    # Within each configuration the requested headless targets run in parallel.
     foreach ($config in $Configs) {
         if (-not $ProbeWindowTarget -and (Invoke-Build $config all) -ne 'PASS') { throw "Prebuild failed: $config" }
         # Prebuild may regenerate CMake after a pull. Never use a stale target list.

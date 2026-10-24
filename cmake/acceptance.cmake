@@ -1,8 +1,7 @@
 # Headless commands keep their existing binary-directory cwd (fonts and fixtures),
 # but get private TEMP/TMP and logs. No console pool: Ninja may run them in parallel.
-set_property(GLOBAL APPEND PROPERTY JOB_POOLS acceptance_source_fixture=1)
 function(atelier_headless_acceptance target)
-    cmake_parse_arguments(PARSE_ARGV 1 A "" "JOB_POOL" "DEPENDS")
+    cmake_parse_arguments(PARSE_ARGV 1 A "" "" "DEPENDS")
     set(_directory "${CMAKE_BINARY_DIR}/acceptance-headless/${target}")
     set(_script "set(_directory [==[${_directory}]==])\n")
     string(APPEND _script "include([==[${PROJECT_SOURCE_DIR}/cmake/run-headless-acceptance.cmake]==])\n")
@@ -19,13 +18,9 @@ function(atelier_headless_acceptance target)
     endforeach()
     string(APPEND _script "atelier_run(${_command})\natelier_finish(PASS)\n")
     file(GENERATE OUTPUT "${_directory}/run.cmake" CONTENT "${_script}")
-    set(_pool)
-    if(A_JOB_POOL)
-        set(_pool JOB_POOL "${A_JOB_POOL}")
-    endif()
     add_custom_target(${target}
         COMMAND "${CMAKE_COMMAND}" -P "${_directory}/run.cmake"
-        DEPENDS ${A_DEPENDS} ${_pool}
+        DEPENDS ${A_DEPENDS}
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" VERBATIM)
     set_property(GLOBAL APPEND PROPERTY ATELIER_HEADLESS_ACCEPTANCE "${target}")
 endfunction()

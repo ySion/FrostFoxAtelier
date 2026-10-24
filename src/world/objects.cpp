@@ -105,12 +105,12 @@ Result<void> validate_body_settings(Runtime& runtime, const BodySettings& value)
 
 namespace detail {
 Result<EntityData> entity_data(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<EntityData> {
+    return runtime.with_native<const Entity>(object, [](const Entity& entity) -> Result<EntityData> {
         return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity)};
     });
 }
 Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Component>(object, [](Component& component) -> Result<ComponentData> {
+    return runtime.with_native<const Component>(object, [](const Component& component) -> Result<ComponentData> {
         return ComponentData{Access::owner(component).id(), Access::enabled(component)};
     });
 }
@@ -202,7 +202,7 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
 }
 
 Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [&](Entity& entity) -> Result<std::vector<ObjectRoot>> {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::vector<ObjectRoot>> {
         if (Access::transitioning(entity)) return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity)) {
             if (auto ready = Access::state(*world).admit(false); !ready) return std::unexpected(ready.error());
@@ -224,7 +224,7 @@ Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
     });
 }
 Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<Entity>(object, [](Entity& entity) -> Result<Trs> {
+    return runtime.with_native<const Entity>(object, [](const Entity& entity) -> Result<Trs> {
         if (!Access::spatial(entity)) return error(ErrorCode::invalid_member, "Entity has no Transform.");
         return Trs{entity.position, entity.rotation, entity.scale};
     });

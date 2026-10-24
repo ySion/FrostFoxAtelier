@@ -19,22 +19,14 @@ void quality_work_elision(Fixture& f) {
                   "work-elision completion belongs to an already submitted case frame");
             const auto& options=f.frame.view.lit;
             const auto active=[&](unsigned bit){return (stats.scene_lit_gpu_pass_mask&(1u<<bit))!=0;};
-            check(active(10)==!options.direct_reference && active(11)==!options.direct_reference && active(12)&&active(13),
-                  "completed direct scope mask distinguishes reference bypass from its visibility and resolve work");
-            const bool filtered=!options.direct_reference&&stats.scene_lit_light_sources>0;
-            check(active(16)&&active(17)==filtered&&active(18)==filtered&&active(19)==filtered,
-                  "completed reconstruction scopes retain resolve and skip all filters for reference or no sources");
+            check(active(2)&&active(12)&&active(14),"completed direct scope mask records light lists and fused shading");
             const bool probes=options.ddgi&&std::ranges::any_of(options.probe_volumes,[](const auto& v){return v.enabled;});
-            check(active(3)==options.ddgi && active(8)==probes && active(9)==options.ddgi && active(14)==probes && active(15)==probes,
+            check(active(3)==options.ddgi && active(8)==probes && active(9)==options.ddgi && active(10)==probes && active(11)==probes,
                   "completed DDGI scope mask follows this case instead of delayed previous settings");
-            for(float value:stats.scene_lit_direct_gpu_ms)check(std::isfinite(value)&&value>=0,"direct subpass duration is finite");
-            double reconstruction_sum=0;
-            for(float value:stats.scene_lit_direct_reconstruction_gpu_ms) {
-                check(std::isfinite(value)&&value>=0,"direct reconstruction subpass duration is finite");
-                reconstruction_sum+=value;
-            }
-            check(reconstruction_sum<=stats.scene_lit_direct_gpu_ms[3]+.01,
-                  "reconstruction scopes belong to the completed resolve/filter parent");
+            const double direct_parts=double(stats.scene_lit_direct_cluster_gpu_ms)+stats.scene_lit_shadow_cache_gpu_ms+
+                stats.scene_lit_direct_shading_gpu_ms;
+            check(std::isfinite(direct_parts)&&direct_parts>=0&&direct_parts<=stats.scene_lit_gpu_ms[2]+.01,
+                  "direct subpass durations are finite and belong to the completed direct scope");
             for(float value:stats.scene_lit_ddgi_update_gpu_ms)check(std::isfinite(value)&&value>=0,"DDGI update subpass duration is finite");
             previous_sequence=stats.scene_lit_gpu_sample_sequence;samples[count++]=stats;
             evidence << name << ',' << f.drawing.id << ',' << first_frame << ',' << previous_sequence << ','
@@ -57,9 +49,8 @@ void quality_work_elision(Fixture& f) {
     f.lights.assign(1,{});auto& light=f.lights.front();
     light.stable_key=100;light.position={0,0,.5f};light.range=30;light.casts_shadow=true;
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
-    // Reservoir scopes and one selected visibility ray per receiver describe ReSTIR.
-    auto& options=f.frame.view.lit;options={};options.direct_clustered=false;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    auto& options=f.frame.view.lit;options={};
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     options.shadows=true;options.antialiasing=render::Antialiasing::none;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
@@ -67,55 +58,27 @@ void quality_work_elision(Fixture& f) {
     ++f.frame.scene_identity;f.edited();f.frame.camera_cut=true;
     const auto region=project_region(f.frame.camera,f.frame.scene_viewport,f.drawing.extent,{0,0,4},12);
 
+    // Direct visibility comes from the shadow atlas: no light kind, size or
+    // candidate setting traces a ray for screen receivers.
     for(auto kind:{render::LightKind::point,render::LightKind::directional}) {
-        light.kind=kind;light.source_radius=0;light.intensity=kind==render::LightKind::point?30.f:2.f;
+        light.kind=kind;light.intensity=kind==render::LightKind::point?30.f:2.f;
         const std::string prefix=kind==render::LightKind::point?"work-point-":"work-directional-";
-        std::uint64_t reference_queries=0;
-        std::array<double,3> reference_color{};
-        std::vector<float> reference_depth;
-        for(auto candidate_count:{1u,8u,32u}) {
-            options.direct_candidates=candidate_count;options.direct_reference=false;f.edited();
-            const auto first_frame=f.drawing.id+1;
-            const auto name=prefix+std::to_string(candidate_count);
-            const auto image=f.capture(name.c_str(),16);
-            const auto color=mean_rgb(image,region);
-            const auto samples=completed(name.c_str(),first_frame);
-            if(candidate_count==1) {
-                reference_queries=samples.front().scene_lit_shadow_rays;
-                reference_color=color;reference_depth=image.depth;
-                check(reference_queries>0 && color[0]>5,"delta-light receiver is lit and actually traces visibility");
+        for(const float radius:{0.f,kind==render::LightKind::point?.2f:.02f})
+            for(auto candidate_count:{1u,32u}) {
+                light.source_radius=radius;options.direct_candidates=candidate_count;f.edited();
+                const auto first_frame=f.drawing.id+1;
+                const auto name=prefix+(radius>0?"finite-":"delta-")+std::to_string(candidate_count);
+                const auto image=f.capture(name.c_str(),4);
+                check(mean_rgb(image,region)[0]>5,"direct work case lights its receiver");
+                for(const auto& stats:completed(name.c_str(),first_frame))
+                    check(stats.scene_lit_shadow_rays==0 && stats.scene_lit_probe_rays==0,
+                          "screen direct lighting traces no visibility rays");
             }
-            for(const auto& stats:samples)
-                check(stats.scene_lit_shadow_rays==reference_queries && stats.scene_lit_probe_rays==0,
-                      "delta-light 1/8/32 candidates trace one selected visibility ray per receiver");
-            check(image.depth==reference_depth,"delta-light work reduction preserves captured geometry depth");
-            for(std::size_t channel=0;channel<3;++channel)
-                check(std::abs(color[channel]-reference_color[channel])<=2,
-                      "delta-light candidate settings preserve settled receiver brightness within two RGB8 levels");
-        }
-        options.direct_reference=true;f.edited();
-        auto first_frame=f.drawing.id+1;auto name=prefix+"delta-reference64";
-        f.capture(name.c_str(),4);
-        for(const auto& stats:completed(name.c_str(),first_frame))
-            check(stats.scene_lit_shadow_rays==reference_queries*(kind==render::LightKind::point?64u:1u) &&
-                  stats.scene_lit_probe_rays==0,
-                  "reference traces 64 independent local RIS estimates; delta directionals retain one exact visibility query");
-        light.source_radius=kind==render::LightKind::point?.2f:.02f;
-        options.direct_candidates=8;options.direct_reference=false;f.edited();
-        first_frame=f.drawing.id+1;name=prefix+"finite-8";
-        f.capture(name.c_str(),4);
-        for(const auto& stats:completed(name.c_str(),first_frame))
-            check(stats.scene_lit_shadow_rays==reference_queries && stats.scene_lit_probe_rays==0,
-                  "finite-size realtime source traces only its selected sample, independent of candidate count");
-        options.direct_reference=true;f.edited();first_frame=f.drawing.id+1;name=prefix+"finite-reference64";
-        f.capture(name.c_str(),4);
-        for(const auto& stats:completed(name.c_str(),first_frame))
-            check(stats.scene_lit_shadow_rays==reference_queries*64 && stats.scene_lit_probe_rays==0,
-                  "finite-source reference traces 64 independent visible estimates without reuse");
     }
+    light.source_radius=0;options.direct_candidates=8;
 
-    // Cover the physical last row/column of both a partial 64-pixel reference
-    // tile and a partial 8-pixel compute group, with less than 65K receivers.
+    // Cover the physical last row/column of a partial 8-pixel compute group
+    // and a partial 16-pixel light-list tile.
     const auto original_extent=f.drawing.extent;
     const auto original_viewport=f.frame.scene_viewport;
     const auto original_camera=f.frame.camera;
@@ -123,33 +86,20 @@ void quality_work_elision(Fixture& f) {
     check(f.drawing.extent==ui::PixelExtent{337,191},"reference tail case uses the exact nonaligned render-target extent");
     f.frame.scene_viewport={0,0,337,191};
     f.frame.camera.projection[0]=1/(2.5f*(337.f/191.f));
-    light.kind=render::LightKind::point;light.source_radius=0;light.intensity=30;
-    options.direct_reference=true;f.frame.camera_cut=true;f.edited();
-    auto tail_first_frame=f.drawing.id+1;
-    const auto tail_reference=f.capture("work-point-reference64-337x191");
-    check(std::ranges::all_of(tail_reference.depth,[](float value){return value>0;}),
-          "reference tail case has a receiver at every physical pixel including the last row and column");
-    constexpr std::uint64_t tail_pixels=337u*191u;
-    for(const auto& stats:completed("work-point-reference64-337x191",tail_first_frame))
-        check(stats.scene_lit_shadow_rays==tail_pixels*64 && stats.scene_lit_probe_rays==0,
-              "partial reference tiles trace exactly 64 independent point visibility queries for every receiver");
-    options.direct_reference=false;f.edited();tail_first_frame=f.drawing.id+1;
-    const auto tail_realtime=f.capture("work-point-realtime-337x191");
-    check(tail_realtime.depth==tail_reference.depth,"reference-to-realtime transition preserves complete tail geometry coverage");
-    for(const auto& stats:completed("work-point-realtime-337x191",tail_first_frame))
-        check(stats.scene_lit_shadow_rays==tail_pixels && stats.scene_lit_probe_rays==0,
-              "realtime dispatch resets its origin and shades every physical pixel exactly once after tiled reference");
-    for(unsigned x=0;x<337;++x)
-        check(pixel(tail_reference,x,190)[0]>5 && pixel(tail_realtime,x,190)[0]>5,"both estimators illuminate the physical last row");
-    for(unsigned y=0;y<191;++y)
-        check(pixel(tail_reference,336,y)[0]>5 && pixel(tail_realtime,336,y)[0]>5,"both estimators illuminate the physical last column");
+    light.kind=render::LightKind::point;light.intensity=30;
+    f.frame.camera_cut=true;f.edited();
+    const auto tail=f.capture("work-point-337x191",4);
+    check(std::ranges::all_of(tail.depth,[](float value){return value>0;}),
+          "tail case has a receiver at every physical pixel including the last row and column");
+    for(unsigned x=0;x<337;++x)check(pixel(tail,x,190)[0]>5,"direct lighting illuminates the physical last row");
+    for(unsigned y=0;y<191;++y)check(pixel(tail,336,y)[0]>5,"direct lighting illuminates the physical last column");
     f.window.resize(static_cast<int>(original_extent.width),static_cast<int>(original_extent.height));
     f.drawing.extent=take(f.renderer.sync_window_target()).extent;
     check(f.drawing.extent==original_extent,"tail case restores the render target before DDGI lifecycle cases");
     f.frame.scene_viewport=original_viewport;f.frame.camera=original_camera;f.frame.camera_cut=true;f.edited();
 
     f.lights.clear();f.frame.environment={.05f,.05f,.05f};
-    options.direct_reference=false;options.ddgi=true;
+    options.ddgi=true;
     options.probe_volumes[0].minimum={-6,-4,0};options.probe_volumes[0].maximum={6,4,8};options.probe_volumes[0].counts={4,4,4};
     options.probe_update_budget=64;options.probe_rays=64;
     const auto gather_case=[&](const char* name,bool needs_gather) {
@@ -167,9 +117,7 @@ void quality_work_elision(Fixture& f) {
     };
     receiver.material.metallic=1;
     gather_case("work-ddgi-metal",false);
-    options.ssil=true;
-    gather_case("work-ddgi-metal-ssil",true);
-    options.ssil=false;receiver.material.metallic=0;receiver.color={0,0,0,1};
+    receiver.material.metallic=0;receiver.color={0,0,0,1};
     gather_case("work-ddgi-black",false);
     receiver.color={1e-5f,1e-5f,1e-5f,1};
     gather_case("work-ddgi-tiny-nonzero",true);
@@ -211,26 +159,19 @@ void quality_work_elision(Fixture& f) {
     for(const auto& stats:completed("work-ddgi-all-inactive",first_frame))
         check(stats.scene_lit_probe_rays==64u*32u && stats.scene_lit_ddgi_visibility_rays[0]==0,
               "inactive probes retain fixed classification rays but skip illumination tracing and scratch-hit shading");
-    const auto enclosed=f.capture("work-ddgi-inactive-dark",32);
+    render::Capture enclosed;
+    for(unsigned i=0;i<32;++i)check(f.step(i==31?&enclosed:nullptr).stats.scene_lit_history_resets==0,
+        "enclosing the receiver keeps the scene history domain");
+    png(enclosed,f.output/"work-ddgi-inactive-dark.png");
     const auto enclosed_color=mean_rgb(enclosed,region);
-    // This assertion isolates DDGI scratch/transport, not the independent DI
-    // denoiser's low-luminance tail after a one-frame visibility edit. Keep the
-    // warmed probe field intact while bypassing only direct reconstruction.
-    options.direct_reference=true;render::Capture isolated;
-    const auto isolated_stats=f.step(&isolated).stats;
-    png(isolated,f.output/"work-ddgi-inactive-isolated.png");
-    check(isolated_stats.scene_lit_history_resets==0 &&
-          std::ranges::all_of(isolated_stats.scene_lit_probe_volumes,[](const auto& volume){return volume.reset_probes==0;}),
-          "direct reference isolates DDGI without resetting its warmed probe field");
     options.ddgi=false;
-    const auto without_gi=f.capture("work-ddgi-inactive-reference-without-gi",1);
-    const auto no_gi_color=mean_rgb(without_gi,region),isolated_color=mean_rgb(isolated,region);
-    std::printf("Inactive receiver after %llu frames: realtime=(%.6f,%.6f,%.6f), direct reference DDGI on=(%.6f,%.6f,%.6f), DDGI off=(%.6f,%.6f,%.6f)\n",
+    const auto without_gi=f.capture("work-ddgi-inactive-without-gi",1);
+    const auto no_gi_color=mean_rgb(without_gi,region);
+    std::printf("Inactive receiver after %llu frames: DDGI on=(%.6f,%.6f,%.6f), DDGI off=(%.6f,%.6f,%.6f)\n",
         static_cast<unsigned long long>(enclosed.frame_id-first_frame+1),enclosed_color[0],enclosed_color[1],enclosed_color[2],
-        isolated_color[0],isolated_color[1],isolated_color[2],no_gi_color[0],no_gi_color[1],no_gi_color[2]);
-    check(*std::max_element(no_gi_color.begin(),no_gi_color.end())<=1,
-          "enclosure blocks the outside light in independent direct reference");
-    check(*std::max_element(isolated_color.begin(),isolated_color.end())<=1,
+        no_gi_color[0],no_gi_color[1],no_gi_color[2]);
+    check(*std::max_element(no_gi_color.begin(),no_gi_color.end())<=1,"enclosure blocks the outside light's direct contribution");
+    check(*std::max_element(enclosed_color.begin(),enclosed_color.end())<=1,
           "inactive probes do not leak prior surface radiance into the enclosed receiver");
-    std::puts("Renderer SceneLit work elision: PASS (candidate-independent selected visibility, independent reference64 rays, zero/tiny diffuse support, SSIL/debug consumers, DDGI span resize and inactive scratch lifecycle)");
+    std::puts("Renderer SceneLit work elision: PASS (ray-free direct visibility, zero/tiny diffuse support, debug consumer, DDGI span resize and inactive scratch lifecycle)");
 }

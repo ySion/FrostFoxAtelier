@@ -2,6 +2,8 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <charconv>
 #include <cmath>
 #include <string>
 #include <unordered_set>
@@ -35,6 +37,22 @@ inline std::size_t identity(const Json& value) {
     if (value.is_number_unsigned()) return value.get<std::size_t>();
     if (value.is_number_integer() && value.get<std::int64_t>() >= 0) return value.get<std::size_t>();
     throw std::runtime_error("Expected a nonnegative integer identity or version.");
+}
+// A float field is written as a decimal that reads back as the same float, normally the
+// shortest (0.2f as 0.2), not as the exact double the float widens to (0.20000000298023224).
+inline Json number(float value) {
+    std::array<char, 32> text;
+    const auto end = std::to_chars(text.data(), text.data() + text.size(), value).ptr;
+    double shortest{};
+    std::from_chars(text.data(), end, shortest);
+    // Reading parses a double and rounds it to float. Only for ±7.038531e-26 does that double
+    // rounding land on the neighbouring float; those two keep the exact widened value.
+    return std::bit_cast<std::uint32_t>(static_cast<float>(shortest)) == std::bit_cast<std::uint32_t>(value) ? shortest : double(value);
+}
+template<std::size_t Count> Json numbers(const std::array<float, Count>& values) {
+    Json result = Json::array();
+    for (const float value : values) result.push_back(number(value));
+    return result;
 }
 template<std::size_t Count> std::array<float, Count> vector(const Json& value) {
     if (!value.is_array() || value.size() != Count) throw std::runtime_error("Invalid vector length.");

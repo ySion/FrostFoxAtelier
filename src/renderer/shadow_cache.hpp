@@ -4,17 +4,20 @@
 #include "light_frame.hpp"
 
 #include <memory>
+#include <optional>
 
 namespace atelier::renderer::detail {
 
 inline constexpr std::uint32_t shadow_atlas_extent=4096;
 inline constexpr std::uint32_t shadow_tile_border=2;
-// Bound as the same shader uniform by SceneLit. PCSS direction perturbations
-// must not exceed this CPU residency support.
-inline constexpr float shadow_filter_tangent_limit=0.25f;
+inline constexpr std::uint32_t shadow_high_tier_lights=16,shadow_face_redraw_budget=24,shadow_fade_frames=8;
 inline constexpr float shadow_near_ratio=1e-6f;
 inline constexpr float shadow_maximum_near=1e-5f;
 
+// Camera view Z range of the GBuffer receivers, reduced on the GPU and read
+// back after its frame completed. Absent until a reading of the current
+// camera epoch (scene and camera cut) arrives.
+struct ShadowReceiverDepth { float minimum{},maximum{}; };
 struct ShadowBounds {
     std::array<float,3> minimum{},maximum{};
 };
@@ -51,10 +54,13 @@ struct GpuShadowFace {
     std::array<std::uint32_t,4> meta{};
 };
 struct GpuShadowLight {
-    // Kind: 0=not cached (existing visibility), 1=point, 2=directional.
-    // First face descriptor, face count, flags (bit0: shade in this batch).
+    // Kind: 0=no direct light this frame (dropped, or a face still undrawn),
+    // 1=cube from the light centre, 2=directional cascades. First face
+    // descriptor, face count, float bits of the fade-in factor.
     std::array<std::uint32_t,4> meta{};
-    // Directional cascade far boundaries in unjittered camera view Z.
+    // Directional: cascade far boundaries in unjittered camera view Z.
+    // Cube: xyz is the origin its faces were drawn from, which lags the
+    // light while a redraw waits for budget.
     std::array<float,4> splits{};
 };
 static_assert(sizeof(GpuShadowFace)==112);
@@ -62,45 +68,48 @@ static_assert(sizeof(GpuShadowLight)==32);
 
 enum class ShadowLayer : std::uint32_t { stationary, dynamic };
 struct ShadowUpdate {
-    std::uint32_t face{}; // Index into this batch's faces.
+    std::uint32_t face{}; // Index into the plan's faces.
     ShadowLayer layer{};
     std::array<std::uint32_t,4> rect{}; // x,y,width,height, including guard.
     // Expanded projection used with the entire rect as viewport/scissor.
     std::array<float,16> view_projection{};
     std::vector<std::uint32_t> instances;
 };
-struct ShadowBatch {
-    // Shade only these analytic source indices, once. Rectangle/no-shadow
-    // sources are included and retain their existing visibility behavior.
-    std::vector<std::uint32_t> sources;
-    // Compact analytic prefix + directional tail, excluding emitter triangles.
-    // analytic=local_count-emitter_count; index=source<analytic ? source :
-    // analytic+(source-local_count). Never index this array with an emitter.
-    std::vector<GpuShadowLight> lights;
-    std::vector<GpuShadowFace> faces;
-    std::vector<ShadowUpdate> updates;
-    bool include_emitters{}; // Exactly the first batch, including empty scenes.
-    // Rectangle integration (including unshadowed sources), or conservative
-    // sphere-interior receivers of shadow-casting points need the endpoint kernel.
-    // Emitters are selected independently by include_emitters and their count.
-    bool endpoint_visibility{};
-};
 struct ShadowPlanStats {
     std::uint32_t requested_faces{},reused_faces{},static_updates{},dynamic_updates{};
-    std::uint32_t rendered_instances{},resolution_downgrades{},pressure_batches{};
+    std::uint32_t rendered_instances{},resolution_downgrades{};
+    // Shadow-casting lights the atlas could not hold even at the minimum
+    // resolution. They contribute no direct light this frame.
+    std::uint32_t dropped_lights{};
     // Requested point faces intersecting a caster at/before the minimum near
     // plane. A center shadow map cannot represent that part of visibility.
     std::uint32_t near_plane_faces{};
+    // Faces the redraw budget left for a later frame (stale faces keep their
+    // previous projection and contents), the longest consecutive deferral
+    // among them in frames, the 128² cells held by all requested faces, and
+    // resident lights withheld from direct light until every face is drawn.
+    std::uint32_t deferred_faces{},deferral_frames{},atlas_cells{},pending_lights{};
 };
+// Every shadow-casting light that is lit this frame is resident at once.
+// Reservation runs in importance order, directional lights first. Only the
+// most important point lights use 256²/512² faces; the rest use 128². Cascades
+// always redraw; at most shadow_face_redraw_budget other faces redraw per
+// frame. A cube's faces redraw together, lights with undrawn faces first, then
+// stale lights longest-waiting first; a deferred light keeps its previous
+// origin, projections and contents, so shadows lag a frame or two. A light adds
+// no direct light until all of its faces have contents; one that waited fades
+// in over shadow_fade_frames.
 struct ShadowFramePlan {
-    std::vector<ShadowBatch> batches;
+    // Indexed by light source. Non-casting and dropped lights keep kind 0.
+    std::vector<GpuShadowLight> lights;
+    std::vector<GpuShadowFace> faces;
+    std::vector<ShadowUpdate> updates;
     ShadowPlanStats stats;
 };
 
 // CPU-only owner of derived atlas residency. SceneLit owns the two D32_FLOAT
 // textures, clears update rects to 0, draws each update with GREATER depth, then
-// unbinds both atlases before shading the batch. Later batches may overwrite
-// earlier regions: upload/consume each batch's descriptors before the next one.
+// unbinds both atlases before shading.
 class ShadowCache {
 public:
     ShadowCache();
@@ -108,7 +117,7 @@ public:
     ShadowCache(const ShadowCache&)=delete;
     ShadowCache& operator=(const ShadowCache&)=delete;
     const ShadowFramePlan& prepare(const Frame&,const LightFrame&,
-        std::span<const ShadowCaster>,std::span<const ShadowChange>,std::uint64_t sequence);
+        std::span<const ShadowCaster>,std::span<const ShadowChange>,std::optional<ShadowReceiverDepth>,std::uint64_t sequence);
     // Call only after every update and corresponding shade has been encoded.
     // No GPU wait is required: these resources stay on the existing queue.
     void commit() noexcept;

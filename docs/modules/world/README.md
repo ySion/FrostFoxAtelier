@@ -41,7 +41,7 @@ EntityRemoval 保留子树、原组合父与位置；ComponentRemoval 保留 own
 
 ## 空间树与网格
 
-`has_transform / read_transform / set_transform / remove_transform` 操作 Entity 的可选内联空间。默认参考最近具有空间能力的组合祖先；`space_reference` 的 nullopt 表示继承，空 ObjectId 表示显式世界空间，非空身份表示显式弱空间参考。无空间 Entity 可以组织子树；组件不再保存 TRS、parent 或 root。
+`has_transform / read_transform / set_transform / remove_transform` 操作 Entity 的可选内联空间。默认参考最近具有空间能力的组合祖先；`space_reference` 的 nullopt 表示继承，空 ObjectId 表示显式世界空间，非空身份表示显式弱空间参考。无空间 Entity 可以组织子树；组件不保存 TRS、parent 或 root。
 
 `component_requires_space` 按组件类型判断空间需求：`SpatialComponent` 及其派生（网格、碰撞、灯光与项目派生类型）要求 owner 有 Transform，与字段值无关；其他组件（例如 EnvironmentComponent）不要求。移除 Transform 前须移除依赖该空间的能力，并解除直接指向它的显式空间参考。默认继承的子节点可继续寻找更上层空间，保持原局部 TRS；最终图仍须有效。
 
@@ -49,13 +49,13 @@ EntityRemoval 保留子树、原组合父与位置；ComponentRemoval 保留 own
 
 运行中的 World 可在生命周期回调之外切换空间参考。只改空间不会改变组合资格，不重发 Begin/End 或启用通知，也不取消任务。物理在下一步前协调空间依赖；keep_world 保留有效后端身份和连续状态，实际世界姿态或尺度变化按物理规则处理。
 
-TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每轴 scale。Matrix4 为行主序、行向量，local = S * R * T，平移位于 12–14，world = local * reference_world。层级矩阵可含剪切，不保存第二份可编辑空间状态，也不以伪造单位矩阵掩盖无效关系。
+TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每轴 scale。规范化保留在 float 舍入范围内已是单位长度的四元数（double 中 |norm² − 1| ≤ 2^-22），其余在 double 中归一化后舍入为 float；结果总在该范围内，所以规范化是幂等的，重复加载保存不改变旋转。Matrix4 为行主序、行向量，local = S * R * T，平移位于 12–14，world = local * reference_world。层级矩阵可含剪切，不保存第二份可编辑空间状态，也不以伪造单位矩阵掩盖无效关系。
 
 负 scale 表示镜像，rotation 始终是真旋转。从矩阵分解 TRS（keep_world、物理回写）时，奇数个负轴优先取对象原局部 scale 的符号，符号奇偶不符时只取 X 为负，因此 (-1,-1,-1) 的回写保持原 TRS，而无偏好的世界分解为 (-1,1,1) 加半周旋转。零 scale 可以存储，但该节点及其整棵空间子树退化：按链上是否有零缩放轴判定，不看舍入成 FP32 后的行列式（旋转后的零轴会在子级矩阵里留下非零舍入残差）；网格不绘制、Primitive 不建刚体，各报告一条 `degenerate_value` 警告，身份指向链上最上层的零缩放节点，持续期间合并计数；这不是对象失败，任何策略下都不停用行为或停机。涉及奇异矩阵的 keep_world 仍拒绝。灯光朝向忽略 scale 幅值、保留符号，随镜像一起镜像；零缩放不使灯光退化，见[灯光](../presentation/README.md#提取与坐标)。
 
 StaticMeshComponent 保存网格与材质，LightComponent 保存灯参数，PrimitiveComponent 保存 body 作者配置；绘制、灯光与物理都查询 owner Entity 的空间。需要独立空间时创建子 Entity，将能力组件放到该子实体。
 
-PrimitiveComponent、CollisionComponent、BodySettings 与 PhysicsMaterial 留在 world 库，是呈现与物理共用的基元层：类型定义放在这里供两侧引用，规则不归 World 核心。字段规则迁入 Runtime 类型校验器之后，World 核心不再对这些类型做任何判断；具体能力由登记的呈现、准入与模拟系统负责。
+PrimitiveComponent、CollisionComponent、BodySettings 与 PhysicsMaterial 留在 world 库，是呈现与物理共用的基元层：类型定义放在这里供两侧引用，规则不归 World 核心：字段规则属于 Runtime 类型校验器，具体能力由登记的呈现、准入与模拟系统负责。
 
 ## 生命周期与执行顺序
 
@@ -106,7 +106,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 已入场成员的作者字段、Transform 增删、材质、材质槽与灯参数，以及 World 光照设置，都可以在宿主边界编辑，World 运行中也一样：新值从下一个执行的阶段起生效，不重发 Begin/End，不取消任务；夹值、类型规则、准入与失败恢复与停止时相同。行为分发内的重入、结构转换期间的编辑以及其他 World 的成员仍拒绝；`inspect_entity` 的 `can_edit` 表示当前不在行为分发内。失败策略属于 World 配置，仍只在停止时可改。组合归属和空间参考按结构操作的准入规则处理。同 Runtime 的 Detached 图可以在 World 运行时于宿主边界准备，完整校验后经同一入口原子发布。Entity 和 Component 属性走同一 Runtime FieldPath 与 scalar 编辑事务；TRS 历史保存完整前后值，业务字段保留精确 Scalar。空 Entity 仍可选择编辑；成员资格、对象存活、运行激活和呈现登记分别判断。
 
-`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。整值重载 `write(object, path, ValueInput)` 用于 String、Array 与记录：写入前先把旧的整值读到同类型的临时值里，之后的校验、准入与恢复与标量版相同；Runtime 对非 plain 值的写入有强保证，写入本身失败时字段不变。整值写入不能替换 Entity 的 Transform 字段，这些字段只能经标量写入或 `set_transform`。组写入 `write(object, paths, values)` 把同一对象的多个标量叶作为一次编辑：逐叶经 `Runtime::write` 写入（同样夹值），全部写完后只做一次类型规则检查和一次准入，因此只要求这些值合在一起有效（例如整体平移探针体积、在 GTAO 与 Local GI 之间切换）；任何失败都把全部叶按位恢复。同一组里重复的路径直接拒绝，Transform 叶拒绝，改用 `set_transform`。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
+`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。整值重载 `write(object, path, ValueInput)` 用于 String、Array 与记录：写入前先把旧的整值读到同类型的临时值里，之后的校验、准入与恢复与标量版相同；Runtime 对非 plain 值的写入有强保证，写入本身失败时字段不变。整值写入不能替换 Entity 的 Transform 字段，这些字段只能经标量写入或 `set_transform`。组写入 `write(object, paths, values)` 把同一对象的多个标量叶作为一次编辑：逐叶经 `Runtime::write` 写入（同样夹值），全部写完后只做一次类型规则检查和一次准入，因此只要求这些值合在一起有效（例如整体平移探针体积）；任何失败都把全部叶按位恢复。同一组里重复的路径直接拒绝，Transform 叶拒绝，改用 `set_transform`。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
 
 `destroy_entity / destroy_component` 是游戏对象终结入口：先退出 World，再清理组成并调用 Runtime；可信宿主不得绕过它直接销毁活跃成员。detach 保留对象图；历史裁剪只释放根，不隐式 destroy。close 退出所有子树、释放成员根后不可重启，重复 close 无副作用。
 
@@ -114,16 +114,16 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 能力按组件类型登记：`register_capability(component_type, predicate)` 返回不透明的 `CapabilityId`，World 只维护该登记下成员组件的桶（组合前序，包含未启用项并以 active 标出，active 即自身启用且 owner 有效启用，不含是否已 Begin），随组合、成员与启用的每次变化更新，由 `members(id)` 查询；组件数据改变后，负责该数据的写入方调用 `reevaluate_capabilities(component)` 重新求值谓词。不带谓词再次登记同一类型时返回已有的无谓词登记，所以在同一 World 上重建的领域宿主（例如每次 Play 新建的 PhysicsScene）不会累积登记。每个 World 最多 32 个登记。领域代码在 `write` 之外改动组件的原生数据（例如网格绑定）前调用 `admit_component_edit(Runtime&, component)`：组件 Detached 时返回空；属于某个 World 时要求该 World 处在宿主边界（未关闭、未在转换或分派中），并返回它，改动后由调用方对数据影响谓词的组件调用 `reevaluate_capabilities`。World 核心自己不登记能力：presentation::Scene 登记网格（需要有几何）、灯光与环境，物理登记 Primitive、Character、Ragdoll 作为逐帧协调的候选来源。
 
-跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write` 及其上的类型化入口，例如 presentation 的 `set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 的两个重载都用 `Runtime::restore` 把写入前读出的原值换回字段，不再经过硬边界、有限性检查与类型校验器，所以由可信路径写成 NaN 或越过硬边界的原值也按位恢复；这样的原值本身违反字段不变量，`Runtime::validate` 会继续报告它。类型化入口先检查新值自身的规则，再经整值 `write` 写入，所以准入与按位恢复与之相同。Admission 运行时按分派处理：它可以读 World，但其中的编辑和 `add_admission` 返回 busy。Admission 抛出的异常转为 `invocation_failed`（内存不足时为 `capacity_exceeded`），与返回错误一样拒绝这次改动并恢复原值。恢复是交换，不分配内存，对可交换的类型不会失败；只有结构性错误（例如对象在原生借用中、非 plain 值返回 busy）才会使恢复失败，这时返回的错误写明被拒的值未能恢复，并给出原因。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。World 核心不登记准入；presentation::Scene 登记一条：每个 World 至多一个 EnvironmentComponent，停用的也计数。
+跨对象的成员规则同样按类型登记：`add_admission(component_type, Admission)`，Admission 收到该类型（含派生）的候选组件。attach、attach_batch、restore 与向已入场 Entity 的 attach_components 在发布前以全部新组件为候选调用它，失败则整批拒绝；Detached 组合不调用。作者编辑（`write` 及其上的类型化入口，例如 presentation 的 `set_material`、`set_light`）改动成员组件时采用“先写、再检查、失败恢复”：先写入，候选组件以写入后的值出现在 World 中，Admission 失败时恢复原值并返回该错误。`write` 的两个重载都用 `Runtime::restore` 把写入前读出的原值换回字段，不经过硬边界、有限性检查与类型校验器，所以由可信路径写成 NaN 或越过硬边界的原值也按位恢复；这样的原值本身违反字段不变量，`Runtime::validate` 会继续报告它。类型化入口先检查新值自身的规则，再经整值 `write` 写入，所以准入与按位恢复与之相同。Admission 运行时按分派处理：它可以读 World，但其中的编辑和 `add_admission` 返回 busy。Admission 抛出的异常转为 `invocation_failed`（内存不足时为 `capacity_exceeded`），与返回错误一样拒绝这次改动并恢复原值。恢复是交换，不分配内存，对可交换的类型不会失败；只有结构性错误（例如对象在原生借用中、非 plain 值返回 busy）才会使恢复失败，这时返回的错误写明被拒的值未能恢复，并给出原因。不经 World 的 Runtime 写入与生成代码写入不调用准入，由消费端的确定规则兜底。World 核心不登记准入；presentation::Scene 登记一条：每个 World 至多一个 EnvironmentComponent，停用的也计数。
 
-`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对链上有零缩放轴或矩阵奇异的空间，在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](../presentation/README.md#提取与坐标)）。presentation 的提取只经这三个入口读取空间。
+`spatial_pass(phase)` 开始一次提取遍历，同时开始该阶段的诊断遍历（重复失败按遍历合并 repeats），直到下一次遍历开始。`matrix(entity)` 返回成员 Entity 的世界矩阵，空间不可求值时在失败的 Entity 上记 `invalid_value` 并返回空（halt 策略或 World 级失败时返回错误）；`degenerate(entity, matrix, message)` 对链上有零缩放轴或矩阵奇异的空间，在链上最上层的零缩放节点记一条 `degenerate_value` 警告并返回 true；`orientation(entity)` 返回忽略 scale 幅值、保留符号的方向（`mirrored` 时帧为 −rotation，见[灯光](../presentation/README.md#提取与坐标)）；`parent(entity)` 返回同一缓存中的空间父级，世界空间为空。`matrix`、`orientation` 与 `parent` 只接受成员 Entity，其他对象返回 `invalid_member`；`degenerate` 接收本次遍历 `matrix` 的结果。presentation 的提取只经这四个入口读取空间。
 
 `revision()` 是 World 的结构版本号：成员、组合、启用、空间关系、Transform 有无和能力登记每变化一次就前进；在它前进之前，每个能力桶保持同样的成员、组件和顺序。字段值（包括 TRS）也会经 World 之外的路径改变，不计入它；缓存提取结果的消费者自己比较这些值，例如 [presentation 的提取缓存](../presentation/README.md#提取缓存)。
 
-成员的世界矩阵来自 World 持有的一份空间缓存，各个提取遍历（例如 presentation 的 `render_items`、`light_items`）、`world_matrix` 与 `spatial_parent` 共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。只有 World 成员的 Transform 增删与空间参考变化会使缓存失效。Detached 对象和候选图仍使用临时求值。
+成员的世界矩阵来自 World 持有的一份空间缓存，各个提取遍历（例如 presentation 的 `render_items`、`light_items`）、`world_matrix`、`spatial_parent` 与位姿批次（`apply_simulation_transforms` 和 `translate_owner` 的批量应用）共用：组合关系、空间参考与 Transform 增删经 World 结构操作改变并使缓存失效；每次提取重新读取所访问 Entity 的当前 TRS，按位比较后只重组变化的链，因此 Runtime 直接写入与生成代码的写入在下一次查询即可见。某个节点组合失败时，失败也记入本次提取：其下的查询直接得到同一错误和同一失败节点，不再重走到根。Detached 对象、结构编辑的候选图，以及祖先也在同一位姿批次里的位姿（要以祖先的目标位姿换算）仍使用临时求值。
 
 ## 运行位姿与验收入口
 
-Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。已登记模拟系统以 `writes_pose` 声明位姿的 Entity（例如物理 body 或控制器所在的 Entity）拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。被拒绝的命令与位姿按失败策略处理。
+Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。已登记模拟系统以 `writes_pose` 声明位姿的 Entity（例如物理 body 或控制器所在的 Entity）拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。可选的 `written` 返回实际发布的各 Entity 局部 TRS（逐位即写入值，不含被拒绝的位姿），模拟系统据此识别之后绕过它的写入。被拒绝的命令与位姿按失败策略处理。
 
-端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。Scene 写出 v7；仓库里的官方示例仍是 v6，读取时迁移，旧 v1–v5 先经严格导入，见[项目场景](project-scenes.md#v6--v7-迁移)。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。
+端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。Scene 只读写 v9，见[项目场景](project-scenes.md#scene-v9)。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。

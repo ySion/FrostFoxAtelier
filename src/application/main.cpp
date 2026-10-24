@@ -30,6 +30,7 @@ void guard_acceptance_native_dialogs();
 
 int wmain(int argc, wchar_t** argv) {
     try {
+        atelier::application::install_frame_timing();
         std::printf("FrostFox Atelier | %s | %s\n",atelier::build_info::revision,atelier::build_info::configuration);
         if (argc==2 && std::wstring_view(argv[1])==L"--version") return 0;
         if (argc>=3 && std::wstring_view(argv[1])==L"--run-project")
@@ -103,10 +104,10 @@ int wmain(int argc, wchar_t** argv) {
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
             std::fprintf(stderr, "Usage: atelier_editor [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version|--physic|--dungeons] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-tooltips|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
-        auto example_workspace=examples||physics_examples||dungeons_acceptance?std::filesystem::absolute(argv[2])/"Workspace":std::filesystem::path{};
         // Each dedicated example run must consume current templates. Product workspaces
         // intentionally preserve existing folders and must not be refreshed here.
-        if(physics_examples||dungeons_acceptance) example_workspace/=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        const auto example_workspace=examples||physics_examples||dungeons_acceptance?
+            std::filesystem::absolute(argv[2])/"Workspace"/std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()):std::filesystem::path{};
         const bool harness=acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || project_acceptance || scene_lit ||
             sponza || physics_examples || dungeons_acceptance || examples;
         if(harness) guard_acceptance_native_dialogs();

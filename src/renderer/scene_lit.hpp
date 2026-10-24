@@ -28,7 +28,8 @@ public:
     ~SceneLit();
     SceneLit(const SceneLit&)=delete;
     SceneLit& operator=(const SceneLit&)=delete;
-    void validate(const Frame& frame) const;
+    // Stable mesh key uniqueness is tracked by the Renderer across shading modes.
+    void validate(const Frame& frame,bool duplicate_mesh_keys) const;
     // See Renderer::preparation; only Lit views reach here.
     Result<Preparation> preparation(const ViewSettings& view);
     void draw(const Frame& frame,ui::PixelExtent extent,GfxTexture depth,

@@ -228,6 +228,12 @@ void hierarchical_space_boundaries() {
     require(optional_space.id()==optional_id && !take(w::space_reference(runtime,optional_id)).has_value() &&
         equal_matrix(take(w::world_matrix(runtime,optional_id)),w::transform_matrix(probe_local)),
         "Re-added Transform reactivated an expired hidden origin.");
+    auto stretched=take(w::create_entity(runtime)),turned=take(w::create_entity(runtime)),carried=take(w::create_entity(runtime));
+    take(world.set_transform(stretched.id(),{{0,0,0},{},{2,1,1}}));
+    take(world.set_transform(turned.id(),{{1,0,0},{},{.5f,1,1}}));
+    take(world.set_transform(carried.id(),{{0,1,0},{},{1,1,1}}));
+    committed(world.attach(stretched.id()));committed(world.attach(turned.id(),w::append,stretched.id()));
+    committed(world.attach(carried.id(),w::append,turned.id()));
     committed(world.start());
     const std::array poses{w::SimulationPose{x.id(),{201,3,0},{}},w::SimulationPose{a.id(),{200,0,0},{}}};
     take(world.apply_simulation_transforms(poses));
@@ -243,6 +249,19 @@ void hierarchical_space_boundaries() {
         rejected_pose.size()==1 && rejected_pose[0].object==x.id() && rejected_pose[0].kind==w::DiagnosticKind::command_rejected &&
         rejected_pose[0].phase==w::DiagnosticPhase::physics && rejected_pose[0].severity==w::Severity::warning,
         "Isolated simulation batch did not reject exactly the invalid pose.");
+    // The child first converts against its parent's quarter-turn target. That turn under
+    // the stretched grandparent would change the parent's authored scale, so the parent
+    // is rejected and the child converts again against the parent's unmoved pose.
+    const auto turned_world=take(w::world_matrix(runtime,turned.id()));
+    const std::array conflicting{w::SimulationPose{carried.id(),{60,5,0},{}},
+        w::SimulationPose{turned.id(),{50,0,0},{0,0,.70710678f,.70710678f}}};
+    take(world.apply_simulation_transforms(conflicting));
+    const auto conflict=world.take_diagnostics();
+    const auto carried_world=take(w::world_matrix(runtime,carried.id()));
+    require(conflict.size()==1 && conflict[0].object==turned.id() && conflict[0].kind==w::DiagnosticKind::command_rejected &&
+        equal_matrix(turned_world,take(w::world_matrix(runtime,turned.id()))) &&
+        near(carried_world[12],60) && near(carried_world[13],5) && near(carried_world[14],0),
+        "A pose kept after its parent's pose was rejected converted against the rejected target.");
     committed(world.stop());take(world.set_failure_policy(w::FailurePolicy::halt));committed(world.start());
     take(world.apply_simulation_transforms(poses));
     reject(world.apply_simulation_transforms(invalid_poses),"Invalid final simulation pose was accepted.");

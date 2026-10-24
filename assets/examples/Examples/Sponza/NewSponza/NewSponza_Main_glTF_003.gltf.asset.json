@@ -1,0 +1,33 @@
+{
+  "id": "{8C05964C-1952-45D6-94BA-718C2AAAD150}",
+  "materials": {
+    "arch_stone_wall_01": "project/{14C0F709-C489-40A3-BAE6-6333E2442A47}",
+    "brickwall_01": "project/{30CF3504-EE29-4E53-BEB0-9CA4204C37A0}",
+    "brickwall_02": "project/{EEDEFEC3-3222-42C2-B6E6-EE5E101A0C7E}",
+    "ceiling_plaster_01": "project/{8394DED7-EE47-48BA-BEDB-62655AB7B3C0}",
+    "ceiling_plaster_02": "project/{402B3EEE-E763-4C38-82DB-53D9FF20224F}",
+    "column_1stfloor": "project/{6C94551A-FF5F-4D17-AE6E-9B1F8ABBCE33}",
+    "column_brickwall_01": "project/{A9B4D1F4-E278-4027-A82F-87E81213BFFC}",
+    "column_head_1stfloor": "project/{54D43E6E-7797-4BE1-9F56-16BB3579667B}",
+    "column_head_2ndfloor_02": "project/{F6039727-F45F-4EDB-994A-1247D2413C4E}",
+    "column_head_2ndfloor_03": "project/{9D15282B-0F27-4D9C-8E13-587F18FF38C2}",
+    "door_stoneframe_01": "project/{5F49CDA2-25F3-4D3B-846B-4F6CCCB57324}",
+    "door_stoneframe_02": "project/{EF80380E-9D0F-40CF-8D55-7D78E790EE74}",
+    "floor_01": "project/{D25E8CE0-3B8D-4C8E-97F8-E698B113B0D4}",
+    "glass": "project/{0DDB72F2-ECFE-470B-B548-FA0845E951F4}",
+    "lamp_glass_01": "project/{97CF50DB-5FB0-4B29-B295-FD9976B7E4DC}",
+    "light_bulb": "project/{16E03D1A-2370-4C92-A63B-3850644119A6}",
+    "metal_door": "project/{B6DA05B8-A890-4A97-B9DF-31B2BA0F6F8B}",
+    "ornament_01": "project/{ADE8E0BF-9109-445E-8368-5E344B5FB134}",
+    "ornament_lion": "project/{11247A34-3736-44DA-96D3-1DF5B83AC88A}",
+    "roof_tiles_01": "project/{7B9120FE-E84F-428C-82CC-AA811769529E}",
+    "stone_trims_01": "project/{B4E9FF7F-A2CA-44E9-8108-6B7C19FAB0E6}",
+    "stone_trims_02": "project/{0D9EA75D-25CA-466D-BA54-3337D0C685D7}",
+    "stones_01_tile": "project/{12DF4A05-68CE-40F3-803F-9906EDC9F9C0}",
+    "stones_2ndfloor": "project/{B7A50FF3-1D80-44C4-A206-EC0BA8C55562}",
+    "window_frame_01": "project/{6BAECE8B-7E72-40F2-90F3-8724C161008F}",
+    "wood_01": "project/{9A61A951-A8A2-4249-906B-EE19D206D0A1}",
+    "wood_door_01": "project/{32BFAE24-02C4-47CF-B5CE-A40685C9D27E}"
+  },
+  "version": 1
+}

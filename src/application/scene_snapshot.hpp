@@ -1,5 +1,6 @@
 #pragma once
 
+#include "application/timing.hpp"
 #include "editor/session.hpp"
 #include "renderer/renderer.hpp"
 #include <algorithm>
@@ -32,7 +33,8 @@ public:
         // The slot map below indexes the synchronized Scene's cache; another one needs reset().
         if(synced_ && synced_->scene!=scene.identity())
             return std::unexpected(Error{ErrorCode::argument_mismatch,"A scene snapshot was refreshed from another document without reset()."});
-        auto version=scene.update();if(!version) return std::unexpected(version.error());
+        auto version=[&]{timing::Scope extracting{phases::extract};return scene.update(document.presented_poses());}();
+        if(!version) return std::unexpected(version.error());
         const auto selection=document.selected_entities();
         const bool reselect=!synced_ || !std::ranges::equal(synced_->selection,selection);
         if(synced_ && synced_->version==*version && !reselect) return {};
@@ -45,7 +47,7 @@ public:
             if(slots[slot].changed<=since) continue;
             const auto at=dense_[slot];
             if((at==absent)==slots[slot].item.has_value()) {relayout=true;break;}
-            if(at!=absent) {auto& value=meshes[at];value=instance(*slots[slot].item,value.stable_key,value.selected);}
+            if(at!=absent) {auto& value=meshes[at];value=instance(slots[slot],value.stable_key,value.selected);}
         }
         if(relayout) {
             for(auto& [object,key]:mesh_keys_) { (void)object;key.seen=false; }
@@ -55,7 +57,7 @@ public:
                 const auto& item=*slots[slot].item;
                 dense_[slot]=static_cast<std::uint32_t>(meshes.size());
                 mesh_entities.push_back(item.entity);
-                meshes.push_back(instance(item,key(mesh_keys_,item.component),false));
+                meshes.push_back(instance(slots[slot],key(mesh_keys_,item.component),false));
             }
             std::erase_if(mesh_keys_,[](const auto& item){return !item.second.seen;});
         }
@@ -83,9 +85,11 @@ private:
         at->second.seen=true;return at->second.value;
     }
     static std::array<float,3> rgb(math::Vector3 value) {return {value.x,value.y,value.z};}
-    renderer::MeshInstance instance(const presentation::RenderItem& item,std::uint64_t key,bool selected) {
+    // A mesh is drawn at its presented matrix while a simulation interpolates it.
+    renderer::MeshInstance instance(const presentation::MeshSlot& slot,std::uint64_t key,bool selected) {
+        const auto& item=*slot.item;
         ++built;
-        renderer::MeshInstance value{item.world.elements,
+        renderer::MeshInstance value{(slot.presented?*slot.presented:item.world).elements,
             {item.material.base_color.x,item.material.base_color.y,item.material.base_color.z,1},
             selected,item.geometry,{item.material.roughness,item.material.metallic,rgb(item.material.emissive)},key};
         value.surfaces=item.surfaces;

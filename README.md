@@ -17,7 +17,7 @@
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、GC/拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
-| Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 10 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
+| Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 9 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
 | 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、撒点/变换/Promote/Copy to Points 等 C++ 操作、实例按块发布；由 Runtime 对象构成的节点图与按内容键缓存的增量求值；尚未接入场景与编辑器 | [程序化模块](docs/modules/procedural/README.md) |
 | C++ 基础库与反射 | Array/String、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
@@ -45,7 +45,7 @@ Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含
 
 工作室 MatCap / Smooth / Flat 默认开启 Screen Cavity，通过几何凹凸增强表面分界；开关、Ridge、Valley 与像素半径属于视口显示设置，具体范围见[渲染合同](docs/modules/renderer/contract.md#工作室-cavity)。
 
-Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线、发光采样与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。直接光默认按屏幕 tile 与深度分层收集局部解析灯并精确枚举，紧凑光源确定求值，发光三角形按候选预算随机采样，方向光独立评估；原生 ReSTIR DI 保留为诊断回退；所有选中的投影光源都查询真实可见性。发光网格在 DDGI 关闭时仍提供直接漫反射，DDGI 通过同一光源入口和独立采样负责后续反弹，避免重复计算一跳发光。直接光、DDGI、GTAO 和随机屏幕反射分别稳定自己的信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。**Window → World Settings** 编辑直接光候选预算、四个 DDGI 体积、传播预算、曝光、Bloom 和默认关闭的 Local GI；作者值随 Scene 保存并参与撤销。Diagnostics 提供独立直接光参考模式、DI／DDGI 共用空间选灯的对照开关、真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，偏好留在视口，与 Control 共用入口。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 沿 Create、Entity Structure、Parameters 和场景保存的现有入口编辑；均匀天光是 World Settings 的 Sky 组，关闭时环境照明为零；Scene Lit 使用黑背景，工作室模式保留渐变偏好。通过 Project → Examples → Scene Lit Room 可打开 [Scene Lit Room](assets/examples/Examples/Scene%20Lit%20Room/README.md)，入口自动配置 Scene Lit 与相机。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`；Renderer 端到端入口为 `renderer_acceptance` 目标，运行默认入口与全部 `--scene-lit*` 入口，每个入口另有单独目标，清单见 [Scene Lit](docs/modules/renderer/scene-lit.md#诊断与性能边界)。本批 GPU 验收和性能状态以[验收记录](docs/modules/renderer/acceptance.md)为准。
+Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线命中与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。直接光按屏幕 tile 与深度分层收集局部解析灯，在一个通道里逐盏确定求值并与间接光、自发光合成 HDR，方向光独立评估；投影光源的可见性来自阴影 atlas，没有随机采样、时间历史或降噪。发光网格只经 DDGI 照亮场景：探针射线命中发光面时记录其自发光，DDGI 关闭时发光网格不照亮其他表面。DDGI、GTAO 和随机屏幕反射分别稳定自己的信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。**Window → World Settings** 编辑探针命中点的光源候选预算、四个 DDGI 体积、传播预算、曝光和 Bloom；作者值随 Scene 保存并参与撤销。Diagnostics 提供 DDGI 命中点空间选灯的对照开关、真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，偏好留在视口，与 Control 共用入口。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 沿 Create、Entity Structure、Parameters 和场景保存的现有入口编辑；均匀天光是 World Settings 的 Sky 组，关闭时环境照明为零；Scene Lit 使用黑背景，工作室模式保留渐变偏好。通过 Project → Examples → Scene Lit Room 可打开 [Scene Lit Room](assets/examples/Examples/Scene%20Lit%20Room/README.md)，入口自动配置 Scene Lit 与相机。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`；Renderer 端到端入口为 `renderer_acceptance` 目标，运行默认入口与全部 `--scene-lit*` 入口，每个入口另有单独目标，清单见 [Scene Lit](docs/modules/renderer/scene-lit.md#诊断与性能边界)。本批 GPU 验收和性能状态以[验收记录](docs/modules/renderer/acceptance.md)为准。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，当前输入合同见[UI 模块](docs/modules/ui/README.md#共享单行编辑)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
@@ -53,8 +53,6 @@ Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质�
 菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前阶段验收与 review 修复见 [2026-10-02 编辑器 UI 收口](docs/research/editor-ui-20261002-closeout.md)。
 
 完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询在对象标题下按需展开，Parameters 连续展示实例属性，Entity Structure 独立维护组件组成。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。资源浏览器的工具行、目录树、状态行和 List/Details/Tiles 全部结果视图已迁入 DSL；三种呈现共享数据、选择和虚拟绘制，菜单内容、Controls、停靠界面与总外壳也已迁入同一 DSL，旧 C++ 界面组装路径已移除；跨区域资源拖放尚未实现。
-
-其后与 Runtime 冻结交付的同候选双配置重建和消费者验收见 [Runtime／编辑器集成记录](docs/research/runtime-editor-integration-20261002.md)；原 2870 帧窗口记录仍归属集成前的编辑器版本。
 
 数学基础、World、文件夹工程与视口显示的前代组合已于 2026-10-05 通过双配置后台与正式项目窗口验收，并随 PR #11 发布到 `855433a`，见[最终集成记录](docs/research/editor-product-integration-20261005.md)。后续 Guides 的独立验收见上方记录；与其他未发布增量的组合仍需验证。Unicode 剪贴板偶发失败及普通系统对话框边界仍未关闭。
 
@@ -111,16 +109,16 @@ pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets world_acceptance,dev:
 
 `-Targets` 中的每一项是 `目标`、`release:目标` 或 `dev:目标`，逗号分隔；名称必须来自 CMake 生成的目标清单，否则脚本失败。汇总目标 `renderer_acceptance` 会被拒绝：它让全部入口共用一个验证级别，应改列需要的 `renderer_acceptance_<入口>`。`-Configs` 默认 `dev,release`，脚本总是先构建这些配置的 `all`。
 
-**GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。`rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit`、`renderer_acceptance_scene_lit_restir_suite` 用 `gbv`（D3D12 debug layer + GPU-based validation）；其余窗口目标用 `debug`，只开 debug layer，包括 Renderer 的另外七个入口和全部编辑器窗口目标（含 Control 拉起的编辑器）。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证，`scene-lit-stability` 只开 debug layer。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原来的 GBV 运行。
+**GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。`rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit` 用 `gbv`（D3D12 debug layer + GPU-based validation）；其余窗口目标用 `debug`，只开 debug layer，包括 Renderer 的另外七个入口和全部编辑器窗口目标（含 Control 拉起的编辑器）。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证，`scene-lit-stability` 只开 debug layer。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原来的 GBV 运行。
 
 debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 barrier；以下错误只有 GBV 能发现：着色器执行时访问越界、未初始化或已销毁的描述符（bindless 和动态索引尤其如此），描述符类型与着色器声明不符，以及着色器实际访问的资源与其当前状态不符。只出现在编辑器路径（编辑器 UI、弹窗、Control、示例工程场景）或被降级的 Renderer 入口（temporal、quality、stability、clustered、shadows、cost、benchmark）里的这类错误，脚本不再自动发现；改动涉及这些路径的 GPU 资源绑定时，不设该变量直接运行对应目标，按 GBV 复查。
 
 CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单，总入口 `acceptance` 依赖两者，只供手动排查，不是交付或集成要求。直接运行 CMake 目标不取得跨工作树锁，也没有脚本的逐目标超时保护和验证级别设置；必要测试应使用脚本。
 
-- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、程序化、物理、布局、生产 UI、文档、恢复、材质、物理工程、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
+- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、程序化、物理、布局、生产 UI、文档、恢复、材质、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
 - `acceptance_window`：RHI、Renderer、Control 与全部自动化编辑器窗口目标。先 CPU 后 GPU/窗口的混合目标整体归此层；Ninja console pool 保持串行，脚本也逐目标调用构建命令。Renderer 每个入口是一个目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，如 `renderer_acceptance_scene_lit_temporal`），各自一个进程和窗口，限时 1800 秒；`renderer_acceptance` 汇总全部入口，只供手动运行。
 
-无窗口目标通过 `atelier_headless_acceptance` 注册，自有临时文件使用 `out/<配置>/acceptance-headless/<目标>/temp/`，日志为同目录 `output.log`。原有工程证据和 Cache 保留各自专用目录；只读字体等仍从构建目录读取。`editor_physics_project_acceptance` 通过 `__FILE__` 找到源码夹具，加载可能写入其 Cache，无法只靠工作目录隔离，因此放入 `acceptance_source_fixture` 串行 job pool。job pool 不跨 Ninja 实例同步，脚本按配置依次执行无窗口层；不要对同一检出并发启动两个门禁或两个配置的该夹具验收。
+无窗口目标通过 `atelier_headless_acceptance` 注册，自有临时文件使用 `out/<配置>/acceptance-headless/<目标>/temp/`，日志为同目录 `output.log`。原有工程证据和 Cache 保留各自专用目录；只读字体等仍从构建目录读取。
 
 **新增自动验收目标必须归入其中一层**：无窗口目标使用 `atelier_headless_acceptance`；窗口目标加入根 CMake 的 `_window_acceptance`，保留 `USES_TERMINAL`。不确定或含任何 GPU/窗口/原生输入的目标归窗口层。窗口清单由 CMake 生成到 `out/<配置>/acceptance-window-targets.txt`，无窗口清单为 `acceptance-headless-targets.txt`。脚本只读取这些清单，不维护第二份目标列表。
 
@@ -132,8 +130,6 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 每次运行的日志、超时截图 `*.log.timeout.<窗口句柄>.png`、`summary.txt` 和 `summary.csv` 位于 `out/acceptance-gate/<时间戳-PID>/`；汇总首行为 `Run=targeted`（超时 probe 为 `Run=probe`），并区分请求范围和实际执行的配置/层（`build`、`headless`、`window` 或 `probe`）。每个目标记录配置、层、`PASS/FAIL/TIMEOUT`、秒数和验证级别（窗口目标为 `gbv` 或 `debug`，构建和无窗口目标为 `none`），并追加至 `out/acceptance-gate/history.csv`。任一失败或超时令脚本返回非 0。仅验证超时清理时，可在已完成构建后运行 `pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Configs release -ProbeWindowTarget editor_control_acceptance -ProbeTimeoutSeconds 30`，在冷管线准备阶段检查整个父子进程树的终止；probe 不启动激活器，不注入输入，不能与 `-Targets` 同用。该模式仍持锁，但明确记为 probe，不是测试通过。
 
 测量入口统一以 `--profile-*` 命名（如 `atelier_editor_document_acceptance --profile-scene-cpu`、`atelier_editor --profile-render-performance`），只输出数值报告，不属于验收，也不进入总入口；其中的数值不作为任何通过条件。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
-
-2026-09-27 的 Wave 1 三线集成已通过上述 dev/release 总验收；提交来源、补丁签出修正、运行证据和已知限制见[集成记录](docs/research/wave1-integration.md)。
 
 首次配置新机器：先按工具链锁文件安装所需 MSVC 工具集、Windows SDK、CMake/Ninja 的 Visual Studio C++ 开发工具，再执行：
 
@@ -160,20 +156,18 @@ git submodule update --init --recursive third_party/jolt
 git submodule status third_party/jolt
 ```
 
-当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃/车辆基础场景 API 及对应组件；官方 [Physic](assets/examples/Examples/Physic/README.md) 提供 10 个可运行场景。原物理测试项目已迁为 [验收夹具](acceptance/editor/fixtures/physics-project/README.md)，保留 Body 场景加载与 Jolt 模拟检查。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
+当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃基础场景 API 及对应组件；官方 [Physic](assets/examples/Examples/Physic/README.md) 提供 9 个可运行场景。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
 
 按上方准备工具链并配置后，独立验收入口如下；其中 `physics_examples_acceptance` 包含真实窗口，运行时需要窗口锁：
 
 ```powershell
 cmake --build --preset dev --target physics_acceptance
 cmake --build --preset release --target physics_acceptance
-cmake --build --preset dev --target editor_physics_project_acceptance
-cmake --build --preset release --target editor_physics_project_acceptance
 cmake --build --preset dev --target physics_examples_acceptance
 cmake --build --preset release --target physics_examples_acceptance
 ```
 
-`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查 Entity 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃/车辆；`--list` 列出可独立运行的场景，完成时输出逐项结果与总数。`editor_physics_project_acceptance` 保留旧 Body 工程迁移检查；`physics_examples_acceptance` 验证 10 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
+`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查 Entity 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃；`--list` 列出可独立运行的场景，完成时输出逐项结果与总数。`physics_examples_acceptance` 验证 9 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 
@@ -407,4 +401,4 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
 
-World 配置通过 **Window → World Settings** 打开，光照、天光、DDGI 与效果写在 Environment 组件上，随 Scene v7 保存并支持同一场景撤销；诊断留在视口。Scene v6 的 world 段与 Sky Light 读取时并入 Environment，旧版 Scene v1–v5 经严格导入读取，v4 阴影预算字段仅在兼容边界校验后丢弃。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。
+World 配置通过 **Window → World Settings** 打开，光照、天光、DDGI 与效果写在 Environment 组件上，随 Scene v9 保存并支持同一场景撤销；诊断留在视口。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。

@@ -1,0 +1,10 @@
+{
+  "id": "{701C5C3F-DB7A-4E38-8C57-C4B7298C6A4D}",
+  "materials": {
+    "curtain_01": "project/{A48CBDC4-9627-4583-A865-35C7D9665D75}",
+    "curtain_02": "project/{9F451F49-E64A-41F8-B7D4-2983287FF4B9}",
+    "curtain_03": "project/{497CCEC2-CEF3-46CA-BD55-5B9DEAA59ADC}",
+    "metal_door": "project/{009AEA2F-74B7-4C4E-ADA0-BED3D5426718}"
+  },
+  "version": 1
+}

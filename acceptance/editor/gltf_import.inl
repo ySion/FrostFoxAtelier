@@ -1,0 +1,337 @@
+void verify_gltf_import() {
+    namespace fs=std::filesystem;namespace mat=atelier::material;
+    using Json=nlohmann::json;
+    const auto evidence=fs::current_path()/"project-document-evidence"/("gltf-"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
+    const auto source=evidence/"source";fs::create_directories(source/"textures");
+    const auto bmp=[](std::uint8_t r,std::uint8_t g,std::uint8_t b) {
+        std::string bytes(70,'\0');bytes[0]='B';bytes[1]='M';bytes[2]=70;bytes[10]=54;bytes[14]=40;bytes[18]=2;bytes[22]=2;bytes[26]=1;bytes[28]=32;
+        for(std::size_t i=54;i<bytes.size();i+=4) {bytes[i]=char(b);bytes[i+1]=char(g);bytes[i+2]=char(r);bytes[i+3]=char(255);}
+        return bytes;
+    };
+    take(editor::write_file(source/"textures"/"color map.bmp",bmp(255,128,64)));
+    take(editor::write_file(source/"textures"/"color copy.bmp",bmp(255,128,64)));
+    take(editor::write_file(source/"textures"/"packed.bmp",bmp(0,90,200)));
+    take(editor::write_file(source/"textures"/"normal.bmp",bmp(128,128,255)));
+    take(editor::write_file(source/"textures"/"corrupt.png",std::string("not an image")));
+    // Quad: interleaved POSITION/NORMAL/TANGENT/TEXCOORD_0 (stride 48) with uint16 indices.
+    // Triangle: separate POSITION and TEXCOORD_0, uint32 indices, no NORMAL or TANGENT.
+    std::string bin;
+    const auto put=[&](std::initializer_list<float> values) {for(const float v:values) bin.append(reinterpret_cast<const char*>(&v),4);};
+    const float d=.70710678f;
+    const float quad_uv[4][2]{{.25f,.75f},{1,.75f},{1,0},{.25f,0}};
+    const float quad_position[4][3]{{0,0,0},{1,0,0},{1,1,0},{0,1,0}};
+    for(std::size_t i=0;i<4;++i) {
+        put({quad_position[i][0],quad_position[i][1],quad_position[i][2]});put({d,0,d});put({1,0,0,1});put({quad_uv[i][0],quad_uv[i][1]});
+    }
+    for(const std::uint16_t i:{0,1,2,0,2,3}) bin.append(reinterpret_cast<const char*>(&i),2);
+    put({0,0,0,1,0,0,0,1,0});put({0,0,1,0,0,1});
+    for(const std::uint32_t i:{0u,1u,2u}) bin.append(reinterpret_cast<const char*>(&i),4);
+    require(bin.size()==276,"glTF fixture buffer layout changed.");
+    take(editor::write_file(source/"scene.bin",bin));
+    const auto accessor=[](int view,int offset,const char* type,int component,int count) {
+        return Json{{"bufferView",view},{"byteOffset",offset},{"type",type},{"componentType",component},{"count",count}};
+    };
+    const Json fixture{
+        {"asset",{{"version","2.0"}}},{"scenes",{{{"nodes",{0,2,3}}}}},
+        {"nodes",{
+            {{"translation",{1,2,3}},{"children",{1}}},
+            {{"rotation",{0,d,0,d}},{"scale",{2,1,1}},{"mesh",0}},
+            {{"scale",{-1,1,1}},{"mesh",1}},
+            {{"mesh",1}}}},
+        {"meshes",{
+            {{"primitives",{
+                {{"attributes",{{"POSITION",0},{"NORMAL",1},{"TANGENT",2},{"TEXCOORD_0",3}}},{"indices",4},{"material",0}},
+                {{"attributes",{{"POSITION",0},{"TEXCOORD_0",3}}},{"indices",4},{"material",1}}}}},
+            {{"primitives",{{{"attributes",{{"POSITION",5},{"TEXCOORD_0",6}}},{"indices",7},{"material",2}}}}}}},
+        {"materials",{
+            {{"name","opaque"},{"doubleSided",true},{"emissiveFactor",{.1,.2,.3}},
+                {"pbrMetallicRoughness",{{"baseColorFactor",{1,.5,.25,1}},{"baseColorTexture",{{"index",0}}},{"roughnessFactor",.5},{"metallicRoughnessTexture",{{"index",1}}}}},
+                {"normalTexture",{{"index",2},{"scale",.5}}}},
+            {{"name","glass"},{"alphaMode","BLEND"}},
+            {{"name","leaf"},{"alphaMode","MASK"},{"alphaCutoff",.3},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",3}}},{"metallicFactor",0}}}},
+            {{"name","unused"},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",4}}}}}}}},
+        {"textures",{{{"source",0},{"sampler",0}},{{"source",1}},{{"source",2}},{{"source",3}},{{"source",4}}}},
+        {"samplers",{{{"wrapS",33071},{"wrapT",33071}}}},
+        {"images",{{{"uri","textures/color%20map.bmp"}},{{"uri","textures/packed.bmp"}},{{"uri","textures/normal.bmp"}},{{"uri","textures/color%20copy.bmp"}},{{"uri","textures/missing.bmp"}}}},
+        {"buffers",{{{"uri","scene.bin"},{"byteLength",276}}}},
+        {"bufferViews",{
+            {{"buffer",0},{"byteOffset",0},{"byteLength",192},{"byteStride",48}},{{"buffer",0},{"byteOffset",192},{"byteLength",12}},
+            {{"buffer",0},{"byteOffset",204},{"byteLength",36}},{{"buffer",0},{"byteOffset",240},{"byteLength",24}},{{"buffer",0},{"byteOffset",264},{"byteLength",12}}}},
+        {"accessors",{accessor(0,0,"VEC3",5126,4),accessor(0,12,"VEC3",5126,4),accessor(0,24,"VEC4",5126,4),accessor(0,40,"VEC2",5126,4),
+            accessor(1,0,"SCALAR",5123,6),accessor(2,0,"VEC3",5126,3),accessor(3,0,"VEC2",5126,3),accessor(4,0,"SCALAR",5125,3)}}};
+    take(editor::write_file(source/"scene.gltf",fixture.dump()));
+    const auto close=[](const float* actual,std::initializer_list<double> expected) {
+        std::size_t i=0;for(const double e:expected) if(std::abs(actual[i++]-e)>1e-5) return false;
+        return true;
+    };
+    editor::ImageCache cache;
+    const auto loaded=editor::load_gltf(source/"scene.gltf",&cache);
+    const auto& mesh=*loaded.mesh;const auto vertices=mesh.vertices();const auto parts=mesh.parts();
+    require(vertices.size()==12 && parts.size()==3 && mesh.materials().size()==2 &&
+        mesh.materials()[0].name=="opaque" && mesh.materials()[1].name=="leaf" &&
+        parts[0].vertex_count==6 && parts[0].material==0 && parts[1].material==1 && parts[2].material==1,
+        "glTF lost primitives, node instances or material slots, or imported the BLEND primitive.");
+    require(loaded.notes.size()==1 && loaded.notes[0].find("glass")!=std::string::npos && loaded.notes[0].find("2 triangles")!=std::string::npos,
+        "glTF did not report the skipped BLEND primitive.");
+    require(loaded.files.size()==6 && std::ranges::none_of(loaded.files,[](const auto& f){return f.relative.filename()==L"missing.bmp";}),
+        "glTF read an image no imported material uses, or missed a dependency.");
+    // Node 0 translates (1,2,3); node 1 rotates +90 degrees about Y after scaling X by 2, so
+    // glTF (x,y,z) -> (z, y, -2x) + (1,2,3); the engine then mirrors X.
+    require(close(vertices[0].position,{-1,2,3}) && close(vertices[1].position,{-1,2,1}) && close(vertices[2].position,{-1,3,1}) &&
+        close(vertices[3].position,{-1,2,3}) && close(vertices[4].position,{-1,3,1}) && close(vertices[5].position,{-1,3,3}),
+        "glTF node transforms, index order or the left-handed conversion are wrong.");
+    // Normal (1,0,1)/sqrt2 takes the inverse transpose: (1/2,0,1) -> rotate (2,0,-1) -> mirror -> (-2,0,-1)/sqrt5.
+    // Tangent (1,0,0) takes the matrix: (0,0,-2), unchanged by the mirror, then is orthogonalized: (1,0,-2)/sqrt5.
+    // The world determinant is negative, so the authored handedness +1 flips to -1.
+    require(close(vertices[0].normal,{-.894427,0,-.447214}) && close(vertices[0].tangent,{.447214,0,-.894427,-1}),
+        "glTF normals or authored tangents did not follow the node transform and mirror.");
+    require(close(vertices[0].uv,{.25,.75}) && close(vertices[2].uv,{1,0}),"glTF texture coordinates were changed.");
+    // The triangle (0,0,0),(1,0,0),(0,1,0) faces +Z in glTF. Node 2 mirrors X itself, so the engine
+    // positions equal the source; node 3 is mirrored once by the conversion. Both still face +Z.
+    // glTF normal maps put +Y toward -V, so the bitangent cross(N,T)*w must point to -Y here.
+    require(close(vertices[6].position,{0,0,0}) && close(vertices[7].position,{1,0,0}) && close(vertices[8].position,{0,1,0}) &&
+        close(vertices[10].position,{-1,0,0}) && close(vertices[6].normal,{0,0,1}) && close(vertices[9].normal,{0,0,1}) &&
+        close(vertices[6].tangent,{1,0,0,-1}) && close(vertices[9].tangent,{-1,0,0,1}),
+        "glTF flat normals or generated tangents ignore the front side or the normal-map convention.");
+    const auto& opaque=mesh.materials()[0].surface->description();const auto& leaf=mesh.materials()[1].surface->description();
+    const auto& roughness=opaque.texture(mat::Input::roughness);const auto& metallic=opaque.texture(mat::Input::metallic);
+    require(roughness.image && roughness.image==metallic.image && roughness.channel==1 && metallic.channel==2 &&
+        roughness.image->pixels()[1]==90 && roughness.image->pixels()[2]==200 &&
+        opaque.parameters.roughness==.5f && opaque.parameters.metallic==1,
+        "glTF metallicRoughness did not map G to roughness and B to metallic with glTF factor defaults.");
+    require(opaque.texture(mat::Input::normal).image && opaque.parameters.normal_scale==.5f &&
+        opaque.texture(mat::Input::base_color).address==mat::Address::clamp && opaque.texture(mat::Input::normal).address==mat::Address::repeat &&
+        close(opaque.parameters.base_color.data(),{1,.5,.25,1}) && close(opaque.parameters.emissive.data(),{.1,.2,.3}),
+        "glTF base color, emission, normal scale or sampler wrap was not imported.");
+    require(opaque.parameters.coverage==mat::Coverage::opaque && opaque.parameters.double_sided && opaque.parameters.emission_two_sided &&
+        leaf.parameters.coverage==mat::Coverage::mask && std::abs(leaf.parameters.alpha_cutoff-.3f)<1e-6f &&
+        !leaf.parameters.double_sided && !leaf.parameters.emission_two_sided && leaf.parameters.metallic==0,
+        "glTF alpha mode, cutoff or sidedness was not imported.");
+    require(leaf.texture(mat::Input::base_color).image==opaque.texture(mat::Input::base_color).image && cache.entries.size()==3,
+        "Images with the same bytes did not share decoded pixels.");
+    require(editor::load_gltf(source/"scene.gltf",&cache).mesh->materials()[0].surface->description().texture(mat::Input::base_color).image==
+        opaque.texture(mat::Input::base_color).image,"A second import did not reuse cached pixels.");
+    const auto uncached=editor::load_gltf(source/"scene.gltf");
+    require(uncached.mesh->materials()[1].surface->description().texture(mat::Input::base_color).image!=opaque.texture(mat::Input::base_color).image,
+        "Uncached glTF loads shared pixels through hidden state.");
+    {
+        const std::string pixels=bmp(1,2,3);const std::array<std::string_view,2> two{pixels,pixels};
+        bool limited=false;
+        try {static_cast<void>(editor::decode_images(two,nullptr,31));}
+        catch(const std::runtime_error& error) {limited=std::string_view(error.what()).starts_with("Decoded textures exceed");}
+        require(limited && editor::decode_images(two,nullptr,32).size()==2,"Image decoding did not hold its pixel budget.");
+    }
+    {
+        // Float normals are not exactly unit: a tangent equal to its normal must still take the fallback.
+        const float d=.70710677f;std::vector<atelier::geometry::Vertex> triangle(3);
+        triangle[1].position[0]=1;triangle[2].position[1]=1;
+        for(auto& v:triangle) {v.normal[0]=v.normal[2]=d;v.tangent[0]=v.tangent[2]=d;v.tangent[3]=1;}
+        const atelier::geometry::Mesh parallel(std::move(triangle),{},{},{},atelier::geometry::Tangents::authored);
+        for(const auto& v:parallel.vertices())
+            require(std::abs(v.tangent[0]*v.normal[0]+v.tangent[1]*v.normal[1]+v.tangent[2]*v.normal[2])<1e-5f &&
+                std::abs(std::hypot(v.tangent[0],v.tangent[1],v.tangent[2])-1)<1e-5f,"An authored tangent parallel to its normal stayed parallel.");
+        // A long tangent within rounding of its normal must take the fallback (+X here), not its residual (+Y).
+        std::vector<atelier::geometry::Vertex> scaled(3);
+        scaled[1].position[0]=1;scaled[2].position[1]=1;
+        for(auto& v:scaled) {v.normal[2]=1;v.tangent[1]=1e-5f;v.tangent[2]=1000;v.tangent[3]=1;}
+        const atelier::geometry::Mesh long_parallel(std::move(scaled),{},{},{},atelier::geometry::Tangents::authored);
+        for(const auto& v:long_parallel.vertices())
+            require(close(v.tangent,{1,0,0,1}),"A long authored tangent parallel to its normal kept its rounding residual as the tangent.");
+    }
+
+    auto variant=fixture;variant["meshes"][1]["primitives"][0].erase("material");
+    take(editor::write_file(source/"variant.gltf",variant.dump()));
+    {
+        const auto implicit=editor::load_gltf(source/"variant.gltf");const auto& fallback=implicit.mesh->materials().back();
+        const auto& p=fallback.surface->description().parameters;
+        require(implicit.mesh->materials().size()==2 && fallback.name=="default" && p.metallic==1 && p.roughness==1 &&
+            !p.double_sided && p.coverage==mat::Coverage::opaque,"A primitive without a material did not get the glTF default material.");
+    }
+    // Scenes bind by slot name, so repeated, empty and implicit-default names become unique.
+    variant["materials"][0]["name"]="default";take(editor::write_file(source/"variant.gltf",variant.dump()));
+    {
+        const auto named=editor::load_gltf(source/"variant.gltf");
+        require(named.mesh->materials()[0].name=="default" && named.mesh->materials()[1].name=="default (2)","The implicit default slot reused a material's name.");
+    }
+    variant=fixture;variant["materials"][0]["name"]="leaf";take(editor::write_file(source/"variant.gltf",variant.dump()));
+    require(editor::load_gltf(source/"variant.gltf").mesh->materials()[1].name=="leaf (2)","Two glTF materials with one name shared a slot name.");
+    variant["materials"][0]["name"]="";take(editor::write_file(source/"variant.gltf",variant.dump()));
+    require(editor::load_gltf(source/"variant.gltf").mesh->materials()[0].name=="material 0","An unnamed glTF material did not get its index name.");
+    const auto rejects=[&](Json document,std::string_view expected,const char* message) {
+        take(editor::write_file(source/"variant.gltf",document.dump()));
+        try {static_cast<void>(editor::load_gltf(source/"variant.gltf"));}
+        catch(const std::runtime_error& error) {if(std::string_view(error.what()).find(expected)!=std::string_view::npos) return;throw std::runtime_error(std::string(message)+" Got: "+error.what());}
+        throw std::runtime_error(message);
+    };
+    variant=fixture;variant["extensionsRequired"]={"KHR_draco_mesh_compression"};
+    rejects(variant,"required extensions","glTF ignored a required extension.");
+    variant=fixture;variant["meshes"][0]["primitives"][0]["mode"]=1;
+    rejects(variant,"triangle-list","glTF accepted a line primitive.");
+    variant=fixture;variant["accessors"][0]["sparse"]=Json::object();
+    rejects(variant,"sparse","glTF accepted a sparse accessor.");
+    variant=fixture;variant["accessors"][0]["count"]=5;
+    rejects(variant,"exceeds its buffer","glTF read past a buffer view.");
+    variant=fixture;variant["buffers"][0]["uri"]="%2E%2E/scene.bin";
+    rejects(variant,"inside the source directory","glTF followed an encoded parent-directory uri.");
+    variant=fixture;variant["images"][2]["uri"]="textures/corrupt.png";
+    rejects(variant,"Cannot decode texture","A failed parallel decode was not reported.");
+    variant=fixture;variant["images"][0]["uri"]="textures/albedo";
+    rejects(variant,"PNG, JPEG, BMP or TIFF","glTF accepted an image file that the Project cannot catalogue as a texture.");
+
+    auto project=take(editor::Project::create(evidence/"project"));
+    const auto key=take(project.import_mesh(source/"scene.gltf"));
+    const auto imported=evidence/"project"/"Content"/"Meshes"/"scene";
+    require(fs::exists(imported/"scene.gltf") && fs::exists(imported/"scene.bin") && fs::exists(imported/"textures"/"color map.bmp") &&
+        !fs::exists(imported/"textures"/"missing.bmp") && project.mesh_notes(key).size()==1,
+        "Import Mesh did not publish the glTF bundle with its notes.");
+    auto reopened=take(editor::Project::open(project.root()));
+    const auto asset=take(reopened.mesh(key));
+    require(asset.mesh->vertices().size()==12 && reopened.mesh_notes(key).size()==1,"A reopened project did not load its glTF mesh.");
+
+    // Import publishes one material per slot and names them as the mesh's slot defaults.
+    const auto listed=[](const editor::Project& catalog,const std::string& resource)->const editor::ProjectEntry& {
+        const auto* entry=catalog.entry(resource);require(entry!=nullptr,"A generated resource key is not catalogued.");return *entry;
+    };
+    const auto default_of=[](const editor::MeshAsset& mesh,std::string_view slot) {
+        const auto at=std::ranges::find(mesh.materials,slot,&editor::SlotMaterial::slot);
+        require(at!=mesh.materials.end(),"A mesh slot has no default material.");return at->key;
+    };
+    const auto opaque_key=default_of(asset,"opaque"),leaf_key=default_of(asset,"leaf");
+    require(asset.materials.size()==2 && listed(project,opaque_key).path==fs::path("Content/Meshes/scene/Materials/opaque.material") &&
+        listed(project,leaf_key).path==fs::path("Content/Meshes/scene/Materials/leaf.material"),
+        "Import Mesh did not publish one material per slot as the mesh's defaults.");
+    {
+        // The mesh's file closure reaches its slot default materials, each with its identity file, and
+        // lists a texture that is both a glTF dependency and a material texture once.
+        const auto files=take(project.asset_files(key));
+        const auto once=[&](const fs::path& file){return std::ranges::count(files,fs::path("Content/Meshes/scene")/file)==1;};
+        for(const auto* file:{L"scene.gltf",L"scene.gltf.asset.json",L"scene.bin",L"textures/color map.bmp",L"textures/color map.bmp.asset.json",
+            L"Materials/opaque.material",L"Materials/opaque.material.asset.json",L"Materials/leaf.material",L"Materials/leaf.material.asset.json"})
+            require(once(file),("A glTF mesh's asset files miss or repeat "+editor::utf8(file)).c_str());
+    }
+    {
+        using mat::Input;const auto opaque=take(project.material(opaque_key)),leaf=take(project.material(leaf_key));
+        const auto file=[&](const std::string& texture){return listed(project,texture).path.filename();};
+        const auto slot=[&](const editor::MaterialAsset& m,Input input){return m.textures[static_cast<std::size_t>(input)];};
+        const auto& p=opaque.description;
+        require(slot(opaque,Input::roughness)==slot(opaque,Input::metallic) && file(slot(opaque,Input::roughness))==L"packed.bmp" &&
+            p.texture(Input::roughness).channel==1 && p.texture(Input::metallic).channel==2 && p.parameters.roughness==.5f && p.parameters.metallic==1 &&
+            file(slot(opaque,Input::base_color))==L"color map.bmp" && p.texture(Input::base_color).address==mat::Address::clamp &&
+            file(slot(opaque,Input::normal))==L"normal.bmp" && p.parameters.normal_scale==.5f && slot(opaque,Input::emissive).empty() &&
+            leaf.description.parameters.coverage==mat::Coverage::mask && std::abs(leaf.description.parameters.alpha_cutoff-.3f)<1e-6f &&
+            file(slot(leaf,Input::base_color))==L"color copy.bmp",
+            "Generated materials lost the glTF channels, factors, samplers or their own texture files.");
+        // Texture assets decode through the import's cache: identical bytes share the mesh's pixels.
+        const auto& pixels=asset.mesh->materials()[0].surface->description().texture(Input::base_color).image;
+        require(take(reopened.texture(slot(opaque,Input::base_color))).image==pixels && take(reopened.texture(slot(leaf,Input::base_color))).image==pixels,
+            "A texture asset decoded its own copy of pixels the mesh import already holds.");
+    }
+    // Generated file names stay valid and unique on a case-insensitive file system, beyond ASCII as well.
+    variant=fixture;variant["materials"][0]["name"]="Äußen/Top";variant["materials"][2]["name"]="äußen_top";
+    take(editor::write_file(source/"names.gltf",variant.dump()));
+    variant["materials"][0]["name"]="CON.foo";variant["materials"][2]["name"]="COM1 .x";take(editor::write_file(source/"reserved.gltf",variant.dump()));
+    variant["materials"][0]["name"]="CONOUT$";variant["materials"][2]["name"]="lpt¹";take(editor::write_file(source/"devices.gltf",variant.dump()));
+    {
+        const auto named=take(project.mesh(take(project.import_mesh(source/"names.gltf"))));
+        const auto reserved=take(project.mesh(take(project.import_mesh(source/"reserved.gltf"))));
+        const auto devices=take(project.mesh(take(project.import_mesh(source/"devices.gltf"))));
+        require(listed(project,default_of(named,"Äußen/Top")).path.filename()==L"Äußen_Top.material" &&
+            listed(project,default_of(named,"äußen_top")).path.filename()==L"äußen_top (2).material" &&
+            listed(project,default_of(reserved,"CON.foo")).path.filename()==L"_CON.foo.material" &&
+            listed(project,default_of(reserved,"COM1 .x")).path.filename()==L"_COM1 .x.material" &&
+            listed(project,default_of(devices,"CONOUT$")).path.filename()==L"_CONOUT$.material" &&
+            listed(project,default_of(devices,"lpt¹")).path.filename()==L"_lpt¹.material",
+            "Generated material file names are invalid or collide by case.");
+    }
+    // A write that fails after earlier files were published removes every file the import wrote.
+    take(editor::write_file(source/"blocked.gltf",fixture.dump()));
+    const auto blocked=project.root()/"Content"/"Meshes"/"blocked";
+    take(editor::write_file(blocked/"Materials","not a folder"));
+    require(!project.import_mesh(source/"blocked.gltf") && fs::exists(blocked/"Materials") && !fs::exists(blocked/"blocked.gltf") &&
+        std::ranges::none_of(fs::recursive_directory_iterator(blocked),[](const auto& item){return item.is_regular_file() && item.path().filename()!=L"Materials";}),
+        "A failed glTF import left published files behind.");
+
+    // Mesh defaults are resolved at runtime and never written to scenes.
+    const auto placed=take(project.mesh(key));editor::Session document;auto& runtime=document.world().runtime();
+    require(placed.materials.size()==2 && placed.materials[0].slot=="opaque" && placed.materials[1].slot=="leaf",
+        "Mesh defaults are not listed in the mesh's slot order.");
+    changed(document.create_static_mesh(placed,{},&project));
+    const auto part=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
+    const auto surfaces=[](editor::Session& session,ObjectId object){return *take(presentation::material_surfaces(session.world().runtime(),object));};
+    const auto index=[&](std::string_view slot) {
+        for(std::size_t i=0;i<placed.mesh->materials().size();++i) if(presentation::material_slot_name(*placed.mesh,i)==slot) return i;
+        throw std::runtime_error("Missing glTF slot.");
+    };
+    const auto opaque_slot=index("opaque"),leaf_slot=index("leaf");
+    const auto opaque_root=take(document.material_resource(project,opaque_key));
+    const auto captured=[](editor::Session& session,const ObjectRoot& root){return take(material::capture(session.world().runtime(),root.id()));};
+    require(take(presentation::read_material_bindings(runtime,part)).empty() && surfaces(document,part)[opaque_slot]==captured(document,opaque_root) &&
+        surfaces(document,part)[opaque_slot]->description().parameters.roughness==.5f && surfaces(document,part)[opaque_slot]->description().parameters.metallic==1,
+        "A placed glTF mesh did not show its default materials, or the component's base parameters replaced them.");
+    require(*take(document.mesh_surfaces(project,placed))==surfaces(document,part),"Mesh surfaces without a component differ from a placed mesh's defaults.");
+    const auto roughness_field=[&] {
+        const auto properties=take(document.properties(opaque_root.id()));
+        return std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name)->path;
+    }();
+    // The extraction cache, not only a fresh capture, must see edits to a default material.
+    const auto drawn=[&] {
+        const auto items=take(document.presentation().render_items());require(items.size()==1,"The placed glTF mesh is not drawn.");
+        return (*items.front().surfaces)[opaque_slot]->description().parameters.roughness;
+    };
+    require(drawn()==.5f,"The drawn mesh does not show its default material.");
+    take(document.set_property(opaque_root.id(),roughness_field,Scalar{.2f},301));
+    require(surfaces(document,part)[opaque_slot]->description().parameters.roughness==.2f && drawn()==.2f,"Editing a default material did not reach the mesh that shows it.");
+    take(document.material_undo(opaque_key));
+    require(drawn()==.5f,"Undoing a default material edit did not reach the drawn mesh.");
+    const auto saved=take(document.serialize());const auto scene=nlohmann::json::parse(saved);
+    require(scene["materials"].empty() && scene["entities"][0]["components"][0]["materials"].empty(),"Saving wrote mesh default materials into the scene.");
+    {
+        auto loaded=take(editor::Session::deserialize(saved,project,{},editor::LoadPolicy::strict));
+        const auto copy=component(*loaded,take(loaded->world().members()).front().id(),loaded->presentation_types().static_mesh_component);
+        require(surfaces(*loaded,copy)[opaque_slot]==captured(*loaded,take(loaded->material_resource(project,opaque_key))) &&
+            surfaces(*loaded,copy)[opaque_slot]->description().parameters.roughness==.5f,"A reopened scene did not resolve its mesh defaults.");
+    }
+    // Overriding a defaulted slot binds one instance of the default; Undo, Redo and Clear restore the default.
+    const auto history=document.undo_count();
+    take(document.set_material_override(part,"opaque",roughness_field,true));
+    const auto bound=take(presentation::read_material_bindings(runtime,part));
+    require(document.undo_count()==history+1 && bound.size()==1 && bound[0].slot=="opaque" && bound[0].overridden &&
+        take(material::read_material(runtime,bound[0].resource.id())).parent.reference()==opaque_root.reference(),
+        "Overriding a defaulted slot did not bind one instance of its default material in one history step.");
+    take(document.set_property(bound[0].resource.id(),roughness_field,Scalar{.9f},302));
+    require(surfaces(document,part)[opaque_slot]->description().parameters.roughness==.9f && captured(document,opaque_root)->description().parameters.roughness==.5f,
+        "An instance override did not stay on its component.");
+    changed(document.undo());changed(document.undo());
+    require(take(presentation::read_material_bindings(runtime,part)).empty() && surfaces(document,part)[opaque_slot]==captured(document,opaque_root),
+        "Undoing the override did not return the slot to its mesh default.");
+    changed(document.redo());take(document.clear_material(part,"opaque"));
+    require(take(presentation::read_material_bindings(runtime,part)).empty() && surfaces(document,part)[opaque_slot]==captured(document,opaque_root),
+        "Use Mesh Default did not return the slot to its default material.");
+    // A sidecar-only change reaches the next load; the cached geometry stays.
+    take(project.refresh()); // Only the sidecar changes below.
+    auto sidecar=imported/"scene.gltf";sidecar+=L".asset.json";
+    const auto sidecar_text=take(editor::read_file(sidecar));auto mapping=nlohmann::json::parse(sidecar_text);
+    mapping["materials"]["leaf"]=opaque_key;take(editor::write_file(sidecar,mapping.dump(2)));
+    const auto catalog=project.revision();take(project.refresh());
+    const auto remapped=take(project.mesh(key));
+    require(project.revision()>catalog && default_of(remapped,"leaf")==opaque_key && remapped.mesh==placed.mesh,
+        "A changed mesh sidecar was not picked up, or it discarded the cached geometry.");
+    {
+        auto loaded=take(editor::Session::deserialize(saved,project));
+        const auto copy=component(*loaded,take(loaded->world().members()).front().id(),loaded->presentation_types().static_mesh_component);
+        require(surfaces(*loaded,copy)[leaf_slot]==captured(*loaded,take(loaded->material_resource(project,opaque_key))),"A remapped slot default did not load.");
+    }
+    mapping["materials"]["missing slot"]=opaque_key;take(editor::write_file(sidecar,mapping.dump(2)));take(project.refresh());
+    require(!project.mesh(key),"Mesh metadata naming an absent slot was accepted.");
+    take(editor::write_file(sidecar,sidecar_text));
+    // An unavailable default material stands in with a warning; the scene still opens.
+    const auto leaf_file=project.root()/listed(project,leaf_key).path;
+    fs::rename(leaf_file,evidence/"leaf.material");take(project.refresh());
+    {
+        auto loaded=take(editor::Session::deserialize(saved,project));const auto& issues=loaded->load_issues();
+        require(issues.size()==1 && issues[0].kind==world::DiagnosticKind::missing_resource && issues[0].field==std::vector<std::string>{"mesh"} &&
+            loaded->unavailable(editor::AssetKind::material,leaf_key),"A missing default material was not reported as a stand-in.");
+    }
+    fs::rename(evidence/"leaf.material",leaf_file);
+    std::puts("glTF import acceptance: PASS (node transforms, left-handed conversion, authored and generated tangents, PBR channels, MASK, BLEND notes, shared images, rejections, unique slot names, generated materials, rollback, runtime mesh defaults)");
+}

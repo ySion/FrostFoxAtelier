@@ -4,6 +4,7 @@
 #include "editor/workspace.hpp"
 #include "application/play_process.hpp"
 #include "application/project_runner.hpp"
+#include "application/timing.hpp"
 #include "application/presentation.hpp"
 #include "ui/session.hpp"
 #include <Windows.h>
@@ -154,6 +155,10 @@ void run(const std::filesystem::path& root) {
     application::PlayProcess process;take(process.start(root,snapshot,true,20,report,false,false,editor::Camera{}.state()));wait(process,std::chrono::seconds(45));
     const auto output=process.take_output();std::fwrite(output.data(),1,output.size(),stdout);
     require(process.exit_code()==0,"The real isolated runner failed.");
+    // The Play report: every loop is a timed frame, headless frames are sampled, and no phase left its parent.
+    require(output.find("Performance: 20 frames (window ")!=output.npos && output.find(" app.ui ")!=output.npos &&
+        output.find(" world.update ")!=output.npos && output.find(" app.gc ")!=output.npos &&
+        output.find("timing structure errors")==output.npos,"The runner did not report its frame performance.");
     auto executed=editor::load_project_scene(project,take(editor::read_file(report)));require(executed.session!=nullptr,"Run output did not restore through the shared scene loader.");
     check_position(position(*executed.session,entity(*executed.session)),2.f/3);
     require(take(editor::read_file(root/"Content/Scenes/Main.scene"))==original,"The runner overwrote the authored scene.");
@@ -274,6 +279,7 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
 }
 int main() {
     try {
+        application::install_frame_timing();
         const auto root=std::filesystem::current_path()/"project-integration-evidence"/(std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
         run(root);return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"Project integration: FAIL: %s\n",error.what());return 1;}
