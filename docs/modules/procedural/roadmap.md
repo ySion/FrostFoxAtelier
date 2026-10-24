@@ -1,0 +1,118 @@
+# 程序化：方向、未决契约与后续阶段
+
+当前实现、接口和验收以[模块说明](README.md)为准。本页保留首阶段方案中尚有用的产品决定、设计依据与未实施的跨模块约定，不是已实现能力清单，也不授权启动后续阶段。
+
+本轮仅收尾 P1 与共享不可变列迁移。**不包含场景 Generator、渲染器实例化、节点图 UI、L3、冻结或 Bake。Remap／属性噪声的目标列选择仍未决定，不计为完成。**
+
+## 方向与依据
+
+- 第一类产品是 Houdini 式统一几何图：点、顶点、图元、实例与各层属性共用 Geometry。先解决现有网格上的撒点、属性运算与资源实例化，再做多边形构造；Substance 式贴图图推后。点和顶点不是 Runtime 对象或 Entity；生成器将来才作为组件挂在普通 Entity 上。
+- Geometry 核心轻量自建，不做 CAD 内核。算法优先用自有语言；容器、求值器、BVH 和暂时必须由 C++ 完成的改变点数操作留在 C++。可靠的批量服务可以作为原生黑箱，但当前 C++ 操作并不因此自动成为语言可调用的 BorrowSafe 方法。
+- 图是权威数据。未来人与 LLM 共用 Control 操作符和撤销历史：人用网络编辑器与 Parameters，LLM 读写文本、调用操作符并读取客观统计。生成结果不是另一套可编辑权威数据。
+- 场景默认用 Cache 或冻结结果，不每次从零求值；同时允许 Play 与游戏运行时主动求值，图可以封装为可复用的数字资产。这是已定方向，场景消费者与持久缓存尚未实现。
+- 预期规模是单生成器约 10 万实例、图内约 100 万点；典型图（≤20 节点、≤10 万点）调参重算期望 ≤33 ms，目标画面为 120 FPS。这些是设计量级，不是未经测量的性能承诺或验收硬闸。
+- `id` 是 uint32 随机种子，不是唯一身份。100 万点约有 116 对哈希碰撞的期望值；重复只使随机值相同。P1/P2 当前范围不需要 64 位列，也没有 Source Map/Set 的真实需求。实例覆盖或 Spawn Entity 若需要逐元素身份，必须另定契约；撒点的（`sourceprim`，`sourceordinal`）可作为基础，但不是跨拓扑编辑的永久身份。
+- 参考 Houdini 的分层、属性名与实例矩阵公式；参考 Adobe Lagrange（Apache-2.0）的保留拓扑、用途与等边数图元表示，改编代码须保留许可和署名；Blender Geometry Nodes（GPL）只参考设计，不复制或改编代码。
+- 暂不做常量列（借给 Source 的 Array 需要先展开）、外部缓冲策略矩阵、稳定边编号。需要邻接的服务按需建立邻接；常量列的收益须由负载证明。没有选用 Lagrange 的网格剪枝撒点，因为它不保证点数与面积成比例。
+
+## P1 未决与后续依赖
+
+| 项目 | 状态与下一步 |
+| --- | --- |
+| Remap／属性噪声 | 现有 PointNode 按 evaluate 参数名绑定列，不能由参数选择目标属性。候选是带 String 字段 `attribute` 的原生基类，让源码子类继承、求值器按字段值绑定；另一候选是保持固定列名、由用户写专用节点。前者改变节点契约，须先由用户定方向，再交总负责人审；不自行选定 |
+| 语言能力 | 参数名、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md)。`math.is_finite` 是后续便利能力，不把它当作当前 P1 阻塞 |
+| L3 | 拥有型 Array 按值返回倾向在调用方存储构造；需运行时负责人另立方案，P4 前再决定。当前借用规则不允许属性节点改列长度 |
+| 调度 | 当前求值器在 Runtime 线程上串行执行，没有每帧时间片调度。C++ 节点迁到工作线程须先有只读求值计划、清楚的发布和借用生命周期，再由实测决定；不能只因列支持写时复制就并行调用 Runtime |
+| 数字资产 | 暴露参数与实例覆盖是类型语义契约，P2 前另审。建议用图上的参数记录和生成器的显式覆盖，不让图资产发布 Runtime 类型：已发布类型不可变，作者频繁增删暴露参数会导致重建 |
+
+## 程序化与引擎的显式合约
+
+用户原则：**程序化过程中不应有隐式决策和变化。** 默认行为必须是显式参数或可查阅的合约，不按名字或数值临时猜测用途。
+
+P2 方案之前提交合约清单，与运行时负责人对齐未来语言服务可读取的表示。每条至少有 `name`、`meaning`、`writer`、`reader`、`violation` 和 `status`；可用注册元数据或结构化文档，不只写散文。现有行为可从模块说明迁入清单作为唯一权威，不能趁整理改变语义。
+
+| 待覆盖条目 | 需要明确的边界 | 对齐方 |
+| --- | --- | --- |
+| LOD | 由显式资产合约决定，不按三角形数推断；`_LOD0`–`_LOD5` 只是用户举的候选形式，不是已实现的导入规则。要定义识别、缺级、选择与错误，与 meshlet/CPU 剔除方案一起审 | 渲染、编辑器、总负责人 |
+| 属性约定 | P、N、v、up、Cd、pscale、scale、orient 的层、类型、单位、用途和写读双方；约定名推导用途的规则、显式用途覆盖与不匹配错误 | 程序化、运行时 |
+| 随机与来源 | `id` 的生成、碰撞语义、图/节点种子混合、sourceprim/sourceordinal/sourceprimuv 的稳定范围 | 程序化、运行时 |
+| 实例变体 | `variant` 默认列名、缺列时用 0、越界失败；默认值不能伪装成推断出的用户意图 | 程序化 |
+| 空间块 | publish 当前要求调用者显式传 chunk_size；生成器曾提议默认 32 m，但生成器尚未实现。将来须在生成器参数与合约中写明，不能把测量用 32 m 当作现行 API 默认 | 程序化、渲染 |
+| 退化实例 | 上游非有限值使节点失败；发布时丢掉法线变换不可表示的实例并计数，不静默修复 | 程序化、渲染 |
+| 身份与格式 | 图资产 GUID、节点文档名、运行时对象身份、缓存键、集合历史身份各自的有效范围；新场景版本只读最新版本、不写迁移 | 程序化、World、编辑器 |
+
+## P2 场景与实例化：未实施的对齐方案
+
+以下保留此前与渲染、性能、World、编辑器负责人的接口讨论。实施前须在当时主线上复核，尤其是 LOD、剔除、材质与渲染数据尺寸；本轮不修改这些模块。
+
+### 宿主、资源与保存
+
+- 候选 `procedural.GeneratorComponent : SpatialComponent` 位于 presentation，引用图资产键、保存暴露参数覆盖、持有最近发布的不可变输出。presentation 保持一个组件一个槽位；SceneSnapshot 展开的是集合，不是逐实例的 CPU 渲染项。
+- 候选图资源为 `Content/**/*.procgraph`，复用 `.asset.json` GUID 边车；AssetKind 在末尾增加，编辑器负责人审。现有图 JSON v1 不含暴露参数；添加 `parameters` 时另定是否升到 v2。
+- 场景经组件 properties 保存。生成器若需要新的顶层载荷，先确定版本；新程序只读最新场景版本，不增加旧版本迁移。已有内联 Array 编解码按字段 form/kind 分派，不按 JSON 数组形状猜测；它扩展了此前无法保存的字段形状，不需要空迁移。
+- 材质沿用 `editor::Session::mesh_surfaces(Project&, const MeshAsset&)`，网格经 `Project::mesh(key)` 取得。编辑器与 Play 同源：按网格槽顺序解析当前默认材质 capture，未映射槽保留导入表面，不乘组件独有参数。刷新/重载后重新解析，逐元素比较 SurfaceRef；外层 vector 每次新建，不能拿它的地址当变化。材质变化不替换局部变换数组。
+- 第二刀的生成网格候选资源键为 `<图 GUID>#<输出名>`，经 set_mesh_binding 接入；碰撞缓存加入内容哈希。未实施，不是现在可解析的资源键。
+
+| 未来模式 | 预期行为与数据归属 |
+| --- | --- |
+| 实时 | 参数或代码变化重算，结果在内存 |
+| Cache（默认，未实现） | 以完整持久内容键查 `Cache/Procedural/<图 GUID>/<键哈希>.bin`，可重建；不能直接保存当前进程内缓存键 |
+| 冻结 | Content 中场景旁的二进制边车是作者数据；固定结果，直到显式解冻。格式尚未定 |
+| Bake | 可撤销地转成普通 StaticMeshEntity；第二刀再支持 Mesh 资产 |
+
+### 集合与渲染接口
+
+Geometry 的 instance 层和按（引用，空间块）发布、逐块复用已实现，见[模块说明](README.md#实例发布)。下面是尚未接入的消费者契约：
+
+| 项 | 对齐方案与约束 |
+| --- | --- |
+| 数据 | MeshInstance 增加共享不可变局部仿射数组：每项 12 float、48 B，行主序、行向量，x/y/z 轴与平移四行。null 是普通单实例，非 null 必须非空，空集合由生产者不发布；selected、surfaces、常量材质对整个集合生效 |
+| 身份 | SceneSnapshot 按（组件，网格，块）管理非零 stable_key。局部数组相同则沿用；替换数组则换新键，旧集合退休、新集合插入并回到 stationary。仅生成器 world 变化沿用现行 dynamic 判定。消费者持有 shared_ptr，不能只缓存裸地址 |
+| 世界矩阵 | local[i] · 生成器 world。首版 CPU 用 double 合成世界矩阵、光栅法线矩阵、Lit 逆矩阵与逐实例镜像符号，校验并入同一循环；只在数组或 world 改变时执行，所以拖动生成器是 O(N) |
+| 法线与有限性 | 发布已用公共 math::normal_transform 判据拒绝退化局部矩阵。集合路径组合 normal(world) · normal(local[i])，不从可能下溢的 FP32 世界乘积重新推导法线并拒帧。数组或 world 改变时仍检查合成位置是否可表示，失败沿用渲染器整帧拒绝边界 |
+| 包围盒 | 数组变化时渲染器自己合并所有变换后网格包围盒，O(N)，不信任生产者给的范围；world 变化只变换集合包围盒的 8 个角 |
+| 常驻区段 | 按 stable_key 分配光栅、Lit 与 material_offsets 区段，数组/world 变化才更新，其他场景项增删不平移集合。draw 直接以区段基址 + SV_InstanceID 取实例；scene_vs、lit_gbuffer、lit_shadow 按 draw 选择取法，阴影按区间绘制而非逐实例上传 caster 下标 |
+| 检查与计数 | 字段须进入 MeshChecks::same、valid_instance 及 sizeof(MeshInstance) 断言。scene_instances/scene_culled_instances 计展开实例，scene_draw_calls 计实际 draw；无集合场景数值不变。按旧数字搜索 acceptance 中断言后列入必要验证 |
+| 剔除和阴影 | 首版 CPU 按集合包围盒，阴影缓存视集合为一个 caster，探针场景范围按集合算。点光 face 与级联相交时可能重绘整块，大块还会撑大深度范围；分块只降低浪费，不能代替后续显式 LOD/剔除方案 |
+| 历史 | stable_key 与集合内序号混合为每实例历史表面 id，供 TAA/SSR 区分；数组更换导致历史失效 |
+| 拾取 | 先按实例包围盒排除，再做三角形求交；命中选择生成器组件。实测需要时再为实例包围盒建 BVH，编辑器负责人审 |
+| 扩展 | 逐实例属性以后另设与变换等长的流。共享不可变列迁移不顺带更换这里的 shared_ptr<const vector<Affine>> 接口 |
+
+TLAS 路径仍需实测选择：
+
+- **a：gfx 每实例句柄。** 当时的 gfx build/update 会 CPU 遍历全部实例并上传 64 B 描述；一个普通物体运动也可能使 10 万实例每帧重写约 6.4 MB。
+- **b：调用方持有描述缓冲。** 候选局部 gfx 补丁接受常驻实例描述缓冲和数量；普通物体按脏区间写，集合由 compute 展开，世界/法线矩阵与 TLAS 描述一次生成。数组变化预先计算界值，world 变化用 O(1) 判界。首版数据布局应允许 a→b，不提前实施补丁。
+- 展开实例数须小于 2²⁴（InstanceID 24 位）。当时布局估算每实例光栅 108 B、Lit 192 B、材质偏移 4 B、TLAS 64 B，10 万约 37 MB，另有 gfx CPU 句柄；这些是预算依据，非当前占用测量。
+- 不能把每实例变成一个 CPU 渲染项：此前性能负责人以 Dungeon 3380 实例推算到 10 万，render_items + SceneSnapshot 约 20 ms、Renderer prepare 约 9 ms、静止 Scene Lit 循环约 3.7 ms，阴影规划还随灯数增加。只是当时推算，不是新实现的成绩。
+
+### 后续性能验证口径（本轮不采样）
+
+保留 Dungeon 原样、Dungeon_10k、Dungeon_100k 三个只差生成器的工程副本，用同一现有网格、显式 LOD，报告单实例和总三角形数；实例在可走区域，镜头只见一部分。已对齐镜头参数为 `--scene-lit-camera 6.927793 -0.362655 24.410025 3.6086 -1.3809 33.7881`。
+
+- Renderer 的 release profile 看 clustered、clustered_orbit、docked_smooth；性能负责人届时补 clustered_motion，分别移动生成器和一个普通 Entity，覆盖 TLAS update。
+- CPU 看 render.prepare、render.encode.scene.lit、render、application_step_ms；GPU 看 acceleration、gbuffer、shadow_cache、ddgi_trace/ddgi_update、direct_visibility/direct、hdr_reflections、measured_main_total_ms。Acceleration 的 CPU 包含在 .lit，按场景差值比较。
+- 无窗口 scene CPU profile 看 render_items、light_items、scene_snapshot、scene_snapshot_changed，届时增加 generator_moved/replaced 情形，配合现有 procedural profile。
+- 依当时机器协议持锁、独占空闲采样；基线/改动版交替各两轮取中位数，不加产品专用 marker。静止 Dungeon 应在基线波动范围内，否则补成对测量；10k→100k 报静止 CPU 斜率、运动 ns/实例、各 GPU pass 增量及实例/剔除/draw/TLAS/上传字节数。这是诊断口径，不用测量代替正确性验收，也不以估算宣称达成 120 FPS。
+
+## P3 编辑器与 P4/P5
+
+目标仍为 Houdini 式紧凑节点、Parameters 独立调参、Tab 搜索添加、display 标记。可复用停靠标签页、DSL、out_of_flow/offset 布局、DrawQuad、菜单搜索、反射 Parameters、文档撤销历史、操作符/Control、虚拟 Table 和视口 OverlayShape 点显示；不因此认为节点画布已存在。
+
+| 编号 | 未实施的缺口 | 接口审阅 |
+| --- | --- | --- |
+| G1 | UI 线段/曲线连接，复用抗锯齿着色，守住 UI 合批契约 | 渲染、编辑器 |
+| G2 | 画布按档位缩放 DIP 尺寸与字号 | 编辑器 |
+| G3 | 宿主处理平移、框选、移动、连线、断开，基于接受帧 UiFrame::find 命中 | 编辑器 |
+| G4 | 节点/图参数检查、数组编辑、图文档撤销 | 编辑器 |
+| G5 | Network View、Geometry Spreadsheet、Asset Browser 类型与视口 display 输出 | 编辑器 |
+| G6 | graph.add_node/connect/disconnect/delete/move/set_display/freeze/bake 与 graph.inspect，返回点数、范围、属性统计及间距/穿插反馈 | 编辑器，遵循其操作符规范 |
+
+| 阶段 | 边界与验收目标 | 原估算，非本轮排期 |
+| --- | --- | --- |
+| P1 | 当前 Geometry、图、求值器、JSON v1、原生/源码节点的验收见模块说明；Remap/噪声选择仍未决 | 原计划 14–18 人日，不代表剩余工作量 |
+| P2 | 生成器、覆盖、Cache、冻结、Bake、Play；验证旋转/非均匀缩放下集合与矩阵、改参数增量发布、静止不发布、保存重开及删缓存重建、冻结不随代码变化、Bake 可撤销；GPU 读回、退化实例不拒帧、其他项增删不重写集合、只替换变化块；另做性能对照 | 场景/格式 6–9；渲染集合/TLAS a 8–12；视实测追加 TLAS b 5–8，GPU 剔除/LOD 6–10 人日 |
+| P3 | G1–G6；窗口验收操作符和拖拽连线、Parameters、连线中点和视口像素、表格行数、撤销/重做、保存重开及 inspect 统计 | 14–20 人日 |
+| P4 | 子图、从选中节点封装数字资产，L3 批准后迁移改变点数的基元；验证展开前后及 C++/Source 输出一致 | 6–10 人日，依赖 L3 |
+| P5 | 基本体、挤出、焊接、法线、投影 UV、实例嵌套/Realize、Mesh 输出和碰撞缓存；参考已有 OBJ 耳切三角化保留边界 mask | 20–30 人日起，另立方案 |
+
+布尔、细分、减面、UV 展开、凸分解不混入 P1；候选参考 Manifold、OpenSubdiv、meshoptimizer、xatlas、V-HACD，按真实需要逐项核实许可、维护状态和接入收益。

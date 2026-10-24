@@ -1,6 +1,6 @@
 # Procedural：几何与程序化图
 
-静态库 `atelier_procedural`（[cmake/procedural.cmake](../../../cmake/procedural.cmake)）依赖 runtime 与 geometry，不依赖 World、presentation 或编辑器。入口头文件：
+静态库 `atelier_procedural`（[cmake/procedural.cmake](../../../cmake/procedural.cmake)）依赖 runtime、geometry 与 source，不依赖 World、presentation 或编辑器。入口头文件：
 
 | 头文件 | 内容 |
 | --- | --- |
@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-方向、分阶段计划与跨模块约定见[程序化节点图方案](../../research/procedural-graph-plan-20261022.md)。生成器组件、渲染器实例化和网络编辑器尚未实施。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施；Remap／属性噪声的目标列选择待用户决定，不计为已完成。
 
 ## Geometry
 
