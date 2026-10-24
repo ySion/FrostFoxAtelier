@@ -404,6 +404,21 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     require(document->placeholder_count()==3 && take(presentation::read_static_mesh(runtime,mesh_object)).mesh.source=="builtin/cube" &&
         take(physics::constraint_target(runtime,constraint))==ObjectId{},
         "Placeholders did not keep their native base, or a mistyped reference was applied.");
+    {
+        // Serials and display order follow document identity; document-level data comes last.
+        std::vector<std::uint64_t> order;
+        std::uint64_t serial{};
+        for(const auto& issue:document->issues()) {
+            require(issue.serial==++serial,"Current issue serials did not follow display order.");
+            order.push_back(issue.object==ObjectId{}?std::numeric_limits<std::uint64_t>::max():*document->document_identity(issue.object));
+        }
+        std::vector<std::uint64_t> expected_order{std::stoull(entity_id),std::stoull(move_id),std::stoull(missing_id),
+            std::stoull(mesh_id),std::stoull(constraint_id),std::stoull(gone_id)};
+        std::ranges::sort(expected_order);expected_order.push_back(std::numeric_limits<std::uint64_t>::max());
+        auto objects=order;objects.erase(std::ranges::unique(objects).begin(),objects.end());
+        require(std::ranges::is_sorted(order) && objects==expected_order,
+            "Current issues did not follow document identity order with document data last.");
+    }
     const auto view=take(document->retained(move_object));
     require(view.type.empty() && view.entries.size()==3 && std::ranges::count(view.entries,unknown_field,&editor::RetainedEntry::kind)==1 &&
         std::ranges::count(view.entries,mismatch,&editor::RetainedEntry::kind)==2,"Retained view misclassified saved data.");

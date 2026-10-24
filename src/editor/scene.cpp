@@ -12,6 +12,7 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <tuple>
 #include <unordered_set>
 
 namespace atelier::editor {
@@ -1920,10 +1921,14 @@ std::vector<world::Diagnostic> Session::issues() const {
         }
     };
     try {
-        for(const auto& [object,entry]:retained_) {
-            if(!runtime_.type_of(object) || (owner(object)==ObjectId{} && !is_material(object))) continue;
-            report(object,entry,entry.type.empty()?type_name(world_.runtime(),take(runtime_.type_of(object))):entry.type);
-        }
+        // Serials and display order follow document identity, not hash-table order.
+        std::vector<std::tuple<std::uint64_t,ObjectId,const Retained*>> listed;
+        for(const auto& [object,entry]:retained_)
+            if(runtime_.type_of(object) && (owner(object)!=ObjectId{} || is_material(object)))
+                listed.emplace_back(local_ids_.at(object),object,&entry);
+        std::ranges::sort(listed,{},[](const auto& item){return std::get<0>(item);});
+        for(const auto& [key,object,entry]:listed)
+            report(object,*entry,entry->type.empty()?type_name(world_.runtime(),take(runtime_.type_of(object))):entry->type);
         report({},retained_document_,{});
     } catch(const std::exception&) {}
     return result;

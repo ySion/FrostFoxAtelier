@@ -46,6 +46,8 @@ EnvironmentComponent 的 `sky_map` 是天空贴图的资产键。记录缺少 `s
 
 诊断记录使用 `world::Diagnostic`（[src/world/diagnostic.hpp](../../../src/world/diagnostic.hpp)），`phase` 为 `load`，`Session::load_issues()` 返回本次加载的诊断，`Session::issues()` 返回当前仍未解决的数据。没有改名重定向表；字段改名前后的值以 `unknown_field` 保留，改回原名后恢复。
 
+`Session::issues()` 按对象的文档 ID 数值升序列出，同一对象内保留类型、字段和引用诊断的生成顺序，文档级数据最后列出；`serial` 从 1 起按返回顺序连续编号，不作为跨次查询的诊断身份。此顺序不依赖 Runtime ObjectId 的哈希或哈希表遍历顺序；`load_issues()` 仍保留加载时的报告顺序。
+
 StaticMeshComponent 的 mesh、base_color、roughness、metallic、emissive 和 materials 使用专有资源验证；命名材质槽保存资源身份与显式覆盖意图。相同匿名材质被多个槽或对象引用时，往返仍恢复为同一个实例。场景内联实例随 Entity 子树复制，共享资产、父材质与 Texture 保持共享。槽绑定只经 `resource` 引用 `materials` 中的定义。导入失败撤销本次新增的 Session 资源缓存与文档身份，保留既有资源及其编辑状态。
 
 灯通过 LightComponent 的 `properties.settings` 保存，空间来自 owner Entity。Primitive 的 `properties.body` 保存 BodySettings 与 PhysicsMaterial，Cook 数据是派生缓存。加载按待发布图中的 owner 世界尺度读取工程 Cook 缓存，包含导入目标 parent 与所有 origin；缓存缺失或校验不通过时从源网格重新 Cook 并写回，不产生诊断；内置网格消费 CPU 几何；Mesh 不可用时跳过。源网格可读但无法 Cook 时报告 `unreadable_resource` 并跳过该刚体。缓存准备在 World 发布与 Begin 之前完成。
