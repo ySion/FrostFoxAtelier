@@ -29,7 +29,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
-World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v8 保存；它只控制 DDGI 探针命中点每次挑选的局部光候选数，屏幕直接光不随机选灯。`spatial_light_sampling` 是视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换探针命中点 fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史。Scene v4 的 `shadow_light_budget` / `shadow_samples` 只在读取边界严格校验并丢弃。屏幕直接光对 cluster 列表中的解析灯逐盏确定求值，方向光独立评估，没有历史；发光网格只经 DDGI 照明。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
+World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v9 保存；它只控制 DDGI 探针命中点每次挑选的局部光候选数，屏幕直接光不随机选灯。`spatial_light_sampling` 是视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换探针命中点 fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史。屏幕直接光对 cluster 列表中的解析灯逐盏确定求值，方向光独立评估，没有历史；发光网格只经 DDGI 照明。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
 
 `LightFrame` 消费已验证的低层 Frame，在 CPU 从 `frame.lights` 派生统一的解析光源快照及当前近源 proposal；它不持有 World 或创建 GPU 资源。Scene Lit 仍是上传、绑定、统计与退休的唯一拥有者。近源网格只改变抽样概率，候选批次按确定性近源/全局配额生成，并以实际整数配额组成的完整概率求权重；单候选或无有效局部域时全部使用全局 proposal，远源与溢出源保留全局支持。网格滚动不作为辐射变化清历史，也不要求第二份旧网格。当前编码帧的保留源数、非空 cell 数、逻辑字节及上传标记，与异步 GPU 完成统计分开，具体口径见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
@@ -64,7 +64,7 @@ CPU 在编码前复用数学模块计算一次 inverse view-projection。有限�
 
 Edit/Play 决定场景是否执行及如何更新；视口显示决定同一场景快照如何呈现。两者不互相选择：Play 可以使用 MatCap 等工作室显示，编辑状态也可以使用 Scene Lit。Scene Lit 消费场景真实光源与材质；不以是否 Play 作为渲染分支，也不把 MatCap 定义为只能用于编辑的模式。
 
-Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSettings` 的 `sky_enabled`、`sky_color`、`sky_intensity`，以及方向性贴图 `sky_map` 与 `sky_rotation`，写在 Environment 组件上）。宿主用 `rendering::sky_radiance` 求颜色乘强度，填入 `Frame.environment`；贴图和旋转角随 `Frame::view.lit` 传入。默认关闭，值为零。关闭天光、删除 Environment、换贴图或更换场景会更新这些值，并沿既有信号历史处理收敛。天光参与 DDGI 和环境反射；只有设了贴图时背景才显示天空，否则 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单、独立信号历史与 Local GI 字段的现状见 [Scene Lit](scene-lit.md)。天空贴图的约定与限制见 [Scene Lit](scene-lit.md)。
+Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSettings` 的 `sky_enabled`、`sky_color`、`sky_intensity`，以及方向性贴图 `sky_map` 与 `sky_rotation`，写在 Environment 组件上）。宿主用 `rendering::sky_radiance` 求颜色乘强度，填入 `Frame.environment`；贴图和旋转角随 `Frame::view.lit` 传入。默认关闭，值为零。关闭天光、删除 Environment、换贴图或更换场景会更新这些值，并沿既有信号历史处理收敛。天光参与 DDGI 和环境反射；只有设了贴图时背景才显示天空，否则 Scene Lit 背景为黑，参考网格继续消费同一场景深度且不写深度。抗锯齿菜单与独立信号历史的现状见 [Scene Lit](scene-lit.md)。天空贴图的约定与限制见 [Scene Lit](scene-lit.md)。
 
 每份共享 Mesh 首次使用时上传一份索引几何：逐位相同的角点焊接成顶点缓冲，每个三角形三个 uint32 索引，保持 Mesh 的三角形和角点顺序，另有每三角形 16 字节记录（定向几何法线、材质槽和多边形边标记）。工作室与 Lit 的光栅 pass 都以索引绘制这一份，像素着色器按 draw 的起始三角形加 `SV_PrimitiveID` 读记录，边线距离由 `SV_Barycentrics` 求得；Scene Lit 的 BLAS 按这份索引构建，射线命中按 primitive 下标读同一份索引、顶点和记录；切换显示方式复用同一份几何缓存。批次按资源在完整 `Frame::meshes` 中首次出现的顺序排列，批内保持 Frame 顺序；这个顺序只由成员表决定，不随可见性或选中状态变化。不同资源之间的绘制顺序不属于契约，但对同一份成员表稳定：完全共面且重叠的不同资源由谁覆盖、Lines: All 半透明边线在重叠处的混合，都取决于它，调用方和验收不能依赖原成员顺序。每个有可见实例的批次在每个光栅 pass 中为一次 draw：实体模式一个 pass，纯线模式为深度与边线两个 pass，Cavity 开启时叠线另加一个边线 pass；同一 draw 内按实例的 Frame 顺序、每个实例按 part 顺序画完全部三角形；两者都计入唯一的 `FrameResult::stats.scene_draw_calls`，不代表 GPU 计时。MatCap 属于场景资源，不混入 UI image/coverage 统计。
 

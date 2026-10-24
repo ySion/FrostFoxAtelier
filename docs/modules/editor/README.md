@@ -53,7 +53,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 参数和坐标
 
-材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v8、旧版兼容读取、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
+材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v9、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
 
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
@@ -129,13 +129,13 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 ### 场景光照
 
-Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光对保守灯列表中的解析灯逐盏确定求值，投影光源的遮挡来自阴影 atlas；`Direct candidates`（1～32，默认 8）只控制 DDGI 探针命中点的局部光候选数。旧 Shadow Budget 和 Shadows 实际/请求提示已退役。Local GI 与 GTAO 在作者配置中仍互斥，但渲染器已不再读取 Local GI，AA 默认 SMAA；显示模式、相机和诊断开关仍属于视口。Scene Lit 管线由 Renderer 在工作线程上按设置分组准备，首次使用某组时不阻塞编辑器：视口先继续显示上一个已画出的 Scene Lit 视图，还没画过时显示 Smooth，状态栏显示 `Compiling shaders n/m`（n/m 按当前视图需要的组计算，打开新组时总数会变大），就绪后自动切回。准备失败时状态栏显示错误，视口保持 Smooth。编辑器和 Play 进程把编译结果缓存到环境变量 `ATELIER_SHADER_CACHE` 指定的目录，未设置时为 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`。窗口验收、快照、性能采样模式和 Control 验收在宿主未设置该变量时改用编辑器可执行文件旁的 `shader-cache`（即 `out\dev\shader-cache` 与 `out\release\shader-cache`，两种配置不共用），并由它们启动的 Play 进程继承，不写用户缓存。验收需要冷启动（强制出现未就绪和回退）时，宿主在启动编辑器或 `atelier_editor_control_acceptance` 前把 `ATELIER_SHADER_CACHE` 设为一个新建的空目录；已设置的值不会被覆盖。窗口验收的帧推进只计入画出所请求视图的接受帧，Scene Lit 未就绪时等待准备完成（上限 20 分钟，覆盖 GPU 验证下的预热）。
+Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光对保守灯列表中的解析灯逐盏确定求值，投影光源的遮挡来自阴影 atlas；`Direct candidates`（1～32，默认 8）只控制 DDGI 探针命中点的局部光候选数。AA 默认 SMAA；显示模式、相机和诊断开关仍属于视口。Scene Lit 管线由 Renderer 在工作线程上按设置分组准备，首次使用某组时不阻塞编辑器：视口先继续显示上一个已画出的 Scene Lit 视图，还没画过时显示 Smooth，状态栏显示 `Compiling shaders n/m`（n/m 按当前视图需要的组计算，打开新组时总数会变大），就绪后自动切回。准备失败时状态栏显示错误，视口保持 Smooth。编辑器和 Play 进程把编译结果缓存到环境变量 `ATELIER_SHADER_CACHE` 指定的目录，未设置时为 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`。窗口验收、快照、性能采样模式和 Control 验收在宿主未设置该变量时改用编辑器可执行文件旁的 `shader-cache`（即 `out\dev\shader-cache` 与 `out\release\shader-cache`，两种配置不共用），并由它们启动的 Play 进程继承，不写用户缓存。验收需要冷启动（强制出现未就绪和回退）时，宿主在启动编辑器或 `atelier_editor_control_acceptance` 前把 `ATELIER_SHADER_CACHE` 设为一个新建的空目录；已设置的值不会被覆盖。窗口验收的帧推进只计入画出所请求视图的接受帧，Scene Lit 未就绪时等待准备完成（上限 20 分钟，覆盖 GPU 验证下的预热）。
 
-**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影、直接光候选数与 Sky 组（均匀天光的开关、强度和颜色）；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO / Local GI、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针命中点的空间选灯开关、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
+**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影、直接光候选数与 Sky 组（均匀天光的开关、强度和颜色）；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针命中点的空间选灯开关、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
 
 World 字段的 label、category、description 与类型、范围、枚举值统一声明在 `ViewOptionInfo` 原定义表中，面板不再维护另一份逐项名称或帮助表。同一描述供共享属性行与 Control 查询使用；Probe Volume 的四个槽位和 XYZ 分量共用说明，Follow Focus 只按真实语义把边界标题改为 Min / Max offset。World 与 Entity 参数共用属性行和悬浮说明的呈现契约；World 仍是场景持有的设置值，通过完整候选值验证与 Session 撤销提交，不为显示参数创建 Entity。视口诊断保持独立生命周期，不进入 Scene 数据。
 
-**Coverage → Fit Scene** 按当前可渲染几何的世界边界建立固定覆盖；**Scene + Follow Focus** 保留粗层场景覆盖，并用高优先级体积跟随观察目标。两者保留传播与诊断值，按一次完整 World 修改进入场景历史；重复应用不产生新历史。打开示例（含默认启动）和 `--scene-lit-camera` 时，若场景未保存探针体积，就按当前几何拟合覆盖；这属于加载初始化，不进入撤销历史，文档保持未修改，下次保存时写入。已保存的体积及其更新预算原样保留。普通场景读取自身配置，旧格式使用默认值，不继承上一场景。数值输入和拖动只更新字段草稿，提交后才通过 Session 发布 World 配置与渲染快照；取消、关闭页面和替换文档会结束未提交编辑。无效配置整体拒绝，规则与 Renderer / Control 共用。
+**Coverage → Fit Scene** 按当前可渲染几何的世界边界建立固定覆盖；**Scene + Follow Focus** 保留粗层场景覆盖，并用高优先级体积跟随观察目标。两者保留传播与诊断值，按一次完整 World 修改进入场景历史；重复应用不产生新历史。打开示例（含默认启动）和 `--scene-lit-camera` 时，若场景没有 Environment，就按当前几何拟合覆盖；这属于加载初始化，不进入撤销历史，文档保持未修改，下次保存时写入。已保存的体积及其更新预算原样保留。普通场景读取自身配置，没有 Environment 时使用默认值，不继承上一场景。数值输入和拖动只更新字段草稿，提交后才通过 Session 发布 World 配置与渲染快照；取消、关闭页面和替换文档会结束未提交编辑。无效配置整体拒绝，规则与 Renderer / Control 共用。
 
 **Current layout (CPU)** 显示最近接受帧的实际世界边界、间距、数量、驻留槽数及本帧调度/重置数。这些数值描述 CPU 布局和调度，不表示 GPU 已完成更新或有效光照支持数。切换文档清除旧读数；具体容量、传播和诊断语义以 [Scene Lit](../renderer/scene-lit.md) 为准。
 
@@ -180,9 +180,9 @@ GPU 段：
 
 `atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。性能表、Control 快照的结构验收由上文的 `--acceptance-surfaces` 承担。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此测量模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
 
-在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 同时记录文件中的 `source_world`（v6 的 `world` 段，v7 起为 null）和经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null；报告 schema v7）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
+在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 记录经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
 
-普通启动中的 `--scene-lit-camera` 会为未保存探针体积的场景自动拟合 DDGI，因此普通窗口与此测量的 World 配置可能不同。需要保留保存参数的交互诊断时，正常打开工程和 Scene 后通过 Control `camera.look_at` 设置相机，并检查实际 World 值。
+普通启动中的 `--scene-lit-camera` 会为没有 Environment 的场景自动拟合 DDGI，因此普通窗口与此测量的 World 配置可能不同。需要保留保存参数的交互诊断时，正常打开工程和 Scene 后通过 Control `camera.look_at` 设置相机，并检查实际 World 值。
 
 测量先调用既有 Scene pane maximize，再调整原生客户区。实际 Scene View 范围通过 Renderer 共用的 `raster_viewport` 计算：只在像素中心覆盖恰为 **2560×1440** 时继续。JSON 同时记录含小数的物理逻辑 rect、DIP rect、像素范围、DPI 和完整 Frame.extent；完整窗口 RT 仍包含编辑器 chrome，不能把它与视口像素数混为一谈。无法精确校准时失败，不接受近似尺寸。
 
@@ -353,7 +353,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 ## 验收入口
 
-总 `acceptance` 目标中每项检查只运行一次：已有独立构建目标的文档模式（`--recovery`、`--materials`、`--physics-test-project`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--profile-*` 是测量入口，不进入总入口。
+总 `acceptance` 目标中每项检查只运行一次：已有独立构建目标的文档模式（`--recovery`、`--materials`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--profile-*` 是测量入口，不进入总入口。
 
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开 About、文件选择、工程目录选择，以及 Examples 子菜单触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 

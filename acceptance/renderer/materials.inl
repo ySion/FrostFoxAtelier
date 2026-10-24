@@ -65,7 +65,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     // including the unjittered editing-depth pass used by temporal AA.
     meshes[0].stable_key=1;frame.scene_identity=9123;frame.environment={1,1,1};
     frame.view.wireframe=render::Wireframe::off;
-    frame.view.lit.ddgi=false;frame.view.lit.gtao=false;frame.view.lit.sssr=false;frame.view.lit.ssil=false;
+    frame.view.lit.ddgi=false;frame.view.lit.gtao=false;frame.view.lit.sssr=false;
     frame.view.lit.bloom=false;frame.view.lit.shadows=false;
     std::array<render::Light,1> sunlight{};sunlight[0].kind=render::LightKind::directional;sunlight[0].intensity=4;
     sunlight[0].casts_shadow=false;frame.lights=sunlight;
@@ -229,7 +229,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     render::Frame frame{drawing,camera(drawing.extent),{0,0,float(drawing.extent.width),float(drawing.extent.height)},room.meshes};
     frame.scene_identity=12000;frame.lights=lights;frame.view.shading=render::Shading::scene_lit;
     auto& options=frame.view.lit;options.antialiasing=render::Antialiasing::none;
-    options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.gtao=options.sssr=options.bloom=false;
     options.probe_volumes[0].minimum={-5,-1,-1};options.probe_volumes[0].maximum={5,5,8};options.probe_volumes[0].counts={11,7,10};options.probe_update_budget=96;options.probe_rays=64;
     const auto capture=[&](const char* name) {
         render::Capture result;

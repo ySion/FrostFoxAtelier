@@ -49,7 +49,7 @@ EntityRemoval 保留子树、原组合父与位置；ComponentRemoval 保留 own
 
 运行中的 World 可在生命周期回调之外切换空间参考。只改空间不会改变组合资格，不重发 Begin/End 或启用通知，也不取消任务。物理在下一步前协调空间依赖；keep_world 保留有效后端身份和连续状态，实际世界姿态或尺度变化按物理规则处理。
 
-TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每轴 scale。Matrix4 为行主序、行向量，local = S * R * T，平移位于 12–14，world = local * reference_world。层级矩阵可含剪切，不保存第二份可编辑空间状态，也不以伪造单位矩阵掩盖无效关系。
+TRS 使用有限 position、非零且规范化的 xyzw 四元数、有限的每轴 scale。规范化保留在 float 舍入范围内已是单位长度的四元数（double 中 |norm² − 1| ≤ 2^-22），其余在 double 中归一化后舍入为 float；结果总在该范围内，所以规范化是幂等的，重复加载保存不改变旋转。Matrix4 为行主序、行向量，local = S * R * T，平移位于 12–14，world = local * reference_world。层级矩阵可含剪切，不保存第二份可编辑空间状态，也不以伪造单位矩阵掩盖无效关系。
 
 负 scale 表示镜像，rotation 始终是真旋转。从矩阵分解 TRS（keep_world、物理回写）时，奇数个负轴优先取对象原局部 scale 的符号，符号奇偶不符时只取 X 为负，因此 (-1,-1,-1) 的回写保持原 TRS，而无偏好的世界分解为 (-1,1,1) 加半周旋转。零 scale 可以存储，但该节点及其整棵空间子树退化：按链上是否有零缩放轴判定，不看舍入成 FP32 后的行列式（旋转后的零轴会在子级矩阵里留下非零舍入残差）；网格不绘制、Primitive 不建刚体，各报告一条 `degenerate_value` 警告，身份指向链上最上层的零缩放节点，持续期间合并计数；这不是对象失败，任何策略下都不停用行为或停机。涉及奇异矩阵的 keep_world 仍拒绝。灯光朝向忽略 scale 幅值、保留符号，随镜像一起镜像；零缩放不使灯光退化，见[灯光](../presentation/README.md#提取与坐标)。
 
@@ -106,7 +106,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 已入场成员的作者字段、Transform 增删、材质、材质槽与灯参数，以及 World 光照设置，都可以在宿主边界编辑，World 运行中也一样：新值从下一个执行的阶段起生效，不重发 Begin/End，不取消任务；夹值、类型规则、准入与失败恢复与停止时相同。行为分发内的重入、结构转换期间的编辑以及其他 World 的成员仍拒绝；`inspect_entity` 的 `can_edit` 表示当前不在行为分发内。失败策略属于 World 配置，仍只在停止时可改。组合归属和空间参考按结构操作的准入规则处理。同 Runtime 的 Detached 图可以在 World 运行时于宿主边界准备，完整校验后经同一入口原子发布。Entity 和 Component 属性走同一 Runtime FieldPath 与 scalar 编辑事务；TRS 历史保存完整前后值，业务字段保留精确 Scalar。空 Entity 仍可选择编辑；成员资格、对象存活、运行激活和呈现登记分别判断。
 
-`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。整值重载 `write(object, path, ValueInput)` 用于 String、Array 与记录：写入前先把旧的整值读到同类型的临时值里，之后的校验、准入与恢复与标量版相同；Runtime 对非 plain 值的写入有强保证，写入本身失败时字段不变。整值写入不能替换 Entity 的 Transform 字段，这些字段只能经标量写入或 `set_transform`。组写入 `write(object, paths, values)` 把同一对象的多个标量叶作为一次编辑：逐叶经 `Runtime::write` 写入（同样夹值），全部写完后只做一次类型规则检查和一次准入，因此只要求这些值合在一起有效（例如整体平移探针体积、在 GTAO 与 Local GI 之间切换）；任何失败都把全部叶按位恢复。同一组里重复的路径直接拒绝，Transform 叶拒绝，改用 `set_transform`。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
+`World::write` 对 Transform 字段走 `set_transform`；其余字段不按类型分支：先经 `Runtime::write` 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再用 `Runtime::validate` 检查对象的硬边界与类型校验器，最后运行准入。写入前有效的对象若因这次编辑变为无效，或准入失败，就恢复原值并返回该错误；写入前已经无效的对象（例如脚本或可信路径写坏）照常可编辑，便于逐字段修复，提取时仍按对象诊断。整值重载 `write(object, path, ValueInput)` 用于 String、Array 与记录：写入前先把旧的整值读到同类型的临时值里，之后的校验、准入与恢复与标量版相同；Runtime 对非 plain 值的写入有强保证，写入本身失败时字段不变。整值写入不能替换 Entity 的 Transform 字段，这些字段只能经标量写入或 `set_transform`。组写入 `write(object, paths, values)` 把同一对象的多个标量叶作为一次编辑：逐叶经 `Runtime::write` 写入（同样夹值），全部写完后只做一次类型规则检查和一次准入，因此只要求这些值合在一起有效（例如整体平移探针体积）；任何失败都把全部叶按位恢复。同一组里重复的路径直接拒绝，Transform 叶拒绝，改用 `set_transform`。字段规则属于类型本身（反射硬边界与 `TypeDefinition::validate`），World 核心不判断具体类型；`validation_diagnostic` 把 Runtime 的校验失败转为 `invalid_value` 诊断，field 为记录前缀加失败路径，value 为越界值预览。
 
 `destroy_entity / destroy_component` 是游戏对象终结入口：先退出 World，再清理组成并调用 Runtime；可信宿主不得绕过它直接销毁活跃成员。detach 保留对象图；历史裁剪只释放根，不隐式 destroy。close 退出所有子树、释放成员根后不可重启，重复 close 无副作用。
 
@@ -126,4 +126,4 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。已登记模拟系统以 `writes_pose` 声明位姿的 Entity（例如物理 body 或控制器所在的 Entity）拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。可选的 `written` 返回实际发布的各 Entity 局部 TRS（逐位即写入值，不含被拒绝的位姿），模拟系统据此识别之后绕过它的写入。被拒绝的命令与位姿按失败策略处理。
 
-端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。Scene 写出 v8；仓库里的官方示例仍是 v6，读取时迁移，旧 v1–v5 先经严格导入，见[项目场景](project-scenes.md#v7--v8-迁移)。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。
+端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`，开发与发布配置均需执行。Scene 只读写 v9，见[项目场景](project-scenes.md#scene-v9)。实际结果与仍未完成的图形验收统一记录在[编辑器验收状态](../editor/README.md#entity-迁移验收状态)。

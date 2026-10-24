@@ -27,7 +27,7 @@ void audit_numeric_inputs(Fixture& f) {
 void audit_selection_work(Fixture& f) {
     f.frame.view={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     f.frame.environment={.05f,.05f,.05f};f.lights.clear();
     f.room.meshes.assign(5,{});
     for(unsigned i=0;i<5;++i) {
@@ -88,7 +88,7 @@ void audit_surface_history(Fixture& f) {
     f.frame.view={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;
     options.antialiasing=render::Antialiasing::none;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     f.frame.environment={};f.lights.assign(1,{});
     f.lights[0].stable_key=100;f.lights[0].kind=render::LightKind::directional;
     f.lights[0].direction={0,0,1};f.lights[0].intensity=4;
@@ -178,7 +178,7 @@ void audit_viewport_depth(Fixture& f) {
     f.drawing.draws.clear();f.frame.scene_viewport={0,0,337,191};f.frame.camera=camera({337,191});
     f.frame.view={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;options.antialiasing=render::Antialiasing::none;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     f.frame.environment={};f.lights.clear();f.room.meshes={defaults.meshes[0],defaults.meshes[7]};
     f.room.meshes[0].material={.roughness=.18f,.metallic=1};
     f.room.meshes[1].world=box(-1.4f,2.1f,6.2f,1.6f,1.8f,.1f);

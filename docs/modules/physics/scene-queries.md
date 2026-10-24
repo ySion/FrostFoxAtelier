@@ -83,13 +83,13 @@ void tick(float dt) {
 }
 ```
 
-场景在 `properties.ignored_entities` 中保存 `{"$ref":"Entity文档ID"}` 的引用数组，持有语义由 Runtime schema 决定；通用引用编码允许 null，但本查询绑定合同拒绝空目标。旧 Actor 中 ignore_self=true 的查询经严格导入时，将该 Actor 内所有 Primitive 的实际新 owner Entity 写入显式排除集合，保留原自组忽略范围；query owner 与旧 Actor 组不是同一范围。
+场景在 `properties.ignored_entities` 中保存 `{"$ref":"Entity文档ID"}` 的引用数组，持有语义由 Runtime schema 决定；通用引用编码允许 null，但本查询绑定合同拒绝空目标。
 
 完整命中列表与对象身份目前由 C++ 场景接口消费；没有为脚本新增对象引用返回 ABI 或一套对象包装。
 
 ## 场景与边界
 
-[Raycasts.scene](../../../assets/examples/Examples/Physic/Scenes/Raycasts.scene) 包含绿色 Overlap 目标、红色首个 Block、蓝色遮挡后目标、黄色通道 Ignore 对象、青色 Sensor，以及包含六个查询子 Entity 的发射器组合。六个查询都显式排除发射器碰撞 Entity 和视觉网格 Entity，保留旧 Actor 分组的自忽略行为。通道使用 7，对象掩码选择类别 1/2；球重叠单独选择类别 3 Sensor。官方场景验收检查身份、命中数、步号、保存重开和模拟后的真实 GPU 画面。视口尚无射线绘制和命中面板，查询结果通过 API/脚本及自动验收读取。
+[Raycasts.scene](../../../assets/examples/Examples/Physic/Scenes/Raycasts.scene) 包含绿色 Overlap 目标、红色首个 Block、蓝色遮挡后目标、黄色通道 Ignore 对象、青色 Sensor，以及包含六个查询子 Entity 的发射器组合。六个查询都显式排除发射器碰撞 Entity 和视觉网格 Entity。通道使用 7，对象掩码选择类别 1/2；球重叠单独选择类别 3 Sensor。官方场景验收检查身份、命中数、步号、保存重开和模拟后的真实 GPU 画面。视口尚无射线绘制和命中面板，查询结果通过 API/脚本及自动验收读取。
 
 已有用户副本的 Physic 目录不会被模板更新覆盖。缺少新场景时，可把此新文件复制到用户工程的 `Examples/Physic/Scenes/`，再刷新并打开；不要替换已编辑的场景。
 

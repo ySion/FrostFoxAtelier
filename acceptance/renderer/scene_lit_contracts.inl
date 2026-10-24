@@ -16,7 +16,7 @@ void quality_contracts(Fixture& f) {
     light.range=2;light.source_radius=2;light.width=light.height=0;light.intensity=200;light.casts_shadow=false;
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;options={};
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     options.antialiasing=render::Antialiasing::none;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;

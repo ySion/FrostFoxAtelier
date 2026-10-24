@@ -140,23 +140,19 @@ public:
     bool shadows{true};
     AFIELD(Label="DDGI", Category="Propagation", DESC="启用探针场提供的间接漫反射光。覆盖范围、密度和更新预算由 Volume 与 Propagation 参数决定。")
     bool ddgi{true};
-    AFIELD(Label="GTAO", Category="Effects", DESC="用屏幕上的几何信息估计附近遮挡，突出接触与凹角。与 Local GI (SSIL) 互斥，二者不能同时启用。")
+    AFIELD(Label="GTAO", Category="Effects", DESC="用屏幕上的几何信息估计附近遮挡，突出接触与凹角。")
     bool gtao{true};
     AFIELD(Label="Reflections (SSSR)", Category="Effects", DESC="启用屏幕空间反射，沿当前画面中的表面信息寻找反射命中。屏幕外或被遮住的表面信息有限。")
     bool sssr{true};
     AFIELD(Category="Effects", DESC="让画面中的高亮部分向周围扩散，形成光晕。它改变显示效果，不会把光照写回 DDGI 探针。")
     bool bloom{true};
-    AFIELD(Label="Local GI (SSIL)", Category="Effects", DESC="使用屏幕上的表面信息补充附近的间接光变化。它与 GTAO 互斥，不替代 DDGI 的空间覆盖。")
-    bool ssil{false};
     AFIELD(Category="Effects", DESC="选择抗锯齿方式。SMAA 处理当前画面的边缘；TAA 和 SMAA T2x 还利用跨帧信息；Off 关闭抗锯齿。")
     Antialiasing antialiasing{Antialiasing::smaa};
     AFIELD(Label="Exposure (EV)", Category="Lighting", HardMin="-16", HardMax="16", DESC="控制最终显示的曝光。每增加 1 EV，曝光倍率翻倍；不改变场景线性 HDR 历史中的光照能量。")
     float exposure_ev{};
-    AFIELD(Label="Shadow bias (m)", Category="Lighting", HardMin="0.000001", HardMax="0.1", DESC="阴影射线的起点偏移，单位 m，用于减少表面对自己的误遮挡。过大可能让接触处的阴影脱离表面。")
-    float shadow_bias{.002f};
     AFIELD(Category="Lighting", HardMin="1", HardMax="32", DESC="每个接收点初始挑选的局部光候选数量。增加候选会增加直接光采样工作量；它不是场景允许存在的灯光数量。")
     std::uint32_t direct_candidates{8};
-    AFIELD(Label="AO radius (m)", Category="Effects", HardMin="0.001", HardMax="100", DESC="GTAO 与 Local GI (SSIL) 观察附近表面的半径，单位 m。应结合场景的实际尺度调整。")
+    AFIELD(Label="AO radius (m)", Category="Effects", HardMin="0.001", HardMax="100", DESC="GTAO 观察附近表面的半径，单位 m。应结合场景的实际尺度调整。")
     float ao_radius{.35f};
     AFIELD(Label="Trace distance (m)", Category="Effects", HardMin="0.001", HardMax="10000", DESC="屏幕空间反射允许追踪的最大距离，单位 m。增加距离不能补出画面外缺失的表面信息。")
     float reflection_distance{30.f};
@@ -168,7 +164,7 @@ public:
     std::uint32_t probe_rays{128};
     AFIELD(Label="Feedback", Category="Propagation", HardMin="0", HardMax="0.99", DESC="DDGI 将上一轮间接光送回探针场的运输系数。0 关闭这部分反馈；改变它会使旧探针照明失效并重新积累。")
     float probe_bounce{.85f};
-    AFIELD(Category="Propagation", HardMin="0", HardMax="8", DESC="最终合成时对间接漫反射应用的增益。DDGI 与 Local GI 合成后只乘一次，不回写探针，也不补出缺失的空间覆盖。")
+    AFIELD(Category="Propagation", HardMin="0", HardMax="8", DESC="最终合成时对 DDGI 间接漫反射应用的增益，只乘一次，不回写探针，也不补出缺失的空间覆盖。")
     float indirect_gain{1.f};
     AFIELD(Label="Sky", Category="Sky", DESC="启用天光。关闭时环境照明为零；颜色、强度、天空贴图和旋转都保留。")
     bool sky_enabled{};

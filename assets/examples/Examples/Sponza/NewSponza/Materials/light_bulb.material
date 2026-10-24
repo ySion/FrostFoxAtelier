@@ -11,8 +11,8 @@
   "emission_two_sided": false,
   "emissive": [
     1.0,
-    0.9999999403953552,
-    1.0000001192092896
+    0.99999994,
+    1.0000001
   ],
   "metallic": 0.0,
   "normal_scale": 1.0,

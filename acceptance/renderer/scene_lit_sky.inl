@@ -44,7 +44,7 @@ bool sky_inside(const render::Frame& frame, unsigned x, unsigned y) {
     return x+.5 >= v.x && x+.5 < v.x+v.width && y+.5 >= v.y && y+.5 < v.y+v.height;
 }
 void sky_flat_options(render::SceneLitSettings& options) {
-    options.ddgi = options.gtao = options.sssr = options.ssil = options.bloom = options.shadows = false;
+    options.ddgi = options.gtao = options.sssr = options.bloom = options.shadows = false;
     options.antialiasing = render::Antialiasing::none;
 }
 void sky_anchor(Fixture& f) {
@@ -343,7 +343,7 @@ void sky_background_temporal(Fixture& f) {
 void sky_probe_misses(Fixture& f) {
     f.restore();
     auto& options = f.frame.view.lit;
-    options.gtao = options.sssr = options.ssil = options.bloom = options.shadows = false; options.ddgi = true;
+    options.gtao = options.sssr = options.bloom = options.shadows = false; options.ddgi = true;
     options.antialiasing = render::Antialiasing::none;
     for (auto& volume : options.probe_volumes) volume.enabled = false;
     auto& volume = options.probe_volumes[0];

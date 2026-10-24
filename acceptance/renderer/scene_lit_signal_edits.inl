@@ -21,7 +21,7 @@ void quality_signal_edits(Fixture& f) {
         f.frame.environment={};f.lights.clear();
         auto& options=f.frame.view.lit;
         options.antialiasing=render::Antialiasing::smaa;
-        options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+        options.ddgi=options.gtao=options.sssr=options.bloom=false;
         f.room.meshes={defaults.meshes[0],defaults.meshes[7]};
         auto& floor=f.room.meshes[0];auto& emitter=f.room.meshes[1];
         floor.color={.7f,.7f,.7f,1};
@@ -124,7 +124,7 @@ void quality_direct_radiance_response(Fixture& f) {
     const auto lights=f.lights;const auto meshes=f.room.meshes;const auto view=f.frame.view;
     auto& options=f.frame.view.lit;
     options.antialiasing=render::Antialiasing::none;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     // The edit is chromatic, so its residual shows as red minus blue.
     const auto red_shift=[](const render::Capture& a,const render::Capture& b) {
         double sum=0;std::size_t count=0;

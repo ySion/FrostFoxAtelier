@@ -4,7 +4,7 @@
 
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
-光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v8 保存并进入 Session 撤销历史。旧版继续读取；v4 的 `shadow_light_budget` / `shadow_samples` 只在兼容读取边界严格校验后丢弃，新字段采用默认值，v1～v3 使用默认 World 配置。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
+光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v9 保存并进入 Session 撤销历史。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
 
 实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线。管线按视图设置分组，在 RHI 工作线程上准备，未就绪的帧返回 not_ready（见 [Renderer 合同](contract.md#场景和-ui)）；采样器、查询、读回与查找表在第一个编码的 Lit 帧创建。关闭与尺寸变化沿既有 gfx 退休机制处理。
 
@@ -87,7 +87,7 @@ Shadows 开启且场景有投影光源时，`ShadowCache` 为每盏投影点光�
 
 方向级联需要时总是当帧重绘，不占预算；其余 face 每帧最多重绘 24 个。一盏点光或矩形光需要重绘的 face 整盏一起画，所以一盏光已画的 face 总来自同一个原点；GPU 光源记录带上这个原点，取样按它选 face、做投影，不按光源当前位置，否则光源移动而重绘被延后时 cube 接缝附近会落到旧 face 外。有无内容 face（新分配、换尺寸）的光排在前面，只有过期 face（光源移动、投影者变化）的光在后，各自按连续等待帧数从长到短、再按重要性排队；整盏放不进本帧剩余预算就整盏延后，继续尝试后面的光。光源移动后还没重绘时，按绘制原点为当前接收面需要的 face 也一并请求，保证延后期间取样选中的 face 都在；光在新原点重绘时，没有一起重绘的旧 face 作废。`stable_key` 为 0 的光没有跨帧身份、不保留缓存，face 和级联一样每帧重绘，不受预算限制；编辑器和 Project Run 的光都有非零键。辐亮度为零的投影光不请求 face。被延后的光沿用上一次的原点、投影、深度范围和内容（其 face 计入 `deferred_faces`），所以这类阴影会滞后一到几帧；`deferral_frames` 是被延后的光连续等待的最长帧数。只要有光被延后，本帧至少已画 25 − k 个 face（k ≤ 6 是那盏光需要的 face 数），因此 N 个待画 face 在 ⌈N/19⌉ 帧内画完。一盏光只要还有需要的 face 没有内容，就整盏不贡献直接光（计入 `pending_lights`），不会在没有阴影时照亮被挡住的接收面；画齐后，等待过的光用 8 帧线性淡入，当帧就画齐的光直接全亮。DDGI 命中用光线追踪可见性，不读 atlas，照常计入这类光。加载、开关 Shadows 或切回 Scene Lit 时所有 face 都要重画，光按重要性逐盏亮起（例如 5 或 6 个 face 的光每帧 4 盏）。同重要性的光优先保留已有 face 的那盏，调整光源顺序不会换一批光驻留。
 
-取样先把接收点沿几何法线移动所用 face 的一个内部纹素（点光按到光源的距离，太阳按级联半径）。World 的 `shadow_bias` 仍可编辑，但 Renderer 只校验它的值域，不读取它；DDGI 与反射等次级射线的起点偏移固定为 2 mm。过滤是 3×3 帐篷：四个相隔半纹素的双线性 tap，用 4 次 GatherCmp 取 2×2 比较块，静态、动态两层逐纹素取遮挡并集后再加权，滤波足迹留在 guard 纹素内。每块的比较深度是偏移点的设备深度，按接收面自身（未偏移）平面的斜率外推到块中心；偏移平面在掠射时会越过点光源、使斜率反号，接收面平面只要朝向光源就不会。一个纹素的法线偏移在任何入射角下都大于块内纹素相对块中心的半纹素平面斜率，所以平面接收面不会自遮挡；接收面所在平面经过或背向光源中心时不外推，按投影点深度比较并计入 `plane_fallbacks`（只有球光或矩形光会这样照到它，零半径点光照不到）；N·L 小于偏移比例时偏移点越过接收面的地平线，外推的比较深度可能低于 0，此时按 0（远平面）比较，只有空纹素算受光。深度梯度溢出（掠射）时同样退回投影点深度并计入 `plane_fallbacks`。方向光包含级联过渡，选中级联取不到时依次用更大的级联，所有级联都取不到时朝太阳追一条射线（见上文级联拟合）。接收点位于发光球内时仍从球心 cube 取阴影。
+取样先把接收点沿几何法线移动所用 face 的一个内部纹素（点光按到光源的距离，太阳按级联半径）。DDGI 与反射等次级射线的起点偏移固定为 2 mm。过滤是 3×3 帐篷：四个相隔半纹素的双线性 tap，用 4 次 GatherCmp 取 2×2 比较块，静态、动态两层逐纹素取遮挡并集后再加权，滤波足迹留在 guard 纹素内。每块的比较深度是偏移点的设备深度，按接收面自身（未偏移）平面的斜率外推到块中心；偏移平面在掠射时会越过点光源、使斜率反号，接收面平面只要朝向光源就不会。一个纹素的法线偏移在任何入射角下都大于块内纹素相对块中心的半纹素平面斜率，所以平面接收面不会自遮挡；接收面所在平面经过或背向光源中心时不外推，按投影点深度比较并计入 `plane_fallbacks`（只有球光或矩形光会这样照到它，零半径点光照不到）；N·L 小于偏移比例时偏移点越过接收面的地平线，外推的比较深度可能低于 0，此时按 0（远平面）比较，只有空纹素算受光。深度梯度溢出（掠射）时同样退回投影点深度并计入 `plane_fallbacks`。方向光包含级联过渡，选中级联取不到时依次用更大的级联，所有级联都取不到时朝太阳追一条射线（见上文级联拟合）。接收点位于发光球内时仍从球心 cube 取阴影。
 
 `direct_cluster_inspect` 只在明确开启时编译/派发接收面支持统计，给出 0～64、>64 的 66 档直方图与最大值。正常入口编译去除该统计工作；不常驻读回逐像素数据。计数是解析局部光保守支持，不含方向光或遮挡判断。普通 cluster 数量/溢出与该接收面分布采用同一完成帧发布。
 
@@ -203,9 +203,9 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 ## 显示菜单与近场策略
 
-World 页统一编辑光照与效果的作者配置，进入同一 World 值和 Session 历史，包括 Shadows、DDGI、GTAO、SSSR、Bloom、Local GI（渲染器不读取，见下）、抗锯齿、曝光和探针命中点的光源候选预算。诊断仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
+World 页统一编辑光照与效果的作者配置，进入同一 World 值和 Session 历史，包括 Shadows、DDGI、GTAO、SSSR、Bloom、抗锯齿、曝光和探针命中点的光源候选预算。诊断仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
 
-**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v8 保存；`spatial_light_sampling`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。Diagnostics 的 Spatial light sampling 默认开启，关闭后 DDGI 命中点的 fresh RIS 使用完整全局 proposal；此开关由统一 ViewOption/Control 入口读写，不写 World、Scene 或 Session 撤销历史，也不关闭 CPU 网格维护和已有 GPU 缓冲的驻留。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
+**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v9 保存；`spatial_light_sampling`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。Diagnostics 的 Spatial light sampling 默认开启，关闭后 DDGI 命中点的 fresh RIS 使用完整全局 proposal；此开关由统一 ViewOption/Control 入口读写，不写 World、Scene 或 Session 撤销历史，也不关闭 CPU 网格维护和已有 GPU 缓冲的驻留。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
 
 `SceneLitSettings::antialiasing` 为 `Antialiasing::{none,taa,smaa,smaa_t2x}`，菜单显示 Off / TAA / SMAA / SMAA T2x，默认 SMAA。所有模式均使用原生分辨率：
 
@@ -219,8 +219,6 @@ World 页统一编辑光照与效果的作者配置，进入同一 World 值和 
 SMAA 使用固定版本的上游面积/搜索 LUT；边缘判断读取非线性 sRGB 亮度，颜色混合保持线性。T2x 仅为颜色重投影去除两相位 jitter，复用上游邻域核计算颜色和抗锯齿速度，以原始两帧 point 采样和速度幅值控制最多 .5 的历史权重。GBuffer motion 的 xy 仍含 jitter、z 表示几何覆盖、w 表示对象与着色材质对应有效性；材质编辑不破坏前帧几何矩阵与 FP32 深度。轮廓前景／背景是互补子样本，不能按深度或背景差异一律拒绝。新增、删除或新显露区域可能混合一帧旧空间颜色，下一帧不再包含该颜色；最终结果不递归累积。
 
 T2x 补充亚像素轮廓信息，不替代直接光、反射或 AO 自己的信号降噪，也不承诺恢复单帧完全漏采样的几何细节。原生 SMAA 的 shader、LUT 来源与许可见 [第三方记录](../../../third_party/smaa/README.md)。
-
-Local GI 对应 `ssil`，没有渲染实现，渲染器不读取它；World 与编辑器仍保存它，并保持它与 GTAO 互斥（开启 Local GI 会关闭 GTAO），所以开启它的效果只是没有 AO。
 
 ## 身份与历史
 

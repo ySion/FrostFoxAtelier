@@ -1159,7 +1159,7 @@ void quality_emissive_ddgi(Fixture& f) {
     f.lights.clear();f.edited();++f.frame.scene_identity;
     f.frame.environment={0,0,0};
     auto& options=f.frame.view.lit;
-    options={};options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options={};options.gtao=options.sssr=options.bloom=false;
     options.antialiasing=render::Antialiasing::none;
     // The receiver plane at z=4 lies between the last two probe slices.
     options.probe_volumes[0].minimum={-4,-3,-.5f};options.probe_volumes[0].maximum={4,3,4.6f};
@@ -1361,7 +1361,7 @@ void quality_smaa_t2x_coverage(Fixture& f) {
     object.material.emissive={.4f,.18f,.07f};
     auto& options=f.frame.view.lit;
     options.antialiasing=render::Antialiasing::smaa_t2x;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     f.frame.camera_cut=true;f.edited();
     const auto stable=[&](const char* name) {
         const auto a=f.capture((std::string(name)+"-a").c_str(),4);
@@ -1459,7 +1459,7 @@ void quality_cases(Fixture& f) {
     f.room.meshes=meshes;f.lights=lights;f.frame.camera=camera;f.edited();
     auto& options=f.frame.view.lit;
     options=defaults;options.antialiasing=render::Antialiasing::none;
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     const auto reference=lighting_mean(f,"quality-direct-converged",penumbra,warmup_frames,32);
     const auto reference_later=f.capture("quality-direct-depth");
     const auto direct_delta=f.compare("quality-direct-deterministic",f.capture("quality-direct-0"),f.capture("quality-direct-1",8));

@@ -43,6 +43,10 @@ void static_mesh_entity_creation() {
         take(world.query(types.component)).empty(), "Factory registered or began an unpublished Entity.");
     require(take(w::read_transform(runtime,entity_id)) == take(w::canonical_transform(description.transform)),
         "Factory failed to validate and canonicalize the initial TRS.");
+    // A Dungeon rotation whose float norm² stays below one: renormalizing walked a component one ulp per save.
+    const w::Trs saved{{},{0.01535156648606062f,-0.7645430564880371f,-0.013860960491001606f,0.64424067735672f},{1,1,1}};
+    const auto once=take(w::canonical_transform(saved));
+    require(take(w::canonical_transform(once))==once,"Canonicalizing a canonical transform changed it.");
     committed(world.attach(entity_id));
     require(events == std::vector<std::pair<char,ObjectId>>{{'R',entity_id},{'R',component_id}},
         "Complete Entity registration was not a single group boundary.");

@@ -406,52 +406,6 @@ void verify_entity_composition() {
         take(physics::set_query_ignored_entities(rt,query,external_exclusions));const auto strong_external=take(graph.serialize());const auto strong_history=graph.undo_count();
         require(!graph.serialize_subtree(original) && take(graph.serialize())==strong_external && graph.undo_count()==strong_history,
             "Independent subtree export accepted an external strong reference sequence or mutated the document on rejection.");
-        const auto legacy_fixture=nlohmann::json::parse(R"({"version":1,"actors":[
-            {"type":"world.Actor","name":"Legacy First","enabled":true,"root":1,"components":[
-                {"id":1,"type":"world.SceneComponent","enabled":true,"parent":0,"position":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
-                {"id":2,"type":"world.SceneComponent","enabled":true,"parent":1,"position":[2,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
-                {"id":3,"type":"world.CollisionComponent","enabled":true,"parent":2,"position":[3,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}
-            ]},
-            {"type":"world.Actor","name":"Legacy Second","enabled":true,"root":1,"components":[
-                {"id":1,"type":"world.SceneComponent","enabled":true,"parent":0,"position":[20,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}
-            ]}
-        ]})");
-        const std::array<std::pair<std::size_t,std::optional<std::size_t>>,4> legacy_requests{{
-            {1,std::nullopt},{0,0},{0,1},{0,2}}};
-        for(unsigned version=1;version<=5;++version) {
-            auto legacy=legacy_fixture;legacy["version"]=version;const auto text=legacy.dump();
-            auto migrated=take(editor::Session::deserialize(text,project));auto& runtime=migrated->world().runtime();
-            const auto identities=take(editor::Session::legacy_selection(text,legacy_requests));
-            const auto second=take(migrated->local_object(identities[0].first));
-            const auto first=take(migrated->local_object(identities[1].first));
-            const auto space=take(migrated->local_object(identities[2].first));
-            const auto collision_owner=take(migrated->local_object(identities[3].first));
-            const auto collision=take(migrated->local_object(identities[3].second));
-            const auto members=take(migrated->world().members());
-            require(members.size()==4 && second==members[3].id() && second!=members[1].id() &&
-                migrated->name(second)==L"Legacy Second" && identities[0].first==identities[0].second &&
-                take(world::parent_entity(runtime,second))==ObjectId{} && take(world::world_matrix(runtime,second))[12]==20,
-                "Legacy Actor index selected an expanded preceding spatial node instead of the second Actor's Entity.");
-            require(identities[1].first==identities[1].second && identities[2].first==identities[2].second &&
-                take(world::parent_entity(runtime,space))==first && take(world::components(runtime,space)).empty() &&
-                take(world::world_matrix(runtime,space))[12]==12,
-                "Legacy pure SceneComponent inspection did not resolve its actual spatial Entity identity.");
-            require(collision_owner!=first && collision_owner!=space &&
-                take(world::inspect_component(runtime,collision)).owner==collision_owner &&
-                take(runtime.type_of(collision))==migrated->types().collision_component &&
-                take(world::parent_entity(runtime,collision_owner))==space && take(world::world_matrix(runtime,collision_owner))[12]==15,
-                "Legacy Primitive inspection did not resolve its actual owner Entity and component identity.");
-            take(migrated->select(collision));
-            require(migrated->selection()==editor::Selection{collision_owner,collision},
-                "Migrated component selection retained the historical Actor owner.");
-            const auto saved=take(migrated->serialize());auto roundtrip=take(editor::Session::deserialize(saved,project));
-            require(take(roundtrip->serialize())==saved,"Legacy identity migration did not round trip through the current graph codec.");
-            const auto restored=take(roundtrip->local_object(identities[3].second));
-            require(take(world::inspect_component(roundtrip->world().runtime(),restored)).owner==
-                take(roundtrip->local_object(identities[3].first)) &&
-                roundtrip->name(take(roundtrip->local_object(identities[0].first)))==L"Legacy Second",
-                "Current graph reload lost the migrated selection identity or actual component owner.");
-        }
     }
     std::puts("Editor Entity composition acceptance: PASS (optional space, recursive trees, reparent compensation, forest history, subtree import/reference remap, stable-ID save/reload)");
 }

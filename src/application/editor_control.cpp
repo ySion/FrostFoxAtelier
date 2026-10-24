@@ -15,10 +15,8 @@
 namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
-// 3: the view carries the sky (sky_enabled, sky_intensity, sky_color_x/y/z).
-// 4: direct_reference, direct_clustered and direct_shadow_cache are removed; direct
-//    light has one clustered path with cached shadows.
-constexpr unsigned repro_view_schema=4;
+// Bumped whenever the frozen view's key set changes; repro.open accepts only this schema.
+constexpr unsigned repro_view_schema=5;
 constexpr std::array<std::string_view,3> removed_view_options{"direct_reference","direct_clustered","direct_shadow_cache"};
 constexpr unsigned inspect_page_items=256;
 constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
@@ -147,7 +145,6 @@ Json performance_json(const editor::FramePerformance& performance) {
 }
 renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patch,std::array<float,3> focus) {
     if(!patch.is_object()) throw Failure("invalid_request","Display patch must be an object");
-    if(patch.value("gtao",false) && patch.value("ssil",false)) throw Failure("invalid_request","GTAO and Local GI are mutually exclusive");
     std::set<editor::ViewOption> assigned;
     for(const auto& [name,value]:patch.items()) {
         if(std::ranges::find(removed_view_options,name)!=removed_view_options.end())
@@ -165,25 +162,6 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view,const Json& patc
         take(editor::set_view_option(view,option->option,scalar));
     }
     take(editor::validate_view_options(view,focus));return view;
-}
-renderer::ViewSettings repro_view(const Json& snapshot,unsigned schema,std::array<float,3> focus) {
-    if(schema>=4 || !snapshot.is_object())return patched_view({},snapshot,focus);
-    auto migrated=snapshot;
-    // Only persisted repro input accepts retired settings. Validate the old
-    // authoring ranges, then retain today's defaults rather than infer reference mode.
-    if(schema==1)for(const auto* name:{"shadow_light_budget","shadow_samples"}) {
-        const auto found=migrated.find(name);if(found==migrated.end())continue;
-        if(migrated.contains("direct_candidates"))throw Failure("invalid_request","Legacy shadow settings cannot be combined with direct_candidates");
-        const bool samples=std::string_view(name)=="shadow_samples";
-        static_cast<void>(integer(*found,samples?1u:0u,samples?64u:16u));
-        migrated.erase(found);
-    }
-    for(const auto name:removed_view_options) {
-        const auto found=migrated.find(name);if(found==migrated.end())continue;
-        if(!found->is_boolean()) throw Failure("invalid_request","Display toggle requires a boolean");
-        migrated.erase(found);
-    }
-    return patched_view({},migrated,focus);
 }
 Json scalar_json(const Scalar& scalar,const Runtime& runtime) {
     return std::visit([&](const auto& value)->Json {
@@ -908,66 +886,42 @@ struct EditorControl::Impl {
         else if(op=="repro.open") {
             replaceable();const std::filesystem::path root=control::wide(text(args.at("directory")));
             const auto manifest=control_artifacts::validate_repro(root);
-            const auto view_schema=manifest.contains("view_schema")?integer(manifest.at("view_schema"),1,repro_view_schema):1u;
+            if(manifest.value("view_schema",Json())!=repro_view_schema) throw Failure("invalid_request","Repro view schema is not current; export the repro again");
             auto camera=app.camera_;if(!camera.set_state(camera_state(manifest.at("camera")))) throw Failure("invalid_request","Invalid repro camera");
             const auto focus=camera.state().target;
-            auto view=repro_view(manifest.at("view"),view_schema,{focus.x,focus.y,focus.z});
-            auto project=take(editor::Project::open(root/"Project"));
-            const auto scene_text=take(editor::read_file(take(project.resolve(project.startup_scene()))));
-            const auto scene=editor::json_format::parse(scene_text);
-            const auto scene_version=editor::json_format::identity(scene.at("version"));
-            if(scene_version>=4 && scene_version<7) {
-                auto authored=repro_view(scene.at("world"),scene_version==4?1u:repro_view_schema,{focus.x,focus.y,focus.z});
-                // These versions kept the sky in a Sky Light, not the world section; the Environment check below covers it.
-                authored.lit.sky_enabled=view.lit.sky_enabled;authored.lit.sky_color=view.lit.sky_color;authored.lit.sky_intensity=view.lit.sky_intensity;
-                if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=static_cast<const rendering::SceneLightingSettings&>(authored.lit))
-                    throw Failure("dependency_mismatch","Repro frame snapshot disagrees with its Scene World settings");
-            }
-            const bool legacy_scene=scene_version<6;
-            const auto& frozen_entities=scene.at(legacy_scene?"actors":"entities");std::vector<unsigned> indices;
+            auto view=patched_view({},manifest.at("view"),{focus.x,focus.y,focus.z});
+            std::vector<unsigned> indices;
             for(const auto& index:manifest.at("selection_indices")) {
                 const auto i=integer(index,0,editor::Session::maximum_entities);
-                if(i>=frozen_entities.size() || std::ranges::find(indices,i)!=indices.end()) throw Failure("dependency_mismatch","Invalid repro selection");indices.push_back(i);
+                if(std::ranges::find(indices,i)!=indices.end()) throw Failure("dependency_mismatch","Invalid repro selection");indices.push_back(i);
             }
-            std::optional<std::pair<unsigned,unsigned>> inspection;
+            std::optional<unsigned> inspection;
             if(manifest.contains("inspection")) {
-                const auto& value=manifest["inspection"];
-                if(legacy_scene) control::fields(value,{"actor","component"});else control::fields(value,{"entity","component"});
-                auto a=integer(value.at(legacy_scene?"actor":"entity"),0,editor::Session::maximum_entities),c=integer(value.at("component"),0,editor::Session::maximum_components);
-                if(indices.size()!=1 || indices[0]!=a || c>=frozen_entities[a].at("components").size()) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection={{a,c}};
+                const auto& value=manifest["inspection"];control::fields(value,{"entity","component"});
+                const auto a=integer(value.at("entity"),0,editor::Session::maximum_entities),c=integer(value.at("component"),0,editor::Session::maximum_components);
+                if(indices.size()!=1 || indices[0]!=a) throw Failure("dependency_mismatch","Invalid repro component inspection");inspection=c;
             }
-            std::vector<std::pair<std::uint64_t,std::uint64_t>> legacy_objects;
-            if(legacy_scene) {
-                std::vector<std::pair<std::size_t,std::optional<std::size_t>>> requests;
-                for(const auto index:indices) requests.emplace_back(index,std::nullopt);
-                if(inspection) requests.emplace_back(inspection->first,inspection->second);
-                // Validate and resolve all old identities before replacing the current document.
-                legacy_objects=take(editor::Session::legacy_selection(scene_text,requests));
-            }
-            bool disagrees=false;
+            std::vector<ObjectId> selected;ObjectId inspected{};bool mismatch=false;
             const auto opened=app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene,[&](const editor::Session& candidate)->Result<void> {
+                const auto reject=[&](std::string message)->Result<void> {mismatch=true;return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)});};
                 const auto environment=candidate.presentation().environment();if(!environment) return std::unexpected(environment.error());
                 // Only the scene records the sky map and its rotation; the view snapshot holds view options.
                 view.lit.sky_map=environment->sky_map;view.lit.sky_rotation=environment->sky_rotation;
-                // Before schema 3 the view had no sky; the scene's Sky Light, now part of its Environment, supplies it.
-                if(view_schema<3) {view.lit.sky_enabled=environment->sky_enabled;view.lit.sky_color=environment->sky_color;view.lit.sky_intensity=environment->sky_intensity;}
-                else if(scene_version>=4 && static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) {
-                    disagrees=true;return std::unexpected(Error{ErrorCode::invalid_definition,"Repro frame snapshot disagrees with its Scene Environment"});
+                if(static_cast<const rendering::SceneLightingSettings&>(view.lit)!=*environment) return reject("Repro frame snapshot disagrees with its Scene Environment");
+                // Indices refer to World members, as written by repro.export; resolve them before the candidate replaces the document.
+                const auto members=candidate.world().members();if(!members) return std::unexpected(members.error());
+                for(const auto i:indices) {if(i>=members->size()) return reject("Repro selection exceeds scene size");selected.push_back((*members)[i].id());}
+                if(inspection) {
+                    const auto components=world::components(candidate.world().runtime(),selected.front());if(!components) return std::unexpected(components.error());
+                    if(*inspection>=components->size()) return reject("Invalid repro component inspection");
+                    inspected=(*components)[*inspection].id();
                 }
                 return {};
             });
-            if(!opened) throw Failure(disagrees?"dependency_mismatch":"operation_failed",opened.error().message);
+            if(!opened) throw Failure(mismatch?"dependency_mismatch":"operation_failed",opened.error().message);
             take(app.workspace_.set_view_settings(*app.document_,view,{focus.x,focus.y,focus.z}));app.document_->mark_saved();app.camera_=camera;app.camera_cut_=true;app.workspace_.viewport_settings.grid_spacing=view.grid_spacing;
-            const auto members=take(app.document_->world().members());std::vector<ObjectId> selected;
-            for(std::size_t index=0;index<indices.size();++index) {
-                if(legacy_scene) selected.push_back(take(app.document_->local_object(legacy_objects[index].first)));
-                else {const auto i=indices[index];if(i>=members.size()) throw Failure("dependency_mismatch","Repro selection exceeds scene size");selected.push_back(members[i].id());}
-            }
             take(app.document_->select_entities(selected,selected.empty()?ObjectId{}:selected.back()));
-            if(inspection) {
-                if(legacy_scene) take(app.document_->select(take(app.document_->local_object(legacy_objects.back().second))));
-                else {const auto components=take(world::components(app.document_->world().runtime(),members[inspection->first].id()));take(app.document_->select(components.at(inspection->second).id()));}
-            }
+            if(inspection) take(app.document_->select(inspected));
         } else throw Failure("unknown_operation","Operation has no implementation");
         return Json::object();
     }

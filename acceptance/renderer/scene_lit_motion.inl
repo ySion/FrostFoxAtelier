@@ -14,7 +14,7 @@ void quality_motion_history(Fixture& f) {
         f.frame.view=view;f.frame.camera=camera;f.frame.environment={};f.lights.clear();
         auto& options=f.frame.view.lit;
         options.antialiasing=render::Antialiasing::smaa;
-        options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+        options.ddgi=options.gtao=options.sssr=options.bloom=false;
         options.shadows=true;
         f.room.meshes={meshes[0],meshes[4]};
         auto& floor=f.room.meshes[0];auto& mover=f.room.meshes[1];

@@ -50,7 +50,7 @@ void quality_work_elision(Fixture& f) {
     light.stable_key=100;light.position={0,0,.5f};light.range=30;light.casts_shadow=true;
     f.frame.environment={};f.frame.view.shading=render::Shading::scene_lit;
     auto& options=f.frame.view.lit;options={};
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     options.shadows=true;options.antialiasing=render::Antialiasing::none;
     f.frame.camera.view={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,4,1};
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;

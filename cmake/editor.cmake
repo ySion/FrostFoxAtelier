@@ -126,11 +126,6 @@ function(atelier_add_editor)
     atelier_headless_acceptance(project_integration_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
         DEPENDS atelier_project_integration_acceptance)
-    # __FILE__ locates a source-tree fixture whose Cache may be written on load.
-    # Keep its consumers in one pool; the gate also runs configurations sequentially.
-    atelier_headless_acceptance(editor_physics_project_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-test-project
-        DEPENDS atelier_editor_document_acceptance JOB_POOL acceptance_source_fixture)
     add_custom_target(physics_examples_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-examples
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-physics-examples "${CMAKE_BINARY_DIR}/physics-examples-evidence"

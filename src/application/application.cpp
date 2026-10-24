@@ -210,10 +210,10 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
 Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
     workspace_.sync_world(*document_);
     auto candidate=workspace_.view;
-    // Fitting fills probe volumes for a file that supplied no World lighting. It belongs
-    // to loading, not authoring: no history, the document stays clean and the next save
+    // Fitting fills probe volumes for a document without an Environment. It belongs to
+    // loading, not authoring: no history, the document stays clean and the next save
     // writes the Environment. Saved settings are the author's and stay.
-    const bool fit=fit_ddgi_volume && !document_->lighting_supplied();
+    const bool fit=fit_ddgi_volume && document_->environment()==ObjectId{};
     if(fit) {
         auto fitted=fitted_probe_view(false);if(!fitted) return std::unexpected(fitted.error());candidate=*fitted;
         const auto& counts=candidate.lit.probe_volumes[0].counts;

@@ -6,8 +6,10 @@
 #include "source/program.hpp"
 #include "physics/physics.hpp"
 #include <nlohmann/json.hpp>
+#include <bit>
 #include <chrono>
 #include <fstream>
+#include <limits>
 #include <cstdio>
 #include <stdexcept>
 
@@ -236,7 +238,7 @@ void verify_codec_graph(editor::Project& project) {
         require(!editor::Session::deserialize(invalid.dump(),project),"The final origin transaction accepted an actual spatial cycle.");
         auto extreme=Json::parse(saved);
         for(auto& entity:extreme["entities"]) {
-            entity["space"]["origin"]="0";entity["space"]["scale"]=Json::array({1e30f,1e30f,1e30f});
+            entity["space"]["origin"]="0";entity["space"]["scale"]=Json::array({1e30,1e30,1e30});
         }
         auto independent=take(editor::Session::deserialize(extreme.dump(),project));
         for(const auto& entity:take(independent->world().members())) require(take(world::world_matrix(independent->world().runtime(),entity.id()))[0]==1e30f,
@@ -287,17 +289,6 @@ void verify_codec_graph(editor::Project& project) {
         require(take(material::capture(reopened->world().runtime(),b.id()))->description().parameters.roughness==.6f &&
             take(material::capture(reopened->world().runtime(),c.id()))->description().parameters.roughness==.3f,
             "Restored shared material edits did not propagate according to object identity.");
-        // Previously generated v6 used per-binding resource payloads. It remains
-        // readable, but has no identity information with which to infer aliasing.
-        auto old=data;
-        for(auto& entity:old["entities"]) for(auto& component:entity["components"]) for(auto& binding:component["materials"]) {
-            const auto id=binding.at("resource");
-            const auto at=std::ranges::find_if(data["materials"],[&](const auto& definition){return definition.at("id")==id;});
-            require(at!=data["materials"].end(),"Missing material definition in compatibility fixture.");
-            for(const auto& [name,value]:at->items()) if(name!="id") binding[name]=value;
-            binding.erase("resource");
-        }
-        old.erase("materials");require(editor::Session::deserialize(old.dump(),project).has_value(),"Previously generated inline-resource v6 input became unreadable.");
         const auto key=take(project.create_material("Content/Materials/Codec-parent.material"));
         const auto parent=take(document.material_resource(project,key));const auto instance=take(material::create_instance(runtime,parent));
         for(std::size_t i=0;i<2;++i) {
@@ -477,8 +468,10 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     rejects(damaged,"A duplicate document identity was accepted.");
     damaged=scene;damaged["entities"][1]["children"]=Json::array({gone_id});
     rejects(damaged,"A composition cycle was accepted.");
-    damaged=scene;damaged["version"]=9;
+    damaged=scene;damaged["version"]=10;
     rejects(damaged,"A newer scene version was accepted.");
+    damaged=scene;damaged["version"]=8;
+    rejects(damaged,"An older scene version was accepted.");
 }
 // String leaves use the scene codec's shared leaf decoder, which also decodes operator parameters strictly.
 void verify_string_properties(editor::Project& project,const std::shared_ptr<Evidence>& evidence) {
@@ -932,69 +925,30 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     a.set_live_forwarding(false);require(take(a.take_live_ops()).empty(),"Stopping forwarding kept its failure.");
     std::puts("Play change forwarding: PASS (every change kind, undo and redo, previews, cancel, material assets, failure)");
 }
-// Version 6 World settings and Sky Lights load into one Environment. Whether the file
-// supplied World lighting follows its contents, not whether the values are the defaults.
-void verify_environment_migration(editor::Project& project) {
-    acceptance_phase="Environment migration";
+// A document's World lighting is its Environment. Load initialization, as an example
+// opens, creates one without history or a modified mark, and only when there is none.
+void verify_environment_document(editor::Project& project) {
+    acceptance_phase="Environment document";
     using enum world::DiagnosticKind;
     const auto settings=[](const editor::Session& session){return take(session.presentation().environment());};
-    const Json space={{"position",{0,0,0}},{"rotation",{0,0,0,1}},{"scale",{1,1,1}},{"origin",nullptr}};
-    const auto light=[](const char* id,const char* kind,bool enabled,Json color,double intensity) {
-        return Json{{"id",id},{"type","world.LightComponent"},{"name",""},{"enabled",enabled},
-            {"properties",{{"settings",{{"kind",kind},{"color",std::move(color)},{"intensity",intensity}}}}}};
-    };
-    const auto entity=[&](const char* id,const char* name,bool enabled,Json components,Json children=Json::array()) {
-        return Json{{"id",id},{"type","world.Entity"},{"name",name},{"enabled",enabled},{"space",space},
-            {"children",std::move(children)},{"components",std::move(components)}};
-    };
-    const auto scene=[](Json world,Json roots,Json entities,const char* next) {
-        return Json{{"version",6},{"next_id",next},{"world",std::move(world)},{"roots",std::move(roots)},{"entities",std::move(entities)}};
-    };
+    const Json empty_scene={{"version",9},{"next_id","1"},{"roots",Json::array()},{"entities",Json::array()},{"materials",Json::array()}};
     const auto load=[&](const Json& data){return take(editor::Session::deserialize(data.dump(),project));};
-    const auto environment_entity=[](const editor::Session& session) {
-        return take(world::inspect_component(session.world().runtime(),session.environment())).owner;
-    };
-    {
-        // The shipped examples' form: an empty world section and no Sky Light.
-        auto empty=load(scene(Json::object(),Json::array(),Json::array(),"1"));
-        require(empty->environment()==ObjectId{} && !empty->lighting_supplied() && empty->load_issues().empty() &&
-            settings(*empty)==rendering::SceneLightingSettings{},"An empty version 6 world section created an Environment or counted as supplied.");
-        auto keyed=load(scene({{"exposure_ev",2}},Json::array(),Json::array(),"1"));
-        require(keyed->environment()!=ObjectId{} && keyed->lighting_supplied() && settings(*keyed).exposure_ev==2 && !keyed->dirty(),
-            "A version 6 world key did not become a supplied Environment value.");
-        require(keyed->name(environment_entity(*keyed))==L"Environment" && !take(world::has_transform(keyed->world().runtime(),environment_entity(*keyed))) &&
-            Json::parse(take(keyed->serialize())).at("next_id")=="3","The migrated Environment is not a spaceless root Entity with the next two identities.");
-    }
-    // A Sky Light alone gives an Environment but supplies no World lighting.
-    const auto sky_only=scene(Json::object(),{"1"},{entity("1","Sky Light",true,{light("2","sky",true,{{"x",.1},{"y",.2},{"z",.3}},2)})},"3");
-    auto sky=load(sky_only);
-    const auto lit=settings(*sky);
-    require(sky->environment()!=ObjectId{} && !sky->lighting_supplied() && lit.sky_enabled && lit.sky_color==std::array{.1f,.2f,.3f} &&
-        lit.sky_intensity==2 && take(sky->presentation().light_items()).empty() && !sky->dirty(),
-        "A version 6 Sky Light did not become the Environment sky, or counted as supplied World lighting.");
-    const auto emptied=take(sky->local_object(1));
-    require(take(world::components(sky->world().runtime(),emptied)).empty() && take(world::has_transform(sky->world().runtime(),emptied)) &&
-        sky->load_issues().size()==1 && sky->load_issues().front().kind==converted && sky->load_issues().front().severity==world::Severity::info,
-        "The Sky Light's Entity did not keep its space without components, with one info diagnostic.");
-    {
-        // The first Sky in composition preorder is under a disabled parent; another one is removed.
-        auto data=scene(Json::object(),{"1","4"},{
-            entity("1","Group",false,Json::array(),{"2"}),entity("2","Inner",true,{light("3","sky",true,{{"x",.4},{"y",.5},{"z",.6}},3)}),
-            entity("4","Second",true,{light("5","sky",true,{{"x",1},{"y",1},{"z",1}},9),light("6","point",true,{{"x",1},{"y",1},{"z",1}},5)})},"7");
-        auto chosen=load(data);const auto value=settings(*chosen);
-        require(!value.sky_enabled && value.sky_color==std::array{.4f,.5f,.6f} && value.sky_intensity==3 &&
-            take(chosen->presentation().light_items()).size()==1 && std::ranges::count(chosen->load_issues(),conflict,&world::Diagnostic::kind)==1 &&
-            take(world::components(chosen->world().runtime(),take(chosen->local_object(4)))).size()==1,
-            "Sky migration did not take the first Sky in preorder with its ancestors' enabled state, or kept another Sky.");
-    }
-    // A saved Environment supplies World lighting on the next open.
-    const auto saved=Json::parse(take(sky->serialize()));
-    require(saved.at("version")==8 && !saved.contains("world"),"A migrated scene did not save as version 8 without a world section.");
+    auto opened=load(empty_scene);
+    require(opened->environment()==ObjectId{} && opened->load_issues().empty() && settings(*opened)==rendering::SceneLightingSettings{},
+        "A document without an Environment did not use the default World settings.");
+    auto fitted=settings(*opened);fitted.probe_volumes[0].minimum={-3,-1,-4};fitted.probe_volumes[0].maximum={3,4,4};
+    fitted.probe_volumes[0].counts={6,5,8};fitted.probe_update_budget=60;
+    take(opened->initialize_environment(fitted));
+    const auto owner=take(world::inspect_component(opened->world().runtime(),opened->environment())).owner;
+    require(settings(*opened)==fitted && !opened->dirty() && opened->undo_count()==0 && opened->redo_count()==0 &&
+        take(opened->world().members()).size()==1 && opened->name(owner)==L"Environment" && !take(world::has_transform(opened->world().runtime(),owner)),
+        "Load initialization did not leave a clean document with one spaceless Environment root.");
+    auto refitted=fitted;refitted.probe_update_budget=61;
+    require(!opened->initialize_environment(refitted) && settings(*opened)==fitted,"Load initialization overwrote an existing Environment.");
+    const auto saved=Json::parse(take(opened->serialize()));
     auto reopened=load(saved);
-    require(reopened->lighting_supplied() && settings(*reopened)==lit && reopened->load_issues().empty(),
-        "A saved Environment did not reopen as supplied World lighting with the same sky.");
+    require(saved.at("version")==9 && settings(*reopened)==fitted && reopened->load_issues().empty(),"A saved Environment did not reopen with the same settings.");
     {
-        // Version 8 adds the Environment's sky map key; a version 7 Environment gains an empty one.
         acceptance_phase="Environment sky map";
         const auto environment_record=[](Json& data,const std::string& type="world.EnvironmentComponent")->Json& {
             for(auto& node:data.at("entities")) for(auto& part:node.at("components")) if(part.at("type")==type) return part;
@@ -1002,15 +956,10 @@ void verify_environment_migration(editor::Project& project) {
         };
         auto current=saved;
         require(environment_record(current).at("sky_map")=="","A saved Environment did not write an empty sky map key.");
-        auto v7=current;v7["version"]=7;environment_record(v7).erase("sky_map");
-        auto upgraded=load(v7);
-        require(upgraded->load_issues().empty() && !settings(*upgraded).sky_map && Json::parse(take(upgraded->serialize()))==current,
-            "A version 7 Environment did not open without a sky map and save as version 8.");
-        auto derived=v7;environment_record(derived)["type"]="game.Environment";
+        auto derived=current;environment_record(derived)["type"]="game.Environment";
         auto derived_document=take(editor::Session::deserialize(derived.dump(),project,prepare(std::make_shared<Evidence>()),editor::LoadPolicy::strict));
-        auto derived_saved=Json::parse(take(derived_document->serialize()));
-        require(environment_record(derived_saved,"game.Environment").at("sky_map")=="" && derived_document->lighting_supplied(),
-            "A version 7 Environment of a derived type did not gain an empty sky map key or did not supply World lighting.");
+        require(derived_document->environment()!=ObjectId{} && Json::parse(take(derived_document->serialize()))==derived,
+            "An Environment of a derived type did not load as the Environment or did not save unchanged.");
         // A key resolves through the Project's cache; a missing one renders without its map and is saved unchanged.
         const auto key=sky_asset(project,"Content/Sky/Scene.hdr",radiance(1,char(129)));const auto map=take(project.sky_map(key)).map;
         auto mapped=current;environment_record(mapped)["sky_map"]=key;
@@ -1039,26 +988,13 @@ void verify_environment_migration(editor::Project& project) {
         changed(kept->undo());require(settings(*kept).sky_map==map,"Undoing a cleared sky map did not restore the same map.");
         take(kept->set_sky_map(asset));require(kept->undo_count()==1 && kept->redo_count()==1,"An unchanged sky map created history.");
         // Without an Environment the first sky map creates one in the same history item.
-        auto empty=load(scene(Json::object(),Json::array(),Json::array(),"1"));
+        auto empty=load(empty_scene);
         take(empty->set_sky_map({}));require(empty->environment()==ObjectId{} && empty->undo_count()==0,"Clearing an absent sky map created an Environment.");
         take(empty->set_sky_map(asset));
         require(empty->environment()!=ObjectId{} && settings(*empty).sky_map==map && empty->undo_count()==1,"The first sky map did not create its Environment.");
         changed(empty->undo());require(empty->environment()==ObjectId{} && take(empty->world().members()).empty(),"Undoing the first sky map left an Environment.");
     }
-    acceptance_phase="Environment migration";
-    // Load initialization, as an example opens: it creates or writes the Environment without history or a modified mark.
-    for(const auto& source:{scene(Json::object(),Json::array(),Json::array(),"1"),sky_only}) {
-        auto opened=load(source);const bool had=opened->environment()!=ObjectId{};
-        auto fitted=settings(*opened);fitted.probe_volumes[0].minimum={-3,-1,-4};fitted.probe_volumes[0].maximum={3,4,4};
-        fitted.probe_volumes[0].counts={6,5,8};fitted.probe_update_budget=60;
-        take(opened->initialize_environment(fitted));
-        require(opened->environment()!=ObjectId{} && settings(*opened)==fitted && !opened->dirty() && opened->undo_count()==0 &&
-            opened->redo_count()==0 && opened->lighting_supplied() && take(opened->world().members()).size()==(had?2u:1u),
-            "Load initialization did not leave a clean document with one fitted Environment.");
-        auto again=load(Json::parse(take(opened->serialize())));
-        require(again->lighting_supplied() && settings(*again)==fitted,"A saved fitted Environment did not reopen as supplied.");
-    }
-    std::puts("Environment migration: PASS (empty and keyed world sections, Sky Light merge and preorder, v7 save/reopen, load initialization)");
+    std::puts("Environment document: PASS (load initialization only without an Environment, derived Environment type, sky map keys and history)");
 }
 void run() {
     verify_stop_reentry();
@@ -1084,9 +1020,27 @@ void run() {
     take(document.preview_edit(13,6.f)); take(document.cancel_edit()); take(document.cancel_edit());
     require(std::get<float>(take(document.read_property(move,speed)))==4,"Cancel failed to restore scalar value.");
     const auto saved=take(document.serialize()); const auto saved_json=Json::parse(saved);
-    require(saved_json["version"]==8 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
+    require(saved_json["version"]==9 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     require(Json::parse(take(reopened->serialize()))==saved_json,"Derived scene roundtrip changed type, fields or composition.");
+    {
+        // A float field is written as its shortest decimal and reads back bit for bit; a double keeps its full value.
+        const auto mass=field(document,move_type,"mass");
+        const std::array values{std::bit_cast<float>(1u),std::numeric_limits<float>::max(),.1f,-0.f,16777215.f,16777216.f,16777218.f,std::bit_cast<float>(0x15ae43fdu)};
+        for(const float value:values) {
+            take(runtime.write(move,speed,Scalar{value}));take(runtime.write(move,mass,Scalar{double(.1f)}));
+            const auto text=take(document.serialize());const auto written=Json::parse(text).at("entities").at(0).at("components").at(1).at("properties");
+            auto loaded=take(editor::Session::deserialize(text,project,prepare(evidence)));
+            take(loaded->select(take(loaded->world().members()).front().id()));
+            const auto loaded_type=take(loaded->world().runtime().find_type("game.Move"));const auto loaded_move=member(*loaded,loaded_type);
+            const auto back=std::get<float>(take(loaded->read_property(loaded_move,field(*loaded,loaded_type,"speed"))));
+            require(std::bit_cast<std::uint32_t>(back)==std::bit_cast<std::uint32_t>(value) &&
+                std::get<double>(take(loaded->read_property(loaded_move,field(*loaded,loaded_type,"mass"))))==double(.1f) &&
+                (value!=.1f || (written["speed"].dump()=="0.1" && written["mass"].dump()=="0.10000000149011612")),
+                "A float field was not saved as its shortest decimal, or a float or double field changed across save and reload.");
+        }
+        take(runtime.write(move,speed,Scalar{4.f}));take(runtime.write(move,mass,Scalar{3.5}));
+    }
     auto defaults=saved_json; defaults["entities"][0]["components"][1]["properties"].erase("speed");
     auto defaulted=take(editor::Session::deserialize(defaults.dump(),project,prepare(evidence)));
     const auto default_entity=take(defaulted->world().members()).front().id(); take(defaulted->select(default_entity));
@@ -1105,7 +1059,7 @@ void run() {
     verify_play_changes(project,evidence);
     verify_string_properties(project,evidence);
     verify_live_forwarding(project,evidence);
-    verify_environment_migration(project);
+    verify_environment_document(project);
     acceptance_phase="Source play and stop lifecycle";
     const auto history=document.undo_count();
     for (int pass=0;pass<3;++pass) {
@@ -1129,23 +1083,6 @@ void run() {
     require(stopped.notification_error.has_value() && !failure->world().running(),"End error lost the committed stop state.");changed(failure->stop());
     evidence->fail_begin=true;auto started=take(failure->start());evidence->fail_begin=false;
     require(started.notification_error.has_value() && !failure->world().running(),"Begin error left World running.");changed(failure->close());
-    const std::string legacy=R"({"version":1,"actors":[{"type":"world.StaticMeshActor","name":"Legacy","enabled":true,"root":1,"components":[
-        {"id":1,"type":"world.StaticMeshComponent","enabled":true,"parent":0,"position":[1,2,3],"rotation":[0,0,0,1],"scale":[2,2,2],"mesh":"builtin/cube","base_color":[0.2,0.3,0.4]}
-    ]}]})";
-    auto migrated=take(editor::Session::deserialize(legacy,project));
-    auto upgraded=Json::parse(legacy);upgraded["version"]=3;
-    upgraded["actors"][0]["components"][0]["materials"]=Json::array();
-    upgraded["actors"][0]["properties"]=Json::object();upgraded["actors"][0]["components"][0]["properties"]=Json::object();
-    // JSON source decimals round through the authored float storage.
-    const auto migrated_json=Json::parse(take(migrated->serialize()));
-    upgraded["actors"][0]["components"][0]["base_color"]=migrated_json["entities"][0]["components"][0]["base_color"];
-    upgraded["actors"][0]["components"][0]["roughness"]=presentation::Material{}.roughness;
-    upgraded["actors"][0]["components"][0]["metallic"]=0.f;
-    upgraded["actors"][0]["components"][0]["emissive"]=Json::array({0.f,0.f,0.f});
-    require(migrated_json["version"]==8 && migrated_json["entities"][0]["components"][0]["properties"]["body"]["enabled"]==false,
-        "Legacy visual mesh unexpectedly enabled physics or failed to migrate to the Entity graph.");
-    auto upgraded_document=take(editor::Session::deserialize(upgraded.dump(),project));
-    require(take(upgraded_document->serialize())==take(migrated->serialize()),"Legacy v1/v3 migration disagreed on complete authored values.");
     acceptance_phase="Source and physics pose ownership";
     auto physical=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     const auto physical_entity=take(physical->world().members()).front().id();take(physical->select(physical_entity));
@@ -1180,7 +1117,7 @@ void run() {
     verify_query_source(project);
     verify_primitive_source(project);
     require(evidence->prepared==evidence->destroyed && evidence->live_runtime_on_release,"Prepared code leaked or outlived its Runtime.");
-    std::puts("Project Scene acceptance: PASS (real derived types, typed history, v1/v2, defaults, retained data, load cleanup, Play change batches, String properties and strict decoding, Source actions, repeated play/stop, Jolt ownership)");
+    std::puts("Project Scene acceptance: PASS (real derived types, typed history, defaults, retained data, load cleanup, Play change batches, String properties and strict decoding, Source actions, repeated play/stop, Jolt ownership)");
 }
 }
 int main() { try { run(); return 0; } catch (const std::exception& error) { std::fprintf(stderr,"Project Scene acceptance: FAIL [%s]: %s\n",acceptance_phase,error.what()); return 1; } }

@@ -29,9 +29,9 @@ Result<void> validate_light(Runtime& runtime,const LightSettings& settings) { re
 rendering::SceneLightingSettings environment_settings(const EnvironmentComponent& value) noexcept {
     rendering::SceneLightingSettings result;
     result.shadows=value.shadows;result.ddgi=value.ddgi;result.gtao=value.gtao;result.sssr=value.sssr;
-    result.bloom=value.bloom;result.ssil=value.ssil;
+    result.bloom=value.bloom;
     result.antialiasing=static_cast<rendering::Antialiasing>(value.antialiasing);
-    result.exposure_ev=value.exposure_ev;result.shadow_bias=value.shadow_bias;result.direct_candidates=value.direct_candidates;
+    result.exposure_ev=value.exposure_ev;result.direct_candidates=value.direct_candidates;
     result.ao_radius=value.ao_radius;result.reflection_distance=value.reflection_distance;
     result.reflection_roughness=value.reflection_roughness;
     const std::array volumes{&value.volume0,&value.volume1,&value.volume2,&value.volume3};

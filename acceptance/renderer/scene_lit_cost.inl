@@ -9,7 +9,7 @@ void cost_cases(Fixture& f) {
     const float aspect=f.frame.scene_viewport.width/f.frame.scene_viewport.height;
     f.frame.camera.projection={1/(2.5f*aspect),0,0,0, 0,1/2.5f,0,0, 0,0,-1/39.9f,0, 0,0,40/39.9f,1};
     auto& options=f.frame.view.lit;options={};
-    options.ddgi=options.gtao=options.sssr=options.ssil=options.bloom=false;
+    options.ddgi=options.gtao=options.sssr=options.bloom=false;
     options.antialiasing=render::Antialiasing::none;
     f.frame.environment={};f.room.meshes.assign(1,{});
     auto& receiver=f.room.meshes.front();receiver.stable_key=1;
