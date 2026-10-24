@@ -9,44 +9,41 @@ namespace {
 std::string text(StringView value) { return std::string{value.std_view()}; }
 
 std::size_t column_size(const ColumnData& data) noexcept {
-    return std::visit([](const auto& column) { return column->size(); }, data);
+    return std::visit([](const auto& column) { return column.size(); }, data);
 }
 // Values at `indices`, or the type's default where an index is `absent`.
 constexpr std::uint32_t absent = ~0u;
 ColumnData gather(const ColumnData& data, std::span<const std::uint32_t> indices) {
     return std::visit([&](const auto& column) -> ColumnData {
-        using T = typename std::remove_cvref_t<decltype(*column)>::Value;
-        auto result = std::make_shared<Array<T>>();
-        result->reserve(indices.size());
+        using T = typename std::remove_cvref_t<decltype(column)>::Value;
+        Array<T> result;
+        result.reserve(indices.size());
         for (const auto index : indices) {
-            if (index == absent) result->emplace();
-            else result->add((*column)[index]);
+            if (index == absent) result.emplace();
+            else result.add(column.array()[index]);
         }
-        return result;
+        return SharedArray<T>{std::move(result)};
     }, data);
 }
 ColumnData empty_like(const ColumnData& data) {
     return std::visit([](const auto& column) -> ColumnData {
-        using T = typename std::remove_cvref_t<decltype(*column)>::Value;
-        return std::make_shared<Array<T>>();
+        return std::remove_cvref_t<decltype(column)>{};
     }, data);
 }
 // Appends `source`, or `count` default values when it is null.
 void append(ColumnData& target, const ColumnData* source, std::uint32_t count) {
     std::visit([&](auto& column) {
-        using T = typename std::remove_cvref_t<decltype(*column)>::Value;
-        if (source) column->append(std::get<Column<T>>(*source)->view());
-        else for (std::uint32_t i = 0; i < count; ++i) column->emplace();
+        using T = typename std::remove_cvref_t<decltype(column)>::Value;
+        auto& values = column.write();
+        if (source) values.append(std::get<SharedArray<T>>(*source).view());
+        else values.resize(values.size() + count);
     }, target);
 }
 
 }
 
-Geometry::Geometry()
-    : vertex_points_(std::make_shared<Array<std::uint32_t>>()),
-      instance_references_(std::make_shared<Array<std::uint32_t>>()),
-      instance_transforms_(std::make_shared<Array<math::Matrix4>>()) {
-    attributes_.push_back({String{"P"}, Layer::point, Usage::point, std::make_shared<Array<math::Vector3>>()});
+Geometry::Geometry() {
+    attributes_.push_back({String{"P"}, Layer::point, Usage::point, SharedArray<math::Vector3>{}});
 }
 
 Result<Geometry> Geometry::points(Array<math::Vector3> positions) {
@@ -54,7 +51,7 @@ Result<Geometry> Geometry::points(Array<math::Vector3> positions) {
     for (const auto& position : positions)
         if (!math::is_finite(position)) return failure("Point positions must be finite.");
     Geometry result;
-    result.attributes_.front().data = std::make_shared<Array<math::Vector3>>(std::move(positions));
+    result.attributes_.front().data = SharedArray<math::Vector3>{std::move(positions)};
     return result;
 }
 
@@ -74,9 +71,9 @@ Result<Geometry> Geometry::polygons(Array<math::Vector3> positions, Array<std::u
     }
     result->vertices_ = static_cast<std::uint32_t>(vertex_points.size());
     result->primitives_ = static_cast<std::uint32_t>(offsets.size() - 1);
-    result->vertex_points_ = std::make_shared<Array<std::uint32_t>>(std::move(vertex_points));
+    result->vertex_points_ = SharedArray<std::uint32_t>{std::move(vertex_points)};
     if (uniform || !result->primitives_) result->uniform_ = uniform;
-    else result->offsets_ = std::make_shared<Array<std::uint32_t>>(offsets);
+    else result->offsets_ = SharedArray<std::uint32_t>{Array<std::uint32_t>{offsets}};
     return result;
 }
 
@@ -86,7 +83,7 @@ std::uint32_t Geometry::count(Layer layer) const noexcept {
     case Layer::vertex: return vertices_;
     case Layer::primitive: return primitives_;
     case Layer::detail: return 1;
-    case Layer::instance: return static_cast<std::uint32_t>(instance_references_->size());
+    case Layer::instance: return static_cast<std::uint32_t>(instance_references_.size());
     }
     return 0;
 }
@@ -109,13 +106,13 @@ Usage Geometry::conventional_usage(StringView name) noexcept {
 }
 
 std::size_t Geometry::bytes() const noexcept {
-    std::size_t total = (vertex_points_->capacity() + (offsets_ ? offsets_->capacity() : 0) + instance_references_->capacity()) *
-        sizeof(std::uint32_t) + instance_transforms_->capacity() * sizeof(math::Matrix4) + references_.capacity() * sizeof(Reference);
+    std::size_t total = (vertex_points_.array().capacity() + offsets_.array().capacity() + instance_references_.array().capacity()) *
+        sizeof(std::uint32_t) + instance_transforms_.array().capacity() * sizeof(math::Matrix4) + references_.capacity() * sizeof(Reference);
     for (const auto& attribute : attributes_)
         total += std::visit([](const auto& column) {
-            using T = typename std::remove_cvref_t<decltype(*column)>::Value;
-            std::size_t size = column->capacity() * sizeof(T);
-            if constexpr (std::same_as<T, String>) for (const auto& text : *column) size += text.size();
+            using T = typename std::remove_cvref_t<decltype(column)>::Value;
+            std::size_t size = column.array().capacity() * sizeof(T);
+            if constexpr (std::same_as<T, String>) for (const auto& text : column.array()) size += text.size();
             return size;
         }, attribute.data);
     return total;
@@ -138,15 +135,15 @@ Result<void> Geometry::fits(Layer layer, const ColumnData& data) const {
 Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optional<Usage> usage) {
     const auto resolved = usage ? *usage : conventional_usage(name);
     auto valid = std::visit([&](const auto& column) {
-        using T = typename std::remove_cvref_t<decltype(*column)>::Value;
+        using T = typename std::remove_cvref_t<decltype(column)>::Value;
         return admit<T>(name, layer, resolved);
     }, data);
     if (!valid) return valid;
     if (auto sized = fits(layer, data); !sized) return sized;
     if (name.view() == "P") {
-        if (layer != Layer::point || !std::holds_alternative<Column<math::Vector3>>(data))
+        if (layer != Layer::point || !std::holds_alternative<SharedArray<math::Vector3>>(data))
             return failure("P is the point vector3 position.");
-        for (const auto& position : *std::get<Column<math::Vector3>>(data))
+        for (const auto& position : std::get<SharedArray<math::Vector3>>(data).array())
             if (!math::is_finite(position)) return failure("Point positions must be finite.");
     }
     if (auto* attribute = mutable_find(name)) {
@@ -176,14 +173,13 @@ Result<void> Geometry::set_instances(std::vector<Reference> references, Array<st
             return failure("Instance transforms must be finite and affine.");
     std::erase_if(attributes_, [](const Attribute& a) { return a.layer == Layer::instance; });
     references_ = std::move(references);
-    instance_references_ = std::make_shared<Array<std::uint32_t>>(std::move(indices));
-    instance_transforms_ = std::make_shared<Array<math::Matrix4>>(std::move(transforms));
+    instance_references_ = SharedArray<std::uint32_t>{std::move(indices)};
+    instance_transforms_ = SharedArray<math::Matrix4>{std::move(transforms)};
     return {};
 }
 
 Array<math::Matrix4>& Geometry::write_instance_transforms() {
-    if (instance_transforms_.use_count() != 1) instance_transforms_ = std::make_shared<Array<math::Matrix4>>(*instance_transforms_);
-    return *instance_transforms_;
+    return instance_transforms_.write();
 }
 
 void Geometry::reverse_primitives() {
@@ -194,7 +190,7 @@ void Geometry::reverse_primitives() {
         const auto range = primitive(p);
         for (std::uint32_t i = 0; i < range.count; ++i) order[range.first + i] = range.first + range.count - 1 - i;
     }
-    vertex_points_ = std::get<Column<std::uint32_t>>(gather(vertex_points_, order.view()));
+    vertex_points_ = std::get<SharedArray<std::uint32_t>>(gather(vertex_points_, order.view()));
     for (auto& attribute : attributes_)
         if (attribute.layer == Layer::vertex) attribute.data = gather(attribute.data, order.view());
 }
@@ -222,12 +218,12 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
     };
     if (layer == Layer::instance) {
         const auto instances = kept(count(Layer::instance), [&](std::uint32_t i) { return !removed[i]; });
-        result.instance_references_ = std::get<Column<std::uint32_t>>(gather(instance_references_, instances.view()));
-        result.instance_transforms_ = std::get<Column<math::Matrix4>>(gather(instance_transforms_, instances.view()));
+        result.instance_references_ = std::get<SharedArray<std::uint32_t>>(gather(instance_references_, instances.view()));
+        result.instance_transforms_ = std::get<SharedArray<math::Matrix4>>(gather(instance_transforms_, instances.view()));
         retain(Layer::instance, instances.view());
         return result;
     }
-    const auto& vertex_points = *vertex_points_;
+    const auto& vertex_points = vertex_points_.array();
     const auto primitives = kept(primitives_, [&](std::uint32_t p) {
         if (layer == Layer::primitive) return !removed[p];
         const auto range = primitive(p);
@@ -256,17 +252,18 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
     retain(Layer::primitive, primitives.view());
     result.vertices_ = static_cast<std::uint32_t>(vertices.size());
     result.primitives_ = static_cast<std::uint32_t>(primitives.size());
-    result.vertex_points_ = std::make_shared<Array<std::uint32_t>>(std::move(new_vertex_points));
-    result.offsets_.reset();
+    result.vertex_points_ = SharedArray<std::uint32_t>{std::move(new_vertex_points)};
+    result.offsets_ = {};
     result.uniform_ = 0;
-    if (offsets_ && result.primitives_) result.offsets_ = std::make_shared<Array<std::uint32_t>>(std::move(offsets));
+    if (!offsets_.empty() && result.primitives_) result.offsets_ = SharedArray<std::uint32_t>{std::move(offsets)};
     else if (result.primitives_) result.uniform_ = uniform_;
-    if (result.offsets_) { // Removal may leave only primitives of one size.
-        const auto first = (*result.offsets_)[1];
+    if (!result.offsets_.empty()) { // Removal may leave only primitives of one size.
+        const auto& sizes = result.offsets_.array();
+        const auto first = sizes[1];
         bool uniform = true;
-        for (std::size_t p = 1; p < result.offsets_->size(); ++p)
-            uniform = uniform && (*result.offsets_)[p] - (*result.offsets_)[p - 1] == first;
-        if (uniform) { result.uniform_ = first; result.offsets_.reset(); }
+        for (std::size_t p = 1; p < sizes.size(); ++p)
+            uniform = uniform && sizes[p] - sizes[p - 1] == first;
+        if (uniform) { result.uniform_ = first; result.offsets_ = {}; }
     }
     return result;
 }
@@ -301,25 +298,23 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
     for (const auto& input : inputs) points += input.count(Layer::point);
     if (points >= absent || vertices >= absent || primitives >= absent || instances >= absent)
         return failure("Merged geometry needs fewer than 2^32 - 1 elements per layer.");
-    auto vertex_points = std::make_shared<Array<std::uint32_t>>();
-    auto offsets = std::make_shared<Array<std::uint32_t>>(Array<std::uint32_t>{0});
-    auto indices = std::make_shared<Array<std::uint32_t>>();
-    auto transforms = std::make_shared<Array<math::Matrix4>>();
+    Array<std::uint32_t> vertex_points, offsets{0}, indices;
+    Array<math::Matrix4> transforms;
     std::uint32_t point_base = 0;
     for (const auto& input : inputs) {
-        for (const auto point : *input.vertex_points_) vertex_points->add(point_base + point);
-        const auto vertex_base = offsets->data()[offsets->size() - 1];
+        for (const auto point : input.vertex_points_.array()) vertex_points.add(point_base + point);
+        const auto vertex_base = offsets[offsets.size() - 1];
         for (std::uint32_t p = 0; p < input.primitives_; ++p) {
             const auto range = input.primitive(p);
-            offsets->add(vertex_base + range.first + range.count);
+            offsets.add(vertex_base + range.first + range.count);
         }
-        for (std::size_t i = 0; i < input.instance_references_->size(); ++i) {
-            const auto& reference = input.references_[(*input.instance_references_)[i]];
+        for (std::size_t i = 0; i < input.instance_references_.size(); ++i) {
+            const auto& reference = input.references_[input.instance_references_.array()[i]];
             auto at = std::ranges::find(result.references_, reference);
             if (at == result.references_.end()) at = result.references_.insert(at, reference);
-            indices->add(static_cast<std::uint32_t>(at - result.references_.begin()));
+            indices.add(static_cast<std::uint32_t>(at - result.references_.begin()));
         }
-        transforms->append(input.instance_transforms_->view());
+        transforms.append(input.instance_transforms_.view());
         for (auto& attribute : result.attributes_) {
             const auto* source = input.find(attribute.name);
             if (attribute.layer == Layer::detail) {
@@ -334,11 +329,11 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         if (attribute.layer == Layer::detail && column_size(attribute.data) == 0) append(attribute.data, nullptr, 1);
     result.vertices_ = static_cast<std::uint32_t>(vertices);
     result.primitives_ = static_cast<std::uint32_t>(primitives);
-    result.vertex_points_ = std::move(vertex_points);
-    if (result.primitives_ && !same) result.offsets_ = std::move(offsets);
+    result.vertex_points_ = SharedArray<std::uint32_t>{std::move(vertex_points)};
+    if (result.primitives_ && !same) result.offsets_ = SharedArray<std::uint32_t>{std::move(offsets)};
     else result.uniform_ = result.primitives_ ? uniform : 0;
-    result.instance_references_ = std::move(indices);
-    result.instance_transforms_ = std::move(transforms);
+    result.instance_references_ = SharedArray<std::uint32_t>{std::move(indices)};
+    result.instance_transforms_ = SharedArray<math::Matrix4>{std::move(transforms)};
     return result;
 }
 

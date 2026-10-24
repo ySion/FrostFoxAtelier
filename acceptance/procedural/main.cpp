@@ -153,7 +153,7 @@ void transform_by_usage() {
 
     // A flattening transform still defines plane normals and never makes NaN.
     auto flat = take(line({0, 0, 0}, {1, 0, 0}, 2));
-    take(flat.set(String{"N"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{0.6f, 0, 0.8f}, {1, 0, 0}})));
+    take(flat.set(String{"N"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{0.6f, 0, 0.8f}, {1, 0, 0}}}));
     take(transform(flat, {}, {}, {1, 1, 0}));
     const auto& flattened = column<Vector3>(flat, "N", Layer::point);
     require(near(flattened[0], {0, 0, 1}) && flattened[1] == Vector3{}, "Singular transforms broke plane normals.");
@@ -162,7 +162,7 @@ void transform_by_usage() {
         auto broken = take(line({0, 0, 0}, {1, 0, 0}, 2));
         const float nan = std::numeric_limits<float>::quiet_NaN();
         if (orientation) take(broken.add<Quaternion>("orient", Layer::point, {nan, 0, 0, 1}));
-        else take(broken.set(String{"N"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{nan, 0, 1}, {0, 0, 1}})));
+        else take(broken.set(String{"N"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{nan, 0, 1}, {0, 0, 1}}}));
         reject(transform(broken, {}, {}, {1, 1, 1}), "A NaN normal or orientation was transformed.");
     }
 
@@ -221,6 +221,35 @@ void removal_merge_and_promotion() {
     // An offset whose step would wrap past 2^32 is not a primitive.
     reject(Geometry::polygons({}, {}, Array<std::uint32_t>{0, 0xffff'fffdu, 0}), "Wrapping primitive offsets were accepted.");
 
+    // Mixed topology must stay addressable across empty inputs and deletion to uniform or empty.
+    const auto empty = take(Geometry::polygons({}, {}, Array<std::uint32_t>{0}));
+    const auto mixed = take(Geometry::polygons(
+        Array<Vector3>{{0, 0, 0}, {2, 0, 0}, {0, 0, 1}, {4, 0, 0}, {6, 0, 0}, {6, 0, 2}, {4, 0, 2}},
+        Array<std::uint32_t>{2, 0, 1, 3, 5, 6, 4}, Array<std::uint32_t>{0, 3, 7}));
+    require(empty.count(Layer::point) == 0 && empty.count(Layer::primitive) == 0 && empty.vertex_points().empty() &&
+        empty.uniform_primitive_size() == 0 && empty.bytes() == 0, "Zero polygons retained topology or column storage.");
+    require(mixed.count(Layer::point) == 7 && mixed.count(Layer::vertex) == 7 && mixed.count(Layer::primitive) == 2 &&
+        mixed.uniform_primitive_size() == 0 && mixed.primitive(0).first == 0 && mixed.primitive(0).count == 3 &&
+        mixed.primitive(1).first == 3 && mixed.primitive(1).count == 4, "Mixed polygon ranges are wrong.");
+    const bool remove_triangle[]{true, false}, remove_all[]{true, true};
+    const auto quad = take(mixed.remove_flagged(Layer::primitive, remove_triangle));
+    require(quad.count(Layer::point) == 7 && quad.count(Layer::primitive) == 1 && quad.uniform_primitive_size() == 4 &&
+        quad.primitive(0).first == 0 && quad.primitive(0).count == 4 &&
+        std::ranges::equal(quad.vertex_points(), std::array{3u, 5u, 6u, 4u}), "Deleting a triangle damaged the surviving quad.");
+    const auto no_faces = take(mixed.remove_flagged(Layer::primitive, remove_all));
+    require(no_faces.count(Layer::point) == 7 && no_faces.count(Layer::primitive) == 0 && no_faces.count(Layer::vertex) == 0 &&
+        no_faces.uniform_primitive_size() == 0 && no_faces.vertex_points().empty() && no_faces.bytes() > 0,
+        "Deleting all polygons lost their points or retained topology.");
+    const auto combined = take(Geometry::merge(std::array{empty, mixed, quad, empty}));
+    require(combined.count(Layer::point) == 14 && combined.count(Layer::primitive) == 3 && combined.count(Layer::vertex) == 11 &&
+        combined.uniform_primitive_size() == 0 && combined.primitive(1).first == 3 && combined.primitive(1).count == 4 &&
+        combined.primitive(2).first == 7 && combined.primitive(2).count == 4 &&
+        std::ranges::equal(combined.vertex_points(), std::array{2u, 0u, 1u, 3u, 5u, 6u, 4u, 10u, 12u, 13u, 11u}),
+        "Merging mixed and empty topology lost ranges or point offsets.");
+    const auto empty_pair = take(Geometry::merge(std::array{empty, empty}));
+    require(empty_pair.count(Layer::point) == 0 && empty_pair.count(Layer::primitive) == 0 && empty_pair.count(Layer::vertex) == 0 &&
+        empty_pair.uniform_primitive_size() == 0 && empty_pair.bytes() == 0, "Merging empty topology allocated element storage.");
+
     reject(Geometry::merge(std::vector{points, cube}), "Point N and vertex N merged.");
     const auto pair = take(Geometry::merge(std::vector{cube, cube}));
     require(pair.count(Layer::point) == 16 && pair.count(Layer::primitive) == 24 && pair.uniform_primitive_size() == 3,
@@ -257,6 +286,25 @@ void removal_merge_and_promotion() {
     require(column<Vector2>(cube, "uv", Layer::vertex)[0] != Vector2{9, 9}, "Writing a copy changed the source.");
     require(column<Vector3>(copy, "N", Layer::vertex).data() == column<Vector3>(cube, "N", Layer::vertex).data(),
         "An unwritten column was copied.");
+
+    // Charge actual retained capacity, not logical length; sharing does not discount a value's budget.
+    for (const std::uint32_t count : {0u, 3u}) {
+        Array<Vector3> positions;
+        positions.resize(count, {1, 2, 3});
+        auto small = take(Geometry::points(std::move(positions)));
+        const auto before = small.bytes();
+        take(small.add<float>("weight", Layer::point, 7.25f));
+        const auto& weights = column<float>(small, "weight", Layer::point);
+        require(weights.size() == count && std::ranges::all_of(weights, [](float x) { return x == 7.25f; }), "A new column lost its fill.");
+        require(small.bytes() - before == weights.capacity() * sizeof(float), "Column bytes do not charge retained capacity.");
+        take(small.add<String>("label", Layer::detail, String{"nonzero fill"}));
+        require(column<String>(small, "label", Layer::detail)[0] == String{"nonzero fill"}, "Detail String fill was lost.");
+        const auto shared = small;
+        require(shared.bytes() == small.bytes(), "Sharing discounted a Geometry's byte budget.");
+        take(small.add<float>("weight", Layer::point, -2.f));
+        require(std::ranges::all_of(column<float>(small, "weight", Layer::point), [](float x) { return x == 7.25f; }),
+            "Adding an existing column replaced its values with the fill.");
+    }
 }
 
 Matrix4 expected_instance(Vector3 position, Quaternion orient, Vector3 scale) {
@@ -281,10 +329,10 @@ void copy_to_points_and_publication() {
 
     auto oriented = take(Geometry::points(Array<Vector3>{{1, 2, 3}, {-4, 0, 1}, {0, 0, 0}}));
     const Quaternion orients[3]{axis_angle({1, 2, 3}, 40), axis_angle({0, 0, 1}, -75), {}};
-    take(oriented.set(String{"orient"}, Layer::point, std::make_shared<Array<Quaternion>>(Array<Quaternion>{orients[0], orients[1], orients[2]})));
-    take(oriented.set(String{"pscale"}, Layer::point, std::make_shared<Array<float>>(Array<float>{2, 0.5f, 1})));
-    take(oriented.set(String{"scale"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{1, 2, 3}, {3, 1, 1}, {1, 1, 1}})));
-    take(oriented.set(String{"variant"}, Layer::point, std::make_shared<Array<std::uint32_t>>(Array<std::uint32_t>{0, 1, 1})));
+    take(oriented.set(String{"orient"}, Layer::point, SharedArray<Quaternion>{Array<Quaternion>{orients[0], orients[1], orients[2]}}));
+    take(oriented.set(String{"pscale"}, Layer::point, SharedArray<float>{Array<float>{2, 0.5f, 1}}));
+    take(oriented.set(String{"scale"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 2, 3}, {3, 1, 1}, {1, 1, 1}}}));
+    take(oriented.set(String{"variant"}, Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{0, 1, 1}}));
     take(oriented.add<String>("label", Layer::detail, String{"kept"}));
     const auto instances = take(copy_to_points(oriented, references));
     require(instances.count(Layer::point) == 0 && instances.count(Layer::instance) == 3, "Copy to Points made no instances.");
@@ -296,11 +344,21 @@ void copy_to_points_and_publication() {
         require(instances.instance_references()[i] == (i ? 1u : 0u), "Variant did not pick the reference.");
     }
 
+    auto edited_instances = instances;
+    auto changed_matrix = instances.instance_transforms()[1];
+    changed_matrix[12] += 13.f;
+    edited_instances.write_instance_transforms()[1] = changed_matrix;
+    require(edited_instances.instance_transforms()[1] == changed_matrix &&
+        near(instances.instance_transforms()[1], expected_instance(oriented.positions()[1], orients[1], scales[1])) &&
+        edited_instances.instance_transforms()[0] == instances.instance_transforms()[0] &&
+        edited_instances.instance_transforms()[2] == instances.instance_transforms()[2], "Writing instance transforms changed the source or another instance.");
+    require(edited_instances.instance_references().data() == instances.instance_references().data(), "Writing transforms copied the reference column.");
+
     // Without orient: N is +Z and up steers +Y; N alone takes the shortest turn.
     auto aligned = take(Geometry::points(Array<Vector3>{{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}));
-    take(aligned.set(String{"N"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{3, 0, 0}, {0, 0, -1}, {0, 0, 1}})));
+    take(aligned.set(String{"N"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{3, 0, 0}, {0, 0, -1}, {0, 0, 1}}}));
     auto with_up = aligned;
-    take(with_up.set(String{"up"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{0, 5, 0}, {0, 0, 0}, {1, 0, 0}})));
+    take(with_up.set(String{"up"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{0, 5, 0}, {0, 0, 0}, {1, 0, 0}}}));
     const auto rows = [](const Matrix4& m) { return std::array<Vector3, 3>{Vector3{m[0], m[1], m[2]}, Vector3{m[4], m[5], m[6]}, Vector3{m[8], m[9], m[10]}}; };
     const auto up_axes = rows(take(copy_to_points(with_up, references)).instance_transforms()[0]);
     require(near(up_axes[0], {0, 0, -1}) && near(up_axes[1], {0, 1, 0}) && near(up_axes[2], {1, 0, 0}), "N and up did not align +Z and +Y.");
@@ -321,9 +379,9 @@ void copy_to_points_and_publication() {
 
     // Publication: chunks of 10 split at 10 and 0; zero and flattened scales drop.
     auto scattered = take(Geometry::points(Array<Vector3>{{9.99f, 0, 0}, {10, 0, 0}, {-0.01f, 0, 0}, {0, 0, 0}, {5, 0, 5}, {6, 0, 6}, {3, 0, 3}}));
-    take(scattered.set(String{"variant"}, Layer::point, std::make_shared<Array<std::uint32_t>>(Array<std::uint32_t>{0, 0, 0, 1, 1, 0, 0})));
-    take(scattered.set(String{"pscale"}, Layer::point, std::make_shared<Array<float>>(Array<float>{1, 1, 1, 1, 0, 1, 1})));
-    take(scattered.set(String{"scale"}, Layer::point, std::make_shared<Array<Vector3>>(Array<Vector3>{{1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 0, 1}, {2, 2, 2}})));
+    take(scattered.set(String{"variant"}, Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{0, 0, 0, 1, 1, 0, 0}}));
+    take(scattered.set(String{"pscale"}, Layer::point, SharedArray<float>{Array<float>{1, 1, 1, 1, 0, 1, 1}}));
+    take(scattered.set(String{"scale"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 0, 1}, {2, 2, 2}}}));
     const auto first = take(publish(take(copy_to_points(scattered, references)), 10));
     require(first.dropped == 2, "Zero and flattened scales were published.");
     std::map<std::pair<std::string, std::array<std::int32_t, 3>>, std::vector<float>> found;
@@ -500,6 +558,15 @@ void ray_node() {
     require(near(p[1], {8, 0, 8}) && (primitive[1] == 0 || primitive[1] == 1) && near(distance[1], 5), "A ray did not reach the ground.");
     require(near(p[2], {20, 5, 20}) && primitive[2] == -1 && distance[2] == -1 && near(n[2], {0, 0, 0}), "A missing ray moved its point.");
     require(near(p[3], {1, -1, 1}) && primitive[3] == -1, "A ray hit a surface behind its origin.");
+    Geometry projected_again;
+    node.evaluate(output, surface, projected_again);
+    require(near(column<float>(projected_again, "hitdist", Layer::point)[0], 0) &&
+        near(column<float>(projected_again, "hitdist", Layer::point)[1], 0) &&
+        column<std::int32_t>(projected_again, "hitprim", Layer::point)[0] == 2 &&
+        column<std::int32_t>(projected_again, "hitprim", Layer::point)[2] == -1 &&
+        near(projected_again.positions()[0], {1, 2, 1}), "Ray did not overwrite existing result columns.");
+    require(near(column<float>(output, "hitdist", Layer::point)[0], 3) && near(column<float>(output, "hitdist", Layer::point)[1], 5) &&
+        points.positions()[0] == Vector3{1, 5, 1}, "Ray wrote through a shared input column.");
     node.remove_misses = true;
     node.evaluate(points, surface, output);
     require(output.count(Layer::point) == 2 && near(output.positions()[1], {8, 0, 8}), "Remove Misses did not keep exactly the hits.");
@@ -783,9 +850,8 @@ struct Project {
     }
 };
 
-// Beside the engine's Source nodes: entries for the engine's internal random functions; Lift takes
-// no context and has a Source setter, Shift reads only the context; the others cannot bind, and
-// Counter would write self if it could.
+// Beside the engine's nodes: internal random entry wrappers, parameter/context consumers,
+// multi-column writes and failures in binding, preparation and execution.
 constexpr std::string_view fixture_source = R"(
 uint test_hash(uint x) { return procedural.hash(x); }
 uint test_hash2(uint a, uint b) { return procedural.hash2(a, b); }
@@ -817,7 +883,31 @@ class fixture.ByValue : procedural.PointNode {
     void evaluate(float x) { }
 }
 class fixture.WrongColumn : procedural.PointNode {
-    void evaluate(Array<float>& P) { }
+    void evaluate(Array<float>& fresh, Array<float>& P) { }
+}
+class fixture.MissingAfterWrite : procedural.PointNode {
+    void evaluate(Array<float>& fresh, const Array<float>& missing) { }
+}
+class fixture.ColumnBatch : procedural.PointNode {
+    float offset = 2.0f;
+    bool fail = false;
+    void evaluate(const Array<vector3>& P, Array<vector3>& N,
+        Array<float>& a, Array<float>& b, Array<float>& c, Array<float>& d,
+        Array<float>& e, Array<float>& f, Array<float>& g, Array<float>& h) {
+        const float offset = self.offset;
+        for (uint i = 0; i < P.size(); i = i + 1) {
+            N[i] = vector3(offset, P[i].z, -P[i].x);
+            a[i] = P[i].x + offset;
+            b[i] = a[i] + 1.0f;
+            c[i] = b[i] + 1.0f;
+            d[i] = c[i] + 1.0f;
+            e[i] = d[i] + 1.0f;
+            f[i] = e[i] + 1.0f;
+            g[i] = f[i] + 1.0f;
+            h[i] = g[i] + 1.0f;
+        }
+        if (self.fail) { a[P.size()] = 1.0f; }
+    }
 }
 class fixture.Unbound : procedural.PointNode {
     float value = 0.0f;
@@ -1051,8 +1141,8 @@ void source_nodes() {
     const auto points = add(faults, type<Grid>(runtime)), unread = add(faults, jitter_type),
         by_value = add(faults, source_type("fixture.ByValue")), retyped = add(faults, source_type("fixture.WrongColumn")),
         unbound = add(faults, source_type("fixture.Unbound")), counter = add(faults, source_type("fixture.Counter")),
-        gathered = add(faults, type<Merge>(runtime));
-    for (const auto node : {unread, by_value, retyped, unbound, counter}) {
+        missing_after_write = add(faults, source_type("fixture.MissingAfterWrite")), gathered = add(faults, type<Merge>(runtime));
+    for (const auto node : {unread, by_value, retyped, unbound, counter, missing_after_write}) {
         take(connect(runtime, faults, points, 0, node, 0));
         take(connect(runtime, faults, node, 0, gathered, 0));
     }
@@ -1066,6 +1156,8 @@ void source_nodes() {
     require(failure_of(checking, unread, ErrorCode::argument_mismatch, "no point attribute id"), "A missing read column did not fail.");
     require(failure_of(checking, by_value, ErrorCode::invalid_definition, "parameter x"), "A by-value parameter was bound.");
     require(failure_of(checking, retyped, ErrorCode::argument_mismatch, "another layer or type"), "A column of another type was bound.");
+    require(failure_of(checking, missing_after_write, ErrorCode::argument_mismatch, "no point attribute missing"),
+        "A missing column after output preparation did not fail.");
     require(failure_of(checking, unbound, ErrorCode::invalid_definition, "no evaluate"), "A type without evaluate was bound.");
     // Without a borrow evaluate is no value region, so it could write self.
     require(failure_of(checking, counter, ErrorCode::invalid_definition, "must borrow"), "An evaluate without borrows was bound.");
@@ -1075,6 +1167,62 @@ void source_nodes() {
     take(unprogrammed.evaluate());
     require(failure_of(unprogrammed, jittered, ErrorCode::unsupported_operation, "needs a program") && !failed(unprogrammed, scattered),
         "A Source node ran without a program.");
+
+    // Eight new columns grow the two-attribute input while N already needs a writable borrow.
+    // A bounds failure occurs inside invoke, after writing every column, not during preparation.
+    const auto batch_root = take(runtime.create(type<Graph>(runtime)));
+    const auto batch_graph = batch_root.id(), batch_input = add(batch_graph, type<Grid>(runtime)),
+        batch = add(batch_graph, source_type("fixture.ColumnBatch")), sibling = add(batch_graph, lift_type);
+    take(runtime.with_native<Grid>(batch_input, [](Grid& node) -> Result<void> { node.rows = 2; node.columns = 3; node.size = {4, 2}; return {}; }));
+    take(connect(runtime, batch_graph, batch_input, 0, batch, 0));
+    take(connect(runtime, batch_graph, batch_input, 0, sibling, 0));
+    take(set_display(runtime, batch_graph, batch_input));
+    Evaluator batching{runtime, batch_root, resources, &program};
+    take(batching.evaluate());
+    require(batching.output() != nullptr, "The batch input failed.");
+    const Geometry original = *batching.output();
+    const auto verify_batch = [](const Geometry* result, float offset) {
+        require(result && result->count(Layer::point) == 6 && result->attributes().size() == 10, "Batch output lost columns or points.");
+        for (std::uint32_t i = 0; i < 6; ++i) {
+            const Vector3 p{-2.f + 2.f * float(i % 3), 0, -1.f + 2.f * float(i / 3)};
+            require(result->positions()[i] == p && column<Vector3>(*result, "N", Layer::point)[i] == Vector3{offset, p.z, -p.x},
+                "A batch read or existing writable column is wrong.");
+            std::uint32_t index = 0;
+            for (const auto* name : {"a", "b", "c", "d", "e", "f", "g", "h"})
+                require(column<float>(*result, name, Layer::point)[i] == p.x + offset + float(index++), "A new batch column is wrong.");
+        }
+    };
+    take(set_display(runtime, batch_graph, batch));
+    take(batching.evaluate());
+    verify_batch(batching.output(), 2);
+    take(set_display(runtime, batch_graph, sibling));
+    take(batching.evaluate());
+    require(batching.output() && batching.output()->attributes().size() == 2, "New columns leaked into a sibling.");
+    const Geometry sibling_result = *batching.output();
+    take(set_display(runtime, batch_graph, batch));
+    take(batching.evaluate());
+    const auto* previous = batching.output();
+    const auto batch_type = source_type("fixture.ColumnBatch");
+    const auto fail = field(runtime, batch_type, "fail"), offset = field(runtime, batch_type, "offset");
+    take(runtime.write(batch, offset, Scalar{9.f}));
+    take(runtime.write(batch, fail, Scalar{true}));
+    take(batching.evaluate());
+    require(failure_of(batching, batch, ErrorCode::invocation_failed, "out of range") && batching.output() == previous,
+        "An invoke failure published a partially written Geometry.");
+    verify_batch(batching.output(), 2);
+    take(batching.evaluate());
+    require(batching.status(batch)->evaluations == 2, "An unchanged invoke failure retried.");
+    take(runtime.write(batch, fail, Scalar{false}));
+    take(batching.evaluate());
+    require(!failed(batching, batch) && batching.status(batch)->evaluations == 3, "A corrected invoke failure did not recover.");
+    verify_batch(batching.output(), 9);
+    for (std::uint32_t i = 0; i < 6; ++i) {
+        const Vector3 p{-2.f + 2.f * float(i % 3), 0, -1.f + 2.f * float(i / 3)};
+        require(original.positions()[i] == p && original.attributes().size() == 2 &&
+            column<Vector3>(original, "N", Layer::point)[i] == Vector3{0, 1, 0} &&
+            sibling_result.positions()[i] == p + Vector3{0, 1, 0} && column<Vector3>(sibling_result, "N", Layer::point)[i] == Vector3{0, 1, 0},
+            "A multi-column write or failed invoke changed the input or sibling.");
+    }
 }
 
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.

@@ -19,10 +19,11 @@
 
 ## Geometry
 
-`procedural.Geometry` 是 Runtime 记录类型（`ASTRUCT`，没有反射字段），作为节点端口按引用传递。它是一个值：复制共享全部列，写某一列之前先把这一列复制成独占的。独占判断读引用计数，所以并行写入之前要在单线程上完成复制。
+`procedural.Geometry` 是 Runtime 记录类型（`ASTRUCT`，没有反射字段），作为节点端口按引用传递。它是一个值：用 [SharedArray](../../foundation.md#共享不可变数组) 共享属性、拓扑和实例列，写入共享列时才复制成独占；已有独占列原地写。每个写入者必须独占自己的 Geometry，但无需先在单线程上复制列。这个存储能力不改变求值器在 Runtime 线程上串行执行的规则。
 
 - **五层**：point、vertex（图元的角）、primitive、detail（恰好一个元素）、instance。每层是“名字 → 列”，名字在整个 Geometry 内唯一，必须是标识符。点位置是 point 层的 `P`，总是存在且是第一列。
-- **列**：`Array<T>`，T 为 bool、int32、uint32、float、Vector2/3/4、Quaternion、Matrix4；String 只能放在 detail 层。`read` 找不到时返回 null，层或类型不符是错误；`write` 取得可写列；`add` 不存在时按填充值新建；`set` 接管一整列；`remove` 删除。
+- **列**：`SharedArray<T>` 持有 `Array<T>`，T 为 bool、int32、uint32、float、Vector2/3/4、Quaternion、Matrix4；String 只能放在 detail 层。`attributes()` 和 `find()` 暴露的共享列只能读取；`read` 借出 const Array，找不到时返回 null，层或类型不符是错误；`write` 先取得独占列再借出可写 Array；`add` 不存在时按填充值新建；`set` 接管一个共享列句柄；`remove` 删除。SharedArray 本身不注册为 Runtime 类型，源码借用的仍是原来的 Array 类型。
+- **借用**：借用结束前，不移动、赋值或结构修改该 Geometry，也不再次 `write` 同一列；可写借用期间还不能复制该 Geometry 或出借列的句柄，只读借用允许复制。需要多列时先完成增列和独占准备，再取供计算使用的引用；Source 求值器和 Ray 节点都按这个顺序执行。
 - **用途**：Vector3 列（以及 Vector4 颜色）带用途 point / vector / normal / color / none，决定变换方式。新列按约定名取用途：P → point，N → normal，v、up → vector，Cd → color，其余 none。
 - **拓扑**：`vertex_points` 给出每个顶点引用的点；图元是首顶点的 CSR 偏移，每个图元至少三个顶点，全部图元边数相同时不存偏移。拓扑只能经 `polygons`、`remove_flagged`、`merge`、`reverse_primitives` 等 C++ 入口改写。
 - **实例**：去重的资源引用表 `references`（持久键 + 宿主解析出的 `MeshRef`），加上 instance 层的保留列：每个实例的引用下标与有限仿射 Matrix4。`set_instances` 替换整个 instance 层并丢弃它的属性。
@@ -45,6 +46,7 @@
 
 `publish(geometry, chunk_size, previous)` 把 instance 层按（引用，块）分组：块是生成器局部空间中平移所在的立方体 floor(t / chunk_size)。每组是一个 `Collection`，带一份共享不可变的 3×4 仿射数组（行主序、行向量约定，x、y、z 轴行加平移行），实例按源顺序排列，数组从不为空。
 
+- 发布接口仍使用 `shared_ptr<const vector<Affine>>`，不随内部 Geometry 列迁移成 SharedArray。
 - 线性部分不能通过 `math::normal_transform` 的实例（零缩放、压扁）被丢弃并计入 `dropped`。这个判据与渲染器对 world 矩阵的判据是同一个函数，所以发布的内容不会让渲染器拒绝整帧。
 - 与 `previous` 中同一（引用，块）的集合逐字节相同时，复用旧的数组指针，以指针为键的消费者因此保留自己的状态。
 - 块大小必须有限且为正，块下标必须在 int32 范围内。
@@ -142,6 +144,8 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 - 资源版本变化但解析结果相同不重算，换了网格只重算读取它的节点，缺失的网格出现后重试；
 - 内容相同的两个节点共享结果；成环、端口越界、图外节点被拒绝；单输入端口替换连接；删除节点断开下游并清除 display；缓存预算为 0 时撤销也要重算。
 
+列存储的边界验收包括：零图元与三角形／四边形混合拓扑，删除后转为均匀或空拓扑，与空几何合并时的顶点偏移；只修改实例副本的一个矩阵，原值不变且引用列继续共享；零元素与小列的非零填充、detail String 填充、按实际 capacity 计入 `bytes()`，共享副本不减记预算；Ray 再次处理已有结果列时覆盖输出而不改写输入。
+
 自有语言节点部分用工程共用的加载函数 `source::engine_sources` 读取引擎文件，再加一个夹具文件组成项目快照，构建 MeshImport → Scatter → Jitter（两个，amount 不同）/ RandomScale，Grid → 夹具 Lift（不带上下文）和夹具 Shift（只读上下文的种子），五路 Merge，并按文档公式和 random.hpp 的哈希独立算出期望值：
 
 - 源码的 `procedural.hash`、`hash2`（经夹具里的包装函数调用）与 random.hpp 逐位相同，`unit` 精确等于 (x >> 8) · 2⁻²⁴，最大输入得到 1 − 2⁻²⁴ 而不是 1；
@@ -150,6 +154,7 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 - 兼容发布：改 Jitter 方法体只重算两个 Jitter 节点和下游，输出用上新方法体；内容不变的发布不重算任何节点；只改 RandomScale 的空白只重算它和下游；改引擎助手只重算代码直接或间接调用了它的节点（改 `random_vector` 只重算 Jitter，改 `hash` 再加上 RandomScale，Lift 和 Shift 都不重算），输出不变；
 - 立方体上撒点 → 夹具把偶数点的 N 置零 → NormalAlign → CopyToPoints，up 依次取 +Y、+Z、−Y 和零：实例矩阵与 C++ CopyToPoints 直接使用 N 和同值 up 列的结果一致。立方体的面法线沿坐标轴，这几个 up 覆盖四元数的四个分支、平行时的最短旋转和正对 −Z 的半圈；改 up 只重算 NormalAlign 和下游；
 - 输入缺少读取的列、按值参数、列类型与已有列不符、没有 evaluate、evaluate 没有参数（因而可以写 `self`）的类型各自失败，只阻断下游；没有 Program 的求值器里自有语言节点失败，C++ 节点照常求值。
+- 六点输入的多列夹具读取 P、改写 N 并新增八列，逐元素核对结果及旧输入／兄弟分支隔离；增列之后发现缺列或类型不符时准备失败；写过所有列后在真正的 invoke 内触发数组越界时保留旧发布、同键不重试，参数修正后重新执行并发布新值。
 
 ```powershell
 . ./tools/enter-dev.ps1

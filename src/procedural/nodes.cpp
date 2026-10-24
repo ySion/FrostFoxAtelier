@@ -56,11 +56,16 @@ void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& ou
     const auto bvh = take(Bvh::build(surface));
     output = points;
     const auto count = output.count(Layer::point);
+    // Finish adding columns before borrowing them: growing attributes moves their handles.
+    take(output.add<std::int32_t>("hitprim", Layer::point));
+    take(output.add<math::Vector2>("hitprimuv", Layer::point));
+    take(output.add<float>("hitdist", Layer::point));
+    if (normal) take(output.add<math::Vector3>("N", Layer::point));
     auto& positions = *take(output.write<math::Vector3>("P", Layer::point));
-    auto& primitives = *take(output.add<std::int32_t>("hitprim", Layer::point));
-    auto& uvs = *take(output.add<math::Vector2>("hitprimuv", Layer::point));
-    auto& distances = *take(output.add<float>("hitdist", Layer::point));
-    auto* normals = normal ? take(output.add<math::Vector3>("N", Layer::point)) : nullptr;
+    auto& primitives = *take(output.write<std::int32_t>("hitprim", Layer::point));
+    auto& uvs = *take(output.write<math::Vector2>("hitprimuv", Layer::point));
+    auto& distances = *take(output.write<float>("hitdist", Layer::point));
+    auto* normals = normal ? take(output.write<math::Vector3>("N", Layer::point)) : nullptr;
     Array<bool> missed;
     missed.resize(remove_misses ? count : 0);
     const auto& corners = surface.positions();

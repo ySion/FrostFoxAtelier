@@ -29,25 +29,34 @@ struct Code {
     std::vector<Parameter> parameters;
 };
 
-template<std::size_t I> using ColumnArray = typename std::variant_alternative_t<I, ColumnData>::element_type;
+template<std::size_t I> using ColumnArray = Array<typename std::variant_alternative_t<I, ColumnData>::Value>;
 
-template<std::size_t I> Result<Argument> borrow_column(Geometry& geometry, const Code::Parameter& parameter) {
+template<std::size_t I> Result<void> prepare_column(Geometry& geometry, const Code::Parameter& parameter) {
     using T = typename ColumnArray<I>::Value;
     if (parameter.use == Code::Use::write) {
         auto column = geometry.add<T>(parameter.name, Layer::point);
         if (!column) return std::unexpected(column.error());
-        return Argument::borrow(**column);
+        return {};
     }
     auto column = geometry.read<T>(parameter.name, Layer::point);
     if (!column) return std::unexpected(column.error());
     if (!*column) return failure("The input has no point attribute " + std::string{parameter.name.view().std_view()} + ".");
-    return Argument::borrow(**column);
+    return {};
 }
-using BorrowColumn = Result<Argument> (*)(Geometry&, const Code::Parameter&);
-template<std::size_t... I> constexpr std::array<BorrowColumn, sizeof...(I)> column_borrowers(std::index_sequence<I...>) {
-    return {&borrow_column<I>...};
+template<std::size_t I> Argument borrow_column(Geometry& geometry, const Code::Parameter& parameter) {
+    using T = typename ColumnArray<I>::Value;
+    // prepare_column already checked the layer/type and made every written column unique.
+    if (parameter.use == Code::Use::write) return Argument::borrow(**geometry.write<T>(parameter.name, Layer::point));
+    return Argument::borrow(**geometry.read<T>(parameter.name, Layer::point));
 }
-constexpr auto borrowers = column_borrowers(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
+struct ColumnAccess {
+    Result<void> (*prepare)(Geometry&, const Code::Parameter&);
+    Argument (*borrow)(Geometry&, const Code::Parameter&);
+};
+template<std::size_t... I> constexpr std::array<ColumnAccess, sizeof...(I)> column_accessors(std::index_sequence<I...>) {
+    return {ColumnAccess{&prepare_column<I>, &borrow_column<I>}...};
+}
+constexpr auto accessors = column_accessors(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
 
 // One evaluation of one node. Keys are exact byte strings, so equal keys mean equal contents.
 struct Entry {
@@ -260,6 +269,13 @@ struct Evaluator::Impl {
     Result<void> run_source(ObjectId id, const State& state, const Code& code, Geometry& output) const {
         output = empty;
         for (const auto& connection : state.inputs) output = nodes.at(connection.from).entry->outputs[connection.output];
+        // Adding attributes can move their handles. Finish that, validation and detach before
+        // taking any column references; the handles then stay untouched throughout invoke.
+        for (const auto& parameter : code.parameters) {
+            if (parameter.use == Code::Use::context) continue;
+            auto prepared = accessors[parameter.column].prepare(output, parameter);
+            if (!prepared) return std::unexpected(prepared.error());
+        }
         Context context;
         context.seed_ = seed;
         std::vector<Argument> arguments;
@@ -269,9 +285,7 @@ struct Evaluator::Impl {
                 arguments.push_back(Argument::borrow(std::as_const(context)));
                 continue;
             }
-            auto borrowed = borrowers[parameter.column](output, parameter);
-            if (!borrowed) return std::unexpected(borrowed.error());
-            arguments.push_back(std::move(*borrowed));
+            arguments.push_back(accessors[parameter.column].borrow(output, parameter));
         }
         auto called = code.entry.invoke(id, arguments);
         if (!called) return std::unexpected(called.error());

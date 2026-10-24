@@ -63,29 +63,29 @@ Geometry import_mesh(const geometry::Mesh& mesh) {
     std::unordered_map<Key, std::uint32_t, KeyHash> welded;
     Array<Vector3> positions;
     Array<std::uint32_t> vertex_points, offsets, materials;
-    auto normals = std::make_shared<Array<Vector3>>();
-    auto uvs = std::make_shared<Array<Vector2>>();
-    vertex_points.reserve(vertices.size()); normals->reserve(vertices.size()); uvs->reserve(vertices.size());
+    Array<Vector3> normals;
+    Array<Vector2> uvs;
+    vertex_points.reserve(vertices.size()); normals.reserve(vertices.size()); uvs.reserve(vertices.size());
     for (const auto& vertex : vertices) {
         const Key key{{std::bit_cast<std::uint32_t>(vertex.position[0]), std::bit_cast<std::uint32_t>(vertex.position[1]),
                        std::bit_cast<std::uint32_t>(vertex.position[2])}};
         const auto [at, added] = welded.try_emplace(key, static_cast<std::uint32_t>(positions.size()));
         if (added) positions.add({vertex.position[0], vertex.position[1], vertex.position[2]});
         vertex_points.add(at->second);
-        normals->add({vertex.normal[0], vertex.normal[1], vertex.normal[2]});
-        uvs->add({vertex.uv[0], vertex.uv[1]});
+        normals.add({vertex.normal[0], vertex.normal[1], vertex.normal[2]});
+        uvs.add({vertex.uv[0], vertex.uv[1]});
     }
     const auto triangles = static_cast<std::uint32_t>(vertices.size() / 3);
     offsets.reserve(triangles + 1);
     for (std::uint32_t t = 0; t <= triangles; ++t) offsets.add(t * 3);
-    auto material = std::make_shared<Array<std::uint32_t>>();
-    material->resize(triangles);
+    Array<std::uint32_t> material;
+    material.resize(triangles);
     for (const auto& part : mesh.parts())
-        for (auto t = part.first_vertex / 3; t < (part.first_vertex + part.vertex_count) / 3; ++t) (*material)[t] = part.material;
+        for (auto t = part.first_vertex / 3; t < (part.first_vertex + part.vertex_count) / 3; ++t) material[t] = part.material;
     auto result = value(Geometry::polygons(std::move(positions), std::move(vertex_points), offsets));
-    (void)result.set(String{"N"}, Layer::vertex, std::move(normals));
-    (void)result.set(String{"uv"}, Layer::vertex, std::move(uvs));
-    (void)result.set(String{"material"}, Layer::primitive, std::move(material));
+    (void)result.set(String{"N"}, Layer::vertex, SharedArray<Vector3>{std::move(normals)});
+    (void)result.set(String{"uv"}, Layer::vertex, SharedArray<Vector2>{std::move(uvs)});
+    (void)result.set(String{"material"}, Layer::primitive, SharedArray<std::uint32_t>{std::move(material)});
     return result;
 }
 
@@ -194,11 +194,11 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     }
     auto result = Geometry::points(std::move(positions));
     if (!result) return result;
-    for (auto added : {result->set(String{"N"}, Layer::point, std::make_shared<Array<Vector3>>(std::move(normals))),
-                       result->set(String{"id"}, Layer::point, std::make_shared<Array<std::uint32_t>>(std::move(ids))),
-                       result->set(String{"sourceprim"}, Layer::point, std::make_shared<Array<std::uint32_t>>(std::move(primitives))),
-                       result->set(String{"sourceordinal"}, Layer::point, std::make_shared<Array<std::uint32_t>>(std::move(ordinals))),
-                       result->set(String{"sourceprimuv"}, Layer::point, std::make_shared<Array<Vector2>>(std::move(barycentrics)))})
+    for (auto added : {result->set(String{"N"}, Layer::point, SharedArray<Vector3>{std::move(normals)}),
+                       result->set(String{"id"}, Layer::point, SharedArray<std::uint32_t>{std::move(ids)}),
+                       result->set(String{"sourceprim"}, Layer::point, SharedArray<std::uint32_t>{std::move(primitives)}),
+                       result->set(String{"sourceordinal"}, Layer::point, SharedArray<std::uint32_t>{std::move(ordinals)}),
+                       result->set(String{"sourceprimuv"}, Layer::point, SharedArray<Vector2>{std::move(barycentrics)})})
         if (!added) return std::unexpected(added.error());
     return result;
 }
@@ -215,7 +215,7 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
     for (const auto& [name, layer] : targets) {
         const auto* attribute = geometry.find(StringView{name});
         const auto view = StringView{name};
-        if (std::holds_alternative<Column<Quaternion>>(attribute->data) && name == "orient") {
+        if (std::holds_alternative<SharedArray<Quaternion>>(attribute->data) && name == "orient") {
             auto& values = *value(geometry.write<Quaternion>(view, layer));
             for (auto& q : values) {
                 q = *unit_rotation * q;
@@ -223,7 +223,7 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
             }
             continue;
         }
-        if (!std::holds_alternative<Column<Vector3>>(attribute->data)) continue;
+        if (!std::holds_alternative<SharedArray<Vector3>>(attribute->data)) continue;
         const auto usage = attribute->usage;
         if (usage != Usage::point && usage != Usage::vector && usage != Usage::normal) continue;
         auto& values = *value(geometry.write<Vector3>(view, layer));
@@ -288,27 +288,27 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
             sources[counts[vertex_points[v]]++] = from == Layer::vertex ? v : vertex_primitive[v];
     }
     auto promoted = std::visit([&](const auto& column) -> Result<ColumnData> {
-        using T = typename std::remove_cvref_t<decltype(*column)>::Value;
+        using T = typename std::remove_cvref_t<decltype(column)>::Value;
         constexpr bool numeric = std::same_as<T, float> || std::same_as<T, Vector2> || std::same_as<T, Vector3> || std::same_as<T, math::Vector4>;
         if constexpr (std::same_as<T, String>) return failure("String attributes stay on detail.");
         else {
             if (reduce != Reduce::first && !numeric) return failure("Sum and average need float or float vector attributes.");
-            auto result = std::make_shared<Array<T>>();
-            result->reserve(targets);
+            Array<T> result;
+            result.reserve(targets);
             for (std::uint32_t i = 0; i < targets; ++i) {
                 const auto first = starts[i], end = starts[i + 1];
-                if (first == end) { result->emplace(); continue; }
+                if (first == end) { result.emplace(); continue; }
                 if constexpr (numeric) {
                     if (reduce != Reduce::first) {
                         T total{};
-                        for (auto s = first; s < end; ++s) total += (*column)[sources[s]];
-                        result->add(reduce == Reduce::sum ? total : total / static_cast<float>(end - first));
+                        for (auto s = first; s < end; ++s) total += column.array()[sources[s]];
+                        result.add(reduce == Reduce::sum ? total : total / static_cast<float>(end - first));
                         continue;
                     }
                 }
-                result->add((*column)[sources[first]]);
+                result.add(column.array()[sources[first]]);
             }
-            return ColumnData{std::move(result)};
+            return ColumnData{SharedArray<T>{std::move(result)}};
         }
     }, attribute->data);
     if (!promoted) return std::unexpected(promoted.error());

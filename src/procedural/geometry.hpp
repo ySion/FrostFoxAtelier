@@ -1,13 +1,13 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/shared_array.hpp"
 #include "foundation/string.hpp"
 #include "geometry/mesh.hpp"
 #include "math/math.hpp"
 #include "runtime/reflection.hpp"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <span>
 #include <variant>
@@ -25,11 +25,10 @@ enum class Reduce : std::uint32_t { first, sum, average };
 // How a transform changes a float vector column; see transform().
 enum class Usage : std::uint8_t { none, point, vector, normal, color };
 
-template<class T> using Column = std::shared_ptr<Array<T>>;
-using ColumnData = std::variant<Column<bool>, Column<std::int32_t>, Column<std::uint32_t>, Column<float>,
-    Column<math::Vector2>, Column<math::Vector3>, Column<math::Vector4>, Column<math::Quaternion>,
-    Column<math::Matrix4>, Column<String>>;
-template<class T> concept Element = requires(ColumnData data) { data = Column<T>{}; };
+using ColumnData = std::variant<SharedArray<bool>, SharedArray<std::int32_t>, SharedArray<std::uint32_t>, SharedArray<float>,
+    SharedArray<math::Vector2>, SharedArray<math::Vector3>, SharedArray<math::Vector4>, SharedArray<math::Quaternion>,
+    SharedArray<math::Matrix4>, SharedArray<String>>;
+template<class T> concept Element = requires(ColumnData data) { data = SharedArray<T>{}; };
 
 struct Attribute {
     String name;
@@ -52,9 +51,11 @@ struct PrimitiveRange { std::uint32_t first, count; };
 }
 
 // Points, polygons over them, instances and per-layer attribute columns. A value:
-// copies share every column, and writing a column first makes it unique. The sharing
-// test reads owner counts, so make columns unique on one thread before parallel writers
-// use them. Point positions are the point attribute P, which always exists. Topology and
+// copies share every column, and writing a column first makes it unique. Each writer
+// must own its Geometry exclusively. While a column is borrowed, do not move or
+// structurally edit the Geometry, or write that column again. A writable borrow also
+// forbids copying the Geometry or its column handle; read-only borrows allow copies.
+// Point positions are the point attribute P, which always exists. Topology and
 // instance columns are reserved: attribute bindings cannot reach them.
 ASTRUCT(Name="procedural.Geometry", DESC="点、顶点、图元、实例及各层属性构成的几何值。复制共享各列，写入时才复制。")
 class Geometry {
@@ -69,33 +70,31 @@ public:
         const Array<std::uint32_t>& offsets);
 
     [[nodiscard]] std::uint32_t count(Layer layer) const noexcept;
-    [[nodiscard]] std::span<const std::uint32_t> vertex_points() const noexcept { return *vertex_points_; }
+    [[nodiscard]] std::span<const std::uint32_t> vertex_points() const noexcept { return vertex_points_.array(); }
     [[nodiscard]] PrimitiveRange primitive(std::uint32_t index) const noexcept {
-        if (!offsets_) return {index * uniform_, uniform_};
-        const auto* offsets = offsets_->data();
+        if (offsets_.empty()) return {index * uniform_, uniform_};
+        const auto* offsets = offsets_.array().data();
         return {offsets[index], offsets[index + 1] - offsets[index]};
     }
     // Shared vertex count of every primitive, or 0 when sizes differ or nothing exists.
-    [[nodiscard]] std::uint32_t uniform_primitive_size() const noexcept { return offsets_ ? 0 : uniform_; }
+    [[nodiscard]] std::uint32_t uniform_primitive_size() const noexcept { return offsets_.empty() ? uniform_ : 0; }
 
     [[nodiscard]] std::span<const Attribute> attributes() const noexcept { return attributes_; }
     [[nodiscard]] const Attribute* find(StringView name) const noexcept;
-    [[nodiscard]] const Array<math::Vector3>& positions() const noexcept { return *std::get<Column<math::Vector3>>(attributes_.front().data); }
+    [[nodiscard]] const Array<math::Vector3>& positions() const noexcept { return std::get<SharedArray<math::Vector3>>(attributes_.front().data).array(); }
     // Null when absent; an attribute of another layer or type is an error.
     template<Element T> Result<const Array<T>*> read(StringView name, Layer layer) const {
         const auto* attribute = find(name);
         if (!attribute) return nullptr;
         auto checked = check<T>(*attribute, layer);
         if (!checked) return std::unexpected(checked.error());
-        return std::get<Column<T>>(attribute->data).get();
+        return &std::get<SharedArray<T>>(attribute->data).array();
     }
     template<Element T> Result<Array<T>*> write(StringView name, Layer layer) {
         auto* attribute = mutable_find(name);
         if (!attribute) return failure("Geometry has no attribute " + std::string{name.std_view()} + ".");
         if (auto checked = check<T>(*attribute, layer); !checked) return std::unexpected(checked.error());
-        auto& column = std::get<Column<T>>(attribute->data);
-        if (column.use_count() != 1) column = std::make_shared<Array<T>>(*column);
-        return column.get();
+        return &std::get<SharedArray<T>>(attribute->data).write();
     }
     // Returns the existing column for writing, or adds one filled with `fill`. Usage defaults
     // to the conventional one for the name (P point, N normal, v and up vector, Cd color).
@@ -104,20 +103,17 @@ public:
         const auto resolved = usage ? *usage : conventional_usage(name);
         if (auto valid = admit<T>(name, layer, resolved); !valid) return std::unexpected(valid.error());
         Array<T> values;
-        values.reserve(count(layer));
-        for (std::uint32_t i = 0; i < count(layer); ++i) values.add(fill);
-        auto column = std::make_shared<Array<T>>(std::move(values));
-        auto* result = column.get();
-        attributes_.push_back({String{name}, layer, resolved, std::move(column)});
-        return result;
+        values.resize(count(layer), fill);
+        attributes_.push_back({String{name}, layer, resolved, SharedArray<T>{std::move(values)}});
+        return &std::get<SharedArray<T>>(attributes_.back().data).write();
     }
     // Takes ownership of a complete column. Replaces an attribute of the same name.
     Result<void> set(String name, Layer layer, ColumnData data, std::optional<Usage> usage = {});
     Result<void> remove(StringView name);
 
     [[nodiscard]] std::span<const Reference> references() const noexcept { return references_; }
-    [[nodiscard]] const Array<std::uint32_t>& instance_references() const noexcept { return *instance_references_; }
-    [[nodiscard]] const Array<math::Matrix4>& instance_transforms() const noexcept { return *instance_transforms_; }
+    [[nodiscard]] const Array<std::uint32_t>& instance_references() const noexcept { return instance_references_.array(); }
+    [[nodiscard]] const Array<math::Matrix4>& instance_transforms() const noexcept { return instance_transforms_.array(); }
     // Replaces the instance layer, dropping its attributes. References must be distinct
     // and each index must name one; transforms must be finite and affine.
     Result<void> set_instances(std::vector<Reference> references, Array<std::uint32_t> indices,
@@ -143,7 +139,7 @@ public:
 private:
     Attribute* mutable_find(StringView name) noexcept;
     template<Element T> Result<void> check(const Attribute& attribute, Layer layer) const {
-        if (attribute.layer != layer || !std::holds_alternative<Column<T>>(attribute.data))
+        if (attribute.layer != layer || !std::holds_alternative<SharedArray<T>>(attribute.data))
             return failure("Attribute " + std::string{attribute.name.view().std_view()} + " has another layer or type.");
         return {};
     }
@@ -159,11 +155,11 @@ private:
     Result<void> fits(Layer layer, const ColumnData& data) const;
 
     std::uint32_t vertices_{}, primitives_{}, uniform_{};
-    Column<std::uint32_t> vertex_points_, offsets_; // offsets_ is null when every primitive has uniform_ vertices.
-    std::vector<Attribute> attributes_;             // P first.
+    SharedArray<std::uint32_t> vertex_points_, offsets_; // offsets_ is empty when every primitive has uniform_ vertices.
+    std::vector<Attribute> attributes_;                // P first.
     std::vector<Reference> references_;
-    Column<std::uint32_t> instance_references_;
-    Column<math::Matrix4> instance_transforms_;
+    SharedArray<std::uint32_t> instance_references_;
+    SharedArray<math::Matrix4> instance_transforms_;
 };
 using Geometries = Array<Geometry>;
 
