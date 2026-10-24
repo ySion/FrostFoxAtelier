@@ -1,0 +1,104 @@
+{
+  "source": "Intel New Sponza (2022), https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-research/samples.html",
+  "license": "CC BY 4.0; see credits_license.txt",
+  "command": "python tools/downscale-sponza/downscale.py <source.gltf> <destination> --flip-normal-green",
+  "filter": "2x2 box, 4096 to 2048: srgb in linear light, linear values directly, normals renormalized",
+  "normal_green": "flipped (DirectX to glTF +Y up)",
+  "tools": {
+    "python": "3.14.0",
+    "numpy": "2.4.6",
+    "pillow": "12.2.0",
+    "zlib": "1.3.1.zlib-ng",
+    "png_compress_level": 9
+  },
+  "files": [
+    {
+      "path": "NewSponza_Curtains_glTF.gltf",
+      "role": "verbatim",
+      "source_bytes": 37076,
+      "source_sha256": "b56968aeb691970b63027ae3ffbb0d77f1d736e7bdace5c70be106d6dcfbb516",
+      "output_bytes": 37076,
+      "output_sha256": "b56968aeb691970b63027ae3ffbb0d77f1d736e7bdace5c70be106d6dcfbb516"
+    },
+    {
+      "path": "NewSponza_Curtains_glTF.bin",
+      "role": "verbatim",
+      "source_bytes": 73479384,
+      "source_sha256": "c89c2876636a0baa9a506e3206d8336239d9a6b79e73c9e1dd53cd47f2caca0c",
+      "output_bytes": 73479384,
+      "output_sha256": "c89c2876636a0baa9a506e3206d8336239d9a6b79e73c9e1dd53cd47f2caca0c"
+    },
+    {
+      "path": "credits_license.txt",
+      "role": "verbatim",
+      "source_bytes": 15921,
+      "source_sha256": "3f981e31f8de04f3754e63d7c259a0a78f71db8f01b5155c58cac52fb79cc2b9",
+      "output_bytes": 15921,
+      "output_sha256": "3f981e31f8de04f3754e63d7c259a0a78f71db8f01b5155c58cac52fb79cc2b9"
+    },
+    {
+      "path": "textures/metal_door_01_Normal.png",
+      "role": "normal",
+      "source_bytes": 30755637,
+      "source_sha256": "05a9ba86641e1e8abb3b0ac8f8eeaf6e332734d0d7caa8ca2f0bd953aa8b91f9",
+      "output_bytes": 8066087,
+      "output_sha256": "2180389f3ecba08e428d157c2f31de1a193848b76c70fc5168207155b346b89c"
+    },
+    {
+      "path": "textures/metal_door_01_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 11159561,
+      "source_sha256": "b87e0c482d153b7adb7b113b612cb7695c0f9f42a94bfaec7d533726094ba331",
+      "output_bytes": 2922479,
+      "output_sha256": "5c8a23279745dda054ef7794aacfab68dbca4ab50a10af25c4aa52921e8a1579"
+    },
+    {
+      "path": "textures/metal_door_01_Roughnessmetal_door_01_Metalness.png",
+      "role": "linear",
+      "source_bytes": 27828983,
+      "source_sha256": "b5123a6db0ebc505adfd01372cf4ba31fb05f14e7f445232a1355e5e08868962",
+      "output_bytes": 6134998,
+      "output_sha256": "50de230812b69be79bbf4bd34f049eb2d0906e6a8ca1949a7979e6d475d57bdd"
+    },
+    {
+      "path": "textures/curtain_fabric_Normal.png",
+      "role": "normal",
+      "source_bytes": 45198462,
+      "source_sha256": "19195ec835958a053fd40c0fef593f5e11a87560d962f49ef3d2c61a9c359919",
+      "output_bytes": 11981041,
+      "output_sha256": "8b3cd99578e2e262a17e1a1d9aacbd3b45bb10bd150c05bba221ef0a8165043a"
+    },
+    {
+      "path": "textures/curtain_fabric_red_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 18157344,
+      "source_sha256": "6a5a092f51f0a680341e5694c2409056dfb8b7d78af84839219600c4c1559910",
+      "output_bytes": 4632521,
+      "output_sha256": "6f1183647afe3285696acb40fda141150f54764e8f7b16930c6ca99e883166a1"
+    },
+    {
+      "path": "textures/curtain_fabric_Roughnesscurtain_fabric_Metalness.png",
+      "role": "linear",
+      "source_bytes": 20018728,
+      "source_sha256": "4bcccb1e9d8b46da323b63acf6fa03a5a369bde0ac1dd22f0b2f0a1b40d35ba8",
+      "output_bytes": 4169732,
+      "output_sha256": "ea89734a71cfcc60af3463487d241fbccd565a438c3a1ccd577f91697a5b980d"
+    },
+    {
+      "path": "textures/curtain_fabric_blue_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 17869201,
+      "source_sha256": "f0d5ffa41776c87b244a1c9680a67cc6ec0f66de414d468ba37a155ce89255b4",
+      "output_bytes": 4601353,
+      "output_sha256": "387ee1fc4fc4e86b940de7dce7b62b3df7386163284945ef88197c78442fff28"
+    },
+    {
+      "path": "textures/curtain_fabric_green_BaseColor.png",
+      "role": "srgb",
+      "source_bytes": 18734493,
+      "source_sha256": "6bdbc84c52e07dbee4a68afe608505e65b9b8cd27157c8b4f9e4f6238e260233",
+      "output_bytes": 4850042,
+      "output_sha256": "26c1779536111e88048a47e8dc24cbe27f21721e7146fbf3d3319c484efa64f5"
+    }
+  ]
+}

@@ -16,10 +16,15 @@ row_major float4x4 lit_camera_view;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
 row_major float4x4 lit_previous_inverse_view_projection;
-float4 lit_environment; // RGB radiance, reserved
-uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom, local GI
-uint lit_history_invalid; // Per-signal incompatibility: direct=1, reflection=2, AO=4, final TAA=8, SSIL=16.
-float4 lit_controls; // exposure multiplier,shadow bias,AO radius,SSR max distance
+float4 lit_environment; // Uniform RGB sky radiance: sky_color * sky_intensity, times the map mean when one is bound.
+float4 lit_sky; // cos and sin of the map yaw, 2^k background storage scale, 1 when a sky map is bound
+float4 lit_sky_radiance; // sky_color * sky_intensity
+Texture2D<float4> lit_sky_background; // Equirectangular, mipmapped; row 0 is +Y, u = 0.5 faces +Z.
+TextureCube<float4> lit_sky_cube; // 4^2 solid-angle box filter of the same map, unscaled.
+SamplerState lit_sky_sampler; // Linear, wrapping u and clamping v.
+uint lit_effect_flags; // shadows, DDGI, AO, reflections, TAA, bloom
+uint lit_history_invalid; // Per-signal incompatibility: reflection=2, AO=4, final TAA=8.
+float4 lit_controls; // exposure multiplier,secondary ray origin offset (m),AO radius,SSR max distance
 float4 lit_temporal; // history weight,roughness threshold,radiance change,visibility geometry change
 float4 lit_jitter; // current xy,previous xy; viewport pixel units
 
@@ -99,6 +104,42 @@ float3 lit_view_direction(float2 uv) {
     float middle=lerp(lit_depth_near_value(),lit_depth_far_value(),.5);
     return normalize(lit_world(uv,lit_depth_near_value())-lit_world(uv,middle));
 }
+// Map space of a world direction: the inverse of the yaw, which turns +X toward -Z.
+float3 lit_sky_map_direction(float3 world) {
+    return float3(world.x*lit_sky.x-world.z*lit_sky.y,world.y,world.x*lit_sky.y+world.z*lit_sky.x);
+}
+// Incident sky radiance along a world direction, at the cube's 4^2 resolution.
+float3 lit_sky_incident(float3 direction) {
+    if(lit_sky.w==0)return lit_environment.rgb;
+    return lit_sky_radiance.rgb*lit_sky_cube.SampleLevel(lit_linear_sampler,lit_sky_map_direction(direction),0).rgb;
+}
+float2 lit_sky_uv(float3 d) {return float2(.5+atan2(d.x,d.z)*(.5/LIT_PI),acos(clamp(d.y,-1,1))/LIT_PI);}
+// The sky seen behind a window pixel, on the unjittered pixel grid: the map is
+// already filtered, so jittering it would only make it shimmer. Its footprint
+// comes from the neighbouring pixels' directions; the u difference wraps so the
+// seam keeps the local level.
+float3 lit_sky_background_at(uint2 pixel) {
+    float2 pitch=1/float2(lit_size_frame.xy),uv=(pixel+.5+lit_jitter.xy)*pitch;
+    float2 t=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv)));
+    float2 dx=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv+float2(pitch.x,0))))-t;
+    float2 dy=lit_sky_uv(lit_sky_map_direction(-lit_view_direction(uv+float2(0,pitch.y))))-t;
+    dx.x-=round(dx.x);dy.x-=round(dy.x);
+    return lit_sky_radiance.rgb*lit_sky.z*lit_sky_background.SampleGrad(lit_sky_sampler,t,dx,dy).rgb;
+}
+// Motion of a background pixel on the unjittered grid, so z (jitter coverage) is 0.
+// The sky lies at infinity: its previous position is the same direction under the
+// previous view-projection with w = 0, which drops the camera translation.
+// Parallel (orthographic) rays see one direction in every pixel, so a pixel keeps
+// its place. A direction behind the previous camera was not on screen: its
+// position is outside the window, kept finite for FP16 like far-off positions.
+float4 lit_background_motion(uint2 pixel) {
+    float2 pitch=1/float2(lit_size_frame.xy),uv=(pixel+.5)*pitch;
+    float valid=lit_size_frame.w!=0?1:0;
+    if(all(lit_previous_view_projection._m03_m13_m23==0))return float4(0,0,0,valid);
+    float4 previous=mul(float4(-lit_view_direction(uv+lit_jitter.xy*pitch),0),lit_previous_view_projection);
+    if(!(previous.w>0))return float4(-1-uv,0,0);
+    return float4(clamp(lit_window_uv(previous)-lit_jitter.zw*pitch,-1,2)-uv,0,valid);
+}
 uint lit_hash(uint x) { x^=x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; return x^(x>>16); }
 float lit_random(inout uint seed) { seed=lit_hash(seed); return (seed>>8)*(1.0/16777216.0); }
 float3 lit_safe_normal(float3 n) {
@@ -174,7 +215,7 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
         lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
-struct LitSurface { float3 position,normal,geometric_normal,base; float roughness,metallic; bool closed,double_sided; };
+struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed,double_sided,emission_two_sided; };
 LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float footprint) {
     LitInstance instance=lit_instances[instance_id];
     LitRayTriangle face=lit_rt_triangles[instance.geometry.x+primitive];
@@ -198,6 +239,6 @@ LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 po
     float4 tangent=a.tangent*(1-bary.x-bary.y)+b.tangent*bary.x+c.tangent*bary.y;
     tangent.xyz=material_transform_tangent(tangent.xyz,instance.world);tangent.w*=instance.normal_x.w;
     s.normal=material_normal(surface,lit_triangle_uv(face,bary),0,0,footprint*uv_density,false,s.normal,tangent,material.roughness);
-    s.base=material.base;s.roughness=material.roughness;s.metallic=material.metallic;
-    s.double_sided=surface.flags.y!=0;return s;
+    s.base=material.base;s.roughness=material.roughness;s.metallic=material.metallic;s.emissive=max(material.emissive,0);
+    s.double_sided=surface.flags.y!=0;s.emission_two_sided=surface.flags.z!=0;return s;
 }

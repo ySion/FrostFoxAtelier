@@ -220,7 +220,41 @@ void verify_material_resources() {
     const auto old_surface=capture(a);changed(document.close());collect(document);
     require(old_surface->description().parameters.roughness==.8f && old_surface->description().textures[0].image,
         "Closing the Runtime invalidated an owning render capture.");
-    std::ofstream(evidence/"acceptance.txt")<<"Material resources acceptance: PASS\nRuntime identity, reflection, texture import, shared edits, explicit inheritance, cancel, Undo/Redo, save/reopen, duplicate, clear mesh, DSL, snapshot lifetime.\n";
+    // A Radiance .hdr in Content is a sky asset; one key returns one map until refresh sees its file change.
+    const auto radiance=[](std::uint32_t height,char exponent) {
+        auto bytes="#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y "+std::to_string(height)+" +X "+std::to_string(2*height)+"\n";
+        for(std::uint32_t i=0;i<2*height*height;++i) bytes+=std::string{char(128),char(128),char(128),exponent};
+        return bytes;
+    };
+    fs::create_directories(project.root()/"Content/Sky");
+    const auto sky_file=project.root()/"Content/Sky/Clear.HDR",broken_file=project.root()/"Content/Sky/Broken.hdr";
+    take(editor::write_file(sky_file,radiance(1,char(129))));take(editor::write_file(broken_file,"broken\n"));
+    take(project.refresh());
+    const auto sky_key=[&](std::wstring_view name) {
+        const auto at=std::ranges::find_if(project.entries(),[&](const auto& entry){return entry.path.filename()==name;});
+        require(at!=project.entries().end() && at->kind==editor::AssetKind::sky && at->key.starts_with("project/"),"A .hdr file was not catalogued as a sky asset.");
+        return at->key;
+    };
+    const auto clear=sky_key(L"Clear.HDR"),broken=sky_key(L"Broken.hdr");
+    const auto sky=take(project.sky_map(clear));
+    require(sky.key==clear && sky.name==L"Clear" && sky.map && sky.map->width()==2 && take(project.sky_map(clear)).map==sky.map,
+        "A sky asset did not resolve, or one key returned two maps.");
+    take(project.refresh());require(take(project.sky_map(clear)).map==sky.map,"A refresh that saw no change replaced a cached sky map.");
+    take(editor::write_file(sky_file,radiance(2,char(130))));take(project.refresh());
+    const auto rewritten=take(project.sky_map(clear)).map;
+    require(rewritten && rewritten!=sky.map && rewritten->width()==4,"A rewritten sky file did not give a new map after refresh.");
+    const auto sky_error=[&](std::string_view key) {
+        const auto result=project.sky_map(key);require(!result,"An invalid sky map key resolved.");return result.error().message;
+    };
+    const std::string absent="project/{00000000-0000-0000-0000-000000000000}";
+    require(sky_error(absent)=="Sky map key is not a Radiance .hdr asset of this project: "+absent,"A missing sky map key was not named.");
+    require(sky_error(texture).starts_with("Sky map key names Content/") && sky_error(texture).ends_with(", which is not a Radiance .hdr asset."),
+        "A texture key resolved as a sky map or did not name its file.");
+    require(sky_error(broken).starts_with("Sky map Content/Sky/Broken.hdr is not a valid Radiance HDR file: Not a Radiance HDR file."),
+        "A corrupt sky file did not report its path and the decoder's reason.");
+    fs::remove(broken_file);
+    require(sky_error(broken).starts_with("Sky map Content/Sky/Broken.hdr could not be read: "),"An unreadable sky file did not report its path.");
+    std::ofstream(evidence/"acceptance.txt")<<"Material resources acceptance: PASS\nRuntime identity, reflection, texture import, shared edits, explicit inheritance, cancel, Undo/Redo, save/reopen, duplicate, clear mesh, DSL, snapshot lifetime, sky map assets.\n";
     std::puts("Material resources acceptance: PASS");
 }
 // Deleted project resources: strict loading rejects the scene; tolerant loading keeps

@@ -1,7 +1,1041 @@
 {
-  "version": 6,
-  "next_id": "31",
-  "world": {},
+  "entities": [
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.26,
+            0.3,
+            0.34
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "16",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.82,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "1",
+      "name": "Stone floor",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          -0.25,
+          0.5
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.0,
+          0.5,
+          10.0
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.58,
+            0.12,
+            0.035
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "17",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.84,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "2",
+      "name": "Warm west wall",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -5.0,
+          1.6,
+          0.5
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.24,
+          3.2,
+          10.0
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.035,
+            0.22,
+            0.48
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "18",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.84,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "3",
+      "name": "Cool east wall",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          5.0,
+          1.6,
+          0.5
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.24,
+          3.2,
+          10.0
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.42,
+            0.43,
+            0.46
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "19",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.82,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "4",
+      "name": "Back wall",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          1.6,
+          5.5
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.0,
+          3.2,
+          0.24
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.58,
+            0.6,
+            0.62
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "20",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.75,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "5",
+      "name": "Stone pillar",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -1.5,
+          1.2,
+          1.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.1,
+          2.4,
+          1.1
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.65,
+            0.28,
+            0.08
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "21",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.88,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.24,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "6",
+      "name": "Copper block",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          1.2,
+          0.65,
+          -0.5
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.3,
+          1.3,
+          1.3
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.55,
+            0.62,
+            0.7
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "22",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.95,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.14,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "7",
+      "name": "Steel block",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          2.4,
+          0.9,
+          2.6
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.9,
+          1.8,
+          0.9
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.14,
+            0.5,
+            0.33
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "23",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.9,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "8",
+      "name": "Matte lowpoly block",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -2.9,
+          0.5,
+          -1.7
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.32,
+            0.34,
+            0.38
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "24",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.72,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.16,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "9",
+      "name": "Reflective floor slab",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.25,
+          0.04,
+          2.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.1,
+          0.08,
+          3.4
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.12,
+            0.03,
+            0.01
+          ],
+          "emissive": [
+            3.0,
+            0.45,
+            0.06
+          ],
+          "enabled": true,
+          "id": "25",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.75,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "10",
+      "name": "Independent emissive accent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -3.8,
+          1.4,
+          4.9
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.7,
+          1.4,
+          0.25
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "26",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.87,
+                "z": 0.7
+              },
+              "height": 2.0,
+              "intensity": 1.8,
+              "kind": "directional",
+              "range": 12.0,
+              "source_radius": 0.018,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "11",
+      "name": "Main directional",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          5.0,
+          -2.0
+        ],
+        "rotation": [
+          0.53675234,
+          0.18786332,
+          0.0,
+          0.8225596
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "27",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.25,
+                "z": 0.055
+              },
+              "height": 2.0,
+              "intensity": 26.0,
+              "kind": "point",
+              "range": 12.0,
+              "source_radius": 0.16,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "12",
+      "name": "Warm point",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -3.0,
+          2.5,
+          -1.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "28",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 0.07,
+                "y": 0.35,
+                "z": 1.0
+              },
+              "height": 2.0,
+              "intensity": 22.0,
+              "kind": "point",
+              "range": 12.0,
+              "source_radius": 0.12,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "13",
+      "name": "Cool point",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          3.1,
+          2.1,
+          3.2
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "29",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 0.75,
+                "y": 0.87,
+                "z": 1.0
+              },
+              "height": 1.6,
+              "intensity": 9.0,
+              "kind": "rectangle",
+              "range": 12.0,
+              "source_radius": 0.0,
+              "two_sided": false,
+              "width": 2.2
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "14",
+      "name": "Ceiling rectangle",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.2,
+          4.5,
+          1.0
+        ],
+        "rotation": [
+          0.70710677,
+          0.0,
+          0.0,
+          0.70710677
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "32",
+          "name": "",
+          "properties": {
+            "antialiasing": "smaa",
+            "ao_radius": 0.35,
+            "bloom": true,
+            "ddgi": true,
+            "direct_candidates": 8,
+            "exposure_ev": 0.0,
+            "gtao": true,
+            "indirect_gain": 1.0,
+            "probe_bounce": 0.85,
+            "probe_rays": 128,
+            "probe_update_budget": 49,
+            "reflection_distance": 30.0,
+            "reflection_roughness": 0.6,
+            "shadows": true,
+            "sky_color": {
+              "x": 0.025,
+              "y": 0.035,
+              "z": 0.055
+            },
+            "sky_enabled": true,
+            "sky_intensity": 1.0,
+            "sky_rotation": 0.0,
+            "sssr": true,
+            "volume0": {
+              "blend_cells": 0.0,
+              "count_x": 7,
+              "count_y": 4,
+              "count_z": 7,
+              "enabled": true,
+              "maximum": {
+                "x": 6.0,
+                "y": 4.0,
+                "z": 7.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -5.0
+              },
+              "placement": "fixed"
+            },
+            "volume1": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume2": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume3": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            }
+          },
+          "sky_map": "",
+          "type": "world.EnvironmentComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "31",
+      "name": "Environment",
+      "properties": {},
+      "space": null,
+      "type": "world.Entity"
+    }
+  ],
+  "materials": [],
+  "next_id": "33",
   "roots": [
     "1",
     "2",
@@ -17,768 +1051,7 @@
     "12",
     "13",
     "14",
-    "15"
+    "31"
   ],
-  "entities": [
-    {
-      "id": "1",
-      "type": "world.StaticMeshEntity",
-      "name": "Stone floor",
-      "enabled": true,
-      "space": {
-        "position": [
-          0,
-          -0.25,
-          0.5
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          10,
-          0.5,
-          10
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.26,
-            0.3,
-            0.34
-          ],
-          "roughness": 0.82,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "16",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "2",
-      "type": "world.StaticMeshEntity",
-      "name": "Warm west wall",
-      "enabled": true,
-      "space": {
-        "position": [
-          -5,
-          1.6,
-          0.5
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          0.24,
-          3.2,
-          10
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.58,
-            0.12,
-            0.035
-          ],
-          "roughness": 0.84,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "17",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "3",
-      "type": "world.StaticMeshEntity",
-      "name": "Cool east wall",
-      "enabled": true,
-      "space": {
-        "position": [
-          5,
-          1.6,
-          0.5
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          0.24,
-          3.2,
-          10
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.035,
-            0.22,
-            0.48
-          ],
-          "roughness": 0.84,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "18",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "4",
-      "type": "world.StaticMeshEntity",
-      "name": "Back wall",
-      "enabled": true,
-      "space": {
-        "position": [
-          0,
-          1.6,
-          5.5
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          10,
-          3.2,
-          0.24
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.42,
-            0.43,
-            0.46
-          ],
-          "roughness": 0.82,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "19",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "5",
-      "type": "world.StaticMeshEntity",
-      "name": "Stone pillar",
-      "enabled": true,
-      "space": {
-        "position": [
-          -1.5,
-          1.2,
-          1
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1.1,
-          2.4,
-          1.1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.58,
-            0.6,
-            0.62
-          ],
-          "roughness": 0.75,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "20",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "6",
-      "type": "world.StaticMeshEntity",
-      "name": "Copper block",
-      "enabled": true,
-      "space": {
-        "position": [
-          1.2,
-          0.65,
-          -0.5
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1.3,
-          1.3,
-          1.3
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.65,
-            0.28,
-            0.08
-          ],
-          "roughness": 0.24,
-          "metallic": 0.88,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "21",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "7",
-      "type": "world.StaticMeshEntity",
-      "name": "Steel block",
-      "enabled": true,
-      "space": {
-        "position": [
-          2.4,
-          0.9,
-          2.5999999999999996
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          0.9,
-          1.8,
-          0.9
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.55,
-            0.62,
-            0.7
-          ],
-          "roughness": 0.14,
-          "metallic": 0.95,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "22",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "8",
-      "type": "world.StaticMeshEntity",
-      "name": "Matte lowpoly block",
-      "enabled": true,
-      "space": {
-        "position": [
-          -2.9,
-          0.5,
-          -1.7
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.14,
-            0.5,
-            0.33
-          ],
-          "roughness": 0.9,
-          "metallic": 0,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "23",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "9",
-      "type": "world.StaticMeshEntity",
-      "name": "Reflective floor slab",
-      "enabled": true,
-      "space": {
-        "position": [
-          0.25,
-          0.04,
-          2.0999999999999996
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          3.1,
-          0.08,
-          3.4
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.32,
-            0.34,
-            0.38
-          ],
-          "roughness": 0.16,
-          "metallic": 0.72,
-          "emissive": [
-            0,
-            0,
-            0
-          ],
-          "properties": {},
-          "id": "24",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "10",
-      "type": "world.StaticMeshEntity",
-      "name": "Independent emissive accent",
-      "enabled": true,
-      "space": {
-        "position": [
-          -3.8,
-          1.4,
-          4.9
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          0.7,
-          1.4,
-          0.25
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "builtin/cube",
-          "base_color": [
-            0.12,
-            0.03,
-            0.01
-          ],
-          "roughness": 0.75,
-          "metallic": 0,
-          "emissive": [
-            3,
-            0.45,
-            0.06
-          ],
-          "properties": {},
-          "id": "25",
-          "name": "StaticMeshComponent",
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "11",
-      "type": "world.Entity",
-      "name": "Main directional",
-      "enabled": true,
-      "space": {
-        "position": [
-          0,
-          5,
-          -2
-        ],
-        "rotation": [
-          0.5367523272229081,
-          0.18786331452801783,
-          0,
-          0.8225596113810472
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "directional",
-              "color": {
-                "x": 1,
-                "y": 0.87,
-                "z": 0.7
-              },
-              "intensity": 1.8,
-              "range": 12,
-              "source_radius": 0.018,
-              "width": 2,
-              "height": 2,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "26",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "12",
-      "type": "world.Entity",
-      "name": "Warm point",
-      "enabled": true,
-      "space": {
-        "position": [
-          -3,
-          2.5,
-          -1
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "point",
-              "color": {
-                "x": 1,
-                "y": 0.25,
-                "z": 0.055
-              },
-              "intensity": 26,
-              "range": 12,
-              "source_radius": 0.16,
-              "width": 2,
-              "height": 2,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "27",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "13",
-      "type": "world.Entity",
-      "name": "Cool point",
-      "enabled": true,
-      "space": {
-        "position": [
-          3.1,
-          2.1,
-          3.2
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "point",
-              "color": {
-                "x": 0.07,
-                "y": 0.35,
-                "z": 1
-              },
-              "intensity": 22,
-              "range": 12,
-              "source_radius": 0.12,
-              "width": 2,
-              "height": 2,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "28",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "14",
-      "type": "world.Entity",
-      "name": "Ceiling rectangle",
-      "enabled": true,
-      "space": {
-        "position": [
-          0.2,
-          4.5,
-          1
-        ],
-        "rotation": [
-          0.7071067811865475,
-          0,
-          0,
-          0.7071067811865475
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "rectangle",
-              "color": {
-                "x": 0.75,
-                "y": 0.87,
-                "z": 1
-              },
-              "intensity": 9,
-              "range": 12,
-              "source_radius": 0,
-              "width": 2.2,
-              "height": 1.6,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "29",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "15",
-      "type": "world.Entity",
-      "name": "Sky Light",
-      "enabled": true,
-      "space": {
-        "position": [
-          0,
-          0,
-          0
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "sky",
-              "color": {
-                "x": 0.025,
-                "y": 0.035,
-                "z": 0.055
-              },
-              "intensity": 1,
-              "range": 10,
-              "source_radius": 0,
-              "width": 1,
-              "height": 1,
-              "two_sided": false,
-              "casts_shadow": false
-            }
-          },
-          "id": "30",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    }
-  ]
+  "version": 9
 }

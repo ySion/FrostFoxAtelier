@@ -155,5 +155,5 @@ ui Board(in bool visible, in Items<Card> rows) {
         "ui Host() { Child child { height: 23; single_line: true; } }").has_value(),
         "Height strategy validation incorrectly rejected distinct component inputs.");
     auto removed=surface.set_controls({});require(removed.has_value(),"Composition unmount failed.");route(*removed);live.commit_controls();
-    std::printf("Composed UI acceptance: PASS (typed text, isolated state, keyed reorder/remount, save/recover, draft preservation); last compile %.1f ms\n",live.compile_milliseconds());
+    std::puts("Composed UI acceptance: PASS (typed text, isolated state, keyed reorder/remount, save/recover, draft preservation)");
 }

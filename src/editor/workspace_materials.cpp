@@ -34,8 +34,13 @@ std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target,const S
             auto state=material::read_material(session.world().runtime(),at->resource.id());
             if(state) {if(state->parent.registered()) state=material::read_material(session.world().runtime(),state->parent.id());if(state) current=state->source;}
         }
+        std::string shown=current; // The mesh default when no explicit material is bound.
+        if(current.empty()) if(auto mesh=presentation::read_static_mesh(session.world().runtime(),target.object)) {
+            const auto fallback=std::ranges::find(mesh->mesh.defaults,target.slot,&presentation::MaterialBinding::slot);
+            if(fallback!=mesh->mesh.defaults.end()) if(auto state=material::read_material(session.world().runtime(),fallback->resource.id())) shown=state->source;
+        }
         add(L"Use Mesh Default",{MaterialChoice::Kind::clear,target.object,target.slot,{}},current.empty());
-        if(!current.empty()) add(L"Edit Shared Material",{MaterialChoice::Kind::edit,target.object,target.slot,current});
+        if(!shown.empty()) add(L"Edit Shared Material",{MaterialChoice::Kind::edit,target.object,target.slot,shown});
     }
     bool first=true;
     for(const auto& entry:project->entries()) if(entry.kind==(texture?AssetKind::texture:AssetKind::material)) {

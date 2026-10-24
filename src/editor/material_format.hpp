@@ -11,12 +11,13 @@ inline Json encode(const MaterialAsset& asset) {
     for(std::size_t i=0;i<names.size();++i) {
         const auto& t=asset.description.textures[i];
         if(t.image && asset.textures[i].empty()) throw std::runtime_error("Save the texture asset before referencing it from a material.");
-        textures[names[i]]={{"source",asset.textures[i]},{"scale",t.scale},{"offset",t.offset},
-            {"rotation",t.rotation},{"address",static_cast<unsigned>(t.address)},{"channel",t.channel}};
+        textures[names[i]]={{"source",asset.textures[i]},{"scale",json_format::numbers(t.scale)},{"offset",json_format::numbers(t.offset)},
+            {"rotation",json_format::number(t.rotation)},{"address",static_cast<unsigned>(t.address)},{"channel",t.channel}};
     }
-    return {{"version",1},{"base_color",p.base_color},{"roughness",p.roughness},{"metallic",p.metallic},
-        {"normal_scale",p.normal_scale},{"normal_y_sign",p.normal_y_sign},{"emissive",p.emissive},
-        {"coverage",p.coverage==material::Coverage::mask?"mask":"opaque"},{"alpha_cutoff",p.alpha_cutoff},
+    using json_format::number;
+    return {{"version",1},{"base_color",json_format::numbers(p.base_color)},{"roughness",number(p.roughness)},{"metallic",number(p.metallic)},
+        {"normal_scale",number(p.normal_scale)},{"normal_y_sign",number(p.normal_y_sign)},{"emissive",json_format::numbers(p.emissive)},
+        {"coverage",p.coverage==material::Coverage::mask?"mask":"opaque"},{"alpha_cutoff",number(p.alpha_cutoff)},
         {"double_sided",p.double_sided},{"emission_two_sided",p.emission_two_sided},{"textures",std::move(textures)}};
 }
 inline MaterialAsset decode(const Json& value) {

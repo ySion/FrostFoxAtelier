@@ -18,7 +18,6 @@ public:
     void reset_document(); // Retire JIT scopes before the owner Runtime is closed.
     std::string_view diagnostic() const noexcept { return diagnostic_; }
     void close(); // Retire GPU work before HWND destruction.
-    double open_cpu_us() const noexcept { return open_cpu_us_; }
     unsigned open_present_count() const noexcept { return open_present_count_; }
     bool visible() const noexcept { return visible_; }
     HWND window() const noexcept { return window_.handle(); }
@@ -45,7 +44,6 @@ private:
     std::uint64_t revision_{};
     std::uint64_t measurement_revision_{};
     bool visible_{}, dirty_{}, closed_{};
-    double open_cpu_us_{};
     unsigned open_present_count_{};
     bool opening_{};
     float measured_dpi_{};

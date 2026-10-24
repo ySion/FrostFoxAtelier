@@ -52,9 +52,6 @@ struct ResourceLess {
     bool operator()(std::pair<AssetKind, std::string_view> a, std::pair<AssetKind, std::string_view> b) const noexcept { return a < b; }
 };
 using UnavailableResources = std::map<std::pair<AssetKind, std::string>, MissingResource, ResourceLess>;
-// The EnvironmentComponent field names of a World Settings option (a view option
-// for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
-std::vector<std::string> environment_field(std::string_view option);
 
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
@@ -74,6 +71,10 @@ public:
     const presentation::Scene& presentation() const noexcept { return presentation_; }
     // Borrowed running scene; invalidated by stop, close, or a failed update.
     physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
+    // Poses to draw the running simulation at this frame; empty without one. See PhysicsScene::presented_poses.
+    std::span<const presentation::PresentedPose> presented_poses() const noexcept {
+        return physics_ ? physics_->presented_poses() : std::span<const presentation::PresentedPose>{};
+    }
     std::span<const Parameter> parameters() const noexcept { return parameters_; }
     Selection selection() const noexcept { return selection_; }
     // Entity-level multi-selection; the active Entity (selection().entity) is the
@@ -89,19 +90,17 @@ public:
     // history item; undoing that edit removes it again. A disabled Environment (the component or an ancestor)
     // rejects any change.
     Result<void> set_environment(const rendering::SceneLightingSettings&);
-    // Load initialization of a freshly opened document, before any history: writes the
-    // environment, creating it when absent, without an undo entry or a modified mark.
-    // The next save writes it.
+    // Binds the Environment's sky map to a resolved asset, as one history item; an empty
+    // asset clears it. Creates the Environment like set_environment; a disabled one rejects.
+    Result<void> set_sky_map(const SkyAsset&);
+    // Load initialization of a freshly opened document without an Environment, before any
+    // history: creates it without an undo entry or a modified mark. The next save writes it.
     Result<void> initialize_environment(const rendering::SceneLightingSettings&);
-    // Whether the loaded file supplied World lighting, a version 6 world section with a
-    // key or a saved Environment, or initialize_environment has run. An Environment
-    // migrated only from a Sky Light does not count.
-    bool lighting_supplied() const noexcept { return lighting_supplied_; }
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
     Result<world::Commit> add_entity(TypeId actual = {});
-    Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {});
+    Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
     Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
     Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
@@ -143,10 +142,16 @@ public:
     // edited or saved as assets.
     Result<ObjectRoot> material_resource(Project&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
     Result<ObjectRoot> material_resource(Project&,const MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
+    // The mesh asset's default material per slot, as this document's shared material assets.
+    // Unavailable ones always stand in and are reported in `missing` when given.
+    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(Project&,const MeshAsset&,std::vector<MissingResource>* missing = nullptr);
+    // What each slot shows where no component binds it: the default material, else the imported surface.
+    // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
+    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(Project&,const MeshAsset&);
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
     Result<ObjectRoot> open_material(Project&,std::string_view key);
-    // The unavailable Mesh, Material or Texture a stand-in in this document replaces.
+    // The unavailable Mesh, Material, Texture or sky map a stand-in in this document replaces.
     const MissingResource* unavailable(AssetKind,std::string_view key) const;
     Result<MaterialAsset> material_asset(ObjectId) const;
     Result<std::vector<MaterialAsset>> material_assets() const;
@@ -216,10 +221,6 @@ public:
     Result<void> discard_retained(ObjectId);
     std::size_t placeholder_count() const noexcept;
     std::optional<std::uint64_t> document_identity(ObjectId) const;
-    // Legacy control bundles refer to pre-migration Actor/Component indices.
-    // Resolve them through the scene importer, then select live document IDs.
-    static Result<std::vector<std::pair<std::uint64_t,std::uint64_t>>> legacy_selection(std::string_view,
-        std::span<const std::pair<std::size_t,std::optional<std::size_t>>>);
     Result<ObjectId> local_object(std::uint64_t) const;
     bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || group_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
     void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
@@ -276,8 +277,10 @@ private:
     struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
     struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<presentation::MaterialBinding> before,after;};
     struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
+    // Undo and redo restore the stored map, so the scene sees the same pointer again.
+    struct SkyMapChange {ObjectRoot root;ObjectId entity;presentation::SkyMapBinding before,after;};
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
-    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,RetainedChange>;
+    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,SkyMapChange,RetainedChange>;
     // Sparse scene-record JSON text the loader could not apply. On the document entry,
     // materials are unreferenced definitions kept for write-back; on a component, they
     // are the scene materials its kept binding table names.
@@ -318,7 +321,6 @@ private:
     mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
     mutable std::uint64_t next_local_id_{1};
     bool play_{};
-    bool lighting_supplied_{};
     // Play copy: document identity to object, including objects the game destroyed.
     std::unordered_map<std::uint64_t,ObjectId> live_objects_;
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
@@ -349,8 +351,10 @@ private:
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
     struct EnvironmentEdit { std::vector<world::FieldPath> paths; std::vector<Scalar> values; };
     Result<EnvironmentEdit> environment_edit(const rendering::SceneLightingSettings&) const;
-    // A Detached Entity holding a new Environment with these values.
-    Result<ObjectRoot> create_environment(std::span<const world::FieldPath>,std::span<const Scalar>);
+    // The owning Entity of an Environment that World settings may change.
+    Result<ObjectId> admit_environment_edit(ObjectId) const;
+    // A Detached Entity holding a new Environment with these values and sky map.
+    Result<ObjectRoot> create_environment(std::span<const world::FieldPath>,std::span<const Scalar>,const presentation::SkyMapBinding* = nullptr);
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
     void forget_entity(ObjectId) noexcept;

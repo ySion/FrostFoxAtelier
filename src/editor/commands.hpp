@@ -88,7 +88,7 @@ inline constexpr std::array command_definitions{
     CommandDefinition{Command::save_all,CommandGroup::file,L"Save All",L""},
     CommandDefinition{Command::save_scene,CommandGroup::file,L"Save Scene",L"",true},
     CommandDefinition{Command::save_scene_as,CommandGroup::file,L"Save Scene As...",L"Ctrl+Shift+S"},
-    CommandDefinition{Command::import_mesh,CommandGroup::file,L"Import Mesh (OBJ)...",L"",true},
+    CommandDefinition{Command::import_mesh,CommandGroup::file,L"Import Mesh (OBJ, glTF)...",L"",true},
     CommandDefinition{Command::import_texture,CommandGroup::file,L"Import Texture...",L""},
     CommandDefinition{Command::create_material,CommandGroup::file,L"New Material...",L""},
     CommandDefinition{Command::refresh_assets,CommandGroup::file,L"Refresh Assets",L"F5"},

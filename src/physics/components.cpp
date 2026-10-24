@@ -57,26 +57,6 @@ Result<Types> register_types(Runtime& runtime) try {
         .field<&RagdollPartComponent::radius>("radius","此部件胶囊的半径，单位 m，必须大于 0。")
         .field<&RagdollPartComponent::capsule_half_height>("capsule_half_height","此部件胶囊中段沿 Y 轴的一半长度，不含两端半球，单位 m。")
         .publish());
-    take(NativeRegistration<VehicleSettings>{runtime,"physics.VehicleSettings",TypeKind::record,
-        "四轮车辆的轮位、轮径和悬挂尺寸。激活时建立车辆约束，修改后需停用并重新启用组件。"}
-        .field<&VehicleSettings::half_width>("half_width","左右轮心到车身中心线的横向距离，单位 m；不会改变底盘碰撞尺寸。")
-        .field<&VehicleSettings::half_length>("half_length","前后轮轴到车身中心的纵向距离，单位 m，必须大于 Wheel Radius。")
-        .field<&VehicleSettings::wheel_radius>("wheel_radius","四个车轮的半径，单位 m，必须大于 0。")
-        .field<&VehicleSettings::suspension_length>("suspension_length","车轮悬挂允许伸展的最大长度，单位 m，必须大于 0。")
-        .publish());
-    types.vehicle_component=take(NativeRegistration<VehicleComponent>{runtime,"physics.VehicleComponent",TypeKind::object,
-        "给 Dynamic 底盘添加四轮车辆约束。每个固定步读取油门、转向和刹车，并更新显式绑定的车轮 Entity。"}
-        .base<world::Component>().field<&VehicleComponent::wheels>("wheels",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence},
-            std::nullopt,{},{},"接收轮位和轮转姿态的 Entity。各 Entity 上的 VehicleWheelComponent 指定 Wheel Index；修改绑定前须停用车辆。")
-        .field<&VehicleComponent::settings>("settings","车轮位置、半径和悬挂尺寸；激活后修改这些设置需停用并重新启用。")
-        .field<&VehicleComponent::throttle>("throttle","油门输入，范围 -1–1。0 不加油门，正负值指定相反的驱动方向。")
-        .field<&VehicleComponent::steering>("steering","转向输入，范围 -1–1。0 回到正向，正负值指定相反的转向方向。")
-        .field<&VehicleComponent::brake>("brake","刹车输入，范围 0–1。0 不刹车，1 使用完整刹车输入。")
-        .publish());
-    types.vehicle_wheel_component=take(NativeRegistration<VehicleWheelComponent>{runtime,"physics.VehicleWheelComponent",TypeKind::object,
-        "将一个车轮 Entity 对应到车辆控制器的轮位，用于接收模拟后的姿态。"}
-        .base<world::Component>().field<&VehicleWheelComponent::wheel_index>("wheel_index","车辆轮位编号，范围 0–3。0/1 位于前轴，2/3 位于后轴；偶数位于局部 +X，奇数位于 -X。")
-        .publish());
     types.distance_constraint_component=take(NativeRegistration<DistanceConstraintComponent>{runtime,"physics.DistanceConstraintComponent",TypeKind::object,
         "限制所属 Entity 与目标 Entity 的物理 body 锚点距离。修改目标或距离范围后需重新建立约束。"}
         .base<world::Component>().field<&DistanceConstraintComponent::target>("target",{TypeReference::native<world::Entity>(),ValueForm::weak_reference},
@@ -158,7 +138,7 @@ Result<ObjectId> constraint_target(Runtime& runtime,ObjectId component) {
 namespace {
 template<class T, ReferenceSequence T::* Member>
 Result<std::vector<ObjectId>> bindings(Runtime& runtime,ObjectId component,std::size_t additional_capacity=0) {
-    return runtime.with_native<T>(component,[&](T& value)->Result<std::vector<ObjectId>> {
+    return runtime.with_native<const T>(component,[&](const T& value)->Result<std::vector<ObjectId>> {
         auto field=runtime.reference_field(component,value.*Member);if(!field) return std::unexpected(field.error());
         auto count=runtime.sequence_size(*field);if(!count) return std::unexpected(count.error());
         std::vector<ObjectId> result;result.reserve(*count+additional_capacity);
@@ -194,12 +174,6 @@ Result<void> set_ragdoll_parts(Runtime& runtime,ObjectId component,std::span<con
 Result<std::vector<ObjectId>> ragdoll_parts(Runtime& runtime,ObjectId component) {
     return bindings<RagdollComponent,&RagdollComponent::parts>(runtime,component);
 }
-Result<void> set_vehicle_wheels(Runtime& runtime,ObjectId component,std::span<const ObjectId> entities) {
-    return set_bindings<VehicleComponent,&VehicleComponent::wheels>(runtime,component,entities);
-}
-Result<std::vector<ObjectId>> vehicle_wheels(Runtime& runtime,ObjectId component) {
-    return bindings<VehicleComponent,&VehicleComponent::wheels>(runtime,component);
-}
 Result<void> set_query_ignored_entities(Runtime& runtime,ObjectId component,std::span<const ObjectId> entities) {
     return set_bindings<SceneQueryComponent,&SceneQueryComponent::ignored_entities>(runtime,component,entities,false);
 }
@@ -215,18 +189,19 @@ void ComponentSimulation::release(const Entry& entry) noexcept {
     switch(entry.kind) {
     case Kind::character: (void)scene_.destroy_character(entry.special);break;
     case Kind::ragdoll: (void)scene_.destroy_ragdoll(entry.special);break;
-    case Kind::vehicle: (void)scene_.destroy_vehicle(entry.special);break;
     case Kind::distance: (void)scene_.destroy_constraint(entry.constraint);break;
     case Kind::query: clear_query(entry.component,true);break;
     default:break;
     }
+    // Ragdoll parts follow the released controller no longer.
+    if(entry.kind==Kind::ragdoll) for(const auto target:entry.targets) scene_.forget_pose(target);
 }
 void ComponentSimulation::clear() noexcept {for(const auto& [id,entry]:entries_) {(void)id;release(entry);}entries_.clear();}
 ObjectId ComponentSimulation::bound_pose_writer(ObjectId object) const {
     for(const auto& [component,entry]:entries_) {
-        if(entry.kind!=Kind::ragdoll && entry.kind!=Kind::vehicle) continue;
+        if(entry.kind!=Kind::ragdoll) continue;
         if(std::ranges::find(entry.targets,object)==entry.targets.end()) continue;
-        const auto handle=entry.kind==Kind::ragdoll?scene_.ragdoll_handle(entry.entity):scene_.vehicle_handle(entry.entity);
+        const auto handle=scene_.ragdoll_handle(entry.entity);
         if(handle && *handle==entry.special) return component;
     }
     return {};
@@ -260,6 +235,7 @@ Result<void> ComponentSimulation::removed(ObjectId object,bool detached) try {
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::reconcile() try {
+    contained_=false;
     auto& runtime=world_.runtime();
     std::unordered_set<ObjectId> seen,owners;std::unordered_map<ObjectId,ObjectId> writers;
     std::vector<std::pair<Entry,bool>> desired_entries;
@@ -270,7 +246,7 @@ Result<void> ComponentSimulation::reconcile() try {
         for(auto component:take(world_.query(take(runtime.native_type<T>())))) owners.insert(take(world::inspect_component(runtime,component)).owner);
     };
     add_owners.template operator()<CharacterComponent>();add_owners.template operator()<RagdollComponent>();
-    add_owners.template operator()<VehicleComponent>();add_owners.template operator()<DistanceConstraintComponent>();
+    add_owners.template operator()<DistanceConstraintComponent>();
     add_owners.template operator()<ForceComponent>();add_owners.template operator()<KinematicMotionComponent>();
     add_owners.template operator()<SceneQueryComponent>();
     // A member's existing body or special controller claims its pose before any desired claim.
@@ -297,7 +273,6 @@ Result<void> ComponentSimulation::reconcile() try {
             Kind kind;
             if(is.template operator()<CharacterComponent>(item.id())) kind=Kind::character;
             else if(is.template operator()<RagdollComponent>(item.id())) kind=Kind::ragdoll;
-            else if(is.template operator()<VehicleComponent>(item.id())) kind=Kind::vehicle;
             else if(is.template operator()<DistanceConstraintComponent>(item.id())) kind=Kind::distance;
             else if(is.template operator()<ForceComponent>(item.id())) kind=Kind::force;
             else if(is.template operator()<KinematicMotionComponent>(item.id())) kind=Kind::kinematic;
@@ -314,10 +289,10 @@ Result<void> ComponentSimulation::reconcile() try {
                 desired.ancestors.push_back(node);
                 node=take(world::spatial_parent(runtime,node));
             }
-            if(kind==Kind::ragdoll || kind==Kind::vehicle) {
-                desired.targets=kind==Kind::ragdoll?take(ragdoll_parts(runtime,item.id())):take(vehicle_wheels(runtime,item.id()));
-                if(kind==Kind::ragdoll) require(!desired.targets.empty(),"Ragdoll requires explicit part Entity bindings.");
-                std::unordered_set<ObjectId> targets;std::set<unsigned> wheels;
+            if(kind==Kind::ragdoll) {
+                desired.targets=take(ragdoll_parts(runtime,item.id()));
+                require(!desired.targets.empty(),"Ragdoll requires explicit part Entity bindings.");
+                std::unordered_set<ObjectId> targets;
                 for(auto target:desired.targets) {
                     require(target!=ObjectId{} && targets.insert(target).second,"Physics bindings require distinct non-null Entities.");
                     const auto target_status=take(world::inspect_entity(runtime,target));
@@ -330,20 +305,15 @@ Result<void> ComponentSimulation::reconcile() try {
                     available&=take(world::inspect_entity(runtime,target)).state==world::EntityState::active;
                     ObjectId metadata;
                     for(const auto& child:take(world::components(runtime,target))) {
-                        const bool matches=kind==Kind::ragdoll?is.template operator()<RagdollPartComponent>(child.id()):is.template operator()<VehicleWheelComponent>(child.id());
-                        if(!matches) continue;
+                        if(!is.template operator()<RagdollPartComponent>(child.id())) continue;
                         require(metadata==ObjectId{},"Physics binding Entity has duplicate part metadata.");metadata=child.id();
                         available&=take(world::inspect_component(runtime,metadata)).active;
                     }
                     require(metadata!=ObjectId{},"Physics binding Entity is missing part metadata.");
-                    if(kind==Kind::vehicle) {
-                        const auto index=read<VehicleWheelComponent>(runtime,metadata,[](const auto& v){return v.wheel_index;});
-                        require(index<4 && wheels.insert(index).second,"Vehicle wheel indices must be unique and within [0,3].");
-                    }
                     desired.metadata.push_back(metadata);
                 }
             }
-            if(kind==Kind::vehicle || kind==Kind::distance || kind==Kind::force || kind==Kind::kinematic) {
+            if(kind==Kind::distance || kind==Kind::force || kind==Kind::kinematic) {
                 auto handle=scene_.body_handle(member.id());if(handle) desired.body=*handle;else available=false;
             }
             if(kind==Kind::distance) {
@@ -357,13 +327,14 @@ Result<void> ComponentSimulation::reconcile() try {
             }
             if(available) {
                 if(kind==Kind::character || kind==Kind::ragdoll) claim(member.id(),member.id());
-                if(kind==Kind::ragdoll || kind==Kind::vehicle) for(auto target:desired.targets) claim(target,item.id());
+                if(kind==Kind::ragdoll) for(auto target:desired.targets) claim(target,item.id());
             }
             desired_entries.emplace_back(std::move(desired),available);
         }
         if(duplicate) {keep_queries=true;throw Failure(std::move(*duplicate));}
         } catch(const std::exception& e) {
             if(!contain(world_,failure_of(e),member.id(),member.id())) throw;
+            contained_=true;
             writers=claimed;
             desired_entries.erase(std::remove_if(desired_entries.begin()+std::ptrdiff_t(planned),desired_entries.end(),
                 [&](const auto& entry){return !keep_queries || entry.first.kind!=Kind::query;}),desired_entries.end());
@@ -379,7 +350,6 @@ Result<void> ComponentSimulation::reconcile() try {
                 e.other_body==desired.other_body && e.targets==desired.targets && e.metadata==desired.metadata;
             if(kind==Kind::character) valid&=scene_.character_handle(e.entity)==e.special;
             if(kind==Kind::ragdoll) valid&=scene_.ragdoll_handle(e.entity)==e.special;
-            if(kind==Kind::vehicle) valid&=scene_.vehicle_handle(e.entity)==e.special;
             if(valid && (kind==Kind::character || kind==Kind::ragdoll)) valid=take(scene_.controller_transform_matches(e.entity,e.origin,e.rotation));
             if(valid) {e.ancestors=std::move(desired.ancestors);seen.insert(desired.component);continue;}
             release(e);entries_.erase(current);
@@ -398,8 +368,6 @@ Result<void> ComponentSimulation::reconcile() try {
                 return RagdollPart{std::to_string(parts.size()),v.parent_index,v.rest_position,v.radius,v.capsule_half_height};}));
             desired.special=take(scene_.create_ragdoll(desired.entity,parts));break;
         }
-        case Kind::vehicle:
-            desired.special=take(scene_.create_vehicle(desired.body,read<VehicleComponent>(runtime,desired.component,[](const auto& v){return v.settings;})));break;
         case Kind::distance: {
             auto limits=read<DistanceConstraintComponent>(runtime,desired.component,[](const auto& v){return std::pair{v.minimum,v.maximum};});
             desired.constraint=take(scene_.create_distance_constraint(desired.body,desired.other_body,limits.first,limits.second));break;
@@ -411,6 +379,7 @@ Result<void> ComponentSimulation::reconcile() try {
     } catch(const std::exception& e) {
         // An isolated controller is not created; an unconfirmed old one is released below.
         if(!contain(world_,failure_of(e),desired.component,desired.entity)) throw;
+        contained_=true;
     }
     for(auto it=entries_.begin();it!=entries_.end();) {
         if(seen.contains(it->first)) ++it;else {release(it->second);it=entries_.erase(it);}
@@ -425,11 +394,8 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
         case Kind::character: {
             const auto input=read<CharacterComponent>(runtime,id,[](const auto& v){return std::pair{v.velocity,v.jump};});
             take(scene_.set_character_input(e.special,input.first,input.second));
-            take(runtime.with_native<CharacterComponent>(id,[](auto& v)->Result<void>{v.jump=false;return {};}));break;
-        }
-        case Kind::vehicle: {
-            const auto input=read<VehicleComponent>(runtime,id,[](const auto& v){return std::array{v.throttle,v.steering,v.brake};});
-            take(scene_.set_vehicle_input(e.special,input[0],input[1],input[2]));break;
+            // A jump request is consumed; an idle one is left unwritten.
+            if(input.second) take(runtime.with_native<CharacterComponent>(id,[](auto& v)->Result<void>{v.jump=false;return {};}));break;
         }
         case Kind::force: {
             const auto input=read<ForceComponent>(runtime,id,[](const auto& v){return std::pair{v.force,v.initial_impulse};});
@@ -452,7 +418,6 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose>& poses) try {
-    auto& runtime=world_.runtime();
     for(const auto& [id,e]:entries_) {
         const auto appended=poses.size();
         try {
@@ -460,13 +425,6 @@ Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose
             auto pose=take(scene_.read_ragdoll_pose(e.special));
             require(pose.positions.size()==e.targets.size() && pose.rotations.size()==e.targets.size(),"Ragdoll pose does not match its Entity bindings.");
             for(std::size_t i=0;i<e.targets.size();++i) poses.push_back({e.targets[i],pose.positions[i],pose.rotations[i]});
-        } else if(e.kind==Kind::vehicle) {
-            const auto state=take(scene_.read_vehicle_state(e.special));
-            for(std::size_t i=0;i<e.targets.size();++i) {
-                const auto index=read<VehicleWheelComponent>(runtime,e.metadata[i],[](const auto& v){return v.wheel_index;});
-                require(index<4,"Vehicle wheel index is out of range.");
-                poses.push_back({e.targets[i],state.wheel_positions[index],state.wheel_rotations[index]});
-            }
         }
         } catch(const std::exception& failure) {
             if(!contain(world_,failure_of(failure),id,e.entity)) throw;

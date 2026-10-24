@@ -1,213 +1,428 @@
 {
-  "version": 6,
-  "next_id": "9",
-  "world": {},
+  "entities": [
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "6",
+          "materials": [],
+          "mesh": "project/{8C05964C-1952-45D6-94BA-718C2AAAD150}",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.65,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "1",
+      "name": "Sponza",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "7",
+          "materials": [],
+          "mesh": "project/{701C5C3F-DB7A-4E38-8C57-C4B7298C6A4D}",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.65,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "2",
+      "name": "Sponza curtains",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "8",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.87,
+                "z": 0.7
+              },
+              "height": 2.0,
+              "intensity": 3.5,
+              "kind": "directional",
+              "range": 12.0,
+              "source_radius": 0.018,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "3",
+      "name": "Sun",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          20.0,
+          0.0
+        ],
+        "rotation": [
+          0.5569754,
+          -0.37058362,
+          0.0,
+          0.74326724
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "9",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.456,
+                "z": 0.114
+              },
+              "height": 2.0,
+              "intensity": 60.0,
+              "kind": "point",
+              "range": 12.0,
+              "source_radius": 0.1,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "4",
+      "name": "Ground floor lamp",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -6.142,
+          4.171,
+          -4.806
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "10",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.456,
+                "z": 0.114
+              },
+              "height": 2.0,
+              "intensity": 60.0,
+              "kind": "point",
+              "range": 12.0,
+              "source_radius": 0.1,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "5",
+      "name": "Upper floor lamp",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -2.162,
+          9.285,
+          4.665
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "12",
+          "name": "",
+          "properties": {
+            "antialiasing": "smaa",
+            "ao_radius": 0.35,
+            "bloom": true,
+            "ddgi": true,
+            "direct_candidates": 8,
+            "exposure_ev": 0.0,
+            "gtao": true,
+            "indirect_gain": 1.0,
+            "probe_bounce": 0.85,
+            "probe_rays": 128,
+            "probe_update_budget": 672,
+            "reflection_distance": 30.0,
+            "reflection_roughness": 0.6,
+            "shadows": true,
+            "sky_color": {
+              "x": 1.0,
+              "y": 1.0,
+              "z": 1.0
+            },
+            "sky_enabled": true,
+            "sky_intensity": 0.5,
+            "sky_rotation": 65.0,
+            "sssr": true,
+            "volume0": {
+              "blend_cells": 0.0,
+              "count_x": 16,
+              "count_y": 12,
+              "count_z": 14,
+              "enabled": true,
+              "maximum": {
+                "x": 17.0,
+                "y": 20.0,
+                "z": 15.0
+              },
+              "minimum": {
+                "x": -21.0,
+                "y": -2.0,
+                "z": -10.0
+              },
+              "placement": "fixed"
+            },
+            "volume1": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume2": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume3": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            }
+          },
+          "sky_map": "project/{34DC7265-3CBC-4FEC-BAC2-790C51A440E3}",
+          "type": "world.EnvironmentComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "11",
+      "name": "Environment",
+      "properties": {},
+      "space": null,
+      "type": "world.Entity"
+    }
+  ],
+  "materials": [],
+  "next_id": "13",
   "roots": [
     "1",
     "2",
     "3",
-    "4"
+    "4",
+    "5",
+    "11"
   ],
-  "entities": [
-    {
-      "id": "1",
-      "type": "world.StaticMeshEntity",
-      "name": "Sponza Atrium",
-      "enabled": true,
-      "space": {
-        "position": [
-          0,
-          0,
-          0
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          0.01,
-          0.01,
-          0.01
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.StaticMeshComponent",
-          "enabled": true,
-          "mesh": "project/{239AB1BE-160D-471D-96D5-84B58A7D549B}",
-          "base_color": [
-            0.55,
-            0.55,
-            0.55
-          ],
-          "roughness": 0.85,
-          "id": "5",
-          "name": "StaticMeshComponent",
-          "properties": {},
-          "materials": []
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "2",
-      "type": "world.Entity",
-      "name": "Atrium sun",
-      "enabled": true,
-      "space": {
-        "position": [
-          0,
-          5,
-          -2
-        ],
-        "rotation": [
-          0.5367523272229081,
-          0.18786331452801783,
-          0,
-          0.8225596113810472
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "directional",
-              "color": {
-                "x": 1,
-                "y": 0.87,
-                "z": 0.7
-              },
-              "intensity": 3.5,
-              "range": 12,
-              "source_radius": 0.018,
-              "width": 2,
-              "height": 2,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "6",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "3",
-      "type": "world.Entity",
-      "name": "Warm movable light",
-      "enabled": true,
-      "space": {
-        "position": [
-          -4,
-          2,
-          0
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "point",
-              "color": {
-                "x": 1,
-                "y": 0.25,
-                "z": 0.055
-              },
-              "intensity": 90,
-              "range": 15,
-              "source_radius": 0.16,
-              "width": 2,
-              "height": 2,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "7",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    },
-    {
-      "id": "4",
-      "type": "world.Entity",
-      "name": "Cool east light",
-      "enabled": true,
-      "space": {
-        "position": [
-          7,
-          3,
-          1
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ],
-        "origin": null
-      },
-      "children": [],
-      "components": [
-        {
-          "type": "world.LightComponent",
-          "enabled": true,
-          "properties": {
-            "settings": {
-              "kind": "point",
-              "color": {
-                "x": 0.07,
-                "y": 0.35,
-                "z": 1
-              },
-              "intensity": 55,
-              "range": 13,
-              "source_radius": 0.12,
-              "width": 2,
-              "height": 2,
-              "two_sided": false,
-              "casts_shadow": true
-            }
-          },
-          "id": "8",
-          "name": "LightComponent"
-        }
-      ],
-      "properties": {}
-    }
-  ]
+  "version": 9
 }

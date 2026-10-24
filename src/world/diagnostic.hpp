@@ -15,10 +15,10 @@ namespace atelier::world {
 enum class Severity : std::uint8_t { info, warning, error };
 
 enum class DiagnosticKind : std::uint8_t {
-    behavior_failed, task_failed, invalid_value, degenerate_value, conflict,
+    behavior_failed, task_failed, invalid_value, degenerate_value,
     command_rejected, observer_failed,
     unknown_type, unknown_field, unknown_key, mismatch, converted,
-    reference_dropped, missing_resource, unreadable_resource,
+    reference_dropped, missing_resource, unreadable_resource, capacity_exceeded,
 };
 
 enum class DiagnosticPhase : std::uint8_t {
@@ -40,7 +40,6 @@ enum class DiagnosticPhase : std::uint8_t {
     case DiagnosticKind::task_failed: return "task_failed";
     case DiagnosticKind::invalid_value: return "invalid_value";
     case DiagnosticKind::degenerate_value: return "degenerate_value";
-    case DiagnosticKind::conflict: return "conflict";
     case DiagnosticKind::command_rejected: return "command_rejected";
     case DiagnosticKind::observer_failed: return "observer_failed";
     case DiagnosticKind::unknown_type: return "unknown_type";
@@ -51,6 +50,7 @@ enum class DiagnosticPhase : std::uint8_t {
     case DiagnosticKind::reference_dropped: return "reference_dropped";
     case DiagnosticKind::missing_resource: return "missing_resource";
     case DiagnosticKind::unreadable_resource: return "unreadable_resource";
+    case DiagnosticKind::capacity_exceeded: return "capacity_exceeded";
     }
     return "unknown";
 }

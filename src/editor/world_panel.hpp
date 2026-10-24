@@ -22,8 +22,8 @@ public:
     std::vector<ui::MenuItem> menu(ui::ControlKey,const renderer::ViewSettings&) const;
     void append(std::vector<ui::Control>&,ui::ControlKey,ui_language::LiveDocument&,const renderer::ViewSettings&,bool editable) const;
     void observe(const renderer::FrameStats&);
-    RenderPerformance& performance() noexcept {return performance_;}
-    const RenderPerformance& performance() const noexcept {return performance_;}
+    FramePerformance& performance() noexcept {return performance_;}
+    const FramePerformance& performance() const noexcept {return performance_;}
     void cancel() noexcept {edit_.reset();}
     bool editing() const noexcept {return edit_.has_value();}
     unsigned selected_volume() const noexcept {return slot_;}
@@ -31,7 +31,7 @@ private:
     struct Edit {ui::ControlKey key;double value;};
     unsigned slot_{};
     std::optional<Edit> edit_;
-    RenderPerformance performance_;
+    FramePerformance performance_;
     mutable PropertyHelpCache help_;
     std::array<renderer::ProbeVolumeStats,renderer::probe_volume_limit> observed_{};
     std::array<std::array<std::wstring,6>,renderer::probe_volume_limit> readouts_{};

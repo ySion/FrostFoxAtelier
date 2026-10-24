@@ -5,7 +5,7 @@ void reject_bound_native_controllers(PhysicsFixture& fixture,atelier::ObjectId t
         "Bound-writer rejection fixture must have unit world scale and no ordinary body.");
     const std::array parts{p::RagdollPart{"Blocked root",-1,{0,0,0},.2f,.25f}};
     require(!fixture.scene->create_character(target) && !fixture.scene->create_ragdoll(target,parts),
-        "Manual native controller stole a bound part/wheel Entity's simulation pose.");
+        "Manual native controller stole a bound part Entity's simulation pose.");
     require(!fixture.scene->character_handle(target) && !fixture.scene->ragdoll_handle(target) &&
         fixture.scene->body_count()==body_count && take(w::read_transform(fixture.runtime,target))==before,
         "Rejected native controller partially changed backend ownership or the bound Entity.");
@@ -99,6 +99,9 @@ void component_lifecycle() {
     const auto restored=take(f.scene->character_handle(entity.id()));
     committed(f.world.stop());require(!f.scene->read_character_state(restored),"World stop retained a character.");
     committed(f.world.start());step(f.world, *f.scene, 0);require(take(f.scene->character_handle(entity.id()))!=restored,"Restart retained the special handle.");
+    auto detached=take(f.world.detach(entity.id()));require(!f.scene->character_handle(entity.id()),"Detached Entity retained its character.");
+    step(f.world, *f.scene, 0);committed(f.world.restore(detached));step(f.world, *f.scene, 0);
+    require(bool(f.scene->character_handle(entity.id())),"Restored Entity did not reconstruct its character.");
     committed(f.world.stop());
     // A component may not silently become a second transform writer.
     auto physical=take(p::read_settings(f.runtime,entity.body.id()));physical.enabled=true;take(p::configure(f.runtime,entity.body.id(),physical));
@@ -113,17 +116,6 @@ void component_lifecycle() {
     require(conflict.notification_error && !f.world.running() && !f.world.take_diagnostics().empty(),
         "Body and Character components were accepted together.");committed(f.world.stop());
     committed(f.world.set_enabled(character.id(),false));
-    auto vehicle=take(w::create_component(f.runtime,f.physics_types.vehicle_component));
-    auto settings=take(p::read_settings(f.runtime,entity.body.id()));settings.motion=p::MotionKind::dynamic;
-    take(p::configure(f.runtime,entity.body.id(),settings));committed(f.world.attach_components(entity.id(),std::array{w::Attachment{vehicle.id()}}));
-    f.start();step(f.world, *f.scene, 0);const auto car=take(f.scene->vehicle_handle(entity.id()));
-    committed(f.world.set_enabled(entity.body.id(),false));require(!f.scene->read_vehicle_state(car),"Chassis disable retained vehicle controller.");
-    step(f.world, *f.scene, 0);committed(f.world.set_enabled(entity.body.id(),true));step(f.world, *f.scene, 0);
-    require(take(f.scene->vehicle_handle(entity.id()))!=car,"Chassis re-enable reused a vehicle handle.");
-    auto detached=take(f.world.detach(entity.id()));require(!f.scene->vehicle_handle(entity.id()),"Detached Entity retained vehicle controller.");
-    step(f.world, *f.scene, 0);committed(f.world.restore(detached));step(f.world, *f.scene, 0);
-    require(bool(f.scene->vehicle_handle(entity.id())),"Restored Entity did not reconstruct its vehicle.");
-    committed(f.world.stop());
 
     auto doll=f.make({12,4,0},{},false);
     auto controller=take(w::create_component(f.runtime,f.physics_types.ragdoll_component));
@@ -199,61 +191,57 @@ void entity_physics_bindings() {
     committed(f.world.reparent(character.id(),base.id(),w::ReparentRule::keep_local));
     auto driver=take(w::create_component(f.runtime,f.physics_types.character_component));
     committed(f.world.attach_components(character.id(),std::array{w::Attachment{driver.id()}}));
-    auto chassis=f.make({20,2,0},dynamic_body());
-    auto vehicle=take(w::create_component(f.runtime,f.physics_types.vehicle_component));
-    committed(f.world.attach_components(chassis.id(),std::array{w::Attachment{vehicle.id()}}));
-    auto wheel=take(w::create_entity(f.runtime));
-    take(f.world.set_transform(wheel.id(),{}));
-    auto metadata=take(w::create_component(f.runtime,f.physics_types.vehicle_wheel_component));
+    auto doll=f.make({20,2,0},{},false);
+    auto controller=take(w::create_component(f.runtime,f.physics_types.ragdoll_component));
+    committed(f.world.attach_components(doll.id(),std::array{w::Attachment{controller.id()}}));
+    auto part=take(w::create_entity(f.runtime));
+    take(f.world.set_transform(part.id(),{}));
+    auto metadata=take(w::create_component(f.runtime,f.physics_types.ragdoll_part_component));
     auto mesh=take(w::create_component(f.runtime,f.presentation_types.static_mesh_component));
     take(pr::set_geometry(f.runtime,mesh.id(),atelier::geometry::cube_mesh()));
-    committed(f.world.attach_components(wheel.id(),std::array{w::Attachment{metadata.id()},w::Attachment{mesh.id()}}));
-    committed(f.world.attach(wheel.id(),w::append,chassis.id()));
+    committed(f.world.attach_components(part.id(),std::array{w::Attachment{metadata.id()},w::Attachment{mesh.id()}}));
+    committed(f.world.attach(part.id(),w::append,doll.id()));
     require(!take(f.runtime.is_a(take(f.runtime.type_of(metadata.id())),f.presentation_types.static_mesh_component)),
-        "Wheel metadata still carries presentation or spatial inheritance.");
-    require(!p::set_vehicle_wheels(f.runtime,vehicle.id(),std::array{wheel.id(),wheel.id()}),
+        "Part metadata still carries presentation or spatial inheritance.");
+    require(!p::set_ragdoll_parts(f.runtime,controller.id(),std::array{part.id(),part.id()}),
         "Duplicate Entity bindings were accepted.");
-    take(p::set_vehicle_wheels(f.runtime,vehicle.id(),std::array{wheel.id()}));
-    require(take(p::vehicle_wheels(f.runtime,vehicle.id()))==std::vector{wheel.id()},"Explicit wheel binding was not preserved.");
-    const auto field=take(f.runtime.find_field(f.physics_types.vehicle_component,"wheels"));
-    const auto description=take(f.runtime.describe(f.physics_types.vehicle_component));
+    take(p::set_ragdoll_parts(f.runtime,controller.id(),std::array{part.id()}));
+    require(take(p::ragdoll_parts(f.runtime,controller.id()))==std::vector{part.id()},"Explicit part binding was not preserved.");
+    const auto field=take(f.runtime.find_field(f.physics_types.ragdoll_component,"parts"));
+    const auto description=take(f.runtime.describe(f.physics_types.ragdoll_component));
     const auto exposed=std::ranges::find(description->fields,field,&atelier::FieldInfo::id);
     require(exposed!=description->fields.end() && exposed->value.form==atelier::ValueForm::strong_sequence,"Entity binding is hidden from the shared type definition.");
-    f.start();step(f.world, *f.scene, 0);
-    const auto vehicle_handle=take(f.scene->vehicle_handle(chassis.id()));
-    reject_bound_native_controllers(f,wheel.id());
-    require(take(f.scene->vehicle_handle(chassis.id()))==vehicle_handle && bool(f.scene->read_vehicle_state(vehicle_handle)),
-        "Rejected native wheel controller replaced the original vehicle.");
-    committed(f.world.stop());
-    take(f.world.set_transform(wheel.id(),{{0,0,0},{0,0,0,1},{.35f,.35f,.15f}}));
+    // Off the controller, so only the part's own write-back can bring it onto the first body.
+    take(f.world.set_transform(part.id(),{{1,0,0},{0,0,0,1},{.35f,.35f,.15f}}));
     f.start();step(f.world, *f.scene, 0);
     const auto character_handle=take(f.scene->character_handle(character.id()));
     const auto initial=take(f.scene->read_character_state(character_handle));
     require(near(initial.position.x,12) && near(initial.position.z,0),"Nested Character used local pose as world pose.");
-    require(!p::set_vehicle_wheels(f.runtime,vehicle.id(),{}),"Active vehicle binding was mutable.");
+    require(!p::set_ragdoll_parts(f.runtime,controller.id(),{}),"Active ragdoll binding was mutable.");
     f.advance(2);
-    const auto vehicle_state=take(f.scene->read_vehicle_state(take(f.scene->vehicle_handle(chassis.id()))));
-    const auto world=take(w::world_matrix(f.runtime,wheel.id()));
-    require(near(world[12],vehicle_state.wheel_positions[0].x) && near(world[13],vehicle_state.wheel_positions[0].y) &&
-        near(world[14],vehicle_state.wheel_positions[0].z),"Wheel pose was not published through its bound Entity.");
-    require(take(w::read_transform(f.runtime,wheel.id())).scale==Vector3{.35f,.35f,.15f},"Physics pose overwrote visual Entity scale.");
+    const auto pose=take(f.scene->read_ragdoll_pose(take(f.scene->ragdoll_handle(doll.id()))));
+    const auto world=take(w::world_matrix(f.runtime,part.id()));
+    require(near(world[12],pose.positions[0].x) && near(world[13],pose.positions[0].y) &&
+        near(world[14],pose.positions[0].z),"Part pose was not published through its bound Entity.");
+    require(take(w::read_transform(f.runtime,part.id())).scale==Vector3{.35f,.35f,.15f},"Physics pose overwrote visual Entity scale.");
     const auto state=take(f.scene->read_character_state(character_handle));
     const auto character_world=take(w::world_matrix(f.runtime,character.id()));
     require(near(character_world[12],state.position.x) && near(character_world[13],state.position.y),
         "Nested Character pose did not use the batch spatial publication.");
-    committed(f.world.set_enabled(wheel.id(),false));
-    require(!f.scene->vehicle_handle(chassis.id()),"Deactivating a bound Entity retained its controller.");
-    step(f.world, *f.scene, 0);require(!f.scene->vehicle_handle(chassis.id()),"Incomplete binding recreated its controller.");
-    committed(f.world.set_enabled(wheel.id(),true));step(f.world, *f.scene, 0);
-    require(bool(f.scene->vehicle_handle(chassis.id())),"Reactivating a bound Entity did not recreate its controller.");
+    committed(f.world.set_enabled(part.id(),false));
+    require(!f.scene->ragdoll_handle(doll.id()),"Deactivating a bound Entity retained its controller.");
+    step(f.world, *f.scene, 0);require(!f.scene->ragdoll_handle(doll.id()),"Incomplete binding recreated its controller.");
+    committed(f.world.set_enabled(part.id(),true));step(f.world, *f.scene, 0);
+    require(bool(f.scene->ragdoll_handle(doll.id())),"Reactivating a bound Entity did not recreate its controller.");
     committed(f.world.stop());
-    // The wheel target cannot also be driven by its own ordinary rigid body.
+    // The part target cannot also be driven by its own ordinary rigid body.
     take(p::configure(f.runtime,mesh.id(),dynamic_body()));f.start();
     require(!f.world.update(0),"Two distinct producers were allowed to write one Entity pose.");
     committed(f.world.stop());require(f.scene->body_count()==0,"Rejected pose bindings leaked ordinary bodies.");
+    auto crate=f.make({24,2,0},dynamic_body());
     auto extra=take(w::create_component(f.runtime,f.world_types.collision_component));
-    committed(f.world.attach_components(chassis.id(),std::array{w::Attachment{extra.id()}}));
+    committed(f.world.attach_components(crate.id(),std::array{w::Attachment{extra.id()}}));
     const auto duplicate=take(f.world.start());
     require(duplicate.notification_error && !f.world.running() && f.scene->body_count()==0 &&
-        !f.scene->body_handle(chassis.id()),"Two Primitive writers on one Entity were accepted or failed to clean their indexes.");
+        !f.scene->body_handle(crate.id()),"Two Primitive writers on one Entity were accepted or failed to clean their indexes.");
 }

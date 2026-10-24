@@ -5,6 +5,8 @@
 #include "application/window.hpp"
 #include "application/presentation.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/timing.hpp"
+#include "editor/performance.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "editor/camera.hpp"
@@ -13,6 +15,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdio>
+#include <format>
 #include <functional>
 
 namespace atelier::application {
@@ -59,6 +62,25 @@ editor::CameraState camera_state(std::wstring_view text) {
     state.view=static_cast<editor::CameraView>(view);
     return state;
 }
+// The Play report in Project Output: frame statistics of the last window, the
+// means of the top-level phases and any timing structure errors of the run.
+void print_performance(const editor::FramePerformance& performance,std::uint64_t frames) {
+    const auto& cpu=performance.snapshot().cpu;
+    if(!cpu.samples) {std::printf("Performance: %llu frames, none accepted\n",static_cast<unsigned long long>(frames));return;}
+    const auto& frame=*cpu.phases[timing::frame.index()];
+    auto line=std::format("Performance: {} frames (window {}), frame mean {:.3f} ms, p95 {:.3f} ms, max {:.3f} ms",
+        frames,cpu.samples,frame.mean,frame.p95,frame.max);
+    if(cpu.interval) line+=std::format(", {:.1f} FPS",1000/cpu.interval->mean);
+    std::string phases="Performance phases (mean ms):";
+    for(const auto* marker:timing::catalog())
+        if(const auto& phase=cpu.phases[marker->index()];phase && marker->parent()==&timing::frame)
+            phases+=std::format(" {} {:.3f}",marker->key(),phase->mean);
+    phases+=std::format(" unattributed {:.3f}",cpu.unattributed->mean);
+    std::printf("%s\n%s\n",line.c_str(),phases.c_str());
+    if(const auto errors=performance.structure_errors())
+        std::printf("Performance: %llu timing structure errors, first %s\n",static_cast<unsigned long long>(errors),
+            performance.first_structure_error()?std::string(performance.first_structure_error()->key()).c_str():"frame");
+}
 }
 int run_project_command(std::span<wchar_t*> arguments) {
     try {
@@ -96,6 +118,7 @@ int run_project_command(std::span<wchar_t*> arguments) {
 int run_project(const RunOptions& options) {
     struct StopEvent {HANDLE value;~StopEvent(){if(value) CloseHandle(value);}} stop_event{options.stop_event};
     try {
+        require_frame_timing();
         if(options.stop_event) {DWORD flags{};if(!GetHandleInformation(options.stop_event,&flags)) throw std::runtime_error("Invalid inherited stop event.");}
         auto project=take(editor::Project::open(options.project));
         editor::ProjectDocument loaded;
@@ -175,9 +198,14 @@ int run_project(const RunOptions& options) {
         }
         auto previous=std::chrono::steady_clock::now();auto last_report=loaded.build;std::string ui_error;
         RenderClock lighting_clock;LitFallback lit_fallback;std::string render_failure;
+        timing::Recorder recorder;editor::FramePerformance performance;
         while(!options.frames || frame<options.frames) {
             if(options.stop_event && WaitForSingleObject(options.stop_event,0)==WAIT_OBJECT_0) break;
+            // One frame per loop; the idle sleeps below stay outside it.
+            timing::Recorder::Frame timed{recorder};
+            std::optional<std::uint64_t> sampled;
             if(window) {
+                timing::Scope input{phases::input};
                 window->poll([&](NativeEvent message) {
                     if(message.message==WM_SIZE || message.message==WM_DPICHANGED) {++surface_revision;effects(ui.cancel_interaction());return;}
                     if(message.message==WM_CANCELMODE || (message.message==WM_ACTIVATEAPP && !message.wparam)) {effects(ui.cancel_interaction());return;}
@@ -186,38 +214,44 @@ int run_project(const RunOptions& options) {
                     if(pointer && (!ui.presented() || ui.presented()->drawing->surface_revision!=surface_revision)) return;
                     effects(ui.input(*input));
                 });
-                if(window->closing()) break;
             }
-            if(loaded.code) static_cast<void>(loaded.code->poll(project));
-            if(loaded.code && loaded.code->report()!=last_report) {
-                last_report=loaded.code->report();
-                if(last_report->error) std::printf("Build: %s\n",last_report->error->message.c_str());
-                else std::printf("Build published: %llu\n",static_cast<unsigned long long>(last_report->published_version));
-                std::fflush(stdout);
+            if(window && window->closing()) {performance.observe(timed.finish(),std::nullopt);break;}
+            if(loaded.code) {
+                timing::Scope polling{phases::project};
+                static_cast<void>(loaded.code->poll(project));
+                if(loaded.code->report()!=last_report) {
+                    last_report=loaded.code->report();
+                    if(last_report->error) std::printf("Build: %s\n",last_report->error->message.c_str());
+                    else std::printf("Build published: %llu\n",static_cast<unsigned long long>(last_report->published_version));
+                    std::fflush(stdout);
+                }
             }
-            project_ui.sync(&project);
             const auto target=renderer?graphics(renderer->target()):renderer::Target{{1280,720},true};
             const auto extent=target.drawable?target.extent:ui::PixelExtent{};
             const auto now=std::chrono::steady_clock::now();
             const float dt=options.headless && options.frames?1.f/60:std::clamp(std::chrono::duration<float>(now-previous).count(),0.f,.1f);
             previous=now;if(started || target.drawable) elapsed+=dt;
-            auto prepared=take(project_ui.prepare(ui,{extent,window?window->dpi_scale():1.f,surface_revision},elapsed,
-                take(document.world().members()).size(),effects));
-            if(options.channel && !options.preview_ui) options.channel->service(document,project,report);
+            auto prepared=[&] {
+                timing::Scope describing{phases::ui};
+                project_ui.sync(&project);
+                return take(project_ui.prepare(ui,{extent,window?window->dpi_scale():1.f,surface_revision},elapsed,
+                    take(document.world().members()).size(),effects));
+            }();
+            if(options.channel && !options.preview_ui) {timing::Scope linking{phases::control};options.channel->service(document,project,report);}
             if(prepared && !started) {
                 if(!options.preview_ui) {auto begun=document.start();report_diagnostics();complete(std::move(begun));}
                 started=true;
                 std::printf("Project started: %s\n",editor::utf8(project.root().wstring()).c_str());std::fflush(stdout);
             }
             if(started && !options.preview_ui) {auto updated=document.update(dt);report_diagnostics();take(std::move(updated));}
-            take(document.collect_step());
+            {timing::Scope collecting{phases::gc};take(document.collect_step());}
             if(project_ui.revision()!=ui_revision) {
                 ui_revision=project_ui.revision();std::printf("Project UI published: %llu\n",static_cast<unsigned long long>(ui_revision));std::fflush(stdout);
             }
             if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty()) {std::printf("Project UI: %s\n",ui_error.c_str());std::fflush(stdout);}}
             if(prepared) {
                 if(renderer) {
-                    {auto refreshed=scene.refresh(document);report_diagnostics();take(std::move(refreshed));}
+                    {timing::Scope snapshot{phases::scene};auto refreshed=scene.refresh(document);report_diagnostics();take(std::move(refreshed));}
                     for(auto& mesh:scene.meshes) mesh.selected=false;
                     const auto matrices=camera.matrices(static_cast<float>(extent.width)/std::max(extent.height,1u));
                     renderer::ViewSettings view;view.shading=renderer::Shading::scene_lit;
@@ -240,16 +274,22 @@ int run_project(const RunOptions& options) {
                             throw std::runtime_error("Project renderer accepted a mismatched frame.");
                         if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
                         lighting_clock.accept(lighting_start,lighting_active && drawn.view.shading==renderer::Shading::scene_lit);
+                        sampled=result.accepted_id;
                     } else lighting_clock.reset();
-                } else if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the headless frame.");
+                } else {
+                    if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the headless frame.");
+                    sampled=prepared->drawing->id;
+                }
             } else lighting_clock.reset();
             if(window) static_cast<void>(window->text_input(ui.text_input()));
             ++frame;
+            performance.observe(timed.finish(),sampled);
             if(!renderer && !options.frames) Sleep(4);
             else if(!target.drawable) Sleep(16);
         }
         {auto stopped=document.stop();report_diagnostics();complete(std::move(stopped));}
         if(!options.report.empty()) take(editor::write_file(options.report,take(document.serialize())));
+        performance.publish();print_performance(performance,frame);
         std::printf("Project stopped: %llu frames\n",static_cast<unsigned long long>(frame));std::fflush(stdout);
         return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"Project run: %s\n",error.what());std::fflush(stderr);return 1;}

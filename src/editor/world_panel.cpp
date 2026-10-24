@@ -170,7 +170,6 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     group(key::root+101,wide(view_option(ViewOption::ddgi)->category),std::move(global));
     auto propagation=groups;groups=std::make_shared<std::vector<Item>>();
     auto debug=std::make_shared<std::vector<Item>>();
-    scalar(*debug,ViewOption::direct_reference);
     scalar(*debug,ViewOption::spatial_light_sampling);
     scalar(*debug,ViewOption::probe_feedback_visibility);
     scalar(*debug,ViewOption::probe_visualization);scalar(*debug,ViewOption::probe_debug_volume);
@@ -182,7 +181,6 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     auto lighting=std::make_shared<std::vector<Item>>();
     scalar(*lighting,ViewOption::exposure_ev);
     scalar(*lighting,ViewOption::shadows);scalar(*lighting,ViewOption::direct_candidates);
-    scalar(*lighting,ViewOption::shadow_bias);
     group(key::root+103,wide(view_option(ViewOption::shadows)->category),std::move(lighting));
     auto sky=std::make_shared<std::vector<Item>>();
     scalar(*sky,ViewOption::sky_enabled);scalar(*sky,ViewOption::sky_intensity);
@@ -191,7 +189,7 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     auto lighting_groups=groups;groups=std::make_shared<std::vector<Item>>();
     auto effects=std::make_shared<std::vector<Item>>();
     scalar(*effects,ViewOption::antialiasing);scalar(*effects,ViewOption::gtao);
-    scalar(*effects,ViewOption::ssil);scalar(*effects,ViewOption::ao_radius);
+    scalar(*effects,ViewOption::ao_radius);
     scalar(*effects,ViewOption::sssr);scalar(*effects,ViewOption::reflection_distance);
     scalar(*effects,ViewOption::reflection_roughness);scalar(*effects,ViewOption::bloom);
     group(key::root+104,wide(view_option(ViewOption::antialiasing)->category),std::move(effects));

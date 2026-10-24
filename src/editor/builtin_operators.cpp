@@ -138,7 +138,7 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
         if (context.project) {
             auto asset = context.project->mesh(key);
             if (!asset) return std::unexpected(asset.error());
-            added = document.create_static_mesh(*asset, context.cursor);
+            added = document.create_static_mesh(*asset, context.cursor, context.project);
         } else {
             const auto* asset = mesh_asset(key);
             if (!asset) return std::unexpected(Error{ErrorCode::invalid_definition, "Unknown mesh asset."});

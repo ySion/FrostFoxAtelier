@@ -51,6 +51,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_workspace.inl"
 #include "project_document.inl"
 #include "textured_obj.inl"
+#include "gltf_import.inl"
 #include "physics_examples.inl"
 #include "examples.inl"
 #include "dungeons.inl"
@@ -83,6 +84,7 @@ int main(int argc, char** argv) {
         if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--gltf") {verify_gltf_import();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--viewport-edit") {verify_viewport_editing();verify_entity_composition();return 0;}
         if((argc==2 || argc==3) && std::string_view(argv[1])=="--scene-lit") {
             verify_scene_lit_application(argc==3?std::filesystem::path{argv[2]}:std::filesystem::path{});return 0;
@@ -94,17 +96,15 @@ int main(int argc, char** argv) {
         if ((argc == 5 || argc == 6) && std::string_view(argv[1]) == "--profile-scene-cpu") {
             profile_scene_cpu(argv[2],argv[3],argv[4],argc==6?std::filesystem::path(argv[5]):std::filesystem::path{});return 0;
         }
+        if (argc == 5 && std::string_view(argv[1]) == "--profile-physics-cpu") {
+            profile_physics_cpu(argv[2],argv[3],argv[4]);return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "--profile-ui-reload") {
             profile_ui_reload(argv[2]);
             return 0;
         }
-        if (argc == 2 && std::string_view(argv[1]) == "--physics-test-project") {
-            verify_physics_test_project();
-            std::puts("Editor physics project acceptance: PASS");
-            return 0;
-        }
         // Each check runs once in the acceptance gate: a mode run by its own target is not repeated here.
-        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --examples | --physics-examples | --physics-test-project | --textured-obj | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-ui-reload output.csv]");
+        require(argc == 1, "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --examples | --physics-examples | --textured-obj | --gltf | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json | --profile-ui-reload output.csv]");
         stage="project document";verify_project_document();
         stage="declarative parameters";verify_declarative_parameters();
         stage="tooltip DSL";verify_tooltip_dsl();

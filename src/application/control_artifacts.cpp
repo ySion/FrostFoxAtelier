@@ -45,6 +45,11 @@ std::string mesh_hash(const geometry::Mesh& mesh) {
     }
     const auto bytes=shape.dump();return control::sha256(std::as_bytes(std::span(bytes)));
 }
+std::string sky_hash(const rendering::SkyMap& map) {
+    const auto bytes=Json{{"width",map.width()},{"height",map.height()},{"scale_exponent",map.scale_exponent()},{"mean",map.mean()},
+        {"pixels",control::sha256(std::as_bytes(map.pixels()))},{"cube",control::sha256(std::as_bytes(map.cube()))}}.dump();
+    return control::sha256(std::as_bytes(std::span(bytes)));
+}
 struct Com {
     Com() {if(FAILED(CoInitializeEx(nullptr,COINIT_MULTITHREADED))) throw Failure("storage_error","Cannot initialize image encoder");}
     ~Com() {CoUninitialize();}
@@ -83,10 +88,10 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
     // Resolve existing ancestors by identity, including case aliases/junctions,
     // before creating any output that a source traversal could encounter.
     if(!data.project.empty()) {
-        for(const auto* section:{"Config","Content","Source"}) {
+        for(const auto& section:data.roots) {
             const auto input=platform::windows_file_path(std::filesystem::canonical(data.project/section));
             for(auto parent=std::filesystem::canonical(directory.parent_path());;) {
-                if(std::filesystem::equivalent(platform::windows_file_path(parent),input)) throw Failure("invalid_destination","Repro output cannot be inside Config, Content or Source");
+                if(std::filesystem::equivalent(platform::windows_file_path(parent),input)) throw Failure("invalid_destination","Repro output cannot be inside a project folder ("+path_text(section)+")");
                 const auto next=parent.parent_path();if(next==parent || next.empty()) break;parent=next;
             }
         }
@@ -96,32 +101,46 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
     if(data.project.empty()) take(editor::Project::create(output/"Project"));
     else {
         std::uintmax_t bytes{};std::size_t files{};Json input_files=Json::array();
-        for(const auto* section:{"Config","Content","Source"}) {
+        const auto link=[](const std::filesystem::path& path) {return (GetFileAttributesW(platform::windows_file_path(path).c_str())&FILE_ATTRIBUTE_REPARSE_POINT)!=0;};
+        const auto copy=[&](const std::filesystem::path& item) {
+            checkpoint(cancel);
+            if(link(item)) throw Failure("dependency_mismatch","Repro export does not follow links");
+            const auto relative=item.lexically_relative(data.project);
+            const auto target=platform::windows_file_path(project/relative);
+            if(std::filesystem::is_directory(item)) {std::filesystem::create_directories(target);return;}
+            if(!std::filesystem::is_regular_file(item)) throw Failure("dependency_mismatch","Unsupported project file");
+            const auto length=std::filesystem::file_size(item);bytes+=length;
+            if(++files>10000 || length>256*1024*1024 || bytes>1024ull*1024*1024) throw Failure("resource_limit","Repro exceeds 10000 files / 1 GiB / 256 MiB per file");
+            const auto stamp=std::filesystem::last_write_time(item);const auto hash=control::sha256_file(item);
+            std::filesystem::create_directories(target.parent_path());
+            if(!std::filesystem::copy_file(item,target)) throw Failure("storage_error","Cannot copy project dependency");
+            if(stamp!=std::filesystem::last_write_time(item) || length!=std::filesystem::file_size(item) ||
+                hash!=control::sha256_file(item) || hash!=control::sha256_file(project/relative))
+                throw Failure("dependency_mismatch","Project dependency changed during export");
+            input_files.push_back({{"path",path_text(relative)},{"sha256",hash}});
+        };
+        // Config and Source are copied whole: the configuration is rewritten and the
+        // published code replaces Source below. Other folders hold assets; only the
+        // files of the scene's assets and their references are copied.
+        for(const auto* section:{"Config","Source"}) {
             const auto root=data.project/section;
-            if(GetFileAttributesW(platform::windows_file_path(root).c_str())&FILE_ATTRIBUTE_REPARSE_POINT) throw Failure("dependency_mismatch","Project sections cannot be links");
+            if(link(root)) throw Failure("dependency_mismatch","Project sections cannot be links");
             std::filesystem::create_directories(project/section);
-            for(const auto& item:std::filesystem::recursive_directory_iterator(root)) {
-                checkpoint(cancel);
-                if(GetFileAttributesW(platform::windows_file_path(item.path()).c_str())&FILE_ATTRIBUTE_REPARSE_POINT) throw Failure("dependency_mismatch","Repro export does not follow links");
-                const auto relative=item.path().lexically_relative(data.project);
-                const auto target=platform::windows_file_path(project/relative);
-                if(item.is_directory()) {std::filesystem::create_directories(target);continue;}
-                if(!item.is_regular_file()) throw Failure("dependency_mismatch","Unsupported project file");
-                const auto length=item.file_size();bytes+=length;
-                if(++files>10000 || length>256*1024*1024 || bytes>1024ull*1024*1024) throw Failure("resource_limit","Repro exceeds 10000 files / 1 GiB / 256 MiB per file");
-                const auto stamp=item.last_write_time();const auto hash=control::sha256_file(item.path());
-                if(!std::filesystem::copy_file(item.path(),target)) throw Failure("storage_error","Cannot copy project dependency");
-                if(stamp!=std::filesystem::last_write_time(item.path()) || length!=std::filesystem::file_size(item.path()) ||
-                    hash!=control::sha256_file(item.path()) || hash!=control::sha256_file(project/relative))
-                    throw Failure("dependency_mismatch","Project dependency changed during export");
-                input_files.push_back({{"path",path_text(relative)},{"sha256",hash}});
-            }
+            for(const auto& item:std::filesystem::recursive_directory_iterator(root)) copy(item.path());
         }
-        // Recheck the complete input set, including additions/removals, after copying.
+        const auto sections=files;
+        for(const auto& relative:data.files) {
+            if(const auto top=*relative.begin();top==L"Config" || top==L"Source") continue;
+            for(auto parent=relative.parent_path();!parent.empty();parent=parent.parent_path())
+                if(link(data.project/parent)) throw Failure("dependency_mismatch","Repro export does not follow links");
+            copy(data.project/relative);
+        }
+        std::filesystem::create_directories(project/"Content");
+        // Recheck the copied set after copying, including additions/removals in Config and Source.
         std::size_t current_files{};
-        for(const auto* section:{"Config","Content","Source"}) for(const auto& item:std::filesystem::recursive_directory_iterator(data.project/section))
+        for(const auto* section:{"Config","Source"}) for(const auto& item:std::filesystem::recursive_directory_iterator(data.project/section))
             if(item.is_regular_file()) ++current_files;
-        if(current_files!=files) throw Failure("dependency_mismatch","Project file set changed during export");
+        if(current_files!=sections) throw Failure("dependency_mismatch","Project file set changed during export");
         for(const auto& file:input_files) {checkpoint(cancel);if(control::sha256_file(data.project/control::wide(file.at("path").get<std::string>()))!=file.at("sha256").get<std::string>()) throw Failure("dependency_mismatch","Project changed during export");}
         data.manifest["input_files"]=std::move(input_files);
     }
@@ -172,6 +191,12 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
         checkpoint(cancel);auto loaded=take(clone.mesh(key));
         const auto expected=mesh_hash(*mesh);
         if(!loaded.mesh || mesh_hash(*loaded.mesh)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded mesh: "+key);
+        resources.push_back({{"key",key},{"content_sha256",expected}});
+    }
+    for(const auto& [key,map]:data.skies) {
+        checkpoint(cancel);const auto loaded=take(clone.sky_map(key)).map;
+        const auto expected=sky_hash(*map);
+        if(!loaded || sky_hash(*loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded sky map: "+key);
         resources.push_back({{"key",key},{"content_sha256",expected}});
     }
     data.manifest["resources"]=std::move(resources);data.manifest["project"]="Project";data.manifest["scene"]=path_text(scene_path);

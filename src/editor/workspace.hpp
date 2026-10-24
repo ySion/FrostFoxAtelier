@@ -165,7 +165,6 @@ struct Workspace {
     void set_ui_source(std::filesystem::path);
     std::filesystem::path ui_source() const;
     std::uint64_t ui_revision() const noexcept {return ui_document_?ui_document_->revision():0;}
-    double ui_compile_milliseconds() const noexcept {return ui_document_?ui_document_->compile_milliseconds():0;}
     std::shared_ptr<ui_language::Component> ui_component(std::string_view name) const {
         return ui_document_?ui_document_->component(name):nullptr;
     }

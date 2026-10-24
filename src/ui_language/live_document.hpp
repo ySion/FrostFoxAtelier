@@ -32,7 +32,6 @@ public:
     std::optional<std::string_view> attempted_source() const noexcept {return attempted_source_?std::optional<std::string_view>{*attempted_source_}:std::nullopt;}
     const std::filesystem::path& path() const noexcept {return path_;}
     std::uint64_t revision() const noexcept {return revision_;}
-    double compile_milliseconds() const noexcept {return compile_ms_;}
     // Auxiliary native surfaces share only the last committed authoring module.
     // Their Instances and accepted frames retain their own publication lifetimes.
     std::shared_ptr<Component> component(std::string_view name) const {return active_?active_->find(name):nullptr;}
@@ -62,6 +61,5 @@ private:
     std::string diagnostic_,failed_region_;
     bool changed_{},attempted_{},candidate_failed_{},pending_submission_{},submission_failed_{};
     std::uint64_t revision_{};
-    double compile_ms_{};
 };
 }

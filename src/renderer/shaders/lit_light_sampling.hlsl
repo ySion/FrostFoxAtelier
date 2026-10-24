@@ -7,26 +7,20 @@ struct LitLightSource {
     float4 radiance;
     float4 edge1_area;
     float4 edge2;
-    float4 uv01;
-    float4 uv2;
     uint4 meta;
 };
 struct LitLightProposal { float probability,accept; uint alias,reserved; };
 struct LitLightCell { uint offset,count; float mass; uint reserved; };
 struct LitSpatialLightProposal { uint source; float accept; uint alias; float probability; };
 StructuredBuffer<LitLightSource> lit_sources;
-StructuredBuffer<LitLightSource> lit_previous_sources;
 StructuredBuffer<LitLightProposal> lit_light_proposals;
 StructuredBuffer<LitLightCell> lit_light_cells;
 StructuredBuffer<LitSpatialLightProposal> lit_spatial_light_proposals;
 StructuredBuffer<uint> lit_spatial_source_slots;
 float4 lit_light_grid_origin; // Minimum XYZ, spacing.
 uint4 lit_light_grid_counts; // XYZ, enabled for this view.
-StructuredBuffer<uint> lit_current_to_previous;
-StructuredBuffer<uint> lit_previous_to_current;
-uint4 lit_source_counts; // local,directional,emissive,previous total
-uint4 lit_di_settings; // initial proposals,history multiplier,reference enabled,reference estimates
-uint lit_di_history_valid;
+uint4 lit_source_counts; // local, directional
+uint lit_hit_candidates; // RIS proposals per secondary hit.
 
 struct LitLightingSurface {
     float3 position,normal,geometric_normal,view,base;
@@ -37,22 +31,17 @@ struct LitLightEvaluation {
     float3 diffuse,specular,target,direction;
     float distance;
 };
-// A sampled endpoint and emission are independent of the receiver. Reuse keeps
-// this smaller value live across its MIS targets instead of rebuilding the same
-// endpoint (and reading textured emission) for each input surface.
+// A sampled endpoint and its emission, independent of the receiver.
 struct LitLightSample {
     float3 position, radiance, normal;
     float range, minimum_distance_squared, area;
+    float cutoff_offset; // Distance inside the emitter excluded from the range window.
     uint kind, flags;
 };
-// Structured-buffer stride is 24 bytes. Confidence is not an independent
-// sample count after spatial reuse; its cap never changes the normalized weight.
 struct LitReservoir {
     uint source;
     float2 uv;
-    // Unnormalized, visibility-free target at this reservoir's receiver.
-    // This replaces the spare DWORD without changing the 24-byte stride.
-    float weight,confidence,target;
+    float weight,target; // Unnormalized, visibility-free target at this reservoir's receiver.
 };
 
 LitReservoir lit_empty_reservoir() {
@@ -89,17 +78,6 @@ LitLightSample lit_prepare_light_sample(LitLightSource light, float2 sample_uv) 
         precise float3 area_radiance=prepared.radiance*prepared.area;
         prepared.radiance=area_radiance;
         prepared.normal=lit_safe_normal(light.direction_radius.xyz);
-    } else if(prepared.kind==3) {
-        if(light.meta.z==~0u||prepared.area<=0){prepared.kind=~0u;return prepared;}
-        float root=sqrt(sample_uv.x);
-        float2 bary=float2(root*(1-sample_uv.y),root*sample_uv.y);
-        prepared.position+=bary.x*light.edge1_area.xyz+bary.y*light.edge2.xyz;
-        MaterialSurface material=material_surfaces[light.meta.z];
-        float2 material_uv=light.uv01.xy*(1-bary.x-bary.y)+light.uv01.zw*bary.x+light.uv2.xy*bary.y;
-        if(!material_covered(material,material_uv,0,0,0,false)){prepared.kind=~0u;return prepared;}
-        prepared.radiance=max(material.emissive_metallic.rgb*material_read(material,4,material_uv,0,0,0,false).rgb,0);
-        // Mirrored edge winding does not change the inverse-transpose author front.
-        prepared.normal=lit_safe_normal(light.direction_radius.xyz);
     } else if(light.direction_radius.w>0) {
         // Finite point sources average sphere positions without an area factor.
         float z=2*sample_uv.x-1,phi=2*LIT_PI*sample_uv.y;
@@ -125,46 +103,40 @@ bool lit_light_incoming(LitLightSample prepared, LitLightingSurface surface,
         if(distance_squared<=0||!isfinite(distance_squared))return false;
         result.distance=sqrt(distance_squared);
         result.direction=delta/result.distance;
-        float attenuation;
-        if(prepared.kind==3) {
+        float cutoff=saturate(1-pow(max(result.distance-prepared.cutoff_offset,0)/prepared.range,4));
+        cutoff*=cutoff;
+        float attenuation=cutoff/max(distance_squared,prepared.minimum_distance_squared);
+        if(prepared.kind==1) {
             float cosine=dot(prepared.normal,-result.direction);
             cosine=(prepared.flags&1u)!=0?abs(cosine):saturate(cosine);
-            attenuation=prepared.area*cosine/distance_squared;
-        } else {
-            float cutoff=saturate(1-pow(result.distance/prepared.range,4));
-            cutoff*=cutoff;
-            attenuation=cutoff/max(distance_squared,prepared.minimum_distance_squared);
-            if(prepared.kind==1) {
-                float cosine=dot(prepared.normal,-result.direction);
-                cosine=(prepared.flags&1u)!=0?abs(cosine):saturate(cosine);
-                attenuation*=cosine;
-            }
+            attenuation*=cosine;
         }
         incoming*=attenuation;
     }
     return dot(surface.normal,result.direction)>0&&dot(surface.geometric_normal,result.direction)>0&&any(incoming>0);
 }
-LitLightEvaluation lit_evaluate_light_sample(LitLightSample prepared, LitLightingSurface surface,
-                                            bool include_emitter_specular) {
+LitLightEvaluation lit_evaluate_light_sample(LitLightSample prepared, LitLightingSurface surface) {
     LitLightEvaluation result=(LitLightEvaluation)0;
     float3 incoming;
     if(!lit_light_incoming(prepared,surface,result,incoming))return result;
     lit_brdf_components(surface.base,surface.roughness,surface.metallic,surface.normal,surface.view,
         result.direction,result.diffuse,result.specular);
-    result.diffuse*=incoming;
-    result.specular=(prepared.kind!=3||include_emitter_specular)?result.specular*incoming:0;
+    result.diffuse*=incoming;result.specular*=incoming;
     return result;
 }
 // Deterministic response of a compact sphere (meta.x 0) or sun disc (meta.x 2):
 // diffuse from the center, GGX specular from the representative point closest
 // to the reflection ray with the (a/a')^2, a'=saturate(a+sin/3) normalization
 // of Karis 2013, "Real Shading in Unreal Engine 4". Visibility is separate.
+// A sphere keeps the sampled path's support and near clamp: the range window
+// starts at its surface, so every listed receiver within range+radius responds.
 LitLightEvaluation lit_evaluate_compact_light(LitLightSource light, LitLightingSurface surface) {
     float radius=light.direction_radius.w;
-    light.direction_radius.w=0;
+    LitLightSample prepared=lit_prepare_light_sample(light,0);
+    if(prepared.kind==0) {prepared.position=light.origin_range.xyz;prepared.cutoff_offset=radius;}
     LitLightEvaluation result=(LitLightEvaluation)0;
     float3 incoming;
-    if(!lit_light_incoming(lit_prepare_light_sample(light,0),surface,result,incoming))return result;
+    if(!lit_light_incoming(prepared,surface,result,incoming))return result;
     lit_brdf_components(surface.base,surface.roughness,surface.metallic,surface.normal,surface.view,
         result.direction,result.diffuse,result.specular);
     if(radius>0) {
@@ -192,49 +164,12 @@ LitLightEvaluation lit_evaluate_compact_light(LitLightSource light, LitLightingS
     result.diffuse*=incoming;result.specular*=incoming;
     return result;
 }
-// A finite source's soft-shadow endpoint: uniform on its disc as seen from the
-// receiver. Directions below the geometric horizon reuse the center ray.
-LitLightEvaluation lit_light_shadow_endpoint(LitLightSource light, LitLightingSurface surface,
-                                             LitLightEvaluation center, float2 sample_uv) {
-    float radius=light.direction_radius.w;
-    if(radius<=0)return center;
-    float3 tangent,bitangent;lit_basis(center.direction,tangent,bitangent);
-    float phi=2*LIT_PI*sample_uv.y;
-    float2 disc=sqrt(sample_uv.x)*float2(cos(phi),sin(phi));
-    float3 offset=disc.x*tangent+disc.y*bitangent;
-    LitLightEvaluation endpoint=center;
-    if(light.meta.x==2) {
-        float3 direction=normalize(center.direction+tan(radius)*offset);
-        if(dot(direction,surface.geometric_normal)<=0)return center;
-        endpoint.direction=direction;endpoint.target=surface.position+direction*center.distance;
-    } else {
-        float3 target=center.target+radius*offset;
-        if(dot(target-surface.position,surface.geometric_normal)<=0)return center;
-        endpoint.target=target;
-    }
-    return endpoint;
+LitLightEvaluation lit_evaluate_light_source(LitLightSource light, LitLightingSurface surface, float2 sample_uv) {
+    return lit_evaluate_light_sample(lit_prepare_light_sample(light,sample_uv),surface);
 }
-LitLightEvaluation lit_evaluate_light_source(LitLightSource light, LitLightingSurface surface,
-                                            float2 sample_uv, bool include_emitter_specular) {
-    return lit_evaluate_light_sample(lit_prepare_light_sample(light,sample_uv),surface,include_emitter_specular);
-}
-
-// Input sample identities here are always in the current frame's local range.
-// A missing reverse map denotes zero support in that previous distribution.
-LitLightSample lit_local_sample(uint source,float2 uv,bool previous) {
-    LitLightSample invalid=(LitLightSample)0;invalid.kind=~0u;
-    if(source>=lit_source_counts.x)return invalid;
-    LitLightSource light;
-    if(previous) {
-        uint index=lit_current_to_previous[source];
-        if(index>=lit_source_counts.w)return invalid;
-        light=lit_previous_sources[index];
-    } else light=lit_sources[source];
-    return lit_prepare_light_sample(light,uv);
-}
-float lit_local_target(LitLightingSurface surface,uint source,float2 uv,bool previous,
-                       bool include_emitter_specular) {
-    return lit_light_target(lit_evaluate_light_sample(lit_local_sample(source,uv,previous),surface,include_emitter_specular));
+float lit_local_target(LitLightingSurface surface,uint source,float2 uv) {
+    if(source>=lit_source_counts.x)return 0;
+    return lit_light_target(lit_evaluate_light_source(lit_sources[source],surface,uv));
 }
 bool lit_reservoir_stream(inout LitReservoir output,inout float sum,uint source,float2 uv,
                           float weight,inout uint seed) {
@@ -325,13 +260,12 @@ uint lit_propose_light(LitLightDistribution distribution,bool use_local,inout ui
         distribution.local_weight*local_probability;
     return source;
 }
-LitReservoir lit_local_initial(LitLightingSurface surface,bool include_emitter_specular,
-                               uint candidates,bool allow_spatial,inout uint seed,out float selected_probability) {
+LitReservoir lit_local_initial(LitLightingSurface surface,uint candidates,bool allow_spatial,
+                               inout uint seed,out float selected_probability) {
     LitReservoir result=lit_empty_reservoir();
     selected_probability=0;
     if(lit_source_counts.x==0||candidates==0)return result;
     if(seed==0)seed=0xa3c59ac3u;
-    result.confidence=float(candidates);
     float sum=0,selected_target=0;
     // Deterministic-mixture RIS reserves global candidates, even when all nearby
     // sources contribute zero. Every technique uses the same balance-heuristic
@@ -343,7 +277,7 @@ LitReservoir lit_local_initial(LitLightingSurface surface,bool include_emitter_s
         float probability;uint source=lit_propose_light(distribution,i<local_candidates,seed,probability);
         float2 uv=lit_light_random_uv(seed);
         if(probability<=0)continue;
-        float target=lit_local_target(surface,source,uv,false,include_emitter_specular);
+        float target=lit_local_target(surface,source,uv);
         if(lit_reservoir_stream(result,sum,source,uv,target/probability,seed)) {
             selected_target=target;selected_probability=probability;
         }
@@ -359,12 +293,12 @@ bool lit_light_sample_visible(LitLightSource light,LitLightingSurface surface, L
     if(light.meta.x==2)return lit_visible(surface.position,surface.geometric_normal,value.direction,value.distance);
     return lit_visible_target(surface.position,surface.geometric_normal,value.target);
 }
-void lit_reservoir_lighting(LitLightingSurface surface,LitReservoir reservoir,bool include_emitter_specular,
-                            bool shadows,out float3 diffuse,out float3 specular) {
+void lit_reservoir_lighting(LitLightingSurface surface,LitReservoir reservoir,bool shadows,
+                            out float3 diffuse,out float3 specular) {
     diffuse=0;specular=0;
     if(reservoir.source>=lit_source_counts.x||reservoir.weight<=0)return;
     LitLightSource light=lit_sources[reservoir.source];
-    LitLightEvaluation value=lit_evaluate_light_source(light,surface,reservoir.uv,include_emitter_specular);
+    LitLightEvaluation value=lit_evaluate_light_source(light,surface,reservoir.uv);
     if(lit_light_target(value)<=0||!lit_light_sample_visible(light,surface,value,shadows))return;
     diffuse=value.diffuse*reservoir.weight;
     specular=value.specular*reservoir.weight;
@@ -375,13 +309,13 @@ void lit_directional_lighting(LitLightingSurface surface,uint samples,bool shado
     [loop] for(uint i=0;i<lit_source_counts.y;++i) {
         LitLightSource light=lit_sources[lit_source_counts.x+i];
         // LightFrame's tail is exclusively directional. Expose that invariant
-        // so the shared evaluator drops local/emissive material and ray paths.
+        // so the shared evaluator drops the local paths.
         light.meta.x=2;
         uint count=light.direction_radius.w>0?max(samples,1u):1u;
         float3 light_diffuse=0,light_specular=0;
         [loop] for(uint s=0;s<count;++s) {
             float2 uv=light.direction_radius.w>0?lit_light_random_uv(seed):0;
-            LitLightEvaluation value=lit_evaluate_light_source(light,surface,uv,true);
+            LitLightEvaluation value=lit_evaluate_light_source(light,surface,uv);
             if(lit_light_target(value)<=0||!lit_light_sample_visible(light,surface,value,shadows))continue;
             light_diffuse+=value.diffuse;light_specular+=value.specular;
         }

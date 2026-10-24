@@ -564,26 +564,6 @@ void verify_viewport_editing() {
         }
     }
     take(document.select_entities(previous_selection,previous_active));publish();
-    {
-        const auto authoring=take(document.serialize());const auto history=document.undo_count();
-        const auto diagnostic=std::ranges::find(view_options(),ViewOption::direct_shadow_cache,&ViewOptionInfo::option);
-        require(diagnostic!=view_options().end() && diagnostic->kind==ViewValueKind::boolean &&
-            view_value(workspace.view,ViewOption::direct_shadow_cache)==0,"Cached-shadow diagnostic metadata/default is missing.");
-        for(const bool clustered:{false,true}) for(const bool cached:{false,true}) {
-            auto candidate=workspace.view;
-            take(set_view_option(candidate,ViewOption::direct_clustered,clustered));
-            take(set_view_option(candidate,ViewOption::direct_shadow_cache,cached));
-            take(workspace.set_view_settings(document,candidate,{}));
-            require(workspace.view.lit.direct_shadow_cache==cached && workspace.view.lit.direct_clustered==clustered,
-                "Direct-light diagnostics lost their independent recorded values.");
-            const auto revision=workspace.view_revision();take(workspace.set_view_settings(document,candidate,{}));
-            require(workspace.view_revision()==revision,"Repeated cached-shadow diagnostic changed the view revision.");
-        }
-        auto candidate=workspace.view;candidate.lit.direct_clustered=false;candidate.lit.direct_shadow_cache=false;
-        take(workspace.set_view_settings(document,candidate,{}));
-        require(take(document.serialize())==authoring && document.undo_count()==history,
-            "Direct-light diagnostics entered World authoring or Scene history.");
-    }
     workspace.viewport_options_collapsed=true;publish();
     require(std::abs(ui.presented()->find(control::viewport)->bounds.height-expanded_height-16)<.1f,
         "Collapsed viewport options did not return their height to the scene.");

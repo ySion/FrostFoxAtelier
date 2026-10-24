@@ -6,8 +6,8 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
     if(!snapshot_only) await_acceptance_activation(app,output,"Official examples");
-    // Sponza's four Entities and the Environment its fitted probe volume created.
-    require(entities(app).size()==5 && app.document().environment()!=atelier::ObjectId{} && model(app.document().presentation().render_items()).front().geometry->vertices().size()==786801 &&
+    // Sponza's building, curtains, three lights and the Environment that holds its sky and fitted probe volume.
+    require(entities(app).size()==6 && app.document().environment()!=atelier::ObjectId{} && model(app.document().presentation().render_items()).front().geometry->vertices().size()==11216634 &&
         Access::scene_lit_view(app).shading==atelier::renderer::Shading::scene_lit && Access::scene_lit_view(app).lit.ddgi,
         "Editor default startup did not load the complete Sponza Scene Lit/DDGI scene.");
     // Fitting an unsaved DDGI volume is load initialization: switching examples must not prompt to save.
@@ -33,8 +33,8 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
             "Example selection did not close the menu and configure Scene Lit.");
     };
     choose(Command::example_scene_lit);
-    require(entities(app).size()==16 && model(app.document().presentation().light_items()).size()==4 && app.document().environment()!=atelier::ObjectId{},
-        "Examples menu did not open the complete Scene Lit Room, including the Environment its Sky Light became.");
+    require(entities(app).size()==15 && model(app.document().presentation().light_items()).size()==4 && app.document().environment()!=atelier::ObjectId{},
+        "Examples menu did not open the complete Scene Lit Room, including its Environment.");
     clean("Opening Scene Lit Room left the document modified or with history.");
     tick(app,96);capture(app,output/"03-scene-lit-room.png");
     const auto shipped=atelier::editor::asset_directory()/"examples/Examples/Scene Lit Room/Scenes/Main.scene";
@@ -48,7 +48,7 @@ int verify_examples_window(Application& app,const char* output_directory,bool sn
     auto lit=Access::scene_lit_view(app).lit;--lit.probe_update_budget;model(Access::scene_lit_settings(app,lit));
     model(app.save_scene());
     const auto saved=model(app.document().serialize());
-    choose(Command::example_sponza);require(entities(app).size()==5,"Examples menu did not return to Sponza.");
+    choose(Command::example_sponza);require(entities(app).size()==6,"Examples menu did not return to Sponza.");
     choose(Command::example_scene_lit);
     require(model(app.document().serialize())==saved && model(atelier::editor::read_file(shipped))==original,
         "Example switching lost the saved copy or modified the bundled template.");

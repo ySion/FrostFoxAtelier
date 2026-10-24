@@ -365,11 +365,11 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 工作量与时间预算
 
-`CollectionBudget::max_work` 必须为正；`max_time` 为零表示关闭时间限制，负数拒绝。`CollectionProgress` 返回本步阶段、`work_done`、`reclaimed` 和 `pending_reclamation`；只有设置时间上限时才读取时钟。宿主帧内的 GC 步耗时记入帧阶段计时，见[基础库](foundation.md#帧阶段计时)。
+`CollectionBudget::max_work` 必须为正；`max_time` 为零表示关闭时间限制，负数拒绝。`CollectionProgress` 返回本步阶段、`work_done`、`reclaimed` 和 `pending_reclamation`；只有设置时间上限时才读取时钟。
 
 一个工作单位是一次根登记项检查、一次队列取项、一个持有字段/内联记录进入或退出、一次清扫槽位检查，或一次阶段转换。空登记项和空槽也消耗工作量；检查到死亡槽位时，其完整析构和释放属于该单位。标记队列使用现有槽位/根登记项的链接，嵌套游标在开始前预留容量；收集步不为这些追踪结构逐项分配。
 
-时间限制只在工作单位之间检查；非空闲步骤至少执行一个单位，所以是软上限，单个长原生析构不可中断。开始时的容量准备、业务执行中的引用写入保护、整值复制/赋值及其追踪不属于某次 `collect_step` 的预算。不能由工作单位数量推导固定毫秒数，也不承诺任意分配速度下都能在固定帧预算内完成回收；当前未测量真实游戏负载的吞吐或尾延迟。
+时间限制只在工作单位之间检查；非空闲步骤至少执行一个单位，所以是软上限，单个长原生析构不可中断。开始时的容量准备、业务执行中的引用写入保护、整值复制/赋值及其追踪不属于某次 `collect_step` 的预算。不能由工作单位数量推导固定毫秒数，也不承诺任意分配速度下都能在固定帧预算内完成回收。编辑器与 Play 宿主每帧对文档 Runtime 推进一步收集（必要时先 begin_collection），这段墙钟记为[帧阶段计时](foundation.md#帧阶段计时)的 `app.gc` 阶段，显示在 Performance 表、Control 与 Play 报告中；UI Runtime 的收集步和代码发布前的排空收集不计入该阶段。尚未据此评估真实游戏负载下的吞吐或尾延迟。
 
 ## JIT 执行
 

@@ -278,7 +278,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | scene.delete / undo / redo | `scene.delete {target: entities}` / `edit.undo` / `edit.redo` |
 | camera.set / camera.look_at | `view.camera_set {state: editor.CameraState}` / `view.look_at {eye, target}` |
 | view.set {patch} / view.layout {layout} | `view.set {...}` / `view.lighting_fit {mode}` |
-| material.create / texture.import | `asset.new_material {path}` / `asset.import {kind: texture, path}`，结果记录带资产键 |
+| material.create / texture.import / mesh.import | `asset.new_material {path}` / `asset.import {kind: texture\|mesh, path}`，结果记录带资产键 |
 | material.set_property | `scene.set_properties`，context object 为材质对象 |
 | material.set_texture / assign / override | `material.set_texture {input, texture}` / `material.assign {slot, asset}` / `material.override {slot, property, enabled}` |
 | material.save / undo / redo {asset} | `asset.save` / `edit.undo` / `edit.redo`，context.asset |

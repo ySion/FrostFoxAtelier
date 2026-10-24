@@ -57,7 +57,6 @@ RWTexture2D<float4> lit_taa_output;
 RWTexture2D<float4> lit_history_normal_output;
 RWTexture2D<float2> lit_history_geometry_normal_output;
 RWTexture2D<float> lit_history_depth_output;
-RWTexture2D<float4> lit_history_base_metallic_output;
 RWTexture2D<uint2> lit_history_surface_id_output;
 Texture2D<float4> lit_taa;
 Texture2D<float4> lit_bloom;
@@ -942,7 +941,6 @@ void lit_taa_cs(uint3 id : SV_DispatchThreadID) {
     lit_history_depth_output[p] = lit_inside(p) ? depth : lit_depth_far_value();
     lit_history_normal_output[p] = lit_inside(p) ? nr : 0;
     lit_history_geometry_normal_output[p]=lit_inside(p)?lit_geometry_normal.Load(int3(p,0)):0;
-    lit_history_base_metallic_output[p]=lit_inside(p)?lit_base_metallic.Load(int3(p,0)):0;
     lit_history_surface_id_output[p]=lit_inside(p)?lit_surface_id.Load(int3(p,0)):0;
     if (!lit_inside(p)) { lit_taa_output[p] = 0; return; }
     float3 current = lit_post_current_hdr(p);

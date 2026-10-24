@@ -88,7 +88,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
             std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
     std::filesystem::create_directories(copy/"Source");
     Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Examples/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
-    require(!app.document().dirty() && entities(app).size()==16 && app.document().environment()!=atelier::ObjectId{} &&
+    require(!app.document().dirty() && entities(app).size()==15 && app.document().environment()!=atelier::ObjectId{} &&
         model(app.document().presentation().render_items()).size()==10 && model(app.document().presentation().light_items()).size()==4,
         "The formal application failed to load the complete Scene Lit example World.");
     const auto loaded=model(app.document().serialize());
@@ -119,7 +119,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     scene_lit_antialiasing(app,static_cast<unsigned>(render::Antialiasing::smaa));
 
     const auto sky=[&]{return atelier::rendering::sky_radiance(model(app.document().presentation().environment()));};
-    require(sky()==std::array{.025f,.035f,.055f},"The example's Sky Light did not become its Environment sky.");
+    require(sky()==std::array{.025f,.035f,.055f},"The example did not load its Environment sky.");
     model(Access::select_entity(app,model(world::inspect_component(app.document().world().runtime(),app.document().environment())).owner));tick(app,2);
     click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
     click(app,static_cast<ControlKey>(Command::erase_selected));tick(app,2);
@@ -225,7 +225,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto saved=model(atelier::editor::read_file(copy/"Content/Scenes/Acceptance.scene"));
     require(!app.document().dirty(),"Scene Lit temporary save did not mark the authored document clean.");
     model(app.open_scene("Content/Scenes/Acceptance.scene"));tick(app,96);
-    require(model(app.document().serialize())==saved && entities(app).size()==19 &&
+    require(model(app.document().serialize())==saved && entities(app).size()==18 &&
         Access::scene_snapshot(app).meshes.size()==10 && Access::scene_snapshot(app).lights.size()==7 &&
         sky()==std::array{.12f,.12f,.12f} &&
         app.frame_statistics().scene_lit_shadow_sources>=7 &&

@@ -1,126 +1,3 @@
-void verify_scene_v1(editor::Project& project) {
-    // Fixed v1 input, independent of the current serializer and C++ math names.
-    constexpr std::string_view source=R"({"version":1,"actors":[{
-        "type":"world.StaticMeshActor","name":"旧场景","enabled":true,"root":1,"components":[
-            {"id":1,"type":"world.StaticMeshComponent","enabled":true,"parent":0,
-             "position":[1.25,-2.5,3.75],"rotation":[0,0,1,0],"scale":[2,3,4],
-             "mesh":"builtin/sphere","base_color":[0.125,0.25,0.5]},
-            {"id":2,"type":"world.SceneComponent","enabled":true,"parent":1,
-             "position":[0.5,0.25,-1],"rotation":[0,0,0,1],"scale":[1,2,1]}
-        ]
-    }]})";
-    const auto path=take(project.resolve("Content/Scenes/Scene-v1.scene"));
-    take(editor::write_file(path,source,editor::WriteMode::create));
-    auto document=take(editor::Session::deserialize(take(editor::read_file(path)),project));
-    auto& runtime=document->world().runtime();
-    require(take(runtime.native_type<math::Vector3>())==document->types().vector3 &&
-        take(runtime.native_type<math::Quaternion>())==document->types().quaternion &&
-        !runtime.find_type("world.Vec3") && !runtime.find_type("world.Quaternion"),
-        "Scene loading did not use the canonical Runtime math types.");
-    const auto entity=take(document->world().members()).front().id();
-    const auto root=component(*document,entity,document->presentation_types().static_mesh_component);
-    const auto child=take(world::children(runtime,entity)).front().id();
-    require(take(world::has_transform(runtime,entity)) && take(world::parent_entity(runtime,child))==entity &&
-        document->name(entity)==L"旧场景","Scene v1 lost its root, parent or Unicode name.");
-    const auto matrix=take(world::world_matrix(runtime,child));
-    require(matrix[0]==-2 && matrix[5]==-6 && matrix[10]==4 &&
-        matrix[12]==.25f && matrix[13]==-3.25f && matrix[14]==-.25f,
-        "Scene v1 changed xyzw rotation, float TRS values or row-vector hierarchy composition.");
-    const auto mesh=take(presentation::read_static_mesh(runtime,root));
-    require(mesh.mesh.source=="builtin/sphere" && mesh.mesh.resolved==take(project.mesh("builtin/sphere")).mesh &&
-        mesh.material.base_color==math::Vector3{.125f,.25f,.5f},
-        "Scene v1 lost its mesh source or material.");
-    take(editor::write_file(path,take(document->serialize())));
-    auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
-    auto upgraded=nlohmann::json::parse(source); upgraded["version"]=3;
-    for (auto& entity:upgraded["actors"]) {
-        entity["properties"]=nlohmann::json::object();
-        for (auto& component:entity["components"]) {
-            component["properties"]=nlohmann::json::object();
-            if(component["type"]=="world.StaticMeshComponent") {
-                component["materials"]=nlohmann::json::array();
-                const presentation::Material material;
-                component["roughness"]=material.roughness;component["metallic"]=material.metallic;
-                component["emissive"]=nlohmann::json::array({0.f,0.f,0.f});
-            }
-        }
-    }
-    auto upgraded_document=take(editor::Session::deserialize(upgraded.dump(),project));
-    require(take(reopened->serialize())==take(upgraded_document->serialize()),
-        "Scene v1 and v3 migration disagreed on authored values or the canonical Entity graph.");
-    require(!take(physics::read_settings(reopened->world().runtime(),component(*reopened,take(reopened->world().members()).front().id(),reopened->presentation_types().static_mesh_component))).enabled,
-        "Legacy visual mesh unexpectedly enabled collision.");
-}
-
-void verify_physics_test_project() {
-    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"acceptance/editor/fixtures/physics-project";
-    auto project=take(editor::Project::open(folder));
-    auto document=take(editor::Session::deserialize(
-        take(editor::read_file(take(project.resolve(project.startup_scene())))),project));
-    const auto members=take(document->world().members());
-    const auto roots=std::ranges::count_if(members,[&](const auto& member) {
-        return take(world::parent_entity(document->world().runtime(),member.id()))==ObjectId{};
-    });
-    require(members.size()==8 && roots==7,
-        "The sample physics project lost an Entity root or the capsule's independently scaled visual child.");
-    const auto find_entity=[&](std::wstring_view name) {
-        for (const auto& entity:take(document->world().members()))
-            if (document->name(entity.id())==name) return entity.id();
-        throw std::runtime_error("The sample physics project lost a named Entity.");
-    };
-    const auto ground=find_entity(L"Static Triangle Ground");
-    const auto box=find_entity(L"Dynamic Box");
-    const auto sphere=find_entity(L"Dynamic Sphere Through Sensor");
-    const auto capsule=find_entity(L"Actor Capsule Body");
-    const auto sensor=find_entity(L"Contact Sensor");
-    const auto platform=find_entity(L"Kinematic Platform");
-    const auto target=find_entity(L"Force And Impulse Target");
-    auto& world=const_cast<world::World&>(document->world());
-    const auto capsule_children=take(world::children(world.runtime(),capsule));
-    require(capsule_children.size()==1 && take(world::read_transform(world.runtime(),capsule_children.front().id())).scale==math::Vector3{1,2,1} &&
-        take(presentation::read_static_mesh(world.runtime(),component(*document,capsule_children.front().id(),document->presentation_types().static_mesh_component))).mesh.source=="builtin/sphere",
-        "Legacy capsule body migration lost its independent visual space or sphere mesh.");
-    const auto body_settings=[&](ObjectId entity) {
-        for(const auto& component:take(world::components(world.runtime(),entity)))
-            if(take(world.runtime().is_a(take(world.runtime().type_of(component.id())),document->types().primitive_component)))
-                return take(physics::read_settings(world.runtime(),component.id()));
-        throw std::runtime_error("Physics example Entity has no primitive capability.");
-    };
-    require(body_settings(ground).shape==physics::ShapeKind::triangle_mesh &&
-        body_settings(box).motion==physics::MotionKind::dynamic &&
-        body_settings(sphere).shape==physics::ShapeKind::sphere &&
-        body_settings(capsule).shape==physics::ShapeKind::capsule &&
-        body_settings(sensor).sensor &&
-        body_settings(platform).motion==physics::MotionKind::kinematic,
-        "The sample physics project lost its Body configurations.");
-    const auto saved=take(document->serialize());
-    auto reopened=take(editor::Session::deserialize(saved,project));
-    require(take(reopened->serialize())==saved,
-        "The sample physics scene changed after an editor save and reopen.");
-    auto scene=take(physics::PhysicsScene::create(world,document->physics_types()));
-    bool entered_sensor=false;
-    scene->on_contact([&](const physics::ContactEvent& event)->Result<void> {
-        if (event.phase==physics::ContactPhase::began && event.trigger &&
-            ((event.first.entity==sphere && event.second.entity==sensor) ||
-             (event.second.entity==sphere && event.first.entity==sensor))) entered_sensor=true;
-        return {};
-    });
-    changed(world.start());
-    require(scene->body_count()==7,"The sample physics project did not activate every Body.");
-    take(scene->add_force(target,{10,0,0}));
-    take(scene->add_impulse(target,{1,0,0}));
-    const auto platform_handle=take(scene->body_handle(platform));
-    take(scene->set_kinematic_target(platform_handle,{-1,.5f,2},{0,0,0,1}));
-    take(world.update(1.f/60.f));
-    require(take(scene->read_body_state(take(scene->body_handle(target)))).linear_velocity.x>0 &&
-        take(scene->read_body_state(platform_handle)).position.x==-1.f,
-        "The sample physics commands did not affect the first completed step.");
-    for (unsigned step=1;step<90;++step) take(world.update(1.f/60.f));
-    require(take(scene->read_body_state(take(scene->body_handle(box)))).position.y<1.f &&
-        entered_sensor,"The sample physics project did not exercise gravity and sensor contact.");
-    changed(world.stop());
-}
-
 void verify_project_document() {
     namespace fs=std::filesystem;
     const auto evidence=fs::current_path()/"project-document-evidence"/std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
@@ -170,7 +47,6 @@ void verify_project_document() {
     require(project.revision()==revision && take(project.mesh(resource)).mesh==original_mesh,
         "An unchanged refresh changed catalog identity or discarded a live mesh.");
     verify_project_workspace(project);
-    verify_scene_v1(project);
     require(!project.import_mesh(external),"Import silently overwrote an existing asset.");
     editor::Session document;
     changed(document.create_static_mesh(take(project.mesh(resource))));
@@ -366,6 +242,6 @@ void verify_project_document() {
     take(presentation::set_geometry(document.world().runtime(),mesh,editor::mesh_assets().front().mesh));
     require(take(presentation::read_static_mesh(document.world().runtime(),mesh)).mesh.source.empty() && !document.serialize(),
         "Unattributed procedural geometry retained stale provenance or was silently saved.");
-    std::ofstream(evidence/"acceptance.txt")<<"Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal; fixed Scene v1 file preserves canonical math, TRS hierarchy, mesh source and material across reopen.\n";
+    std::ofstream(evidence/"acceptance.txt")<<"Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal.\n";
     std::puts("Project document acceptance: PASS");
 }

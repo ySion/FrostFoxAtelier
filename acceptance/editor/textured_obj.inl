@@ -102,18 +102,37 @@ void verify_textured_obj() {
 void verify_sponza_project() {
     const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"assets/examples";
     auto project=take(editor::Project::open(folder));
-    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Examples/Sponza/Scenes/Sponza.scene")),project));
-    const auto items=take(document->presentation().render_items());require(items.size()==1,"Sponza scene should contain one complete static model.");
-    const auto mesh=items.front().geometry;
-    require(mesh->vertices().size()==786801 && mesh->materials().size()==26 && mesh->parts().size()>20,"Sponza geometry/material completeness changed.");
-    std::size_t textured=0;for(const auto& material:mesh->materials()) textured+=bool(material.surface->description().texture(atelier::material::Input::base_color).image);
-    require(textured==24,"Sponza diffuse material count changed.");
+    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Examples/Sponza/Scenes/Sponza.scene")),project,{},editor::LoadPolicy::strict));
+    const auto items=take(document->presentation().render_items());require(items.size()==2,"Sponza scene should contain the building and its curtains.");
+    // Every slot shows the material generated from its glTF material; counts follow the shipped 2K assets.
+    struct Expected {std::size_t triangles,slots,textured;};
+    constexpr std::array expected{Expected{3738878,27,24},Expected{1997366,4,4}};
+    std::size_t triangles{};
+    for(std::size_t i=0;i<items.size();++i) {
+        const auto& mesh=*items[i].geometry;std::size_t textured{};
+        for(const auto& surface:*items[i].surfaces) textured+=bool(surface->description().texture(atelier::material::Input::base_color).image);
+        const auto state=take(presentation::read_static_mesh(document->world().runtime(),items[i].component));
+        const auto* entry=project.entry(state.mesh.source);
+        require(mesh.vertices().size()==expected[i].triangles*3 && mesh.materials().size()==expected[i].slots && state.mesh.defaults.size()==expected[i].slots &&
+            entry && entry->materials.size()==expected[i].slots && textured==expected[i].textured,"Sponza geometry, default materials or textured materials changed.");
+        // Each slot's default is the material generated from the glTF material of the same name.
+        for(const auto& slot:entry->materials) {
+            const auto* material=project.entry(slot.key);
+            require(material && material->path==entry->path.parent_path()/"Materials"/(slot.slot+".material"),"A Sponza slot defaults to another slot's material.");
+        }
+        triangles+=mesh.vertices().size()/3;
+    }
     const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
-    require(take(reopened->serialize())==saved && take(reopened->presentation().render_items()).front().geometry==mesh,
+    require(take(reopened->serialize())==saved && take(reopened->presentation().render_items()).front().geometry==items.front().geometry,
         "Scene save/reopen lost material-backed shared geometry.");
     const auto lights=take(reopened->presentation().light_items());
     require(lights.size()==3 && std::ranges::count_if(lights,[](const auto& light){return light.settings.kind==presentation::LightKind::directional;})==1 &&
         std::ranges::all_of(lights,[](const auto& light){return light.settings.casts_shadow && light.settings.intensity>0;}),
         "Sponza save/reopen lost its directional and two local lights.");
-    std::printf("Sponza project acceptance: PASS (%zu triangles, %zu parts, %zu textured materials)\n",mesh->vertices().size()/3,mesh->parts().size(),textured);
+    // The sky is the sun-removed derivative; the scene's Sun light alone supplies direct sunlight.
+    const auto sky=take(presentation::read_sky_map(reopened->world().runtime(),reopened->environment()));
+    const auto* map=project.entry(sky.source);
+    require(take(reopened->presentation().environment()).sky_enabled && sky.resolved && map &&
+        map->path==std::filesystem::path("Examples/Sponza/Sky/kloppenheim_05_4k_nosun.hdr"),"Sponza save/reopen lost its sun-removed sky map.");
+    std::printf("Sponza project acceptance: PASS (%zu triangles, %zu meshes, every slot on its default material)\n",triangles,items.size());
 }
