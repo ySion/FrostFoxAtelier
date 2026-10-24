@@ -62,6 +62,14 @@ cmake --build --preset release --target rhi_acceptance
 - Dev 未在本批运行：按分层门禁规则，改到 RHI 的集成轮次由门禁加跑 Dev 窗口层。
 - 准备期间 GBV 预热的成本与收益在 Renderer 层测量，见 [Renderer 验收](../renderer/acceptance.md#运行)。
 
+## 只读 buffer 状态合并（2026-10-25）
+
+受影响的 RHI、Renderer 与编辑器目标在 Dev / Release 构建通过；Release `rhi_acceptance` 主进程与三个后端回归均退出 0。主进程使用 GBV，最终 InfoQueue warning/error 均为 0；Dev 本批只构建，不重复运行窗口矩阵。
+
+[资源消费者](../../../acceptance/rhi/resource_cases.cpp)新增一个真实 GPU 循环：同一底层顶点/索引 buffer 经 range 别名交替作为 IA、像素 SRV、compute SRV；两次连续 UAV 读改写之间保留顺序，下一轮由 COPY_DEST 覆写顶点数据，然后重新绘制。四轮逐像素核对 8,192 个 RGBA 像素，并核对四个 compute 读回值，覆盖合并的读状态离开到写状态、UAV → UAV、写 → 读以及同一句柄的 IA 重新安装。既有 BLAS/TLAS build/update → RayQuery 与间接派发消费者同时通过，未省略写入或 AS 同步。
+
+日志为 `.amp/in/p1/rhi-final.log` 与 `out/release/rhi-acceptance.log`；`shared-buffer-reads` 输出 PASS。这些是本工作树的本机证据，不表示其他工作树已经验证。
+
 ## 绘制前窗口同步
 
 [资源与窗口消费者](../../../acceptance/rhi/resource_cases.cpp)创建并管理自己的不激活窗口，依次切换 641×73、257×181、703×97、320×96、641×73、257×181。

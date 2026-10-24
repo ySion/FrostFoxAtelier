@@ -52,6 +52,8 @@
 
 普通 gfx 资源由消费者显式释放，Context 不复制资源管理器，也不追踪第二份资源 owner 表。`close` 的 busy 检查针对 Pipeline；原始资源退出由消费者履行 gfx 契约。
 
+默认堆 buffer 的自动只读用途（顶点、索引、shader SRV、indirect 与 copy source）累积为兼容的状态集合，range 与原始 buffer 共享这一状态。已经包含的读用途不再发屏障；显式转换后的状态增加读用途时仍发必要的转换屏障。写入、UAV 读写与 AS 同步不因这项合并被省略；离开 IA 读状态写入时会解绑活动 IA 资源，下次 draw 重新安装。消费者不需要也不得手工维护这套状态。
+
 ## Scene Lit：inline RayQuery 与离屏资源
 
 - 每个打开的 Context 都支持 inline RayQuery（见上方的硬件门槛），消费者不再检查能力。不新增 DispatchRays 管线种类，使用 `PipelineKind::compute`、`shader_model="6_5"` 和普通 `prepare`；HLSL 通过 `RaytracingAccelerationStructure` / `RayQuery` 访问。
