@@ -214,6 +214,7 @@ template<class T> struct NativeCallbackResult<Result<T>> {
 // A typed reference value, not an external root. Copies preserve stale identities.
 class ObjectReference {
 public:
+    using is_runtime_reference = void;
     ObjectReference() = default;
     [[nodiscard]] ValueDescription description() const noexcept { return description_; }
     [[nodiscard]] ObjectId id() const noexcept { return object_; }
@@ -230,6 +231,7 @@ private:
 // native record copies go through its value operations, not ad-hoc slot assignment.
 class ReferenceSlot {
 public:
+    using is_runtime_reference = void;
     ReferenceSlot() = default;
     [[nodiscard]] ObjectId id() const noexcept { return object_; }
 private:

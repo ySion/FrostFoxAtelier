@@ -125,6 +125,13 @@ public:
             for (; constructed != count; ++constructed) std::construct_at(destination + constructed);
         });
     }
+    // Copies `value` into each new element; it may be an element of this array.
+    void resize(std::size_t size, const T& value) requires std::is_copy_constructible_v<T> {
+        if (size < size_) { destroy(data_ + size, size_ - size); size_ = size; }
+        else extend(size - size_, [&](T* destination, std::size_t count, std::size_t& constructed) {
+            for (; constructed != count; ++constructed) std::construct_at(destination + constructed, value);
+        });
+    }
     void remove_at(std::size_t first, std::size_t count = 1) requires std::is_move_assignable_v<T> {
         check_range(first, count);
         if (!count) return;

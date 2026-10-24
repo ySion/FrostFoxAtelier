@@ -1,12 +1,15 @@
 #include "foundation/array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
+#include "foundation/shared_array.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 using namespace atelier;
@@ -131,6 +134,68 @@ void owned_source_moves() {
     set = std::move(set_source);
     require(set.size() == 1 && set.begin()->get() == set_leaf, "Set subtree promotion lost its child.");
 }
+
+template<class T> concept Shareable = requires { typename SharedArray<T>; };
+
+void shared_arrays() {
+    static_assert(sizeof(SharedArray<int>) == sizeof(void*));
+    static_assert(Shareable<String> && !Shareable<const int> && !Shareable<std::unique_ptr<int>> && !Shareable<std::shared_ptr<int>>);
+    const SharedArray<String> none;
+    require(none.empty() && none.array().capacity() == 0 && same(none, SharedArray<String>{}), "An empty handle owned storage.");
+
+    Array<String> labels;
+    labels.emplace("short"); labels.emplace("a label longer than the inline capacity");
+    const auto* buffer = labels.data();
+    SharedArray<String> first{std::move(labels)};
+    require(labels.empty() && first.view().data() == buffer, "Adopting an Array copied its elements.");
+    auto second = first;
+    require(same(first, second) && second.view().data() == buffer, "Copying a handle copied its contents.");
+    auto& changed = second.write();
+    changed[0] = String{"changed"}; changed.add(String{"tail"});
+    require(!same(first, second) && first.size() == 2 && first.array()[0].view() == "short" && first.view().data() == buffer &&
+        second.size() == 3 && second.array()[0].view() == "changed", "Writing one handle changed a shared copy.");
+    require(first.write().data() == buffer && second.write().data() == changed.data(), "Writing a unique handle copied it.");
+    auto moved = std::move(second);
+    require(second.empty() && !same(second, moved) && moved.size() == 3, "A moved handle kept its block.");
+    second.write().add(String{"reused"});
+    require(second.size() == 1 && second.array()[0].view() == "reused", "A moved-from handle could not be written.");
+    self_operations(moved);
+    require(moved.size() == 3 && moved.array()[2].view() == "tail", "Self assignment or swap changed a shared array.");
+    auto reused = second;
+    const auto* reused_buffer = reused.view().data();
+    second = moved;
+    require(same(second, moved) && moved.array()[0].view() == "changed", "Assignment did not share the block.");
+    require(reused.write().data() == reused_buffer, "Copy assignment kept the replaced block.");
+    auto watched = reused;
+    reused = std::move(second);
+    require(same(reused, moved) && second.empty() && watched.write().data() == reused_buffer, "Move assignment kept the replaced block.");
+
+    // A lost count update either frees the block early or keeps it shared after
+    // every worker copy is gone; the final in-place write detects the latter.
+    Array<std::uint32_t> numbers;
+    numbers.resize(4096);
+    for (std::uint32_t i = 0; i != numbers.size(); ++i) numbers[i] = i;
+    SharedArray<std::uint32_t> shared{std::move(numbers)};
+    const auto* original = shared.view().data();
+    std::atomic<bool> failed{};
+    {
+        std::array<std::jthread, 8> workers;
+        for (std::uint32_t worker = 0; worker != workers.size(); ++worker)
+            workers[worker] = std::jthread{[&, worker] {
+                for (std::uint32_t round = 0; round != 20000; ++round) {
+                    SharedArray<std::uint32_t> copy = shared;
+                    if (copy.view()[round % 4096] != round % 4096) failed = true;
+                    if (round % 64 != worker) continue;
+                    auto& own = copy.write();
+                    if (own.data() == original || own[worker] != worker) failed = true;
+                    own[worker] = ~0u;
+                }
+            }};
+    }
+    require(!failed, "Concurrent copies or writes broke sharing.");
+    require(shared.write().data() == original, "Concurrent copies left the shared block counted as shared.");
+    for (std::uint32_t i = 0; i != shared.size(); ++i) require(shared.array()[i] == i, "A worker's write reached the shared block.");
+}
 }
 
 void verify_container_lifecycle() {
@@ -169,6 +234,7 @@ void verify_container_lifecycle() {
     require(*moved.find(1) == 10 && *assigned.find(2) == 20 && *source.find(3) == 30 &&
         moved_members.contains(1) && assigned_members.contains(2) && members.contains(3), "Policy transfer changed membership.");
     owned_source_moves();
+    shared_arrays();
 
     Array<String> labels;
     labels.emplace("short"); labels.emplace("a longer owned label crossing inline capacity");

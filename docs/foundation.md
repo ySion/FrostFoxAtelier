@@ -1,12 +1,13 @@
 # 引擎 C++ 基础库
 
-当前提供 `atelier::Array<T>`、`Span<T>`、`String`、`StringView`、`Map<K,V>`、`Set<T>` 和 `Hash/Equal`。它们服务于连续数据、文本、唯一键索引与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map/Set 当前服务原生 C++ 消费者，尚未开放反射或源码容器定义。完整 STL 兼容与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
+当前提供 `atelier::Array<T>`、`SharedArray<T>`、`Span<T>`、`String`、`StringView`、`Map<K,V>`、`Set<T>` 和 `Hash/Equal`。它们服务于连续数据、共享不可变数据、文本、唯一键索引与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map/Set 当前服务原生 C++ 消费者，尚未开放反射或源码容器定义。完整 STL 兼容与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
 
 ## 类型与所有权
 
 | 类型 | 存储与复制 | 入口 |
 | --- | --- | --- |
 | `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../src/foundation/array.hpp) |
+| `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../src/foundation/shared_array.hpp) |
 | `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../src/foundation/span.hpp) |
 | `String` | 独占、有效 UTF-8，保证尾部零字符；复制拥有独立缓冲，移动后源为空 | [string.hpp](../src/foundation/string.hpp) |
 | `StringView` | 指针与字节数量；允许外部未验证 UTF-8 与局部字节切片，不保证尾部零字符 | 同上 |
@@ -38,13 +39,32 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 ```
 
 - `size/capacity/empty` 查询状态，`data/begin/end/view` 提供连续访问。`operator[]` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在。
-- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化，对移除元素做析构；`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
+- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化，`resize(n, value)` 从 value 复制构造新增元素，value 可以是本数组的元素；两者都对移除元素做析构，失败时数组不变。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
 - 扩容为几何增长；只构造实际元素，不构造预留槽位。元素要求不抛异常析构，并提供不抛异常的移动构造或复制构造。支持 move-only 元素，但此时复制 Array 的接口不可用。
 - 扩容优先不抛异常移动，否则复制。复制失败时清理新存储，保留旧值。复制、追加与扩容只在类型 trivially-copyable 且实际选中的构造也平凡时批量复制；有序删除另外要求平凡移动赋值，使用可重叠的 memmove。类型标签不会跳过选中模板构造或赋值的副作用。
 - 复制赋值在容量足够、元素可平凡复制构造且平凡复制赋值时复用缓冲，包括空值、变短和重新增长；其他情况先构造完整副本再替换，失败保留目标值。可复制但不可赋值的元素仍然可用。String、智能指针和其他资源类型保留逐元素构析；不抛异常的非平凡赋值不自动取得字节搬运或容量复用资格。
 - 预留容量中的单元素 emplace 直接构造并在成功后增加大小；实际扩容仍先构造新增后缀，再处理旧前缀，保留自身元素或视图作为来源的合同。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
 - `emplace/add` 构造新增元素可能由调用者提供任意参数；若元素构造主动修改参数，包括移动自身元素，失败时不能撤销这些用户行为。保序删除和 `remove_if` 若元素赋值或谓词抛异常，容器仍可析构，但部分元素可能已改变。
 - 非法索引/切片/删除范围抛 `std::out_of_range`，容量溢出抛 `std::length_error`，分配失败沿 C++ 分配异常传播。通过 Runtime 调用的异常按原有边界转为 `Result` 错误。
+
+## 共享不可变数组
+
+```cpp
+atelier::Array<atelier::math::Vector3> positions = /* ... */;
+atelier::SharedArray<atelier::math::Vector3> column{std::move(positions)}; // 接管缓冲，不复制元素
+auto copy = column;                       // 共享同一个块，只增加计数
+const auto& values = copy.array();        // 只读；共享内容在类型上不可写
+auto& owned = copy.write();               // 共享时先复制成独占，再返回可写 Array
+owned[0] = {};                            // column 仍看到原值
+bool shared = same(column, copy);         // false：两者已是不同的块
+```
+
+- 句柄 8 字节，指向堆上的一个块：原子计数加一个 Array。从 `Array<T>&&` 构造只分配这个块并接管缓冲，分配失败时源 Array 不变。复制句柄只增加计数；最后一个句柄释放时析构元素、释放缓冲和块。默认构造与移动后的源是没有块的空句柄，不分配，`array()` 返回共用的空 Array；读取接口不区分空句柄与块中 Array 为空，`same()` 区分二者。
+- 只读访问为 `array()`、`view()`、`size()`、`empty()`；临时句柄不能取 `array()/view()/write()`。`write()` 在本句柄是块的唯一持有者时原地返回块中的 Array，否则先把内容复制进新块再返回；复制失败时句柄不变，空句柄的 `write()` 新建一个块。`same(a, b)` 判断两者是否共享同一个块，两个空句柄也算相同。没有弱引用、计数查询或可作版本键的地址。
+- 块的地址在任何句柄存活期间不变，移动句柄不移动块，因此可以把 `array()` 只读借出、把 `write()` 的结果可写借出，包括经 Runtime 借给源码。`array()/view()` 的结果只在该句柄没有被赋值、移动、`write()` 或析构期间有效；`write()` 返回的引用还要求该句柄没有再被复制，借出期间复制句柄，副本会看到之后的写入，跨线程即数据竞争。借给源码时，调用方在调用期间持有出借的句柄，不对它做上述操作。源码不能给借来的 Array 扩容，借出期间元素缓冲不会重新分配。
+- 计数递增为 relaxed，递减为 release，最后的持有者析构前取 acquire 栅栏；`write()` 以 acquire 判断唯一性。指向同一块的不同句柄可以在任意线程同时复制、析构和读取；同一个句柄的只读操作（读取、从它复制）可以并发，修改它（赋值、移动、`write()`、析构）时不能有其他线程同时使用它。线程独占一个句柄时，在任何线程调用 `write()` 都安全。元素在释放最后一个句柄的线程上析构。源码只在 Runtime 线程执行：工作线程可以持有、读取和 `write()`，不能进入源码。
+- 元素须是不带 const/volatile 的可复制类型，并且是平凡可复制类型或 String；声明了 `is_runtime_reference` 的 Runtime 引用值（ObjectReference、ReferenceSlot）被拒绝，ObjectRoot 等非平凡根句柄不满足前一条。嵌在平凡结构体中的引用值无法在编译期识别；与 `Array<ObjectId>` 一样，SharedArray 中的身份值不是 GC 根，指针、Span 与 StringView 元素也不延长所指对象的寿命。
+- SharedArray 不注册为 Runtime 类型，不能作 Runtime 对象字段，也不是源码类型。
 
 ## Map、Set 与哈希
 
@@ -164,9 +184,9 @@ cmake --build --preset release --target foundation_acceptance reflection_accepta
 
 Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删和 ObjectId 跨上下文/代际及 GC 不保活。业务接入同时使用 `world_acceptance` 和 `editor_document_acceptance`；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。以上均在 dev/release 执行，不依赖 assert，也不新增单元测试框架。本片未测量性能收益；未执行 GPU/原生窗口或输入法验收，原有窗口待验与剪贴板问题不由此关闭。
 
-[生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
+[生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。SharedArray 部分核对接管缓冲不复制、共享句柄写入后另一句柄不变、唯一句柄原地写入、空句柄与移动后的源、自操作、复制赋值与移动赋值放开被替换的块，以及 8 个线程对同一块并发复制、析构和写入后计数回到独占；const、move-only 和智能指针元素在编译期被拒绝。原子内存序在 x64 上不能由验收区分。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
 
-[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 的验收覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)覆盖目录组装的拒绝与回滚、行序、包含式计数、同帧累加、父项不符与未登记标记、`record`、`Suspend` 和嵌套帧。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
+[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 的验收覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证；填充式 resize 覆盖值引用自身元素时的扩容、缩小保留容量，以及资源复制失败时数组不变；ObjectReference、ReferenceSlot 与 ObjectRoot 作为 SharedArray 元素在编译期被拒绝。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)覆盖目录组装的拒绝与回滚、行序、包含式计数、同帧累加、父项不符与未登记标记、`record`、`Suspend` 和嵌套帧。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
 
 [源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
 

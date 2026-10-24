@@ -1,4 +1,5 @@
 #include "foundation/fixture.hpp"
+#include "foundation/shared_array.hpp"
 
 #include <array>
 #include <cstdio>
@@ -223,6 +224,15 @@ void native_workload() {
     require(copy.remove_if([](const String& value) { return value.view() == "sword"; }) == 3, "Ordered removal lost elements.");
     copy.clear(); require(copy.empty() && copy.capacity() == capacity, "clear lost reserved storage.");
     copy.squeeze(); require(copy.capacity() == 0, "Empty squeeze retained storage.");
+    Array<String> filled{String{"a label longer than the inline capacity"}};
+    filled.squeeze();
+    filled.resize(40, filled[0]);
+    for (const auto& label : filled)
+        require(label.view() == "a label longer than the inline capacity", "Filled growth lost its aliased value.");
+    const auto filled_capacity = filled.capacity();
+    filled.resize(3, String{"unused"});
+    require(filled.size() == 3 && filled.capacity() == filled_capacity && filled[2].view() == "a label longer than the inline capacity",
+        "Filled shrink changed capacity or kept elements.");
     Array<std::unique_ptr<int>> unique;
     unique.emplace(std::make_unique<int>(42)); unique.reserve(32);
     require(*unique[0] == 42, "Move-only resource relocation failed.");
@@ -231,6 +241,7 @@ void native_workload() {
     static_assert(std::is_convertible_v<Span<int>, Span<const int>>);
     static_assert(!std::is_convertible_v<Span<const int>, Span<int>>);
     static_assert(detail::borrowed_result<Span<int>> && detail::borrowed_result<StringView>);
+    static_assert(SharedElement<ObjectId> && !SharedElement<ObjectReference> && !SharedElement<ReferenceSlot> && !SharedElement<ObjectRoot>);
     {
         Array<Resource> resources; resources.emplace(7); resources.emplace(9); resources.squeeze();
         require(reinterpret_cast<std::uintptr_t>(resources.data()) % alignof(Resource) == 0, "Array ignored over-alignment.");
@@ -255,6 +266,16 @@ void native_workload() {
                 && destination.capacity() == 64 && Resource::live == 3, "Failed resource assignment changed reserved target or leaked its copy.");
             Resource::copies_until_failure = -1;
         }
+        Resource::copies_until_failure = 2;
+        failed = false;
+        try { resources.resize(5, resources[1]); } catch (const std::runtime_error&) { failed = true; }
+        Resource::copies_until_failure = -1;
+        require(failed && resources.size() == 2 && *resources[1].value == 9 && Resource::live == 2, "Failed filled resize left a partial suffix.");
+        resources.resize(4, resources[0]);
+        require(resources.size() == 4 && *resources[3].value == 7 && *resources[1].value == 9 && Resource::live == 4,
+            "Filled resize lost its aliased resource.");
+        resources.resize(2, resources[0]);
+        require(Resource::live == 2, "Filled shrink kept destroyed resources.");
         auto moved = std::move(resources); require(resources.empty() && moved.size() == 2, "Moved-from array is not empty.");
     }
     require(Resource::live == 0, "Array leaked resource elements.");
