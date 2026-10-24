@@ -149,6 +149,9 @@ struct SceneLit::State {
     GfxBuffer reflection_work,reflection_counter,reflection_arguments;
     // Ray hit views by RT geometry slot: Geometry::vertices, indices, faces and closure.
     std::vector<GfxBuffer> rt_vertices,rt_indices,rt_faces,rt_closure;
+    // Programs keep parameter values. Rebind only after the geometry table changes,
+    // including programs prepared later for optional diagnostics.
+    std::vector<GfxProgram> geometry_bound_programs;
     GfxBuffer sun_trace_list,sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
     LightFrame light_frame;
     GfxBuffer ray_counters;
@@ -618,10 +621,13 @@ struct SceneLit::State {
         bind(p,"lit_source_counts",source_counts);bind(p,"lit_hit_candidates",hit_candidates);
         bind(p,"lit_history_invalid",history_invalid);
         bind(p,"lit_instances",gpu_instances);
-        for(const auto& [name,views]:{std::pair{"lit_geometry_vertices",&rt_vertices},{"lit_geometry_indices",&rt_indices},
-                                     {"lit_geometry_faces",&rt_faces},{"lit_geometry_closure",&rt_closure}}) {
-            static const GfxBuffer none{}; // An empty scene binds one null view; no ray hits it.
-            require(gfxProgramSetBuffers(gfx,p,name,views->empty()?&none:views->data(),views->empty()?1u:static_cast<std::uint32_t>(views->size())),name);
+        if(std::ranges::find(geometry_bound_programs,p)==geometry_bound_programs.end()) {
+            for(const auto& [name,views]:{std::pair{"lit_geometry_vertices",&rt_vertices},{"lit_geometry_indices",&rt_indices},
+                                         {"lit_geometry_faces",&rt_faces},{"lit_geometry_closure",&rt_closure}}) {
+                static const GfxBuffer none{}; // An empty scene binds one null view; no ray hits it.
+                require(gfxProgramSetBuffers(gfx,p,name,views->empty()?&none:views->data(),views->empty()?1u:static_cast<std::uint32_t>(views->size())),name);
+            }
+            geometry_bound_programs.push_back(p);
         }
         bind(p,"lit_sources",gpu_sources);bind(p,"lit_light_proposals",gpu_proposals);
         bind(p,"lit_light_cells",gpu_light_cells);bind(p,"lit_spatial_light_proposals",gpu_spatial_proposals);
@@ -985,6 +991,7 @@ struct SceneLit::State {
             it=geometries.erase(it);geometry_changed=true;
         }
         if(geometry_changed||views_changed) {
+            geometry_bound_programs.clear();
             for(auto* views:{&rt_vertices,&rt_indices,&rt_faces,&rt_closure})views->clear();
             for(auto& [key,g]:geometries) {
                 (void)key;g.slot=static_cast<std::uint32_t>(rt_vertices.size());
@@ -1437,6 +1444,7 @@ struct SceneLit::State {
         if(tlas)require(gfxDestroyTopLevelAccelerationStructure(gfx,std::exchange(tlas,{})),"Retire Scene Lit TLAS");
         for(auto& [key,g]:geometries){(void)key;require(gfxDestroyBottomLevelAccelerationStructure(gfx,g.blas),"Retire Scene Lit BLAS");require(gfxDestroyGeometry(gfx,g.geometry),"Retire Scene Lit geometry");retire(g.faces);retire(g.closure);}geometries.clear();
         for(auto* views:{&rt_vertices,&rt_indices,&rt_faces,&rt_closure})std::vector<GfxBuffer>{}.swap(*views);
+        geometry_bound_programs.clear();
         retire(probe_ray_hits);
         require(instance_table.retire(gfx),"Retire Scene Lit instance table");
         light_tables.each([&](auto& table){require(table.retire(gfx),"Retire Scene Lit light tables");});

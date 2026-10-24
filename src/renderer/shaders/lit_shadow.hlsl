@@ -8,6 +8,7 @@ struct LitShadowRaster {
     precise float4 position:SV_Position;
     float2 uv:TEXCOORD0;
     nointerpolation uint instance:TEXCOORD1;
+    nointerpolation uint first_triangle:TEXCOORD2;
 };
 LitShadowRaster lit_shadow_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     uint index=lit_shadow_instances[lit_shadow_first_instance+instance];
@@ -15,9 +16,12 @@ LitShadowRaster lit_shadow_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceI
     LitShadowRaster result;
     result.position=raster_position(v.position,lit_instances[index].world,lit_shadow_view_projection);
     result.uv=v.uv;result.instance=index;
+    // VS already consumes draw constants. Avoid making the PS upload the entire
+    // shared $Globals block again just to read this one draw-local offset.
+    result.first_triangle=lit_first_triangle;
     return result;
 }
 void lit_shadow_ps(LitShadowRaster input,uint primitive:SV_PrimitiveID) {
-    uint slot=lit_face_slot(lit_faces[lit_first_triangle+primitive]);
+    uint slot=lit_face_slot(lit_faces[input.first_triangle+primitive]);
     if(!material_covered(material_surfaces[material_indices[material_offsets[input.instance]+slot]],input.uv,0,0,0,false))discard;
 }
