@@ -1,8 +1,8 @@
 # Array 存储优化依据
 
-核对日期：2026-09-30。项目基线 `db6ec54`，当前行为见 [array.hpp](../../src/foundation/array.hpp) 与[基础库](../foundation.md)。本文区分外部事实、实施建议和本轮已完成的实现与测量。
+资料与采样日期：2026-09-30，测量基线为 [db6ec54](https://github.com/ySion/FrostFoxAtelier/commit/db6ec54)。本文保留安全边界、实现取舍和历史测量，不代表当前版本重新采样的结果；当前行为见 [array.hpp](../../src/foundation/array.hpp) 与[基础库](../foundation.md)。
 
-## 可保持的模型
+## 存储模型
 
 Array 继续独占连续存储，Windows x64 下为指针、大小、容量三个字段，共 24 字节。现有增长是 `capacity + max(capacity / 2, 8)`，再满足本次总长度；reserve 不构造预留元素，clear 和删除保留容量，squeeze 显式收缩。保留检查索引、自身 Span 追加、过对齐分配、move-only 元素，以及构造失败清理。扩容先构造追加后缀，再以 `move_if_noexcept` 处理旧前缀。
 
@@ -10,7 +10,7 @@ Array 继续独占连续存储，Windows x64 下为指针、大小、容量三�
 
 **事实。** C++23 的 `allocator<T>::allocate` 开始数组对象的生命周期，但不开始每个元素的生命周期。`memcpy/memmove` 在复制前隐式创建目标对象，仅适用于 implicit-lifetime 类型；非 implicit-lifetime 子对象的生命周期不会因此开始。trivially-copyable 两个独立完整对象之间可以复制对象表示；这一许可不能单独回答原始槽位如何开始生命周期。[N4950 allocator](https://github.com/cplusplus/draft/blob/n4950/source/memory.tex#L1550-L1591)、[N4950 implicit creation](https://github.com/cplusplus/draft/blob/n4950/source/basic.tex#L3100-L3114)、[N4950 memcpy](https://github.com/cplusplus/draft/blob/n4950/source/strings.tex#L5204-L5210)、[在线条款](https://eel.is/c++draft/basic.types.trivial)
 
-**建议。** 在当前 Array 元素约束下，按实际表达式设置保守快路径，而不是给类型增加可自定义的 relocation 标记：
+**实现取舍。** 在 Array 元素约束下，按实际表达式设置保守快路径，而不是给类型增加可自定义的 relocation 标记：
 
 | 操作 | 所需条件，均另要求 `is_trivially_copyable_v<T>` |
 | --- | --- |
@@ -33,11 +33,11 @@ Array 继续独占连续存储，Windows x64 下为指针、大小、容量三�
 
 `_Uninitialized_copy/_Uninitialized_move` 仅在迭代器的实际引用表达式可平凡构造、默认 allocator 构造行为等条件成立时走字节路径；否则逐元素构造并由 backout 销毁已完成部分。`_Trivial_cat` 分别判断 bitcopy-constructible 与 bitcopy-assignable，印证操作级判断，不只是查看一个类型标签。[xmemory](https://github.com/microsoft/STL/blob/f023531d8fd0fd668ba9331b349637930611781a/stl/inc/xmemory#L1851-L1988)、[xutility](https://github.com/microsoft/STL/blob/f023531d8fd0fd668ba9331b349637930611781a/stl/inc/xutility#L4841-L4899)
 
-## 最小容量复用建议
+## 容量复用与可观察行为
 
-复制赋值先处理自身赋值。如果源大小不超过容量，并且 `is_nothrow_copy_constructible_v<T> && is_nothrow_copy_assignable_v<T>`，可给共同前缀赋值、构造新增尾部、销毁多余尾部，最后提交大小。平凡类型分别使用上表的字节条件。其余元素和容量不足仍走临时复制再 swap，保留失败时目标不变，也继续支持可复制但不可赋值的元素。
+复制赋值只在上表的平凡构造、平凡赋值条件成立且容量足够时复用缓冲；其他情况先构造完整副本再替换，保留失败时目标不变，并支持可复制但不可赋值的元素。
 
-非平凡不抛异常元素的复用会把现有的复制构造、旧元素销毁改为复制赋值；这是对象生命周期事件的真实变化。若要求连这些事件也完全保持，只启用平凡复用，或仍采用复制构造路径。不可将“不抛异常”误写成“无副作用”。
+没有采用“只要复制构造和赋值都不抛就复用”的更宽条件：非平凡元素的复用会把复制构造、旧元素销毁改为复制赋值，这是对象生命周期事件的真实变化。“不抛异常”不等于“无副作用”。
 
 有序删除可在平凡移动赋值分支一次 memmove。`remove_if` 暂保留逐元素的谓词、搬移顺序：闭包可能观察数组中此前已压缩的位置，按连续存活段延后搬移会改变后续谓词观察。没有新契约时不为批量压缩改变调用顺序。
 
@@ -45,11 +45,11 @@ Array 继续独占连续存储，Windows x64 下为指针、大小、容量三�
 
 **事实。** Epic 的 UE 5.8 文档明确说明 TArray 假定元素可通过原始字节 trivially relocate；该前提覆盖其自己的值类型体系。RemoveAt 保持顺序；RemoveAtSwap 不保证顺序，文档给出 O(Count) 对 O(ArrayNum) 的区别。两者默认可能按 slack 自动收缩，可用 `EAllowShrinking::No` 或 FNonshrinkingAllocator 禁止。[TArray 模型](https://dev.epicgames.com/documentation/en-us/unreal-engine/array-containers-in-unreal-engine)、[RemoveAt](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/TArray/RemoveAt)、[RemoveAtSwap](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Core/TArray/RemoveAtSwap?lang=en-US)
 
-**建议。** 借鉴有序删除与尾部交换的操作区分；保持本项目删除不缩容、显式 squeeze 的合同。UE 的 relocatable 前提不等于 C++23 trivially-copyable，不能由此字节搬移 String、智能指针或其他非平凡资源，也不引入 C++26 relocation 能力。Qt 的共享写时复制模型对本次独占 Array 增量没有必要收益，故不展开。
+**取舍。** 借鉴有序删除与尾部交换的操作区分；保持本项目删除不缩容、显式 squeeze 的合同。UE 的 relocatable 前提不等于 C++23 trivially-copyable，不能由此字节搬移 String、智能指针或其他非平凡资源，也不依赖尚未实现的语言 relocation 能力。Array 的独占语义与 SharedArray 的显式共享分开。
 
 这些优化只改变原生存储执行。当前反射 Array 仍拒绝含 GC 引用的值，`Array<ObjectId>` 不自动成为根；持有引用集合继续通过 `ReferenceSequence` 和原有写屏障履行生命周期责任。字节类型特征不能授予 GC 操作权限。[当前基础库合同](../foundation.md)
 
-## 本轮实现与同机采样
+## 2026-09-30 同机采样
 
 **实际实现。** 只采用上述操作级平凡字节路径和容量复用；非平凡元素继续完整副本替换。`RelocationSource = decltype(std::move_if_noexcept(std::declval<T&>()))` 直接表示现有选择，避免复制一份选择条件。append 与扩容共享后缀先构造、前缀后处理的提交/回退链；预留 emplace 在单个构造成功后提交大小。没有新增分配器层或可自定义 relocation 许可。
 
@@ -71,12 +71,10 @@ Array 继续独占连续存储，Windows x64 下为指针、大小、容量三�
 | 64 个拥有型 String 预留追加 | 743.5–765.4 | 639.1–670.1 | 1.11× | 32 → 32 |
 | 64 个拥有型 String 赋值 | 749.6–845.2 | 686.4–718.8 | 1.04× | 33 → 33 |
 
-当前 MSVC STL 同场景：整数复制 184.2–184.6 ns，预留追加 155.8–162.1 ns，复用赋值 144.3–159.2 ns，移除/补回 32 项 141.0–153.2 ns；Array 的主要批量操作已在相近范围。64 项增量构造的两次对照分别略快和约 11% 慢，未确认稳定速度收益；保留原有增长策略，每批仍为 6 次分配，对照 vector 为 12 次。数据包与 String 的收益较小，不作为主要收益依据。
+该次 MSVC STL 同场景：整数复制 184.2–184.6 ns，预留追加 155.8–162.1 ns，复用赋值 144.3–159.2 ns，移除/补回 32 项 141.0–153.2 ns；Array 的主要批量操作在相近范围。64 项增量构造的两次对照分别略快和约 11% 慢，未确认稳定速度收益；保留原有增长策略，每批仍为 6 次分配，对照 vector 为 12 次。数据包与 String 的收益较小，不作为主要收益依据。
 
-拥有型 String 赋值保留 33 次分配/批次，对照 STL 复用为 0 次，其当前中位数约 289.5–318.9 ns，快于 Array 的 686.4–718.8 ns。这里保留 Array 原有“复制失败不改变目标”的保证及原生构析事件；String 复制可能分配失败，本轮没有改为部分提交的逐元素赋值。
+拥有型 String 赋值保留 33 次分配/批次，对照 STL 复用为 0 次，其中位数约 289.5–318.9 ns，快于 Array 的 686.4–718.8 ns。这里保留 Array 的“复制失败不改变目标”保证及原生构析事件；String 复制可能分配失败，没有改为部分提交的逐元素赋值。
 
 容量复用也保留调用者主动预留的内存：该场景 reserve(8192)，新版在赋值后维持 8192 槽位，按 API 推导为 32 KiB 请求缓冲；旧版每次复制替换，最终 4096 槽位对应 16 KiB。调用者可在需要归还容量时显式 squeeze。分配器取整字节、实际分配次数见原始 JSON Lines；所有采样最终活堆恢复基线。
 
-**功能结果。** dev/release 的 foundation、reflection（含 15 项 CLI 拒绝）、Runtime、源码公共/连续消费者、JIT、World 均通过。Array 消费者验证批量数据完整性、self-view 跨扩容、预留赋值中的活前缀/新尾部、值初始化、过对齐、move-only、模板构造/赋值事件，以及资源复制失败时保留目标并回收新部分。连续消费者两种模型各完成 9216 个任务，关闭时根/对象均为 0；无 UI/图形实现改动。
-
-本地证据位于 `out/array-baseline/provenance.json`、`out/array-{paired,reverse}-{before,after}.jsonl`、`out/array-final-{dev,release}.log`、`out/array-release-build.log`；哈希与汇总见 `out/array-performance-evidence.json`。采样目标与使用方式见[基础库](../foundation.md#array-性能采样入口)。
+功能覆盖与采样入口见[基础库](../foundation.md#验收)。上表保留历史汇总；重新测量须使用同一输入、操作与工具链条件，不能将旧数据当成当前构建的性能承诺。

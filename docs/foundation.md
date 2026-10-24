@@ -2,6 +2,8 @@
 
 当前提供 `atelier::Array<T>`、`SharedArray<T>`、`Span<T>`、`String`、`StringView`、`Map<K,V>`、`Set<T>` 和 `Hash/Equal`。它们服务于连续数据、共享不可变数据、文本、唯一键索引与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map/Set 当前服务原生 C++ 消费者，尚未开放反射或源码容器定义。完整 STL 兼容与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
 
+容器能力和迁移由真实消费者与测量驱动，不以减少 `std::` 数量为目标。成熟原子、类型特征、构析原语和算法可直接复用；第三方与平台类型的转换留在各模块接入边界。选型依据见[工业基础库研究](research/foundation-stl-industrial-research.md)。
+
 ## 类型与所有权
 
 | 类型 | 存储与复制 | 入口 |
@@ -187,13 +189,9 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 没有绑定 Recorder 的线程只读取一次线程局部变量，不做记录。物理工作线程等辅助线程的耗时体现在发起它们的宿主阶段的墙钟时间中。Recorder 不是线程安全的，只能由绑定它的线程写入。产品宿主绑定 Recorder：编辑器的每次 `Application::step`、Play 的每次运行循环各是一帧。进程入口调用 [application/timing.hpp](../src/application/timing.hpp) 的 `install_frame_timing()`，依次登记宿主阶段 `app.*`、World、物理和渲染阶段；`Application` 与 `run_project` 启动时检查目录，未安装时以 `std::logic_error` 拒绝启动，不会把每个阶段都记成结构错误。宿主把每一步的记录交给编辑器的帧性能统计，供 Performance 表、Control 和 Play 报告使用。计时值只用于诊断报告，不作为验收的通过条件；验收只检查阶段是否存在、层级、进入次数和 `structure_errors`。单个作用域的开销由 `atelier_editor_document_acceptance --profile-scene-cpu` 输出的 `timing_scope_ns` 在同一机器上标定。
 ## 验收
 
-```powershell
-. ./tools/enter-dev.ps1
-cmake --build --preset dev --target foundation_acceptance reflection_acceptance
-cmake --build --preset release --target foundation_acceptance reflection_acceptance
-```
+构建与运行方式遵循 [README 的必要性验收](../README.md#构建与端到端验收)，按改动选择以下消费者；这里描述覆盖范围，不记录某次交付的通过状态。
 
-Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删、ObjectId 跨上下文/代际、ObjectId/TypeId 哈希覆盖每个身份字段及 GC 不保活。业务接入同时使用 `world_acceptance` 和 `editor_document_acceptance`；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。以上均在 dev/release 执行，不依赖 assert，也不新增单元测试框架。本片未测量性能收益；未执行 GPU/原生窗口或输入法验收，原有窗口待验与剪贴板问题不由此关闭。
+Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删、ObjectId 跨上下文/代际、ObjectId/TypeId 哈希覆盖每个身份字段及 GC 不保活。业务接入由 `world_acceptance` 和 `editor_document_acceptance` 覆盖；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。检查在 dev/release 中均有效，不依赖 assert。
 
 [生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。SharedArray 部分核对接管缓冲不复制、共享句柄写入后另一句柄不变、唯一句柄原地写入、空句柄与移动后的源、自操作、复制赋值与移动赋值放开被替换的块，以及 8 个线程对同一块并发复制、析构和写入后计数回到独占；const、move-only 和智能指针元素在编译期被拒绝。原子内存序在 x64 上不能由验收区分。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
 
@@ -202,9 +200,6 @@ Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包�
 [源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。
-
-本片 dev/release 已通过上述消费者、15 项反射 CLI 拒绝场景，以及 Runtime、源码公共消费者、JIT 和 World 端到端验收。未执行 UI/图形窗口验收，本片未改动对应模块。
-
 
 ## 字符串性能采样入口
 
