@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "name": "Examples",
+  "startup_scene": "Content/Sponza/Scenes/Sponza.scene"
+}

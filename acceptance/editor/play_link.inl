@@ -150,7 +150,7 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     // A forest arrives as separate root adds over the real IPC connection. Its
     // Environment precedes its camera, including when Redo reuses document IDs.
     {
-        editor::Session source;take(source.initialize_environment({}));
+        editor::Session source;
         complete(source.create_camera({2,3,4}));take(source.set_main_camera(source.selection().entity));
         auto forest=LinkJson::parse(take(source.serialize()));
         const auto environment=take(world::inspect_component(source.world().runtime(),source.environment())).owner;

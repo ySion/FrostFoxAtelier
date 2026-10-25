@@ -3,7 +3,7 @@ void verify_physics_examples() {
     namespace p=atelier::physics;namespace fs=std::filesystem;
     const auto evidence=fs::absolute("physics-examples-document")/std::to_string(GetTickCount64());
     auto project=take(editor::Project::create(evidence));
-    const auto folder=editor::asset_directory()/"examples/Examples/Physic/Scenes";
+    const auto folder=fs::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes";
     const auto entity_named=[](editor::Session& doc,std::wstring_view name) {
         for(const auto& entity:take(doc.world().members())) if(doc.name(entity.id())==name) return entity.id();
         throw std::runtime_error("Physics example Entity missing.");

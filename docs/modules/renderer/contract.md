@@ -27,7 +27,7 @@ renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本
 
 ## 视口显示策略
 
-应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。普通新建场景使用 MatCap；无参数启动的官方 Sponza 与 Examples 入口使用 Scene Lit，详见[官方 Examples](../../../assets/examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
+应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。无参数启动为空文档，普通新建场景使用 MatCap；打开工程不按示例名称改变显示模式，详见[Examples 工程](../../../examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
 
 World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v9 保存；它只控制 DDGI 探针命中点每次挑选的局部光候选数，屏幕直接光不随机选灯。`spatial_light_sampling` 是视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换探针命中点 fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史。屏幕直接光对 cluster 列表中的解析灯逐盏确定求值，方向光独立评估，没有历史；发光网格只经 DDGI 照明。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
 

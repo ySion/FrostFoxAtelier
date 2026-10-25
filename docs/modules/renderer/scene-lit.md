@@ -281,4 +281,4 @@ contracts 通过同一真实 Renderer 覆盖灯光值域、混合开放与闭合
 
 静态 DDGI 闪亮、更新预算与响应时间、多灯采样及 SDF 配套的演进建议见 [稳定性与光照管线研究](../../research/ddgi-stability-and-lighting-roadmap-20261015.md)。其中已落地部分以本文当前合同为准；本批固定近源网格不代表已实现 SDF、room/portal、自动探针布点或真正的光源影响域索引。验收与性能结论仍以[验收记录](acceptance.md)为准。
 
-可打开的真实工程见 [Scene Lit Room](../../../assets/examples/Examples/Scene%20Lit%20Room/README.md) 和 [Sponza](../../../assets/examples/Examples/Sponza/README.md)。体积配置来自当前 Scene 的 World 设置，切换场景不继承上一个场景的布局；重新拟合由 World Settings 页的明确操作完成。渲染通过统一材质表消费原有贴图及 Mask。`editor_sponza_acceptance` 在完整建筑上验证 DDGI 开关、移动光源与关灯后的收敛。性能目标基于 RX 6800 XT；目标帧率与最终本机实测应分开陈述。
+可打开的真实工程见 [Scene Lit Room](../../../examples/Content/Scene%20Lit%20Room/README.md) 和 [Sponza](../../../examples/Content/Sponza/README.md)。体积配置来自当前 Scene 的 World 设置，切换场景不继承上一个场景的布局；重新拟合由 World Settings 页的明确操作完成。渲染通过统一材质表消费原有贴图及 Mask。`editor_sponza_acceptance` 在完整建筑上验证 DDGI 开关、移动光源与关灯后的收敛。性能目标基于 RX 6800 XT；目标帧率与最终本机实测应分开陈述。

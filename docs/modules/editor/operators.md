@@ -83,7 +83,7 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 
 ### 替换文档
 
-`scene.open`、`project.new`、`project.open`、`project.open_example`、`project.rebuild_types` 会替换 Session。Context 持有 `Session&`，而 `publish_document` 会销毁旧 Session，所以这类操作符在 execute 里只调用 `host.replace_document(request)` 登记请求。`call` 在 execute 之后不再碰 Context；Application 在 `call` 返回后、仍在同一次宿主调用里执行替换，并把替换的成败并入返回给调用方的报告。Control 的 `op.call` 因此能拿到“打开失败”的原因。
+`scene.open`、`project.new`、`project.open`、`project.rebuild_types` 会替换 Session。Context 持有 `Session&`，而 `publish_document` 会销毁旧 Session，所以这类操作符在 execute 里只调用 `host.replace_document(request)` 登记请求。`call` 在 execute 之后不再碰 Context；Application 在 `call` 返回后、仍在同一次宿主调用里执行替换，并把替换的成败并入返回给调用方的报告。Control 的 `op.call` 因此能拿到“打开失败”的原因。示例沿普通 `project.open` / `scene.open`，没有专用操作符。
 
 ## 3. Context
 
@@ -211,7 +211,6 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | 旧命令 | 操作符与参数 |
 | --- | --- |
 | new_project / open_project | `project.new {path}` / `project.open {path}`（prompts） |
-| example_sponza / scene_lit / physic / dungeons | `project.open_example {example: sponza\|scene_lit\|physic\|dungeons}` |
 | open_scene | `scene.open {path}`（prompts） |
 | save_scene / save_scene_as | `scene.save {path, as_new}`（as_new 时 prompts） |
 | save_document / save_all | `file.save`（按区域保存场景或源码）/ `file.save_all` |
@@ -312,7 +311,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
   - 视口覆盖 cursor 后的 `scene.add`；
   - poll 失败（空选择时的 `view.frame_selected`）返回原因；
   - 无标志的操作符（`view.axis`、`region.set`）执行后撤销和重做计数都不变；`scene.set_properties` 写多个叶只产生一个历史条目；`edit.undo` 只移动游标；
-  - 经 `op.call` 打开示例（`project.open_example`）：调用返回时文档已经替换，报告给出新场景；验收在 dev 构建（带调试堆检查）下跑，确认替换后没有访问已经销毁的 Session；
+  - 经 `op.call` 打开工程（`project.open`）：调用返回时文档已经替换，报告给出新场景；验收在 dev 构建（带调试堆检查）下跑，确认替换后没有访问已经销毁的 Session；
   - 非交互调用 `scene.open` 不带 path 时失败，原因写明需要 path。
 - 同一个键在视口和场景树中解析到不同的操作符：经 keymap 查询，并在窗口验收中用真实按键验证。
 - 原有窗口验收的点击路径和断言全部通过；菜单项改用第 9 节的查找函数定位。

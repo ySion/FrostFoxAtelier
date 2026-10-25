@@ -389,17 +389,18 @@ void reject_nested_destination(const std::filesystem::path& executable,const std
     require(std::filesystem::is_empty(atelier::platform::windows_file_path(directory/"artifacts"/wide(d.descriptor.at("instance_id").get<std::string>()))),"Rejected nested export left a recursive output");
     d.client.reset();editor.close();
 }
-// An Official Examples scene keeps its assets under Examples/, which holds far more files
-// than a repro may copy. The repro carries only what the Sponza scene references: its two glTF
+// An ordinary examples project contains unrelated content too. The repro carries
+// only what the Sponza scene references: its two glTF
 // meshes with their buffers and images, each slot's default material, and the sun-removed sky
 // map; not the unused original HDRI, the unrelated Physic example or the READMEs.
-void repro_examples(const std::filesystem::path& executable,const std::filesystem::path& root) {
-    const auto shipped=executable.parent_path()/"examples",project=root/"Examples",directory=root/"Control";
-    for(const auto* folder:{L"Config",L"Content",L"Source",L"Examples/Sponza",L"Examples/Physic"}) {
+void repro_examples(const std::filesystem::path& executable,const std::filesystem::path& root) try {
+    const std::filesystem::path shipped=ATELIER_EXAMPLE_PROJECT;
+    const auto project=root/"Project",directory=root/"Control";
+    for(const auto* folder:{L"Config",L"Source",L"Content/Sponza",L"Content/Physic"}) {
         std::filesystem::create_directories(atelier::platform::windows_file_path((project/folder).parent_path()));
         std::filesystem::copy(atelier::platform::windows_file_path(shipped/folder),atelier::platform::windows_file_path(project/folder),std::filesystem::copy_options::recursive);
     }
-    const std::string sponza="Examples/Sponza/",building=sponza+"NewSponza/NewSponza_Main_glTF_003.gltf",curtains=sponza+"SponzaExtend/NewSponza_Curtains_glTF.gltf";
+    const std::string sponza="Content/Sponza/",building=sponza+"NewSponza/NewSponza_Main_glTF_003.gltf",curtains=sponza+"SponzaExtend/NewSponza_Curtains_glTF.gltf";
     // A mesh may spell an image in another case than its file; the repro copies the catalogue's file once.
     const std::string image="textures/arch_stone_wall_01_BaseColor.png",alias="Textures/Arch_Stone_Wall_01_BaseColor.png";
     {
@@ -416,39 +417,45 @@ void repro_examples(const std::filesystem::path& executable,const std::filesyste
     for(const auto& mesh:{building,curtains}) for(const auto& [slot,key]:read(project/(mesh+".asset.json")).at("materials").items()) defaults.insert(material_files.at(key.get<std::string>()));
     require(defaults.size()==31,"The New Sponza meshes no longer name 31 slot default materials");
     const std::string sky_file=sponza+"Sky/kloppenheim_05_4k_nosun.hdr";
-    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
-    Driver d(discover_editor(editor,directory));d.settle();
-    Json resources;std::set<std::string> inputs;
-    const auto exported=[&] {
-        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Examples repro export did not start");
-        const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
-        const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
-        const auto manifest=read(bundle/"manifest.json");
-        std::set<std::string> copied;std::map<std::string,std::string> hashes;
-        for(const auto& file:manifest.at("input_files")) {copied.insert(file.at("path").get<std::string>());hashes[file.at("path").get<std::string>()]=file.at("sha256").get<std::string>();}
-        // Each asset arrives with the identity file the source project gave it.
-        const auto asset=[&](const std::string& path) {
-            return copied.contains(path) && hashes.contains(path+".asset.json") && hashes.at(path+".asset.json")==sha256_file(project/(path+".asset.json"));
+    {
+        Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate",root/"editor.log");
+        Driver d(discover_editor(editor,directory));d.settle();
+        Json resources;std::set<std::string> inputs;
+        const auto exported=[&] {
+            const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Examples repro export did not start");
+            const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+            const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
+            const auto manifest=read(bundle/"manifest.json");
+            std::set<std::string> copied;std::map<std::string,std::string> hashes;
+            for(const auto& file:manifest.at("input_files")) {copied.insert(file.at("path").get<std::string>());hashes[file.at("path").get<std::string>()]=file.at("sha256").get<std::string>();}
+            // Each asset arrives with the identity file the source project gave it.
+            const auto asset=[&](const std::string& path) {
+                return copied.contains(path) && hashes.contains(path+".asset.json") && hashes.at(path+".asset.json")==sha256_file(project/(path+".asset.json"));
+            };
+            for(const auto& path:copied) if(path.find("/textures/")!=std::string::npos && !path.ends_with(".asset.json"))
+                require(asset(path),"An Examples repro copied a texture without its identity file: "+path);
+            require(asset(building) && asset(curtains) && copied.contains(sponza+"NewSponza/NewSponza_Main_glTF_003.bin") &&
+                copied.contains(sponza+"SponzaExtend/NewSponza_Curtains_glTF.bin") && asset(sponza+"NewSponza/"+image) && asset(sky_file),
+                "An Examples repro left out the scene's meshes, their dependencies or its sky map");
+            for(const auto& material:defaults) require(asset(material),"An Examples repro left out the slot default material "+material);
+            require(std::ranges::none_of(copied,[&](const std::string& path){return path.starts_with("Content/Physic/") || path.starts_with(sponza+"Scenes/") ||
+                path.starts_with(sponza+"Sky/kloppenheim_05_4k.hdr") || path.ends_with("README.md");}),
+                "An Examples repro copied files the scene does not use");
+            if(inputs.empty()) {inputs=copied;resources=manifest.at("resources");}
+            require(copied==inputs && manifest.at("resources")==resources,"A reopened Examples repro carried different assets");
+            return std::pair{bundle,manifest};
         };
-        for(const auto& path:copied) if(path.find("/textures/")!=std::string::npos && !path.ends_with(".asset.json"))
-            require(asset(path),"An Examples repro copied a texture without its identity file: "+path);
-        require(asset(building) && asset(curtains) && copied.contains(sponza+"NewSponza/NewSponza_Main_glTF_003.bin") &&
-            copied.contains(sponza+"SponzaExtend/NewSponza_Curtains_glTF.bin") && asset(sponza+"NewSponza/"+image) && asset(sky_file),
-            "An Examples repro left out the scene's meshes, their dependencies or its sky map");
-        for(const auto& material:defaults) require(asset(material),"An Examples repro left out the slot default material "+material);
-        require(std::ranges::none_of(copied,[&](const std::string& path){return path.starts_with("Examples/Physic/") || path.starts_with(sponza+"Scenes/") ||
-            path.starts_with(sponza+"Sky/kloppenheim_05_4k.hdr") || path.ends_with("README.md");}),
-            "An Examples repro copied files the scene does not use");
-        if(inputs.empty()) {inputs=copied;resources=manifest.at("resources");}
-        require(copied==inputs && manifest.at("resources")==resources,"A reopened Examples repro carried different assets");
-        return std::pair{bundle,manifest};
-    };
-    const auto [bundle,manifest]=exported();
-    require(manifest.at("resources").size()==3,"An Examples repro did not check Sponza's two meshes and its sky map: "+manifest.at("resources").dump());
-    d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
-    require(d.inspect().at("view")==manifest.at("view"),"An Examples repro did not open with its frozen view");
-    exported();
-    d.client.reset();editor.close();
+        const auto [bundle,manifest]=exported();
+        require(manifest.at("resources").size()==3,"An Examples repro did not check Sponza's two meshes and its sky map: "+manifest.at("resources").dump());
+        d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+        require(d.inspect().at("view")==manifest.at("view"),"An Examples repro did not open with its frozen view");
+        exported();
+        d.client.reset();editor.close();
+    }
+    std::filesystem::remove_all(atelier::platform::windows_file_path(root));
+} catch(...) {
+    std::fprintf(stderr,"Examples repro failure evidence retained at %s\n",utf8(root.wstring()).c_str());
+    throw;
 }
 // A glTF import publishes one material per slot as the mesh's default, which the scene does not
 // name. The repro carries the default material, its texture and their identity files, reopens

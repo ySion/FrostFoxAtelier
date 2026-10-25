@@ -37,15 +37,15 @@ cmake --build --preset dev --target atelier_editor
 ./out/dev/atelier_editor.exe
 ```
 
-编辑器直接消费正式 Entity/Component/World，无参数启动打开自带的 Sponza 默认场景（Scene Lit + DDGI）。资源浏览器按 Project → Examples → 场景名组织 Sponza / Scene Lit Room / Physic / Dungeons，顶部同名菜单负责切换；首次打开建立整个官方示例工程的用户副本，后续保存保留修改，见 [官方 Examples](assets/examples/README.md)。顶部 Create 快捷区创建空 Entity 或真正的 StaticMeshEntity；Asset Browser 浏览工程文件与内置网格，选择资源后 Add to Scene 一次创建完整 Entity，撤销/重做保留 Entity 子树与组件身份。Scene Tree 展示 World → Entity 组合层级与实际类型，组件组成由 Entity Structure 维护，属性由 Parameters 展示。菜单、快捷区和快捷键共用指令定义、可用性与应用执行入口。位置字段编辑 Entity 的内联空间数据，拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Entity。
+编辑器直接消费正式 Entity/Component/World，无参数启动为空文档。独立 [Examples 工程](examples/README.md) 包含 Sponza / Scene Lit Room / Physic / Dungeons，通过 `--project ./examples` 或 File → Open Project 打开，不随引擎部署。顶部 Create 快捷区创建空 Entity 或真正的 StaticMeshEntity；Asset Browser 浏览工程文件与内置网格，选择资源后 Add to Scene 一次创建完整 Entity，撤销/重做保留 Entity 子树与组件身份。Scene Tree 展示 World → Entity 组合层级与实际类型，组件组成由 Entity Structure 维护，属性由 Parameters 展示。菜单、快捷区和快捷键共用指令定义、可用性与应用执行入口。位置字段编辑 Entity 的内联空间数据，拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Entity。
 视口支持真实网格拾取、多选、框选、移动/旋转/缩放手柄及 G/R/S 数值操作；Shift+D 复制后移动，X 在指针下确认删除，Z 打开支持点击与按住划动松键选择的渲染模式饼菜单；Shift+反引号进入 FPS 自由视角，WASD/QE 移动、鼠标看向、滚轮调速。左键放置 3D 游标、右键选择、W 打开操作菜单，中键环绕、Shift+中键平移、滚轮缩放。工具选项栏提供枢轴、网格吸附与步长；视口内显示当前模式及透视/正交视图菜单。Parameters 的位置、欧拉角和缩放使用三分量数值行，其他数学向量按实际类型组合；选择资源时显示资源元数据。操作、事务和边界见[编辑器模块](docs/modules/editor/README.md#视口编辑)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
 World 提供 Entity 递归组合、有序组件、可选内联 TRS 和独立空间参考，以及 Entity/Component 共用的有序 Begin/End、分阶段 Tick 和任务取消；完整 Detached 子树经统一入口注册，网格、灯和物理消费所属 Entity 的空间。renderer 消费矩阵、共享网格与按槽解析的不可变材质快照。验证入口见[场景模型验收](docs/modules/editor/README.md#场景模型验收)，逐次结果由下方验收门禁记录；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)。编辑器内源码断点/单步交互、节点图、参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 
-Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat / Scene Lit**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。普通新建场景使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格，Sponza 与 Scene Lit Room 入口设置 Scene Lit，Physic 与 Dungeons 使用 Smooth；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，OBJ 简单多边形经三角化后保留原边界。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_project_acceptance`，后者在工程窗口验收开头用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
+Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat / Scene Lit**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。普通新建场景使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格，打开工程不按示例名称改变显示模式；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，OBJ 简单多边形经三角化后保留原边界。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。专项端到端入口为 `renderer_acceptance` 与 `editor_project_acceptance`，后者在工程窗口验收开头用正式编辑器和原生菜单验证显示切换并导出 PNG；两者都会显示真实窗口，运行前应预留桌面时段。当前验收状态见[Renderer 验收记录](docs/modules/renderer/acceptance.md)。
 
 工作室 MatCap / Smooth / Flat 默认开启 Screen Cavity，通过几何凹凸增强表面分界；开关、Ridge、Valley 与像素半径属于视口显示设置，具体范围见[渲染合同](docs/modules/renderer/contract.md#工作室-cavity)。
 
-Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线命中与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。直接光按屏幕 tile 与深度分层收集局部解析灯，在一个通道里逐盏确定求值并与间接光、自发光合成 HDR，方向光独立评估；投影光源的可见性来自阴影 atlas，没有随机采样、时间历史或降噪。发光网格只经 DDGI 照亮场景：探针射线命中发光面时记录其自发光，DDGI 关闭时发光网格不照亮其他表面。DDGI、GTAO 和随机屏幕反射分别稳定自己的信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。**Window → World Settings** 编辑探针命中点的光源候选预算、四个 DDGI 体积、传播预算、曝光和 Bloom；作者值随 Scene 保存并参与撤销。Diagnostics 提供 DDGI 命中点空间选灯的对照开关、真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，偏好留在视口，与 Control 共用入口。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 沿 Create、Entity Structure、Parameters 和场景保存的现有入口编辑；均匀天光是 World Settings 的 Sky 组，关闭时环境照明为零；Scene Lit 使用黑背景，工作室模式保留渐变偏好。通过 Project → Examples → Scene Lit Room 可打开 [Scene Lit Room](assets/examples/Examples/Scene%20Lit%20Room/README.md)，入口自动配置 Scene Lit 与相机。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`；Renderer 端到端入口为 `renderer_acceptance` 目标，运行默认入口与全部 `--scene-lit*` 入口，每个入口另有单独目标，清单见 [Scene Lit](docs/modules/renderer/scene-lit.md#诊断与性能边界)。本批 GPU 验收和性能状态以[验收记录](docs/modules/renderer/acceptance.md)为准。
+Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线命中与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。直接光按屏幕 tile 与深度分层收集局部解析灯，在一个通道里逐盏确定求值并与间接光、自发光合成 HDR，方向光独立评估；投影光源的可见性来自阴影 atlas，没有随机采样、时间历史或降噪。发光网格只经 DDGI 照亮场景：探针射线命中发光面时记录其自发光，DDGI 关闭时发光网格不照亮其他表面。DDGI、GTAO 和随机屏幕反射分别稳定自己的信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。**Window → World Settings** 编辑探针命中点的光源候选预算、四个 DDGI 体积、传播预算、曝光和 Bloom；作者值随 Scene 保存并参与撤销。Diagnostics 提供 DDGI 命中点空间选灯的对照开关、真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，偏好留在视口，与 Control 共用入口。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 沿 Create、Entity Structure、Parameters 和场景保存的现有入口编辑；均匀天光是 World Settings 的 Sky 组，关闭时环境照明为零；Scene Lit 使用黑背景，工作室模式保留渐变偏好。[Scene Lit Room](examples/Content/Scene%20Lit%20Room/README.md) 是 Examples 工程中的普通场景，选择 Main Camera 后可用 View from Camera 对齐，并从显示菜单选择 Scene Lit。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`；Renderer 端到端入口为 `renderer_acceptance` 目标，运行默认入口与全部 `--scene-lit*` 入口，每个入口另有单独目标，清单见 [Scene Lit](docs/modules/renderer/scene-lit.md#诊断与性能边界)。本批 GPU 验收和性能状态以[验收记录](docs/modules/renderer/acceptance.md)为准。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，当前输入合同见[UI 模块](docs/modules/ui/README.md#共享单行编辑)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
@@ -68,7 +68,7 @@ Scene Tree 展示 World → Entity 递归组合关系和实际 Entity 类型，�
 
 参数面板使用类型图标＋对象标题及连续属性滚动区，名称右侧的放大镜按需展开搜索。Entity 名称参与场景撤销；Controls 的 Appearance 页展示共享颜色值的 RGB 元组、逐通道滑条及嵌套页签。滚动条支持拖动、按页和步进，Tab 悬停保持底色，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
 
-工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录>`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。完整 Sponza 已作为 [编辑器自带默认场景](assets/examples/Examples/Sponza/README.md) 随程序部署，使用三盏真实灯光与覆盖完整模型的 DDGI 探针，也可由 Project → Examples 打开。Scene Lit、Smooth/Flat 共用网格材质槽与贴图覆盖；MatCap 保留自己的表面配色，同时遵循 Mask。
+工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录> [--scene <Content 下相对路径>]`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。独立 Examples 工程中的 [Sponza](examples/Content/Sponza/README.md) 使用三盏真实灯光与覆盖完整模型的 DDGI 探针。Scene Lit、Smooth/Flat 共用网格材质槽与贴图覆盖；MatCap 保留自己的表面配色，同时遵循 Mask。
 
 真实窗口验收使用同一个应用可执行文件，依次运行以免多个窗口争用焦点：
 
@@ -79,7 +79,7 @@ cmake --build --preset release --target editor_acceptance
 ```
 
 每种配置输出 `Editor window acceptance: PASS`；无窗口文档链使用 `editor_document_acceptance`。GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，包括状态/字体/256 Entity 列表、组件增删和完整 TRS 投影。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
-窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。可执行文件旁须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证，以及 editor.ss、fonts/ 中的字体和许可证、examples/ 中的官方场景。
+窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。可执行文件旁须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证，以及 editor.ss、fonts/ 中的字体和许可证。Examples 是独立工程，不属于可执行文件的部署依赖。
 
 编辑器的可捕获异常会在释放 Session 前，将未保存的已提交作者 Scene 原子写入独立恢复目录，并在错误日志中报告路径；原场景保持不变。范围、资源依赖与恢复步骤见[异常退出时的场景保全](docs/modules/editor/projects.md#异常退出时的场景保全)。CPU 端到端入口为 `editor_recovery_acceptance`，不会启动图形设备。
 
@@ -156,7 +156,7 @@ git submodule update --init --recursive third_party/jolt
 git submodule status third_party/jolt
 ```
 
-当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃基础场景 API 及对应组件；官方 [Physic](assets/examples/Examples/Physic/README.md) 提供 9 个可运行场景。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
+当前采用单精度位置、Windows x64 的 SSE2 基线和与宿主一致的动态 CRT；关闭上游 LTO、配置编译参数覆盖、调试绘制、profiler、ObjectStream 与 Compute 后端。Jolt 的内存分配使用默认 CRT 路径，由项目现有 mimalloc 重定向接管。`atelier_physics` 已接入 World 刚体、触发/接触、场景查询、Cook 网格和角色/约束/布娃娃基础场景 API 及对应组件；[Physic](examples/Content/Physic/README.md) 提供 9 个可运行场景。创建、步进、资源和未实现边界见[物理模块](docs/modules/physics/README.md)。专用服务器可执行宿主尚未接入。
 
 按上方准备工具链并配置后，独立验收入口如下；其中 `physics_examples_acceptance` 包含真实窗口，运行时需要窗口锁：
 

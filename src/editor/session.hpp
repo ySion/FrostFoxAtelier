@@ -98,9 +98,6 @@ public:
     // Same-document Entity with exactly one CameraComponent (disabled is allowed).
     // Null clears. The first Set creates a default Environment in this history item.
     Result<void> set_main_camera(ObjectId);
-    // Load initialization of a freshly opened document without an Environment, before any
-    // history: creates it without an undo entry or a modified mark. The next save writes it.
-    Result<void> initialize_environment(const rendering::SceneLightingSettings&);
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);

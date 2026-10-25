@@ -11,8 +11,8 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
     const auto thread=GetWindowThreadProcessId(owner,nullptr);
     std::ofstream report(output/"dialogs.txt");
     const ExpectedNativeDialogs expected;
-    for(const auto command:{editor::Command::about,editor::Command::open_source,editor::Command::open_project,editor::Command::example_sponza}) {
-        if(command==editor::Command::example_sponza) {
+    for(const auto command:{editor::Command::about,editor::Command::open_source,editor::Command::open_project,editor::Command::exit}) {
+        if(command==editor::Command::exit) {
             require(bool(Access::command(app,editor::Command::create_entity)),"Unsaved dialog scene creation failed.");tick(app);
         }
         const auto history=app.document().undo_count();
@@ -24,13 +24,6 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
         const auto menu=centre(app,editor::menu_key(definition->group));
         pointer(ui::EventKind::pointer_move,menu);pointer(ui::EventKind::pointer_down,menu);pointer(ui::EventKind::pointer_up,menu);tick(app,1);
         require(app.menu_frame()!=nullptr,"Native dialog menu did not open.");
-        if(command==editor::Command::example_sponza) {
-            const auto* examples=app.menu_frame()->find(control::examples_menu);
-            require(examples!=nullptr,"Examples submenu is absent.");
-            POINT sub{static_cast<LONG>(examples->bounds.x+examples->bounds.width*.5f),static_cast<LONG>(examples->bounds.y+examples->bounds.height*.5f)};
-            MapWindowPoints(app.menu_window(),owner,&sub,1);
-            pointer(ui::EventKind::pointer_move,sub);pointer(ui::EventKind::pointer_down,sub);pointer(ui::EventKind::pointer_up,sub);tick(app,1);
-        }
         const auto* item=app.menu_frame()->find(static_cast<ui::ControlKey>(command));
         require(item!=nullptr,"Native dialog menu item is absent.");
         POINT point{static_cast<LONG>(item->bounds.x+item->bounds.width*.5f),static_cast<LONG>(item->bounds.y+item->bounds.height*.5f)};
@@ -79,6 +72,7 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
         });
         std::printf("Opening native dialog command %llu\n",static_cast<unsigned long long>(command));std::fflush(stdout);
         pointer(ui::EventKind::pointer_move,point);pointer(ui::EventKind::pointer_down,point);pointer(ui::EventKind::pointer_up,point);
+        if(command==editor::Command::exit) tick(app,1); // Exit posts WM_CLOSE; cancelling its unsaved prompt keeps the editor alive.
         probe.request_stop();probe.join();
         require(found && responsive && closed,"Native dialog did not respond and close.");
         require(!captured,"Native dialog left mouse capture on its disabled editor owner.");

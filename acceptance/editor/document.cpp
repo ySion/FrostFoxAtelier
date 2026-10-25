@@ -2,7 +2,6 @@
 #include "editor/project.hpp"
 #include "foundation/frame_timing.hpp"
 #include "physics/timing.hpp"
-#include "editor/examples.hpp"
 #include "editor/workspace.hpp"
 #include "editor/json_format.hpp"
 #include "editor/material_format.hpp"
@@ -89,7 +88,7 @@ int main(int argc, char** argv) {
         if(argc==2 && std::string_view(argv[1])=="--materials") {verify_material_resources();verify_missing_resources();verify_color_edits();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--dungeons") {verify_dungeons();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--procedural-graph") {verify_procedural_graph();return 0;}
-        if(argc==2 && std::string_view(argv[1])=="--examples") {verify_official_examples();return 0;}
+        if(argc==2 && std::string_view(argv[1])=="--examples") {verify_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--physics-examples") {verify_physics_examples();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--textured-obj") {verify_textured_obj();verify_sponza_project();return 0;}
         if(argc==2 && std::string_view(argv[1])=="--gltf") {verify_gltf_import();return 0;}

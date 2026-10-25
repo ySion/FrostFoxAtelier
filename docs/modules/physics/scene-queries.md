@@ -89,9 +89,9 @@ void tick(float dt) {
 
 ## 场景与边界
 
-[Raycasts.scene](../../../assets/examples/Examples/Physic/Scenes/Raycasts.scene) 包含绿色 Overlap 目标、红色首个 Block、蓝色遮挡后目标、黄色通道 Ignore 对象、青色 Sensor，以及包含六个查询子 Entity 的发射器组合。六个查询都显式排除发射器碰撞 Entity 和视觉网格 Entity。通道使用 7，对象掩码选择类别 1/2；球重叠单独选择类别 3 Sensor。官方场景验收检查身份、命中数、步号、保存重开和模拟后的真实 GPU 画面。视口尚无射线绘制和命中面板，查询结果通过 API/脚本及自动验收读取。
+[Raycasts.scene](../../../examples/Content/Physic/Scenes/Raycasts.scene) 包含绿色 Overlap 目标、红色首个 Block、蓝色遮挡后目标、黄色通道 Ignore 对象、青色 Sensor，以及包含六个查询子 Entity 的发射器组合。六个查询都显式排除发射器碰撞 Entity 和视觉网格 Entity。通道使用 7，对象掩码选择类别 1/2；球重叠单独选择类别 3 Sensor。场景验收检查身份、命中数、步号、保存重开和模拟后的真实 GPU 画面。视口尚无射线绘制和命中面板，查询结果通过 API/脚本及自动验收读取。
 
-已有用户副本的 Physic 目录不会被模板更新覆盖。缺少新场景时，可把此新文件复制到用户工程的 `Examples/Physic/Scenes/`，再刷新并打开；不要替换已编辑的场景。
+也可把该场景复制到普通用户工程的 Content 目录，刷新后打开；不要替换已编辑的场景。
 
 当前查询返回已登记的 Primitive 物理体（含静态网格）；虚拟角色、布娃娃独立部件未建立可返回的 BodyHandle 映射。尚无通用 Box/Capsule Sweep、异步查询、骨骼/UV 命中、TraceComplex 切换、碰撞 Profile 或调试绘制。
 

@@ -1,0 +1,1393 @@
+{
+  "entities": [
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.18,
+            0.22,
+            0.27
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "9",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "triangle_mesh"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "1",
+      "name": "Static triangle mesh floor",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          -0.5,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          40.0,
+          1.0,
+          40.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [
+        "10"
+      ],
+      "components": [
+        {
+          "enabled": true,
+          "id": "11",
+          "name": "CollisionComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 1,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 128,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.CollisionComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "2",
+      "name": "Touch target",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.2,
+            0.8,
+            0.3
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "12",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "10",
+      "name": "StaticMeshComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [
+        "13"
+      ],
+      "components": [
+        {
+          "enabled": true,
+          "id": "14",
+          "name": "CollisionComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 2,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.CollisionComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "3",
+      "name": "First blocking target",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          1.0,
+          3.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.9,
+            0.2,
+            0.15
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "15",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "13",
+      "name": "StaticMeshComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [
+        "16"
+      ],
+      "components": [
+        {
+          "enabled": true,
+          "id": "17",
+          "name": "CollisionComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 2,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.CollisionComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "4",
+      "name": "Target behind blocker",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          1.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.2,
+            0.5,
+            0.9
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "18",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "16",
+      "name": "StaticMeshComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [
+        "19"
+      ],
+      "components": [
+        {
+          "enabled": true,
+          "id": "20",
+          "name": "CollisionComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 2,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 128,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.CollisionComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "5",
+      "name": "Channel ignored object",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          1.0,
+          9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.9,
+            0.7,
+            0.2
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "21",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "19",
+      "name": "StaticMeshComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [
+        "22"
+      ],
+      "components": [
+        {
+          "enabled": true,
+          "id": "23",
+          "name": "CollisionComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 3,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": true,
+              "shape": "box"
+            }
+          },
+          "type": "world.CollisionComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "6",
+      "name": "Overlap sensor",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -4.0,
+          1.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.3,
+            0.8,
+            0.8
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "24",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "22",
+      "name": "StaticMeshComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+        "30",
+        "31"
+      ],
+      "components": [
+        {
+          "enabled": true,
+          "id": "32",
+          "name": "CollisionComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": true,
+              "half_extents": {
+                "x": 0.2,
+                "y": 0.2,
+                "z": 0.2
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.4,
+                "restitution": 0.1
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.CollisionComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "7",
+      "name": "Scene query emitter",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          1.0,
+          -4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "base_color": [
+            0.7,
+            0.3,
+            0.9
+          ],
+          "emissive": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "id": "33",
+          "materials": [],
+          "mesh": "builtin/cube",
+          "metallic": 0.0,
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "roughness": 0.7,
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "25",
+      "name": "StaticMeshComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.4
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "34",
+          "name": "SceneQueryComponent",
+          "properties": {
+            "automatic": true,
+            "end": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 16.0
+            },
+            "ignore_self": true,
+            "ignored_entities": [
+              {
+                "$ref": "7"
+              },
+              {
+                "$ref": "25"
+              }
+            ],
+            "settings": {
+              "capacity": 64,
+              "channel": 7,
+              "include_sensors": true,
+              "mode": "single",
+              "object_types": 6,
+              "radius": 0.35,
+              "selection": "channel",
+              "shape": "line"
+            },
+            "start": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          },
+          "type": "physics.SceneQueryComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "26",
+      "name": "SceneQueryComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "35",
+          "name": "SceneQueryComponent",
+          "properties": {
+            "automatic": true,
+            "end": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 16.0
+            },
+            "ignore_self": true,
+            "ignored_entities": [
+              {
+                "$ref": "7"
+              },
+              {
+                "$ref": "25"
+              }
+            ],
+            "settings": {
+              "capacity": 64,
+              "channel": 7,
+              "include_sensors": true,
+              "mode": "multi",
+              "object_types": 6,
+              "radius": 0.35,
+              "selection": "channel",
+              "shape": "line"
+            },
+            "start": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          },
+          "type": "physics.SceneQueryComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "27",
+      "name": "SceneQueryComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "36",
+          "name": "SceneQueryComponent",
+          "properties": {
+            "automatic": true,
+            "end": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 16.0
+            },
+            "ignore_self": true,
+            "ignored_entities": [
+              {
+                "$ref": "7"
+              },
+              {
+                "$ref": "25"
+              }
+            ],
+            "settings": {
+              "capacity": 64,
+              "channel": 7,
+              "include_sensors": true,
+              "mode": "multi",
+              "object_types": 6,
+              "radius": 0.35,
+              "selection": "object_type",
+              "shape": "line"
+            },
+            "start": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          },
+          "type": "physics.SceneQueryComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "28",
+      "name": "SceneQueryComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "37",
+          "name": "SceneQueryComponent",
+          "properties": {
+            "automatic": true,
+            "end": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 16.0
+            },
+            "ignore_self": true,
+            "ignored_entities": [
+              {
+                "$ref": "7"
+              },
+              {
+                "$ref": "25"
+              }
+            ],
+            "settings": {
+              "capacity": 64,
+              "channel": 7,
+              "include_sensors": true,
+              "mode": "test",
+              "object_types": 6,
+              "radius": 0.35,
+              "selection": "channel",
+              "shape": "line"
+            },
+            "start": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          },
+          "type": "physics.SceneQueryComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "29",
+      "name": "SceneQueryComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "38",
+          "name": "SceneQueryComponent",
+          "properties": {
+            "automatic": true,
+            "end": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 16.0
+            },
+            "ignore_self": true,
+            "ignored_entities": [
+              {
+                "$ref": "7"
+              },
+              {
+                "$ref": "25"
+              }
+            ],
+            "settings": {
+              "capacity": 64,
+              "channel": 7,
+              "include_sensors": true,
+              "mode": "multi",
+              "object_types": 6,
+              "radius": 0.35,
+              "selection": "channel",
+              "shape": "sphere_sweep"
+            },
+            "start": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0
+            }
+          },
+          "type": "physics.SceneQueryComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "30",
+      "name": "SceneQueryComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "39",
+          "name": "SceneQueryComponent",
+          "properties": {
+            "automatic": true,
+            "end": {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 16.0
+            },
+            "ignore_self": true,
+            "ignored_entities": [
+              {
+                "$ref": "7"
+              },
+              {
+                "$ref": "25"
+              }
+            ],
+            "settings": {
+              "capacity": 64,
+              "channel": 7,
+              "include_sensors": true,
+              "mode": "multi",
+              "object_types": 8,
+              "radius": 0.35,
+              "selection": "object_type",
+              "shape": "sphere_overlap"
+            },
+            "start": {
+              "x": -4.0,
+              "y": 0.0,
+              "z": 4.0
+            }
+          },
+          "type": "physics.SceneQueryComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "31",
+      "name": "SceneQueryComponent",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "40",
+          "name": "LightComponent",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.87,
+                "z": 0.7
+              },
+              "height": 2.0,
+              "intensity": 1.8,
+              "kind": "directional",
+              "range": 12.0,
+              "source_radius": 0.018,
+              "two_sided": false,
+              "width": 2.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "8",
+      "name": "Main directional",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          5.0,
+          -2.0
+        ],
+        "rotation": [
+          0.53675234,
+          0.18786332,
+          0.0,
+          0.8225596
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "42",
+          "name": "CameraComponent",
+          "properties": {
+            "far_clip": 30000.0,
+            "near_clip": 0.05,
+            "vertical_fov": 45.0
+          },
+          "type": "world.CameraComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "41",
+      "name": "Main Camera",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          10,
+          8,
+          -14
+        ],
+        "rotation": [
+          0.1590249855772303,
+          -0.3008922464907421,
+          0.050961950496297086,
+          0.9389237400159446
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "44",
+          "name": "EnvironmentComponent",
+          "properties": {
+            "main_camera": {
+              "$ref": "41"
+            }
+          },
+          "sky_map": "",
+          "type": "world.EnvironmentComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "43",
+      "name": "Environment",
+      "properties": {},
+      "space": null,
+      "type": "world.Entity"
+    }
+  ],
+  "materials": [],
+  "next_id": "45",
+  "roots": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "41",
+    "43"
+  ],
+  "version": 9
+}

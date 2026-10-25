@@ -53,11 +53,11 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 ## 官方 Physic 场景
 
-[Examples/Physic](../../../assets/examples/Examples/Physic/README.md) 包含 9 个组件场景。`atelier_editor_document_acceptance --physics-examples` 通过真实磁盘写读保存全部属性及约束目标，再各执行 180 个固定步，检查刚体落地、持续力/一次冲量、运动学平台、触发与碰撞矩阵、Ray/Sweep/Overlap、角色落地移动、距离约束及六部件布娃娃。每个场景还验证重复 start/update、暂停/单步、停止和重启；越界约束目标被拒绝。
+[Physic](../../../examples/Content/Physic/README.md) 包含 9 个组件场景。`atelier_editor_document_acceptance --physics-examples` 通过真实磁盘写读保存全部属性及约束目标，再各执行 180 个固定步，检查刚体落地、持续力/一次冲量、运动学平台、触发与碰撞矩阵、Ray/Sweep/Overlap、角色落地移动、距离约束及六部件布娃娃。每个场景还验证重复 start/update、暂停/单步、停止和重启；越界约束目标被拒绝。
 
-`atelier_editor --acceptance-physics-examples <输出目录>` 在输出目录的 Workspace 下为每次运行创建新的官方示例副本，避免旧测试副本缺少新增场景。它使用正式 Application/Session/World/Jolt 以及 D3D12 GPU validation。每个场景输出编辑状态及实际模拟后的两张截图，检查被接受的帧和有效几何深度；布娃娃部件坐标另由文档验收与 Jolt 姿态比对。此入口直接调用应用命令和模拟器，不发送原生鼠标输入。
+`atelier_editor --acceptance-physics-examples <输出目录>` 为每次运行创建普通临时工程，只复制 Content/Physic。它使用正式 Application/Session/World/Jolt 以及 D3D12 GPU validation。每个场景输出编辑状态及实际模拟后的两张截图，检查被接受的帧和有效几何深度；布娃娃部件坐标另由文档验收与 Jolt 姿态比对。此入口直接调用应用命令和模拟器，不发送原生鼠标输入。
 
-`--examples` 文档验收确认老用户工程仅补入缺失的官方示例目录，重复打开保留编辑且不修改模板。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
+`--examples` 文档验收严格加载全部示例，检查主相机、资源身份、材质槽和临时保存重开，不写仓库场景。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
 
 `Raycasts.scene` 的六个查询组件经真实磁盘保存重开，验证通道最近阻挡、通道多命中截断、对象类型穿过阻挡、布尔无载荷、球扫掠与 Sensor 重叠。`project_scene_acceptance` 还通过正式 JIT 绑定查询派生组件 Tick，验证原生继承方法、一次请求、布尔/计数/距离/Vector3 返回、保存后瞬态清空和代码拥有者释放。
 

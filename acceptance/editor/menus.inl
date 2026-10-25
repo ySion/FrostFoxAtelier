@@ -85,16 +85,17 @@ void verify_menu_input_transitions(Application& app) {
     key(ui::Key::escape,VK_ESCAPE);
     require(!app.menu_window(),"Escape did not close the replacement menu.");
 
-    click_control(editor::menu_key(editor::CommandGroup::project));key(ui::Key::home,VK_HOME);
+    click_control(editor::menu_key(editor::CommandGroup::view));key(ui::Key::home,VK_HOME);
+    for(unsigned i=0;i<4;++i) key(ui::Key::down,VK_DOWN);
     const auto parent=app.menu_window();
-    require(live_menu()->find(control::examples_menu),"Project menu is missing its Examples branch.");
+    require(live_menu()->find(control::viewport_camera),"View menu is missing its Camera View branch.");
     key(ui::Key::right,VK_RIGHT);
-    require(app.menu_window()!=parent && live_menu()->find(static_cast<ControlKey>(editor::Command::example_sponza)),
+    require(app.menu_window()!=parent && live_menu()->find(static_cast<ControlKey>(editor::Command::view_perspective)),
         "Right from a top-level menu branch switched menu groups instead of opening its child.");
     key(ui::Key::escape,VK_ESCAPE);
-    require(app.menu_window()==parent && live_menu()->find(control::examples_menu),"Escape did not restore the Project parent menu.");
+    require(app.menu_window()==parent && live_menu()->find(control::viewport_camera),"Escape did not restore the View parent menu.");
     key(ui::Key::escape,VK_ESCAPE);
-    require(!app.menu_window(),"Escape did not close the Project root menu.");
+    require(!app.menu_window(),"Escape did not close the View root menu.");
 
     click_control(control::viewport_select_menu);
     click_control(static_cast<ControlKey>(editor::Command::select_box));

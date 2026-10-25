@@ -44,7 +44,7 @@ step 的 CPU 墙钟记为[帧阶段计时](../../foundation.md#帧阶段计时)�
 
 编辑器沿 Entity Structure 的统一入口添加 `CollisionComponent`；网格已有物理能力，可直接编辑 Parameters 中的 `body.enabled`、形状、运动模式、尺寸、碰撞类别/掩码及材料。`BodySettings` 和 `PhysicsMaterial` 由头文件反射生成，Source/JIT 直接访问同一字段。单字段规则是反射硬边界（尺寸、摩擦非负，恢复系数 [0,1]，类别 [0,15]，掩码不超过 16 位），写入越界时夹到边界；跨字段规则是 BodySettings 的类型校验器：形状与运动类型必须是已声明值，尺寸为正，Ignore 与 Overlap 掩码不相交，Triangle Mesh 只能 Stationary。`configure`、逐步协调与场景加载经 Runtime 检查同一规则。Scene 沿通用 `properties.body` 保存配置，没有第二份物理配置记录；`Session::configure_body` 提供完整配置事务。碰撞可视化及 Cook 管理页尚未实现。
 
-官方 [Examples/Physic](../../../assets/examples/Examples/Physic/README.md) 提供 9 个可保存、重开的组件场景。通过 Project → Examples → Physic 或 `atelier_editor --physic` 打开；编辑场景保持静止，Project → Run 从快照创建独立运行会话，经 Session 统一推进 World 和 Jolt。
+[Physic](../../../examples/Content/Physic/README.md) 提供 9 个可保存、重开的组件场景。通过 `atelier_editor --project ./examples --scene Content/Physic/Scenes/Overview.scene` 打开；编辑场景保持静止，Project → Run 从快照创建独立运行会话，使用场景主相机，经 Session 统一推进 World 和 Jolt。
 
 ## 生命周期与专用控制器
 

@@ -1,31 +1,23 @@
 std::filesystem::path scene_lit_example(const std::filesystem::path& requested) {
-    if (!requested.empty()) return std::filesystem::canonical(requested);
-    for (auto base : {std::filesystem::current_path(),editor::asset_directory()})
-        for (unsigned depth=0;depth<16 && !base.empty();++depth,base=base.parent_path())
-            if (std::filesystem::is_regular_file(base/"assets/examples/Config/Project.json"))
-                return std::filesystem::canonical(base/"assets/examples");
-    throw std::runtime_error("Cannot locate assets/examples; pass its project directory to --scene-lit.");
+    return std::filesystem::canonical(requested.empty()?std::filesystem::path{ATELIER_EXAMPLE_PROJECT}:requested);
 }
 void verify_scene_lit_example(const std::filesystem::path& requested) {
     using namespace editor;
     const auto source=scene_lit_example(requested);
     const auto source_project=take(Project::open(source));
-    const auto source_scene=take(source_project.resolve("Examples/Scene Lit Room/Scenes/Main.scene"));
+    const auto source_scene=take(source_project.resolve("Content/Scene Lit Room/Scenes/Main.scene"));
     const auto source_text=take(read_file(source_scene));
     const auto source_config=take(read_file(source/"Config/Project.json"));
     const auto copy=std::filesystem::absolute("out/scene-lit-application-evidence")/
         ("example-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    std::filesystem::create_directories(copy);
-    for (const auto* directory : {"Config","Content","Examples"})
-        std::filesystem::copy(source/directory,copy/directory,
-            std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
-    std::filesystem::create_directories(copy/"Source");
+    take(Project::create(copy));
+    std::filesystem::copy(source/"Content/Scene Lit Room",copy/"Content/Scene Lit Room",std::filesystem::copy_options::recursive);
     auto project=take(Project::open(copy));
-    auto document=take(Session::deserialize(take(read_file(take(project.resolve("Examples/Scene Lit Room/Scenes/Main.scene")))),project));
+    auto document=take(Session::deserialize(take(read_file(take(project.resolve("Content/Scene Lit Room/Scenes/Main.scene")))),project));
     application::SceneSnapshot scene;take(scene.refresh(*document));
     const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.presentation().environment()));};
     require(scene.meshes.size()==10 && scene.lights.size()==4 && sky(*document)==std::array{.025f,.035f,.055f} &&
-        take(document->world().members()).size()==15 && document->environment()!=ObjectId{} &&
+        take(document->world().members()).size()==16 && document->environment()!=ObjectId{} &&
         take(document->presentation().environment()).probe_volumes[0].enabled,
         "Scene Lit example did not load its ten meshes, four direct lights and an Environment with its sky and DDGI volume.");
     require(std::ranges::count(scene.lights,renderer::LightKind::directional,&renderer::Light::kind)==1 &&

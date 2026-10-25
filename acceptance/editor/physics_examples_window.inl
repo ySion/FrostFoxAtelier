@@ -4,18 +4,22 @@ int verify_physics_examples_window(Application& app,const char* output_directory
     require(SUCCEEDED(initialized)||initialized==RPC_E_CHANGED_MODE,"Cannot initialize physics captures.");
     struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
-    model(app.open_example(atelier::editor::Command::example_physic));
+    const auto project=output/("Project-"+std::to_string(GetTickCount64()));
+    model(atelier::editor::Project::create(project));
+    std::filesystem::copy(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic",project/"Content/Physic",std::filesystem::copy_options::recursive);
+    model(app.open_project(project));model(app.open_scene("Content/Physic/Scenes/Overview.scene"));
+    model(app.configure_view({22,18,-26},{0,2,0},atelier::renderer::Shading::smooth));
     if(const auto& build=Access::project_build(app);build && build->error) throw std::runtime_error(build->error->message);
     require(Access::scene_lit_view(app).shading==atelier::renderer::Shading::smooth &&
         static_cast<const atelier::rendering::SceneLightingSettings&>(Access::scene_lit_view(app).lit)==model(app.document().presentation().environment()),
         "Physic did not open Smooth rendering with its authored lighting settings preserved.");
     struct Example {const char* name;std::size_t entities,roots;};
     constexpr std::array examples{
-        Example{"Overview",23,10},Example{"RigidBodies",8,5},Example{"Forces",8,5},Example{"Triggers",10,6},Example{"Queries",8,5},
-        Example{"Character",8,5},Example{"Constraints",6,4},Example{"Ragdoll",11,4},Example{"Raycasts",20,8}};
+        Example{"Overview",25,12},Example{"RigidBodies",10,7},Example{"Forces",10,7},Example{"Triggers",12,8},Example{"Queries",10,7},
+        Example{"Character",10,7},Example{"Constraints",8,6},Example{"Ragdoll",13,6},Example{"Raycasts",22,10}};
     for(const auto& example:examples) {
         const auto* name=example.name;
-        model(app.open_scene(std::string("Examples/Physic/Scenes/")+name+".scene"));
+        model(app.open_scene(std::string("Content/Physic/Scenes/")+name+".scene"));
         const auto members=model(app.document().world().members());
         const auto roots=std::ranges::count_if(members,[&](const auto& member) {
             return model(atelier::world::parent_entity(app.document().world().runtime(),member.id()))==atelier::ObjectId{};

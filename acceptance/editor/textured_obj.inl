@@ -100,9 +100,9 @@ void verify_textured_obj() {
     std::puts("Textured OBJ acceptance: PASS (bundle import, concave polygon, UV, tangent fallback, shared texture, refresh, lifetime, failure/retry boundaries)");
 }
 void verify_sponza_project() {
-    const auto folder=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"assets/examples";
+    const std::filesystem::path folder=ATELIER_EXAMPLE_PROJECT;
     auto project=take(editor::Project::open(folder));
-    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Examples/Sponza/Scenes/Sponza.scene")),project,{},editor::LoadPolicy::strict));
+    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Content/Sponza/Scenes/Sponza.scene")),project,{},editor::LoadPolicy::strict));
     const auto items=take(document->presentation().render_items());require(items.size()==2,"Sponza scene should contain the building and its curtains.");
     // Every slot shows the material generated from its glTF material; counts follow the shipped 2K assets.
     struct Expected {std::size_t triangles,slots,textured;};
@@ -133,6 +133,6 @@ void verify_sponza_project() {
     const auto sky=take(presentation::read_sky_map(reopened->world().runtime(),reopened->environment()));
     const auto* map=project.entry(sky.source);
     require(take(reopened->presentation().environment()).sky_enabled && sky.resolved && map &&
-        map->path==std::filesystem::path("Examples/Sponza/Sky/kloppenheim_05_4k_nosun.hdr"),"Sponza save/reopen lost its sun-removed sky map.");
+        map->path==std::filesystem::path("Content/Sponza/Sky/kloppenheim_05_4k_nosun.hdr"),"Sponza save/reopen lost its sun-removed sky map.");
     std::printf("Sponza project acceptance: PASS (%zu triangles, %zu meshes, every slot on its default material)\n",triangles,items.size());
 }

@@ -2119,6 +2119,5 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
 }
 
 #include "sponza_window.inl"
-#include "examples_window.inl"
 #include "physics_examples_window.inl"
 #include "dungeons_window.inl"

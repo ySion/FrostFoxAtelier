@@ -146,7 +146,7 @@ void verify_query_source(editor::Project& project) {
         }}));
         return std::static_pointer_cast<void>(code);
     };
-    auto scene=Json::parse(take(editor::read_file(editor::asset_directory()/"examples/Examples/Physic/Scenes/Raycasts.scene")));
+    auto scene=Json::parse(take(editor::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes/Raycasts.scene")));
     unsigned authored_probes{};
     for(auto& entity:scene["entities"]) {
         for (auto& component:entity["components"]) if (component["type"]=="physics.SceneQueryComponent" &&
@@ -918,7 +918,7 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     changed(b->close());changed(a.close());
 
     // A Ragdoll follows its controller, so Play cannot follow an authored move of it.
-    const auto ragdoll_scene=take(editor::read_file(editor::asset_directory()/"examples/Examples/Physic/Scenes/Ragdoll.scene"));
+    const auto ragdoll_scene=take(editor::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes/Ragdoll.scene"));
     std::string ragdoll;
     for(const auto& entity:Json::parse(ragdoll_scene)["entities"])
         for(const auto& part:entity["components"]) if(part["type"]=="physics.RagdollComponent") ragdoll=entity["id"];
@@ -1072,8 +1072,8 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     a.set_live_forwarding(false);require(take(a.take_live_ops()).empty(),"Stopping forwarding kept its failure.");
     std::puts("Play change forwarding: PASS (every change kind, undo and redo, previews, cancel, material assets, failure)");
 }
-// A document's World lighting is its Environment. Load initialization, as an example
-// opens, creates one without history or a modified mark, and only when there is none.
+// A document's World lighting is its Environment. Explicit authoring creates it
+// through ordinary history; opening a scene never fits or rewrites these settings.
 void verify_environment_document(editor::Project& project) {
     acceptance_phase="Environment document";
     using enum world::DiagnosticKind;
@@ -1085,13 +1085,13 @@ void verify_environment_document(editor::Project& project) {
         "A document without an Environment did not use the default World settings.");
     auto fitted=settings(*opened);fitted.probe_volumes[0].minimum={-3,-1,-4};fitted.probe_volumes[0].maximum={3,4,4};
     fitted.probe_volumes[0].counts={6,5,8};fitted.probe_update_budget=60;
-    take(opened->initialize_environment(fitted));
+    take(opened->set_environment(fitted));
     const auto owner=take(world::inspect_component(opened->world().runtime(),opened->environment())).owner;
-    require(settings(*opened)==fitted && !opened->dirty() && opened->undo_count()==0 && opened->redo_count()==0 &&
+    require(settings(*opened)==fitted && opened->dirty() && opened->undo_count()==1 && opened->redo_count()==0 &&
         take(opened->world().members()).size()==1 && opened->name(owner)==L"Environment" && !take(world::has_transform(opened->world().runtime(),owner)),
-        "Load initialization did not leave a clean document with one spaceless Environment root.");
-    auto refitted=fitted;refitted.probe_update_budget=61;
-    require(!opened->initialize_environment(refitted) && settings(*opened)==fitted,"Load initialization overwrote an existing Environment.");
+        "Explicit World settings did not create one undoable spaceless Environment root.");
+    changed(opened->undo());require(opened->environment()==ObjectId{},"Undo did not remove the authored Environment.");
+    changed(opened->redo());require(settings(*opened)==fitted,"Redo did not restore the authored Environment settings.");
     const auto saved=Json::parse(take(opened->serialize()));
     auto reopened=load(saved);
     require(saved.at("version")==9 && settings(*reopened)==fitted && reopened->load_issues().empty(),"A saved Environment did not reopen with the same settings.");
@@ -1218,7 +1218,7 @@ void verify_camera_loading(editor::Project& project) {
 }
 void verify_camera_import(editor::Project& project) {
     acceptance_phase="Camera forest import forwarding";
-    editor::Session source;take(source.initialize_environment({}));
+    editor::Session source;
     changed(source.create_camera({2,3,4}));take(source.set_main_camera(source.selection().entity));
     auto forest=Json::parse(take(source.serialize()));
     const auto environment=take(world::inspect_component(source.world().runtime(),source.environment())).owner;

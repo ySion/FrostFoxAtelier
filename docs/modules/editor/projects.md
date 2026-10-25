@@ -16,7 +16,7 @@ MyGame/
 ## 使用
 
 - File → New Project Folder / Open Project Folder 选择目录；也可运行 `atelier_editor --new-project <目录>` 或 `atelier_editor --project <目录>`，支持中文路径。
-- Ctrl+S 保存当前工作区域：Code 区保存当前源码，其余区域保存场景；File → Save Scene 始终保存场景。Ctrl+Shift+S 另存场景到当前工程 Content 或 Examples 内，File → Open Scene 打开同一工程中的场景。标题显示工程、场景和未保存标记。
+- Ctrl+S 保存当前工作区域：Code 区保存当前源码，其余区域保存场景；File → Save Scene 始终保存场景。Ctrl+Shift+S 另存场景到当前工程 Content 内，File → Open Scene 打开同一工程中的场景。标题显示工程、场景和未保存标记。
 - 关闭窗口、打开其他工程或场景前处理未保存修改。保存决定完成后才读取目标场景，取消新建也不会创建目录。加载在独立、停止的新 Session/World 中完成；失败保留当前文档，成功才撤下旧 UI 绑定和文档。
 - Config 的 `startup_scene` 是打开工程时加载的场景，路径相对工程根。另存场景不隐式修改启动场景配置。
 - Source 文件由工程统一采集、编译并绑定到真实场景类型。Project 菜单提供创建组件源码、构建、重建类型、运行、停止和项目 UI 预览。
@@ -88,7 +88,7 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 ## 资源浏览器
 
-原 Asset Shelf 沿原停靠视图演进为 Asset Browser。左侧常驻目录树以 Project、Engine 为并列根：Project 展示实际 Content、Source、Config 及可选的 Examples 目录，Engine 展示只读内置网格；未打开工程时 Project 根禁用。路径与搜索位于同一紧凑工具行，路径菜单可访问祖先目录，返回和上级操作使用同一导航状态。类型筛选、List/Details/Tiles 和资源操作各由图标菜单承载。
+原 Asset Shelf 沿原停靠视图演进为 Asset Browser。左侧常驻目录树以 Project、Engine 为并列根：Project 展示实际 Content、Source、Config 目录，Engine 展示只读内置网格；未打开工程时 Project 根禁用。路径与搜索位于同一紧凑工具行，路径菜单可访问祖先目录，返回和上级操作使用同一导航状态。类型筛选、List/Details/Tiles 和资源操作各由图标菜单承载。
 
 目录树与结果区之间使用 DSL Splitter，可拖动调整目录宽度；两边分别保留至少 96/64 DIP。Esc、失焦、捕获丢失或关闭正在编辑的区域会取消本次调整；临时缩窄整个面板只限制显示宽度，不抹掉用户此前选择的宽度。目录宽度沿现有工作区状态保留，不进入场景撤销，不触发 viewport 渲染目标缩放。
 
@@ -117,7 +117,7 @@ glTF 上限：文档 16 MiB，buffer 合计 512 MiB，单个图片文件 64 MiB�
 Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘。网格 UUID 与依赖文件的大小/修改时间共同决定缓存是否有效；未变化刷新保留 revision 和资源，MTL/图片改写或删除淘汰相应网格解析缓存。网格元数据只改 `materials` 时 revision 照样提升、几何缓存保留，之后加载的场景取新映射。已有 Entity 保有旧 Mesh/图片版本，重新打开场景或再次添加资源取得新版本。网格默认材质与其他材质资源一样由当前会话共享：外部改写它的贴图后，再次添加网格得到新几何，默认材质仍是会话中已打开的版本，重开工程才读取新贴图（见[材质系统](../renderer/materials.md)）。Project 内的网格（OBJ 与 glTF）和贴图资源引用 SHA-256 相同的图片时共享不可变解码图像，所以 glTF 网格与它生成的材质只解码一次；缓存只保存摘要到图像的弱引用，刷新时清理已失去拥有者的条目。修改图像后新旧 Mesh 各自保有对应版本。外部工具应正常更新文件修改时间；刻意同时保持大小和时间的内容改写无法识别。
 
 
-每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID；网格的元数据还可以有 `materials`（槽名到材质键），每个键必须对应网格中唯一的槽，否则网格无法加载。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。元数据与资源共同位于 Content 或 Examples，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
+每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID；网格的元数据还可以有 `materials`（槽名到材质键），每个键必须对应网格中唯一的槽，否则网格无法加载。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。导入或新建的资源及其元数据共同位于 Content，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引首片最多 10000 项；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。
 
 ## 材质与贴图资源
 
@@ -149,7 +149,7 @@ Scene 统一写出 v9：顶层 `materials` 按文档 ID 保存材质定义，Sta
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。
 - Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
 - 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data；网格的默认材质或其贴图不可用时以替代品显示，诊断记在该组件的 `mesh` 字段。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）遇到任何诊断都拒绝。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing` 与 `mesh.default_materials`（每个默认槽的 `slot`、`object`、`source`、`missing`），材质槽带 `missing`。当前限制：文档级保留数据（未知的顶层键）只在 Project Output 报告，面板中没有对应显示。
-- 物理角色、布娃娃/部件、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。当前使用方式见 [Physic 示例](../../../assets/examples/Examples/Physic/README.md)。
+- 物理角色、布娃娃/部件、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。当前使用方式见 [Physic 示例](../../../examples/Content/Physic/README.md)。
 - SceneQueryComponent 复用 Scene v9 保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源、解析内容和不持久化的槽默认材质（编辑器按网格资产解析，`Session::mesh_defaults`），`read_static_mesh` 覆盖 Detached 与空网格。没有组件的消费者用 `Session::mesh_surfaces` 取同一份默认材质下每个槽的表面。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
 - 重建先创建全部真实 Entity/Component，恢复值、资源与普通引用，再恢复有序组合和 Entity 空间参考，完整 forest 经统一批次注册；无效关系拒绝候选。加载 StaticMeshEntity 不重复调用带默认组成的快捷工厂。
@@ -336,10 +336,10 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ## Sponza 完整模型
 
-[Sponza](../../../assets/examples/Examples/Sponza/README.md) 是编辑器自带默认场景，与 Scene Lit Room、Physic、Dungeons 同属 Official Examples 工程。源模板位于 `assets/examples/`，构建部署到可执行文件旁的 `examples/`；资源浏览器按 `Project / Examples / 场景名` 展示真实目录，启动时展开到 Sponza。无参数启动及顶部 Project → Examples 菜单配置内庭相机与 Scene Lit + DDGI。首次打开建立整个工程的用户副本，后续保存与切换保留修改。工程目录扫描、启动场景及 Save Scene As 同时支持 Content 和可选的 Examples 内容目录；Source 编译和 Cache 排除规则不变。部署及副本约定见 [官方 Examples](../../../assets/examples/README.md)。显式命令行的 `--project`、`--scene`、`--material-camera` 和 `--scene-lit-camera` 保留原语义。
+[Sponza](../../../examples/Content/Sponza/README.md) 与 Scene Lit Room、Physic、Dungeons 同属根目录的普通 [Examples 工程](../../../examples/README.md)，不随引擎部署。无参数启动为空文档；`--project ./examples` 打开工程配置指定的 Sponza，`--scene Content/...` 可明确选择其他场景，不必同时传相机参数。资源浏览器按 `Project / Content / 场景名` 展示目录，场景只保存到 Content。打开场景不自动改变视口模式或拟合 DDGI；每个场景保存自己的主相机，Play 使用该相机。需要固定编辑视图时，可选择 Main Camera 后用 View from Camera，或显式传入 `--material-camera` / `--scene-lit-camera`。
 
 `editor_sponza_acceptance` 运行真实依赖导入/重试/刷新/资源寿命、完整模型保存重开和正式编辑器 GPU 捕获。窗口证据在 `out/<配置>/sponza-evidence/`；基础材质像素与深度/线框检查由 `renderer_acceptance` 执行。
 
 ## Dungeons 地牢资源
 
-[Dungeons](../../../assets/examples/Examples/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。官方菜单及 `--dungeons` 配置原始 Demo 相机与 Smooth 贴图显示；无参数启动仍为 Sponza。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。
+[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。

@@ -455,7 +455,7 @@ void sky_real_stability(Fixture& f, const atelier::rendering::SkyMapRef& map) {
 
 atelier::rendering::SkyMapRef sky_real_map() {
     const auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/
-                      "assets/examples/Examples/Sponza/Sky/kloppenheim_05_4k.hdr";
+                      "examples/Content/Sponza/Sky/kloppenheim_05_4k.hdr";
     std::ifstream input(path, std::ios::binary);
     check(input.good(), "the bundled kloppenheim_05 HDRI is readable");
     const std::string bytes{std::istreambuf_iterator<char>(input), {}};

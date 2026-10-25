@@ -20,17 +20,16 @@ class EditorControl;
 enum class ProjectOpenPolicy { allow_repair, require_scene };
 class Application final : private editor::OperatorHost {
 public:
-    explicit Application(bool gpu_validation = false, bool activate = true, std::filesystem::path examples_workspace = {},
+    explicit Application(bool gpu_validation = false, bool activate = true,
         std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
     ~Application();
     bool step(renderer::Capture* = nullptr);
     void enable_control(const std::filesystem::path& directory);
     // A require_scene open also checks the loaded scene with dmit before retiring the current document.
     Result<void> open_project(const std::filesystem::path&,bool create=false,ProjectOpenPolicy=ProjectOpenPolicy::allow_repair,const std::function<Result<void>(const editor::Session&)>& admit={});
-    Result<void> open_example(editor::Command = editor::Command::example_sponza);
     Result<void> open_scene(const std::filesystem::path&);
-    // Optional one-time DDGI fit to rendered world bounds; ordinary camera moves retain the volume.
-    Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading, bool fit_ddgi_volume = false);
+    // View preferences only; authored World settings remain unchanged.
+    Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading);
     Result<renderer::ViewSettings> fitted_probe_view(bool follow_focus) const;
     Result<void> open_source(const std::filesystem::path&);
     Result<void> save_scene(const std::filesystem::path& relative = {});
@@ -82,7 +81,6 @@ private:
     SceneRecovery recovery_;
     void preserve_failure(std::string_view) noexcept;
     std::optional<editor::Project> project_;
-    std::filesystem::path examples_workspace_; // Empty selects the current user's local application data.
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.
     PlayProcess play_;
     PlayLink live_; // The running Play's change link; the document forwards while it is active.

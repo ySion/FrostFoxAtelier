@@ -1,10 +1,5 @@
 std::filesystem::path scene_lit_window_example(const std::filesystem::path& requested) {
-    if (!requested.empty()) return std::filesystem::canonical(requested);
-    for (auto base : {std::filesystem::current_path(),atelier::editor::asset_directory()})
-        for (unsigned depth=0;depth<16 && !base.empty();++depth,base=base.parent_path())
-            if (std::filesystem::is_regular_file(base/"assets/examples/Config/Project.json"))
-                return std::filesystem::canonical(base/"assets/examples");
-    throw std::runtime_error("Cannot locate assets/examples; pass its project directory to --acceptance-scene-lit.");
+    return std::filesystem::canonical(requested.empty()?std::filesystem::path{ATELIER_EXAMPLE_PROJECT}:requested);
 }
 std::string scene_lit_selection_diagnostic(Application& app) {
     auto& runtime=app.document().world().runtime();
@@ -78,17 +73,14 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto outside=output.lexically_relative(source);
     require(!outside.empty() && *outside.begin()==L"..","Scene Lit evidence output must be outside the source example project.");
     auto source_project=model(atelier::editor::Project::open(source));
-    const auto source_scene=model(source_project.resolve("Examples/Scene Lit Room/Scenes/Main.scene"));
+    const auto source_scene=model(source_project.resolve("Content/Scene Lit Room/Scenes/Main.scene"));
     const auto source_text=model(atelier::editor::read_file(source_scene));
     const auto source_config=model(atelier::editor::read_file(source/"Config/Project.json"));
     const auto copy=output/(L"Project-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
-    std::filesystem::create_directories(copy);
-    for (const auto* directory : {"Config","Content","Examples"})
-        std::filesystem::copy(source/directory,copy/directory,
-            std::filesystem::copy_options::recursive|std::filesystem::copy_options::skip_symlinks);
-    std::filesystem::create_directories(copy/"Source");
-    Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Examples/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
-    require(!app.document().dirty() && entities(app).size()==15 && app.document().environment()!=atelier::ObjectId{} &&
+    model(atelier::editor::Project::create(copy));
+    std::filesystem::copy(source/"Content/Scene Lit Room",copy/"Content/Scene Lit Room",std::filesystem::copy_options::recursive);
+    Access::mark_saved(app);model(app.open_project(copy));model(app.open_scene("Content/Scene Lit Room/Scenes/Main.scene"));tick(app,4);
+    require(!app.document().dirty() && entities(app).size()==16 && app.document().environment()!=atelier::ObjectId{} &&
         model(app.document().presentation().render_items()).size()==10 && model(app.document().presentation().light_items()).size()==4,
         "The formal application failed to load the complete Scene Lit example World.");
     const auto loaded=model(app.document().serialize());
@@ -225,7 +217,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     const auto saved=model(atelier::editor::read_file(copy/"Content/Scenes/Acceptance.scene"));
     require(!app.document().dirty(),"Scene Lit temporary save did not mark the authored document clean.");
     model(app.open_scene("Content/Scenes/Acceptance.scene"));tick(app,96);
-    require(model(app.document().serialize())==saved && entities(app).size()==18 &&
+    require(model(app.document().serialize())==saved && entities(app).size()==19 &&
         Access::scene_snapshot(app).meshes.size()==10 && Access::scene_snapshot(app).lights.size()==7 &&
         sky()==std::array{.12f,.12f,.12f} &&
         app.frame_statistics().scene_lit_shadow_sources>=7 &&
@@ -249,7 +241,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
         "Scene Lit product acceptance modified the source example project.");
     std::ofstream(output/"scene-lit-product.txt")<<"Source project: "<<atelier::editor::utf8(source.wstring())
         <<"\nTemporary project: "<<atelier::editor::utf8(copy.wstring())
-        <<"\nSource Config/Content retained. No Source compilation files copied.\n"
+        <<"\nOnly Content/Scene Lit Room copied into an ordinary temporary project.\n"
         <<"Native Scene Lit/MatCap menu, point/rectangle/directional creation/Parameters, Environment deletion and sky edit; requested=5, budget=4, shadowed=4, unshadowed=1, status=Shadows 4/5.\n"
         <<"Actual GPU captures, native middle-orbit direction and editor modes. Runtime World snapshots are verified separately through document/Renderer E2E; no Simulate UI exists. Saved scene reopened with 10 meshes, 7 direct lights and the Environment sky.\n";
 }

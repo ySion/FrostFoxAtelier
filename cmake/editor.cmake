@@ -8,13 +8,6 @@ function(atelier_add_editor)
     add_executable(atelier_control "${PROJECT_SOURCE_DIR}/src/control/main.cpp")
     atelier_target(atelier_control)
     target_link_libraries(atelier_control PRIVATE atelier_control_transport)
-    # Official scenes are shipped alongside the executable, independently of cwd/source checkout.
-    set(example_root "${PROJECT_SOURCE_DIR}/assets/examples")
-    file(GLOB_RECURSE example_files CONFIGURE_DEPENDS RELATIVE "${example_root}"
-        "${example_root}/Config/*" "${example_root}/Content/*" "${example_root}/Source/*" "${example_root}/Examples/*")
-    foreach(example_file IN LISTS example_files)
-        configure_file("${example_root}/${example_file}" "${CMAKE_BINARY_DIR}/examples/${example_file}" COPYONLY)
-    endforeach()
     find_package(Git QUIET)
     set(build_info "${CMAKE_BINARY_DIR}/generated/atelier/build_info.hpp")
     add_custom_target(atelier_editor_build_info
@@ -29,7 +22,6 @@ function(atelier_add_editor)
         configure_file("${PROJECT_SOURCE_DIR}/assets/fonts/${font_asset}" "${CMAKE_BINARY_DIR}/fonts/${font_asset}" COPYONLY)
     endforeach()
     add_library(atelier_editor_core STATIC
-        "${PROJECT_SOURCE_DIR}/src/editor/examples.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/assets.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_materials.cpp"
@@ -141,10 +133,9 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --textured-obj
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-sponza "${CMAKE_BINARY_DIR}/sponza-evidence"
         DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_examples_acceptance
+    atelier_headless_acceptance(editor_examples_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --examples
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-examples "${CMAKE_BINARY_DIR}/examples-evidence"
-        DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
+        DEPENDS atelier_editor_document_acceptance)
     add_custom_target(editor_dungeons_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --dungeons
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dungeons "${CMAKE_BINARY_DIR}/dungeons-evidence"
@@ -174,7 +165,11 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dialogs "${CMAKE_BINARY_DIR}/dialog-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_scene_lit_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --scene-lit "${PROJECT_SOURCE_DIR}/assets/examples"
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-scene-lit "${CMAKE_BINARY_DIR}/scene-lit-editor-evidence" "${PROJECT_SOURCE_DIR}/assets/examples"
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --scene-lit "${PROJECT_SOURCE_DIR}/examples"
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-scene-lit "${CMAKE_BINARY_DIR}/scene-lit-editor-evidence" "${PROJECT_SOURCE_DIR}/examples"
         DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
+    # Repository examples are explicit acceptance inputs, not deployed engine content.
+    foreach(target atelier_editor atelier_editor_document_acceptance atelier_project_scene_acceptance atelier_editor_control_acceptance)
+        target_compile_definitions(${target} PRIVATE "ATELIER_EXAMPLE_PROJECT=L\"${PROJECT_SOURCE_DIR}/examples\"")
+    endforeach()
 endfunction()

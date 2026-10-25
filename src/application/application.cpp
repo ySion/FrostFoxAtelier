@@ -68,8 +68,8 @@ ui::PixelExtent client_extent(HWND window) {
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
 }
-Application::Application(bool validation,bool activate,std::filesystem::path examples_workspace,std::optional<ui::PixelExtent> initial_client,bool vsync)
-    : window_(nullptr,initial_client),examples_workspace_(std::move(examples_workspace)),ui_(editor_fonts()),gpu_validation_(validation),vsync_(vsync) {
+Application::Application(bool validation,bool activate,std::optional<ui::PixelExtent> initial_client,bool vsync)
+    : window_(nullptr,initial_client),ui_(editor_fonts()),gpu_validation_(validation),vsync_(vsync) {
     require_frame_timing();
     auto style=ui_.style(); style.font.family=L"Sarasa UI SC"; style.font.size=12.5f; style.caption_scale=1; style.title_scale=7.f/6;
     if (!ui_.set_style(style)) throw std::runtime_error("Cannot publish editor typography");
@@ -207,25 +207,14 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
     if(auto valid=editor::validate_view_options(candidate,lighting_focus());!valid) return std::unexpected(valid.error());
     return candidate;
 }
-Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading,bool fit_ddgi_volume) {
+Result<void> Application::configure_view(math::Vector3 eye,math::Vector3 target,renderer::Shading shading) {
     workspace_.sync_world(*document_);
     auto candidate=workspace_.view;
-    // Fitting fills probe volumes for a document without an Environment. It belongs to
-    // loading, not authoring: no history, the document stays clean and the next save
-    // writes the Environment. Saved settings are the author's and stay.
-    const bool fit=fit_ddgi_volume && document_->environment()==ObjectId{};
-    if(fit) {
-        auto fitted=fitted_probe_view(false);if(!fitted) return std::unexpected(fitted.error());candidate=*fitted;
-        const auto& counts=candidate.lit.probe_volumes[0].counts;
-        candidate.lit.probe_update_budget=(counts[0]*counts[1]*counts[2]+3)/4;
-    }
     auto camera=camera_;
     if(shading>renderer::Shading::scene_lit || !camera.look_at(eye,target))
         return std::unexpected(Error{ErrorCode::invalid_definition,"Invalid initial camera or shading mode."});
     candidate.shading=shading;
-    // Reject the whole view before the fitted volume reaches the World, which keeps no history of it.
     if(auto valid=editor::validate_view_options(candidate,{target.x,target.y,target.z});!valid) return valid;
-    if(fit) if(auto initialized=document_->initialize_environment(candidate.lit);!initialized) return initialized;
     if(auto set=workspace_.set_view_settings(*document_,candidate,{target.x,target.y,target.z});!set) return set;
     camera_=camera;camera_cut_=true;invalidate_surface();return {};
 }
@@ -633,7 +622,6 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case select_mode_set:case select_mode_extend:case select_mode_subtract:case select_mode_invert:case select_mode_intersect:
     case view_perspective:case view_top:case view_front:case view_right:case view_bottom:case view_back:case view_left:
         break; // Operators, routed above.
-    case example_sponza:case example_scene_lit:case example_physic:case example_dungeons:return open_example(command);
     case cursor_origin:viewport_tool_.cursor={};viewport_tool_.cursor_rotation={};break;
     case snap_toggle:workspace_.viewport_settings.grid_snap=!workspace_.viewport_settings.grid_snap;break;
     case selection_grid:case selection_cursor: result=viewport_tool_.snap_selection(*document_,workspace_.viewport_settings,command==selection_cursor);break;

@@ -28,7 +28,6 @@ inline constexpr auto add_entity=command_key(Command::create_entity), remove_sel
     add_static_mesh=command_key(Command::create_static_mesh);
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
-inline constexpr ui::ControlKey examples_menu = 840;
 inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes=846;
 inline constexpr ui::ControlKey viewport_snap=847, viewport_camera=848, viewport_tools_menu=849, viewport_hud=850, viewport_readout=851, viewport_rail_snap=852, viewport_add_menu=853;
 inline constexpr ui::ControlKey viewport_delete_menu=855, viewport_shading_pie=856, shading_preset_first=890;

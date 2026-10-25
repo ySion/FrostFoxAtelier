@@ -221,9 +221,7 @@ Result<void> Project::refresh() {
         std::vector<ProjectEntry> entries;
         std::unordered_set<std::string> keys;
         const auto native_root=platform::windows_file_path(root_);
-        std::vector<std::filesystem::path> roots;
-        for (const auto* directory:{L"Content",L"Source",L"Config",L"Examples"})
-            if(std::wstring_view(directory)!=L"Examples" || std::filesystem::exists(platform::windows_file_path(take(resolve(directory))))) roots.emplace_back(directory);
+        std::vector<std::filesystem::path> roots{"Content","Source","Config"};
         for (const auto& directory:roots) {
             const auto root=platform::windows_file_path(take(resolve(directory)));
             if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");

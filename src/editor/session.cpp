@@ -256,18 +256,6 @@ Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath>
     auto composed=world_.attach_components(entity->id(),parts);if(!composed) return std::unexpected(composed.error());
     return std::move(*entity);
 }
-Result<void> Session::initialize_environment(const rendering::SceneLightingSettings& settings) {
-    if(undo_count() || redo_count() || editing() || dirty() || environment()!=ObjectId{})
-        return invalid("World settings initialize only a freshly opened document without an Environment.");
-    auto edit=environment_edit(settings);if(!edit) return std::unexpected(edit.error());
-    if(edit->paths.empty()) return {};
-    auto created=create_environment(edit->paths,edit->values);if(!created) return std::unexpected(created.error());
-    const auto id=created->id();
-    auto attached=world_.attach(id);if(!attached) return std::unexpected(attached.error());
-    if(attached->notification_error) return std::unexpected(*attached->notification_error);
-    names_.emplace(id,L"Environment");
-    ++revision_;return {};
-}
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     if (auto valid=validate_name(name);!valid) return valid;
     if (auto ready = admit_entity_edit(entity); !ready) return ready;

@@ -12,7 +12,6 @@
 int verify_sponza_window(atelier::application::Application&, const char* output_directory);
 int verify_physics_examples_window(atelier::application::Application&, const char* output_directory);
 int verify_dungeons_window(atelier::application::Application&, const char* output_directory);
-int verify_examples_window(atelier::application::Application&, const char* output_directory,bool snapshot_only);
 
 int verify_editor_window(atelier::application::Application&, const char* output_directory);
 int verify_editor_source(atelier::application::Application&, const char* output_directory);
@@ -72,11 +71,9 @@ int wmain(int argc, wchar_t** argv) {
         argc=static_cast<int>(arguments.size());argv=arguments.data();
         const bool sponza=argc==3 && std::wstring_view(argv[1])==L"--acceptance-sponza";
         const bool physics_examples=argc==3 && std::wstring_view(argv[1])==L"--acceptance-physics-examples";
-        const bool physic=argc==2 && std::wstring_view(argv[1])==L"--physic";
-        const bool dungeons=argc==2 && std::wstring_view(argv[1])==L"--dungeons";
         const bool dungeons_acceptance=argc==3 && std::wstring_view(argv[1])==L"--acceptance-dungeons";
-        const bool examples_snapshot=argc==3 && std::wstring_view(argv[1])==L"--snapshot-examples";
-        const bool examples=examples_snapshot || (argc==3 && std::wstring_view(argv[1])==L"--acceptance-examples");
+        const bool scene_argument=(argc==5 || argc==12) && std::wstring_view(argv[1])==L"--project" &&
+            std::wstring_view(argv[3])==L"--scene";
         const bool preview=argc==12 && std::wstring_view(argv[1])==L"--project" &&
             std::wstring_view(argv[3])==L"--scene" &&
             (std::wstring_view(argv[5])==L"--material-camera" || std::wstring_view(argv[5])==L"--scene-lit-camera");
@@ -96,38 +93,32 @@ int wmain(int argc, wchar_t** argv) {
         const bool ime = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-ime";
         const bool project_acceptance=argc>=2 && std::wstring_view(argv[1])==L"--acceptance-project";
         const bool scene_lit = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-scene-lit";
-        const bool project=(argc==3 || preview) && std::wstring_view(argv[1])==L"--project";
+        const bool project=(argc==3 || (argc==5 && scene_argument) || preview) && std::wstring_view(argv[1])==L"--project";
         const bool create=argc==3 && std::wstring_view(argv[1])==L"--new-project";
         if(render_performance_output && !project)
             throw std::runtime_error("--profile-render-performance requires --project, optionally followed by the existing --scene and camera arguments.");
-        if (argc != 1 && !dungeons && !dungeons_acceptance && !physic && !physics_examples && !examples && !sponza && !preview && !((acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || project || create) && argc == 3) &&
+        if (argc != 1 && !dungeons_acceptance && !physics_examples && !sponza && !project && !((acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || create) && argc == 3) &&
             !((project_acceptance || scene_lit) && (argc==3 || argc==4))) {
-            std::fprintf(stderr, "Usage: atelier_editor [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version|--physic|--dungeons] [--project|--new-project folder] [--scene relative.scene --material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z] [--snapshot|--acceptance|--acceptance-ime|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-tooltips|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons|--acceptance-examples|--snapshot-examples output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
+            std::fprintf(stderr, "Usage: atelier_editor [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version] [--project|--new-project folder] [--scene relative.scene [--material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z]] [--snapshot|--acceptance|--acceptance-ime|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-tooltips|--acceptance-dialogs|--acceptance-sponza|--acceptance-physics-examples|--acceptance-dungeons output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n"); return 2;
         }
-        // Each dedicated example run must consume current templates. Product workspaces
-        // intentionally preserve existing folders and must not be refreshed here.
-        const auto example_workspace=examples||physics_examples||dungeons_acceptance?
-            std::filesystem::absolute(argv[2])/"Workspace"/std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()):std::filesystem::path{};
         const bool harness=acceptance || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime || project_acceptance || scene_lit ||
-            sponza || physics_examples || dungeons_acceptance || examples;
+            sponza || physics_examples || dungeons_acceptance;
         if(harness) guard_acceptance_native_dialogs();
         if(harness || render_performance_output) atelier::application::isolate_shader_cache();
-        atelier::application::Application app(gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit || sponza || physics_examples || (examples && !examples_snapshot),!snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !examples_snapshot && !render_performance_output,
-            example_workspace,initial_client,!render_performance_output);
-        if(argc==1 || examples || physic || dungeons) {
-            const auto opened=app.open_example(dungeons?atelier::editor::Command::example_dungeons:physic?atelier::editor::Command::example_physic:atelier::editor::Command::example_sponza);
-            if(!opened) throw std::runtime_error(opened.error().message);
-        }
+        atelier::application::Application app(gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit || sponza || physics_examples,!snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !render_performance_output,
+            initial_client,!render_performance_output);
         if (project || create) {
             const auto opened=app.open_project(argv[2],create,render_performance_output?
                 atelier::application::ProjectOpenPolicy::require_scene:atelier::application::ProjectOpenPolicy::allow_repair);
             if (!opened) throw std::runtime_error(opened.error().message);
         }
-        if(preview) {
+        if(scene_argument) {
             auto opened=app.open_scene(argv[4]);if(!opened) throw std::runtime_error(opened.error().message);
+        }
+        if(preview) {
             const bool lit=std::wstring_view(argv[5])==L"--scene-lit-camera";
             auto view=app.configure_view({camera[0],camera[1],camera[2]},{camera[3],camera[4],camera[5]},
-                lit?atelier::renderer::Shading::scene_lit:atelier::renderer::Shading::smooth,lit && !render_performance_output);
+                lit?atelier::renderer::Shading::scene_lit:atelier::renderer::Shading::smooth);
             if(!view) throw std::runtime_error(view.error().message);
         }
         if(render_performance_output)
@@ -135,7 +126,6 @@ int wmain(int argc, wchar_t** argv) {
         if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());
         if(physics_examples) return verify_physics_examples_window(app,atelier::editor::utf8(argv[2]).c_str());
         if(dungeons_acceptance) return verify_dungeons_window(app,atelier::editor::utf8(argv[2]).c_str());
-        if(examples) return verify_examples_window(app,atelier::editor::utf8(argv[2]).c_str(),examples_snapshot);
         if (source) return verify_editor_source(app,atelier::editor::utf8(argv[2]).c_str());
         if (edit) return verify_editor_edit_mode(app,atelier::editor::utf8(argv[2]).c_str());
         if (shortcuts) return verify_editor_shortcuts(app,atelier::editor::utf8(argv[2]).c_str());

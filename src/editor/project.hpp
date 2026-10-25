@@ -33,7 +33,7 @@ public:
     static bool is_sky_path(const std::filesystem::path&);
     static bool is_scene_path(const std::filesystem::path& path) {
         return !path.empty() && path.extension()==L".scene" &&
-            (*path.begin()==L"Content" || *path.begin()==L"Examples");
+            *path.begin()==L"Content";
     }
     const std::filesystem::path& root() const noexcept { return root_; }
     const std::filesystem::path& startup_scene() const noexcept { return startup_; }
@@ -41,7 +41,7 @@ public:
     const std::wstring& name() const noexcept { return name_; }
     std::span<const ProjectEntry> entries() const noexcept { return entries_; }
     const ProjectEntry* entry(std::string_view key) const;
-    // The top-level folders the catalogue scans: Content, Source, Config, and Examples when present.
+    // The top-level folders the catalogue scans: Content, Source, Config.
     std::span<const std::filesystem::path> roots() const noexcept { return roots_; }
     std::uint64_t revision() const noexcept { return revision_; }
     Result<void> refresh();

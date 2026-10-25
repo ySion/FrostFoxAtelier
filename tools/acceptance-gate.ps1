@@ -280,7 +280,6 @@ exit `$LASTEXITCODE
 # Keep these floors until shader caching lands; warm-only history must not shrink them.
 # Renderer entries use the default floor: 30 minutes, the runner's own per-entry limit.
 $minutes = @{
-    editor_examples_acceptance = @{ dev = 17.6; release = 9.4 }
     editor_control_acceptance = @{ dev = 12.9; release = 11.5 }
     editor_sponza_acceptance = @{ dev = 10.4; release = 7.5 }
     editor_scene_lit_acceptance = @{ dev = 8.7; release = 7.6 }

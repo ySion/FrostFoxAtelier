@@ -1,7 +1,8 @@
 void verify_dungeons() {
     namespace fs=std::filesystem;
-    const auto root=editor::asset_directory()/"examples";
-    const auto folder=root/"Examples/Dungeons";
+    const fs::path root=ATELIER_EXAMPLE_PROJECT;
+    const auto folder=root/"Content/Dungeons";
+    verify_example_identities(root);
     auto project=take(editor::Project::open(root));
     const auto manifest=nlohmann::json::parse(take(editor::read_file(folder/"Import/models.json")));
     require(manifest.size()==2314,"Dungeons model library is incomplete.");
@@ -18,7 +19,7 @@ void verify_dungeons() {
         const auto path=folder/editor::wide(scene.at("file").get<std::string>());
         const auto original=take(editor::read_file(path));
         auto document=take(editor::Session::deserialize(original,project));
-        require(take(document->world().members()).size()==scene.at("entities").get<std::size_t>() &&
+        require(take(document->world().members()).size()==scene.at("entities").get<std::size_t>()+2 &&
             take(document->presentation().render_items()).size()==scene.at("visible_meshes").get<std::size_t>(),"Dungeons scene lost authored model instances.");
         const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
         const auto after=take(reopened->serialize());

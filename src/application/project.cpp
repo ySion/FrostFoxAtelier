@@ -1,6 +1,5 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
-#include "editor/examples.hpp"
 #include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -88,19 +87,6 @@ Result<void> Application::open_project(const std::filesystem::path& folder,bool 
     if (!confirm_discard()) return {};
     return load_project(folder,create,{},policy,admit);
 }
-Result<void> Application::open_example(editor::Command command) {
-    const auto* example=editor::example_definition(command);
-    if(!example) return failed("Unknown official example.");
-    if(!confirm_discard()) return {};
-    auto folder=editor::prepare_examples(examples_workspace_);
-    if(!folder) return std::unexpected(folder.error());
-    auto loaded=load_project(*folder,false,example->scene);if(!loaded) return loaded;
-    workspace_.assets.navigate(std::filesystem::path(example->scene).parent_path().parent_path());
-    if(!workspace_.scene_available) return {}; // Keep normal project build diagnostics visible.
-    const auto items=document_->presentation().render_items();if(!items) return std::unexpected(items.error());
-    const bool textured=command==editor::Command::example_physic || command==editor::Command::example_dungeons;
-    return configure_view(example->eye,example->target,textured?renderer::Shading::smooth:renderer::Shading::scene_lit,!textured && !items->empty());
-}
 Result<void> Application::load_project(const std::filesystem::path& folder,bool create,const std::filesystem::path& scene,ProjectOpenPolicy policy,const std::function<Result<void>(const editor::Session&)>& admit) {
     auto project=create?editor::Project::create(folder):editor::Project::open(folder);
     if (!project) return std::unexpected(project.error());
@@ -159,7 +145,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     if (!effects(*edit)) return failed("The active field could not be committed; the scene was not saved.");
     if(auto committed=finish_color_edit(true);!committed) return committed;
     const auto destination=relative.empty()?scene_path_:relative;
-    if (!editor::Project::is_scene_path(destination)) return failed("Save scenes inside the project's Content or Examples folder with a .scene extension.");
+    if (!editor::Project::is_scene_path(destination)) return failed("Save scenes inside the project's Content folder with a .scene extension.");
     const auto path=project_->resolve(destination);if (!path) return std::unexpected(path.error());
     const auto text=document_->serialize();if (!text) return std::unexpected(text.error());
     auto saved=editor::write_file(*path,*text);if (!saved) return saved;

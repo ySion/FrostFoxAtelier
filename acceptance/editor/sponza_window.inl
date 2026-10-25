@@ -140,8 +140,7 @@ int verify_sponza_window(atelier::application::Application& app,const char* outp
     require(SUCCEEDED(initialized) || initialized==RPC_E_CHANGED_MODE,"Cannot initialize capture encoding.");
     struct Apartment {bool owns;~Apartment(){if(owns) CoUninitialize();}} apartment{SUCCEEDED(initialized)};
     const auto output=std::filesystem::absolute(output_directory);std::filesystem::create_directories(output);
-    const auto root=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-    model(app.open_project(root/"assets/examples"));model(app.open_scene("Examples/Sponza/Scenes/Sponza.scene"));
+    model(app.open_project(ATELIER_EXAMPLE_PROJECT));model(app.open_scene("Content/Sponza/Scenes/Sponza.scene"));
     require(model(app.document().presentation().render_items()).front().geometry->vertices().size()==11216634,"Sponza viewport lost model geometry.");
     model(app.configure_view({8,2,0},{-6,3,0},atelier::renderer::Shading::smooth));tick(app,3);
     atelier::renderer::Capture image;require(app.step(&image) && image.frame_id,"Sponza frame was not accepted.");
