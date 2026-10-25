@@ -22,52 +22,15 @@
 
 8. **引擎基础库和反射绑定有成熟实践。** UnrealEngine-AngelScript 使用 Unreal 反射自动绑定 C++ 类型、属性和函数。Unreal 将可变字符串、名称标识和本地化文本分别建模；EASTL 提供面向游戏运行时和工具的容器，官方仓库列出 Frostbite 的使用。这些案例支持控制引擎基础类型，但不意味着现在需要实现完整容器库或复制 Unreal 的所有文本类型。[自动绑定](https://angelscript.hazelight.se/cpp-bindings/automatic-bindings/)、[Unreal 字符串类型](https://dev.epicgames.com/documentation/unreal-engine/string-handling-in-unreal-engine)、[EASTL](https://github.com/electronicarts/EASTL)
 
-参数传递支持 i32、独立枚举身份、AENUM 和三种传递模式，并贯通语言/JIT 调用。i32/u32 底层枚举、宿主变量和字段别名、只读临时值、错误后的写入、协程局部同步借用及热更新签名检查由[真实生成消费者](../../acceptance/reflection/calls.cpp)覆盖。枚举保留数值别名及未命名底层值；async 签名禁止借用参数。
-
-## 统一模型
+## 共享表示的取舍
 
 同一份类型定义回答“是什么类型”；值布局与生命周期操作回答“如何存放和管理”；函数参数再独立说明“如何传递”。原生注册、反射生成器和语言编译器共同生产这些信息，保留类型化的直接调用路径。
 
-| C++ 表达 | 建议语义 | 约束 |
-| --- | --- | --- |
-| `int` | 当前 Windows x64 目标映射为有符号 i32 | 编译期检查位宽；`int32_t` 若为同一 C++ 类型，不重复注册身份 |
-| `enum class E : int32_t` | 独立枚举类型身份和明确底层表示 | 保留枚举项名称、数值及别名；不自动混同整数 |
-| `T` | 按值参数 | 非平凡类型沿用已登记的生命周期操作 |
-| `const T&` | 调用期间只读借用 | 可以按语言规则绑定临时值；只读限制作用于此访问路径 |
-| `T&` | 调用期间可写借用 | 必须绑定可赋值存储，不能自动解释为 out |
-| `StringView` / `Span<T>` | 不拥有存储的视图 | 单独规定有效期与失效条件；不允许逃逸 |
-
-### 可写引用的不变量
-
-- `func(x, x)` 的两个参数必须指向同一存储；混合 `const int&` 和 `int&` 时也必须观察到相同的修改。逐参数复制再写回会破坏这个语义，不能作为透明实现。
-- 初期仅允许借用跨越同步调用。async 函数参数及保存到协程帧的值不能携带未经管理的借用地址；async 函数内部仍可在一次不挂起的同步调用期间使用借用。
-- 局部变量需要可寻址存储；对象字段还要保持所属对象存活并处于合法借用范围。容器元素在借用期间必须禁止导致地址失效的变更，未建立此约束前应拒绝该类借用。
-- 原生函数失败前的写入不自动回滚。现有引用批量更新的原子性是专门契约，不能扩展解释为任意函数调用事务。
-- 含对象引用的值需要继续履行根和写屏障协议；不可用可写裸槽绕过它们。对象身份引用与参数借用应保持不同概念。
-
-### 基础库的边界
-
-建议形成引擎和语言共用的小型基础库，从标量、枚举、拥有存储的 `String` 与借用视图开始，再按实际需求增加 `Array<T>` 等容器。内部可以复用成熟实现，工具和编译器内部无需全面替换 STL。
-
-共享内存表示有两种可行路径：直接采用已注册的原生值类型，或定义项目控制的公开类型。后一种更方便控制分配、编码、容器失效和版本契约，但增加维护责任。单纯给 `std::string` 起别名不会产生新的布局保证；统一分配器也不等于统一对象表示。
+项目控制 Array/String 的公开类型，以控制分配、编码、失效和版本契约，同时承担维护责任。单纯给 `std::string` 起别名不会产生新的布局保证；统一分配器也不等于统一对象表示。类型本身和 Runtime 中的登记不是两套业务值。
 
 JIT 可以通过权威布局信息分配值槽，通过宿主操作构造和访问非平凡值，无需将 STL 私有布局写死在生成代码里。现有 LLVM 后端隔离 DLL 的边界继续采用受控 ABI，不暴露 STL 对象或跨边界转移其分配所有权。共享表示的承诺限于约定的进程、构建和工具链，不能自动扩展到磁盘格式、网络或任意插件 ABI。
 
-`std::string` 原生 API 是否直接兼容取决于最终选用的实际类型；如果需要适配，必须说明编码、复制和生命周期，尤其不能悄悄把 `std::string&` 变成破坏别名的临时副本。
-
-语言持有字符串和容器后，正常返回、错误退出、取消与协程挂起都必须正确执行值生命周期。`Array<ObjectRef>` 还需接入现有动态引用存储的追踪与写屏障机制，不能建立独立的 GC 世界。
-
-## 对按需自有基础库的判断
-
-用户确认的总体方向是引擎与语言共用自有基础类型，按需实现，不引入 EASTL。这个方向契合本项目控制布局、分配和生命周期的目标。建议将目标限定为小型核心库；编译工具内部现有 STL 不需要随之迁移。
-
-- **Array<T> 与 Span<T>**：优先完成连续存储、容量管理、追加、构造、删除和切片。明确扩容、插入和删除何时使元素地址失效。非平凡元素必须按构造/移动/销毁契约处理，不能把任何 T 都当成可 memcpy 搬迁。UE TArray 是动态、可调整容量的值容器，其文档也强调元素与分配策略。[TArray 官方说明](https://dev.epicgames.com/documentation/en-us/unreal-engine/array-containers-in-unreal-engine)
-- **String 与 StringView**：拥有字符的值与借用字符的视图分别表达。可变、拥有存储的 UTF-8 String 是候选；编码单位、结尾零、嵌入零、复制与移动、非法 UTF-8 的处理要明确。字符串可复用适合的缓冲区机制，但不宜直接公开可任意修改字符的 Array 接口而破坏字符串不变量。
-- **视图按值传递仍然借用数据**：Qt QAnyStringView 是不拥有存储的字符视图，主要作为按值传递的接口参数；底层字符串必须覆盖视图使用期。所以参数模式只解决 T&，StringView/Span 内部的借用需要另行识别，不能因外层传值就允许无条件保存或跨 await。[Qt QAnyStringView](https://doc.qt.io/qt-6/qanystringview.html)
-- **共享布局还需要共享操作**：原生与语言应使用同一已注册值类型及其生命周期机制。泛型容器的每个实例化类型还需权威类型身份；包含对象引用的元素必须接入既有根、追踪和写屏障协议。统一外壳大小不代表这些责任已自动完成。
-- **按收益选择优化**：先明确并完成语义与真实消费链，再决定小字符串优化、内联容量、写时复制或特殊分配策略。复用当前分配设施，避免一轮同时重做分配器、容器、Unicode 算法和完整标准库。
-
-自有实现带来控制权，也将异常安全、边界处理、增长策略和非平凡元素的维护责任交给项目。借鉴成熟实现应吸收适用的不变量与算法，保留所复用代码的来源；具体取舍由真实调用场景验证，而不能仅凭“自研”推断更快。
+原生适配须保持别名：`func(x, x)` 的两个参数应看到同一存储，逐参数复制再写回不是透明实现。只读引用不代表独占访问，原生函数失败前的写入也不自动回滚。视图按值传递仍借用内部指针；同步借用、跨挂起限制及 GC 引用边界由[原生值借用](../native-value-borrows.md)维护，不能仅凭统一布局绕过根和写屏障。
 
 ## UE 对照审计：值容器与引用参数
 
@@ -75,7 +38,7 @@ JIT 可以通过权威布局信息分配值槽，通过宿主操作构造和访�
 
 **值容器与擦除存储要分清。** 日常业务数组对应 `TArray<T>`：拥有元素存储，复制生成独立数组，析构时析构剩余元素，并支持移动。若元素本身是指针或共享句柄，复制数组不意味着克隆所指对象。`FString` 提供复制、移动构造和赋值，是可修改的拥有值；它与 .NET 不可变字符串的选择不同。二者都需要真实生命周期操作，不能因反射能识别类型便按若干整数复制。[TArray](https://dev.epicgames.com/documentation/en-us/unreal-engine/array-containers-in-unreal-engine)、[FString API](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/FString)
 
-若采用 FArray 作为本项目的名字，其业务语义应对标 TArray<T>。`FScriptArray` 是反射层使用的擦除存储；`FScriptArrayHelper` 将数组地址、元素属性、大小和对齐组合起来，并提供构造元素等操作。因此业务模板、擦除存储和反射操作不是三个可互换的业务类型。推断：我们可以共享底层机制，但不应向调用者暴露第二套数组身份。[FScriptArrayHelper](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/CoreUObject/FScriptArrayHelper)
+`FScriptArray` 是反射层使用的擦除存储；`FScriptArrayHelper` 将数组地址、元素属性、大小和对齐组合起来，并提供构造元素等操作。因此业务模板、擦除存储和反射操作不是三个可互换的业务类型。它们可以共享机制，但不应向调用者暴露第二套数组身份。[FScriptArrayHelper](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/CoreUObject/FScriptArrayHelper)
 
 **视图按值传递，数据仍是借用。** Epic 明确建议 `FStringView` 按值传参；它不拥有字符，不保证以零结尾，底层存储必须覆盖使用期。`TArrayView<T>` 适合只访问现有元素的函数，不负责扩容或所有权；借用期间不能释放或重分配底层数组。`const TArrayView<T>` 只限制视图自身，元素只读应写 `TArrayView<const T>`。同理，`const Array<View<T>>&` 不能据此认定为深层只读；其中视图指向的数据仍取决于元素视图的契约。[TStringView](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/TStringView)、[TArrayView](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/TArrayView)
 
@@ -90,7 +53,7 @@ JIT 可以通过权威布局信息分配值槽，通过宿主操作构造和访�
 
 资料补查：2026-09-30。以下采用官方合同作为依据，实现为本项目独立编写，未复制上游容器源代码。
 
-- Qt 隐式共享在写入时分离，非 const 遍历可能触发 detach；已有可写迭代器与复制、分离组合还存在特殊失效规则。项目采用独占缓冲、深复制、移动转移与显式 view，避免引入这套额外状态。[Qt 隐式共享](https://doc.qt.io/qt-6/implicit-sharing.html)、[迭代器问题](https://doc.qt.io/qt-6/containers.html#implicit-sharing-iterator-problem)
+- Qt 隐式共享在写入时分离，非 const 遍历可能触发 detach；已有可写迭代器与复制、分离组合还存在特殊失效规则。项目的 Array/String 保持独占缓冲、深复制和显式 view；共享数据由单独的 SharedArray 及显式 `write()` 表达，不把隐式分离加进普通数组或字符串。[Qt 隐式共享](https://doc.qt.io/qt-6/implicit-sharing.html)、[迭代器问题](https://doc.qt.io/qt-6/containers.html#implicit-sharing-iterator-problem)
 - UE 区分保序移除与末尾填洞的 RemoveAtSwap；默认允许容量收缩。Qt QList 区分 reserve、clear 和 squeeze。项目保留 `remove_at/remove_at_swap` 的语义区分，删除不自动缩容，容量由 `reserve/clear/squeeze/release` 明确控制。[UE RemoveAtSwap](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/TArray/RemoveAtSwap)、[Qt QList](https://doc.qt.io/qt-6/qlist.html)
 - QString 按 UTF-16 码元存储，不能把其长度或索引语义原样搬到 UTF-8。Qt 的 UTF-8 视图与多编码视图说明视图的借用性质及码元长度。项目 String 使用有效 UTF-8、尾部零字符并保留嵌入零；StringView 明确按字节切片，外部或切片输入需在建立拥有 String 时校验。[QString](https://doc.qt.io/qt-6/qstring.html)、[QUtf8StringView](https://doc.qt.io/qt-6/qutf8stringview.html)、[编码单位](https://doc.qt.io/qt-6/qanystringview.html#sizes-and-sub-strings)
 
