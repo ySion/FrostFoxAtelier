@@ -52,7 +52,7 @@
 
 普通 gfx 资源由消费者显式释放，Context 不复制资源管理器，也不追踪第二份资源 owner 表。`close` 的 busy 检查针对 Pipeline；原始资源退出由消费者履行 gfx 契约。
 
-默认堆 buffer 的自动只读用途（顶点、索引、shader SRV、indirect 与 copy source）累积为兼容的状态集合，range 与原始 buffer 共享这一状态。已经包含的读用途不再发屏障；显式转换后的状态增加读用途时仍发必要的转换屏障。写入、UAV 读写与 AS 同步不因这项合并被省略；离开 IA 读状态写入时会解绑活动 IA 资源，下次 draw 重新安装。消费者不需要也不得手工维护这套状态。
+默认堆 buffer 的自动只读用途（顶点、索引、shader SRV、indirect 与 copy source）累积为兼容的状态集合，range 与原始 buffer 共享这一状态。已经包含的读用途不再发屏障；显式转换后的状态增加读用途时仍发必要的转换屏障。写入、UAV 读写与 AS 同步不因这项合并被省略；离开 IA 读状态写入时按实际安装的 IA 资源判断解绑，下次 draw 重新安装。仅 bind 而未 draw 的逻辑句柄不替代实际安装状态；经 range 别名写入也遵守同一规则。消费者不需要也不得手工维护这套状态。
 
 ## Scene Lit：inline RayQuery 与离屏资源
 

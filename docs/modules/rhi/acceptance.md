@@ -64,11 +64,19 @@ cmake --build --preset release --target rhi_acceptance
 
 ## 只读 buffer 状态合并（2026-10-25）
 
-受影响的 RHI、Renderer 与编辑器目标在 Dev / Release 构建通过；Release `rhi_acceptance` 主进程与三个后端回归均退出 0。主进程使用 GBV，最终 InfoQueue warning/error 均为 0；Dev 本批只构建，不重复运行窗口矩阵。
+初版（36548664）受影响的 RHI、Renderer 与编辑器目标在 Dev / Release 构建通过；Release `rhi_acceptance` 主进程与三个后端回归均退出 0。主进程使用 GBV，最终 InfoQueue warning/error 均为 0；Dev 本批只构建，不重复运行窗口矩阵。
 
-[资源消费者](../../../acceptance/rhi/resource_cases.cpp)新增一个真实 GPU 循环：同一底层顶点/索引 buffer 经 range 别名交替作为 IA、像素 SRV、compute SRV；两次连续 UAV 读改写之间保留顺序，下一轮由 COPY_DEST 覆写顶点数据，然后重新绘制。四轮逐像素核对 8,192 个 RGBA 像素，并核对四个 compute 读回值，覆盖合并的读状态离开到写状态、UAV → UAV、写 → 读以及同一句柄的 IA 重新安装。既有 BLAS/TLAS build/update → RayQuery 与间接派发消费者同时通过，未省略写入或 AS 同步。
+[资源消费者](../../../acceptance/rhi/resource_cases.cpp)的初版真实 GPU 循环让同一底层顶点/索引 buffer 经 range 别名交替作为 IA、像素 SRV、compute SRV；两次连续 UAV 读改写之间保留顺序，下一轮由 COPY_DEST 覆写顶点数据，然后重新绘制。四轮逐像素核对 8,192 个 RGBA 像素，并核对四个 compute 读回值，覆盖合并的读状态离开到写状态、UAV → UAV 和写 → 读。既有 BLAS/TLAS build/update → RayQuery 与间接派发消费者同时通过。
 
-日志为 `.amp/in/p1/rhi-final.log` 与 `out/release/rhi-acceptance.log`；`shared-buffer-reads` 输出 PASS。这些是本工作树的本机证据，不表示其他工作树已经验证。
+初版日志保存在 `.amp/in/p1/rhi-final.log`；当时 `shared-buffer-reads` 输出 PASS。这些是本工作树的本机证据，不表示其他工作树已经验证。
+
+独立审查发现初版写前解绑错误地匹配逻辑 `bound_*`，而非实际 `installed_*`：draw A → bind B（不 draw）→ range 写 A → bind A → draw 可漏掉 IA 重新安装。初版用例的写入均在该 command list 首次 draw 前，每轮 `finish()` 重置安装标记，不能证明这一分支正确。
+
+修复仅把两处资源匹配改为 `installed_*`，原有 transition/UAV/AS 同步不变。同一 command list 回归先 draw A，再经 range 执行 COPY_DEST/UAV 写入，最后重新 draw A；四轮中两轮插入只 bind 不 draw 的 B，两轮保留 A，继续核对原有像素和 compute 真值以及 InfoQueue。
+
+本轮真实红绿已通过：相同新增用例在旧 bound 匹配下连续两次退出 1，均报实际状态 0xC0 缺 INDEX_BUFFER（0x2）与 VERTEX_AND_CONSTANT_BUFFER（0x1），并因像素错误失败；改为 installed 匹配后四轮 8,192 像素与四个 compute word 正确，`shared-buffer-reads` 和 Release RHI 主进程、三个后端回归均 PASS。主进程启用 GBV，最终 InfoQueue warning/error 为 0；日志中故意超时、非法输入和 live-object 阳性对照保留，不是忽略了意外错误。
+
+Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_renderer_acceptance`、`atelier_editor` 均以 Jobs=2 构建通过，Dev 不另跑窗口；两配置重放后的 gfx.cpp 散列相同。证据在渲染工作树 `.amp/in/artifacts/p1-installed-ia-20261025/`：`red{,-repeat}-rhi.log`、`green-rhi.log`、`green-rhi-run.log`、两配置构建日志及制品散列；`red-to-green-gfx.diff` 证明生成实现仅有两处匹配差异。此结论只针对该候选和本机硬件，不替代后续独立复审与主线集成。
 
 ## 绘制前窗口同步
 

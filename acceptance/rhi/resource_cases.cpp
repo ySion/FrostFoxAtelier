@@ -255,12 +255,13 @@ RWStructuredBuffer<uint> indices, values;
     auto index_view = gfxCreateBufferRange(gfx, indices, 0, sizeof(triangle));
     auto value_view = gfxCreateBufferRange(gfx, values, 0, sizeof(data));
     auto upload = gfxCreateBuffer<std::uint32_t>(gfx, 3, data.data(), kGfxCpuAccess_Write);
+    auto other = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data(), kGfxCpuAccess_Write);
     auto result = gfxCreateBuffer<std::uint32_t>(gfx, 1);
     auto readback = gfxCreateBuffer<std::uint32_t>(gfx, 1, nullptr, kGfxCpuAccess_Read);
     auto pixels = gfxCreateBuffer(gfx, 64 * 32 * 4, nullptr, kGfxCpuAccess_Read);
     auto target = gfxCreateTexture2D(gfx, 64, 32, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr,
                                      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    require(indices && values && index_view && value_view && upload && result && readback && pixels && target,
+    require(indices && values && index_view && value_view && upload && other && result && readback && pixels && target,
             "shared IA/SRV buffer resources unavailable");
     for (auto p : {draw.program(), read.program(), write.program()}) {
         check(gfxProgramSetParameter(gfx, p, "indices", index_view));
@@ -270,13 +271,22 @@ RWStructuredBuffer<uint> indices, values;
     check(gfxCommandBindIndexBuffer(gfx, indices));
     check(gfxCommandBindVertexBuffer(gfx, values));
     for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
-        // COPY_DEST and UAV must leave the accumulated read state, including
-        // unbinding/reinstalling the same IA handles through their range aliases.
-        check(gfxCommandCopyBuffer(gfx, values, upload));
+        // Install A before writing through its range aliases in this same list.
+        // finish() between these draws would mask a missing IA reinstall.
+        check(gfxCommandBindColorTarget(gfx, 0, target));
+        check(gfxCommandBindKernel(gfx, draw.kernel()));
+        check(gfxCommandDrawIndexed(gfx, 3));
+        if (iteration % 2 != 0) {
+            // Only change the logical binds to B; no draw installs B in IA.
+            check(gfxCommandBindIndexBuffer(gfx, other));
+            check(gfxCommandBindVertexBuffer(gfx, other));
+        }
+        check(gfxCommandCopyBuffer(gfx, value_view, upload));
         check(gfxCommandBindKernel(gfx, write.kernel()));
         check(gfxCommandDispatch(gfx, 1, 1, 1));
         check(gfxCommandDispatch(gfx, 1, 1, 1)); // Ordered UAV read-modify-write.
-        check(gfxCommandBindColorTarget(gfx, 0, target));
+        check(gfxCommandBindIndexBuffer(gfx, indices));
+        check(gfxCommandBindVertexBuffer(gfx, values));
         check(gfxCommandBindKernel(gfx, draw.kernel()));
         check(gfxCommandDrawIndexed(gfx, 3));
         check(gfxCommandBindKernel(gfx, read.kernel()));
@@ -295,12 +305,12 @@ RWStructuredBuffer<uint> indices, values;
             require(color[4 * i] == red && color[4 * i + 1] == green && color[4 * i + 2] == blue && color[4 * i + 3] == 255,
                     "shared IA/SRV reads or post-write IA reinstall corrupted pixels");
     }
-    for (auto buffer : {index_view, value_view, indices, values, upload, result, readback, pixels}) check(gfxDestroyBuffer(gfx, buffer));
+    for (auto buffer : {index_view, value_view, indices, values, upload, other, result, readback, pixels}) check(gfxDestroyBuffer(gfx, buffer));
     check(gfxDestroyTexture(gfx, target));
     draw = {}; read = {}; write = {};
     complete(owner.close());
     check_debug(debug.Get());
-    std::puts("shared-buffer-reads: IA/pixel/compute/range-aliases COPY_DEST/UAV/UAV-to-read pixels=PASS");
+    std::puts("shared-buffer-reads: same-list draw/bind-B/alias-write/rebind-A/draw COPY_DEST/UAV/UAV-to-read pixels=PASS");
 }
 
 void texture_ranges() {

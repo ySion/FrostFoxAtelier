@@ -1620,9 +1620,10 @@
                  break;  // break barrier batches to avoid debug layer warnings
              }
 -        if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_INDEX_BUFFER &&  // unbind if active index buffer to prevent debug layer errors
-+        if((*buffer.resource_state_ & D3D12_RESOURCE_STATE_INDEX_BUFFER) != 0 &&
++        if((*buffer.resource_state_ & D3D12_RESOURCE_STATE_INDEX_BUFFER) != 0 && // Logical binds may differ from installed IA views.
 +            (resource_state & D3D12_RESOURCE_STATE_INDEX_BUFFER) == 0 &&
-             buffer_handles_.has_handle(bound_index_buffer_.handle) && buffers_[bound_index_buffer_].resource_ == buffer.resource_)
+-            buffer_handles_.has_handle(bound_index_buffer_.handle) && buffers_[bound_index_buffer_].resource_ == buffer.resource_)
++            buffer_handles_.has_handle(installed_index_buffer_.handle) && buffers_[installed_index_buffer_].resource_ == buffer.resource_)
          {
              command_list_->IASetIndexBuffer(nullptr);
              force_install_index_buffer_ = true;
@@ -1630,7 +1631,8 @@
 -        if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER &&    // unbind if active vertex buffer to prevent debug layer errors
 +        if((*buffer.resource_state_ & D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) != 0 &&
 +            (resource_state & D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) == 0 &&
-             buffer_handles_.has_handle(bound_vertex_buffer_.handle) && buffers_[bound_vertex_buffer_].resource_ == buffer.resource_)
+-            buffer_handles_.has_handle(bound_vertex_buffer_.handle) && buffers_[bound_vertex_buffer_].resource_ == buffer.resource_)
++            buffer_handles_.has_handle(installed_vertex_buffer_.handle) && buffers_[installed_vertex_buffer_].resource_ == buffer.resource_)
          {
              command_list_->IASetVertexBuffers(0, 1, nullptr);
 @@ -10132,12 +10619,8 @@
