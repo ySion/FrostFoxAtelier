@@ -12,6 +12,16 @@ Box、Sphere、Capsule 支持静态、运动学和动态体。世界缩放先按
 
 ## 固定步与位姿写入
 
+### 显式顺序
+
+普通 body 和组件控制器各自在协调时按当时的 World 成员顺序加入，同一 Entity 内按组件顺序；直接调用原生创建 API 的专用后端按调用顺序加入。每次成功创建或重建分配新的加入序号。加入后在实体树里调整顺序，不改变已有 body、专用后端或组件控制器的序号，直到该项被重建；Play 从文档重新加载，初次协调使用存盘成员顺序。ObjectId 和哈希函数都不是执行顺序的来源。
+
+现有阶段与批次边界不变：普通 body 协调先于组件协调，输入先于求解，位姿先于后回调；各批次内的运动学驱动、角色更新、组件输入/查询、控制器位姿、连带撤销与协调末尾未确认条目的清理按加入序号遍历，由这些遍历产生的诊断也沿用该顺序。生命周期事件仍按 World 的通知顺序处理，单条显式命令仍按提交顺序处理。求解线程收集的普通 body 位姿继续按 Jolt BodyID 去重和定序（BodyID 的分配/复用取决于上述显式创建/撤销顺序），之后依次追加角色、布娃娃、绑定部件与需要保持世界位姿的子 body；World 再按空间依赖换算局部 TRS。该规则消除哈希迭代的隐式影响，不承诺跨平台位级确定性。
+
+替换旧 Entry 时仍随当前成员协调顺序立即释放，不延迟到末尾清理。例如 A、B 加入后将树重排为 B、A，再同时重建两项，旧 Entry 可以按 B、A 释放；这不受旧加入序号约束。
+
+### 推进与回写
+
 PhysicsScene 创建时向 World 登记为模拟系统，析构时注销；`World::update(dt)` 在 pre_physics 阶段之后调用它的 step。创建时还把 Primitive、Character、Ragdoll 组件登记为 World 能力（见 [World](../world/README.md)），World 随组合、成员和启用的每次变化维护这些桶，同一 World 上重建的 PhysicsScene 复用同一登记。step 只协调可能参与物理的 Entity：桶中启用且 body 已启用的 Primitive 的 owner、桶中启用的 Character/Ragdoll 的 owner，以及已有刚体或专用后端的 Entity。哪些要重新协调由 Runtime 的[写代号](../../runtime-model.md#写代号与变化游标)决定：场景在每次 step 的回写之后、分发接触通知之前取游标，下一次 step 只协调此后被写过的对象及本次前/后回调写过的对象，即被写的 Entity、被写组件的 owner，以及经刚体祖先链反向索引找到的、被写 Entity（或被写组件的 owner）之下的全部刚体；body 设置和空间祖先链（成员、启用、缩放、祖先上移动的物理体、父节点）对这些刚体重新读取，同一次协调中每个祖先只读一次、由全部子孙刚体共用，协调结束即丢弃。`World::revision()` 前进（组合、成员、启用、结构变化）或 World 重新启动后协调全部候选；协调失败或因零缩放而没有刚体的 Entity 每一步重试，所以持续的失败每步都报告。控制器组件（Character、Ragdoll、约束、力、运动学、查询）在有任何写入、有刚体或控制器被创建或移除、或上一次协调隔离过失败时重新协调。没有写入的步不读任何成员。随后按 60 Hz 最多推进 8 个固定子步，超出上限的时间丢弃。`last_step()` 返回最近一次 step 的 `StepResult`：完成步号、子步数、剩余/丢弃时间、失效命令和接触通知溢出。登记的 `writes_pose` 声明物理写入位姿的 Entity：已有 body、角色、布娃娃或绑定目标的 Entity，以及带有启用的 Character / Ragdoll 组件的 Entity（控制器在下一次 step 创建之前即已声明）；`translate_owner` 对它们逐条拒绝。启用但被隔离拒绝的控制器（例如镜像 Entity 上的 Character、同一 Entity 上的双控制器）同样声明位姿：作者配置了控制器，位姿就归物理，该 Entity 的平移命令持续被拒绝，控制器修好后也不会出现位姿跳变。`set_paused`、`step_once` 控制子步；`on_before_step` 在消费命令前调用，`on_after_step` 在求解、位姿回写与接触收集后调用。运动学目标保留到被下一目标或传送替换，每个子步重新计算速度，到达后停止。位姿以物理体世界状态为准。每个固定子步只回写本步移动过的刚体：求解后仍活跃的、本步内转入睡眠的、被传送的，以及空间祖先在本步被回写的刚体（保持其世界位姿）；Character、Ragdoll 与专用后端照常回写。静态和保持睡眠的刚体不回写。任何途径写入刚体所在 Entity 或其非物理祖先的 TRS（经 World、`translate_owner`、Runtime 直接写入、Source）都与 `set_transform` 等效、传送刚体并保留速度：经 World 的写入立即经下文的 `relocated` 通知物理；绕过 World 的写入在下一步协调时发现：场景记录每个刚体创建、传送或回写时 owner 的局部 TRS 和世界位姿，协调时局部 TRS 逐位不同，或世界位姿超出 TRS 往返的浮点误差（祖先移动），即按 `relocated` 的路径传送。`on_before_step`、`on_after_step` 中的写入在回调返回时即这样处理：前回调的传送在本子步求解前生效，不被本步回写覆盖；后回调的传送在下一子步生效。这些传送排在该回调自己发出的物理命令（例如 `teleport`）之后；需要与命令定序时用 `set_transform`，它立即排入命令。回调中改了结构（reparent、空间参考）时，同一步内对新祖先的写入沿当前空间链找到其下刚体。场景先收集这些求解结果，再按 Entity 空间依赖顺序整批回写 Entity，保留局部缩放。移动使用力、冲量、运动学目标或显式传送。宿主在运行中直接编辑物理控制 Entity 的变换时（例如 Play 收到编辑器的修改），World 经 `relocated` 通知物理：刚体在下一步按新的世界位姿传送并保留速度，Character 立即设置位置与朝向；Ragdoll 及其部件的位姿跟随控制器，这类编辑以 `unsupported_operation` 拒绝并恢复原 TRS；编辑它们的祖先同样使整次变换编辑失败（Play 的增量应用记为 unsupported 跳过）。缩放变化仍由逐步协调重建刚体。运行中 keep_local 的结构编辑（reparent、空间参考）不通知物理，只依赖下一次逐步协调；当前宿主路径都按 keep_world 改结构，再经 `set_transform` 写最终局部变换。
 
 step 的 CPU 墙钟记为[帧阶段计时](../../foundation.md#帧阶段计时)的 `physics.*` 阶段（标记见 [physics/timing.hpp](../../../src/physics/timing.hpp)），挂在 World 的 `world.simulation` 下：`physics.step` 包含逐帧协调 `physics.reconcile`（成员 body 协调与组件协调）、每个固定子步一次的 `physics.substep`，以及子步全部完成后的接触通知分发 `physics.events`。子步内 `physics.solve` 是 Jolt 更新的墙钟，`physics.write_back` 覆盖位姿读出与 Entity 回写。

@@ -1,5 +1,6 @@
 #pragma once
 #include "physics/physics.hpp"
+#include "physics/order.hpp"
 #include <unordered_map>
 #include <optional>
 
@@ -38,10 +39,13 @@ private:
         double elapsed{};
         bool impulse_pending{true};
         std::optional<QueryResult> query{};
+        std::uint64_t revision{};
     };
     world::World& world_;
     PhysicsScene& scene_;
     std::unordered_map<ObjectId, Entry> entries_;
+    InsertionOrder order_;
+    std::uint64_t next_revision_{1};
     bool contained_{};
     void release(const Entry&) noexcept;
     void clear_query(ObjectId,bool clear_request) noexcept;
