@@ -31,8 +31,10 @@ Json engine_source_hashes(std::span<const language::SourceFile> files) {
         hashes[file.path]=control::sha256(std::as_bytes(std::span(file.source)));
     return hashes;
 }
-std::string mesh_hash(const geometry::Mesh& mesh) {
+std::string mesh_hash(const editor::MeshAsset& asset) {
+    const auto& mesh=*asset.mesh;
     Json shape{{"vertices",control::sha256(std::as_bytes(mesh.vertices()))},{"parts",Json::array()},{"materials",Json::array()}};
+    shape["defaults"]=Json::object();for(const auto& binding:asset.materials) shape["defaults"][binding.slot]=binding.key;
     std::vector<std::uint8_t> edges;edges.reserve(mesh.vertices().size()/3);
     for(std::size_t i=0;i<mesh.vertices().size()/3;++i) edges.push_back(mesh.edge_mask(i));
     shape["edges"]=control::sha256(std::as_bytes(std::span(edges)));
@@ -199,17 +201,18 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
         // Publish the live draft only in this independent bundle, never in the source project.
         take(clone.save_material(material));
     }
-    for(const auto& [key,mesh]:data.meshes) {
-        checkpoint(cancel);auto loaded=take(clone.mesh(key));
-        const auto expected=mesh_hash(*mesh);
-        if(!loaded.mesh || mesh_hash(*loaded.mesh)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded mesh: "+key);
-        resources.push_back({{"key",key},{"content_sha256",expected}});
+    std::set<std::string> recorded;
+    for(const auto& mesh:data.meshes) {
+        checkpoint(cancel);auto loaded=take(clone.mesh(mesh.key));
+        const auto expected=mesh_hash(mesh);
+        if(!loaded.mesh || mesh_hash(loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded mesh content or slot defaults: "+mesh.key);
+        if(recorded.insert(mesh.key).second) resources.push_back({{"key",mesh.key},{"content_sha256",expected}});
     }
     for(const auto& [key,map]:data.skies) {
         checkpoint(cancel);const auto loaded=take(clone.sky_map(key)).map;
         const auto expected=sky_hash(*map);
         if(!loaded || sky_hash(*loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded sky map: "+key);
-        resources.push_back({{"key",key},{"content_sha256",expected}});
+        if(recorded.insert(key).second) resources.push_back({{"key",key},{"content_sha256",expected}});
     }
     data.manifest["resources"]=std::move(resources);data.manifest["project"]="Project";data.manifest["scene"]=path_text(scene_path);
     if(!data.drafts.empty()) write(directory/"drafts.json",data.drafts.dump(2)+"\n");

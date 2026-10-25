@@ -14,7 +14,8 @@ struct Repro {
     std::shared_ptr<const language::SourceSnapshot> sources;
     std::optional<language::SourceFile> ui_source;
     std::uint64_t publication_version{};
-    std::vector<std::pair<std::string,geometry::MeshRef>> meshes;
+    // Distinct loaded versions, including slot defaults not serialized in the scene.
+    std::vector<editor::MeshAsset> meshes;
     std::vector<std::pair<std::string,rendering::SkyMapRef>> skies;
     std::vector<editor::MaterialAsset> materials;
     control::Json manifest, drafts;

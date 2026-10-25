@@ -581,9 +581,11 @@ void repro_gltf_defaults(const std::filesystem::path& executable,const std::file
     write(source/"scene.bin",bin);
     const auto view=[](int offset,int length){return Json{{"buffer",0},{"byteOffset",offset},{"byteLength",length}};};
     const auto accessor=[](int index,const char* type,int component){return Json{{"bufferView",index},{"type",type},{"componentType",component},{"count",3}};};
+    const auto primitive=[](int material) {return Json{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",material}};};
     write(source/"scene.gltf",Json{{"asset",{{"version","2.0"}}},{"scenes",{{{"nodes",{0}}}}},{"nodes",{{{"mesh",0}}}},
-        {"meshes",{{{"primitives",{{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",0}}}}}}},
-        {"materials",{{{"name","paint"},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}}}},
+        {"meshes",{{{"primitives",{primitive(0),primitive(1)}}}}},
+        {"materials",{{{"name","paint"},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}},
+            {{"name","trim"},{"pbrMetallicRoughness",{{"baseColorFactor",{0.2,0.7,0.4,1}},{"roughnessFactor",0.3}}}}}},
         {"textures",{{{"source",0}}}},{"images",{{{"uri","textures/color.png"}}}},{"buffers",{{{"uri","scene.bin"},{"byteLength",bin.size()}}}},
         {"bufferViews",{view(0,36),view(36,36),view(72,24),view(96,6)}},
         {"accessors",{accessor(0,"VEC3",5126),accessor(1,"VEC3",5126),accessor(2,"VEC2",5126),accessor(3,"SCALAR",5123)}}}.dump());
@@ -591,9 +593,10 @@ void repro_gltf_defaults(const std::filesystem::path& executable,const std::file
     Driver d(discover_editor(editor,directory));d.settle();
     const auto mesh=d.ok("mesh.import",{{"path",utf8((source/"scene.gltf").wstring())}}).at("asset").get<std::string>();
     d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}});
-    const std::string folder="Content/Meshes/scene/",material=folder+"Materials/paint.material";
-    const auto defaults=read(project/(folder+"scene.gltf.asset.json")).at("materials");
-    require(defaults.size()==1 && defaults.begin()->get<std::string>()=="project/"+read(project/(material+".asset.json")).at("id").get<std::string>(),
+    const std::string folder="Content/Meshes/scene/",material=folder+"Materials/paint.material",trim=folder+"Materials/trim.material";
+    const auto identity=read(project/(folder+"scene.gltf.asset.json")),defaults=identity.at("materials");
+    require(defaults.size()==2 && defaults.at("paint")=="project/"+read(project/(material+".asset.json")).at("id").get<std::string>() &&
+        defaults.at("trim")=="project/"+read(project/(trim+".asset.json")).at("id").get<std::string>(),
         "The glTF import did not name its generated material as the slot default: "+defaults.dump());
     std::set<std::string> inputs;
     const auto exported=[&] {
@@ -602,17 +605,81 @@ void repro_gltf_defaults(const std::filesystem::path& executable,const std::file
         const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
         std::set<std::string> copied;
         for(const auto& file:read(bundle/"manifest.json").at("input_files")) copied.insert(file.at("path").get<std::string>());
-        for(const auto& file:{folder+"scene.gltf",folder+"scene.bin",folder+"textures/color.png",material})
+        for(const auto& file:{folder+"scene.gltf",folder+"scene.bin",folder+"textures/color.png",material,trim})
             require(copied.contains(file) && (file.ends_with(".bin") || copied.contains(file+".asset.json")),"A glTF repro left out "+file+" or its identity file");
         if(inputs.empty()) inputs=copied;
         require(copied==inputs,"A reopened glTF repro carried different files");
         return bundle;
     };
     const auto bundle=exported();
+    const auto refresh=[&] {
+        const auto window=editor.window();require(window!=nullptr,"Dependency drift needs the real Refresh command");
+        SendMessageW(window,WM_KEYDOWN,VK_F5,1);SendMessageW(window,WM_KEYUP,VK_F5,1);d.settle();
+    };
+    const auto component_details=[&] {
+        auto result=Json::array();
+        for(const auto& entity:d.inspect().at("entities")) for(const auto& component:entity.at("components"))
+            result.push_back(d.ok("editor.inspect",{{"detail","object"},{"object",component.at("handle")}}));
+        return result;
+    };
+    auto observations=Json::array();
+    const auto rejected=[&](const char* label) {
+        const auto before=d.inspect(),details=component_details();
+        std::map<std::filesystem::path,std::string> hashes;
+        for(const auto& file:std::filesystem::recursive_directory_iterator(project)) if(file.is_regular_file() &&
+            *file.path().lexically_relative(project).begin()!=L"Cache") hashes.emplace(file.path(),sha256_file(file.path()));
+        const auto id=unique_id();auto response=d.call("repro.export",Json::object(),id);
+        if(response.at("status")=="pending") response=d.wait(id);
+        const bool refused=response.at("status")=="error" && response.at("error").at("code")=="dependency_mismatch";
+        observations.push_back({{"case",label},{"rejected",refused},{"response",response},{"components",details},
+            {"disk_defaults",read(project/(folder+"scene.gltf.asset.json")).at("materials")}});
+        write(root/"dependency-consistency.json",observations.dump(2));
+        const auto after=d.inspect();
+        for(const auto* field:{"entities","selection","dirty","dirty_materials","undo","redo","camera","project","scene_path"})
+            require(before.at(field)==after.at(field),"Rejected export changed "+std::string(field));
+        require(component_details()==details,"Export rebound the live document's defaults");
+        for(const auto& [path,hash]:hashes) require(sha256_file(path)==hash,"Export changed a source file");
+        return refused;
+    };
+    // The same dependency set is not the same relation: both material files remain reachable.
+    auto swapped=identity;std::swap(swapped["materials"]["paint"],swapped["materials"]["trim"]);
+    write(project/(folder+"scene.gltf.asset.json"),swapped.dump());refresh();
+    const bool relationship_rejected=rejected("same-set-swapped-defaults");
+    write(project/(folder+"scene.gltf.asset.json"),identity.dump());refresh();
+    // Two components retain different immutable versions of the same key after Refresh.
+    // Restore disk to the first version: checking only the first component would miss the second.
+    auto changed=bin;const float longer=3;changed.replace(12,4,reinterpret_cast<const char*>(&longer),4);
+    write(project/(folder+"scene.bin"),changed);refresh();
+    const bool content_rejected=rejected("same-key-changed-content");
+    d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}});
+    write(project/(folder+"scene.bin"),bin);refresh();
+    const bool versions_rejected=rejected("same-key-mixed-loaded-versions");
+    d.op("edit.undo");exported();
+    require(relationship_rejected && content_rejected && versions_rejected,
+        "Repro accepted dependency drift; see dependency-consistency.json");
+    d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}});
+    require(read(exported()/"manifest.json").at("resources").size()==1,"Equal loaded content must export once per key");
+    d.op("edit.undo");
     // The export froze the unsaved mesh; undoing it leaves the source scene clean so the repro may replace it.
     d.op("edit.undo");require(!d.inspect().at("dirty").get<bool>(),"Undoing the placed glTF mesh did not restore the saved scene");
     d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
     exported();
+    auto reopened_defaults=Json::object();
+    for(const auto& binding:component_details()[0].at("object").at("mesh").at("default_materials"))
+        reopened_defaults[binding.at("slot").get<std::string>()]=binding.at("source");
+    require(reopened_defaults==defaults,"Reopened repro changed slot relationships");
+    // Live material drafts are intentionally frozen, unlike external dependency drift.
+    const auto draft_source=bundle/"Project"/trim;const auto saved_material=sha256_file(draft_source);
+    const auto trim_key=defaults.at("trim").get<std::string>();
+    const auto handle=d.ok("material.inspect",{{"asset",trim_key}}).at("handle");
+    d.ok("material.set_property",{{"object",handle},{"property","parameters.roughness"},{"value",0.625}});
+    const auto draft_bundle=exported();
+    require(read(draft_bundle/"Project"/trim).at("roughness")==0.625 && sha256_file(draft_source)==saved_material &&
+        d.ok("material.inspect",{{"asset",trim_key}}).at("dirty")==true,"Repro lost or saved the source material draft");
+    d.ok("material.undo",{{"asset",trim_key}});d.ok("repro.open",{{"directory",utf8(draft_bundle.wstring())}});
+    const auto reopened_material=d.ok("material.inspect",{{"asset",trim_key}});
+    require(std::ranges::any_of(reopened_material.at("properties"),[](const Json& p){return p.at("name")=="parameters.roughness" && p.at("value")==0.625;}),
+        "Repro did not load the frozen material draft");
     // A component keeps its material bindings while its mesh is missing. Only the scene names the
     // bound material then, and the repro still carries it.
     d.ok("project.open",{{"path",utf8(project.wstring())}});
@@ -620,6 +687,19 @@ void repro_gltf_defaults(const std::filesystem::path& executable,const std::file
     const auto entity=d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}}).at("object");Json component;
     for(const auto& item:d.inspect().at("entities")) if(item.at("handle")==entity) component=item.at("components")[0].at("handle");
     d.ok("material.assign",{{"component",component},{"slot","paint"},{"asset",bound}});d.ok("scene.save");
+    // Missing defaults remain missing, rather than being rebound or preventing diagnostic export.
+    const auto trim_bytes=read(project/trim).dump();std::filesystem::remove(project/trim);
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    const auto missing_id=unique_id();require(d.call("repro.export",Json::object(),missing_id).at("status")=="pending","Missing-default export did not start");
+    const auto missing_done=d.wait(missing_id);require(missing_done.at("status")=="ok",missing_done.dump());
+    const std::filesystem::path missing_bundle=wide(missing_done.at("result").at("directory").get<std::string>());
+    require(!std::filesystem::exists(missing_bundle/"Project"/trim) && read(missing_bundle/"Project"/(folder+"scene.gltf.asset.json")).at("materials")==defaults,
+        "Missing-default export synthesized a material or rebound the slots");
+    const auto before_missing_open=d.inspect();
+    error(d.call("repro.open",{{"directory",utf8(missing_bundle.wstring())}}),"operation_failed");
+    require(d.inspect().at("entities")==before_missing_open.at("entities") && d.inspect().at("project")==before_missing_open.at("project"),
+        "Strict missing-default reopen replaced the document");
+    write(project/trim,trim_bytes);
     std::filesystem::remove(atelier::platform::windows_file_path(project/(folder+"scene.gltf")));
     d.ok("project.open",{{"path",utf8(project.wstring())}});
     const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Missing-mesh repro export did not start");
@@ -629,6 +709,8 @@ void repro_gltf_defaults(const std::filesystem::path& executable,const std::file
     require(copied.contains("Content/Materials/Bound.material") && copied.contains("Content/Materials/Bound.material.asset.json") && !copied.contains(material),
         "A repro of a component whose mesh is missing lost its bound material, or copied the mesh's default");
     d.client.reset();editor.close();
+    write(root/"result.json",Json{{"status","passed"},{"cases",{"slot-relationship-drift","loaded-content-drift","mixed-loaded-versions",
+        "equal-loaded-versions","repaired-retry","slot-relationship-reopen","default-material-draft","missing-default-export-strict-reopen","missing-mesh-bound-material"}}}.dump(2));
 }
 void repro_paths(const std::filesystem::path& executable,const std::filesystem::path& root,bool deep_control) {
     const auto project=root/"Project";

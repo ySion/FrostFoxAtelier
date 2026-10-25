@@ -650,9 +650,13 @@ struct EditorControl::Impl {
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
         for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id())))
             if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved) {
-                if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.first==mesh->mesh.source;})) data.meshes.emplace_back(mesh->mesh.source,mesh->mesh.resolved);
+                editor::MeshAsset snapshot{mesh->mesh.source,{},mesh->mesh.resolved};
+                for(const auto& binding:mesh->mesh.defaults)
+                    snapshot.materials.push_back({binding.slot,take(material::read_material(app.document_->world().runtime(),binding.resource.id())).source});
+                if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.key==snapshot.key && entry.mesh==snapshot.mesh && entry.materials==snapshot.materials;}))
+                    data.meshes.push_back(std::move(snapshot));
             } else if(auto sky=presentation::read_sky_map(app.document_->world().runtime(),component.id());sky && sky->resolved)
-                if(std::ranges::none_of(data.skies,[&](const auto& entry){return entry.first==sky->source;})) data.skies.emplace_back(sky->source,sky->resolved);
+                if(std::ranges::none_of(data.skies,[&](const auto& entry){return entry.first==sky->source && entry.second==sky->resolved;})) data.skies.emplace_back(sky->source,sky->resolved);
         if(app.project_) {
             data.roots.assign(app.project_->roots().begin(),app.project_->roots().end());
             // The repro holds what the scene references, whatever else this session loaded: the
@@ -682,7 +686,7 @@ struct EditorControl::Impl {
                     if(const auto textures=value->find("textures");textures!=value->end() && textures->is_object())
                         for(const auto& texture:*textures) if(texture.is_object()) reference(editor::AssetKind::texture,string_field(texture,"source"));
             };
-            for(const auto& [key,mesh]:data.meshes) add(key);
+            for(const auto& mesh:data.meshes) add(mesh.key);
             for(const auto& [key,map]:data.skies) add(key);
             const auto scene=editor::json_format::parse(data.scene);
             if(const auto materials=scene.find("materials");materials!=scene.end()) for(const auto& definition:*materials) material_keys(definition,live);
