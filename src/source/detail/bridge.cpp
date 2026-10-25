@@ -255,14 +255,17 @@ void AbiArguments::initialize(const Binding& binding, const FunctionSignature& s
 }
 
 Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout,
-    CollectionBudget work, InvocationObserver observation, BusinessTrace* capture, std::shared_ptr<DebugSessionState> session)
+    InvocationObserver observation, BusinessTrace* capture, std::shared_ptr<DebugSessionState> session, ExecutionScope* scope)
     : runtime(owner), binding(bound),
-      expanded_roots(layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
-      roots(expanded_roots.empty() ? std::span<ObjectRoot>{inline_roots} : std::span<ObjectRoot>{expanded_roots}),
-      observations(layout.weak_slots), frame(owner, roots),
+      expanded_roots(!scope && layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
+      roots(scope ? std::span<ObjectRoot>{} : expanded_roots.empty() ? std::span<ObjectRoot>{inline_roots} : std::span<ObjectRoot>{expanded_roots}),
+      expanded_references(scope && layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
+      observations(layout.weak_slots),
+      frame(scope ? ExecutionFrame(*scope, expanded_references.empty() ? std::span<ObjectReference>{inline_references} : std::span<ObjectReference>{expanded_references}) :
+          ExecutionFrame(owner, roots)),
       expanded_arguments(layout.max_call_arguments > inline_arguments.size() ? layout.max_call_arguments : 0),
       method_arguments(expanded_arguments.empty() ? std::span<Argument>{inline_arguments} : std::span<Argument>{expanded_arguments}),
-      budget(work), observer(observation), trace(capture), debugger(std::move(session)) {}
+      observer(observation), trace(capture), debugger(std::move(session)) {}
 bool Invocation::resources_cleared() const noexcept {
     if (!frame.empty() || live_values != 0 || debug_top) return false;
     for (const auto& observation : observations)
@@ -291,10 +294,15 @@ std::span<const FieldId> field_path(const Binding& binding, std::uint32_t field,
     require(field < binding.fields.size() && binding.fields[field].kind == kind, "Host field index or scalar kind is invalid.");
     return binding.fields[field].path;
 }
+Result<ObjectId> object_value(Invocation& invocation, std::uint32_t slot) {
+    auto reference = reference_value(invocation, slot);
+    if (!reference) return std::unexpected(std::move(reference.error()));
+    return reference->id(); // Runtime access still validates liveness, including explicit destruction.
+}
 std::uint32_t read_float(void* context, std::uint32_t slot, std::uint32_t field, float* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::f32));
         if (!value) return std::unexpected(std::move(value.error()));
@@ -305,7 +313,7 @@ std::uint32_t read_float(void* context, std::uint32_t slot, std::uint32_t field,
 std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field, float value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f32), value);
     });
@@ -313,7 +321,7 @@ std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field
 std::uint32_t read_double(void* context, std::uint32_t slot, std::uint32_t field, double* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::f64));
         if (!value) return std::unexpected(std::move(value.error()));
@@ -324,7 +332,7 @@ std::uint32_t read_double(void* context, std::uint32_t slot, std::uint32_t field
 std::uint32_t write_double(void* context, std::uint32_t slot, std::uint32_t field, double value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f64), value);
     });
@@ -334,7 +342,7 @@ std::uint32_t read_bool(void* context, std::uint32_t slot, std::uint32_t field, 
     return bridge(invocation, [&]() -> Result<void> {
         require(output && reinterpret_cast<std::uintptr_t>(output) % alignof(std::uint32_t) == 0,
             "Host boolean result storage is null or misaligned.");
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         auto value = invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::boolean));
         if (!value) return std::unexpected(std::move(value.error()));
@@ -347,7 +355,7 @@ std::uint32_t write_bool(void* context, std::uint32_t slot, std::uint32_t field,
     return bridge(invocation, [&]() -> Result<void> {
         if (value > 1)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Host boolean value must be 0 or 1."});
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::boolean), value != 0);
     });
@@ -363,7 +371,7 @@ std::uint32_t read_value(void* context, std::uint32_t slot, std::uint32_t field,
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
         const auto& target = typed_field(invocation.binding, field);
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         return invocation.runtime.read(*object, target.path,
             ValueOutput{value_type_id(invocation.binding, target.kind), output});
@@ -373,7 +381,7 @@ std::uint32_t write_value(void* context, std::uint32_t slot, std::uint32_t field
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
         const auto& target = typed_field(invocation.binding, field);
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         return invocation.runtime.write(*object, target.path,
             ValueInput{value_type_id(invocation.binding, target.kind), input});
@@ -382,7 +390,7 @@ std::uint32_t write_value(void* context, std::uint32_t slot, std::uint32_t field
 std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         require(field < invocation.binding.fields.size() &&
             (invocation.binding.fields[field].kind == ValueKind::u32 || invocation.binding.fields[field].kind == ValueKind::i32 ||
@@ -396,7 +404,7 @@ std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, 
 std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         require(field < invocation.binding.fields.size() &&
             (invocation.binding.fields[field].kind == ValueKind::u32 || invocation.binding.fields[field].kind == ValueKind::i32 ||
@@ -421,7 +429,7 @@ std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t metho
             if (input.storage == ArgumentStorage::field) {
                 require(input.field < invocation.binding.fields.size() && invocation.binding.fields[input.field].kind == input.kind,
                     "Host borrowed field is invalid.");
-                auto owner = invocation.frame.object(input.slot);
+                auto owner = object_value(invocation, input.slot);
                 if (!owner) return std::unexpected(owner.error());
                 invocation.method_arguments[index] = Argument::field(*owner, invocation.binding.fields[input.field].path);
             } else if (input.storage == ArgumentStorage::read_only || input.storage == ArgumentStorage::reference) {
@@ -441,7 +449,7 @@ std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t metho
                 }
             }
         }
-        auto object = invocation.frame.object(slot);
+        auto object = object_value(invocation, slot);
         if (!object) return std::unexpected(std::move(object.error()));
         if (aggregate(target.result)) {
             require(target.result.type_index < invocation.binding.values.size() &&
@@ -475,14 +483,8 @@ std::uint32_t begin(void* context) noexcept {
 std::uint32_t poll(void* context) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        auto progress = invocation.frame.poll(invocation.budget);
-        if (!progress) return std::unexpected(std::move(progress.error()));
-        if (invocation.trace) {
-            diagnostic_add(invocation.trace->gc_work, progress->work_done);
-            diagnostic_add(invocation.trace->gc_reclaimed, progress->reclaimed);
-        }
         if (invocation.observer.poll)
-            return invocation.observer.poll(invocation.observer.context, invocation, *progress);
+            return invocation.observer.poll(invocation.observer.context, invocation);
         return {};
     });
 }
@@ -513,7 +515,7 @@ std::uint32_t change_reference(void* context, ReferenceOperation operation,
         const bool weak = (destination & observation_slot_bit) != 0;
         const auto index = destination & ~observation_slot_bit;
         if (destination == null_reference_slot ||
-            (weak ? index >= invocation.observations.size() : index >= invocation.roots.size()))
+            (weak ? index >= invocation.observations.size() : index >= invocation.frame.size()))
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Reference destination is out of range."});
         auto value = reference_value(invocation, source);
         if (!value) return std::unexpected(std::move(value.error()));
@@ -538,6 +540,7 @@ std::uint32_t change_reference(void* context, ReferenceOperation operation,
             auto acquired = invocation.runtime.try_acquire(*value);
             if (!acquired) return std::unexpected(std::move(acquired.error()));
             if (*acquired) {
+                if (invocation.roots.empty()) return invocation.frame.hold(index, (**acquired).reference());
                 invocation.roots[index] = std::move(**acquired);
                 return {};
             }
@@ -715,23 +718,22 @@ Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
 
 // The caller retains admission until invocation roots and observer effects are
 // destroyed. Published versions provide checked metadata from their own code.
-Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const Binding& binding,
+Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
     BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver,
-    std::span<const BusinessValue> arguments, bool request_collection, InvocationObserver observer,
-    CollectionBudget budget, void* result_data, BusinessTrace* trace, std::shared_ptr<DebugSessionState> debugger,
+    std::span<const BusinessValue> arguments, InvocationObserver observer,
+    void* result_data, BusinessTrace* trace, std::shared_ptr<DebugSessionState> debugger,
     std::uint32_t* failure_site) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
         auto checked = check_source_receiver(binding, receiver);
         if (!checked) return std::unexpected(std::move(checked.error()));
     }
-    Invocation invocation(runtime, binding, layout, budget, observer, trace, std::move(debugger));
+    Invocation invocation(runtime, binding, layout, observer, trace, std::move(debugger), &scope);
     if (trace) trace->resources_cleared = false;
     if (hold_receiver) {
         auto rooted = invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!rooted) return std::unexpected(std::move(rooted.error()));
     }
-    if (request_collection) invocation.frame.request_collection();
     char backend_error[512];
     BusinessValue value{};
     value.data = result_data;
@@ -759,8 +761,7 @@ Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime& runtime, const 
 }
 
 Result<BusinessValue> execute_typed(Runtime& runtime, const Binding& binding, BusinessCode* code,
-    ObjectId receiver, std::span<const BusinessValue> arguments, bool request_collection,
-    InvocationObserver observer, CollectionBudget budget) {
+    ObjectId receiver, std::span<const BusinessValue> arguments, InvocationObserver observer) {
     auto activation = ExecutionScope::enter(runtime);
     if (!activation) return std::unexpected(std::move(activation.error()));
     if (binding.runtime != &runtime)
@@ -783,6 +784,6 @@ Result<BusinessValue> execute_typed(Runtime& runtime, const Binding& binding, Bu
     if (layout.object_type_name && *layout.object_type_name && binding.name != layout.object_type_name)
         return std::unexpected(Error{ErrorCode::type_mismatch, "Business code was compiled for a different object type."});
     return execute_admitted(*activation, runtime, binding, code, layout, info.requires_receiver,
-        receiver, arguments, request_collection, observer, budget);
+        receiver, arguments, observer);
 }
 }

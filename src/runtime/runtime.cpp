@@ -1386,7 +1386,7 @@ Result<void> Runtime::check_code_publication() const {
 }
 
 Result<void> Runtime::begin_collection() {
-    if (impl_->callbacks != 0 || !impl_->roots->alive || impl_->phase != CollectionPhase::idle) {
+    if (impl_->callbacks != 0 || impl_->active_executions != 0 || !impl_->roots->alive || impl_->phase != CollectionPhase::idle) {
         return failure(ErrorCode::busy, "Collection can begin only at an idle host safe point.");
     }
     if (impl_->epoch == std::numeric_limits<std::uint64_t>::max()) {
@@ -1404,7 +1404,7 @@ Result<void> Runtime::begin_collection() {
 }
 
 Result<CollectionProgress> Runtime::collect_step(CollectionBudget budget) {
-    if (impl_->callbacks != 0 || !impl_->roots->alive) {
+    if (impl_->callbacks != 0 || impl_->active_executions != 0 || !impl_->roots->alive) {
         return failure(ErrorCode::busy, "Collection steps require a host safe point.");
     }
     if (budget.max_work == 0 || budget.max_time < std::chrono::nanoseconds::zero()) {

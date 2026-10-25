@@ -41,8 +41,6 @@ DiagnosticReport Diagnostics::snapshot() const {
     report.status = state.status;
     report.calls = state.trace.calls;
     report.resumes = state.resumes;
-    report.gc_work = state.trace.gc_work;
-    report.gc_reclaimed = state.trace.gc_reclaimed;
     report.peak_owned_values = state.trace.peak_owned_values;
     report.remaining_owned_values = state.trace.remaining_owned_values;
     report.resources_cleared = state.trace.resources_cleared;

@@ -17,7 +17,7 @@ struct BusinessTrace {
     std::uint32_t current_location{no_diagnostic_location};
     std::uint32_t failure_location{no_diagnostic_location};
     std::uint32_t suspended_location{no_diagnostic_location};
-    std::uint64_t gc_work{}, gc_reclaimed{}, peak_owned_values{};
+    std::uint64_t peak_owned_values{};
     std::size_t remaining_owned_values{};
     bool resources_cleared{};
 };

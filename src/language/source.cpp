@@ -1003,8 +1003,9 @@ private:
                 }
                 continue;
             }
-            if (function_.expressions[receiver].type != ValueType::strong_reference)
-                reject(position, "Member access requires a strong reference; acquire weak references first.");
+            if (function_.expressions[receiver].type != ValueType::strong_reference &&
+                function_.expressions[receiver].type != ValueType::weak_reference)
+                reject(position, "Member access requires a typed object reference.");
             const auto member = qualified_identifier();
             if (accept("(")) {
                 const MethodBinding* method{};

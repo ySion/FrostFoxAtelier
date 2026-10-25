@@ -186,11 +186,12 @@ class SnapshotBuilder {
                 }
                 reference = invocation_.observations[index];
             } else {
-                if (slot >= invocation_.roots.size()) {
+                const auto held = invocation_.frame.reference(slot);
+                if (!held) {
                     unavailable(value, "Reference slot is unavailable.");
                     return;
                 }
-                reference = invocation_.roots[slot].reference();
+                reference = *held;
             }
         }
         value.state = DebugValueState::available;

@@ -70,6 +70,56 @@ void collect(Runtime& runtime) {
     while (take(runtime.collect_step({4096})).phase != CollectionPhase::idle) {}
 }
 
+void verify_execution_interval() {
+    Runtime runtime;
+    const auto host_type = register_foundations(runtime);
+    auto temporary = take(runtime.create(host_type));
+    const auto identity = temporary.id();
+    temporary.reset();
+    Program program(runtime);
+    publish(program, R"(
+        uint run(uint count) {
+            uint sum = 0;
+            for (uint i = 0; i < count; i = i + 1) { sum = sum + i; }
+            return sum;
+        }
+    )");
+    take(runtime.begin_collection());
+    const auto phase = runtime.collection_phase();
+    require(result<std::uint32_t>(program.entry().invoke({}, std::array{Scalar{std::uint32_t{256}}})) == 32640,
+        "Protected synchronous execution returned an incorrect result.");
+    require(runtime.collection_phase() == phase && runtime.type_of(identity),
+        "GC advanced or invalidated an object inside synchronous execution.");
+    collect(runtime);
+    require(!runtime.type_of(identity), "Host could not collect after execution returned.");
+
+    Program allocations(runtime, host_type);
+    publish(allocations, R"(
+        uint run(uint count) {
+            uint total = 0;
+            for (uint i = 0; i < count; i = i + 1) {
+                weak foundation.Host temporary = observe(new foundation.Host());
+                temporary.guard = i;
+                total = total + temporary.guard;
+            }
+            return total;
+        }
+    )");
+    require(result<std::uint32_t>(allocations.entry().invoke({}, std::array{Scalar{1024u}})) == 523776 &&
+        runtime.live_objects() == 1024 && runtime.root_count() == 0,
+        "A synchronous allocation loop collected implicitly or retained per-local roots.");
+    collect(runtime);
+    require(runtime.live_objects() == 0, "Allocation-loop garbage survived host collection.");
+    for (unsigned batch = 0; batch < 16; ++batch) {
+        require(result<std::uint32_t>(allocations.entry().invoke({}, std::array{Scalar{64u}})) == 2016 &&
+            runtime.live_objects() == 64 && runtime.root_count() == 0,
+            "Batched execution retained objects or changed weak access semantics.");
+        collect(runtime);
+        require(runtime.live_objects() == 0, "Host collection left a backlog between batches.");
+    }
+    std::puts("Source execution interval: PASS (1024 temporary objects in one call; 64 per host-collected batch)");
+}
+
 void verify_boolean_storage() {
     Runtime runtime;
     const auto host_type = register_foundations(runtime);
@@ -412,6 +462,7 @@ void verify_async_and_rejections() {
 }
 
 void verify_source_foundations() {
+    verify_execution_interval();
     verify_boolean_storage();
     verify_flags_and_scopes();
     verify_short_circuit();

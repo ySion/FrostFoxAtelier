@@ -858,6 +858,7 @@ private:
     [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*, ValueOutput = {});
     [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>, PreparedArguments&, bool fields) const;
     friend class ExecutionScope;
+    friend class ExecutionFrame;
     [[nodiscard]] Result<void> enter_execution();
     void leave_execution() noexcept;
     friend class ExecutionInspection;

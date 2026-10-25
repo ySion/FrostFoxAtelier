@@ -13,13 +13,13 @@
 | 模块 | 入口与拥有的职责 | 当前目标、依赖与边界 |
 | --- | --- | --- |
 | 类型与对象 Runtime | [runtime.hpp](../src/runtime/runtime.hpp)、[runtime.cpp](../src/runtime/runtime.cpp)：类型发布、对象身份、值操作、根、GC 和原生调用 | 正式静态目标 `atelier_runtime`；不依赖 LLVM、语言前端或验收代码 |
-| 执行协议 | [execution.hpp](../src/runtime/execution.hpp)、[execution.cpp](../src/runtime/execution.cpp)：ExecutionScope、根槽执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
+| 执行协议 | [execution.hpp](../src/runtime/execution.hpp)、[execution.cpp](../src/runtime/execution.cpp)：ExecutionScope、定型引用/持久根执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
 | 原生定义生产者 | [native.hpp](../src/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition；[自动反射工具](../tools/reflection/main.cpp)产生这些注册调用 | `atelier_reflect` 是构建期工具，薄宏入口为 [reflection.hpp](../src/runtime/reflection.hpp)；生成代码使用同一 Runtime 定义与 Invoker 协议 |
 | 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：类型检查和定型 AST；[declarations.cpp](../src/language/declarations.cpp)、[lexer.hpp](../src/language/lexer.hpp)：共享声明解析与词法，字段/参数/局部共用类型名称解析 | 同一前端按宿主与 LLVM DLL 各自 ABI 编译，STL 对象不跨 DLL；宿主复用定型常量求值，完整方法编译与 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
 | LLVM 降低与代码资源 | [source_backend.cpp](../src/jit/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
 | Windows 展开信息 | [windows_unwind.cpp](../src/jit/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
 | 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar 或数学值的 ValueOutput，使用已有 Coroutine 表达协程拥有关系 |
-| Runtime 桥接 | [bridge.hpp](../src/source/detail/bridge.hpp)、[bridge.cpp](../src/source/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总 GC 工作与拥有值余额。内部策略观察点继续供验收使用 |
+| Runtime 桥接 | [bridge.hpp](../src/source/detail/bridge.hpp)、[bridge.cpp](../src/source/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额。内部策略观察点继续供验收使用，不推进 GC |
 | 调用诊断 | [diagnostics.hpp](../src/source/diagnostics.hpp)、[diagnostics.cpp](../src/source/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
 | 源码调试 | [debugger.hpp](../src/source/debugger.hpp)、[debugger.cpp](../src/source/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
 | 端到端消费者 | [公共最小消费者](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[连续会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 公共消费者使用正式接口，连续会话另读取分配器和 OS 统计；完整验收通过内部接缝检查 raw ABI 和故障路径，均使用同一正式实现 |
@@ -86,7 +86,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
   → 生成代码与既有 BusinessServices → yield / 完成 / 错误
 ```
 
-- 挂起保留 Invocation、引用槽和旧 Version，释放本次执行作用域。宿主此后可以推进 GC 或发布兼容版本。
+- 挂起保留 Invocation、引用槽和旧 Version，释放本次执行作用域。同 Runtime 的所有外层执行也已退出时，宿主才可以推进 GC 或发布兼容版本。
 - 完成、失败和取消通过各自协议释放生成帧；运行中取消仅登记请求，等本次恢复返回后处理。具体优先级见[协程协议](runtime-model.md#协程核心协议)。
 - 同步和协程终结均由 `Invocation::resources_cleared()` 检查执行强根与弱槽已经清空、源码拥有值存活计数归零；验证发生在 RAII 兜底前。机器快照的 ObjectRoot 归验收消费者，生成槽清理不负责这个外部拥有者。
 - `BusinessServices::call` 进入原有 `Runtime::call` 和原生借用保护。源码挂起点不保留普通原生调用栈中的借用地址。
@@ -117,9 +117,9 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 ## 当前取舍
 
-- 显式根槽接入已有 GC、引用屏障和撤销协议；当前语言尚无通用记录值帧，不预先引入 statepoint 或另一个根表。
+- 同步引用槽由最外层执行区间保护，不逐局部登记持久根；跨挂起的持有槽仍接入已有 GC、引用屏障和撤销协议。当前语言尚无通用含引用记录帧，不预先引入 statepoint 或另一个根表。
 - 单源 Program 的每个 Version 独立拥有编译代码。工程模块里，一个编译单元的入口共享该单元的 LLJIT；输入未变的单元沿用已发布的代码，新旧 Version 共同持有，最后一个持有者释放时回收。活动调用、协程与租约保持所在 Version 的恢复/清理入口及展开信息。不同单元之间不共享 LLJIT：共享会改变符号空间、错误归属和独立退休责任，目前没有采用。
-- 发布检查 Runtime 静止，挂起帧保留旧版本；安全点推进 GC，不在轮询中暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
+- 发布检查 Runtime 静止，挂起帧保留旧版本；宿主在执行区间外推进 GC，源码轮询既不收集也不暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
 - 原生异常在受控边界转成状态，生成代码显式清理后提交结果。Windows 展开表服务当前栈回溯与代码寿命，不授权 C++ 异常穿越任意生成帧。
 
 工业来源见 [JIT 研究](research/jit-industrial-research.md)和[协程研究](research/coroutine-runtime-research.md)，它们不另维护执行合同。
@@ -136,7 +136,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 一个 LLVM module 拥有公开入口及内部函数，逐函数降低复用同一实现。内部函数使用 LLVM 定型参数：标量按值、引用按地址；公共入口和原生调用继续使用既有边界描述。每个函数的值和实参暂存放在自己的生成栈上，循环不追加栈分配。原生调用暂存需求取可达函数的最大实际原生调用参数数。
 
-根槽由一个 Invocation 提供，各可达函数占用互不重叠的固定区间，接收者槽共用。无环调用图保证同一函数没有并存的递归激活；每个函数只清理自身区间和拥有值，公开入口最终撤接收者根并检查全部资源归零。辅助调用错误携带原失败原因逐层返回。协程在同步助手退出后才能挂起，取消时不存在尚未返回的助手帧。
+引用槽由一个 Invocation 提供，各可达函数占用互不重叠的固定区间，接收者槽共用；同步 Invocation 使用身份存储，协程 Invocation 使用持久根存储。无环调用图保证同一函数没有并存的递归激活；每个函数只清理自身区间和拥有值，公开入口最终清空接收者槽并检查全部资源归零。辅助调用错误携带原失败原因逐层返回。协程在同步助手退出后才能挂起，取消时不存在尚未返回的助手帧。
 
 代码版本持有整个编译模块，内部直接调用不会解析到较新的模块版本。此设计没有新增 Runtime 函数注册表或通用源码分派入口。当前限制与验收见[同模块多函数](source-function-modules.md)。
 

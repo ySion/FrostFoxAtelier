@@ -153,8 +153,10 @@ class game.Probe : project.Probe {
     const std::array args{Argument::borrow(std::as_const(label))};
     require(std::get<bool>(*take(take(program.entry("game.Probe.borrowed")).invoke(id,args))) &&
         runtime.collection_phase() == CollectionPhase::roots, "Shared helper advanced GC inside a borrowed-value entry.");
-    require(!std::get<bool>(*take(take(program.entry("game.Probe.work")).invoke(id,{}))),
-        "Unrelated borrowed entry suppressed an ordinary loop's GC progress.");
+    require(std::get<bool>(*take(take(program.entry("game.Probe.work")).invoke(id,{}))) &&
+        runtime.collection_phase() == CollectionPhase::roots,
+        "Ordinary entry or its helper advanced GC inside the execution interval.");
+    while (take(runtime.collect_step({4096})).phase != CollectionPhase::idle) {}
 }
 struct CodeBase { float scale{1.0f}; };
 // An entry keeps its code while its unit compiles from identical input; codes never repeat in the process.
@@ -333,8 +335,7 @@ void verify_project_self_reads() {
         take(runtime.begin_collection());
         const auto phase = runtime.collection_phase();
         const auto cursor = take(runtime.change_cursor());
-        // A large budget makes any stray safe point leave the roots phase or destroy the retired object.
-        require(std::get<std::uint32_t>(*take(entry.invoke(id, args, CollectionBudget{1024}))) == 10,
+        require(std::get<std::uint32_t>(*take(entry.invoke(id, args))) == 10,
             "A value region misread a self field through a BorrowSafe call.");
         require(runtime.collection_phase() == phase && SelfReadRetired::destroyed == destroyed, "Self field reads advanced GC inside a value region.");
         require(!runtime.changed_since(id, cursor), "A self field read stamped its object.");
@@ -729,7 +730,7 @@ void verify_project_code_reuse() {
             return stop.command(source::DebugAction::continue_execution);
         }, {.break_on_entry = false});
         take(debugger.set_breakpoints({*at}));
-        return std::get<std::int32_t>(*take(lease.invoke(receiver, five, {1}, nullptr, &debugger))) == 2 && stopped == line;
+        return std::get<std::int32_t>(*take(lease.invoke(receiver, five, nullptr, &debugger))) == 2 && stopped == line;
     };
     publish(program, snapshot(0, "1"));
     const auto a = take(runtime.create(program.classes()[0].type));
