@@ -100,7 +100,7 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     auto& document=*loaded.session;
     application::PlayProcess process;std::unique_ptr<application::LiveLink> live;std::string output;
     const auto spill=root/"Cache/Play/acceptance";
-    take(process.start(root,snapshot,true,0,{},false,false,{},&live));
+    take(process.start(root,snapshot,true,0,{},false,false,&live));
     application::PlayLink link;link.open(std::move(live),spill);document.set_live_forwarding(true);
     const auto service=[&] {
         process.poll();output+=process.take_output();link.poll(process.running(),process.stopping());
@@ -147,6 +147,73 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     take(document.begin_edit(move,speed,880001));take(document.preview_edit(880001,9.f));forward();
     require(speed_of()==9,"A field preview did not reach Play.");
     take(document.cancel_edit());forward();require(speed_of()==2,"Cancelling a preview did not restore Play.");
+    // A forest arrives as separate root adds over the real IPC connection. Its
+    // Environment precedes its camera, including when Redo reuses document IDs.
+    {
+        editor::Session source;take(source.initialize_environment({}));
+        complete(source.create_camera({2,3,4}));take(source.set_main_camera(source.selection().entity));
+        auto forest=LinkJson::parse(take(source.serialize()));
+        const auto environment=take(world::inspect_component(source.world().runtime(),source.environment())).owner;
+        forest["roots"]=LinkJson::array({std::to_string(*source.document_identity(environment)),std::to_string(*source.document_identity(source.selection().entity))});
+        complete(document.instantiate_subtree(forest.dump(),project));
+        const auto imported_camera=take(document.main_camera());
+        const auto imported_environment=take(world::inspect_component(runtime,document.environment())).owner;
+        const auto verify_import=[&] {
+            const auto environment=inspect(imported_environment),camera=inspect(imported_camera);
+            require(environment && camera,"A camera forest import lost a root over Play IPC.");
+            for(const auto& part:environment->at("components")) if(part.at("type")=="world.EnvironmentComponent") {
+                require(part.at("properties").at("main_camera")==LinkJson{{"$ref",std::to_string(*document.document_identity(imported_camera))}},
+                    "A camera forest import lost its document-identity selection over Play IPC.");
+                return;
+            }
+            throw std::runtime_error("An imported Environment lost its component over Play IPC.");
+        };
+        forward();verify_import();
+        complete(document.undo());forward();
+        require(!inspect(imported_environment) && !inspect(imported_camera),"Undo camera import left a root in Play.");
+        complete(document.redo());forward();verify_import();
+        require(output.find("reference_dropped")==std::string::npos && output.find("command_rejected")==std::string::npos,
+            "Camera forest import/history reported a dropped reference or rejected command over IPC.");
+        complete(document.undo());forward();
+        std::puts("Camera forest IPC: PASS (Environment-first import, undo, redo, document identities, no rejected command or dropped reference)");
+    }
+    // Main camera changes cross the real process boundary as document references,
+    // including the first Environment and delete/save/Undo's graph-before-reference order.
+    complete(document.create_camera({2,3,4}));const auto camera_a=document.selection().entity;forward();
+    complete(document.create_camera({-7,1,6}));const auto camera_b=document.selection().entity;forward();
+    take(document.set_main_camera(camera_a));forward();
+    const auto environment=document.environment();
+    const auto environment_owner=take(world::inspect_component(runtime,environment)).owner;
+    const auto main_reference=[&]() -> LinkJson {
+        const auto inspected=inspect(environment_owner);
+        require(inspected.has_value(),"Play lost the Environment Entity.");
+        for(const auto& component:inspected->at("components")) if(component.at("type")=="world.EnvironmentComponent")
+            return component.at("properties").at("main_camera");
+        throw std::runtime_error("Play lost the EnvironmentComponent.");
+    };
+    const auto reference=[&](ObjectId entity) {return LinkJson{{"$ref",std::to_string(*document.document_identity(entity))}};};
+    require(main_reference()==reference(camera_a),"First Set Main Camera did not transfer its reference.");
+    complete(document.undo());forward();require(!inspect(environment_owner),"Undo first Set kept an Environment in Play.");
+    complete(document.redo());forward();require(main_reference()==reference(camera_a),"Redo first Set lost its reference.");
+    take(document.set_main_camera(camera_b));forward();require(main_reference()==reference(camera_b),"Set B did not replace A in Play.");
+    take(document.set_main_camera({}));forward();require(main_reference().is_null(),"Clear Main Camera did not reach Play.");
+    complete(document.undo());forward();require(main_reference()==reference(camera_b),"Undo Clear did not restore B in Play.");
+    complete(document.redo());forward();require(main_reference().is_null(),"Redo Clear did not clear Play.");
+    take(document.set_main_camera(camera_a));forward();
+    take(document.select_entities(std::array{camera_a},camera_a));complete(document.erase_selected());forward();
+    require(main_reference().is_null() && !inspect(camera_a),"Deleting the main camera did not clear Play before removal.");
+    static_cast<void>(take(document.serialize()));document.mark_saved();
+    complete(document.undo());forward();
+    require(inspect(camera_a).has_value() && main_reference()==reference(camera_a),"Undo after save did not restore both Play graph and reference.");
+    complete(document.redo());forward();require(main_reference().is_null() && !inspect(camera_a),"Redo deletion did not clear and remove in Play.");
+    complete(document.create_camera({1,4,9}));const auto later_camera=document.selection().entity;forward();
+    take(document.set_main_camera(later_camera));forward();
+    take(document.select_entities(std::array{environment_owner,later_camera},later_camera));complete(document.erase_entities());forward();
+    require(!inspect(environment_owner) && !inspect(later_camera),"Deleting the Environment and its main camera left one in Play.");
+    static_cast<void>(take(document.serialize()));document.mark_saved();
+    complete(document.undo());forward();
+    require(main_reference()==reference(later_camera) && inspect(later_camera),"Undo lost a camera reference when the Environment root precedes its target.");
+    require(output.find("reference_dropped")==std::string::npos,"A valid camera Undo reported a dropped reference before restoring its target.");
     // Scene commands stay available while Play follows the document; their changes are forwarded.
     {
         editor::Workspace workspace;workspace.project_open=true;workspace.project_running=true;workspace.play_pending=0;
@@ -163,7 +230,7 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     require(!link.close() && !std::filesystem::exists(spill),"Stopping Play left its change files.");
 
     // Play's end of the protocol, scripted: spilled batches, inspection and the sequence rule.
-    std::unique_ptr<application::LiveLink> raw;take(process.start(root,snapshot,true,0,{},false,false,{},&raw));
+    std::unique_ptr<application::LiveLink> raw;take(process.start(root,snapshot,true,0,{},false,false,&raw));
     LinkPeer play{std::move(raw),{}};output.clear();
     const auto id=std::to_string(*document.document_identity(mover));
     const auto rename=[&](std::string_view name){return LinkJson::array({{{"op","set"},{"id",id},{"name",name}}});};

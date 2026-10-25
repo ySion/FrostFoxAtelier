@@ -14,6 +14,7 @@ function(atelier_add_world)
     add_library(atelier_presentation STATIC
         src/material/resources.cpp
         src/presentation/objects.cpp
+        src/presentation/camera.cpp
         src/presentation/lighting.cpp
         src/presentation/materials.cpp
         src/presentation/scene.cpp)

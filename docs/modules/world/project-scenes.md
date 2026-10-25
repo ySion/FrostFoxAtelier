@@ -36,6 +36,8 @@ Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字�
 - 保留数据中的引用与活引用规则相同：子树导出拒绝图外目标，同一 Session 内复制继续指向原目标；目标在文档中被删除时写为 null 并报告 `reference_dropped`，撤销删除后恢复。
 - 编辑某字段会释放它的保留值；`Session::discard_retained` 丢弃一个对象的全部保留值，占位对象仍保留原类型。两者都进入 Undo/Redo。
 
+CameraComponent（包括派生类型）在全部属性解码后、发布前执行整记录校验；near/far 各自在硬边界内仍必须满足 far > near。严格加载拒绝违反联合规则的记录；宽容加载在组件的 `properties` 上报告 `mismatch`，恢复真实类型的整记录默认值（包括作者引用和引用序列），并保留原始属性记录供保存与重开。此检查不依赖相机是否被选为主相机，也不代替运行中的消费端校验。
+
 ### 天空贴图
 
 EnvironmentComponent 的 `sky_map` 是天空贴图的资产键。记录缺少 `sky_map` 时报告 `mismatch` warning，天空没有贴图；值不是字符串时同样报告 `mismatch`，原值保留并写回。

@@ -20,7 +20,8 @@ class WorldPanel {
 public:
     Result<bool> apply(const ui::Action&,renderer::ViewSettings& candidate);
     std::vector<ui::MenuItem> menu(ui::ControlKey,const renderer::ViewSettings&) const;
-    void append(std::vector<ui::Control>&,ui::ControlKey,ui_language::LiveDocument&,const renderer::ViewSettings&,bool editable) const;
+    void append(std::vector<ui::Control>&,ui::ControlKey,ui_language::LiveDocument&,const renderer::ViewSettings&,bool editable,
+        std::wstring_view main_camera,bool can_clear_camera) const;
     void observe(const renderer::FrameStats&);
     FramePerformance& performance() noexcept {return performance_;}
     const FramePerformance& performance() const noexcept {return performance_;}

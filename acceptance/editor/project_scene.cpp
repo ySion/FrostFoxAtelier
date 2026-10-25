@@ -708,9 +708,9 @@ void verify_array_properties(editor::Project& project,const std::shared_ptr<Evid
     };
     require(apply({{"weights",Json::array({.5})}}).empty() && weights_of(rb,b_tags)==std::vector<float>{.5f},
         "A Play set did not shorten an Array to its one element.");
-    take(const_cast<world::World&>(b->world()).add_admission(fields(rb).tags,[&](const world::World& world,std::span<const ObjectId> candidates)->Result<void> {
-        for(const auto object:candidates)
-            if(std::ranges::contains(names_of(world.runtime(),object),std::string{"Closed"})) return std::unexpected(Error{ErrorCode::invalid_member,"Tags cannot name Closed."});
+    take(const_cast<world::World&>(b->world()).add_admission(fields(rb).tags,[&](const world::World& world,std::span<const world::World::AdmissionCandidate> candidates)->Result<void> {
+        for(const auto& candidate:candidates)
+            if(std::ranges::contains(names_of(world.runtime(),candidate.component),std::string{"Closed"})) return std::unexpected(Error{ErrorCode::invalid_member,"Tags cannot name Closed."});
         return {};
     }));
     const auto rejected=apply({{"names",Json::array({"open","Closed"})}});
@@ -777,9 +777,9 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     const auto b_label=in_b(label);
     applied({{{"op","set"},{"id",id(label)},{"properties",{{"title","North gate"}}}}});
     require(title_of(b->world(),b_label)=="North gate","A Play String field change was not applied.");
-    take(const_cast<world::World&>(b->world()).add_admission(b_label_type,[&](const world::World& world,std::span<const ObjectId> candidates)->Result<void> {
-        for(const auto object:candidates)
-            if(title_of(world,object)=="Closed") return std::unexpected(Error{ErrorCode::invalid_member,"A Label cannot be titled Closed."});
+    take(const_cast<world::World&>(b->world()).add_admission(b_label_type,[&](const world::World& world,std::span<const world::World::AdmissionCandidate> candidates)->Result<void> {
+        for(const auto& candidate:candidates)
+            if(title_of(world,candidate.component)=="Closed") return std::unexpected(Error{ErrorCode::invalid_member,"A Label cannot be titled Closed."});
         return {};
     }));
     const auto closed=apply({{{"op","set"},{"id",id(label)},{"properties",{{"title","Closed"}}}}});
@@ -1143,6 +1143,202 @@ void verify_environment_document(editor::Project& project) {
     }
     std::puts("Environment document: PASS (load initialization only without an Environment, derived Environment type, sky map keys and history)");
 }
+void verify_camera_loading(editor::Project& project) {
+    acceptance_phase="Camera combined load validation";
+    struct DerivedCamera : presentation::CameraComponent {
+        ReferenceSlot target,held_target;
+        ReferenceSequence targets;
+        Array<float> weights{.25f,.75f};
+        DerivedCamera() {near_clip=.25f;far_clip=60;vertical_fov=80;}
+    };
+    const editor::Session::Prepare camera_type=[](world::World& world)->Result<std::shared_ptr<void>> {
+        take(world.runtime().register_type(array_definition<float>(world.runtime(),"game.CameraWeights")));
+        take(NativeRegistration<DerivedCamera>{world.runtime(),"game.Camera",TypeKind::object}.base<presentation::CameraComponent>()
+            .field<&DerivedCamera::target>("target",{TypeReference::native<world::Entity>(),ValueForm::weak_reference})
+            .field<&DerivedCamera::held_target>("held_target",{TypeReference::native<world::Entity>(),ValueForm::strong_reference})
+            .field<&DerivedCamera::targets>("targets",{TypeReference::native<world::Entity>(),ValueForm::strong_sequence})
+            .field<&DerivedCamera::weights>("weights").publish());
+        return {};
+    };
+    editor::Session source;changed(source.create_camera({2,3,4}));
+    const auto baseline=Json::parse(take(source.serialize()));
+    const auto entity_id=*source.document_identity(source.selection().entity);
+    bool passed=true;
+    for(const bool derived:{false,true}) for(const float far:{2.f,5.f,9.f}) {
+        auto input=baseline;auto& part=input["entities"][0]["components"][0];
+        part["type"]=derived?"game.Camera":"world.CameraComponent";
+        part["properties"]["near_clip"]=5;part["properties"]["far_clip"]=far;part["properties"]["vertical_fov"]=70;
+        if(derived) {
+            const Json target={{"$ref",std::to_string(entity_id)}};
+            part["properties"]["target"]=target;part["properties"]["held_target"]=target;
+            part["properties"]["targets"]=Json::array({target,nullptr,target});
+            part["properties"]["weights"]=Json::array({2.f,3.f,5.f});
+        }
+        const auto component_id=std::stoull(part["id"].get<std::string>());
+        const bool valid=far>5;
+        auto strict=editor::Session::deserialize(input.dump(),project,camera_type,editor::LoadPolicy::strict);
+        const bool strict_ok=bool(strict)==valid;
+        auto document=take(editor::Session::deserialize(input.dump(),project,camera_type));
+        bool tolerant_ok=true,references_ok=true,sequence_ok=true,array_ok=true,roundtrip_ok=true;
+        // Reopen the saved retained record as well as checking its first load.
+        for(int pass=0;pass<2;++pass) {
+            const auto component=take(document->local_object(component_id));
+            const auto& issues=document->load_issues();
+            tolerant_ok &= valid?issues.empty():issues.size()==1 && issues[0].kind==world::DiagnosticKind::mismatch &&
+                issues[0].object==component && issues[0].field==std::vector<std::string>{"properties"} && document->has_retained(component);
+            const auto camera=document->presentation().camera(take(document->local_object(entity_id)));
+            tolerant_ok &= camera && camera->near_clip==(valid?5.f:derived?.25f:.05f) &&
+                camera->far_clip==(valid?9.f:derived?60.f:30000.f) && camera->vertical_fov==(valid?70.f:derived?80.f:45.f);
+            if(derived) {
+                auto& runtime=document->world().runtime();const auto type=take(runtime.type_of(component));
+                const auto expected=valid?take(document->local_object(entity_id)):ObjectId{};
+                for(const auto name:{"target","held_target"})
+                    references_ok &= take(runtime.read_reference(component,take(runtime.find_field(type,name)))).id()==expected;
+                const auto targets=take(runtime.reference_field(component,take(runtime.find_field(type,"targets"))));
+                const auto count=take(runtime.sequence_size(targets));sequence_ok &= count==(valid?3u:0u);
+                if(valid && count==3) for(std::size_t i=0;i<count;++i)
+                    sequence_ok &= take(runtime.sequence_read(targets,i)).id()==(i==1?ObjectId{}:expected);
+                Array<float> weights;
+                take(runtime.read(component,take(runtime.find_field(type,"weights")),ValueOutput{take(runtime.native_type<Array<float>>()),&weights}));
+                array_ok &= valid?weights.size()==3 && weights[0]==2.f && weights[1]==3.f && weights[2]==5.f:
+                    weights.size()==2 && weights[0]==.25f && weights[1]==.75f;
+                std::printf("Camera derived load pass=%d far=%.0f: weak-null=%d strong-null=%d sequence-size=%zu\n",pass,far,
+                    take(runtime.read_reference(component,take(runtime.find_field(type,"target")))).id()==ObjectId{},
+                    take(runtime.read_reference(component,take(runtime.find_field(type,"held_target")))).id()==ObjectId{},count);
+            }
+            const auto saved=take(document->serialize());roundtrip_ok &= Json::parse(saved)==input;
+            if(pass==0) document=take(editor::Session::deserialize(saved,project,camera_type));
+        }
+        std::printf("Camera load %s near=5 far=%.0f: strict=%s tolerant/defaults=%s references=%s sequence=%s array=%s retained-roundtrip=%s\n",
+            derived?"derived":"native",far,strict_ok?"PASS":"FAIL",tolerant_ok?"PASS":"FAIL",
+            references_ok?"PASS":"FAIL",sequence_ok?"PASS":"FAIL",array_ok?"PASS":"FAIL",roundtrip_ok?"PASS":"FAIL");
+        passed &= strict_ok && tolerant_ok && references_ok && sequence_ok && array_ok && roundtrip_ok;
+    }
+    require(passed,"Camera loading did not enforce its combined projection rule and retained-data contract.");
+}
+void verify_camera_import(editor::Project& project) {
+    acceptance_phase="Camera forest import forwarding";
+    editor::Session source;take(source.initialize_environment({}));
+    changed(source.create_camera({2,3,4}));take(source.set_main_camera(source.selection().entity));
+    auto forest=Json::parse(take(source.serialize()));
+    const auto environment=take(world::inspect_component(source.world().runtime(),source.environment())).owner;
+    forest["roots"]=Json::array({std::to_string(*source.document_identity(environment)),std::to_string(*source.document_identity(source.selection().entity))});
+    bool passed=true;
+    for(const bool environment_first:{false,true}) for(const bool play_after_import:{false,true}) {
+        auto input=forest;if(!environment_first) std::ranges::reverse(input["roots"]);
+        editor::Session author;changed(author.add_entity());
+        auto play=take(editor::Session::deserialize(take(author.serialize()),project));play->enter_play();
+        author.set_live_forwarding(!play_after_import);
+        changed(author.instantiate_subtree(input.dump(),project));
+        const auto target=take(author.main_camera());
+        if(play_after_import) {
+            play=take(editor::Session::deserialize(take(author.serialize()),project));play->enter_play();author.set_live_forwarding(true);
+        }
+        const auto sync=[&](const char* step,bool present) {
+            Json ops=Json::array();for(const auto& op:take(author.take_live_ops())) ops.push_back(Json::parse(op));
+            const auto issues=take(play->apply_live(Json{{"ops",ops}}.dump(),project));
+            const auto selected=take(play->main_camera());
+            bool correct=issues.empty();
+            if(present) {
+                const auto camera=play->presentation().main_camera();
+                correct &= selected!=ObjectId{} && selected!=target && play->document_identity(selected)==author.document_identity(target) &&
+                    camera && camera->position==math::Vector3{2,3,4};
+            } else correct &= selected==ObjectId{} && play->environment()==ObjectId{} && take(play->world().members()).size()==1;
+            std::printf("Camera forest %s Play-%s %s: %s diagnostics=%zu\n",environment_first?"Environment-first":"Camera-first",
+                play_after_import?"after-import":"before-import",step,correct?"PASS":"FAIL",issues.size());
+            for(const auto& issue:issues) std::printf("  %s: %s\n",world::name(issue.kind).data(),issue.message.c_str());
+            passed &= correct;
+        };
+        sync("import",true);
+        changed(author.undo());sync("undo",false);
+        changed(author.redo());sync("redo",true);
+    }
+    require(passed,"A multi-root camera import or its history diverged between author and Play.");
+}
+void verify_camera_document(editor::Project& project) {
+    acceptance_phase="Camera authoring, reference history and sparse Play changes";
+    editor::Session a;
+    take(a.set_main_camera({}));require(a.environment()==ObjectId{} && a.undo_count()==0,"Clear created an absent Environment.");
+    changed(a.create_camera({2,3,-4}));const auto first=a.selection().entity;
+    changed(a.create_camera({-5,1,7}));const auto second=a.selection().entity;
+    require(take(a.main_camera())==ObjectId{},"Create Camera selected itself as main.");
+    auto b=take(editor::Session::deserialize(take(a.serialize()),project));b->enter_play();
+    a.set_live_forwarding(true);
+    const auto in_b=[&](ObjectId object){return take(b->local_object(*a.document_identity(object)));};
+    const auto sync=[&] {
+        Json ops=Json::array();for(const auto& op:take(a.take_live_ops())) ops.push_back(Json::parse(op));
+        const auto issues=take(b->apply_live(Json{{"ops",ops}}.dump(),project));
+        if(!issues.empty()) throw std::runtime_error(issues.front().message);
+        return ops;
+    };
+    const auto before=a.undo_count();take(a.set_main_camera(first));
+    require(sync().size()==1 && a.undo_count()==before+1 && take(b->presentation().main_camera()).entity==in_b(first),
+        "First Set did not create and forward the Environment with its selection in one history item.");
+    changed(a.undo());sync();require(a.environment()==ObjectId{} && b->environment()==ObjectId{},"First Set undo left an Environment.");
+    changed(a.redo());sync();require(take(b->presentation().main_camera()).entity==in_b(first),"First Set redo lost the reference.");
+    take(a.set_main_camera(second));
+    const auto set=sync();
+    require(set.size()==1 && set[0]["properties"].size()==1 && set[0]["properties"]["main_camera"]["$ref"]==std::to_string(*a.document_identity(second)) &&
+        take(b->presentation().main_camera()).entity==in_b(second),"Set did not forward only the changed reference by document identity.");
+    const auto stable=a.undo_count();take(a.set_main_camera(second));require(a.undo_count()==stable && sync().empty(),"Unchanged main selection created history or IPC.");
+    take(a.set_main_camera({}));sync();require(!b->presentation().main_camera(),"Clear chose a Play fallback.");
+    changed(a.undo());sync();require(take(b->presentation().main_camera()).entity==in_b(second),"Reference undo did not reach Play.");
+    changed(a.redo());sync();require(take(b->main_camera())==ObjectId{},"Reference redo did not clear Play.");
+    changed(a.undo());sync();
+    // Native game writes do not travel back to the document; an unrelated scalar
+    // edit must not send the entire Environment and overwrite the game's choice.
+    auto& rb=b->world().runtime();const auto selected=take(rb.find_field(b->presentation_types().environment_component,"main_camera"));
+    auto game_target=take(rb.hold(in_b(first),b->world().types().entity));
+    take(rb.write_reference(b->environment(),selected,game_target.reference()));
+    auto settings=take(a.presentation().environment());settings.exposure_ev=2;
+    take(a.set_environment(settings));sync();
+    require(take(a.main_camera())==second && take(b->presentation().main_camera()).entity==in_b(first),"A scalar edit overwrote a Play-only reference write.");
+    take(rb.write(b->environment(),field(*b,b->presentation_types().environment_component,"exposure_ev"),Scalar{6.f}));
+    const auto game_choice=[&] {
+        sync();require(take(b->presentation().main_camera()).entity==in_b(first) && take(b->presentation().environment()).exposure_ev==6,
+            "An unrelated add/history resent the existing Environment and overwrote game state.");
+    };
+    changed(a.create_camera({8,2,1}));game_choice();
+    changed(a.undo());game_choice();changed(a.redo());game_choice();
+    take(a.set_main_camera(first));sync();take(a.set_main_camera(second));sync();
+    changed(a.add_entity());const auto parent=a.selection().entity;sync();
+    changed(a.reparent(second,parent,world::ReparentRule::keep_local));sync();
+    take(a.select(parent));changed(a.erase_entities());sync();
+    require(take(a.main_camera())==ObjectId{} && take(b->main_camera())==ObjectId{},"Subtree deletion did not synchronously clear both selections.");
+    const auto deleted=take(a.serialize());a.mark_saved();
+    require(take(editor::Session::deserialize(deleted,project))->load_issues().empty(),"Deleted camera could not be saved and reopened cleanly.");
+    changed(a.undo());sync();require(take(b->presentation().main_camera()).entity==in_b(second),"Delete-save-undo did not restore graph and reference.");
+    changed(a.redo());sync();require(take(b->main_camera())==ObjectId{},"Deletion redo did not clear the Play reference.");
+    changed(a.undo());sync();
+    const auto saved=take(a.serialize());auto reopened=take(editor::Session::deserialize(saved,project,{},editor::LoadPolicy::strict));
+    require(take(reopened->serialize())==saved && reopened->name(take(reopened->main_camera()))==a.name(second),"Camera fields/reference failed strict Scene v9 roundtrip.");
+    // The game can destroy a target independently; editor Set reports the dropped
+    // reference instead of recreating that target or reusing an ObjectId.
+    changed(world::destroy_entity(rb,in_b(first)));take(a.set_main_camera(first));
+    Json missing=Json::array();for(const auto& op:take(a.take_live_ops())) missing.push_back(Json::parse(op));
+    const auto dropped=take(b->apply_live(Json{{"ops",missing}}.dump(),project));
+    require(dropped.size()==1 && dropped[0].kind==world::DiagnosticKind::reference_dropped && take(b->main_camera())==ObjectId{},
+        "Setting a game-destroyed camera resurrected it or omitted its diagnostic.");
+    changed(a.add_entity());sync();changed(a.undo());sync();changed(a.redo());sync();
+    require(!b->local_object(*a.document_identity(first)) && take(b->main_camera())==ObjectId{},
+        "An unrelated add/history resurrected a game-deleted camera outside its batch.");
+
+    auto malformed=Json::parse(saved);
+    for(auto& entity:malformed["entities"]) for(auto& part:entity["components"])
+        if(part["type"]=="world.EnvironmentComponent") part["properties"]["main_camera"]="not a reference";
+    auto retained=take(editor::Session::deserialize(malformed.dump(),project));
+    const auto env=retained->environment();require(retained->has_retained(env),"Malformed main camera was not retained.");
+    take(retained->set_main_camera({}));require(!retained->has_retained(env),"Clear did not release retained reference data.");
+    changed(retained->undo());require(Json::parse(take(retained->serialize()))==malformed,"Reference undo lost retained data.");
+    const auto target=take(retained->local_object(*a.document_identity(second)));
+    auto& rr=retained->world().runtime();auto held=take(rr.hold(target,retained->world().types().entity));
+    take(rr.write_reference(env,take(rr.find_field(retained->presentation_types().environment_component,"main_camera")),held.reference()));
+    take(retained->select(target));changed(retained->erase_entities());
+    require(!retained->has_retained(env) && take(retained->main_camera())==ObjectId{} && retained->serialize(),"Delete left retained data overriding the cleared selection.");
+    changed(retained->undo());require(retained->has_retained(env) && take(retained->main_camera())==target,"Delete undo did not restore the graph, selection and retained value together.");
+    changed(retained->redo());require(take(retained->main_camera())==ObjectId{} && !retained->has_retained(env),"Delete redo did not clear retained reference data.");
+    std::puts("Camera document: PASS (Scene v9 references, first-Set creation, history, sparse Play forwarding, game deletion, retained data, delete-save-undo)");
+}
 void run() {
     verify_stop_reentry();
     acceptance_phase="Source document fields and history";
@@ -1208,6 +1404,9 @@ void run() {
     verify_array_properties(project,evidence);
     verify_live_forwarding(project,evidence);
     verify_environment_document(project);
+    verify_camera_loading(project);
+    verify_camera_document(project);
+    verify_camera_import(project);
     acceptance_phase="Source play and stop lifecycle";
     const auto history=document.undo_count();
     for (int pass=0;pass<3;++pass) {

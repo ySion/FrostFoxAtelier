@@ -195,6 +195,7 @@ void validate(const Frame &frame, MeshChecks &meshes) {
         good &= finite(v);
     for (float v : frame.camera.projection)
         good &= finite(v);
+    good &= finite(frame.camera.far_depth) && frame.camera.far_depth>=0 && frame.camera.far_depth<=1;
     std::uint64_t material_slots=0;
     good &= meshes.check(frame.meshes, material_slots);
     good &= material_slots<=std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface);
@@ -785,6 +786,7 @@ struct Renderer::State {
         const std::array<std::uint32_t,2> guides{frame.view.reference_grid?1u:0u,frame.view.origin_axes?1u:0u};
         require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse), "Set grid inverse camera");
         require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection), "Set grid camera");
+        require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth), "Set grid far clipping");
         require(gfxProgramSetParameter(gfx, program, "guides", guides), "Set reference guides");
         require(gfxProgramSetParameter(gfx, program, "grid_spacing", frame.view.grid_spacing), "Set grid spacing");
         require(gfxProgramSetParameter(gfx, program, "grid_plane", static_cast<std::uint32_t>(frame.view.grid_plane)), "Set grid plane");
@@ -932,6 +934,7 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
                 require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
+                require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth), "Set scene far clipping");
                 require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy");
                 require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
@@ -1228,7 +1231,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
         s.raster_visibility.clear();s.raster_visibility.reserve(frame.meshes.size());
-        const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height);
+        const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height,frame.camera.far_depth);
         s.mesh_groups.clear();s.instance_groups.clear();s.instance_groups.reserve(frame.meshes.size());
         for (std::size_t i = 0; i < frame.meshes.size(); ++i) {
             const auto &mesh = frame.meshes[i];

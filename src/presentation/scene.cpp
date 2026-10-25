@@ -23,6 +23,10 @@ Result<Scene> Scene::create(world::World& world, const Types& types) {
     if (!environments) return std::unexpected(environments.error());
     auto unique = detail::unique_environment(*environments);
     if (auto existing = unique(world, {}); !existing) return std::unexpected(existing.error());
+    auto cameras = world.register_capability(types.camera_component);
+    if (!cameras) return std::unexpected(cameras.error());
+    auto camera_unique = detail::unique_camera(*cameras);
+    if (auto existing = camera_unique(world, {}); !existing) return std::unexpected(existing.error());
     auto meshes = world.register_capability(types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
         return runtime.with_native<const StaticMeshComponent>(object, [](const StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
     });
@@ -31,7 +35,9 @@ Result<Scene> Scene::create(world::World& world, const Types& types) {
     if (!lights) return std::unexpected(lights.error());
     if (auto admitted = world.add_admission(types.environment_component, std::move(unique)); !admitted)
         return std::unexpected(admitted.error());
-    scene.meshes_ = *meshes; scene.lights_ = *lights; scene.environments_ = *environments;
+    if (auto admitted = world.add_admission(types.camera_component, std::move(camera_unique)); !admitted)
+        return std::unexpected(admitted.error());
+    scene.meshes_ = *meshes; scene.lights_ = *lights; scene.environments_ = *environments; scene.cameras_ = *cameras;
     static std::atomic<std::uint64_t> created;
     scene.identity_ = ++created;
     return scene;

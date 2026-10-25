@@ -15,7 +15,7 @@ namespace atelier::renderer::detail {
 class SceneFrustum {
 public:
     SceneFrustum(const std::array<float,16>& view,const std::array<float,16>& projection,
-                 float width,float height) {
+                 float width,float height,float far_depth) {
         math::Matrix4d v,p;
         for(std::size_t i=0;i<16;++i) {v.elements[i]=view[i];p.elements[i]=projection[i];}
         const auto vp=v*p;
@@ -27,7 +27,7 @@ public:
             const double cz=vp.elements[offset+2],cw=vp.elements[offset+3];
             planes_[0][row]=cw*x+cx;planes_[1][row]=cw*x-cx;
             planes_[2][row]=cw*y+cy;planes_[3][row]=cw*y-cy;
-            planes_[4][row]=cz;planes_[5][row]=cw-cz;
+            planes_[4][row]=cz-far_depth*cw;planes_[5][row]=cw-cz;
             // Uncombined magnitudes retain cancellation error in w +/- x/y/z.
             magnitude_[row]=std::max({std::abs(cw)*x+std::abs(cx),
                 std::abs(cw)*y+std::abs(cy),std::abs(cw)+std::abs(cz)});

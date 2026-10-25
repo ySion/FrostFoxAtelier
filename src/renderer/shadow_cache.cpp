@@ -51,7 +51,7 @@ double far_distance(const ShadowBounds& b,V p) {
 }
 // Homogeneous plane rejection is conservative for boxes crossing the eye or
 // near plane, unlike projecting only the corners and dividing by w.
-bool intersects(const ShadowBounds& b,const M& vp,double padding=0) {
+bool intersects(const ShadowBounds& b,const M& vp,double padding=0,double far_depth=0) {
     std::array<bool,6> outside{true,true,true,true,true,true};
     for(std::uint32_t i=0;i<8;++i){const auto p=corner(b,i);
         const auto q=math::Vector4d{p.x,p.y,p.z,1}*vp;
@@ -65,7 +65,7 @@ bool intersects(const ShadowBounds& b,const M& vp,double padding=0) {
         const double epsilon=1e-5*scale;
         outside[0]&=q.x< -w-epsilon;outside[1]&=q.x>w+epsilon;
         outside[2]&=q.y< -w-epsilon;outside[3]&=q.y>w+epsilon;
-        outside[4]&=q.z< -epsilon;outside[5]&=q.z>q.w+epsilon;
+        outside[4]&=q.z-far_depth*q.w< -epsilon;outside[5]&=q.z>q.w+epsilon;
     }
     return std::ranges::none_of(outside,[](bool value){return value;});
 }
@@ -193,7 +193,7 @@ Request directional_request(const Frame& frame,const GpuLightSource& source,std:
     double camera_near=std::numeric_limits<double>::infinity(),camera_far=-camera_near;
     for(std::uint32_t i=0;i<4;++i){const double x=i&1?1:-1,y=i&2?1:-1;
         near_corners[i]=unproject(*inverse_projection,x,y,1);
-        const auto far_clip=math::Vector4d{x,y,0,1}*(*inverse_projection);
+        const auto far_clip=math::Vector4d{x,y,frame.camera.far_depth,1}*(*inverse_projection);
         check(std::isfinite(far_clip.x)&&std::isfinite(far_clip.y)&&std::isfinite(far_clip.z)&&std::isfinite(far_clip.w),
             "Invalid shadow camera far direction");
         // H.xyz-N*H.w is a ray even when the reversed-Z far endpoint is at
@@ -526,7 +526,7 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame,const LightFrame&
         for(std::size_t axis=0;axis<3;++axis)check(std::isfinite(caster.bounds.minimum[axis])&&std::isfinite(caster.bounds.maximum[axis])&&
             caster.bounds.minimum[axis]<=caster.bounds.maximum[axis],"Invalid shadow caster bounds");
         check(caster.instance<frame.meshes.size(),"Shadow caster instance exceeds current frame");
-        if(intersects(caster.bounds,camera_vp,camera_padding))receivers.push_back(caster);
+        if(intersects(caster.bounds,camera_vp,camera_padding,frame.camera.far_depth))receivers.push_back(caster);
     }
     auto& requests=s.requests;requests.assign(s.lights.size(),{});
     auto& sizes=s.sizes;sizes.assign(s.lights.size(),0);

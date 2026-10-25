@@ -88,7 +88,7 @@ Result<void> Application::run_project() {
     const auto path=project_->resolve(relative);if(!path) return std::unexpected(path.error());
     auto saved=editor::write_file(*path,*source,editor::WriteMode::create);if(!saved) return saved;
     std::unique_ptr<LiveLink> link;
-    auto started=play_.start(project_->root(),*path,false,0,{},false,false,camera_.state(),&link);
+    auto started=play_.start(project_->root(),*path,false,0,{},false,false,&link);
     if(!started) {std::error_code ignored;std::filesystem::remove(*path,ignored);return started;}
     // Forwarding starts with the snapshot just serialized, so no change falls between them;
     // the pipe holds batches until Play has loaded.

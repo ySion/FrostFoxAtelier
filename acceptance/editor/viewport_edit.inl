@@ -500,6 +500,29 @@ void verify_viewport_editing() {
         const auto center=orthographic.project(transform(first).position);
         require(center && tool.pick(document,orthographic,center->x,center->y).has_value(),"Orthographic picking lost real geometry.");
     }
+    {
+        // One sloped polygon crosses far=4 at x=0; reject the distant half,
+        // not the entire mesh. The uncropped view supplies independent pixels.
+        Session clipped;
+        auto mesh=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
+            {{-2,-1,2},{1,0,-1}},{{-2,1,2},{1,0,-1}},{{2,1,6},{1,0,-1}},
+            {{-2,-1,2},{1,0,-1}},{{2,1,6},{1,0,-1}},{{2,-1,6},{1,0,-1}}});
+        changed(clipped.create_static_mesh({{},L"Far crossing",mesh}));const auto entity=clipped.selection().entity;
+        for(const auto kind:{CameraView::perspective,CameraView::front}) {
+            Camera limited;auto state=limited.state();state.view=kind;state.target={0,0,1};state.yaw=std::numbers::pi_v<float>;
+            state.pitch=state.roll=0;state.distance=1;state.vertical_fov=60;state.near_clip=.25f;state.far_clip=8;
+            require(limited.set_state(state),"Far picking camera was rejected.");
+            const auto full=ViewportView::make(limited,{0,0,800,600},1);
+            state.far_clip=4;require(limited.set_state(state),"Finite far clipping camera was rejected.");
+            const auto bounded=ViewportView::make(limited,full.bounds,1);
+            const auto inside=full.project({-.5f,0,3.5f}),outside=full.project({.5f,0,4.5f});
+            require(inside && outside && tool.pick(clipped,full,inside->x,inside->y)==entity &&
+                tool.pick(clipped,full,outside->x,outside->y)==entity,"Picking control missed the crossing polygon.");
+            require(bounded.project({-.5f,0,3.5f}) && !bounded.project({.5f,0,4.5f}) &&
+                tool.pick(clipped,bounded,inside->x,inside->y)==entity && !tool.pick(clipped,bounded,outside->x,outside->y),
+                "Projection and picking disagree with the finite far plane.");
+        }
+    }
     settings.tool=TransformTool::transform;shapes.clear();take(overlay_scene.refresh(document));
     tool.overlay(document,view,settings,overlay_scene.mesh_entities,shapes);
     require(shapes.size()>100,"Universal handle did not expose axes, planes and rotation rings.");

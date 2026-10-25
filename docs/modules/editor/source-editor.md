@@ -49,7 +49,7 @@ Workspace 独立拥有编辑器 UI Runtime；场景切换清理旧业务绑定�
 
 评估了 [Scintilla](https://www.scintilla.org/ScintillaDoc.html)、[Lexilla](https://scintilla.org/LexillaDoc.html) 和 [Tree-sitter](https://github.com/tree-sitter/tree-sitter)。Scintilla 的 Windows 接口是独立原生控件；Lexilla 提供不依赖显示系统的词法器；Tree-sitter 提供增量语法树，均不直接提供本项目的 Source 类型语义。
 
-本阶段复用已有 ICU/DirectWrite/IMM32 编辑设施，把持久文档、增量历史和多行呈现接入原生控件。没有嵌入另一套窗口/渲染系统，也没有新增第三方依赖。后续词法着色可以按实际语言支持成本复用成熟后端；语义诊断、补全和调试继续由现有编译器/Runtime 提供权威信息。
+源码编辑复用 ICU/DirectWrite/IMM32 编辑设施，持久文档、增量历史和多行呈现接入原生控件，不嵌入另一套窗口/渲染系统。后续词法着色可以按实际语言支持成本复用成熟后端；语义诊断、补全和调试继续由现有编译器/Runtime 提供权威信息。
 
 ## 端到端验收
 
@@ -57,16 +57,4 @@ Workspace 独立拥有编辑器 UI Runtime；场景切换清理旧业务绑定�
 
 真实窗口入口为 `atelier_editor --acceptance-source <输出目录>`，由 `editor_project_acceptance` 运行，要求前台焦点。覆盖菜单打开、原生选区输入、Ctrl+S 发布、错误点击、恢复、大段系统剪贴板、撤销与关闭；同一窗口还创建工程、添加 Source 组件、编辑数值与 bool、跨文件定位、保存重开并启动和停止游戏/UI 预览。每轮导出 PNG。后台协议验收不替代真实系统 IME 或窗口验收。
 
-2026-10-06 工程接线基线结果（审查前）；本轮修订后的结果以[工作流审查](../../research/editor-project-review-20261006.md)为准：
-
-| 验收 | Dev | Release |
-|---|---|---|
-| 工程 Source → 类型/属性 → 场景 → 热更 → 独立运行，含游戏/UI 死循环终止、空工程和首次新增类型 | PASS | PASS |
-| Scene v1/v2、真实派生类型、标量历史、生命周期与 Jolt 所有权 | PASS | PASS |
-| 共享 UI | 23/23 | 23/23 |
-| 完整编辑器文档、DSL 更新与源码编辑 | PASS | PASS |
-| 原生 Code 与工程工作流窗口 | PASS，4288 个接受帧 | PASS，468 个接受帧 |
-
-后台日志位于 `out/project-{dev,release}-{integration,scenes,ui,documents}.log`。窗口报告与截图位于 `out/project-window-dev/` 和 `out/project-window-release/`；发布版窗口验收之后补充的空快照边界已通过两种配置的工程验收，开发版窗口使用该最终行为。真实系统 IME 未在本轮重跑。
-
-`E:/ffa_testproj` 已加入 `Source/Math.source`、`Source/Move.source`、`Source/UI/Main.ui.source` 和 `Content/Scenes/SourceWorkflow.scene`，并配置项目 UI 入口；该目录已通过正式运行入口的 20 帧验收。打开 SourceWorkflow.scene 可以直接修改 speed/moving 并运行，原启动场景配置仍指向 Main.scene。
+工程编译、类型发布、热更及独立 runner 的无窗口入口是 `project_integration_acceptance`；场景往返、派生类型、属性历史与保留数据由 `project_scene_acceptance` 覆盖。运行命令和本轮日志位置以[验收门禁](../../../README.md#构建与端到端验收)为准，不将历史版本的 PASS 表作为当前构建结果。

@@ -15,8 +15,8 @@
 namespace atelier::application {
 namespace {
 using control::Json;using control::Failure;
-// Bumped whenever the frozen view's key set changes; repro.open accepts only this schema.
-constexpr unsigned repro_view_schema=5;
+// Bumped whenever the frozen camera/view contract changes; repro.open accepts only this schema.
+constexpr unsigned repro_view_schema=6;
 constexpr std::array<std::string_view,3> removed_view_options{"direct_reference","direct_clustered","direct_shadow_cache"};
 constexpr unsigned inspect_page_items=256;
 constexpr std::size_t inspect_page_bytes=control::maximum_message/4;
@@ -37,12 +37,19 @@ math::Vector3 vector3(const Json& value) {
     const auto f=[](const Json& n) {const auto v=number(n);if(std::abs(v)>100000000) throw Failure("invalid_request","Vector exceeds authoring range");return static_cast<float>(v);};
     return {f(value[0]),f(value[1]),f(value[2])};
 }
-Json vector3(math::Vector3 v) {return {v.x,v.y,v.z};}
-Json camera_json(const editor::CameraState& c) {return {{"view",static_cast<unsigned>(c.view)},{"target",vector3(c.target)},{"yaw",c.yaw},{"pitch",c.pitch},{"distance",c.distance}};}
+Json vector3(math::Vector3 v) {return editor::json_format::numbers(std::array{v.x,v.y,v.z});}
+Json camera_json(const editor::CameraState& c) {
+    using editor::json_format::number;
+    return {{"view",static_cast<unsigned>(c.view)},{"target",vector3(c.target)},{"yaw",number(c.yaw)},{"pitch",number(c.pitch)},
+        {"distance",number(c.distance)},{"roll",number(c.roll)},{"vertical_fov",number(c.vertical_fov)},
+        {"near_clip",number(c.near_clip)},{"far_clip",number(c.far_clip)}};
+}
 editor::CameraState camera_state(const Json& args) {
-    control::fields(args,{"view","target","yaw","pitch","distance"});
+    control::fields(args,{"view","target","yaw","pitch","distance","roll","vertical_fov","near_clip","far_clip"});
     return {static_cast<editor::CameraView>(integer(args.at("view"),0,static_cast<unsigned>(editor::CameraView::left))),vector3(args.at("target")),
-        static_cast<float>(number(args.at("yaw"))),static_cast<float>(number(args.at("pitch"))),static_cast<float>(number(args.at("distance")))};
+        static_cast<float>(number(args.at("yaw"))),static_cast<float>(number(args.at("pitch"))),static_cast<float>(number(args.at("distance"))),
+        static_cast<float>(number(args.at("roll"))),static_cast<float>(number(args.at("vertical_fov"))),
+        static_cast<float>(number(args.at("near_clip"))),static_cast<float>(number(args.at("far_clip")))};
 }
 Json view_json(const renderer::ViewSettings& view) {
     Json result=Json::object();
@@ -50,6 +57,7 @@ Json view_json(const renderer::ViewSettings& view) {
         const auto value=editor::view_value(view,option.option);
         if(option.kind==editor::ViewValueKind::enumeration) result[option.name]=option.choices[static_cast<std::size_t>(value)];
         else if(option.kind==editor::ViewValueKind::boolean) result[option.name]=value!=0;
+        else if(option.kind==editor::ViewValueKind::number) result[option.name]=editor::json_format::number(static_cast<float>(value));
         else result[option.name]=value;
     }
     return result;
@@ -298,7 +306,7 @@ struct EditorControl::Impl {
     Json frame_json() const {
         if(!last_frame) return Json::object();const auto& f=*last_frame;const auto& s=f.stats;
         return {{"frame_id",f.id},{"accepted_count",f.count},{"viewport",{f.bounds.x,f.bounds.y,f.bounds.width,f.bounds.height}},
-            {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
+            {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"far_depth",editor::json_format::number(f.camera.far_depth)},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
             {"frame_stats",{{"scene_draw_calls",s.scene_draw_calls},{"scene_instances",s.scene_instances},{"scene_culled_instances",s.scene_culled_instances},
                 {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},

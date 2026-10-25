@@ -3,6 +3,7 @@ row_major float4x4 view_projection;
 uint2 guides;
 float grid_spacing;
 uint grid_plane;
+float camera_far_depth;
 
 struct GridOutput {
     float4 color : SV_Target;
@@ -29,7 +30,7 @@ GridOutput main(float4 position : SV_Position, float2 uv : TEXCOORD0) {
     float denominator = inverse_view_projection[2][normal_axis];
     if (denominator == 0 || abs(near_h.w) < 1e-8) discard;
     float plane_depth = -base_h[normal_axis] / denominator;
-    if (plane_depth <= 0 || plane_depth > 1) discard;
+    if (plane_depth <= 0 || plane_depth < camera_far_depth || plane_depth > 1) discard;
     float4 hit_h = mul(float4(ndc, plane_depth, 1), inverse_view_projection);
     if (hit_h.w <= 1e-8) discard;
     float3 world = hit_h.xyz / hit_h.w;
@@ -42,7 +43,7 @@ GridOutput main(float4 position : SV_Position, float2 uv : TEXCOORD0) {
     float4 clip = mul(float4(world, 1), view_projection);
     if (clip.w <= 0) discard;
     float z = clip.z / clip.w;
-    if (z <= 0 || z > 1) discard;
+    if (z <= 0 || z < camera_far_depth || z > 1) discard;
 
     float2 coordinates = grid_plane == 0 ? world.xz : grid_plane == 1 ? world.xy : world.yz;
     float2 dx = ddx(coordinates), dy = ddy(coordinates);

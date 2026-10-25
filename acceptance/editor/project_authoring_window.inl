@@ -82,6 +82,8 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
     model(app.build_project());tick(app,2);
     key(app,VK_F8);
     wait([&]{return Access::output_contains(app,L"Project started:");},"Native Run did not start the project process.");
+    wait([&]{return Access::output_contains(app,L"Main camera:") && Access::output_contains(app,L"Project UI published:");},
+        "A camera-less Play did not diagnose its missing camera while publishing the project UI.");
     const auto until=GetTickCount64()+400;while(GetTickCount64()<until) tick(app,1);
     require(Access::project_running(app),"The native game window failed after starting.");
     app.stop_project();wait([&]{return !Access::project_running(app);},"Native project Stop did not finish.");
@@ -102,5 +104,36 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
         }
     require(retained,"Reopening lost the Source component or its authored property.");
     capture(app,output/"project-reopened.png");
+
+    click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::create));
+    click(app,static_cast<ControlKey>(Command::create_camera));
+    const auto camera=app.document().selection().entity;
+    require(model(app.document().main_camera())==atelier::ObjectId{},"Create Camera implicitly selected a main camera.");
+    model(Access::physics_document(app).set_transform(camera,{{0,0,-8},{},{1,1,1}}));tick(app,2);
+    click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
+    click(app,static_cast<ControlKey>(Command::set_main_camera));
+    require(model(app.document().main_camera())==camera,"Set as Main Camera did not select the authored camera.");
+    const auto camera_history=app.document().undo_count();const auto camera_document=model(app.document().serialize());
+    click(app,atelier::editor::menu_key(atelier::editor::CommandGroup::window));
+    click(app,static_cast<ControlKey>(Command::show_scene));
+    click(app,control::viewport_camera);click(app,static_cast<ControlKey>(Command::view_from_camera));
+    require(atelier::math::length(Access::camera_eye(app)-atelier::math::Vector3{0,0,-8})<.001f &&
+        app.document().undo_count()==camera_history && model(app.document().serialize())==camera_document,
+        "View from Camera changed the scene or failed to copy its pose.");
+    model(Access::command(app,Command::show_world_settings));tick(app,2);
+    click(app,atelier::editor::world_control::lighting_tab);
+    const auto* clear=command_tool(app,static_cast<ControlKey>(Command::clear_main_camera));
+    require(clear && clear->enabled,"World Settings did not expose an enabled Clear Main Camera button.");
+    const auto clear_key=clear->key;
+    capture(app,output/"main-camera-selected.png");
+    click(app,clear_key);
+    require(model(app.document().main_camera())==atelier::ObjectId{} && app.document().undo_count()==camera_history+1,
+        "World Settings Clear did not create one author transaction.");
+    clear=command_tool(app,static_cast<ControlKey>(Command::clear_main_camera));
+    require(clear && !clear->enabled,"Clear Main Camera remained enabled for an empty selection.");
+    capture(app,output/"main-camera-cleared.png");
+    key(app,'Z',true);
+    require(model(app.document().main_camera())==camera,"Undo Clear did not restore the selected camera.");
+    Access::mark_saved(app);
     std::puts("Editor project authoring window acceptance: PASS");
 }

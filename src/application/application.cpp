@@ -625,7 +625,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     Result<void> result;
     switch (command) {
     case frame_all:case focus:case reset_camera:case reset_layout:case close_tab:case maximize_pane:case undo:case redo:
-    case add_transform:case remove_transform:case discard_saved_data:
+    case add_transform:case remove_transform:case discard_saved_data:case create_camera:case set_main_camera:case clear_main_camera:case view_from_camera:
     case create_entity:case create_static_mesh:case create_point_light:case create_rectangle_light:case create_directional_light:
     case tool_select:case tool_transform:case tool_move:case tool_rotate:case tool_scale:case pivot_median:case pivot_cursor:
     case snap_grid_01:case snap_grid_02:case snap_grid_05:case snap_grid_1:
@@ -1340,7 +1340,7 @@ bool Application::run_step(renderer::Capture* capture) try {
     auto* frame_capture=capture?capture:capturing_control?&control_capture:nullptr;
     const auto effective_view=control_?control_->view():workspace_.view;
     const auto lighting_focus=camera_.state().target;
-    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements}, scene_bounds,
+    renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements,camera.far_depth}, scene_bounds,
         viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
         viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,camera_cut_ || projection_cut,
         rendering::sky_radiance(effective_view.lit),{lighting_focus.x,lighting_focus.y,lighting_focus.z}};

@@ -1,5 +1,5 @@
-// Shared contract: LH +Y up, row vectors, finite reversed D3D Z: near=1,
-// far/background=0. Depth correspondence is FP32 throughout. All images
+// Shared contract: LH +Y up, row vectors, reversed D3D Z: near=1,
+// background=0. A separate far clip does not renormalize device depth. All images
 // cover the window; lit_viewport selects the scene rectangle in physical pixels.
 // HDR and all temporal signals are scene linear, before display exposure.
 // Motion.xy = previous window UV - current window UV, including sample jitter;
@@ -16,6 +16,7 @@ row_major float4x4 lit_camera_view;
 row_major float4x4 lit_inverse_view_projection;
 row_major float4x4 lit_previous_view_projection;
 row_major float4x4 lit_previous_inverse_view_projection;
+float lit_far_depth; // Geometry clipping only; zero remains the background sentinel.
 float4 lit_environment; // Uniform RGB sky radiance: sky_color * sky_intensity, times the map mean when one is bound.
 float4 lit_sky; // cos and sin of the map yaw, 2^k background storage scale, 1 when a sky map is bound
 float4 lit_sky_radiance; // sky_color * sky_intensity

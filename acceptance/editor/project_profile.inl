@@ -121,7 +121,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         const auto width=viewport.at("receiver_pixel_extent").at(0).get<float>();
         const auto height=viewport.at("receiver_pixel_extent").at(1).get<float>();
         const renderer::detail::SceneFrustum frustum(camera.at("view_matrix").get<std::array<float,16>>(),
-            camera.at("projection_matrix").get<std::array<float,16>>(),width,height);
+            camera.at("projection_matrix").get<std::array<float,16>>(),width,height,camera.at("far_depth").get<float>());
         // The Renderer draws each visible geometry's material parts once per surface pass.
         std::unordered_set<const geometry::Mesh*> drawn;
         std::size_t visible{},visible_triangles{},visible_geometry_parts{};

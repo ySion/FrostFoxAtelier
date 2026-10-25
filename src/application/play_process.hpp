@@ -1,6 +1,5 @@
 #pragma once
 #include "application/play_link.hpp"
-#include "editor/camera.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <chrono>
@@ -20,7 +19,7 @@ public:
     PlayProcess& operator=(const PlayProcess&)=delete;
     Result<void> start(const std::filesystem::path& project,const std::filesystem::path& scene,
         bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false,bool halt=false,
-        const std::optional<editor::CameraState>& camera={},std::unique_ptr<LiveLink>* live=nullptr);
+        std::unique_ptr<LiveLink>* live=nullptr);
     void stop() noexcept;
     void poll();
     void close() noexcept;
