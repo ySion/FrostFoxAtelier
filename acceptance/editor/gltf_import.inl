@@ -247,9 +247,21 @@ void verify_gltf_import() {
     take(editor::write_file(source/"blocked.gltf",fixture.dump()));
     const auto blocked=project.root()/"Content"/"Meshes"/"blocked";
     take(editor::write_file(blocked/"Materials","not a folder"));
-    require(!project.import_mesh(source/"blocked.gltf") && fs::exists(blocked/"Materials") && !fs::exists(blocked/"blocked.gltf") &&
+    fs::create_directory(blocked/"textures");take(project.refresh());
+    const auto before_revision=project.revision();const auto before_mesh=take(project.mesh(key)).mesh;
+    const std::vector<editor::ProjectEntry> before_entries(project.entries().begin(),project.entries().end());
+    const auto before_file=take(editor::read_file(imported/"scene.gltf"));
+    const auto rejected=project.import_mesh(source/"blocked.gltf");
+    require(!rejected && rejected.error().message.starts_with("create_directories:") && rejected.error().message.find("Materials")!=std::string::npos &&
+        take(editor::read_file(blocked/"Materials"))=="not a folder" && !fs::exists(blocked/"blocked.gltf") &&
+        project.revision()==before_revision && std::ranges::equal(project.entries(),before_entries) &&
+        take(project.mesh(key)).mesh==before_mesh && take(editor::read_file(imported/"scene.gltf"))==before_file &&
         std::ranges::none_of(fs::recursive_directory_iterator(blocked),[](const auto& item){return item.is_regular_file() && item.path().filename()!=L"Materials";}),
-        "A failed glTF import left published files behind.");
+        "A failed glTF import changed the accepted catalog/cache/files or left published files behind.");
+    fs::remove(blocked/"Materials");
+    require(take(project.mesh(take(project.import_mesh(source/"blocked.gltf")))).mesh!=nullptr && fs::is_directory(blocked/"Materials"),
+        "A glTF import could not retry after removing its write obstruction.");
+    std::printf("Import write rollback: PASS (catalog/cache/files preserved; retry); failure=%s\n",rejected.error().message.c_str());
 
     // Mesh defaults are resolved at runtime and never written to scenes.
     const auto placed=take(project.mesh(key));editor::Session document;auto& runtime=document.world().runtime();

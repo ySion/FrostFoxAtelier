@@ -43,7 +43,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 | 操作 | 权威入口与行为 |
 | --- | --- |
-| editor.inspect | 默认 `detail: full` 返回完整场景与资源目录，适用于小场景；`summary` 返回状态、历史、相机、显示和最近接受帧，不枚举对象；`objects` 分页发现 Entity/Component 句柄，`object` 读取一个已发现对象的反射属性。full/summary 的 `performance` 共用 World 性能表的有界统计快照 |
+| editor.inspect | 默认 `detail: full` 返回完整场景与资源目录，适用于小场景；`summary` 返回状态、历史、相机、显示和最近接受帧，不枚举对象或资产；`assets` 分页读取资源目录，`objects` 分页发现 Entity/Component 句柄，`object` 读取一个已发现对象的反射属性。full/summary 的 `performance` 共用 World 性能表的有界统计快照 |
 | op.list | 列出编辑器操作符：ID、标题、说明、历史标志和参数 schema，以及 Context 覆盖的 schema。参数 schema 由文档 Runtime 中的参数记录生成（字段、枚举成员、硬边界 minimum/maximum、界面范围 ui_min/ui_max；非补丁式带 default，补丁式标 `"seeded": true`）。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
 | op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`args` 按参数记录严格解码：未知字段、类型不符或越过硬边界都返回 `invalid_request`，不夹值，文档不变；补丁式操作符（`tool.settings`）只改出现的字段。`context` 只在本次调用内替换 `selection {entities, active, object}` 或 `region`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`，参数或 Context 不合法为 `invalid_request`。成功时返回调用后的选择 |
 | view.layout | `layout: fit_scene` / `scene_focus`，沿 World 页同一命令按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
@@ -76,6 +76,22 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。组件目录保留反射参数与材质，组件记录不含 TRS。创建子实体复用 scene.create 和 scene.reparent；没有第二套 create_child 工厂或对象身份。
 
 `editor.inspect` 的对象记录与 `material.inspect` 共享 `type_description` 和 `properties` 输出。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。说明不包含可执行入口，查询不改变场景状态或历史。
+
+### 资产目录分页
+
+```json
+{"op":"editor.inspect","args":{"detail":"assets","limit":64}}
+```
+
+`assets` 只接受 `detail`、`limit`、`cursor`，返回 `detail: assets`、`assets`、`next_cursor`、`document_generation` 和 `project_revision`；外层仍有 `state_token`。条目与 full.assets 的形状及顺序完全一致：先内建网格（key/name/kind，kind 为字符串 `mesh`），再按工程目录路径排序的条目（key/path/kind，kind 为 AssetKind 数值）。目录包括文件夹、Source 和 Config，不只包括可加载资源；没有工程时仍返回内建项。
+
+默认每页 64 项，limit 为 1–256；条目字节预算为 1 MiB，复用 `capabilities.limits.inspect_page_items/inspect_page_bytes`。仅序列化本页，不生成全量 JSON 再截取；成功的非末页至少含一项并推进游标，单项超过预算报 `result_too_large`。`next_cursor: null` 表示结束，否则原样传回 cursor；可调整 limit。游标区分 assets 与 objects 域，绑定实例、文档代际、工程目录 revision 和下一位置，不持有跨请求目录快照。
+
+工程或文档替换（含同工程切场景/重建）、实例或已发布目录 revision 改变时返回 `stale_cursor`，调用方应丢弃已收集页重新查询。普通场景、选择、相机编辑与无变化 Refresh 不使资产游标失效。查询只读最后成功发布的目录，不扫描磁盘、不加载资源、不触发 Refresh；失败 Refresh 不发布半份目录。非法/跨域游标、非法 limit 或对象过滤参数返回 `invalid_request`。
+
+full 仍返回完整 assets，不静默截断；full/summary 不接受分页参数。4 MiB 响应上限、repro 输入文件与 Source 编译限额保持独立，不因工程目录取消项数上限而取消。大工程调用方可先 summary，再逐页读取 assets，并用资源 key 与最新 state_token 沿既有操作编辑。
+
+真实 `editor_control_acceptance` 同时检查无工程内建项、小目录分页与 full 完全一致、超过 10000 项的尾页、游标失效与保留、参数错误、失败 Refresh 及只读性。
 
 ### 大场景对象查询
 

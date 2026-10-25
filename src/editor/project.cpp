@@ -224,7 +224,6 @@ Result<void> Project::refresh() {
         std::vector<std::filesystem::path> roots{"Content","Source","Config"};
         for (const auto& directory:roots) {
             const auto root=platform::windows_file_path(take(resolve(directory)));
-            if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
             entries.push_back({directory,utf8(directory.generic_wstring()),AssetKind::folder});
             for (const auto& entry:std::filesystem::recursive_directory_iterator(root)) {
                 if (entry.is_symlink()) continue;
@@ -232,7 +231,6 @@ Result<void> Project::refresh() {
                 take(resolve(relative));
                 const auto filename=entry.path().filename().wstring();
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp")) continue;
-                if (entries.size()>=10000) return failure("Project exceeds the current 10000-entry catalog limit.");
                 auto kind=entry.is_directory()?AssetKind::folder:is_mesh_path(entry.path())?AssetKind::mesh:
                     entry.path().extension()==L".material"?AssetKind::material:is_texture_path(entry.path())?AssetKind::texture:
                     is_sky_path(entry.path())?AssetKind::sky:

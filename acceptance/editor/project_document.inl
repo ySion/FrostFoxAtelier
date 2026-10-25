@@ -187,17 +187,49 @@ void verify_project_document() {
     const auto orphan=evidence/"Orphan.obj";take(editor::write_file(orphan,take(editor::read_file(external))));
     require(!project.import_mesh(orphan) && !fs::exists(folder/"Content/Meshes/Orphan.obj") &&
         take(editor::read_file(folder/"Content/Meshes/Orphan.obj.asset.json"))==metadata_text,"Import claimed or replaced orphan resource metadata.");
-    // Exercise failure after OBJ and metadata publication, not just preflight.
-    const auto capacity_entries=10000-project.entries().size();
+    {
+        // The orphan is ignored until the import publishes its BMP. Only the final refresh
+        // then reads this unsupported version; a preflight or write failure cannot produce it.
+        const auto source=evidence/"refresh-source",target=folder/"Content/Meshes/Refresh";
+        std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
+        for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
+        take(editor::write_file(source/"color.bmp",bmp));
+        take(editor::write_file(source/"scene.mtl","newmtl red\nmap_Kd color.bmp\n"));
+        take(editor::write_file(source/"Refresh.obj","mtllib scene.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl red\nf 1/1 2/2 3/3\n"));
+        auto invalid_metadata=nlohmann::json::parse(metadata_text);invalid_metadata["version"]=2;
+        const auto broken=invalid_metadata.dump();take(editor::write_file(target/"color.bmp.asset.json",broken));
+        take(project.refresh());const auto revision=project.revision();
+        const std::vector<editor::ProjectEntry> entries(project.entries().begin(),project.entries().end());
+        const auto rejected=project.import_mesh(source/"Refresh.obj");
+        std::printf("Final-refresh fixture import result: %s\n",rejected?"accepted":rejected.error().message.c_str());
+        require(!rejected && rejected.error().message=="Unsupported resource metadata version.",
+            "Import did not reach the final refresh's newly published BMP metadata.");
+        require(project.revision()==revision && std::ranges::equal(project.entries(),entries) &&
+            take(project.mesh(resource)).mesh==original_mesh && take(editor::read_file(metadata))==metadata_text &&
+            take(editor::read_file(target/"color.bmp.asset.json"))==broken &&
+            std::ranges::all_of(fs::directory_iterator(target),[](const auto& file){return file.path().filename()==L"color.bmp.asset.json";}),
+            "Final-refresh rollback changed the accepted catalog/cache or kept owned files.");
+        fs::remove(target/"color.bmp.asset.json");
+        require(take(project.mesh(take(project.import_mesh(source/"Refresh.obj")))).mesh!=nullptr &&
+            fs::exists(target/"Refresh.obj.asset.json") && fs::exists(target/"scene.mtl") && take(editor::read_file(target/"color.bmp"))==bmp,
+            "Final-refresh import could not retry after metadata repair.");
+        std::puts("Import final-refresh rollback: PASS (unsupported BMP metadata; initial refresh accepted; catalog/cache/files preserved; retry)");
+    }
+    // The real catalogue, including its tail and imports, is not capped at 10000 entries.
+    const auto capacity_entries=10005-project.entries().size();
     for (std::size_t i=0;i<capacity_entries;++i) fs::create_directory(folder/"Source"/("Limit"+std::to_string(i)));
     take(project.refresh());const auto full_revision=project.revision();
-    require(project.entries().size()==10000,"Catalog capacity fixture is not at the admission boundary.");
+    require(project.entries().size()==10005 && project.entry(project.entries().back().key)==&project.entries().back(),
+        "A large catalog lost its tail entry.");
+    take(project.refresh());
+    require(project.revision()==full_revision && take(project.mesh(resource)).mesh==original_mesh,
+        "Unchanged large catalog refresh replaced the revision or resource cache.");
     const auto capacity_mesh=evidence/"Capacity.obj";take(editor::write_file(capacity_mesh,take(editor::read_file(external))));
-    require(!project.import_mesh(capacity_mesh) && !fs::exists(folder/"Content/Meshes/Capacity.obj") &&
-        !fs::exists(folder/"Content/Meshes/Capacity.obj.asset.json") && project.revision()==full_revision &&
-        take(project.mesh(resource)).mesh==original_mesh,"Post-publication import failure did not roll back owned files and retain the accepted catalog.");
+    require(take(project.mesh(take(project.import_mesh(capacity_mesh)))).mesh!=nullptr && project.entries().size()==10006,
+        "A large catalog rejected an import or lost its published entry.");
+    std::puts("Large project catalog: PASS (10005 entries, tail lookup, unchanged refresh/cache, import to 10006)");
     for (std::size_t i=0;i<capacity_entries;++i) fs::remove(folder/"Source"/("Limit"+std::to_string(i)));
-    require(take(project.mesh(take(project.import_mesh(capacity_mesh)))).mesh!=nullptr,"Import retry failed after capacity was restored.");
+    take(project.refresh());
     const auto original=take(editor::read_file(folder/"Content/Scenes/Main.scene"));
     fs::create_directory(folder/"Content/Scenes/blocked.scene");
     require(!editor::write_file(folder/"Content/Scenes/blocked.scene",saved),"Saving over a directory did not fail.");

@@ -156,6 +156,117 @@ void verify_operators(Driver& d,const std::string& entity) {
     d.op("scene.select",selection(entity));
     require(d.inspect().at("selection")==Json::array({entity}),"scene.select did not restore the selection");
 }
+void verify_asset_directory(Driver& d,HWND window,const std::filesystem::path& project,const Json& capabilities) {
+    namespace fs=std::filesystem;
+    const auto maximum=capabilities.at("limits").at("inspect_page_items").get<unsigned>();
+    const auto budget=capabilities.at("limits").at("inspect_page_bytes").get<std::size_t>();
+    // Refresh is the existing F5 command, not a second Control operation.
+    const auto refresh=[&] {
+        require(window!=nullptr,"Refresh requires the real editor window");
+        SendMessageW(window,WM_KEYDOWN,VK_F5,1);SendMessageW(window,WM_KEYUP,VK_F5,1);
+        unsigned stable{};
+        for(unsigned i=0;i<200 && stable<5;++i) {
+            const auto before=d.token;std::this_thread::sleep_for(30ms);d.ok("editor.inspect",{{"detail","summary"}});
+            stable=before==d.token?stable+1:0;
+        }
+        require(stable==5,"Refresh did not settle");
+    };
+    const auto saved=sha256_file(project/"Content/Scenes/Main.scene");
+    const auto full=d.inspect();const auto token=d.token;
+    const auto page=[&](Json args=Json::object()) {args["detail"]="assets";return d.ok("editor.inspect",std::move(args));};
+    const auto collect=[&](unsigned limit,const Json& expected) {
+        Json actual=Json::array(),cursor=nullptr;unsigned pages{};
+        do {
+            Json args{{"limit",limit}};if(!cursor.is_null()) args["cursor"]=cursor;
+            const auto result=page(args);const auto& entries=result.at("assets");
+            std::size_t bytes{};for(const auto& entry:entries) {bytes+=entry.dump().size()+1;actual.push_back(entry);}
+            require(entries.size()<=limit && bytes<=budget && actual.size()<=expected.size(),"Assets page exceeded its item/byte bounds");
+            const auto next=result.at("next_cursor");
+            require(next.is_null() || (!entries.empty() && next!=cursor),"Assets pagination did not advance");
+            cursor=next;require(++pages<=expected.size()+1,"Assets pagination did not terminate");
+        } while(!cursor.is_null());
+        require(actual==expected,"Assets pages diverged from full.assets order, shape or tail");
+        return pages;
+    };
+    collect(1,full.at("assets"));collect(maximum,full.at("assets"));
+    const auto first=page({{"limit",1}}),cursor=first.at("next_cursor");
+    require(!cursor.is_null() && first.at("detail")=="assets","Small project did not return an assets continuation");
+    const auto continuation=page({{"limit",1},{"cursor",cursor}});
+    for(const auto& limit:Json::array({0,-1,257,1.5,"2",nullptr}))
+        error(d.call("editor.inspect",{{"detail","assets"},{"limit",limit}}),"invalid_request");
+    for(const auto* field:{"entity_name","type","object"})
+        error(d.call("editor.inspect",{{"detail","assets"},{field,"not-an-assets-filter"}}),"invalid_request");
+    for(const auto& malformed:Json::array({nullptr,Json::object(),"not-a-cursor"}))
+        error(d.call("editor.inspect",{{"detail","assets"},{"cursor",malformed}}),"invalid_request");
+    auto foreign=cursor;foreign["domain"]="objects";
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",foreign}}),"invalid_request");
+    foreign=cursor;foreign["index"]=full.at("assets").size()+1;
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",foreign}}),"invalid_request");
+    foreign=cursor;foreign["index"]=-1;
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",foreign}}),"invalid_request");
+    for(const auto* field:{"instance","document","project_revision"}) {
+        foreign=cursor;foreign[field]=field==std::string_view("instance")?Json("other-instance"):Json(cursor.at(field).get<std::uint64_t>()+1);
+        error(d.call("editor.inspect",{{"detail","assets"},{"cursor",foreign}}),"stale_cursor");
+    }
+    error(d.call("editor.inspect",{{"detail","objects"},{"cursor",cursor}}),"invalid_request");
+    for(const auto* detail:{"full","summary"}) error(d.call("editor.inspect",{{"detail",detail},{"limit",1}}),"invalid_request");
+    require(d.token==token && d.inspect().at("entities")==full.at("entities"),"Asset queries or rejected parameters mutated the document");
+    d.ok("scene.create",{{"kind","mesh"}});const auto created=d.inspect();
+    const auto object_cursor=d.ok("editor.inspect",{{"detail","objects"},{"limit",1}}).at("next_cursor");
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",object_cursor}}),"invalid_request");
+    d.ok("scene.rename",{{"object",created.at("entities")[0].at("handle")},{"name","Assets cursor edit"}});
+    d.op("scene.select",selection(created.at("entities")[0].at("handle").get<std::string>()));
+    d.ok("camera.look_at",{{"eye",{3,4,-6}},{"target",{0,0,0}}});
+    require(page({{"limit",1},{"cursor",cursor}})==continuation,"Ordinary scene/selection/camera edits invalidated assets cursor");
+    d.op("edit.undo");d.op("edit.undo");d.ok("camera.set",{{"state",full.at("camera")}});
+    refresh();
+    require(page({{"limit",1},{"cursor",cursor}})==continuation,"Unchanged refresh invalidated assets cursor");
+    // Inspection must not scan the disk, decode a new asset, or publish a failed refresh.
+    write(project/"Content/bad.bmp","not decoded by catalog");write(project/"Content/bad.bmp.asset.json","{broken");
+    require(page({{"limit",1},{"cursor",cursor}})==continuation,"Inspection refreshed the catalog");
+    refresh();
+    require(page({{"limit",1},{"cursor",cursor}})==continuation,"Failed refresh replaced the published directory");
+    fs::remove(project/"Content/bad.bmp.asset.json");fs::remove(project/"Content/bad.bmp");
+    write(project/"Content/new.txt","catalog change");refresh();
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",cursor}}),"stale_cursor");
+    const auto changed_cursor=page({{"limit",1}}).at("next_cursor");
+    d.ok("scene.open",{{"path","Content/Scenes/Main.scene"}});
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",changed_cursor}}),"stale_cursor");
+    const auto scene_cursor=page({{"limit",1}}).at("next_cursor");
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    error(d.call("editor.inspect",{{"detail","assets"},{"cursor",scene_cursor}}),"stale_cursor");
+    // A real catalog beyond the old limit; page through its final item, not just its first page.
+    const auto large=project/"Content/Catalog";fs::create_directory(large);
+    for(unsigned i=0;i<10005;++i) fs::create_directory(large/("Entry"+std::to_string(i)));
+    refresh();const auto expanded=d.inspect();const auto expanded_token=d.token;
+    require(expanded.at("assets").size()>10000 && page().at("assets").size()==64,"Large asset catalog/default page is incomplete");
+    const auto pages=collect(maximum,expanded.at("assets"));
+    require(d.token==expanded_token && !expanded.at("dirty").get<bool>(),"Large directory inspection mutated state");
+    write(project.parent_path()/"assets-pagination.json",Json{{"status","passed"},{"count",expanded.at("assets").size()},{"pages",pages},
+        {"first",expanded.at("assets").front()},{"last",expanded.at("assets").back()},{"sample_page",first}}.dump(2));
+    fs::remove_all(large);fs::remove(project/"Content/new.txt");refresh();
+    // Real long paths exceed the full response limit and hit the byte budget before 256 items.
+    auto expected=full.at("assets");fs::path deep="Content/Wide";
+    const auto add_directory=[&](const fs::path& path) {
+        fs::create_directories(atelier::platform::windows_file_path(project/path));
+        const auto key=utf8(path.generic_wstring());expected.push_back({{"key",key},{"path",key},{"kind",0}});
+    };
+    add_directory(deep);
+    for(unsigned i=0;i<30;++i) {deep/=std::string(160,'a');add_directory(deep);}
+    for(unsigned i=0;i<450;++i) add_directory(deep/("Leaf"+std::to_string(i)));
+    std::stable_sort(expected.begin(),expected.end(),[](const Json& a,const Json& b) {
+        if(!a.contains("path") || !b.contains("path")) return !a.contains("path") && b.contains("path");
+        return fs::path(wide(a.at("path").get<std::string>()))<fs::path(wide(b.at("path").get<std::string>()));
+    });
+    refresh();error(d.call("editor.inspect"),"result_too_large");
+    const auto byte_pages=collect(maximum,expected);
+    require(byte_pages>(expected.size()+maximum-1)/maximum,"Long-path pagination did not exercise the byte budget");
+    fs::remove_all(atelier::platform::windows_file_path(project/"Content/Wide"));refresh();
+    require(d.inspect().at("assets")==full.at("assets") && sha256_file(project/"Content/Scenes/Main.scene")==saved,
+        "Asset pagination or fixture cleanup changed the original saved document/catalog");
+    std::cout<<"Assets pagination E2E: PASS ("<<expanded.at("assets").size()<<" entries, "<<pages<<" pages; "<<byte_pages
+        <<" byte-limited pages; full equality/oversize, cursor domains/invalidation, read-only)\n";
+}
 void verify_option_descriptions(const Json& capabilities) {
     const auto& options=capabilities.at("display_options");
     for(const auto& [name,option]:options.items()) {
@@ -795,7 +906,7 @@ int wmain(int argc,wchar_t** argv) {
         }
         const auto directory=root/"Control";const auto project=root/"Project";
         project_fixture(project);
-        auto arguments=L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate";
+        auto arguments=L"--control-directory "+quote(directory)+L" --no-activate";
         if(!descriptions) arguments+=L" --gpu-validation";
         Process editor(argv[1],std::move(arguments),root/"editor.log");
         const auto descriptor=discover_editor(editor,directory);
@@ -806,6 +917,11 @@ int wmain(int argc,wchar_t** argv) {
         }
         Driver d(descriptor);const auto caps=d.ok("capabilities");require(caps.at("operations").size()>=20,"Capabilities are incomplete");
         verify_option_descriptions(caps);
+        const auto empty=d.settle();const auto builtins=d.ok("editor.inspect",{{"detail","assets"}});
+        require(empty.at("project")=="" && builtins.at("assets")==empty.at("assets") && builtins.at("next_cursor").is_null(),
+            "No-project assets query did not return the builtin catalog");
+        d.ok("project.open",{{"path",utf8(project.wstring())}});d.settle();
+        verify_asset_directory(d,editor.window(),project,caps);
         auto initial=d.inspect();unsigned stable{};
         for(unsigned i=0;i<200 && stable<5;++i) {
             const auto token=d.token;std::this_thread::sleep_for(30ms);initial=d.inspect();

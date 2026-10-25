@@ -203,8 +203,8 @@ const std::vector<Operation>& operations() {
         {"capabilities","Discover operations, arguments, limits and display options",false,{},{}},
         {"op.list","List editor operators: identity, flags and parameter schema; the context override schema",false,{},{}},
         {"op.call","Call one editor operator; context replaces selection or region for this call only",true,{{"id",str},{"args",obj},{"context",obj}},{"id"}},
-        {"editor.inspect","Read editor state, a bounded object directory, or one discovered object",false,
-            {{"detail",{{"enum",{"full","summary","objects","object"}}}},{"object",str},{"entity_name",str},{"type",str},
+        {"editor.inspect","Read editor state, bounded asset/object directories, or one discovered object",false,
+            {{"detail",{{"enum",{"full","summary","assets","objects","object"}}}},{"object",str},{"entity_name",str},{"type",str},
              {"limit",{{"type","integer"},{"minimum",1},{"maximum",inspect_page_items}}},{"cursor",obj}},{}},
         {"project.open","Open an existing project; refuses unsaved scene or source drafts",true,{{"path",str}},{"path"}},
         {"scene.open","Open a project-relative scene; refuses unsaved scene",true,{{"path",str}},{"path"}},
@@ -501,6 +501,49 @@ struct EditorControl::Impl {
         }
         return result;
     }
+    // Full and paged inspection share the existing builtin-then-project entry contract.
+    Json asset_json(std::size_t index) const {
+        const auto builtins=editor::mesh_assets();
+        if(index<builtins.size()) {
+            const auto& asset=builtins[index];return {{"key",asset.key},{"name",control::utf8(asset.name)},{"kind","mesh"}};
+        }
+        const auto& entry=app.project_->entries()[index-builtins.size()];
+        return {{"key",entry.key},{"path",control::utf8(entry.path.generic_wstring())},{"kind",static_cast<unsigned>(entry.kind)}};
+    }
+    Json inspect_assets(const Json& args) {
+        control::fields(args,{"detail","limit","cursor"});
+        const auto limit=args.contains("limit")?integer(args.at("limit"),1,inspect_page_items):64u;
+        const auto revision=app.project_?app.project_->revision():0;
+        const auto instance=server.identity().at("instance_id");
+        const auto count=editor::mesh_assets().size()+(app.project_?app.project_->entries().size():0);
+        std::size_t index{};
+        if(args.contains("cursor")) {
+            const auto& cursor=args.at("cursor");
+            control::fields(cursor,{"domain","instance","document","project_revision","index"});
+            if(cursor.at("domain")!="assets") throw Failure("invalid_request","Expected an assets cursor");
+            for(const auto* field:{"document","project_revision","index"})
+                if(!cursor.at(field).is_number_integer() || cursor.at(field)<0)
+                    throw Failure("invalid_request","Expected an unsigned cursor integer");
+            if(text(cursor.at("instance"))!=instance.get_ref<const std::string&>() || cursor.at("document")!=document_generation || cursor.at("project_revision")!=revision)
+                throw Failure("stale_cursor","The asset directory changed; restart without a cursor");
+            const auto position=cursor.at("index").get<std::uint64_t>();
+            if(position>count) throw Failure("invalid_request","Asset directory cursor is outside the catalog");
+            index=static_cast<std::size_t>(position);
+        }
+        Json result{{"detail","assets"},{"document_generation",document_generation},{"project_revision",revision},
+            {"assets",Json::array()},{"next_cursor",nullptr}};
+        auto& entries=result["assets"];std::size_t bytes{};
+        for(;index<count;++index) {
+            if(entries.size()==limit) break;
+            auto entry=asset_json(index);const auto size=entry.dump().size()+1;
+            if(size>inspect_page_bytes) throw Failure("result_too_large","One asset directory entry exceeds the page byte limit");
+            if(size>inspect_page_bytes-bytes) break;
+            bytes+=size;entries.push_back(std::move(entry));
+        }
+        if(index<count) result["next_cursor"]={{"domain","assets"},{"instance",instance},{"document",document_generation},
+            {"project_revision",revision},{"index",index}};
+        return result;
+    }
     Json inspect_objects(const Json& args) {
         control::fields(args,{"detail","entity_name","type","limit","cursor"});
         const auto limit=args.contains("limit")?integer(args.at("limit"),1,inspect_page_items):64u;
@@ -580,8 +623,8 @@ struct EditorControl::Impl {
         result["inspected_object"]=handle(app.document_->selection().object);
         result["dirty_materials"]=app.document_->dirty_materials();
         for(const auto& type:take(app.document_->component_types())) result["component_types"].push_back(type.name);
-        for(const auto& asset:editor::mesh_assets()) result["assets"].push_back({{"key",asset.key},{"name",control::utf8(asset.name)},{"kind","mesh"}});
-        if(app.project_) for(const auto& entry:app.project_->entries()) result["assets"].push_back({{"key",entry.key},{"path",control::utf8(entry.path.generic_wstring())},{"kind",static_cast<unsigned>(entry.kind)}});
+        const auto count=editor::mesh_assets().size()+(app.project_?app.project_->entries().size():0);
+        for(std::size_t i=0;i<count;++i) result["assets"].push_back(asset_json(i));
         return result;
     }
     Job& new_job(const std::string& id,const std::shared_ptr<control::Peer>& peer) {
@@ -763,6 +806,7 @@ struct EditorControl::Impl {
         if(op=="op.list") return operator_list();
         if(op=="editor.inspect") {
             const auto detail=args.contains("detail")?text(args.at("detail")):std::string{"full"};
+            if(detail=="assets") return inspect_assets(args);
             if(detail=="objects") return inspect_objects(args);
             if(detail=="object") {
                 control::fields(args,{"detail","object"});
