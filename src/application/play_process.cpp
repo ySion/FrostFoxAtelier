@@ -1,7 +1,6 @@
 #include "application/play_process.hpp"
 #include <array>
 #include <algorithm>
-#include <charconv>
 #include <utility>
 #include <vector>
 
@@ -26,7 +25,7 @@ struct Handle {
 PlayProcess::~PlayProcess(){close();}
 Result<void> PlayProcess::start(const std::filesystem::path& project,const std::filesystem::path& scene,
     bool headless,std::uint64_t frames,const std::filesystem::path& report,bool preview_ui,bool halt,
-    const std::optional<editor::CameraState>& camera,std::unique_ptr<LiveLink>* live) {
+    std::unique_ptr<LiveLink>* live) {
     if (running()) return failure("A project is already running",ERROR_BUSY);
     exit_code_.reset();stopping_=forced_=false;pending_output_.clear();
     SECURITY_ATTRIBUTES security{sizeof(security),nullptr,TRUE};
@@ -57,13 +56,6 @@ Result<void> PlayProcess::start(const std::filesystem::path& project,const std::
     if (!report.empty()) command+=L" --report "+argument(report.wstring());
     if (live) command+=L" --live-channel "+std::to_wstring(reinterpret_cast<std::uintptr_t>(from_editor.value))+
         L" "+std::to_wstring(reinterpret_cast<std::uintptr_t>(to_editor.value));
-    if (camera) {
-        command+=L" --camera "+std::to_wstring(static_cast<unsigned>(camera->view));
-        for (const float value:{camera->target.x,camera->target.y,camera->target.z,camera->yaw,camera->pitch,camera->distance}) {
-            std::array<char,32> text{};const auto written=std::to_chars(text.data(),text.data()+text.size(),value).ptr;
-            command+=L',';command.append(text.data(),written);
-        }
-    }
     SIZE_T bytes{};InitializeProcThreadAttributeList(nullptr,1,0,&bytes);
     std::vector<std::byte> attributes(bytes);auto* list=reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     if (!InitializeProcThreadAttributeList(list,1,0,&bytes)) return failure("Cannot initialize run handle inheritance");

@@ -24,6 +24,7 @@ SceneOutput main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
     Instance instance = instances[index];
     SceneOutput o;
     o.position = raster_position(vertex.position,instance.world,scene_view_projection);
+    o.far_clip = o.position.z-camera_far_depth*o.position.w;
     float3 normal = display.x == 1 ? face.face_normal : vertex.normal;
     o.normal = normal.x * instance.normal_x + normal.y * instance.normal_y + normal.z * instance.normal_z;
     o.tangent=float4(material_transform_tangent(vertex.tangent.xyz,instance.world),vertex.tangent.w*instance.tangent_sign);

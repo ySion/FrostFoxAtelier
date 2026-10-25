@@ -99,6 +99,71 @@ ObjectId Session::environment() const {
     const auto found=world_.query(presentation_types_.environment_component);
     return found && !found->empty()?found->front():ObjectId{};
 }
+Result<ObjectId> Session::main_camera() const {
+    const auto existing=environment();if(existing==ObjectId{}) return ObjectId{};
+    auto field=runtime_.find_field(presentation_types_.environment_component,"main_camera");
+    if(!field) return std::unexpected(field.error());
+    auto value=runtime_.read_reference(existing,*field);if(!value) return std::unexpected(value.error());
+    return value->id();
+}
+Result<void> Session::set_main_camera(ObjectId target) {
+    if(editing()) return invalid("Finish the current edit before changing the main camera.");
+    if(world_.running() || world_.closed()) return invalid("Main camera authoring requires an open, stopped document.");
+    auto reference=runtime_.null_reference(types_.entity,ValueForm::weak_reference);
+    if(!reference) return std::unexpected(reference.error());
+    if(target!=ObjectId{}) {
+        if(auto ready=admit_entity_edit(target);!ready) return ready;
+        auto cameras=world_.members(presentation_.cameras());if(!cameras) return std::unexpected(cameras.error());
+        if(std::ranges::count(*cameras,target,&world::CapabilityMember::entity)!=1)
+            return invalid("Set as Main Camera requires an Entity with exactly one CameraComponent.");
+        auto held=runtime_.hold(target,types_.entity);if(!held) return std::unexpected(held.error());
+        reference=runtime_.observe(held->reference());if(!reference) return std::unexpected(reference.error());
+    }
+    auto field=runtime_.find_field(presentation_types_.environment_component,"main_camera");
+    if(!field) return std::unexpected(field.error());
+    if(const auto existing=environment();existing!=ObjectId{}) {
+        auto owner=admit_property_edit(existing);if(!owner) return std::unexpected(owner.error());
+        auto before=runtime_.read_reference(existing,*field);if(!before) return std::unexpected(before.error());
+        if(*before==*reference && !has_retained(existing)) return {};
+        auto held=runtime_.hold(existing);if(!held) return std::unexpected(held.error());
+        ReferenceFieldChange change{std::move(*held),*owner,{*field},*before,*reference};
+        if(auto written=apply_reference(change,true);!written) return written;
+        remember(std::move(change));return {};
+    }
+    if(target==ObjectId{}) return {};
+    auto created=create_environment({},{});if(!created) return std::unexpected(created.error());
+    auto parts=world::components(runtime_,created->id());if(!parts) return std::unexpected(parts.error());
+    if(auto written=runtime_.write_reference(parts->front().id(),*field,*reference);!written) return written;
+    EntityChange change;change.added=true;change.removals.emplace_back().root=std::move(*created);
+    const auto id=change.removals.front().id();names_.emplace(id,L"Environment");
+    auto attached=world_.attach(id);
+    if(!attached) {names_.erase(id);return std::unexpected(attached.error());}
+    remember(std::move(change));
+    if(attached->notification_error) return std::unexpected(*attached->notification_error);
+    return {};
+}
+Result<void> Session::apply_reference(const ReferenceFieldChange& change,bool forward) {
+    auto owner=admit_property_edit(change.root.id());if(!owner) return std::unexpected(owner.error());
+    if(*owner!=change.entity) return invalid("The reference field's owning Entity changed.");
+    return runtime_.write_reference(change.root.id(),change.path,forward?change.after:change.before);
+}
+Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_removal(std::span<const ObjectId> targets) {
+    auto selected=main_camera();if(!selected) return std::unexpected(selected.error());
+    if(!world_.contains(*selected)) return std::nullopt;
+    for(auto node=*selected;node!=ObjectId{};) {
+        if(std::ranges::find(targets,node)!=targets.end()) {
+            const auto existing=environment();
+            auto owner=admit_property_edit(existing);if(!owner) return std::unexpected(owner.error());
+            auto field=runtime_.find_field(presentation_types_.environment_component,"main_camera");if(!field) return std::unexpected(field.error());
+            auto before=runtime_.read_reference(existing,*field);if(!before) return std::unexpected(before.error());
+            auto after=runtime_.null_reference(types_.entity,ValueForm::weak_reference);if(!after) return std::unexpected(after.error());
+            auto held=runtime_.hold(existing);if(!held) return std::unexpected(held.error());
+            return ReferenceFieldChange{std::move(*held),*owner,{*field},*before,*after};
+        }
+        auto parent=world::parent_entity(runtime_,node);if(!parent) return std::unexpected(parent.error());node=*parent;
+    }
+    return std::nullopt;
+}
 Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
     auto current=presentation_.environment();if(!current) return std::unexpected(current.error());
     renderer::ViewSettings before,after;
@@ -374,6 +439,16 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind,math::V
     const auto label=kind==presentation::LightKind::point?L"Point Light":kind==presentation::LightKind::rectangle?L"Rectangle Light":L"Directional Light";
     return attach_created(std::move(*entity),label);
 }
+Result<world::Commit> Session::create_camera(math::Vector3 position) {
+    auto cancelled=cancel_edit();if(!cancelled) return std::unexpected(cancelled.error());
+    auto members=world_.members();if(!members) return std::unexpected(members.error());
+    if(members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
+    auto entity=world::create_entity(runtime_);if(!entity) return std::unexpected(entity.error());
+    auto camera=world::create_component(runtime_,presentation_types_.camera_component);if(!camera) return std::unexpected(camera.error());
+    if(auto positioned=world_.set_transform(entity->id(),{position,{},{1,1,1}});!positioned) return std::unexpected(positioned.error());
+    auto composed=world_.attach_components(entity->id(),std::array{world::Attachment{camera->id()}});if(!composed) return composed;
+    return attach_created(std::move(*entity),L"Camera");
+}
 Result<world::Commit> Session::attach_created(ObjectRoot root,std::wstring_view label) {
     EntityChange change;
     change.added=true; change.removals.emplace_back().root=std::move(root);
@@ -402,9 +477,15 @@ Result<world::Commit> Session::erase_entities() {
         while(parent!=ObjectId{}) {if(is_selected(parent)) {included=true;break;}parent=take(world::parent_entity(runtime_,parent));}
         if(!included) targets.push_back(entity);
     }
+    auto clear=main_camera_removal(targets);if(!clear) return std::unexpected(clear.error());
+    if(*clear) if(auto written=apply_reference(**clear,true);!written) return std::unexpected(written.error());
     auto removed=world_.detach_batch(targets);
-    if(!removed) return std::unexpected(removed.error());
+    if(!removed) {
+        if(*clear) if(auto restored=apply_reference(**clear,false);!restored) return std::unexpected(restored.error());
+        return std::unexpected(removed.error());
+    }
     EntityChange change;
+    change.cleared_camera=std::move(*clear);
     change.removals=std::move(*removed);
     world::Commit result;
     for (auto& removal:change.removals) {
@@ -865,6 +946,11 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             if (!written) return std::unexpected(written.error());
             set_selection({item.entity,item.root.id()});
             return world::Commit{true, {}};
+        } else if constexpr (std::is_same_v<T, ReferenceFieldChange>) {
+            auto written=apply_reference(item,forward);
+            if(!written) return std::unexpected(written.error());
+            set_selection({item.entity,item.root.id()});
+            return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, TransformChange>) {
             std::vector<world::Trs> values;values.reserve(item.entries.size());
             for(const auto& entry:item.entries) values.push_back(forward?entry.after:entry.before);
@@ -919,6 +1005,8 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             if (item.added == forward) {
                 auto restored=world_.restore(item.removals);
                 if(!restored) return std::unexpected(restored.error());
+                if(item.cleared_camera)
+                    if(auto written=apply_reference(*item.cleared_camera,false);!written) return std::unexpected(written.error());
                 merge(*restored);
                 std::vector<ObjectId> restored_ids;
                 for(const auto& removal:item.removals) restored_ids.push_back(removal.id());
@@ -930,8 +1018,14 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             }
             std::vector<ObjectId> targets;
             for(const auto& removal:item.removals) targets.push_back(removal.id());
+            if(item.cleared_camera)
+                if(auto written=apply_reference(*item.cleared_camera,true);!written) return std::unexpected(written.error());
             auto removed=world_.detach_batch(targets);
-            if(!removed) return std::unexpected(removed.error());
+            if(!removed) {
+                if(item.cleared_camera)
+                    if(auto restored=apply_reference(*item.cleared_camera,false);!restored) return std::unexpected(restored.error());
+                return std::unexpected(removed.error());
+            }
             item.removals=std::move(*removed);
             for(auto& removal:item.removals) merge(removal.commit);
             if(result.changed) for(const auto target:targets) forget_entity(target);

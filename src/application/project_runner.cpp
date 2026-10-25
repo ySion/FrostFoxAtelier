@@ -9,10 +9,8 @@
 #include "editor/performance.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
-#include "editor/camera.hpp"
 #include "renderer/renderer.hpp"
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <format>
@@ -45,22 +43,6 @@ std::uint64_t number(std::wstring_view text) {
         value=value*10+static_cast<unsigned>(ch-L'0');
     }
     return value;
-}
-// "view,target-x,target-y,target-z,yaw,pitch,distance", written by PlayProcess with round-trip floats.
-editor::CameraState camera_state(std::wstring_view text) {
-    std::string narrow;for(const auto ch:text) {if(ch>0x7f) throw std::runtime_error("Invalid run camera.");narrow+=static_cast<char>(ch);}
-    const char* at=narrow.data();const char* const end=at+narrow.size();
-    const auto field=[&](auto& value,bool last) {
-        const auto [next,error]=std::from_chars(at,end,value);
-        if(error!=std::errc{} || (last?next!=end:next==end || *next!=',')) throw std::runtime_error("Invalid run camera.");
-        at=last?next:next+1;
-    };
-    unsigned view{};editor::CameraState state;field(view,false);
-    field(state.target.x,false);field(state.target.y,false);field(state.target.z,false);
-    field(state.yaw,false);field(state.pitch,false);field(state.distance,true);
-    if(view>static_cast<unsigned>(editor::CameraView::left)) throw std::runtime_error("Invalid run camera.");
-    state.view=static_cast<editor::CameraView>(view);
-    return state;
 }
 // The Play report in Project Output: frame statistics of the last window, the
 // means of the top-level phases and any timing structure errors of the run.
@@ -101,7 +83,6 @@ int run_project_command(std::span<wchar_t*> arguments) {
             if(option==L"--scene-snapshot") options.scene_snapshot=arguments[i];
             else if(option==L"--report") options.report=arguments[i];
             else if(option==L"--frames") options.frames=number(arguments[i]);
-            else if(option==L"--camera") options.camera=camera_state(arguments[i]);
             else if(option==L"--stop-event") options.stop_event=reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));
             else throw std::runtime_error("Unknown project run option.");
         }
@@ -181,21 +162,9 @@ int run_project(const RunOptions& options) {
         };
         if(project_ui.configured()) {std::printf("Project UI evaluating\n");std::fflush(stdout);}
         SceneSnapshot scene;
-        editor::Camera camera;std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
-        // Play from the editor opens on the editor's view. A standalone run frames the
-        // authored mesh centers once; large collision floors should not force a tiny
-        // view of the moving Entities. Navigation stays a host concern.
-        const auto initial=take(document.presentation().render_items());
-        if(options.camera) {
-            if(!camera.set_state(*options.camera)) throw std::runtime_error("Invalid run camera.");
-        } else if(!initial.empty()) {
-            math::Vector3 low{initial.front().world.elements[12],initial.front().world.elements[13],initial.front().world.elements[14]},high=low;
-            for(const auto& item:initial) for(unsigned axis=0;axis<3;++axis) {
-                low[axis]=std::min(low[axis],item.world.elements[12+axis]);high[axis]=std::max(high[axis],item.world.elements[12+axis]);
-            }
-            const auto target=(low+high)*.5f;const auto size=std::max({high.x-low.x,high.y-low.y,high.z-low.z,4.f});
-            static_cast<void>(camera.look_at(target+math::Vector3{size*1.3f,size,size*-1.6f},target));
-        }
+        std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
+        std::optional<atelier::presentation::CameraSnapshot> accepted_camera;
+        std::string camera_error;
         auto previous=std::chrono::steady_clock::now();auto last_report=loaded.build;std::string ui_error;
         RenderClock lighting_clock;LitFallback lit_fallback;std::string render_failure;
         timing::Recorder recorder;editor::FramePerformance performance;
@@ -245,23 +214,56 @@ int run_project(const RunOptions& options) {
             }
             if(started && !options.preview_ui) {auto updated=document.update(dt);report_diagnostics();take(std::move(updated));}
             {timing::Scope collecting{phases::gc};take(document.collect_step());}
+            // Reference writes do not change World revision. Resolve after every update,
+            // including its late flush; only value snapshots survive this boundary.
+            std::optional<atelier::presentation::CameraSnapshot> camera;
+            renderer::Camera matrices;
+            renderer::ViewSettings view;
+            std::array<float,3> focus{};
+            std::string unavailable;
+            if(!options.preview_ui) {
+                timing::Scope snapshot{phases::scene};
+                auto selected=document.presentation().main_camera();
+                if(!selected) unavailable=selected.error().message;
+                else {
+                    auto projected=selected->matrices(static_cast<float>(std::max(extent.width,1u))/std::max(extent.height,1u));
+                    auto environment=document.presentation().environment();
+                    if(!projected) unavailable=projected.error().message;
+                    else if(!environment) unavailable=environment.error().message;
+                    else {
+                        focus={selected->position.x,selected->position.y,selected->position.z};
+                        static_cast<rendering::SceneLightingSettings&>(view.lit)=*environment;
+                        const auto* invalid=rendering::scene_lighting_focus_error(view.lit,focus);
+                        if(!invalid) invalid=renderer::probe_focus_error(view.lit,focus);
+                        if(invalid) unavailable=invalid;
+                        else {camera=*selected;matrices={projected->view.elements,projected->projection.elements,projected->far_depth};view.shading=renderer::Shading::scene_lit;}
+                    }
+                }
+                report_diagnostics();
+            }
+            if(!camera) {accepted_camera.reset();lighting_clock.reset();focus={};view={};}
+            if(unavailable!=camera_error) {
+                camera_error=std::move(unavailable);
+                if(!camera_error.empty()) {std::printf("Main camera: %s\n",camera_error.c_str());std::fflush(stdout);}
+            }
+            const bool camera_cut=camera && (!accepted_camera || camera->entity!=accepted_camera->entity ||
+                camera->vertical_fov!=accepted_camera->vertical_fov || camera->near_clip!=accepted_camera->near_clip ||
+                camera->far_clip!=accepted_camera->far_clip);
             if(project_ui.revision()!=ui_revision) {
                 ui_revision=project_ui.revision();std::printf("Project UI published: %llu\n",static_cast<unsigned long long>(ui_revision));std::fflush(stdout);
             }
             if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty()) {std::printf("Project UI: %s\n",ui_error.c_str());std::fflush(stdout);}}
             if(prepared) {
                 if(renderer) {
-                    {timing::Scope snapshot{phases::scene};auto refreshed=scene.refresh(document);report_diagnostics();take(std::move(refreshed));}
+                    if(camera) {timing::Scope snapshot{phases::scene};auto refreshed=scene.refresh(document);report_diagnostics();take(std::move(refreshed));}
                     for(auto& mesh:scene.meshes) mesh.selected=false;
-                    const auto matrices=camera.matrices(static_cast<float>(extent.width)/std::max(extent.height,1u));
-                    renderer::ViewSettings view;view.shading=renderer::Shading::scene_lit;
-                    {auto environment=document.presentation().environment();report_diagnostics();static_cast<rendering::SceneLightingSettings&>(view.lit)=take(std::move(environment));}
-                    const auto focus=camera.state().target;
-                    renderer::Frame rendered{*prepared->drawing,{matrices.view.elements,matrices.projection.elements},
-                        options.preview_ui?ui::Rect{}:ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)},scene.meshes,
-                        view,{},scene.lights,scene.identity,false,rendering::sky_radiance(view.lit),{focus.x,focus.y,focus.z}};
+                    renderer::Frame rendered{*prepared->drawing,matrices,
+                        camera?ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)}:ui::Rect{},
+                        camera?std::span<const renderer::MeshInstance>{scene.meshes}:std::span<const renderer::MeshInstance>{},
+                        view,{},camera?std::span<const renderer::Light>{scene.lights}:std::span<const renderer::Light>{},
+                        scene.identity,camera_cut,rendering::sky_radiance(view.lit),focus};
                     const auto lighting_start=RenderClock::Clock::now();
-                    const bool lighting_active=target.drawable && !options.preview_ui && !scene.meshes.empty() && view.lit.ddgi;
+                    const bool lighting_active=target.drawable && camera && !scene.meshes.empty() && view.lit.ddgi;
                     rendered.render_delta_seconds=lighting_clock.delta(lighting_start,lighting_active);
                     const auto drawn=graphics(lit_fallback.render(*renderer,rendered,nullptr));
                     if(drawn.failure!=render_failure) {
@@ -274,6 +276,7 @@ int run_project(const RunOptions& options) {
                             throw std::runtime_error("Project renderer accepted a mismatched frame.");
                         if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
                         lighting_clock.accept(lighting_start,lighting_active && drawn.view.shading==renderer::Shading::scene_lit);
+                        if(drawn.view.shading==renderer::Shading::scene_lit) accepted_camera=camera;
                         sampled=result.accepted_id;
                     } else lighting_clock.reset();
                 } else {

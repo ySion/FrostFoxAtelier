@@ -4,6 +4,7 @@
 #include "math/math.hpp"
 #include <string_view>
 
+namespace atelier::presentation { struct CameraSnapshot; }
 namespace atelier::editor {
 constexpr std::wstring_view camera_view_name(CameraView view) noexcept {
     switch(view) {
@@ -16,23 +17,26 @@ constexpr std::wstring_view camera_view_name(CameraView view) noexcept {
 struct CameraMatrices {
     math::Matrix4 view;
     math::Matrix4 projection;
+    float far_depth{}; // Derived finite clipping boundary, separate from background depth zero.
 };
 struct CameraState {
     CameraView view{CameraView::perspective};
     math::Vector3 target{};
     float yaw{}, pitch{}, distance{};
+    float roll{}, vertical_fov{45}, near_clip{.05f}, far_clip{30000};
     bool operator==(const CameraState&) const = default;
 };
 // Left-handed, metres, +Y up; row-major matrices and row vectors.
 class Camera final {
 public:
-    static constexpr float field_of_view = 0.785398163f; // Vertical, radians.
     Camera() { reset(); }
     void reset() noexcept;
     void set_view(CameraView) noexcept;
     CameraView view() const noexcept { return view_; }
     void focus(math::Vector3) noexcept;
     bool look_at(math::Vector3 eye, math::Vector3 target) noexcept;
+    // A one-shot view, including roll and projection, not a binding to the scene.
+    bool view_from(const presentation::CameraSnapshot&) noexcept;
     // Frame a world-space sphere so it fills the view (Blender View Selected / View All).
     void frame(math::Vector3 center, float radius) noexcept;
     void orbit(float logical_dx, float logical_dy) noexcept;
@@ -47,11 +51,12 @@ public:
     math::Vector3 up_hint() const noexcept;
     math::Vector3 construction_normal() const noexcept;
     CameraMatrices matrices(float aspect) const noexcept;
-    CameraState state() const noexcept { return {view_, target_, yaw_, pitch_, distance_}; }
+    CameraState state() const noexcept { return {view_, target_, yaw_, pitch_, distance_,roll_,vertical_fov_,near_clip_,far_clip_}; }
     bool set_state(const CameraState&) noexcept;
 private:
     CameraView view_{CameraView::perspective};
     math::Vector3 target_;
     float yaw_{}, pitch_{}, distance_{};
+    float roll_{},vertical_fov_{45},near_clip_{.05f},far_clip_{30000};
 };
 }

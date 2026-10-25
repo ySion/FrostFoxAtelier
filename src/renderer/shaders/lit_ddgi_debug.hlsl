@@ -40,6 +40,7 @@ float4 ddgi_debug_coverage_ps(float4 position : SV_Position) : SV_Target {
 
 struct DDGIDebugVertex {
     float4 position : SV_Position;
+    float far_clip : SV_ClipDistance;
     float3 normal : TEXCOORD0;
     nointerpolation uint probe : TEXCOORD1;
 };
@@ -94,6 +95,7 @@ DDGIDebugVertex ddgi_debug_vs(uint vertex : SV_VertexID, uint instance : SV_Inst
             result.position=mul(float4(base+offset.xyz+result.normal*radius,1),lit_view_projection);
         }
     }
+    result.far_clip=result.position.z-lit_far_depth*result.position.w;
     result.position=raster_viewport_position(result.position);
     return result;
 }

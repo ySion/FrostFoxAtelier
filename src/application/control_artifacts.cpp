@@ -251,7 +251,7 @@ Json write_samples(const std::filesystem::path& output,std::vector<Sample> sampl
         write(directory/(name+".depth.f32"),{reinterpret_cast<const char*>(pixels.depth.data()),pixels.depth.size()*sizeof(float)});
         sample.metadata["color"]=name+".png";sample.metadata["depth"]=name+".depth.f32";
         sample.metadata["extent"]={pixels.extent.width,pixels.extent.height};
-        sample.metadata["depth_format"]="float32-le, top-left, tightly packed, reversed-Z near=1 far/background=0; unjittered";
+        sample.metadata["depth_format"]="float32-le, top-left, tightly packed, reversed-Z near=1 background=0; camera.far_depth is the geometry clipping boundary; unjittered";
         sample.metadata["color_format"]="sRGB RGBA8, top-left; complete editor client area";
         write(directory/(name+".json"),sample.metadata.dump(2)+"\n");manifest["samples"].push_back(std::move(sample.metadata));
     }

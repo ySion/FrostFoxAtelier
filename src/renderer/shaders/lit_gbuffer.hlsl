@@ -4,6 +4,7 @@ StructuredBuffer<uint> lit_draw_instances;
 uint lit_first_instance;
 struct LitRaster {
     precise float4 position:SV_Position;
+    float far_clip:SV_ClipDistance;
     float3 normal:NORMAL;
     float4 previous:TEXCOORD0;
     float2 uv:TEXCOORD1;
@@ -18,6 +19,7 @@ LitRaster lit_gbuffer_vs(uint vertex:SV_VertexID,uint instance:SV_InstanceID) {
     uint index=lit_draw_instances[lit_first_instance+instance];
     LitInstance i=lit_instances[index]; LitRaster o;
     o.position=raster_position(v.position,i.world,lit_view_projection);
+    o.far_clip=o.position.z-lit_far_depth*o.position.w;
     o.previous=raster_position(v.position,i.previous_world,lit_previous_view_projection);
     o.normal=v.normal.x*i.normal_x.xyz+v.normal.y*i.normal_y.xyz+v.normal.z*i.normal_z.xyz;
     o.uv=v.uv;

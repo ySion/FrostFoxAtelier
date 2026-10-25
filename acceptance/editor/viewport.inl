@@ -40,7 +40,11 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
     png(initial,output/"matcap.png");
     const auto choose=[&](ControlKey source,ControlKey option) {
         click(app,source);
-        require(app.menu_frame() && app.menu_frame()->find(option),"Viewport choice did not use the native shared menu.");
+        if(!app.menu_frame() || !app.menu_frame()->find(option)) {
+            capture(app,output/"viewport-menu-failure.png");
+            throw std::runtime_error("Viewport choice did not use the native shared menu: source="+
+                std::to_string(source)+", option="+std::to_string(option));
+        }
         const auto frame=app.menu_frame();
         if (source==control::scene_shading) {
             const std::array starts{control::shading_first,control::edges_first,control::topology_first};

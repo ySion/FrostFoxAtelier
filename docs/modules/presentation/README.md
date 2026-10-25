@@ -1,14 +1,16 @@
-# Presentation：网格、灯光与环境
+# Presentation：网格、灯光、相机与环境
 
-正式入口为 [presentation.hpp](../../../src/presentation/presentation.hpp)。`atelier_presentation` 在 World 核心之上定义网格、灯光、环境与材质资源的类型和规则，依赖 world、material、geometry 与 rendering（只用到 `scene_lighting.hpp` 头文件）；World 核心不引用其中任何类型。物理链接它，三角网格碰撞经 `read_static_mesh` 取网格。持久类型名沿用场景格式的 `world.` 前缀（`world.StaticMeshComponent` 等），C++ 命名空间为 `atelier::presentation`。
+正式入口为 [presentation.hpp](../../../src/presentation/presentation.hpp)。`atelier_presentation` 在 World 核心之上定义网格、灯光、相机、环境与材质资源的类型和规则，依赖 world、material、geometry 与 rendering（只用到 `scene_lighting.hpp` 头文件）；World 核心不引用其中任何类型。物理链接它，三角网格碰撞经 `read_static_mesh` 取网格。持久类型名沿用场景格式的 `world.` 前缀（`world.StaticMeshComponent` 等），C++ 命名空间为 `atelier::presentation`。
 
 `presentation::register_types(Runtime&)` 在 `world::register_types` 之后调用，登记 material 资源类型与本库类型，`core.String` 不存在时一并登记。
 
 ## Scene
 
-`presentation::Scene::create(World&, Types)` 在宿主边界为一个 World 建立呈现：登记网格（要求组件已有几何）、灯光、环境三项能力，以及“每个 World 至多一个 EnvironmentComponent”的准入。每个 World 只创建一个 Scene，它先于 World 析构；网格登记带谓词，重复创建会累积登记。编辑器 Session（编辑与 Play 共用）在 World 旁持有它，由 `Session::presentation()` 取得。`meshes() / lights() / environments()` 返回这三个 `CapabilityId`，可经 `World::members(id)` 查询桶。
+`presentation::Scene::create(World&, Types)` 在宿主边界为一个 World 建立呈现：登记网格（要求组件已有几何）、灯光、环境、相机四项能力，以及“每个 World 至多一个 EnvironmentComponent”和“每个 Entity 至多一个 CameraComponent”的准入（含派生与停用组件）。创建时也检查已有图。每个 World 只创建一个 Scene，它先于 World 析构；网格登记带谓词，重复创建会累积登记。编辑器 Session（编辑与 Play 共用）在 World 旁持有它，由 `Session::presentation()` 取得。`meshes() / lights() / environments() / cameras()` 返回对应的 `CapabilityId`，可经 `World::members(id)` 查询桶。
 
 `render_items()`、`light_items()` 与 `environment()` 只遍历这些桶，经 `World::spatial_pass` 读取空间，对象失败经 `World::contain` 写入 World 的诊断日志，按 World 的失败策略隔离或使调用失败。
+
+`camera(entity)` 返回该 Entity 唯一相机的位姿和投影参数值快照，允许停用对象供作者查看；`main_camera()` 则解析 Environment 的显式弱引用，并检查存活、归属和有效启用。解析期间持有临时根，返回后不保活业务对象；无效选择返回错误，不修改引用、不另选相机。空间旋转只沿真实父链复合局部四元数，缩放大小和符号均不参与。相机不进入网格/灯光提取缓存；每次更新及 late flush 后重新解析，Runtime 引用写入不要求 World revision 改变。`CameraSnapshot::matrices(aspect)` 生成左手 +Z 前方、行向量、无限远 reversed-Z 透视矩阵（设备深度为 near/view Z），并拒绝不可表示的矩阵；同一快照派生 `far_depth=near_clip/far_clip`，消费端据此保留相机 +Z 有限 far 裁剪，不能只复制 view/projection。深度 0 是无穷远方向，不是可除以 w 的有限点；无限远深度映射不表示无限场景范围。字段、编辑器和 Play 合同见[场景相机](../editor/projects.md#场景相机)。
 
 ### 提取缓存
 

@@ -22,13 +22,15 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<ProbeVolume>::build(runtime));
     definitions.push_back(reflection::Definition<EnvironmentComponent>::build(runtime));
     definitions.back().validate = [](const void* value) { return detail::environment_rules(*static_cast<const EnvironmentComponent*>(value)); };
+    definitions.push_back(reflection::Definition<CameraComponent>::build(runtime));
+    definitions.back().validate = [](const void* value) { return detail::camera_rules(*static_cast<const CameraComponent*>(value)); };
     if (!runtime.find_type("core.String")) definitions.push_back(string_definition(runtime));
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;
     types.material = (*ids)[0]; types.static_mesh_component = (*ids)[1]; types.static_mesh_entity = (*ids)[2];
     types.light_kind = (*ids)[3]; types.light_settings = (*ids)[4]; types.light_component = (*ids)[5];
-    types.environment_component = (*ids)[9];
+    types.environment_component = (*ids)[9]; types.camera_component = (*ids)[10];
     return types;
 }
 

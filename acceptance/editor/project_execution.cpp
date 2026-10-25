@@ -151,7 +151,7 @@ void run(const std::filesystem::path& root) {
     take(editor::write_file(root/"Source/UI/Main.ui.source",editor::ProjectCode::ui_source()));
 
     const auto snapshot=root/"Cache/run.scene",report=root/"Cache/result.scene";take(editor::write_file(snapshot,original));
-    application::PlayProcess process;take(process.start(root,snapshot,true,20,report,false,false,editor::Camera{}.state()));wait(process,std::chrono::seconds(45));
+    application::PlayProcess process;take(process.start(root,snapshot,true,20,report));wait(process,std::chrono::seconds(45));
     const auto output=process.take_output();std::fwrite(output.data(),1,output.size(),stdout);
     require(process.exit_code()==0,"The real isolated runner failed.");
     // The Play report: every loop is a timed frame, headless frames are sampled, and no phase left its parent.

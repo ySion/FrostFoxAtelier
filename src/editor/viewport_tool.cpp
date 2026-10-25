@@ -152,6 +152,7 @@ ViewportView ViewportView::make(const Camera& camera,ui::Rect bounds,float dpi) 
     result.construction_normal=camera.construction_normal();
     const auto matrices=camera.matrices(std::max(bounds.width,1.f)/std::max(bounds.height,1.f));
     result.view=matrices.view;result.projection=matrices.projection;
+    result.far_depth=matrices.far_depth;
     math::Matrix4d vp;const auto m=matrices.view*matrices.projection;
     std::copy(m.begin(),m.end(),vp.begin());result.inverse=math::try_inverse(vp).value_or(math::Matrix4d::identity());
     result.forward=math::try_normalize(camera.target()-camera.eye()).value_or(V3{0,0,1});
@@ -163,7 +164,7 @@ bool ViewportView::contains(float x,float y) const noexcept {
 }
 std::optional<V2> ViewportView::project(V3 p) const noexcept {
     const auto clip=math::Vector4{p.x,p.y,p.z,1}*view*projection;
-    if(!math::is_finite(clip) || clip.w<=0 || clip.z<0 || clip.z>clip.w) return {};
+    if(!math::is_finite(clip) || clip.w<=0 || clip.z<far_depth*clip.w || clip.z>clip.w) return {};
     return V2{bounds.x+(clip.x/clip.w+1)*bounds.width*.5f,bounds.y+(1-clip.y/clip.w)*bounds.height*.5f};
 }
 ViewportView::Ray ViewportView::ray(float x,float y) const noexcept {

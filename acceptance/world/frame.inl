@@ -135,16 +135,18 @@ void frame_phases() {
 
     // Admissions see attach candidates and edited values; a rejected edit is restored.
     std::vector<ObjectId> admitted;
-    take(shown.add_admission(types.counter, [&](const w::World& world, std::span<const ObjectId> candidates) -> Result<void> {
-        admitted.assign(candidates.begin(), candidates.end());
-        for (const auto id : candidates) {
-            auto value = world.runtime().read(id, types.counter_value);
+    take(shown.add_admission(types.counter, [&](const w::World& world, std::span<const w::World::AdmissionCandidate> candidates) -> Result<void> {
+        admitted.clear();
+        for (const auto& candidate : candidates) admitted.push_back(candidate.component);
+        for (const auto& candidate : candidates) {
+            require(candidate.owner != ObjectId{}, "Admission did not receive a proposed owner.");
+            auto value = world.runtime().read(candidate.component, types.counter_value);
             if (!value) return std::unexpected(value.error());
             if (std::get<float>(*value) > 10.f) return std::unexpected(Error{ErrorCode::argument_mismatch, "Counter exceeds 10."});
         }
         return {};
     }));
-    reject(shown.add_admission(types.entity, [](const w::World&, std::span<const ObjectId>) -> Result<void> { return {}; }),
+    reject(shown.add_admission(types.entity, [](const w::World&, std::span<const w::World::AdmissionCandidate>) -> Result<void> { return {}; }),
         "An Entity type was registered for admission.");
     auto loud = take(w::create_component(runtime, types.counter));
     take(runtime.write(loud.id(), types.counter_value, Scalar{11.f}));
@@ -167,10 +169,10 @@ void frame_phases() {
     // that throws rejects the edit like a returned error, and the previous value is restored.
     enum class Probe { none, reenter, raise } probe{};
     std::optional<Result<void>> nested_write, nested_admission;
-    take(shown.add_admission(types.counter, [&](const w::World&, std::span<const ObjectId> candidates) -> Result<void> {
+    take(shown.add_admission(types.counter, [&](const w::World&, std::span<const w::World::AdmissionCandidate> candidates) -> Result<void> {
         if (probe == Probe::reenter) {
-            nested_write = shown.write(candidates.front(), std::array{types.counter_value}, Scalar{9.f});
-            nested_admission = shown.add_admission(types.counter, [](const w::World&, std::span<const ObjectId>) -> Result<void> { return {}; });
+            nested_write = shown.write(candidates.front().component, std::array{types.counter_value}, Scalar{9.f});
+            nested_admission = shown.add_admission(types.counter, [](const w::World&, std::span<const w::World::AdmissionCandidate>) -> Result<void> { return {}; });
         }
         if (probe == Probe::raise) throw std::runtime_error("Admission probe threw.");
         return {};
@@ -190,7 +192,7 @@ void frame_phases() {
     // A rejected edit returns the field to its exact previous bytes, even a value that bypassed
     // the write path: NaN keeps its payload and an out-of-bounds value is not clamped.
     bool deny = false, raise = false;
-    const auto denied = [&](const w::World&, std::span<const ObjectId>) -> Result<void> {
+    const auto denied = [&](const w::World&, std::span<const w::World::AdmissionCandidate>) -> Result<void> {
         if (deny) return std::unexpected(Error{ErrorCode::argument_mismatch, "Restore probe denied the edit."});
         if (raise) throw std::runtime_error("Restore probe threw.");
         return {};

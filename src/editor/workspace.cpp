@@ -59,6 +59,9 @@ std::optional<OperatorCall> operator_for(Command command) {
     case Command::frame_all:return call("view.frame_all");
     case Command::focus:return call("view.frame_selected");
     case Command::reset_camera:return call("view.reset");
+    case Command::view_from_camera:return call("view.from_camera");
+    case Command::set_main_camera:return call("scene.main_camera_set");
+    case Command::clear_main_camera:return call("scene.main_camera_clear");
     case Command::reset_layout:return call("layout.reset");
     case Command::close_tab:return call("layout.close_tab");
     case Command::maximize_pane:return call("layout.maximize");
@@ -69,6 +72,7 @@ std::optional<OperatorCall> operator_for(Command command) {
     case Command::discard_saved_data:return call("scene.discard_saved_data");
     case Command::create_entity:return call("scene.add",{{"kind","entity"}});
     case Command::create_static_mesh:return call("scene.add",{{"kind","mesh"}});
+    case Command::create_camera:return call("scene.add",{{"kind","camera"}});
     case Command::create_point_light:return call("scene.add",{{"kind","point"}});
     case Command::create_rectangle_light:return call("scene.add",{{"kind","rectangle"}});
     case Command::create_directional_light:return call("scene.add",{{"kind","directional"}});
@@ -808,7 +812,11 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     }
     if (view.key==control::workbench) { workbench.append(result,view.content,*ui_document_); continue; }
     if (view.key==world_control::tab) {
-        lighting.append(result,view.content,*ui_document_,this->view,!session.world().running());continue;
+        const auto selected=session.main_camera();
+        const auto name=selected && *selected!=ObjectId{}?session.name(*selected):std::wstring_view{};
+        const auto label=!selected?L"Unavailable":*selected==ObjectId{}?L"None":name.empty()?L"Missing Entity":std::wstring(name);
+        lighting.append(result,view.content,*ui_document_,this->view,!session.world().running(),label,
+            command_enabled(Command::clear_main_camera,session,project));continue;
     }
     if (view.key==control::assets_tab) {
         assets.append(result,view.content,project,command_enabled(Command::create_static_mesh,session,project),frame,*ui_document_);
@@ -1329,7 +1337,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 case control::viewport_snap: return commands({snap_toggle,snap_grid_01,snap_grid_02,snap_grid_05,snap_grid_1,
                     snap_affect_move,snap_affect_rotate,snap_affect_scale,snap_rotation_1,snap_rotation_5,snap_rotation_15,snap_rotation_45,
                     selection_grid,selection_cursor,cursor_selected,cursor_origin,cursor_grid,cursor_surface});
-                case control::viewport_camera: return commands({view_perspective,view_front,view_back,view_left,view_right,view_top,view_bottom,focus,reset_camera});
+                case control::viewport_camera: return commands({view_perspective,view_front,view_back,view_left,view_right,view_top,view_bottom,focus,view_from_camera,reset_camera});
                 case control::viewport_pivot: return commands({pivot_median,pivot_cursor,cursor_selected,cursor_origin,cursor_grid});
                 case control::viewport_orientation: {
                     auto items=commands({orientation_global,orientation_local});items.front().separator_before=false;

@@ -470,7 +470,9 @@ public:
     // publishing. Author edits (write and the typed entries over it) of a member
     // component run it on that component after writing and restore the previous
     // value when it fails. Runtime writes outside World are not admitted.
-    using Admission = std::function<Result<void>(const World&, std::span<const ObjectId> candidates)>;
+    // owner is the proposed Entity, even before an incoming component is attached.
+    struct AdmissionCandidate { ObjectId component, owner; };
+    using Admission = std::function<Result<void>(const World&, std::span<const AdmissionCandidate> candidates)>;
     [[nodiscard]] Result<void> add_admission(TypeId component_type, Admission);
 
     // Rotation of a space with scale magnitudes dropped and signs kept: each
@@ -492,6 +494,9 @@ public:
         // zero-scale node. Degenerate spaces are not object failures under any policy.
         [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
         [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
+        // Normalized local rotations composed along the actual spatial chain.
+        // Scale magnitudes and signs do not participate; zero scale is valid.
+        [[nodiscard]] Result<std::optional<math::Quaterniond>> rotation(ObjectId entity);
         // Spatial parent of a member Entity, null for world space; read from the same cache as matrix().
         [[nodiscard]] Result<ObjectId> parent(ObjectId entity);
     private:

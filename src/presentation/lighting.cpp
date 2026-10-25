@@ -55,7 +55,7 @@ Result<void> detail::environment_rules(const EnvironmentComponent& value) {
     return {};
 }
 world::World::Admission detail::unique_environment(world::CapabilityId environments) {
-    return [environments](const world::World& world,std::span<const ObjectId> candidates)->Result<void> {
+    return [environments](const world::World& world,std::span<const world::World::AdmissionCandidate> candidates)->Result<void> {
         auto members=world.members(environments);if(!members) return std::unexpected(members.error());
         ObjectId first;
         const auto visit=[&](ObjectId object)->Result<void> {
@@ -63,7 +63,7 @@ world::World::Admission detail::unique_environment(world::CapabilityId environme
                 return error(ErrorCode::invalid_member,"A World can contain only one EnvironmentComponent, including disabled components.");
             first=object;return {};
         };
-        for(const auto object:candidates) if(auto valid=visit(object);!valid) return valid;
+        for(const auto& candidate:candidates) if(auto valid=visit(candidate.component);!valid) return valid;
         for(const auto& member:*members) if(auto valid=visit(member.component);!valid) return valid;
         return {};
     };

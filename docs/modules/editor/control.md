@@ -105,7 +105,9 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存场景引用到的材质（含网格的默认材质）的实际草稿，并核对已载入贴图内容，原工程不变；会话里载入过但场景没有引用的材质不进入副本。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
 
-坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left，原有 0–3 编码不变；yaw/pitch 为弧度，distance 为 0.5–2000 米，恢复时验证相机基底。视图命令与 UI 使用同一六向相机入口，`camera.set` 仍恢复完整状态。
+坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left；yaw/pitch/roll 为弧度，distance 为 0.5–2000 米，vertical_fov 为 1–179 度，near_clip 为 0.001–100000 米，far_clip 不超过 1000000 米且大于 near_clip。恢复时验证相机基底；`camera.set` 必须提供完整状态。视图命令与 UI 使用同一六向相机入口。`view.from_camera` 通过选中 Entity 一次性复制场景相机的位姿（含 roll）和投影，不改作者数据。`scene.main_camera_set` / `scene.main_camera_clear` 编辑场景主相机引用，详见[场景相机](projects.md#场景相机)。
+
+Control 的相机和视图 float 值与 Scene 共用 `json_format::number(float)`，写作可往返的最短十进制；manifest 与 inspect 使用同一编码。常规透视采用无限远 reversed-Z 深度映射：设备深度为 `near_clip / view_z`，near 映射为 1，深度 0 反投影为无穷远方向。`far_clip` 仍是相机 +Z 方向的有限裁剪平面，快照派生 `far_depth = near_clip / far_clip`，不新增作者字段或持久状态。正交仍为有限 reversed-Z，near=1、far=0，派生 far_depth=0。背景始终为 0，不按 far_depth 判断，也不把裁剪后的深度区间重新归一化。far 改变仍触发投影 cut，即使透视矩阵本身没有改变。有限且有序的裁剪值仍按既有范围接受；FP32 矩阵和运算不承诺一至数 ULP 极窄区间的端点保真，不另加固定间距阈值。
 
 持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自 World 的天光设置；background 仍保存工作室模式偏好。天光是 scene 项 `sky_enabled`（bool）、`sky_intensity`（cd/m²）和 `sky_color_x/y/z`（线性 RGB 三个标量），与其他 World 选项一样经 `view.set` 写入 Environment 组件，第一次写入时创建 Environment，二者是同一条历史；`sky_enabled` 为 false 时环境辐射为零。
 
@@ -177,7 +179,7 @@ Shadows 开启时，投影光源的可见性一律来自阴影 atlas；普通 vi
 结果在控制目录 artifacts/<instance>/<random>/：
 
 - PNG：完整客户区的 sRGB RGBA8，左上角原点。
-- .depth.f32：紧密排列的小端 float32，左上角原点、Reversed-Z near=1、far/background=0。现有 Renderer 提供不带 TAA 抖动的编辑器深度，使用 metadata 的 viewport 定位场景区。
+- .depth.f32：紧密排列的小端 float32，左上角原点、Reversed-Z near=1、background=0；透视 far 平面深度为 near/far，正交 far 为 0。现有 Renderer 提供不带 TAA 抖动的编辑器深度，使用 metadata 的 viewport 定位场景区。metadata 与 `last_frame.camera` 同时提供 `view`、`projection` 和 `far_depth`，三者共同描述已接受帧的投影与有限裁剪边界；不能只凭透视矩阵重建作者 far。
 - 每次采样 JSON：接受帧号、全局计数、case 内序号、viewport、相机矩阵、有效设置、Sky radiance、等待/跳过帧和 GPU 统计。`frame_stats` 提供当前帧的 `history_resets`、`light_sources`、`shadow_sources`、`di_candidates`；后两者是启用 Shadows 时具备投影资格的源数和初始候选预算，不是实际射线数。`spatial_light_sampling` 子对象返回当前编码帧的 `retained_sources`（局部表保留源数）、`nonempty_cells`、`resource_bytes`（三张表的逻辑容量，含空表 sentinel）和 `uploaded`；它们不是完成帧 GPU 计数，也不是可见光源或剔除结果。未编码 Scene Lit（例如无几何且不绘制探针诊断）时这四项为零，其他保留的 Scene Lit 缓存仍计入总 `resource_bytes`。`case_reported_history_resets` 累计本 case 所有已报告帧的重置次数。旧阴影槽统计不再属于当前输出。
 - manifest.json：文件大小及 SHA-256，最后发布的完整产物标记。
 
@@ -217,7 +219,7 @@ Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录
 
 repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、额外文件或链接；运行时生成的 Project/Cache 不参与复现依赖。随后通过同一工程入口的严格加载策略编译源码并读取场景，全部成功才替换当前文档并恢复视图与选择。编译或反序列化失败保留当前工程和对象；常规 UI 的修复工程模式保持原有行为。有未保存场景或源码时拒绝替换。失败/取消可能留下诊断目录，未返回成功的任务不应当作成功交付。
 
-新产物的 manifest 标记 `view_schema: 5`，视图快照的键集合改变时加一。`repro.open` 只接受当前 `view_schema` 和当前格式的场景；缺少标记、其他版本、带已删除选项（例如 `ssil`、`shadow_bias`、`direct_reference`）的视图，以及旧格式场景都拒绝。视图里的 World 设置与加载出的候选文档的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment。选择按导出时的 World 成员序号、检查目标按该 Entity 上的组件序号，在候选文档替换当前文档之前解析；序号越界返回 `dependency_mismatch`。视图版本或已删除选项不合格返回 `invalid_request`，旧格式场景在严格加载时失败，返回 `operation_failed`。任何验证失败都保留当前文档。
+manifest 标记 `view_schema: 6`，相机或视图快照合同改变时加一。`repro.open` 只接受当前 `view_schema` 和当前格式的场景；缺少标记、其他版本、带已删除选项（例如 `ssil`、`shadow_bias`、`direct_reference`）的视图，以及旧格式场景都拒绝。视图里的 World 设置与加载出的候选文档的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment。选择按导出时的 World 成员序号、检查目标按该 Entity 上的组件序号，在候选文档替换当前文档之前解析；序号越界返回 `dependency_mismatch`。视图版本或已删除选项不合格返回 `invalid_request`，旧格式场景在严格加载时失败，返回 `operation_failed`。任何验证失败都保留当前文档。
 
 ## 生命周期和扩展
 
@@ -257,6 +259,11 @@ repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、
 
     cmake --build --preset dev --target editor_control_path_acceptance
     cmake --build --preset release --target editor_control_path_acceptance
+
+相机投影专项复用 Control 驱动，使用非默认正常游戏尺度裁剪面完成透视/正交的 camera.set、相等裁剪面拒绝、repro 导出/重开、已知面深度捕获与远裁剪变化；核对 Capture 的派生 far_depth，透视 far 改变不改变 P，但仍裁掉越界几何。报告与图像位于构建目录 camera-projection-acceptance/：
+
+    cmake --build --preset dev --target editor_camera_projection_acceptance
+    cmake --build --preset release --target editor_camera_projection_acceptance
 
 独立工程和真实编辑器进程通过命名管道验收：发现与 CLI、创建/选择/组件/属性/TRS、Undo/Redo、相机、显示约束、重复请求、请求/任务淘汰、过期 token、未保存场景导出/重开、游戏和 UI 发布快照、额外文件拒绝、重开失败保留原文档、嵌套输出拒绝、多接受帧捕获、Scene Lit、失败与无效修改保留任务、取消、上下文变化、超时、断线和关闭。需要可绘制的独立窗口，不要求键盘焦点或人工输入；报告和图像保存在构建目录 control-acceptance/。
 

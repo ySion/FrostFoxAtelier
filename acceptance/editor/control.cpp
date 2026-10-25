@@ -141,7 +141,7 @@ void verify_operators(Driver& d,const std::string& entity) {
     error(d.try_op("view.frame_all",Json::object(),{{"region","nowhere"}}),"invalid_request");
     error(d.try_op("scene.select",Json::object(),{{"selection",{{"entities",Json::array({entity,entity})}}}}),"invalid_request");
     // Arguments decode strictly into the operator's parameter record; a rejected call changes nothing.
-    require(find("scene.add").at("parameters").at("properties").at("kind").at("enum")==Json::array({"entity","mesh","point","rectangle","directional"}) &&
+    require(find("scene.add").at("parameters").at("properties").at("kind").at("enum")==Json::array({"entity","mesh","point","rectangle","directional","camera"}) &&
         find("scene.add").at("flags")==Json::array({"undo"}) && find("tool.settings").at("parameters").value("seeded",false),
         "op.list does not publish the operator parameter records");
     const auto entries=d.inspect().at("undo").get<std::size_t>();
@@ -243,8 +243,8 @@ Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities
 void repro_lighting_agreement(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema")==5 && original_scene.at("version")==9 && !original_scene.contains("world"),
-        "Current repro export did not identify view schema 5 and Scene v9");
+    require(original.at("view_schema")==6 && original_scene.at("version")==9 && !original_scene.contains("world"),
+        "Current repro export did not identify view schema 6 and Scene v9");
     const auto copy=root/"LightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(copy),
         std::filesystem::copy_options::recursive);
@@ -267,7 +267,7 @@ void repro_lighting_agreement(Driver& d,const std::filesystem::path& repro,const
         require(d.token==token,"Rejected lighting repro changed the accepted editor state token");
     };
     auto unmarked=original;unmarked.erase("view_schema");rejected(unmarked,original_scene);
-    for(unsigned schema:{4u,6u}) {auto other=original;other["view_schema"]=schema;rejected(other,original_scene);}
+    for(unsigned schema:{5u,7u}) {auto other=original;other["view_schema"]=schema;rejected(other,original_scene);}
     auto old_scene=original_scene;old_scene["version"]=8;rejected(original,old_scene,"operation_failed");
     for(const auto& [name,value]:Json{{"ssil",false},{"shadow_bias",.002},{"shadow_light_budget",16},{"shadow_samples",64},
         {"direct_reference",true},{"direct_clustered",false},{"direct_shadow_cache",true}}.items()) {
@@ -679,16 +679,84 @@ void ddgi_debug(const std::filesystem::path& executable,const std::filesystem::p
         "coverage-presets","rolling-focus-capture","focus-precision-atomicity","four-volume-repro","legacy-aliases","history-and-scene-isolation","clean-close"}}}.dump(2));
     std::cout<<"Editor DDGI Control E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
+void camera_projection(const std::filesystem::path& executable,const std::filesystem::path& root) {
+    const auto project=root/"Project",directory=root/"Control";project_fixture(project);
+    Process editor(executable,L"--project "+quote(project)+L" --control-directory "+quote(directory)+L" --no-activate --gpu-validation",root/"editor.log");
+    Driver d(discover_editor(editor,directory));const auto initial=d.settle().at("camera");
+    const auto mesh=d.ok("scene.create",{{"kind","mesh"}}).at("object");
+    // A normal authoring range with a known front face 2.5 metres from the eye.
+    d.ok("scene.transform",{{"object",mesh},{"position",{0,0,-3}},{"rotation",{0,0,0,1}},{"scale",{.5,.5,1}}});
+    d.op("scene.select",{{"selection",{{"entities",Json::array()}}}});d.ok("scene.save");
+    auto cases=Json::array();
+    for(const unsigned view:{0u,2u}) {
+        const std::string name=view==0?"perspective":"orthographic";
+        auto camera=initial;camera["view"]=view;camera["target"]={0,0,-1};camera["yaw"]=0;camera["pitch"]=0;
+        camera["roll"]=0;camera["distance"]=1;camera["vertical_fov"]=60;camera["near_clip"]=.25;camera["far_clip"]=6.5;
+        d.ok("camera.set",{{"state",camera}});const auto accepted=d.settle().at("camera");
+        require(accepted.at("near_clip").get<float>()==.25f && accepted.at("far_clip").get<float>()==6.5f &&
+            accepted.at("view")==view && accepted.at("vertical_fov")==60,"Control changed camera projection parameters");
+        auto invalid=accepted;invalid["far_clip"]=invalid.at("near_clip");
+        error(d.call("camera.set",{{"state",invalid}}),"invalid_request");
+        require(d.inspect().at("camera")==accepted,"Rejected equal clip planes changed the camera");
+        const auto export_id=unique_id();require(d.call("repro.export",Json::object(),export_id).at("status")=="pending","Camera repro export did not start");
+        const auto exported=d.wait(export_id);require(exported.at("status")=="ok",exported.dump());
+        const std::filesystem::path repro=wide(exported.at("result").at("directory").get<std::string>());
+        require(read(repro/"manifest.json").at("camera")==accepted,"Repro changed the camera projection");
+        d.ok("camera.set",{{"state",initial}});
+        // Switching view kind updates its derived grid plane on the next editor step.
+        require(d.settle().at("camera")==initial,"Camera did not reset before repro reopen");
+        d.ok("repro.open",{{"directory",utf8(repro.wstring())}});
+        require(d.settle().at("camera")==accepted,"Repro did not restore the projection and view kind");
+        const auto capture_id=unique_id();require(d.call("render.capture",{{"sample_frames",{1}}},capture_id).at("status")=="pending","Camera capture did not start");
+        const auto captured=d.wait(capture_id);require(captured.at("status")=="ok",captured.dump());
+        const auto& sample=captured.at("result").at("samples").at(0);
+        const std::filesystem::path output=wide(captured.at("result").at("directory").get<std::string>());
+        require(sample.at("camera").at("far_depth").get<float>()==(view==0?.25f/6.5f:0),
+            "Capture metadata lost the independent finite far boundary");
+        const auto pixels=sample.at("extent")[0].get<std::size_t>()*sample.at("extent")[1].get<std::size_t>();
+        std::ifstream input(output/wide(sample.at("depth").get<std::string>()),std::ios::binary);
+        std::vector<float> depth(pixels);input.read(reinterpret_cast<char*>(depth.data()),static_cast<std::streamsize>(pixels*sizeof(float)));
+        const auto geometry=std::ranges::count_if(depth,[](float z){return z>0;});
+        require(bool(input) && std::ranges::all_of(depth,[](float z){return std::isfinite(z) && z>=0 && z<=1;}) && geometry>100,
+            "Camera projection did not capture visible geometry with finite reversed-Z depth");
+        const float expected_depth=view==0?.25f/2.5f:(6.5f-2.5f)/(6.5f-.25f);
+        require(std::abs(*std::ranges::max_element(depth)-expected_depth)<.0001f,
+            "Captured front-face depth does not match the camera's projection kind");
+        std::filesystem::copy_file(output/wide(sample.at("color").get<std::string>()),root/(name+".png"));
+        cases.push_back({{"view",name},{"camera",accepted},{"geometry_pixels",geometry},{"repro",utf8(repro.wstring())},
+            {"capture",captured.at("result")}});
+        auto shortened=accepted;shortened["far_clip"]=2;
+        d.ok("camera.set",{{"state",shortened}});d.settle();
+        const auto clipped_id=unique_id();
+        require(d.call("render.capture",{{"sample_frames",{1}}},clipped_id).at("status")=="pending","Far clip capture did not start");
+        const auto clipped=d.wait(clipped_id);require(clipped.at("status")=="ok",clipped.dump());
+        const auto& clipped_sample=clipped.at("result").at("samples").at(0);
+        const std::filesystem::path clipped_output=wide(clipped.at("result").at("directory").get<std::string>());
+        std::ifstream clipped_input(clipped_output/wide(clipped_sample.at("depth").get<std::string>()),std::ios::binary);
+        clipped_input.read(reinterpret_cast<char*>(depth.data()),static_cast<std::streamsize>(pixels*sizeof(float)));
+        require(bool(clipped_input) && std::ranges::all_of(depth,[](float z){return z==0;}),
+            "Camera far edit did not clip the actual mesh to background depth zero");
+        if(view==0)require(clipped_sample.at("camera").at("projection")==sample.at("camera").at("projection") &&
+            clipped_sample.at("camera").at("far_depth").get<float>()==.125f,"Perspective far edit changed P instead of its derived clip boundary");
+        cases.back()["far_clipped_capture"]=clipped.at("result");
+        d.ok("camera.set",{{"state",accepted}});d.settle();
+        std::cout<<"Camera Control "<<name<<": PASS (set, equality rejected, export/open, captured geometry="<<geometry<<")\n"<<std::flush;
+    }
+    d.client.reset();editor.close();require(discover(directory).empty(),"Camera editor retained its Control endpoint");
+    write(root/"result.json",Json{{"status","passed"},{"cases",cases}}.dump(2));
+    std::cout<<"Editor camera projection E2E: PASS | "<<utf8(root.wstring())<<'\n';
+}
 #include "client_size.inl"
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting" || std::wstring_view(argv[3])==L"--descriptions" || std::wstring_view(argv[3])==L"--client-size")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions|--client-size]");
+        require(argc==3 || (argc==4 && (std::wstring_view(argv[3])==L"--repro-paths" || std::wstring_view(argv[3])==L"--ddgi-debug" || std::wstring_view(argv[3])==L"--repro-lighting" || std::wstring_view(argv[3])==L"--descriptions" || std::wstring_view(argv[3])==L"--client-size" || std::wstring_view(argv[3])==L"--camera-projection")),"Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions|--client-size|--camera-projection]");
         const bool descriptions=argc==4 && std::wstring_view(argv[3])==L"--descriptions";
         // Launched editors and their Play processes inherit the editor's harness cache, not the user's.
         if(!GetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",nullptr,0))
             SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",(std::filesystem::absolute(argv[1]).parent_path()/L"shader-cache").c_str());
         const auto root=std::filesystem::absolute(argv[2])/unique_id();std::filesystem::create_directories(root);
+        if(argc==4 && std::wstring_view(argv[3])==L"--camera-projection") {camera_projection(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--client-size") {client_size(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--ddgi-debug") {ddgi_debug(argv[1],root);return 0;}
         if(argc==4 && std::wstring_view(argv[3])==L"--repro-lighting") {repro_lighting(argv[1],root);return 0;}

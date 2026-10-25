@@ -202,6 +202,7 @@ struct SceneLit::State {
     std::vector<std::uint32_t> packed_closed_slots;
     std::array<float,16> view_projection{},inverse_view_projection{},previous_view_projection{},previous_inverse_view_projection{};
     std::array<float,16> camera_view{};
+    float far_depth{};
     std::array<float,4> viewport{},environment{},controls{},temporal{},jitter{},probe_history{},probe_controls{};
     // Holding the map keeps its address from naming a newer map while these textures live.
     rendering::SkyMapRef sky_source;
@@ -592,6 +593,7 @@ struct SceneLit::State {
         bind(p,"lit_size_frame",size_frame);bind(p,"lit_viewport",viewport);bind(p,"lit_screen_dispatch",screen_dispatch);bind(p,"lit_view_projection",view_projection);
         bind(p,"lit_inverse_view_projection",inverse_view_projection);bind(p,"lit_previous_view_projection",previous_view_projection);
         bind(p,"lit_previous_inverse_view_projection",previous_inverse_view_projection);
+        bind(p,"lit_far_depth",far_depth);
         bind(p,"lit_camera_view",camera_view);bind(p,"lit_cluster_tiles",cluster_tiles);bind(p,"lit_cluster_origin",cluster_origin);
         bind(p,"lit_environment",environment);bind(p,"lit_controls",controls);
         bind(p,"lit_sky",sky);bind(p,"lit_sky_radiance",sky_radiance);bind(p,"lit_sky_background",sky_background);
@@ -1036,6 +1038,7 @@ struct SceneLit::State {
             for(auto& [key,object]:objects){(void)key;object.shadow_tracked=false;if(scene_identity!=frame.scene_identity)object.shadow_dynamic=false;}
         }
         else if(frame.camera_cut)reset(false);
+        far_depth=frame.camera.far_depth;
         const std::array<float,4> next_viewport{frame.scene_viewport.x,frame.scene_viewport.y,frame.scene_viewport.width,frame.scene_viewport.height};
         if(viewport!=next_viewport)reset(false);
         if(previous_probe_settings!=settings.probe_volumes || previous_indirect_gain!=settings.indirect_gain)reset(false);
@@ -1345,6 +1348,7 @@ struct SceneLit::State {
         const auto& v=frame.scene_viewport;
         bind(p,"raster_viewport_transform",raster_viewport(v).clip_transform);
         bind(p,"lit_view_projection",floats(matrix(frame.camera.view)*matrix(frame.camera.projection)));
+        bind(p,"lit_far_depth",frame.camera.far_depth);
         bind(p,"lit_viewport",std::array<float,4>{v.x,v.y,v.width,v.height});
         bind_probe_debug(p);bind(p,"lit_probe_volumes",preview.current);
         bind(p,"lit_probe_pool",std::array<std::uint32_t,4>{preview.width,preview.total,0,ready?1u:0u});

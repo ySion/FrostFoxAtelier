@@ -382,7 +382,8 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         const auto camera_json=[&] {
             return Json{{"view",static_cast<unsigned>(camera.view)},{"target",{camera.target.x,camera.target.y,camera.target.z}},
                 {"yaw",camera.yaw},{"pitch",camera.pitch},{"distance",camera.distance},
-                {"view_matrix",accepted_camera.view.elements},{"projection_matrix",accepted_camera.projection.elements}};
+                {"view_matrix",accepted_camera.view.elements},{"projection_matrix",accepted_camera.projection.elements},
+                {"far_depth",accepted_camera.far_depth}};
         };
         const auto active_panes=[&] {
             auto panes=Json::array();

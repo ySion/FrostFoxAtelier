@@ -283,8 +283,8 @@ struct World::Impl {
     struct AdmissionEntry { TypeId type; Admission admission; };
     std::vector<AdmissionEntry> admissions;
     // Runs each admission on the candidates of its type; empty selections are skipped.
-    Result<void> check_admissions(std::span<const ObjectId> candidates);
-    Result<void> check_admissions(std::span<const ObjectRoot> candidates);
+    Result<void> check_admissions(std::span<const ObjectId> candidates, ObjectId proposed_owner = {});
+    Result<void> check_admissions(std::span<const ObjectRoot> candidates, ObjectId proposed_owner = {});
     // Whether an edit of this member component runs admissions; detached composition does not.
     Result<bool> admitted(ObjectId component) const;
     // Shared by World::write: write, then type rules and admissions; `restore` undoes a rejected edit.

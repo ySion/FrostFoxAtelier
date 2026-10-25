@@ -145,7 +145,7 @@ Scene 统一写出 v9：顶层 `materials` 按文档 ID 保存材质定义，Sta
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene v9 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
 - World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。天空贴图不是 World 选项，由 `Session::set_sky_map(SkyAsset)` 单独设置：资产来自 `Project::sky_map`，空资产表示清除；同样记一条历史，没有 Environment 时在同一历史项里创建它，停用时拒绝，无变化为空操作。撤销和重做恢复历史里保存的那个指针，不重新解析键。`sky_rotation` 是普通属性。视口诊断从不进入 Scene。
-- 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质与灯光；天光由宿主按 Environment 求出 `Frame.environment`，没有 Environment 或天光关闭时为零。探针滚动位置、历史、统计、可视化与相机不写入 Scene。
+- 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质与灯光；天光由宿主按 Environment 求出 `Frame.environment`，没有 Environment 或天光关闭时为零。探针滚动位置、历史、统计、可视化与编辑器观察相机不写入 Scene；场景 CameraComponent 和 Environment.main_camera 则是持久作者数据。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。
 - Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
 - 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data；网格的默认材质或其贴图不可用时以替代品显示，诊断记在该组件的 `mesh` 字段。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）遇到任何诊断都拒绝。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing` 与 `mesh.default_materials`（每个默认槽的 `slot`、`object`、`source`、`missing`），材质槽带 `missing`。当前限制：文档级保留数据（未知的顶层键）只在 Project Output 报告，面板中没有对应显示。
@@ -229,7 +229,17 @@ Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路�
 
 Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有者。退出顺序保证 End 能访问行为代码，World 先于代码释放，Runtime 最后销毁。PhysicsScene 是 World 登记的模拟系统，Session::update 只调用 `World::update`，物理子步在其中推进。编辑器 UI Runtime 由 Workspace 独立拥有，场景替换不会让 UI 借用失效的运行时。
 
-项目 Play 和 UI Preview 共用一个进程宿主。父进程传入工程位置、场景快照、停止事件和当前视口相机，读取输出，并经变更链路转发文档修改（见下节）。编辑器启动的 Play 从当前视口相机开始；命令行独立运行没有相机参数，对准各网格位置的中心，避免大面积碰撞地面把运动物体缩得很小。Stop 先请求正常退出；2 秒未响应后结束该运行进程组。关闭编辑器或切换工程也回收它。运行中的对象身份、GPU 资源和 JIT 地址不会跨进程传递。停止后保留编辑场景、选择和撤销历史；运行结果不会自动写回。
+项目 Play 和 UI Preview 共用一个进程宿主。父进程传入工程位置、场景快照和停止事件，读取输出，并经变更链路转发文档修改（见下节）。Play 只使用场景里的显式主相机；没有可用主相机时黑屏，工程 UI 照常叠加并响应，不使用编辑器观察相机或自动取景。Stop 先请求正常退出；2 秒未响应后结束该运行进程组。关闭编辑器或切换工程也回收它。运行中的对象身份、GPU 资源和 JIT 地址不会跨进程传递。停止后保留编辑场景、选择和撤销历史；运行结果不会自动写回。
+
+### 场景相机
+
+- `world.CameraComponent` 派生 SpatialComponent，一个 Entity 至多一个（包括派生和停用组件），准入在挂接/恢复发布前检查。位置取 Entity 世界矩阵，朝向沿真实空间父链复合规范化局部四元数；缩放大小和符号不进入朝向，零缩放本身不使相机失效。灯光仍使用自己的 orientation 规则。
+- 垂直 FOV 默认 45 度、near/far 默认 0.05/30000 米。反射硬边界为 FOV 1–179、near 0.001–100000、far 0.002–1000000，组件校验要求 far > near；渲染前仍验证有限性与投影。加载时同样执行联合校验，拒绝或保留规则见 [Scene 加载合同](../world/project-scenes.md#scene-v9)。Scene 保持 v9，新增字段未保存时使用默认值。
+- `world.EnvironmentComponent.main_camera` 是指向 Entity 的弱引用，默认 null，保存为文档 `$ref`，不按顺序自动选择。写入必须走 Runtime 引用接口；同 Runtime 的跨 World 写入可以成功，消费端负责拒绝。每次更新结束（包括 late flush）重新检查引用存活、World 归属、Entity/祖先/组件启用、唯一 Camera、空间、投影和 focus；不依赖 World revision，不清掉失效引用，也不保活弱目标。
+- **Create → Camera** 新建但不自动设为主相机；**Edit → Set as Main Camera** 将选中的同场景 Camera Entity 写入引用，可存停用目标。**Clear Main Camera** 清空引用；World Settings 的 Lighting 页显示当前选择并提供 Clear。作者 Set/Clear 只在本 Session 可编辑边界执行，各记一条历史；首次 Set 同一历史创建默认 Environment，Clear 在没有 Environment 时不创建实体。作者删除目标或包含它的子树时，同一删除历史同步 Clear；删除后保存再 Undo 仍同时恢复图和引用。
+- **View → View from Camera** 一次性复制选中相机的位姿、roll、FOV 和裁剪面，不修改场景或撤销历史，不持续跟随。编辑器观察相机仍是视口状态。
+- Play 的 lighting focus 是主相机世界位置，编辑器使用观察 target。切换主相机 Entity、从无效恢复、FOV/near/far 改变时提交 camera_cut；单纯转头不移动 focus。没有可用相机时输出诊断、重置 lighting clock，不提交 Lit 场景帧，UI 独立存在。游戏瞬移相机的显式 cut API 尚未提供。
+- 游戏原生/生成代码可经 Runtime 写引用，变化只在 Play 副本内生效，不进作者历史、不自动回写。**真实 Source 控制器切镜头仍未实现**：Source 尚不支持所需的跨对象引用访问和写入，不能把 Runtime、原生或 IPC 的能力当作语言能力。
 
 ### Play 副本与变更批次
 
@@ -261,7 +271,9 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 
 批次格式错误，或对编辑文档调用时，整次调用返回错误。
 
-编辑器文档一侧由 `Session::set_live_forwarding(true)` 开始记录：每次提交、撤销和重做之后，按修改留下的当前值生成上表的 op，顺序与修改一致；新增或撤销删除的多个根按（父级，序号）升序生成 `add`，绑定新材质前先生成它的 `materials` 定义。预览和取消也生成 op，同一目标（Entity 的一个 TRS 叶、一组字段、一个材质或资源键）较新的预览替换队列中较早的一项；预览过的 TRS 叶在提交或取消时都会再发送一次，即使它回到了起始值。Body 设置作为整个 `properties.body` 记录发送。选择、相机和视口设置不转发。`take_live_ops()` 取走队列中的 op。某项修改无法描述时（例如没有持久来源的程序网格），记录停止，之后的调用一直失败，直到重新设置转发：这时 Play 已经与文档分歧。
+编辑器文档一侧由 `Session::set_live_forwarding(true)` 开始记录：每次提交、撤销和重做之后，按修改留下的当前值生成上表的 op，顺序与修改一致；新增或撤销删除的多个根按（父级，序号）升序生成 `add`，绑定新材质前先生成它的 `materials` 定义。预览和取消也生成 op，同一目标（Entity 的一个 TRS 叶、一组字段、一个材质或资源键）较新的预览替换队列中较早的一项；预览过的 TRS 叶在提交或取消时都会再发送一次，即使它回到了起始值。Body 设置作为整个 `properties.body` 记录发送。选择、编辑器观察相机和视口设置不转发；场景相机属性照常转发。`main_camera` 的 Set/Clear/Undo/Redo 只发送该引用叶（`{"$ref":"文档ID"}` 或 null），不相关标量修改不覆盖 Play 内的游戏选择。删除目标先发 Clear 再 remove，撤销先 add 再恢复引用；保留数据和引用历史同步回放。`take_live_ops()` 取走队列中的 op。某项修改无法描述时（例如没有持久来源的程序网格），记录停止，之后的调用一直失败，直到重新设置转发：这时 Play 已经与文档分歧。
+
+多根导入及其 Redo 中，若本批新增或恢复的 Environment 的 `main_camera` 指向同批另一根下的 Entity，该叶在 Environment 的 add 中暂为 null，全部根 add 完成后再单独发送。它不依赖根的先后顺序；同根内部引用照常解码，其他引用字段不被消隐。批次外的既存 Environment 不被重发，游戏已删除且不在本批的目标不被重建。
 
 Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除外。`RunOptions::channel` 可以挂一个 `PlayChannel`（不持有），帧循环每帧在宿主边界调用一次它的 `service(Session&, Project&, Report)`：首帧在 start 之前，之后每次都在 update 之前。批次的取得、应用、回执都在 service 内完成，service 不阻塞也不抛出；`Report` 与 World 诊断走同一条输出（`describe_diagnostic` 逐行写入 Project Output）。编辑器启动的 Play 经 `--live-channel` 挂上链路的 Play 端；独立运行的 `--run-project` 没有 channel。
 

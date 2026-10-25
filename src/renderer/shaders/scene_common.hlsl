@@ -1,5 +1,6 @@
 struct SceneOutput {
     precise float4 position : SV_Position;
+    float far_clip : SV_ClipDistance;
     float3 normal : NORMAL;
     // Original barycentrics and clip w share perspective interpolation. Their
     // quotient is affine in screen space, even across eye/near-plane clipping.
@@ -18,6 +19,7 @@ float2 wire_style;
 row_major float4x4 view;
 row_major float4x4 projection;
 row_major float4x4 scene_view_projection;
+float camera_far_depth;
 
 float3 unit_normal(float3 normal) {
     float magnitude = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
