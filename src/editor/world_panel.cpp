@@ -108,7 +108,8 @@ void WorldPanel::observe(const renderer::FrameStats& stats) {
         text[5]=value.enabled?std::format(L"{} scheduled · {} reset",value.updated,value.reset_probes):L"—";
     }
 }
-void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent,ui_language::LiveDocument& document,const renderer::ViewSettings& view,bool editable) const {
+void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent,ui_language::LiveDocument& document,const renderer::ViewSettings& view,bool editable,
+    std::wstring_view main_camera,bool can_clear_camera) const {
     using namespace ui_language;namespace key=world_control;
     static const renderer::ViewSettings defaults;
     help_.begin();
@@ -197,9 +198,10 @@ void WorldPanel::append(std::vector<ui::Control>& controls,ui::ControlKey parent
     constexpr std::array labels{L"Placement",L"World min (m)",L"World max (m)",L"Spacing (m)",L"Resident (CPU)",L"This frame (CPU)"};
     for(std::size_t i=0;i<labels.size();++i) actual->push_back({key::root+128+i,{std::wstring(labels[i]),readouts_[slot_][i].empty()?std::wstring(L"—"):readouts_[slot_][i]}});
     std::uint32_t total{};for(const auto& item:view.lit.probe_volumes) if(item.enabled) total+=item.counts[0]*item.counts[1]*item.counts[2];
-    const std::array<InputValue,12> inputs{L"Volume "+std::to_wstring(slot_),ItemList{std::move(volume_groups)},ItemList{std::move(propagation)},ItemList{std::move(actual)},
+    const std::array<InputValue,14> inputs{L"Volume "+std::to_wstring(slot_),ItemList{std::move(volume_groups)},ItemList{std::move(propagation)},ItemList{std::move(actual)},
         std::to_wstring(total)+L" / 4096 configured probes",ItemList{std::move(lighting_groups)},ItemList{std::move(groups)},ItemList{std::move(diagnostics)},editable,
-        TableBinding{performance_.table(),performance_.selection()},performance_.status(),performance_.resources()};
+        TableBinding{performance_.table(),performance_.selection()},performance_.status(),performance_.resources(),std::wstring(main_camera),
+        ActionBinding{static_cast<ui::ControlKey>(Command::clear_main_camera),can_clear_camera}};
     const std::array keys{KeyBinding{"slot",key::slot},KeyBinding{"setup",key::setup},KeyBinding{"scroll",key::root+80},KeyBinding{"lighting_tab",key::lighting_tab},KeyBinding{"ddgi_tab",key::ddgi_tab},KeyBinding{"effects_tab",key::effects_tab},KeyBinding{"diagnostics_tab",key::diagnostics_tab},
         KeyBinding{"performance_tab",key::performance_tab},KeyBinding{"performance_table",key::performance_table},KeyBinding{"performance_status",key::performance_status},KeyBinding{"performance_resources",key::performance_resources}};
     static_cast<void>(document.append("WorldPanel",parent,keys,inputs,controls));

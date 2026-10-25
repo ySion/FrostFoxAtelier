@@ -2,11 +2,13 @@
 #include "shader_source.hpp"
 #include "math/math.hpp"
 #include "scene_lit.hpp"
+#include "scene_geometry.hpp"
 #include "frame_slots.hpp"
 #include "raster_viewport.hpp"
 #include "scene_visibility.hpp"
 #include "timing.hpp"
 
+#include <ankerl/unordered_dense.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
 
@@ -20,10 +22,54 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+
+namespace atelier::renderer::detail {
+WeldedMesh weld(const geometry::Mesh& mesh) {
+    // Merges only bitwise-identical corners: every vertex keeps its exact authored data.
+    struct Hash {
+        using is_transparent=void;using is_avalanching=void;
+        const std::vector<geometry::Vertex>* unique;
+        std::uint64_t operator()(const geometry::Vertex& v) const noexcept {
+            return ankerl::unordered_dense::hash<std::string_view>{}(std::string_view(reinterpret_cast<const char*>(&v),sizeof v));
+        }
+        std::uint64_t operator()(std::uint32_t i) const noexcept {return (*this)((*unique)[i]);}
+    };
+    struct Equal {
+        using is_transparent=void;
+        const std::vector<geometry::Vertex>* unique;
+        bool operator()(std::uint32_t a,std::uint32_t b) const noexcept {return a==b;}
+        bool operator()(const geometry::Vertex& v,std::uint32_t i) const noexcept {return std::memcmp(&v,&(*unique)[i],sizeof v)==0;}
+        bool operator()(std::uint32_t i,const geometry::Vertex& v) const noexcept {return (*this)(v,i);}
+    };
+    const auto source=mesh.vertices();
+    WeldedMesh result;result.indices.resize(source.size());result.faces.resize(source.size()/3);
+    ankerl::unordered_dense::set<std::uint32_t,Hash,Equal> seen(0,Hash{&result.vertices},Equal{&result.vertices});
+    for(std::size_t i=0;i<source.size();++i) {
+        if(const auto found=seen.find(source[i]);found!=seen.end()) {result.indices[i]=*found;continue;}
+        const auto index=static_cast<std::uint32_t>(result.vertices.size());
+        result.vertices.push_back(source[i]);seen.insert(index);result.indices[i]=index;
+    }
+    for(const auto& part:mesh.parts())for(std::uint32_t t=part.first_vertex/3;t<(part.first_vertex+part.vertex_count)/3;++t) {
+        const auto* v=source.data()+std::size_t(t)*3;
+        std::array<double,3> a{},b{};
+        for(std::size_t i=0;i<3;++i) {a[i]=double(v[1].position[i])-v[0].position[i];b[i]=double(v[2].position[i])-v[0].position[i];}
+        const std::array<double,3> normal{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
+        const double length=std::hypot(normal[0],normal[1],normal[2]);
+        double orientation=0;
+        for(std::size_t i=0;i<3;++i)orientation+=normal[i]*(double(v[0].normal[i])+v[1].normal[i]+v[2].normal[i]);
+        auto& face=result.faces[t];
+        for(std::size_t i=0;i<3;++i)
+            face.normal[i]=length==0?v[0].normal[i]:static_cast<float>(normal[i]/length*(orientation<0?-1:1));
+        face.slot_edges=part.material|std::uint32_t(mesh.edge_mask(t))<<face_slot_bits;
+    }
+    return result;
+}
+}
 
 namespace atelier::renderer {
 namespace {
@@ -195,9 +241,12 @@ void validate(const Frame &frame, MeshChecks &meshes) {
         good &= finite(v);
     for (float v : frame.camera.projection)
         good &= finite(v);
+    good &= finite(frame.camera.far_depth) && frame.camera.far_depth>=0 && frame.camera.far_depth<=1;
     std::uint64_t material_slots=0;
     good &= meshes.check(frame.meshes, material_slots);
     good &= material_slots<=std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface);
+    static_assert(std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface)<(1u<<detail::face_slot_bits),
+        "An accepted Frame's material slots fit GpuFace");
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
             finite(draw.border_width) && draw.border_width >= 0 && !(draw.coverage && draw.image);
@@ -217,13 +266,6 @@ void validate(const Frame &frame, MeshChecks &meshes) {
     }
     meshes.commit(frame.meshes);
 }
-struct SceneTriangle {
-    std::array<geometry::Vertex, 3> vertices;
-    std::uint32_t edge_mask;
-    std::array<float, 3> face_normal;
-    std::uint32_t material_slot{};
-    std::array<std::uint32_t,3> reserved{};
-};
 struct GridCamera {
     std::array<float, 16> view_projection, inverse;
 };
@@ -261,25 +303,6 @@ std::optional<std::array<float,16>> prepare_cavity_projection(const Frame& frame
     return result;
 }
 enum class PipelineStyle { ui, surface, cavity_surface, depth, visible_lines, all_lines, background, grid, grid_depth };
-static_assert(sizeof(SceneTriangle) == 176);
-SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
-    const auto vertices = mesh.vertices().subspan(index * 3, 3);
-    SceneTriangle result{{vertices[0], vertices[1], vertices[2]}, mesh.edge_mask(index), {}, mesh.material_slot(index), {}};
-    std::array<double, 3> a{}, b{}, normal{};
-    for (std::size_t i = 0; i < 3; ++i) {
-        a[i] = double(vertices[1].position[i]) - vertices[0].position[i];
-        b[i] = double(vertices[2].position[i]) - vertices[0].position[i];
-    }
-    normal = {a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]};
-    const double length = std::hypot(normal[0], normal[1], normal[2]);
-    double orientation = 0;
-    for (std::size_t i = 0; i < 3; ++i)
-        orientation += normal[i] * (double(vertices[0].normal[i]) + vertices[1].normal[i] + vertices[2].normal[i]);
-    for (std::size_t i = 0; i < 3; ++i)
-        result.face_normal[i] = length == 0 ? vertices[0].normal[i] :
-            static_cast<float>(normal[i] / length * (orientation < 0 ? -1 : 1));
-    return result;
-}
 Instance prepare_instance(const MeshInstance &mesh) {
     const auto &m = mesh.world;
     const auto normal = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
@@ -367,7 +390,8 @@ struct Renderer::State {
     std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
     material::ImageRef white_image;
     // group is this frame's MeshGroup only while that group points back at the entry.
-    struct CachedGeometry { geometry::MeshRef source; GfxBuffer vertices; bool used{}; std::uint32_t group{}; };
+    struct CachedGeometry { geometry::MeshRef source; detail::SceneGeometry gpu; bool used{}; std::uint32_t group{}; };
+    std::uint64_t geometry_uploads{};
     // One per geometry in first-appearance order over the complete snapshot, so
     // visibility and selection never reorder draws. Ranges index draw_instances.
     struct MeshGroup { CachedGeometry* geometry; std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{}; };
@@ -484,10 +508,12 @@ struct Renderer::State {
         }
         for (auto& [key, geometry] : geometries) {
             (void)key;
-            if (!geometry.vertices) continue;
-            const auto r = gfxDestroyBuffer(gfx, geometry.vertices);
-            if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
-            geometry.vertices = {};
+            for (auto* buffer : {&geometry.gpu.vertices, &geometry.gpu.indices, &geometry.gpu.faces}) {
+                if (!*buffer) continue;
+                const auto r = gfxDestroyBuffer(gfx, *buffer);
+                if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
+                *buffer = {};
+            }
         }
         geometries.clear(); mesh_groups.clear();
         for(const auto r:{draw_order_slots.retire(gfx),instance_slots.retire(gfx)})if(r)
@@ -785,6 +811,7 @@ struct Renderer::State {
         const std::array<std::uint32_t,2> guides{frame.view.reference_grid?1u:0u,frame.view.origin_axes?1u:0u};
         require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse), "Set grid inverse camera");
         require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection), "Set grid camera");
+        require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth), "Set grid far clipping");
         require(gfxProgramSetParameter(gfx, program, "guides", guides), "Set reference guides");
         require(gfxProgramSetParameter(gfx, program, "grid_spacing", frame.view.grid_spacing), "Set grid spacing");
         require(gfxProgramSetParameter(gfx, program, "grid_plane", static_cast<std::uint32_t>(frame.view.grid_plane)), "Set grid plane");
@@ -888,15 +915,17 @@ struct Renderer::State {
                 timing::Scope upload_stage{phases::encode_scene_upload};
                 for (const auto& group : mesh_groups) {
                     auto& geometry = *group.geometry;
-                    if (!geometry.vertices) {
-                        const auto vertices = geometry.source->vertices();
-                        std::vector<SceneTriangle> triangles;
-                        triangles.reserve(vertices.size() / 3);
-                        for (std::size_t i = 0; i < vertices.size() / 3; ++i)
-                            triangles.push_back(prepare_triangle(*geometry.source, i));
-                        geometry.vertices = gfxCreateBuffer<SceneTriangle>(gfx,
-                            static_cast<std::uint32_t>(triangles.size()), triangles.data());
-                        allocation(bool(geometry.vertices));
+                    if (!geometry.gpu.vertices) {
+                        const auto welded = detail::weld(*geometry.source);
+                        auto& gpu = geometry.gpu;
+                        gpu.vertices = gfxCreateBuffer<geometry::Vertex>(gfx, static_cast<std::uint32_t>(welded.vertices.size()), welded.vertices.data());
+                        allocation(bool(gpu.vertices));
+                        gpu.indices = gfxCreateBuffer<std::uint32_t>(gfx, static_cast<std::uint32_t>(welded.indices.size()), welded.indices.data());
+                        allocation(bool(gpu.indices));
+                        gpu.faces = gfxCreateBuffer<detail::GpuFace>(gfx, static_cast<std::uint32_t>(welded.faces.size()), welded.faces.data());
+                        allocation(bool(gpu.faces));
+                        gpu.triangle_count = static_cast<std::uint32_t>(welded.faces.size());
+                        gpu.generation = ++geometry_uploads;
                     }
                     geometry.used = true;
                 }
@@ -932,6 +961,7 @@ struct Renderer::State {
                 require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
                 require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection), "Set projection matrix");
                 require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection), "Set raster view projection");
+                require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth), "Set scene far clipping");
                 require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy");
                 require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
                 require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
@@ -943,21 +973,19 @@ struct Renderer::State {
                     const auto count=selected_only?group.selected_count:group.visible_count;
                     if(!count)continue;
                     const auto& geometry = *group.geometry;
-                    require(gfxProgramSetParameter(gfx, program, "triangles", geometry.vertices), "Bind mesh triangles");
+                    require(gfxProgramSetParameter(gfx, program, "vertices", geometry.gpu.vertices), "Bind mesh vertices");
+                    require(gfxProgramSetParameter(gfx, program, "faces", geometry.gpu.faces), "Bind mesh triangle records");
+                    require(gfxProgramSetParameter(gfx, program, "first_triangle", 0u), "Set mesh triangle offset");
                     require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
-                    for(const auto& part:geometry.source->parts()) {
-                        require(gfxProgramSetParameter(gfx,program,"material_slot",part.material),"Set material slot");
-                        require(gfxProgramSetParameter(gfx,program,"first_vertex",part.first_vertex),"Set material vertex offset");
-                        require(gfxCommandDraw(gfx,part.vertex_count,count),"Draw material part");
-                        ++stats.scene_draw_calls;
-                    }
+                    require(gfxCommandBindIndexBuffer(gfx, geometry.gpu.indices), "Bind mesh indices");
+                    require(gfxCommandDrawIndexed(gfx,geometry.gpu.triangle_count*3,count),"Draw mesh batch");
+                    ++stats.scene_draw_calls;
                 }
             };
             if(lighting) {
                 lit_draws.clear();lit_draws.reserve(mesh_groups.size());
                 for(const auto& group:mesh_groups)
-                    lit_draws.push_back({group.geometry->vertices,static_cast<std::uint32_t>(group.geometry->source->vertices().size()),
-                        group.visible_first,group.visible_count});
+                    lit_draws.push_back({group.geometry->gpu,group.visible_first,group.visible_count});
                 {
                     timing::Scope lit_stage{phases::encode_lit};
                     scene_lit->draw(frame,extent,depth,{lit_draws,instance_groups,order},materials,stats);
@@ -1007,7 +1035,8 @@ struct Renderer::State {
         stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) { ++it; continue; }
-            if (it->second.vertices) require(gfxDestroyBuffer(gfx, it->second.vertices), "Retire unused mesh geometry");
+            for (const auto &buffer : {it->second.gpu.vertices, it->second.gpu.indices, it->second.gpu.faces})
+                if (buffer) require(gfxDestroyBuffer(gfx, buffer), "Retire unused mesh geometry");
             it = geometries.erase(it);
         }
         require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");
@@ -1201,7 +1230,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms={};s.stats.scene_lit_ddgi_gpu_ms={};s.stats.scene_lit_ddgi_visibility_rays={};s.stats.scene_lit_gpu_timing_valid=false;
     s.stats.scene_lit_direct_shading_gpu_ms=0;s.stats.scene_lit_ddgi_update_gpu_ms={};s.stats.scene_lit_gpu_pass_mask=0;
-    s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;
+    s.stats.scene_lit_resource_bytes=0;s.stats.scene_lit_shadow_rays=0;s.stats.scene_lit_probe_rays=0;s.stats.scene_lit_reflection_work_items=0;
     s.stats.scene_lit_light_sources=0;s.stats.scene_lit_shadow_sources=0;s.stats.scene_lit_history_resets=0;s.stats.scene_lit_probe_volumes={};
     s.stats.scene_lit_spatial_sources=0;s.stats.scene_lit_spatial_cells=0;s.stats.scene_lit_spatial_bytes=0;s.stats.scene_lit_spatial_changed=false;
     s.stats.scene_lit_gpu_sample_sequence=0;s.stats.scene_lit_gpu_sample_frame_id=0;
@@ -1228,7 +1257,7 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
         s.instances.clear();
         s.instances.reserve(frame.meshes.size());
         s.raster_visibility.clear();s.raster_visibility.reserve(frame.meshes.size());
-        const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height);
+        const detail::SceneFrustum frustum(frame.camera.view,frame.camera.projection,frame.scene_viewport.width,frame.scene_viewport.height,frame.camera.far_depth);
         s.mesh_groups.clear();s.instance_groups.clear();s.instance_groups.reserve(frame.meshes.size());
         for (std::size_t i = 0; i < frame.meshes.size(); ++i) {
             const auto &mesh = frame.meshes[i];

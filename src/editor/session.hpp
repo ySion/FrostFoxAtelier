@@ -93,6 +93,11 @@ public:
     // Binds the Environment's sky map to a resolved asset, as one history item; an empty
     // asset clears it. Creates the Environment like set_environment; a disabled one rejects.
     Result<void> set_sky_map(const SkyAsset&);
+    // Authored weak selection, not camera availability; null without an Environment.
+    Result<ObjectId> main_camera() const;
+    // Same-document Entity with exactly one CameraComponent (disabled is allowed).
+    // Null clears. The first Set creates a default Environment in this history item.
+    Result<void> set_main_camera(ObjectId);
     // Load initialization of a freshly opened document without an Environment, before any
     // history: creates it without an undo entry or a modified mark. The next save writes it.
     Result<void> initialize_environment(const rendering::SceneLightingSettings&);
@@ -102,6 +107,7 @@ public:
     Result<world::Commit> add_entity(TypeId actual = {});
     Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
+    Result<world::Commit> create_camera(math::Vector3 position = {});
     Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
     Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
     Result<world::Commit> duplicate_selected(); // Fresh Entity/Component identities; immutable resources stay shared.
@@ -235,8 +241,18 @@ public:
     static constexpr std::size_t maximum_entities = 8192;
     static constexpr std::size_t maximum_components = 1024;
 private:
+    struct ReferenceFieldChange {
+        ObjectRoot root;
+        ObjectId entity;
+        world::FieldPath path;
+        ObjectReference before, after; // Weak targets are not kept alive by history.
+    };
     // Removal records restore together as one forest transaction.
-    struct EntityChange { bool added{}; std::vector<world::EntityRemoval> removals; };
+    struct EntityChange {
+        bool added{};
+        std::vector<world::EntityRemoval> removals;
+        std::optional<ReferenceFieldChange> cleared_camera;
+    };
     struct ComponentChange { bool added{}; world::ComponentRemoval removal; bool created_transform{}; };
     struct ReparentChange {
         struct Entry {ObjectRoot root;world::Trs before,after;};
@@ -280,7 +296,7 @@ private:
     // Undo and redo restore the stored map, so the scene sees the same pointer again.
     struct SkyMapChange {ObjectRoot root;ObjectId entity;presentation::SkyMapBinding before,after;};
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
-    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,SkyMapChange,RetainedChange>;
+    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,SkyMapChange,RetainedChange,ReferenceFieldChange>;
     // Sparse scene-record JSON text the loader could not apply. On the document entry,
     // materials are unreferenced definitions kept for write-back; on a component, they
     // are the scene materials its kept binding table names.
@@ -346,6 +362,8 @@ private:
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     Result<ObjectId> admit_property_edit(ObjectId) const;
     Result<void> apply_field(const FieldChange&, bool forward);
+    Result<void> apply_reference(const ReferenceFieldChange&, bool forward);
+    Result<std::optional<ReferenceFieldChange>> main_camera_removal(std::span<const ObjectId>);
     Result<void> apply_group(const FieldGroupChange&, bool forward);
     Result<void> write_group(ObjectId,std::span<const world::FieldPath>,std::span<const Scalar>);
     Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);

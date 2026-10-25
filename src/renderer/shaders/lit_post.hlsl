@@ -457,19 +457,23 @@ bool lit_ssr_intersect(float3 world_origin, float3 ray, float3 view_direction,
             if (lit_post_inside_uv(candidate.xy)) {
                 int2 q = lit_post_pixel(candidate.xy);
                 float z = lit_depth.Load(int3(q, 0));
-                float3 surface = lit_world(candidate.xy, z);
-                float along_ray = dot(surface - world_origin, ray);
-                float error = length(surface - world_origin - ray * along_ray);
-                float thickness = world_thickness + along_ray * .002;
-                float3 hit_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
-                if (!lit_is_background_depth(z) && along_ray > max(lit_controls.y * 8, .04) &&
-                    along_ray < max_distance && error < thickness && dot(hit_normal, -ray) > .025) {
-                    float2 local = (candidate.xy * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
-                    float edge = min(min(local.x, local.y), min(1 - local.x, 1 - local.y));
-                    confidence = saturate(edge * 12) * (1 - smoothstep(.75, 1, along_ray / max_distance)) *
-                                 (1 - smoothstep(.25, 1, error / thickness));
-                    hit = float4(candidate.xy, z, along_ray);
-                    return confidence > 0;
+                // Depth zero is an infinite direction, not a surface point.
+                // An empty candidate still advances through the current cell below.
+                if (!lit_is_background_depth(z)) {
+                    float3 surface = lit_world(candidate.xy, z);
+                    float along_ray = dot(surface - world_origin, ray);
+                    float error = length(surface - world_origin - ray * along_ray);
+                    float thickness = world_thickness + along_ray * .002;
+                    float3 hit_normal = lit_safe_normal(lit_normal_roughness.Load(int3(q, 0)).xyz);
+                    if (along_ray > max(lit_controls.y * 8, .04) &&
+                        along_ray < max_distance && error < thickness && dot(hit_normal, -ray) > .025) {
+                        float2 local = (candidate.xy * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
+                        float edge = min(min(local.x, local.y), min(1 - local.x, 1 - local.y));
+                        confidence = saturate(edge * 12) * (1 - smoothstep(.75, 1, along_ray / max_distance)) *
+                                     (1 - smoothstep(.25, 1, error / thickness));
+                        hit = float4(candidate.xy, z, along_ray);
+                        return confidence > 0;
+                    }
                 }
             }
         }
@@ -633,6 +637,8 @@ bool lit_post_previous_hit_present(float2 hit, out float source_motion, out floa
     float3 position = previous_world.xyz / previous_world.w;
     float3 old_normal = lit_safe_normal(lit_history_normal.Load(int3(old_pixel, 0)).xyz);
     depth += dot(hit - lit_post_uv(old_pixel), lit_post_previous_depth_gradient(position,lit_decode_normal(lit_history_geometry_normal.Load(int3(old_pixel,0)))));
+    // A far-boundary change cuts history, so reusable history has this same bound.
+    if (!isfinite(depth) || depth <= 0 || depth < lit_far_depth || depth > 1) return false;
     local = (hit * lit_size_frame.xy - lit_viewport.xy) / lit_viewport.zw;
     previous_world = mul(float4(local * float2(2, -2) + float2(-1, 1), depth, 1), lit_previous_inverse_view_projection);
     position = previous_world.xyz / previous_world.w;

@@ -36,6 +36,7 @@ inline std::unexpected<Error> error(ErrorCode code, std::string message) { retur
 // Validators registered with LightSettings and EnvironmentComponent.
 Result<void> light_rules(const LightSettings&);
 Result<void> environment_rules(const EnvironmentComponent&);
+Result<void> camera_rules(const CameraComponent&);
 // Checks a native value against its reflected type's hard bounds and validators.
 template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
     auto type = runtime.native_type<T>();
@@ -51,6 +52,8 @@ Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfac
 Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::SurfaceRef>>);
 // One EnvironmentComponent per World, disabled components included.
 world::World::Admission unique_environment(world::CapabilityId environments);
+// One CameraComponent per Entity, disabled and derived components included.
+world::World::Admission unique_camera(world::CapabilityId cameras);
 // The diagnostic of an extraction item failure, for World::contain.
 world::Diagnostic diagnostic(world::DiagnosticKind, world::DiagnosticPhase, ObjectId object, ObjectId entity,
     std::vector<std::string> field = {});

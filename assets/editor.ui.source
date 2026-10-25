@@ -316,7 +316,8 @@ ui ResourceProperty(in Text title, in Text value) {
 ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
               in Items<PropertyGroup> propagation, in Items<ResourceProperty> actual, in Text configured,
               in Items<PropertyGroup> lighting, in Items<PropertyGroup> effects, in Items<PropertyGroup> diagnostics,
-              in bool editable, in TableBinding performance, in Text performance_status, in Text performance_resources) {
+              in bool editable, in TableBinding performance, in Text performance_status, in Text performance_resources,
+              in Text main_camera, in ActionBinding clear_camera) {
     state double page = 0.0d;
     state bool show_actual = true;
     Column pane { expand_height: true; panel: true; classes: "parameter-pane";
@@ -333,7 +334,14 @@ ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
             Combo setup { text: "Coverage"; enabled: input.editable; height: 26.667; content_width: 0; min_width: 88; classes: "parameter-menu"; collapsed: state.page != 1.0d; }
         }
         List scroll { expand_height: true; gap: 1; collapsed: state.page == 4.0d; classes: "parameter-list";
-            Column lighting { gap: 1; collapsed: state.page != 0.0d; Repeat lighting_settings { items: input.lighting; } }
+            Column lighting { gap: 1; collapsed: state.page != 0.0d;
+                Row camera { height: 28; padding_left: 6; padding_right: 6; gap: 6; align_center: true;
+                    Text label { text: "Main camera"; single_line: true; }
+                    Text value { text: input.main_camera; expand_width: true; single_line: true; classes: "resource-value"; }
+                    Button clear_camera { text: "Clear"; action: input.clear_camera; height: 24; width: 44; classes: "parameter-tool"; }
+                }
+                Repeat lighting_settings { items: input.lighting; }
+            }
             Column ddgi { gap: 1; collapsed: state.page != 1.0d; Repeat volume { items: input.volume; } Repeat propagation { items: input.propagation; } }
             Column effects { gap: 1; collapsed: state.page != 2.0d; Repeat effect_settings { items: input.effects; } }
             Column diagnostics { gap: 1; collapsed: state.page != 3.0d;

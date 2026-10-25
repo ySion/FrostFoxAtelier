@@ -97,6 +97,9 @@ function(atelier_add_editor)
     add_custom_target(editor_control_path_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-path-acceptance" --repro-paths
         DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
+    add_custom_target(editor_camera_projection_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/camera-projection-acceptance" --camera-projection
+        DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_executable(atelier_editor_document_acceptance
         "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")

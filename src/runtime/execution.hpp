@@ -5,7 +5,7 @@
 namespace atelier {
 
 // Covers entry preparation, generated execution and frame teardown. Nested
-// invocations in one Runtime prevent publication until the outermost returns.
+// invocations in one Runtime prevent GC and publication until the outermost returns.
 // The Runtime must outlive the scope; moving transfers the same activation.
 class ExecutionScope final {
 public:
@@ -16,6 +16,7 @@ public:
     ExecutionScope& operator=(const ExecutionScope&) = delete;
     ExecutionScope& operator=(ExecutionScope&&) = delete;
 private:
+    friend class ExecutionFrame;
     explicit ExecutionScope(Runtime& runtime) noexcept : runtime_(&runtime) {}
     Runtime* runtime_;
 };
@@ -37,13 +38,13 @@ private:
     Runtime* runtime_;
 };
 
-// An execution owns registrations in caller-provided, stable slots. Coroutine
-// owners keep these slots across suspension. Runtime/storage outlive the frame.
-// Slot numbers identify
-// execution storage, never a second object identity. No value-record stack ABI.
+// Stable caller-owned slots: a synchronous frame borrows its execution interval;
+// a persistent frame owns roots across suspension. Scope/Runtime/storage outlive
+// their frame. Slot numbers are execution storage, never object identities.
 class ExecutionFrame final {
 public:
     ExecutionFrame(Runtime& runtime, std::span<ObjectRoot> slots) noexcept;
+    ExecutionFrame(ExecutionScope& scope, std::span<ObjectReference> slots) noexcept;
     ~ExecutionFrame();
     ExecutionFrame(const ExecutionFrame&) = delete;
     ExecutionFrame& operator=(const ExecutionFrame&) = delete;
@@ -58,20 +59,16 @@ public:
     [[nodiscard]] Result<void> create(std::uint32_t slot, TypeId type);
     // Identity only: subsequent Runtime access still validates liveness.
     [[nodiscard]] Result<ObjectId> object(std::uint32_t slot) const;
-    // Move the existing registration; no unrooted return-value interval.
+    // Hand off a root before ending the execution interval.
     [[nodiscard]] Result<ObjectRoot> take(std::uint32_t slot);
     [[nodiscard]] Result<void> clear(std::uint32_t slot);
     [[nodiscard]] bool empty() const noexcept;
-
-    // A request coalesces with an existing cycle; it never starts GC itself.
-    void request_collection() noexcept;
-    // Host-cooperative point, outside native borrows. At most one budgeted step.
-    [[nodiscard]] Result<CollectionProgress> poll(CollectionBudget budget);
+    [[nodiscard]] std::size_t size() const noexcept { return slots_.size() + references_.size(); }
 
 private:
     Runtime& runtime_;
     std::span<ObjectRoot> slots_;
-    bool collection_requested_{};
+    std::span<ObjectReference> references_;
 };
 
 enum class CoroutineState { ready, running, suspended, completed, failed, cancelled };

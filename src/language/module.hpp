@@ -40,6 +40,7 @@ struct TopLevel {
     SourcePosition position;
     MappedSource source;
     std::vector<std::uint32_t> uses;
+    std::string property; // eligible accessor projection for the complete project type-name check
 };
 struct ClassDeclaration {
     std::string name, base;

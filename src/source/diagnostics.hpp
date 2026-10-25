@@ -16,7 +16,7 @@ struct DiagnosticReport {
     std::string entry, source_name;
     DiagnosticStatus status{DiagnosticStatus::unused};
     DiagnosticCounters calls;
-    std::uint64_t resumes{}, gc_work{}, gc_reclaimed{}, peak_owned_values{};
+    std::uint64_t resumes{}, peak_owned_values{};
     std::size_t remaining_owned_values{};
     bool resources_cleared{};
     bool timing{};

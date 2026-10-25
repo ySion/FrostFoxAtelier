@@ -301,7 +301,9 @@ struct Program::Version {
         } catch (...) {}
     }
     template<class T>
-    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments, Diagnostics* diagnostics, Debugger* debugger) const {
+        auto activation = ExecutionScope::enter(*contract->binding.runtime);
+        if (!activation) return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
         auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
         if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
         DiagnosticScope scope(std::move(*capture), *contract->binding.runtime);
@@ -313,7 +315,7 @@ struct Program::Version {
                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
             const AbiArguments encoded(contract->binding, declaration->signature, arguments);
             if (!encoded.status) return std::unexpected(encoded.status.error());
-            auto result = invoke(receiver, encoded.values, {}, budget, nullptr, scope.trace(), debug_scope.state());
+            auto result = invoke(receiver, encoded.values, {}, nullptr, scope.trace(), debug_scope.state());
             if (!result) return std::unexpected(result.error());
             auto decoded = detail::scalar_value(*result, &contract->binding);
             if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
@@ -323,7 +325,9 @@ struct Program::Version {
         }()));
     }
     template<class T>
-    Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
+        auto activation = ExecutionScope::enter(*contract->binding.runtime);
+        if (!activation) return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
         auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
         if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
         DiagnosticScope scope(std::move(*capture), *contract->binding.runtime);
@@ -344,7 +348,7 @@ struct Program::Version {
             // native value here would execute an unrelated default constructor.
             ::atelier::detail::ValueStorage staging_owner;
             auto* staged = staging_owner.prepare(value.size, value.alignment);
-            auto result = invoke(receiver, encoded.values, {}, budget, staged, scope.trace(), debug_scope.state());
+            auto result = invoke(receiver, encoded.values, {}, staged, scope.trace(), debug_scope.state());
             if (!result) return std::unexpected(result.error());
             if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
                 return std::unexpected(Error{ErrorCode::invocation_failed, "Compiled aggregate result changed its typed output storage."});
@@ -353,7 +357,7 @@ struct Program::Version {
         }()));
     }
     Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
-        InvocationObserver observer, CollectionBudget budget, void* result_data = nullptr, BusinessTrace* trace = nullptr,
+        InvocationObserver observer, void* result_data = nullptr, BusinessTrace* trace = nullptr,
         std::shared_ptr<DebugSessionState> debugger = {}) const {
         if (info.signature.is_coroutine)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
@@ -366,7 +370,7 @@ struct Program::Version {
         if (!checked) return std::unexpected(std::move(checked.error()));
         std::uint32_t site = no_diagnostic_location;
         auto result = execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
-            declaration->signature.receiver.has_value(), receiver, arguments, false, observer, budget, result_data, trace, std::move(debugger), &site);
+            declaration->signature.receiver.has_value(), receiver, arguments, observer, result_data, trace, std::move(debugger), &site);
         if (!result) locate(result.error(), site);
         return result;
     }
@@ -402,11 +406,11 @@ struct Program::Frame final : CoroutineFrame {
     bool observed_terminal{}, captures_owned{};
     DiagnosticStatus terminal{DiagnosticStatus::cancelled};
     DebugStatus debug_terminal{DebugStatus::cancelled};
-    Frame(std::shared_ptr<const Version> owner, InvocationObserver observer, CollectionBudget budget,
+    Frame(std::shared_ptr<const Version> owner, InvocationObserver observer,
         std::shared_ptr<DiagnosticState> capture, std::shared_ptr<DebugSessionState> debugger)
         : version(std::move(owner)), diagnostic(std::move(capture)),
           invocation(*version->contract->binding.runtime, version->contract->binding,
-            version->layout, budget, observer, diagnostic ? &diagnostic->trace : nullptr, std::move(debugger)) {}
+            version->layout, observer, diagnostic ? &diagnostic->trace : nullptr, std::move(debugger)) {}
     ~Frame() override {
         // Generated destruction can call host cleanup, so retain Invocation and
         // Version until the DLL frame has finished using them.
@@ -500,7 +504,7 @@ struct Program::Prepared {
 };
 
 Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Version> version, ObjectId receiver,
-    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget, std::shared_ptr<DiagnosticState> capture,
+    std::span<const BusinessValue> arguments, InvocationObserver observer, std::shared_ptr<DiagnosticState> capture,
     std::shared_ptr<DebugSessionState> debugger) {
     if (!version || !version->info.signature.is_coroutine)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Starting a coroutine requires a coroutine declaration."});
@@ -514,7 +518,7 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
         auto checked_receiver = check_source_receiver(binding, receiver);
         if (!checked_receiver) return std::unexpected(std::move(checked_receiver.error()));
     }
-    auto frame = std::make_unique<Program::Frame>(std::move(version), observer, budget, std::move(capture), std::move(debugger));
+    auto frame = std::make_unique<Program::Frame>(std::move(version), observer, std::move(capture), std::move(debugger));
     if (hold_receiver) {
         auto held = frame->invocation.frame.hold(receiver_slot, receiver, binding.type);
         if (!held) return std::unexpected(std::move(held.error()));
@@ -588,98 +592,100 @@ Result<std::vector<DiagnosticLocation>> Program::Lease::debug_sites() const {
 }
 
 Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectId receiver,
-    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget) {
+    std::span<const BusinessValue> arguments, InvocationObserver observer) {
     const auto version = lease.version_;
     if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
     // Callback destruction of the lease is safe: only the local pin follows.
-    return version->invoke(receiver, arguments, observer, budget);
+    return version->invoke(receiver, arguments, observer);
 }
 Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectId receiver,
-    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget) {
+    std::span<const BusinessValue> arguments, InvocationObserver observer) {
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     const auto version = owner->select(entry.index_);
     if (!version) return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
     // Select once and never access the entry or program after callbacks start.
-    return version->invoke(receiver, arguments, observer, budget);
+    return version->invoke(receiver, arguments, observer);
 }
 Result<Coroutine> ProgramAccess::start(const Program::Lease& lease, ObjectId receiver,
-    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget) {
-    return start_version(lease.version_, receiver, arguments, observer, budget);
+    std::span<const BusinessValue> arguments, InvocationObserver observer) {
+    return start_version(lease.version_, receiver, arguments, observer);
 }
 Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId receiver,
-    std::span<const BusinessValue> arguments, InvocationObserver observer, CollectionBudget budget) {
+    std::span<const BusinessValue> arguments, InvocationObserver observer) {
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-    return start_version(owner->select(entry.index_), receiver, arguments, observer, budget);
+    return start_version(owner->select(entry.index_), receiver, arguments, observer);
 }
 BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept {
     return lease.version_ ? lease.version_->layout : BusinessFrameLayout{};
 }
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
         return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
-    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
         return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
-    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
     if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
-    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
     if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
-    return version->invoke_values(receiver, arguments, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
         return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
-    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
         return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
-    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
     if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
-    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-    ValueOutput output, CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
     if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
-    return version->invoke_values(receiver, arguments, output, budget, diagnostics, debugger);
+    return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
         return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
+    auto activation = ExecutionScope::enter(*version->contract->binding.runtime);
+    if (!activation) return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
     auto capture = DiagnosticAccess::begin(diagnostics, version->diagnostic,
         *version->contract->binding.runtime, version->info.diagnostics);
     if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
@@ -690,7 +696,7 @@ Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scala
     auto result = [&]() -> Result<Coroutine> {
         const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
         if (!encoded.status) return std::unexpected(encoded.status.error());
-        return ProgramAccess::start_version(version, receiver, encoded.values, {}, budget, scope.state(), debug_scope.state());
+        return ProgramAccess::start_version(version, receiver, encoded.values, {}, scope.state(), debug_scope.state());
     }();
     if (!result) return scope.complete(debug_scope.complete(std::move(result)));
     scope.transfer(DiagnosticStatus::ready);
@@ -698,9 +704,11 @@ Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scala
     return result;
 }
 Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments,
-    CollectionBudget budget, Diagnostics* diagnostics, Debugger* debugger) const {
+    Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
     if (!version) return std::unexpected(reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
+    auto activation = ExecutionScope::enter(*version->contract->binding.runtime);
+    if (!activation) return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
     auto capture = DiagnosticAccess::begin(diagnostics, version->diagnostic,
         *version->contract->binding.runtime, version->info.diagnostics);
     if (!capture) return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
@@ -711,7 +719,7 @@ Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scala
     auto result = [&]() -> Result<Coroutine> {
         const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
         if (!encoded.status) return std::unexpected(encoded.status.error());
-        return ProgramAccess::start_version(version, receiver, encoded.values, {}, budget, scope.state(), debug_scope.state());
+        return ProgramAccess::start_version(version, receiver, encoded.values, {}, scope.state(), debug_scope.state());
     }();
     if (!result) return scope.complete(debug_scope.complete(std::move(result)));
     scope.transfer(DiagnosticStatus::ready);

@@ -585,6 +585,21 @@ void shadow_cases(Fixture& f) {
     stats=warm("shadow-csm-infinite-perspective-warm");
     check(stats.scene_lit_shadow_cache_faces==4,"infinite-far perspective reuses all four complete cascades");
 
+    // Independent far clipping limits receivers, not the scene's caster storage.
+    // The only receiver is at z=4: far=3 removes it, far=5 restores its lighting.
+    f.frame.camera.far_depth=.1f/3;f.frame.camera_cut=true;
+    stats=submit("shadow-csm-finite-clip-empty");
+    const auto beyond_far=f.capture("shadow-csm-finite-clip-empty-image",4);
+    check(stats.scene_lit_shadow_cache_faces==0 && stats.scene_instances==1 &&
+        std::ranges::all_of(beyond_far.depth,[](float z){return z==0;}),
+        "finite far clips receivers without removing the scene instance");
+    f.frame.camera.far_depth=.1f/5;f.frame.camera_cut=true;
+    stats=submit("shadow-csm-finite-clip-restored");
+    const auto restored_far=f.capture("shadow-csm-finite-clip-restored-image",4);
+    check(stats.scene_lit_shadow_cache_faces==4 && mean_rgb(restored_far,infinite_region)[0]>20,
+        "finite far change restores receiver-bounded directional lighting");
+    f.frame.camera.far_depth=0;
+
     // Cascades fit the measured receiver depth. A wall 3 m away hides a far
     // receiver at 1000 m, so the conservative receiver bound is 1024 m and its
     // first cascade has about 3.7 cm texels at the wall; the fitted [2, 4] m

@@ -28,6 +28,7 @@ struct ViewportView {
     math::Vector3 eye, right, up, forward;
     math::Vector3 construction_normal{0,1,0};
     bool orthographic{};
+    float far_depth{};
     static ViewportView make(const Camera&, ui::Rect bounds, float dpi_scale);
     bool contains(float x, float y) const noexcept;
     // Screen position; empty outside the camera's near/far depth interval.

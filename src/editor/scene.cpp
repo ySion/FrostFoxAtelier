@@ -742,7 +742,10 @@ struct Session::GraphCodec {
                 continue;
             }
             Json* at=&properties;for(const auto& name:field->names) at=&(*at)[name];
-            *at=encode_scalar(runtime,take(runtime.read(object,path)));
+            if(field->form==ValueForm::strong_reference || field->form==ValueForm::weak_reference) {
+                const auto reference=take(runtime.read_reference(object,path));
+                *at=reference.is_null()?Json(nullptr):ref_key(identity(session,reference.id()));
+            } else *at=encode_scalar(runtime,take(runtime.read(object,path)));
         }
         if(!properties.empty()) op["properties"]=std::move(properties);
         return op;
@@ -1057,17 +1060,24 @@ struct Session::GraphCodec {
             committed(world.set_enabled(object,enabled));
         };
         // A record that fails its combined validation returns to the type defaults.
-        using Defaults=std::vector<std::pair<world::FieldPath,PropertyLeaf>>;
+        using Defaults=std::vector<std::pair<world::FieldPath,std::variant<Scalar,String,ArrayLeaf,ObjectReference,std::vector<ObjectReference>>>>;
         const auto snapshot=[&](ObjectId object,std::string_view prefix) {
             Defaults values;
             for(const auto& field:business_fields(runtime,session.types_,session.presentation_types_,take(runtime.type_of(object))))
-                if(field.form==ValueForm::inline_value && !field.names.empty() && (prefix.empty() || field.names.front()==prefix)) {
-                    if(field.kind==TypeKind::array) {
-                        const auto array=take(ArrayLeaf::create(runtime,field.type));take(runtime.read(object,field.path,array.output()));
-                        values.emplace_back(field.path,array);continue;
-                    }
-                    if(field.kind!=TypeKind::string) {values.emplace_back(field.path,take(runtime.read(object,field.path)));continue;}
-                    String text;take(runtime.read(object,field.path,ValueOutput{field.type,&text}));values.emplace_back(field.path,std::move(text));
+                if(!field.names.empty() && (prefix.empty() || field.names.front()==prefix)) {
+                    if(field.form==ValueForm::inline_value) {
+                        if(field.kind==TypeKind::array) {
+                            const auto array=take(ArrayLeaf::create(runtime,field.type));take(runtime.read(object,field.path,array.output()));
+                            values.emplace_back(field.path,array);continue;
+                        }
+                        if(field.kind!=TypeKind::string) {values.emplace_back(field.path,take(runtime.read(object,field.path)));continue;}
+                        String text;take(runtime.read(object,field.path,ValueOutput{field.type,&text}));values.emplace_back(field.path,std::move(text));
+                    } else if(field.form==ValueForm::strong_sequence) {
+                        const auto locator=take(runtime.reference_field(object,field.path));const auto count=take(runtime.sequence_size(locator));
+                        std::vector<ObjectReference> references;references.reserve(count);
+                        for(std::size_t i=0;i<count;++i) references.push_back(take(runtime.sequence_read(locator,i)));
+                        values.emplace_back(field.path,std::move(references));
+                    } else values.emplace_back(field.path,take(runtime.read_reference(object,field.path)));
                 }
             return values;
         };
@@ -1085,7 +1095,13 @@ struct Session::GraphCodec {
             for(const auto& [path,value]:defaults) {
                 if(const auto* scalar=std::get_if<Scalar>(&value)) take(runtime.write(object,path,*scalar));
                 else if(const auto* array=std::get_if<ArrayLeaf>(&value)) take(runtime.write(object,path,array->input()));
-                else take(runtime.write(object,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(value)}));
+                else if(const auto* text=std::get_if<String>(&value)) take(runtime.write(object,path,ValueInput{take(runtime.native_type<String>()),text}));
+                else if(const auto* reference=std::get_if<ObjectReference>(&value)) take(runtime.write_reference(object,path,*reference));
+                else {
+                    const auto locator=take(runtime.reference_field(object,path));
+                    const ReferenceChange change=SequenceSplice{locator,0,take(runtime.sequence_size(locator)),std::get<std::vector<ObjectReference>>(value)};
+                    take(runtime.apply_reference_changes({&change,1}));
+                }
             }
         };
         // Without its mesh a component has no slots. Its binding table is kept verbatim,
@@ -1109,8 +1125,9 @@ struct Session::GraphCodec {
                 const auto object=ids.at(local_key(part.at("id")));const auto type=take(runtime.type_of(object));
                 const bool light=derives(runtime,type,session.presentation_types_.light_component),physical=physical_type(runtime,type);
                 const bool environment=derives(runtime,type,session.presentation_types_.environment_component);
+                const bool camera=derives(runtime,type,session.presentation_types_.camera_component);
                 const auto light_defaults=light?snapshot(object,"settings"):Defaults{};
-                const auto environment_defaults=environment?snapshot(object,{}):Defaults{};
+                const auto record_defaults=environment || camera?snapshot(object,{}):Defaults{};
                 const auto body_defaults=physical?snapshot(object,"body"):Defaults{};
                 properties(part,object);
                 if(derives(runtime,type,session.presentation_types_.static_mesh_component)) {
@@ -1215,9 +1232,9 @@ struct Session::GraphCodec {
                 }
                 if(light) if(auto valid=presentation::validate_light(runtime,take(presentation::read_light(runtime,object)));!valid)
                     invalid_record(object,"settings",light_defaults,valid.error().message);
-                // The Environment's rules span its fields, so a record that breaks them returns whole to the defaults.
-                if(environment) if(const auto failure=take(runtime.validate(object)))
-                    invalid_record(object,{},environment_defaults,failure->error.message);
+                // These rules span fields, so a record that breaks them returns whole to the type defaults.
+                if(environment || camera) if(const auto failure=take(runtime.validate(object)))
+                    invalid_record(object,{},record_defaults,failure->error.message);
                 if(physical) {
                     auto settings=take(physics::read_settings(runtime,object));std::string problem;
                     if(auto valid=world::validate_body_settings(runtime,settings);!valid) problem=valid.error().message;
@@ -1669,15 +1686,55 @@ void Session::forward_change(const Change& change,bool forward) {
         std::visit([&](const auto& item) {
             using T=std::decay_t<decltype(item)>;
             if constexpr(std::is_same_v<T,EntityChange>) {
-                if(item.added!=forward) {for(const auto& removal:item.removals) push({{"op","remove"},{"id",C::live_id(*this,removal.id())}});return;}
+                const auto camera=[&] {
+                    if(item.cleared_camera) {
+                        const auto& edit=*item.cleared_camera;
+                        push(C::live_properties(*this,edit.root.id(),{&edit.path,1}));
+                    }
+                };
+                if(item.added!=forward) {
+                    camera();
+                    for(const auto& removal:item.removals) push({{"op","remove"},{"id",C::live_id(*this,removal.id())}});
+                    return;
+                }
                 struct Add {std::uint64_t parent;std::size_t index;Json op;};std::vector<Add> adds;
+                std::unordered_map<std::string,std::size_t> added_entities;
                 for(const auto& removal:item.removals) {
                     const auto root=removal.id(),parent=take(world::parent_entity(runtime_,root));const auto index=C::live_position(*this,root,parent);
+                    auto graph=C::capture(*this,{&root,1},true,false,true).data;
+                    for(const auto& entity:graph.at("entities")) added_entities.emplace(entity.at("id").template get<std::string>(),adds.size());
+                    // This transaction restores its camera reference after all roots.
+                    // An earlier Environment add must not refer to the still-missing target.
+                    if(item.cleared_camera) {
+                        const auto component=C::live_id(*this,item.cleared_camera->root.id());
+                        for(auto& entity:graph.at("entities")) for(auto& part:entity.at("components"))
+                            if(part.at("id")==component) part["properties"]["main_camera"]=nullptr;
+                    }
                     adds.push_back({parent==ObjectId{}?0:C::identity(*this,parent),index,{{"op","add"},
-                        {"parent",parent==ObjectId{}?Json(nullptr):Json(C::live_id(*this,parent))},{"index",index},{"graph",C::capture(*this,{&root,1},true,false,true).data}}});
+                        {"parent",parent==ObjectId{}?Json(nullptr):Json(C::live_id(*this,parent))},{"index",index},{"graph",std::move(graph)}}});
+                }
+                // Import and Redo also own references inside their incoming forest.
+                // Defer only main_camera across its roots; never resend an existing
+                // Environment or pull a target outside this batch back into Play.
+                std::optional<Json> imported_camera;
+                if(const auto env=environment();env!=ObjectId{}) {
+                    const auto component=C::live_id(*this,env);
+                    for(std::size_t i=0;i<adds.size();++i)
+                        for(auto& entity:adds[i].op.at("graph").at("entities")) for(auto& part:entity.at("components")) if(part.at("id")==component) {
+                            auto& properties=part.at("properties");
+                            const auto reference=properties.find("main_camera");
+                            if(reference==properties.end()) continue; // A retained malformed record may replace properties.
+                            if(const auto target=reference->find("$ref");target!=reference->end())
+                                if(const auto at=added_entities.find(target->template get<std::string>());at!=added_entities.end() && at->second!=i) {
+                                    imported_camera=set(env,"properties",{{"main_camera",*reference}});
+                                    *reference=nullptr;
+                                }
+                        }
                 }
                 std::ranges::sort(adds,{},[](const Add& add){return std::pair{add.parent,add.index};});
                 for(const auto& add:adds) push(add.op);
+                if(imported_camera) push(*imported_camera);
+                camera();
             } else if constexpr(std::is_same_v<T,ComponentChange>) {
                 const auto owner=item.removal.owner,component=item.removal.id();
                 if(item.added==forward) {
@@ -1692,6 +1749,8 @@ void Session::forward_change(const Change& change,bool forward) {
             } else if constexpr(std::is_same_v<T,FieldChange>) {
                 if(const auto* after=std::get_if<world::Trs>(&item.after)) leaves(item.root.id(),std::get<world::Trs>(item.before),*after);
                 else push(C::live_properties(*this,item.root.id(),{&item.path,1}));
+            } else if constexpr(std::is_same_v<T,ReferenceFieldChange>) {
+                push(C::live_properties(*this,item.root.id(),{&item.path,1}));
             } else if constexpr(std::is_same_v<T,FieldGroupChange>) push(C::live_properties(*this,item.root.id(),item.paths));
             else if constexpr(std::is_same_v<T,TransformChange>) {for(const auto& entry:item.entries) leaves(entry.root.id(),entry.before,entry.after);}
             else if constexpr(std::is_same_v<T,NameChange>) push(set(item.root.id(),"name",utf8(name(item.root.id()))));
@@ -1835,12 +1894,16 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         auto* entry=entry_of(object);if(!entry || entry->record.empty()) return;
         auto record=Json::parse(entry->record);if(!erase_path(record,path)) return;
         auto after=*entry;after.record=dump_retained(record);
-        swaps.push_back({object,*entry,after});*entry=std::move(after);
+        swaps.push_back({object,*entry,after});
+        if(object!=ObjectId{} && after.empty()) retained_.erase(object);
+        else *entry=std::move(after);
     };
     const auto drop_slots=[&](ObjectId object) {
         auto* entry=entry_of(object);if(!entry || entry->slots.empty()) return;
         auto after=*entry;after.slots.clear();
-        swaps.push_back({object,*entry,after});*entry=std::move(after);
+        swaps.push_back({object,*entry,after});
+        if(object!=ObjectId{} && after.empty()) retained_.erase(object);
+        else *entry=std::move(after);
     };
     // Field paths map to scene record paths: business fields live under
     // properties; a StaticMeshComponent's material fields are mesh payload keys.
@@ -1864,6 +1927,10 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         if constexpr(std::is_same_v<T,FieldChange>) {
             if(std::holds_alternative<world::Trs>(item.after)) drop(item.root.id(),space);else field(item.root.id(),item.path);
         } else if constexpr(std::is_same_v<T,FieldGroupChange>) {for(const auto& path:item.paths) field(item.root.id(),path);}
+        else if constexpr(std::is_same_v<T,ReferenceFieldChange>) field(item.root.id(),item.path);
+        else if constexpr(std::is_same_v<T,EntityChange>) {
+            if(item.cleared_camera) field(item.cleared_camera->root.id(),item.cleared_camera->path);
+        }
         else if constexpr(std::is_same_v<T,NameChange>) drop(item.root.id(),name);
         else if constexpr(std::is_same_v<T,BodyChange>) drop(item.root.id(),body);
         else if constexpr(std::is_same_v<T,TransformChange>) {for(const auto& entry:item.entries) drop(entry.root.id(),space);}

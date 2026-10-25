@@ -1,21 +1,19 @@
-# 首个场景编辑器
+# 场景编辑器
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
 
 完整 DSL 迁移的当前评估、区域需求、控件语义、手势边界和实施次序见[迁移计划](dsl-migration.md)。完整工具架、现有参数区结构和 Scene Tree 主体已使用当前[声明式 UI](declarative-ui.md)，现有外壳、菜单、停靠、Controls 和资源浏览器的装配也已迁入同一声明。
 启动日志和 Help → About 使用构建时生成的同一提交标识及配置；未提交改动标为 `local changes`。`atelier_editor --version` 可在不创建窗口的情况下读取该二进制的标识。工程打开成功后记录实际根目录，About 同时显示当前工程目录和场景路径。标识在构建时刷新，运行时不读取当前目录的 Git 状态。
-当前消费者将正式 Entity/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。已收口的 S1/S2 输入与视觉合同保留；当前基础控件增量及其验收入口见下文。World 使用可选内联空间的 Entity、StaticMeshComponent 和真实 StaticMeshEntity；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
+当前消费者将正式 Entity/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。输入、视觉合同及验收入口见下文。World 使用可选内联空间的 Entity、StaticMeshComponent 和真实 StaticMeshEntity；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
 模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择 Material 时编辑共享材质参数，其他资源显示元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；编辑器内 JIT 单步交互、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
 UI 作者层已将 Parameters 的查询、Position、属性组、Entity Structure 和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
-
-本波次审查、对象模型判断和验收见[工程工作流审查](../../research/editor-project-review-20261006.md)。
 
 ## 工程与文件
 
 [Editor Control](control.md) 是指令化操作与调试的标准入口，供 UI、快捷键、CLI、自动化、验收和 LLM 共用。现有外部指令支持实例发现、场景操作、内存快照导出和渲染对照；UI 直接调用业务层，本机管道与 CLI 适配到相同的 Application/Session 入口。正常编辑器默认启用外部接入，`--no-control` 可关闭；源码调试面板和 `debug.*` 仍待接入。
 
-编辑器操作统一为可经接口调用的操作符（菜单、快捷键、Control 和以后的自有语言共用同一入口），设计已定稿、尚未实现，见[操作符设计稿](operators.md)。
+场景和视口命令通过同一操作符入口供菜单、快捷键与 Control 调用；参数 schema、可用性、历史和后续语言接入边界见[操作符](operators.md)。
 
 工程直接选择文件夹，包含 Config、Content、Source、Cache。已接入创建/打开、场景保存重开、资源目录、三种浏览视图和 OBJ/glTF 几何导入；Source 文件已接入编辑器内创建、跨文件编译、真实组件类型、属性持久化、独立运行与兼容热更；项目 UI 采用同一工程配置并支持独立预览。格式、操作、资源身份和实际支持范围见[文件夹工程](projects.md)。
 
@@ -172,8 +170,6 @@ GPU 段：
 
 统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。现有 `--acceptance-surfaces` 端到端入口同时验证真实 GPU 数据、CPU 阶段的存在、层级、进入次数与行序、Table 显示与列宽、禁用项、合计、概要读取和换域清理，并生成 `world-performance.png` 与 `performance.json`；窗口 `--acceptance` 与 Control 验收另检查整个运行期间（含 Capture 步）没有计时结构错误。
 
-2026-10-13 的主目录 Dev / Release 构建、Scene Lit 文档链和性能表窗口验收通过。最终日志为 `out/performance-{dev,release}-verified.log`；同名前缀目录保留禁用 DDGI、启用 DDGI（`world-performance-ddgi.png`）、Target 缩小（`world-performance-resized.png`）和非 Lit 的截图。启用场景收满 120 个完成样本，验证 update、primary trace、hit lighting 与 gather 行有效；这些小场景截图用于接线验收，不作为代表性性能基线。
-
 ### 真实工程的原生 1440p 渲染对照
 
 直接光只有一条路径（灯列表、阴影 atlas 与融合 compose）。下面原生性能入口的 `clustered` 与 `clustered_orbit` 沿用原 case 名；2026-10-22 之前同名 case 测的是 RT 可见性的 A 路径，旧 `legacy` case 测的是已删除的 ReSTIR，前后对比时必须同时核对报告中的构建版本。
@@ -188,9 +184,9 @@ GPU 段：
 
 正常停靠布局可能需要超出桌面的客户区。仅此测量的校准使用 `SWP_NOSENDCHANGING` 避免 Windows 默认拖动尺寸上限截断，仍沿原生 `WM_SIZE` 和产品 resize 路径更新；产品窗口规则不变。报告的 `calibration` 按布局保存每步原窗口/客户区、实际 RT、DPI、viewport 像素误差、请求与实际调整尺寸及 Win32 错误。尺寸被截断、重复状态、超出 16384 像素窗口上限或耗尽校准步数均明确失败，不改变 Dock 比例或降低采样分辨率。
 
-完成冷资源准备后，独立采集接收面灯数 histogram。clustered case 关闭该诊断，保留同一相机、Scene 和 World 设置；额外 warmup 192 个接受帧，再收集 240 个按 sequence 去重、且来自 warmup 之后的完成 GPU 样本。之后追加 clustered_orbit：配置与 clustered 相同，预热和采样期间每个接受帧把 yaw 改变 .2°，在原相机 ±12° 内三角波往返，没有镜头切换；case 的 `camera_motion` 记录这些参数，结束后恢复原相机。它测量相机持续运动导致缓存失效时的成本，静止 case 的结果不能代表这种情况。随后使用同一场景、相机与原生视口测量最大化布局的 Smooth、MatCap，各 warmup 192 帧并记录 240 个真实接受步。最后通过 Dock 原有恢复入口解除最大化，保留原树和分隔比例，重新将实际 viewport 校准为 2560×1440，追加 docked_smooth、docked_matcap 两组；相机状态和 DPI 不变。非 Lit 的 gpu_passes 和 measured_main_total_ms 明确为 null，不读取上一组的 Scene Lit GPU 样本。统计含八个主区间、全部直接光/DDGI 子区间、cluster 计数、资源，以及接受帧呈现间隔的 P50/P95；`probe_rays`、`shadow_rays`、`ddgi_visibility_rays` 与耗时共用同一完成帧。CPU 观察帧和完成 GPU 帧分开标记。截图和 JSON 写盘在计时区间外。
+完成冷资源准备后，独立采集接收面灯数 histogram。clustered case 关闭该诊断，保留同一相机、Scene 和 World 设置；额外 warmup 192 个接受帧，再收集 240 个按 sequence 去重、且来自 warmup 之后的完成 GPU 样本。之后追加 clustered_orbit：配置与 clustered 相同，预热和采样期间每个接受帧把 yaw 改变 .2°，在原相机 ±12° 内三角波往返，没有镜头切换；case 的 `camera_motion` 记录这些参数，结束后恢复原相机。它测量相机持续运动导致缓存失效时的成本，静止 case 的结果不能代表这种情况。随后使用同一场景、相机与原生视口测量最大化布局的 Smooth、MatCap，各 warmup 192 帧并记录 240 个真实接受步。最后通过 Dock 原有恢复入口解除最大化，保留原树和分隔比例，重新将实际 viewport 校准为 2560×1440，追加 docked_smooth、docked_matcap 两组；相机状态和 DPI 不变。非 Lit 的 gpu_passes 和 measured_main_total_ms 明确为 null，不读取上一组的 Scene Lit GPU 样本。统计含八个主区间、全部直接光/DDGI 子区间、cluster 计数、资源，以及接受帧呈现间隔的 P50/P95；`probe_rays`、`shadow_rays`、`ddgi_visibility_rays`、`reflection_work_items`（SSSR 分类出、送去层级追踪的像素数）与耗时共用同一完成帧。CPU 观察帧和完成 GPU 帧分开标记。截图和 JSON 写盘在计时区间外。
 
-输出为 `render-performance.json`（schema v6）和六组同名 PNG：clustered、clustered_orbit、smooth、matcap、docked_smooth、docked_matcap。每个 case 明确记录 layout（maximized / docked）；layouts 目录记录各布局的实际 viewport、完整 RT、相机矩阵与活动 Dock 页。根级 viewport/camera 保留最初最大化布局，布局对照须读取 case 自身数据。正常布局可能需要更大的客户区；校准只接受像素覆盖精确相等，不以完整窗口尺寸代替 viewport。仅此测量入口在 Application 创建主 Renderer 时关闭 VSync，正常编辑器保持默认开启；报告读取本次实际配置。默认 Release 不启用 GPU validation。测量读取 Application 每一步自身的[帧阶段计时](../../foundation.md#帧阶段计时)记录（`Application::frame_record()`），呈现间隔取相邻两个接受步的帧记录结束时刻之差，包含被跳过的步进、等待以及步与步之间的验收工作；GPU 时间倒数不代表实际 FPS。结束恢复原 view，禁止保存 Scene。`--gpu-validation` 可用于诊断，其结果须与正常性能数据区分。
+输出为 `render-performance.json`（schema v7）和六组同名 PNG：clustered、clustered_orbit、smooth、matcap、docked_smooth、docked_matcap。每个 case 明确记录 layout（maximized / docked）；layouts 目录记录各布局的实际 viewport、完整 RT、相机矩阵与活动 Dock 页。根级 viewport/camera 保留最初最大化布局，布局对照须读取 case 自身数据。正常布局可能需要更大的客户区；校准只接受像素覆盖精确相等，不以完整窗口尺寸代替 viewport。仅此测量入口在 Application 创建主 Renderer 时关闭 VSync，正常编辑器保持默认开启；报告读取本次实际配置。默认 Release 不启用 GPU validation。测量读取 Application 每一步自身的[帧阶段计时](../../foundation.md#帧阶段计时)记录（`Application::frame_record()`），呈现间隔取相邻两个接受步的帧记录结束时刻之差，包含被跳过的步进、等待以及步与步之间的验收工作；GPU 时间倒数不代表实际 FPS。结束恢复原 view，禁止保存 Scene。`--gpu-validation` 可用于诊断，其结果须与正常性能数据区分。
 
 每个 case 的 cpu.samples 记录接受帧身份及该步的帧计时序号 `timing_sequence`；cpu.stages 按目录顺序给出该 case 中进入过的每个阶段的分布：`frame` 为整步，`app.*` 为宿主阶段（`app.scene` 含 `app.scene.extract`），`render.*` 为渲染阶段（prepare/encode/frame，frame 下为 submit/present/wait/recycle），`frame.unattributed` 为整步减去直接子阶段之和。父子阶段不能相加；帧计时序号不能和异步完成的 GPU 样本身份混用。accepted_steps_per_second 来自接受步数与帧记录覆盖的墙钟时间。
 
@@ -370,7 +366,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 本轮集成的 Dev / Release 编译、World、场景/JIT、材质及原生窗口快捷键/弹窗尺寸端到端均通过；包含 FPS 开关、采样、重复设置、被动文字绘制与关闭清理。发布版完整编辑器文档链及地牢的 2332 个模型、30 张共享图集、三个场景保存重开也通过。日志为 `out/stage-{dev,release}-{world,scene,materials,shortcuts,surfaces}.log`，发布版完整链为 `out/stage-release-{documents,dungeons}.log`；FPS 截图与逐移动记录在 `out/stage-{dev,release}-shortcuts/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 `editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口且仅需一次 Present、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；`surface-evidence/surfaces.csv` 按菜单和打开序号记录每次打开的 Present 次数，PNG 保存拖动预览和提交后的画面。菜单打开的 CPU 耗时计入[帧性能](#帧性能)中打开它的宿主阶段。
 
-2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门复现与验证见[渲染验收](../renderer/acceptance.md#选中边线深度一致性2026-10-11)。
+2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门验证见[渲染验收](../renderer/acceptance.md#默认入口)。
 
 2026-10-11 的 DDGI 整合验收通过当时的 Scene Lighting → DDGI Debug 菜单点击 Probe Spheres 互斥项与 Volume Bounds 勾选项（当前入口已迁至 World → Diagnostics），确认显示设置生效且不写场景历史。Dev 与独立 Release 均通过，菜单截图和日志在 `out/ddgi-integration-20261011/surfaces-{dev,release}/` 及对应 `.log`。
 
@@ -419,18 +415,6 @@ cmake --build --preset release --target editor_ime_acceptance
 
 驱动只请求一次前台并等待用户切换，随后失焦即停止，不反复抢焦点。临时生产 DEBUG、逐键跟踪、有界取消快照及诊断分支均已移除，保留必要原生计数、失败分类和正式回归。`out/sogou-environment-final.json` 与实测前记录核对，输入法列表/顺序和搜狗默认未变。系统 IME、协议注入、静态环境检查分别记录；此次仅证明当时搜狗 16.8.0.5415 及已观察候选顺序，不代表其他 IME。S2 已在该范围内收口；后续编辑器能力以本模块和当前声明式 UI 文档为准。
 
-### S1 真实负载采样
-
-以下是已收口 S1 的同一次 release 窗口验收在 AMD Radeon RX 6800 XT、debug/GBV 与 vsync 开启时的结果。原始数据为 `out/release/editor-evidence-s1/s1-performance.csv` 和 `s1-resources.csv`；dev 归档目录保留相同格式。没有同负载改前数据，不声称性能提升比例，也不把这组数据当作 S2 测量结果。
-
-| 256成员负载 | 样本帧 | prepare CPU 均值 / p95（ms） | render CPU 均值 / p95（ms） | 栅格次数 / R8字节 | 上传次数 / 有效R8字节 |
-| --- | --- | --- | --- | --- | --- |
-| 列表滚动 | 48 | 0.235 / 0.342 | 15.346 / 17.422 | 232 / 370890 | 490 / 780588 |
-| 连续位置拖动 | 64 | 0.228 / 0.326 | 16.080 / 16.944 | 64 / 143427 | 64 / 143427 |
-
-滚动/拖动分别累计 UI draw 4245/5632、场景 draw 48/64。采样时 UI CPU Coverage 持有峰值分别为277项/451706字节、277项/457032字节；renderer cache峰值分别为33项/65354 texel字节、32项/64488 texel字节。CPU像素统计不含DWrite对象等开销，cache统计不含gfx待退休资源或物理显存。
-滚动中累计剪除11716个屏外文字控件生成，拖动中剪除15616个；滚回可能重新上传是现有帧末GPU缓存淘汰行为。真实业务参数仍只有XYZ，数据不代表高密度参数面板已经验证。
-
 ## Scene Tree
 
 Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合关系。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Entity、StaticMeshEntity 使用不同的原生矢量符号和颜色。组件组成在 Entity Structure 中显示，不进入 Scene Tree。Entity 组合 parent 决定树缩进；无空间的组织 Entity 仍显示，组件保留在 Entity Structure，不另建组件空间树。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
@@ -451,47 +435,10 @@ Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合�
 
 菜单栏和 Combo 在鼠标按下时请求展开，弹窗接管后续松键，不再等待一次完整点击。列表弹窗在主视口提交/Present 前更新与呈现，避免再等待一轮场景渲染；仍只接受与原生客户区匹配的 GPU 帧。PopupHost 在窗口呈现前通过 `Renderer::sync_window_target` 同步实际客户区尺寸，沿 RHI 原有排空和资源退休机制调整交换链；菜单直接准备并呈现正确尺寸的帧，移除了先呈现旧画布再重试的循环。同尺寸为空操作，隐藏窗口仍可准备尺寸，菜单输入继续只使用已接受的帧。这个调度调整不改变渲染器本身的重场景耗时。
 
-## Entity 迁移验收状态
+## 场景模型验收
 
-Entity 模型及二审修复已落地。以下记录限定于 2026-10-14 的 World 分支候选 `1278adce`；该候选的 GPU 窗口链尚未收口。随后与 UI、渲染的主线组合结果见本节末尾。
+`world_acceptance` 覆盖成员准入、空间求值、生命周期和 presentation；`project_scene_acceptance` 覆盖 Scene v9 往返、文档身份、保留数据、属性与引用历史。场景只接受当前版本，不包含旧格式迁移验收。物理组件的模拟与资产合同由 `physics_acceptance` 覆盖。
 
-| CPU 入口 | Dev | Release |
-| --- | --- | --- |
-| 受影响目标构建，含编辑器、Control 与运行消费者 | PASS | PASS |
-| World | 15/15 PASS | 15/15 PASS |
-| Physics | 22/22 PASS | 22/22 PASS |
-| Source public consumer、Project Scene | PASS | PASS |
-| editor document、viewport-edit（含 EntityComposition）、recovery、materials、legacy physics-project | PASS | PASS |
-| 10 个官方 physics examples 的文档/模拟链 | PASS | PASS |
+`project_integration_acceptance` 使用真实 Source 和独立 headless Play，覆盖构建、热更及作者变更转发。相机引用经文档身份转发，不比较两个 Runtime 的 ObjectId；真实 Source 控制器切镜头仍依赖尚未接入的通用引用能力，不能用原生行为或 IPC 检查代替。
 
-构建及 World/Physics 结果：[Dev](../../../out/entity-migration/review-dev-final-build.log)、[Release](../../../out/entity-migration/review-release-final-build.log)。场景编解码：[Dev](../../../out/entity-migration/review-dev-project-scene.log)、[Release](../../../out/entity-migration/review-release-project-scene.log)。完整文档：[Dev](../../../out/entity-migration/review-dev-document.log)、[Release](../../../out/entity-migration/review-release-document.log)。其余逐入口日志统一位于 [Entity 迁移目录](../../../out/entity-migration/)，使用 `review-dev-` / `review-release-` 前缀。
-
-新增反例覆盖整批空间图和极值缩放、运行中空间切换的生命周期/协程/物理连续性、Transform 撤销、外部空间引用的复制与恢复、材质共享身份和失败回滚、最终父级尺度的 Cook，以及旧 v1–v5 选择映射。Control 的正式编辑器入口已编译，其迁移映射经过无窗口文档链验收；完整 Control 窗口流程仍未运行。
-
-此前迁移阶段还通过了两配置 UI layout 41/41，以及 Dev 的 Dungeons 详细 CPU（2332 模型、30 atlas、3 场景）、Sponza、official examples 和 Project integration；本次二审未重跑这些入口，不将其标为本次执行结果。
-
-GPU 窗口结果分别记录如下，所有图形进程现已停止：
-
-- Dev edit 因 external focus loss 停止输入，未完成：[dev-window-edit.log](../../../out/entity-migration/dev-window-edit.log)。
-- physics window 暴露的旧 DDGI 断言已修正，Dev / Release 均编译通过，未重跑窗口验收：[dev-window-physics-examples.log](../../../out/entity-migration/dev-window-physics-examples.log)、[dev-window-build.log](../../../out/entity-migration/dev-window-build.log)、[release-window-build.log](../../../out/entity-migration/release-window-build.log)。
-- 官方 Examples 窗口 Renderer 因设备重置停止；日志记录 0x887A0007 / DXGI_ERROR_DEVICE_RESET：[dev-window-examples.log](../../../out/entity-migration/dev-window-examples.log)。用户报告 GPU 驱动崩溃，根因尚未判定，不能据此归因于驱动 bug 或断定与模型无关。
-- Dungeons / Control 窗口任务被停止，不计 PASS；Dungeons 的零退出码没有对应验收产物，不能作为通过证据：[dev-window-dungeons.log](../../../out/entity-migration/dev-window-dungeons.log)。
-
-范围外的扩展共享 UI 验收为 Dev/Release 23/24：[Dev](../../../out/entity-migration/dev-ui-e2e.log)、[Release](../../../out/entity-migration/release-ui-e2e.log)。唯一失败项 shared_menu_semantics 的 coverage 收集与 coverage checkbox 边框断言不一致。对应生产与验收源内容哈希均与 b0ede07d 一致；未运行该基线，不能据此声称基线 PASS 或 FAIL。本次未扩展菜单整改。
-
-### 2026-10-14 主线组合验收
-
-主线合并 Claude UI `a0daaba`、渲染审计与计时接口 `792740d`、World 性能表 `6de9cab`、Entity 模型 `1278adce`。Entity 层级与新存档契约保留，类型图标、紧凑字段、状态栏和性能页接入同一编辑器链。Control 旧格式夹具修正了 v5 误用 v4 阴影字段，以及扩展旧对象图检查结束后未恢复调用方场景的问题；正式加载校验和删除语义未放宽。
-
-| 主目录入口 | Dev | Release |
-| --- | --- | --- |
-| 编辑器、文档、Control、World、Physics、Renderer 目标构建 | PASS | PASS |
-| World / Physics | 15/15、22/22 PASS | 15/15、22/22 PASS |
-| 完整编辑器文档链 | PASS | PASS |
-| surfaces，含真实 GPU 性能表、列宽、采样域及 Control 快照 | PASS | PASS |
-| 视口快捷键、分隔条、菜单、FPS HUD | PASS | PASS |
-| Control | 旧格式复现专项 PASS | 完整 E2E PASS |
-
-构建与前五行的日志为主目录 `out/integration-20261014-{dev,release}-{build,world,physics,document,surfaces,shortcuts}.log`。Control 最终记录为 [Dev 旧格式专项](../../../out/integration-20261014-dev-repro-lighting-final.log) 和 [Release 完整流程](../../../out/integration-20261014-release-control-final.log)。图像与性能快照位于 `out/integration-20261014-{dev,release}-surfaces/`。Dev 完整 Control 的初次失败记录保留；夹具修正后只重跑相关专项，完整流程由 Release 覆盖。
-
-Renderer 生产源码与已验收的 `792740d` 一致，复用其[完整渲染验收](../renderer/acceptance.md)，本次另以正式编辑器验证组合后的 GPU 链。此前 Examples / Dungeons 窗口链及共享 UI 的 23/24 记录未在本轮重跑，不将它们计入本次通过范围。
+窗口与 Control 的入口和覆盖范围见[验收入口](#验收入口)。构建配置、必要性选择、机器锁和逐次报告由[验收门禁](../../../README.md#构建与端到端验收)统一规定；通过结果必须来自对应工作树的实际执行，不复用旧版本的通过表。

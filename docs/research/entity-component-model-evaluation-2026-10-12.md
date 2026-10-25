@@ -211,7 +211,7 @@ Door Entity（主空间；DoorBehavior）
 
 验收状态：**实现已落地，Dev/Release CPU 通过，GPU 未收口。** 双配置全量构建、World 13/13、Physics 22/22、Source public consumer、Project Scene、editor document、viewport-edit（含 EntityComposition）、recovery、materials、legacy physics-project、10 个 physics examples 文档/模拟链、UI layout 41/41 均已通过。Dev 额外 Dungeons 详细 CPU（2332 模型、30 atlas、3 场景）、Sponza、official examples、Project integration 通过；Release Project integration 未运行。
 
-GPU Dev edit 因 external focus loss 未完成，physics window 旧 DDGI 断言已修正并通过 Dev / Release 编译、未重跑。官方 Examples 窗口日志证实 0x887A0007 / DXGI_ERROR_DEVICE_RESET，用户报告 GPU 驱动崩溃，根因尚未判定。Dungeons/Control 被停止，不计 PASS；Dungeons 零退出无产物亦不算通过。图形进程均已停止。证据见 [Entity 迁移日志目录](../../out/entity-migration/)及[编辑器当前验收矩阵](../modules/editor/README.md#entity-迁移验收状态)。
+GPU Dev edit 因 external focus loss 未完成，physics window 旧 DDGI 断言已修正并通过 Dev / Release 编译、未重跑。官方 Examples 窗口日志证实 0x887A0007 / DXGI_ERROR_DEVICE_RESET，用户报告 GPU 驱动崩溃，根因尚未判定。Dungeons/Control 被停止，不计 PASS；Dungeons 零退出无产物亦不算通过。图形进程均已停止。历史证据目录为 `out/entity-migration/`；当前验证入口见[场景模型验收](../modules/editor/README.md#场景模型验收)。
 
 范围外扩展 UI 两配置 23/24，shared_menu_semantics 的 coverage 收集与 checkbox 边框断言不一致。对应生产与验收源码内容哈希和 b0ede07d 一致，未运行基线，不推断其 PASS/FAIL；本轮未扩展菜单整改。
 

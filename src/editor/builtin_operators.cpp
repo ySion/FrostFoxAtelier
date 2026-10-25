@@ -149,6 +149,7 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
     case AddKind::point: added = document.create_light(presentation::LightKind::point, context.cursor); break;
     case AddKind::rectangle: added = document.create_light(presentation::LightKind::rectangle, context.cursor); break;
     case AddKind::directional: added = document.create_light(presentation::LightKind::directional, context.cursor); break;
+    case AddKind::camera: added = document.create_camera(context.cursor); break;
     }
     auto result = committed(std::move(added));
     host.scene_changed();
@@ -169,6 +170,43 @@ void register_builtin_operators(OperatorRegistry& registry) {
         [](OperatorHost& host, const Context& context, ValueInput) { return frame(host, context, true); }});
     add({"view.reset", L"Reset Camera", "Return the viewport camera to its default view", OperatorFlag::none, available,
         [](OperatorHost& host, const Context&, ValueInput) { auto camera = host.camera(); camera.reset(); return host.set_camera(camera); }});
+    add({"view.from_camera",L"View from Camera","Copy the selected scene camera's pose and projection into the editor viewport once",OperatorFlag::none,
+        [](const Context& context)->Result<void> {
+            if(auto editable=editable_entity(context);!editable) return editable;
+            const auto camera=context.document.presentation().camera(context.selection.active);
+            return camera?Result<void>{}:std::unexpected(camera.error());
+        },
+        [](OperatorHost& host,const Context& context,ValueInput)->Result<void> {
+            auto snapshot=context.document.presentation().camera(context.selection.active);if(!snapshot) return std::unexpected(snapshot.error());
+            auto camera=host.camera();
+            if(!camera.view_from(*snapshot)) return unavailable("The camera view cannot be represented in the editor viewport.");
+            return host.set_camera(camera);
+        }});
+    add({"scene.main_camera_set",L"Set as Main Camera","Select this Entity's camera for Play; disabled cameras may be selected",OperatorFlag::undo,
+        [](const Context& context)->Result<void> {
+            if(auto editable=editable_entity(context);!editable) return editable;
+            if(context.document.world().running()) return unavailable("Stop the document before changing its main camera.");
+            auto cameras=context.document.world().members(context.document.presentation().cameras());
+            if(!cameras) return std::unexpected(cameras.error());
+            if(std::ranges::count(*cameras,context.selection.active,&world::CapabilityMember::entity)!=1)
+                return unavailable("Select an Entity with exactly one CameraComponent.");
+            return {};
+        },
+        [](OperatorHost& host,const Context& context,ValueInput) {
+            auto result=context.document.set_main_camera(context.selection.active);host.scene_changed();return result;
+        }});
+    add({"scene.main_camera_clear",L"Clear Main Camera","Clear the scene's explicit Play camera selection",OperatorFlag::undo,
+        [](const Context& context)->Result<void> {
+            if(!context.scene_available || context.document.world().running()) return unavailable("Open a stopped document first.");
+            const auto environment=context.document.environment();
+            auto selected=context.document.main_camera();if(!selected) return std::unexpected(selected.error());
+            if(*selected==ObjectId{} && (environment==ObjectId{} || !context.document.has_retained(environment)))
+                return unavailable("The scene has no main camera selection.");
+            return {};
+        },
+        [](OperatorHost& host,const Context& context,ValueInput) {
+            auto result=context.document.set_main_camera({});host.scene_changed();return result;
+        }});
     add({"layout.reset", L"Reset Layout", "Restore the default pane layout", OperatorFlag::none, available,
         [](OperatorHost& host, const Context&, ValueInput) { host.reset_layout(); return Result<void>{}; }});
     add({"layout.close_tab", L"Close Pane Tab", "Close the focused region's pane tab; on the Code page, close its active document first",
@@ -199,7 +237,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
             host.scene_changed();
             return {};
         }});
-    add({"scene.add", L"Add", "Add an Entity, a static mesh or a light at the 3D cursor and select it", OperatorFlag::undo, add_poll,
+    add({"scene.add", L"Add", "Add an Entity, a static mesh, a light or a camera at the 3D cursor and select it", OperatorFlag::undo, add_poll,
         with_parameters(scene_add), "editor.SceneAdd"});
     add({"tool.settings", L"Tool Settings", "Change the viewport tool, selection mode and snapping; unnamed fields keep their values",
         OperatorFlag::none, available, with_parameters(tool_settings), "editor.ToolSettings",

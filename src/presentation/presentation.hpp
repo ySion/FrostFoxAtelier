@@ -102,6 +102,18 @@ public:
     LightSettings settings;
 };
 
+ACLASS(Name="world.CameraComponent", DESC="提供透视相机。一个 Entity 至多一个，包括派生和已停用组件。位置来自世界变换，朝向只复合空间父链的旋转，不受缩放或镜像影响。")
+class CameraComponent : public world::SpatialComponent {
+    AGENERATED_BODY(CameraComponent)
+public:
+    AFIELD(Label="Vertical FOV (°)", Category="Camera", HardMin="1", HardMax="179", DESC="垂直视野角度。横向视野由窗口宽高比决定。")
+    float vertical_fov{45.f};
+    AFIELD(Label="Near clip (m)", Category="Camera", HardMin="0.001", HardMax="100000", DESC="近裁剪距离，单位 m，必须小于 Far clip。")
+    float near_clip{.05f};
+    AFIELD(Label="Far clip (m)", Category="Camera", HardMin="0.002", HardMax="1000000", DESC="远裁剪距离，单位 m，必须大于 Near clip。")
+    float far_clip{30000.f};
+};
+
 AENUM(Name="world.Antialiasing", DESC="Off 关闭抗锯齿；SMAA 处理当前画面的边缘；TAA 和 SMAA T2x 还利用跨帧信息。")
 enum class Antialiasing : std::uint32_t { off, taa, smaa, smaa_t2x };
 AENUM(Name="world.ProbePlacement", DESC="Fixed 使用固定的世界坐标范围；Follow Focus 把范围作为相对于 lighting focus 的偏移，跟随时按整格移动。")
@@ -136,6 +148,8 @@ ACLASS(Name="world.EnvironmentComponent", DESC="World 的光照、天光、效�
 class EnvironmentComponent : public world::Component {
     AGENERATED_BODY(EnvironmentComponent)
 public:
+    AFIELD(Category="Camera", Weak="world.Entity", DESC="Play 的主相机 Entity。未指定或目标不可用时场景黑屏，UI 不受影响。停用目标保留选择，不自动改选其他相机。")
+    ReferenceSlot main_camera;
     AFIELD(Category="Lighting", DESC="控制 Scene Lit 的灯光阴影。灯光自身的 Cast Shadows 设置仍决定该光源是否投影。")
     bool shadows{true};
     AFIELD(Label="DDGI", Category="Propagation", DESC="启用探针场提供的间接漫反射光。覆盖范围、密度和更新预算由 Volume 与 Propagation 参数决定。")
@@ -203,7 +217,7 @@ private:
 struct Types {
     TypeId static_mesh_component, material, static_mesh_entity;
     TypeId light_kind, light_settings, light_component;
-    TypeId environment_component;
+    TypeId environment_component, camera_component;
 };
 // Call once per Runtime, after world::register_types.
 [[nodiscard]] Result<Types> register_types(Runtime&);
@@ -242,6 +256,21 @@ struct LightRenderItem {
     // Range and physical dimensions are world metres, not scaled. Directional
     // source_radius is angular (radians); see LightSettings.
     LightSettings settings;
+};
+
+struct CameraMatrices {
+    math::Matrix4 view, projection;
+    float far_depth{}; // Derived near/far clipping depth, not background zero.
+};
+// Values, not borrowed payloads; extracting a camera holds no roots afterwards.
+struct CameraSnapshot {
+    ObjectId entity, component;
+    math::Vector3 position;
+    math::Quaternion rotation;
+    float vertical_fov{}, near_clip{}, far_clip{};
+    // Left-handed +Z forward, row vectors; infinite reversed Z (depth=near/view Z),
+    // with a separate finite +Z far clipping boundary in the returned snapshot.
+    [[nodiscard]] Result<CameraMatrices> matrices(float aspect) const;
 };
 
 // Configure detached objects before attachment, or replace a member's immutable
@@ -317,6 +346,7 @@ public:
     [[nodiscard]] world::CapabilityId meshes() const noexcept { return meshes_; }
     [[nodiscard]] world::CapabilityId lights() const noexcept { return lights_; }
     [[nodiscard]] world::CapabilityId environments() const noexcept { return environments_; }
+    [[nodiscard]] world::CapabilityId cameras() const noexcept { return cameras_; }
     // Unique in the process: no later Scene takes it, so consumers of the cache
     // can tell a replaced document from the one they synchronized with.
     [[nodiscard]] std::uint64_t identity() const noexcept { return identity_; }
@@ -356,6 +386,12 @@ public:
     // without one. An invalid Environment is reported as invalid_value in the
     // lighting phase's current pass and yields the defaults; see contain.
     [[nodiscard]] Result<rendering::SceneLightingSettings> environment() const;
+    // Author preview of one member Entity's unique camera, including disabled ones.
+    [[nodiscard]] Result<CameraSnapshot> camera(ObjectId entity) const;
+    // Resolve afresh after every update (including late flush), not by revision.
+    // Missing/stale/foreign/disabled selections fail without changing the reference.
+    // Hosts report the error and draw black with UI; they validate focus before Lit submission.
+    [[nodiscard]] Result<CameraSnapshot> main_camera() const;
 private:
     Scene(world::World& world, const Types& types) noexcept : world_(&world), types_(types) {}
     // Re-reads the mesh slots whose sources were written since the latest update (all
@@ -370,7 +406,7 @@ private:
     Result<std::vector<LightRenderItem>> extract_lights(const detail::Presented*, bool* failed = nullptr, bool* moved = nullptr) const;
     world::World* world_;
     Types types_;
-    world::CapabilityId meshes_, lights_, environments_;
+    world::CapabilityId meshes_, lights_, environments_, cameras_;
     // Aligned with the meshes and lights buckets at each extraction call.
     mutable detail::PassedValues<Material> valid_materials_;
     mutable detail::PassedValues<LightSettings> valid_lights_;

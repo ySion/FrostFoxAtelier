@@ -1,5 +1,4 @@
 #pragma once
-#include "editor/camera.hpp"
 #include "world/diagnostic.hpp"
 #include <Windows.h>
 #include <cstdint>
@@ -26,7 +25,6 @@ struct RunOptions {
     // Stops the World at the first object failure (acceptance and CI) instead of isolating it.
     bool halt{};
     std::uint64_t frames{};
-    std::optional<editor::CameraState> camera;
     PlayChannel* channel{}; // Not owned; outlives the run.
 };
 int run_project(const RunOptions&);

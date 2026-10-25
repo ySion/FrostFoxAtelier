@@ -511,10 +511,10 @@ Result<void> World::add_admission(TypeId type, Admission admission) {
     state.admissions.push_back({type, std::move(admission)});
     return {};
 }
-Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates) {
+Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates, ObjectId proposed_owner) {
     // Admissions may read the World; edits and registrations stay busy until they return.
     detail::DispatchScope dispatch{dispatch_depth};
-    std::vector<ObjectId> selected;
+    std::vector<AdmissionCandidate> selected;
     for (const auto& [type, admission] : admissions) {
         selected.clear();
         for (const auto object : candidates) {
@@ -522,7 +522,15 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates)
             if (!object_type) return std::unexpected(object_type.error());
             auto matches = runtime.is_a(*object_type, type);
             if (!matches) return std::unexpected(matches.error());
-            if (*matches) selected.push_back(object);
+            if (*matches) {
+                auto owner = proposed_owner;
+                if (owner == ObjectId{}) {
+                    auto data = detail::component_data(runtime, object);
+                    if (!data) return std::unexpected(data.error());
+                    owner = data->owner;
+                }
+                selected.push_back({object, owner});
+            }
         }
         if (selected.empty()) continue;
         Result<void> admitted;
@@ -539,12 +547,12 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates)
     }
     return {};
 }
-Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidates) {
+Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidates, ObjectId proposed_owner) {
     if (admissions.empty()) return {};
     std::vector<ObjectId> ids;
     ids.reserve(candidates.size());
     for (const auto& root : candidates) ids.push_back(root.id());
-    return check_admissions(std::span<const ObjectId>{ids});
+    return check_admissions(std::span<const ObjectId>{ids}, proposed_owner);
 }
 Result<bool> World::Impl::admitted(ObjectId component) const {
     if (admissions.empty()) return false;
@@ -630,6 +638,28 @@ Result<std::optional<World::Orientation>> World::SpatialPass::orientation(Object
     if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, phase_, entity, entity, {"rotation"})) return std::unexpected(composed.error());
     return std::nullopt;
 }
+Result<std::optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId entity) {
+    auto matrix = this->matrix(entity);
+    if (!matrix) return std::unexpected(matrix.error());
+    if (!*matrix) return std::nullopt;
+    math::Quaterniond result;
+    // matrix() validated and cached the actual spatial chain, including explicit origins.
+    for (auto node = entity; node != ObjectId{};) {
+        const auto* entry = impl_->space.entry(node);
+        const auto& q = entry->local.rotation;
+        const auto local = math::try_normalize(math::Quaterniond{q.x, q.y, q.z, q.w});
+        const auto next = local ? math::try_normalize(*local * result) : std::nullopt;
+        if (!next) {
+            const auto failure = Error{ErrorCode::argument_mismatch, "Space rotation is not finite or normalizable."};
+            if (!impl_->contain(failure, DiagnosticKind::invalid_value, phase_, node, node, {"rotation"}))
+                return std::unexpected(failure);
+            return std::nullopt;
+        }
+        result = *next;
+        node = entry->parent;
+    }
+    return result;
+}
 Result<std::uint64_t> World::add_simulation(Simulation simulation) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready) return std::unexpected(ready.error());
@@ -686,7 +716,7 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     // by attach_batch before any member, observer or behavior is published.
     if (entity->world)
         if (auto valid = detail::requires_space(runtime(), entity_id, roots); !valid) return std::unexpected(valid.error());
-    if (entity->world) if (auto admitted = state.check_admissions(roots); !admitted) return std::unexpected(admitted.error());
+    if (entity->world) if (auto admitted = state.check_admissions(roots, entity_id); !admitted) return std::unexpected(admitted.error());
     auto held = runtime().hold(entity_id, types().entity);
     if (!held) return std::unexpected(held.error());
     auto changed = runtime().with_native<Entity>(entity_id, [&](Entity& value) -> Result<void> {

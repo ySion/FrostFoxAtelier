@@ -58,7 +58,7 @@ void verify_coroutine_references(Runtime& runtime, TypeId type) {
             weak $T observed = observe(held);
             held.bump(amount);
             yield;
-            held.bump(1);
+            observed.bump(1);
             held = null;
             yield;
             if (try_acquire(observed) == null) { return 7; }
@@ -67,7 +67,12 @@ void verify_coroutine_references(Runtime& runtime, TypeId type) {
     publish_coroutine(program, "coroutine-roots.source", source);
     const std::array arguments{scalar(5u)};
     auto task = take(start_fixture(program.entry(), {}, arguments));
-    require(take(task.resume()) == CoroutineState::suspended, "Reference coroutine did not suspend.");
+    {
+        auto outer = take(ExecutionScope::enter(runtime));
+        require(take(task.resume()) == CoroutineState::suspended, "Reference coroutine did not suspend.");
+        reject(runtime.begin_collection(), ErrorCode::busy, "Yield released an outer execution interval.");
+        reject(runtime.collect_step({1024}), ErrorCode::busy, "Yield allowed GC inside an outer execution interval.");
+    }
     collect(runtime);
     require(runtime.live_objects() == 1, "Suspended strong reference did not survive a complete GC cycle.");
     take(runtime.visit_roots({&task, [](void* context, const ObjectReference&) -> Result<void> {
@@ -93,7 +98,7 @@ void verify_coroutine_references(Runtime& runtime, TypeId type) {
 
     // Inspect cancellation before Invocation's destructor can mask missing generated cleanup.
     auto code = compile_bound(binding, source, "coroutine-raw-cleanup.source");
-    Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1});
+    Invocation invocation(runtime, binding, atelier_business_layout(code.get()));
     BusinessCoroutine* raw{};
     char diagnostic[512]{};
     require(atelier_create_business_coroutine(code.get(), &invocation, arguments.data(), 1,
@@ -126,6 +131,21 @@ void verify_coroutine_references(Runtime& runtime, TypeId type) {
     require(invalid.state() == CoroutineState::failed && !invalid.result() && runtime.root_count() == 0,
         "Failed resumed access retained roots or published a result.");
 
+    BusinessProgram weak_only(runtime, type);
+    publish_coroutine(weak_only, "coroutine-weak-access.source", reference_source(R"(
+        async uint access() {
+            weak $T watched = observe(new $T());
+            yield;
+            return watched.bump(1);
+        })", binding.name));
+    auto weak = take(start_fixture(weak_only.entry(), {}, {}));
+    take(weak.resume());
+    collect(runtime);
+    require(runtime.live_objects() == 0, "A suspended weak reference was silently strengthened.");
+    reject(weak.resume(), ErrorCode::invalid_object, "Weak member access revived a collected target on resume.");
+    require(weak.state() == CoroutineState::failed && runtime.root_count() == 0,
+        "Expired weak access failed to clean up its coroutine.");
+
     auto callbacks = services;
     callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method,
         const BusinessValue* arguments, std::uint32_t count, BusinessValue* result) noexcept -> std::uint32_t {
@@ -136,7 +156,7 @@ void verify_coroutine_references(Runtime& runtime, TypeId type) {
     auto malformed_code = compile_bound(binding, "async uint malformed() { yield; return self.bump(0); }",
         "coroutine-abi-error.source", callbacks);
     auto target = take(runtime.create(type));
-    Invocation malformed(runtime, binding, atelier_business_layout(malformed_code.get()), {1});
+    Invocation malformed(runtime, binding, atelier_business_layout(malformed_code.get()));
     take(malformed.frame.hold(receiver_slot, target.id()));
     BusinessCoroutine* malformed_frame{};
     require(atelier_create_business_coroutine(malformed_code.get(), &malformed, nullptr, 0, &malformed_frame,
@@ -190,7 +210,7 @@ void verify_coroutine_control() {
     publish_coroutine(program, "coroutine-control.source", "async uint control() { yield; return 9; }");
     enum class Mode { cancel, fail, discard };
     struct Control { std::optional<Coroutine>* owner; Mode mode; bool visited{}; };
-    const auto hook = [](void* context, Invocation& invocation, const CollectionProgress&) {
+    const auto hook = [](void* context, Invocation& invocation) {
         auto& control = *static_cast<Control*>(context);
         if (fixture(invocation).stats.polls != 2) return;
         control.visited = true;

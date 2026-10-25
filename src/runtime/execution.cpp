@@ -37,20 +37,33 @@ ExecutionInspection::ExecutionInspection(ExecutionInspection&& other) noexcept
 ExecutionFrame::ExecutionFrame(Runtime& runtime, std::span<ObjectRoot> slots) noexcept
     : runtime_(runtime), slots_(slots) {}
 
+ExecutionFrame::ExecutionFrame(ExecutionScope& scope, std::span<ObjectReference> slots) noexcept
+    : runtime_(*scope.runtime_), references_(slots) {}
+
 ExecutionFrame::~ExecutionFrame() {
     for (auto& root : slots_) root.reset();
+    for (auto& reference : references_) reference = {};
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object_id) {
-    if (slot >= slots_.size()) return invalid_slot();
+    if (slot >= size()) return invalid_slot();
     auto root = runtime_.hold(object_id);
     if (!root) return std::unexpected(std::move(root.error()));
-    slots_[slot] = std::move(*root);
+    if (references_.empty()) slots_[slot] = std::move(*root);
+    else references_[slot] = root->reference();
     return {};
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& reference) {
-    if (slot >= slots_.size()) return invalid_slot();
+    if (slot >= size()) return invalid_slot();
+    if (!references_.empty()) {
+        auto valid = runtime_.validate_reference(reference);
+        if (!valid) return valid;
+        if (reference.description().form != ValueForm::strong_reference)
+            return std::unexpected(Error{ErrorCode::type_mismatch, "Holding slots require a strong reference."});
+        references_[slot] = reference;
+        return {};
+    }
     auto root = runtime_.hold(reference);
     if (!root) return std::unexpected(std::move(root.error()));
     slots_[slot] = std::move(*root);
@@ -58,33 +71,39 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& ref
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId declared_type) {
-    if (slot >= slots_.size()) return invalid_slot();
+    if (slot >= size()) return invalid_slot();
     auto root = runtime_.hold(object, declared_type);
     if (!root) return std::unexpected(std::move(root.error()));
-    slots_[slot] = std::move(*root);
+    if (references_.empty()) slots_[slot] = std::move(*root);
+    else references_[slot] = root->reference();
     return {};
 }
 
 Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
-    if (slot >= slots_.size()) return invalid_slot();
+    if (slot >= size()) return invalid_slot();
+    if (!references_.empty()) {
+        if (references_[slot].description().type == TypeId{})
+            return std::unexpected(Error{ErrorCode::invalid_object, "Execution reference slot is empty."});
+        return references_[slot];
+    }
     if (!slots_[slot].registered())
         return std::unexpected(Error{ErrorCode::invalid_object, "Execution root slot is empty."});
     return slots_[slot].reference();
 }
 
 Result<void> ExecutionFrame::create(std::uint32_t slot, TypeId type) {
-    if (slot >= slots_.size()) return invalid_slot();
+    if (slot >= size()) return invalid_slot();
     auto root = runtime_.create(type);
     if (!root) return std::unexpected(std::move(root.error()));
-    slots_[slot] = std::move(*root);
+    if (references_.empty()) slots_[slot] = std::move(*root);
+    else references_[slot] = root->reference();
     return {};
 }
 
 Result<ObjectId> ExecutionFrame::object(std::uint32_t slot) const {
-    if (slot >= slots_.size()) return invalid_slot();
-    if (!slots_[slot].registered())
-        return std::unexpected(Error{ErrorCode::invalid_object, "Execution root slot is empty."});
-    return slots_[slot].id();
+    const auto value = reference(slot);
+    if (!value) return std::unexpected(value.error());
+    return value->id();
 }
 
 Result<ObjectRoot> ExecutionFrame::take(std::uint32_t slot) {
@@ -92,35 +111,25 @@ Result<ObjectRoot> ExecutionFrame::take(std::uint32_t slot) {
     if (!identity) return std::unexpected(identity.error());
     const auto type = runtime_.type_of(*identity);
     if (!type) return std::unexpected(type.error());
+    if (!references_.empty()) {
+        auto root = runtime_.hold(references_[slot]);
+        if (root) references_[slot] = {};
+        return root;
+    }
     return std::move(slots_[slot]);
 }
 
 Result<void> ExecutionFrame::clear(std::uint32_t slot) {
-    if (slot >= slots_.size()) return invalid_slot();
-    slots_[slot].reset();
+    if (slot >= size()) return invalid_slot();
+    if (references_.empty()) slots_[slot].reset();
+    else references_[slot] = {};
     return {};
 }
 
 bool ExecutionFrame::empty() const noexcept {
     for (const auto& root : slots_) if (root.registered()) return false;
+    for (const auto& reference : references_) if (reference.description().type != TypeId{}) return false;
     return true;
-}
-
-void ExecutionFrame::request_collection() noexcept { collection_requested_ = true; }
-
-Result<CollectionProgress> ExecutionFrame::poll(CollectionBudget budget) {
-    const auto ready = runtime_.check_execution_entry();
-    if (!ready) return std::unexpected(ready.error());
-    if (budget.max_work == 0 || budget.max_time < std::chrono::nanoseconds::zero())
-        return std::unexpected(Error{ErrorCode::argument_mismatch,
-            "Execution safe points require positive work and nonnegative time limits."});
-    if (runtime_.collection_phase() == CollectionPhase::idle) {
-        if (!collection_requested_) return CollectionProgress{};
-        const auto started = runtime_.begin_collection();
-        if (!started) return std::unexpected(started.error());
-    }
-    collection_requested_ = false;
-    return runtime_.collect_step(budget);
 }
 
 struct Coroutine::Control {

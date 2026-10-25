@@ -56,11 +56,14 @@ std::wstring widen(std::string_view text) {
 bool meets_hardware_floor(ID3D12Device& device) {
     D3D12_FEATURE_DATA_D3D12_OPTIONS7 mesh{};
     D3D12_FEATURE_DATA_D3D12_OPTIONS5 raytracing{};
+    D3D12_FEATURE_DATA_D3D12_OPTIONS3 barycentrics{};
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_5};
     return SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &mesh, sizeof(mesh))) &&
         mesh.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED &&
         SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &raytracing, sizeof(raytracing))) &&
         raytracing.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1 &&
+        SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &barycentrics, sizeof(barycentrics))) &&
+        barycentrics.BarycentricsSupported &&
         SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model))) &&
         model.HighestShaderModel >= D3D_SHADER_MODEL_6_5;
 }

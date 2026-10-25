@@ -17,8 +17,8 @@ AENUM(Name="editor.Orientation", DESC="移动、旋转手柄和 X/Y/Z 约束使�
 enum class Orientation : std::uint32_t { global, local };
 AENUM(Name="editor.CameraView", DESC="视口相机：Perspective 透视，或沿某个坐标轴的正交视图。")
 enum class CameraView : std::uint32_t { perspective, top, front, right, bottom, back, left };
-AENUM(Name="editor.AddKind", DESC="新建对象的种类：空 Entity、静态网格，或点光、矩形面光、平行光。")
-enum class AddKind : std::uint32_t { entity, mesh, point, rectangle, directional };
+AENUM(Name="editor.AddKind", DESC="新建对象的种类：空 Entity、静态网格、点光、矩形面光、平行光或相机。")
+enum class AddKind : std::uint32_t { entity, mesh, point, rectangle, directional, camera };
 
 ASTRUCT(Name="editor.ToolSettings", DESC="视口变换工具、选择方式与吸附设置。")
 struct ToolSettings {

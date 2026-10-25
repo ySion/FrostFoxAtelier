@@ -38,10 +38,15 @@ struct Target {
     bool drawable{};
 };
 // Left-handed, +Y up, meters, D3D depth [0,1]. Row-major storage and row
-// vectors: p * world * view * projection. Finite Reversed-Z: near=1, far=0.
+// vectors: p * world * view * projection. Reversed-Z: near=1, background=0.
+// Infinite perspective maps depth=near/view Z; finite orthographic maps far=0.
 struct Camera {
     std::array<float, 16> view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::array<float, 16> projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1, 1};
+    // Lower clipping depth: near/far for infinite perspective with a finite far
+    // plane, zero for a projection carrying its own far plane (or no far limit).
+    // A change is a projection change: the producer must set Frame::camera_cut.
+    float far_depth{};
 };
 struct Material {
     float roughness{0.65f};
@@ -96,7 +101,7 @@ struct Frame {
     // view.lit.sky_map and sky_rotation shape it by direction. Zero when the sky is
     // off; this is not a viewport ambient-light setting.
     std::array<float, 3> environment{};
-    std::array<float, 3> lighting_focus{}; // Receiver/play focus for following DDGI volumes; not camera eye.
+    std::array<float, 3> lighting_focus{}; // Editor observation target; Play main camera world position.
     // Active rendering time since the last accepted frame, independent of Play.
     // Zero restarts a paused/discontinuous clock; fixed-step producers use 1/60.
     // Only presentation filtering consumes this [0, .1] interval, not sampling confidence.
@@ -204,6 +209,7 @@ struct FrameStats {
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
+    std::uint32_t scene_lit_reflection_work_items{}; // Pixels SSSR classified for hierarchy traversal in that completed sample.
     std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
     std::uint32_t scene_lit_spatial_sources{},scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
     std::uint64_t scene_lit_spatial_bytes{}; // Three current logical GPU buffers, including empty sentinels.

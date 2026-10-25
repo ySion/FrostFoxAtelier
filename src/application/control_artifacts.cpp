@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "editor/json_format.hpp"
 #include "platform/windows_path.hpp"
+#include "source/snapshot.hpp"
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -23,6 +24,12 @@ std::string path_text(const std::filesystem::path& path) {return control::utf8(p
 bool generated_cache(const std::filesystem::path& relative) {
     auto part=relative.begin();if(part==relative.end() || *part++!=L"Project") return false;
     return part!=relative.end() && *part==L"Cache";
+}
+Json engine_source_hashes(std::span<const language::SourceFile> files) {
+    auto hashes=Json::object();
+    for(const auto& file:files) if(file.path.starts_with("engine/"))
+        hashes[file.path]=control::sha256(std::as_bytes(std::span(file.source)));
+    return hashes;
 }
 std::string mesh_hash(const geometry::Mesh& mesh) {
     Json shape{{"vertices",control::sha256(std::as_bytes(mesh.vertices()))},{"parts",Json::array()},{"materials",Json::array()}};
@@ -168,7 +175,12 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
             throw Failure("dependency_mismatch","Published source is not project relative");
         write(project/relative,file.source);
     };
-    if(data.sources) for(const auto& file:data.sources->files) publish_source(file);
+    // Engine definitions stay installation-owned. Pin the published inputs rather
+    // than copying them into project scope or silently using a newer installation.
+    data.manifest["engine_sources"]=data.sources?engine_source_hashes(data.sources->files):
+        engine_source_hashes(take(source::engine_sources(source::default_engine_root())));
+    if(data.sources) for(const auto& file:data.sources->files)
+        if(!file.path.starts_with("engine/")) publish_source(file);
     if(data.ui_source) publish_source(*data.ui_source);
     const auto scene_path=std::filesystem::path("Content/Scenes")/("Control-"+control::unique_id()+".scene");
     write(project/scene_path,data.scene);
@@ -210,6 +222,11 @@ Json validate_repro(const std::filesystem::path& input) {
     if(manifest.value("kind","")!="repro" || !manifest.value("complete",false) ||
         manifest.at("protocol")!=control::protocol_version || manifest.at("project")!="Project")
         throw Failure("invalid_request","Not a completed compatible repro bundle");
+    if(!manifest.contains("engine_sources") || !manifest.at("engine_sources").is_object())
+        throw Failure("invalid_request","Repro lacks engine Source dependencies; export it again");
+    const auto engine=source::engine_sources(source::default_engine_root());
+    if(!engine || engine_source_hashes(*engine)!=manifest.at("engine_sources"))
+        throw Failure("dependency_mismatch","Installed engine Source differs from the published repro inputs");
     const auto& files=manifest.at("files");
     if(!files.is_array() || files.size()>11000) throw Failure("invalid_request","Invalid repro file list");
     std::unordered_map<std::string,const Json*> expected;
@@ -251,7 +268,7 @@ Json write_samples(const std::filesystem::path& output,std::vector<Sample> sampl
         write(directory/(name+".depth.f32"),{reinterpret_cast<const char*>(pixels.depth.data()),pixels.depth.size()*sizeof(float)});
         sample.metadata["color"]=name+".png";sample.metadata["depth"]=name+".depth.f32";
         sample.metadata["extent"]={pixels.extent.width,pixels.extent.height};
-        sample.metadata["depth_format"]="float32-le, top-left, tightly packed, reversed-Z near=1 far/background=0; unjittered";
+        sample.metadata["depth_format"]="float32-le, top-left, tightly packed, reversed-Z near=1 background=0; camera.far_depth is the geometry clipping boundary; unjittered";
         sample.metadata["color_format"]="sRGB RGBA8, top-left; complete editor client area";
         write(directory/(name+".json"),sample.metadata.dump(2)+"\n");manifest["samples"].push_back(std::move(sample.metadata));
     }

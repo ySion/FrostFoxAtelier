@@ -128,12 +128,12 @@ struct Context {
 
 | 记录 | 操作符 | 字段 |
 | --- | --- | --- |
-| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、point、rectangle、directional）、mesh（String，空为第一个内置网格） |
+| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、point、rectangle、directional、camera）、mesh（String，空为第一个内置网格） |
 | `editor.ToolSettings` | `tool.settings`（seed） | tool、pivot、grid_snap、cursor_surface、grid_spacing、select_mode、orientation、snap_move、snap_rotate、snap_scale、rotation_step、scale_step |
 | `editor.ViewAxis` | `view.axis` | view（`editor.CameraView`） |
 
 - 只有编辑器自己的文档 Session（`SessionRole::editor`）在引擎类型之后、工程 Source 构建之前登记这些类型；Play、独立运行和其他 Session 不登记。工程 Source 既看不到也不能声明 `editor.*` 类型（运行时的前缀规则），`project_integration` 在编辑器文档里断言这一点。
-- 原来的 `ViewportTool::Settings` 直接改为 `editor.ToolSettings`，字段和默认值不变；`tool.settings` 的参数就是它。各编辑器枚举的底层类型从 `uint8_t` 改为 `uint32_t`，因为生成器只支持 int32/uint32。这些枚举不进持久格式：工具、轴心、选择模式和坐标轴从不保存；`CameraView` 只以序号出现在 Control 的相机 JSON、repro 包和 Play 的 `--camera` 参数里，外部表示不变。
+- `tool.settings` 的参数是 `editor.ToolSettings`。各编辑器枚举的底层类型为 `uint32_t`，生成器支持 int32/uint32。工具、轴心、选择模式和坐标轴不进持久格式；`CameraView` 以序号出现在 Control 的编辑器相机 JSON 和 repro 包中。Play 使用场景主相机，不接收编辑器相机参数。
 - `editor.AddKind` 没有 sky：天光是 Environment 组件的属性，由 World Settings（`set_environment`）编辑，不是新建的 Entity。
 - 参数记录暂不能含引用（调用时拒绝），第一个引用参数落地时再处理根集。
 - 补丁式操作符（`tool.settings`、`view.set`、`region.set`）用 `seed` 从当前状态初始化参数，args 只写出现的叶。因此 `snap_grid_05` 就是 `tool.settings {"grid_spacing":0.5}`。
@@ -241,6 +241,9 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | cursor_origin / cursor_selected / cursor_grid | `cursor.reset` / `cursor.to_selection` / `cursor.to_grid` |
 | view_perspective / top / front / right / bottom / back / left | `view.axis {view}` |
 | focus / frame_all / reset_camera | `view.frame_selected` / `view.frame_all` / `view.reset` |
+| create_camera | `scene.add {kind: camera}`，不自动选为主相机 |
+| set_main_camera / clear_main_camera | `scene.main_camera_set` / `scene.main_camera_clear`（undo；Set 使用 Context 的 active Entity） |
+| view_from_camera | `view.from_camera`（一次性复制 Context active 相机的完整位姿和投影，无作者历史） |
 | viewport_options / show_fps | `view.toggle {option: tool_options\|fps}` |
 | fit_probe_scene / fit_probe_scene_focus | `view.lighting_fit {mode: scene\|scene_focus}`（undo） |
 | show_scene / parameters / entities / structure / assets / code / output / controls / world_settings | `layout.show {tab}` |

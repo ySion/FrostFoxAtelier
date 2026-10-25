@@ -58,7 +58,7 @@ void verify_operator_parameters() {
         tools.at("properties").at("snap_scale").at("type") == "boolean", "ToolSettings field kinds are wrong.");
     const auto add = schema("scene.add");
     require(add.at("title") == "editor.SceneAdd" && !add.contains("seeded") &&
-        add.at("properties").at("kind").at("enum") == Json{"entity", "mesh", "point", "rectangle", "directional"} &&
+        add.at("properties").at("kind").at("enum") == Json{"entity", "mesh", "point", "rectangle", "directional", "camera"} &&
         add.at("properties").at("kind").at("default") == "entity" && add.at("properties").at("mesh").at("type") == "string" &&
         add.at("properties").at("mesh").at("default") == "", "scene.add does not describe editor.SceneAdd with its defaults.");
     require(schema("view.axis").at("properties").at("view").at("default") == "perspective", "view.axis lost its default view.");
@@ -149,10 +149,75 @@ void verify_operator_parameters() {
             "A command's fixed arguments did not decode into the value it names.");
     }
     const auto before = document.undo_count();
-    for (const auto command : {create_entity, create_static_mesh, create_point_light, create_rectangle_light, create_directional_light})
+    for (const auto command : {create_entity, create_static_mesh, create_point_light, create_rectangle_light, create_directional_light,create_camera})
         take(editor::call(registry, host, context(), *editor::operator_for(command)));
-    require(document.undo_count() == before + 5, "A Create command did not add one Entity.");
+    require(document.undo_count() == before + 6, "A Create command did not add one Entity.");
     for (const auto& definition : editor::command_definitions)
         if (const auto request = editor::operator_for(definition.id)) take(editor::call(registry, host, context(), *request));
+    // Scene camera operations share the UI/Control operator path. Viewing copies
+    // the full orientation (including roll and vertical views), not just eye/target.
+    take(call("scene.add",{{"kind","camera"}}));
+    const auto camera_entity=document.selection().entity;
+    const auto camera_component=take(world::components(runtime,camera_entity)).front().id();
+    const auto camera_call=[&](std::string id) {
+        auto selected=context();selected.selection={camera_entity,camera_entity,std::vector{camera_entity}};
+        const auto result=take(editor::call(registry,host,selected,{std::move(id),Json::object(),{}}));
+        require(result.status==editor::OperatorStatus::finished,"A camera operator was unexpectedly unavailable.");
+    };
+    take(runtime.write(camera_component,take(runtime.find_field(document.presentation_types().camera_component,"vertical_fov")),73.f));
+    take(runtime.write(camera_component,take(runtime.find_field(document.presentation_types().camera_component,"near_clip")),.2f));
+    take(runtime.write(camera_component,take(runtime.find_field(document.presentation_types().camera_component,"far_clip")),650.f));
+    for(const auto rotation:std::array{math::Quaternion{.2f,.3f,.4f,.8f},math::Quaternion{1,0,0,1},math::Quaternion{1,0,0,-1}}) {
+        take(document.set_transform(camera_entity,{{3,-2,7},rotation,{-2,0,5}}));
+        const auto source=take(document.presentation().camera(camera_entity));
+        const auto expected=take(source.matrices(1.7f));
+        const auto history=document.undo_count();const auto saved=take(document.serialize());
+        camera_call("view.from_camera");
+        const auto actual=host.view.matrices(1.7f);
+        for(unsigned i=0;i<16;++i) require(std::abs(actual.view[i]-expected.view[i])<.0002f &&
+            std::abs(actual.projection[i]-expected.projection[i])<.0002f,"View from Camera lost pose, roll or projection.");
+        require(actual.far_depth==expected.far_depth,"View from Camera lost its independent far boundary.");
+        require(document.undo_count()==history && take(document.serialize())==saved,"Viewing a camera modified the author document or its history.");
+        editor::Camera restored;require(restored.set_state(host.view.state()) && restored.state()==host.view.state(),"CameraState did not preserve the copied projection and roll.");
+    }
+    // Normal authoring ranges: perspective depth is reciprocal with an infinite
+    // far endpoint; orthographic depth is linear over a finite interval.
+    for(const auto clips:std::array{std::array{.2f,650.f},std::array{1.5f,40.f},std::array{.05f,30000.f}}) {
+        take(runtime.write(camera_component,take(runtime.find_field(document.presentation_types().camera_component,"near_clip")),clips[0]));
+        take(runtime.write(camera_component,take(runtime.find_field(document.presentation_types().camera_component,"far_clip")),clips[1]));
+        camera_call("view.from_camera");
+        for(const auto view:{editor::CameraView::perspective,editor::CameraView::front}) {
+            auto state=host.view.state();state.view=view;
+            require(host.view.set_state(state),"A finite, ordered camera clip interval was rejected.");
+            const auto matrices=host.view.matrices(1.7f);const auto& projection=matrices.projection;
+            require(math::is_finite(matrices.view) && math::is_finite(projection),"A legal camera produced a nonfinite matrix.");
+            const auto depth=[&](double z) {return (z*projection[10]+projection[14])/(z*projection[11]+projection[15]);};
+            const bool perspective=view==editor::CameraView::perspective;
+            const double far_depth=perspective?double(clips[0])/clips[1]:0;
+            require(std::abs(matrices.far_depth-far_depth)<.000001,"Camera snapshot lost its derived far boundary.");
+            require(std::abs(depth(clips[0])-1)<.00001 && std::abs(depth(clips[1])-far_depth)<.00001,
+                "Camera depth did not match infinite perspective or finite orthographic projection.");
+            const double mid=(double(clips[0])+clips[1])*.5;
+            const double expected=perspective?double(clips[0])/mid:
+                (double(clips[1])-mid)/(double(clips[1])-clips[0]);
+            require(std::abs(depth(mid)-expected)<.00001,"Camera depth interpolation did not match its projection kind.");
+            if(perspective) {
+                const auto inverse=math::try_inverse(projection);require(bool(inverse),"Infinite perspective was not invertible.");
+                const auto direction=math::Vector4{0,0,0,1}*(*inverse);
+                require(direction.w==0 && direction.z>0,"Depth zero was not an infinite forward direction.");
+            }
+            const auto before=host.view.state();state.far_clip=state.near_clip;
+            require(!host.view.set_state(state) && host.view.state()==before,"Equal clip planes were accepted or changed the camera.");
+            std::printf("Camera projection %s near=%.9g far=%.9g: PASS (normal range, depth mapping, midpoint, equality rejected)\n",
+                view==editor::CameraView::perspective?"perspective":"orthographic",clips[0],clips[1]);
+        }
+    }
+    auto* camera_world=take(world::admit_component_edit(runtime,camera_component));
+    changed(camera_world->set_enabled(camera_entity,false));
+    camera_call("scene.main_camera_set");
+    require(take(document.main_camera())==camera_entity && !document.presentation().main_camera(),"Set could not store a disabled camera, or Play used it.");
+    changed(camera_world->set_enabled(camera_entity,true));
+    require(take(document.presentation().main_camera()).entity==camera_entity,"Re-enabling the selected camera did not restore it.");
+    camera_call("scene.main_camera_clear");require(take(document.main_camera())==ObjectId{},"Clear Main Camera kept the selection.");
     std::puts("Operator parameters: PASS (editor document only, schema, strict rejection, seeded patch, one history entry, command arguments)");
 }

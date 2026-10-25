@@ -188,5 +188,78 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
     run_case("mirrored",-1,render::Shading::smooth,render::Antialiasing::none,1.f,true);
     run_case("wide",-1,render::Shading::smooth,render::Antialiasing::none,1.f,false,8.f);
     check(interiors_preserved,"near/eye-plane clipping must not flood selected polygon interiors");
-    std::puts("Renderer selection clipping: PASS (eye/near clipping, original/triangle edges, bounded width, four shading and AA modes, FP32 depth, extreme scale, mirror, explicit wires)");
+    // Normal metre-scale polygon crossing far=4 at x=0. A whole-mesh CPU
+    // rejection or a missing raster clip would lose the left half or retain the right.
+    floor.world=translation(0,0,0);
+    floor.geometry=std::make_shared<const Mesh>(std::vector<Vertex>{
+        {{-2,-1,2},{0,0,-1}},{{-2,1,2},{0,0,-1}},{{2,1,6},{0,0,-1}},
+        {{-2,-1,2},{0,0,-1}},{{2,1,6},{0,0,-1}},{{2,-1,6},{0,0,-1}}},std::vector<std::uint8_t>{5,3});
+    for(const bool orthographic:{false,true}) {
+        frame.camera={};
+        frame.camera.projection=orthographic?
+            std::array<float,16>{.4f,0,0,0,0,.6f,0,0,0,0,-1/3.75f,0,0,0,4/3.75f,1}:
+            std::array<float,16>{1,0,0,0,0,1.5f,0,0,0,0,0,1,0,0,.25f,0};
+        frame.camera.far_depth=orthographic?0:.25f/4;
+        for(const auto shading:{render::Shading::flat,render::Shading::scene_lit}) {
+            frame.view.shading=shading;frame.view.cavity.enabled=true;
+            frame.view.lit.antialiasing=render::Antialiasing::none;
+            frame.view.wire_width=1.25f;frame.view.wireframe=render::Wireframe::off;
+            floor.selected=false;frame.camera_cut=true;draw();frame.camera_cut=false;
+            const auto surface=capture;
+            check(std::ranges::count_if(surface.depth,[](float z){return z>0;})>1000,
+                "far clipping retains the visible part of crossing triangles");
+            check(std::ranges::all_of(surface.depth,[&](float z){return z==0 || (z>=frame.camera.far_depth-1e-6f && z<=1);}),
+                "far clipped surface depth remains in the original device interval");
+            for(const auto mode:{render::Wireframe::off,render::Wireframe::overlay,render::Wireframe::only}) {
+                frame.view.wireframe=mode;floor.selected=mode==render::Wireframe::off;
+                for(const bool hidden:{false,true}) {
+                    frame.view.hidden_lines=hidden;draw();
+                    check(capture.depth==surface.depth,"far clipping differs between surface and editing depth/edges");
+                    std::size_t edge_pixels{};
+                    for(unsigned y=0;y<extent.height;++y)for(unsigned x=0;x<extent.width;++x) {
+                        const auto* p=pixel(capture,x,y);
+                        if(x>extent.width/2+3)check(depth(capture,x,y)==0 && p[0]==0 && p[1]==0 && p[2]==0,
+                            "geometry, selected edges or hidden wires leaked beyond the far clipping plane");
+                        if(p[0]>225 && p[1]>150 && p[2]<80)++edge_pixels;
+                    }
+                    if(floor.selected)check(edge_pixels>20,"far clipping lost the surviving selected edges");
+                }
+            }
+            const auto name=std::string{"selection-far-"}+(orthographic?"orthographic-":"perspective-")+
+                (shading==render::Shading::scene_lit?"lit":"studio")+".ppm";
+            frame.view.wireframe=render::Wireframe::off;floor.selected=true;draw();snapshot(capture,name.c_str());
+        }
+    }
+    frame.camera={.projection={1,0,0,0,0,1.5f,0,0,0,0,0,1,0,0,.25f,0},.far_depth=.0625f};
+    floor.selected=false;
+    floor.geometry=std::make_shared<const Mesh>(std::vector<Vertex>{
+        {{-2,-1,4},{0,0,-1}},{{-2,1,4},{0,0,-1}},{{2,1,4},{0,0,-1}},
+        {{-2,-1,4},{0,0,-1}},{{2,1,4},{0,0,-1}},{{2,-1,4},{0,0,-1}}});
+    frame.camera_cut=true;draw();frame.camera_cut=false;
+    check(depth(capture,extent.width/2,extent.height/2)==.0625f && pixel(capture,extent.width/2,extent.height/2)[0]>15,
+        "positive far-plane depth remains a visible Lit surface, not background");
+    frame.meshes={};frame.view.shading=render::Shading::flat;
+    frame.view.reference_grid=frame.view.origin_axes=true;frame.view.grid_plane=render::GridPlane::xy;
+    frame.camera.view[14]=4;draw();const auto grid=capture;
+    check(std::ranges::count_if(grid.rgba,[](auto c){return c>0 && c<255;})>100,
+        "reference grid remains visible at the positive far clipping boundary");
+    frame.camera.far_depth=.25f/3;draw();
+    for(std::size_t i=0;i<capture.depth.size();++i)
+        check(capture.depth[i]==0 && capture.rgba[i*4]==0 && capture.rgba[i*4+1]==0 && capture.rgba[i*4+2]==0,
+            "reference guides beyond the finite far plane do not leak color or depth");
+    frame.view.reference_grid=frame.view.origin_axes=false;frame.camera.view[14]=0;
+    frame.view.shading=render::Shading::scene_lit;
+    auto& debug=frame.view.lit;debug.probe_visualization=render::ProbeVisualization::state;
+    debug.probe_volume=debug.probe_xray=true;
+    for(auto& volume:debug.probe_volumes)volume.enabled=false;
+    debug.probe_volumes[0].enabled=true;debug.probe_volumes[0].minimum={-1,-1,7};
+    debug.probe_volumes[0].maximum={1,1,9};debug.probe_volumes[0].counts={2,2,2};
+    frame.camera.far_depth=.25f/12;frame.camera_cut=true;draw();
+    check(std::ranges::count_if(capture.rgba,[](auto c){return c>0 && c<255;})>100,
+        "DDGI diagnostic spheres and bounds have a visible far-clip control");
+    frame.camera.far_depth=.25f/4;draw();frame.camera_cut=false;
+    for(std::size_t i=0;i<capture.depth.size();++i)
+        check(capture.depth[i]==0 && capture.rgba[i*4]==0 && capture.rgba[i*4+1]==0 && capture.rgba[i*4+2]==0,
+            "X-ray DDGI diagnostic geometry still obeys the main-camera far plane");
+    std::puts("Renderer selection clipping: PASS (eye/near/far clipping, original/triangle edges, bounded width, four shading and AA modes, FP32 depth, extreme scale, mirror, explicit wires, far surface/grid/DDGI boundaries)");
 }

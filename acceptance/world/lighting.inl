@@ -310,9 +310,9 @@ void environment_and_group_writes() {
 
     // An admission rejection restores every leaf to its exact bytes, including a
     // NaN payload and -0 that no write can produce; the rejection is the admission's.
-    take(world.add_admission(types.environment_component,[&](const w::World& owner_world,std::span<const ObjectId> candidates)->Result<void> {
-        for(const auto object:candidates)
-            if(std::get<float>(take(owner_world.runtime().read(object,path("sky_intensity"))))>5)
+    take(world.add_admission(types.environment_component,[&](const w::World& owner_world,std::span<const w::World::AdmissionCandidate> candidates)->Result<void> {
+        for(const auto& candidate:candidates)
+            if(std::get<float>(take(owner_world.runtime().read(candidate.component,path("sky_intensity"))))>5)
                 return std::unexpected(Error{ErrorCode::invalid_member,"Test admission rejects bright skies."});
         return {};
     }));
@@ -355,8 +355,8 @@ void environment_and_group_writes() {
     require(bound.source=="project/sky" && bound.resolved==sky && lit.sky_map==sky && lit.sky_rotation==180.f,
         "The sky map binding or the clamped sky rotation did not reach the World settings.");
     std::optional<Result<void>> nested_sky;
-    take(world.add_admission(types.environment_component,[&](const w::World&,std::span<const ObjectId> candidates)->Result<void> {
-        if(!nested_sky) nested_sky=p::set_sky_map_binding(runtime,candidates.front(),{});
+    take(world.add_admission(types.environment_component,[&](const w::World&,std::span<const w::World::AdmissionCandidate> candidates)->Result<void> {
+        if(!nested_sky) nested_sky=p::set_sky_map_binding(runtime,candidates.front().component,{});
         return {};
     }));
     take(world.write(environment.id(),path("sky_rotation"),-90.f));
@@ -480,4 +480,148 @@ void presentation_cache() {
     require(reports.size()==1 && reports[0].repeats==2,"A persistent invalid Environment was not reported on each update.");
     committed(world.close());
     std::puts("[pass] Presentation cache: unchanged updates keep the version; World, Runtime, Environment, TRS, enablement, composition, reparent and material resource edits advance it and rebuild only their slots; isolated items and an invalid Environment are reported on every update");
+}
+
+struct DerivedCamera : p::CameraComponent {};
+void scene_cameras() {
+    Runtime runtime;const auto types=register_all_types(runtime);
+    const auto derived=take(NativeRegistration<DerivedCamera>{runtime,"camera.DerivedCamera",TypeKind::object}.base<p::CameraComponent>().publish());
+    w::World world(runtime,types);const auto scene=take(p::Scene::create(world,types));
+    const auto make_camera=[&](TypeId type) {
+        auto entity=take(w::create_entity(runtime));auto camera=take(w::create_component(runtime,type));
+        take(world.set_transform(entity.id(),{}));
+        committed(world.attach_components(entity.id(),std::array{w::Attachment{camera.id()}}));
+        return std::pair{std::move(entity),std::move(camera)};
+    };
+    auto [a,ca]=make_camera(types.camera_component);auto [b,cb]=make_camera(derived);
+    auto group=take(w::create_entity(runtime)),origin=take(w::create_entity(runtime));
+    // Deliberately different composition and spatial parents; zero and negative
+    // scales affect translation, but camera axes are rotations only.
+    const auto quarter=std::sqrt(.5f);
+    take(world.set_transform(group.id(),{{99,88,77},{quarter,0,0,quarter},{2,3,4}}));
+    take(world.set_transform(origin.id(),{{4,5,6},{0,quarter,0,quarter},{-2,0,3}}));
+    take(world.set_transform(a.id(),{{1,2,3},{0,0,quarter,quarter},{-1,4,2}}));
+    committed(world.reparent(a.id(),group.id(),w::ReparentRule::keep_local));
+    committed(world.set_space_reference(a.id(),origin.id(),w::ReparentRule::keep_local));
+    committed(world.attach_batch(std::array{group.id(),origin.id(),b.id()}));
+    auto environment=take(w::create_component(runtime,types.environment_component));
+    committed(world.attach_components(group.id(),std::array{w::Attachment{environment.id()}}));
+    const auto selected=take(runtime.find_field(types.environment_component,"main_camera"));
+    require(take(runtime.read_reference(environment.id(),selected)).is_null(),"Main camera did not default to null.");
+    reject(scene.main_camera(),"An unselected scene chose a camera implicitly.");
+    take(runtime.write_reference(environment.id(),selected,a.reference()));
+    const auto roots=runtime.root_count();const auto snapshot=take(scene.main_camera());
+    const auto forward=math::rotate(snapshot.rotation,math::Vector3{0,0,1}),up=math::rotate(snapshot.rotation,math::Vector3{0,1,0});
+    require(snapshot.entity==a.id() && near(snapshot.position.x,13) && near(snapshot.position.y,5) && near(snapshot.position.z,8) &&
+        near(forward.x,1) && near(forward.y,0) && near(forward.z,0) && near(up.x,0) && near(up.y,0) && near(up.z,1) &&
+        runtime.root_count()==roots,"Camera lost its true spatial chain, incorporated scale into rotation, or retained roots.");
+    const auto matrices=take(snapshot.matrices(1.7f));
+    const auto origin_view=math::transform_point(snapshot.position,matrices.view);
+    const auto near_clip=math::Vector4{0,0,snapshot.near_clip,1}*matrices.projection;
+    const auto far_clip=math::Vector4{0,0,snapshot.far_clip,1}*matrices.projection;
+    const auto inverse=math::try_inverse(matrices.projection);
+    require(bool(inverse),"Infinite camera projection was not invertible.");
+    const auto direction=math::Vector4{0,0,0,1}*(*inverse);
+    require(near(origin_view.x,0) && near(origin_view.y,0) && near(origin_view.z,0) && near(near_clip.z/near_clip.w,1) &&
+        near(far_clip.z/far_clip.w,snapshot.near_clip/snapshot.far_clip) &&
+        near(matrices.far_depth,snapshot.near_clip/snapshot.far_clip) && direction.w==0 && direction.z>0 &&
+        near(matrices.projection[5]/matrices.projection[0],1.7f),
+        "Camera matrices lost the eye, aspect ratio or infinite reversed-Z depth mapping.");
+    reject(snapshot.matrices(0),"A zero camera aspect ratio was accepted.");
+    const auto revision=world.revision();
+    take(runtime.write_reference(environment.id(),selected,b.reference()));
+    require(world.revision()==revision && take(scene.main_camera()).entity==b.id(),"A camera switch waited for a structural revision.");
+    take(runtime.write_reference(environment.id(),selected,a.reference()));
+    for(const auto object:std::array{a.id(),group.id(),ca.id(),environment.id()}) {
+        committed(world.set_enabled(object,false));reject(scene.main_camera(),"A disabled camera chain remained usable.");
+        require(take(runtime.read_reference(environment.id(),selected)).id()==a.id(),"Consumption cleared a disabled selection.");
+        committed(world.set_enabled(object,true));require(take(scene.main_camera()).entity==a.id(),"Re-enabling did not restore the main camera.");
+    }
+    auto removed=take(world.remove_component(ca.id()));
+    reject(scene.main_camera(),"A selected Entity without its CameraComponent remained usable.");
+    committed(world.restore(removed));
+    const auto fov=take(runtime.find_field(types.camera_component,"vertical_fov"));
+    const auto near_field=take(runtime.find_field(types.camera_component,"near_clip"));
+    const auto far_field=take(runtime.find_field(types.camera_component,"far_clip"));
+    take(world.write(ca.id(),std::array{fov},65.f));
+    require(take(scene.main_camera()).vertical_fov==65.f,"Camera projection edits were cached by World revision.");
+    reject(world.write(ca.id(),std::array{near_field},30000.f),"Equal near/far was accepted by authoring.");
+    require(take(scene.main_camera()).near_clip==.05f,"Rejected projection edit was not restored.");
+    take(runtime.write(ca.id(),far_field,.05f));reject(scene.main_camera(),"A direct invalid projection reached the camera snapshot.");
+    take(runtime.write(ca.id(),far_field,30000.f));
+    reject(runtime.write(ca.id(),fov,std::numeric_limits<float>::infinity()),"The Runtime accepted non-finite bounded FOV.");
+    take(runtime.with_native<p::CameraComponent>(ca.id(),[](auto& camera)->Result<void> {
+        camera.vertical_fov=std::numeric_limits<float>::infinity();return {};
+    }));
+    reject(scene.main_camera(),"Non-finite native camera FOV was accepted by the consumer.");
+    take(runtime.write(ca.id(),fov,65.f));
+    take(runtime.write(origin.id(),types.position_fields[0],std::numeric_limits<float>::infinity()));
+    reject(scene.main_camera(),"A non-finite camera ancestor was accepted.");
+    take(runtime.write(origin.id(),types.position_fields[0],4.f));
+    require(take(scene.main_camera()).entity==a.id(),"Repairing the spatial chain did not restore the camera.");
+
+    // Domain admission rejects the whole incoming batch before publication, and
+    // receives the proposed owner even while a component has no owner yet.
+    auto extra=take(w::create_component(runtime,derived));committed(world.set_enabled(extra.id(),false));
+    reject(world.attach_components(a.id(),std::array{w::Attachment{extra.id()}}),"A disabled derived second camera was accepted.");
+    require(take(w::inspect_component(runtime,extra.id())).owner==ObjectId{} && take(world.members(scene.cameras())).size()==2,
+        "Rejected camera attachment partially published ownership or a capability.");
+    auto empty=take(w::create_entity(runtime));take(world.set_transform(empty.id(),{}));committed(world.attach(empty.id()));
+    auto extra2=take(w::create_component(runtime,types.camera_component));
+    reject(world.attach_components(empty.id(),std::array{w::Attachment{extra.id()},w::Attachment{extra2.id()}}),
+        "Two incoming cameras on the same owner were accepted.");
+    require(take(w::components(runtime,empty.id())).empty(),"A rejected camera batch partially published components.");
+    auto old=take(world.remove_component(cb.id()));
+    committed(world.attach_components(b.id(),std::array{w::Attachment{extra.id()}}));
+    reject(world.restore(old),"Restoring a second camera bypassed admission.");
+    auto detached=take(world.detach(b.id()));
+    committed(world.attach_components(b.id(),std::array{w::Attachment{cb.id()}}));
+    reject(world.restore(detached),"Restoring a detached graph with duplicate cameras bypassed admission.");
+    require(!world.contains(b.id()),"Rejected forest restore published membership.");
+    auto discarded=take(world.remove_component(cb.id()));committed(world.restore(detached));
+    auto duplicate=take(w::create_entity(runtime));take(world.set_transform(duplicate.id(),{}));
+    auto extra3=take(w::create_component(runtime,types.camera_component));
+    committed(world.attach_components(duplicate.id(),std::array{w::Attachment{cb.id()},w::Attachment{extra3.id()}}));
+    auto innocent=take(w::create_entity(runtime));
+    reject(world.attach_batch(std::array{innocent.id(),duplicate.id()}),"A forest with duplicate cameras was accepted.");
+    require(!world.contains(innocent.id()) && !world.contains(duplicate.id()),"A rejected forest published an unrelated root.");
+    {
+        w::World unguarded(runtime,types);
+        committed(unguarded.attach(duplicate.id()));
+        reject(p::Scene::create(unguarded,types),"Scene creation accepted existing duplicate cameras.");
+        committed(unguarded.close());
+    }
+    {
+        w::World foreign(runtime,types);auto [other,other_camera]=make_camera(types.camera_component);
+        committed(foreign.attach(other.id()));
+        take(runtime.write_reference(environment.id(),selected,other.reference()));
+        reject(scene.main_camera(),"A same-Runtime foreign World camera was adopted.");
+        require(take(runtime.read_reference(environment.id(),selected)).id()==other.id(),"Consumer rewrote a foreign selection.");
+        committed(foreign.close());
+    }
+    // Native/generated game code uses Runtime's reference barrier. A selection
+    // made during Late Tick is invalidated by that phase's queued disable.
+    committed(world.set_enabled(extra.id(),true));
+    bool disable_camera{};
+    take(world.bind_behavior(types.entity,{.late_tick=[&](Runtime& rt,ObjectId id,float)->Result<void> {
+        if(id!=group.id()) return {};
+        take(rt.write_reference(environment.id(),selected,b.reference()));
+        if(disable_camera) take(world.request({.kind=w::RequestKind::entity_enabled,.target=b.id(),.enabled=false}));
+        return {};
+    }}));
+    committed(world.start());
+    const auto before_tick=world.revision();take(world.update(.016f));
+    require(world.revision()==before_tick && take(scene.main_camera()).entity==b.id(),"Late Tick reference write waited for a World revision.");
+    disable_camera=true;take(world.update(.016f));
+    reject(scene.main_camera(),"Camera consumption ignored the final Late Tick flush.");
+    require(take(runtime.read_reference(environment.id(),selected)).id()==b.id(),"Late flush rejection cleared the game's weak selection.");
+    committed(world.stop());
+    take(runtime.write_reference(environment.id(),selected,a.reference()));
+    const auto stale=a.id();committed(w::destroy_entity(runtime,a.id()));
+    reject(scene.main_camera(),"A destroyed camera weak target was adopted.");
+    require(take(runtime.read_reference(environment.id(),selected)).id()==stale,"A stale weak selection lost its identity.");
+    take(runtime.write_reference(environment.id(),selected,take(runtime.null_reference(types.entity,ValueForm::weak_reference))));
+    reject(scene.main_camera(),"Explicitly clearing the main camera chose a fallback.");
+    committed(world.close());
+    std::puts("[pass] Scene cameras: explicit weak selection, no fallback, fresh snapshots, spatial rotation independent of signed/zero scale, projection validation, atomic per-Entity uniqueness across attach/restore/existing graphs");
 }

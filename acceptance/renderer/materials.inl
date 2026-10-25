@@ -25,7 +25,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     render::Frame frame{ui_frame,{}, {0,0,float(ui_frame.extent.width),float(ui_frame.extent.height)},meshes};render::Capture capture;
     auto result=take(prepared_render(renderer,frame,&capture));
     const auto x=ui_frame.extent.width/4,y=ui_frame.extent.height/4;
-    check(result.stats.scene_draw_calls==2 && result.stats.material_upload_count>0,"material parts bind distinct surfaces");
+    check(result.stats.scene_draw_calls==1 && result.stats.material_upload_count>0,"material parts share one draw and bind distinct surfaces");
     for(const auto& point:std::array{std::array{x,y},std::array{x*3,y},std::array{x,y*3},std::array{x*3,y*3}}) {
         const auto* color=pixel(capture,point[0],point[1]);
         std::printf("Material coverage pixel=(%u,%u) rgba=(%u,%u,%u,%u) depth=%.9f\n",
