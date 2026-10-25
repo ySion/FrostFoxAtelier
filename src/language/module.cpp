@@ -98,18 +98,22 @@ void initializer_shape(Tokens& tokens, const SourceFile& unit, std::uint32_t fil
     }
     if (tokens.token_.text == ";") { field.initializer_name = std::move(name); field.initializer_arguments = std::move(arguments); }
 }
-std::string function_signature(Tokens& tokens, const TypeName& type, std::vector<std::string>& parameters) {
+std::string function_signature(Tokens& tokens, const TypeName& type, std::vector<std::string>& parameters,
+    TopLevel* declaration = nullptr) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
+    bool writable_parameter = false;
     tokens.expect("(");
     if (!tokens.accept(")")) for (;;) {
         const bool constant = tokens.accept("const");
         auto parameter = parse_type_name(tokens);
         const bool reference = tokens.accept("&");
+        writable_parameter |= reference && !constant;
         parameters.emplace_back(tokens.identifier().text);
         signature += (constant ? "const " : "") + parameter.name + ":" + std::to_string(parameter.array_depth) + (reference ? "&;" : ";");
         if (tokens.accept(")")) break;
         tokens.expect(",");
     }
+    if (declaration) declaration->property = property_name(declaration->name, parameters.size(), type.name == "void", writable_parameter);
     return signature;
 }
 // The <module> of a well-formed engine/<module>/<file> path; empty for every other path.
@@ -126,9 +130,10 @@ std::string_view engine_module(std::string_view path) {
 bool in_namespace(std::string_view name, std::string_view space) {
     return name.size() > space.size() && name.starts_with(space) && name[space.size()] == '.';
 }
-using Names = std::unordered_map<std::string_view, std::uint32_t>;
+using Names = std::unordered_multimap<std::string, std::uint32_t>;
 // Every top-level name the text spells as an identifier or dotted chain, at each length of the chain.
-// A local that shares a name only adds that declaration; nothing reaches a declaration without its name.
+// Property names include both accessors. Conservative extra dependencies also keep
+// same-name declarations in one unit so the parser can diagnose collisions.
 void spelled(std::string_view text, const Names& names, std::vector<std::uint32_t>& uses) {
     Lexer lexer(text);
     std::string chain;
@@ -138,7 +143,12 @@ void spelled(std::string_view text, const Names& names, std::vector<std::uint32_
             if (dotted) chain += '.'; else chain.clear();
             chain += token.text;
             dotted = false;
-            if (const auto found = names.find(chain); found != names.end()) uses.push_back(found->second);
+            const auto include = [&](const std::string& name) {
+                const auto [begin, end] = names.equal_range(name);
+                for (auto entry = begin; entry != end; ++entry) uses.push_back(entry->second);
+            };
+            include(chain);
+            if (const auto alias = property_name(chain); !alias.empty()) include(alias);
         } else {
             dotted = token.text == "." && !chain.empty();
             if (!dotted) chain.clear();
@@ -204,7 +214,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                 const auto begin = tokens.token_.position;
                 if (!tokens.accept("class")) {
                     // A top-level declaration ends at ';' or a complete body.
-                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}};
+                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {}};
                     const bool function = tokens.token_.text != "struct" && tokens.token_.text != "enum" && tokens.token_.text != "const";
                     if (function) {
                         if (tokens.accept("async")) reject(begin, "Project exports must be synchronous.");
@@ -213,7 +223,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         declaration.name = tokens.qualified_identifier();
                         declare(declaration.name, declaration.position);
                         FunctionDeclaration exported{declaration.name, {}, {}};
-                        exported.signature = function_signature(tokens, type, exported.parameters);
+                        exported.signature = function_signature(tokens, type, exported.parameters, &declaration);
                         // Engine functions serve Source calls only; project functions are the global entries.
                         if (own.empty()) result.functions.push_back(std::move(exported));
                     } else {
@@ -293,7 +303,12 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
         } catch (const Rejected& error) { return std::unexpected(ModuleDiagnostic{file, error.diagnostic}); }
     }
     Names names;
-    for (std::uint32_t i = 0; i < result.declarations.size(); ++i) names.emplace(result.declarations[i].name, i);
+    for (std::uint32_t i = 0; i < result.declarations.size(); ++i) {
+        const auto& declaration = result.declarations[i];
+        names.emplace(declaration.name, i);
+        if (declaration.kind == TopLevel::Kind::function)
+            if (auto alias = property_name(declaration.name); !alias.empty()) names.emplace(std::move(alias), i);
+    }
     for (auto& declaration : result.declarations) spelled(declaration.source.text, names, declaration.uses);
     // A method spells its own name, so a top-level declaration sharing it joins the class unit,
     // where the parser rejects the clash as before.

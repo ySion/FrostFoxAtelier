@@ -612,11 +612,19 @@ class procedural.Jitter : procedural.Base { float amount = 0.5f; float evaluate(
         "A function took a registered type's name.");
     rejected(engine_file("const uint procedural.Jitter = 1;"), "cannot share a name with a type: procedural.Jitter",
         "A constant took a source class's name.");
+    // Empty classes have no bound compile unit: the project-wide name check must see accessor projections.
+    rejected(project("class C : procedural.Base {} uint GetC() { return 1; } uint run() { return C; }"),
+        "cannot share a name with a type: C", "A getter property took an empty source class's name.");
+    rejected(project("class C : procedural.Base {} void SetC(const uint& value) {} void run() { C = 1; }"),
+        "cannot share a name with a type: C", "A const-reference setter property took an empty source class's name.");
+    rejected(engine_file("uint procedural.GetBase() { return 1; }"), "cannot share a name with a type: procedural.Base",
+        "An engine getter property took a registered object type's name.");
     rejected(project("class mygame.Twin : procedural.Base { float run() { return 1.0; } }\nfloat mygame.Twin.run() { return 2.0; }"),
         "cannot extend a type name: mygame.Twin.run", "A function took a class method's entry name.");
     rejected(engine_file("uint procedural.twice(uint v) { return hash(v); }"), "Unknown source function 'hash'",
         "An engine file called a qualified function by its short name.");
-    require(!runtime.find_type("procedural.Jitter") && program.classes().empty(), "A rejected engine snapshot published a type.");
+    require(!runtime.find_type("procedural.Jitter") && !runtime.find_type("C") && program.classes().empty(),
+        "A rejected engine snapshot published a type.");
     publish(program, with({{"Source/Game.source", 1, R"(
 class mygame.Foo : procedural.Base {
     procedural.Axis axis = procedural.Axis::z;
@@ -638,6 +646,27 @@ float unshadowed() { return procedural.y; }
         std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "procedural.Jitter.evaluate"; }) &&
         std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "mygame.Foo.run"; }),
         "Engine and project classes on the engine's native base did not publish.");
+
+    // Get/Set alone does not reserve a name: only eligible signatures project a property.
+    Program ordinary_accessors(runtime);
+    publish(ordinary_accessors, {"property-names", 1, {{"Source/Names.source", 1, R"(
+class C : procedural.Base {}
+class D : procedural.Base {}
+uint GetC(uint value) { return value + 1; }
+bool SetC(uint value) { return value == 8; }
+void GetD() {}
+void SetD(uint& value) { value = value + 1; }
+uint GetLimit() { return 11; }
+uint run() {
+    uint value = 7;
+    GetD();
+    SetD(value);
+    if (SetC(value)) { return GetC(value) + Limit; }
+    return 0;
+}
+)"}}});
+    require(std::get<std::uint32_t>(*take(take(ordinary_accessors.entry("run")).invoke({}, {}))) == 20,
+        "Ineligible Get/Set functions conflicted with types, or a nonconflicting property stopped working.");
 }
 // A unit compiles its own text with the declarations it spells, so its code follows only them;
 // engine functions are internal, and each declaration is still checked in its home unit.
@@ -701,6 +730,35 @@ void verify_project_compile_units() {
     require(after.size() == 2 && after[0].code != after[1].code && after[0].code != before && after[1].code != before &&
         std::get<float>(*take(take(moved.entry("m.g")).invoke({}, {}))) == 1.0f,
         "A unit whose text stayed the same while its exports grew kept its old codes.");
+
+    Program properties(runtime);
+    source::SourceSnapshot property_input{"properties", 1, {
+        {"engine/props/value.source", 1, "uint props.GetValue() { return 7; } void props.SetValue(uint v) {}"},
+        {"Source/Property.source", 1, R"(
+            uint value() { return props.Value; }
+            class game.Property : procedural.Base {
+                uint stored = 3;
+                uint GetLocal() { return self.stored; }
+                void SetLocal(uint v) { self.stored = v; }
+                uint run() { Local = Local + props.Value; return Local; }
+            }
+        )"}}};
+    publish(properties, property_input);
+    const auto instance = take(runtime.create(take(runtime.find_type("game.Property"))));
+    const auto entry = take(properties.entry("game.Property.run"));
+    const auto old_property = take(properties.pin("game.Property.run"));
+    require(std::get<std::uint32_t>(*take(entry.invoke(instance.id(), {}))) == 10,
+        "Class-local or engine property did not resolve to its Source accessor.");
+    property_input.files[0].source = "uint props.GetValue() { return 11; } void props.SetValue(uint v) {}";
+    publish(properties, property_input);
+    require(std::get<std::uint32_t>(*take(entry.invoke(instance.id(), {}))) == 21 &&
+        std::get<std::uint32_t>(*take(take(properties.entry("value")).invoke({}, {}))) == 11 &&
+        std::get<std::uint32_t>(*take(old_property.invoke(instance.id(), {}))) == 28,
+        "A property dependency kept stale code or changed a pinned accessor version.");
+    property_input.files[0].source = "uint props.GetValue() { return 11; } void props.SetValue(float v) {}";
+    const auto bad_property = Program::prepare(take(properties.request(property_input)));
+    require(!bad_property && bad_property.error().message.find("Property getter and setter types differ") != std::string::npos,
+        "The dependency closure omitted an unused property setter's contract.");
 }
 // A unit compiled from unchanged input keeps its machine code; the new Version maps faults and
 // breakpoints through the current files and works once the module that compiled it is gone.

@@ -18,6 +18,24 @@ inline bool reserved(std::string_view value) noexcept {
         value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
         value == "async" || value == "yield" || value == "struct" || value == "enum" || value == "class";
 }
+// Naming projection only; the parser also checks the accessor's signature.
+inline std::string property_name(std::string_view name) {
+    const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
+    const auto member = name.substr(start);
+    if ((!member.starts_with("Get") && !member.starts_with("Set")) || member.size() == 3) return {};
+    const auto suffix = member.substr(3);
+    if (!letter(suffix.front()) || reserved(suffix)) return {};
+    return std::string(name.substr(0, start)) + std::string(suffix);
+}
+// The project collector and typed parser use the same accessor eligibility rule.
+inline std::string property_name(std::string_view name, std::size_t parameters, bool void_result, bool writable_parameter) {
+    auto alias = property_name(name);
+    if (alias.empty()) return {};
+    const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
+    const bool getter = name.substr(start).starts_with("Get");
+    if (getter ? (parameters != 0 || void_result) : (parameters != 1 || !void_result || writable_parameter)) return {};
+    return alias;
+}
 struct Token {
     enum class Kind { end, identifier, number, punctuation, string };
     Kind kind;

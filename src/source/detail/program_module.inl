@@ -226,7 +226,8 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     if (!values) return fail(mapped_error(input, types, values.error().position, values.error().message));
     module.value_types = std::move(*values);
     auto& runtime = *state_->contract->binding.runtime;
-    // Functions and constants share dotted names with types: Class.method entries need both rules.
+    // Functions, constants and accessor projections share names with the complete type catalog,
+    // including empty classes that produce no bound compile unit.
     const auto type_named = [&](std::string_view name) {
         return (!language::editor_reserved(name) && runtime.find_type(name)) ||
             find_named(module.source.classes, name) || find_named(module.value_types, name);
@@ -237,6 +238,9 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (type_named(name))
             return fail(source_error(input, declaration.file, declaration.position,
                 "A source function or constant cannot share a name with a type: " + declaration.name));
+        if (!declaration.property.empty() && type_named(declaration.property))
+            return fail(source_error(input, declaration.file, declaration.position,
+                "A source property cannot share a name with a type: " + declaration.property));
         if (const auto dot = name.rfind('.'); dot != std::string_view::npos && type_named(name.substr(0, dot)))
             return fail(source_error(input, declaration.file, declaration.position,
                 "A source function or constant name cannot extend a type name: " + declaration.name));

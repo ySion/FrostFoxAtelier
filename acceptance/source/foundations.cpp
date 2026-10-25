@@ -43,6 +43,12 @@ struct Host {
     bool text(const String& value) { ++calls; return value.size() != 0; }
     bool fail() { ++calls; throw std::runtime_error("foundation first failure"); }
     std::uint32_t live_count() const noexcept { return Work::live; }
+    std::uint32_t get_next() noexcept { return ++calls; }
+    std::uint32_t get_guard() const noexcept { return guard; }
+    void set_guard(std::uint32_t value) {
+        if (value > 100) throw std::runtime_error("guard rejected");
+        guard = value;
+    }
 };
 TypeId register_foundations(Runtime& runtime) {
     auto work = NativeRegistration<Work>{runtime, "foundation.Work", TypeKind::record}
@@ -54,6 +60,9 @@ TypeId register_foundations(Runtime& runtime) {
             .field<&Host::after>("after").field<&Host::guard>("guard")
             .method<&Host::alias>("alias", true).method<&Host::touch>("touch", true)
             .method<&Host::text>("text", true).method<&Host::fail>("fail", true)
+            .method<&Host::get_next>("GetNext", true).method<&Host::get_guard>("GetGuard", true)
+            .method<&Host::set_guard>("SetGuard", true)
+            .method<&Host::get_guard>("GetUnsafe")
             .method<&Host::live_count>("live_count", true).build(),
         string_definition(runtime), std::move(work),
         array_definition<Work>(runtime, "foundation.Works"),
@@ -118,6 +127,101 @@ void verify_execution_interval() {
         require(runtime.live_objects() == 0, "Host collection left a backlog between batches.");
     }
     std::puts("Source execution interval: PASS (1024 temporary objects in one call; 64 per host-collected batch)");
+}
+
+void verify_properties_and_weakening() {
+    Runtime runtime;
+    const auto host_type = register_foundations(runtime);
+    Program program(runtime, host_type);
+    const auto object = take(runtime.create(host_type));
+    publish(program, R"(
+        uint run() {
+            foundation.Host held = self;
+            weak foundation.Host watched = held;
+            watched = null;
+            watched = held;
+            watched.Guard = watched.Next * 10 + watched.Next;
+            return watched.Guard + watched.Next * 100;
+        }
+    )");
+    require(result<std::uint32_t>(program.entry().invoke(object.id(), {})) == 312,
+        "Implicit weakening or native property evaluation order changed the result.");
+    publish(program, R"(
+        uint GetValue() { return self.Next; }
+        void SetValue(uint value) { self.Guard = value; }
+        void SetSink(uint value) { self.SetGuard(value); }
+        uint run() {
+            (Value) = Value * 10 + Value;
+            Sink = self.Guard + GetValue();
+            return self.GetGuard();
+        }
+    )");
+    require(result<std::uint32_t>(program.entry().invoke(object.id(), {})) == 51,
+        "Source property assignment read its getter, repeated an operand, or lost explicit accessor calls.");
+    publish(program, "uint run() { self.Guard = 101; return 0; }");
+    const auto rejected_write = program.entry().invoke(object.id(), {});
+    require(!rejected_write && rejected_write.error().message.find("guard rejected") != std::string::npos &&
+        take(runtime.with_native<Host>(object.id(), [](const Host& host) -> Result<bool> { return host.guard == 51; })),
+        "Property assignment bypassed its native setter or swallowed rejection.");
+    publish(program, "uint run() { weak foundation.Host absent; return self.Guard + absent.Guard; }");
+    const auto null_read = program.entry().invoke(object.id(), {});
+    require(!null_read && null_read.error().code == ErrorCode::invalid_object,
+        "An ordinary property getter bypassed null-receiver validation.");
+    Program values(runtime, host_type);
+    publish(values, R"(
+        struct foundation.Pair { uint x; uint y; };
+        foundation.Pair GetPair() {
+            foundation.Pair p;
+            p.x = self.Guard; p.y = 9;
+            return p;
+        }
+        void SetPair(const foundation.Pair& p) { self.Guard = p.x + p.y; }
+        uint run() { Pair = Pair; return Pair.x + Pair.y; }
+    )");
+    require(result<std::uint32_t>(values.entry().invoke(object.id(), {})) == 69,
+        "Plain-record property results, member reads or const-reference setters lost their value lifetime.");
+    Program coroutine(runtime, host_type);
+    publish(coroutine, R"(
+        async uint run() {
+            weak foundation.Host watched = new foundation.Host();
+            yield;
+            foundation.Host held = try_acquire(watched);
+            if (held == null) { return 7; }
+            return 0;
+        }
+    )");
+    auto task = take(coroutine.entry().start({}, {}));
+    require(take(task.resume()) == CoroutineState::suspended, "Implicit weakening coroutine did not suspend.");
+    collect(runtime);
+    require(take(task.resume()) == CoroutineState::completed && result<std::uint32_t>(task.result()) == 7,
+        "Implicit strong-to-weak conversion retained the temporary across suspension.");
+    constexpr std::array invalid{
+        "void run() { weak foundation.Host w = self; foundation.Host h = w; }",
+        "void run() { self.Next = 1; }",
+        "void SetSink(uint v) {} uint run() { return Sink; }",
+        "uint GetX() { return 1; } void SetX(float v) {} uint run() { return 0; }",
+        "uint GetX() { return 1; } const uint X = 2; uint run() { return X; }",
+        "uint GetX() { return 1; } uint X() { return 2; } uint run() { return X(); }",
+        "uint GetX() { return 1; } uint X.child() { return 2; } uint run() { return 0; }",
+        "uint GetX() { return 1; } uint run(uint X) { return X; }",
+        "uint GetX() { return 1; } uint run() { uint X = 2; return X; }",
+        "bool SetX(uint v) { return true; } void run() { X = 2; }",
+        "void SetX(uint& v) {} void run() { X = 2; }",
+        "void change(uint& v) { v = 2; } void run() { change(self.Guard); }",
+        "vector3 GetPoint() { return vector3(); } void run() { Point.x = 1.0; }",
+        "uint run() { String text = \"active borrow\"; return self.Unsafe; }"};
+    for (const auto text : invalid) {
+        const auto failed = Program::prepare(take(program.request("invalid-property.source", text, "run")));
+        require(!failed && failed.error().message.find("invalid-property.source") != std::string::npos,
+            "Invalid property or implicit strengthening was accepted or lost its source location.");
+    }
+    // A property is not an additional stored field and may not silently hide one.
+    Runtime conflicts;
+    auto conflicting = NativeRegistration<Host>{conflicts, "foundation.Conflict", TypeKind::object}
+        .field<&Host::guard>("Guard").method<&Host::get_guard>("GetGuard", true).build();
+    Program collision(conflicts, take(conflicts.register_type(std::move(conflicting))));
+    require(!Program::prepare(take(collision.request("collision.source", "uint run() { return self.Guard; }", "run"))),
+        "A native property silently shadowed stored object data.");
 }
 
 void verify_boolean_storage() {
@@ -463,11 +567,12 @@ void verify_async_and_rejections() {
 
 void verify_source_foundations() {
     verify_execution_interval();
+    verify_properties_and_weakening();
     verify_boolean_storage();
     verify_flags_and_scopes();
     verify_short_circuit();
     verify_numeric_failures();
     verify_async_and_rejections();
     require(Work::live == 0, "Foundation acceptance retained owned work records.");
-    std::puts("Source foundations: PASS (bool ABI/storage, short circuit, checked integers/casts, constants, scoped for/async and versions)");
+    std::puts("Source foundations: PASS (bool ABI/storage, short circuit, checked integers/casts, constants, scoped for/async, properties and implicit weakening)");
 }

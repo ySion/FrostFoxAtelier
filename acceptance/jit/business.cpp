@@ -650,10 +650,10 @@ void verify_reference_values(Runtime& runtime, const Binding& binding, const Bin
     auto code = compile_reference(binding, R"(
         void references(float delta, uint loops) {
             $T empty;
-            weak $T watched;
+            weak $T watched = empty;
             $T alias = self;
             $T copy = alias;
-            weak $T observed = observe(alias);
+            weak $T observed = alias;
             weak $T observed_copy = observed;
             $T acquired = try_acquire(observed_copy);
             self.state.cycles = 0;
@@ -974,7 +974,7 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
             uint turn = 0;
             while (turn < 1) { turn = turn + 1; }
             $T alias = held;
-            weak $T after = observe(alias);
+            weak $T after = alias;
             weak $T copy = before;
             $T acquired = try_acquire(after);
             self.state.cycles = 0;
@@ -1185,9 +1185,7 @@ void verify_reference_rejections(Runtime& runtime, const Binding& binding, const
         "void bad(float a, uint n) { null.advance(a); }",
         "void bad(float a, uint n) { null.state.cycles = n; }",
         "void bad(float a, uint n) { $T h = observe(self); }",
-        "void bad(float a, uint n) { weak $T w = self; }",
         "void bad(float a, uint n) { $T h = self; weak $T w = observe(h); h = w; }",
-        "void bad(float a, uint n) { $T h = self; weak $T w; w = h; }",
         "void bad(float a, uint n) { float x = self + self; }",
         "void bad(float a, uint n) { float x = self - self; }",
         "void bad(float a, uint n) { float x = self * a; }",
