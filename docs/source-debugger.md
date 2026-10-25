@@ -19,10 +19,10 @@ source::Debugger debugger([](const source::DebugSnapshot& stop) {
     // 宿主可在此处理快照并等待命令；示例逐个跳过源码语句。
     return stop.command(source::DebugAction::step_over);
 });
-auto result = entry.invoke(receiver, arguments, {1}, nullptr, &debugger);
+auto result = entry.invoke(receiver, arguments, nullptr, &debugger);
 ```
 
-第四个参数仍是可选 `Diagnostics*`；调试器位于其后。`ValueOutput` 调用和异步 `start` 同样在原有参数后追加。宿主继续使用返回的 Coroutine 控制恢复与取消。
+第三个参数是可选 `Diagnostics*`；调试器位于其后。`ValueOutput` 调用和异步 `start` 同样在原有参数后追加。调用不接受收集预算；整个调试暂停仍在执行区间内，不允许推进 GC。宿主继续使用返回的 Coroutine 控制恢复与取消。
 
 - 默认在首次进入真实源码函数和首个运行错误时暂停，可通过 `DebugOptions` 分别关闭。
 - 普通编译不生成调试帧、变量表和停点调用。调试编译保留可观察存储和函数调用，继续使用 LLVM 管线，承担明确的调试开销。

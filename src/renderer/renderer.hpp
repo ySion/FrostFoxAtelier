@@ -209,6 +209,7 @@ struct FrameStats {
     std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
+    std::uint32_t scene_lit_reflection_work_items{}; // Pixels SSSR classified for hierarchy traversal in that completed sample.
     std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
     std::uint32_t scene_lit_spatial_sources{},scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
     std::uint64_t scene_lit_spatial_bytes{}; // Three current logical GPU buffers, including empty sentinels.

@@ -6,8 +6,8 @@
 
 ## 当前代码实际做了什么
 
-- [solid_geometry.hpp](../../src/renderer/solid_geometry.hpp) 在 Renderer 首次缓存不可变 Mesh 时派生每三角形几何法线和闭合资格；精确位置邻接跨 normal／UV seam，保留作者朝向，开放、非流形、退化或零体积组件不作为内部证据。这是一次性资格分析，不是每帧全网格 inside 测试，也不证明网格无自相交。
-- [scene_lit.cpp](../../src/renderer/scene_lit.cpp) 的 `Geometry::volumes` 随对应 Mesh 缓存和退休；GPU 三角形记录附带上述数据，没有另一套业务 Mesh 身份。
+- [solid_geometry.hpp](../../src/renderer/solid_geometry.hpp) 在 Scene Lit 首次为不可变 Mesh 建 BLAS 时派生每三角形闭合资格，朝向由自身的位置叉积与作者法线确定；精确位置邻接跨 normal／UV seam，保留作者朝向，开放、非流形、退化或零体积组件不作为内部证据。这是一次性资格分析，不是每帧全网格 inside 测试，也不证明网格无自相交。
+- [scene_lit.cpp](../../src/renderer/scene_lit.cpp) 把结果写成每三角形 4 B 的闭合字，随对应 Mesh 的缓存退休，没有另一套业务 Mesh 身份。
 - [lit_ddgi.hlsl](../../src/renderer/shaders/lit_ddgi.hlsl) 的 `ddgi_trace_ray` 仅将合格闭合组件的几何背面记为负距离。开放背面仍遮挡，距离为正，并保留既有着色侧。`DDGIUpdate` 每次更新用 32 条固定方向射线做几何决策，超过四分之一为负判为内部；位移仍受网格单元的 `.45` 椭球范围约束。
 
 NVIDIA RTXGI 同样利用固定射线的背面比例及最近距离做分类和 relocation，并限制位移范围；固定几何射线与随机照明估计分工明确。这是采样式判断，并非一般网格的严格点内外证明。官方内容建议还要求墙体有厚度；不能把它的适用条件直接等同于本项目允许开放薄片的合同。[RTXGI DDGIVolume：Relocation、Classification、Fixed Rays、Geometry Configuration](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/docs/DDGIVolume.md#probe-relocation)，[实际 relocation shader](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/rtxgi-sdk/shaders/ddgi/ProbeRelocationCS.hlsl)。
@@ -46,7 +46,7 @@ Epic 的 Mesh DF 文档明确区分分辨率损失、薄结构负体素要求和
 
 SDF 体素的空间分辨率、单个距离数值的位宽、屏幕 D32／FP32 深度是三个不同维度；提高数值位宽不能恢复体素网格已经漏掉的薄结构。当前屏幕深度及历史的 FP32 合同保持不变。
 
-边长分辨率翻倍意味着八倍容量。当前 `TriangleVolume` 为 16 B／三角形，CPU 分类数组和 GPU 附加记录各一份；10 万三角形约各 1.53 MiB。因此 SDF 并非必然更占内存：稠密复杂网格可能更省，简单盒子通常更贵；还要算生成、驻留、梯度和场景加速结构。若只替换固定射线而保留照明光追，BLAS/TLAS 成本仍存在。
+边长分辨率翻倍意味着八倍容量。当前闭合信息只在 GPU 上保留每三角形 4 B，CPU 分类数组在建 BLAS 后即释放；10 万三角形约 0.38 MiB。因此 SDF 并非必然更占内存：稠密复杂网格可能更省，简单盒子通常更贵；还要算生成、驻留、梯度和场景加速结构。若只替换固定射线而保留照明光追，BLAS/TLAS 成本仍存在。
 
 Mesh 本地场可随刚体实例复用；几何版本变化需要重建。Global DF 则额外承担合成和更新。Epic 的 GDF 是跟随视点的低分辨率 clipmap 缓存，局部更新受影响区域；Lumen 的细节追踪结合近处 Mesh DF 与远处 Global DF，并指出大量重叠实例会增加细节追踪成本。这提供了工程参考，不能据此推断本项目小型 DDGI 体积已有净收益。[Epic Mesh Distance Fields：Global Distance Field](https://dev.epicgames.com/documentation/en-us/unreal-engine/mesh-distance-fields-in-unreal-engine#globaldistancefield)，[Lumen Software Ray Tracing](https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-technical-details-in-unreal-engine#softwareraytracing)。
 

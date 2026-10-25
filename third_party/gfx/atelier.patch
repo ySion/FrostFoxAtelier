@@ -1596,8 +1596,17 @@
      }
 
      GfxResult createResource(D3D12MA::ALLOCATION_DESC const &allocation_desc, D3D12_RESOURCE_DESC const &resource_desc,
-@@ -9936,7 +10413,8 @@
+@@ -9934,9 +10411,17 @@
+     bool transitionResource(Buffer &buffer, D3D12_RESOURCE_STATES resource_state, TransitionType transition_type = kTransitionType_Explicit)
+     {
          GFX_ASSERT(buffer.data_ == nullptr); if(buffer.data_ != nullptr) return false;
++        // Retain compatible read usages instead of oscillating between IA and SRV.
++        // Expanding an explicitly transitioned state still emits a real barrier;
++        // only an already-covered subset can skip it. COMMON and writes stay exact.
++        if(transition_type == kTransitionType_Implicit && resource_state != D3D12_RESOURCE_STATE_COMMON &&
++            (*buffer.resource_state_ & D3D12_RESOURCE_STATE_GENERIC_READ) == *buffer.resource_state_ &&
++            (resource_state & D3D12_RESOURCE_STATE_GENERIC_READ) == resource_state)
++            resource_state |= *buffer.resource_state_;
          if((*buffer.resource_state_ & resource_state) == resource_state && (resource_state != 0 || *buffer.resource_state_ == resource_state))
          {
 -            if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
@@ -1606,7 +1615,27 @@
              {
                  bool already_has_uav_barrier = false;
                  for(std::vector<D3D12_RESOURCE_BARRIER>::const_iterator it = resource_barriers_.begin(); it != resource_barriers_.end(); ++it)
-@@ -10132,12 +10610,8 @@
+@@ -9977,13 +10462,15 @@
+                 submitPipelineBarriers();
+                 break;  // break barrier batches to avoid debug layer warnings
+             }
+-        if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_INDEX_BUFFER &&  // unbind if active index buffer to prevent debug layer errors
++        if((*buffer.resource_state_ & D3D12_RESOURCE_STATE_INDEX_BUFFER) != 0 && // Logical binds may differ from installed IA views.
++            (resource_state & D3D12_RESOURCE_STATE_INDEX_BUFFER) == 0 &&
+-            buffer_handles_.has_handle(bound_index_buffer_.handle) && buffers_[bound_index_buffer_].resource_ == buffer.resource_)
++            buffer_handles_.has_handle(installed_index_buffer_.handle) && buffers_[installed_index_buffer_].resource_ == buffer.resource_)
+         {
+             command_list_->IASetIndexBuffer(nullptr);
+             force_install_index_buffer_ = true;
+         }
+-        if(*buffer.resource_state_ == D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER &&    // unbind if active vertex buffer to prevent debug layer errors
++        if((*buffer.resource_state_ & D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) != 0 &&
++            (resource_state & D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) == 0 &&
+-            buffer_handles_.has_handle(bound_vertex_buffer_.handle) && buffers_[bound_vertex_buffer_].resource_ == buffer.resource_)
++            buffer_handles_.has_handle(installed_vertex_buffer_.handle) && buffers_[installed_vertex_buffer_].resource_ == buffer.resource_)
+         {
+             command_list_->IASetVertexBuffers(0, 1, nullptr);
+@@ -10132,12 +10619,8 @@
      {
          for(uint32_t i = 0; i < max_frames_in_flight_; ++i)
          {
@@ -1621,7 +1650,7 @@
          }
          return forceGarbageCollection();
      }
-@@ -10152,14 +10626,14 @@
+@@ -10152,14 +10635,14 @@
              back_buffers_[i] = nullptr;
              freeRTVDescriptor(back_buffer_rtvs_[i]);
          }
@@ -1638,7 +1667,7 @@
          back_buffer_index_ = swap_chain_->GetCurrentBackBufferIndex();
          GFX_TRY(acquireSwapChainBuffers());
          GFX_TRY(createBackBufferRTVs());
-@@ -10184,8 +10658,7 @@
+@@ -10184,8 +10667,7 @@
              allocation_desc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
              if(createResource(allocation_desc, resource_desc, D3D12_RESOURCE_STATE_COMMON, texture.clear_value_, &allocation, IID_PPV_ARGS(&resource)) != kGfxResult_NoError)
              {
@@ -1648,7 +1677,7 @@
              }
              collect(texture);   // release previous texture
              texture.resource_ = resource;
-@@ -10471,6 +10944,8 @@
+@@ -10471,6 +10953,8 @@
 
      GfxResult handleDeviceLost()
      {
@@ -1657,7 +1686,7 @@
          HRESULT const reason = device_->GetDeviceRemovedReason();
          LPSTR error_text = nullptr;
          DWORD const result = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER, nullptr, reason,
-@@ -10547,7 +11022,9 @@
+@@ -10547,7 +11031,9 @@
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return kGfxResult_NoError; // nothing to destroy
@@ -1668,7 +1697,7 @@
      return kGfxResult_NoError;
  }
 
-@@ -10556,6 +11033,18 @@
+@@ -10556,6 +11042,18 @@
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return false;
      return gfx->isValid();
@@ -1687,7 +1716,7 @@
  }
 
  uint32_t gfxGetBackBufferWidth(GfxContext context)
-@@ -11037,6 +11526,11 @@
+@@ -11037,6 +11535,11 @@
  GfxResult gfxDrawStateSetFillMode(GfxDrawState draw_state, D3D12_FILL_MODE fill_mode)
  {
      return GfxInternal::SetDrawStateFillMode(draw_state, fill_mode);
@@ -1699,7 +1728,7 @@
  }
 
  GfxResult gfxDrawStateSetDepthFunction(GfxDrawState draw_state, D3D12_COMPARISON_FUNC depth_function)
-@@ -11313,6 +11807,13 @@
+@@ -11313,6 +11816,13 @@
      return gfx->encodeClearImage(texture, mip_level, slice);
  }
 
@@ -1713,7 +1742,7 @@
  GfxResult gfxCommandCopyTextureToBackBuffer(GfxContext context, GfxTexture texture)
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
-@@ -11341,6 +11842,18 @@
+@@ -11341,6 +11851,18 @@
      return gfx->encodeCopyTextureToBuffer(dst, src);
  }
 
@@ -1732,7 +1761,7 @@
  GfxResult gfxCommandGenerateMips(GfxContext context, GfxTexture texture)
  {
      GfxInternal *gfx = GfxInternal::GetGfx(context);
-@@ -11474,6 +11987,12 @@
+@@ -11474,6 +11996,12 @@
      return gfx->encodeDrawMeshIndirect(args_buffer);
  }
 
@@ -1745,7 +1774,7 @@
  GfxTimestampQuery gfxCreateTimestampQuery(GfxContext context)
  {
      GfxTimestampQuery const timestamp_query = {};
-@@ -11494,6 +12013,13 @@
+@@ -11494,6 +12022,13 @@
      GfxInternal *gfx = GfxInternal::GetGfx(context);
      if(!gfx) return 0.0f;   // invalid context
      return gfx->getTimestampQueryDuration(timestamp_query);
@@ -1759,7 +1788,7 @@
  }
 
  GfxResult gfxCommandBeginTimestampQuery(GfxContext context, GfxTimestampQuery timestamp_query)
-@@ -11590,11 +12116,18 @@
+@@ -11590,11 +12125,18 @@
      return gfx->encodeRadixSort(keys_dst, keys_src, values_dst, values_src, count);
  }
 
@@ -1780,7 +1809,7 @@
  }
 
  GfxResult gfxFinish(GfxContext context)
-@@ -11751,6 +12284,62 @@
+@@ -11751,6 +12293,62 @@
      return gfx->getBackBuffer();
  }
 

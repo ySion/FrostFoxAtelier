@@ -76,7 +76,7 @@ void verify_compile_modes_and_stepping() {
     publish(plain, "plain-debug.source", change, {.artifacts = true});
     std::size_t stops{};
     Debugger unsupported([&](const DebugSnapshot& stop) { ++stops; return stop.command(DebugAction::continue_execution); });
-    const auto refused = plain.entry().invoke(host.id(), {}, {1}, nullptr, &unsupported);
+    const auto refused = plain.entry().invoke(host.id(), {}, nullptr, &unsupported);
     require(!refused && refused.error().code == ErrorCode::unsupported_operation &&
         unsupported.status() == DebugStatus::rejected && !unsupported.active() && stops == 0 &&
         std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 0,
@@ -89,10 +89,37 @@ void verify_compile_modes_and_stepping() {
         "Normal compilation inserted debugger hooks.");
     publish(plain, "plain-debug.source", change);
     take(plain.entry().invoke(host.id(), {}));
-    take(plain.entry().invoke(host.id(), {}, {1}, nullptr, &unsupported));
+    take(plain.entry().invoke(host.id(), {}, nullptr, &unsupported));
     require(stops == 1 && unsupported.status() == DebugStatus::completed &&
         std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 2,
         "Debug compilation changed ordinary behavior or could not reuse a terminal debugger.");
+
+    publish(plain, "reference-preview.source", R"(void run() {
+    debugger.Host held = self;
+    weak debugger.Host observed = observe(held);
+    debugger.Host empty;
+    observed.value = held.value + 1;
+}
+)");
+    bool references_seen{};
+    Debugger references([&](const DebugSnapshot& stop) {
+        const auto& frame = stop.frames.at(0);
+        const auto* held = local(frame, "held");
+        const auto* observed = local(frame, "observed");
+        const auto* empty = local(frame, "empty");
+        require(held && held->state == DebugValueState::available && held->object == host.id() &&
+            held->type == type && held->object_live && !held->weak &&
+            observed && observed->state == DebugValueState::available && observed->object == host.id() &&
+            observed->object_live && observed->weak && empty && empty->state == DebugValueState::available &&
+            empty->type == type && empty->object == ObjectId{} && !empty->object_live && runtime.root_count() == 1,
+            "Synchronous reference previews lost identity, type, liveness or the rootless storage policy.");
+        references_seen = true;
+        return stop.command(DebugAction::continue_execution);
+    }, {.break_on_entry = false});
+    take(references.set_breakpoints({breakpoint(take(plain.pin()), "reference-preview.source", 5)}));
+    take(plain.entry().invoke(host.id(), {}, nullptr, &references));
+    require(references_seen && std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 3,
+        "Reference preview did not resume weak member access correctly.");
 
     Program calls(runtime);
     publish(calls, "steps.source", R"(uint leaf(uint value) {
@@ -138,7 +165,7 @@ uint run(uint input) {
         return stop.command(DebugAction::step_into);
     });
     const std::array args{Scalar{std::uint32_t{21}}};
-    require(std::get<std::uint32_t>(*take(calls.entry().invoke({}, args, {1}, nullptr, &into))) == 43 &&
+    require(std::get<std::uint32_t>(*take(calls.entry().invoke({}, args, nullptr, &into))) == 43 &&
         entered_leaf && returned_to_caller && initialized_result && into.status() == DebugStatus::completed,
         "Step-into/out did not resume the same caller and publish its initialized result.");
     std::size_t over_stops{};
@@ -147,7 +174,7 @@ uint run(uint input) {
             "Step-over entered a helper or exposed a synthetic export wrapper.");
         return stop.command(DebugAction::step_over);
     });
-    require(std::get<std::uint32_t>(*take(calls.entry().invoke({}, args, {1}, nullptr, &over))) == 43 && over_stops > 1,
+    require(std::get<std::uint32_t>(*take(calls.entry().invoke({}, args, nullptr, &over))) == 43 && over_stops > 1,
         "Step-over skipped every executable caller site.");
 
     Program loops(runtime);
@@ -173,7 +200,7 @@ uint run(uint input) {
         return stop.command(DebugAction::step_over);
     });
     require(std::get<std::uint32_t>(*take(loops.entry().invoke({}, std::array{Scalar{std::uint32_t{10}}},
-        {1}, nullptr, &loop))) == 3 && loop_stops > 3 && scope_available && scope_finished,
+        nullptr, &loop))) == 3 && loop_stops > 3 && scope_available && scope_finished,
         "Same-line loop stops or break/continue lexical availability were lost.");
 }
 
@@ -201,13 +228,13 @@ void verify_exact_breakpoints() {
     }, {.break_on_entry = false});
     take(debugger.set_breakpoints({bound}));
     const std::array args{Scalar{std::uint32_t{41}}};
-    require(std::get<std::uint32_t>(*take(lease.invoke({}, args, {1}, nullptr, &debugger))) == 42 && hits > 0,
+    require(std::get<std::uint32_t>(*take(lease.invoke({}, args, nullptr, &debugger))) == 42 && hits > 0,
         "A discovered executable site did not bind.");
     auto wrong = bound;
     wrong.source_version = 0;
     take(debugger.set_breakpoints({wrong}));
     const auto previous_hits = hits;
-    require(!lease.invoke({}, args, {1}, nullptr, &debugger) && debugger.status() == DebugStatus::rejected &&
+    require(!lease.invoke({}, args, nullptr, &debugger) && debugger.status() == DebugStatus::rejected &&
         hits == previous_hits, "A zero source version acted as a wildcard for a different published file version.");
     snapshot.files[0].version = 0;
     candidate = take(Program::prepare(take(project.request(snapshot, {.debugging = true}))));
@@ -216,7 +243,7 @@ void verify_exact_breakpoints() {
     bound = breakpoint(lease, "Source/Math.source", 2);
     require(bound.source_version == 0, "A real zero file version was replaced by the publication version.");
     take(debugger.set_breakpoints({bound}));
-    require(std::get<std::uint32_t>(*take(lease.invoke({}, args, {1}, nullptr, &debugger))) == 42 && hits > previous_hits,
+    require(std::get<std::uint32_t>(*take(lease.invoke({}, args, nullptr, &debugger))) == 42 && hits > previous_hits,
         "An exact breakpoint could not bind a real zero-version SourceSnapshot file.");
 }
 
@@ -279,7 +306,7 @@ DebugSnapshot verify_inspection_and_previews() {
         return stop.command(DebugAction::continue_execution);
     }, {.break_on_entry = false, .max_elements = 7, .max_text_bytes = 1024});
     take(debugger.set_breakpoints({at}));
-    require(std::get<float>(*take(program.entry().invoke(host.id(), args, {1}, nullptr, &debugger))) == 2.0f &&
+    require(std::get<float>(*take(program.entry().invoke(host.id(), args, nullptr, &debugger))) == 2.0f &&
         inspected && !entered_native && pending && debugger.status() == DebugStatus::completed &&
         std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 5,
         "Resuming inspection lost normal behavior or consumed the rejected publication.");
@@ -298,7 +325,7 @@ DebugSnapshot verify_inspection_and_previews() {
         return stop.command(DebugAction::continue_execution);
     }, {.break_on_entry = false, .max_elements = 1, .max_text_bytes = 8});
     take(bounded.set_breakpoints({at}));
-    take(program.entry().invoke(host.id(), args, {1}, nullptr, &bounded));
+    take(program.entry().invoke(host.id(), args, nullptr, &bounded));
     require(bounded_text, "Copied names, source paths and values exceeded the shared snapshot text budget.");
     take(program.try_publish(pending));
     values.clear();
@@ -336,7 +363,7 @@ void verify_failure_and_abort() {
         }, {.break_on_entry = false});
         source::Diagnostics capture;
         const std::array args{Scalar{native}, Scalar{std::uint32_t{0}}};
-        const auto result = program.entry().invoke(host.id(), args, {1}, native ? &capture : nullptr, &debugger);
+        const auto result = program.entry().invoke(host.id(), args, native ? &capture : nullptr, &debugger);
         const auto report = capture.snapshot();
         require(!result && result.error().code == ErrorCode::invocation_failed && errors == 1 && before_cleanup &&
             debugger.status() == DebugStatus::failed && !debugger.active() &&
@@ -372,7 +399,7 @@ void verify_failure_and_abort() {
         }, {.break_on_entry = false});
         take(debugger.set_breakpoints({at}));
         source::Diagnostics capture;
-        const auto result = aborted.entry().invoke(host.id(), {}, {1}, &capture, &debugger);
+        const auto result = aborted.entry().invoke(host.id(), {}, &capture, &debugger);
         const auto report = capture.snapshot();
         require(!result && stops == 1 && !debugger.active() &&
             (failure != CommandFailure::abort ||
@@ -434,7 +461,7 @@ async uint run(uint value) {
         return stop.command(DebugAction::step_into);
     });
     source::Diagnostics capture;
-    auto task = take(entry.start({}, args, {1}, &capture, &debugger));
+    auto task = take(entry.start({}, args, &capture, &debugger));
     current = &task;
     require(debugger.status() == DebugStatus::ready && stops == 0, "Starting async code executed a debug stop.");
     require(take(task.resume()) == CoroutineState::suspended && debugger.status() == DebugStatus::suspended && saw_yield,
@@ -454,19 +481,19 @@ async uint run(uint value) {
 
     std::size_t cancel_stops{};
     Debugger cancelled([&](const DebugSnapshot& stop) { ++cancel_stops; return stop.command(DebugAction::continue_execution); });
-    auto ready = take(old.start({}, args, {1}, nullptr, &cancelled));
+    auto ready = take(old.start({}, args, nullptr, &cancelled));
     ready.cancel();
     ready.cancel();
     require(cancelled.status() == DebugStatus::cancelled && !cancelled.active() && cancel_stops == 0,
         "Ready cancellation entered source code or left its debug session active.");
-    auto suspended = take(old.start({}, args, {1}, nullptr, &cancelled));
+    auto suspended = take(old.start({}, args, nullptr, &cancelled));
     take(suspended.resume());
     suspended.cancel();
     require(cancelled.status() == DebugStatus::cancelled && !cancelled.active() && cancel_stops == 1,
         "Suspended cancellation stopped during cleanup or lost its terminal state.");
 
     Debugger abort([](const DebugSnapshot& stop) { return stop.command(DebugAction::abort); });
-    auto aborted = take(old.start({}, args, {1}, nullptr, &abort));
+    auto aborted = take(old.start({}, args, nullptr, &abort));
     require(take(aborted.resume()) == CoroutineState::cancelled && abort.status() == DebugStatus::cancelled &&
         !abort.active() && !aborted.result(), "Async abort did not resolve through Runtime cancellation without a result.");
 
@@ -476,7 +503,7 @@ async uint run(uint value) {
         return stop.command(DebugAction::continue_execution);
     });
     auto observer = *shell;
-    auto detached = take(old.start({}, args, {1}, nullptr, shell.get()));
+    auto detached = take(old.start({}, args, nullptr, shell.get()));
     take(detached.resume());
     take(detached.resume());
     require(!shell && observer.status() == DebugStatus::completed && !observer.active() && observer.last_stop(),

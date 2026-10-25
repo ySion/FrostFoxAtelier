@@ -384,12 +384,14 @@ struct PhysicsScene::Impl {
     std::unordered_map<ObjectId, std::vector<ObjectId>>& below() {
         if (dependents_stale) {
             dependents.clear();
-            for (const auto& [component, body] : bodies) for (const auto node : body.ancestors) dependents[node].push_back(component);
+            for (const auto component : body_order.get(bodies))
+                for (const auto node : bodies.at(component).ancestors) dependents[node].push_back(component);
             dependents_stale = false;
         }
         return dependents;
     }
     std::unordered_map<ObjectId, Body> bodies;
+    detail::InsertionOrder body_order;
     std::unordered_map<ObjectId, ObjectId> entity_bodies;
     Body* resolve(BodyHandle handle, std::uint64_t scene) {
         auto found=bodies.find(handle.component);
@@ -410,11 +412,13 @@ struct PhysicsScene::Impl {
         bool jump{};
     };
     std::unordered_map<ObjectId, Character> characters;
+    detail::InsertionOrder character_order;
     struct Ragdoll {
         std::uint64_t revision;
         JPH::Ref<JPH::Ragdoll> ragdoll;
     };
     std::unordered_map<ObjectId, Ragdoll> ragdolls;
+    detail::InsertionOrder ragdoll_order;
     std::unordered_set<JPH::BodyID> ragdoll_ids;
     struct PairState { std::uint32_t contacts{}; ContactEvent event; };
     std::map<std::uint64_t, PairState> active_pairs;
@@ -660,6 +664,7 @@ void PhysicsScene::remove(ObjectId component) noexcept {
     impl_->body_components.erase(id);
     impl_->entity_bodies.erase(entity);
     impl_->bodies.erase(found);
+    impl_->body_order.invalidate();
     unbuilt_ |= impl_->system.GetNumBodies() == 0;
     ++edits_;
     impl_->dependents_stale = true;
@@ -721,28 +726,34 @@ Result<void> PhysicsScene::follow_handler(std::uint64_t opened) {
     auto& written = impl_->handler_writes;
     runtime.changed_objects(opened, written);
     impl_->pending.insert(impl_->pending.end(), written.begin(), written.end());
-    std::unordered_set<ObjectId> moved;
+    std::vector<ObjectId> moved;
     if (world_.revision() == reconciled_) {
         auto& below = impl_->below();
         for (const auto object : written)
             if (const auto found = below.find(object); found != below.end())
-                for (const auto component : found->second) moved.insert(impl_->bodies.at(component).entity);
+                moved.insert(moved.end(), found->second.begin(), found->second.end());
     } else {
         // A structural edit since this step's reconcile leaves Body::ancestors behind; walk the current chains.
         const std::unordered_set<ObjectId> touched(written.begin(), written.end());
-        for (const auto& [component, body] : impl_->bodies) {
-            (void)component;
+        for (const auto component : impl_->body_order.get(impl_->bodies)) {
+            const auto& body = impl_->bodies.at(component);
             if (!world_.contains(body.entity)) continue;
             for (auto node = body.entity; node != ObjectId{};) {
-                if (touched.contains(node)) { moved.insert(body.entity); break; }
+                if (touched.contains(node)) { moved.push_back(component); break; }
                 auto parent = world::spatial_parent(runtime, node);
                 if (!parent) break;
                 node = *parent;
             }
         }
     }
-    for (const auto entity : moved) {
-        const auto& body = impl_->bodies.at(impl_->entity_bodies.at(entity));
+    // Sort only the affected subset; an idle handler must not scan every body.
+    std::ranges::sort(moved, [&](ObjectId a, ObjectId b) {
+        return impl_->bodies.at(a).revision < impl_->bodies.at(b).revision;
+    });
+    moved.erase(std::unique(moved.begin(), moved.end()), moved.end());
+    for (const auto component : moved) {
+        const auto& body = impl_->bodies.at(component);
+        const auto entity = body.entity;
         auto relocated = [&]() -> Result<void> {
             auto local = world::read_transform(runtime, entity);
             if (!local) return std::unexpected(local.error());
@@ -763,11 +774,12 @@ void PhysicsScene::remove_special(ObjectId entity) noexcept {
         forget_pose(entity);
         ++edits_;
     }
-    impl_->characters.erase(entity);
+    if (impl_->characters.erase(entity)) impl_->character_order.invalidate();
     if (auto found = impl_->ragdolls.find(entity); found != impl_->ragdolls.end()) {
         for (const auto id : found->second.ragdoll->GetBodyIDs()) impl_->ragdoll_ids.erase(id);
         found->second.ragdoll->RemoveFromPhysicsSystem();
         impl_->ragdolls.erase(found);
+        impl_->ragdoll_order.invalidate();
         unbuilt_ |= impl_->system.GetNumBodies() == 0;
     }
 }
@@ -955,6 +967,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     remove_special(entity);
     try {
         impl_->bodies.emplace(component,Impl::Body{id,entity,component,settings->motion,*settings,std::move(mesh),next_revision_++,scale,*canonical,owner_local,std::move(ancestors),*canonical});
+        impl_->body_order.invalidate();
         impl_->dependents_stale=true;
         impl_->entity_bodies.emplace(entity,component);
         impl_->body_components.emplace(id,component);
@@ -991,10 +1004,9 @@ Result<void> PhysicsScene::lifecycle(world::Lifecycle phase, ObjectId object) {
             if(auto own=impl_->entity_bodies.find(object);own!=impl_->entity_bodies.end()) remove(own->second);
             // Deactivation follows composition ownership. A disabled independent
             // origin still supplies its authored frame to active owners.
-            if(phase==world::Lifecycle::detached && world_.running()) for(auto it=impl_->bodies.begin();it!=impl_->bodies.end();) {
-                const auto component=it->first;
-                const bool dependent=std::ranges::find(it->second.ancestors,object)!=it->second.ancestors.end();
-                ++it;if(dependent) remove(component);
+            if(phase==world::Lifecycle::detached && world_.running()) for(const auto component:impl_->body_order.get(impl_->bodies)) {
+                const auto& body=impl_->bodies.at(component);
+                if(std::ranges::find(body.ancestors,object)!=body.ancestors.end()) remove(component);
             }
         }
         return {};
@@ -1153,13 +1165,13 @@ Result<void> PhysicsScene::step(float elapsed) {
                 break;
             }
         }
-        for (const auto& [component,body]:impl_->bodies) {
-            (void)component;
+        for (const auto component:impl_->body_order.get(impl_->bodies)) {
+            const auto& body=impl_->bodies.at(component);
             if (body.motion==MotionKind::kinematic)
                 bodies.MoveKinematic(body.id,position(body.target.position),rotation(body.target.rotation),fixed);
         }
-        for (auto& [entity, controlled] : impl_->characters) {
-            (void)entity;
+        for (const auto entity : impl_->character_order.get(impl_->characters)) {
+            auto& controlled = impl_->characters.at(entity);
             auto& character = *controlled.character;
             character.UpdateGroundVelocity();
             auto velocity = character.GetLinearVelocity();
@@ -1222,10 +1234,13 @@ Result<void> PhysicsScene::step(float elapsed) {
         };
         for(const auto id:moved)
             if(const auto owner=impl_->body_components.find(id);owner!=impl_->body_components.end()) publish(impl_->bodies.at(owner->second));
-        for(const auto& [entity,controlled]:impl_->characters)
+        for(const auto entity:impl_->character_order.get(impl_->characters)) {
+            const auto& controlled=impl_->characters.at(entity);
             poses.push_back({entity,vector(controlled.character->GetPosition()),rotation(controlled.character->GetRotation())});
+        }
         // Manual native ragdolls have no authoring Entry but still publish their owner pose.
-        for(const auto& [entity,controlled]:impl_->ragdolls) {
+        for(const auto entity:impl_->ragdoll_order.get(impl_->ragdolls)) {
+            const auto& controlled=impl_->ragdolls.at(entity);
             JPH::RVec3 where;JPH::Quat orientation;
             reader.GetPositionAndRotation(controlled.ragdoll->GetBodyIDs().front(),where,orientation);
             poses.push_back({entity,vector(where),rotation(orientation)});
@@ -1237,8 +1252,8 @@ Result<void> PhysicsScene::step(float elapsed) {
         if(!poses.empty() && std::ranges::any_of(impl_->bodies,[](const auto& item){return item.second.ancestors.size()>1;})) {
             std::unordered_set<ObjectId> published;
             for(const auto& pose:poses) published.insert(pose.entity);
-            for(auto& [component,body]:impl_->bodies) {
-                (void)component;
+            for(const auto component:impl_->body_order.get(impl_->bodies)) {
+                auto& body=impl_->bodies.at(component);
                 if(body.ancestors.size()>1 && !published.contains(body.entity) &&
                     std::any_of(body.ancestors.begin()+1,body.ancestors.end(),[&](ObjectId node){return published.contains(node);}))
                     publish(body);
@@ -1544,6 +1559,7 @@ Result<SpecialHandle> PhysicsScene::create_character(ObjectId entity, CharacterS
         position(trs->position), rotation(trs->rotation), 0, &impl_->system);
     const auto revision = next_revision_++;
     impl_->characters.emplace(entity, Impl::Character{revision, settings, character});
+    impl_->character_order.invalidate();
     hold_poses(std::array{world::SimulationPose{entity, trs->position, trs->rotation}});
     return SpecialHandle{entity, scene_id_, revision};
 }
@@ -1584,6 +1600,7 @@ Result<void> PhysicsScene::destroy_character(SpecialHandle handle) {
     if (auto state = read_character_state(handle); !state) return std::unexpected(state.error());
     forget_pose(handle.entity);
     impl_->characters.erase(handle.entity);
+    impl_->character_order.invalidate();
     ++edits_;
     return {};
 }
@@ -1640,6 +1657,7 @@ Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity,
     for (const auto id : ragdoll->GetBodyIDs()) impl_->ragdoll_ids.insert(id);
     const auto revision = next_revision_++;
     impl_->ragdolls.emplace(entity, Impl::Ragdoll{revision, ragdoll});
+    impl_->ragdoll_order.invalidate();
     hold_poses(std::array{world::SimulationPose{entity, trs->position, trs->rotation}});
     return SpecialHandle{entity, scene_id_, revision};
 }

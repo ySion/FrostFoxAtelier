@@ -111,6 +111,7 @@ public:
                 for (const auto& parameter : function.locals)
                     if (parameter.name == value.name) reject(function.position, "Parameters cannot shadow a module constant.");
         }
+        collect_properties();
         for (std::size_t i = 0; i < constants_.size(); ++i) resolve_constant(i);
         if (module_.functions.empty()) return std::move(module_);
         if (entry_name.empty() && module_.functions.size() != 1 && !allow_declarations)
@@ -123,6 +124,7 @@ public:
             visible_.clear(); expression_heights_.clear();
             for (std::uint32_t j = 0; j < function_.parameters.size(); ++j) visible_.push_back(j);
             function_.body = block();
+            finish_properties();
             if (function_.result != ValueType::void_value && !returns(function_.body))
                 reject(function_.position, "Non-void function can reach the end without a return value.");
             module_.functions[i] = std::move(function_);
@@ -321,25 +323,131 @@ private:
         if (!accept(")")) {
             do {
                 if (arguments.size() >= parameters.size()) reject(token_.position, "Call argument count mismatch.");
-                const auto argument = expression();
-                const auto& parameter = parameters[arguments.size()];
-                same_type(argument, parameter.type);
-                if (parameter.passing == ParameterPassing::value && plain_record(parameter.type) &&
-                    !math_type(parameter.type) && !environment_.values[parameter.type.type_index].can_own)
-                    reject(function_.expressions[argument].position,
-                        "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
-                if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
-                    reject(function_.expressions[argument].position, "Writable reference requires a mutable lvalue.");
-                if (parameter.passing == ParameterPassing::reference && function_.expressions[argument].kind == Expression::Kind::field &&
-                    environment_.fields[function_.expressions[argument].value].constrained)
-                    reject(function_.expressions[argument].position,
-                        "Hard-bounded fields cannot be borrowed writably; assign the field instead.");
-                arguments.push_back(argument);
+                arguments.push_back(expression());
             } while (accept(","));
             expect(")");
         }
         if (arguments.size() != parameters.size()) reject(token_.position, "Call argument count mismatch.");
         return arguments;
+    }
+    Expression call_expression(bool native, std::uint32_t index, SourcePosition position,
+        NodeId receiver, std::vector<NodeId> arguments) {
+        const auto parameters = native ? environment_.methods[index].parameters :
+            std::span<const ParameterType>{module_.functions[index].parameters};
+        const auto result = native ? environment_.methods[index].result : module_.functions[index].result;
+        if (!native && module_.functions[index].is_coroutine)
+            reject(position, "Source calls require a synchronous function; async entries are started by the host.");
+        if (plain_record(result) && !math_type(result)) {
+            if (!environment_.values[result.type_index].can_own)
+                reject(position, "Plain record results require borrow-preserving copy and lifecycle operations.");
+            function_.uses_scoped_values = true;
+        }
+        Expression call{native ? Expression::Kind::call : Expression::Kind::source_call, result, position,
+            no_node, no_node, index, Operation::add, receiver};
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            const auto& parameter = parameters[i];
+            auto argument = converted(arguments[i], parameter.type);
+            const auto& node = function_.expressions[argument];
+            if (parameter.passing == ParameterPassing::value && plain_record(parameter.type) &&
+                !math_type(parameter.type) && !environment_.values[parameter.type.type_index].can_own)
+                reject(node.position, "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
+            if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
+                reject(node.position, "Writable reference requires a mutable lvalue.");
+            if (parameter.passing != ParameterPassing::value && node.kind == Expression::Kind::field) {
+                if (!native) reject(node.position, "Runtime object fields may only be borrowed by protected native calls.");
+                if (parameter.passing == ParameterPassing::reference && environment_.fields[node.value].constrained)
+                    reject(node.position, "Hard-bounded fields cannot be borrowed writably; assign the field instead.");
+            }
+            call.arguments.push_back(argument);
+            call.argument_passing.push_back(parameter.passing);
+        }
+        return call;
+    }
+    struct Property {
+        std::string name;
+        ValueType type;
+        bool native;
+        std::uint32_t getter{UINT32_MAX}, setter{UINT32_MAX};
+    };
+    struct PropertyUse { NodeId node; std::size_t property; };
+    std::vector<Property> properties_;
+    std::vector<PropertyUse> property_uses_;
+    const Property* find_property(std::string_view name, bool native) const {
+        for (const auto& property : properties_)
+            if (property.native == native && property.name == name) return &property;
+        return nullptr;
+    }
+    void collect_properties() {
+        const auto collect = [&](std::string_view name, std::span<const ParameterType> parameters,
+            ValueType result, bool native, std::uint32_t index, SourcePosition position) {
+            auto alias = property_name(name, parameters.size(), result == ValueType::void_value,
+                parameters.size() == 1 && parameters[0].passing == ParameterPassing::reference);
+            if (alias.empty()) return;
+            const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
+            const bool getter = name.substr(start).starts_with("Get");
+            const auto type = getter ? result : parameters[0].type;
+            auto property = std::ranges::find_if(properties_, [&](const auto& p) { return p.native == native && p.name == alias; });
+            if (property == properties_.end()) {
+                properties_.push_back({std::move(alias), type, native});
+                property = properties_.end() - 1;
+            }
+            if (property->type != type) reject(position, "Property getter and setter types differ: " + property->name);
+            (getter ? property->getter : property->setter) = index;
+        };
+        for (std::uint32_t i = 0; i < environment_.methods.size(); ++i) {
+            const auto& method = environment_.methods[i];
+            collect(method.name, method.parameters, method.result, true, i, {});
+        }
+        for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
+            const auto& function = module_.functions[i];
+            if (!function.is_coroutine) collect(function.function_name, function.parameters, function.result, false, i, function.position);
+        }
+        for (const auto& property : properties_) {
+            const auto conflict = [&] { reject({}, "Property conflicts with a visible declaration: " + property.name); };
+            const auto hidden = [&](std::string_view name) {
+                return name == property.name || (name.starts_with(property.name) && name.size() > property.name.size() &&
+                    name[property.name.size()] == '.');
+            };
+            for (const auto& other : properties_)
+                if (&other != &property && other.native == property.native && hidden(other.name)) conflict();
+            for (const auto& field : environment_.fields) if (hidden(field.name)) conflict();
+            if (property.native) {
+                for (const auto& method : environment_.methods) if (hidden(method.name)) conflict();
+                continue;
+            }
+            if (math_reserved_name(property.name) || hidden(environment_.object_type_name)) conflict();
+            for (const auto& type : environment_.values) if (hidden(type.name)) conflict();
+            for (const auto& type : environment_.enumerations) if (hidden(type.name)) conflict();
+            for (const auto& constant : constants_) if (hidden(constant.name)) conflict();
+            for (const auto& function : module_.functions) {
+                if (hidden(function.function_name)) conflict();
+                for (const auto& parameter : function.locals) if (parameter.name == property.name) conflict();
+            }
+        }
+    }
+    NodeId property_access(const Property& property, SourcePosition position, NodeId receiver = no_node) {
+        // Keep only a call-shaped placeholder until assignment vs. read is known.
+        // No speculative getter call may enter effect analysis or the call graph.
+        const auto node = add(Expression{property.native ? Expression::Kind::call : Expression::Kind::source_call,
+            property.type, position, no_node, no_node, 0, Operation::add, receiver});
+        property_uses_.push_back({node, static_cast<std::size_t>(&property - properties_.data())});
+        return node;
+    }
+    void finish_properties() {
+        for (const auto& use : property_uses_) {
+            const auto& property = properties_[use.property];
+            const auto node = function_.expressions[use.node];
+            if (property.getter == UINT32_MAX) reject(node.position, "Property is write-only: " + property.name);
+            function_.expressions[use.node] = call_expression(property.native, property.getter, node.position, node.receiver, {});
+        }
+        property_uses_.clear();
+    }
+    std::string expression_name(bool native) {
+        std::string name(identifier().text);
+        while (token_.text == "." && !find_property(name, native)) {
+            consume(); name += '.'; name += identifier().text;
+        }
+        return name;
     }
     struct Depth {
         std::size_t& value;
@@ -505,6 +613,7 @@ private:
     }
     void unused_name(const Token& name) const {
         if (math_reserved_name(name.text)) reject(name.position, "Locals cannot replace math constructors or the math namespace.");
+        if (find_property(name.text, false)) reject(name.position, "Locals cannot shadow a property.");
         for (const auto& value : constants_)
             if (value.name == name.text) reject(name.position, "A module constant with this name is already visible; shadowing is not supported.");
         for (const auto index : visible_)
@@ -585,13 +694,15 @@ private:
         if (node.left != no_node) signed_constant(node.left);
         if (node.right != no_node) signed_constant(node.right);
     }
-    void same_type(NodeId expression, ValueType required) {
+    NodeId converted(NodeId expression, ValueType required) {
         if (required == ValueType::i32 && integer_constant(expression)) signed_constant(expression);
         const auto actual = function_.expressions[expression].type;
-        if (actual == required || (reference_type(required) && actual == ValueType::null_reference)) return;
+        if (actual == required || (reference_type(required) && actual == ValueType::null_reference)) return expression;
+        if (required == ValueType::weak_reference && actual == ValueType::strong_reference)
+            return add(Expression{Expression::Kind::observe_reference, required, function_.expressions[expression].position, expression});
         if (reference_type(required) || reference_type(actual))
             reject(function_.expressions[expression].position,
-                "Type mismatch; references require the same strong/weak form or null and cannot mix with scalars.");
+                "Type mismatch; only strong-to-weak reference conversion is implicit; use try_acquire to strengthen.");
         reject(function_.expressions[expression].position, "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
     }
     static long double numeric_value(ValueType type, std::uint64_t bits) {
@@ -710,8 +821,7 @@ private:
         visible_.clear();
         lexer_ = value.lexer;
         token_ = value.token;
-        const auto initializer = expression();
-        same_type(initializer, value.type);
+        const auto initializer = converted(expression(), value.type);
         expect(";");
         validate_constant(initializer);
         value.bits = fold_constant(initializer);
@@ -764,7 +874,7 @@ private:
             NodeId initializer = no_node;
             if (initialized) initializer = expression();
             else if (reference_type(type)) initializer = add(Expression{Expression::Kind::null_reference, ValueType::null_reference, name.position});
-            if (initializer != no_node) same_type(initializer, type);
+            if (initializer != no_node) initializer = converted(initializer, type);
             expect(terminator);
             const auto index = local(name, type);
             function_.locals[index].read_only = read_only;
@@ -772,9 +882,21 @@ private:
         }
         const auto target = expression();
         if (accept("=")) {
+            const auto use = std::ranges::find(property_uses_, target, &PropertyUse::node);
+            if (use != property_uses_.end()) {
+                const auto property = properties_[use->property];
+                const auto node = function_.expressions[target];
+                if (property.setter == UINT32_MAX) reject(position, "Property is read-only: " + property.name);
+                property_uses_.erase(use);
+                auto call = call_expression(property.native, property.setter, node.position, node.receiver, {expression()});
+                // The RHS can be deeper than the original property placeholder.
+                if (expression_heights_[call.arguments[0]] >= 128) reject(position, "Expression tree exceeds the compiler limit of 128.");
+                function_.expressions[target] = std::move(call);
+                expect(terminator);
+                return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
+            }
             if (!writable(target)) reject(position, "Assignment requires a writable local or field.");
-            const auto value = expression();
-            same_type(value, function_.expressions[target].type);
+            const auto value = converted(expression(), function_.expressions[target].type);
             expect(terminator);
             return add(Statement{Statement::Kind::assign, position, target, value, no_node, no_node, {}});
         }
@@ -847,8 +969,7 @@ private:
                 if (token_.text != ";") reject(token_.position, "This void entry cannot return a value.");
             } else {
                 if (token_.text == ";") reject(token_.position, "Non-void entry requires a return value.");
-                value = expression();
-                same_type(value, function_.result);
+                value = converted(expression(), function_.result);
             }
             expect(";");
             return add(Statement{Statement::Kind::return_value, position, no_node, value, no_node, no_node, {}});
@@ -974,7 +1095,7 @@ private:
                             if (operation == SequenceMutation::reserve || operation == SequenceMutation::resize) {
                                 const auto input_type = function_.expressions[input].type;
                                 if (input_type != ValueType::u32 && input_type != ValueType::i32) reject(member.position, "Sequence capacity requires uint or int.");
-                            } else same_type(input, operation == SequenceMutation::add ? environment_.values[type.type_index].element : type);
+                            } else input = converted(input, operation == SequenceMutation::add ? environment_.values[type.type_index].element : type);
                         }
                         expect(")");
                         Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver, input};
@@ -1003,22 +1124,18 @@ private:
                 }
                 continue;
             }
-            if (function_.expressions[receiver].type != ValueType::strong_reference)
-                reject(position, "Member access requires a strong reference; acquire weak references first.");
-            const auto member = qualified_identifier();
+            if (function_.expressions[receiver].type != ValueType::strong_reference &&
+                function_.expressions[receiver].type != ValueType::weak_reference)
+                reject(position, "Member access requires a typed object reference.");
+            const auto member = expression_name(true);
             if (accept("(")) {
                 const MethodBinding* method{};
                 for (const auto& candidate : environment_.methods) if (candidate.name == member) method = &candidate;
                 if (!method) reject(position, "Unknown native method '" + member + "'.");
-                if (plain_record(method->result) && !math_type(method->result) && !environment_.values[method->result.type_index].can_own)
-                    reject(position, "Native plain record results require borrow-preserving copy and lifecycle operations.");
-                auto arguments = call_arguments(method->parameters);
-                Expression call{Expression::Kind::call, method->result, position,
-                    no_node, no_node, static_cast<std::uint32_t>(method - environment_.methods.data()), Operation::add, receiver};
-                if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
-                call.arguments = std::move(arguments);
-                for (const auto& parameter : method->parameters) call.argument_passing.push_back(parameter.passing);
-                receiver = add(std::move(call));
+                receiver = add(call_expression(true, static_cast<std::uint32_t>(method - environment_.methods.data()),
+                    position, receiver, call_arguments(method->parameters)));
+            } else if (const auto* property = find_property(member, true)) {
+                receiver = property_access(*property, position, receiver);
             } else {
                 const FieldBinding* field{};
                 for (const auto& candidate : environment_.fields) if (candidate.name == member) field = &candidate;
@@ -1069,7 +1186,7 @@ private:
             if (!arguments.empty() && arguments.size() != descriptor.components() &&
                 !(descriptor.shape == math::Shape::matrix4 && arguments.size() == 1))
                 reject(position, "Math construction requires no arguments, one scalar per component, or one diagonal scalar for a matrix.");
-            for (const auto argument : arguments) same_type(argument, math_scalar(descriptor));
+            for (auto& argument : arguments) argument = converted(argument, math_scalar(descriptor));
             Expression result{Expression::Kind::math_construct, constructed, position};
             result.arguments = std::move(arguments);
             return add(std::move(result));
@@ -1132,7 +1249,7 @@ private:
         case MathOperation::cross:
             if (!descriptor.vector() || (operation == MathOperation::cross && descriptor.shape != math::Shape::vector3))
                 reject(position, "math.dot requires vectors; math.cross requires vector3.");
-            same_type(arguments[1], first);
+            arguments[1] = converted(arguments[1], first);
             if (operation == MathOperation::dot) result_type = math_scalar(descriptor);
             break;
         case MathOperation::length:
@@ -1235,7 +1352,7 @@ private:
             // Any other dotted name not led by a local or self is a qualified module function or constant.
             if (name.size() != token.text.size() && token.text != "self" &&
                 std::ranges::none_of(visible_, [&](auto local) { return function_.locals[local].name == token.text; })) {
-                const auto qualified = qualified_identifier();
+                const auto qualified = expression_name(false);
                 if (accept("(")) return source_call(qualified, token.position);
                 return module_constant(qualified, token.position);
             }
@@ -1278,6 +1395,7 @@ private:
         return module_constant(token.text, token.position);
     }
     NodeId module_constant(std::string_view name, SourcePosition position) {
+        if (const auto* property = find_property(name, false)) return property_access(*property, position);
         for (std::size_t i = 0; i < constants_.size(); ++i) {
             if (constants_[i].name != name) continue;
             resolve_constant(i);
@@ -1292,17 +1410,7 @@ private:
         for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
             const auto& target = module_.functions[i];
             if (target.function_name != name) continue;
-            if (target.is_coroutine) reject(position, "Source calls require a synchronous function; async entries are started by the host.");
-            Expression call{Expression::Kind::source_call, target.result, position, no_node, no_node, i};
-            if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
-            call.arguments = call_arguments(target.parameters);
-            for (std::size_t parameter = 0; parameter < target.parameters.size(); ++parameter) {
-                const auto mode = target.parameters[parameter].passing;
-                if (mode != ParameterPassing::value && function_.expressions[call.arguments[parameter]].kind == Expression::Kind::field)
-                    reject(position, "Runtime object fields may only be borrowed by protected native calls.");
-                call.argument_passing.push_back(mode);
-            }
-            return add(std::move(call));
+            return add(call_expression(false, i, position, no_node, call_arguments(target.parameters)));
         }
         reject(position, "Unknown source function '" + std::string(name) + "'.");
     }

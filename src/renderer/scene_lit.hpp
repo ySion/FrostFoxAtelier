@@ -1,19 +1,12 @@
 #pragma once
 #include "renderer.hpp"
 #include "material_frame.hpp"
+#include "scene_geometry.hpp"
 
 namespace atelier::renderer::detail {
-struct SceneTriangle {
-    std::array<geometry::Vertex, 3> vertices;
-    std::uint32_t edge_mask;
-    std::array<float, 3> face_normal;
-    std::uint32_t material_slot{};
-    std::array<std::uint32_t,3> reserved{};
-};
 // One draw per Renderer geometry group, in group order.
 struct SceneLitDraw {
-    GfxBuffer triangles;
-    std::uint32_t vertex_count{};
+    SceneGeometry geometry;
     std::uint32_t first{}, count{}; // Visible instances in SceneLitDraws::draw_instances.
 };
 struct SceneLitDraws {

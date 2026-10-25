@@ -62,7 +62,7 @@ void verify_arguments(Runtime& runtime, const Binding& binding) {
     for (const auto bits : invalid_bits) {
         Observation observation;
         auto activation = take(ExecutionScope::enter(runtime));
-        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, observation.observer());
+        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), observation.observer(), nullptr, {}, &activation);
         const BusinessValue argument{ValueKind::boolean, bits};
         const BusinessValue sentinel{ValueKind::u32, 0xcafebabeu};
         auto output = sentinel;
@@ -88,7 +88,7 @@ void verify_results(Runtime& runtime, const Binding& binding, ObjectId receiver)
     for (const auto bits : invalid_bits) {
         Observation observation{bits};
         auto activation = take(ExecutionScope::enter(runtime));
-        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, observation.observer());
+        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), observation.observer(), nullptr, {}, &activation);
         take(invocation.frame.hold(receiver_slot, receiver));
         const BusinessValue sentinel{ValueKind::u32, 0xcafebabeu};
         auto output = sentinel;

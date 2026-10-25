@@ -196,27 +196,31 @@ void ComponentSimulation::release(const Entry& entry) noexcept {
     // Ragdoll parts follow the released controller no longer.
     if(entry.kind==Kind::ragdoll) for(const auto target:entry.targets) scene_.forget_pose(target);
 }
-void ComponentSimulation::clear() noexcept {for(const auto& [id,entry]:entries_) {(void)id;release(entry);}entries_.clear();}
+void ComponentSimulation::clear() noexcept {for(const auto& [id,entry]:entries_) {(void)id;release(entry);}entries_.clear();order_.invalidate();}
 ObjectId ComponentSimulation::bound_pose_writer(ObjectId object) const {
+    // This query also runs through PhysicsScene's noexcept pose-writer lookup.
+    // Select the earliest live claim without allocating a traversal snapshot.
+    ObjectId writer;
+    std::uint64_t revision=UINT64_MAX;
     for(const auto& [component,entry]:entries_) {
         if(entry.kind!=Kind::ragdoll) continue;
         if(std::ranges::find(entry.targets,object)==entry.targets.end()) continue;
         const auto handle=scene_.ragdoll_handle(entry.entity);
-        if(handle && *handle==entry.special) return component;
+        if(handle && *handle==entry.special && entry.revision<revision) {writer=component;revision=entry.revision;}
     }
-    return {};
+    return writer;
 }
 Result<void> ComponentSimulation::removed(ObjectId object,bool detached) try {
     clear_query(object,true);
-    for(auto it=entries_.begin();it!=entries_.end();) {
-        const auto& e=it->second;
+    for(const auto id:order_.get(entries_)) {
+        const auto& e=entries_.at(id);
         if(e.entity==object || e.component==object || e.target==object ||
             e.body.component==object || e.other_body.component==object ||
             std::ranges::find(e.targets,object)!=e.targets.end() ||
             std::ranges::find(e.metadata,object)!=e.metadata.end() ||
             (detached && std::ranges::find(e.ancestors,object)!=e.ancestors.end())) {
-            release(e);it=entries_.erase(it);
-        } else ++it;
+            release(e);entries_.erase(id);order_.invalidate();
+        }
     }
     auto& runtime=world_.runtime();
     auto queries=world_.query(take(runtime.native_type<SceneQueryComponent>()));
@@ -352,7 +356,7 @@ Result<void> ComponentSimulation::reconcile() try {
             if(kind==Kind::ragdoll) valid&=scene_.ragdoll_handle(e.entity)==e.special;
             if(valid && (kind==Kind::character || kind==Kind::ragdoll)) valid=take(scene_.controller_transform_matches(e.entity,e.origin,e.rotation));
             if(valid) {e.ancestors=std::move(desired.ancestors);seen.insert(desired.component);continue;}
-            release(e);entries_.erase(current);
+            release(e);entries_.erase(current);order_.invalidate();
         }
         if(!available) continue;
         if(kind!=Kind::query) {
@@ -374,22 +378,25 @@ Result<void> ComponentSimulation::reconcile() try {
         }
         case Kind::force:case Kind::kinematic:case Kind::query:break;
         }
-        try {entries_.emplace(desired.component,desired);}catch(...) {release(desired);throw;}
+        desired.revision=next_revision_++;
+        try {entries_.emplace(desired.component,desired);order_.invalidate();}catch(...) {release(desired);throw;}
         seen.insert(desired.component);
     } catch(const std::exception& e) {
         // An isolated controller is not created; an unconfirmed old one is released below.
         if(!contain(world_,failure_of(e),desired.component,desired.entity)) throw;
         contained_=true;
     }
-    for(auto it=entries_.begin();it!=entries_.end();) {
-        if(seen.contains(it->first)) ++it;else {release(it->second);it=entries_.erase(it);}
+    for(const auto id:order_.get(entries_)) {
+        if(!seen.contains(id)) {release(entries_.at(id));entries_.erase(id);order_.invalidate();}
     }
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::before_step(float fixed) try {
     auto& runtime=world_.runtime();
     // An isolated controller skips this step and is sampled again next step.
-    for(auto& [id,e]:entries_) try {
+    for(const auto id:order_.get(entries_)) {
+        auto& e=entries_.at(id);
+        try {
         switch(e.kind) {
         case Kind::character: {
             const auto input=read<CharacterComponent>(runtime,id,[](const auto& v){return std::pair{v.velocity,v.jump};});
@@ -412,13 +419,15 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
         }
         default:break;
         }
-    } catch(const std::exception& failure) {
-        if(!contain(world_,failure_of(failure),id,e.entity)) throw;
+        } catch(const std::exception& failure) {
+            if(!contain(world_,failure_of(failure),id,e.entity)) throw;
+        }
     }
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose>& poses) try {
-    for(const auto& [id,e]:entries_) {
+    for(const auto id:order_.get(entries_)) {
+        const auto& e=entries_.at(id);
         const auto appended=poses.size();
         try {
         if(e.kind==Kind::ragdoll) {
@@ -434,7 +443,9 @@ Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose
     return {};
 } catch(const std::exception& e) {return failed(e);}
 Result<void> ComponentSimulation::after_step() try {
-    for(auto& [id,e]:entries_) try {
+    for(const auto id:order_.get(entries_)) {
+        auto& e=entries_.at(id);
+        try {
         if(e.kind==Kind::character || e.kind==Kind::ragdoll) {
             // Remember the published owner frame, which need not equal a ragdoll's
             // first rest-body frame before its first completed simulation step.
@@ -442,8 +453,9 @@ Result<void> ComponentSimulation::after_step() try {
             e.origin=pose.position;e.rotation=pose.rotation;
         } else if(e.kind==Kind::query &&
             read<SceneQueryComponent>(world_.runtime(),id,[](const auto& v){return v.automatic || v.pending_;})) take(sample_query(id));
-    } catch(const std::exception& failure) {
-        if(!contain(world_,failure_of(failure),id,e.entity)) throw;
+        } catch(const std::exception& failure) {
+            if(!contain(world_,failure_of(failure),id,e.entity)) throw;
+        }
     }
     return {};
 } catch(const std::exception& e) {return failed(e);}
