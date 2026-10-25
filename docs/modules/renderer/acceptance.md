@@ -163,6 +163,10 @@ D3D12 debug layer。同一 Renderer 上依次跑 DDGI 读回诊断、上一节�
 
 ## 当前性能
 
+以下是不同阶段的历史测量，不是最新 main（含后续相机／Runtime 集成）的性能承诺。
+
+### P1 之前的历史基线
+
 `atelier_editor --profile-render-performance`，Release，原生 2560×1440 最大化视口，不开验证，VSync 关；两轮交替，取两轮 p50 的均值，单位 ms。场景是 Examples 的新 Sponza（573.6 万三角形，示例相机，DDGI 16×12×14、每帧更新 672，带天空贴图），提交 de6627b2，渲染代码与 63de8635 相同。
 
 | 情形 | GPU 合计 | gbuffer | direct | ddgi（update / gather） | ao | reflections | hdr_resolve | display |
@@ -173,6 +177,23 @@ D3D12 debug layer。同一 Renderer 上依次跑 DDGI 读回诊断、上一节�
 - 相机环绕时 GPU 合计 23.73 ms，其中 shadow_cache 6.14 ms（级联每帧重画整个网格）、ddgi_gather 4.27 ms。
 - Smooth / MatCap 每个几何批次一次 draw，与按 part 绘制的 63de8635 交替测量：wall 4.70 / 4.23 ms（按 part 时 5.01 / 4.47），没有 GPU 计时；draw 由 444 降到 2，CPU `render.encode.scene.draws` 由约 1.56 ms 降到 0.026 ms。CPU 节省大于 wall 的下降，说明这两种模式在 Sponza 上主要受 GPU 限制。Scene Lit 与 Room、Dungeon 两场景没有可分辨的变化。
 - 反射比旧 Sponza 多出的约 1.86 ms 是推断，还没有归因；性能报告的每个 Scene Lit 样本带 SSSR 的 `reflection_work_items`，可用于这项归因。
+
+### P1 历史收益与已接受的性能取舍（2026-10-25）
+
+宿主是 Windows 上的正式编辑器 `atelier_editor --profile-render-performance`，不是独立渲染微基准；RX 6800 XT、Release、接收视口 2560×1440、GBV/VSync 关闭。Dungeon 最终四份数据在渲染工作树 `.amp/in/p1/perf/dungeon-finalclean-{p0,p1fixed}-{1,2}/render-performance.json`；顺序为新、旧、旧、新，每边两轮，每个 Lit case 预热 192 accepted 帧、240 个完成 GPU 样本，CPU/wall 为 243 个 accepted-step 记录。下表为两轮分位数的均值，单位 ms，不混合重算分位数。
+
+| Dungeon | GPU p50（旧→新） | CPU Lit p50（旧→新） | wall p50（旧→新） | wall p95（旧→新） |
+|---|---|---|---|---|
+| 静止 | 7.946→7.956 | 2.370→2.610（+0.240） | 8.289→8.285 | 8.771→9.254 |
+| 环绕 | 8.447→8.429 | 4.036→4.627（+0.591） | 8.751→8.708 | 13.186→14.687（+1.501） |
+
+相机、接收尺寸与工作量一致：静止 111 次场景 draw；环绕阴影记录逐项一致，中位 271 面、662 draw、静态／动态各 4 次更新。环绕 wall p95 的旧两轮为 12.690/13.683，新两轮为 14.573/14.802，范围不交叠；静止 wall p95 轮间范围交叠。GPU 中位恢复不等于 CPU 或尾延迟无回退；+1.501 ms 约为 120 FPS 帧预算的 18%，不能宣称稳定 120 FPS，也不据这些分位数保证稳定 60 FPS。
+
+版本证据边界：旧报告自报 `2069cc63a4d286b33f702d46db9e2201ec24ddf5 + local changes`（schema v5），新报告自报 `2f0c2273a6d8ba194bdd47e8f82321151c863486 + local changes`（v7）。新二进制与后续 36548664／b3fc05f5 的对应来自当时交付记录；**没有采样时完整 EXE/DLL/资源制品清单的散列封存**，不能仅凭自报 revision 证明与某个干净提交逐字节一致，或把旧数据称为当前 main 的结果。Scene v8/v9 副本和旧报告字段差异保留在原始数据中。
+
+原始 P0→P1（2069cc63→9ed0761e）Sponza 两轮数据保存在性能工作树 `.amp/in/sponza/runs/*-{2069cc63,9ed0761e}-*/`：静止／环绕 GPU p50 为 15.857→14.337、24.818→18.727 ms；Smooth／MatCap wall p50 为 4.624→2.937、4.064→2.340 ms。这是另一个历史配对，不与上述修复样本拼算。在渲染工作树另一个 1600×900 Control 流程中，首次上传 CPU 为旧两次均值 688.150→新一次 770.506 ms（+82.356）；完成相同 Lit 流程后进程 Dedicated Usage 为 9,877,245,952→7,342,018,560 B，减少约 2.36 GiB。后者是 Windows 进程显存计数，不是逻辑资源字节；新旧 `scene_lit_resource_bytes` 口径不同，不据其差值计算显存节省。
+
+总负责人已明确接受历史 Dungeon CPU／wall 尾延迟取舍，保留 P1 收益，不扩绑定架构或 P2，不把新一轮匹配基线性能测量设为收敛前置。Room 旧配对的环绕 GPU 3.953→4.003 ms 仍是未归因的小幅差异记录，**不再列为待启动的复测门槛**，也不改称“无回退”。新增 [installed/bound IA 修复及同 command list 验收](../rhi/acceptance.md#只读-buffer-状态合并2026-10-25) 已完成本候选的真实红绿验证，仍待独立复审与主线集成。受影响目标 Dev/Release 构建及 Release RHI GBV、`--scene-lit-shadows`、`--scene-lit-quality`（RT/几何生命周期路径）均通过；本批没有性能测量，不据正确性通过更新上面的历史性能值。原始日志在 `.amp/in/artifacts/p1-installed-ia-20261025/`。
 
 ## 未覆盖
 
