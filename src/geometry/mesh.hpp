@@ -112,6 +112,13 @@ private:
 
 using MeshRef = std::shared_ptr<const Mesh>;
 
+// Names, not slot positions, are the persistent correspondence. Empty imported
+// names use the reserved slot/<index> spelling until assigned a named asset.
+[[nodiscard]] inline std::string material_slot_name(const Mesh& mesh,std::size_t index) {
+    const auto& slot=mesh.materials()[index];
+    return slot.name.empty()?"slot/"+std::to_string(index):slot.name;
+}
+
 // A built-in resource; the cube has no special object type or rendering path.
 [[nodiscard]] inline MeshRef cube_mesh() {
     static const auto resource = [] {

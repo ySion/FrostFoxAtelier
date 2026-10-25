@@ -778,7 +778,7 @@ struct Session::GraphCodec {
         if(!source.empty() && entry.contains("inline")) throw std::runtime_error("Material binding has competing sources.");
         if(entry.contains("parent")) {
             if(!source.empty()) throw std::runtime_error("A material instance cannot own an asset identity.");
-            auto parent=take(session.material_resource(*project,entry.at("parent").get<std::string>(),missing));
+            auto parent=take(session.material_resource(project->assets(),entry.at("parent").get<std::string>(),missing));
             auto state=take(material::read_material(runtime,parent.id()));state.source.clear();state.parent=parent;state.overrides=0;
             state.description=material_format::decode(entry.at("inline")).description;
             const auto& names=entry.at("overrides");
@@ -792,8 +792,8 @@ struct Session::GraphCodec {
             return take(material::create_material(runtime,state));
         }
         if(entry.contains("overrides")) throw std::runtime_error("Overrides require a parent material.");
-        return source.empty()?take(session.material_resource(*project,material_format::decode(entry.at("inline")),missing)):
-            take(session.material_resource(*project,source,missing));
+        return source.empty()?take(session.material_resource(project->assets(),material_format::decode(entry.at("inline")),missing)):
+            take(session.material_resource(project->assets(),source,missing));
     }
     // A Play copy's object for a document identity. Unknown identities mean Play
     // diverged; identities whose object the game destroyed are skipped.
@@ -824,8 +824,8 @@ struct Session::GraphCodec {
         if(!project) throw std::runtime_error("Sky map restoration requires a Project.");
         const auto* item=load.live?nullptr:session.unavailable(AssetKind::sky,source);
         if(!item) {
-            if(auto loaded=project->sky_map(source)) {session.unavailable_.erase(std::pair{AssetKind::sky,source});return loaded->map;}
-            else item=&session.remember_unavailable(*project,AssetKind::sky,source,loaded.error());
+            if(auto loaded=project->assets().sky_map(source)) {session.unavailable_.erase(std::pair{AssetKind::sky,source});return loaded->map;}
+            else item=&session.remember_unavailable(project->assets(),AssetKind::sky,source,loaded.error());
         }
         const Json value=source;
         load.report(world::Severity::warning,item->kind,object,{"sky_map"},&value,item->reason+" The sky renders without its map; the key is saved unchanged.");
@@ -1154,15 +1154,15 @@ struct Session::GraphCodec {
                             // A source that already failed is not read again for each component that uses it.
                             const auto* item=session.unavailable(AssetKind::mesh,source);
                             if(!item) {
-                                if(auto loaded=project->mesh(source)) {
+                                if(auto loaded=project->assets().mesh(source)) {
                                     mesh=loaded->mesh;std::vector<MissingResource> missing;
-                                    defaults=take(session.mesh_defaults(*project,*loaded,&missing));
+                                    defaults=take(session.mesh_defaults(project->assets(),*loaded,&missing));
                                     for(const auto& absent:missing) {
                                         const Json value=absent.key;
                                         load.report(world::Severity::warning,absent.kind,object,{"mesh"},&value,absent.reason+(absent.input?
                                             " A default material of the mesh has no texture for this input.":" A default material of the mesh stands in."));
                                     }
-                                } else item=&session.remember_unavailable(*project,AssetKind::mesh,source,loaded.error());
+                                } else item=&session.remember_unavailable(project->assets(),AssetKind::mesh,source,loaded.error());
                             }
                             if(item) {
                                 const Json value=source;
@@ -1548,11 +1548,11 @@ struct Session::GraphCodec {
                     if(!at->is_string()) throw std::runtime_error("Expected a sky map key.");
                     const auto source=at->get<std::string>();rendering::SkyMapRef map;const MissingResource* missing{};
                     if(!source.empty()) {
-                        auto loaded=project.sky_map(source);
+                        auto loaded=project.assets().sky_map(source);
                         // A sky map imported after Play opened its Project is not catalogued yet.
-                        if(!loaded && !project.entry(source)) {take(project.refresh());loaded=project.sky_map(source);}
+                        if(!loaded && !project.entry(source)) {take(project.refresh());loaded=project.assets().sky_map(source);}
                         if(loaded) {map=loaded->map;session.unavailable_.erase(std::pair{AssetKind::sky,source});}
-                        else missing=&session.remember_unavailable(project,AssetKind::sky,source,loaded.error());
+                        else missing=&session.remember_unavailable(project.assets(),AssetKind::sky,source,loaded.error());
                     }
                     take(presentation::set_sky_map_binding(runtime,edited,{source,std::move(map)}));
                     // The document keeps the same key unresolved; Play reports it without diverging.
@@ -1615,12 +1615,12 @@ struct Session::GraphCodec {
                 if(const auto at=session.materials_.find(key);at!=session.materials_.end()) {
                     material::State state;state.source=key;state.description=asset.description;
                     for(std::size_t i=0;i<state.textures.size();++i) if(!asset.textures[i].empty()) {
-                        state.textures[i]=take(session.texture_resource(project,asset.textures[i]));
+                        state.textures[i]=take(session.texture_resource(project.assets(),asset.textures[i]));
                         state.description.textures[i].image=take(material::read_texture(runtime,state.textures[i].id())).image;
                     }
                     take(material::update_material(runtime,at->second.root.id(),state));
                     session.unavailable_.erase(std::pair{AssetKind::material,std::string(key)});
-                } else take(session.material_resource(project,asset));
+                } else take(session.material_resource(project.assets(),asset));
             } else throw std::runtime_error("Unknown change: "+kind);
             for(const auto key:load.dropped) note(world::Severity::warning,world::DiagnosticKind::reference_dropped,
                 "#"+std::to_string(key)+" was destroyed by the game; the reference is null.");

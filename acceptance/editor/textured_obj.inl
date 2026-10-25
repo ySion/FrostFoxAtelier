@@ -45,7 +45,7 @@ void verify_textured_obj() {
     const std::string obj="mtllib scene.mtl\nv 0 0 0\nv 2 0 0\nv 2 2 0\nv 1 1 0\nv 0 2 0\nvt -1 0\nvt 2 0\nvt 2 1\nvt 0.5 0.5\nvt 0 1\nusemtl red\nf 1/1 2/2 3/3 4/4 5/5\nusemtl other\nf -5/1 -4/2 -2/4\n";
     take(editor::write_file(source/"scene.obj",obj));
     auto project=take(editor::Project::create(evidence/"project"));const auto key=take(project.import_mesh(source/"scene.obj"));
-    auto old=take(project.mesh(key)).mesh;
+    auto old=take(project.assets().mesh(key)).mesh;
     require(old->vertices().size()==12 && old->parts().size()==2 && old->materials().size()==3 &&
         old->materials()[1].surface->description().texture(atelier::material::Input::base_color).image==old->materials()[2].surface->description().texture(atelier::material::Input::base_color).image,"OBJ lost triangles, material parts or shared images.");
     require(old->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[0]==255,
@@ -57,30 +57,30 @@ void verify_textured_obj() {
     require(negative_uv && area==3,"OBJ changed wrap coordinates or filled a concave cutout.");
     require(!project.import_mesh(source/"scene.obj"),"Repeated import overwrote an existing material bundle.");
     const auto revision=project.revision();take(project.refresh());
-    require(project.revision()==revision && take(project.mesh(key)).mesh==old,"Unchanged refresh replaced a mesh resource.");
+    require(project.revision()==revision && take(project.assets().mesh(key)).mesh==old,"Unchanged refresh replaced a mesh resource.");
     const auto sibling=project.root()/"Content/Meshes/scene/sibling.obj";
     take(editor::write_file(sibling,obj));take(project.refresh());
     const auto sibling_entry=std::ranges::find(project.entries(),fs::path("Content/Meshes/scene/sibling.obj"),&editor::ProjectEntry::path);
     require(sibling_entry!=project.entries().end(),"Shared-texture mesh is absent from the real project catalog.");
     const auto sibling_key=sibling_entry->key;
-    auto sibling_mesh=take(project.mesh(sibling_key)).mesh;
+    auto sibling_mesh=take(project.assets().mesh(sibling_key)).mesh;
     // import_mesh already owns its first bundle; reopen to exercise the project cache.
     auto shared_project=take(editor::Project::open(project.root()));
-    auto shared_a=take(shared_project.mesh(key)).mesh,shared_b=take(shared_project.mesh(sibling_key)).mesh;
+    auto shared_a=take(shared_project.assets().mesh(key)).mesh,shared_b=take(shared_project.assets().mesh(sibling_key)).mesh;
     require(shared_a!=shared_b && shared_a->materials()[1].surface->description().texture(atelier::material::Input::base_color).image==shared_b->materials()[1].surface->description().texture(atelier::material::Input::base_color).image,
         "Different model assets decoded the same atlas more than once.");
     const auto texture=project.root()/"Content/Meshes/scene/color.bmp";
     for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i]=char(255);bmp[i+2]=0;}
     take(editor::write_file(texture,bmp));fs::last_write_time(texture,fs::last_write_time(texture)+std::chrono::seconds(2));take(project.refresh());
-    auto changed=take(project.mesh(key)).mesh;
-    auto sibling_changed=take(project.mesh(sibling_key)).mesh;
+    auto changed=take(project.assets().mesh(key)).mesh;
+    auto sibling_changed=take(project.assets().mesh(sibling_key)).mesh;
     require(sibling_changed!=sibling_mesh && changed->materials()[1].surface->description().texture(atelier::material::Input::base_color).image==sibling_changed->materials()[1].surface->description().texture(atelier::material::Input::base_color).image &&
         sibling_mesh->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[0]==255,"Shared atlas refresh lost sharing or retired pixels.");
     require(changed!=old && changed->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[2]==255 && old->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[0]==255,
         "Texture refresh did not publish a new resource while preserving its old owner.");
     take(editor::write_file(project.root()/"Content/Meshes/scene/scene.mtl","newmtl red\nKd 0 1 0\nmap_Kd color.bmp\nnewmtl other\nKd 1 1 1\n"));
-    take(project.refresh());require(take(project.mesh(key)).mesh->materials()[1].surface->description().parameters.base_color[0]==0,"MTL edits did not invalidate the cached mesh.");
-    fs::remove(texture);take(project.refresh());require(!project.mesh(key),"Missing material dependency was silently ignored.");
+    take(project.refresh());require(take(project.assets().mesh(key)).mesh->materials()[1].surface->description().parameters.base_color[0]==0,"MTL edits did not invalidate the cached mesh.");
+    fs::remove(texture);take(project.refresh());require(!project.assets().mesh(key),"Missing material dependency was silently ignored.");
     take(editor::write_file(source/"bad.obj","mtllib ../outside.mtl\nv 0 0 0\n"));
     require(!project.import_mesh(source/"bad.obj") && !fs::exists(project.root()/"Content/Meshes/bad.obj"),"Unsafe dependency left a published import.");
     take(editor::write_file(source/"bad.obj","mtllib absent.mtl\n"));require(!project.import_mesh(source/"bad.obj"),"Missing MTL was silently ignored.");
@@ -89,7 +89,7 @@ void verify_textured_obj() {
     take(editor::write_file(source/"degenerate_uv.obj",
         "v 0 0 0\nv 0 1 0\nv 0 0 1\nvt 0 0\nvn 1 0 0\nf 1/1/1 2/1/1 3/1/1\n"));
     const auto degenerate_key=take(project.import_mesh(source/"degenerate_uv.obj"));
-    const auto degenerate=take(project.mesh(degenerate_key)).mesh;
+    const auto degenerate=take(project.assets().mesh(degenerate_key)).mesh;
     for(const auto& vertex:degenerate->vertices()) {
         const auto& n=vertex.normal;const auto& t=vertex.tangent;
         require(n[0]==1 && n[1]==0 && n[2]==0,"Tangent generation changed the authored OBJ normal.");

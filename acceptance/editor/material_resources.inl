@@ -14,7 +14,7 @@ void verify_material_resources() {
     auto metadata_path=material_path;metadata_path+=L".asset.json";
     const auto material_bytes=take(editor::read_file(material_path)),metadata_bytes=take(editor::read_file(metadata_path));
     const auto catalog_revision=project.revision();
-    require(take(editor::Project::open(project.root())).material(key).has_value(),"Normalized material path did not survive reopening the project.");
+    require(take(editor::Project::open(project.root())).assets().material(key).has_value(),"Normalized material path did not survive reopening the project.");
     require(!project.create_material("Content/Materials/Stone.material") &&
         !project.create_material("Content/Materials/Unused/../Stone.material"),"Material creation overwrote an existing resource.");
     require(project.revision()==catalog_revision && take(editor::read_file(material_path))==material_bytes &&
@@ -23,8 +23,8 @@ void verify_material_resources() {
     require(!project.create_material("Content/../Source/Escaped.material") &&
         !project.create_material("Content/../../Escaped.material") && !fs::exists(project.root()/"Source/Escaped.material") &&
         !fs::exists(evidence/"Escaped.material"),"Material path normalization escaped Content.");
-    editor::Session document;auto resource=take(document.material_resource(project,key));
-    require(take(document.material_resource(project,key)).id()==resource.id(),"A shared material acquired a second Runtime identity.");
+    editor::Session document;auto resource=take(document.material_resource(project.assets(),key));
+    require(take(document.material_resource(project.assets(),key)).id()==resource.id(),"A shared material acquired a second Runtime identity.");
     take(document.set_material_texture(project,resource.id(),material::Input::base_color,texture));
     const auto find_property=[&](ObjectId object,std::string_view name) {
         auto properties=take(document.properties(object));const auto at=std::ranges::find(properties,name,&editor::Property::name);
@@ -38,7 +38,7 @@ void verify_material_resources() {
     auto& runtime=document.world().runtime();
     const auto saved_state=take(material::read_material(runtime,resource.id()));
     const auto saved_surface=take(material::capture(runtime,resource.id()));
-    auto transient_texture=take(material::create_texture(runtime,{},take(project.texture(texture)).image));
+    auto transient_texture=take(material::create_texture(runtime,{},take(project.assets().texture(texture)).image));
     auto invalid_state=saved_state;invalid_state.textures[0]=std::move(transient_texture);invalid_state.description.parameters.roughness=.2f;
     require(!material::update_material(runtime,resource.id(),invalid_state),"A persistent material accepted a texture without a persistent source.");
     const auto retained_state=take(material::read_material(runtime,resource.id()));
@@ -50,9 +50,9 @@ void verify_material_resources() {
     take(document.set_material_texture(project,resource.id(),material::Input::base_color,texture));
     require(take(material::capture(document.world().runtime(),resource.id()))->description().parameters.roughness==.4f &&
         !document.material_dirty(key),"Changing a texture committed a cancelled parameter draft or created no-op history.");
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));const auto entity_a=document.selection().entity;
+    changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));const auto entity_a=document.selection().entity;
     const auto a=component(document,entity_a,document.presentation_types().static_mesh_component);
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));const auto entity_b=document.selection().entity;
+    changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube")),{2,0,0}));const auto entity_b=document.selection().entity;
     const auto b=component(document,entity_b,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,a,"slot/0",key));take(document.assign_material(project,b,"slot/0",key));
     const auto count=document.undo_count();take(document.assign_material(project,a,"slot/0",key));
@@ -101,7 +101,7 @@ void verify_material_resources() {
     take(document.material_undo(key));
     take(document.save_material(project,key));
     auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
-    auto changed_parent=take(project.material(key));changed_parent.description.parameters.base_color[1]=.35f;
+    auto changed_parent=take(project.assets().material(key));changed_parent.description.parameters.base_color[1]=.35f;
     take(project.save_material(changed_parent));
     auto reopened=take(editor::Session::deserialize(take(editor::read_file(project.root()/"Content/Scenes/Main.scene")),project));
     const auto reopened_entities=take(reopened->world().members());
@@ -125,10 +125,10 @@ void verify_material_resources() {
     take(editor::write_file(evidence/"Replacement.mtl","newmtl replacement\nKd 1 1 1\n"));
     take(editor::write_file(evidence/"Replacement.obj",
         "mtllib Replacement.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl replacement\nf 1 2 3\n"));
-    const auto replacement=take(project.mesh(take(project.import_mesh(evidence/"Replacement.obj"))));
+    const auto replacement=take(project.assets().mesh(take(project.import_mesh(evidence/"Replacement.obj"))));
     take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{replacement.key,replacement.mesh}));
     take(document.assign_material(project,duplicate,"replacement",key));
-    const auto original=take(project.mesh("builtin/cube"));
+    const auto original=take(project.assets().mesh("builtin/cube"));
     take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{original.key,original.mesh}));
     const auto retained=take(presentation::read_material_bindings(document.world().runtime(),duplicate));
     require(retained.size()==1 && retained[0].slot=="slot/0" && retained[0].resource.id()==duplicate_material.id(),
@@ -140,8 +140,8 @@ void verify_material_resources() {
     {
         editor::Session local;auto& local_runtime=local.world().runtime();
         editor::MaterialAsset asset;asset.description.parameters.roughness=.3f;asset.textures[0]=texture;
-        const auto original=take(local.material_resource(project,asset));
-        changed(local.create_static_mesh(take(project.mesh("builtin/cube"))));
+        const auto original=take(local.material_resource(project.assets(),asset));
+        changed(local.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
         const auto original_entity=local.selection().entity;
         const auto original_mesh=component(local,original_entity,local.presentation_types().static_mesh_component);
         const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",original,true}}};
@@ -190,7 +190,7 @@ void verify_material_resources() {
     require(workspace.ui_error().empty() && !instance_controls.empty(),"Material instance DSL projection failed.");
     take(editor::write_file(evidence/"Two.mtl","newmtl First\nKd 1 1 1\nnewmtl Second\nKd 1 1 1\n"));
     take(editor::write_file(evidence/"Two.obj","mtllib Two.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nusemtl First\nf 1 2 3\nusemtl Second\nf 2 4 3\n"));
-    const auto two_slots=take(project.mesh(take(project.import_mesh(evidence/"Two.obj"))));
+    const auto two_slots=take(project.assets().mesh(take(project.import_mesh(evidence/"Two.obj"))));
     changed(document.create_static_mesh(two_slots));const auto partial_entity=document.selection().entity;
     const auto partial=component(document,partial_entity,document.presentation_types().static_mesh_component);
     const auto first_slot=presentation::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().front().material);
@@ -236,15 +236,15 @@ void verify_material_resources() {
         return at->key;
     };
     const auto clear=sky_key(L"Clear.HDR"),broken=sky_key(L"Broken.hdr");
-    const auto sky=take(project.sky_map(clear));
-    require(sky.key==clear && sky.name==L"Clear" && sky.map && sky.map->width()==2 && take(project.sky_map(clear)).map==sky.map,
+    const auto sky=take(project.assets().sky_map(clear));
+    require(sky.key==clear && sky.name==L"Clear" && sky.map && sky.map->width()==2 && take(project.assets().sky_map(clear)).map==sky.map,
         "A sky asset did not resolve, or one key returned two maps.");
-    take(project.refresh());require(take(project.sky_map(clear)).map==sky.map,"A refresh that saw no change replaced a cached sky map.");
+    take(project.refresh());require(take(project.assets().sky_map(clear)).map==sky.map,"A refresh that saw no change replaced a cached sky map.");
     take(editor::write_file(sky_file,radiance(2,char(130))));take(project.refresh());
-    const auto rewritten=take(project.sky_map(clear)).map;
+    const auto rewritten=take(project.assets().sky_map(clear)).map;
     require(rewritten && rewritten!=sky.map && rewritten->width()==4,"A rewritten sky file did not give a new map after refresh.");
     const auto sky_error=[&](std::string_view key) {
-        const auto result=project.sky_map(key);require(!result,"An invalid sky map key resolved.");return result.error().message;
+        const auto result=project.assets().sky_map(key);require(!result,"An invalid sky map key resolved.");return result.error().message;
     };
     const std::string absent="project/{00000000-0000-0000-0000-000000000000}";
     require(sky_error(absent)=="Sky map key is not a Radiance .hdr asset of this project: "+absent,"A missing sky map key was not named.");
@@ -273,20 +273,20 @@ void verify_missing_resources() {
     const auto stone=take(project.create_material("Content/Materials/Stone.material"));
     const auto brick=take(project.create_material("Content/Materials/Brick.material"));
     const auto moss=take(project.create_material("Content/Materials/Moss.material")); // Named only by the mesh that goes missing.
-    const auto wall=take(project.mesh(take(project.import_mesh(evidence/"Wall.obj"))));
+    const auto wall=take(project.assets().mesh(take(project.import_mesh(evidence/"Wall.obj"))));
     const auto wall_slot=presentation::material_slot_name(*wall.mesh,wall.mesh->parts().front().material);
     editor::Session document;auto& runtime=document.world().runtime();
-    const auto stone_resource=take(document.material_resource(project,stone));
+    const auto stone_resource=take(document.material_resource(project.assets(),stone));
     const auto roughness=[&] {
         const auto properties=take(document.properties(stone_resource.id()));
         return std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name)->path;
     }();
     take(document.set_material_texture(project,stone_resource.id(),material::Input::base_color,texture));
     take(document.set_property(stone_resource.id(),roughness,Scalar{.4f},201));take(document.save_material(project,stone));
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
+    changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
     const auto textured=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,textured,"slot/0",stone));
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube")),{2,0,0}));
+    changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube")),{2,0,0}));
     const auto instanced=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,instanced,"slot/0",brick));take(document.set_material_override(instanced,"slot/0",roughness,true));
     take(document.set_property(take(presentation::read_material_bindings(runtime,instanced)).front().resource.id(),roughness,Scalar{.8f},202));

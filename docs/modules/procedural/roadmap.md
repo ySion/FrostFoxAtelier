@@ -50,7 +50,7 @@ P2 方案之前提交合约清单，与运行时负责人对齐未来语言服�
 - 候选 `procedural.GeneratorComponent : SpatialComponent` 位于 presentation，引用图资产键、保存暴露参数覆盖、持有最近发布的不可变输出。presentation 保持一个组件一个槽位；SceneSnapshot 展开的是集合，不是逐实例的 CPU 渲染项。
 - 候选图资源为 `Content/**/*.procgraph`，复用 `.asset.json` GUID 边车；AssetKind 在末尾增加，编辑器负责人审。现有图 JSON v1 不含暴露参数；添加 `parameters` 时另定是否升到 v2。
 - 场景经组件 properties 保存。生成器若需要新的顶层载荷，先确定版本；新程序只读最新场景版本，不增加旧版本迁移。已有内联 Array 编解码按字段 form/kind 分派，不按 JSON 数组形状猜测；它扩展了此前无法保存的字段形状，不需要空迁移。
-- 材质沿用 `editor::Session::mesh_surfaces(Project&, const MeshAsset&)`，网格经 `Project::mesh(key)` 取得。编辑器与 Play 同源：按网格槽顺序解析当前默认材质 capture，未映射槽保留导入表面，不乘组件独有参数。刷新/重载后重新解析，逐元素比较 SurfaceRef；外层 vector 每次新建，不能拿它的地址当变化。材质变化不替换局部变换数组。
+- 材质沿用 `editor::Session::mesh_surfaces(assets::Reader&, const MeshAsset&)`，网格经 `project.assets().mesh(key)` 取得。编辑器与 Play 同源：按网格槽顺序解析当前默认材质 capture，未映射槽保留导入表面，不乘组件独有参数。刷新/重载后重新解析，逐元素比较 SurfaceRef；外层 vector 每次新建，不能拿它的地址当变化。材质变化不替换局部变换数组。
 - 第二刀的生成网格候选资源键为 `<图 GUID>#<输出名>`，经 set_mesh_binding 接入；碰撞缓存加入内容哈希。未实施，不是现在可解析的资源键。
 
 | 未来模式 | 预期行为与数据归属 |

@@ -135,15 +135,12 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
         const auto catalog = mesh_assets();
         std::string_view key{p.mesh.c_str(), p.mesh.size()};
         if (key.empty()) key = catalog.front().key;
-        if (context.project) {
-            auto asset = context.project->mesh(key);
-            if (!asset) return std::unexpected(asset.error());
-            added = document.create_static_mesh(*asset, context.cursor, context.project);
-        } else {
-            const auto* asset = mesh_asset(key);
-            if (!asset) return std::unexpected(Error{ErrorCode::invalid_definition, "Unknown mesh asset."});
-            added = document.create_static_mesh(*asset, context.cursor);
-        }
+        assets::Reader engine;
+        auto& reader=context.project?context.project->assets():engine;
+        auto asset=reader.mesh(key);
+        if(!asset) return context.project?std::unexpected(asset.error()):
+            std::unexpected(Error{ErrorCode::invalid_definition,"Unknown mesh asset."});
+        added=document.create_static_mesh(*asset,context.cursor,context.project);
         break;
     }
     case AddKind::point: added = document.create_light(presentation::LightKind::point, context.cursor); break;

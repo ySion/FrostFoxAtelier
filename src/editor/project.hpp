@@ -2,35 +2,16 @@
 #include "runtime/runtime.hpp"
 #include "math/math.hpp"
 #include "editor/assets.hpp"
-#include "editor/mesh_import.hpp"
+#include "assets/reader.hpp"
 #include <filesystem>
-#include <unordered_map>
 
 namespace atelier::editor {
-struct TextureAsset {std::string key;std::wstring name;material::ImageRef image;};
-struct MaterialAsset {
-    std::string key;
-    std::wstring name;
-    material::Description description;
-    std::array<std::string,material::input_count> textures;
-};
-struct ProjectEntry {
-    std::filesystem::path path; // Relative to the project root; never a Runtime ID.
-    std::string key;
-    AssetKind kind{};
-    std::uintmax_t bytes{};
-    std::filesystem::file_time_type modified{};
-    std::vector<SlotMaterial> materials{}; // A mesh sidecar's default material per slot, by slot name.
-    bool operator==(const ProjectEntry&) const = default;
-};
 // The folder is the project. Config/Project.json identifies it; all persisted
 // locations are relative to this root. Cache never owns authoritative content.
 class Project final {
 public:
     static Result<Project> create(const std::filesystem::path&);
     static Result<Project> open(const std::filesystem::path&);
-    static bool is_texture_path(const std::filesystem::path&);
-    static bool is_sky_path(const std::filesystem::path&);
     static bool is_scene_path(const std::filesystem::path& path) {
         return !path.empty() && path.extension()==L".scene" &&
             *path.begin()==L"Content";
@@ -39,29 +20,17 @@ public:
     const std::filesystem::path& startup_scene() const noexcept { return startup_; }
     const std::filesystem::path& ui_source() const noexcept { return ui_source_; }
     const std::wstring& name() const noexcept { return name_; }
-    std::span<const ProjectEntry> entries() const noexcept { return entries_; }
-    const ProjectEntry* entry(std::string_view key) const;
+    assets::Reader& assets() noexcept { return assets_; }
+    const assets::Reader& assets() const noexcept { return assets_; }
+    std::span<const ProjectEntry> entries() const noexcept { return assets_.entries(); }
+    const ProjectEntry* entry(std::string_view key) const { return assets_.entry(key); }
     // The top-level folders the catalogue scans: Content, Source, Config.
     std::span<const std::filesystem::path> roots() const noexcept { return roots_; }
-    std::uint64_t revision() const noexcept { return revision_; }
+    std::uint64_t revision() const noexcept { return assets_.revision(); }
     Result<void> refresh();
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
-    Result<MeshAsset> mesh(std::string_view);
-    // Project-relative files of one asset and of every asset it references (a mesh's source
-    // dependencies and slot default materials, a material's textures), each with its
-    // .asset.json identity, in the catalogue's spelling and without duplicates. Loads a mesh
-    // to learn its references; builtin keys and missing or wrong-kind referenced assets have
-    // no files, and an asset that cannot be read keeps only its own. A commit that adds a
-    // reference between assets extends this.
-    Result<std::vector<std::filesystem::path>> asset_files(std::string_view key);
     // glTF imports also publish one material asset per slot, which the mesh names as its slot defaults.
     Result<std::string> import_mesh(const std::filesystem::path&);
-    // Source content the loaded mesh left out (see MeshImport::notes); empty until mesh() loads it.
-    std::span<const std::string> mesh_notes(std::string_view key) const;
-    Result<TextureAsset> texture(std::string_view);
-    // A Radiance .hdr sky asset; the same key returns the same map until refresh sees the file change.
-    Result<SkyAsset> sky_map(std::string_view);
-    Result<MaterialAsset> material(std::string_view);
     Result<std::string> import_texture(const std::filesystem::path&);
     Result<std::string> create_material(const std::filesystem::path&,const MaterialAsset& = {});
     Result<void> save_material(const MaterialAsset&);
@@ -80,25 +49,14 @@ public:
 private:
     std::filesystem::path root_, startup_, ui_source_;
     std::wstring name_;
-    std::vector<ProjectEntry> entries_;
     std::vector<std::filesystem::path> roots_;
-    std::uint64_t revision_{};
-    struct KeyHash {
-        using is_transparent=void;
-        std::size_t operator()(std::string_view key) const noexcept {return std::hash<std::string_view>{}(key);}
-    };
-    std::unordered_map<std::string,std::size_t,KeyHash,std::equal_to<>> entry_index_; // Key to entries_ position.
-    std::unordered_map<std::string,material::ImageRef> textures_;
-    std::unordered_map<std::string,rendering::SkyMapRef> sky_maps_;
-    struct CachedMesh { geometry::MeshRef mesh; std::vector<std::filesystem::path> dependencies; std::vector<std::string> notes; };
-    std::unordered_map<std::string,CachedMesh> meshes_;
-    ImageCache images_;
+    assets::Reader assets_;
 };
 // Same-directory temporary + flush + replacement. Failed writes leave the old
 // file intact. Strings and on-disk paths use validated UTF-8.
-Result<std::string> read_file(const std::filesystem::path&, std::size_t maximum=16*1024*1024);
+using assets::read_file;
+using assets::utf8;
+using assets::wide;
 enum class WriteMode { replace, create };
 Result<void> write_file(const std::filesystem::path&, std::string_view, WriteMode = WriteMode::replace);
-std::string utf8(std::wstring_view);
-std::wstring wide(std::string_view);
 }

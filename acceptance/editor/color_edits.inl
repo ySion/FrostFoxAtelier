@@ -43,7 +43,7 @@ void verify_color_edits() {
     changed(document.redo());require(read(light,light_paths)==std::vector<Scalar>(last.begin(),last.end()),"Color redo missed its final value.");
 
     const auto key=take(project.create_material("Content/Materials/Color.material"));
-    const auto material=take(document.material_resource(project,key));
+    const auto material=take(document.material_resource(project.assets(),key));
     const auto material_paths=paths(material.id(),"parameters.base_color.");
     const auto material_before=read(material.id(),material_paths);
     document.mark_saved();const auto scene_history=document.undo_count();
@@ -62,11 +62,11 @@ void verify_color_edits() {
     take(document.material_undo(key,true));take(document.save_material(project,key));
     require(!document.material_dirty(key),"Asset color did not use the material save path.");
     auto opened=take(editor::Project::open(project.root()));editor::Session reloaded;
-    const auto reloaded_material=take(reloaded.material_resource(opened,key));
+    const auto reloaded_material=take(reloaded.material_resource(opened.assets(),key));
     require(take(material::capture(reloaded.world().runtime(),reloaded_material.id()))->description().parameters.base_color==
         take(material::capture(runtime,material.id()))->description().parameters.base_color,"Saved color did not survive material reopen.");
 
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
+    changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
     const auto entity=document.selection().entity;
     const auto mesh=component(document,entity,document.presentation_types().static_mesh_component);
     take(document.assign_material(project,mesh,"slot/0",key));

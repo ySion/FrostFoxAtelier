@@ -4,10 +4,6 @@
 namespace atelier::presentation {
 using detail::Access;
 using detail::error;
-std::string material_slot_name(const geometry::Mesh& mesh,std::size_t index) {
-    const auto& slot=mesh.materials()[index];
-    return slot.name.empty()?"slot/"+std::to_string(index):slot.name;
-}
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime,ObjectId id) {
     return runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value)->Result<std::vector<MaterialBinding>> {
         auto field=runtime.reference_field(id,Access::materials(value));if(!field) return std::unexpected(field.error());

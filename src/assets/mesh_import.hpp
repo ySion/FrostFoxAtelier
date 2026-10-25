@@ -1,11 +1,11 @@
 #pragma once
-#include "editor/image_decode.hpp"
+#include "assets/image_decode.hpp"
 #include "geometry/mesh.hpp"
 #include <filesystem>
 #include <string>
 #include <vector>
 
-namespace atelier::editor {
+namespace atelier::assets {
 struct ImportedFile { std::filesystem::path relative; std::string bytes; };
 struct MeshImport {
     geometry::MeshRef mesh;

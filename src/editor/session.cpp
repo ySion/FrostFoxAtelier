@@ -1,4 +1,5 @@
 #include "editor/session.hpp"
+#include "editor/project.hpp"
 #include "editor/fields.hpp"
 #include "editor/operator_parameters.hpp"
 #include "editor/view_options.hpp"
@@ -404,7 +405,7 @@ Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset, math::
     presentation::Material material;
     if(asset.mesh && asset.mesh->has_materials()) material.base_color={1,1,1};
     std::vector<presentation::MaterialBinding> defaults;
-    if(project) {auto resolved=mesh_defaults(*project,asset);if(!resolved) return std::unexpected(resolved.error());defaults=std::move(*resolved);}
+    if(project) {auto resolved=mesh_defaults(project->assets(),asset);if(!resolved) return std::unexpected(resolved.error());defaults=std::move(*resolved);}
     auto root=presentation::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},material,asset.key,std::move(defaults)});
     if (!root) return std::unexpected(root.error());
     return attach_created(std::move(*root),asset.name);

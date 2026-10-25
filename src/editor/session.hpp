@@ -3,6 +3,7 @@
 #include "world/world.hpp"
 #include "world/diagnostic.hpp"
 #include "editor/assets.hpp"
+#include "assets/reader.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
 #include <map>
@@ -10,7 +11,6 @@
 
 namespace atelier::editor {
 class Project;
-struct MaterialAsset;
 struct Parameter {
     const char* name;
     const char* unit;
@@ -140,17 +140,17 @@ public:
     // without history; commit records one entry against the values seen at begin.
     Result<void> begin_group_edit(ObjectId, std::span<const world::FieldPath>, std::uint64_t control_session);
     Result<void> preview_group_edit(std::uint64_t control_session, std::span<const Scalar>);
-    // With a missing list, materials and textures the project cannot provide become
+    // With a missing list, materials and textures the reader cannot provide become
     // stand-ins and are reported there; without one they fail. Stand-ins are never
     // edited or saved as assets.
-    Result<ObjectRoot> material_resource(Project&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
-    Result<ObjectRoot> material_resource(Project&,const MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
+    Result<ObjectRoot> material_resource(assets::Reader&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
+    Result<ObjectRoot> material_resource(assets::Reader&,const MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
     // The mesh asset's default material per slot, as this document's shared material assets.
     // Unavailable ones always stand in and are reported in `missing` when given.
-    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(Project&,const MeshAsset&,std::vector<MissingResource>* missing = nullptr);
+    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&,const MeshAsset&,std::vector<MissingResource>* missing = nullptr);
     // What each slot shows where no component binds it: the default material, else the imported surface.
     // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
-    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(Project&,const MeshAsset&);
+    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(assets::Reader&,const MeshAsset&);
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
     Result<ObjectRoot> open_material(Project&,std::string_view key);
@@ -350,10 +350,10 @@ private:
     std::unordered_map<std::string,MaterialDocument> materials_;
     std::unordered_map<std::string,ObjectRoot> textures_;
     UnavailableResources unavailable_;
-    const MissingResource& remember_unavailable(const Project&,AssetKind,std::string_view key,const Error&);
+    const MissingResource& remember_unavailable(const assets::Reader&,AssetKind,std::string_view key,const Error&);
     struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};std::vector<world::FieldPath> paths;ObjectId entity,component;};
     std::optional<MaterialEdit> material_edit_;
-    Result<ObjectRoot> texture_resource(Project&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);
+    Result<ObjectRoot> texture_resource(assets::Reader&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);
     Result<void> replace_material_bindings(ObjectId,std::vector<presentation::MaterialBinding>);
     Result<void> admit_entity_edit(ObjectId) const;
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;

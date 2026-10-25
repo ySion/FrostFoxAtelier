@@ -176,7 +176,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
         if(!created) return std::unexpected(created.error());
         if(const auto* at=project_->entry(*created)) workspace_.assets.navigate(at->path.parent_path());
         if(command==create_material) {
-            auto root=document_->material_resource(*project_,*created);if(!root) return std::unexpected(root.error());
+            auto root=document_->material_resource(project_->assets(),*created);if(!root) return std::unexpected(root.error());
             workspace_.material_inspection=*created;workspace_.inspecting_asset=true;
         }
         workspace_.status=command==create_material?L"Material created":L"Texture imported";return {};
@@ -194,7 +194,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     if (!project_) return failed("Open a project folder first.");
     if (command==import_mesh) {
         auto imported=project_->import_mesh(*path);if (!imported) return std::unexpected(imported.error());
-        for(const auto& note:project_->mesh_notes(*imported)) workspace_.log(L"Import Mesh: "+editor::wide(note));
+        for(const auto& note:project_->assets().mesh_notes(*imported)) workspace_.log(L"Import Mesh: "+editor::wide(note));
         workspace_.assets.reset(true);workspace_.assets.navigate(L"Content/Meshes");return {};
     }
     auto relative=path->is_absolute()?path->lexically_relative(project_->root()):*path;

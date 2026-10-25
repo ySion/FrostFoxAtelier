@@ -6,10 +6,10 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-namespace atelier::editor {
+namespace atelier::assets {
 // Shared WIC decoding for project texture assets and model-import dependencies.
 material::ImageRef decode_image(std::string_view bytes);
-// Project-owned: source bytes with the same SHA-256 share immutable decoded pixels.
+// Reader-owned: source bytes with the same SHA-256 share immutable decoded pixels.
 // Weak ownership allows retired meshes and their images to leave independently.
 struct ImageCache {
     std::unordered_map<std::string,std::weak_ptr<const material::Image>> entries; // Keyed by SHA-256 hex.

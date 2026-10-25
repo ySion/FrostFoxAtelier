@@ -662,14 +662,14 @@ struct EditorControl::Impl {
             // The repro holds what the scene references, whatever else this session loaded: the
             // components' meshes and sky maps and every material the frozen scene defines (bound
             // ones, instance parents and inline textures), and the keys a component keeps while it
-            // cannot resolve them. Project gives each the files of everything it references in turn.
+            // cannot resolve them. Reader gives each the files of everything it references in turn.
             // A live reference the catalogue lost fails the export; the key of a stand-in or of
             // retained data is copied when the catalogue still has it, and otherwise stays in the
             // scene without files.
             const auto& doc=*app.document_;
             std::set<std::filesystem::path> listed;
             const auto add=[&](const std::string& key) {
-                for(auto& file:take(app.project_->asset_files(key))) if(listed.insert(file).second) data.files.push_back(std::move(file));
+                for(auto& file:take(app.project_->assets().asset_files(key))) if(listed.insert(file).second) data.files.push_back(std::move(file));
             };
             const auto optional=[&](editor::AssetKind kind,const std::string& key) {
                 if(const auto* entry=key.empty()?nullptr:app.project_->entry(key);entry && entry->kind==kind) add(key);

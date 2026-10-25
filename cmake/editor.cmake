@@ -5,6 +5,7 @@ function(atelier_add_editor)
     atelier_target(atelier_control_transport)
     target_include_directories(atelier_control_transport PUBLIC "${PROJECT_SOURCE_DIR}/src")
     target_link_libraries(atelier_control_transport PUBLIC nlohmann_json::nlohmann_json PRIVATE advapi32 bcrypt ole32)
+    include(${PROJECT_SOURCE_DIR}/cmake/assets.cmake)
     add_executable(atelier_control "${PROJECT_SOURCE_DIR}/src/control/main.cpp")
     atelier_target(atelier_control)
     target_link_libraries(atelier_control PRIVATE atelier_control_transport)
@@ -25,9 +26,6 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/editor/assets.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_materials.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/image_decode.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/obj_import.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/gltf_import.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
@@ -40,7 +38,7 @@ function(atelier_add_editor)
     atelier_target(atelier_editor_core)
     atelier_reflect(atelier_editor_core SOURCE src/editor/operator_parameters.cpp HEADERS src/editor/operator_parameters.hpp)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_control_transport ole32 shell32 windowscodecs nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_control_transport ole32 shell32 nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"

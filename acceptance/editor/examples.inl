@@ -2,8 +2,8 @@ void verify_example_identities(const std::filesystem::path& source) {
     namespace fs=std::filesystem;
     // Check before open: Project::refresh creates identities for newly discovered resources.
     for(const auto* folder:{"Content","Source","Config"}) for(const auto& file:fs::recursive_directory_iterator(source/folder))
-        if(file.is_regular_file() && (editor::is_mesh_path(file.path()) || file.path().extension()==L".material" ||
-            editor::Project::is_texture_path(file.path()) || editor::Project::is_sky_path(file.path())))
+        if(file.is_regular_file() && (assets::is_mesh_path(file.path()) || file.path().extension()==L".material" ||
+            assets::is_texture_path(file.path()) || assets::is_sky_path(file.path())))
             require(fs::is_regular_file(file.path().wstring()+L".asset.json"),"An example resource has no authored identity.");
 }
 void verify_examples() {
@@ -21,7 +21,7 @@ void verify_examples() {
         for(const auto& binding:entry.materials) {
             const auto* listed=project.entry(binding.key);
             require(listed && listed->kind==editor::AssetKind::material,"An example mesh names a missing default material.");
-            for(const auto& texture:take(project.material(binding.key)).textures)
+            for(const auto& texture:take(project.assets().material(binding.key)).textures)
                 require(texture.empty() || (project.entry(texture) && project.entry(texture)->kind==editor::AssetKind::texture),
                     "An example default material names a missing texture.");
         }

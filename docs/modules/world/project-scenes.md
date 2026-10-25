@@ -42,7 +42,7 @@ CameraComponent（包括派生类型）在全部属性解码后、发布前执�
 
 EnvironmentComponent 的 `sky_map` 是天空贴图的资产键。记录缺少 `sky_map` 时报告 `mismatch` warning，天空没有贴图；值不是字符串时同样报告 `mismatch`，原值保留并写回。
 
-`sky_map` 是隐藏字段，没有公开 FieldId，`World::write` 和属性记录都碰不到它；只能经 `presentation::set_sky_map_binding` 与解析出的 `rendering::SkyMapRef` 成对设置。加载经 `Project::sky_map` 解析键：同一个键在 Project 刷新看到文件变化之前返回同一个指针，所以重新打开或撤销都不会让 SceneSnapshot 误判天空变了。
+`sky_map` 是隐藏字段，没有公开 FieldId，`World::write` 和属性记录都碰不到它；只能经 `presentation::set_sky_map_binding` 与解析出的 `rendering::SkyMapRef` 成对设置。加载经 `project.assets().sky_map` 解析键：同一个键在 Project 刷新发布给 Reader 的目录看到文件变化之前返回同一个指针，所以重新打开或撤销都不会让 SceneSnapshot 误判天空变了。
 
 打开场景与 `--scene-lit-camera` 不创建 Environment，也不拟合 DDGI。没有 Environment 时使用默认 World 设置；显式编辑 World Settings 或 Coverage → Fit Scene 通过普通历史创建或修改 Environment。场景保存的设置属于作者，打开时不改动。
 

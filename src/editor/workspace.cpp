@@ -935,7 +935,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             add(0,L"Type",kind);add(1,L"Resource",wide(asset->key));
             add(2,L"Location",asset->path.empty()?L"Engine":asset->path.generic_wstring());
             if(!asset->path.empty() && asset->kind!=AssetKind::folder) add(3,L"Size",std::to_wstring(asset->bytes)+L" bytes");
-            if(const auto* mesh=mesh_asset(asset->key)) {
+            if(auto mesh=atelier::assets::Reader{}.mesh(asset->key)) {
                 add(4,L"Triangles",std::to_wstring(mesh->mesh->vertices().size()/3));
             }
         }

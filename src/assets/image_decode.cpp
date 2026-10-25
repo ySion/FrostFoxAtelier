@@ -1,4 +1,4 @@
-#include "editor/image_decode.hpp"
+#include "assets/image_decode.hpp"
 #include "control/control.hpp"
 #include <Windows.h>
 #include <wincodec.h>
@@ -9,7 +9,7 @@
 #include <system_error>
 #include <thread>
 
-namespace atelier::editor {
+namespace atelier::assets {
 namespace {
 // Pixels one decode_images call may return; charged before each allocation.
 struct PixelBudget {

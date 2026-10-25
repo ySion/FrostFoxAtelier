@@ -1,11 +1,11 @@
-#include "editor/mesh_import.hpp"
-#include "editor/project.hpp"
-#include "editor/image_decode.hpp"
+#include "assets/mesh_import.hpp"
+#include "assets/file.hpp"
+#include "assets/image_decode.hpp"
 #include <charconv>
 #include <sstream>
 #include <unordered_map>
 
-namespace atelier::editor {
+namespace atelier::assets {
 namespace {
 void require(bool ok,const char* message) { if (!ok) throw std::runtime_error(message); }
 std::string rest(std::istringstream& row) {

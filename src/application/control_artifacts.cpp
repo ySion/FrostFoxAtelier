@@ -193,7 +193,7 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
     for(const auto& material:data.materials) {
         checkpoint(cancel);
         for(std::size_t i=0;i<material.textures.size();++i) if(!material.textures[i].empty()) {
-            const auto copied=take(clone.texture(material.textures[i])).image;const auto& expected=material.description.textures[i].image;
+            const auto copied=take(clone.assets().texture(material.textures[i])).image;const auto& expected=material.description.textures[i].image;
             if(!expected || copied->width()!=expected->width() || copied->height()!=expected->height() ||
                 control::sha256(std::as_bytes(copied->pixels()))!=control::sha256(std::as_bytes(expected->pixels())))
                 throw Failure("dependency_mismatch","Copied texture differs from the loaded material: "+material.textures[i]);
@@ -203,13 +203,13 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
     }
     std::set<std::string> recorded;
     for(const auto& mesh:data.meshes) {
-        checkpoint(cancel);auto loaded=take(clone.mesh(mesh.key));
+        checkpoint(cancel);auto loaded=take(clone.assets().mesh(mesh.key));
         const auto expected=mesh_hash(mesh);
         if(!loaded.mesh || mesh_hash(loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded mesh content or slot defaults: "+mesh.key);
         if(recorded.insert(mesh.key).second) resources.push_back({{"key",mesh.key},{"content_sha256",expected}});
     }
     for(const auto& [key,map]:data.skies) {
-        checkpoint(cancel);const auto loaded=take(clone.sky_map(key)).map;
+        checkpoint(cancel);const auto loaded=take(clone.assets().sky_map(key)).map;
         const auto expected=sky_hash(*map);
         if(!loaded || sky_hash(*loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded sky map: "+key);
         if(recorded.insert(key).second) resources.push_back({{"key",key},{"content_sha256",expected}});

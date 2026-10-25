@@ -1,5 +1,16 @@
 void verify_project_document() {
     namespace fs=std::filesystem;
+    {
+        assets::Reader engine;
+        for(const auto* key:{"builtin/cube","builtin/sphere","builtin/plane"}) {
+            const auto mesh=take(engine.mesh(key));
+            require(mesh.key==key && mesh.mesh && !mesh.mesh->vertices().empty() &&
+                mesh.mesh==take(assets::Reader{}.mesh(key)).mesh,"Engine-only readers lost built-in identity or shared content.");
+        }
+        require(engine.entries().empty() && engine.revision()==0 && !engine.mesh("builtin/unknown") &&
+            !engine.texture("builtin/cube") && !engine.material("builtin/cube") && !engine.sky_map("builtin/cube"),
+            "Engine-only reads invented a project catalogue or resolved an unknown/wrong-kind asset.");
+    }
     const auto evidence=fs::current_path()/"project-document-evidence"/std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
     fs::create_directories(evidence);
     const auto folder=evidence/L"工程";
@@ -11,7 +22,7 @@ void verify_project_document() {
     const auto external=evidence/"Triangle.obj";
     take(editor::write_file(external,"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
     const auto resource=take(project.import_mesh(external));
-    const auto original_mesh=take(project.mesh(resource)).mesh;
+    const auto original_mesh=take(project.assets().mesh(resource)).mesh;
     const math::Vector3 collision_scale{2,3,4};
     const auto collision_file=take(project.cook_collision(resource,collision_scale));
     const auto collision_bytes=take(project.collision(resource,collision_scale));
@@ -32,7 +43,7 @@ void verify_project_document() {
         require(after!=project.entries().end() && after->path==renamed && renamed.filename()==L"Renamed Triangle.obj" &&
             !fs::exists(folder/before) && fs::exists(folder/renamed) && fs::exists(fs::path(folder/renamed)+=L".asset.json"),
             "Rename lost the resource identity or its sidecar.");
-        require(take(project.mesh(resource)).mesh!=nullptr,"A renamed mesh no longer resolves by its key.");
+        require(take(project.assets().mesh(resource)).mesh!=nullptr,"A renamed mesh no longer resolves by its key.");
         require(!project.rename(renamed,L"bad/name.obj") && !project.rename(renamed,L"trailing.") && !project.rename("Content",L"Other"),
             "Rename accepted an invalid name or a top-level folder.");
         const auto taken=folder/renamed.parent_path()/"Taken.obj";
@@ -44,12 +55,12 @@ void verify_project_document() {
     }
     const auto revision=project.revision();
     take(project.refresh());take(project.refresh());
-    require(project.revision()==revision && take(project.mesh(resource)).mesh==original_mesh,
+    require(project.revision()==revision && take(project.assets().mesh(resource)).mesh==original_mesh,
         "An unchanged refresh changed catalog identity or discarded a live mesh.");
     verify_project_workspace(project);
     require(!project.import_mesh(external),"Import silently overwrote an existing asset.");
     editor::Session document;
-    changed(document.create_static_mesh(take(project.mesh(resource))));
+    changed(document.create_static_mesh(take(project.assets().mesh(resource))));
     const auto entity=document.selection().entity;
     take(document.rename(entity,L"主角 Triangle"));
     const auto mesh=component(document,entity,document.presentation_types().static_mesh_component);
@@ -64,7 +75,7 @@ void verify_project_document() {
     require(take(loaded->serialize())==saved,"Scene roundtrip lost identity relations, names, transforms or null meshes.");
     {
         editor::Session built_in;
-        changed(built_in.create_static_mesh(take(project.mesh("builtin/sphere"))));
+        changed(built_in.create_static_mesh(take(project.assets().mesh("builtin/sphere"))));
         const auto built_in_entity=built_in.selection().entity;
         const auto body=component(built_in,built_in_entity,built_in.presentation_types().static_mesh_component);
         physics::BodySettings settings;
@@ -85,7 +96,7 @@ void verify_project_document() {
     }
     {
         editor::Session physical;
-        changed(physical.create_static_mesh(take(project.mesh(resource))));
+        changed(physical.create_static_mesh(take(project.assets().mesh(resource))));
         const auto physical_entity=physical.selection().entity;
         take(const_cast<world::World&>(physical.world()).set_transform(physical_entity,
             {{0,0,0},{0,0,0,1},collision_scale}));
@@ -179,10 +190,10 @@ void verify_project_document() {
     const auto retry=evidence/"Retry.obj";take(editor::write_file(retry,take(editor::read_file(external))));
     require(!project.import_mesh(retry) && !fs::exists(folder/"Content/Meshes/Retry.obj") &&
         !fs::exists(folder/"Content/Meshes/Retry.obj.asset.json"),"Failed import left a target that prevented retry.");
-    require(take(project.mesh(resource)).mesh==original_mesh,"Failed refresh destroyed the previously accepted resource cache.");
+    require(take(project.assets().mesh(resource)).mesh==original_mesh,"Failed refresh destroyed the previously accepted resource cache.");
     take(editor::write_file(metadata,metadata_text));
     const auto retried=take(project.import_mesh(retry));
-    require(take(project.mesh(retried)).mesh!=nullptr,"Import could not recover after catalog repair.");
+    require(take(project.assets().mesh(retried)).mesh!=nullptr,"Import could not recover after catalog repair.");
     take(editor::write_file(folder/"Content/Meshes/Orphan.obj.asset.json",metadata_text));
     const auto orphan=evidence/"Orphan.obj";take(editor::write_file(orphan,take(editor::read_file(external))));
     require(!project.import_mesh(orphan) && !fs::exists(folder/"Content/Meshes/Orphan.obj") &&
@@ -205,12 +216,12 @@ void verify_project_document() {
         require(!rejected && rejected.error().message=="Unsupported resource metadata version.",
             "Import did not reach the final refresh's newly published BMP metadata.");
         require(project.revision()==revision && std::ranges::equal(project.entries(),entries) &&
-            take(project.mesh(resource)).mesh==original_mesh && take(editor::read_file(metadata))==metadata_text &&
+            take(project.assets().mesh(resource)).mesh==original_mesh && take(editor::read_file(metadata))==metadata_text &&
             take(editor::read_file(target/"color.bmp.asset.json"))==broken &&
             std::ranges::all_of(fs::directory_iterator(target),[](const auto& file){return file.path().filename()==L"color.bmp.asset.json";}),
             "Final-refresh rollback changed the accepted catalog/cache or kept owned files.");
         fs::remove(target/"color.bmp.asset.json");
-        require(take(project.mesh(take(project.import_mesh(source/"Refresh.obj")))).mesh!=nullptr &&
+        require(take(project.assets().mesh(take(project.import_mesh(source/"Refresh.obj")))).mesh!=nullptr &&
             fs::exists(target/"Refresh.obj.asset.json") && fs::exists(target/"scene.mtl") && take(editor::read_file(target/"color.bmp"))==bmp,
             "Final-refresh import could not retry after metadata repair.");
         std::puts("Import final-refresh rollback: PASS (unsupported BMP metadata; initial refresh accepted; catalog/cache/files preserved; retry)");
@@ -222,10 +233,10 @@ void verify_project_document() {
     require(project.entries().size()==10005 && project.entry(project.entries().back().key)==&project.entries().back(),
         "A large catalog lost its tail entry.");
     take(project.refresh());
-    require(project.revision()==full_revision && take(project.mesh(resource)).mesh==original_mesh,
+    require(project.revision()==full_revision && take(project.assets().mesh(resource)).mesh==original_mesh,
         "Unchanged large catalog refresh replaced the revision or resource cache.");
     const auto capacity_mesh=evidence/"Capacity.obj";take(editor::write_file(capacity_mesh,take(editor::read_file(external))));
-    require(take(project.mesh(take(project.import_mesh(capacity_mesh)))).mesh!=nullptr && project.entries().size()==10006,
+    require(take(project.assets().mesh(take(project.import_mesh(capacity_mesh)))).mesh!=nullptr && project.entries().size()==10006,
         "A large catalog rejected an import or lost its published entry.");
     std::puts("Large project catalog: PASS (10005 entries, tail lookup, unchanged refresh/cache, import to 10006)");
     for (std::size_t i=0;i<capacity_entries;++i) fs::remove(folder/"Source"/("Limit"+std::to_string(i)));
@@ -237,14 +248,14 @@ void verify_project_document() {
     // Move both source and metadata, preserving the persistent resource identity.
     fs::rename(folder/"Content/Meshes/Triangle.obj",folder/"Content/Meshes/Renamed.obj");
     fs::rename(folder/"Content/Meshes/Triangle.obj.asset.json",folder/"Content/Meshes/Renamed.obj.asset.json");
-    take(project.refresh());require(take(project.mesh(resource)).name==L"Renamed","Asset rename changed its persistent identity.");
-    require(take(project.mesh(resource)).mesh==original_mesh,"Asset rename unnecessarily duplicated unchanged geometry.");
+    take(project.refresh());require(take(project.assets().mesh(resource)).name==L"Renamed","Asset rename changed its persistent identity.");
+    require(take(project.assets().mesh(resource)).mesh==original_mesh,"Asset rename unnecessarily duplicated unchanged geometry.");
     const auto renamed=folder/"Content/Meshes/Renamed.obj";
     const auto old_time=fs::last_write_time(renamed);
     take(editor::write_file(renamed,"v 0 0 0\nv 4 0 0\nv 0 4 0\nf 1 2 3\n"));
     fs::last_write_time(renamed,old_time+std::chrono::seconds(1));
     take(project.refresh());
-    const auto updated_mesh=take(project.mesh(resource)).mesh;
+    const auto updated_mesh=take(project.assets().mesh(resource)).mesh;
     require(updated_mesh!=original_mesh && updated_mesh->vertices()[1].position[0]==4 && original_mesh->vertices()[1].position[0]==1,
         "Changed mesh did not create a new resource version while preserving old live geometry.");
     require(*take(project.collision(resource,collision_scale))!=*collision_bytes,

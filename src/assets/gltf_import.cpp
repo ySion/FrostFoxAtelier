@@ -1,5 +1,6 @@
-#include "editor/mesh_import.hpp"
-#include "editor/project.hpp"
+#include "assets/mesh_import.hpp"
+#include "assets/assets.hpp"
+#include "assets/file.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <charconv>
@@ -10,7 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace atelier::editor {
+namespace atelier::assets {
 namespace {
 using Json=nlohmann::json;
 // Sized for the 2K Intel Sponza (largest file: 3.75M triangles, 134 MiB of buffers, 72 images,
@@ -212,7 +213,7 @@ MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_imag
                 require(!image.contains("bufferView"),"images stored in buffers are not supported.");
                 const auto path=dependency(member(image,"uri"));
                 // Generated materials reference the image as a Project texture asset.
-                require(Project::is_texture_path(path),"images must be PNG, JPEG, BMP or TIFF files.");
+                require(is_texture_path(path),"images must be PNG, JPEG, BMP or TIFF files.");
                 slot=image_files.size();image_files.push_back(read(path,maximum_image_file));
             }
             return slot;

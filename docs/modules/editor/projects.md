@@ -86,6 +86,14 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 实施时的端到端门槛包括：加载大场景期间持续处理输入和取消；关闭后迟到结果不复活；A/B 场景交替编辑只撤销目标场景；同场景多 View 共用一次历史；共享材质跨场景一致；保存/撤销/重做/分叉/裁剪的 dirty 标记正确；兼容热更保留历史，失败或不兼容重建不损坏旧状态。当前本节仍为设计，不能以已有单场景验收替代这些结果。
 
+## 资源读取与作者写入
+
+`assets::Reader` 是同步读侧，默认只解析精确的 `builtin/cube`、`builtin/sphere`、`builtin/plane` 三个内建网格，不需要 Project、Runtime 对象或设备。工程的 mesh、texture、material、sky、导入说明与依赖文件读取也由它负责；OBJ/glTF/WIC、材质与共用 JSON 编解码位于 `src/assets`。Reader 不创建目录、身份文件或作者材质文档，不持有 Runtime 根。
+
+Project 保留配置、目录作者扫描、sidecar 身份处理以及导入、保存、重命名事务；扫描完整候选通过校验后，发布给它组合的唯一 Reader。目录条目、键索引、revision、网格/天空/贴图内容缓存及图片弱缓存只由 Reader 拥有，Project 的目录接口只是只读视图；类型化读取直接使用 `project.assets()`，不另设 Project 读实现。刷新仍按现有文件大小/修改时间失效，导入预载复用同一图片缓存，失败时移除本次预载与本次写出的文件。借用的目录/说明视图不能跨发布保留；已返回的不可变内容拥有独立寿命。Reader 的调用与发布仍由所属线程串行执行，不提供异步或并发读取合同。
+
+Runtime 中的 Texture/Material 根和可变作者历史仍由 Session/宿主持有。Scene v9、材质 v1、语言 `engine_sources` 摘要与依赖文件的宽容复制规则不变：未知 `builtin/` 前缀在依赖文件枚举时仍没有工程文件，不代表该键可被类型化读取。安装资产版本/内容摘要核对与更严格的依赖集合验证不属于本次读侧迁移。
+
 ## 资源浏览器
 
 原 Asset Shelf 沿原停靠视图演进为 Asset Browser。左侧常驻目录树以 Project、Engine 为并列根：Project 展示实际 Content、Source、Config 目录，Engine 展示只读内置网格；未打开工程时 Project 根禁用。路径与搜索位于同一紧凑工具行，路径菜单可访问祖先目录，返回和上级操作使用同一导航状态。类型筛选、List/Details/Tiles 和资源操作各由图标菜单承载。
@@ -131,7 +139,7 @@ Entity/Component 的 Parameters 按网格槽显示材质选择菜单。菜单提
 
 编辑器的内联实例参数历史目前要求单组件归属；同一匿名实例绑定多个组件时，参数编辑明确拒绝。其共享身份仍可保存和复制，原生消费者通过 `material::update_material` 更新同一个资源对象。
 
-资源引用由 Runtime 强引用与 GC 管理；Project 保留不可变图像解析缓存和持久索引。渲染只借用拥有型 Surface 快照，不访问 Runtime 对象或磁盘。材质变化按内容发布快照，未变化帧复用；对象关闭后已发布捕获仍拥有图片内容。实例原生字段编辑须经过 `material::write_property / set_override` 明确覆盖意图，不能仅根据字段值与父值不同推断覆盖。
+资源引用由 Runtime 强引用与 GC 管理；Project 组合的 Reader 保留不可变图像解析缓存和持久索引。渲染只借用拥有型 Surface 快照，不访问 Runtime 对象或磁盘。材质变化按内容发布快照，未变化帧复用；对象关闭后已发布捕获仍拥有图片内容。实例原生字段编辑须经过 `material::write_property / set_override` 明确覆盖意图，不能仅根据字段值与父值不同推断覆盖。
 
 外部图片改写目前不会自动替换已载入 Runtime 中的 Texture 对象。Project Refresh 更新目录及解析缓存；已有会话保留既有图片版本，重新打开工程/场景重新解析。替换为其他 Texture GUID 会立即使用对应资源。本轮没有接入 UI Image 控件的 Runtime Texture 资源。
 
@@ -144,7 +152,7 @@ Scene 统一写出 v9：顶层 `materials` 按文档 ID 保存材质定义，Sta
 - Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 只读写 `version: 9`，其他版本拒绝。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。float 字段写成能读回同一 float 的十进制，通常是最短形式（`0.2f` 写作 `0.2`，不写成扩为 double 后的 `0.20000000298023224`），double 字段写成 double 的最短表示；Scene 与材质文件共用这一写法。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene v9 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
-- World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。天空贴图不是 World 选项，由 `Session::set_sky_map(SkyAsset)` 单独设置：资产来自 `Project::sky_map`，空资产表示清除；同样记一条历史，没有 Environment 时在同一历史项里创建它，停用时拒绝，无变化为空操作。撤销和重做恢复历史里保存的那个指针，不重新解析键。`sky_rotation` 是普通属性。视口诊断从不进入 Scene。
+- World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。天空贴图不是 World 选项，由 `Session::set_sky_map(SkyAsset)` 单独设置：资产来自 `assets::Reader::sky_map`，空资产表示清除；同样记一条历史，没有 Environment 时在同一历史项里创建它，停用时拒绝，无变化为空操作。撤销和重做恢复历史里保存的那个指针，不重新解析键。`sky_rotation` 是普通属性。视口诊断从不进入 Scene。
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质与灯光；天光由宿主按 Environment 求出 `Frame.environment`，没有 Environment 或天光关闭时为零。探针滚动位置、历史、统计、可视化与编辑器观察相机不写入 Scene；场景 CameraComponent 和 Environment.main_camera 则是持久作者数据。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。
 - Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。

@@ -290,9 +290,7 @@ struct StaticMeshState { MeshBinding mesh; Material material; };
 struct SkyMapBinding { std::string source; rendering::SkyMapRef resolved; };
 [[nodiscard]] Result<void> set_sky_map_binding(Runtime&, ObjectId environment_component, SkyMapBinding);
 [[nodiscard]] Result<SkyMapBinding> read_sky_map(Runtime&, ObjectId environment_component);
-// Names, not slot positions, are the persistent correspondence. Empty imported
-// names use the reserved slot/<index> spelling until assigned a named asset.
-[[nodiscard]] std::string material_slot_name(const geometry::Mesh&,std::size_t);
+using geometry::material_slot_name;
 [[nodiscard]] Result<std::vector<MaterialBinding>> read_material_bindings(Runtime&,ObjectId);
 [[nodiscard]] Result<void> set_material_bindings(Runtime&,ObjectId,std::span<const MaterialBinding>);
 [[nodiscard]] Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&,ObjectId);

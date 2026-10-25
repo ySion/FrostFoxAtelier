@@ -110,7 +110,7 @@ void verify_primitive_source(editor::Project& project) {
     auto candidate=take(source::Program::prepare(take(program.request("Primitive.source",
         "void configure() { self.body.enabled = true; self.body.half_extents.x = 2.0f; self.body.material.friction = 0.6f; }"))));
     take(program.try_publish(candidate));
-    changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));
+    changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
     const auto component=member(document,document.presentation_types().static_mesh_component);
     auto lease=take(program.pin());take(lease.invoke(component,{}));
     const auto settings=take(physics::read_settings(runtime,component));
@@ -280,7 +280,7 @@ void verify_codec_graph(editor::Project& project) {
         editor::Session document;auto& runtime=document.world().runtime();
         std::array<ObjectId,3> entities,meshes;
         for(std::size_t i=0;i<entities.size();++i) {
-            changed(document.create_static_mesh(take(project.mesh("builtin/cube"))));entities[i]=document.selection().entity;
+            changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));entities[i]=document.selection().entity;
             meshes[i]=member(document,document.presentation_types().static_mesh_component);
         }
         material::State state;state.description.parameters.roughness=.3f;
@@ -305,14 +305,14 @@ void verify_codec_graph(editor::Project& project) {
             take(material::capture(reopened->world().runtime(),c.id()))->description().parameters.roughness==.3f,
             "Restored shared material edits did not propagate according to object identity.");
         const auto key=take(project.create_material("Content/Materials/Codec-parent.material"));
-        const auto parent=take(document.material_resource(project,key));const auto instance=take(material::create_instance(runtime,parent));
+        const auto parent=take(document.material_resource(project.assets(),key));const auto instance=take(material::create_instance(runtime,parent));
         for(std::size_t i=0;i<2;++i) {
             const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",instance,true}}};take(presentation::set_material_bindings(runtime,meshes[i],bindings));
         }
         auto instances=take(editor::Session::deserialize(take(document.serialize()),project));
         const auto instance_members=take(instances->world().members());
         const auto left=bindings_of(*instances,instance_members[0].id()),right=bindings_of(*instances,instance_members[1].id());
-        require(left.id()==right.id() && take(material::read_material(instances->world().runtime(),left.id())).parent.id()==take(instances->material_resource(project,key)).id(),
+        require(left.id()==right.id() && take(material::read_material(instances->world().runtime(),left.id())).parent.id()==take(instances->material_resource(project.assets(),key)).id(),
             "Shared inline instance identity or its shared GUID parent was lost on reload.");
         const std::array selected{entities[0],entities[1]};take(document.select_entities(selected,entities[1]));changed(document.duplicate_selected());
         const std::vector<ObjectId> copies(document.selected_entities().begin(),document.selected_entities().end());
@@ -328,12 +328,12 @@ void verify_codec_graph(editor::Project& project) {
         editor::MaterialAsset asset;asset.textures[0]=texture;
         const auto incoming=take(project.create_material("Content/Materials/Codec-incoming.material",asset));
         const auto retained=take(project.create_material("Content/Materials/Codec-retained.material"));
-        editor::Session source;changed(source.create_static_mesh(take(project.mesh("builtin/cube"))));
+        editor::Session source;changed(source.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
         take(source.assign_material(project,member(source,source.presentation_types().static_mesh_component),"slot/0",incoming));
         changed(source.add_entity());auto invalid=Json::parse(take(source.serialize()));
         invalid["entities"][1]["properties"]["unknown_business_field"]={{"$ref","999999"}};
         editor::Session target;changed(target.add_entity());const auto original=target.selection().entity;
-        const auto resource=take(target.material_resource(project,retained));const auto properties=take(target.properties(resource.id()));
+        const auto resource=take(target.material_resource(project.assets(),retained));const auto properties=take(target.properties(resource.id()));
         const auto roughness=std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name);
         require(roughness!=properties.end(),"Material rollback fixture lost roughness reflection.");take(target.set_property(resource.id(),roughness->path,Scalar{.2f},832));
         const auto before=take(target.serialize());target.mark_saved();const auto history=target.undo_count(),count=take(target.material_assets()).size();
@@ -867,7 +867,7 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     // A mesh imported after Play opened its own Project still resolves.
     const auto obj=project.root().parent_path()/"Imported.obj";
     {std::ofstream file(obj);file<<"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";}
-    changed(a.create_static_mesh(take(project.mesh(take(project.import_mesh(obj))))));const auto imported=a.selection().entity;
+    changed(a.create_static_mesh(take(project.assets().mesh(take(project.import_mesh(obj))))));const auto imported=a.selection().entity;
     physics::BodySettings triangle;triangle.shape=physics::ShapeKind::triangle_mesh;
     take(a.configure_body(member(a,take(ra.find_type("world.StaticMeshComponent"))),triangle));
     applied({{{"op","add"},{"parent",nullptr},{"index",nullptr},{"graph",Json::parse(take(a.serialize_live_subtree(imported)))}}});
@@ -942,7 +942,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     };
     const auto first=added({1,2,3});changed(a.add_component(move_type));const auto move=member(a,move_type);
     const auto second=added({0,0,4});
-    changed(a.create_static_mesh(take(project.mesh("builtin/cube")),{0,1,0}));const auto mesh=member(a,a.presentation_types().static_mesh_component);
+    changed(a.create_static_mesh(take(project.assets().mesh("builtin/cube")),{0,1,0}));const auto mesh=member(a,a.presentation_types().static_mesh_component);
     take(a.assign_material(project,mesh,"slot/0",material_key));
     const auto property=[&](ObjectId object,std::string_view name) {
         const auto properties=take(a.properties(object));const auto at=std::ranges::find(properties,name,&editor::Property::name);
@@ -986,12 +986,12 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     // A sky map reaches Play as its key, which Play resolves in its own Project, refreshed for a file added after Play opened it.
     const auto sky_key=sky_asset(project,"Content/Sky/Forwarded.hdr",radiance(1,char(130)));
     const auto play_sky=[&]{return take(b->presentation().environment()).sky_map;};
-    each("Sky map",[&]{take(a.set_sky_map(take(project.sky_map(sky_key))));});
-    require(play_sky() && play_sky()==take(play_project.sky_map(sky_key)).map,"A sky map did not reach Play through its own Project.");
+    each("Sky map",[&]{take(a.set_sky_map(take(project.assets().sky_map(sky_key))));});
+    require(play_sky() && play_sky()==take(play_project.assets().sky_map(sky_key)).map,"A sky map did not reach Play through its own Project.");
     const auto environment_entity=take(world::inspect_component(ra,a.environment())).owner;
     take(a.select(environment_entity));changed(a.erase_selected());sync("Environment removal");
     changed(a.undo());sync("Environment restoration");
-    require(play_sky()==take(play_project.sky_map(sky_key)).map,"An added Environment did not carry its sky map key to Play.");
+    require(play_sky()==take(play_project.assets().sky_map(sky_key)).map,"An added Environment did not carry its sky map key to Play.");
     // A key Play cannot resolve only warns, as the document keeps it unresolved too; a malformed one is rejected.
     const auto environment_id=std::to_string(*a.document_identity(a.environment()));
     const auto set_play_sky=[&](Json value) {
@@ -1010,10 +1010,10 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     require(set_play_sky(late_key).size()==1 && b->unavailable(editor::AssetKind::sky,late_key),"Play resolved a corrupt sky map.");
     take(a.select(environment_entity));changed(a.erase_selected());sync("Environment removal before a restored sky map");
     take(editor::write_file(project.root()/"Content/Sky/Late.hdr",radiance(1,char(131))));take(project.refresh());
-    take(a.set_sky_map(take(project.sky_map(late_key))));sync("Environment creation with a restored sky map");
-    require(play_sky() && play_sky()==take(play_project.sky_map(late_key)).map,"Play kept an earlier failure for a restored sky map.");
+    take(a.set_sky_map(take(project.assets().sky_map(late_key))));sync("Environment creation with a restored sky map");
+    require(play_sky() && play_sky()==take(play_project.assets().sky_map(late_key)).map,"Play kept an earlier failure for a restored sky map.");
     changed(a.undo());sync("Restored sky map undo");changed(a.undo());sync("Environment removal undo");
-    require(play_sky()==take(play_project.sky_map(sky_key)).map,"Undoing back to the original Environment lost its sky map in Play.");
+    require(play_sky()==take(play_project.assets().sky_map(sky_key)).map,"Undoing back to the original Environment lost its sky map in Play.");
     each("Name",[&]{take(a.rename(first,L"Runner"));});
     each("Field",[&]{edit(a,move,speed,Scalar{5.f},201);});
     each("Field group",[&]{
@@ -1066,7 +1066,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     each("Component removal",[&]{take(a.select(first));changed(a.remove_component(move));});
 
     acceptance_phase="Play forwarding failure";
-    auto procedural=take(project.mesh("builtin/cube"));procedural.key.clear();
+    auto procedural=take(project.assets().mesh("builtin/cube"));procedural.key.clear();
     changed(a.create_static_mesh(procedural));
     require(!a.take_live_ops() && !a.take_live_ops(),"A change Play cannot follow did not stop forwarding.");
     a.set_live_forwarding(false);require(take(a.take_live_ops()).empty(),"Stopping forwarding kept its failure.");
@@ -1108,7 +1108,7 @@ void verify_environment_document(editor::Project& project) {
         require(derived_document->environment()!=ObjectId{} && Json::parse(take(derived_document->serialize()))==derived,
             "An Environment of a derived type did not load as the Environment or did not save unchanged.");
         // A key resolves through the Project's cache; a missing one renders without its map and is saved unchanged.
-        const auto key=sky_asset(project,"Content/Sky/Scene.hdr",radiance(1,char(129)));const auto map=take(project.sky_map(key)).map;
+        const auto key=sky_asset(project,"Content/Sky/Scene.hdr",radiance(1,char(129)));const auto map=take(project.assets().sky_map(key)).map;
         auto mapped=current;environment_record(mapped)["sky_map"]=key;
         auto bound=load(mapped);
         require(map && settings(*bound).sky_map==map && bound->load_issues().empty() && Json::parse(take(bound->serialize()))==mapped,
@@ -1124,7 +1124,7 @@ void verify_environment_document(editor::Project& project) {
         require(kept->load_issues().size()==1 && kept->load_issues()[0].kind==mismatch && Json::parse(take(kept->serialize()))==malformed &&
             take(kept->retained(kept->environment())).entries.at(0).kind==mismatch,"A malformed sky map key was not reported and kept as a mismatch.");
         // set_sky_map is one history item that releases the kept value; undo and redo restore the stored map.
-        const auto asset=take(project.sky_map(key));
+        const auto asset=take(project.assets().sky_map(key));
         take(kept->set_sky_map(asset));
         require(settings(*kept).sky_map==map && kept->undo_count()==1 && Json::parse(take(kept->serialize()))==mapped,
             "Setting a sky map did not bind it as one history item or kept the malformed value.");

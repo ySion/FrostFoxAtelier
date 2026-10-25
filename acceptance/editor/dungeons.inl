@@ -8,7 +8,7 @@ void verify_dungeons() {
     require(manifest.size()==2314,"Dungeons model library is incomplete.");
     std::size_t models{},textured{};std::unordered_set<const material::Image*> images;
     for(const auto& row:manifest) {
-        const auto mesh=take(project.mesh(row.at("resource").get<std::string>())).mesh;
+        const auto mesh=take(project.assets().mesh(row.at("resource").get<std::string>())).mesh;
         require(mesh->vertices().size()/3==row.at("triangles").get<std::size_t>(),"Converted dungeon model lost triangles.");
         for(const auto& material:mesh->materials()) if(material.surface->description().texture(atelier::material::Input::base_color).image) {++textured;images.insert(material.surface->description().texture(atelier::material::Input::base_color).image.get());}
         ++models;
