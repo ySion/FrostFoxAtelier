@@ -39,7 +39,7 @@ AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
 
 该字段仍以 `position` 查找和保存；`Label` 不改变字段名称，`Category` 不创建类型或命名空间。两项支持普通 UTF-8 字符串及 C++ 转义，允许显式空字符串；省略或为空时，由消费者回退到字段名或未分类。控制字符、重复参数和未知参数仍报错，只接受标准拼写 `Category`。
 
-生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。源码类字段目前不填写展示文本。
+生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。源码类字段的 `[Label = "...", Category = "..."]` 属性也填写同一套展示元数据。
 
 标记紧邻一个声明，可隔空白和注释；每个字段独立标记、独立声明。标记必须直接写在源码中，不再包在另一层宏内。不支持模板、局部类、匿名命名空间和嵌套类型。前向声明可以存在，最终必须在本生成组中找到完整定义；重复标注必须一致。
 

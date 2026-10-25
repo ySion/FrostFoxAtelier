@@ -11,6 +11,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -602,6 +603,19 @@ public:
     void evaluate(Geometry&) const {}
 };
 
+struct PaddedParameters {
+    bool enabled{true};
+    std::uint32_t count{3};
+};
+
+class RecordNode : public Node {
+public:
+    PaddedParameters parameters;
+    void evaluate(Geometry& output) const {
+        output = parameters.enabled ? take(line({0, 0, 0}, {1, 0, 0}, parameters.count)) : Geometry{};
+    }
+};
+
 struct Counts {
     std::uint64_t evaluations, hits;
     bool operator==(const Counts&) const = default;
@@ -613,6 +627,52 @@ void expect(const Evaluator& evaluator, std::initializer_list<std::pair<ObjectId
     }
 }
 bool failed(const Evaluator& evaluator, ObjectId node) { return evaluator.status(node)->error.has_value(); }
+
+void record_parameter_keys() {
+    Runtime runtime;
+    take(register_types(runtime));
+    const auto parameters_type = take(NativeRegistration<PaddedParameters>{runtime, "proceduralAcceptance.Parameters", TypeKind::record}
+        .field<&PaddedParameters::enabled>("enabled").field<&PaddedParameters::count>("count").publish());
+    const auto node_type = take(NativeRegistration<RecordNode>{runtime, "proceduralAcceptance.RecordNode", TypeKind::object}
+        .base<Node>().field<&RecordNode::parameters>("parameters")
+        .method<&RecordNode::evaluate>("evaluate").parameter_names({"output"}).publish());
+    const auto parameters_field = field(runtime, node_type, "parameters");
+    const auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto first = take(add_node(runtime, graph.id(), node_type));
+    const auto second = take(add_node(runtime, graph.id(), node_type));
+    PaddedParameters parameters;
+    static_assert(offsetof(PaddedParameters, count) > sizeof(bool));
+    const auto bytes = std::as_writable_bytes(std::span{&parameters, 1});
+    std::fill(bytes.begin() + sizeof(bool), bytes.begin() + offsetof(PaddedParameters, count), std::byte{});
+    take(runtime.write(first.id(), parameters_field, ValueInput{parameters_type, &parameters}));
+    take(set_display(runtime, graph.id(), first.id()));
+    Meshes resources;
+    Evaluator evaluator{runtime, graph, resources};
+    take(evaluator.evaluate(true));
+    require(!failed(evaluator, first.id()) && evaluator.output()->count(Layer::point) == 3, "A record parameter did not reach evaluate.");
+    require(evaluator.status(first.id())->time.has_value(), "An explicitly timed node did not record its run.");
+
+    std::fill(bytes.begin() + sizeof(bool), bytes.begin() + offsetof(PaddedParameters, count), std::byte{0x7f});
+    take(runtime.write(first.id(), parameters_field, ValueInput{parameters_type, &parameters}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{first.id(), {1, 0}}}, "Changing only record padding reran a node.");
+    take(runtime.write(second.id(), parameters_field, ValueInput{parameters_type, &parameters}));
+    take(set_display(runtime, graph.id(), second.id()));
+    take(evaluator.evaluate());
+    expect(evaluator, {{second.id(), {0, 1}}}, "Equal record fields with different padding did not share a result.");
+    require(!evaluator.status(second.id())->time, "A cache hit inherited another node's timing.");
+    require(evaluator.output()->count(Layer::point) == 3, "A shared record result changed its output.");
+
+    parameters.count = 4;
+    take(runtime.write(second.id(), parameters_field, ValueInput{parameters_type, &parameters}));
+    take(evaluator.evaluate());
+    expect(evaluator, {{second.id(), {1, 1}}}, "A record field change reused an obsolete result.");
+    require(evaluator.output()->count(Layer::point) == 4, "The changed record count did not reach evaluate.");
+    parameters.enabled = false;
+    take(runtime.write(second.id(), parameters_field, ValueInput{parameters_type, &parameters}));
+    take(evaluator.evaluate());
+    require(evaluator.output()->count(Layer::point) == 0, "The record bool was omitted from its key.");
+}
 
 bool same_instances(const Geometry* actual, const Geometry& expected) {
     require(actual != nullptr, "The graph has no output.");
@@ -690,20 +750,25 @@ void graph_evaluation() {
     expect(evaluator, {{grid_node, {1, 0}}, {moved, {1, 0}}, {line_node, {1, 0}}, {merged, {1, 0}}, {copied, {1, 0}}},
         "The first evaluation did not run each node once.");
     require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 1, 1}, 2, cube)), "The graph output differs from direct calls.");
-    take(evaluator.evaluate());
+    require(!evaluator.status(moved)->time, "Node timing was enabled by default.");
+    take(evaluator.evaluate(true));
     expect(evaluator, {{grid_node, {1, 0}}, {moved, {1, 0}}, {line_node, {1, 0}}, {merged, {1, 0}}, {copied, {1, 0}}},
         "An unchanged graph was evaluated again.");
+    require(!evaluator.status(moved)->time, "Enabling timing measured an idle node.");
 
     // A parameter write reruns the node and what reads it; undoing it finds the cached results.
     write_vector(moved, translate, {2, 0, 0});
-    take(evaluator.evaluate());
+    take(evaluator.evaluate(true));
     expect(evaluator, {{grid_node, {1, 0}}, {line_node, {1, 0}}, {moved, {2, 0}}, {merged, {2, 0}}, {copied, {2, 0}}},
         "A Transform write did not rerun exactly Transform and its downstream nodes.");
+    const auto moved_time = evaluator.status(moved)->time;
+    require(moved_time && !evaluator.status(grid_node)->time, "Timing did not follow actual node executions.");
     require(same_instances(evaluator.output(), expected_output({2, 0, 0}, {1, 1, 1}, 2, cube)), "The rerun output is wrong.");
     write_vector(moved, translate, {1, 0, 0});
     take(evaluator.evaluate());
     expect(evaluator, {{grid_node, {1, 0}}, {line_node, {1, 0}}, {moved, {2, 1}}, {merged, {2, 1}}, {copied, {2, 1}}},
         "Undoing a write did not reuse the cached results.");
+    require(evaluator.status(moved)->time == moved_time, "A cache hit replaced the last actual run's timing.");
     require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 1, 1}, 2, cube)), "The undone output is wrong.");
 
     // A writable borrow that changes nothing stamps the node, but its key filters it out.
@@ -715,6 +780,7 @@ void graph_evaluation() {
     take(runtime.with_native<Transform>(moved, [](Transform& node) -> Result<void> { node.scale = {1, 2, 1}; return {}; }));
     take(evaluator.evaluate());
     expect(evaluator, {{grid_node, {1, 0}}, {moved, {3, 1}}, {merged, {3, 1}}, {copied, {3, 1}}}, "A native write was not evaluated.");
+    require(!evaluator.status(moved)->time, "An unmeasured new run retained obsolete timing.");
     take(runtime.write(line_node, field(runtime, type<Line>(runtime), "count"), Scalar{std::uint32_t{3}}));
     take(evaluator.evaluate());
     expect(evaluator, {{grid_node, {1, 0}}, {moved, {3, 1}}, {line_node, {2, 0}}, {merged, {4, 1}}, {copied, {4, 1}}},
@@ -722,22 +788,27 @@ void graph_evaluation() {
     require(same_instances(evaluator.output(), expected_output({1, 0, 0}, {1, 2, 1}, 3, cube)), "The two-branch output is wrong.");
     // The graph seed reaches only nodes that take the context.
     take(runtime.write(graph, field(runtime, type<Graph>(runtime), "seed"), Scalar{std::uint32_t{9}}));
-    take(evaluator.evaluate());
+    take(evaluator.evaluate(true));
     expect(evaluator, {{grid_node, {1, 0}}, {moved, {3, 1}}, {line_node, {2, 0}}, {merged, {4, 1}}, {copied, {5, 1}}},
         "The graph seed did not rerun exactly the nodes taking the context.");
+    const auto copied_time = evaluator.status(copied)->time;
+    require(copied_time.has_value(), "A timed downstream node has no timing.");
 
     // A failing node blocks its downstream nodes and keeps the published output; it is not
     // retried until its key changes, and restoring it finds the cache again.
     const auto* shown = evaluator.output();
     write_vector(moved, scale, {std::nanf(""), 1, 1});
-    take(evaluator.evaluate());
+    take(evaluator.evaluate(true));
     require(failed(evaluator, moved) && failed(evaluator, merged) && failed(evaluator, copied) && !failed(evaluator, line_node),
         "A failure did not block exactly the downstream nodes.");
     require(evaluator.output() == shown, "A failure replaced the published output.");
     expect(evaluator, {{moved, {4, 1}}, {merged, {4, 1}}, {copied, {5, 1}}}, "Blocked nodes were evaluated.");
+    const auto failed_time = evaluator.status(moved)->time;
+    require(failed_time && evaluator.status(copied)->time == copied_time, "Failure timing changed a blocked node's timing.");
     take(runtime.write(line_node, field(runtime, type<Line>(runtime), "count"), Scalar{std::uint32_t{4}}));
     take(evaluator.evaluate());
     expect(evaluator, {{moved, {4, 1}}, {line_node, {3, 0}}, {merged, {4, 1}}}, "A failed node was retried with the same key.");
+    require(evaluator.status(moved)->time == failed_time, "Suppressing a repeated failure replaced its timing.");
     write_vector(moved, scale, {1, 2, 1});
     take(evaluator.evaluate());
     require(!failed(evaluator, moved) && !failed(evaluator, merged) && !failed(evaluator, copied), "Restoring the parameter left a failure.");
@@ -1321,11 +1392,14 @@ void profile(const char* path) {
     take(set_display(runtime, graph, copied.id()));
 
     std::optional<Evaluator> evaluator;
-    number("cold_ms", median_ms(samples, [&](int) { evaluator.emplace(runtime, graph_root, resources); }, [&] { take(evaluator->evaluate()); }));
+    number("cold_ms", median_ms(samples, [&](int) { evaluator.emplace(runtime, graph_root, resources); }, [&] { take(evaluator->evaluate(true)); }));
     const std::pair<const char*, ObjectId> nodes[]{{"mesh_import", imported.id()}, {"scatter", scattered.id()}, {"grid", gridded.id()},
         {"transform", lifted.id()}, {"ray", cast.id()}, {"merge", merged.id()}, {"copy_to_points", copied.id()}};
-    for (const auto& [name, node] : nodes)
-        number((std::string{"node_"} + name + "_ms").c_str(), std::chrono::duration<double, std::milli>(evaluator->status(node)->time).count());
+    for (const auto& [name, node] : nodes) {
+        const auto elapsed = evaluator->status(node)->time;
+        require(elapsed.has_value(), "The profile node was not timed.");
+        number((std::string{"node_"} + name + "_ms").c_str(), std::chrono::duration<double, std::milli>(*elapsed).count());
+    }
     const auto* result = evaluator->output();
     require(result != nullptr, "The profile graph failed.");
     number("idle_ms", median_ms(samples, [](int) {}, [&] { take(evaluator->evaluate()); }));
@@ -1372,6 +1446,7 @@ int main(int argc, char** argv) {
         copy_to_points_and_publication();
         bvh_queries();
         ray_node();
+        record_parameter_keys();
         graph_evaluation();
         source_nodes();
     } catch (const std::exception& error) {

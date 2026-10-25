@@ -123,8 +123,25 @@ struct Evaluator::Impl {
     }
 
     Result<void> append_value(std::string& key, const TypeInfo& info, const void* data) const {
-        if (info.kind == TypeKind::scalar || info.kind == TypeKind::enumeration || info.plain_value) {
+        if (info.kind == TypeKind::scalar || info.kind == TypeKind::enumeration || info.math) {
             key.append(static_cast<const char*>(data), info.size);
+            return {};
+        }
+        if (info.kind == TypeKind::record && info.plain_value) {
+            const std::span source{static_cast<const std::byte*>(data), info.size};
+            // Ordinary records have padding; only their declared public fields are parameters.
+            // Runtime resolves native member pointers too, so no published offset is required.
+            for (const auto& field : info.fields) {
+                auto child = runtime.describe(field.value.type);
+                if (!child) return std::unexpected(child.error());
+                atelier::detail::ValueStorage storage;
+                const std::span bytes{storage.prepare((*child)->size, (*child)->alignment), (*child)->size};
+                if (auto made = runtime.initialize_value(field.value.type, bytes); !made) return made;
+                auto added = runtime.read(info.id, source, {&field.id, 1}, ValueOutput{field.value.type, bytes.data()});
+                if (added) added = append_value(key, **child, bytes.data());
+                (void)runtime.destroy_value(field.value.type, bytes);
+                if (!added) return added;
+            }
             return {};
         }
         if ((info.kind != TypeKind::string && info.kind != TypeKind::array) || !info.sequence_view)
@@ -331,14 +348,16 @@ struct Evaluator::Impl {
         return runtime.call(id, state.ports->evaluate, arguments);
     }
 
-    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const Code* code, std::string key) {
+    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const Code* code, std::string key, bool record_timings) {
         auto entry = std::make_shared<Entry>();
         entry->key = std::move(key);
         entry->outputs.resize(state.ports->outputs.size());
         ++state.status.evaluations;
-        const auto start = std::chrono::steady_clock::now();
+        state.status.time.reset();
+        std::chrono::steady_clock::time_point start{};
+        if (record_timings) start = std::chrono::steady_clock::now();
         auto ran = code ? run_source(id, state, *code, entry->outputs.front()) : run_native(id, state, *entry);
-        state.status.time = std::chrono::steady_clock::now() - start;
+        if (record_timings) state.status.time = std::chrono::steady_clock::now() - start;
         if (!ran) return std::unexpected(ran.error());
         entry->serial = ++serials;
         entry->revision = revision;
@@ -349,7 +368,7 @@ struct Evaluator::Impl {
         return entry;
     }
 
-    void update(ObjectId id, State& state) {
+    void update(ObjectId id, State& state, bool record_timings) {
         if (state.fault) {
             state.status.error = state.fault;
             return;
@@ -393,7 +412,7 @@ struct Evaluator::Impl {
             state.status.error.reset();
             return;
         }
-        auto evaluated = run(id, state, code, key);
+        auto evaluated = run(id, state, code, key, record_timings);
         if (!evaluated) {
             state.entry.reset();
             state.failed = std::move(key);
@@ -433,7 +452,7 @@ struct Evaluator::Impl {
         return result;
     }
 
-    Result<void> evaluate() {
+    Result<void> evaluate(bool record_timings) {
         auto now = runtime.change_cursor();
         if (!now) return std::unexpected(now.error());
         const auto id = graph.id();
@@ -475,7 +494,7 @@ struct Evaluator::Impl {
         revision = resources.revision();
         auto sequence = order();
         if (!sequence) return std::unexpected(sequence.error());
-        for (const auto node : *sequence) update(node, nodes.at(node));
+        for (const auto node : *sequence) update(node, nodes.at(node), record_timings);
         if (display == ObjectId{}) published.reset();
         else if (const auto& shown = nodes.at(display); !shown.status.error && shown.entry) published = shown.entry;
         return {};
@@ -487,7 +506,7 @@ Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resour
     : impl_(std::make_unique<Impl>(runtime, std::move(graph), resources, program, cache_bytes)) {}
 Evaluator::~Evaluator() = default;
 
-Result<void> Evaluator::evaluate() { return impl_->evaluate(); }
+Result<void> Evaluator::evaluate(bool record_timings) { return impl_->evaluate(record_timings); }
 
 const Geometry* Evaluator::output() const noexcept {
     return impl_->published ? &impl_->published->outputs.front() : nullptr;

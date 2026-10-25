@@ -14,7 +14,9 @@ struct NodeStatus {
     std::optional<Error> error;   // Set while the node or an input it reads fails.
     std::uint64_t evaluations{};  // Calls of evaluate.
     std::uint64_t cache_hits{};   // Results found in the cache instead.
-    std::chrono::nanoseconds time{}; // Of the last evaluate call, with its argument setup.
+    // The last actual node run, including argument setup and failures; empty if never run
+    // or that run was unmeasured. Idle, cached and blocked nodes retain their previous time.
+    std::optional<std::chrono::nanoseconds> time;
 };
 
 // Brings a graph's display output up to date on the Runtime thread. A node runs again only
@@ -34,8 +36,9 @@ public:
     Evaluator(const Evaluator&) = delete;
     Evaluator& operator=(const Evaluator&) = delete;
     // Fails only when the graph cannot be read. Node failures go to status(), and output()
-    // keeps the last result.
-    Result<void> evaluate();
+    // keeps the last result. Timing is opt-in diagnostics only: it neither changes keys
+    // nor forces nodes to run.
+    Result<void> evaluate(bool record_timings = false);
     // The display node's first output from the last evaluation that produced one; null while
     // the graph has no display node.
     [[nodiscard]] const Geometry* output() const noexcept;

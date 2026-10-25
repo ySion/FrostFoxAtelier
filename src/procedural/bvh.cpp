@@ -216,7 +216,7 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
     const auto distance = [&](const Node& node) {
         double sum = 0;
         for (std::size_t axis = 0; axis < 3; ++axis) {
-            const double d = std::max({node.minimum[axis] - point[axis], 0.0, point[axis] - node.maximum[axis]});
+            const double d = std::max(std::max(node.minimum[axis] - point[axis], 0.0), point[axis] - node.maximum[axis]);
             sum += d * d;
         }
         return sum;
