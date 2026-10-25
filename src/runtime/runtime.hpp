@@ -475,9 +475,10 @@ struct FieldDefinition {
     // Optional direct access to standard-layout native fields, supplied by
     // generated offsetof expressions. Native bindings are trusted producers.
     std::optional<std::size_t> native_offset{};
-    // Described scalar fields only. Construction applies this before publication;
-    // copy construction copies the source instead. Native constructors own defaults.
-    std::optional<Scalar> default_value{};
+    // Described object fields only: one finite leaf per scalar component in storage order, of the exact
+    // scalar type; an enum gives its underlying integer. Construction writes them after the field's
+    // own construction; copy construction copies the source instead. Native constructors own defaults.
+    std::vector<Scalar> default_leaves{};
     // Optional presentation text; never part of field identity or value layout.
     // Empty text leaves display-name/group fallback to the consumer.
     std::string label{}, category{};
@@ -525,7 +526,8 @@ struct FieldInfo {
     std::string name;
     ValueDescription value;
     std::optional<std::size_t> offset{};
-    std::optional<Scalar> default_value{};
+    // The defined leaves; an enum's leaf is published as its EnumValue.
+    std::vector<Scalar> default_leaves{};
     // Owned by the type descriptor, including inherited field copies.
     std::string label{}, category{}, description{};
     FieldRange range{};

@@ -10,9 +10,9 @@ struct ScalarField {
     TypeId type;
     std::string label,category,description;
     ValueForm form{ValueForm::inline_value};
-    // Inline leaves are scalars, enumerations or strings; only the first two are Scalar values.
+    // Inline leaves are scalars, enumerations, strings or whole Arrays of those; only the first two are Scalar values.
     TypeKind kind{TypeKind::scalar};
-    // The declared range of the leaf, or of its math vector for a lane.
+    // The declared range of the leaf, of its math vector for a lane, or of each element of an Array.
     FieldRange range{};
 };
 inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
@@ -24,8 +24,15 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
         if ((*info)->kind == TypeKind::scalar || (*info)->kind == TypeKind::enumeration || (*info)->kind == TypeKind::string) {
             prefix.type = current; prefix.kind = (*info)->kind; result.push_back(std::move(prefix)); return {};
         }
+        if (!prefix.path.empty() && (*info)->kind == TypeKind::array) {
+            auto element = runtime.describe(*(*info)->element);
+            if (!element) return std::unexpected(element.error());
+            if ((*element)->kind != TypeKind::scalar && (*element)->kind != TypeKind::enumeration && (*element)->kind != TypeKind::string)
+                return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene property Arrays hold scalars, enums or strings."});
+            prefix.type = current; prefix.kind = TypeKind::array; result.push_back(std::move(prefix)); return {};
+        }
         if (!prefix.path.empty() && (*info)->kind != TypeKind::record)
-            return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene properties support scalars, enums, strings and records of those values."});
+            return std::unexpected(Error{ErrorCode::unsupported_operation,"Scene properties support scalars, enums, strings, Arrays of those and records of those values."});
         for (const auto& field : (*info)->fields) {
             auto child = prefix; child.names.push_back(field.name); child.path.push_back(field.id);
             // A vector's lanes share the aggregate caption. Other record children
@@ -51,7 +58,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
 }
 inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime,TypeId type) {
     auto result=author_fields(runtime,type);
-    if(result) std::erase_if(*result,[](const auto& field){return field.form!=ValueForm::inline_value || field.kind==TypeKind::string;});
+    if(result) std::erase_if(*result,[](const auto& field){return field.form!=ValueForm::inline_value || field.kind==TypeKind::string || field.kind==TypeKind::array;});
     return result;
 }
 inline bool finite_scalar(const Scalar& value) {

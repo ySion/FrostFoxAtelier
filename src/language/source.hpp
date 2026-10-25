@@ -64,7 +64,9 @@ enum class Operation {
     remainder, bitwise_and, bitwise_or, bitwise_xor, bitwise_not, shift_left, shift_right,
     logical_not, logical_and, logical_or
 };
-enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root };
+// square_root and every later operation are element-wise over float/double scalars and vectors; sin and later ones accept float only.
+enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root,
+    floor, ceil, trunc, fract, abs, sign, min, max, clamp, lerp, step, smoothstep, sin, cos, atan2, exp, log, pow };
 struct Expression {
     enum class Kind {
         literal, local, field, call, unary, binary,
@@ -140,6 +142,7 @@ struct Program {
 // Environment names describe already validated Runtime members. No Runtime or
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.
+// allow_declarations checks a module that selects no entry, with or without functions.
 [[nodiscard]] std::expected<Program, Diagnostic> compile_source(
     std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name = {},
     bool allow_declarations = false);

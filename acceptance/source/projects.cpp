@@ -1,11 +1,16 @@
+#include "source/debugger.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
 #include "world/world.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <windows.h>
 
 namespace {
 using namespace atelier;
@@ -30,8 +35,8 @@ class game.Move : world.Component {
 }
 )"}}};
 }
-void publish(Program& program, source::SourceSnapshot snapshot) {
-    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot)))));
+void publish(Program& program, source::SourceSnapshot snapshot, source::CompileOptions options = {}) {
+    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot), options))));
     take(program.try_publish(candidate));
     require(!candidate, "Published project candidate retained an independently publishable result.");
 }
@@ -44,16 +49,16 @@ void verify_declaration_only_project() {
     auto rejected = Program::prepare(take(program.request(input)));
     require(!rejected && rejected.error().source && rejected.error().source->path == "Data.source" &&
         !runtime.find_type("game.Settings"), "Declaration-only project bypassed typed validation or partially published.");
-    input.files[0].source = "const float __source_validate = 1.0f; class game.Settings : world.Component { float speed = -0.0f; double value = 0.0d / 0.0d; }";
+    input.files[0].source = "const float __source_validate = 1.0f; class game.Settings : world.Component { float speed = -0.0f; double value = 1.0d / 3.0d; }";
     publish(program, input);
     require(program.entries().empty() && program.classes().size() == 1, "Declaration-only project exported a synthetic entry.");
     const auto type = program.classes()[0].type;
     auto instance = take(runtime.create(type));
     const auto speed = take(runtime.find_field(type,"speed"));
     require(std::signbit(std::get<float>(take(runtime.read(instance.id(), speed)))) &&
-        std::isnan(std::get<double>(take(runtime.read(instance.id(), take(runtime.find_field(type,"value")))))),
+        std::get<double>(take(runtime.read(instance.id(), take(runtime.find_field(type,"value"))))) == 1.0 / 3.0,
         "Runtime scalar defaults lost their floating representation.");
-    publish(program, input); // Same NaN representation must remain compatible.
+    publish(program, input); // The same representation stays compatible.
     input.files[0].source.replace(input.files[0].source.find("-0.0f"), 5, "0.0f");
     rejected = Program::prepare(take(program.request(input)));
     require(!rejected && rejected.error().code == ErrorCode::rebuild_required, "Changed signed-zero default was silently ignored.");
@@ -151,6 +156,323 @@ class game.Probe : project.Probe {
     require(!std::get<bool>(*take(take(program.entry("game.Probe.work")).invoke(id,{}))),
         "Unrelated borrowed entry suppressed an ordinary loop's GC progress.");
 }
+struct CodeBase { float scale{1.0f}; };
+// An entry keeps its code while its unit compiles from identical input; codes never repeat in the process.
+void verify_project_entry_codes() {
+    const auto snapshot = [](std::string_view helper, std::string_view b, std::string_view extra) {
+        source::SourceSnapshot input{"codes", 1, {
+            {"Helper.source", 1, "float helper(float x) { return x * " + std::string(helper) + "; }"},
+            {"A.source", 1, "class game.A : project.CodeBase { float run(float x) { return helper(x) + 1.0f; } }"},
+            {"B.source", 1, "class game.B : project.CodeBase { float run(float x) { return helper(x); } float other() { return " +
+                std::string(b) + "; } }"}}};
+        if (!extra.empty()) input.files.push_back({"Extra.source", 1, std::string(extra)});
+        return input;
+    };
+    const auto base = [](Runtime& runtime) {
+        take(runtime.register_type(NativeRegistration<CodeBase>(runtime, "project.CodeBase", TypeKind::object).build()));
+    };
+    const auto codes = [](const Program& program) {
+        std::vector<std::pair<std::string, std::uint64_t>> result;
+        for (const auto& entry : program.entries()) result.emplace_back(entry.name, entry.code);
+        std::ranges::sort(result);
+        return result;
+    };
+    const auto code = [](const std::vector<std::pair<std::string, std::uint64_t>>& values, std::string_view name) {
+        return std::ranges::find(values, name, &std::pair<std::string, std::uint64_t>::first)->second;
+    };
+    const std::string class_c = "class game.C : project.CodeBase { float run() { return 5.0f; } }";
+    Runtime runtime;
+    base(runtime);
+    Program program(runtime);
+    require(program.revision() == 0, "An unpublished Program reported a revision.");
+    publish(program, snapshot("2.0f", "1.0f", ""));
+    const auto first = codes(program);
+    std::vector<std::uint64_t> seen;
+    for (const auto& [name, value] : first) seen.push_back(value);
+    std::ranges::sort(seen);
+    require(program.revision() == 1 && first.size() == 4 && seen.front() != 0 && std::ranges::adjacent_find(seen) == seen.end(),
+        "The first publication did not give every entry its own code.");
+    publish(program, snapshot("2.0f", "3.0f", ""));
+    const auto second = codes(program);
+    require(program.revision() == 2 && code(second, "game.A.run") == code(first, "game.A.run") &&
+        code(second, "game.B.run") != code(first, "game.B.run") && code(second, "game.B.other") != code(first, "game.B.other") &&
+        code(second, "helper") == code(first, "helper"), "A class method edit did not change exactly that class's codes.");
+    publish(program, snapshot("4.0f", "3.0f", ""));
+    const auto third = codes(program);
+    for (const auto& [name, value] : third)
+        require(value != code(second, name), "A global helper edit kept a class or helper code.");
+    publish(program, snapshot("4.0f", "3.0f", class_c));
+    const auto fourth = codes(program);
+    for (const auto& [name, value] : third)
+        require(code(fourth, name) == value, "Adding a class changed the codes of unchanged classes.");
+    require(code(fourth, "game.C.run") > std::ranges::max_element(third, {}, &std::pair<std::string, std::uint64_t>::second)->second &&
+        program.revision() == 4, "A new class reused an earlier code.");
+    // A new Runtime value type changes every member catalog although no Source text changed.
+    TypeDefinition extra;
+    extra.name = "project.Extra";
+    extra.kind = TypeKind::record;
+    FieldDefinition x;
+    x.name = "x";
+    x.value = {TypeReference::native<float>()};
+    extra.fields.push_back(std::move(x));
+    take(runtime.register_type(std::move(extra)));
+    publish(program, snapshot("4.0f", "3.0f", class_c));
+    const auto fifth = codes(program);
+    for (const auto& [name, value] : fifth)
+        require(value != code(fourth, name), "A changed member catalog kept an entry code.");
+    const auto publish_with = [&](source::SourceSnapshot input, source::CompileOptions options) {
+        auto candidate = take(Program::prepare(take(program.request(std::move(input), options))));
+        take(program.try_publish(candidate));
+    };
+    publish_with(snapshot("4.0f", "3.0f", class_c), {.diagnostics = true});
+    const auto sixth = codes(program);
+    auto renamed = snapshot("4.0f", "3.0f", class_c);
+    renamed.name = "renamed";
+    publish_with(std::move(renamed), {.diagnostics = true});
+    const auto seventh = codes(program);
+    for (const auto& [name, value] : sixth)
+        require(value != code(fifth, name) && value != code(seventh, name), "Changed compile options or snapshot name kept an entry code.");
+    auto stale = take(Program::prepare(take(program.request(snapshot("5.0f", "3.0f", class_c)))));
+    auto latest = take(Program::prepare(take(program.request(snapshot("4.0f", "6.0f", class_c)))));
+    require(!program.try_publish(stale), "An older snapshot published.");
+    { auto execution = take(ExecutionScope::enter(runtime)); require(!program.try_publish(latest), "Busy publication succeeded."); }
+    require(program.revision() == 7 && codes(program) == seventh, "A rejected publication changed the revision or entry codes.");
+    take(program.try_publish(latest));
+    const auto eighth = codes(program);
+    require(!program.try_publish(latest) && program.revision() == 8 && codes(program) == eighth && eighth != seventh,
+        "A repeated publication changed the revision or entry codes.");
+    Program single(runtime);
+    auto single_candidate = take(Program::prepare(take(single.request("single", "float one() { return 1.0f; }"))));
+    take(single.try_publish(single_candidate));
+    require(single.revision() == 1 && !single.try_publish(single_candidate) && single.revision() == 1,
+        "A single-source publication did not count exactly once.");
+    Runtime other_runtime;
+    base(other_runtime);
+    Program other(other_runtime);
+    publish(other, snapshot("2.0f", "1.0f", ""));
+    for (const auto& [name, value] : codes(other))
+        for (const auto* values : {&first, &second, &third, &fourth, &fifth, &sixth, &seventh, &eighth})
+            for (const auto& [_, earlier] : *values)
+                require(value != earlier, "Two Programs published the same entry code.");
+}
+enum class Quality : std::uint32_t { low = 1, high = 7 };
+struct SelfReader {
+    float gain{};
+    Quality quality{Quality::low};
+    math::Vector3 offset{};
+    std::uint32_t twice(std::uint32_t value) const noexcept { return value * 2; }
+    float peek(const float& value) const noexcept { return value; }
+};
+struct SelfReadRetired {
+    static inline int destroyed{};
+    ~SelfReadRetired() { ++destroyed; }
+};
+// A value region reads inherited native and declared Source fields of self only: the reads do not
+// stamp self, advance GC or move the borrowed storage, and every other self access stays rejected.
+void verify_project_self_reads() {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<float>(runtime, "project.Floats"),
+        NativeRegistration<Quality>(runtime, "project.Quality", TypeKind::enumeration)
+            .enumerator("low", Quality::low).enumerator("high", Quality::high).build(),
+        NativeRegistration<SelfReader>(runtime, "project.Reader", TypeKind::object)
+            .field<&SelfReader::gain>("gain").field<&SelfReader::quality>("quality").field<&SelfReader::offset>("offset")
+            .method<&SelfReader::twice>("twice", true).method<&SelfReader::peek>("peek", true).build(),
+        NativeRegistration<SelfReadRetired>(runtime, "project.Retired", TypeKind::object).build()}));
+    const auto snapshot = [](std::string_view methods) {
+        return source::SourceSnapshot{"reads", 1, {{"Node.source", 1, "class game.Node : project.Reader {\n"
+            "    float bias = 0.75f;\n    uint seed = 5;\n    int shift = -3;\n    bool enabled = true;\n"
+            "    void store() { self.bias = 2.0f; }\n" + std::string(methods) + "}\n"}}};
+    };
+    Program program(runtime);
+    // Each body compiles in an ordinary method; a borrowed Array parameter makes the method a value region.
+    for (const std::string body : {"self.bias = 2.0f;", "self.offset.x = 1.0f;", "(self.offset).x = 1.0f;", "float x = self.peek(self.gain);",
+        "store();", "float x = (new game.Node()).bias;"}) {
+        require(static_cast<bool>(Program::prepare(take(program.request(snapshot("    void probe() { " + body + " }\n"))))),
+            "A self access control did not compile outside a value region.");
+        const auto failed = Program::prepare(take(program.request(snapshot("    void probe(Array<float>& values) { " + body + " }\n"))));
+        require(!failed && failed.error().message.find("Scoped value execution in 'probe'") != std::string::npos,
+            "A value region admitted a self write, a self field borrow or another object's field.");
+    }
+    publish(program, snapshot(R"(
+    float scaled(float x) { return x * self.gain + self.bias; }
+    uint evaluate(Array<float>& values, const Array<float>& input) {
+        const vector3 offset = self.offset;
+        const float lift = self.offset.y;
+        uint i = 0;
+        while (i < values.size()) {
+            float value = scaled(input[i]) + offset.x + lift;
+            if (self.enabled && self.quality == project.Quality::high) { value = value + float(self.shift); }
+            values[i] = value;
+            i = i + 1;
+        }
+        return self.twice(self.seed);
+    }
+)"));
+    const auto base = take(runtime.native_type<SelfReader>());
+    const auto type = program.classes()[0].type;
+    const auto node = take(runtime.create(type));
+    const auto id = node.id();
+    const std::array gain{take(runtime.find_field(base, "gain"))}, quality{take(runtime.find_field(base, "quality"))},
+        offset{take(runtime.find_field(base, "offset"))}, bias{take(runtime.find_field(type, "bias"))};
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
+    const auto quality_type = take(runtime.native_type<Quality>());
+    Array<float> values, input;
+    for (int i = 0; i < 8; ++i) { input.add(static_cast<float>(i) * 0.5f - 3.0f); values.add(0.0f); }
+    const auto* storage = values.data();
+    const auto entry = take(program.entry("game.Node.evaluate"));
+    const std::array args{Argument::borrow(values), Argument::borrow(std::as_const(input))};
+    // Exact dyadic values keep the expected results independent of rounding order.
+    const auto run = [&](float g, Quality q, math::Vector3 o, float b, float shift) {
+        take(runtime.write(id, gain, Scalar{g}));
+        take(runtime.write(id, quality, Scalar{EnumValue{quality_type, static_cast<std::uint32_t>(q)}}));
+        take(runtime.write(id, offset, ValueInput{vector3, &o}));
+        take(runtime.write(id, bias, Scalar{b}));
+        auto retired = take(runtime.create(take(runtime.native_type<SelfReadRetired>())));
+        retired.reset();
+        const auto destroyed = SelfReadRetired::destroyed;
+        take(runtime.begin_collection());
+        const auto phase = runtime.collection_phase();
+        const auto cursor = take(runtime.change_cursor());
+        // A large budget makes any stray safe point leave the roots phase or destroy the retired object.
+        require(std::get<std::uint32_t>(*take(entry.invoke(id, args, CollectionBudget{1024}))) == 10,
+            "A value region misread a self field through a BorrowSafe call.");
+        require(runtime.collection_phase() == phase && SelfReadRetired::destroyed == destroyed, "Self field reads advanced GC inside a value region.");
+        require(!runtime.changed_since(id, cursor), "A self field read stamped its object.");
+        require(values.data() == storage, "Self field reads moved the borrowed storage.");
+        for (std::size_t i = 0; i < values.size(); ++i)
+            require(values[i] == input[i] * g + b + o.x + o.y + shift, "A value region misread an inherited or declared self field.");
+        while (runtime.collection_phase() != CollectionPhase::idle) (void)take(runtime.collect_step({1}));
+        require(SelfReadRetired::destroyed == destroyed + 1, "The host could not collect after the value region returned.");
+        return cursor;
+    };
+    const auto cursor = run(1.5f, Quality::high, {0.25f, -2.0f, 7.0f}, 0.75f, -3.0f);
+    take(runtime.write(id, bias, Scalar{0.25f}));
+    require(runtime.changed_since(id, cursor), "The write-stamp control missed a host write.");
+    run(-2.0f, Quality::low, {1.0f, 0.5f, 0.0f}, 0.25f, 0.0f);
+}
+// Source class fields hold scalars, float/double vectors and enums, with whole-value defaults and AFIELD
+// attributes. Defaults and bounds are finite constants; changing them or the presentation text needs a rebuild.
+void verify_project_class_fields() {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<float>(runtime, "project.Floats"),
+        NativeRegistration<Quality>(runtime, "project.Quality", TypeKind::enumeration)
+            .enumerator("low", Quality::low).enumerator("high", Quality::high).build(),
+        NativeRegistration<CodeBase>(runtime, "project.CodeBase", TypeKind::object).build()}));
+    const std::string enums = "enum geo.Axis : uint { x, y, z }\nenum geo.Falloff { linear, smooth, constant }\n";
+    const std::string jitter = R"(class geo.Jitter : project.CodeBase {
+    [Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "Jitter distance.\nPer point."]
+    float amount = 0.5f;
+    [Min = -1.0, Max = 1.0, LockMin, LockMax] vector3 offset = vector3(0.25, -0.5, 1.0 / 8.0);
+    [HardMin = 0.0d] vector2d size = vector2d(1.0d, 2.0d);
+    vector4 color;
+    vector2 span = vector2();
+    geo.Axis up_axis = geo.Axis::z;
+    geo.Falloff falloff;
+    project.Quality quality = project.Quality::high;
+    [Min = 1, Max = 64, LockMin] uint samples = 8;
+    [HardMin = -5, HardMax = 5] int shift = -2;
+    float pick(Array<float>& values) {
+        float sum = 0.0f;
+        if (self.up_axis == geo.Axis::z && self.quality == project.Quality::high) { sum = self.offset.x + self.offset.z + float(self.shift); }
+        values[0] = sum;
+        return sum + self.amount;
+    }
+    void flip() { self.up_axis = geo.Axis::x; self.offset = vector3(0.5, 3.0, -0.5); self.amount = 50.0f; }
+}
+)";
+    const auto snapshot = [&](std::string body, std::string extra = {}) {
+        source::SourceSnapshot input{"fields", 1, {{"Enums.source", 1, enums}, {"Jitter.source", 1, std::move(body)}}};
+        if (!extra.empty()) input.files.push_back({"Bad.source", 1, std::move(extra)});
+        return input;
+    };
+    Program program(runtime);
+    publish(program, snapshot(jitter));
+    const auto type = program.classes()[0].type;
+    const auto axis = take(runtime.find_type("geo.Axis")), falloff = take(runtime.find_type("geo.Falloff"));
+    const auto quality = take(runtime.native_type<Quality>());
+    const auto* info = take(runtime.describe(type));
+    const auto described = [&](std::string_view name) -> const FieldInfo& { return *std::ranges::find(info->fields, name, &FieldInfo::name); };
+    const auto& amount = described("amount");
+    require(amount.label == "Amount" && amount.category == "Noise" && amount.description == "Jitter distance.\nPer point." &&
+        amount.range == FieldRange{Scalar{0.0f}, Scalar{2.0f}, Scalar{0.0f}, Scalar{10.0f}} &&
+        described("offset").range == FieldRange{Scalar{-1.0f}, Scalar{1.0f}, Scalar{-1.0f}, Scalar{1.0f}} &&
+        described("size").range == FieldRange{.hard_min = Scalar{0.0}} &&
+        described("samples").range == FieldRange{Scalar{1u}, Scalar{64u}, Scalar{1u}, {}} &&
+        described("shift").range == FieldRange{.hard_min = Scalar{std::int32_t{-5}}, .hard_max = Scalar{std::int32_t{5}}},
+        "Source field attributes did not publish their presentation text or ranges.");
+    require(described("offset").default_leaves == std::vector<Scalar>{0.25f, -0.5f, 0.125f} &&
+        described("size").default_leaves == std::vector<Scalar>{1.0, 2.0} && described("color").default_leaves == std::vector<Scalar>(4, 0.0f) &&
+        described("span").default_leaves == std::vector<Scalar>(2, 0.0f) &&
+        described("up_axis").default_leaves == std::vector<Scalar>{EnumValue{axis, 2}} &&
+        described("falloff").default_leaves == std::vector<Scalar>{EnumValue{falloff, 0}} &&
+        described("quality").default_leaves == std::vector<Scalar>{EnumValue{quality, 7}} &&
+        described("shift").default_leaves == std::vector<Scalar>{std::int32_t{-2}},
+        "Source field defaults did not publish one leaf per component.");
+    auto object = take(runtime.create(type));
+    const auto id = object.id();
+    const auto field = [&](std::string_view name) { return std::array{take(runtime.find_field(type, name))}; };
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
+    math::Vector3 offset;
+    math::Vector2d size;
+    take(runtime.read(id, field("offset"), ValueOutput{vector3, &offset}));
+    take(runtime.read(id, field("size"), ValueOutput{take(runtime.native_type<math::Vector2d>()), &size}));
+    require(offset == math::Vector3{0.25f, -0.5f, 0.125f} && size == math::Vector2d{1.0, 2.0} &&
+        take(runtime.read(id, field("up_axis"))) == Scalar{EnumValue{axis, 2}} && take(runtime.read(id, field("quality"))) == Scalar{EnumValue{quality, 7}} &&
+        take(runtime.read(id, field("samples"))) == Scalar{8u} && take(runtime.read(id, field("shift"))) == Scalar{std::int32_t{-2}},
+        "Runtime create did not apply Source vector, enum or scalar defaults.");
+    // A value region reads the declared vector and enum fields; Source writes clamp to declared hard bounds.
+    Array<float> values;
+    values.add(0.0f);
+    const std::array args{Argument::borrow(values)};
+    const auto pick = take(program.entry("geo.Jitter.pick"));
+    require(std::get<float>(*take(pick.invoke(id, args))) == -1.125f && values[0] == -1.625f,
+        "A value region misread a Source vector or enum field.");
+    take(take(program.entry("geo.Jitter.flip")).invoke(id, {}));
+    take(runtime.read(id, field("offset"), ValueOutput{vector3, &offset}));
+    require(offset == math::Vector3{0.5f, 1.0f, -0.5f} && take(runtime.read(id, field("amount"))) == Scalar{10.0f} &&
+        take(runtime.read(id, field("up_axis"))) == Scalar{EnumValue{axis, 0}} && std::get<float>(*take(pick.invoke(id, args))) == 10.0f,
+        "Source writes ignored the hard bounds or enum values of Source fields.");
+    const auto edited = [&](std::string_view from, std::string_view to) {
+        auto text = jitter;
+        const auto at = text.find(from);
+        require(at != std::string::npos, "A field edit anchor is missing.");
+        return snapshot(text.replace(at, from.size(), to));
+    };
+    publish(program, edited("[Min = 0.0, Max = 2.0,", "[ Min=0.0,Max  =  2.0 ,"));
+    publish(program, edited("] vector3 offset", "] math.vector3 offset"));
+    require(program.classes()[0].type == type, "Spacing in a field attribute list or a vector's canonical name changed the published class.");
+    for (const auto& [from, to] : std::initializer_list<std::pair<std::string_view, std::string_view>>{
+            {"\"Amount\"", "\"Amount 2\""}, {"\"Noise\"", "\"Other\""}, {"Per point.", "Per item."}, {"HardMax = 10.0", "HardMax = 11.0"},
+            {"vector3(0.25, -0.5", "vector3(0.25, -0.75"}, {"geo.Axis::z;", "geo.Axis::y;"}, {"[HardMin = 0.0d] ", ""}}) {
+        const auto failed = Program::prepare(take(program.request(edited(from, to))));
+        if (failed || failed.error().code != ErrorCode::rebuild_required)
+            throw std::runtime_error("A Source field edit published without a rebuild: " + std::string(to));
+    }
+    // Each malformed field reports its own line in its own file.
+    for (const auto& [member, fragment] : std::initializer_list<std::pair<std::string_view, std::string_view>>{
+            {"float bad = 0.0f / 0.0f;", "must be finite"}, {"float bad = 1e30f * 1e30f;", "must be finite"},
+            {"vector3 bad = vector3(1.0, 0.0 / 0.0, 2.0);", "must be finite"},
+            {"vector3 bad = vector3(1.0, 2.0);", "one constant per component"},
+            {"vector3 bad = vector3(1.0, 2.0, 3.0) * 2.0;", "one constant per component"},
+            {"vector3d bad = vector3d(1.0d, 2.0, 3.0d);", ""}, {"quaternion bad;", "quaternions or matrices"},
+            {"project.CodeBase bad;", "Source object fields require"}, {"geo.Axis bad = geo.Falloff::linear;", "Enum field defaults name one item"},
+            {"geo.Axis bad = geo.Axis::w;", "Enum field defaults name one item"}, {"[Min = 0.0] bool bad;", "Field ranges require"},
+            {"[HardMax = 1] geo.Axis bad;", "Field ranges require"}, {"[LockMin] float bad;", "requires Min and excludes HardMin"},
+            {"[Min = 0.0, LockMin, HardMin = 1.0] float bad;", "requires Min and excludes HardMin"},
+            {"[Min = 2.0, Max = 1.0] float bad;", "minimum exceeds maximum"}, {"[HardMax = 1.0] float bad = 2.0f;", "default lies outside hard bounds"},
+            {"[HardMin = 0.0] vector3 bad = vector3(1.0, -1.0, 1.0);", "default lies outside hard bounds"},
+            {"[Min = 0.0d] float bad;", ""}, {"[Min = missing] float bad;", ""}, {"[Min = 1.0 +] float bad;", ""},
+            {"vector3 bad = vector3(1.0, 2.0, );", ""}, {"[Label = \"a\\nb\"] float bad;", "control characters"},
+            {"[DESC = \"a\\0b\"] float bad;", "Description requires valid UTF-8"}, {"[Label = 1.0] float bad;", "requires a string literal"},
+            {"[Shape = 1.0] float bad;", "Unknown field attribute"}, {"[Min = 0.0, Min = 1.0] float bad;", "Duplicate field attribute"},
+            {"[Min = 0.0] void bad() {}", "Attributes apply only to class fields"}}) {
+        const auto failed = Program::prepare(take(program.request(snapshot(jitter, "class game.Bad : project.CodeBase {\n    " + std::string(member) + "\n}\n"))));
+        if (failed || !failed.error().source || failed.error().source->path != "Bad.source" || failed.error().source->line != 2 ||
+            failed.error().message.find(fragment) == std::string::npos)
+            throw std::runtime_error("A malformed Source field was not rejected at its line: " + std::string(member) + " -> " +
+                (failed ? std::string("accepted") : failed.error().message));
+    }
+}
 struct EditorPanel { float x; };
 struct ProjectHost { float x; };
 // The editor registers its own types under editor. in the same Runtime before project Source
@@ -209,6 +531,232 @@ class game.Panel : project.Host { float speed = 1.0f; }
         std::get<bool>(*take(take(program.entry("pick")).invoke({}, {}))) && program.classes().size() == 1,
         "Registered project types did not bind beside hidden editor. types.");
 }
+struct EngineBase { float x; };
+std::filesystem::path executable_directory() {
+    std::wstring path(32768, L'\0');
+    path.resize(GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size())));
+    return std::filesystem::path(path).parent_path();
+}
+// Engine Source files load from disk with engine/ paths and declare only their module's names;
+// project files use them but cannot declare in that namespace.
+void verify_project_engine_sources() {
+    const auto root = std::filesystem::temp_directory_path() / ("atelier-engine-sources-" + std::to_string(GetCurrentProcessId()));
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{root};
+    const auto write = [&](const std::filesystem::path& relative, std::string_view text) {
+        std::filesystem::create_directories((root / relative).parent_path());
+        std::ofstream(root / relative, std::ios::binary) << text;
+    };
+    const std::string random = "const uint procedural.SEED = 7;\nuint procedural.hash(uint x) { return x * 31 + procedural.SEED; }\n";
+    write("procedural/random.source", "\xef\xbb\xbf" + random);
+    write("procedural/nested/orient.source", R"(
+enum procedural.Axis : uint { x, y, z }
+const float procedural.y = 9.0;
+float procedural.scaled(float v) { return v * float(procedural.hash(2)); }
+class procedural.Jitter : procedural.Base { float amount = 0.5f; float evaluate(float v) { return v + self.amount * float(procedural.hash(1)); } }
+)");
+    write("procedural/notes.txt", "not source");
+    write("copy/random.source", random);
+    const auto paths = take(source::engine_source_paths(root));
+    require(paths.size() == 3 && paths[0] == std::filesystem::path("copy/random.source") &&
+        paths[1] == std::filesystem::path("procedural/nested/orient.source") && paths[2] == std::filesystem::path("procedural/random.source"),
+        "Engine source paths were not the sorted .source files under the root.");
+    auto loaded = take(source::engine_sources(root));
+    require(loaded.size() == 3 && loaded[0].path == "engine/copy/random.source" && loaded[1].path == "engine/procedural/nested/orient.source" &&
+        loaded[2].path == "engine/procedural/random.source" && loaded[2].source == random && loaded[0].source == random &&
+        loaded[0].version != loaded[2].version, "Engine sources lost their engine/ path, dropped text or hashed the BOM away.");
+    write("copy/random.source", "\xef\xbb\xbf" + random);
+    const auto copied = take(source::engine_sources(root))[0].version;
+    write("copy/random.source", "\xef\xbb\xbf" + random + " ");
+    require(copied == loaded[2].version && take(source::engine_sources(root))[0].version != copied,
+        "Engine source versions did not follow the saved bytes alone.");
+    require(take(source::engine_sources(root / "missing")).empty(), "A missing engine root produced sources.");
+    // The build copies assets/engine beside the executable exactly; development builds read the tree.
+    const std::filesystem::path tree{ATELIER_ENGINE_SOURCE_TREE};
+    const auto tree_files = take(source::engine_sources(tree)), copy_files = take(source::engine_sources(executable_directory() / "engine"));
+    require(tree_files.size() == copy_files.size() && std::ranges::equal(tree_files, copy_files, [](const auto& a, const auto& b) {
+        return a.path == b.path && a.version == b.version && a.source == b.source;
+    }), "engine/ beside the executable differs from assets/engine.");
+    require(source::default_engine_root() == (std::filesystem::is_directory(tree) ? tree : executable_directory() / "engine"),
+        "The default engine root did not prefer the source tree.");
+
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    std::vector<source::SourceFile> engine(loaded.begin() + 1, loaded.end());
+    const auto with = [&](std::vector<source::SourceFile> files) {
+        source::SourceSnapshot snapshot{"engine", 1, engine};
+        snapshot.files.insert(snapshot.files.end(), files.begin(), files.end());
+        return snapshot;
+    };
+    const auto rejected = [&](std::vector<source::SourceFile> files, std::string_view expected, const char* message) {
+        const auto path = files.front().path;
+        auto failed = Program::prepare(take(program.request(with(std::move(files)))));
+        if (failed || failed.error().message.find(expected) == std::string::npos || !failed.error().source || failed.error().source->path != path)
+            throw std::runtime_error(std::string(message) + (failed ? "" : " Got: " + failed.error().message));
+    };
+    const auto project = [](std::string text) { return std::vector<source::SourceFile>{{"Source/Bad.source", 1, std::move(text)}}; };
+    const auto engine_file = [](std::string text) { return std::vector<source::SourceFile>{{"engine/procedural/bad.source", 1, std::move(text)}}; };
+    const std::string_view reserved = "Only engine sources under engine/procedural/ may declare names in the procedural. namespace";
+    rejected(project("class procedural.Mine : procedural.Base { }"), reserved, "A project file declared an engine class.");
+    rejected(project("struct procedural.Mine { float a; };"), reserved, "A project file declared an engine struct.");
+    rejected(project("enum procedural.Mine { a }"), reserved, "A project file declared an engine enum.");
+    rejected(project("float procedural.mine() { return 1.0; }"), reserved, "A project file declared an engine function.");
+    rejected(project("const uint procedural.MINE = 1;"), reserved, "A project file declared an engine constant.");
+    const std::string_view own = "Engine sources under engine/procedural/ may only declare names in the procedural. namespace";
+    rejected(engine_file("float other.f() { return 1.0; }"), own, "An engine file declared outside its module.");
+    rejected(engine_file("float f() { return 1.0; }"), own, "An engine file declared an unqualified name.");
+    rejected({{"engine/loose.source", 1, ""}}, "Engine source paths must be engine/<module>/<file>", "An engine file had no module.");
+    rejected({{"engine/math/x.source", 1, ""}}, "Engine source paths must be engine/<module>/<file>", "An engine module used math.");
+    rejected(engine_file("float procedural.Base() { return 1.0; }"), "cannot share a name with a type: procedural.Base",
+        "A function took a registered type's name.");
+    rejected(engine_file("const uint procedural.Jitter = 1;"), "cannot share a name with a type: procedural.Jitter",
+        "A constant took a source class's name.");
+    rejected(project("class mygame.Twin : procedural.Base { float run() { return 1.0; } }\nfloat mygame.Twin.run() { return 2.0; }"),
+        "cannot extend a type name: mygame.Twin.run", "A function took a class method's entry name.");
+    rejected(engine_file("uint procedural.twice(uint v) { return hash(v); }"), "Unknown source function 'hash'",
+        "An engine file called a qualified function by its short name.");
+    require(!runtime.find_type("procedural.Jitter") && program.classes().empty(), "A rejected engine snapshot published a type.");
+    publish(program, with({{"Source/Game.source", 1, R"(
+class mygame.Foo : procedural.Base {
+    procedural.Axis axis = procedural.Axis::z;
+    float run(float v) { return procedural.scaled(v) + float(procedural.SEED); }
+}
+uint project_hash(uint v) { return procedural.hash(v); }
+float project_scaled(float v) { return procedural.scaled(v); }
+float shadowed() { vector3 procedural = vector3(1.0, 2.0, 3.0); return procedural.y; }
+float unshadowed() { return procedural.y; }
+)"}}));
+    const auto invoke = [&](std::string_view name, std::span<const Scalar> arguments) { return *take(take(program.entry(name)).invoke({}, arguments)); };
+    const std::array five{Scalar{std::uint32_t{5}}}, half{Scalar{0.5f}};
+    require(std::get<std::uint32_t>(invoke("project_hash", five)) == 162 && std::get<float>(invoke("project_scaled", half)) == 34.5f &&
+        std::get<float>(invoke("shadowed", {})) == 2.0f && std::get<float>(invoke("unshadowed", {})) == 9.0f,
+        "Qualified engine functions, constants or local shadowing evaluated incorrectly.");
+    const auto classes = program.classes();
+    const auto base = take(runtime.find_type("procedural.Base"));
+    require(classes.size() == 2 && std::ranges::all_of(classes, [&](const auto& c) { return c.base == base; }) &&
+        std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "procedural.Jitter.evaluate"; }) &&
+        std::ranges::any_of(program.entries(), [](const auto& e) { return e.name == "mygame.Foo.run"; }),
+        "Engine and project classes on the engine's native base did not publish.");
+}
+// A unit compiles its own text with the declarations it spells, so its code follows only them;
+// engine functions are internal, and each declaration is still checked in its home unit.
+void verify_project_compile_units() {
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    const auto snapshot = [](std::string_view inner, std::string_view unused, std::string_view b, std::string_view extra = {}) {
+        return source::SourceSnapshot{"units", 1, {
+            {"Source/Game.source", 1, "float twice(float x) { return x * 2.0; }\n"
+                "class game.A : procedural.Base { float run(float x) { return procedural.used(x); } }\n"
+                "class game.B : procedural.Base { float run(float x) { return twice(x) + " + std::string(b) + "; } }\n" + std::string(extra)},
+            {"engine/procedural/lib.source", 1, "const float procedural.K = 3.0;\n"
+                "float procedural.inner(float x) { return x + procedural.K * " + std::string(inner) + "; }\n"
+                "float procedural.used(float x) { return procedural.inner(x) * 2.0; }\n"
+                "float procedural.unused(float x) { return x - " + std::string(unused) + "; }\n"}}};
+    };
+    const auto codes = [&] {
+        std::vector<std::pair<std::string, std::uint64_t>> result;
+        for (const auto& entry : program.entries()) result.emplace_back(entry.name, entry.code);
+        std::ranges::sort(result);
+        return result;
+    };
+    const auto rejected = [&](source::SourceSnapshot input, std::string_view path, std::string_view expected, const char* message) {
+        auto failed = Program::prepare(take(program.request(std::move(input))));
+        if (failed || !failed.error().source || failed.error().source->path != path || failed.error().message.find(expected) == std::string::npos)
+            throw std::runtime_error(std::string(message) + (failed ? "" : " Got: " + failed.error().message));
+    };
+    rejected(snapshot("1.0", "true", "1.0"), "engine/procedural/lib.source", "", "An uncalled engine function skipped its type check.");
+    rejected(snapshot("1.0", "1.0", "1.0", "const uint BAD = 1.5;\n"), "Source/Game.source", "", "An unused project constant skipped its type check.");
+    rejected(snapshot("1.0", "1.0", "1.0", "float twice(float y) { return y; }\n"), "Source/Game.source",
+        "Duplicate source function name", "A repeated top-level name was accepted.");
+    rejected(snapshot("1.0", "1.0", "1.0", "class game.C : procedural.Base { float twice(float x) { return x; } }\n"), "Source/Game.source",
+        "Duplicate source function name", "A class method shared a global function's name.");
+    publish(program, snapshot("1.0", "1.0", "1.0"));
+    const auto first = codes();
+    require(first.size() == 3 && first[0].first == "game.A.run" && first[1].first == "game.B.run" && first[2].first == "twice" &&
+        !program.entry("procedural.used"), "Engine functions were published as entries.");
+    const auto a = take(runtime.create(program.classes()[0].type));
+    const std::array one{Scalar{1.0f}};
+    require(std::get<float>(*take(take(program.entry("game.A.run")).invoke(a.id(), one))) == 8.0f,
+        "A class did not compile the engine functions it reaches transitively.");
+    publish(program, snapshot("1.0", "2.0", "1.0"));
+    require(codes() == first, "Editing an uncalled engine function changed a code.");
+    publish(program, snapshot("2.0", "2.0", "1.0"));
+    const auto second = codes();
+    require(second[0].second != first[0].second && second[1] == first[1] && second[2] == first[2],
+        "Editing an engine function changed codes beyond the class that reaches it.");
+    require(std::get<float>(*take(take(program.entry("game.A.run")).invoke(a.id(), one))) == 14.0f,
+        "The class that reaches an edited engine function kept its old code.");
+    publish(program, snapshot("2.0", "2.0", "5.0"));
+    const auto third = codes();
+    require(third[0] == second[0] && third[1].second != second[1].second && third[2] == second[2],
+        "Editing one class changed another unit's code.");
+    // Moving an engine function into a project file keeps the project unit's text but adds an export.
+    Program moved(runtime);
+    publish(moved, {"moved", 1, {{"Source/a.source", 1, "float f() { return m.g(); }\n"}, {"engine/m/x.source", 1, "float m.g() { return 1.0; }\n"}}});
+    const auto before = moved.entries()[0].code;
+    publish(moved, {"moved", 1, {{"Source/a.source", 1, "float f() { return m.g(); }\n"}, {"Source/b.source", 1, "float m.g() { return 1.0; }\n"}}});
+    const auto after = moved.entries();
+    require(after.size() == 2 && after[0].code != after[1].code && after[0].code != before && after[1].code != before &&
+        std::get<float>(*take(take(moved.entry("m.g")).invoke({}, {}))) == 1.0f,
+        "A unit whose text stayed the same while its exports grew kept its old codes.");
+}
+// A unit compiled from unchanged input keeps its machine code; the new Version maps faults and
+// breakpoints through the current files and works once the module that compiled it is gone.
+void verify_project_code_reuse() {
+    Runtime runtime;
+    take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
+    Program program(runtime);
+    const auto snapshot = [](std::size_t lines, std::string_view b, std::string_view extra = {}) {
+        return source::SourceSnapshot{"reuse", 1, {{"Source/Game.source", lines + 1, std::string(lines, '\n') +
+            "class game.A : procedural.Base {\n    int run(int x) {\n        return 10 / x;\n    }\n}\n"
+            "class game.B : procedural.Base { int run(int x) { return x + " + std::string(b) + "; } }\n" + std::string(extra)}}};
+    };
+    const std::array zero{Scalar{std::int32_t{0}}}, five{Scalar{std::int32_t{5}}};
+    const auto fault = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
+        const auto failed = lease.invoke(receiver, zero);
+        return !failed && failed.error().source && failed.error().source->path == "Source/Game.source" &&
+            failed.error().source->line == line && failed.error().source->version == version;
+    };
+    const auto stop_line = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
+        std::optional<source::DebugBreakpoint> at;
+        for (const auto& site : take(lease.debug_sites()))
+            if (site.source.line == line) at = source::DebugBreakpoint{site.source.path, site.source.version, line, 0};
+        if (!at || at->source_version != version) return false;
+        std::size_t stopped{};
+        source::Debugger debugger([&](const source::DebugSnapshot& stop) {
+            stopped = stop.frames[0].location.source.line;
+            return stop.command(source::DebugAction::continue_execution);
+        }, {.break_on_entry = false});
+        take(debugger.set_breakpoints({*at}));
+        return std::get<std::int32_t>(*take(lease.invoke(receiver, five, {1}, nullptr, &debugger))) == 2 && stopped == line;
+    };
+    publish(program, snapshot(0, "1"));
+    const auto a = take(runtime.create(program.classes()[0].type));
+    auto first = take(program.pin("game.A.run"));
+    require(fault(first, a.id(), 3, 1), "A fault lost its source location.");
+    publish(program, snapshot(2, "2"), {.debugging = true});
+    auto second = take(program.pin("game.A.run"));
+    require(second.address() != first.address() && stop_line(second, a.id(), 5, 3),
+        "Changed compile options reused code compiled without them.");
+    const auto code = program.entries()[0].code;
+    // A new class makes this request publish a type, so reuse also runs through the type-bound Contract.
+    publish(program, snapshot(4, "3", "class game.C : procedural.Base { int run(int x) { return x; } }\n"), {.debugging = true});
+    auto third = take(program.pin("game.A.run"));
+    require(program.classes().size() == 3 && third.address() == second.address() && program.entries()[0].code == code,
+        "An unchanged class unit was compiled again.");
+    require(fault(third, a.id(), 7, 5) && stop_line(third, a.id(), 7, 5),
+        "Reused code mapped faults or breakpoints through the files it was compiled from.");
+    require(fault(first, a.id(), 3, 1) && fault(second, a.id(), 5, 3) &&
+        std::get<std::int32_t>(*take(second.invoke(a.id(), five))) == 2, "Leases on older modules stopped working.");
+    // The second module and its Contract are released; the reused code must not refer to them.
+    first = {};
+    second = {};
+    third = {};
+    const auto entry = take(program.entry("game.A.run"));
+    require(std::get<std::int32_t>(*take(entry.invoke(a.id(), five))) == 2 && fault(take(program.pin("game.A.run")), a.id(), 7, 5),
+        "Reused code failed once the module that compiled it was released.");
+}
 }
 
 void verify_source_projects() {
@@ -263,7 +811,7 @@ void verify_source_projects() {
         "Double, signed integer or bool field defaults were not applied.");
     const auto* info = take(runtime.describe(type));
     bool default_found = false;
-    for (const auto& field : info->fields) if (field.id == speed) default_found = field.default_value && std::get<float>(*field.default_value) == 2.f;
+    for (const auto& field : info->fields) if (field.id == speed) default_found = field.default_leaves == std::vector<Scalar>{2.f};
     require(default_found, "Runtime metadata did not describe the default.");
     const auto signature = take(program.describe("game.Move.tick"));
     require(signature.receiver && signature.receiver->type == type && signature.parameters.size() == 1,
@@ -369,7 +917,15 @@ void verify_source_projects() {
     require(!old.invoke(instance.id(),args), "Lease accepted a destroyed receiver.");
     verify_declaration_only_project();
     verify_project_borrow_effects();
+    verify_project_entry_codes();
+    verify_project_self_reads();
+    verify_project_class_fields();
     verify_project_field_ranges();
     verify_editor_reserved_types();
-    std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, diagnostics, lifetime)");
+    verify_project_engine_sources();
+    verify_project_compile_units();
+    verify_project_code_reuse();
+    std::puts("Source project consumer: PASS (files, native classes/defaults, typed entries, atomic hot update, entry codes/revision, diagnostics, lifetime, "
+        "read-only self fields in value regions with borrow and GC rules unchanged, vector/enum class fields with attributes, "
+        "engine sources with qualified names and reserved namespaces, compile units that follow only what they reach, unchanged units that keep their code)");
 }

@@ -73,7 +73,7 @@ auto result = entry.invoke(receiver, arguments, {1}, nullptr, &debugger);
 
 正常返回、失败和取消均解除生成的调试帧，清理期间不再暂停。async 调试表在 `coro.begin` 后、首次挂起前初始化，局部地址与可用状态保存在 LLVM 协程帧中；取消 ready 帧不会进入源码或伪造停点。
 
-Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映射在编译时复制，保存的快照在代码与 Runtime 销毁后仍可读取。调试与[调用诊断](source-diagnostics.md)可同时使用：调用计数单列 `debug_hook`，执行计时包含暂停处理器等待。最终性能测量应使用未启用调试插桩的版本。
+Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映射在准备发布时按请求的快照建立，保存的快照在代码与 Runtime 销毁后仍可读取。调试与[调用诊断](source-diagnostics.md)可同时使用：调用计数单列 `debug_hook`，执行计时包含暂停处理器等待。最终性能测量应使用未启用调试插桩的版本。
 
 ## 范围与验收
 

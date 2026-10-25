@@ -79,12 +79,21 @@ function(atelier_add_source)
     target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support)
 
     add_library(atelier_source STATIC src/source/program.cpp src/source/diagnostics.cpp src/source/detail/bridge.cpp
-        src/source/debugger.cpp src/source/detail/debugger.cpp
+        src/source/debugger.cpp src/source/detail/debugger.cpp src/source/snapshot.cpp
         src/language/source.cpp src/language/declarations.cpp src/language/module.cpp)
     atelier_target(atelier_source)
     target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
     target_compile_features(atelier_source PUBLIC cxx_std_23)
     target_link_libraries(atelier_source PUBLIC atelier_runtime PRIVATE atelier_source_backend)
+    # engine/ beside the executables is an exact copy of assets/engine: every reconfigure starts
+    # empty, and adding, removing or editing a .source file reconfigures.
+    set(engine_tree "${PROJECT_SOURCE_DIR}/assets/engine")
+    target_compile_definitions(atelier_source PRIVATE "ATELIER_ENGINE_SOURCE_TREE=L\"${engine_tree}\"")
+    file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/engine")
+    file(GLOB_RECURSE engine_files CONFIGURE_DEPENDS RELATIVE "${engine_tree}" "${engine_tree}/*.source")
+    foreach(engine_file IN LISTS engine_files)
+        configure_file("${engine_tree}/${engine_file}" "${CMAKE_BINARY_DIR}/engine/${engine_file}" COPYONLY)
+    endforeach()
 
     add_executable(atelier_source_minimal
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
@@ -95,6 +104,7 @@ function(atelier_add_source)
     atelier_target(atelier_source_minimal)
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
+    target_compile_definitions(atelier_source_minimal PRIVATE "ATELIER_ENGINE_SOURCE_TREE=L\"${engine_tree}\"")
     atelier_headless_acceptance(source_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal>
         DEPENDS atelier_source_minimal)

@@ -174,7 +174,7 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 源码通过既有 `Program` / `Argument::borrow` 接受原生记录、Array 的只读或可写借用，以及 String 的只读借用。数组长度、元素和有直接偏移的原生记录字段由生成代码访问同一存储；String 只开放字节长度和只读索引。布局和序列视图来自同一 Runtime 元数据，不把 String/Array 塞进 `Scalar`。`AFUNCTION` 原生成员同时支持无 GC 引用的原生记录/Array/String 引用，聚合值仍不进入 Scalar。
 
-源码拥有型局部复用原生构析操作，序列修改经 `Runtime::mutate_sequence` 分派到基础库；`sequence_mutate` 与 `value_operations_preserve_borrows` 由同一 TypeInfo 发布，数组能力还取决于元素的操作契约。当前没有数组元素编辑器、非平凡按值调用 ABI 或跨挂起借用。同步原生值区间只允许 `BorrowSafe` 原生方法，结构修改限于源码拥有的序列，并把 GC 留给区间外的宿主；原生调用方仍负责实际存续期。详细限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
+源码拥有型局部复用原生构析操作，序列修改经 `Runtime::mutate_sequence` 分派到基础库；`sequence_mutate` 与 `value_operations_preserve_borrows` 由同一 TypeInfo 发布，数组能力还取决于元素的操作契约。当前没有数组元素编辑器、非平凡按值调用 ABI 或跨挂起借用。同步原生值区间只允许 `BorrowSafe` 原生方法和按值读取 `self` 字段，结构修改限于源码拥有的序列，并把 GC 留给区间外的宿主；原生调用方仍负责实际存续期。详细限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
 
 ## 帧阶段计时
 

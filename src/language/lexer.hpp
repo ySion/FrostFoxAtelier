@@ -120,6 +120,26 @@ private:
     SourcePosition position_;
 };
 
+// A string token's UTF-8 bytes, with the escapes \\ \" \n \r \t \0 decoded.
+inline std::string string_value(const Token& token) {
+    std::string value;
+    for (std::size_t i = 1; i + 1 < token.text.size(); ++i) {
+        char c = token.text[i];
+        if (c == '\\') {
+            switch (c = token.text[++i]) {
+            case '\\': case '"': break;
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case '0': c = '\0'; break;
+            default: reject(token.position, "Unsupported string escape.");
+            }
+        }
+        value.push_back(c);
+    }
+    return value;
+}
+
 class Tokens {
 public:
     explicit Tokens(std::string_view source) : lexer_(source), token_(lexer_.next()) {}

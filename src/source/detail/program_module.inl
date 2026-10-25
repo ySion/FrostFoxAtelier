@@ -20,28 +20,36 @@ Error mapped_error(const SourceSnapshot& snapshot, const language::MappedSource&
     }
     return source_error(snapshot, 0, {}, std::move(message));
 }
-Result<Scalar> field_default(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner, const language::ClassField& field) {
-    if (field.initializer.text.empty()) {
-        if (field.type == "bool") return Scalar{false};
-        if (field.type == "float") return Scalar{0.0f};
-        if (field.type == "double") return Scalar{0.0};
-        if (field.type == "int") return Scalar{std::int32_t{}};
-        return Scalar{std::uint32_t{}};
-    }
+// Folds one constant scalar expression with the typed Source parser; floating results must be finite.
+Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::MappedSource& expression, std::string_view type) {
     language::MappedSource text;
-    text.text = "const " + field.type + " __source_default = "; text.append(field.initializer);
-    text.text += "; " + field.type + " __source_value() { return __source_default; }";
+    text.text = "const " + std::string(type) + " __source_default = "; text.append(expression);
+    text.text += "; " + std::string(type) + " __source_value() { return __source_default; }";
     auto parsed = language::compile_source(snapshot.name, text.text, {}, "__source_value");
-    if (!parsed) return std::unexpected(mapped_error(snapshot, text, parsed.error().position, parsed.error().message));
+    if (!parsed) {
+        // A position in the generated wrapper, such as the ';' after `1.0 +`, reports at the expression.
+        const auto offset = parsed.error().position.offset;
+        const bool inside = std::ranges::any_of(text.pieces, [&](const auto& piece) { return offset >= piece.begin && offset <= piece.end; });
+        return std::unexpected(inside ? mapped_error(snapshot, text, parsed.error().position, parsed.error().message)
+            : mapped_error(snapshot, expression, {}, parsed.error().message));
+    }
     const auto& function = parsed->functions[parsed->entry];
     const auto& value = function.expressions[function.statements[function.statements[function.body].children[0]].expression];
-    if (value.kind != language::Expression::Kind::literal)
-        return std::unexpected(source_error(snapshot, owner.file, field.position, "Field defaults require a constant scalar expression."));
-    if (field.type == "bool") return Scalar{value.bits != 0};
-    if (field.type == "float") return Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))};
-    if (field.type == "double") return Scalar{std::bit_cast<double>(value.bits)};
-    if (field.type == "int") return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits))};
-    return Scalar{static_cast<std::uint32_t>(value.bits)};
+    const auto at = [&](std::string message) { return std::unexpected(mapped_error(snapshot, expression, {}, std::move(message))); };
+    if (value.kind != language::Expression::Kind::literal) return at("Field defaults and bounds require constant scalar expressions.");
+    if (type == "bool") return Scalar{value.bits != 0};
+    if (type == "int") return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits))};
+    if (type == "uint") return Scalar{static_cast<std::uint32_t>(value.bits)};
+    const auto number = type == "float" ? double{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))} : std::bit_cast<double>(value.bits);
+    if (!std::isfinite(number)) return at("Field defaults and bounds must be finite.");
+    return type == "float" ? Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))} : Scalar{number};
+}
+Scalar zero_leaf(std::string_view type) {
+    if (type == "bool") return false;
+    if (type == "float") return 0.0f;
+    if (type == "double") return 0.0;
+    if (type == "int") return std::int32_t{};
+    return std::uint32_t{};
 }
 // Published classes keep their layout, defaults and methods; new methods may follow.
 bool keeps_class(const language::ClassDeclaration& published, const language::ClassDeclaration& updated) {
@@ -59,6 +67,100 @@ const T* find_named(const std::vector<T>& values, std::string_view name) {
     const auto found = std::ranges::find(values, name, &T::name);
     return found == values.end() ? nullptr : &*found;
 }
+// A class field's Runtime definition. Defaults and bounds fold against the field's leaf type: each
+// component of a vector; an enum default names one item and becomes its underlying integer.
+Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner, const language::ClassField& field,
+    const std::vector<language::TypeDeclaration>& declarations, const Binding& binding, Runtime& runtime) {
+    const auto at = [&](language::SourcePosition position, std::string message) {
+        return std::unexpected(source_error(snapshot, owner.file, position, std::move(message)));
+    };
+    const auto unsupported = [&] {
+        return at(field.position, "Source object fields require bool, int, uint, float, double, a float or double vector, or an enum: " + field.type);
+    };
+    FieldDefinition result;
+    result.name = field.name;
+    std::string_view leaf; // empty for an enum
+    const BoundValue* vector{};
+    const std::vector<std::pair<std::string, std::uint32_t>>* items{};
+    bool signed_items{};
+    const auto names_vector = [&](std::string_view name) {
+        return vector && (name == vector->name || name == math::short_name(vector->math));
+    };
+    if (field.type == "bool" || field.type == "int" || field.type == "uint" || field.type == "float" || field.type == "double") {
+        leaf = field.type;
+        result.value = {leaf == "bool" ? binding.boolean : leaf == "int" ? binding.i32 : leaf == "uint" ? binding.u32 : leaf == "float" ? binding.f32 : binding.f64};
+    } else if (const auto* declared = find_named(declarations, field.type)) {
+        if (!declared->enumeration) return unsupported();
+        result.value = {TypeReference{field.type}};
+        items = &declared->enumerators;
+        signed_items = declared->signed_enum;
+    } else if (const auto found = std::ranges::find_if(binding.values, [&](const BoundValue& value) {
+        return value.math && field.type == value.name;
+    }); found != binding.values.end()) {
+        if (!found->math.vector()) return at(field.position, "Source object fields cannot hold quaternions or matrices: " + field.type);
+        vector = &*found;
+        result.value = {vector->type};
+        leaf = vector->math.precision == math::Precision::f64 ? "double" : "float";
+    } else if (const auto type = runtime.find_type(field.type); type && !language::editor_reserved(field.type)) {
+        const auto* info = take(runtime.describe(*type));
+        if (!info->enumeration) return unsupported();
+        result.value = {*type};
+        items = &info->enumeration->values;
+        signed_items = info->enumeration->underlying == binding.i32;
+    } else return unsupported();
+    const auto& initializer = field.initializer;
+    if (items) {
+        std::uint32_t bits = 0;
+        if (!initializer.text.empty()) {
+            const auto item = std::ranges::find(*items, field.initializer_item, &std::pair<std::string, std::uint32_t>::first);
+            if (field.initializer_item.empty() || field.initializer_name != field.type || item == items->end())
+                return std::unexpected(mapped_error(snapshot, initializer, {}, "Enum field defaults name one item: " + field.type + "::item."));
+            bits = item->second;
+        }
+        result.default_leaves = {signed_items ? Scalar{std::bit_cast<std::int32_t>(bits)} : Scalar{bits}};
+    } else if (vector) {
+        const auto components = vector->math.components();
+        if (!initializer.text.empty()) {
+            const auto& arguments = field.initializer_arguments;
+            if (!field.initializer_item.empty() || !names_vector(field.initializer_name) || (!arguments.empty() && arguments.size() != components))
+                return std::unexpected(mapped_error(snapshot, initializer, {}, "Vector field defaults are " + field.type + "() or " +
+                    field.type + " with one constant per component."));
+            for (const auto& argument : arguments) {
+                auto value = fold_scalar(snapshot, argument, leaf);
+                if (!value) return std::unexpected(value.error());
+                result.default_leaves.push_back(*value);
+            }
+        }
+        if (result.default_leaves.empty()) result.default_leaves.assign(components, zero_leaf(leaf));
+    } else {
+        auto value = initializer.text.empty() ? Result<Scalar>{zero_leaf(leaf)} : fold_scalar(snapshot, initializer, leaf);
+        if (!value) return std::unexpected(value.error());
+        result.default_leaves = {*value};
+    }
+    if (field.range) {
+        if (leaf.empty() || leaf == "bool") return at(*field.range, "Field ranges require an int, uint, float or double field, or a float or double vector.");
+        const std::array sides{&result.range.ui_min, &result.range.ui_max, &result.range.hard_min, &result.range.hard_max};
+        for (std::size_t side = 0; side < sides.size(); ++side) {
+            if (field.bounds[side].text.empty()) continue;
+            auto bound = fold_scalar(snapshot, field.bounds[side], leaf);
+            if (!bound) return std::unexpected(bound.error());
+            *sides[side] = *bound;
+        }
+    }
+    result.label = field.label;
+    result.category = field.category;
+    result.description = field.description;
+    return result;
+}
+// A published field keeps its exact default leaves, bounds and presentation text; source spacing is not part of them.
+bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
+    const auto same = [](const std::optional<Scalar>& x, const std::optional<Scalar>& y) {
+        return x && y ? same_scalar(*x, *y) : x.has_value() == y.has_value();
+    };
+    return same_leaves(a.default_leaves, b.default_leaves) && same(a.range.ui_min, b.range.ui_min) && same(a.range.ui_max, b.range.ui_max) &&
+        same(a.range.hard_min, b.range.hard_min) && same(a.range.hard_max, b.range.hard_max) &&
+        a.label == b.label && a.category == b.category && a.description == b.description;
+}
 }
 
 std::shared_ptr<const SourceSnapshot> Program::SourceRequest::snapshot() const { return module_ ? module_->snapshot : nullptr; }
@@ -68,6 +170,7 @@ std::span<const ClassInfo> Program::classes() const noexcept {
 std::span<const EntryInfo> Program::entries() const noexcept {
     return state_->module ? std::span<const EntryInfo>{state_->module->entries} : std::span<const EntryInfo>{};
 }
+std::uint64_t Program::revision() const noexcept { return state_->revision; }
 Result<Program::Entry> Program::entry(std::string_view name) const {
     if (!state_->open) return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     const auto index = state_->find(name);
@@ -99,6 +202,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     request->module_ = std::make_shared<ModuleRequest>();
     auto& module = *request->module_;
     module.snapshot = std::make_shared<const SourceSnapshot>(std::move(snapshot));
+    module.options = options;
     const auto& input = *module.snapshot;
     const auto fail = [&](Error error) -> Result<Request> { request->declaration_error_ = std::move(error); return request; };
     std::size_t bytes = 0;
@@ -110,9 +214,33 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     auto collected = language::collect_module(input);
     if (!collected) return fail(source_error(input, collected.error().file, collected.error().diagnostic.position, collected.error().diagnostic.message));
     module.source = std::move(*collected);
-    auto values = language::collect_declarations(module.source.common.text);
-    if (!values) return fail(mapped_error(input, module.source.common, values.error().position, values.error().message));
+    // A math short name and its canonical name are one type, so a published field keeps it under either spelling.
+    for (auto& cls : module.source.classes)
+        for (auto& field : cls.fields)
+            for (const auto& value : state_->contract->binding.values)
+                if (value.math && field.type == math::short_name(value.math)) field.type = value.name;
+    language::MappedSource types;
+    for (const auto& declaration : module.source.declarations)
+        if (declaration.kind == language::TopLevel::Kind::type) types.append(declaration.source);
+    auto values = language::collect_declarations(types.text);
+    if (!values) return fail(mapped_error(input, types, values.error().position, values.error().message));
     module.value_types = std::move(*values);
+    auto& runtime = *state_->contract->binding.runtime;
+    // Functions and constants share dotted names with types: Class.method entries need both rules.
+    const auto type_named = [&](std::string_view name) {
+        return (!language::editor_reserved(name) && runtime.find_type(name)) ||
+            find_named(module.source.classes, name) || find_named(module.value_types, name);
+    };
+    for (const auto& declaration : module.source.declarations) {
+        if (declaration.kind == language::TopLevel::Kind::type) continue;
+        const std::string_view name = declaration.name;
+        if (type_named(name))
+            return fail(source_error(input, declaration.file, declaration.position,
+                "A source function or constant cannot share a name with a type: " + declaration.name));
+        if (const auto dot = name.rfind('.'); dot != std::string_view::npos && type_named(name.substr(0, dot)))
+            return fail(source_error(input, declaration.file, declaration.position,
+                "A source function or constant name cannot extend a type name: " + declaration.name));
+    }
     // A published module only grows: deleting, renaming or changing a published
     // export, type or class needs a rebuild; new ones publish compatibly.
     const ModuleRequest* published = state_->module ? state_->module->request.get() : nullptr;
@@ -137,7 +265,6 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     if (!definitions) return fail(definitions.error());
     // Existing source types stay published; new ones still reference them by name.
     if (published) std::erase_if(*definitions, [&](const auto& definition) { return find_named(published->value_types, definition.name); });
-    auto& runtime = *state_->contract->binding.runtime;
     for (const auto& cls : module.source.classes) {
         if (std::ranges::any_of(state_->contract->binding.values, [&](const auto& value) {
             return value.math && cls.name == math::short_name(value.math);
@@ -150,41 +277,61 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (!info || (*info)->kind != TypeKind::object || !(*info)->native_storage)
             return fail(source_error(input, cls.file, cls.position, "Source classes require an existing native object base."));
         TypeDefinition definition; definition.kind = TypeKind::object; definition.name = cls.name; definition.base = *base;
-        std::vector<std::optional<Scalar>> defaults;
+        std::vector<FieldDefinition> fields;
         for (const auto& field : cls.fields) {
-            auto value = field_default(input, cls, field);
-            if (!value) return fail(value.error());
-            TypeId type;
-            if (field.type == "float") type = state_->contract->binding.f32;
-            else if (field.type == "double") type = state_->contract->binding.f64;
-            else if (field.type == "int") type = state_->contract->binding.i32;
-            else if (field.type == "uint") type = state_->contract->binding.u32;
-            else type = state_->contract->binding.boolean;
-            FieldDefinition declared; declared.name = field.name; declared.value = {type}; declared.default_value = *value;
-            definition.fields.push_back(std::move(declared)); defaults.emplace_back(std::move(*value));
+            auto declared = class_field(input, cls, field, module.value_types, state_->contract->binding, runtime);
+            if (!declared) return fail(declared.error());
+            fields.push_back(std::move(*declared));
         }
         const auto* kept = published ? find_named(published->source.classes, cls.name) : nullptr;
         if (kept) {
-            const auto& before = published->defaults[static_cast<std::size_t>(kept - published->source.classes.data())];
-            if (!std::equal(before.begin(), before.end(), defaults.begin(), defaults.end(), same_default))
-                return fail({ErrorCode::rebuild_required, "Published source class defaults changed; rebuild the Runtime context: " + cls.name});
-        } else definitions->push_back(std::move(definition));
-        module.defaults.push_back(std::move(defaults));
+            const auto& before = published->class_fields[static_cast<std::size_t>(kept - published->source.classes.data())];
+            for (std::size_t i = 0; i < fields.size(); ++i)
+                if (!same_field(before[i], fields[i]))
+                    return fail({ErrorCode::rebuild_required, "Published source class field changed its default, range or presentation; "
+                        "rebuild the Runtime context: " + cls.name + "." + fields[i].name});
+        } else {
+            definition.fields = fields;
+            definitions->push_back(std::move(definition));
+        }
+        module.class_fields.push_back(std::move(fields));
     }
     if (!definitions->empty()) {
         auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
-        if (!publication) return fail(publication.error());
+        if (!publication) {
+            // Runtime field rules end with `Class.field`; report them at that field.
+            const auto& error = publication.error();
+            for (const auto& cls : module.source.classes)
+                for (const auto& field : cls.fields)
+                    if (error.message.ends_with(": " + cls.name + "." + field.name))
+                        return fail(source_error(input, cls.file, field.position, error.message, error.code));
+            return fail(error);
+        }
         request->type_publication_ = *publication;
     }
     const auto catalog = request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
     request->compilation_contract_ = std::make_shared<const Contract>(runtime, TypeId{}, catalog);
-    if (!module.source.functions.empty()) {
-        ModuleRequest::Unit unit{request->compilation_contract_, {}, {}, {}, {}};
+    // A unit compiles its own text with the closure of the declarations it spells. Every top-level
+    // declaration is checked in its home unit: the project's, whose functions are the global
+    // entries, or its engine module's, which only checks.
+    const auto home = [&](std::string_view engine) {
+        std::vector<std::uint32_t> roots;
+        for (std::uint32_t i = 0; i < module.source.declarations.size(); ++i)
+            if (module.source.declarations[i].engine == engine) roots.push_back(i);
+        return roots;
+    };
+    if (const auto roots = home({}); !roots.empty()) {
+        ModuleRequest::Unit unit{request->compilation_contract_, module.source.closure(roots), {}, {}, {}, false};
         for (const auto& function : module.source.functions) {
             unit.names.push_back(function.name); unit.parameter_names.push_back(function.parameters);
         }
         module.units.push_back(std::move(unit));
     }
+    std::vector<std::string_view> engines;
+    for (const auto& declaration : module.source.declarations)
+        if (!declaration.engine.empty() && std::ranges::find(engines, declaration.engine) == engines.end()) engines.push_back(declaration.engine);
+    for (const auto engine : engines)
+        module.units.push_back({request->compilation_contract_, module.source.closure(home(engine)), {}, "engine/" + std::string(engine), {}, false});
     for (const auto& cls : module.source.classes) {
         const TypeInfo* info{};
         if (catalog.empty()) { auto found = runtime.find_type(cls.name); if (found) info = take(runtime.describe(*found)); }
@@ -192,14 +339,12 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (!info || !info->base) return fail(source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
         module.classes.push_back({cls.name, info->id, *info->base});
         if (cls.methods.empty()) continue;
-        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog), {}, {}, cls.name, {}};
+        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog), module.source.closure(cls.uses), {}, cls.name, {}, true};
         for (const auto& method : cls.methods) {
             unit.source.append(method.source); unit.names.push_back(method.name); unit.parameter_names.push_back(method.parameters);
         }
         module.units.push_back(std::move(unit));
     }
-    // An empty export set still uses the same parser to check all declarations.
-    if (module.units.empty()) module.units.push_back({request->compilation_contract_, {}, {}, {}, {}});
     return request;
 }
 
@@ -220,22 +365,45 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
         }
     }
     for (const auto& unit : request->module_->units) {
-        auto text = request->module_->source.common;
-        text.append(unit.source);
-        const EnvironmentView storage(unit.contract->binding);
-        const auto environment = storage.view(unit.contract->type_name.c_str());
-        std::vector<const char*> names;
-        for (const auto& name : unit.names) names.push_back(name.c_str());
-        std::vector<BusinessCode*> output(names.size());
-        std::vector<CodeOwner> codes;
-        codes.reserve(names.size());
-        CompileLocation location{}; char diagnostic[2048]{};
-        const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
-            text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
-            names.data(), static_cast<std::uint32_t>(names.size()), !unit.owner.empty(), output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
-        for (auto* code : output) codes.emplace_back(code, &atelier_destroy_business);
-        if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
-            {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+        const auto& text = unit.source;
+        // A unit whose input matches the published unit keeps its machine code and entry codes without
+        // being checked or compiled again; its Versions are rebuilt for this snapshot and sequence.
+        const ModuleVersion* kept = nullptr;
+        if (owner->module) {
+            const auto& old = *owner->module->request;
+            const auto found = std::ranges::find(old.units, unit.owner, &ModuleRequest::Unit::owner);
+            // The unit text holds every declaration it compiles; a declaration moving between an engine and a
+            // project file keeps the text but changes the exports, so the names are compared as well.
+            if (found != old.units.end() && found->source.text == unit.source.text && found->names == unit.names &&
+                old.snapshot->name == snapshot.name &&
+                old.options == request->module_->options && found->contract->binding == unit.contract->binding)
+                kept = owner->module.get();
+        }
+        const auto entry_name = [&](const std::string& method) { return unit.receiver ? unit.owner + "." + method : method; };
+        const auto kept_index = [&](const std::string& name) {
+            return static_cast<std::size_t>(std::ranges::find(kept->entries, name, &EntryInfo::name) - kept->entries.begin());
+        };
+        std::vector<std::shared_ptr<BusinessCode>> codes;
+        codes.reserve(unit.names.size());
+        if (kept) {
+            for (const auto& method : unit.names) codes.push_back(kept->versions[kept_index(entry_name(method))]->code);
+        } else {
+            const EnvironmentView storage(unit.contract->binding);
+            const auto environment = storage.view(unit.contract->type_name.c_str());
+            std::vector<const char*> names;
+            for (const auto& name : unit.names) names.push_back(name.c_str());
+            std::vector<BusinessCode*> output(names.size());
+            std::vector<CodeOwner> owned;
+            owned.reserve(names.size());
+            CompileLocation location{}; char diagnostic[2048]{};
+            const auto status = atelier_compile_business_entries(&unit.contract->actual_services, request->source_name.c_str(),
+                text.text.data(), static_cast<std::uint32_t>(text.text.size()), &environment,
+                names.data(), static_cast<std::uint32_t>(names.size()), unit.receiver, output.data(), &location, diagnostic, sizeof(diagnostic), request->options);
+            for (auto* code : output) owned.emplace_back(code, &atelier_destroy_business);
+            if (status) return std::unexpected(mapped_error(*request->module_->snapshot, text,
+                {static_cast<std::size_t>(location.offset), static_cast<std::size_t>(location.line), static_cast<std::size_t>(location.column)}, diagnostic));
+            for (auto& code : owned) codes.push_back(std::move(code));
+        }
         auto map = std::make_shared<const SourceMap>(SourceMap{request->module_->snapshot, text.pieces});
         std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
         std::shared_ptr<const DebugTables> debug_tables;
@@ -251,7 +419,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             auto signature = unit.contract->resolve_signature(info, request->type_publication_.get());
             if (!signature) return std::unexpected(signature.error());
             const auto& method = unit.names[i];
-            if (!unit.owner.empty()) {
+            if (unit.receiver) {
                 const bool tick = method == "tick" || method == "post_physics_tick" || method == "late_tick";
                 if ((tick || method == "begin" || method == "end") &&
                     (signature->result || signature->parameters.size() != (tick ? 1u : 0u) ||
@@ -261,8 +429,9 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                         "Lifecycle methods require void begin(), void tick(float), void post_physics_tick(float), "
                         "void late_tick(float), or void end()."});
             }
-            const auto name = unit.owner.empty() ? method : unit.owner + "." + method;
-            module->entries.push_back({name, *signature, unit.parameter_names[i]});
+            const auto name = entry_name(method);
+            const auto code = kept ? kept->entries[kept_index(name)].code : next_entry_code.fetch_add(1, std::memory_order_relaxed);
+            module->entries.push_back({name, *signature, unit.parameter_names[i], code});
             auto declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{owner->id, request->sequence,
                 name, request->source_name, locations});
@@ -303,6 +472,7 @@ Result<void> Program::publish_module(Candidate& candidate) {
     }
     state_->contract = prepared.compilation_contract;
     state_->published_request = prepared.sequence;
+    ++state_->revision;
     state_->module = std::move(prepared.module);
     return {};
 }

@@ -225,7 +225,7 @@ Project 配置 + Source 文件快照
   → 独立 Session → start → update → stop
 ```
 
-Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路径排序。每份文件保留正文和版本；上限为 256 份、单份 1 MiB、总计 16 MiB。源码编译是同步、整工程候选发布；没有逐文件混合发布或磁盘机器码缓存。未改变内容不会重复编译。轮询依赖修改时间和大小，显式 Build 会重新读取内容。
+Source 目录递归收集 `.source` 文件，排除 `.ui.source`，按相对路径排序，其后追加引擎附带的 `engine/` 源码（见[项目快照](../../source-function-modules.md#项目快照与多个公开入口)）。每份文件保留正文和版本；工程文件上限为 256 份，单份 1 MiB，工程与引擎文件总计 16 MiB。源码编译是同步、整工程候选发布；没有逐文件混合发布或磁盘机器码缓存。未改变内容不会重复编译。轮询依赖工程文件和引擎文件的修改时间和大小，显式 Build 会重新读取内容。
 
 Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有者。退出顺序保证 End 能访问行为代码，World 先于代码释放，Runtime 最后销毁。PhysicsScene 是 World 登记的模拟系统，Session::update 只调用 `World::update`，物理子步在其中推进。编辑器 UI Runtime 由 Workspace 独立拥有，场景替换不会让 UI 借用失效的运行时。
 
@@ -242,7 +242,7 @@ Session 在创建对象之前调用 Prepare，独占保有返回的代码拥有�
 | `add` | `parent`（身份或 null）、`index`、`graph` | 一个根 Entity 及其子树，graph 由 `serialize_live_subtree` 生成：保留身份，graph 外的引用写作 `{"$ref":身份}`。新对象按运行中插入的规则立即 Begin。 |
 | `attach` | `entity`、`index`、`graph` | 给已有 Entity 增加组件。graph 中该 Entity 的记录为 `{"id","existing":true,"children":[],"components":[...]}`，由 `serialize_live_components` 生成。 |
 | `remove` | `id` | 经 World 退出链销毁 Entity（连同子树）或 Component，End 照常执行；之后可以用同一身份再次 `add`（撤销删除）。 |
-| `set` | `id`，可选 `name`、`enabled`、`space`、`properties`、`base_color`/`roughness`/`metallic`/`emissive`、`materials`、`sky_map` | `properties` 是稀疏记录，只写出现的叶，游戏写过的其他字段不受影响；标量叶作为一次组写入经过 `World::write` 的夹值、校验和准入，跨字段规则（例如整体平移一个探针体积）只对最终组合检查；String 叶逐个整值写入。World 设置是 Environment 组件的属性，同样走 `set`；首次编辑时编辑器转发一条带完整组件的 `add`，撤销它转发 `remove`。`space` 为 null 时移除空间；记录中缺省的叶保持当前值，`origin` 取 `"0"`（世界）、null（继承）或身份。物理接管的 Entity 改位姿时由模拟系统瞬移。`materials` 是完整绑定表。`sky_map` 是 Environment 的天空贴图键，Play 在自己的 Project 中解析；目录里还没有这个键时先刷新一次 Project（文件可能是 Play 打开之后才加入的），仍解析不到时以对应资源种类的 warning 报告，键照常写入、天空没有贴图，与文档一侧相同，不算分歧。`add` 中的天空贴图键即使之前在 Play 里解析失败过也重新读取，因为编辑器可能在文件恢复之后才发来它。 |
+| `set` | `id`，可选 `name`、`enabled`、`space`、`properties`、`base_color`/`roughness`/`metallic`/`emissive`、`materials`、`sky_map` | `properties` 是稀疏记录，只写出现的叶，游戏写过的其他字段不受影响；记录按严格规则解码，越界即拒；标量叶作为一次组写入经过 `World::write` 的校验和准入，跨字段规则（例如整体平移一个探针体积）只对最终组合检查；String 与 Array 叶逐个整值写入。World 设置是 Environment 组件的属性，同样走 `set`；首次编辑时编辑器转发一条带完整组件的 `add`，撤销它转发 `remove`。`space` 为 null 时移除空间；记录中缺省的叶保持当前值，`origin` 取 `"0"`（世界）、null（继承）或身份。物理接管的 Entity 改位姿时由模拟系统瞬移。`materials` 是完整绑定表。`sky_map` 是 Environment 的天空贴图键，Play 在自己的 Project 中解析；目录里还没有这个键时先刷新一次 Project（文件可能是 Play 打开之后才加入的），仍解析不到时以对应资源种类的 warning 报告，键照常写入、天空没有贴图，与文档一侧相同，不算分歧。`add` 中的天空贴图键即使之前在 Play 里解析失败过也重新读取，因为编辑器可能在文件恢复之后才发来它。 |
 | `move` | `id`、`parent`、`index`、`space` | 以 keep-world 改父级和顺序，再写入最终局部 TRS。 |
 | `materials` | `materials`（Scene 材质定义列表） | 已有身份按定义更新值；新身份创建后登记。绑定新材质前先发送它的定义。Play 读不到的来源、父材质或贴图与宽容加载一样以替代品应用，并报告警告。 |
 | `resource` | `key`、`material`（`.material` 资产内容） | Play 已加载的同键材质原地更新，引用它的实例随之变化；未加载的键只登记，供之后的 `add` 使用。新导入的 Mesh / Texture / 天空贴图由 `add` 按需从磁盘读取。 |

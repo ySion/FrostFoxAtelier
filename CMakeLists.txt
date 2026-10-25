@@ -117,6 +117,9 @@ add_library(atelier_rendering STATIC src/rendering/sky_map.cpp)
 atelier_target(atelier_rendering)
 target_include_directories(atelier_rendering PUBLIC src)
 
+include(cmake/procedural.cmake)
+atelier_add_procedural()
+
 include(cmake/world.cmake)
 atelier_add_world()
 

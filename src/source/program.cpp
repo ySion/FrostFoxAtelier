@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 
 #include <limits>
@@ -27,6 +28,8 @@ std::uint64_t next_program_id() {
         if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) return value;
     }
 }
+// Entry codes are unique across every Program in the process, so caches may outlive a Program.
+std::atomic<std::uint64_t> next_entry_code{1};
 // Project units map combined-text offsets back to snapshot files on demand.
 struct SourceMap {
     std::shared_ptr<const SourceSnapshot> snapshot;
@@ -72,17 +75,18 @@ template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
-bool same_default(const std::optional<Scalar>& a, const std::optional<Scalar>& b) {
-    if (!a || !b) return a.has_value() == b.has_value();
+// Floating leaves compare by representation, so signed zeros differ.
+bool same_scalar(const Scalar& a, const Scalar& b) {
     return std::visit([&](const auto& value) {
         using T = std::remove_cvref_t<decltype(value)>;
-        const auto* other = std::get_if<T>(&*b);
+        const auto* other = std::get_if<T>(&b);
         if (!other) return false;
         if constexpr (std::same_as<T, float>) return std::bit_cast<std::uint32_t>(value) == std::bit_cast<std::uint32_t>(*other);
         else if constexpr (std::same_as<T, double>) return std::bit_cast<std::uint64_t>(value) == std::bit_cast<std::uint64_t>(*other);
         else return value == *other;
-    }, *a);
+    }, a);
 }
+bool same_leaves(const std::vector<Scalar>& a, const std::vector<Scalar>& b) { return std::ranges::equal(a, b, same_scalar); }
 }
 namespace {
 Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations, const Binding& binding) {
@@ -154,7 +158,7 @@ struct Program::Metadata {
         for (std::size_t i = 0; i < value.fields.size(); ++i) {
             const auto& a = actual.fields[i];
             const auto& b = value.fields[i];
-            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset || !same_default(a.default_value, b.default_value)) return false;
+            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset || !same_leaves(a.default_leaves, b.default_leaves)) return false;
         }
         for (std::size_t i = 0; i < value.methods.size(); ++i) {
             const auto& a = actual.methods[i];
@@ -275,14 +279,15 @@ struct Program::Version {
     std::shared_ptr<const Contract> contract;
     std::shared_ptr<const Declaration> declaration;
     std::uint64_t sequence;
-    CodeOwner code;
+    // Shared: a project unit compiled from identical input reuses its code in the next Version.
+    std::shared_ptr<BusinessCode> code;
     BusinessCodeInfo info;
     BusinessFrameLayout layout;
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
     std::shared_ptr<const DebugMetadata> debug;
     std::shared_ptr<const SourceMap> map;
     Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared,
-        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, CodeOwner owner,
+        std::uint64_t request, std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session, std::shared_ptr<BusinessCode> owner,
         std::shared_ptr<const SourceMap> source_map = {}) noexcept
         : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())), diagnostic(std::move(capture)),
@@ -374,7 +379,7 @@ struct Program::State {
     std::shared_ptr<const Version> current;
     std::shared_ptr<const ModuleVersion> module;
     const std::uint64_t id{next_program_id()};
-    std::uint64_t latest_request{}, published_request{};
+    std::uint64_t latest_request{}, published_request{}, revision{};
     bool open{true};
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
     std::optional<std::size_t> find(std::string_view name) const {
@@ -848,6 +853,7 @@ Result<void> Program::try_publish(Candidate& candidate) {
     owner->contract = prepared.compilation_contract;
     owner->declaration = std::move(declaration);
     owner->published_request = prepared.sequence;
+    ++owner->revision;
     owner->current = std::move(version);
     return {};
 }

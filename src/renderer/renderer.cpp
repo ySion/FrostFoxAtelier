@@ -282,35 +282,11 @@ SceneTriangle prepare_triangle(const geometry::Mesh& mesh, std::size_t index) {
 }
 Instance prepare_instance(const MeshInstance &mesh) {
     const auto &m = mesh.world;
-    const double a = m[0], b = m[1], c = m[2];
-    const double d = m[4], e = m[5], f = m[6];
-    const double g = m[8], h = m[9], i = m[10];
-    // Cofactor rows are inverse-transpose rows times determinant. Double
-    // intermediates avoid overflow/underflow for finite float matrix entries.
-    const std::array<double, 9> cofactors{e * i - f * h, f * g - d * i, d * h - e * g,
-                                          c * h - b * i, a * i - c * g, b * g - a * h,
-                                          b * f - c * e, c * d - a * f, a * e - b * d};
-    const double determinant = a * cofactors[0] + b * cofactors[1] + c * cofactors[2];
-    if (determinant == 0) throw error(rhi::ErrorCode::invalid_argument, "Mesh world matrix is singular");
-    Instance result{mesh.world, {}, mesh.selected ? 1.0f : 0.0f, determinant<0?-1.f:1.f};
-    // One common factor preserves inverse-transpose row weights for arbitrary
-    // vertex normals. Double cofactors also support very small/large scales.
-    double maximum = 0;
-    for (double value : cofactors) maximum = std::max(maximum, std::abs(value));
-    const double sign = determinant < 0 ? -1. : 1.;
-    for (std::size_t n = 0; n < cofactors.size(); ++n)
-        result.normal_matrix[n] = static_cast<float>(sign * cofactors[n] / maximum);
-    // Test the actual FP32 representation, including GPU flush-to-zero. A
-    // nonzero double determinant alone does not guarantee a usable GPU matrix.
-    for (float& value : result.normal_matrix)
-        if (std::abs(value) < std::numeric_limits<float>::min()) value = 0;
-    const auto& normal = result.normal_matrix;
-    const double gpu_determinant = double(normal[0])*(double(normal[4])*normal[8]-double(normal[5])*normal[7])
-        - double(normal[1])*(double(normal[3])*normal[8]-double(normal[5])*normal[6])
-        + double(normal[2])*(double(normal[3])*normal[7]-double(normal[4])*normal[6]);
-    if (gpu_determinant == 0)
-        throw error(rhi::ErrorCode::invalid_argument, "Mesh normal transform cannot be represented by GPU floats");
-    return result;
+    const auto normal = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
+    if (!normal) throw error(rhi::ErrorCode::invalid_argument,
+        normal.error() == math::NormalTransformFailure::singular ? "Mesh world matrix is singular"
+                                                                  : "Mesh normal transform cannot be represented by GPU floats");
+    return {mesh.world, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
 }
 struct TextureKey {
     std::uint64_t identity, revision;

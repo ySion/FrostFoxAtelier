@@ -1,5 +1,6 @@
 #include "editor/project_code.hpp"
 #include "platform/windows_path.hpp"
+#include "procedural/graph.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
@@ -8,10 +9,6 @@
 namespace atelier::editor {
 namespace {
 auto fail(std::string message) {return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)});}
-std::uint64_t hash(std::string_view text,std::uint64_t seed=14695981039346656037ULL) {
-    for (const auto c:text) {seed^=static_cast<unsigned char>(c);seed*=1099511628211ULL;}
-    return seed?seed:1;
-}
 bool same(const source::SourceSnapshot& a,const source::SourceSnapshot& b) {
     if (a.files.size()!=b.files.size()) return false;
     for (std::size_t i=0;i<a.files.size();++i)
@@ -59,27 +56,27 @@ ProjectCode::ProjectCode(world::World& world):world_(world),report_(std::make_sh
 }
 Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     auto paths=project.source_paths();if (!paths) return std::unexpected(paths.error());
+    auto engine=source::engine_sources(source::default_engine_root());if (!engine) return std::unexpected(engine.error());
     source::SourceSnapshot result;result.name=utf8(project.name());result.version=14695981039346656037ULL;
     std::size_t bytes{};
+    const auto add=[&](source::SourceFile file) {
+        bytes+=file.source.size();if (bytes>16*1024*1024) return false;
+        result.version=source::content_hash(file.path,source::content_hash(file.source,result.version));
+        result.files.push_back(std::move(file));return true;
+    };
     for (const auto& relative:*paths) {
         auto path=project.resolve(relative);if (!path) return std::unexpected(path.error());
-        auto text=read_file(*path,1024*1024);if (!text) return std::unexpected(text.error());
-        bytes+=text->size();if (bytes>16*1024*1024) return fail("Project Source exceeds the 16 MiB compilation limit.");
-        try {static_cast<void>(wide(*text));}catch(const std::exception& error){return fail(error.what());}
-        const auto version=hash(*text);const auto name=utf8(relative.generic_wstring());
-        result.version=hash(name,hash(*text,result.version));
-        if (text->starts_with("\xef\xbb\xbf")) text->erase(0,3);
-        result.files.push_back({name,version,std::move(*text)});
+        auto file=source::read_source_file(*path,utf8(relative.generic_wstring()));if (!file) return std::unexpected(file.error());
+        if (!add(std::move(*file))) return fail("Project and engine Source exceed the 16 MiB compilation limit.");
     }
+    for (auto& file:*engine) if (!add(std::move(file))) return fail("Project and engine Source exceed the 16 MiB compilation limit.");
     return result;
 }
 Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project& project) {
     if(project.ui_source().empty()) return std::optional<source::SourceFile>{};
     auto path=project.resolve(project.ui_source());if(!path) return std::unexpected(path.error());
-    auto content=read_file(*path,1024*1024);if(!content) return std::unexpected(content.error());
-    try {static_cast<void>(wide(*content));}catch(const std::exception& error){return fail(error.what());}
-    const auto version=hash(*content);if(content->starts_with("\xef\xbb\xbf")) content->erase(0,3);
-    return source::SourceFile{utf8(project.ui_source().generic_wstring()),version,std::move(*content)};
+    auto file=source::read_source_file(*path,utf8(project.ui_source().generic_wstring()));if(!file) return std::unexpected(file.error());
+    return std::optional<source::SourceFile>{std::move(*file)};
 }
 Result<void> ProjectCode::build(const Project& project) {
     auto next=std::make_shared<ProjectBuild>();next->published_version=report_->published_version;
@@ -107,7 +104,11 @@ Result<void> ProjectCode::build(const Project& project) {
         while (world_.runtime().collection_phase()!=CollectionPhase::idle) {
             auto step=world_.runtime().collect_step({1024});if (!step) return reject(step.error());
         }
-        if (!program_) program_=std::make_unique<source::Program>(world_.runtime());
+        if (!program_) {
+            // The engine Source in every snapshot declares procedural nodes.
+            if (auto registered=procedural::register_types(world_.runtime());!registered) return reject(registered.error());
+            program_=std::make_unique<source::Program>(world_.runtime());
+        }
         // Request through publish runs synchronously here, and this is the Runtime's only
         // Program, so no other producer can invalidate the candidate; an asynchronous
         // build would need to re-request once when publication reports a stale catalog.
@@ -120,7 +121,7 @@ Result<void> ProjectCode::build(const Project& project) {
         // Published code may fix isolated objects; they resume without a second Begin.
         if (world_.running()) if (auto cleared=world_.clear_faults();!cleared) return reject(cleared.error());
     }
-    next->published_version=next->ui_source?hash(next->ui_source->source,next->sources->version):next->sources->version;
+    next->published_version=next->ui_source?source::content_hash(next->ui_source->source,next->sources->version):next->sources->version;
     published_=next;report_=std::move(next);return {};
 }
 // Compatible publications may add classes or lifecycle methods; those need a
@@ -177,12 +178,18 @@ Result<void> ProjectCode::poll(const Project& project,bool force) {
     next_poll_=now+std::chrono::milliseconds(500);
     auto paths=project.source_paths();if (!paths) return build(project);
     if(!project.ui_source().empty()) paths->push_back(project.ui_source());
-    std::vector<Stamp> stamps;stamps.reserve(paths->size());
+    const auto engine_root=source::default_engine_root();
+    auto engine=source::engine_source_paths(engine_root);if (!engine) return build(project);
+    std::vector<Stamp> stamps;stamps.reserve(paths->size()+engine->size());
     try {
         for (const auto& relative:*paths) {
             const auto path=project.resolve(relative);if (!path) return build(project);
             const auto native=platform::windows_file_path(*path);
             stamps.push_back({relative,std::filesystem::last_write_time(native),std::filesystem::file_size(native)});
+        }
+        for (const auto& relative:*engine) {
+            const auto native=platform::windows_file_path(engine_root/relative);
+            stamps.push_back({native,std::filesystem::last_write_time(native),std::filesystem::file_size(native)});
         }
     } catch(const std::exception&) {return build(project);}
     if (!force && stamps==stamps_) return {};

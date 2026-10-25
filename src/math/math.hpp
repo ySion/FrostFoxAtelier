@@ -7,6 +7,7 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <expected>
 #include <limits>
 #include <optional>
 #include <type_traits>
@@ -146,9 +147,10 @@ template<Real T, std::size_t N>
     value /= scale;
     return value / std::sqrt(dot(value, value));
 }
+// Same formula as source math.lerp: exact at t = 0 and t = 1 for finite values, not monotonic.
 template<Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> lerp(BasicVector<T, N> a, BasicVector<T, N> b, std::type_identity_t<T> t) noexcept {
-    for (std::size_t i = 0; i < N; ++i) a[i] = std::lerp(a[i], b[i], t);
+    for (std::size_t i = 0; i < N; ++i) a[i] = a[i] * (T(1) - t) + b[i] * t;
     return a;
 }
 
@@ -348,6 +350,44 @@ template<Real T>
         result(0, 3) = result(1, 3) = result(2, 3) = T{};
         result(3, 3) = T{1};
     }
+    return result;
+}
+
+// The normal transform a GPU consumes for an affine linear part (row-major 3x3,
+// row vectors): sign(det) * cofactor matrix scaled by one common factor, which
+// keeps the inverse-transpose row weights. Fails when the double determinant of
+// the FP32 entries is zero (singular) or the scaled matrix becomes singular once
+// FP32 flushes denormals to zero (unrepresentable). The renderer and producers of
+// instance transforms share this test so neither accepts what the other rejects.
+struct NormalTransform {
+    std::array<float, 9> matrix;
+    float mirror; // -1 when the linear part reflects, else 1.
+};
+enum class NormalTransformFailure { singular, unrepresentable };
+[[nodiscard]] inline std::expected<NormalTransform, NormalTransformFailure>
+normal_transform(const std::array<float, 9>& linear) noexcept {
+    const double a = linear[0], b = linear[1], c = linear[2];
+    const double d = linear[3], e = linear[4], f = linear[5];
+    const double g = linear[6], h = linear[7], i = linear[8];
+    // Double intermediates avoid overflow/underflow for finite float entries.
+    const std::array<double, 9> cofactors{e * i - f * h, f * g - d * i, d * h - e * g,
+                                          c * h - b * i, a * i - c * g, b * g - a * h,
+                                          b * f - c * e, c * d - a * f, a * e - b * d};
+    const double determinant = a * cofactors[0] + b * cofactors[1] + c * cofactors[2];
+    if (determinant == 0) return std::unexpected(NormalTransformFailure::singular);
+    double maximum = 0;
+    for (double value : cofactors) maximum = std::max(maximum, std::abs(value));
+    const double sign = determinant < 0 ? -1. : 1.;
+    NormalTransform result{{}, determinant < 0 ? -1.f : 1.f};
+    for (std::size_t n = 0; n < cofactors.size(); ++n) {
+        result.matrix[n] = static_cast<float>(sign * cofactors[n] / maximum);
+        if (std::abs(result.matrix[n]) < std::numeric_limits<float>::min()) result.matrix[n] = 0;
+    }
+    const auto& m = result.matrix;
+    const double gpu_determinant = double(m[0])*(double(m[4])*m[8]-double(m[5])*m[7])
+        - double(m[1])*(double(m[3])*m[8]-double(m[5])*m[6])
+        + double(m[2])*(double(m[3])*m[7]-double(m[4])*m[6]);
+    if (gpu_determinant == 0) return std::unexpected(NormalTransformFailure::unrepresentable);
     return result;
 }
 

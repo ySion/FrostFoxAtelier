@@ -1,0 +1,20 @@
+// Moves each point by a random offset in [-amount, amount) per axis, scaled per axis. The offset
+// comes from the graph seed, the node's seed and the point's id, so it follows the point when
+// other points change.
+class procedural.Jitter : procedural.PointNode {
+    [Min = 0.0, Max = 1.0, LockMin, Label = "Amount", DESC = "每个轴上偏移的最大距离，单位 m。"]
+    float amount = 0.1f;
+    [Min = 0.0, Max = 1.0, LockMin, Label = "Axis Scale", DESC = "按轴缩放偏移；某一分量为 0 时不沿该轴移动。"]
+    vector3 axis_scale = vector3(1.0, 1.0, 1.0);
+    [Label = "Seed", DESC = "与图的种子混合后得到本节点的随机种子。"]
+    uint seed = 0;
+
+    void evaluate(const procedural.Context& context, Array<vector3>& P, const Array<uint>& id) {
+        const vector3 reach = self.axis_scale * self.amount;
+        const uint node_seed = procedural.hash2(context.seed, self.seed);
+        for (uint i = 0; i < P.size(); i = i + 1) {
+            const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
+            P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
+        }
+    }
+}

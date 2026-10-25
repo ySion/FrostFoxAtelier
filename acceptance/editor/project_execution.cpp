@@ -50,7 +50,8 @@ void wait(application::PlayProcess& process,std::chrono::seconds timeout) {
 void run(const std::filesystem::path& root) {
     auto project=take(editor::Project::create(root));
     const auto helper=root/"Source/Math.source",component=root/"Source/Move.source";
-    const std::string helpers="float travel(float speed,float dt) { return speed * dt; }\n";
+    // Project Source calls the engine's procedural library; procedural.unit(2^31) is exactly 0.5.
+    const std::string helpers="float travel(float speed,float dt) { return speed * dt * (2.0f * procedural.unit(2147483648)); }\n";
     const std::string declaration="class project.Move : world.Component {\n    float speed = 2.0f;\n    bool moving = true;\n    uint ticks = 0;\n    void tick(float dt) {\n        if (self.moving) { self.translate_owner(travel(self.speed, dt), 0.0f, 0.0f); }\n        self.ticks = self.ticks + 1;\n    }\n}\n";
     {
         auto empty=editor::load_project_scene(project,take(editor::read_file(root/"Content/Scenes/Main.scene")));

@@ -66,13 +66,14 @@ public:
                 const auto position = token_.position;
                 const auto type = parameter_type();
                 if (!scalar(type)) reject(position, "Module constants require a scalar or enum type.");
-                const auto name = identifier();
-                if (math_reserved_name(name.text)) reject(name.position, "Module constants cannot replace built-in math names.");
-                if (std::ranges::any_of(constants_, [&](const auto& value) { return value.name == name.text; }))
-                    reject(name.position, "Duplicate module constant name.");
+                const auto name_position = token_.position;
+                const auto name = qualified_identifier();
+                if (math_reserved_name(name)) reject(name_position, "Module constants cannot replace built-in math names.");
+                if (std::ranges::any_of(constants_, [&](const auto& value) { return value.name == name; }))
+                    reject(name_position, "Duplicate module constant name.");
                 if (constants_.size() == 1024) reject(position, "A source module supports at most 1024 constants.");
                 expect("=");
-                constants_.push_back({std::string(name.text), type, name.position, lexer_, token_});
+                constants_.push_back({name, type, name_position, lexer_, token_});
                 while (!accept(";")) {
                     if (token_.kind == Token::Kind::end || token_.text == "{" || token_.text == "}")
                         reject(token_.position, "Expected ';' to close a module constant.");
@@ -112,7 +113,7 @@ public:
         }
         for (std::size_t i = 0; i < constants_.size(); ++i) resolve_constant(i);
         if (module_.functions.empty()) return std::move(module_);
-        if (entry_name.empty() && module_.functions.size() != 1)
+        if (entry_name.empty() && module_.functions.size() != 1 && !allow_declarations)
             reject({}, "A multi-function module requires an explicit host entry name.");
         bool found = entry_name.empty();
         for (std::size_t i = 0; i < module_.functions.size(); ++i) {
@@ -156,7 +157,7 @@ private:
         return ValueType::void_value;
     }
     bool math_reserved_name(std::string_view name) const noexcept {
-        return name == "math" || math_named_type(name) != ValueType::void_value;
+        return name == "math" || name.starts_with("math.") || math_named_type(name) != ValueType::void_value;
     }
     ValueType named_type(std::string_view name, SourcePosition position) const {
         if (name == "bool") return ValueType::boolean;
@@ -213,9 +214,10 @@ private:
         if (function_.is_coroutine && aggregate(function_.result))
             reject(function_.position, "async aggregate results are not supported by the task result contract.");
         if (plain_record(function_.result) && !math_type(function_.result)) function_.uses_scoped_values = true;
-        const auto name = identifier();
-        if (math_reserved_name(name.text)) reject(name.position, "Source functions cannot replace math constructors or the math namespace.");
-        function_.function_name = name.text;
+        const auto name_position = token_.position;
+        const auto name = qualified_identifier();
+        if (math_reserved_name(name)) reject(name_position, "Source functions cannot replace math constructors or the math namespace.");
+        function_.function_name = name;
         expect("(");
         if (!accept(")")) {
             do {
@@ -245,10 +247,22 @@ private:
     void analyze_calls() {
         // Summarize direct effects before propagating callee effects bottom-up.
         for (auto& function : module_.functions) {
-            std::vector<bool> allowed(function.expressions.size());
+            // A self node preserves borrows only if every use is a BorrowSafe call or a by-value field
+            // read; `(self.v).x = 1` shares its self node with the unused `self.v` read it was projected from.
+            std::vector<bool> allowed(function.expressions.size()), blocked(function.expressions.size()),
+                stored(function.expressions.size());
             function.preserves_borrows = true;
-            for (const auto& node : function.expressions) {
+            for (const auto& statement : function.statements)
+                if (statement.kind == Statement::Kind::assign) stored[statement.target] = true;
+            for (const auto& node : function.expressions)
+                if (node.kind == Expression::Kind::call)
+                    for (std::size_t i = 0; i < node.arguments.size(); ++i)
+                        if (node.argument_passing[i] != ParameterPassing::value) stored[node.arguments[i]] = true;
+            for (std::size_t i = 0; i < function.expressions.size(); ++i) {
+                const auto& node = function.expressions[i];
                 if (node.kind == Expression::Kind::receiver) function.requires_receiver = true;
+                if (node.kind == Expression::Kind::field && function.expressions[node.receiver].kind == Expression::Kind::receiver)
+                    (stored[i] ? blocked : allowed)[node.receiver] = true;
                 if (node.kind != Expression::Kind::call) continue;
                 if (!environment_.methods[node.value].preserves_borrows ||
                     function.expressions[node.receiver].kind != Expression::Kind::receiver)
@@ -256,7 +270,7 @@ private:
                 else allowed[node.receiver] = true;
             }
             for (std::size_t i = 0; i < function.expressions.size(); ++i)
-                if (reference_type(function.expressions[i].type) && !allowed[i]) function.preserves_borrows = false;
+                if (reference_type(function.expressions[i].type) && (!allowed[i] || blocked[i])) function.preserves_borrows = false;
             for (const auto& local : function.locals)
                 if (reference_type(local.type)) function.preserves_borrows = false;
         }
@@ -287,7 +301,7 @@ private:
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
                         reject(function.position, "Scoped value execution in '" + function.function_name +
-                            "' reaches suspension, object operations or a native call without BorrowSafe.");
+                            "' reaches suspension, an object operation other than reading a self field, or a native call without BorrowSafe.");
                     states[cursor.function] = State::complete; stack.pop_back();
                 }
             }
@@ -1072,15 +1086,48 @@ private:
         else if (name == "math.transform_point") { operation = MathOperation::transform_point; arity = 2; }
         else if (name == "math.transform_direction") { operation = MathOperation::transform_direction; arity = 2; }
         else if (name == "math.sqrt") operation = MathOperation::square_root;
+        else if (name == "math.floor") operation = MathOperation::floor;
+        else if (name == "math.ceil") operation = MathOperation::ceil;
+        else if (name == "math.trunc") operation = MathOperation::trunc;
+        else if (name == "math.fract") operation = MathOperation::fract;
+        else if (name == "math.abs") operation = MathOperation::abs;
+        else if (name == "math.sign") operation = MathOperation::sign;
+        else if (name == "math.min") { operation = MathOperation::min; arity = 2; }
+        else if (name == "math.max") { operation = MathOperation::max; arity = 2; }
+        else if (name == "math.step") { operation = MathOperation::step; arity = 2; }
+        else if (name == "math.clamp") { operation = MathOperation::clamp; arity = 3; }
+        else if (name == "math.lerp") { operation = MathOperation::lerp; arity = 3; }
+        else if (name == "math.smoothstep") { operation = MathOperation::smoothstep; arity = 3; }
+        else if (name == "math.sin") operation = MathOperation::sin;
+        else if (name == "math.cos") operation = MathOperation::cos;
+        else if (name == "math.atan2") { operation = MathOperation::atan2; arity = 2; }
+        else if (name == "math.exp") operation = MathOperation::exp;
+        else if (name == "math.log") operation = MathOperation::log;
+        else if (name == "math.pow") { operation = MathOperation::pow; arity = 2; }
         else reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
         if (arguments.size() != arity) reject(position, "Math operation argument count mismatch.");
         const auto first = function_.expressions[arguments[0]].type;
         const auto descriptor = math_type(first);
         auto result_type = first;
-        switch (operation) {
-        case MathOperation::square_root:
-            if (!floating(first)) reject(position, "math.sqrt requires float or double.");
-            break;
+        if (operation >= MathOperation::square_root) {
+            // Element-wise: the result is the vector argument's type, or the scalar
+            // type when every argument is scalar; scalar arguments apply to every lane.
+            for (const auto argument : arguments) {
+                const auto type = function_.expressions[argument].type;
+                if (math_type(type).vector()) { result_type = type; break; }
+            }
+            const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
+            if (operation >= MathOperation::sin && lane != ValueType::f32)
+                reject(position, std::string(name) + " requires float scalars or vectors.");
+            if (!floating(lane))
+                reject(position, std::string(name) + " requires float or double scalars or vectors.");
+            for (const auto argument : arguments) {
+                const auto type = function_.expressions[argument].type;
+                if (type != result_type && type != lane)
+                    reject(function_.expressions[argument].position, std::string(name) +
+                        " arguments must have the result type or its component type; numeric types and precision do not convert implicitly.");
+            }
+        } else switch (operation) {
         case MathOperation::dot:
         case MathOperation::cross:
             if (!descriptor.vector() || (operation == MathOperation::cross && descriptor.shape != math::Shape::vector3))
@@ -1116,6 +1163,7 @@ private:
                 reject(position, "Transform operations require a vector3 followed by a matrix4 of matching precision.");
             break;
         }
+        default: break;
         }
         Expression result{Expression::Kind::math_intrinsic, result_type, position};
         result.math_operation = operation;
@@ -1131,22 +1179,7 @@ private:
         }
         if (token.kind == Token::Kind::string) {
             consume();
-            std::string value;
-            for (std::size_t i = 1; i + 1 < token.text.size(); ++i) {
-                char c = token.text[i];
-                if (c == '\\') {
-                    c = token.text[++i];
-                    switch (c) {
-                    case '\\': case '"': break;
-                    case 'n': c = '\n'; break;
-                    case 'r': c = '\r'; break;
-                    case 't': c = '\t'; break;
-                    case '0': c = '\0'; break;
-                    default: reject(token.position, "Unsupported string escape.");
-                    }
-                }
-                value.push_back(c);
-            }
+            auto value = string_value(token);
             for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
                 if (environment_.values[i].kind != ValueType::string || !environment_.values[i].can_own || !environment_.values[i].can_mutate) continue;
                 function_.uses_scoped_values = true;
@@ -1199,6 +1232,13 @@ private:
                 }
                 reject(token.position, "Unknown enum type.");
             }
+            // Any other dotted name not led by a local or self is a qualified module function or constant.
+            if (name.size() != token.text.size() && token.text != "self" &&
+                std::ranges::none_of(visible_, [&](auto local) { return function_.locals[local].name == token.text; })) {
+                const auto qualified = qualified_identifier();
+                if (accept("(")) return source_call(qualified, token.position);
+                return module_constant(qualified, token.position);
+            }
         }
         consume();
         if (token.text == "true" || token.text == "false")
@@ -1234,32 +1274,37 @@ private:
                 return add(Expression{Expression::Kind::local, local_value.type, token.position,
                     no_node, no_node, *iterator});
         }
+        if (accept("(")) return source_call(token.text, token.position);
+        return module_constant(token.text, token.position);
+    }
+    NodeId module_constant(std::string_view name, SourcePosition position) {
         for (std::size_t i = 0; i < constants_.size(); ++i) {
-            if (constants_[i].name != token.text) continue;
+            if (constants_[i].name != name) continue;
             resolve_constant(i);
-            const auto node = literal(constants_[i].type, token.position, constants_[i].bits);
+            const auto node = literal(constants_[i].type, position, constants_[i].bits);
             function_.expressions[node].typed_constant = true;
             return node;
         }
-        if (accept("(")) {
-            for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
-                const auto& target = module_.functions[i];
-                if (target.function_name != token.text) continue;
-                if (target.is_coroutine) reject(token.position, "Source calls require a synchronous function; async entries are started by the host.");
-                Expression call{Expression::Kind::source_call, target.result, token.position, no_node, no_node, i};
-                if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
-                call.arguments = call_arguments(target.parameters);
-                for (std::size_t parameter = 0; parameter < target.parameters.size(); ++parameter) {
-                    const auto mode = target.parameters[parameter].passing;
-                    if (mode != ParameterPassing::value && function_.expressions[call.arguments[parameter]].kind == Expression::Kind::field)
-                        reject(token.position, "Runtime object fields may only be borrowed by protected native calls.");
-                    call.argument_passing.push_back(mode);
-                }
-                return add(std::move(call));
+        reject(position, "Unknown identifier '" + std::string(name) + "'.");
+    }
+    // Called after the opening parenthesis.
+    NodeId source_call(std::string_view name, SourcePosition position) {
+        for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
+            const auto& target = module_.functions[i];
+            if (target.function_name != name) continue;
+            if (target.is_coroutine) reject(position, "Source calls require a synchronous function; async entries are started by the host.");
+            Expression call{Expression::Kind::source_call, target.result, position, no_node, no_node, i};
+            if (plain_record(call.type) && !math_type(call.type)) function_.uses_scoped_values = true;
+            call.arguments = call_arguments(target.parameters);
+            for (std::size_t parameter = 0; parameter < target.parameters.size(); ++parameter) {
+                const auto mode = target.parameters[parameter].passing;
+                if (mode != ParameterPassing::value && function_.expressions[call.arguments[parameter]].kind == Expression::Kind::field)
+                    reject(position, "Runtime object fields may only be borrowed by protected native calls.");
+                call.argument_passing.push_back(mode);
             }
-            reject(token.position, "Unknown source function '" + std::string(token.text) + "'.");
+            return add(std::move(call));
         }
-        reject(token.position, "Unknown identifier '" + std::string(token.text) + "'.");
+        reject(position, "Unknown source function '" + std::string(name) + "'.");
     }
 
     Environment environment_;

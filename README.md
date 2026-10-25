@@ -2,6 +2,8 @@
 
 面向 Windows x64 游戏的精简引擎工具包。C++ 与自有业务语言共享 Runtime 的类型、对象身份和生命周期；业务语言经 JIT 编译成本机代码后执行。
 
+硬件基线：CPU 为支持 FMA3 的 x64（源码 JIT 创建后端时检查，缺少时编译失败并写明原因）；GPU 需同时支持 Mesh Shader 与 DXR 1.1 inline RayQuery（DX12 Ultimate 一档，见 [RHI 图形验收](#rhi-图形验收)）。两者都不保留旧硬件回退路径。
+
 项目协作入口为 [AGENTS.md](AGENTS.md)，工程约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。以下概览描述当前源码树的能力；具体语法、合同和验收证据由对应模块文档维护。
 
 ## 当前能力与文档入口
@@ -16,6 +18,7 @@
 | Runtime / JIT 诊断 | 按需调用计数与计时、GC/拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
 | Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 9 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
+| 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、撒点/变换/Promote/Copy to Points 等 C++ 操作、实例按块发布；由 Runtime 对象构成的节点图与按内容键缓存的增量求值；尚未接入场景与编辑器 | [程序化模块](docs/modules/procedural/README.md) |
 | C++ 基础库与反射 | Array/String、共享不可变的 SharedArray、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -112,7 +115,7 @@ debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 
 
 CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单，总入口 `acceptance` 依赖两者，只供手动排查，不是交付或集成要求。直接运行 CMake 目标不取得跨工作树锁，也没有脚本的逐目标超时保护和验证级别设置；必要测试应使用脚本。
 
-- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、物理、布局、生产 UI、文档、恢复、材质、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
+- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、程序化、物理、布局、生产 UI、文档、恢复、材质、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
 - `acceptance_window`：RHI、Renderer、Control 与全部自动化编辑器窗口目标。先 CPU 后 GPU/窗口的混合目标整体归此层；Ninja console pool 保持串行，脚本也逐目标调用构建命令。Renderer 每个入口是一个目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，如 `renderer_acceptance_scene_lit_temporal`），各自一个进程和窗口，限时 1800 秒；`renderer_acceptance` 汇总全部入口，只供手动运行。
 
 无窗口目标通过 `atelier_headless_acceptance` 注册，自有临时文件使用 `out/<配置>/acceptance-headless/<目标>/temp/`，日志为同目录 `output.log`。原有工程证据和 Cache 保留各自专用目录；只读字体等仍从构建目录读取。
@@ -244,7 +247,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 [模块函数消费者](acceptance/source/modules.cpp)覆盖前向/嵌套调用、直接定型参数、跨函数引用别名、逐层资源清理、对象根与 GC，以及 async 入口调用同步助手。宿主通过 `Program::request(name, source, entry_name)` 选择公开入口；整模块随代码版本一起发布和退休。当前内部调用图无环，不支持递归或调用 async 函数。详见[同模块多函数](docs/source-function-modules.md)。
 
-[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量默认值和具名多入口。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态并可追加类、方法、函数和类型，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量、向量与枚举字段默认值及字段属性（范围与展示文本）和具名多入口；值区间内只读 `self` 的继承原生字段与源码字段，不改变借用规则和 GC 规则（不盖写代号、不推进收集、借用存储不动），写入、字段借用和读取其他对象仍拒绝。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态并可追加类、方法、函数和类型，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
 
 [类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型可在创建对象后随代码更新追加，已发布类型的定义与身份保持不变；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
@@ -261,6 +264,8 @@ cmake --build --preset release --target atelier_source_measure
 ./out/release/atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
 # 代码生成证据：每个用例的 .s / 优化后 .ll、对象字节数，以及失败点密集模块的编译时间与内存
 ./out/release/atelier_source_measure.exe --artifacts out/codegen
+# 编译单元：500/3000 行合成引擎库、1/10/50 个类，改一个类、改被调用/没被调用的引擎函数后重新发布的耗时与 code 变化数
+./out/release/atelier_source_measure.exe --compile-units
 ```
 
 [机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。

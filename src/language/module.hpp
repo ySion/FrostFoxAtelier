@@ -2,6 +2,10 @@
 #include "language/source.hpp"
 #include "language/snapshot.hpp"
 
+#include <array>
+#include <optional>
+#include <span>
+
 namespace atelier::language {
 struct SourcePiece { std::size_t begin{}, end{}, offset{}; std::uint32_t file{}; };
 struct MappedSource {
@@ -11,23 +15,49 @@ struct MappedSource {
     void append(const SourceFile&, std::uint32_t file, std::size_t begin, std::size_t end);
 };
 struct ModuleDiagnostic { std::uint32_t file{}; Diagnostic diagnostic; };
-struct ClassField { std::string name, type; MappedSource initializer; SourcePosition position; };
+// Syntax only; types, defaults and bounds resolve when the snapshot is prepared.
+struct ClassField {
+    std::string name, type; MappedSource initializer; SourcePosition position;
+    // An initializer spelled exactly `name(arguments)` or `name::item` also keeps that shape:
+    // math vector and enum fields require it, scalar fields fold the whole initializer.
+    std::string initializer_name, initializer_item;
+    std::vector<MappedSource> initializer_arguments;
+    // Attributes. LockMin/LockMax already copy their UI bound to the hard side.
+    std::string label, category, description;
+    std::array<MappedSource, 4> bounds; // ui_min, ui_max, hard_min, hard_max
+    std::optional<SourcePosition> range; // the first range attribute
+};
 // Signatures omit parameter names, so renaming a parameter stays compatible.
 struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; std::vector<std::string> parameters; };
 struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; };
+// A top-level struct, enum, constant or function. uses names every other top-level
+// declaration its text spells, so a compile unit needs only the closure of its own uses.
+struct TopLevel {
+    enum class Kind { type, constant, function } kind;
+    std::string name;
+    std::string engine; // the engine module of its file, empty in project files
+    std::uint32_t file{};
+    SourcePosition position;
+    MappedSource source;
+    std::vector<std::uint32_t> uses;
+};
 struct ClassDeclaration {
     std::string name, base;
     std::uint32_t file{};
     SourcePosition position;
     std::vector<ClassField> fields;
     std::vector<ClassMethod> methods;
+    std::vector<std::uint32_t> uses; // top-level declarations its methods spell
 };
 // File collection and class structure use the ordinary lexer. Function bodies,
 // signatures and constant expressions are checked by the one typed Source parser.
 struct SourceModule {
-    MappedSource common;
-    std::vector<FunctionDeclaration> functions;
+    std::vector<TopLevel> declarations; // snapshot order
+    std::vector<FunctionDeclaration> functions; // project-file functions, the exported ones
     std::vector<ClassDeclaration> classes;
+    // The declarations reachable from roots through uses, in snapshot order.
+    [[nodiscard]] MappedSource closure(std::span<const std::uint32_t> roots) const;
 };
+// Files under engine/<module>/ declare only <module>.* names; other files declare none in a module present in the snapshot.
 [[nodiscard]] std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapshot&);
 }

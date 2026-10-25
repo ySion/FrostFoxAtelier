@@ -142,6 +142,8 @@ public:
     // Views remain valid until the next successful publication or close.
     std::span<const ClassInfo> classes() const noexcept;
     std::span<const EntryInfo> entries() const noexcept;
+    // Counts successful publications; 0 before the first.
+    std::uint64_t revision() const noexcept;
     Result<FunctionSignature> describe() const;
     template<class R, class... Args>
         requires ((!std::is_rvalue_reference_v<Args> && !std::is_volatile_v<std::remove_reference_t<Args>>) && ...) &&
