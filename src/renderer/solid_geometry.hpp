@@ -4,7 +4,6 @@
 
 namespace atelier::renderer::detail {
 struct TriangleVolume {
-    std::array<float,3> normal{};
     std::uint32_t closed{}; // Zero or connected closed-component root + 1.
 };
 
@@ -50,7 +49,6 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
             double(v[0].normal[1])+v[1].normal[1]+v[2].normal[1],double(v[0].normal[2])+v[1].normal[2]+v[2].normal[2]};
         const double alignment=dot(n,authored),length=std::hypot(n[0],n[1],n[2]);
         eligible[i]=length>0&&alignment!=0;orientation[i]=alignment<0?-1:1;
-        if(length>0)for(std::size_t c=0;c<3;++c)result[i].normal[c]=static_cast<float>(n[c]/length*orientation[i]);
         std::array<std::uint32_t,3> ids;
         for(std::size_t c=0;c<3;++c) {
             Position p{v[c].position[0],v[c].position[1],v[c].position[2]};

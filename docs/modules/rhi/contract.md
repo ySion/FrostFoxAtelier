@@ -4,7 +4,7 @@
 
 ## 执行域与所有权
 
-- `Context::open` 按高性能顺序筛选同时支持 FL12_1、Mesh Shader、DXR 1.1 与 Shader Model 6.5 的硬件 adapter，跳过不合格候选；无合格硬件，或创建后的 gfx 设备拿不到 DXR 接口，都返回 unsupported，没有 WARP 或无光追回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
+- `Context::open` 按高性能顺序筛选同时支持 FL12_1、Mesh Shader、DXR 1.1、SV_Barycentrics 与 Shader Model 6.5 的硬件 adapter，跳过不合格候选；无合格硬件，或创建后的 gfx 设备拿不到 DXR 接口，都返回 unsupported，没有 WARP 或无光追回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
 - 一个 Context 对应一个 owned gfx context、一个 owner 线程、一条 DIRECT queue。`frame` 异步推进 gfx 帧槽；`finish` 提交当前工作并等待完成。
 - `Context`、`Pipeline` 不可复制，可移动。Pipeline 持有 Program/Kernel 和执行域；Context 外壳消失不提前销毁仍被 Pipeline 持有的执行域。最后一个所有者负责有限排空与释放。
 - 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
@@ -51,6 +51,8 @@
 不能绕过 Context 调用 `gfxFrame`、`gfxFinish`、`gfxSyncWindowTarget`、`gfxDestroyContext`、`gfxKernelReloadAll`、原生提交、替换 swapchain、外部资源导入或手工修改资源状态。专门的后端回归直接使用这些入口不代表它们成为普通消费者能力。借用不能越过 close 或执行域最终销毁。
 
 普通 gfx 资源由消费者显式释放，Context 不复制资源管理器，也不追踪第二份资源 owner 表。`close` 的 busy 检查针对 Pipeline；原始资源退出由消费者履行 gfx 契约。
+
+默认堆 buffer 的自动只读用途（顶点、索引、shader SRV、indirect 与 copy source）累积为兼容的状态集合，range 与原始 buffer 共享这一状态。已经包含的读用途不再发屏障；显式转换后的状态增加读用途时仍发必要的转换屏障。写入、UAV 读写与 AS 同步不因这项合并被省略；离开 IA 读状态写入时按实际安装的 IA 资源判断解绑，下次 draw 重新安装。仅 bind 而未 draw 的逻辑句柄不替代实际安装状态；经 range 别名写入也遵守同一规则。消费者不需要也不得手工维护这套状态。
 
 ## Scene Lit：inline RayQuery 与离屏资源
 

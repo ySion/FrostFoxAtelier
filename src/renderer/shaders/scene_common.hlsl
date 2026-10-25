@@ -2,17 +2,32 @@ struct SceneOutput {
     precise float4 position : SV_Position;
     float far_clip : SV_ClipDistance;
     float3 normal : NORMAL;
-    // Original barycentrics and clip w share perspective interpolation. Their
-    // quotient is affine in screen space, even across eye/near-plane clipping.
-    float4 edge_coordinates : TEXCOORD0;
-    nointerpolation uint edge_mask : TEXCOORD1;
+    // Perspective SV_Barycentrics divided by the interpolated clip w are affine
+    // in screen space, even across eye/near-plane clipping.
+    float clip_w : TEXCOORD0;
+    nointerpolation uint instance : TEXCOORD1;
     nointerpolation float selected : TEXCOORD2;
     float2 uv : TEXCOORD3;
-    nointerpolation uint material_index : TEXCOORD4;
     float4 tangent:TEXCOORD5;
     float3 eye_position:TEXCOORD6;
-    nointerpolation float3 eye_geometric_normal:TEXCOORD7;
 };
+// The shared indexed mesh: welded vertices read by SV_VertexID, one record per
+// triangle at first_triangle plus the draw's SV_PrimitiveID.
+struct Vertex { float3 position; float3 normal; float2 uv; float4 tangent; };
+// Oriented geometric normal; material slot in bits 0-28, polygon edge mask in bits 29-31.
+struct Face { float3 normal; uint slot_edges; };
+struct Instance {
+    row_major float4x4 world;
+    float3 normal_x;
+    float3 normal_y;
+    float3 normal_z;
+    float selected;
+    float tangent_sign;
+};
+StructuredBuffer<Vertex> vertices;
+StructuredBuffer<Face> faces;
+uint first_triangle;
+StructuredBuffer<Instance> instances;
 // Shading, wireframe, triangle edges, pass (surface / wire lines / depth / studio overlay).
 uint4 display;
 float2 wire_style;

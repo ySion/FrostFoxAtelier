@@ -215,6 +215,104 @@ float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); 
                 kind == PipelineKind::mesh ? "mesh" : "vertex", indexed);
 }
 
+void shared_buffer_reads_and_writes() {
+    auto owner = open_context();
+    const auto gfx = owner.borrow();
+    auto debug = debug_queue(gfx);
+    PipelineDesc raster;
+    raster.kind = PipelineKind::vertex;
+    raster.source.vs = R"(
+struct Output { float4 position : SV_Position; nointerpolation uint value : COLOR; };
+Output main(uint id : SV_VertexID, uint value : DATA) {
+    Output o;
+    o.position = float4(id == 0 ? float2(-1,-1) : id == 1 ? float2(-1,3) : float2(3,-1), 0, 1);
+    o.value = value; return o;
+})";
+    raster.source.ps = R"(
+StructuredBuffer<uint> indices, values;
+float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) : SV_Target {
+    return float4(value, values[2], indices[0] + 1, 255) / 255.0;
+})";
+    check(gfxDrawStateSetColorTarget(raster.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM));
+    check(gfxDrawStateSetCullMode(raster.draw_state, D3D12_CULL_MODE_NONE));
+    auto draw = take(owner.prepare(raster));
+    PipelineDesc compute;
+    compute.source.cs = R"(
+StructuredBuffer<uint> indices, values;
+RWStructuredBuffer<uint> result;
+[numthreads(1,1,1)] void main() { result[0] = values[indices[0]] + values[2] * 256; }
+)";
+    auto read = take(owner.prepare(compute));
+    compute.source.cs = R"(
+RWStructuredBuffer<uint> indices, values;
+[numthreads(1,1,1)] void main() {
+    for (uint i = 0; i < 3; ++i) { indices[i] = (indices[i] + 1) % 3; values[i] += 1; }
+})";
+    auto write = take(owner.prepare(compute));
+    const std::array<std::uint32_t, 3> triangle{2, 0, 1}, data{17, 31, 43};
+    auto indices = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data());
+    auto values = gfxCreateBuffer<std::uint32_t>(gfx, 3, data.data());
+    auto index_view = gfxCreateBufferRange(gfx, indices, 0, sizeof(triangle));
+    auto value_view = gfxCreateBufferRange(gfx, values, 0, sizeof(data));
+    auto upload = gfxCreateBuffer<std::uint32_t>(gfx, 3, data.data(), kGfxCpuAccess_Write);
+    auto other = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data(), kGfxCpuAccess_Write);
+    auto result = gfxCreateBuffer<std::uint32_t>(gfx, 1);
+    auto readback = gfxCreateBuffer<std::uint32_t>(gfx, 1, nullptr, kGfxCpuAccess_Read);
+    auto pixels = gfxCreateBuffer(gfx, 64 * 32 * 4, nullptr, kGfxCpuAccess_Read);
+    auto target = gfxCreateTexture2D(gfx, 64, 32, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr,
+                                     D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    require(indices && values && index_view && value_view && upload && other && result && readback && pixels && target,
+            "shared IA/SRV buffer resources unavailable");
+    for (auto p : {draw.program(), read.program(), write.program()}) {
+        check(gfxProgramSetParameter(gfx, p, "indices", index_view));
+        check(gfxProgramSetParameter(gfx, p, "values", value_view));
+    }
+    check(gfxProgramSetParameter(gfx, read.program(), "result", result));
+    check(gfxCommandBindIndexBuffer(gfx, indices));
+    check(gfxCommandBindVertexBuffer(gfx, values));
+    for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
+        // Install A before writing through its range aliases in this same list.
+        // finish() between these draws would mask a missing IA reinstall.
+        check(gfxCommandBindColorTarget(gfx, 0, target));
+        check(gfxCommandBindKernel(gfx, draw.kernel()));
+        check(gfxCommandDrawIndexed(gfx, 3));
+        if (iteration % 2 != 0) {
+            // Only change the logical binds to B; no draw installs B in IA.
+            check(gfxCommandBindIndexBuffer(gfx, other));
+            check(gfxCommandBindVertexBuffer(gfx, other));
+        }
+        check(gfxCommandCopyBuffer(gfx, value_view, upload));
+        check(gfxCommandBindKernel(gfx, write.kernel()));
+        check(gfxCommandDispatch(gfx, 1, 1, 1));
+        check(gfxCommandDispatch(gfx, 1, 1, 1)); // Ordered UAV read-modify-write.
+        check(gfxCommandBindIndexBuffer(gfx, indices));
+        check(gfxCommandBindVertexBuffer(gfx, values));
+        check(gfxCommandBindKernel(gfx, draw.kernel()));
+        check(gfxCommandDrawIndexed(gfx, 3));
+        check(gfxCommandBindKernel(gfx, read.kernel()));
+        check(gfxCommandDispatch(gfx, 1, 1, 1));
+        check(gfxCommandCopyBuffer(gfx, readback, result));
+        check(gfxCommandBindKernel(gfx, draw.kernel()));
+        check(gfxCommandDrawIndexed(gfx, 3)); // IA and pixel reads after a compute read.
+        check(gfxCommandCopyTextureToBuffer(gfx, pixels, target));
+        complete(owner.finish());
+        const auto first = (2 + 2 * (iteration + 1)) % 3;
+        const auto red = data[first] + 2, green = data[2] + 2, blue = first + 1;
+        const auto* color = gfxBufferGetData<std::uint8_t>(gfx, pixels);
+        const auto* word = gfxBufferGetData<std::uint32_t>(gfx, readback);
+        require(color && word && *word == red + green * 256, "shared buffer compute read saw stale writes");
+        for (std::size_t i = 0; i < 64 * 32; ++i)
+            require(color[4 * i] == red && color[4 * i + 1] == green && color[4 * i + 2] == blue && color[4 * i + 3] == 255,
+                    "shared IA/SRV reads or post-write IA reinstall corrupted pixels");
+    }
+    for (auto buffer : {index_view, value_view, indices, values, upload, other, result, readback, pixels}) check(gfxDestroyBuffer(gfx, buffer));
+    check(gfxDestroyTexture(gfx, target));
+    draw = {}; read = {}; write = {};
+    complete(owner.close());
+    check_debug(debug.Get());
+    std::puts("shared-buffer-reads: same-list draw/bind-B/alias-write/rebind-A/draw COPY_DEST/UAV/UAV-to-read pixels=PASS");
+}
+
 void texture_ranges() {
     auto owner = open_context();
     const auto gfx = owner.borrow();
@@ -409,6 +507,7 @@ void resource_cases() {
     indirect_graphics(PipelineKind::vertex, false);
     indirect_graphics(PipelineKind::vertex, true);
     indirect_graphics(PipelineKind::mesh, false);
+    shared_buffer_reads_and_writes();
     texture_ranges();
     window_target_sync();
 }
