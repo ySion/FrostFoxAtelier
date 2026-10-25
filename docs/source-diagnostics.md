@@ -19,7 +19,7 @@ if (!published) return published;
 
 source::Diagnostics capture({.timing = true});
 std::array arguments{Scalar{3.0f}};
-auto result = program.entry().invoke({}, arguments, {1}, &capture);
+auto result = program.entry().invoke({}, arguments, &capture);
 auto report = capture.snapshot(); // owning copy; also available after failure
 ```
 
@@ -38,8 +38,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 | `source_name`、`location` | 编译输入名称；错误/挂起位置包含函数、原始文件路径、文件版本、字节偏移及从 1 开始的行列。单文本请求以请求序号表示源码版本 |
 | `status`、`error` | 执行状态与首个错误；清理不会覆盖首错。错误文字有界保存，最长 511 字节 |
 | `calls` | 生成代码实际经过的调用边界次数；统计口径见下文 |
-| `before`、`after` | 开始及最近暂停/结束时，该 Runtime 的对象数、根数、待回收数与 GC 阶段。它们是上下文快照，不能直接当作本函数的分配量 |
-| `gc_work`、`gc_reclaimed` | 本次调用经已有安全点推进 GC 的工作量与回收对象数；宿主在协程挂起期间推进的 GC 不计入 |
+| `before`、`after` | 开始及最近暂停/结束时，该 Runtime 的对象数、根数、待回收数与 GC 阶段。它们是上下文快照，不能直接当作本函数的分配量。执行区间内不推进 GC，协程挂起且外层执行退出后宿主可继续收集；不提供逐调用 GC 工作/回收计数 |
 | `peak_owned_values`、`remaining_owned_values` | 本次源码 Invocation 管理的拥有值峰值及当前余额，包含内部函数；不表示字节数或全进程分配次数 |
 | `resources_cleared` | 执行槽与拥有值是否已由显式清理归零；在 Invocation 的 RAII 兜底之前核对 |
 | `resumes`、`active_time` | 实际进入源码帧的恢复次数；可选时间包含参数准备、执行及清理，排除 ready/suspended 的等待时间 |
@@ -52,7 +51,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 - `value_construct` / `value_assign` / `value_destroy`、`sequence_mutation`：源码拥有值和容器生命周期服务。
 - `sequence_view`：直接调用原生容器视图函数，包括绕过普通服务包装的路径。借用参数的视图在函数入口缓存；索引与内联数学不产生逐元素服务调用。
 - `coroutine_allocate` / `coroutine_free`：LLVM 协程生成帧的分配/释放调用，不包含宿主控制块与其它 C++ 分配。
-- `begin` / `finish`：现有执行策略服务；受保护值路径按原合同省略它们和 GC 轮询。
+- `begin` / `finish`：现有执行策略服务；受保护值路径按原合同省略它们和轮询。`poll` 不再推进 GC；`root_clear` 名称保留，同步调用清除身份槽，协程调用清除根槽。
 - `source_call`：语言内部函数调用，与 JIT→C++ 边界分开统计。即使 O2 内联了函数，仍表示源码调用次数。
 - `debug_hook`：启用调试编译时的帧与停点服务。若同时启用执行计时，暂停处理器的等待时间也包含在内。
 

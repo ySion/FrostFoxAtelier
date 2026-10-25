@@ -186,28 +186,24 @@ void collect(Runtime& runtime) {
 struct RootObservation {
     ObjectId snapshot;
     ObjectId garbage;
-    bool observed{}, completed{}, request_fresh_cycle{}, fresh_requested{};
+    CollectionPhase phase{CollectionPhase::roots};
+    bool observed{}, garbage_alive{true};
 };
-void observe_roots(void* data, Invocation& invocation, const CollectionProgress& progress) {
+void observe_roots(void* data, Invocation& invocation) {
     auto& observation = *static_cast<RootObservation*>(data);
     const auto snapshot = fixture(invocation).snapshot.id();
     if (!observation.observed) {
         observation.snapshot = snapshot;
         observation.observed = true;
     }
-    require(invocation.runtime.root_count() == 3,
-            "Snapshot survival is hidden by an unexpected host root.");
+    require(invocation.runtime.root_count() == 2,
+            "Synchronous receiver registered an unnecessary root.");
     take(invocation.runtime.type_of(snapshot));
-    if (progress.phase == CollectionPhase::idle && progress.work_done != 0) {
-        if (observation.request_fresh_cycle && !observation.fresh_requested) {
-            observation.fresh_requested = true;
-            invocation.frame.request_collection();
-        } else {
-            reject(invocation.runtime.type_of(observation.garbage), ErrorCode::invalid_object,
-                   "Unrooted control object survived a completed collection.");
-            observation.completed = true;
-        }
-    }
+    reject(invocation.runtime.begin_collection(), ErrorCode::busy, "Execution observer started GC.");
+    reject(invocation.runtime.collect_step({1024}), ErrorCode::busy, "Execution observer advanced GC.");
+    require(invocation.runtime.collection_phase() == observation.phase &&
+        invocation.runtime.type_of(observation.garbage).has_value() == observation.garbage_alive,
+        "Execution advanced GC or revived an identity committed dead before entry.");
 }
 
 void verify_business_state(BusinessCode* code) {
@@ -225,9 +221,8 @@ void verify_business_state(BusinessCode* code) {
             ExecutionStats stats;
             auto snapshot = take(execute_machine(runtime, binding, code, receiver.id(), amount, 128,
                 true, &stats, observe_roots, &observation));
-            require(stats.explicit_cleanup && observation.observed && observation.completed &&
-                    stats.completed_cycles == 1 && stats.reclaimed != 0,
-                    "Generated safe points did not complete the root-survival scenario.");
+            require(stats.explicit_cleanup && observation.observed && runtime.collection_phase() == CollectionPhase::roots,
+                    "Generated execution or teardown advanced the paused GC cycle.");
             require(snapshot.id() == observation.snapshot && snapshot.id() != receiver.id() && runtime.root_count() == 2,
                     "Returned snapshot did not transfer its original execution root.");
             const auto expected_progress = amount > 0 ? 38.0f : 6.0f;
@@ -235,6 +230,8 @@ void verify_business_state(BusinessCode* code) {
             check_machine(runtime, binding, receiver.id(), expected_progress, 3.5f, expected_cycles);
             check_machine(runtime, binding, snapshot.id(), expected_progress, 3.5f, expected_cycles);
             collect(runtime);
+            reject(runtime.type_of(observation.garbage), ErrorCode::invalid_object,
+                "Host collection retained the unrooted control object.");
             check_machine(runtime, binding, snapshot.id(), expected_progress, 3.5f, expected_cycles);
             const auto retired = snapshot.id();
             snapshot.reset();
@@ -254,29 +251,38 @@ void verify_business_state(BusinessCode* code) {
         require(runtime.live_objects() == 0 && runtime.root_count() == 0, "Business iteration left owned objects or roots.");
     }
     std::puts("[pass] Same generated business advances native/described machines, branches, wraps cycles and returns rooted snapshots");
-    std::puts("[pass] Execution-only snapshot roots survive complete GC cycles; transferred results die after host root release");
+    std::puts("[pass] Execution pauses GC; transferred snapshots survive host collection and die after root release");
 }
 
 void verify_paused_collection(BusinessCode* code) {
-    Runtime runtime;
-    const auto types = register_machines(runtime);
-    const auto binding = bind_type(runtime, types[0]);
-    auto receiver = take(runtime.create(binding.type));
-    auto garbage = take(runtime.create(binding.type));
-    RootObservation observation;
-    observation.garbage = garbage.id();
-    observation.request_fresh_cycle = true;
-    garbage.reset();
-    take(runtime.begin_collection());
-    while (runtime.collection_phase() == CollectionPhase::roots) take(runtime.collect_step({1}));
-    require(runtime.collection_phase() != CollectionPhase::idle, "Could not pause an existing collection.");
-    ExecutionStats stats;
-    auto snapshot = take(execute_machine(runtime, binding, code, receiver.id(), 0.25f, 128,
-        false, &stats, observe_roots, &observation));
-    require(stats.completed_cycles == 2 && observation.completed && observation.fresh_requested && stats.explicit_cleanup,
-            "Late execution roots did not survive an independently started fresh cycle.");
-    check_machine(runtime, binding, snapshot.id(), 32.0f, 0.0f, 128);
-    std::puts("[pass] Execution enters paused marking safely and newly added roots survive a later complete collection");
+    for (const auto phase : {CollectionPhase::idle, CollectionPhase::roots, CollectionPhase::mark, CollectionPhase::sweep}) {
+        Runtime runtime;
+        const auto types = register_machines(runtime);
+        const auto binding = bind_type(runtime, types[0]);
+        auto receiver = take(runtime.create(binding.type));
+        auto garbage = take(runtime.create(binding.type));
+        RootObservation observation;
+        observation.garbage = garbage.id();
+        observation.phase = phase;
+        observation.garbage_alive = phase != CollectionPhase::sweep;
+        garbage.reset();
+        if (phase != CollectionPhase::idle) {
+            take(runtime.begin_collection());
+            while (runtime.collection_phase() != phase) {
+                take(runtime.collect_step({1}));
+                require(runtime.collection_phase() != CollectionPhase::idle, "Missed requested GC phase.");
+            }
+        }
+        ExecutionStats stats;
+        auto snapshot = take(execute_machine(runtime, binding, code, receiver.id(), 0.25f, 128,
+            false, &stats, observe_roots, &observation));
+        require(observation.observed && stats.explicit_cleanup && runtime.collection_phase() == phase,
+            "Execution did not preserve its entry GC phase through teardown.");
+        collect(runtime);
+        check_machine(runtime, binding, snapshot.id(), 32.0f, 0.0f, 128);
+        reject(runtime.type_of(observation.garbage), ErrorCode::invalid_object, "Host collection did not reclaim garbage.");
+    }
+    std::puts("[pass] Execution excludes every GC phase, never revives dead identities, and hands results to host roots");
 }
 
 void verify_failures_and_admission(BusinessCode* code) {
@@ -301,7 +307,7 @@ void verify_failures_and_admission(BusinessCode* code) {
     collect(runtime);
     require(runtime.live_objects() == 1, "Failed snapshot was not reclaimable.");
     const auto poll_error = execute_machine(runtime, binding, code, receiver.id(), 0.5f, 8, true, &stats,
-        [](void*, Invocation&, const CollectionProgress&) { throw std::runtime_error("Safe-point service failed."); });
+        [](void*, Invocation&) { throw std::runtime_error("Safe-point service failed."); });
     reject(poll_error, ErrorCode::invocation_failed, "Safe-point error did not return through generated cleanup.");
     require(stats.explicit_cleanup && runtime.root_count() == 1, "Safe-point failure leaked roots before RAII fallback.");
     collect(runtime);
@@ -361,7 +367,7 @@ void verify_identity_boundaries(BusinessCode* code) {
     struct Replacement { ObjectId old; ObjectRoot root{}; bool replaced{}; } replacement{receiver.id()};
     ExecutionStats stats;
     auto result = execute_machine(runtime, binding, code, receiver.id(), 1.0f, 4, false, &stats,
-        [](void* data, Invocation& invocation, const CollectionProgress&) {
+        [](void* data, Invocation& invocation) {
             auto& state = *static_cast<Replacement*>(data);
             if (state.replaced) return;
             state.replaced = true;
@@ -394,19 +400,17 @@ void verify_frame_protocol() {
         require(take(frame.object(0)) == receiver.id() && runtime.root_count() == baseline + 1,
                 "Failed replacement discarded the old execution root.");
         reject(frame.create(2, types[0]), ErrorCode::argument_mismatch, "Invalid root slot was accepted.");
-        frame.request_collection();
-        reject(frame.poll({0}), ErrorCode::argument_mismatch, "Invalid safe-point budget was accepted.");
+        reject(runtime.collect_step({0}), ErrorCode::argument_mismatch, "Invalid host collection budget was accepted.");
         require(runtime.collection_phase() == CollectionPhase::idle, "Invalid budget changed collection state.");
         take(frame.create(1, types[0]));
         const auto first = take(frame.object(1));
-        take(frame.poll({1}));
+        take(runtime.begin_collection());
+        take(runtime.collect_step({1}));
         take(frame.clear(1));
         take(frame.create(1, types[0]));
         const auto replacement = take(frame.object(1));
         require(first != replacement, "Root slot replacement returned the old object.");
-        while (runtime.collection_phase() != CollectionPhase::idle) take(frame.poll({1}));
-        frame.request_collection();
-        do { take(frame.poll({1})); } while (runtime.collection_phase() != CollectionPhase::idle);
+        collect(runtime);
         reject(runtime.type_of(first), ErrorCode::invalid_object, "Cleared execution root retained its old object.");
         take(runtime.type_of(replacement));
         const auto rooted_count = runtime.root_count();
@@ -424,16 +428,20 @@ void verify_frame_protocol() {
         throw std::runtime_error("Host scope exit.");
     } catch (const std::runtime_error&) {}
     require(runtime.root_count() == baseline, "Host exception bypassed frame RAII cleanup.");
-    {
+    for (const bool synchronous : {false, true}) {
+        transferred.reset();
+        auto scope = take(ExecutionScope::enter(runtime));
         std::array<ObjectRoot, 2> roots;
-        ExecutionFrame frame(runtime, roots);
+        std::array<ObjectReference, 2> references;
+        ExecutionFrame frame = synchronous ? ExecutionFrame(scope, references) : ExecutionFrame(runtime, roots);
+        const auto registrations = synchronous ? 0u : 1u;
         reject(frame.reference(0), ErrorCode::invalid_object, "Empty typed reference slot was readable.");
         reject(frame.reference(2), ErrorCode::argument_mismatch, "Typed reference accepted an invalid slot.");
         const auto null = take(runtime.null_reference(types[0]));
         take(frame.hold(0, null));
-        require(roots[0].registered() && take(frame.reference(0)) == null &&
-                take(frame.object(0)) == ObjectId{} && runtime.root_count() == baseline + 1,
-                "Typed null lost its target type or root registration.");
+        require(take(frame.reference(0)) == null && take(frame.object(0)) == ObjectId{} &&
+                runtime.root_count() == baseline + registrations,
+                "Typed null lost its target type or used the wrong frame root policy.");
         reject(frame.take(0), ErrorCode::invalid_object, "Validated return transfer accepted typed null.");
         reject(frame.hold(0, ObjectId{}), ErrorCode::invalid_object, "Raw identity hold accepted null.");
         require(take(frame.reference(0)) == null, "Rejected raw null replaced the typed null slot.");
@@ -458,13 +466,23 @@ void verify_frame_protocol() {
                 "Typed hold discarded a stale identity.");
         reject(frame.take(1), ErrorCode::invalid_object, "Validated return transfer accepted a stale reference.");
         reject(frame.hold(1, stale.id()), ErrorCode::invalid_object, "Raw identity hold accepted a stale reference.");
-        require(take(frame.reference(1)) == stale && roots[1].registered(),
-                "Failed stale take or raw hold removed the previous typed root.");
+        require(take(frame.reference(1)) == stale && runtime.root_count() == baseline + 2 * registrations,
+                "Failed stale take or raw hold changed the previous typed reference.");
         take(frame.clear(0));
         take(frame.clear(1));
         require(frame.empty() && runtime.root_count() == baseline, "Typed reference cleanup leaked registrations.");
+        take(frame.create(0, types[0]));
+        const auto created = take(frame.object(0));
+        transferred = take(frame.take(0));
+        require(frame.empty() && transferred.id() == created && runtime.root_count() == baseline + 1,
+                "Frame handoff failed to register or transfer exactly one host root.");
     }
-    std::puts("[pass] Raw and typed frame roots preserve null/stale identities, reject invalid replacement atomically and validate return transfer");
+    collect(runtime);
+    take(runtime.type_of(transferred.id()));
+    transferred.reset();
+    collect(runtime);
+    require(runtime.root_count() == baseline && runtime.live_objects() == 1, "Frame handoff retained an unowned object.");
+    std::puts("[pass] Persistent and interval frames preserve null/stale identities, reject invalid replacement atomically and hand off host roots");
 }
 
 void verify_active_code_lifetime(bool fail_after_retirement) {
@@ -618,11 +636,11 @@ void verify_scalar_reference_storage(Runtime& runtime, const Binding& binding, B
     auto receiver = take(runtime.create(binding.type));
     ExecutionStats stats;
     auto snapshot = take(execute_machine(runtime, binding, code, receiver.id(), 1.0f, 0, false, &stats,
-        [](void*, Invocation& invocation, const CollectionProgress&) {
-            require(invocation.expanded_roots.capacity() == 0 && invocation.observations.capacity() == 0 &&
-                    invocation.roots.data() == invocation.inline_roots.data() &&
-                    invocation.roots.size() == business_root_slots,
-                    "Scalar execution allocated a reference array instead of its original stack roots.");
+        [](void*, Invocation& invocation) {
+            require(invocation.expanded_roots.capacity() == 0 && invocation.expanded_references.capacity() == 0 &&
+                    invocation.observations.capacity() == 0 && invocation.roots.empty() &&
+                    invocation.frame.size() == business_root_slots,
+                    "Scalar execution allocated persistent roots instead of inline identities.");
         }));
     require(stats.polls == 1 && stats.explicit_cleanup && runtime.root_count() == 2,
             "Scalar reference-storage control changed execution or cleanup.");
@@ -632,10 +650,10 @@ void verify_reference_values(Runtime& runtime, const Binding& binding, const Bin
     auto code = compile_reference(binding, R"(
         void references(float delta, uint loops) {
             $T empty;
-            weak $T watched;
+            weak $T watched = empty;
             $T alias = self;
             $T copy = alias;
-            weak $T observed = observe(alias);
+            weak $T observed = alias;
             weak $T observed_copy = observed;
             $T acquired = try_acquire(observed_copy);
             self.state.cycles = 0;
@@ -652,7 +670,7 @@ void verify_reference_values(Runtime& runtime, const Binding& binding, const Bin
             observed_copy = null;
             if (acquired == observed_copy) { self.state.cycles = self.state.cycles + 1; }
             $T fresh = new $T();
-            $T fresh_alias = fresh;
+            weak $T fresh_alias = observe(fresh);
             fresh.progress = 2.0;
             fresh_alias.state.heat = 3.0;
             fresh.state.cycles = 4;
@@ -701,7 +719,7 @@ void verify_reference_collection(Runtime& runtime, const Binding& binding) {
             uint tail = 0;
             while (tail < 1) { tail = tail + 1; }
             if (watched != null) {
-                if (try_acquire(watched) == null) { self.state.cycles = 7; }
+                if (watched.progress == delta) { self.state.cycles = 7; }
             }
             self.progress = 10.0;
         }
@@ -715,37 +733,34 @@ void verify_reference_collection(Runtime& runtime, const Binding& binding) {
         auto& state = *static_cast<Observation*>(context);
         require(++state.calls == 1, "Reference collection unexpectedly called native code twice.");
         state.object = call.self; // Identity only: no host root may hide source ownership.
-        require(call.runtime.root_count() == 4, "New-expression temporary survived its declaration.");
+        require(call.runtime.root_count() == 2, "Synchronous local unexpectedly registered a root.");
     }};
     ExecutionStats stats;
     ObjectRoot snapshot;
     {
         ActionScope scope(capture);
         snapshot = take(execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, 0, false, &stats,
-            [](void* context, Invocation& invocation, const CollectionProgress&) {
+            [](void* context, Invocation& invocation) {
                 auto& state = *static_cast<Observation*>(context);
                 const auto poll = fixture(invocation).stats.polls;
-                require(poll <= 4 && invocation.runtime.root_count() == ((poll == 2 || poll == 3) ? 4u : 3u),
-                        "Lexical source root or weak observation changed the expected ownership count.");
-                collect(invocation.runtime); // Finish any old work, then complete an independent new cycle.
+                require(poll <= 4 && invocation.runtime.root_count() == 2,
+                        "Synchronous reference registered a root.");
+                reject(invocation.runtime.collect_step({4096}), ErrorCode::busy, "Poll advanced collection.");
                 ++state.cycles;
-                reject(invocation.runtime.type_of(state.garbage), ErrorCode::invalid_object,
-                       "Fresh source-local collection left its unrooted control alive.");
-                if (poll == 2 || poll == 3) {
-                    require(state.calls == 1 && state.object != ObjectId{} && invocation.runtime.live_objects() == 3,
-                            "Source-only strong reference did not survive a complete fresh cycle.");
+                take(invocation.runtime.type_of(state.garbage));
+                if (poll > 1) {
+                    require(state.calls == 1 && state.object != ObjectId{} && invocation.runtime.live_objects() == 4,
+                            "An unrooted local died before the execution interval ended.");
                     take(invocation.runtime.type_of(state.object));
-                } else {
-                    require(invocation.runtime.live_objects() == 2, "Weak-only object was retained after its inner block.");
-                    if (poll == 4)
-                        reject(invocation.runtime.type_of(state.object), ErrorCode::invalid_object,
-                               "Observation kept an out-of-scope source object alive.");
                 }
             }, &state));
     }
     require(stats.polls == 4 && state.cycles == 4 && state.calls == 1 && stats.explicit_cleanup && runtime.root_count() == 2,
-            "Source-local strong/weak collection skipped a real safe point or explicit cleanup.");
+            "Source-local strong/weak execution skipped a poll or explicit cleanup.");
     check_machine(runtime, binding, snapshot.id(), 10.0f, 0.0f, 7);
+    collect(runtime);
+    require(runtime.live_objects() == 2 && !runtime.type_of(state.object) && !runtime.type_of(state.garbage),
+        "Host collection retained rootless locals after execution.");
 }
 
 void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
@@ -763,7 +778,7 @@ void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
                 index = index + 1;
             }
             if (previous != null) {
-                if (try_acquire(previous) == null) { self.state.cycles = loops; }
+                if (previous.progress == delta) { self.state.cycles = loops; }
             }
         }
     )", "reference-loop.source");
@@ -771,12 +786,11 @@ void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
     struct Iterations { std::array<ObjectId, 4> objects{}; std::size_t calls{}, cycles{}; } state;
     NativeAction capture{&state, [](void* context, CallContext& call) {
         auto& state = *static_cast<Iterations*>(context);
-        require(state.calls < state.objects.size() && call.runtime.root_count() == 4,
-                "Repeated declaration retained an old root or expression temporary.");
+        require(state.calls < state.objects.size() && call.runtime.root_count() == 2,
+                "Repeated synchronous declaration registered a root.");
         for (std::size_t i = 0; i < state.calls; ++i) {
             require(state.objects[i] != call.self, "Reused object storage repeated an earlier generation.");
-            reject(call.runtime.type_of(state.objects[i]), ErrorCode::invalid_object,
-                   "A previous loop-local object survived into the next iteration.");
+            take(call.runtime.type_of(state.objects[i]));
         }
         state.objects[state.calls++] = call.self;
     }};
@@ -785,27 +799,24 @@ void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
     {
         ActionScope scope(capture);
         snapshot = take(execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, 4, false, &stats,
-            [](void* context, Invocation& invocation, const CollectionProgress&) {
+            [](void* context, Invocation& invocation) {
                 auto& state = *static_cast<Iterations*>(context);
-                require(fixture(invocation).stats.polls == state.calls + 1 && invocation.runtime.root_count() == 3,
-                        "Loop block did not release its source root before the backedge poll.");
-                collect(invocation.runtime);
+                require(fixture(invocation).stats.polls == state.calls + 1 && invocation.runtime.root_count() == 2,
+                        "Loop block registered a source root at its backedge.");
+                reject(invocation.runtime.begin_collection(), ErrorCode::busy, "Loop poll started collection.");
                 ++state.cycles;
-                require(invocation.runtime.live_objects() == 2, "Reused loop-local slot leaked an object.");
+                require(invocation.runtime.live_objects() == 2 + state.calls, "Execution lost an unrooted loop object.");
                 for (std::size_t i = 0; i < state.calls; ++i)
-                    reject(invocation.runtime.type_of(state.objects[i]), ErrorCode::invalid_object,
-                           "An old slot identity survived an independent collection.");
-                if (state.calls < state.objects.size()) {
-                    take(invocation.runtime.begin_collection());
-                    take(invocation.runtime.collect_step({1}));
-                    require(invocation.runtime.collection_phase() != CollectionPhase::idle,
-                            "Slot-reuse scenario did not leave a paused collection for the next iteration.");
-                }
+                    take(invocation.runtime.type_of(state.objects[i]));
             }, &state));
     }
     require(stats.polls == 5 && state.calls == 4 && state.cycles == 5 && stats.explicit_cleanup && runtime.root_count() == 2,
             "Loop slot reuse missed a backedge or explicit final cleanup.");
     check_machine(runtime, binding, snapshot.id(), 0.0f, 0.0f, 4);
+    collect(runtime);
+    require(runtime.live_objects() == 2, "Host collection retained loop-local objects.");
+    for (const auto object : state.objects)
+        reject(runtime.type_of(object), ErrorCode::invalid_object, "Loop identity survived host collection.");
 }
 
 void verify_reference_exit(Runtime& runtime, const Binding& binding, bool fail_native) {
@@ -827,7 +838,7 @@ void verify_reference_exit(Runtime& runtime, const Binding& binding, bool fail_n
     struct Exit { ObjectId held; ObjectId receiver; unsigned calls{}; bool fail{}; } state{{}, receiver.id(), 0, fail_native};
     NativeAction callback{&state, [](void* context, CallContext& call) {
         auto& state = *static_cast<Exit*>(context);
-        require(call.runtime.root_count() == 4, "Early/native-failure scenario lost its initialized source owner.");
+        require(call.runtime.root_count() == 2, "Early/native-failure scenario registered synchronous roots.");
         ++state.calls;
         if (state.calls == 1) {
             require(call.self != state.receiver, "Source new expression aliased self.");
@@ -882,8 +893,8 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
         const auto status = bridge(invocation, [&]() -> Result<void> {
             // Final cleanup after publication would mask a missing early-return
             // cleanup. Inspect actual slots before handing off the snapshot.
-            for (std::size_t index = business_root_slots; index < invocation.roots.size(); ++index)
-                require(!invocation.roots[index].registered(), "Return kept a user root until snapshot publication.");
+            for (std::uint32_t index = business_root_slots; index < invocation.frame.size(); ++index)
+                require(!invocation.frame.reference(index), "Return kept a user reference until snapshot publication.");
             for (const auto& observation : invocation.observations)
                 require(observation.description().type == TypeId{}, "Return kept a weak slot until snapshot publication.");
             auto& state = *static_cast<State*>(fixture(invocation).hook_state);
@@ -909,8 +920,8 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
             NativeAction callback{&state, [](void* context, CallContext& call) {
                 auto& state = *static_cast<State*>(context);
                 ++state.calls;
-                require(call.runtime.live_objects() == 3 && call.runtime.root_count() == 5,
-                    "Multi-return path changed lexical roots across a complete collection.");
+                require(call.runtime.live_objects() == 2 + state.calls && call.runtime.root_count() == 2,
+                    "Multi-return path collected a local or registered synchronous roots.");
                 if (state.failure == Failure::native)
                     throw std::runtime_error("Reference-return native failure.");
             }};
@@ -919,7 +930,9 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
             {
                 ActionScope action(callback);
                 auto result = execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, steps, true, &stats,
-                    [](void*, Invocation& invocation, const CollectionProgress&) { collect(invocation.runtime); }, &state);
+                    [](void*, Invocation& invocation) {
+                        reject(invocation.runtime.collect_step({1024}), ErrorCode::busy, "Return path advanced GC.");
+                    }, &state);
                 if (failure == Failure::none) snapshot = take(std::move(result));
                 else {
                     reject(result, ErrorCode::invocation_failed, "Multi-return error escaped generated cleanup.");
@@ -961,7 +974,7 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
             uint turn = 0;
             while (turn < 1) { turn = turn + 1; }
             $T alias = held;
-            weak $T after = observe(alias);
+            weak $T after = alias;
             weak $T copy = before;
             $T acquired = try_acquire(after);
             self.state.cycles = 0;
@@ -974,7 +987,7 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
             if (acquired != alias) { self.state.cycles = self.state.cycles + 1; }
             self.progress = 4.0;
             if (loops != 0) {
-                alias.progress = 88.0;
+                copy.progress = 88.0;
                 self.state.heat = 99.0;
             }
         }
@@ -990,7 +1003,7 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
     state.receiver = receiver.id();
     NativeAction capture{&state, [](void* context, CallContext& call) {
         auto& state = *static_cast<Replacement*>(context);
-        require(++state.calls == 1 && call.self != state.receiver && call.runtime.root_count() == 4,
+        require(++state.calls == 1 && call.self != state.receiver && call.runtime.root_count() == 2,
                 "Stale-reference scenario did not capture a source-only new object.");
         state.old = call.self;
     }};
@@ -999,15 +1012,15 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
     {
         ActionScope scope(capture);
         auto result = execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, dereference ? 1u : 0u, false, &stats,
-            [](void* context, Invocation& invocation, const CollectionProgress&) {
+            [](void* context, Invocation& invocation) {
                 auto& state = *static_cast<Replacement*>(context);
                 if (fixture(invocation).stats.polls == 1) {
-                    require(!state.destroyed && state.calls == 0 && invocation.runtime.root_count() == 3,
+                    require(!state.destroyed && state.calls == 0 && invocation.runtime.root_count() == 2,
                             "Source-owned destruction ran before initialization.");
                     return;
                 }
                 require(fixture(invocation).stats.polls == 2 && state.calls == 1 && !state.destroyed &&
-                        state.old != state.receiver && invocation.runtime.root_count() == 4,
+                        state.old != state.receiver && invocation.runtime.root_count() == 2,
                         "Source-owned destruction ran at the wrong safe point.");
                 take(invocation.runtime.destroy(state.old));
                 state.destroyed = true;
@@ -1015,8 +1028,8 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
                 require(state.root.id() != state.old && state.root.id() != state.receiver,
                         "Replacement reused an old identity or replaced self.");
                 set_machine(invocation.runtime, invocation.binding, state.root.id(), 99.0f, 7.0f, 25);
-                collect(invocation.runtime);
-                require(invocation.runtime.root_count() == 5 && invocation.runtime.live_objects() == 3,
+                reject(invocation.runtime.collect_step({1024}), ErrorCode::busy, "Explicit destruction enabled GC.");
+                require(invocation.runtime.root_count() == 3 && invocation.runtime.live_objects() == 3,
                         "Destroyed source root or host-held replacement has incorrect ownership.");
                 reject(invocation.runtime.type_of(state.old), ErrorCode::invalid_object,
                        "Explicitly destroyed local resolved to its replacement.");
@@ -1072,9 +1085,8 @@ void verify_reference_temporaries(Runtime& runtime, const Binding& binding) {
         auto& state = *static_cast<Temporaries*>(context);
         const auto step = state.calls++;
         require(step < 5, "Unexecuted temporary branch reached native code.");
-        const auto expected_roots = step == 0 ? 5u : step == 3 ? 6u : step == 4 ? 4u : 3u;
-        require(call.runtime.root_count() == expected_roots,
-                "Full-expression roots were cleared early or survived their statement/condition.");
+        require(call.runtime.root_count() == 2,
+                "Synchronous expression registered a root.");
         if (step == 0) {
             require(call.self != state.receiver, "Temporary receiver did not call the new object.");
             state.temporary = call.self;
@@ -1089,30 +1101,32 @@ void verify_reference_temporaries(Runtime& runtime, const Binding& binding) {
     {
         ActionScope scope(observe);
         snapshot = take(execute_machine(runtime, binding, code.get(), receiver.id(), 0.5f, 0, false, &stats,
-            [](void* context, Invocation& invocation, const CollectionProgress&) {
+            [](void* context, Invocation& invocation) {
                 auto& state = *static_cast<Temporaries*>(context);
                 const auto step = fixture(invocation).stats.polls;
                 require(step <= 3 && state.calls == (step == 1 ? 0u : step == 2 ? 3u : 5u) &&
-                        invocation.runtime.root_count() == 3,
-                        "Temporary expression or inner scope retained a root at its next safe point.");
+                        invocation.runtime.root_count() == 2,
+                        "Temporary expression or inner scope registered a root.");
                 for (const auto& observation : invocation.observations)
                     require(observation.description().type == TypeId{},
                             "A temporary or unexecuted branch was treated as an initialized weak value.");
-                collect(invocation.runtime);
+                reject(invocation.runtime.collect_step({1024}), ErrorCode::busy, "Temporary expression enabled GC.");
                 ++state.cycles;
-                require(invocation.runtime.live_objects() == 2, "Full-expression temporaries survived independent collection.");
+                require(invocation.runtime.live_objects() == (step == 1 ? 2u : step == 2 ? 4u : 6u),
+                    "Execution lost a temporary or evaluated a skipped branch.");
                 if (step >= 2)
-                    reject(invocation.runtime.type_of(state.temporary), ErrorCode::invalid_object,
-                           "Temporary native receiver was retained after its full expression.");
+                    take(invocation.runtime.type_of(state.temporary));
                 if (step == 3)
-                    reject(invocation.runtime.type_of(state.held), ErrorCode::invalid_object,
-                           "Acquired aliases retained their block-local owner.");
+                    take(invocation.runtime.type_of(state.held));
             }, &state));
     }
     require(state.calls == 5 && state.cycles == 3 && stats.polls == 3 && stats.explicit_cleanup && runtime.root_count() == 2,
             "Full-expression reference execution skipped callbacks, safe points or explicit cleanup.");
     check_machine(runtime, binding, receiver.id(), 1.0f, 0.0f, 1);
     check_machine(runtime, binding, snapshot.id(), 1.0f, 0.0f, 1);
+    collect(runtime);
+    require(runtime.live_objects() == 2 && !runtime.type_of(state.temporary) && !runtime.type_of(state.held),
+        "Host collection retained completed expression temporaries.");
 }
 
 void verify_reference_failed_initializer(Runtime& runtime, const Binding& binding) {
@@ -1140,7 +1154,7 @@ void verify_reference_failed_initializer(Runtime& runtime, const Binding& bindin
     struct Failed { ObjectId live; unsigned calls{}; } state;
     NativeAction capture{&state, [](void* context, CallContext& call) {
         auto& state = *static_cast<Failed*>(context);
-        require(++state.calls == 1 && call.runtime.root_count() == 4,
+        require(++state.calls == 1 && call.runtime.root_count() == 2,
                 "Failed-initializer scenario executed an unselected or unreachable initializer.");
         state.live = call.self;
     }};
@@ -1167,13 +1181,11 @@ void verify_reference_rejections(Runtime& runtime, const Binding& binding, const
         }
     )", "retained-reference.source");
     const char* cases[]{
-        "void bad(float a, uint n) { weak $T w = observe(self); float x = w.progress; }",
-        "void bad(float a, uint n) { weak $T w = observe(self); w.advance(a); }",
-        "void bad(float a, uint n) { weak $T w = observe(self); w.state.cycles = n; }",
+        "void bad(float a, uint n) { float x = null.progress; }",
+        "void bad(float a, uint n) { null.advance(a); }",
+        "void bad(float a, uint n) { null.state.cycles = n; }",
         "void bad(float a, uint n) { $T h = observe(self); }",
-        "void bad(float a, uint n) { weak $T w = self; }",
         "void bad(float a, uint n) { $T h = self; weak $T w = observe(h); h = w; }",
-        "void bad(float a, uint n) { $T h = self; weak $T w; w = h; }",
         "void bad(float a, uint n) { float x = self + self; }",
         "void bad(float a, uint n) { float x = self - self; }",
         "void bad(float a, uint n) { float x = self * a; }",
@@ -1652,7 +1664,7 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
     ExecutionStats stats;
     {
         ActionScope scope(attempt);
-        auto snapshot = take(invoke_machine(first.entry(), receiver.id(), 0.5f, 4, &stats, [](void* context, Invocation& invocation, const CollectionProgress&) {
+        auto snapshot = take(invoke_machine(first.entry(), receiver.id(), 0.5f, 4, &stats, [](void* context, Invocation& invocation) {
             auto& state = *static_cast<Active*>(context);
             ++state.polls;
             reject(state.second->try_publish(*state.second_candidate), ErrorCode::busy,
@@ -1667,6 +1679,8 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
                            "Nested execution admission released the outer publication guard.");
                     (void)take(invoke_machine(state.second->entry(), state.other, 0.0f, 0));
                 }
+                reject(invocation.runtime.collect_step({1024}), ErrorCode::busy,
+                       "Returning from a nested invocation cleared the outer GC guard.");
                 reject(state.second->try_publish(*state.second_candidate), ErrorCode::busy,
                        "Returning from a nested invocation cleared the outer execution scope.");
                 ++state.nested;
@@ -1689,7 +1703,7 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
     auto pending = prepare_reload(second, binding, 3);
     struct Guarded { BusinessProgram* program; BusinessProgram::Candidate* candidate; unsigned calls{}; }
         guarded{&second, &pending};
-    const auto cannot_publish = [](void* context, Invocation&, const CollectionProgress&) {
+    const auto cannot_publish = [](void* context, Invocation&) {
         auto& guarded = *static_cast<Guarded*>(context);
         reject(guarded.program->try_publish(*guarded.candidate), ErrorCode::busy,
                "An old lease or unversioned execute bypassed the Runtime-wide activity guard.");
@@ -1783,21 +1797,22 @@ void verify_reload_standalone_guards(Runtime& runtime, const Binding& binding, T
     require(runtime.collection_phase() != CollectionPhase::idle, "Publication secretly completed the paused collection.");
     ExecutionStats stats;
     unsigned cycles{};
-    auto snapshot = take(invoke_machine(program.entry(), receiver.id(), 0.5f, 3, &stats, [](void* context, Invocation& invocation, const CollectionProgress&) {
+    auto snapshot = take(invoke_machine(program.entry(), receiver.id(), 0.5f, 3, &stats, [](void* context, Invocation& invocation) {
         auto& cycles = *static_cast<unsigned*>(context);
-        collect(invocation.runtime);
+        reject(invocation.runtime.collect_step({1024}), ErrorCode::busy, "Reloaded invocation advanced GC.");
         ++cycles;
-        require(invocation.runtime.live_objects() == (fixture(invocation).stats.polls == 1 ? 2u : 3u),
-                "Published reference-slot layout lost a source-held object or retained garbage.");
-        for (const auto& root : invocation.roots)
-            if (root.registered() && root.id() != ObjectId{}) take(invocation.runtime.type_of(root.id()));
+        require(invocation.runtime.live_objects() == (fixture(invocation).stats.polls == 1 ? 3u : 4u),
+                "Published reference-slot layout lost an execution-protected object.");
+        for (std::uint32_t i = 0; i < invocation.frame.size(); ++i)
+            if (auto value = invocation.frame.reference(i); value && value->id() != ObjectId{})
+                take(invocation.runtime.type_of(value->id()));
     }, &cycles));
     require(cycles == 4 && stats.polls == 4 && stats.explicit_cleanup && runtime.root_count() == 2,
-            "Paused-GC publication did not preserve new source references through real collections and cleanup.");
-    reject(runtime.type_of(unrooted_id), ErrorCode::invalid_object, "Paused collection retained its unrooted control.");
+            "Paused-GC publication did not preserve new source references through execution and cleanup.");
     check_machine(runtime, binding, receiver.id(), 4.5f, 3.0f, 9);
     check_machine(runtime, binding, snapshot.id(), 4.5f, 3.0f, 9);
     collect(runtime);
+    reject(runtime.type_of(unrooted_id), ErrorCode::invalid_object, "Host collection retained its unrooted control.");
     require(runtime.live_objects() == 2, "Reference locals remained alive after the reloaded invocation.");
 }
 
@@ -1840,7 +1855,7 @@ void verify_reload_failure_release(Runtime& runtime, const Binding& binding) {
     auto pending = prepare_reload(program, binding, 2);
     auto receiver = take(runtime.create(binding.type));
     ExecutionStats stats;
-    reject(invoke_machine(program.entry(), receiver.id(), 0.5f, 1, &stats, [](void*, Invocation&, const CollectionProgress&) { throw std::runtime_error("Reload poll failure."); }),
+    reject(invoke_machine(program.entry(), receiver.id(), 0.5f, 1, &stats, [](void*, Invocation&) { throw std::runtime_error("Reload poll failure."); }),
         ErrorCode::invocation_failed, "Reload safe-point error escaped its checked entry.");
     require(stats.explicit_cleanup && runtime.root_count() == 1, "Poll failure retained execution ownership.");
     check_machine(runtime, binding, receiver.id(), 0.0f, 0.0f, 0);

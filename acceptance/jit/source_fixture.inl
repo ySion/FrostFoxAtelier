@@ -1,8 +1,8 @@
 // Acceptance-owned observations around the actual source host bridge.
 // Program, version, invocation and generated-code ownership stay in the library.
-using PollHook = void (*)(void*, Invocation&, const CollectionProgress&);
+using PollHook = void (*)(void*, Invocation&);
 struct ExecutionStats {
-    std::size_t polls{}, completed_cycles{}, reclaimed{};
+    std::size_t polls{};
     bool entered{}, explicit_cleanup{};
 };
 struct FixtureInvocation {
@@ -44,13 +44,10 @@ struct FixtureInvocation {
                 state.snapshot = std::move(*created);
                 return {};
             },
-            [](void* context, Invocation& invocation, const CollectionProgress& progress) -> Result<void> {
+            [](void* context, Invocation& invocation) -> Result<void> {
                 auto& state = *static_cast<FixtureInvocation*>(context);
                 ++state.stats.polls;
-                state.stats.reclaimed += progress.reclaimed;
-                if (progress.work_done != 0 && progress.phase == CollectionPhase::idle)
-                    ++state.stats.completed_cycles;
-                if (state.hook) state.hook(state.hook_state, invocation, progress);
+                if (state.hook) state.hook(state.hook_state, invocation);
                 return state.refresh(invocation);
             },
             [](void* context, Invocation& invocation) -> Result<void> {
@@ -96,22 +93,25 @@ Result<ExecutionResult> finish_fixture(Result<BusinessValue> result, FixtureInvo
     return ExecutionResult{*result, std::move(state.output)};
 }
 Result<ExecutionResult> execute_fixture(Runtime& runtime, const Binding& binding, BusinessCode* code,
-    ObjectId receiver, std::span<const BusinessValue> arguments, bool request_collection = false,
+    ObjectId receiver, std::span<const BusinessValue> arguments, bool start_collection = false,
     ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* hook_state = nullptr,
-    CollectionBudget budget = {1}, bool make_snapshot = false) {
+    bool make_snapshot = false) {
     if (statistics) *statistics = {};
+    if (start_collection && runtime.collection_phase() == CollectionPhase::idle) {
+        auto started = runtime.begin_collection();
+        if (!started) return std::unexpected(std::move(started.error()));
+    }
     FixtureInvocation state{make_snapshot, hook, hook_state};
     auto result = source_detail::execute_typed(runtime, binding, code, receiver, arguments,
-        request_collection, state.observer(), budget);
+        state.observer());
     return finish_fixture(std::move(result), state, statistics);
 }
 Result<ObjectRoot> execute_machine(Runtime& runtime, const Binding& binding, BusinessCode* code,
-    ObjectId receiver, float amount, std::uint32_t steps, bool request_collection = false,
-    ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* hook_state = nullptr,
-    CollectionBudget budget = {1}) {
+    ObjectId receiver, float amount, std::uint32_t steps, bool start_collection = false,
+    ExecutionStats* statistics = nullptr, PollHook hook = nullptr, void* hook_state = nullptr) {
     const auto arguments = machine_arguments(amount, steps);
-    auto result = execute_fixture(runtime, binding, code, receiver, arguments, request_collection,
-        statistics, hook, hook_state, budget, true);
+    auto result = execute_fixture(runtime, binding, code, receiver, arguments, start_collection,
+        statistics, hook, hook_state, true);
     if (!result) return std::unexpected(std::move(result.error()));
     return std::move(result->snapshot);
 }

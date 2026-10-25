@@ -144,9 +144,9 @@ BusinessServices typed_trace_services() {
         const auto status = bridge(invocation, [&]() -> Result<void> {
             auto& trace = *static_cast<TypedTrace*>(fixture(invocation).hook_state);
             ++trace.finishes;
-            trace.receiver_at_finish = invocation.roots[receiver_slot].registered();
-            for (std::size_t index = business_root_slots; index < invocation.roots.size(); ++index)
-                require(!invocation.roots[index].registered(), "Typed return retained a user root into finish.");
+            trace.receiver_at_finish = invocation.frame.reference(receiver_slot).has_value();
+            for (std::uint32_t index = business_root_slots; index < invocation.frame.size(); ++index)
+                require(!invocation.frame.reference(index), "Typed return retained a user reference into finish.");
             for (const auto& observation : invocation.observations)
                 require(observation.description().type == TypeId{}, "Typed return retained a weak slot into finish.");
             if (trace.fail_finish)
@@ -165,10 +165,10 @@ BusinessServices typed_trace_services() {
     };
     return callbacks;
 }
-void typed_trace_poll(void* context, Invocation& invocation, const CollectionProgress&) {
+void typed_trace_poll(void* context, Invocation& invocation) {
     const auto& trace = *static_cast<TypedTrace*>(context);
     if (fixture(invocation).stats.polls == 2) {
-        collect(invocation.runtime);
+        reject(invocation.runtime.collect_step({1024}), ErrorCode::busy, "Typed execution advanced GC.");
         if (trace.fail_poll) throw std::runtime_error("Typed poll failure.");
     }
 }
@@ -178,7 +178,7 @@ TypedRawResult typed_raw(Runtime& runtime, const Binding& binding, BusinessCode*
     auto activation = ExecutionScope::enter(runtime);
     require(static_cast<bool>(activation), "Typed raw invocation could not enter execution.");
     FixtureInvocation observed{false, typed_trace_poll, &trace};
-    Invocation invocation(runtime, binding, atelier_business_layout(code), {1}, observed.observer());
+    Invocation invocation(runtime, binding, atelier_business_layout(code), observed.observer(), nullptr, {}, &*activation);
     if (receiver != ObjectId{}) take(invocation.frame.hold(receiver_slot, receiver));
     char diagnostic[512]{};
     const auto status = atelier_invoke_business(code, &invocation, arguments, count, result, diagnostic, sizeof(diagnostic));
@@ -545,7 +545,7 @@ void verify_typed_active_owner() {
         const std::array arguments{BusinessValue{ValueKind::f32, 0x7fc54321u}};
         ExecutionStats stats;
         auto result = execute_fixture(runtime, binding, code.get(), {}, arguments, false, &stats,
-            [](void* context, Invocation&, const CollectionProgress&) {
+            [](void* context, Invocation&) {
                 auto& state = *static_cast<State*>(context);
                 ++state.callbacks;
                 state.owner->reset();
@@ -724,7 +724,7 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
             Calls calls{0, fault};
             auto activation = take(ExecutionScope::enter(runtime));
             FixtureInvocation observed{false, nullptr, &calls};
-            Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, observed.observer());
+            Invocation invocation(runtime, binding, atelier_business_layout(code.get()), observed.observer(), nullptr, {}, &activation);
             take(invocation.frame.hold(receiver_slot, receiver.id()));
             auto output = sentinel;
             char error[512]{};
@@ -752,7 +752,7 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
         Calls calls{0, Fault::none};
         auto activation = take(ExecutionScope::enter(runtime));
         FixtureInvocation observed{false, nullptr, &calls};
-        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {1}, observed.observer());
+        Invocation invocation(runtime, binding, atelier_business_layout(code.get()), observed.observer(), nullptr, {}, &activation);
         take(invocation.frame.hold(receiver_slot, receiver.id()));
         auto output = sentinel;
         char error[512]{"Previous invocation failure."};
@@ -767,7 +767,7 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
         Calls calls{0, Fault::service_failure};
         auto activation = take(ExecutionScope::enter(runtime));
         FixtureInvocation observed{false, nullptr, &calls};
-        Invocation invocation(runtime, binding, atelier_business_layout(native_failure.get()), {1}, observed.observer());
+        Invocation invocation(runtime, binding, atelier_business_layout(native_failure.get()), observed.observer(), nullptr, {}, &activation);
         take(invocation.frame.hold(receiver_slot, receiver.id()));
         auto output = sentinel;
         char error[512]{};
@@ -912,4 +912,3 @@ void verify_typed_business() {
     std::puts("[pass] Native result ABI violations retain diagnostics through explicit cleanup and host propagation without changing service status or later success");
     std::puts("[pass] Bound source declarations: host signature checking, fixed receiver requirements, old leases and per-version actual native-call scratch demand");
 }
-

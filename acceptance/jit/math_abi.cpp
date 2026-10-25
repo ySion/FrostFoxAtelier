@@ -149,7 +149,7 @@ void verify_result_rejection(Runtime& runtime, const Binding& binding, BusinessC
     {
         Observation observation{fault};
         auto activation = take(ExecutionScope::enter(runtime));
-        Invocation invocation(runtime, binding, atelier_business_layout(code), {1}, observation.observer());
+        Invocation invocation(runtime, binding, atelier_business_layout(code), observation.observer(), nullptr, {}, &activation);
         take(invocation.frame.hold(receiver_slot, receiver));
         char diagnostic[512]{};
         const auto status = atelier_invoke_business(code, &invocation, nullptr, 0, &output,
@@ -174,7 +174,7 @@ void verify_result_rejection(Runtime& runtime, const Binding& binding, BusinessC
         Observation observation{fault};
         auto activation = take(ExecutionScope::enter(runtime));
         const auto failed = execute_admitted(activation, runtime, binding, code, atelier_business_layout(code),
-            true, receiver, {}, false, observation.observer());
+            true, receiver, {}, observation.observer());
         require(!failed && failed.error().message == "Math ABI native first failure." && observation.calls == 1 && observation.finishes == 0,
             "Source bridge replaced the native math ABI first failure.");
     }

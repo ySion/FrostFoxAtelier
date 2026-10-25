@@ -527,7 +527,7 @@ void isolated_failures() {
             if (id == b_id) {
                 source::Diagnostics capture;
                 const std::array arguments{Scalar{dt}};
-                if (auto invoked = script.invoke(id, arguments, {1}, &capture); !invoked) return std::unexpected(invoked.error());
+                if (auto invoked = script.invoke(id, arguments, &capture); !invoked) return std::unexpected(invoked.error());
             }
             if (id == d_id && world_failure) return std::unexpected(Error{ErrorCode::capacity_exceeded, "Intentional World-level failure."});
             if (id == d_id || id == m_id) {
