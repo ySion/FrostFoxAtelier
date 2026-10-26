@@ -90,6 +90,8 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 `assets::Reader` 是同步读侧，默认只解析精确的 `builtin/cube`、`builtin/sphere`、`builtin/plane` 三个内建网格，不需要 Project、Runtime 对象或设备。工程的 mesh、texture、material、sky、导入说明与依赖文件读取也由它负责；OBJ/glTF/WIC、材质与共用 JSON 编解码位于 `src/assets`。Reader 不创建目录、身份文件或作者材质文档，不持有 Runtime 根。
 
+资产值类型直接使用 `assets::AssetKind`、`assets::MeshAsset` 等声明；文件读取/UTF-8 转换、JSON 与材质 codec 分别通过 `assets/file.hpp`、`assets/json_format.hpp`、`assets/material_format.hpp` 使用，不经 `editor` 别名或转发头。`editor/assets.hpp` 仅声明编辑器部署目录定位 `asset_directory()`，不再作为资产读取入口。接口和格式升级遵循[当前开发基线](../../engineering.md#当前开发基线)。
+
 Project 保留配置、目录作者扫描、sidecar 身份处理以及导入、保存、重命名事务；扫描完整候选通过校验后，发布给它组合的唯一 Reader。目录条目、键索引、revision、网格/天空/贴图内容缓存及图片弱缓存只由 Reader 拥有，Project 的目录接口只是只读视图；类型化读取直接使用 `project.assets()`，不另设 Project 读实现。刷新仍按现有文件大小/修改时间失效，导入预载复用同一图片缓存，失败时移除本次预载与本次写出的文件。借用的目录/说明视图不能跨发布保留；已返回的不可变内容拥有独立寿命。Reader 的调用与发布仍由所属线程串行执行，不提供异步或并发读取合同。
 
 Runtime 中的 Texture/Material 根和可变作者历史仍由 Session/宿主持有。Scene v9、材质 v1、语言 `engine_sources` 摘要与依赖文件的宽容复制规则不变：未知 `builtin/` 前缀在依赖文件枚举时仍没有工程文件，不代表该键可被类型化读取。
