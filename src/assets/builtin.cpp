@@ -1,4 +1,4 @@
-#include "assets/assets.hpp"
+#include "assets/reader.hpp"
 #include <numbers>
 
 namespace atelier::assets {
@@ -26,12 +26,34 @@ geometry::MeshRef sphere() {
     }
     return std::make_shared<const geometry::Mesh>(std::move(vertices),std::move(edges));
 }
+struct Producer {
+    const char* key;
+    const wchar_t* name;
+    std::uint32_t semantic_version;
+    geometry::MeshRef (*make)();
+};
+// This table owns identities, order and producer compatibility declarations.
+constexpr std::array producers{
+    Producer{"builtin/cube",L"Cube",1,geometry::cube_mesh},
+    Producer{"builtin/sphere",L"Sphere",1,sphere},
+    Producer{"builtin/plane",L"Plane",1,plane}};
 }
 std::span<const MeshAsset> mesh_assets() {
-    static const std::array assets{
-        MeshAsset{"builtin/cube",L"Cube",geometry::cube_mesh()},
-        MeshAsset{"builtin/sphere",L"Sphere",sphere()},
-        MeshAsset{"builtin/plane",L"Plane",plane()}};
+    static const auto assets=[] {
+        std::array<MeshAsset,producers.size()> result;
+        for(std::size_t i=0;i<producers.size();++i) {
+            const auto& p=producers[i];result[i]={p.key,p.name,p.make()};
+        }
+        return result;
+    }();
     return assets;
+}
+Result<EngineDependency> Reader::engine_dependency(std::string_view key,AssetKind expected) const {
+    const auto at=std::ranges::find(producers,key,&Producer::key);
+    if(at==producers.end()) return std::unexpected(Error{ErrorCode::invalid_definition,"Unknown installed engine asset: "+std::string(key)});
+    if(expected!=AssetKind::mesh) return std::unexpected(Error{ErrorCode::invalid_definition,"Installed engine asset is a mesh, not the requested kind: "+std::string(key)});
+    const auto digest=mesh_content_sha256(mesh_assets()[static_cast<std::size_t>(at-producers.begin())]);
+    if(!digest) return std::unexpected(digest.error());
+    return EngineDependency{std::string(key),AssetKind::mesh,at->semantic_version,mesh_digest_version,*digest};
 }
 }

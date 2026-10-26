@@ -6,10 +6,42 @@ void verify_project_document() {
             const auto mesh=take(engine.mesh(key));
             require(mesh.key==key && mesh.mesh && !mesh.mesh->vertices().empty() &&
                 mesh.mesh==take(assets::Reader{}.mesh(key)).mesh,"Engine-only readers lost built-in identity or shared content.");
+            const auto dependency=take(engine.engine_dependency(key,assets::AssetKind::mesh));
+            require(dependency.key==key && dependency.kind==assets::AssetKind::mesh && dependency.semantic_version==1 &&
+                dependency.digest_version==1 && dependency.content_sha256.size()==64 &&
+                dependency.content_sha256==take(assets::mesh_content_sha256(mesh)),"Engine dependency did not describe its actual published mesh.");
         }
         require(engine.entries().empty() && engine.revision()==0 && !engine.mesh("builtin/unknown") &&
             !engine.texture("builtin/cube") && !engine.material("builtin/cube") && !engine.sky_map("builtin/cube"),
             "Engine-only reads invented a project catalogue or resolved an unknown/wrong-kind asset.");
+        require(!engine.engine_dependency("builtin/unknown",assets::AssetKind::mesh) &&
+            !engine.engine_dependency("builtin/cube",assets::AssetKind::texture) &&
+            !engine.engine_dependency("project/fake",assets::AssetKind::mesh),"An engine dependency trusted a prefix or a wrong kind.");
+        // The public content contract distinguishes alpha, dormant sampling and slot
+        // relationships, not object identity or the order of the binding vector.
+        material::Description surface;
+        const auto shape=[&](const material::Description& description,std::vector<std::uint8_t> edges) {
+            return std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
+                {{0,0,0},{0,0,1},{0,0},{1,0,0,1}},{{2,0,0},{0,0,1},{1,0},{1,0,0,1}},{{0,3,0},{0,0,1},{0,1},{1,0,0,1}},
+                {{0,0,1},{0,0,1},{0,0},{1,0,0,1}},{{4,0,1},{0,0,1},{1,0},{1,0,0,1}},{{0,5,1},{0,0,1},{0,1},{1,0,0,1}}},
+                std::move(edges),std::vector<material::Slot>{{"paint",std::make_shared<const material::Surface>(description)},{"trim"}},
+                std::vector<geometry::MeshPart>{{0,3,0},{3,3,1}},geometry::Tangents::authored);
+        };
+        assets::MeshAsset content{"first",L"First",shape(surface,{}),{{"paint","project/A"},{"trim","project/B"}}};
+        const auto digest=take(assets::mesh_content_sha256(content));auto other=content;
+        other.key="second";other.name=L"Second";other.mesh=shape(surface,{7,7});std::ranges::reverse(other.materials);
+        require(take(assets::mesh_content_sha256(other))==digest,"Mesh digest depends on identity, implicit edges or binding storage order.");
+        std::swap(other.materials[0].key,other.materials[1].key);
+        require(take(assets::mesh_content_sha256(other))!=digest,"Mesh digest lost the slot-to-material relationship.");
+        other=content;other.materials.push_back({"paint","project/C"});
+        require(!assets::mesh_content_sha256(other),"Mesh digest silently overwrote duplicate slot defaults.");
+        for(unsigned change=0;change<3;++change) {
+            other=content;auto changed_surface=surface;
+            if(change==0) changed_surface.parameters.base_color[3]=.375f;
+            if(change==1) changed_surface.texture(material::Input::opacity).offset[1]=.25f;
+            other.mesh=shape(changed_surface,change==2?std::vector<std::uint8_t>{5,3}:std::vector<std::uint8_t>{});
+            require(take(assets::mesh_content_sha256(other))!=digest,"Mesh digest omitted alpha, dormant sampling or visible edges.");
+        }
     }
     const auto evidence=fs::current_path()/"project-document-evidence"/std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
     fs::create_directories(evidence);

@@ -1,8 +1,8 @@
 #include "control/control.hpp"
+#include "foundation/sha256.hpp"
 #include "platform/windows_path.hpp"
 #include <Windows.h>
 #include <objbase.h>
-#include <bcrypt.h>
 #include <sddl.h>
 #include <algorithm>
 #include <array>
@@ -31,35 +31,6 @@ std::string hex(std::span<const unsigned char> bytes) {
     for (auto value : bytes) { result += digits[value >> 4]; result += digits[value & 15]; }
     return result;
 }
-class Hash final {
-public:
-    Hash() {
-        if (BCryptOpenAlgorithmProvider(&algorithm_, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-            throw Failure("storage_error", "Cannot open SHA-256 provider");
-        if (BCryptCreateHash(algorithm_, &hash_, nullptr, 0, nullptr, 0, 0) < 0) {
-            BCryptCloseAlgorithmProvider(algorithm_, 0); algorithm_ = nullptr;
-            throw Failure("storage_error", "Cannot create SHA-256 hash");
-        }
-    }
-    ~Hash() { if (hash_) BCryptDestroyHash(hash_); if (algorithm_) BCryptCloseAlgorithmProvider(algorithm_, 0); }
-    void add(std::span<const std::byte> bytes) {
-        while (!bytes.empty()) {
-            const auto count = static_cast<ULONG>(std::min<std::size_t>(bytes.size(), 1024 * 1024));
-            if (BCryptHashData(hash_, reinterpret_cast<PUCHAR>(const_cast<std::byte*>(bytes.data())), count, 0) < 0)
-                throw Failure("storage_error", "Cannot hash bytes");
-            bytes = bytes.subspan(count);
-        }
-    }
-    std::string finish() {
-        std::array<unsigned char, 32> digest{};
-        if (BCryptFinishHash(hash_, digest.data(), static_cast<ULONG>(digest.size()), 0) < 0)
-            throw Failure("storage_error", "Cannot finish SHA-256 hash");
-        return hex(digest);
-    }
-private:
-    BCRYPT_ALG_HANDLE algorithm_{};
-    BCRYPT_HASH_HANDLE hash_{};
-};
 std::uint64_t started(HANDLE process) {
     FILETIME creation{}, exit{}, kernel{}, user{};
     check(GetProcessTimes(process, &creation, &exit, &kernel, &user) != FALSE, "Read process identity");
@@ -158,14 +129,10 @@ std::string unique_id() {
     GUID value{}; if (FAILED(CoCreateGuid(&value))) throw Failure("storage_error", "Cannot allocate control identity");
     return hex({reinterpret_cast<const unsigned char*>(&value), sizeof(value)});
 }
-std::string sha256(std::span<const std::byte> bytes) { Hash hash; hash.add(bytes); return hash.finish(); }
-std::string sha256_file(const std::filesystem::path& path) {
-    std::ifstream file(platform::windows_file_path(path), std::ios::binary); if (!file) throw Failure("storage_error", "Cannot read file for hashing");
-    Hash hash; std::array<std::byte, 65536> buffer{};
-    while (file) { file.read(reinterpret_cast<char*>(buffer.data()), buffer.size()); hash.add({buffer.data(), static_cast<std::size_t>(file.gcount())}); }
-    if (!file.eof()) throw Failure("storage_error", "Cannot finish reading file for hashing");
-    return hash.finish();
-}
+std::string sha256(std::span<const std::byte> bytes) try {return foundation::sha256(bytes);}
+catch(const std::exception& error) {throw Failure("storage_error",error.what());}
+std::string sha256_file(const std::filesystem::path& path) try {return foundation::sha256_file(path);}
+catch(const std::exception& error) {throw Failure("storage_error",error.what());}
 void fields(const Json& value, std::initializer_list<std::string_view> allowed) {
     if (!value.is_object()) throw Failure("invalid_request", "Expected an object");
     for (const auto& item : value.items()) if (std::ranges::find(allowed, item.key()) == allowed.end())

@@ -8,6 +8,17 @@
 
 namespace atelier::assets {
 enum class AssetKind { folder, mesh, scene, source, file, texture, material, sky };
+// An installed producer's compatibility declaration and actual immutable content.
+// Neither the digest nor the semantic version authenticates executable code.
+struct EngineDependency {
+    std::string key;
+    AssetKind kind;
+    std::uint32_t semantic_version;
+    std::uint32_t digest_version;
+    std::string content_sha256;
+    bool operator==(const EngineDependency&) const = default;
+};
+inline constexpr std::uint32_t mesh_digest_version=1;
 // A mesh slot's default material: the material asset key its sidecar names for the slot.
 struct SlotMaterial {
     std::string slot;

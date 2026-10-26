@@ -1,5 +1,5 @@
 #include "assets/image_decode.hpp"
-#include "control/control.hpp"
+#include "foundation/sha256.hpp"
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -62,7 +62,7 @@ std::vector<material::ImageRef> decode_images(std::span<const std::string_view> 
             try {
                 std::string digest;
                 if(cache) {
-                    digest=control::sha256(std::as_bytes(std::span(sources[i].data(),sources[i].size())));
+                    digest=foundation::sha256(std::as_bytes(std::span(sources[i].data(),sources[i].size())));
                     std::scoped_lock lock(guard);
                     if(const auto found=cache->entries.find(digest);found!=cache->entries.end()) result[i]=found->second.lock();
                 }

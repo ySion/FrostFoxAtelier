@@ -639,8 +639,7 @@ struct EditorControl::Impl {
         jobs.push_back(std::move(job));return *jobs.back();
     }
     Json start_export(const std::string& id,const std::shared_ptr<control::Peer>& peer) {
-        control_artifacts::Repro data;data.scene=take(app.document_->serialize());
-        data.materials=take(app.document_->material_assets());
+        auto data=control_artifacts::snapshot_resources(*app.document_);
         if(app.project_) {
             if(!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available) throw Failure("not_ready","Repair the project and load its scene before exporting a repro");
             data.project=app.project_->root();const auto& published=*app.project_code_->published_build();
@@ -648,15 +647,6 @@ struct EditorControl::Impl {
         }
         data.drafts=Json::array();for(const auto& file:app.workspace_.source_editor.files()) if(file->dirty())
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
-        for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(app.document_->world().runtime(),entity.id())))
-            if(auto mesh=presentation::read_static_mesh(app.document_->world().runtime(),component.id());mesh && mesh->mesh.resolved) {
-                editor::MeshAsset snapshot{mesh->mesh.source,{},mesh->mesh.resolved};
-                for(const auto& binding:mesh->mesh.defaults)
-                    snapshot.materials.push_back({binding.slot,take(material::read_material(app.document_->world().runtime(),binding.resource.id())).source});
-                if(std::ranges::none_of(data.meshes,[&](const auto& entry){return entry.key==snapshot.key && entry.mesh==snapshot.mesh && entry.materials==snapshot.materials;}))
-                    data.meshes.push_back(std::move(snapshot));
-            } else if(auto sky=presentation::read_sky_map(app.document_->world().runtime(),component.id());sky && sky->resolved)
-                if(std::ranges::none_of(data.skies,[&](const auto& entry){return entry.first==sky->source && entry.second==sky->resolved;})) data.skies.emplace_back(sky->source,sky->resolved);
         if(app.project_) {
             data.roots.assign(app.project_->roots().begin(),app.project_->roots().end());
             // The repro holds what the scene references, whatever else this session loaded: the
@@ -959,6 +949,7 @@ struct EditorControl::Impl {
             }
             std::vector<ObjectId> selected;ObjectId inspected{};bool mismatch=false;
             const auto opened=app.open_project(root/"Project",false,ProjectOpenPolicy::require_scene,[&](const editor::Session& candidate)->Result<void> {
+                control_artifacts::validate_candidate_assets(candidate,manifest);
                 const auto reject=[&](std::string message)->Result<void> {mismatch=true;return std::unexpected(Error{ErrorCode::invalid_definition,std::move(message)});};
                 const auto environment=candidate.presentation().environment();if(!environment) return std::unexpected(environment.error());
                 // Only the scene records the sky map and its rotation; the view snapshot holds view options.

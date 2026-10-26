@@ -1,12 +1,15 @@
 #include "application/control_artifacts.hpp"
 #include "editor/project.hpp"
+#include "editor/session.hpp"
 #include "editor/json_format.hpp"
+#include "assets/material_format.hpp"
 #include "platform/windows_path.hpp"
 #include "source/snapshot.hpp"
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <fstream>
+#include <map>
 #include <set>
 #include <unordered_map>
 
@@ -31,28 +34,97 @@ Json engine_source_hashes(std::span<const language::SourceFile> files) {
         hashes[file.path]=control::sha256(std::as_bytes(std::span(file.source)));
     return hashes;
 }
-std::string mesh_hash(const editor::MeshAsset& asset) {
-    const auto& mesh=*asset.mesh;
-    Json shape{{"vertices",control::sha256(std::as_bytes(mesh.vertices()))},{"parts",Json::array()},{"materials",Json::array()}};
-    shape["defaults"]=Json::object();for(const auto& binding:asset.materials) shape["defaults"][binding.slot]=binding.key;
-    std::vector<std::uint8_t> edges;edges.reserve(mesh.vertices().size()/3);
-    for(std::size_t i=0;i<mesh.vertices().size()/3;++i) edges.push_back(mesh.edge_mask(i));
-    shape["edges"]=control::sha256(std::as_bytes(std::span(edges)));
-    for(const auto& p:mesh.parts()) shape["parts"].push_back({p.first_vertex,p.vertex_count,p.material});
-    for(const auto& m:mesh.materials()) {
-        const auto& d=m.surface->description();const auto& p=d.parameters;
-        Json surface{{"name",m.name},{"base_color",p.base_color},{"roughness",p.roughness},{"metallic",p.metallic},
-            {"emissive",p.emissive},{"normal_scale",p.normal_scale},{"normal_y_sign",p.normal_y_sign},{"coverage",static_cast<unsigned>(p.coverage)},
-            {"alpha_cutoff",p.alpha_cutoff},{"double_sided",p.double_sided},{"emission_two_sided",p.emission_two_sided},{"textures",Json::array()}};
-        for(const auto& t:d.textures) {
-            Json image=nullptr;
-            if(t.image)image={{"width",t.image->width()},{"height",t.image->height()},{"rgba",control::sha256(std::as_bytes(t.image->pixels()))}};
-            surface["textures"].push_back({{"image",std::move(image)},{"scale",t.scale},{"offset",t.offset},
-                {"rotation",t.rotation},{"address",static_cast<unsigned>(t.address)},{"channel",t.channel}});
-        }
-        shape["materials"].push_back(std::move(surface));
+std::string mesh_hash(const editor::MeshAsset& asset) try {
+    auto digest=assets::mesh_content_sha256(asset);
+    if(!digest) throw Failure("dependency_mismatch",digest.error().message);
+    return std::move(*digest);
+} catch(const Failure&) {throw;}
+catch(const std::exception& error) {throw Failure("storage_error",error.what());}
+assets::EngineDependency installed_asset(std::string_view key,assets::AssetKind kind) try {
+    auto result=assets::Reader{}.engine_dependency(key,kind);
+    if(!result) throw Failure("dependency_mismatch",result.error().message);
+    return std::move(*result);
+} catch(const Failure&) {throw;}
+catch(const std::exception& error) {throw Failure("storage_error",error.what());}
+Json engine_assets_json(std::span<const assets::EngineDependency> assets) {
+    auto records=Json::array();
+    for(const auto& asset:assets) records.push_back({{"key",asset.key},{"kind","mesh"},{"semantic_version",asset.semantic_version},
+        {"digest_version",asset.digest_version},{"content_sha256",asset.content_sha256}});
+    return {{"version",1},{"records",std::move(records)}};
+}
+std::vector<assets::EngineDependency> installed_assets(const Json& manifest) {
+    if(!manifest.contains("engine_assets")) throw Failure("invalid_request","Repro lacks engine assets; export it again");
+    const auto version=[](const Json& value)->std::uint32_t {
+        if(!value.is_number_integer() || (value.is_number_integer() && !value.is_number_unsigned() && value.get<std::int64_t>()<=0) ||
+            value.get<std::uint64_t>()==0 || value.get<std::uint64_t>()>UINT32_MAX)
+            throw Failure("invalid_request","Engine asset versions require positive uint32 integers");
+        return value.get<std::uint32_t>();
+    };
+    const auto& object=manifest.at("engine_assets");control::fields(object,{"version","records"});
+    if(version(object.at("version"))!=1) throw Failure("invalid_request","Unknown engine assets schema; export it again");
+    const auto& records=object.at("records");if(!records.is_array()) throw Failure("invalid_request","Engine assets require a record array");
+    std::set<std::string> keys;std::vector<assets::EngineDependency> result;
+    for(const auto& record:records) {
+        control::fields(record,{"key","kind","semantic_version","digest_version","content_sha256"});
+        const auto key=record.at("key").get<std::string>();
+        if(!keys.insert(key).second) throw Failure("invalid_request","Duplicate engine asset: "+key);
+        const auto semantic=version(record.at("semantic_version")),encoding=version(record.at("digest_version"));
+        if(encoding!=assets::mesh_digest_version) throw Failure("invalid_request","Unknown engine asset digest encoding; export it again");
+        const auto digest=record.at("content_sha256").get<std::string>();
+        if(digest.size()!=64 || !std::ranges::all_of(digest,[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}))
+            throw Failure("invalid_request","Invalid engine asset SHA-256: "+key);
+        const auto kind=record.at("kind").get<std::string>();
+        if(kind!="mesh") throw Failure("dependency_mismatch","Installed engine asset kind differs: "+key);
+        auto current=installed_asset(key,assets::AssetKind::mesh);
+        if(current.semantic_version!=semantic) throw Failure("dependency_mismatch","Installed engine asset semantic version differs: "+key);
+        if(current.content_sha256!=digest) throw Failure("dependency_mismatch","Installed engine asset content differs: "+key);
+        result.push_back(std::move(current));
     }
-    const auto bytes=shape.dump();return control::sha256(std::as_bytes(std::span(bytes)));
+    std::ranges::sort(result,{},&assets::EngineDependency::key);return result;
+}
+std::string string_field(const Json& object,const char* name) {
+    const auto at=object.find(name);return at!=object.end() && at->is_string()?at->get<std::string>():std::string{};
+}
+// Only schema resource slots are references. Do not inspect arbitrary strings,
+// cached drafts, copied files or unknown extension properties.
+template<class Reference> void scene_references(const Json& scene,const Reference& reference) {
+    if(const auto materials=scene.find("materials");materials!=scene.end() && materials->is_array())
+        for(const auto& definition:*materials) if(definition.is_object()) {
+            reference(assets::AssetKind::material,string_field(definition,"source"));
+            reference(assets::AssetKind::material,string_field(definition,"parent"));
+            if(const auto value=definition.find("inline");value!=definition.end() && value->is_object())
+                if(const auto textures=value->find("textures");textures!=value->end() && textures->is_object())
+                    for(const auto* name:assets::material_format::names)
+                        if(const auto texture=textures->find(name);texture!=textures->end() && texture->is_object())
+                            reference(assets::AssetKind::texture,string_field(*texture,"source"));
+        }
+    if(const auto entities=scene.find("entities");entities!=scene.end() && entities->is_array())
+        for(const auto& entity:*entities)
+            if(const auto components=entity.find("components");components!=entity.end() && components->is_array())
+                for(const auto& component:*components) if(component.is_object()) {
+                    reference(assets::AssetKind::mesh,string_field(component,"mesh"));
+                    reference(assets::AssetKind::sky,string_field(component,"sky_map"));
+                }
+}
+// Only inspect published Scene resource slots and their mesh defaults/material
+// inputs, never all copied files. The strict loader still owns project failures;
+// this preflight identifies invalid engine keys before it can reject the load.
+void preflight_resources(editor::Project& project,const Json& scene) {
+    std::set<std::pair<assets::AssetKind,std::string>> references;
+    const auto reference=[&](assets::AssetKind kind,const std::string& key) {
+        if(!key.empty()) references.emplace(kind,key);
+    };
+    scene_references(scene,reference);
+    // Collect before visiting materials; their ordinal need not follow meshes.
+    std::vector<std::string> meshes;
+    for(const auto& [kind,key]:references) if(kind==assets::AssetKind::mesh) meshes.push_back(key);
+    for(const auto& key:meshes) if(auto mesh=project.assets().mesh(key))
+        for(const auto& binding:mesh->materials) reference(assets::AssetKind::material,binding.key);
+    std::vector<std::string> materials;
+    for(const auto& [kind,key]:references) if(kind==assets::AssetKind::material) materials.push_back(key);
+    for(const auto& key:materials) if(auto material=project.assets().material(key))
+        for(const auto& texture:material->textures) reference(assets::AssetKind::texture,texture);
+    for(const auto& [kind,key]:references) if(key.starts_with("builtin/")) static_cast<void>(installed_asset(key,kind));
 }
 std::string sky_hash(const rendering::SkyMap& map) {
     const auto bytes=Json{{"width",map.width()},{"height",map.height()},{"scale_exponent",map.scale_exponent()},{"mean",map.mean()},
@@ -86,6 +158,61 @@ void finish(const std::filesystem::path& directory,Json& manifest,const std::ato
     if(encoded.size()>editor::json_format::maximum_bytes) throw Failure("resource_limit","Artifact manifest exceeds the 16 MiB file limit");
     write(directory/"manifest.json",encoded);
 }
+}
+Repro snapshot_resources(const editor::Session& document) {
+    Repro data;data.scene=take(document.serialize());
+    std::map<std::string,assets::EngineDependency,std::less<>> engine;
+    std::set<std::string> material_keys;
+    const auto reference=[&](assets::AssetKind kind,const std::string& key) {
+        if(key.empty()) return;
+        if(key.starts_with("builtin/")) {
+            const auto at=engine.find(key);
+            if(at==engine.end()) engine.emplace(key,installed_asset(key,kind));
+            else if(at->second.kind!=kind) throw Failure("dependency_mismatch","Engine asset used with conflicting kinds: "+key);
+        } else if(kind==assets::AssetKind::material) material_keys.insert(key);
+    };
+    // The serialized graph includes retained resource definitions, but not every
+    // material a browser happened to load. Ordinary properties are not references.
+    scene_references(editor::json_format::parse(data.scene),reference);
+    auto& runtime=document.world().runtime();
+    for(const auto& entity:take(document.world().members())) for(const auto& component:take(world::components(runtime,entity.id()))) {
+        if(auto mesh=presentation::read_static_mesh(runtime,component.id())) {
+            reference(assets::AssetKind::mesh,mesh->mesh.source);
+            editor::MeshAsset snapshot{mesh->mesh.source,{},mesh->mesh.resolved};
+            for(const auto& binding:mesh->mesh.defaults) {
+                const auto key=take(material::read_material(runtime,binding.resource.id())).source;
+                reference(assets::AssetKind::material,key);snapshot.materials.push_back({binding.slot,key});
+            }
+            if(snapshot.mesh && std::ranges::none_of(data.meshes,[&](const auto& entry) {
+                return entry.key==snapshot.key && entry.mesh==snapshot.mesh && entry.materials==snapshot.materials;
+            })) data.meshes.push_back(std::move(snapshot));
+        } else if(auto sky=presentation::read_sky_map(runtime,component.id())) {
+            reference(assets::AssetKind::sky,sky->source);
+            if(sky->resolved && std::ranges::none_of(data.skies,[&](const auto& entry) {
+                return entry.first==sky->source && entry.second==sky->resolved;
+            })) data.skies.emplace_back(sky->source,sky->resolved);
+        }
+    }
+    for(const auto& key:material_keys) {
+        if(document.unavailable(assets::AssetKind::material,key)) continue;
+        const auto object=document.loaded_material(key);if(object==ObjectId{}) continue;
+        auto asset=take(document.material_asset(object));
+        for(const auto& texture:asset.textures) reference(assets::AssetKind::texture,texture);
+        data.materials.push_back(std::move(asset));
+    }
+    // Compare every distinct loaded version before deduplicating the declaration.
+    for(const auto& mesh:data.meshes) if(const auto at=engine.find(mesh.key);at!=engine.end())
+        if(mesh_hash(mesh)!=at->second.content_sha256)
+            throw Failure("dependency_mismatch","Loaded engine mesh differs from its installed producer: "+mesh.key);
+    for(auto& [key,dependency]:engine) {static_cast<void>(key);data.engine_assets.push_back(std::move(dependency));}
+    return data;
+}
+void validate_candidate_assets(const editor::Session& candidate,const Json& manifest) {
+    const auto expected=installed_assets(manifest),actual=snapshot_resources(candidate).engine_assets;
+    for(const auto& item:actual) if(std::ranges::find(expected,item)==expected.end())
+        throw Failure("dependency_mismatch","Repro omits or changes an actual engine dependency: "+item.key);
+    for(const auto& item:expected) if(std::ranges::find(actual,item)==actual.end())
+        throw Failure("dependency_mismatch","Repro declares an unused engine dependency: "+item.key);
 }
 Json export_repro(const std::filesystem::path& output,Repro data,const std::atomic_bool& cancel) {
     checkpoint(cancel);
@@ -206,7 +333,12 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
         checkpoint(cancel);auto loaded=take(clone.assets().mesh(mesh.key));
         const auto expected=mesh_hash(mesh);
         if(!loaded.mesh || mesh_hash(loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded mesh content or slot defaults: "+mesh.key);
-        if(recorded.insert(mesh.key).second) resources.push_back({{"key",mesh.key},{"content_sha256",expected}});
+        if(mesh.key.starts_with("builtin/")) {
+            const auto at=std::ranges::find(data.engine_assets,mesh.key,&assets::EngineDependency::key);
+            if(at==data.engine_assets.end() || *at!=installed_asset(mesh.key,assets::AssetKind::mesh) || at->content_sha256!=expected)
+                throw Failure("dependency_mismatch","Frozen engine declaration differs from the loaded mesh: "+mesh.key);
+        } else if(recorded.insert(mesh.key).second)
+            resources.push_back({{"key",mesh.key},{"digest_version",assets::mesh_digest_version},{"content_sha256",expected}});
     }
     for(const auto& [key,map]:data.skies) {
         checkpoint(cancel);const auto loaded=take(clone.assets().sky_map(key)).map;
@@ -214,6 +346,7 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
         if(!loaded || sky_hash(*loaded)!=expected) throw Failure("dependency_mismatch","Copied dependency differs from the loaded sky map: "+key);
         if(recorded.insert(key).second) resources.push_back({{"key",key},{"content_sha256",expected}});
     }
+    data.manifest["engine_assets"]=engine_assets_json(data.engine_assets);
     data.manifest["resources"]=std::move(resources);data.manifest["project"]="Project";data.manifest["scene"]=path_text(scene_path);
     if(!data.drafts.empty()) write(directory/"drafts.json",data.drafts.dump(2)+"\n");
     finish(directory,data.manifest,cancel);
@@ -221,10 +354,15 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
 }
 Json validate_repro(const std::filesystem::path& input) {
     const auto directory=platform::windows_file_path(input);
-    auto manifest=editor::json_format::parse(take(editor::read_file(directory/"manifest.json")));
+    const auto text=take(editor::read_file(directory/"manifest.json"));
+    Json manifest;
+    // Format-limit and duplicate-field failures are input errors, not I/O failures.
+    try {manifest=editor::json_format::parse(text);}
+    catch(const std::runtime_error& error) {throw Failure("invalid_request",error.what());}
     if(manifest.value("kind","")!="repro" || !manifest.value("complete",false) ||
         manifest.at("protocol")!=control::protocol_version || manifest.at("project")!="Project")
         throw Failure("invalid_request","Not a completed compatible repro bundle");
+    static_cast<void>(installed_assets(manifest));
     if(!manifest.contains("engine_sources") || !manifest.at("engine_sources").is_object())
         throw Failure("invalid_request","Repro lacks engine Source dependencies; export it again");
     const auto engine=source::engine_sources(source::default_engine_root());
@@ -255,6 +393,9 @@ Json validate_repro(const std::filesystem::path& input) {
         expected.erase(found);
     }
     if(!expected.empty()) throw Failure("dependency_mismatch","Repro bundle file is missing");
+    auto project=take(editor::Project::open(input/"Project"));
+    const auto scene=take(project.resolve(project.startup_scene()));
+    preflight_resources(project,editor::json_format::parse(take(editor::read_file(scene))));
     return manifest;
 }
 Json write_samples(const std::filesystem::path& output,std::vector<Sample> samples,Json manifest,const std::atomic_bool& cancel) {

@@ -4,6 +4,9 @@
 #include "assets/mesh_import.hpp"
 
 namespace atelier::assets {
+// Cold-path, bounded-memory canonical encoding of actual content and slot defaults.
+// Invalid content returns an error; SHA provider failures throw std::runtime_error.
+Result<std::string> mesh_content_sha256(const MeshAsset&);
 // Synchronous asset reads, independent of author documents, Runtime objects and devices.
 // The default reader has only the engine catalogue. A project owner supplies a root
 // and complete scanned entries; the reader never creates sidecars or writes files.
@@ -20,6 +23,8 @@ public:
     // Borrowed entries/notes expire on publication; returned content keeps its own owners.
     Result<void> publish(std::vector<ProjectEntry>);
     Result<MeshAsset> mesh(std::string_view);
+    // Exact installed identity and kind, never a project fallback. SHA failures throw.
+    Result<EngineDependency> engine_dependency(std::string_view,AssetKind expected) const;
     Result<TextureAsset> texture(std::string_view);
     Result<MaterialAsset> material(std::string_view);
     Result<SkyAsset> sky_map(std::string_view);

@@ -90,6 +90,125 @@ Json discover_editor(const Process& editor,const std::filesystem::path& director
 }
 void error(const Json& result,std::string_view expected) {require(result.value("status","")=="error" && result.at("error").at("code").get<std::string>()==expected,result.dump());}
 Json selection(const std::string& entity) {return {{"selection",{{"entities",Json::array({entity})}}}};}
+void repro_engine_assets(Driver& d,const std::filesystem::path& root) {
+    const auto exported=[&] {
+        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Engine repro export did not start");
+        const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+        return std::filesystem::path(wide(done.at("result").at("directory").get<std::string>()));
+    };
+    const auto empty=exported();
+    require(read(empty/"manifest.json").at("engine_assets")==Json{{"version",1},{"records",Json::array()}},
+        "An empty no-project document acquired unused installation assets");
+    for(const auto* key:{"builtin/plane","builtin/cube","builtin/sphere"}) d.ok("scene.create",{{"kind","mesh"},{"mesh",key}});
+    const auto bundle=exported();const auto original=read(bundle/"manifest.json");
+    const auto records=original.at("engine_assets").at("records");
+    require(records.size()==3 && records[0].at("key")=="builtin/cube" && records[1].at("key")=="builtin/plane" &&
+        records[2].at("key")=="builtin/sphere","No-project export did not freeze exactly its three actual engine meshes");
+    const auto copy=root/"EngineRepro";
+    std::filesystem::copy(bundle,copy,std::filesystem::copy_options::recursive);
+    const auto scene_path=copy/"Project"/wide(original.at("scene").get<std::string>());
+    const auto scene=read(scene_path);
+    const auto publish=[&](Json manifest,const Json& value) {
+        write(scene_path,value.dump(2));
+        for(auto& file:manifest.at("files")) if(copy/wide(file.at("path").get<std::string>())==scene_path) {
+            file["sha256"]=sha256_file(scene_path);file["bytes"]=std::filesystem::file_size(scene_path);
+        }
+        write(copy/"manifest.json",manifest.dump(2));
+    };
+    error(d.call("repro.open",{{"directory",utf8(copy.wstring())}}),"unsaved_changes"); // guard, not dependency atomicity
+    for(unsigned i=0;i<3;++i) d.op("edit.undo");
+    d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+    const auto entity=d.inspect().at("entities")[0].at("handle").get<std::string>();
+    d.ok("scene.rename",{{"object",entity},{"name","Saved with history"}});d.ok("scene.save");
+    d.op("scene.select",selection(entity));d.ok("camera.look_at",{{"eye",{7,4,-9}},{"target",{1,0,2}}});d.settle();
+    const auto rejected_open=[&](std::string_view code) {
+        const auto before=d.inspect();const auto token=d.token;
+        require(!before.at("dirty").get<bool>() && before.at("undo").get<unsigned>()>0 && !before.at("selection").empty(),
+            "Dependency atomicity fixture is not a saved, replaceable document with history and selection");
+        error(d.call("repro.open",{{"directory",utf8(copy.wstring())}}),code);
+        const auto after=d.inspect();
+        for(const auto* field:{"project","entities","selection","camera","view","undo","redo","dirty"})
+            require(after.at(field)==before.at(field),"Rejected engine dependency changed "+std::string(field));
+        require(d.token==token,"Rejected engine dependency changed the state token");
+    };
+    const auto rejected=[&](const Json& manifest,const Json& value,std::string_view code) {
+        publish(manifest,value);rejected_open(code);
+    };
+    for(unsigned change=0;change<12;++change) {
+        auto manifest=original;auto& engine=manifest.at("engine_assets");auto& items=engine.at("records");
+        std::string_view code="dependency_mismatch";
+        if(change==0) items.erase(items.begin());
+        if(change==1) items=Json::array();
+        if(change==2) {items.push_back(items[0]);code="invalid_request";}
+        if(change==3) items[0]["kind"]="texture";
+        if(change==4) items[0]["semantic_version"]=2;
+        if(change==5) items[0]["content_sha256"]=std::string(64,'0');
+        if(change==6) {manifest.erase("engine_assets");code="invalid_request";}
+        if(change==7) {engine["version"]=2;code="invalid_request";}
+        if(change==8) {items[0]["digest_version"]=2;code="invalid_request";}
+        if(change==9) {items[0]["semantic_version"]=1.5;code="invalid_request";}
+        if(change==10) items[0]["key"]="builtin/unknown";
+        if(change==11) {items[0]["content_sha256"]="not-a-digest";code="invalid_request";}
+        rejected(manifest,scene,code);
+    }
+    auto unused=scene;unused["roots"]=Json::array();unused["entities"]=Json::array();
+    rejected(original,unused,"dependency_mismatch");
+    auto unresolved=scene;unresolved["entities"][0]["components"][0]["mesh"]="builtin/unknown";
+    rejected(original,unresolved,"dependency_mismatch");
+    auto wrong_kind=scene;wrong_kind["materials"].push_back({{"id","9000"},{"source","builtin/cube"}});
+    rejected(original,wrong_kind,"dependency_mismatch");
+    publish(original,scene);const auto valid_manifest=read(copy/"manifest.json").dump();
+    auto duplicate=valid_manifest;constexpr std::string_view engine_field="\"engine_assets\":{";
+    const auto at=duplicate.find(engine_field);require(at!=std::string::npos,"Engine dependency fixture lacks its record");
+    // Preserve duplicate keys in raw text: a JSON DOM would silently replace them.
+    duplicate.insert(at+engine_field.size(),"\"version\":1,");
+    write(root/"duplicate-engine-version.json",duplicate);write(copy/"manifest.json",duplicate);
+    rejected_open("invalid_request");
+    require(std::filesystem::remove(copy/"manifest.json"),"Missing-manifest fixture did not remove the file");
+    rejected_open("storage_error");
+    write(copy/"manifest.json",valid_manifest);d.ok("repro.open",{{"directory",utf8(copy.wstring())}});
+    const auto recovered=d.inspect();
+    require(recovered.at("entities").size()==scene.at("entities").size() && recovered.at("undo")==0 &&
+        recovered.at("entities")[0].at("name")==scene.at("entities")[0].at("name"),
+        "Restoring a valid manifest did not reopen the original document after parse/read rejection");
+    // Disabled members remain dependencies. A name is not an asset protocol.
+    auto disabled=scene;for(auto& item:disabled.at("entities")) {item["enabled"]=false;item["name"]="builtin/not-an-asset-reference";}
+    publish(original,disabled);d.ok("repro.open",{{"directory",utf8(copy.wstring())}});
+    require(read(exported()/"manifest.json").at("engine_assets").at("records")==records,
+        "Export dropped disabled members or treated an ordinary name as a resource slot");
+    d.ok("repro.open",{{"directory",utf8(empty.wstring())}});
+    require(d.inspect().at("entities").empty(),"Empty engine dependency set did not reopen");
+
+    // A cached but unused material and an obsolete disk texture are not roots.
+    // Only the referenced, published draft belongs to the frozen document.
+    const auto project=root/"EngineDraftProject";project_fixture(project);d.ok("project.open",{{"path",utf8(project.wstring())}});
+    const auto used=d.ok("material.create",{{"path","Content/Materials/Used.material"}}).at("asset");
+    const auto cached=d.ok("material.create",{{"path","Content/Materials/Cached.material"}}).at("asset");
+    for(const auto* name:{"Used","Cached"}) {
+        const auto file=project/"Content/Materials"/(std::string(name)+".material");auto value=read(file);
+        value["textures"]["base_color"]["source"]="builtin/unknown";write(file,value.dump(2));
+    }
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    d.ok("material.inspect",{{"asset",cached}});
+    const auto loaded=d.ok("material.inspect",{{"asset",used}});
+    require(loaded.at("missing_textures")==Json::array({"builtin/unknown"}),"Unknown-engine draft fixture did not retain its missing texture");
+    d.ok("scene.create",{{"kind","mesh"}});
+    const auto component=d.inspect().at("entities")[0].at("components")[0].at("handle");
+    d.ok("material.assign",{{"component",component},{"slot","slot/0"},{"asset",used}});d.ok("scene.save");
+    error(d.call("repro.export"),"dependency_mismatch");
+    d.ok("material.set_texture",{{"object",loaded.at("handle")},{"input","base_color"},{"texture",""}});
+    const auto draft=exported();
+    require(!std::filesystem::exists(draft/"Project/Content/Materials/Cached.material") &&
+        read(draft/"Project/Content/Materials/Used.material").at("textures").at("base_color").at("source")=="" &&
+        read(project/"Content/Materials/Used.material").at("textures").at("base_color").at("source")=="builtin/unknown",
+        "Frozen draft roots included an unused cache, ignored the live draft or changed its source file");
+    d.ok("material.undo",{{"asset",used}});d.ok("repro.open",{{"directory",utf8(draft.wstring())}});
+    require(d.ok("material.inspect",{{"asset",used}}).at("missing_textures").empty(),"Published draft did not reopen strictly");
+    write(root/"engine-assets.json",Json{{"status","passed"},{"records",records},{"cases",{"no-project-empty-and-three-meshes",
+        "missing-and-extra-records","schema-kind-version-digest","saved-history-selection-camera-preserved","unknown-actual-resource",
+        "duplicate-json-field-invalid-request","missing-manifest-storage-error","valid-manifest-reopen",
+        "disabled-members","ordinary-name","unused-cache-and-superseded-disk-not-roots","referenced-draft"}}}.dump(2));
+}
 // One operator registry serves menus, keys and Control; the context override lasts one call.
 void verify_operators(Driver& d,const std::string& entity) {
     const auto listed=d.ok("op.list");
@@ -1002,6 +1121,7 @@ int wmain(int argc,wchar_t** argv) {
         const auto empty=d.settle();const auto builtins=d.ok("editor.inspect",{{"detail","assets"}});
         require(empty.at("project")=="" && builtins.at("assets")==empty.at("assets") && builtins.at("next_cursor").is_null(),
             "No-project assets query did not return the builtin catalog");
+        if(!descriptions) repro_engine_assets(d,root);
         d.ok("project.open",{{"path",utf8(project.wstring())}});d.settle();
         verify_asset_directory(d,editor.window(),project,caps);
         auto initial=d.inspect();unsigned stable{};

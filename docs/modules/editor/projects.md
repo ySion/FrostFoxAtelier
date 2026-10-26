@@ -92,7 +92,17 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 Project 保留配置、目录作者扫描、sidecar 身份处理以及导入、保存、重命名事务；扫描完整候选通过校验后，发布给它组合的唯一 Reader。目录条目、键索引、revision、网格/天空/贴图内容缓存及图片弱缓存只由 Reader 拥有，Project 的目录接口只是只读视图；类型化读取直接使用 `project.assets()`，不另设 Project 读实现。刷新仍按现有文件大小/修改时间失效，导入预载复用同一图片缓存，失败时移除本次预载与本次写出的文件。借用的目录/说明视图不能跨发布保留；已返回的不可变内容拥有独立寿命。Reader 的调用与发布仍由所属线程串行执行，不提供异步或并发读取合同。
 
-Runtime 中的 Texture/Material 根和可变作者历史仍由 Session/宿主持有。Scene v9、材质 v1、语言 `engine_sources` 摘要与依赖文件的宽容复制规则不变：未知 `builtin/` 前缀在依赖文件枚举时仍没有工程文件，不代表该键可被类型化读取。安装资产版本/内容摘要核对与更严格的依赖集合验证不属于本次读侧迁移。
+Runtime 中的 Texture/Material 根和可变作者历史仍由 Session/宿主持有。Scene v9、材质 v1、语言 `engine_sources` 摘要与依赖文件的宽容复制规则不变：未知 `builtin/` 前缀在依赖文件枚举时仍没有工程文件，不代表该键可被类型化读取。
+
+### 引擎依赖摘要
+
+`Reader::engine_dependency(key, expected_kind)` 查询本安装精确生产者，返回拥有型 `EngineDependency`（key、kind、semantic_version、digest_version、content_sha256）；不回退工程目录。三网格的身份、生成入口和语义版本 1 统一由 `assets/builtin.cpp` 的生产者表维护。语义版本是兼容声明，编码版本独立演进；摘要根据实际发布内容计算，不根据生成参数猜测，也不认证未来 C++/shader 行为。无 Project/Runtime/设备即可读取，安装不产生可写目录或材质文档。
+
+`mesh_content_sha256` 的编码 v1 使用 `Atelier.Mesh` 域字节、u32 编码版本；整数小端，长度/数量为 u64，bool 为 u8，有限 float 为保留正负零的 IEEE-754 u32 位。字符串是长度前缀的原 UTF-8 字节，枚举使用固定编码。不哈希 padding、指针或容器布局。64 KiB 有界缓冲批量送入共用 `foundation::Sha256`，只在依赖核对冷路径计算。
+
+字段顺序为：顶点 position/normal/uv/tangent；bounds；每三角形有效边 mask（省略边数组等同全 7）；有序 part 的 first_vertex/vertex_count/material；有序槽名及 Surface。Surface 依次含 base_color **四分量**、roughness、metallic、normal_scale、normal_y_sign、emissive、coverage（opaque=0/mask=1）、alpha_cutoff、double_sided、emission_two_sided；六路 base_color/roughness/metallic/normal/emissive/opacity 各含有无图、scale、offset、rotation、address（repeat=0/clamp=1/mirror=2）、channel，有图时再含 width/height、像素字节数/RGBA8 字节、mean_linear/has_alpha。无图采样值也参与摘要。最后按有序槽名编码默认关系的有无及目标 key；先拒绝重复、歧义、不存在槽，不用覆盖或排序掩盖关系。资产自身 key/显示名不是内容，默认关系目标 key 是内容。
+
+工程 mesh 与引擎 mesh 使用同一编码。repro 新增的必需版本字段、实际集合核对与旧包重导出见[复现工程](control.md#复现工程)；`asset_files` 的宽容复制并未整体改严。引擎语言 Source 仍使用独立的既有摘要合同。
 
 ## 资源浏览器
 
