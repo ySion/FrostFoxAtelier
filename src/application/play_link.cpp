@@ -1,5 +1,6 @@
 #include "application/play_link.hpp"
-#include "editor/json_format.hpp"
+#include "assets/file.hpp"
+#include "assets/json_format.hpp"
 #include "editor/project_code.hpp"
 #include "editor/session.hpp"
 #include <atomic>
@@ -9,7 +10,7 @@
 
 namespace atelier::application {
 namespace {
-using Json=editor::json_format::Json;
+using Json=assets::json_format::Json;
 bool transfer(HANDLE pipe,void* storage,std::size_t bytes,bool write) {
     auto* cursor=static_cast<char*>(storage);
     while(bytes) {
@@ -105,7 +106,7 @@ void PlayLink::send(std::string_view ops) {
         const auto file=spill_/(L"batch-"+std::to_wstring(seq)+L".json");
         std::string text=R"({"ops":[)";text.append(ops);text+="]}";bytes=text.size();
         if(auto saved=editor::write_file(file,text);!saved) {fail("Cannot write a large Play change batch: "+saved.error().message);return;}
-        message=dump(Json{{"type","batch"},{"seq",seq},{"file",editor::utf8(file.wstring())}});
+        message=dump(Json{{"type","batch"},{"seq",seq},{"file",assets::utf8(file.wstring())}});
     }
     link_->send(std::move(message));
     pending_.push_back({seq,bytes});pending_bytes_+=bytes;
@@ -117,7 +118,7 @@ void PlayLink::poll(bool running,bool stopping) {
     if(!link_) return;
     for(const auto& text:link_->receive()) {
         try {
-            const auto message=editor::json_format::parse(text);
+            const auto message=assets::json_format::parse(text);
             const auto& type=message.at("type").get_ref<const std::string&>();
             if(type=="inspect") {
                 inspected_[message.at("id").get<std::uint64_t>()]=message.contains("graph")?message.at("graph").get<std::string>():
@@ -168,7 +169,7 @@ void PlayEnd::service(editor::Session& document,editor::Project& project,const R
             return Json{{"severity","error"},{"kind","command_rejected"},{"message",item.message}};
         };
         try {
-            auto message=editor::json_format::parse(text);
+            auto message=assets::json_format::parse(text);
             const auto type=message.at("type").get<std::string>();
             if(type=="inspect") {
                 reply={{"type","inspect"},{"id",message.at("id")}};
@@ -188,8 +189,8 @@ void PlayEnd::service(editor::Session& document,editor::Project& project,const R
                     ++expected_;
                     std::string batch;
                     if(message.contains("file")) {
-                        const std::filesystem::path file=editor::wide(message.at("file").get<std::string>());
-                        auto read=editor::read_file(file);std::error_code ignored;std::filesystem::remove(file,ignored);
+                        const std::filesystem::path file=assets::wide(message.at("file").get<std::string>());
+                        auto read=assets::read_file(file);std::error_code ignored;std::filesystem::remove(file,ignored);
                         if(read) batch=std::move(*read);
                         else out.push_back(reject("Cannot read Play change batch "+std::to_string(seq)+": "+read.error().message,true));
                     } else batch=dump(Json{{"ops",std::move(message.at("ops"))}});
@@ -201,7 +202,7 @@ void PlayEnd::service(editor::Session& document,editor::Project& project,const R
                             for(const auto& item:*applied) {
                                 if(item.severity==world::Severity::error) diverged_=true;
                                 out.push_back({{"severity",world::name(item.severity)},{"kind",world::name(item.kind)},
-                                    {"message",editor::utf8(editor::describe_diagnostic(document,item))}});
+                                    {"message",assets::utf8(editor::describe_diagnostic(document,item))}});
                             }
                         }
                     }

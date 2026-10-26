@@ -4,7 +4,7 @@ void verify_dungeons() {
     const auto folder=root/"Content/Dungeons";
     verify_example_identities(root);
     auto project=take(editor::Project::open(root));
-    const auto manifest=nlohmann::json::parse(take(editor::read_file(folder/"Import/models.json")));
+    const auto manifest=nlohmann::json::parse(take(assets::read_file(folder/"Import/models.json")));
     require(manifest.size()==2314,"Dungeons model library is incomplete.");
     std::size_t models{},textured{};std::unordered_set<const material::Image*> images;
     for(const auto& row:manifest) {
@@ -14,21 +14,21 @@ void verify_dungeons() {
         ++models;
     }
     require(textured>1000 && images.size()>10 && images.size()<100,"Dungeons textures are missing or shared atlases were decoded per model.");
-    const auto summary=nlohmann::json::parse(take(editor::read_file(folder/"Import/summary.json")));
+    const auto summary=nlohmann::json::parse(take(assets::read_file(folder/"Import/summary.json")));
     for(const auto& scene:summary.at("scenes")) {
-        const auto path=folder/editor::wide(scene.at("file").get<std::string>());
-        const auto original=take(editor::read_file(path));
+        const auto path=folder/assets::wide(scene.at("file").get<std::string>());
+        const auto original=take(assets::read_file(path));
         auto document=take(editor::Session::deserialize(original,project));
         require(take(document->world().members()).size()==scene.at("entities").get<std::size_t>()+2 &&
             take(document->presentation().render_items()).size()==scene.at("visible_meshes").get<std::size_t>(),"Dungeons scene lost authored model instances.");
         const auto saved=take(document->serialize());auto reopened=take(editor::Session::deserialize(saved,project));
         const auto after=take(reopened->serialize());
-        require(atelier::acceptance::dungeons_roundtrip_equal(saved,after) && take(editor::read_file(path))==original,"Dungeons scene round trip changed data or the template.");
+        require(atelier::acceptance::dungeons_roundtrip_equal(saved,after) && take(assets::read_file(path))==original,"Dungeons scene round trip changed data or the template.");
         // Scene Tree lays out a window of rows, whatever the World size, and still reaches any Entity.
         editor::Workspace workspace;workspace.project_open=true;
         const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
         ui::Session surface(fonts);
-        const auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+        const auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
         require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779,1154},1,1}),"Dungeons UI surface failed.");
         std::vector<ui::Control> controls;
         const auto present=[&] {

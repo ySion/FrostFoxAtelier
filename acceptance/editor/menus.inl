@@ -44,11 +44,11 @@ void verify_about(Application& app,std::wstring_view expected_project) {
     {const ExpectedNativeDialogs expected;click(app,static_cast<ControlKey>(atelier::editor::Command::about));}
     dismiss.request_stop();dismiss.join();tick(app);
     const bool valid=lookup.found && !IsWindow(lookup.found) && title==L"About FrostFox Atelier" &&
-        content.contains(atelier::editor::wide(atelier::build_info::revision)) &&
-        content.contains(atelier::editor::wide(atelier::build_info::configuration)) && content.contains(expected_project);
+        content.contains(atelier::assets::wide(atelier::build_info::revision)) &&
+        content.contains(atelier::assets::wide(atelier::build_info::configuration)) && content.contains(expected_project);
     if (!valid) std::fprintf(stderr,"About verification: found=%d closed=%d title=%d revision=%d configuration=%d project=%d\n",
         lookup.found!=nullptr,!IsWindow(lookup.found),title==L"About FrostFox Atelier",
-        content.contains(atelier::editor::wide(atelier::build_info::revision)),content.contains(atelier::editor::wide(atelier::build_info::configuration)),content.contains(expected_project));
+        content.contains(atelier::assets::wide(atelier::build_info::revision)),content.contains(atelier::assets::wide(atelier::build_info::configuration)),content.contains(expected_project));
     require(valid,"About did not show this binary's build identity and current project.");
     require(!app.menu_window() && app.document().undo_count()==history,"About changed document history or retained its menu.");
 }

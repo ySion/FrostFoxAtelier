@@ -7,7 +7,7 @@ void verify_entity_composition() {
         editor::Session document;auto& runtime=document.world().runtime();
         changed(document.add_entity());const auto parent=document.selection().entity;
         take(document.set_transform(parent,{{.1f,0,0},{},{1,1,1}}));
-        changed(document.create_static_mesh(editor::mesh_assets().front(),{.3f,0,0}));const auto child=document.selection().entity;
+        changed(document.create_static_mesh(assets::mesh_assets().front(),{.3f,0,0}));const auto child=document.selection().entity;
         take(document.set_transform(child,{{.3f,0,0},editor::from_euler_degrees({0,0,90}),{1,1,1}}));
         changed(document.reparent(child,parent,world::ReparentRule::keep_local));
         take(document.select_entities(std::array{parent,child},child));
@@ -41,7 +41,7 @@ void verify_entity_composition() {
         take(key(13,ui::Key::enter));require(document.undo_count()==history+1,"Active-child snapping did not record one group edit.");
         changed(document.undo());require(take(world::read_transform(runtime,parent))==parent_before &&
             take(world::read_transform(runtime,child))==child_before,"Active-child snapping Undo lost the original local poses.");
-        changed(document.create_static_mesh(editor::mesh_assets().front(),{2.1f,0,0}));const auto other=document.selection().entity;
+        changed(document.create_static_mesh(assets::mesh_assets().front(),{2.1f,0,0}));const auto other=document.selection().entity;
         take(document.select_entities(std::array{parent,other,child},child));settings.grid_snap=false;
         take(key('S'));take(key('X'));take(text(L"2"));
         require(std::abs(take(world::read_transform(runtime,parent)).position.x-.1f)<.0001f &&
@@ -53,7 +53,7 @@ void verify_entity_composition() {
     {
         editor::Session inherited;auto& rt=inherited.world().runtime();
         changed(inherited.add_entity());const auto parent=inherited.selection().entity;
-        changed(inherited.create_static_mesh(editor::mesh_assets().front(),{3,0,0}));const auto child=inherited.selection().entity;
+        changed(inherited.create_static_mesh(assets::mesh_assets().front(),{3,0,0}));const auto child=inherited.selection().entity;
         changed(inherited.reparent(child,parent,world::ReparentRule::keep_local));
         const auto child_pose=take(world::read_transform(rt,child));
         const auto before=take(inherited.serialize());inherited.mark_saved();const auto cursor=inherited.undo_count();
@@ -83,7 +83,7 @@ void verify_entity_composition() {
             "A nonspatial group with frameable descendants cannot Focus or incorrectly enables a Transform gesture.");
         application::SceneSnapshot snapshot;take(snapshot.refresh(inherited));
         require(snapshot.meshes.size()==1 && snapshot.meshes.front().selected,"A nonspatial selected ancestor did not highlight its rendered child.");
-        changed(inherited.create_static_mesh(editor::mesh_assets().front(),{8,0,0}));const auto other=inherited.selection().entity;
+        changed(inherited.create_static_mesh(assets::mesh_assets().front(),{8,0,0}));const auto other=inherited.selection().entity;
         take(inherited.select(parent));take(snapshot.refresh(inherited));
         require(snapshot.meshes.size()==2 && snapshot.meshes[0].selected && !snapshot.meshes[1].selected,
             "Composition selection propagated into a different root.");
@@ -122,11 +122,11 @@ void verify_entity_composition() {
     require(take(world::has_transform(runtime,group)) && document.undo_count()==initial+1,"Adding Entity space did not use document history.");
     changed(document.undo());require(!take(world::has_transform(runtime,group)),"Transform addition Undo did not restore absence.");
     changed(document.redo());
-    changed(document.create_static_mesh(editor::mesh_assets().front(),{2,0,0}));const auto child=document.selection().entity;
+    changed(document.create_static_mesh(assets::mesh_assets().front(),{2,0,0}));const auto child=document.selection().entity;
     changed(document.reparent(child,group,world::ReparentRule::keep_local));
     require(take(world::parent_entity(runtime,child))==group && take(world::world_matrix(runtime,child))[12]==12,
         "Composition reparent did not preserve the requested local frame.");
-    changed(document.create_static_mesh(editor::mesh_assets().front(),{3,0,0}));const auto leaf=document.selection().entity;
+    changed(document.create_static_mesh(assets::mesh_assets().front(),{3,0,0}));const auto leaf=document.selection().entity;
     changed(document.reparent(leaf,child,world::ReparentRule::keep_local));
     require(take(world::world_matrix(runtime,leaf))[12]==15 && take(world::children(runtime,child)).front().id()==leaf,
         "Nested Entity composition lost space or child identity.");
@@ -177,7 +177,7 @@ void verify_entity_composition() {
         editor::Session affine;auto& rt=affine.world().runtime();
         changed(affine.add_entity());const auto parent=affine.selection().entity;
         take(affine.set_transform(parent,{{},{},{2,1,1}}));
-        changed(affine.create_static_mesh(editor::mesh_assets().front(),{2,0,0}));const auto target=affine.selection().entity;
+        changed(affine.create_static_mesh(assets::mesh_assets().front(),{2,0,0}));const auto target=affine.selection().entity;
         const auto rotation=editor::from_euler_degrees({0,0,45});take(affine.set_transform(target,{{2,0,0},rotation,{1,1,1}}));
         changed(affine.reparent(target,parent,world::ReparentRule::keep_local));
         const auto before=take(world::world_matrix(rt,target));editor::ViewportTool handle;handle.cursor={6,0,0};
@@ -281,12 +281,12 @@ void verify_entity_composition() {
         take(forest.set_transform(first_parent,{{10,0,0},{},{1,1,1}}));
         changed(forest.add_entity());const auto second_parent=forest.selection().entity;
         take(forest.set_transform(second_parent,{{100,0,0},{},{1,1,1}}));
-        changed(forest.create_static_mesh(editor::mesh_assets().front(),{2,0,0}));const auto origin=forest.selection().entity;
+        changed(forest.create_static_mesh(assets::mesh_assets().front(),{2,0,0}));const auto origin=forest.selection().entity;
         changed(forest.reparent(origin,second_parent,world::ReparentRule::keep_local));
-        changed(forest.create_static_mesh(editor::mesh_assets().front(),{3,0,0}));const auto follower=forest.selection().entity;
+        changed(forest.create_static_mesh(assets::mesh_assets().front(),{3,0,0}));const auto follower=forest.selection().entity;
         changed(forest.reparent(follower,first_parent,world::ReparentRule::keep_local));
         changed(forest.set_space_reference(follower,origin,world::ReparentRule::keep_local));
-        changed(forest.create_static_mesh(editor::mesh_assets().front(),{4,0,0}));const auto descendant=forest.selection().entity;
+        changed(forest.create_static_mesh(assets::mesh_assets().front(),{4,0,0}));const auto descendant=forest.selection().entity;
         changed(forest.reparent(descendant,follower,world::ReparentRule::keep_local));
         const auto graph=[&] {auto value=nlohmann::json::parse(take(forest.serialize()));value.erase("next_id");return value;};
         const auto children=[&](ObjectId parent) {std::vector<ObjectId> ids;for(const auto& child:take(world::children(rt,parent))) ids.push_back(child.id());return ids;};
@@ -330,9 +330,9 @@ void verify_entity_composition() {
         const auto folder=std::filesystem::current_path()/"out/editor-subtree-evidence"/std::to_string(GetTickCount64());
         auto project=take(editor::Project::create(folder));editor::Session graph;auto& rt=graph.world().runtime();
         changed(graph.add_entity());const auto original=graph.selection().entity;take(graph.rename(original,L"Reference Bundle"));
-        changed(graph.create_static_mesh(editor::mesh_assets().front(),{1,0,0}));const auto first=graph.selection().entity;
+        changed(graph.create_static_mesh(assets::mesh_assets().front(),{1,0,0}));const auto first=graph.selection().entity;
         changed(graph.reparent(first,original,world::ReparentRule::keep_local));
-        changed(graph.create_static_mesh(editor::mesh_assets().front(),{2,0,0}));const auto second=graph.selection().entity;
+        changed(graph.create_static_mesh(assets::mesh_assets().front(),{2,0,0}));const auto second=graph.selection().entity;
         changed(graph.reparent(second,original,world::ReparentRule::keep_local));
         take(graph.select(first));changed(graph.add_component(graph.physics_types().distance_constraint_component));const auto constraint=graph.selection().object;
         take(physics::set_constraint_target(rt,constraint,second));
@@ -391,7 +391,7 @@ void verify_entity_composition() {
             require(row(after,entity.at("id").get<std::string>())==entity,"Rename/reorder changed local IDs, child/component identities, or reflected references.");
         }
         const auto saved=take(graph.serialize());const auto path=take(project.resolve("Content/Scenes/Subtree-roundtrip.scene"));
-        take(editor::write_file(path,saved));auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project));
+        take(editor::write_file(path,saved));auto reopened=take(editor::Session::deserialize(take(assets::read_file(path)),project));
         require(take(reopened->serialize())==saved,"Complete save/reload changed stable local IDs or imported reference graphs.");
         std::size_t checked{};
         for(const auto& member:take(reopened->world().members())) if(take(world::parent_entity(reopened->world().runtime(),member.id()))==ObjectId{}) {

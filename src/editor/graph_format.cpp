@@ -10,7 +10,7 @@
 
 namespace atelier::editor {
 namespace {
-using json_format::Json;
+using assets::json_format::Json;
 struct Failed { Error error; };
 template<class T> T take(Result<T> value) { if (!value) throw Failed{value.error()}; return std::move(*value); }
 void take(Result<void> value) { if (!value) throw Failed{value.error()}; }
@@ -42,9 +42,9 @@ std::vector<detail::ScalarField> parameters(Runtime& runtime, TypeId type) { ret
 
 Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
     try {
-        const auto file = json_format::parse(text);
-        json_format::fields(file, {"version", "settings", "nodes"});
-        if (!file.contains("version") || json_format::identity(file.at("version")) != 1) malformed("Unsupported procedural graph version.");
+        const auto file = assets::json_format::parse(text);
+        assets::json_format::fields(file, {"version", "settings", "nodes"});
+        if (!file.contains("version") || assets::json_format::identity(file.at("version")) != 1) malformed("Unsupported procedural graph version.");
         const auto settings = file.value("settings", Json::object());
         const auto entries = file.value("nodes", Json::object());
         if (!settings.is_object()) malformed("Graph settings must be a record.");
@@ -53,9 +53,9 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
             malformed("The graph display must name one node.");
         for (const auto& [name, entry] : entries.items()) {
             if (!identifier(name)) malformed("Invalid node name: " + name);
-            json_format::fields(entry, {"type", "position", "properties", "inputs"});
+            assets::json_format::fields(entry, {"type", "position", "properties", "inputs"});
             if (!entry.contains("type") || !entry.at("type").is_string()) malformed(name + ": a node needs a type name.");
-            if (entry.contains("position")) static_cast<void>(json_format::vector<2>(entry.at("position")));
+            if (entry.contains("position")) static_cast<void>(assets::json_format::vector<2>(entry.at("position")));
             if (entry.contains("properties") && !entry.at("properties").is_object()) malformed(name + ": properties must be a record.");
             const auto inputs = entry.find("inputs");
             if (inputs == entry.end()) continue;
@@ -76,7 +76,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
             world::Diagnostic item;
             item.serial = document.issues.size() + 1; item.severity = severity; item.kind = kind; item.phase = world::DiagnosticPhase::load;
             item.object = object; item.type = std::move(type);
-            if (value) item.value = json_format::preview(*value);
+            if (value) item.value = assets::json_format::preview(*value);
             item.message = dotted(field) + ": " + detail; item.field = std::move(field);
             document.issues.push_back(std::move(item));
         };
@@ -101,7 +101,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
                                keeping(document.kept, graph, "procedural.Graph", {"settings"})));
 
         for (const auto& [name, entry] : entries.items()) {
-            GraphNode item{name, {}, entry.contains("position") ? json_format::vector<2>(entry.at("position")) : std::array<float, 2>{}};
+            GraphNode item{name, {}, entry.contains("position") ? assets::json_format::vector<2>(entry.at("position")) : std::array<float, 2>{}};
             const auto& type_name = entry.at("type").get_ref<const std::string&>();
             const auto type = runtime.find_type(type_name);
             auto added = type ? procedural::add_node(runtime, graph, *type) : Result<ObjectRoot>{std::unexpected(type.error())};
@@ -201,7 +201,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         };
         auto settings = take(encode_properties(runtime, graph, parameters(runtime, take(runtime.type_of(graph))), no_reference));
         if (contents.display != ObjectId{}) settings["display"] = by_node.at(contents.display)->name;
-        json_format::overlay(settings, document.kept);
+        assets::json_format::overlay(settings, document.kept);
         Json nodes = Json::object();
         for (const auto& [name, item] : by_name) {
             Json entry = item->kept;
@@ -220,7 +220,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                 entry = {{"type", take(runtime.describe(type))->name},
                          {"properties", take(encode_properties(runtime, node, parameters(runtime, type), no_reference))},
                          {"inputs", std::move(inputs)}};
-                json_format::overlay(entry, item->kept);
+                assets::json_format::overlay(entry, item->kept);
             }
             entry["position"] = {item->position[0], item->position[1]};
             nodes[std::string{name}] = std::move(entry);

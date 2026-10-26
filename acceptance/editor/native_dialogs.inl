@@ -2,7 +2,7 @@ int verify_editor_dialogs(Application& app,const char* output_directory) {
     using namespace atelier;
     namespace control=atelier::editor::control;
     using Access=application::EditorAcceptanceAccess;
-    const auto output=std::filesystem::absolute(editor::wide(output_directory));
+    const auto output=std::filesystem::absolute(assets::wide(output_directory));
     std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Dialog scene creation failed.");

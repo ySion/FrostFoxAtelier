@@ -167,7 +167,7 @@ void verify_viewport_fly(Application& app,const std::filesystem::path& output) {
         Access::input(app,{.kind=ui::EventKind::key_up},VK_SHIFT);
         require(GetCapture()==app.window() && !Access::menu_open(app),"Shift+accent-grave did not capture fly navigation.");
         tick(app,2);
-        if(!Access::camera_flying(app)) throw std::runtime_error("Fly lost ownership on its entry frames: "+editor::utf8(app.status_text()));
+        if(!Access::camera_flying(app)) throw std::runtime_error("Fly lost ownership on its entry frames: "+assets::utf8(app.status_text()));
         snapshot("viewport-fly-entry.png");verify_fly_ui(true);
     };
     const auto move_fly=[&](WPARAM code) {

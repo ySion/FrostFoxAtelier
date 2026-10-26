@@ -1,7 +1,8 @@
 #include "application/control_artifacts.hpp"
 #include "editor/project.hpp"
 #include "editor/session.hpp"
-#include "editor/json_format.hpp"
+#include "assets/file.hpp"
+#include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
 #include "platform/windows_path.hpp"
 #include "source/snapshot.hpp"
@@ -34,7 +35,7 @@ Json engine_source_hashes(std::span<const language::SourceFile> files) {
         hashes[file.path]=control::sha256(std::as_bytes(std::span(file.source)));
     return hashes;
 }
-std::string mesh_hash(const editor::MeshAsset& asset) try {
+std::string mesh_hash(const assets::MeshAsset& asset) try {
     auto digest=assets::mesh_content_sha256(asset);
     if(!digest) throw Failure("dependency_mismatch",digest.error().message);
     return std::move(*digest);
@@ -155,7 +156,7 @@ void finish(const std::filesystem::path& directory,Json& manifest,const std::ato
     }
     checkpoint(cancel);manifest["files"]=std::move(files);manifest["complete"]=true;
     const auto encoded=manifest.dump(2)+"\n";
-    if(encoded.size()>editor::json_format::maximum_bytes) throw Failure("resource_limit","Artifact manifest exceeds the 16 MiB file limit");
+    if(encoded.size()>assets::json_format::maximum_bytes) throw Failure("resource_limit","Artifact manifest exceeds the 16 MiB file limit");
     write(directory/"manifest.json",encoded);
 }
 }
@@ -173,12 +174,12 @@ Repro snapshot_resources(const editor::Session& document) {
     };
     // The serialized graph includes retained resource definitions, but not every
     // material a browser happened to load. Ordinary properties are not references.
-    scene_references(editor::json_format::parse(data.scene),reference);
+    scene_references(assets::json_format::parse(data.scene),reference);
     auto& runtime=document.world().runtime();
     for(const auto& entity:take(document.world().members())) for(const auto& component:take(world::components(runtime,entity.id()))) {
         if(auto mesh=presentation::read_static_mesh(runtime,component.id())) {
             reference(assets::AssetKind::mesh,mesh->mesh.source);
-            editor::MeshAsset snapshot{mesh->mesh.source,{},mesh->mesh.resolved};
+            assets::MeshAsset snapshot{mesh->mesh.source,{},mesh->mesh.resolved};
             for(const auto& binding:mesh->mesh.defaults) {
                 const auto key=take(material::read_material(runtime,binding.resource.id())).source;
                 reference(assets::AssetKind::material,key);snapshot.materials.push_back({binding.slot,key});
@@ -294,7 +295,7 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
         checkpoint(cancel);const auto relative=path.lexically_relative(project);
         const auto found=published.find(path_text(relative));
         if(found!=published.end() && std::filesystem::file_size(path)==found->second->source.size() &&
-            take(editor::read_file(path))==found->second->source) {std::filesystem::remove(path);continue;}
+            take(assets::read_file(path))==found->second->source) {std::filesystem::remove(path);continue;}
         const auto archive=platform::windows_file_path(directory/"unpublished"/relative);
         std::filesystem::create_directories(archive.parent_path());std::filesystem::rename(path,archive);
     }
@@ -313,7 +314,7 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
     if(data.ui_source) publish_source(*data.ui_source);
     const auto scene_path=std::filesystem::path("Content/Scenes")/("Control-"+control::unique_id()+".scene");
     write(project/scene_path,data.scene);
-    auto config=editor::json_format::parse(take(editor::read_file(project/"Config/Project.json")));
+    auto config=assets::json_format::parse(take(assets::read_file(project/"Config/Project.json")));
     if(data.ui_source) config["ui_source"]=data.ui_source->path;else config.erase("ui_source");
     config["startup_scene"]=path_text(scene_path);take(editor::write_file(project/"Config/Project.json",config.dump(2)+"\n"));
     auto clone=take(editor::Project::open(output/"Project"));auto resources=Json::array();
@@ -354,10 +355,10 @@ Json export_repro(const std::filesystem::path& output,Repro data,const std::atom
 }
 Json validate_repro(const std::filesystem::path& input) {
     const auto directory=platform::windows_file_path(input);
-    const auto text=take(editor::read_file(directory/"manifest.json"));
+    const auto text=take(assets::read_file(directory/"manifest.json"));
     Json manifest;
     // Format-limit and duplicate-field failures are input errors, not I/O failures.
-    try {manifest=editor::json_format::parse(text);}
+    try {manifest=assets::json_format::parse(text);}
     catch(const std::runtime_error& error) {throw Failure("invalid_request",error.what());}
     if(manifest.value("kind","")!="repro" || !manifest.value("complete",false) ||
         manifest.at("protocol")!=control::protocol_version || manifest.at("project")!="Project")
@@ -395,7 +396,7 @@ Json validate_repro(const std::filesystem::path& input) {
     if(!expected.empty()) throw Failure("dependency_mismatch","Repro bundle file is missing");
     auto project=take(editor::Project::open(input/"Project"));
     const auto scene=take(project.resolve(project.startup_scene()));
-    preflight_resources(project,editor::json_format::parse(take(editor::read_file(scene))));
+    preflight_resources(project,assets::json_format::parse(take(assets::read_file(scene))));
     return manifest;
 }
 Json write_samples(const std::filesystem::path& output,std::vector<Sample> samples,Json manifest,const std::atomic_bool& cancel) {

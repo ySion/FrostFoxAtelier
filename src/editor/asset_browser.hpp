@@ -19,7 +19,7 @@ inline constexpr ui::TableKey name_column=1, type_column=2, size_column=3;
 }
 class AssetBrowser {
 public:
-    struct Item { std::string key; std::filesystem::path path; std::wstring name; AssetKind kind{}; std::uintmax_t bytes{}; };
+    struct Item { std::string key; std::filesystem::path path; std::wstring name; assets::AssetKind kind{}; std::uintmax_t bytes{}; };
     enum class View { list, details, tiles };
     void reset(bool has_project);
     void append(std::vector<ui::Control>&,ui::ControlKey parent,const Project*,bool can_create,const ui::UiFrame*,ui_language::LiveDocument&);

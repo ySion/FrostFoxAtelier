@@ -9,10 +9,10 @@ void verify_physics_examples() {
         throw std::runtime_error("Physics example Entity missing.");
     };
     for(const auto* name:{"RigidBodies","Forces","Triggers","Queries","Character","Constraints","Ragdoll","Overview","Raycasts"}) {
-        const auto text=take(editor::read_file(folder/(std::string(name)+".scene")));
+        const auto text=take(assets::read_file(folder/(std::string(name)+".scene")));
         auto doc=take(editor::Session::deserialize(text,project));
         const auto saved=take(doc->serialize());const auto path=evidence/"Content/Scenes"/(std::string(name)+".scene");
-        take(editor::write_file(path,saved));doc=take(editor::Session::deserialize(take(editor::read_file(path)),project));
+        take(editor::write_file(path,saved));doc=take(editor::Session::deserialize(take(assets::read_file(path)),project));
         require(take(doc->serialize())==saved,"Physics component scene roundtrip changed settings or target identities.");
         if(std::string_view(name)=="Constraints") {
             auto malformed=nlohmann::json::parse(saved);

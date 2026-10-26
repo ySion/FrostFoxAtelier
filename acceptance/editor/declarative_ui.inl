@@ -125,9 +125,9 @@ void verify_declarative_parameters() {
     editor::Workspace workspace;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session ui(fonts);
-    auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+    auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
     require(theme.has_value() && ui.set_style_sheet(*theme).has_value(),"Declarative Parameters theme failed.");
-    changed(document.create_static_mesh(editor::mesh_assets().front()));
+    changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto entity=document.selection().entity;
     const auto root=entity;
     const auto surface=ui.set_surface({{1600,1000},1,1});
@@ -322,7 +322,7 @@ void verify_declarative_parameters() {
     take(document.select(entity));publish();
     require(workspace.field_control(root,document.parameters()[0].path)==x && ui.presented()->find(x) &&
         document.undo_count()==inspection_history,"Object inspection availability changed World field routing or scene history.");
-    changed(document.create_static_mesh(editor::mesh_assets()[1]));
+    changed(document.create_static_mesh(assets::mesh_assets()[1]));
     const auto other=document.selection().entity;const auto other_root=other;
     publish();
     const auto other_x=workspace.field_control(other_root,document.parameters()[0].path);
@@ -399,7 +399,7 @@ void verify_declarative_parameters() {
         require(surface.set_controls({}).has_value(),"Popup retirement failed.");popup->close();
     }
     std::puts("Editor shell DSL acceptance: PASS (root, native slots, keyed dock reparent/maximize, Controls checkbox/tabs/sliders, popup check/radio)");
-    const auto source=take(editor::read_file(editor::asset_directory()/"editor.ui.source"));
+    const auto source=take(assets::read_file(editor::asset_directory()/"editor.ui.source"));
     auto invalid=source;const auto expression=invalid.find("selected: state.expanded;");
     require(expression!=std::string::npos,"Cannot locate the diagnostic fixture.");
     invalid.replace(expression,std::string_view("selected: state.expanded;").size(),"selected: state.expanded = true;");

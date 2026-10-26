@@ -11,7 +11,7 @@ std::string scene_lit_selection_diagnostic(Application& app) {
         return info?(*info)->name:std::string("unknown type");
     };
     const auto selected=app.document().selection();
-    std::string result="; selected Entity="+type_name(selected.entity)+"/"+atelier::editor::utf8(app.document().name(selected.entity))+
+    std::string result="; selected Entity="+type_name(selected.entity)+"/"+atelier::assets::utf8(app.document().name(selected.entity))+
         "; selected Object="+type_name(selected.object)+"; components=";
     const auto components=atelier::world::components(runtime,selected.entity);
     if(!components) return result+components.error().message;
@@ -74,8 +74,8 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     require(!outside.empty() && *outside.begin()==L"..","Scene Lit evidence output must be outside the source example project.");
     auto source_project=model(atelier::editor::Project::open(source));
     const auto source_scene=model(source_project.resolve("Content/Scene Lit Room/Scenes/Main.scene"));
-    const auto source_text=model(atelier::editor::read_file(source_scene));
-    const auto source_config=model(atelier::editor::read_file(source/"Config/Project.json"));
+    const auto source_text=model(atelier::assets::read_file(source_scene));
+    const auto source_config=model(atelier::assets::read_file(source/"Config/Project.json"));
     const auto copy=output/(L"Project-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
     model(atelier::editor::Project::create(copy));
     std::filesystem::copy(source/"Content/Scene Lit Room",copy/"Content/Scene Lit Room",std::filesystem::copy_options::recursive);
@@ -170,7 +170,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
                 label.bounds.y<=centre_y && label.bounds.y+label.bounds.height>centre_y &&
                 text_coverage(*app.presented(),label.key)!=nullptr;
         }),"Native light intensity row has no visible painted caption.");
-        std::printf("Scene Lit native parameter units: %s\n",atelier::editor::utf8(captions[index]).c_str());
+        std::printf("Scene Lit native parameter units: %s\n",atelier::assets::utf8(captions[index]).c_str());
         const auto text=std::to_wstring(intensities[index]);type(app,text.c_str());key(app,VK_RETURN);
         require(model(presentation::read_light(runtime,light)).intensity==intensities[index] &&
             app.document().undo_count()==edit_history+1,
@@ -214,7 +214,7 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     capture(app,output/"07-scene-lit-edit.png");
 
     model(app.save_scene("Content/Scenes/Acceptance.scene"));tick(app,2);
-    const auto saved=model(atelier::editor::read_file(copy/"Content/Scenes/Acceptance.scene"));
+    const auto saved=model(atelier::assets::read_file(copy/"Content/Scenes/Acceptance.scene"));
     require(!app.document().dirty(),"Scene Lit temporary save did not mark the authored document clean.");
     model(app.open_scene("Content/Scenes/Acceptance.scene"));tick(app,96);
     require(model(app.document().serialize())==saved && entities(app).size()==19 &&
@@ -236,11 +236,11 @@ void verify_scene_lit_window(Application& app,const std::filesystem::path& outpu
     require(std::abs(Access::camera_eye(app).x-eye.x)<.001f && std::abs(Access::camera_eye(app).z-eye.z)<.001f,
         "Opposite horizontal middle drag did not return the camera to its starting side.");
     capture(app,output/"09-middle-orbit.png");
-    require(model(atelier::editor::read_file(source_scene))==source_text &&
-        model(atelier::editor::read_file(source/"Config/Project.json"))==source_config,
+    require(model(atelier::assets::read_file(source_scene))==source_text &&
+        model(atelier::assets::read_file(source/"Config/Project.json"))==source_config,
         "Scene Lit product acceptance modified the source example project.");
-    std::ofstream(output/"scene-lit-product.txt")<<"Source project: "<<atelier::editor::utf8(source.wstring())
-        <<"\nTemporary project: "<<atelier::editor::utf8(copy.wstring())
+    std::ofstream(output/"scene-lit-product.txt")<<"Source project: "<<atelier::assets::utf8(source.wstring())
+        <<"\nTemporary project: "<<atelier::assets::utf8(copy.wstring())
         <<"\nOnly Content/Scene Lit Room copied into an ordinary temporary project.\n"
         <<"Native Scene Lit/MatCap menu, point/rectangle/directional creation/Parameters, Environment deletion and sky edit; requested=5, budget=4, shadowed=4, unshadowed=1, status=Shadows 4/5.\n"
         <<"Actual GPU captures, native middle-orbit direction and editor modes. Runtime World snapshots are verified separately through document/Renderer E2E; no Simulate UI exists. Saved scene reopened with 10 meshes, 7 direct lights and the Environment sky.\n";

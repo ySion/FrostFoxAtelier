@@ -1,6 +1,7 @@
 #include "application/recovery.hpp"
 #include "control/control.hpp"
 #include "editor/project.hpp"
+#include "assets/file.hpp"
 #include <chrono>
 
 namespace atelier::application {
@@ -28,8 +29,8 @@ const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
         outcome_=std::move(record);
         if(!cancelled) outcome_->value().warning=cancelled.error().message;
         const control::Json metadata{{"version",1},{"kind","author_scene_recovery"},{"scene","Scene.scene"},
-            {"original_project",editor::utf8(project.generic_wstring())},
-            {"original_scene",editor::utf8(scene.generic_wstring())},{"reason",reason},
+            {"original_project",assets::utf8(project.generic_wstring())},
+            {"original_scene",assets::utf8(scene.generic_wstring())},{"reason",reason},
             {"unix_time_ms",std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count()},
             {"unfinished_edit_cancelled",unfinished},{"assets_validated",false},

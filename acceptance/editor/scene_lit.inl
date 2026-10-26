@@ -6,14 +6,14 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     const auto source=scene_lit_example(requested);
     const auto source_project=take(Project::open(source));
     const auto source_scene=take(source_project.resolve("Content/Scene Lit Room/Scenes/Main.scene"));
-    const auto source_text=take(read_file(source_scene));
-    const auto source_config=take(read_file(source/"Config/Project.json"));
+    const auto source_text=take(assets::read_file(source_scene));
+    const auto source_config=take(assets::read_file(source/"Config/Project.json"));
     const auto copy=std::filesystem::absolute("out/scene-lit-application-evidence")/
         ("example-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     take(Project::create(copy));
     std::filesystem::copy(source/"Content/Scene Lit Room",copy/"Content/Scene Lit Room",std::filesystem::copy_options::recursive);
     auto project=take(Project::open(copy));
-    auto document=take(Session::deserialize(take(read_file(take(project.resolve("Content/Scene Lit Room/Scenes/Main.scene")))),project));
+    auto document=take(Session::deserialize(take(assets::read_file(take(project.resolve("Content/Scene Lit Room/Scenes/Main.scene")))),project));
     application::SceneSnapshot scene;take(scene.refresh(*document));
     const auto sky=[](const Session& session){return rendering::sky_radiance(take(session.presentation().environment()));};
     require(scene.meshes.size()==10 && scene.lights.size()==4 && sky(*document)==std::array{.025f,.035f,.055f} &&
@@ -38,7 +38,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     const auto saved=take(document->serialize());
     const auto saved_path=take(project.resolve("Content/Scenes/Acceptance.scene"));
     take(write_file(saved_path,saved,WriteMode::create));
-    auto reopened=take(Session::deserialize(take(read_file(saved_path)),project));
+    auto reopened=take(Session::deserialize(take(assets::read_file(saved_path)),project));
     application::SceneSnapshot restored;take(restored.refresh(*reopened));
     require(take(reopened->serialize())==saved && restored.meshes.size()==10 && restored.lights.size()==4 &&
         restored.meshes.front().material.roughness==.71f && sky(*reopened)==sky(*document),
@@ -65,9 +65,9 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     const auto ended=take(reopened->stop());
     require(!ended.notification_error && take(reopened->serialize())==saved,
         "Runtime World presentation modified the saved editing document.");
-    require(take(read_file(source_scene))==source_text && take(read_file(source/"Config/Project.json"))==source_config,
+    require(take(assets::read_file(source_scene))==source_text && take(assets::read_file(source/"Config/Project.json"))==source_config,
         "Scene Lit example acceptance modified the source project.");
-    std::ofstream(copy/"acceptance.txt")<<"Scene Lit example Project/Scene: PASS\nSource read only: "<<utf8(source.wstring())
+    std::ofstream(copy/"acceptance.txt")<<"Scene Lit example Project/Scene: PASS\nSource read only: "<<assets::utf8(source.wstring())
         <<"\nTemporary saved Scene: Content/Scenes/Acceptance.scene\n10 meshes, 4 shadow lights, sky in the Environment; HDR/metal/roughness and edited material survive reopening.\n";
     std::puts("Scene Lit example Project/Scene acceptance: PASS (source read only, temporary save/reopen)");
 }
@@ -140,7 +140,7 @@ void verify_environment_sky_application() {
     auto project=take(Project::create(folder));
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Sky.scene"));
     take(write_file(file,text,WriteMode::create));
-    auto reopened=take(Session::deserialize(take(read_file(file)),project));snapshot.reset();take(snapshot.refresh(*reopened));
+    auto reopened=take(Session::deserialize(take(assets::read_file(file)),project));snapshot.reset();take(snapshot.refresh(*reopened));
     require(sky(*reopened)==radiance && snapshot.lights.size()==1 && !nlohmann::json::parse(text).contains("world"),
         "The Environment sky changed after saved scene reopen.");
     std::puts("Environment sky application acceptance: PASS (first edit creates it, unique, enable/remove/undo, scene save/reopen)");
@@ -151,8 +151,8 @@ void verify_scene_snapshot_updates() {
     using namespace editor;
     Session document;
     auto& world=const_cast<world::World&>(document.world());
-    changed(document.create_static_mesh(mesh_assets().front()));const auto first=document.selection().entity;
-    changed(document.create_static_mesh(mesh_assets().front()));
+    changed(document.create_static_mesh(assets::mesh_assets().front()));const auto first=document.selection().entity;
+    changed(document.create_static_mesh(assets::mesh_assets().front()));
     changed(document.create_light(presentation::LightKind::point));
     const auto light=component(document,document.selection().entity,document.presentation_types().light_component);
     application::SceneSnapshot snapshot;take(snapshot.refresh(document));
@@ -192,7 +192,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project=take(Project::create(folder));Session document;
     auto& runtime=document.world().runtime();
-    changed(document.create_static_mesh(mesh_assets().front()));const auto mesh_entity=document.selection().entity;
+    changed(document.create_static_mesh(assets::mesh_assets().front()));const auto mesh_entity=document.selection().entity;
     const auto mesh=component(document,mesh_entity,document.presentation_types().static_mesh_component);
     std::uint64_t edit_session=990000;
     const auto property=[&](ObjectId object,std::string_view name) {
@@ -234,7 +234,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(component(document,light_entities[0],document.presentation_types().light_component)==lights[0] && snapshot.lights.size()==3,
         "Component undo failed to restore the real light identity and presentation.");
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Lighting.scene"));
-    take(write_file(file,text,WriteMode::create));auto reopened=take(Session::deserialize(take(read_file(file)),project));
+    take(write_file(file,text,WriteMode::create));auto reopened=take(Session::deserialize(take(assets::read_file(file)),project));
     application::SceneSnapshot loaded;take(loaded.refresh(*reopened));
     require(loaded.meshes.size()==1 && loaded.lights.size()==3 && loaded.meshes[0].material.emissive[0]==4 &&
         loaded.meshes[0].material.metallic==.6f && loaded.lights[0].intensity==80 && loaded.lights[2].source_radius==.0046f,
@@ -260,7 +260,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(snapshot.identity!=identity,"Document replacement reused the previous renderer history domain.");
 
     Workspace workspace;const std::array fonts{(asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};ui::Session surface(fonts);
-    const auto theme=ui::StyleSheet::parse(take(read_file(asset_directory()/"editor.ss")));
+    const auto theme=ui::StyleSheet::parse(take(assets::read_file(asset_directory()/"editor.ss")));
     require(theme.has_value() && surface.set_style_sheet(*theme).has_value(),"Lighting production editor.ss failed to resolve.");
     require(bool(surface.set_surface({{1500,1000},1,1})),"Lighting UI surface failed.");
     std::vector<ui::Control> controls;

@@ -60,7 +60,7 @@ void verify_textured_obj() {
     require(project.revision()==revision && take(project.assets().mesh(key)).mesh==old,"Unchanged refresh replaced a mesh resource.");
     const auto sibling=project.root()/"Content/Meshes/scene/sibling.obj";
     take(editor::write_file(sibling,obj));take(project.refresh());
-    const auto sibling_entry=std::ranges::find(project.entries(),fs::path("Content/Meshes/scene/sibling.obj"),&editor::ProjectEntry::path);
+    const auto sibling_entry=std::ranges::find(project.entries(),fs::path("Content/Meshes/scene/sibling.obj"),&assets::ProjectEntry::path);
     require(sibling_entry!=project.entries().end(),"Shared-texture mesh is absent from the real project catalog.");
     const auto sibling_key=sibling_entry->key;
     auto sibling_mesh=take(project.assets().mesh(sibling_key)).mesh;
@@ -102,7 +102,7 @@ void verify_textured_obj() {
 void verify_sponza_project() {
     const std::filesystem::path folder=ATELIER_EXAMPLE_PROJECT;
     auto project=take(editor::Project::open(folder));
-    auto document=take(editor::Session::deserialize(take(editor::read_file(folder/"Content/Sponza/Scenes/Sponza.scene")),project,{},editor::LoadPolicy::strict));
+    auto document=take(editor::Session::deserialize(take(assets::read_file(folder/"Content/Sponza/Scenes/Sponza.scene")),project,{},editor::LoadPolicy::strict));
     const auto items=take(document->presentation().render_items());require(items.size()==2,"Sponza scene should contain the building and its curtains.");
     // Every slot shows the material generated from its glTF material; counts follow the shipped 2K assets.
     struct Expected {std::size_t triangles,slots,textured;};

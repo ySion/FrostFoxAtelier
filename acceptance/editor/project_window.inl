@@ -13,7 +13,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     if(!existing) std::filesystem::remove_all(folder);
     std::filesystem::remove_all(moved);
     access::EditorAcceptanceAccess::mark_saved(app);
-    model(access::EditorAcceptanceAccess::command(app,existing?Command::open_project:Command::new_project,atelier::editor::utf8(folder.wstring())));tick(app,4);
+    model(access::EditorAcceptanceAccess::command(app,existing?Command::open_project:Command::new_project,atelier::assets::utf8(folder.wstring())));tick(app,4);
     const auto initial_count=entities(app).size();
     require((existing || initial_count==0) && !app.document().dirty(),"Project did not publish its clean initial scene.");
     verify_about(app,folder.wstring());
@@ -92,7 +92,7 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     const auto content_tree=access::EditorAcceptanceAccess::directory_key(app,"Content");
     const auto selected_tree=access::EditorAcceptanceAccess::directory_key(app,selection_folder);
     click(app,content_tree);
-    const auto directory=access::EditorAcceptanceAccess::asset_key(app,atelier::editor::utf8(selection_folder.generic_wstring()));
+    const auto directory=access::EditorAcceptanceAccess::asset_key(app,atelier::assets::utf8(selection_folder.generic_wstring()));
     click(app,directory);require(action_enabled(browser::open),"Selected project folder could not be opened.");
     click(app,browser::search);type(app,L"no such asset");key(app,VK_RETURN);
     require(!has_resource(directory) && !action_enabled(browser::open),
@@ -134,13 +134,13 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(!action_enabled(browser::open),"Refreshing retained an executable removed directory.");
     const auto external=std::filesystem::absolute(output/"Imported.obj");
     model(atelier::editor::write_file(external,"v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n"));
-    model(access::EditorAcceptanceAccess::command(app,Command::import_mesh,atelier::editor::utf8(external.wstring())));tick(app,3);
+    model(access::EditorAcceptanceAccess::command(app,Command::import_mesh,atelier::assets::utf8(external.wstring())));tick(app,3);
     require(app.presented()->find(access::EditorAcceptanceAccess::directory_key(app,"Content/Meshes"))->selected,
         "Import did not reveal the project's mesh folder.");
     capture(app,output/"project-directory.png");
     const auto catalog=model(atelier::editor::Project::open(folder));
     const auto imported_entry=std::find_if(catalog.entries().begin(),catalog.entries().end(),[](const auto& entry) {
-        return entry.path==L"Content/Meshes/Imported.obj" && entry.kind==atelier::editor::AssetKind::mesh;
+        return entry.path==L"Content/Meshes/Imported.obj" && entry.kind==atelier::assets::AssetKind::mesh;
     });
     require(imported_entry!=catalog.entries().end(),"Imported OBJ did not publish a project mesh entry.");
     click(app,access::EditorAcceptanceAccess::asset_key(app,imported_entry->key));
@@ -199,13 +199,13 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(!app.open_scene("Content/Scenes/Broken.scene") && model(app.document().serialize())==*saved,
         "Failed scene open replaced the current document.");
     const auto metadata=folder/"Content/Meshes/Imported.obj.asset.json";
-    const auto metadata_text=model(atelier::editor::read_file(metadata));
+    const auto metadata_text=model(atelier::assets::read_file(metadata));
     model(atelier::editor::write_file(metadata,"{broken"));
     model(access::EditorAcceptanceAccess::command(app,Command::create_entity));
     saved=app.document().serialize();require(saved.has_value(),"Cannot inspect the modified scene.");
     model(access::EditorAcceptanceAccess::command(app,Command::save_scene));
     require(!app.document().dirty() && app.status_text().starts_with(L"Scene saved; asset refresh failed:") &&
-        model(atelier::editor::read_file(folder/"Content/Scenes/Main.scene"))==*saved,
+        model(atelier::assets::read_file(folder/"Content/Scenes/Main.scene"))==*saved,
         "A failed catalog refresh misreported or undid the successful scene save.");
     model(atelier::editor::write_file(metadata,metadata_text));
     std::filesystem::create_directories(folder/"Cache");

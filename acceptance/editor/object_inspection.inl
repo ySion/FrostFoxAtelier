@@ -30,7 +30,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     editor::Workspace workspace;workspace.project_open=true;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
-    auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+    auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
     require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1600,1000},1,1}),"Object inspection surface failed.");
     std::vector<ui::Control> controls;
     const auto dispatch=[&](const ui::Reply& reply) {

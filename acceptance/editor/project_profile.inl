@@ -12,7 +12,7 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     auto project=take(editor::Project::open(root));
-    auto play=take(editor::Session::deserialize(take(editor::read_file(take(project.resolve(scene)))),project));
+    auto play=take(editor::Session::deserialize(take(assets::read_file(take(project.resolve(scene)))),project));
     {
         timing::Recorder::Frame frame{recorder};changed(play->start());
         require(frame.finish().structure_errors==0,"Physics profile recorded a misplaced or unregistered phase in Play start.");
@@ -41,7 +41,7 @@ void profile_physics_cpu(const std::filesystem::path& root,std::string_view scen
         bucket[4].push_back(std::chrono::duration<double,std::milli>(recorder.last().time(application::phases::scene)).count());
         quiet=awake?0:quiet+1;
     }
-    Json report{{"schema","atelier.editor.physics-cpu.v1"},{"project",editor::utf8(root.wstring())},{"scene",scene},
+    Json report{{"schema","atelier.editor.physics-cpu.v1"},{"project",assets::utf8(root.wstring())},{"scene",scene},
         {"bodies",physics.body_count()},{"frames",frames},{"steps",steps},{"active_frames",active[0].size()},{"sleeping_frames",sleeping[0].size()},
         {"start_ms",started.count()},{"first_frames",first_frames}};
 #ifdef NDEBUG
@@ -82,7 +82,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     };
     auto project=take(editor::Project::open(root));
     const auto path=take(project.resolve(scene));
-    const auto source=take(editor::read_file(path));
+    const auto source=take(assets::read_file(path));
     auto document=take(editor::Session::deserialize(source,project));
     const auto original=take(document->serialize());
     application::SceneSnapshot snapshot;take(snapshot.refresh(*document));
@@ -107,7 +107,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     for(const auto& item:geometry) for(const auto& binding:take(presentation::read_material_bindings(document->world().runtime(),item.component))) {
         materials.insert(binding.resource.id());++material_bindings;
     }
-    Json report{{"schema","atelier.editor.scene-cpu.v3"},{"project",editor::utf8(root.wstring())},{"scene",scene},
+    Json report{{"schema","atelier.editor.scene-cpu.v3"},{"project",assets::utf8(root.wstring())},{"scene",scene},
         {"gpu",false},{"samples",121},{"warmup",20},{"source_bytes",source.size()},
         {"entities",take(document->world().members()).size()},{"selected_entities",document->selected_entities().size()},{"meshes",snapshot.meshes.size()},
         {"unique_geometries",unique.size()},{"instance_triangles",triangles},
@@ -116,7 +116,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."}};
     if(!camera_report.empty()) {
         // Consume the accepted product matrices, including its actual aspect.
-        const auto reference=Json::parse(take(editor::read_file(camera_report)));
+        const auto reference=Json::parse(take(assets::read_file(camera_report)));
         const auto& viewport=reference.at("viewport");const auto& camera=reference.at("camera");
         const auto width=viewport.at("receiver_pixel_extent").at(0).get<float>();
         const auto height=viewport.at("receiver_pixel_extent").at(1).get<float>();
@@ -130,7 +130,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             ++visible;visible_triangles+=mesh.geometry->vertices().size()/3;
             if(drawn.insert(mesh.geometry.get()).second) visible_geometry_parts+=mesh.geometry->parts().size();
         }
-        report["visibility"]={{"camera_report",editor::utf8(camera_report.wstring())},{"camera",camera},
+        report["visibility"]={{"camera_report",assets::utf8(camera_report.wstring())},{"camera",camera},
             {"pixel_extent",{width,height}},{"visible_instances",visible},{"culled_instances",snapshot.meshes.size()-visible},
             {"visible_geometries",drawn.size()},{"visible_geometry_parts",visible_geometry_parts},{"visible_instance_triangles",visible_triangles}};
     }
@@ -243,7 +243,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
         // The docked editor's UI step on a headless Session: description against the accepted frame, then layout.
         const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
         ui::Session surface(fonts);
-        const auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+        const auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
         require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779,1154},1,1}),"CPU profile UI surface failed.");
         std::size_t controls{},rows{};
         measure("ui_docked",[&] {
@@ -272,7 +272,7 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
             {"semantics","Frame root time divided by sequential empty scopes, including loop overhead."}};
         std::printf("Scene CPU timing scope: %.1f ns median\n",samples[15]);
     }
-    require(take(document->serialize())==original && take(editor::read_file(path))==source &&
+    require(take(document->serialize())==original && take(assets::read_file(path))==source &&
         !document->dirty() && document->undo_count()==0 && document->redo_count()==0,
         "CPU profile changed the document or source Scene.");
     report["status"]="pass";
@@ -315,7 +315,7 @@ void profile_project_json(const std::filesystem::path& output) {
     for (const auto [entities, components] : {std::pair{1, 1}, {64, 1}, {256, 1}, {256, 16}}) {
         editor::Session document;
         for (int entity = 0; entity < entities; ++entity) {
-            changed(document.create_static_mesh(editor::mesh_assets()[static_cast<std::size_t>(entity) % editor::mesh_assets().size()]));
+            changed(document.create_static_mesh(assets::mesh_assets()[static_cast<std::size_t>(entity) % assets::mesh_assets().size()]));
             take(document.rename(document.selection().entity, L"测量 Entity " + std::to_wstring(entity)));
             for (int component = 1; component < components; ++component)
                 changed(document.add_component(document.types().component));
@@ -328,13 +328,13 @@ void profile_project_json(const std::filesystem::path& output) {
         roundtrip.reset();
         auto dom = Json::parse(text);
         Json row = {{"entities", entities}, {"components_per_entity", components}, {"bytes", text.size()},
-            {"read_cached", measure([&] { return take(editor::read_file(path)); })},
+            {"read_cached", measure([&] { return take(assets::read_file(path)); })},
             {"parse_dom", measure([&] { return Json::parse(text); })},
-            {"parse_format", measure([&] { return editor::json_format::parse(text); })},
+            {"parse_format", measure([&] { return assets::json_format::parse(text); })},
             {"dump_dom", measure([&] { return dom.dump(2); })},
             {"save_scene_to_text", measure([&] { return take(document.serialize()); })},
             {"load_scene_from_text", measure([&] { return take(editor::Session::deserialize(text, project)); })},
-            {"load_scene_from_file", measure([&] { return take(editor::Session::deserialize(take(editor::read_file(path)), project)); })}};
+            {"load_scene_from_file", measure([&] { return take(editor::Session::deserialize(take(assets::read_file(path)), project)); })}};
         row["parse_mb_per_second"] = static_cast<double>(text.size()) / row["parse_dom"]["median_ms"].get<double>() / 1000.;
         std::printf("JSON %dx%d: %zu bytes, parse %.3f ms (%.1f MB/s), scene load %.3f ms\n",
             entities, components, text.size(), row["parse_dom"]["median_ms"].get<double>(),

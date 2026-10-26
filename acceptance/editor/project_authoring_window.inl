@@ -58,7 +58,7 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
     key(app,'Z',true);
     require(std::get<bool>(model(app.document().read_property(component,moving))),"Source checkbox undo did not restore its field.");
     click(app,static_cast<ControlKey>(Command::save_scene));
-    const auto saved=model(atelier::editor::read_file(folder/"Content/Scenes/Main.scene"));
+    const auto saved=model(atelier::assets::read_file(folder/"Content/Scenes/Main.scene"));
     const auto saved_history=app.document().undo_count();
     capture(app,output/"project-components.png");
 
@@ -74,10 +74,10 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
     require(app.presented()->find(source::buffer)->code->text().find(L"missing")!=std::wstring::npos,"Cross-file diagnostic did not open Math.source.");
     capture(app,output/"project-diagnostic.png");
     click(app,source::buffer);key(app,'A',true);
-    {KeyStateScope modifiers;for(const auto c:atelier::editor::wide(math)) SendMessageW(app.window(),WM_CHAR,c,0);tick(app,2);}
+    {KeyStateScope modifiers;for(const auto c:atelier::assets::wide(math)) SendMessageW(app.window(),WM_CHAR,c,0);tick(app,2);}
     key(app,'S',true);
     wait([&]{return Access::project_build(app) && !Access::project_build(app)->error;},"Native project Ctrl+S did not rebuild the corrected source.");
-    require(model(atelier::editor::read_file(helper))==math,"Code save did not update the project source file.");
+    require(model(atelier::assets::read_file(helper))==math,"Code save did not update the project source file.");
     model(app.create_source("Source/UI/Main.ui.source",true));
     model(app.build_project());tick(app,2);
     key(app,VK_F8);
@@ -88,7 +88,7 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
     require(Access::project_running(app),"The native game window failed after starting.");
     app.stop_project();wait([&]{return !Access::project_running(app);},"Native project Stop did not finish.");
     require(!app.document().dirty() && app.document().undo_count()==saved_history &&
-        model(atelier::editor::read_file(folder/"Content/Scenes/Main.scene"))==saved,"Play modified the authored scene or history.");
+        model(atelier::assets::read_file(folder/"Content/Scenes/Main.scene"))==saved,"Play modified the authored scene or history.");
     model(app.preview_project_ui());
     const auto preview_until=GetTickCount64()+1200;while(GetTickCount64()<preview_until) tick(app,1);
     require(Access::project_running(app),"The real project UI preview did not stay running.");

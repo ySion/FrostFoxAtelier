@@ -2,8 +2,8 @@
 #include "application/application.hpp"
 #include "application/control_artifacts.hpp"
 #include "editor/view_options.hpp"
-#include "editor/json_format.hpp"
-#include "editor/material_format.hpp"
+#include "assets/json_format.hpp"
+#include "assets/material_format.hpp"
 #include "platform/windows_path.hpp"
 #include "atelier/build_info.hpp"
 #include <deque>
@@ -37,9 +37,9 @@ math::Vector3 vector3(const Json& value) {
     const auto f=[](const Json& n) {const auto v=number(n);if(std::abs(v)>100000000) throw Failure("invalid_request","Vector exceeds authoring range");return static_cast<float>(v);};
     return {f(value[0]),f(value[1]),f(value[2])};
 }
-Json vector3(math::Vector3 v) {return editor::json_format::numbers(std::array{v.x,v.y,v.z});}
+Json vector3(math::Vector3 v) {return assets::json_format::numbers(std::array{v.x,v.y,v.z});}
 Json camera_json(const editor::CameraState& c) {
-    using editor::json_format::number;
+    using assets::json_format::number;
     return {{"view",static_cast<unsigned>(c.view)},{"target",vector3(c.target)},{"yaw",number(c.yaw)},{"pitch",number(c.pitch)},
         {"distance",number(c.distance)},{"roll",number(c.roll)},{"vertical_fov",number(c.vertical_fov)},
         {"near_clip",number(c.near_clip)},{"far_clip",number(c.far_clip)}};
@@ -57,7 +57,7 @@ Json view_json(const renderer::ViewSettings& view) {
         const auto value=editor::view_value(view,option.option);
         if(option.kind==editor::ViewValueKind::enumeration) result[option.name]=option.choices[static_cast<std::size_t>(value)];
         else if(option.kind==editor::ViewValueKind::boolean) result[option.name]=value!=0;
-        else if(option.kind==editor::ViewValueKind::number) result[option.name]=editor::json_format::number(static_cast<float>(value));
+        else if(option.kind==editor::ViewValueKind::number) result[option.name]=assets::json_format::number(static_cast<float>(value));
         else result[option.name]=value;
     }
     return result;
@@ -306,7 +306,7 @@ struct EditorControl::Impl {
     Json frame_json() const {
         if(!last_frame) return Json::object();const auto& f=*last_frame;const auto& s=f.stats;
         return {{"frame_id",f.id},{"accepted_count",f.count},{"viewport",{f.bounds.x,f.bounds.y,f.bounds.width,f.bounds.height}},
-            {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"far_depth",editor::json_format::number(f.camera.far_depth)},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
+            {"camera",{{"view",f.camera.view},{"projection",f.camera.projection},{"far_depth",assets::json_format::number(f.camera.far_depth)},{"projection_convention","editor_unjittered"}}},{"effective_view",view_json(f.view)},
             {"environment",f.environment},{"lighting_focus",f.lighting_focus},{"extent",{f.extent.width,f.extent.height}},
             {"frame_stats",{{"scene_draw_calls",s.scene_draw_calls},{"scene_instances",s.scene_instances},{"scene_culled_instances",s.scene_culled_instances},
                 {"history_resets",s.scene_lit_history_resets},{"light_sources",s.scene_lit_light_sources},{"shadow_sources",s.scene_lit_shadow_sources},
@@ -486,7 +486,7 @@ struct EditorControl::Impl {
                 for(const auto& binding:mesh->mesh.defaults) {
                     const auto source=take(material::read_material(runtime,binding.resource.id())).source;
                     defaults.push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",source},
-                        {"missing",app.document_->unavailable(editor::AssetKind::material,source)!=nullptr}});
+                        {"missing",app.document_->unavailable(assets::AssetKind::material,source)!=nullptr}});
                 }
                 result["mesh"]={{"source",mesh->mesh.source},{"missing",!mesh->mesh.resolved && !mesh->mesh.source.empty()},{"default_materials",std::move(defaults)}};
             }
@@ -496,14 +496,14 @@ struct EditorControl::Impl {
                 const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
                 result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
                     {"parent",parent},{"parameter_mask",state.overrides},{"assignment_override",binding.overridden},
-                    {"missing",app.document_->unavailable(editor::AssetKind::material,parent.empty()?state.source:parent)!=nullptr}});
+                    {"missing",app.document_->unavailable(assets::AssetKind::material,parent.empty()?state.source:parent)!=nullptr}});
             }
         }
         return result;
     }
     // Full and paged inspection share the existing builtin-then-project entry contract.
     Json asset_json(std::size_t index) const {
-        const auto builtins=editor::mesh_assets();
+        const auto builtins=assets::mesh_assets();
         if(index<builtins.size()) {
             const auto& asset=builtins[index];return {{"key",asset.key},{"name",control::utf8(asset.name)},{"kind","mesh"}};
         }
@@ -515,7 +515,7 @@ struct EditorControl::Impl {
         const auto limit=args.contains("limit")?integer(args.at("limit"),1,inspect_page_items):64u;
         const auto revision=app.project_?app.project_->revision():0;
         const auto instance=server.identity().at("instance_id");
-        const auto count=editor::mesh_assets().size()+(app.project_?app.project_->entries().size():0);
+        const auto count=assets::mesh_assets().size()+(app.project_?app.project_->entries().size():0);
         std::size_t index{};
         if(args.contains("cursor")) {
             const auto& cursor=args.at("cursor");
@@ -623,7 +623,7 @@ struct EditorControl::Impl {
         result["inspected_object"]=handle(app.document_->selection().object);
         result["dirty_materials"]=app.document_->dirty_materials();
         for(const auto& type:take(app.document_->component_types())) result["component_types"].push_back(type.name);
-        const auto count=editor::mesh_assets().size()+(app.project_?app.project_->entries().size():0);
+        const auto count=assets::mesh_assets().size()+(app.project_?app.project_->entries().size():0);
         for(std::size_t i=0;i<count;++i) result["assets"].push_back(asset_json(i));
         return result;
     }
@@ -661,27 +661,27 @@ struct EditorControl::Impl {
             const auto add=[&](const std::string& key) {
                 for(auto& file:take(app.project_->assets().asset_files(key))) if(listed.insert(file).second) data.files.push_back(std::move(file));
             };
-            const auto optional=[&](editor::AssetKind kind,const std::string& key) {
+            const auto optional=[&](assets::AssetKind kind,const std::string& key) {
                 if(const auto* entry=key.empty()?nullptr:app.project_->entry(key);entry && entry->kind==kind) add(key);
             };
-            const auto live=[&](editor::AssetKind kind,const std::string& key) {
+            const auto live=[&](assets::AssetKind kind,const std::string& key) {
                 if(doc.unavailable(kind,key)) optional(kind,key);else if(!key.empty()) add(key);
             };
             const auto string_field=[](const Json& object,const char* name) {
                 const auto at=object.find(name);return at!=object.end() && at->is_string()?at->get<std::string>():std::string{};
             };
             const auto material_keys=[&](const Json& definition,const auto& reference) {
-                reference(editor::AssetKind::material,string_field(definition,"source"));reference(editor::AssetKind::material,string_field(definition,"parent"));
+                reference(assets::AssetKind::material,string_field(definition,"source"));reference(assets::AssetKind::material,string_field(definition,"parent"));
                 if(const auto value=definition.find("inline");value!=definition.end() && value->is_object())
                     if(const auto textures=value->find("textures");textures!=value->end() && textures->is_object())
-                        for(const auto& texture:*textures) if(texture.is_object()) reference(editor::AssetKind::texture,string_field(texture,"source"));
+                        for(const auto& texture:*textures) if(texture.is_object()) reference(assets::AssetKind::texture,string_field(texture,"source"));
             };
             for(const auto& mesh:data.meshes) add(mesh.key);
             for(const auto& [key,map]:data.skies) add(key);
-            const auto scene=editor::json_format::parse(data.scene);
+            const auto scene=assets::json_format::parse(data.scene);
             if(const auto materials=scene.find("materials");materials!=scene.end()) for(const auto& definition:*materials) material_keys(definition,live);
             if(const auto entities=scene.find("entities");entities!=scene.end()) for(const auto& entity:*entities) for(const auto& component:entity.at("components")) {
-                optional(editor::AssetKind::mesh,string_field(component,"mesh"));optional(editor::AssetKind::sky,string_field(component,"sky_map"));
+                optional(assets::AssetKind::mesh,string_field(component,"mesh"));optional(assets::AssetKind::sky,string_field(component,"sky_map"));
                 if(const auto bindings=component.find("materials");bindings!=component.end() && bindings->is_array())
                     for(const auto& binding:*bindings) if(binding.is_object()) material_keys(binding,optional);
             }
@@ -690,14 +690,14 @@ struct EditorControl::Impl {
             for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(runtime,entity.id())))
                 if(auto mesh=presentation::read_static_mesh(runtime,component.id())) for(const auto& binding:mesh->mesh.defaults) {
                     const auto source=take(material::read_material(runtime,binding.resource.id())).source;const auto* entry=app.project_->entry(source);
-                    if(!doc.unavailable(editor::AssetKind::material,source) && (!entry || !listed.contains(entry->path)))
+                    if(!doc.unavailable(assets::AssetKind::material,source) && (!entry || !listed.contains(entry->path)))
                         throw Failure("dependency_mismatch","A mesh's default material is no longer in the project: "+source);
                 }
             // A referenced material exports its live draft, whose textures may differ from the saved file's.
-            std::erase_if(data.materials,[&](const editor::MaterialAsset& asset) {
+            std::erase_if(data.materials,[&](const assets::MaterialAsset& asset) {
                 const auto* entry=app.project_->entry(asset.key);return !entry || !listed.contains(entry->path);
             });
-            for(const auto& asset:data.materials) for(const auto& texture:asset.textures) live(editor::AssetKind::texture,texture);
+            for(const auto& asset:data.materials) for(const auto& texture:asset.textures) live(assets::AssetKind::texture,texture);
         }
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
@@ -818,10 +818,10 @@ struct EditorControl::Impl {
             const auto state=take(material::read_material(runtime,target));
             const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
             auto result=object_json(target);result["asset"]=state.source;result["parent"]=parent;
-            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(editor::AssetKind::material,parent.empty()?state.source:parent)!=nullptr;
+            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(assets::AssetKind::material,parent.empty()?state.source:parent)!=nullptr;
             auto& textures=result["missing_textures"]=Json::array();
             for(const auto& texture:state.textures) if(texture.registered())
-                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(editor::AssetKind::texture,source)) textures.push_back(std::move(source));
+                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(assets::AssetKind::texture,source)) textures.push_back(std::move(source));
             result["dirty"]=state.source.empty()?doc.dirty():doc.material_dirty(state.source);return result;
         }
         if(op=="job.status" || op=="job.cancel") {
@@ -852,9 +852,9 @@ struct EditorControl::Impl {
                 if(asset.empty()) take(doc.clear_material(component,slot));else take(doc.assign_material(project,component,slot,asset));return Json::object();
             }
             if(op=="material.set_texture") {
-                const auto input=text(args.at("input"));const auto at=std::ranges::find(editor::material_format::names,input);
-                if(at==editor::material_format::names.end()) throw Failure("invalid_request","Unknown material input");
-                take(doc.set_material_texture(project,object(args.at("object")),static_cast<material::Input>(at-editor::material_format::names.begin()),text(args.at("texture"))));return Json::object();
+                const auto input=text(args.at("input"));const auto at=std::ranges::find(assets::material_format::names,input);
+                if(at==assets::material_format::names.end()) throw Failure("invalid_request","Unknown material input");
+                take(doc.set_material_texture(project,object(args.at("object")),static_cast<material::Input>(at-assets::material_format::names.begin()),text(args.at("texture"))));return Json::object();
             }
             auto target=op=="material.override"?ObjectId{}:object(args.at("object"));
             ObjectId component;std::string slot;

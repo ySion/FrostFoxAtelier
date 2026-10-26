@@ -1,5 +1,6 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
+#include "assets/file.hpp"
 #include "dungeons_roundtrip.hpp"
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"
@@ -38,7 +39,7 @@ struct EditorAcceptanceAccess {
     static bool camera_flying(const Application& app) {return app.camera_fly_.has_value();}
     static editor::Session& physics_document(Application& app) {return *app.document_;}
     static void ui_source(Application& app,const std::filesystem::path& path) {
-        auto source=editor::read_file(app.workspace_.ui_source());
+        auto source=assets::read_file(app.workspace_.ui_source());
         if (!source) throw std::runtime_error(source.error().message);
         auto saved=editor::write_file(path,*source);if (!saved) throw std::runtime_error(saved.error().message);
         app.workspace_.set_ui_source(path);
@@ -309,7 +310,7 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
             const std::wstring_view title = created.lpszName && !IS_INTRESOURCE(created.lpszName) ? created.lpszName : L"";
             // The hook runs inside a Win32 callback: an unconvertible title must not throw past it.
             try {
-                std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", atelier::editor::utf8(title).c_str());
+                std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", atelier::assets::utf8(title).c_str());
             } catch (...) {
                 std::fputs("Editor acceptance: FAIL: unexpected native dialog (title not printable)\n", stderr);
             }
@@ -1116,7 +1117,7 @@ void guard_acceptance_native_dialogs() {
 int verify_editor_scene_lit(Application& app,const char* output_directory,const wchar_t* source_project) {
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
-    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));
+    const auto output=std::filesystem::absolute(atelier::assets::wide(output_directory));
     std::filesystem::create_directories(output);
     await_acceptance_activation(app,output,"Scene Lit");
     const auto legacy=output/"legacy-viewport";
@@ -1142,7 +1143,7 @@ int capture_editor_snapshot(Application& app,const char* output_directory) {
     using atelier::editor::Command;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
-    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));std::filesystem::create_directories(output);
+    const auto output=std::filesystem::absolute(atelier::assets::wide(output_directory));std::filesystem::create_directories(output);
     const auto settle=[&]{for(int i=0;i<6;++i) require(app.step(),"Snapshot editor closed.");};
     const auto shot=[&](const char* name) {
         settle();atelier::renderer::Capture image;
@@ -1201,7 +1202,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     using Access=application::EditorAcceptanceAccess;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
-    const auto output=std::filesystem::absolute(editor::wide(output_directory));std::filesystem::create_directories(output);
+    const auto output=std::filesystem::absolute(assets::wide(output_directory));std::filesystem::create_directories(output);
     tick(app);
     verify_viewport_splitter_drag(app,output);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Shortcut scene creation failed.");tick(app);
@@ -1261,7 +1262,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     key('X');const bool reopen_requested=Access::menu_open(app);tick(app);
     if(app.menu_window()!=popup_hwnd) throw std::runtime_error("Delete menu did not reuse its native window: old="+
         std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd))+", new="+std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window()))+
-        ", requested="+std::to_string(reopen_requested)+", menu="+std::to_string(Access::menu_open(app))+", status="+editor::utf8(app.status_text())+
+        ", requested="+std::to_string(reopen_requested)+", menu="+std::to_string(Access::menu_open(app))+", status="+assets::utf8(app.status_text())+
         "; before=["+before_reopen+"]; after=["+Access::menu_input_diagnostic(app)+"].");
     Access::input(app,{.kind=ui::EventKind::pointer_down,.x=x,.y=y});Access::input(app,{.kind=ui::EventKind::pointer_up,.x=x,.y=y});tick(app);
     require(app.document().world().members()->size()==1 && !Access::menu_open(app),"Delete confirmation click missed its command.");
@@ -1314,7 +1315,7 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
 int verify_editor_edit_mode(Application& app,const char* output_directory) {
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
-    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));std::filesystem::create_directories(output);
+    const auto output=std::filesystem::absolute(atelier::assets::wide(output_directory));std::filesystem::create_directories(output);
     await_acceptance_activation(app,output,"edit mode");tick(app);
     verify_viewport_edit_window(app,output);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
@@ -1328,7 +1329,7 @@ int verify_editor_source(Application& app,const char* output_directory) {
     using Access=atelier::application::EditorAcceptanceAccess;
     using atelier::editor::Command;
     namespace source=atelier::editor::source_control;
-    const auto output=std::filesystem::absolute(atelier::editor::wide(output_directory));
+    const auto output=std::filesystem::absolute(atelier::assets::wide(output_directory));
     std::filesystem::create_directories(output);
     const auto path=output/"editor.ui.source";
     Access::ui_source(app,path);
@@ -1358,7 +1359,7 @@ int verify_editor_source(Application& app,const char* output_directory) {
         throw std::runtime_error(std::string(message)+": "+std::string(Access::ui_error(app)));
     };
     wait([&]{return Access::ui_revision(app)>revision;},"Native Ctrl+S did not publish the edited UI");
-    require(model(atelier::editor::read_file(path)).find("Edited inside Atelier")!=std::string::npos,"Native save did not write the actual file.");
+    require(model(atelier::assets::read_file(path)).find("Edited inside Atelier")!=std::string::npos,"Native save did not write the actual file.");
     capture(app,output/"source-editor.png");
     key(app,VK_END,true);key(app,VK_RETURN);
     {KeyStateScope modifiers;for (const auto c:std::wstring_view(L"ui Broken( {")) SendMessageW(app.window(),WM_CHAR,c,0);tick(app,2);}
@@ -1387,7 +1388,7 @@ int verify_editor_source(Application& app,const char* output_directory) {
 int verify_editor_project(Application& app,const char* output_directory,const wchar_t* source_project) {
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope { ~ComScope() { CoUninitialize(); } } com_scope;
-    const auto base=std::filesystem::weakly_canonical(atelier::editor::wide(output_directory));
+    const auto base=std::filesystem::weakly_canonical(atelier::assets::wide(output_directory));
     const auto output=base/(L"run-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
     if (source_project) {
         const auto source=std::filesystem::canonical(source_project);
@@ -1409,11 +1410,11 @@ int verify_editor_project(Application& app,const char* output_directory,const wc
     SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Project acceptance did not close the editor.");
     std::ofstream report(output/"acceptance.txt");
     report<<"Editor project acceptance: PASS\nBuild: "<<atelier::build_info::revision<<"\nConfiguration: "<<atelier::build_info::configuration
-        <<"\nSource project: "<<(source_project?atelier::editor::utf8(source_project):"new fixture")
+        <<"\nSource project: "<<(source_project?atelier::assets::utf8(source_project):"new fixture")
         <<"\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
         <<"Shared viewport display/TRS checks followed by project commands, About identity/current root, Entity creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
         <<"Native UI authoring: real file save/recompile/present, compile-error retention/recovery, repeated tree rows, foldout state and active text token retained.\n";
-    std::printf("Editor project acceptance: PASS; evidence: %s\n",atelier::editor::utf8(output.wstring()).c_str());
+    std::printf("Editor project acceptance: PASS; evidence: %s\n",atelier::assets::utf8(output.wstring()).c_str());
     return 0;
 }
 

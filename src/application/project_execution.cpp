@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "assets/file.hpp"
 #include <algorithm>
 #include <atomic>
 
@@ -15,7 +16,7 @@ bool same_sources(const source::SourceSnapshot& a,const source::SourceSnapshot& 
 void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> report) {
     if(!report || workspace_.project_build==report) return;
     workspace_.project_build=std::move(report);
-    if(workspace_.project_build->error) workspace_.status=editor::wide(workspace_.project_build->error->message);
+    if(workspace_.project_build->error) workspace_.status=assets::wide(workspace_.project_build->error->message);
     else workspace_.status=L"Project build ready";
     workspace_.log(workspace_.status);
 }
@@ -55,7 +56,7 @@ Result<void> Application::build_project(bool rebuild) {
 }
 Result<void> Application::create_source(const std::filesystem::path& relative,bool is_ui) {
     if(!project_) return failure("Open a project folder first.");
-    const auto stem=editor::utf8(relative.stem().wstring());
+    const auto stem=assets::utf8(relative.stem().wstring());
     if(!is_ui && (stem.empty() || !((stem.front()>='A' && stem.front()<='Z') || (stem.front()>='a' && stem.front()<='z') || stem.front()=='_') ||
         std::ranges::any_of(stem,[](unsigned char c){return !((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_');})))
         return failure("Use a Source identifier as the component file name (letters, digits and underscore).");
@@ -63,12 +64,12 @@ Result<void> Application::create_source(const std::filesystem::path& relative,bo
     if(!created) return created;
     if(is_ui) {
         auto configured=project_->set_ui_source(relative);
-        if(!configured) {workspace_.log(L"UI file created; project entry was not changed: "+editor::wide(configured.error().message));return configured;}
+        if(!configured) {workspace_.log(L"UI file created; project entry was not changed: "+assets::wide(configured.error().message));return configured;}
         workspace_.project_ui_configured=true;
     }
     const auto path=project_->resolve(relative);if(!path) return std::unexpected(path.error());
     auto opened=open_source(*path);if(!opened) return opened;
-    auto refreshed=project_->refresh();if(!refreshed) workspace_.log(L"Source created; browser refresh failed: "+editor::wide(refreshed.error().message));
+    auto refreshed=project_->refresh();if(!refreshed) workspace_.log(L"Source created; browser refresh failed: "+assets::wide(refreshed.error().message));
     source_build_pending_=true;
     workspace_.status=is_ui?L"Project UI created":L"Component source created. Build, then rebuild types to add the new component.";
     return {};
@@ -130,7 +131,7 @@ void Application::poll_project() {
         play_output_+=output;
         const auto end=play_output_.find_last_of('\n');
         if(end!=std::string::npos) {
-            try{workspace_.log(editor::wide(std::string_view(play_output_).substr(0,end+1)));}catch(const std::exception&){workspace_.log(L"Runner output contains invalid UTF-8.");}
+            try{workspace_.log(assets::wide(std::string_view(play_output_).substr(0,end+1)));}catch(const std::exception&){workspace_.log(L"Runner output contains invalid UTF-8.");}
             play_output_.erase(0,end+1);
         }
         if(play_output_.size()>65536) play_output_.clear();
@@ -139,7 +140,7 @@ void Application::poll_project() {
     live_.poll(play_.running(),play_.stopping());
     if(!live_.divergence().empty() && !workspace_.play_diverged) {
         workspace_.play_diverged=true;document_->set_live_forwarding(false);
-        workspace_.status=L"Play no longer follows the scene: "+editor::wide(live_.divergence());workspace_.log(workspace_.status+L" Restart Play to continue.");
+        workspace_.status=L"Play no longer follows the scene: "+assets::wide(live_.divergence());workspace_.log(workspace_.status+L" Restart Play to continue.");
     }
     if(was_running && !play_.running()) {
         workspace_.status=play_.forced()?L"Project stopped: run did not respond to Stop":play_.exit_code().value_or(1)==0?L"Project stopped":L"Project exited with an error; see Project Output";
@@ -147,17 +148,17 @@ void Application::poll_project() {
     }
     if(!play_.running() && live_.active()) {
         document_->set_live_forwarding(false);
-        if(const auto error=live_.close()) workspace_.log(L"Cannot remove the run's change files: "+editor::wide(error.message()));
+        if(const auto error=live_.close()) workspace_.log(L"Cannot remove the run's change files: "+assets::wide(error.message()));
     }
     workspace_.play_pending=live_.active()?std::optional(live_.unacknowledged()):std::nullopt;workspace_.play_diverged=!live_.divergence().empty();
     if(!play_.running() && !play_snapshot_.empty()) {
         std::error_code error;std::filesystem::remove(play_snapshot_,error);
-        if(error) workspace_.log(L"Cannot remove the run snapshot: "+editor::wide(error.message()));
+        if(error) workspace_.log(L"Cannot remove the run snapshot: "+assets::wide(error.message()));
         play_snapshot_.clear();
     }
     if(restart_play_ && !play_.running()) {
         restart_play_=false;
-        if(auto restarted=run_project();!restarted) {workspace_.status=L"Cannot restart Play: "+editor::wide(restarted.error().message);workspace_.log(workspace_.status);}
+        if(auto restarted=run_project();!restarted) {workspace_.status=L"Cannot restart Play: "+assets::wide(restarted.error().message);workspace_.log(workspace_.status);}
         else workspace_.status=L"Play restarted";
     }
     if(!project_) return;

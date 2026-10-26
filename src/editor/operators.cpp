@@ -145,7 +145,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     return OperatorReport{OperatorStatus::finished, {}};
 }
 namespace {
-using json_format::Json;
+using assets::json_format::Json;
 Json scalar_json(Runtime& runtime, const Scalar& value) {
     return std::visit([&](const auto& leaf) -> Json {
         if constexpr (std::same_as<std::decay_t<decltype(leaf)>, EnumValue>) {
@@ -209,7 +209,7 @@ Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<F
     return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", std::move(properties)}};
 }
 }
-Result<json_format::Json> parameter_schema(Runtime& runtime, const OperatorInfo& op) {
+Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const OperatorInfo& op) {
     if (op.parameters.empty()) return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
     auto value = parameters(runtime, op);
     if (!value) return std::unexpected(value.error());

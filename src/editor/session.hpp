@@ -2,7 +2,6 @@
 
 #include "world/world.hpp"
 #include "world/diagnostic.hpp"
-#include "editor/assets.hpp"
 #include "assets/reader.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
@@ -49,9 +48,9 @@ struct MissingResource {
 // leaves only the mesh unavailable.
 struct ResourceLess {
     using is_transparent = void;
-    bool operator()(std::pair<AssetKind, std::string_view> a, std::pair<AssetKind, std::string_view> b) const noexcept { return a < b; }
+    bool operator()(std::pair<assets::AssetKind, std::string_view> a, std::pair<assets::AssetKind, std::string_view> b) const noexcept { return a < b; }
 };
-using UnavailableResources = std::map<std::pair<AssetKind, std::string>, MissingResource, ResourceLess>;
+using UnavailableResources = std::map<std::pair<assets::AssetKind, std::string>, MissingResource, ResourceLess>;
 
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
@@ -92,7 +91,7 @@ public:
     Result<void> set_environment(const rendering::SceneLightingSettings&);
     // Binds the Environment's sky map to a resolved asset, as one history item; an empty
     // asset clears it. Creates the Environment like set_environment; a disabled one rejects.
-    Result<void> set_sky_map(const SkyAsset&);
+    Result<void> set_sky_map(const assets::SkyAsset&);
     // Authored weak selection, not camera availability; null without an Environment.
     Result<ObjectId> main_camera() const;
     // Same-document Entity with exactly one CameraComponent (disabled is allowed).
@@ -102,7 +101,7 @@ public:
     Result<void> select(ObjectId);
     Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
     Result<world::Commit> add_entity(TypeId actual = {});
-    Result<world::Commit> create_static_mesh(const MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
+    Result<world::Commit> create_static_mesh(const assets::MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
     Result<world::Commit> create_camera(math::Vector3 position = {});
     Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
@@ -144,20 +143,20 @@ public:
     // stand-ins and are reported there; without one they fail. Stand-ins are never
     // edited or saved as assets.
     Result<ObjectRoot> material_resource(assets::Reader&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
-    Result<ObjectRoot> material_resource(assets::Reader&,const MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
+    Result<ObjectRoot> material_resource(assets::Reader&,const assets::MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
     // The mesh asset's default material per slot, as this document's shared material assets.
     // Unavailable ones always stand in and are reported in `missing` when given.
-    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&,const MeshAsset&,std::vector<MissingResource>* missing = nullptr);
+    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&,const assets::MeshAsset&,std::vector<MissingResource>* missing = nullptr);
     // What each slot shows where no component binds it: the default material, else the imported surface.
     // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
-    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(assets::Reader&,const MeshAsset&);
+    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(assets::Reader&,const assets::MeshAsset&);
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
     Result<ObjectRoot> open_material(Project&,std::string_view key);
     // The unavailable Mesh, Material, Texture or sky map a stand-in in this document replaces.
-    const MissingResource* unavailable(AssetKind,std::string_view key) const;
-    Result<MaterialAsset> material_asset(ObjectId) const;
-    Result<std::vector<MaterialAsset>> material_assets() const;
+    const MissingResource* unavailable(assets::AssetKind,std::string_view key) const;
+    Result<assets::MaterialAsset> material_asset(ObjectId) const;
+    Result<std::vector<assets::MaterialAsset>> material_assets() const;
     std::vector<ObjectId> material_objects() const;
     Result<void> begin_material_edit(ObjectId,std::uint64_t control_session);
     Result<void> preview_material(std::uint64_t,const material::State&);
@@ -350,7 +349,7 @@ private:
     std::unordered_map<std::string,MaterialDocument> materials_;
     std::unordered_map<std::string,ObjectRoot> textures_;
     UnavailableResources unavailable_;
-    const MissingResource& remember_unavailable(const assets::Reader&,AssetKind,std::string_view key,const Error&);
+    const MissingResource& remember_unavailable(const assets::Reader&,assets::AssetKind,std::string_view key,const Error&);
     struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};std::vector<world::FieldPath> paths;ObjectId entity,component;};
     std::optional<MaterialEdit> material_edit_;
     Result<ObjectRoot> texture_resource(assets::Reader&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);

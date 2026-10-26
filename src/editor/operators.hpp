@@ -1,6 +1,6 @@
 #pragma once
 #include "editor/camera.hpp"
-#include "editor/json_format.hpp"
+#include "assets/json_format.hpp"
 #include "editor/operator_parameters.hpp"
 #include "editor/session.hpp"
 #include <functional>
@@ -100,7 +100,7 @@ void register_builtin_operators(OperatorRegistry&);
 
 struct OperatorCall {
     std::string id;
-    json_format::Json args = json_format::Json::object();
+    assets::json_format::Json args = assets::json_format::Json::object();
     ContextOverride context;
 };
 enum class OperatorStatus { finished, unavailable };
@@ -116,5 +116,5 @@ Result<OperatorReport> call(const OperatorRegistry&, OperatorHost&, const Contex
 // JSON schema of an operator's arguments, from its parameter record in this Runtime:
 // field names, kinds, enum members, hard bounds as minimum/maximum, the UI range, and
 // defaults; a seeded operator has no defaults and reports "seeded": true instead.
-Result<json_format::Json> parameter_schema(Runtime&, const OperatorInfo&);
+Result<assets::json_format::Json> parameter_schema(Runtime&, const OperatorInfo&);
 }

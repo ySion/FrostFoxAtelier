@@ -1,21 +1,22 @@
 #include "editor/asset_browser.hpp"
 #include "editor/commands.hpp"
 #include "ui_language/live_document.hpp"
+#include "assets/file.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
 
 namespace atelier::editor {
 namespace {
-std::wstring_view kind_name(AssetKind kind) {
-    switch (kind) { case AssetKind::folder:return L"Folder"; case AssetKind::mesh:return L"Mesh";
-    case AssetKind::scene:return L"Scene"; case AssetKind::source:return L"Source";
-    case AssetKind::texture:return L"Texture";case AssetKind::material:return L"Material";default:return L"File"; }
+std::wstring_view kind_name(assets::AssetKind kind) {
+    switch (kind) { case assets::AssetKind::folder:return L"Folder"; case assets::AssetKind::mesh:return L"Mesh";
+    case assets::AssetKind::scene:return L"Scene"; case assets::AssetKind::source:return L"Source";
+    case assets::AssetKind::texture:return L"Texture";case assets::AssetKind::material:return L"Material";default:return L"File"; }
 }
 std::wstring folded(std::wstring text) { for (auto& c:text) c=static_cast<wchar_t>(std::towlower(c)); return text; }
 bool matches_filter(const AssetBrowser::Item& item,std::wstring_view query,unsigned filter) {
     return (query.empty() || folded(item.name).find(query)!=std::wstring::npos) &&
-        (!filter || item.kind==AssetKind::folder || item.kind==(filter==1?AssetKind::mesh:filter==2?AssetKind::scene:filter==3?AssetKind::source:filter==4?AssetKind::material:AssetKind::texture));
+        (!filter || item.kind==assets::AssetKind::folder || item.kind==(filter==1?assets::AssetKind::mesh:filter==2?assets::AssetKind::scene:filter==3?assets::AssetKind::source:filter==4?assets::AssetKind::material:assets::AssetKind::texture));
 }
 int compare_names(std::wstring_view a,std::wstring_view b) {
     for (std::size_t i=0;i<std::min(a.size(),b.size());++i) {
@@ -29,8 +30,8 @@ std::optional<std::size_t> column_index(ui::TableKey key) {
     if (key>=browser_control::name_column && key<=browser_control::size_column) return static_cast<std::size_t>(key-browser_control::name_column);
     return std::nullopt;
 }
-ui::ControlIcon item_icon(AssetKind kind) {
-    return kind==AssetKind::folder?ui::ControlIcon::folder:kind==AssetKind::mesh?ui::ControlIcon::mesh:ui::ControlIcon::object;
+ui::ControlIcon item_icon(assets::AssetKind kind) {
+    return kind==assets::AssetKind::folder?ui::ControlIcon::folder:kind==assets::AssetKind::mesh?ui::ControlIcon::mesh:ui::ControlIcon::object;
 }
 }
 void AssetBrowser::reset(bool has_project) {
@@ -48,7 +49,7 @@ ui::ControlKey AssetBrowser::key_for(const std::string& value) {
 }
 ui::ControlKey AssetBrowser::directory_control(const std::filesystem::path& path) const {
     if (path.empty()) return browser_control::project;
-    const auto name="nav:"+utf8(path.generic_wstring());
+    const auto name="nav:"+assets::utf8(path.generic_wstring());
     const auto* key=keys_.find(StringView{name});return key?*key:0;
 }
 void AssetBrowser::visit(Location location,bool remember) {
@@ -75,9 +76,9 @@ void AssetBrowser::update_directories(const Project* project) {
     if (root==project_root_ && revision==directory_revision_ && has_project_==(project!=nullptr)) return;
     has_project_=project!=nullptr;project_root_=root;directory_revision_=revision;directory_items_dirty_=true;
     const auto previous=std::exchange(directories_,{});targets_.clear();
-    if (project) for (const auto& entry:project->entries()) if (entry.kind==AssetKind::folder) {
+    if (project) for (const auto& entry:project->entries()) if (entry.kind==assets::AssetKind::folder) {
         directories_.push_back({entry.key,entry.path,entry.path.filename().wstring(),entry.kind,0});
-        targets_.push_back({key_for("nav:"+utf8(entry.path.generic_wstring())),directories_.back()});
+        targets_.push_back({key_for("nav:"+assets::utf8(entry.path.generic_wstring())),directories_.back()});
         // A directory first appears expanded when it is or holds the current directory.
         if (!engine_ && std::ranges::none_of(previous,[&](const auto& item){return item.path==entry.path;}))
             if (const auto relative=directory_.lexically_relative(entry.path);!relative.empty() && *relative.begin()!=L"..")
@@ -139,7 +140,7 @@ Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> p
 }
 void AssetBrowser::sort_items() {
     std::sort(items_.begin(),items_.end(),[&](const auto& a,const auto& b) {
-        if ((a.kind==AssetKind::folder)!=(b.kind==AssetKind::folder)) return a.kind==AssetKind::folder;
+        if ((a.kind==assets::AssetKind::folder)!=(b.kind==assets::AssetKind::folder)) return a.kind==assets::AssetKind::folder;
         int order{};
         if (sort_.column==browser_control::size_column) order=a.bytes==b.bytes?0:a.bytes<b.bytes?-1:1;
         else if (sort_.column==browser_control::type_column) order=kind_name(a.kind).compare(kind_name(b.kind));
@@ -154,7 +155,7 @@ void AssetBrowser::sort_items() {
 void AssetBrowser::update_items(const Project* project) {
     if (!items_dirty_ && catalog_revision_==(project?project->revision():0)) return;
     items_.clear();
-    if (engine_) for (const auto& asset:mesh_assets()) items_.push_back({asset.key,{},asset.name,AssetKind::mesh,0});
+    if (engine_) for (const auto& asset:assets::mesh_assets()) items_.push_back({asset.key,{},asset.name,assets::AssetKind::mesh,0});
     else if (project) for (const auto& entry:project->entries())
         if (entry.path.parent_path()==directory_) items_.push_back({entry.key,entry.path,entry.path.filename().wstring(),entry.kind,entry.bytes});
     const auto query=folded(query_);
@@ -187,7 +188,7 @@ const std::shared_ptr<const ui::TableData>& AssetBrowser::table_data() {
     data->rows.reserve(items_.size());
     for (const auto& item:items_) {
         const auto row=row_key(item.key);
-        const auto size=item.kind==AssetKind::folder || item.path.empty()?L"":item.bytes<1024?std::to_wstring(item.bytes)+L" B":
+        const auto size=item.kind==assets::AssetKind::folder || item.path.empty()?L"":item.bytes<1024?std::to_wstring(item.bytes)+L" B":
             std::to_wstring(item.bytes/1024+(item.bytes%1024!=0))+L" KB";
         data->rows.push_back({row,{{(row<<2)|browser_control::name_column,item.name,item_icon(item.kind)},
             {(row<<2)|browser_control::type_column,std::wstring(kind_name(item.kind))},
@@ -222,9 +223,9 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         radio(id::engine,L"Engine",true,engine_,ui::ControlIcon::mesh);
     } else {
         if (source!=id::actions && source!=id::results) return {};
-        items.push_back({id::open,L"Open",selected_ && (selected_->kind==AssetKind::folder || selected_->kind==AssetKind::scene || selected_->kind==AssetKind::source || selected_->kind==AssetKind::material),false,{}});
+        items.push_back({id::open,L"Open",selected_ && (selected_->kind==assets::AssetKind::folder || selected_->kind==assets::AssetKind::scene || selected_->kind==assets::AssetKind::source || selected_->kind==assets::AssetKind::material),false,{}});
         items.back().icon=ui::ControlIcon::folder;
-        items.push_back({id::add,L"Add to Scene",can_create_ && selected_ && selected_->kind==AssetKind::mesh,false,{}});
+        items.push_back({id::add,L"Add to Scene",can_create_ && selected_ && selected_->kind==assets::AssetKind::mesh,false,{}});
         items.back().icon=ui::ControlIcon::plus;
         items.push_back({id::rename,L"Rename",can_rename(),false,{},L"F2"});
         items.back().icon=ui::ControlIcon::rename;

@@ -1,7 +1,6 @@
 #pragma once
 #include "runtime/runtime.hpp"
 #include "math/math.hpp"
-#include "editor/assets.hpp"
 #include "assets/reader.hpp"
 #include <filesystem>
 
@@ -22,8 +21,8 @@ public:
     const std::wstring& name() const noexcept { return name_; }
     assets::Reader& assets() noexcept { return assets_; }
     const assets::Reader& assets() const noexcept { return assets_; }
-    std::span<const ProjectEntry> entries() const noexcept { return assets_.entries(); }
-    const ProjectEntry* entry(std::string_view key) const { return assets_.entry(key); }
+    std::span<const assets::ProjectEntry> entries() const noexcept { return assets_.entries(); }
+    const assets::ProjectEntry* entry(std::string_view key) const { return assets_.entry(key); }
     // The top-level folders the catalogue scans: Content, Source, Config.
     std::span<const std::filesystem::path> roots() const noexcept { return roots_; }
     std::uint64_t revision() const noexcept { return assets_.revision(); }
@@ -32,8 +31,8 @@ public:
     // glTF imports also publish one material asset per slot, which the mesh names as its slot defaults.
     Result<std::string> import_mesh(const std::filesystem::path&);
     Result<std::string> import_texture(const std::filesystem::path&);
-    Result<std::string> create_material(const std::filesystem::path&,const MaterialAsset& = {});
-    Result<void> save_material(const MaterialAsset&);
+    Result<std::string> create_material(const std::filesystem::path&,const assets::MaterialAsset& = {});
+    Result<void> save_material(const assets::MaterialAsset&);
     // Fresh, deterministic compiler inputs. UI declarations have their own
     // configured entry and are not parsed as gameplay Source functions.
     Result<std::vector<std::filesystem::path>> source_paths() const;
@@ -54,9 +53,6 @@ private:
 };
 // Same-directory temporary + flush + replacement. Failed writes leave the old
 // file intact. Strings and on-disk paths use validated UTF-8.
-using assets::read_file;
-using assets::utf8;
-using assets::wide;
 enum class WriteMode { replace, create };
 Result<void> write_file(const std::filesystem::path&, std::string_view, WriteMode = WriteMode::replace);
 }

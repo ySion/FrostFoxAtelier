@@ -1,4 +1,5 @@
 #include "application/project_runner.hpp"
+#include "assets/file.hpp"
 #include "application/play_link.hpp"
 #include "application/render_clock.hpp"
 #include "application/lit_preparation.hpp"
@@ -108,7 +109,7 @@ int run_project(const RunOptions& options) {
             loaded.session=std::make_unique<editor::Session>();
         } else {
             const auto scene=options.scene_snapshot.empty()?take(project.resolve(project.startup_scene())):options.scene_snapshot;
-            loaded=editor::load_project_scene(project,take(editor::read_file(scene)));
+            loaded=editor::load_project_scene(project,take(assets::read_file(scene)));
         }
         if(!loaded.session) throw std::runtime_error(loaded.error?loaded.error->message:"Project scene was not loaded.");
         auto& document=*loaded.session;
@@ -116,11 +117,11 @@ int run_project(const RunOptions& options) {
         // The editor owns document identities; this copy addresses objects it spawns by runtime handle.
         if(!options.preview_ui) document.enter_play();
         if(const auto summary=editor::describe_issues(document,document.load_issues(),L"Scene");!summary.empty())
-            {std::printf("%s\n",editor::utf8(summary.front()).c_str());std::fflush(stdout);}
+            {std::printf("%s\n",assets::utf8(summary.front()).c_str());std::fflush(stdout);}
         // Isolated failures keep Play running; under halt the failing call is reported before it stops the run.
         std::uint64_t dropped{};
         const Report report=[&](std::span<const world::Diagnostic> items) {
-            for(const auto& item:items) std::printf("%s\n",editor::utf8(editor::describe_diagnostic(document,item)).c_str());
+            for(const auto& item:items) std::printf("%s\n",assets::utf8(editor::describe_diagnostic(document,item)).c_str());
             std::fflush(stdout);
         };
         const auto report_diagnostics=[&] {
@@ -210,7 +211,7 @@ int run_project(const RunOptions& options) {
             if(prepared && !started) {
                 if(!options.preview_ui) {auto begun=document.start();report_diagnostics();complete(std::move(begun));}
                 started=true;
-                std::printf("Project started: %s\n",editor::utf8(project.root().wstring()).c_str());std::fflush(stdout);
+                std::printf("Project started: %s\n",assets::utf8(project.root().wstring()).c_str());std::fflush(stdout);
             }
             if(started && !options.preview_ui) {auto updated=document.update(dt);report_diagnostics();take(std::move(updated));}
             {timing::Scope collecting{phases::gc};take(document.collect_step());}

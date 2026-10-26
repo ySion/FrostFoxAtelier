@@ -38,7 +38,7 @@ void verify_rotated_viewport_transforms() {
 }
 void verify_mirrored_viewport_transforms() {
     using namespace editor;
-    Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto entity=document.selection().entity;
+    Session document;changed(document.create_static_mesh(assets::mesh_assets().front()));const auto entity=document.selection().entity;
     const auto pose=[&]{return take(world::read_transform(document.world().runtime(),entity));};
     // One mirrored axis: an unbiased decomposition reports (-1,1,1) plus a half turn instead.
     const world::Trs mirrored{{1,2,3},from_euler_degrees({0,30,0}),{1,-1,1}};
@@ -91,7 +91,7 @@ void verify_mirrored_viewport_transforms() {
 }
 void verify_viewport_local_constraints() {
     using namespace editor;
-    Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto entity=document.selection().entity;
+    Session document;changed(document.create_static_mesh(assets::mesh_assets().front()));const auto entity=document.selection().entity;
     take(document.set_transform(entity,{{},from_euler_degrees({0,0,90}),{1,1,1}}));
     const auto before=take(world::read_transform(document.world().runtime(),entity));
     Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
@@ -123,8 +123,8 @@ void verify_viewport_local_constraints() {
 }
 void verify_viewport_gesture_input() {
     using namespace editor;
-    Session document;changed(document.create_static_mesh(mesh_assets().front()));const auto first=document.selection().entity;
-    changed(document.create_static_mesh(mesh_assets().front(),{2,0,0}));const auto second=document.selection().entity;take(document.select(first));
+    Session document;changed(document.create_static_mesh(assets::mesh_assets().front()));const auto first=document.selection().entity;
+    changed(document.create_static_mesh(assets::mesh_assets().front(),{2,0,0}));const auto second=document.selection().entity;take(document.select(first));
     Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
     const auto center=*view.project({});auto pointer=center;
     ViewportTool tool;ToolSettings settings;settings.tool=TransformTool::select;settings.grid_spacing=.25f;
@@ -202,7 +202,7 @@ void verify_viewport_gesture_input() {
 }
 void verify_viewport_duplication() {
     editor::Session document;
-    changed(document.create_static_mesh(editor::mesh_assets().front(),{1,2,3}));
+    changed(document.create_static_mesh(assets::mesh_assets().front(),{1,2,3}));
     const auto first=document.selection().entity;
     changed(document.add_component(document.types().component));
     changed(document.add_component(document.types().collision_component));
@@ -256,7 +256,7 @@ void verify_viewport_duplication() {
     changed(document.undo());take(document.select({}));const auto count=document.undo_count();
     changed(document.duplicate_selected());require(document.undo_count()==count,"Empty duplicate changed history.");
     editor::Session restricted;
-    changed(restricted.create_static_mesh(editor::mesh_assets().front()));const auto mesh_entity=restricted.selection().entity;
+    changed(restricted.create_static_mesh(assets::mesh_assets().front()));const auto mesh_entity=restricted.selection().entity;
     // A World keeps one Environment, so copying it with a mesh fails as one group.
     auto restricted_lighting=take(restricted.presentation().environment());restricted_lighting.exposure_ev=1;take(restricted.set_environment(restricted_lighting));
     const auto sky_entity=take(world::inspect_component(restricted.world().runtime(),restricted.environment())).owner;
@@ -290,7 +290,7 @@ void verify_viewport_editing() {
     verify_viewport_duplication();
     using namespace editor;
     Session document;
-    const auto create=[&](math::Vector3 at) {changed(document.create_static_mesh(mesh_assets().front(),at));return document.selection().entity;};
+    const auto create=[&](math::Vector3 at) {changed(document.create_static_mesh(assets::mesh_assets().front(),at));return document.selection().entity;};
     const auto first=create({-1.5f,0,0}),second=create({1.5f,0,0});
     const auto root=[&](ObjectId entity){return entity;};
     const auto transform=[&](ObjectId entity){return take(world::read_transform(document.world().runtime(),root(entity)));};
@@ -528,7 +528,7 @@ void verify_viewport_editing() {
     require(shapes.size()>100,"Universal handle did not expose axes, planes and rotation rings.");
     Workspace workspace;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};ui::Session ui(fonts);
-    const auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+    const auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
     if(!theme) throw std::runtime_error("Viewport UI theme failed at "+std::to_string(theme.error().line)+": "+theme.error().message);
     require(bool(ui.set_style_sheet(*theme)),"Viewport UI theme could not be applied.");
     require(bool(ui.set_surface({{1200,800},1,1})),"Viewport UI surface failed.");

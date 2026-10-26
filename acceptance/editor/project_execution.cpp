@@ -1,4 +1,5 @@
-#include "editor/json_format.hpp"
+#include "assets/file.hpp"
+#include "assets/json_format.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "editor/workspace.hpp"
@@ -54,17 +55,17 @@ void run(const std::filesystem::path& root) {
     const std::string helpers="float travel(float speed,float dt) { return speed * dt * (2.0f * procedural.unit(2147483648)); }\n";
     const std::string declaration="class project.Move : world.Component {\n    float speed = 2.0f;\n    bool moving = true;\n    uint ticks = 0;\n    void tick(float dt) {\n        if (self.moving) { self.translate_owner(travel(self.speed, dt), 0.0f, 0.0f); }\n        self.ticks = self.ticks + 1;\n    }\n}\n";
     {
-        auto empty=editor::load_project_scene(project,take(editor::read_file(root/"Content/Scenes/Main.scene")));
+        auto empty=editor::load_project_scene(project,take(assets::read_file(root/"Content/Scenes/Main.scene")));
         if(!empty.session) throw std::runtime_error("Empty project: "+empty.error->message);
         complete(empty.session->add_entity());
         take(editor::write_file(helper,helpers));take(editor::write_file(component,declaration));
         take(empty.code->poll(project,true));
         require(empty.session->world().runtime().find_type("project.Move").has_value(),"Adding the first Source class did not publish it into the open scene.");
     }
-    auto loaded=editor::load_project_scene(project,take(editor::read_file(root/"Content/Scenes/Main.scene")));
+    auto loaded=editor::load_project_scene(project,take(assets::read_file(root/"Content/Scenes/Main.scene")));
     if(!loaded.session) throw std::runtime_error("Initial project: "+loaded.error->message);
     auto& document=*loaded.session;
-    complete(document.create_static_mesh(editor::mesh_assets().front()));
+    complete(document.create_static_mesh(assets::mesh_assets().front()));
     complete(document.add_component(take(document.world().runtime().find_type("project.Move"))));
     require(std::get<float>(field(document,"speed"))==2 && std::get<bool>(field(document,"moving")),"Runtime did not initialize source field defaults.");
     const auto original=take(document.serialize());take(editor::write_file(root/"Content/Scenes/Main.scene",original));document.mark_saved();
@@ -78,7 +79,7 @@ void run(const std::filesystem::path& root) {
     auto described=ui.set_controls(controls);
     if(!described) {
         for(const auto& control:controls) if(control.key==described.error().key || control.parent==described.error().key)
-            std::printf("Control %llu parent %llu kind %u text %s\n",static_cast<unsigned long long>(control.key),static_cast<unsigned long long>(control.parent),static_cast<unsigned>(control.kind),editor::utf8(control.text).c_str());
+            std::printf("Control %llu parent %llu kind %u text %s\n",static_cast<unsigned long long>(control.key),static_cast<unsigned long long>(control.parent),static_cast<unsigned>(control.kind),assets::utf8(control.text).c_str());
     }
     display(std::move(described));workspace.commit_ui_controls();auto prepared=display(ui.prepare());require(ui.accept(prepared),"Could not accept project property UI.");
     require(workspace.ui_error().empty(),"Editor UI failed while projecting source properties.");
@@ -129,7 +130,7 @@ void run(const std::filesystem::path& root) {
             faults[0].entity==mover && faults[0].type=="project.Move","A Source Tick fault was not isolated to one diagnostic on its object.");
         const auto line=editor::describe_diagnostic(run,faults[0]);
         require(line.starts_with(L"Diagnostic [error] behavior_failed in tick") && line.find(L"(project.Move)")!=std::wstring::npos &&
-            line.find(editor::wide(faults[0].message))!=std::wstring::npos,"The Project Output line lost the fault's kind, type or message.");
+            line.find(assets::wide(faults[0].message))!=std::wstring::npos,"The Project Output line lost the fault's kind, type or message.");
         take(editor::write_file(component,declaration));take(faulty.code->poll(project,true));
         take(run.update(.5f));check_position(position(run,mover),2);
         require(run.take_diagnostics().empty(),"A fixed object did not resume Tick after its code was published.");
@@ -159,9 +160,9 @@ void run(const std::filesystem::path& root) {
     require(output.find("Performance: 20 frames (window ")!=output.npos && output.find(" app.ui ")!=output.npos &&
         output.find(" world.update ")!=output.npos && output.find(" app.gc ")!=output.npos &&
         output.find("timing structure errors")==output.npos,"The runner did not report its frame performance.");
-    auto executed=editor::load_project_scene(project,take(editor::read_file(report)));require(executed.session!=nullptr,"Run output did not restore through the shared scene loader.");
+    auto executed=editor::load_project_scene(project,take(assets::read_file(report)));require(executed.session!=nullptr,"Run output did not restore through the shared scene loader.");
     check_position(position(*executed.session,entity(*executed.session)),2.f/3);
-    require(take(editor::read_file(root/"Content/Scenes/Main.scene"))==original,"The runner overwrote the authored scene.");
+    require(take(assets::read_file(root/"Content/Scenes/Main.scene"))==original,"The runner overwrote the authored scene.");
     {
         // The runner enters Play and services its channel at the host boundary: before start, then before every update.
         struct Probe final : application::PlayChannel {
@@ -178,7 +179,7 @@ void run(const std::filesystem::path& root) {
         options.headless=true;options.frames=20;options.channel=&probe;
         require(application::run_project(options)==0 && probe.calls==20 && probe.stopped_first,
             "The runner did not service its Play channel before start and before every update.");
-        auto served=editor::load_project_scene(project,take(editor::read_file(report)));require(served.session!=nullptr,"The served run's report did not load.");
+        auto served=editor::load_project_scene(project,take(assets::read_file(report)));require(served.session!=nullptr,"The served run's report did not load.");
         check_position(position(*served.session,entity(*served.session)),4.f/3);
     }
     verify_link_protocol(root);verify_play_link(root,project,original,snapshot);
@@ -239,7 +240,7 @@ void run(const std::filesystem::path& root) {
             if(halt) require(process.exit_code()!=0 && faulted.find("Project stopped")==std::string::npos,"--halt-on-fault kept running after the first fault.");
             else {
                 require(process.exit_code()==0 && faulted.find("Project stopped: 20 frames")!=std::string::npos,"An isolated Source fault stopped Play.");
-                auto finished=editor::load_project_scene(project,take(editor::read_file(report)));
+                auto finished=editor::load_project_scene(project,take(assets::read_file(report)));
                 require(finished.session!=nullptr,"The faulted run's report did not load.");
                 check_position(position(*finished.session,entity(*finished.session)),2.f/60);
             }
@@ -272,9 +273,9 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
     auto moved=root;moved+=L"-moved";std::filesystem::rename(root,moved);
     std::filesystem::remove(moved/"Cache/run.scene");std::filesystem::remove(moved/"Cache/result.scene");std::filesystem::remove(moved/"Cache");
     auto reopened=take(editor::Project::open(moved));
-    auto relocated=editor::load_project_scene(reopened,take(editor::read_file(moved/"Content/Scenes/Main.scene")));
+    auto relocated=editor::load_project_scene(reopened,take(assets::read_file(moved/"Content/Scenes/Main.scene")));
     require(relocated.session!=nullptr && std::get<float>(field(*relocated.session,"speed"))==2,"Moving the project broke source or scene association.");
-    std::printf("Project integration: PASS (Source classes, files, properties, scene, hot update, diagnostics, saved data across Source changes, placeholders, UI, process, stop, relocation)\nEvidence: %s\n",editor::utf8(moved.wstring()).c_str());
+    std::printf("Project integration: PASS (Source classes, files, properties, scene, hot update, diagnostics, saved data across Source changes, placeholders, UI, process, stop, relocation)\nEvidence: %s\n",assets::utf8(moved.wstring()).c_str());
 }
 }
 int main() {

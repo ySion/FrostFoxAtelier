@@ -1,6 +1,7 @@
 #include "editor/source_editor.hpp"
 #include "editor/commands.hpp"
 #include "editor/project_code.hpp"
+#include "assets/file.hpp"
 #include <algorithm>
 #include <charconv>
 #include <stdexcept>
@@ -10,7 +11,7 @@ namespace {
 auto failure(std::string message) {return std::unexpected(Error{ErrorCode::invalid_storage,std::move(message)});}
 std::wstring normalized(std::string_view bytes) {
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    auto value=wide(bytes);std::wstring result;result.reserve(value.size());
+    auto value=assets::wide(bytes);std::wstring result;result.reserve(value.size());
     for (std::size_t i=0;i<value.size();++i) {
         if (value[i]==L'\r') {result+=L'\n';if (i+1<value.size() && value[i+1]==L'\n') ++i;}
         else result+=value[i];
@@ -44,24 +45,24 @@ SourceEditor::File* SourceEditor::active() const noexcept {
 }
 Result<void> SourceEditor::open(const std::filesystem::path& path) {
     std::error_code error;const auto canonical=std::filesystem::canonical(path,error);
-    if (error) return failure("Cannot open source file: "+utf8(path.wstring()));
+    if (error) return failure("Cannot open source file: "+assets::utf8(path.wstring()));
     for (const auto& file:files_) {
         if (std::filesystem::equivalent(file->path,canonical,error) && !error) {selected_=file->key;problem_line_=0;return {};}
         error.clear();
     }
     if (files_.size()>=16) return failure("Close a source document before opening more than 16 files.");
-    auto bytes=read_file(canonical,1024*1024);if (!bytes) return std::unexpected(bytes.error());
+    auto bytes=assets::read_file(canonical,1024*1024);if (!bytes) return std::unexpected(bytes.error());
     auto file=std::make_unique<File>();file->path=canonical;file->key=next_key_++;
     if (auto loaded=load(*file,std::move(*bytes));!loaded) return loaded;
     selected_=file->key;problem_line_=0;files_.push_back(std::move(file));return {};
 }
 Result<void> SourceEditor::save(File& file,bool overwrite) {
-    auto disk=read_file(file.path,1024*1024);
+    auto disk=assets::read_file(file.path,1024*1024);
     if (!overwrite && (!disk || *disk!=file.disk)) {
         file.conflict=true;return failure("The file changed on disk. Reload it or confirm overwriting the external changes.");
     }
     try {
-        auto text=utf8(file.document->text());
+        auto text=assets::utf8(file.document->text());
         if (file.crlf) {std::string converted;converted.reserve(text.size()+file.document->edit().line_count());for (auto c:text) {if (c=='\n') converted+='\r';converted+=c;}text=std::move(converted);}
         if (file.bom) text.insert(0,"\xef\xbb\xbf");
         if (text.size()>1024*1024) return failure("Source file exceeds 1 MiB of UTF-8 text.");
@@ -72,7 +73,7 @@ Result<void> SourceEditor::save(File& file,bool overwrite) {
     } catch (const std::exception& error) {return failure(error.what());}
 }
 Result<void> SourceEditor::reload(File& file) {
-    auto bytes=read_file(file.path,1024*1024);if (!bytes) return std::unexpected(bytes.error());
+    auto bytes=assets::read_file(file.path,1024*1024);if (!bytes) return std::unexpected(bytes.error());
     return load(file,std::move(*bytes));
 }
 void SourceEditor::close(ui::ControlKey key) {
@@ -91,7 +92,7 @@ void SourceEditor::poll(bool composing) {
         std::error_code error;const auto stamp=std::filesystem::last_write_time(file->path,error);
         const auto size=error?0:std::filesystem::file_size(file->path,error);
         if (!error && file->stamp==stamp && file->disk_size==size) continue;
-        auto disk=read_file(file->path,1024*1024);
+        auto disk=assets::read_file(file->path,1024*1024);
         if (!disk) {file->storage_error=disk.error().message;continue;}
         file->storage_error.clear();
         file->stamp=error?std::nullopt:std::optional{stamp};file->disk_size=size;
@@ -109,7 +110,7 @@ bool SourceEditor::locate_problem() {
     if(!problem_line_) return false;
     if(!problem_path_.empty()) {
         const auto line=problem_line_,column=problem_column_;const auto path=problem_path_;const auto source=problem_source_;
-        auto disk=read_file(path,1024*1024);if(!disk) return false;
+        auto disk=assets::read_file(path,1024*1024);if(!disk) return false;
         std::string_view bytes=*disk;if(bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
         if(bytes!=source) return false;
         if(!open(path)) return false;
@@ -123,9 +124,9 @@ bool SourceEditor::locate_problem() {
     if (!file || !problem_line_ || file->document!=problem_document_.lock() || file->document->revision()!=problem_revision_) return false;
     const auto& buffer=file->document->edit();const auto line=buffer.line(std::min(problem_line_-1,buffer.line_count()-1));
     // Compiler columns count UTF-8 bytes; the native editor uses UTF-16 offsets.
-    const auto bytes=utf8(line);auto count=std::min(problem_column_?problem_column_-1:0,bytes.size());
+    const auto bytes=assets::utf8(line);auto count=std::min(problem_column_?problem_column_-1:0,bytes.size());
     while (count && count<bytes.size() && (static_cast<unsigned char>(bytes[count])&0xc0)==0x80) --count;
-    file->document->locate(problem_line_,wide(std::string_view(bytes).substr(0,count)).size()+1);return true;
+    file->document->locate(problem_line_,assets::wide(std::string_view(bytes).substr(0,count)).size()+1);return true;
 }
 void SourceEditor::append(std::vector<ui::Control>& controls,ui::ControlKey parent,ui_language::LiveDocument& live,
     const Project* project,const ProjectBuild* build,bool running) {
@@ -142,7 +143,7 @@ void SourceEditor::append(std::vector<ui::Control>& controls,ui::ControlKey pare
         status=location+L"  |  Ln "+std::to_wstring(buffer.line_at(offset)+1)+L", Col "+std::to_wstring(offset-buffer.line_start(buffer.line_at(offset))+1);
         conflict=file->conflict;
         if (conflict) diagnostic=L"File changed on disk. Reload discards this draft; Save asks before overwriting.";
-        else if (!file->storage_error.empty()) diagnostic=wide(file->storage_error);
+        else if (!file->storage_error.empty()) diagnostic=assets::wide(file->storage_error);
         std::error_code error;
         const auto* ui_source=&live;
         error.clear();const bool authoring=std::filesystem::equivalent(file->path,ui_source->path(),error) && !error;
@@ -152,10 +153,10 @@ void SourceEditor::append(std::vector<ui::Control>& controls,ui::ControlKey pare
             status+=(file->dirty()?L"  |  Unsaved":L"  |  Saved");
             status+=L"  |  UI revision "+std::to_wstring(ui_source->revision());
             if (!ui_source->diagnostic().empty() && diagnostic.empty()) {
-                diagnostic=wide(ui_source->diagnostic());
+                diagnostic=assets::wide(ui_source->diagnostic());
                 if (!current) diagnostic=L"Previous saved version: "+diagnostic;
                 else {
-                    const auto prefix=utf8(ui_source->path().filename().wstring())+":";
+                    const auto prefix=assets::utf8(ui_source->path().filename().wstring())+":";
                     auto message=ui_source->diagnostic();
                     if (message.starts_with(prefix)) {
                         message.remove_prefix(prefix.size());
@@ -174,12 +175,12 @@ void SourceEditor::append(std::vector<ui::Control>& controls,ui::ControlKey pare
         status+=running?L"  |  Running":L"  |  Project";
         status+=build->state==BuildState::ready?L" · Build ready":build->state==BuildState::rebuild_required?L" · Rebuild required":L" · Build failed";
         if(build->error && diagnostic.empty()) {
-            diagnostic=wide(build->error->message);
+            diagnostic=assets::wide(build->error->message);
             if(const auto& location=build->error->source;location && build->sources) {
                 const auto at=std::ranges::find(build->sources->files,location->path,&source::SourceFile::path);
                 const auto* input=at!=build->sources->files.end()?&*at:build->ui_source && build->ui_source->path==location->path?&*build->ui_source:nullptr;
                 if(input && input->version==location->version) {
-                    auto path=project->resolve(wide(location->path));
+                    auto path=project->resolve(assets::wide(location->path));
                     if(path) {
                         problem_path_=*path;problem_source_=input->source;problem_line_=location->line;problem_column_=location->column;
                         if(file && file->path==problem_path_ && (file->dirty() || normalized(problem_source_)!=file->document->text())) {

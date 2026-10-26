@@ -3,7 +3,7 @@ int verify_editor_tooltips(Application& app,const char* output_directory) {
     using Access=application::EditorAcceptanceAccess;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
-    const auto output=std::filesystem::absolute(editor::wide(output_directory));std::filesystem::create_directories(output);
+    const auto output=std::filesystem::absolute(assets::wide(output_directory));std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Tooltip fixture could not create its mesh.");tick(app);
     const auto history=app.document().undo_count();

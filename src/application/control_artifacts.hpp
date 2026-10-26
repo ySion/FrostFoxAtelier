@@ -3,7 +3,7 @@
 #include "geometry/mesh.hpp"
 #include "renderer/renderer.hpp"
 #include "language/snapshot.hpp"
-#include "editor/project.hpp"
+#include "assets/assets.hpp"
 
 namespace atelier::editor {class Session;}
 namespace atelier::application::control_artifacts {
@@ -16,9 +16,9 @@ struct Repro {
     std::optional<language::SourceFile> ui_source;
     std::uint64_t publication_version{};
     // Distinct loaded versions, including slot defaults not serialized in the scene.
-    std::vector<editor::MeshAsset> meshes;
+    std::vector<assets::MeshAsset> meshes;
     std::vector<std::pair<std::string,rendering::SkyMapRef>> skies;
-    std::vector<editor::MaterialAsset> materials;
+    std::vector<assets::MaterialAsset> materials;
     std::vector<assets::EngineDependency> engine_assets;
     control::Json manifest, drafts;
 };

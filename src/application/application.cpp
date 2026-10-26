@@ -1,6 +1,8 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
 #include "application/presentation.hpp"
+#include "assets/file.hpp"
+#include "assets/json_format.hpp"
 #include "atelier/build_info.hpp"
 #include <windowsx.h>
 #include <algorithm>
@@ -97,7 +99,7 @@ void Application::preserve_failure(std::string_view reason) noexcept {
         const auto& saved=recovery_.preserve(*document_,project_?project_->root():std::filesystem::path{},scene_path_,reason);
         if(!saved) std::fprintf(stderr,"Scene recovery failed: %s\n",saved.error().message.c_str());
         else if(*saved) {
-            std::fprintf(stderr,"Scene recovery saved: %s\n",editor::utf8(saved->value().scene.wstring()).c_str());
+            std::fprintf(stderr,"Scene recovery saved: %s\n",assets::utf8(saved->value().scene.wstring()).c_str());
             if(!saved->value().warning.empty()) std::fprintf(stderr,"Scene recovery warning: %s\n",saved->value().warning.c_str());
         }
         std::fflush(stderr);
@@ -143,7 +145,7 @@ Result<editor::OperatorReport> Application::call_operator(const editor::Operator
     return report;
 }
 Result<void> Application::run_operator(std::string_view id,bool report_unavailable) {
-    auto report=call_operator({std::string(id),editor::json_format::Json::object(),{}},true);if(!report) return std::unexpected(report.error());
+    auto report=call_operator({std::string(id),assets::json_format::Json::object(),{}},true);if(!report) return std::unexpected(report.error());
     if(report->status==editor::OperatorStatus::unavailable && report_unavailable)
         return std::unexpected(Error{ErrorCode::unsupported_operation,report->message});
     return {};
@@ -309,7 +311,7 @@ Result<void> Application::action(const ui::Action& source) {
             if(auto cancelled=document_->cancel_edit();!cancelled) return cancelled;
             workspace_.inspecting_asset=true;workspace_.material_inspection.clear();
             const auto& selected=workspace_.assets.selected();
-            if(selected && selected->kind==editor::AssetKind::material && project_) {
+            if(selected && selected->kind==assets::AssetKind::material && project_) {
                 auto root=document_->open_material(*project_,selected->key);if(!root) return std::unexpected(root.error());
                 workspace_.material_inspection=selected->key;
             }
@@ -330,15 +332,15 @@ Result<void> Application::action(const ui::Action& source) {
         if (!selected) return {};
         if (const auto* cell=std::get_if<ui::TableSelection>(&event.value);
             cell && workspace_.assets.row_key(selected->key)!=cell->row) return {};
-        if (event.key==editor::browser_control::add && selected->kind==editor::AssetKind::mesh)
+        if (event.key==editor::browser_control::add && selected->kind==assets::AssetKind::mesh)
             return execute(editor::Command::create_static_mesh,selected->key);
-        if (selected->kind==editor::AssetKind::folder) workspace_.assets.navigate(selected->path);
-        else if(selected->kind==editor::AssetKind::material && project_) {
+        if (selected->kind==assets::AssetKind::folder) workspace_.assets.navigate(selected->path);
+        else if(selected->kind==assets::AssetKind::material && project_) {
             auto root=document_->open_material(*project_,selected->key);if(!root) return std::unexpected(root.error());
             workspace_.material_inspection=selected->key;workspace_.inspecting_asset=true;workspace_.dock.select(editor::control::parameters_tab);
         }
-        else if (selected->kind==editor::AssetKind::scene) return open_scene(selected->path);
-        else if (selected->kind==editor::AssetKind::source && project_) {
+        else if (selected->kind==assets::AssetKind::scene) return open_scene(selected->path);
+        else if (selected->kind==assets::AssetKind::source && project_) {
             auto path=project_->resolve(selected->path);if (!path) return std::unexpected(path.error());
             return open_source(*path);
         }
@@ -690,8 +692,8 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case previous_tab: case next_tab: workspace_.dock.cycle(command==previous_tab?-1:1); break;
     case about: {
         close_menu(false);
-        const auto details=L"FrostFox Atelier\n\nBuild: "+editor::wide(build_info::revision)+
-            L"\nConfiguration: "+editor::wide(build_info::configuration)+L"\n\nProject:\n"+
+        const auto details=L"FrostFox Atelier\n\nBuild: "+assets::wide(build_info::revision)+
+            L"\nConfiguration: "+assets::wide(build_info::configuration)+L"\n\nProject:\n"+
             (project_?project_->root().wstring():L"No project open")+L"\n\nScene:\n"+
             (scene_path_.empty()?L"Untitled":scene_path_.generic_wstring());
         MessageBoxW(window(),details.c_str(),L"About FrostFox Atelier",MB_OK|MB_ICONINFORMATION);
@@ -867,7 +869,7 @@ void Application::update_menu() {
     popup_->update(source->key,{points[0].x,points[0].y,points[1].x,points[1].y},below,workspace_.menu_items,ui_.style(),style_sheet_,workspace_.ui_component("PopupMenu"),
         request.group==editor::control::viewport_delete_menu);
     if (!popup_->visible()) {
-        workspace_.status=L"UI: "+editor::wide(std::string(popup_->diagnostic()));close_menu(false);return;
+        workspace_.status=L"UI: "+assets::wide(std::string(popup_->diagnostic()));close_menu(false);return;
     }
     window_.capture(true); popup_->render();
     auto items=std::span<const ui::MenuItem>(workspace_.menu_items);
@@ -887,7 +889,7 @@ void Application::update_menu() {
         auto& child=*submenus_[depth];
         child.update(at->key,{corners[0].x,corners[0].y,corners[1].x,corners[1].y},false,at->children,ui_.style(),style_sheet_,workspace_.ui_component("PopupMenu"));
         if (!child.visible()) {
-            workspace_.status=L"UI: "+editor::wide(std::string(child.diagnostic()));menu_path_.resize(depth);break;
+            workspace_.status=L"UI: "+assets::wide(std::string(child.diagnostic()));menu_path_.resize(depth);break;
         }
         child.render(); parent=&child; items=at->children;
     }

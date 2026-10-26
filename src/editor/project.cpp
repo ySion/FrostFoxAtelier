@@ -1,9 +1,10 @@
 #include "editor/project.hpp"
 #include "editor/session.hpp"
 #include "platform/windows_path.hpp"
+#include "assets/file.hpp"
 #include "assets/mesh_import.hpp"
-#include "editor/json_format.hpp"
-#include "editor/material_format.hpp"
+#include "assets/json_format.hpp"
+#include "assets/material_format.hpp"
 #include "physics/physics.hpp"
 #include <Windows.h>
 #include <objbase.h>
@@ -21,20 +22,20 @@
 
 namespace atelier::editor {
 namespace {
-using json_format::Json;
+using assets::json_format::Json;
 auto failure(std::string text) { return std::unexpected(Error{ErrorCode::invalid_storage,std::move(text)}); }
 std::string identity() {
     GUID id{}; if (FAILED(CoCreateGuid(&id))) throw std::runtime_error("Cannot create asset identity.");
-    wchar_t text[40]{}; StringFromGUID2(id,text,40); return utf8(text);
+    wchar_t text[40]{}; StringFromGUID2(id,text,40); return assets::utf8(text);
 }
 template<class T> T take(Result<T> value) {
     if (!value) throw std::runtime_error(value.error().message);
     if constexpr (!std::is_void_v<T>) return std::move(*value);
 }
-Json read_json(const std::filesystem::path& path) { return json_format::parse(take(read_file(path))); }
+Json read_json(const std::filesystem::path& path) { return assets::json_format::parse(take(assets::read_file(path))); }
 // A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
 std::wstring material_file(std::string_view slot,std::vector<std::wstring>& taken) {
-    auto name=wide(slot);
+    auto name=assets::wide(slot);
     for(auto& c:name) if(c<32 || std::wstring_view(L"\\/:*?\"<>|").find(c)!=std::wstring_view::npos) c=L'_';
     while(!name.empty() && (name.back()==L'.' || name.back()==L' ')) name.pop_back();
     if(name.empty()) name=L"material";
@@ -59,15 +60,15 @@ Result<void> write_file(const std::filesystem::path& path,std::string_view text,
     try {
         const auto native=platform::windows_file_path(path);
         std::filesystem::create_directories(native.parent_path());
-        temporary=native; temporary+=L"."+wide(identity())+L".tmp";
+        temporary=native; temporary+=L"."+assets::wide(identity())+L".tmp";
         const auto file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if (file==INVALID_HANDLE_VALUE) return failure("Cannot create temporary file for "+utf8(path.wstring())+" (Windows error "+std::to_string(GetLastError())+").");
+        if (file==INVALID_HANDLE_VALUE) return failure("Cannot create temporary file for "+assets::utf8(path.wstring())+" (Windows error "+std::to_string(GetLastError())+").");
         DWORD written{}; const bool ok=text.size()<=MAXDWORD && WriteFile(file,text.data(),static_cast<DWORD>(text.size()),&written,nullptr) && written==text.size() && FlushFileBuffers(file);
         const auto write_error=GetLastError(); CloseHandle(file);
         const DWORD flags=MOVEFILE_WRITE_THROUGH|(mode==WriteMode::replace?MOVEFILE_REPLACE_EXISTING:0);
         if (!ok || !MoveFileExW(temporary.c_str(),native.c_str(),flags)) {
             const auto error=ok?GetLastError():write_error;
-            DeleteFileW(temporary.c_str()); return failure("Cannot save "+utf8(path.wstring())+" (Windows error "+std::to_string(error)+").");
+            DeleteFileW(temporary.c_str()); return failure("Cannot save "+assets::utf8(path.wstring())+" (Windows error "+std::to_string(error)+").");
         }
         return {};
     } catch (const std::exception& error) {
@@ -85,7 +86,7 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
         if (std::filesystem::exists(native) && (!std::filesystem::is_directory(native) || !std::filesystem::is_empty(native)))
             return failure("Create Project requires an empty folder; existing files were not changed.");
         for (const auto* directory:{L"Config",L"Content/Scenes",L"Source",L"Cache"}) std::filesystem::create_directories(platform::windows_file_path(folder/directory));
-        const Json config={{"version",1},{"name",utf8(std::filesystem::canonical(native).filename().wstring())},{"startup_scene","Content/Scenes/Main.scene"}};
+        const Json config={{"version",1},{"name",assets::utf8(std::filesystem::canonical(native).filename().wstring())},{"startup_scene","Content/Scenes/Main.scene"}};
         Session empty_scene;take(write_file(folder/"Content/Scenes/Main.scene",take(empty_scene.serialize()),WriteMode::create));
         take(write_file(folder/".gitignore","/Cache/\n",WriteMode::create));
         take(write_file(folder/"Config/Project.json",config.dump(2)+"\n",WriteMode::create)); // Marker is published last.
@@ -97,12 +98,12 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
         Project project; project.root_=std::filesystem::canonical(platform::windows_file_path(folder));
         project.assets_=assets::Reader(project.root_);
         const auto config=read_json(take(project.resolve("Config/Project.json")));
-        json_format::fields(config,{"version","name","startup_scene","ui_source"});
-        if (json_format::identity(config.at("version"))!=1) return failure("Unsupported project format version.");
-        project.name_=wide(config.at("name").get<std::string>());
-        project.startup_=wide(config.at("startup_scene").get<std::string>());
+        assets::json_format::fields(config,{"version","name","startup_scene","ui_source"});
+        if (assets::json_format::identity(config.at("version"))!=1) return failure("Unsupported project format version.");
+        project.name_=assets::wide(config.at("name").get<std::string>());
+        project.startup_=assets::wide(config.at("startup_scene").get<std::string>());
         if (config.contains("ui_source")) {
-            project.ui_source_=wide(config.at("ui_source").get<std::string>());
+            project.ui_source_=assets::wide(config.at("ui_source").get<std::string>());
             if (!project.ui_source_.empty() && (*project.ui_source_.begin()!=L"Source" ||
                 !project.ui_source_.filename().wstring().ends_with(L".ui.source"))) return failure("Project UI must be a .ui.source file inside Source.");
             if (!project.ui_source_.empty()) take(project.resolve(project.ui_source_));
@@ -136,7 +137,7 @@ Result<void> Project::create_source(const std::filesystem::path& relative,std::s
         return failure("Create source files inside the project's Source directory.");
     const auto path=resolve(relative);if (!path) return std::unexpected(path.error());
     if (text.size()>1024*1024) return failure("Source file exceeds the 1 MiB limit.");
-    try { static_cast<void>(wide(text)); }
+    try { static_cast<void>(assets::wide(text)); }
     catch (const std::exception& error) { return failure(error.what()); }
     return write_file(*path,text,WriteMode::create);
 }
@@ -146,12 +147,12 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
     if (!relative.empty()) {auto path=resolve(relative);if (!path) return std::unexpected(path.error());}
     try {
         const auto path=take(resolve("Config/Project.json"));auto config=read_json(path);
-        json_format::fields(config,{"version","name","startup_scene","ui_source"});
-        if (json_format::identity(config.at("version"))!=1 || config.at("name")!=utf8(name_) ||
-            config.at("startup_scene")!=utf8(startup_.generic_wstring()) ||
-            config.value("ui_source",std::string{})!=utf8(ui_source_.generic_wstring()))
+        assets::json_format::fields(config,{"version","name","startup_scene","ui_source"});
+        if (assets::json_format::identity(config.at("version"))!=1 || config.at("name")!=assets::utf8(name_) ||
+            config.at("startup_scene")!=assets::utf8(startup_.generic_wstring()) ||
+            config.value("ui_source",std::string{})!=assets::utf8(ui_source_.generic_wstring()))
             return failure("Project configuration changed on disk. Reopen the project before changing its UI entry.");
-        if (relative.empty()) config.erase("ui_source");else config["ui_source"]=utf8(relative.generic_wstring());
+        if (relative.empty()) config.erase("ui_source");else config["ui_source"]=assets::utf8(relative.generic_wstring());
         auto saved=write_file(path,config.dump(2)+"\n");if (!saved) return saved;
         ui_source_=relative;return {};
     } catch (const std::exception& error) {return failure(error.what());}
@@ -188,49 +189,49 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
 }
 Result<void> Project::refresh() {
     try {
-        std::vector<ProjectEntry> entries;
+        std::vector<assets::ProjectEntry> entries;
         std::unordered_set<std::string> keys;
         const auto native_root=platform::windows_file_path(root_);
         std::vector<std::filesystem::path> roots{"Content","Source","Config"};
         for (const auto& directory:roots) {
             const auto root=platform::windows_file_path(take(resolve(directory)));
-            entries.push_back({directory,utf8(directory.generic_wstring()),AssetKind::folder});
+            entries.push_back({directory,assets::utf8(directory.generic_wstring()),assets::AssetKind::folder});
             for (const auto& entry:std::filesystem::recursive_directory_iterator(root)) {
                 if (entry.is_symlink()) continue;
                 const auto relative=entry.path().lexically_relative(native_root);
                 take(resolve(relative));
                 const auto filename=entry.path().filename().wstring();
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp")) continue;
-                auto kind=entry.is_directory()?AssetKind::folder:assets::is_mesh_path(entry.path())?AssetKind::mesh:
-                    entry.path().extension()==L".material"?AssetKind::material:assets::is_texture_path(entry.path())?AssetKind::texture:
-                    assets::is_sky_path(entry.path())?AssetKind::sky:
-                    entry.path().extension()==L".scene"?AssetKind::scene:directory==L"Source"?AssetKind::source:AssetKind::file;
-                std::string key=utf8(relative.generic_wstring());std::vector<SlotMaterial> materials;
-                if (kind==AssetKind::mesh || kind==AssetKind::material || kind==AssetKind::texture || kind==AssetKind::sky) {
+                auto kind=entry.is_directory()?assets::AssetKind::folder:assets::is_mesh_path(entry.path())?assets::AssetKind::mesh:
+                    entry.path().extension()==L".material"?assets::AssetKind::material:assets::is_texture_path(entry.path())?assets::AssetKind::texture:
+                    assets::is_sky_path(entry.path())?assets::AssetKind::sky:
+                    entry.path().extension()==L".scene"?assets::AssetKind::scene:directory==L"Source"?assets::AssetKind::source:assets::AssetKind::file;
+                std::string key=assets::utf8(relative.generic_wstring());std::vector<assets::SlotMaterial> materials;
+                if (kind==assets::AssetKind::mesh || kind==assets::AssetKind::material || kind==assets::AssetKind::texture || kind==assets::AssetKind::sky) {
                     auto meta_relative=relative; meta_relative+=L".asset.json";
                     auto metadata=take(resolve(meta_relative));
                     if (!std::filesystem::exists(metadata)) {
                         const auto created=write_file(metadata,Json{{"version",1},{"id",identity()}}.dump(2)+"\n",WriteMode::create);
                         if (!created && !std::filesystem::exists(metadata)) return created;
                     }
-                    const auto info=read_json(metadata);json_format::fields(info,{"version","id","materials"});
-                    if (json_format::identity(info.at("version"))!=1) return failure("Unsupported resource metadata version.");
-                    const auto raw=wide(info.at("id").get<std::string>());GUID id{};
+                    const auto info=read_json(metadata);assets::json_format::fields(info,{"version","id","materials"});
+                    if (assets::json_format::identity(info.at("version"))!=1) return failure("Unsupported resource metadata version.");
+                    const auto raw=assets::wide(info.at("id").get<std::string>());GUID id{};
                     if (raw.size()!=38 || raw.front()!=L'{' || raw.back()!=L'}' || FAILED(CLSIDFromString(raw.c_str(),&id)))
                         return failure("Invalid resource identity metadata.");
-                    wchar_t canonical[40]{};StringFromGUID2(id,canonical,40);key="project/"+utf8(canonical);
+                    wchar_t canonical[40]{};StringFromGUID2(id,canonical,40);key="project/"+assets::utf8(canonical);
                     if (!keys.insert(key).second) return failure("Duplicate resource identity; import or create an independent asset.");
                     if (const auto mapping=info.find("materials");mapping!=info.end()) {
-                        if (kind!=AssetKind::mesh || !mapping->is_object())
-                            return failure("Only mesh metadata lists default materials, as slot names to material keys: "+utf8(meta_relative.generic_wstring()));
+                        if (kind!=assets::AssetKind::mesh || !mapping->is_object())
+                            return failure("Only mesh metadata lists default materials, as slot names to material keys: "+assets::utf8(meta_relative.generic_wstring()));
                         for (const auto& [slot,material]:mapping->items()) {
-                            if (slot.empty() || !material.is_string()) return failure("Invalid default material in "+utf8(meta_relative.generic_wstring()));
+                            if (slot.empty() || !material.is_string()) return failure("Invalid default material in "+assets::utf8(meta_relative.generic_wstring()));
                             materials.push_back({slot,material.get<std::string>()});
                         }
                     }
                 }
-                entries.push_back({relative,std::move(key),kind,kind==AssetKind::folder?0:entry.file_size(),
-                    kind!=AssetKind::folder?entry.last_write_time():std::filesystem::file_time_type{},std::move(materials)});
+                entries.push_back({relative,std::move(key),kind,kind==assets::AssetKind::folder?0:entry.file_size(),
+                    kind!=assets::AssetKind::folder?entry.last_write_time():std::filesystem::file_time_type{},std::move(materials)});
             }
         }
         std::sort(entries.begin(),entries.end(),[](const auto& a,const auto& b) { return a.path<b.path; });
@@ -270,11 +271,11 @@ Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
             }
             std::vector<std::wstring> names;const auto& slots=loaded.mesh->materials();
             for(std::size_t i=0;i<slots.size();++i) {
-                MaterialAsset asset;asset.description=slots[i].surface->description();
+                assets::MaterialAsset asset;asset.description=slots[i].surface->description();
                 for(std::size_t input=0;input<material::input_count;++input)
                     if(const auto& file=loaded.textures[i][input];!file.empty()) asset.textures[input]=texture_keys.at(file);
                 const auto path=relative/"Materials"/material_file(slots[i].name,names);const auto key="project/"+identity();
-                generated.push_back({path,material_format::encode(asset).dump(2)+"\n"});generated.push_back({sidecar(path),identity_file(key,Json::object())});
+                generated.push_back({path,assets::material_format::encode(asset).dump(2)+"\n"});generated.push_back({sidecar(path),identity_file(key,Json::object())});
                 defaults[geometry::material_slot_name(*loaded.mesh,i)]=key;
             }
         }
@@ -329,7 +330,7 @@ Result<std::shared_ptr<const std::string>> Project::collision(std::string_view k
     if (!asset) return std::unexpected(asset.error());
     auto path = resolve(collision_path(key, scale));
     if (!path) return std::unexpected(path.error());
-    if (auto bytes = read_file(*path, 128ull * 1024 * 1024 + 8192);
+    if (auto bytes = assets::read_file(*path, 128ull * 1024 * 1024 + 8192);
         bytes && physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, key))
         return std::make_shared<const std::string>(std::move(*bytes));
     // The cache is derived data: a missing or stale entry is rebuilt from the source mesh.

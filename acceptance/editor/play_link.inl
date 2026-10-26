@@ -1,5 +1,5 @@
 // Included by project_execution.cpp: the editor-to-Play change link.
-using LinkJson=editor::json_format::Json;
+using LinkJson=assets::json_format::Json;
 // Plays the other end of a link: queues what arrives so tests read one message at a time.
 struct LinkPeer {
     std::unique_ptr<application::LiveLink> link;
@@ -50,13 +50,13 @@ void verify_link_protocol(const std::filesystem::path& root) {
         link.forward({five});
         const auto spilled=peer.next();
         require(spilled.at("seq")==2 && spilled.contains("file") && !spilled.contains("ops"),"A batch over one message was not spilled to a file.");
-        const std::filesystem::path file=editor::wide(spilled.at("file").get<std::string>());
-        require(file.parent_path()==spill && take(editor::read_file(file))==R"({"ops":[)"+five+"]}","The spilled file is not the batch Play applies.");
+        const std::filesystem::path file=assets::wide(spilled.at("file").get<std::string>());
+        require(file.parent_path()==spill && take(assets::read_file(file))==R"({"ops":[)"+five+"]}","The spilled file is not the batch Play applies.");
         // Past the 16 MiB batch limit the ops split at their boundary into consecutive batches.
         link.forward({nine,nine});
         const auto first=peer.next(),second=peer.next();
         require(first.at("seq")==3 && second.at("seq")==4 && link.unacknowledged()==3 &&
-            take(editor::read_file(editor::wide(second.at("file").get<std::string>())))==R"({"ops":[)"+nine+"]}","Oversized ops were not split into consecutive batches.");
+            take(assets::read_file(assets::wide(second.at("file").get<std::string>())))==R"({"ops":[)"+nine+"]}","Oversized ops were not split into consecutive batches.");
         peer.send(ack(2));peer.send(ack(3));peer.send(ack(4));settle(link);
         link.forward({name_op});require(peer.next().at("seq")==5,"Batches lost their numbering.");
         peer.send(ack(5,"error"));settle(link);
@@ -236,7 +236,7 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     const auto rename=[&](std::string_view name){return LinkJson::array({{{"op","set"},{"id",id},{"name",name}}});};
     const auto file=root/"Cache/Play/raw-batch.json";
     take(editor::write_file(file,LinkJson{{"ops",rename("Spilled")}}.dump()));
-    play.send({{"type","batch"},{"seq",1},{"file",editor::utf8(file.wstring())}});
+    play.send({{"type","batch"},{"seq",1},{"file",assets::utf8(file.wstring())}});
     auto reply=play.next(&process,&output);
     require(reply.at("type")=="ack" && reply.at("seq")==1 && reply.at("diagnostics").empty() && !std::filesystem::exists(file),
         "Play did not apply and delete a spilled batch.");

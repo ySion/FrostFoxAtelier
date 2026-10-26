@@ -45,7 +45,7 @@ void parameter_menu(Application& app, ControlKey source) {
     SendMessageW(app.window(),WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(at.x,at.y));
     SendMessageW(app.window(),WM_RBUTTONUP,0,MAKELPARAM(at.x,at.y));
     tick(app,2);
-    if (!app.menu_frame() || app.menu_frame()->popup!=control::parameter_menu) throw std::runtime_error("Parameter menu did not enter the accepted frame (source "+std::to_string(source)+", status: "+atelier::editor::utf8(app.status_text())+").");
+    if (!app.menu_frame() || app.menu_frame()->popup!=control::parameter_menu) throw std::runtime_error("Parameter menu did not enter the accepted frame (source "+std::to_string(source)+", status: "+atelier::assets::utf8(app.status_text())+").");
 }
 bool tuple_reset_available(Application& app, ControlKey group) {
     parameter_menu(app,group);

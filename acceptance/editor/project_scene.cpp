@@ -1,6 +1,7 @@
 #include "editor/session.hpp"
 #include "editor/project.hpp"
-#include "editor/material_format.hpp"
+#include "assets/file.hpp"
+#include "assets/material_format.hpp"
 #include "editor/properties.hpp"
 #include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
@@ -99,7 +100,7 @@ std::string sky_asset(editor::Project& project,const std::filesystem::path& rela
     std::filesystem::create_directories((project.root()/relative).parent_path());
     take(editor::write_file(project.root()/relative,bytes));take(project.refresh());
     const auto at=std::ranges::find_if(project.entries(),[&](const auto& entry){return entry.path.filename()==relative.filename();});
-    require(at!=project.entries().end() && at->kind==editor::AssetKind::sky,"A .hdr file was not catalogued as a sky asset.");
+    require(at!=project.entries().end() && at->kind==assets::AssetKind::sky,"A .hdr file was not catalogued as a sky asset.");
     return at->key;
 }
 void verify_primitive_source(editor::Project& project) {
@@ -146,7 +147,7 @@ void verify_query_source(editor::Project& project) {
         }}));
         return std::static_pointer_cast<void>(code);
     };
-    auto scene=Json::parse(take(editor::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes/Raycasts.scene")));
+    auto scene=Json::parse(take(assets::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes/Raycasts.scene")));
     unsigned authored_probes{};
     for(auto& entity:scene["entities"]) {
         for (auto& component:entity["components"]) if (component["type"]=="physics.SceneQueryComponent" &&
@@ -325,7 +326,7 @@ void verify_codec_graph(editor::Project& project) {
         std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
         for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
         const auto path=project.root()/"Codec.bmp";take(editor::write_file(path,bmp));const auto texture=take(project.import_texture(path));
-        editor::MaterialAsset asset;asset.textures[0]=texture;
+        assets::MaterialAsset asset;asset.textures[0]=texture;
         const auto incoming=take(project.create_material("Content/Materials/Codec-incoming.material",asset));
         const auto retained=take(project.create_material("Content/Materials/Codec-retained.material"));
         editor::Session source;changed(source.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
@@ -806,12 +807,12 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
         take(b->presentation().environment()).probe_volumes[0].maximum[0]==-10,"A Play set that breaks the Environment's rules was applied.");
     const auto key=take(project.create_material("Content/Materials/Live.material"));
     require(b->loaded_material(key)==ObjectId{},"Play loaded an unreferenced material.");
-    editor::MaterialAsset asset;asset.description.parameters.roughness=.25f;
-    applied({{{"op","resource"},{"key",key},{"material",editor::material_format::encode(asset)}}});
+    assets::MaterialAsset asset;asset.description.parameters.roughness=.25f;
+    applied({{{"op","resource"},{"key",key},{"material",assets::material_format::encode(asset)}}});
     const auto loaded=b->loaded_material(key);
     require(loaded!=ObjectId{} && take(material::read_material(rb,loaded)).description.parameters.roughness==.25f,"A new material asset did not reach Play.");
     asset.description.parameters.roughness=.75f;
-    applied({{{"op","resource"},{"key",key},{"material",editor::material_format::encode(asset)}}});
+    applied({{{"op","resource"},{"key",key},{"material",assets::material_format::encode(asset)}}});
     require(b->loaded_material(key)==loaded && take(material::read_material(rb,loaded)).description.parameters.roughness==.75f,
         "A material asset edit did not update the loaded material in place.");
 
@@ -918,7 +919,7 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
     changed(b->close());changed(a.close());
 
     // A Ragdoll follows its controller, so Play cannot follow an authored move of it.
-    const auto ragdoll_scene=take(editor::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes/Ragdoll.scene"));
+    const auto ragdoll_scene=take(assets::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT}/"Content/Physic/Scenes/Ragdoll.scene"));
     std::string ragdoll;
     for(const auto& entity:Json::parse(ragdoll_scene)["entities"])
         for(const auto& part:entity["components"]) if(part["type"]=="physics.RagdollComponent") ragdoll=entity["id"];
@@ -1007,7 +1008,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     require(set_play_sky(sky_key).empty() && scene(a)==scene(*b) && play_sky(),"Play did not return to the document's sky map.");
     // An add reads a key Play failed to read before again: the editor may send it once the file is restored.
     const auto late_key=sky_asset(project,"Content/Sky/Late.hdr","broken\n");
-    require(set_play_sky(late_key).size()==1 && b->unavailable(editor::AssetKind::sky,late_key),"Play resolved a corrupt sky map.");
+    require(set_play_sky(late_key).size()==1 && b->unavailable(assets::AssetKind::sky,late_key),"Play resolved a corrupt sky map.");
     take(a.select(environment_entity));changed(a.erase_selected());sync("Environment removal before a restored sky map");
     take(editor::write_file(project.root()/"Content/Sky/Late.hdr",radiance(1,char(131))));take(project.refresh());
     take(a.set_sky_map(take(project.assets().sky_map(late_key))));sync("Environment creation with a restored sky map");

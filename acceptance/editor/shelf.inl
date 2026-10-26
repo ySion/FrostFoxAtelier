@@ -52,7 +52,7 @@ void verify_tool_shelf(Application& app,const std::filesystem::path& output) {
             const auto target=static_cast<ControlKey>(definition.id);
             const auto* current=shelf_tool(target);
             if ((current!=nullptr)!=(definition.group==group))
-                throw std::runtime_error("The presented shelf included a hidden category or omitted a tool: "+atelier::editor::utf8(definition.title));
+                throw std::runtime_error("The presented shelf included a hidden category or omitted a tool: "+atelier::assets::utf8(definition.title));
             if (!current) continue;
             require(current->key!=target && std::ranges::count(app.presented()->controls,target,&atelier::ui::ControlBox::action_target)==1,
                 "A shelf command lost its distinct visual identity or appeared more than once.");

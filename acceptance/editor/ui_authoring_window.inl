@@ -59,7 +59,7 @@ void verify_asset_ui_authoring_window(Application& app,const std::filesystem::pa
         require(offset!=text.npos && (end==text.npos || offset<end),"Asset authoring fixture could not find its real Source property.");
         text.replace(offset,before.size(),after);
     };
-    auto changed=model(atelier::editor::read_file(path));
+    auto changed=model(atelier::assets::read_file(path));
     replace_component(changed,"AssetResults","padding_left: 0;","padding_left: 4;");
     replace_component(changed,"AssetBrowserShell","height: 20;","height: 22;");
     const auto verify_retained=[&] {
@@ -160,7 +160,7 @@ void verify_ui_authoring_window(Application& app,const std::filesystem::path& ou
     click(app,control::parameter_search);type(app,L"position");
     require(app.text_input().has_value(),"Declarative query did not open a native text session.");
     const auto token=app.text_input()->token;
-    const auto source=model(atelier::editor::read_file(path));
+    const auto source=model(atelier::assets::read_file(path));
     auto changed=source;const auto section=changed.find("Foldout section {");
     const auto offset=section==changed.npos?changed.npos:changed.find("text: \"",section);
     const auto end=offset==changed.npos?changed.npos:changed.find('"',offset+7);

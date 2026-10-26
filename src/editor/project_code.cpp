@@ -1,4 +1,5 @@
 #include "editor/project_code.hpp"
+#include "assets/file.hpp"
 #include "platform/windows_path.hpp"
 #include "procedural/graph.hpp"
 #include "ui_language/component.hpp"
@@ -57,7 +58,7 @@ ProjectCode::ProjectCode(world::World& world):world_(world),report_(std::make_sh
 Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     auto paths=project.source_paths();if (!paths) return std::unexpected(paths.error());
     auto engine=source::engine_sources(source::default_engine_root());if (!engine) return std::unexpected(engine.error());
-    source::SourceSnapshot result;result.name=utf8(project.name());result.version=14695981039346656037ULL;
+    source::SourceSnapshot result;result.name=assets::utf8(project.name());result.version=14695981039346656037ULL;
     std::size_t bytes{};
     const auto add=[&](source::SourceFile file) {
         bytes+=file.source.size();if (bytes>16*1024*1024) return false;
@@ -66,7 +67,7 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     };
     for (const auto& relative:*paths) {
         auto path=project.resolve(relative);if (!path) return std::unexpected(path.error());
-        auto file=source::read_source_file(*path,utf8(relative.generic_wstring()));if (!file) return std::unexpected(file.error());
+        auto file=source::read_source_file(*path,assets::utf8(relative.generic_wstring()));if (!file) return std::unexpected(file.error());
         if (!add(std::move(*file))) return fail("Project and engine Source exceed the 16 MiB compilation limit.");
     }
     for (auto& file:*engine) if (!add(std::move(file))) return fail("Project and engine Source exceed the 16 MiB compilation limit.");
@@ -75,7 +76,7 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
 Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project& project) {
     if(project.ui_source().empty()) return std::optional<source::SourceFile>{};
     auto path=project.resolve(project.ui_source());if(!path) return std::unexpected(path.error());
-    auto file=source::read_source_file(*path,utf8(project.ui_source().generic_wstring()));if(!file) return std::unexpected(file.error());
+    auto file=source::read_source_file(*path,assets::utf8(project.ui_source().generic_wstring()));if(!file) return std::unexpected(file.error());
     return std::optional<source::SourceFile>{std::move(*file)};
 }
 Result<void> ProjectCode::build(const Project& project) {
@@ -219,20 +220,20 @@ std::vector<std::wstring> describe_issues(const Session& session,std::span<const
     lines.push_back(std::wstring(source)+L": "+std::to_wstring(issues.size())+L" scene diagnostic(s), "+std::to_wstring(session.placeholder_count())+
         L" placeholder object(s). Saved data that could not be applied is kept and written back on save.");
     for(const auto& item:issues)
-        lines.push_back(L"  ["+wide(world::name(item.severity))+L"] "+wide(item.message)+(item.value.empty()?std::wstring{}:L" Saved: "+wide(item.value)));
+        lines.push_back(L"  ["+assets::wide(world::name(item.severity))+L"] "+assets::wide(item.message)+(item.value.empty()?std::wstring{}:L" Saved: "+assets::wide(item.value)));
     return lines;
 }
 std::wstring describe_diagnostic(const Session& session,const world::Diagnostic& item) {
-    auto line=L"Diagnostic ["+wide(world::name(item.severity))+L"] "+wide(world::name(item.kind))+L" in "+wide(world::name(item.phase));
+    auto line=L"Diagnostic ["+assets::wide(world::name(item.severity))+L"] "+assets::wide(world::name(item.kind))+L" in "+assets::wide(world::name(item.phase));
     if(item.entity!=ObjectId{}) {
         const auto label=session.name(item.entity);
         line+=label.empty()?std::wstring(L" Entity"):L" \""+std::wstring(label)+L"\"";
     }
-    if(!item.type.empty()) line+=L" ("+wide(item.type)+L")";
-    for(std::size_t i=0;i<item.field.size();++i) line+=(i?L".":L" ")+wide(item.field[i]);
-    line+=L": "+wide(item.message);
-    if(!item.value.empty()) line+=L" Value: "+wide(item.value);
-    if(item.source) line+=L" at "+wide(item.source->path)+L":"+std::to_wstring(item.source->line)+L":"+std::to_wstring(item.source->column);
+    if(!item.type.empty()) line+=L" ("+assets::wide(item.type)+L")";
+    for(std::size_t i=0;i<item.field.size();++i) line+=(i?L".":L" ")+assets::wide(item.field[i]);
+    line+=L": "+assets::wide(item.message);
+    if(!item.value.empty()) line+=L" Value: "+assets::wide(item.value);
+    if(item.source) line+=L" at "+assets::wide(item.source->path)+L":"+std::to_wstring(item.source->line)+L":"+std::to_wstring(item.source->column);
     if(item.repeats>1) line+=L" (×"+std::to_wstring(item.repeats)+L")";
     return line;
 }

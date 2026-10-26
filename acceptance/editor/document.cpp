@@ -1,10 +1,12 @@
 #include "editor/session.hpp"
 #include "editor/project.hpp"
+#include "editor/assets.hpp"
+#include "assets/file.hpp"
 #include "foundation/frame_timing.hpp"
 #include "physics/timing.hpp"
 #include "editor/workspace.hpp"
-#include "editor/json_format.hpp"
-#include "editor/material_format.hpp"
+#include "assets/json_format.hpp"
+#include "assets/material_format.hpp"
 #include "editor/graph_format.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/nodes.hpp"
@@ -129,7 +131,7 @@ int main(int argc, char** argv) {
         stage="document history";
         {
             editor::Session single;
-            changed(single.create_static_mesh(editor::mesh_assets().front()));
+            changed(single.create_static_mesh(assets::mesh_assets().front()));
             require(single.undo_count()==1 && take(single.world().runtime().type_of(single.selection().entity))==single.presentation_types().static_mesh_entity,
                 "Static mesh factory did not enter document history as one typed Entity creation.");
             const auto entity = single.selection().entity;
@@ -142,7 +144,7 @@ int main(int argc, char** argv) {
                 "Creation undo retained the Entity or its rendering.");
             changed(single.redo());
             require(single.selection().entity==entity && component(single,entity,single.presentation_types().static_mesh_component)==mesh &&
-                take(single.presentation().render_items()).front().geometry==editor::mesh_assets().front().mesh,
+                take(single.presentation().render_items()).front().geometry==assets::mesh_assets().front().mesh,
                 "Creation redo changed Entity/component identity or mesh resource.");
             take(single.begin_edit(entity, single.types().position_fields[0], 91));
             take(single.preview_edit(91, 4)); take(single.commit_edit(91));
@@ -195,7 +197,7 @@ int main(int argc, char** argv) {
         changed(document.add_component(document.presentation_types().static_mesh_component));
         const auto transform = entity;
         const auto cube = component(document, entity, document.presentation_types().static_mesh_component);
-        take(presentation::set_geometry(runtime,cube,editor::mesh_assets().front().mesh));
+        take(presentation::set_geometry(runtime,cube,assets::mesh_assets().front().mesh));
         require(take(document.presentation().render_items()).size() == 1 && take(document.world().members(document.presentation().meshes())).size() == 1,
             "AttachedInactive mesh component did not create a value projection.");
         changed(document.remove_component(cube));

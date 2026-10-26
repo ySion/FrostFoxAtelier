@@ -12,13 +12,13 @@ void verify_material_resources() {
     const auto key=take(project.create_material("Content/Materials/./Unused/../Stone.material"));
     const auto material_path=project.root()/"Content/Materials/Stone.material";
     auto metadata_path=material_path;metadata_path+=L".asset.json";
-    const auto material_bytes=take(editor::read_file(material_path)),metadata_bytes=take(editor::read_file(metadata_path));
+    const auto material_bytes=take(assets::read_file(material_path)),metadata_bytes=take(assets::read_file(metadata_path));
     const auto catalog_revision=project.revision();
     require(take(editor::Project::open(project.root())).assets().material(key).has_value(),"Normalized material path did not survive reopening the project.");
     require(!project.create_material("Content/Materials/Stone.material") &&
         !project.create_material("Content/Materials/Unused/../Stone.material"),"Material creation overwrote an existing resource.");
-    require(project.revision()==catalog_revision && take(editor::read_file(material_path))==material_bytes &&
-        take(editor::read_file(metadata_path))==metadata_bytes && !fs::exists(project.root()/"Content/Materials/Unused"),
+    require(project.revision()==catalog_revision && take(assets::read_file(material_path))==material_bytes &&
+        take(assets::read_file(metadata_path))==metadata_bytes && !fs::exists(project.root()/"Content/Materials/Unused"),
         "Rejected material creation changed an existing file, identity or catalog.");
     require(!project.create_material("Content/../Source/Escaped.material") &&
         !project.create_material("Content/../../Escaped.material") && !fs::exists(project.root()/"Source/Escaped.material") &&
@@ -103,7 +103,7 @@ void verify_material_resources() {
     auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
     auto changed_parent=take(project.assets().material(key));changed_parent.description.parameters.base_color[1]=.35f;
     take(project.save_material(changed_parent));
-    auto reopened=take(editor::Session::deserialize(take(editor::read_file(project.root()/"Content/Scenes/Main.scene")),project));
+    auto reopened=take(editor::Session::deserialize(take(assets::read_file(project.root()/"Content/Scenes/Main.scene")),project));
     const auto reopened_entities=take(reopened->world().members());
     const auto reopened_a=component(*reopened,reopened_entities[0].id(),reopened->presentation_types().static_mesh_component);
     const auto reopened_b=component(*reopened,reopened_entities[1].id(),reopened->presentation_types().static_mesh_component);
@@ -139,7 +139,7 @@ void verify_material_resources() {
     auto cleared=take(editor::Session::deserialize(take(document.serialize()),project));static_cast<void>(cleared);
     {
         editor::Session local;auto& local_runtime=local.world().runtime();
-        editor::MaterialAsset asset;asset.description.parameters.roughness=.3f;asset.textures[0]=texture;
+        assets::MaterialAsset asset;asset.description.parameters.roughness=.3f;asset.textures[0]=texture;
         const auto original=take(local.material_resource(project.assets(),asset));
         changed(local.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
         const auto original_entity=local.selection().entity;
@@ -167,7 +167,7 @@ void verify_material_resources() {
         const auto path=project.root()/"Content/Scenes/Inline.scene";
         take(editor::write_file(path,take(local.serialize())));
         auto reopened_project=take(editor::Project::open(project.root()));
-        auto reopened_local=take(editor::Session::deserialize(take(editor::read_file(path)),reopened_project));
+        auto reopened_local=take(editor::Session::deserialize(take(assets::read_file(path)),reopened_project));
         const auto entities=take(reopened_local->world().members());require(entities.size()==2,"Inline material scene lost its Entities.");
         auto& reopened_runtime=reopened_local->world().runtime();
         const auto material_of=[&](std::size_t index) {
@@ -232,7 +232,7 @@ void verify_material_resources() {
     take(project.refresh());
     const auto sky_key=[&](std::wstring_view name) {
         const auto at=std::ranges::find_if(project.entries(),[&](const auto& entry){return entry.path.filename()==name;});
-        require(at!=project.entries().end() && at->kind==editor::AssetKind::sky && at->key.starts_with("project/"),"A .hdr file was not catalogued as a sky asset.");
+        require(at!=project.entries().end() && at->kind==assets::AssetKind::sky && at->key.starts_with("project/"),"A .hdr file was not catalogued as a sky asset.");
         return at->key;
     };
     const auto clear=sky_key(L"Clear.HDR"),broken=sky_key(L"Broken.hdr");
@@ -300,7 +300,7 @@ void verify_missing_resources() {
     const auto backup=evidence/"Backup";fs::create_directory(backup);
     std::vector<std::pair<fs::path,fs::path>> moved;
     for(const auto& key:{texture,brick,wall.key}) {
-        const auto relative=std::ranges::find(project.entries(),key,&editor::ProjectEntry::key)->path;
+        const auto relative=std::ranges::find(project.entries(),key,&assets::ProjectEntry::key)->path;
         auto metadata=relative;metadata+=L".asset.json";
         for(const auto& file:{relative,metadata}) {moved.emplace_back(root/file,backup/file.filename());fs::rename(root/file,backup/file.filename());}
     }
@@ -321,13 +321,13 @@ void verify_missing_resources() {
     const auto shared_state=take(material::read_material(kept_runtime,shared.id()));
     const auto missing_texture=take(material::read_texture(kept_runtime,shared_state.textures[0].id()));
     require(shared_state.source==stone && shared_state.description.parameters.roughness==.4f && missing_texture.source==texture &&
-        !missing_texture.image && kept->unavailable(editor::AssetKind::texture,texture) && !kept->unavailable(editor::AssetKind::material,stone),
+        !missing_texture.image && kept->unavailable(assets::AssetKind::texture,texture) && !kept->unavailable(assets::AssetKind::material,stone),
         "A missing texture replaced its material or lost the material's other parameters.");
     const auto instance=take(presentation::read_material_bindings(kept_runtime,part(1))).front().resource;
     const auto instance_state=take(material::read_material(kept_runtime,instance.id()));
     const auto stand_in=instance_state.parent;
     require(take(material::capture(kept_runtime,instance.id()))->description().parameters.roughness==.8f &&
-        take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(editor::AssetKind::material,brick),
+        take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(assets::AssetKind::material,brick),
         "A missing parent material lost its instance's overrides or reference.");
     const auto mesh=take(presentation::read_static_mesh(kept_runtime,part(2))).mesh;
     const auto retained=take(kept->retained(part(2)));
@@ -344,8 +344,8 @@ void verify_missing_resources() {
     const auto kept_properties=take(kept->properties(shared.id()));
     const auto kept_roughness=std::ranges::find(kept_properties,std::string("parameters.roughness"),&editor::Property::name)->path;
     take(kept->set_property(shared.id(),kept_roughness,Scalar{.5f},204));take(kept->save_material(damaged,stone));
-    const auto stone_file=root/std::ranges::find(damaged.entries(),stone,&editor::ProjectEntry::key)->path;
-    require(editor::material_format::decode(editor::json_format::parse(take(editor::read_file(stone_file)))).textures[0]==texture,
+    const auto stone_file=root/std::ranges::find(damaged.entries(),stone,&assets::ProjectEntry::key)->path;
+    require(assets::material_format::decode(assets::json_format::parse(take(assets::read_file(stone_file)))).textures[0]==texture,
         "Saving a material dropped the key of its missing texture.");
     application::SceneSnapshot snapshot;take(snapshot.refresh(*kept));
     take(kept->discard_retained(part(2)));
@@ -368,37 +368,37 @@ void verify_missing_resources() {
         take(physics::read_settings(restored->world().runtime(),restored_part(2))).cooked_shape,
         "Restored resources did not resolve through the preserved references or rebuild the missing Cook cache.");
     {
-        const auto stone_file=root/std::ranges::find(repaired.entries(),stone,&editor::ProjectEntry::key)->path;
-        const auto stone_text=take(editor::read_file(stone_file));
+        const auto stone_file=root/std::ranges::find(repaired.entries(),stone,&assets::ProjectEntry::key)->path;
+        const auto stone_text=take(assets::read_file(stone_file));
         // A scene that names a material as a mesh leaves only that mesh unavailable.
         auto misnamed_scene=nlohmann::json::parse(saved);misnamed_scene["entities"][1]["components"][0]["mesh"]=stone;
         auto misnamed=take(editor::Session::deserialize(misnamed_scene.dump(),repaired));
-        require(misnamed->unavailable(editor::AssetKind::mesh,stone) && !misnamed->unavailable(editor::AssetKind::material,stone) &&
+        require(misnamed->unavailable(assets::AssetKind::mesh,stone) && !misnamed->unavailable(assets::AssetKind::material,stone) &&
             misnamed->open_material(repaired,stone) && misnamed->save_material(repaired,stone),
             "A material key named as a mesh made the healthy material unavailable.");
         // An undecodable texture file does not block saving a material that references it.
-        const auto texture_file=root/std::ranges::find(repaired.entries(),texture,&editor::ProjectEntry::key)->path;
-        const auto image=take(editor::read_file(texture_file));take(editor::write_file(texture_file,"not an image"));
+        const auto texture_file=root/std::ranges::find(repaired.entries(),texture,&assets::ProjectEntry::key)->path;
+        const auto image=take(assets::read_file(texture_file));take(editor::write_file(texture_file,"not an image"));
         auto undecodable=take(editor::Project::open(root));
         auto opened=take(editor::Session::deserialize(saved,undecodable));
         const auto opened_stone=take(opened->open_material(undecodable,stone));
         const auto opened_properties=take(opened->properties(opened_stone.id()));
         take(opened->set_property(opened_stone.id(),
             std::ranges::find(opened_properties,std::string("parameters.roughness"),&editor::Property::name)->path,Scalar{.6f},205));
-        require(opened->unavailable(editor::AssetKind::texture,texture) && opened->save_material(undecodable,stone),
+        require(opened->unavailable(assets::AssetKind::texture,texture) && opened->save_material(undecodable,stone),
             "An undecodable texture blocked saving a material that references it.");
         take(editor::write_file(texture_file,image));take(editor::write_file(stone_file,stone_text));
     }
-    const auto moss_file=root/std::ranges::find(repaired.entries(),moss,&editor::ProjectEntry::key)->path;
+    const auto moss_file=root/std::ranges::find(repaired.entries(),moss,&assets::ProjectEntry::key)->path;
     take(editor::write_file(moss_file,"{"));
     require(!editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict),"Strict loading accepted an unreadable material.");
     auto unreadable=take(editor::Session::deserialize(saved,repaired));const auto& unreadable_issues=unreadable->load_issues();
     take(editor::write_file(root/"Content/Scenes/Main.scene",take(unreadable->serialize())));
     require(unreadable_issues.size()==1 && unreadable_issues[0].kind==world::DiagnosticKind::unreadable_resource &&
         unreadable_issues[0].field==std::vector<std::string>{"source"} && !unreadable->open_material(repaired,moss) &&
-        take(unreadable->serialize())==saved && take(editor::read_file(moss_file))=="{",
+        take(unreadable->serialize())==saved && take(assets::read_file(moss_file))=="{",
         "An unreadable material did not stand in with its own diagnostic, opened as an asset, or changed when the scene was saved.");
-    const auto wall_file=root/std::ranges::find(repaired.entries(),wall.key,&editor::ProjectEntry::key)->path;
+    const auto wall_file=root/std::ranges::find(repaired.entries(),wall.key,&assets::ProjectEntry::key)->path;
     take(editor::write_file(wall_file,"f 1 2 3\n"));
     auto reloaded=take(editor::Project::open(root));auto broken=take(editor::Session::deserialize(saved,reloaded));
     const auto unreadable_at=[&](std::initializer_list<std::string> field) {

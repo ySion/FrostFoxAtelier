@@ -224,7 +224,7 @@ Result<void> Session::set_environment(const rendering::SceneLightingSettings& se
     if(attached->notification_error) return std::unexpected(*attached->notification_error);
     return {};
 }
-Result<void> Session::set_sky_map(const SkyAsset& asset) {
+Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
     if(editing()) return invalid("Finish the current property edit before changing World settings.");
     presentation::SkyMapBinding after{asset.key,asset.map};
     if(const auto existing=environment();existing!=ObjectId{}) {
@@ -396,7 +396,7 @@ Result<world::Commit> Session::reparent(ObjectId entity,ObjectId parent,world::R
     }
     return changed;
 }
-Result<world::Commit> Session::create_static_mesh(const MeshAsset& asset, math::Vector3 position, Project* project) {
+Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset, math::Vector3 position, Project* project) {
     auto cancelled=cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     auto members=world_.members();

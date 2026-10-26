@@ -1,5 +1,5 @@
 #include "editor/operators.hpp"
-#include "editor/assets.hpp"
+#include "assets/assets.hpp"
 #include "editor/project.hpp"
 #include <limits>
 #include <stdexcept>
@@ -132,7 +132,7 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
     switch (p.kind) {
     case AddKind::entity: added = document.add_entity(); break;
     case AddKind::mesh: {
-        const auto catalog = mesh_assets();
+        const auto catalog = assets::mesh_assets();
         std::string_view key{p.mesh.c_str(), p.mesh.size()};
         if (key.empty()) key = catalog.front().key;
         assets::Reader engine;

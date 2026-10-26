@@ -1,5 +1,5 @@
 #pragma once
-#include "editor/project.hpp"
+#include "assets/file.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
@@ -51,7 +51,7 @@ public:
         if(!entry.help || entry.help->title!=title || entry.help->identity!=identity || entry.description!=description) {
             entry.description=description;
             entry.help=std::make_shared<const ui::Tooltip>(ui::Tooltip{
-                std::wstring(title),std::wstring(identity),wide(description)});
+                std::wstring(title),std::wstring(identity),assets::wide(description)});
         }
         return entry.help;
     }

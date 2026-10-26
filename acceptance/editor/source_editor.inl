@@ -8,7 +8,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder,ui::S
     saved.resize(256,' ');broken.resize(256,' ');
     take(editor::write_file(helper,saved));
     take(editor::write_file(component,"class project.Move : world.Component { float speed=1.0f; void tick(float dt) { self.translate_owner(travel(self.speed,dt),0.0f,0.0f); } }"));
-    auto loaded=editor::load_project_scene(project,take(editor::read_file(folder/"Content/Scenes/Main.scene")));
+    auto loaded=editor::load_project_scene(project,take(assets::read_file(folder/"Content/Scenes/Main.scene")));
     require(loaded.session && loaded.code,"Project diagnostic scene did not load.");
     editor::Workspace workspace;workspace.project_open=true;workspace.project_build=loaded.code->report();
     workspace.dock.select(editor::source_control::tab);
@@ -31,12 +31,12 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder,ui::S
     const auto& error=workspace.project_build->error;
     require(error && error->source && error->source->path=="Source/Math.source","Project diagnostic lost its source file.");
     frame();
-    require(target->document==old_document && target->document->text()==editor::wide(saved) && !target->dirty(),
+    require(target->document==old_document && target->document->text()==assets::wide(saved) && !target->dirty(),
         "Project diagnostic setup did not retain the stale clean buffer.");
     require(workspace.source_editor.problem_current() && workspace.source_editor.locate_problem(),
         "Project diagnostic did not refresh the clean target to its compiled source.");
     const auto current=target->document;
-    require(workspace.source_editor.active()==target && current!=old_document && current->text()==editor::wide(broken) && !target->dirty(),
+    require(workspace.source_editor.active()==target && current!=old_document && current->text()==assets::wide(broken) && !target->dirty(),
         "Project diagnostic selected stale source or dirtied its refreshed buffer.");
     require(current->edit().current().caret.offset==current->edit().line_start(error->source->line-1)+error->source->column-1,
         "Project diagnostic caret does not identify the compiled source location.");
@@ -51,7 +51,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder,ui::S
     require(current->edit().history(false)==ui::detail::TextEdit::Change::text && !target->dirty(),"Could not undo the target draft.");
     require(workspace.source_editor.select(caller),"Could not select caller before the disk-version check.");frame();
     take(editor::write_file(helper,saved));
-    require(!workspace.source_editor.locate_problem() && target->document==current && current->text()==editor::wide(broken),
+    require(!workspace.source_editor.locate_problem() && target->document==current && current->text()==assets::wide(broken),
         "Project diagnostic used a source version that changed after compilation.");
     take(loaded.code->poll(project,true));workspace.project_build=loaded.code->report();frame();
     require(!workspace.source_editor.problem_current(),"A corrected project retained a stale diagnostic target.");
@@ -64,7 +64,7 @@ void verify_source_editor() {
     std::filesystem::create_directories(folder);
     struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code error;std::filesystem::remove_all(path,error);}} cleanup{folder};
     editor::Session scene;editor::Workspace workspace;
-    const auto original=take(editor::read_file(workspace.ui_source()));
+    const auto original=take(assets::read_file(workspace.ui_source()));
     const auto path=folder/"editor.ui.source";take(editor::write_file(path,original));
     workspace.set_ui_source(path);take(workspace.source_editor.open(path));workspace.dock.select(editor::source_control::tab);
     const auto* file=workspace.source_editor.active();require(file,"Source document was not opened.");
@@ -74,7 +74,7 @@ void verify_source_editor() {
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring(),(editor::asset_directory()/"fonts/SourceCodePro-Regular.otf").wstring()};
     ui::Session surface(fonts);
     require(surface.set_surface({{1200,800},1,1}).has_value(),"Source surface failed.");
-    auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+    auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
     require(theme.has_value(),"Source theme failed.");require(surface.set_style_sheet(*theme).has_value(),"Source theme publication failed.");
     const auto frame=[&] {
         const auto controls=workspace.describe(scene,{1200,800},surface.presented().get());
@@ -137,14 +137,14 @@ void verify_source_editor() {
     input({.kind=ui::EventKind::text,.data=std::wstring(L"// local draft\n")});frame();
     take(editor::write_file(path,original+"\n// external writer\n"));
     const auto refused=workspace.source_editor.save(*workspace.source_editor.active());
-    require(!refused && file->conflict && take(editor::read_file(path))==original+"\n// external writer\n",
+    require(!refused && file->conflict && take(assets::read_file(path))==original+"\n// external writer\n",
         "Source save silently overwrote external changes.");
     take(workspace.source_editor.reload(*workspace.source_editor.active()));frame();
     require(!file->dirty() && !file->conflict && file->document!=document,"Explicit reload failed to replace the conflicted draft.");
     const auto other=folder/"other.source";take(editor::write_file(other,"// other\r\n"));take(workspace.source_editor.open(other));frame();
     surface.focus(editor::source_control::buffer);key(ui::Key::end,true);input({.kind=ui::EventKind::text,.data=std::wstring(L"// new\n")});
     take(workspace.source_editor.save(*workspace.source_editor.active()));
-    require(take(editor::read_file(other))=="// other\r\n// new\r\n","Source save failed to preserve the file's line-ending convention.");
+    require(take(assets::read_file(other))=="// other\r\n// new\r\n","Source save failed to preserve the file's line-ending convention.");
     workspace.source_editor.select(file_key);frame();workspace.dock.close(editor::source_control::tab);frame();
     workspace.dock.select(editor::source_control::tab);frame();
     require(workspace.source_editor.active()==file && surface.presented()->find_code(editor::source_control::buffer),"Hiding and reopening Code lost document state.");

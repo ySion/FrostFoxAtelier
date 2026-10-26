@@ -43,7 +43,7 @@ std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target,const S
         if(!shown.empty()) add(L"Edit Shared Material",{MaterialChoice::Kind::edit,target.object,target.slot,shown});
     }
     bool first=true;
-    for(const auto& entry:project->entries()) if(entry.kind==(texture?AssetKind::texture:AssetKind::material)) {
+    for(const auto& entry:project->entries()) if(entry.kind==(texture?assets::AssetKind::texture:assets::AssetKind::material)) {
         add(entry.path.stem().wstring(),{texture?MaterialChoice::Kind::texture:MaterialChoice::Kind::assign,target.object,target.slot,entry.key,target.index},
             current==entry.key,first);first=false;
     }

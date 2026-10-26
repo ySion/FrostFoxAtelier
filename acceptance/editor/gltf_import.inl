@@ -189,11 +189,11 @@ void verify_gltf_import() {
     require(asset.mesh->vertices().size()==12 && reopened.assets().mesh_notes(key).size()==1,"A reopened project did not load its glTF mesh.");
 
     // Import publishes one material per slot and names them as the mesh's slot defaults.
-    const auto listed=[](const editor::Project& catalog,const std::string& resource)->const editor::ProjectEntry& {
+    const auto listed=[](const editor::Project& catalog,const std::string& resource)->const assets::ProjectEntry& {
         const auto* entry=catalog.entry(resource);require(entry!=nullptr,"A generated resource key is not catalogued.");return *entry;
     };
-    const auto default_of=[](const editor::MeshAsset& mesh,std::string_view slot) {
-        const auto at=std::ranges::find(mesh.materials,slot,&editor::SlotMaterial::slot);
+    const auto default_of=[](const assets::MeshAsset& mesh,std::string_view slot) {
+        const auto at=std::ranges::find(mesh.materials,slot,&assets::SlotMaterial::slot);
         require(at!=mesh.materials.end(),"A mesh slot has no default material.");return at->key;
     };
     const auto opaque_key=default_of(asset,"opaque"),leaf_key=default_of(asset,"leaf");
@@ -207,12 +207,12 @@ void verify_gltf_import() {
         const auto once=[&](const fs::path& file){return std::ranges::count(files,fs::path("Content/Meshes/scene")/file)==1;};
         for(const auto* file:{L"scene.gltf",L"scene.gltf.asset.json",L"scene.bin",L"textures/color map.bmp",L"textures/color map.bmp.asset.json",
             L"Materials/opaque.material",L"Materials/opaque.material.asset.json",L"Materials/leaf.material",L"Materials/leaf.material.asset.json"})
-            require(once(file),("A glTF mesh's asset files miss or repeat "+editor::utf8(file)).c_str());
+            require(once(file),("A glTF mesh's asset files miss or repeat "+assets::utf8(file)).c_str());
     }
     {
         using mat::Input;const auto opaque=take(project.assets().material(opaque_key)),leaf=take(project.assets().material(leaf_key));
         const auto file=[&](const std::string& texture){return listed(project,texture).path.filename();};
-        const auto slot=[&](const editor::MaterialAsset& m,Input input){return m.textures[static_cast<std::size_t>(input)];};
+        const auto slot=[&](const assets::MaterialAsset& m,Input input){return m.textures[static_cast<std::size_t>(input)];};
         const auto& p=opaque.description;
         require(slot(opaque,Input::roughness)==slot(opaque,Input::metallic) && file(slot(opaque,Input::roughness))==L"packed.bmp" &&
             p.texture(Input::roughness).channel==1 && p.texture(Input::metallic).channel==2 && p.parameters.roughness==.5f && p.parameters.metallic==1 &&
@@ -249,13 +249,13 @@ void verify_gltf_import() {
     take(editor::write_file(blocked/"Materials","not a folder"));
     fs::create_directory(blocked/"textures");take(project.refresh());
     const auto before_revision=project.revision();const auto before_mesh=take(project.assets().mesh(key)).mesh;
-    const std::vector<editor::ProjectEntry> before_entries(project.entries().begin(),project.entries().end());
-    const auto before_file=take(editor::read_file(imported/"scene.gltf"));
+    const std::vector<assets::ProjectEntry> before_entries(project.entries().begin(),project.entries().end());
+    const auto before_file=take(assets::read_file(imported/"scene.gltf"));
     const auto rejected=project.import_mesh(source/"blocked.gltf");
     require(!rejected && rejected.error().message.starts_with("create_directories:") && rejected.error().message.find("Materials")!=std::string::npos &&
-        take(editor::read_file(blocked/"Materials"))=="not a folder" && !fs::exists(blocked/"blocked.gltf") &&
+        take(assets::read_file(blocked/"Materials"))=="not a folder" && !fs::exists(blocked/"blocked.gltf") &&
         project.revision()==before_revision && std::ranges::equal(project.entries(),before_entries) &&
-        take(project.assets().mesh(key)).mesh==before_mesh && take(editor::read_file(imported/"scene.gltf"))==before_file &&
+        take(project.assets().mesh(key)).mesh==before_mesh && take(assets::read_file(imported/"scene.gltf"))==before_file &&
         std::ranges::none_of(fs::recursive_directory_iterator(blocked),[](const auto& item){return item.is_regular_file() && item.path().filename()!=L"Materials";}),
         "A failed glTF import changed the accepted catalog/cache/files or left published files behind.");
     fs::remove(blocked/"Materials");
@@ -322,7 +322,7 @@ void verify_gltf_import() {
     // A sidecar-only change reaches the next load; the cached geometry stays.
     take(project.refresh()); // Only the sidecar changes below.
     auto sidecar=imported/"scene.gltf";sidecar+=L".asset.json";
-    const auto sidecar_text=take(editor::read_file(sidecar));auto mapping=nlohmann::json::parse(sidecar_text);
+    const auto sidecar_text=take(assets::read_file(sidecar));auto mapping=nlohmann::json::parse(sidecar_text);
     mapping["materials"]["leaf"]=opaque_key;take(editor::write_file(sidecar,mapping.dump(2)));
     const auto catalog=project.revision();take(project.refresh());
     const auto remapped=take(project.assets().mesh(key));
@@ -342,7 +342,7 @@ void verify_gltf_import() {
     {
         auto loaded=take(editor::Session::deserialize(saved,project));const auto& issues=loaded->load_issues();
         require(issues.size()==1 && issues[0].kind==world::DiagnosticKind::missing_resource && issues[0].field==std::vector<std::string>{"mesh"} &&
-            loaded->unavailable(editor::AssetKind::material,leaf_key),"A missing default material was not reported as a stand-in.");
+            loaded->unavailable(assets::AssetKind::material,leaf_key),"A missing default material was not reported as a stand-in.");
     }
     fs::rename(evidence/"leaf.material",leaf_file);
     std::puts("glTF import acceptance: PASS (node transforms, left-handed conversion, authored and generated tangents, PBR channels, MASK, BLEND notes, shared images, rejections, unique slot names, generated materials, rollback, runtime mesh defaults)");

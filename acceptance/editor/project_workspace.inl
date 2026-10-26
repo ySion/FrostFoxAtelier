@@ -5,7 +5,7 @@ void verify_project_workspace(editor::Project& project) {
     editor::Session document;editor::Workspace workspace;workspace.project_open=true;workspace.assets.reset(true);
     const std::array fonts{(std::filesystem::current_path()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
-    auto theme=ui::StyleSheet::parse(take(editor::read_file("editor.ss")));
+    auto theme=ui::StyleSheet::parse(take(assets::read_file("editor.ss")));
     require(theme.has_value(),"Project UI theme failed to parse.");
     require(surface.set_style_sheet(*theme).has_value(),"Project UI theme failed to resolve.");
     ui::PixelExtent current_extent{};float current_scale{};std::uint64_t surface_revision{};
@@ -199,7 +199,7 @@ void verify_project_workspace(editor::Project& project) {
     header(browser::name_column);
     workspace.dock.maximize(editor::control::assets_tab);workspace.assets.apply({ui::ActionKind::activate,browser::project,{}});
     const std::wstring unicode_name=L"Entry00000_材质\U0001F98A.txt";
-    const auto unicode_resource="Source/"+editor::utf8(unicode_name);
+    const auto unicode_resource="Source/"+assets::utf8(unicode_name);
     std::ofstream(project.root()/"Source"/unicode_name)<<"// Unicode catalog fixture\n";
     for (unsigned i=0;i<2600;++i) std::ofstream(project.root()/"Source"/("Entry"+std::to_string(10000+i)+".txt"))<<"// Catalog acceptance fixture\n";
     take(project.refresh());workspace.assets.navigate(L"Content");workspace.assets.navigate(L"Source");present({1600,1000},1);present({1600,1000},1);

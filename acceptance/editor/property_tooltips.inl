@@ -2,7 +2,7 @@
 // geometry and delayed help. This path needs no GPU or desktop input injection.
 void verify_property_tooltips() {
     editor::Session document;
-    changed(document.create_static_mesh(editor::mesh_assets().front()));
+    changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto mesh=document.selection().entity;
     changed(document.create_light(presentation::LightKind::point));
     const auto light=component(document,document.selection().entity,document.presentation_types().light_component);
@@ -25,7 +25,7 @@ void verify_property_tooltips() {
     editor::Workspace workspace;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
-    const auto theme=ui::StyleSheet::parse(take(editor::read_file(editor::asset_directory()/"editor.ss")));
+    const auto theme=ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory()/"editor.ss")));
     require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1600,1000},1,1}),
         "Property tooltip editor surface failed.");
     std::vector<ui::Control> controls;
@@ -72,14 +72,14 @@ void verify_property_tooltips() {
     publish();
     const auto position_key=label(L"Position (m)"),rotation_key=label(L"Rotation (°)");
     const auto position_help=help_for(position_key),rotation_help=help_for(rotation_key);
-    require(position_help->title==L"Position (m)" && position_help->description==editor::wide(position.description) &&
-        position_help->identity==editor::wide(mesh_type->name)+L".position : "+editor::wide(take(runtime.describe(position.value.type))->name),
+    require(position_help->title==L"Position (m)" && position_help->description==assets::wide(position.description) &&
+        position_help->identity==assets::wide(mesh_type->name)+L".position : "+assets::wide(take(runtime.describe(position.value.type))->name),
         "Default Transform Position help differs from its Runtime aggregate field.");
-    require(rotation_help->description==editor::wide(rotation.description) &&
-        rotation_help->identity==editor::wide(mesh_type->name)+L".rotation : "+editor::wide(take(runtime.describe(rotation.value.type))->name)+L" · Euler (°)",
+    require(rotation_help->description==assets::wide(rotation.description) &&
+        rotation_help->identity==assets::wide(mesh_type->name)+L".rotation : "+assets::wide(take(runtime.describe(rotation.value.type))->name)+L" · Euler (°)",
         "Rotation help lost its Quaternion storage type or displayed Euler unit.");
     const auto type_help=help_for(52);
-    require(type_help->identity==editor::wide(mesh_type->name) && type_help->description==editor::wide(mesh_type->description),
+    require(type_help->identity==assets::wide(mesh_type->name) && type_help->description==assets::wide(mesh_type->description),
         "Object header help differs from the actual Runtime type.");
     const auto position_frame=hover(position_key);
     publish();
@@ -91,8 +91,8 @@ void verify_property_tooltips() {
         "Switching inspected objects retained or accepted an old tooltip frame.");
     const auto color_help=help_for(label(L"Color"));
     const auto* light_type=take(runtime.describe(take(runtime.type_of(light))));
-    require(color_help->description==editor::wide(color.description)+L"\n硬下限 0" &&
-        color_help->identity==editor::wide(light_type->name)+L".settings.color : "+editor::wide(take(runtime.describe(color.value.type))->name),
+    require(color_help->description==assets::wide(color.description)+L"\n硬下限 0" &&
+        color_help->identity==assets::wide(light_type->name)+L".settings.color : "+assets::wide(take(runtime.describe(color.value.type))->name),
         "Light Color help used a scalar lane identity or lost its aggregate description and hard-bound note.");
 
     // Declared field ranges: the number's legal range is the hard bounds, a float with a UI range
@@ -123,7 +123,7 @@ void verify_property_tooltips() {
             if(control.tooltip && control.tooltip->identity.find(field)!=std::wstring::npos) return control.tooltip;
         throw std::runtime_error("A ranged material row has no help.");
     };
-    require(help_of(L".material.roughness : ")->description==editor::wide(roughness.description)+L"\n范围 0 – 1，上下限锁定",
+    require(help_of(L".material.roughness : ")->description==assets::wide(roughness.description)+L"\n范围 0 – 1，上下限锁定",
         "Roughness help does not state its locked range.");
     const auto* lanes=take(runtime.describe(document.types().vector3));
     for(const auto& lane:lanes->fields) {
@@ -132,7 +132,7 @@ void verify_property_tooltips() {
             "Emissive lanes did not take the hard bounds 0–65504 without a slider.");
     }
     require(help_of(L".material.emissive : ")->description==
-        editor::wide(emissive.description)+L"\n范围 0 – 10，下限锁定，硬上限 65504",
+        assets::wide(emissive.description)+L"\n范围 0 – 10，下限锁定，硬上限 65504",
         "Emissive help does not distinguish its UI range from the hard maximum.");
     take(document.select(ObjectId{}));publish();
     require(!surface.presented()->tooltip && !surface.accept(position_frame) &&
@@ -143,11 +143,11 @@ void verify_property_tooltips() {
     workspace.dock.select(editor::world_control::tab);publish();
     const auto* exposure=editor::view_option(editor::ViewOption::exposure_ev);
     require(exposure!=nullptr,"World exposure option metadata is missing.");
-    const auto exposure_key=label(editor::wide(exposure->label));
+    const auto exposure_key=label(assets::wide(exposure->label));
     const auto exposure_help=help_for(exposure_key);
-    require(exposure_help->title==editor::wide(exposure->label) &&
-        exposure_help->description==editor::wide(exposure->description) &&
-        exposure_help->identity.find(editor::wide(exposure->name))!=std::wstring::npos && exposure_help->identity.starts_with(L"Scene · "),
+    require(exposure_help->title==assets::wide(exposure->label) &&
+        exposure_help->description==assets::wide(exposure->description) &&
+        exposure_help->identity.find(assets::wide(exposure->name))!=std::wstring::npos && exposure_help->identity.starts_with(L"Scene · "),
         "World property help diverged from the shared ViewOption descriptor.");
     const auto world_frame=hover(exposure_key);
     workspace.dock.select(editor::control::parameters_tab);publish();

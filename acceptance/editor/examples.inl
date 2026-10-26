@@ -15,20 +15,20 @@ void verify_examples() {
     auto project=take(editor::Project::open(source));
     for(const auto* folder:{"Content/Sponza","Content/Scene Lit Room","Content/Physic","Content/Dungeons"})
         require(std::ranges::any_of(project.entries(),[&](const auto& entry){
-            return entry.path==folder && entry.kind==editor::AssetKind::folder;
+            return entry.path==folder && entry.kind==assets::AssetKind::folder;
         }),"An example is absent from the ordinary Content catalog.");
     for(const auto& entry:project.entries()) if(entry.key.starts_with("project/")) {
         for(const auto& binding:entry.materials) {
             const auto* listed=project.entry(binding.key);
-            require(listed && listed->kind==editor::AssetKind::material,"An example mesh names a missing default material.");
+            require(listed && listed->kind==assets::AssetKind::material,"An example mesh names a missing default material.");
             for(const auto& texture:take(project.assets().material(binding.key)).textures)
-                require(texture.empty() || (project.entry(texture) && project.entry(texture)->kind==editor::AssetKind::texture),
+                require(texture.empty() || (project.entry(texture) && project.entry(texture)->kind==assets::AssetKind::texture),
                     "An example default material names a missing texture.");
         }
     }
     std::size_t scenes{};
-    for(const auto& entry:project.entries()) if(entry.kind==editor::AssetKind::scene) {
-        const auto original=take(editor::read_file(source/entry.path));
+    for(const auto& entry:project.entries()) if(entry.kind==assets::AssetKind::scene) {
+        const auto original=take(assets::read_file(source/entry.path));
         auto document=take(editor::Session::deserialize(original,project,{},editor::LoadPolicy::strict));
         const auto meshes=take(document->presentation().render_items());
         require(!meshes.empty() && document->load_issues().empty() && !document->dirty() && document->undo_count()==0,
@@ -57,10 +57,10 @@ void verify_examples() {
         take(document->set_property(meshes.front().component,roughness->path,.61f,881001));
         const auto saved=take(document->serialize());const auto path=output/entry.path;
         take(editor::write_file(path,saved));
-        auto reopened=take(editor::Session::deserialize(take(editor::read_file(path)),project,{},editor::LoadPolicy::strict));
+        auto reopened=take(editor::Session::deserialize(take(assets::read_file(path)),project,{},editor::LoadPolicy::strict));
         require(atelier::acceptance::dungeons_roundtrip_equal(saved,take(reopened->serialize())) &&
             take(reopened->presentation().main_camera()).position==camera.position &&
-            take(editor::read_file(source/entry.path))==original,"Example save/reopen lost authored data or modified the source project.");
+            take(assets::read_file(source/entry.path))==original,"Example save/reopen lost authored data or modified the source project.");
         ++scenes;
     }
     require(scenes==14,"The ordinary examples project must contain all fourteen scenes.");

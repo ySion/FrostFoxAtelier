@@ -1,5 +1,6 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
+#include "assets/file.hpp"
 #include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -49,12 +50,12 @@ bool Application::confirm_discard(bool sources) {
     if(auto committed=finish_color_edit(true);!committed) {status(committed,L"");return false;}
     if (sources) for (const auto& file:workspace_.source_editor.files()) if (!confirm_source(*file)) return false;
     for(const auto& key:document_->dirty_materials()) {
-        const auto response=MessageBoxW(window(),(L"Save changes to material "+editor::wide(key)+L"?").c_str(),L"Unsaved material",MB_YESNOCANCEL|MB_ICONQUESTION);
+        const auto response=MessageBoxW(window(),(L"Save changes to material "+assets::wide(key)+L"?").c_str(),L"Unsaved material",MB_YESNOCANCEL|MB_ICONQUESTION);
         if(response==IDCANCEL) return false;
         if(response==IDYES) {
             if(!project_) return false;
             const auto saved=document_->save_material(*project_,key);
-            if(!saved) {workspace_.status=editor::wide(saved.error().message);return false;}
+            if(!saved) {workspace_.status=assets::wide(saved.error().message);return false;}
         }
     }
     if (!document_->dirty()) return true;
@@ -62,7 +63,7 @@ bool Application::confirm_discard(bool sources) {
     if (response==IDCANCEL) return false;
     if (response==IDNO) return true;
     const auto saved=save_scene();
-    if (!saved) {workspace_.status=editor::wide(saved.error().message);MessageBoxW(window(),workspace_.status.c_str(),L"Scene was not saved",MB_OK|MB_ICONERROR);}
+    if (!saved) {workspace_.status=assets::wide(saved.error().message);MessageBoxW(window(),workspace_.status.c_str(),L"Scene was not saved",MB_OK|MB_ICONERROR);}
     return saved.has_value();
 }
 void Application::publish_document(std::unique_ptr<editor::Session> next,editor::ProjectCode* code) {
@@ -92,7 +93,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     if (!project) return std::unexpected(project.error());
     const auto initial_scene=scene.empty()?project->startup_scene():scene;
     const auto path=project->resolve(initial_scene);if (!path) return std::unexpected(path.error());
-    const auto content=editor::read_file(*path);if (!content) return std::unexpected(content.error());
+    const auto content=assets::read_file(*path);if (!content) return std::unexpected(content.error());
     // Reproducible workflows admit only a complete, exactly applied candidate
     // before retiring the current document. Interactive opening keeps unresolved
     // saved data and loads placeholders while the Source build is broken.
@@ -118,18 +119,18 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     if(candidate.error) {
         workspace_.dock.select(editor::source_control::tab);
         if(candidate.build && candidate.build->sources && !candidate.build->sources->files.empty()) {
-            auto source_path=project_->resolve(editor::wide(candidate.build->sources->files.front().path));
+            auto source_path=project_->resolve(assets::wide(candidate.build->sources->files.front().path));
             if(source_path) static_cast<void>(open_source(*source_path));
         }
     }
-    std::printf("Project: %s\n",editor::utf8(project_->root().wstring()).c_str());
+    std::printf("Project: %s\n",assets::utf8(project_->root().wstring()).c_str());
     return {};
 }
 Result<void> Application::open_scene(const std::filesystem::path& relative) {
     if (!project_) return failed("Open a project folder first.");
     if (!confirm_discard(false)) return {};
     auto path=project_->resolve(relative);if (!path) return std::unexpected(path.error());
-    auto text=editor::read_file(*path);if (!text) return std::unexpected(text.error());
+    auto text=assets::read_file(*path);if (!text) return std::unexpected(text.error());
     auto next=editor::load_project_scene(*project_,*text,editor::LoadPolicy::tolerant,true,editor::SessionRole::editor);
     if(!next.session) {publish_build(next.build);return std::unexpected(*next.error);}
     play_.close();scene_path_=relative;pending_scene_=*text;workspace_.scene_available=true;
@@ -151,7 +152,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     auto saved=editor::write_file(*path,*text);if (!saved) return saved;
     scene_path_=destination;document_->mark_saved();
     const auto refreshed=project_->refresh();
-    workspace_.status=refreshed?L"Scene saved":L"Scene saved; asset refresh failed: "+editor::wide(refreshed.error().message);
+    workspace_.status=refreshed?L"Scene saved":L"Scene saved; asset refresh failed: "+assets::wide(refreshed.error().message);
     auto pending=document_->issues();
     const auto kept=pending.size();
     std::erase_if(pending,[](const auto& item){return item.kind!=world::DiagnosticKind::reference_dropped;});
@@ -166,7 +167,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     if(command==create_material || command==import_texture) {
         if(!project_) return failed("Open a project before creating resources.");
         std::filesystem::path path;
-        if(!argument.empty()) path=editor::wide(argument);
+        if(!argument.empty()) path=assets::wide(argument);
         else {
             auto picked=pick(window(),command==create_material?Pick::material_save:Pick::texture,project_->root()/"Content");
             if(!picked) return std::unexpected(picked.error());if(!*picked) return {};path=**picked;
@@ -184,7 +185,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     if (command==refresh_assets) return project_?project_->refresh():Result<void>(failed("No project is open."));
     const auto kind=command==new_project || command==open_project?Pick::folder:command==open_scene?Pick::scene_open:command==save_scene_as?Pick::scene_save:Pick::mesh;
     std::optional<std::filesystem::path> path;
-    if (!argument.empty()) path=editor::wide(argument);
+    if (!argument.empty()) path=assets::wide(argument);
     else {
         const auto chosen=pick(window(),kind,project_?project_->root()/"Content":std::filesystem::path{});
         if (!chosen) return std::unexpected(chosen.error());path=*chosen;
@@ -194,7 +195,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     if (!project_) return failed("Open a project folder first.");
     if (command==import_mesh) {
         auto imported=project_->import_mesh(*path);if (!imported) return std::unexpected(imported.error());
-        for(const auto& note:project_->assets().mesh_notes(*imported)) workspace_.log(L"Import Mesh: "+editor::wide(note));
+        for(const auto& note:project_->assets().mesh_notes(*imported)) workspace_.log(L"Import Mesh: "+assets::wide(note));
         workspace_.assets.reset(true);workspace_.assets.navigate(L"Content/Meshes");return {};
     }
     auto relative=path->is_absolute()?path->lexically_relative(project_->root()):*path;
@@ -224,7 +225,7 @@ bool Application::confirm_source(editor::SourceEditor::File& file) {
     if (response==IDCANCEL) return false;
     if (response==IDNO) return true;
     const auto saved=save_source(file);
-    if (!saved) {workspace_.status=editor::wide(saved.error().message);MessageBoxW(window(),workspace_.status.c_str(),L"Source was not saved",MB_OK|MB_ICONERROR);}
+    if (!saved) {workspace_.status=assets::wide(saved.error().message);MessageBoxW(window(),workspace_.status.c_str(),L"Source was not saved",MB_OK|MB_ICONERROR);}
     return saved.has_value();
 }
 Result<void> Application::source_command(editor::Command command,std::string_view argument) {
@@ -245,7 +246,7 @@ Result<void> Application::source_command(editor::Command command,std::string_vie
     }
     if (command==edit_ui_source) return this->open_source(workspace_.ui_source());
     if (command==open_source) {
-        if (!argument.empty()) return this->open_source(editor::wide(argument));
+        if (!argument.empty()) return this->open_source(assets::wide(argument));
         const auto path=pick(window(),Pick::source,project_?project_->root()/"Source":workspace_.ui_source().parent_path());
         if (!path) return std::unexpected(path.error());
         return *path?this->open_source(**path):Result<void>{};

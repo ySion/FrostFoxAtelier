@@ -1,5 +1,7 @@
 #include "editor/assets.hpp"
 #include <windows.h>
+#include <stdexcept>
+#include <string>
 
 namespace atelier::editor {
 std::filesystem::path asset_directory() {

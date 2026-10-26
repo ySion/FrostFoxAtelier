@@ -61,17 +61,17 @@ void verify_project_document() {
     require(fs::is_regular_file(collision_file) && !collision_bytes->empty(),
         "Imported mesh collision was not cooked into the project cache.");
     take(editor::write_file(collision_file,"broken"));
-    require(*take(project.collision(resource,collision_scale))==*collision_bytes && take(editor::read_file(collision_file))==*collision_bytes,
+    require(*take(project.collision(resource,collision_scale))==*collision_bytes && take(assets::read_file(collision_file))==*collision_bytes,
         "A corrupt collision cache was not rebuilt from its source mesh and written back.");
     require(*take(project.collision(resource,{1,1,1}))!=*collision_bytes,"Collision cache served a different scale.");
     {
         // Asset rename keeps the stable resource key (its sidecar moves with it), refuses
         // collisions, bad names and configured paths, and leaves the original on failure.
-        const auto entry=std::ranges::find(project.entries(),resource,&editor::ProjectEntry::key);
+        const auto entry=std::ranges::find(project.entries(),resource,&assets::ProjectEntry::key);
         require(entry!=project.entries().end(),"Imported mesh is missing from the catalog.");
         const auto before=entry->path;
         const auto renamed=take(project.rename(before,L"Renamed Triangle.obj"));
-        const auto after=std::ranges::find(project.entries(),resource,&editor::ProjectEntry::key);
+        const auto after=std::ranges::find(project.entries(),resource,&assets::ProjectEntry::key);
         require(after!=project.entries().end() && after->path==renamed && renamed.filename()==L"Renamed Triangle.obj" &&
             !fs::exists(folder/before) && fs::exists(folder/renamed) && fs::exists(fs::path(folder/renamed)+=L".asset.json"),
             "Rename lost the resource identity or its sidecar.");
@@ -170,7 +170,7 @@ void verify_project_document() {
         auto rebuilt=take(editor::Session::deserialize(physical_scene,project,{},editor::LoadPolicy::strict));
         const auto rebuilt_body=component(*rebuilt,take(rebuilt->world().members()).front().id(),rebuilt->presentation_types().static_mesh_component);
         require(*take(physics::read_settings(rebuilt->world().runtime(),rebuilt_body)).cooked_shape==*collision_bytes &&
-            take(editor::read_file(collision_file))==*collision_bytes,
+            take(assets::read_file(collision_file))==*collision_bytes,
             "A corrupt Cook cache rejected the scene instead of being rebuilt from its source mesh.");
     }
     require(!editor::Session::deserialize("{\"version\":999,\"entities\":[]}",project),"Unknown scene version was accepted.");
@@ -215,11 +215,11 @@ void verify_project_document() {
         "Editor admitted a component beyond its scene format limit.");
     full.reset();
     require(!editor::write_file(folder/"Content/Scenes/Main.scene","overwrite",editor::WriteMode::create) &&
-        take(editor::read_file(folder/"Content/Scenes/Main.scene"))==saved,"Create-only file publication overwrote an existing scene.");
+        take(assets::read_file(folder/"Content/Scenes/Main.scene"))==saved,"Create-only file publication overwrote an existing scene.");
     const auto metadata=folder/"Content/Meshes/Triangle.obj.asset.json";
-    const auto metadata_text=take(editor::read_file(metadata));
+    const auto metadata_text=take(assets::read_file(metadata));
     take(editor::write_file(metadata,"{broken"));
-    const auto retry=evidence/"Retry.obj";take(editor::write_file(retry,take(editor::read_file(external))));
+    const auto retry=evidence/"Retry.obj";take(editor::write_file(retry,take(assets::read_file(external))));
     require(!project.import_mesh(retry) && !fs::exists(folder/"Content/Meshes/Retry.obj") &&
         !fs::exists(folder/"Content/Meshes/Retry.obj.asset.json"),"Failed import left a target that prevented retry.");
     require(take(project.assets().mesh(resource)).mesh==original_mesh,"Failed refresh destroyed the previously accepted resource cache.");
@@ -227,9 +227,9 @@ void verify_project_document() {
     const auto retried=take(project.import_mesh(retry));
     require(take(project.assets().mesh(retried)).mesh!=nullptr,"Import could not recover after catalog repair.");
     take(editor::write_file(folder/"Content/Meshes/Orphan.obj.asset.json",metadata_text));
-    const auto orphan=evidence/"Orphan.obj";take(editor::write_file(orphan,take(editor::read_file(external))));
+    const auto orphan=evidence/"Orphan.obj";take(editor::write_file(orphan,take(assets::read_file(external))));
     require(!project.import_mesh(orphan) && !fs::exists(folder/"Content/Meshes/Orphan.obj") &&
-        take(editor::read_file(folder/"Content/Meshes/Orphan.obj.asset.json"))==metadata_text,"Import claimed or replaced orphan resource metadata.");
+        take(assets::read_file(folder/"Content/Meshes/Orphan.obj.asset.json"))==metadata_text,"Import claimed or replaced orphan resource metadata.");
     {
         // The orphan is ignored until the import publishes its BMP. Only the final refresh
         // then reads this unsupported version; a preflight or write failure cannot produce it.
@@ -242,19 +242,19 @@ void verify_project_document() {
         auto invalid_metadata=nlohmann::json::parse(metadata_text);invalid_metadata["version"]=2;
         const auto broken=invalid_metadata.dump();take(editor::write_file(target/"color.bmp.asset.json",broken));
         take(project.refresh());const auto revision=project.revision();
-        const std::vector<editor::ProjectEntry> entries(project.entries().begin(),project.entries().end());
+        const std::vector<assets::ProjectEntry> entries(project.entries().begin(),project.entries().end());
         const auto rejected=project.import_mesh(source/"Refresh.obj");
         std::printf("Final-refresh fixture import result: %s\n",rejected?"accepted":rejected.error().message.c_str());
         require(!rejected && rejected.error().message=="Unsupported resource metadata version.",
             "Import did not reach the final refresh's newly published BMP metadata.");
         require(project.revision()==revision && std::ranges::equal(project.entries(),entries) &&
-            take(project.assets().mesh(resource)).mesh==original_mesh && take(editor::read_file(metadata))==metadata_text &&
-            take(editor::read_file(target/"color.bmp.asset.json"))==broken &&
+            take(project.assets().mesh(resource)).mesh==original_mesh && take(assets::read_file(metadata))==metadata_text &&
+            take(assets::read_file(target/"color.bmp.asset.json"))==broken &&
             std::ranges::all_of(fs::directory_iterator(target),[](const auto& file){return file.path().filename()==L"color.bmp.asset.json";}),
             "Final-refresh rollback changed the accepted catalog/cache or kept owned files.");
         fs::remove(target/"color.bmp.asset.json");
         require(take(project.assets().mesh(take(project.import_mesh(source/"Refresh.obj")))).mesh!=nullptr &&
-            fs::exists(target/"Refresh.obj.asset.json") && fs::exists(target/"scene.mtl") && take(editor::read_file(target/"color.bmp"))==bmp,
+            fs::exists(target/"Refresh.obj.asset.json") && fs::exists(target/"scene.mtl") && take(assets::read_file(target/"color.bmp"))==bmp,
             "Final-refresh import could not retry after metadata repair.");
         std::puts("Import final-refresh rollback: PASS (unsupported BMP metadata; initial refresh accepted; catalog/cache/files preserved; retry)");
     }
@@ -267,16 +267,16 @@ void verify_project_document() {
     take(project.refresh());
     require(project.revision()==full_revision && take(project.assets().mesh(resource)).mesh==original_mesh,
         "Unchanged large catalog refresh replaced the revision or resource cache.");
-    const auto capacity_mesh=evidence/"Capacity.obj";take(editor::write_file(capacity_mesh,take(editor::read_file(external))));
+    const auto capacity_mesh=evidence/"Capacity.obj";take(editor::write_file(capacity_mesh,take(assets::read_file(external))));
     require(take(project.assets().mesh(take(project.import_mesh(capacity_mesh)))).mesh!=nullptr && project.entries().size()==10006,
         "A large catalog rejected an import or lost its published entry.");
     std::puts("Large project catalog: PASS (10005 entries, tail lookup, unchanged refresh/cache, import to 10006)");
     for (std::size_t i=0;i<capacity_entries;++i) fs::remove(folder/"Source"/("Limit"+std::to_string(i)));
     take(project.refresh());
-    const auto original=take(editor::read_file(folder/"Content/Scenes/Main.scene"));
+    const auto original=take(assets::read_file(folder/"Content/Scenes/Main.scene"));
     fs::create_directory(folder/"Content/Scenes/blocked.scene");
     require(!editor::write_file(folder/"Content/Scenes/blocked.scene",saved),"Saving over a directory did not fail.");
-    require(take(editor::read_file(folder/"Content/Scenes/Main.scene"))==original,"A failed save damaged the original scene.");
+    require(take(assets::read_file(folder/"Content/Scenes/Main.scene"))==original,"A failed save damaged the original scene.");
     // Move both source and metadata, preserving the persistent resource identity.
     fs::rename(folder/"Content/Meshes/Triangle.obj",folder/"Content/Meshes/Renamed.obj");
     fs::rename(folder/"Content/Meshes/Triangle.obj.asset.json",folder/"Content/Meshes/Renamed.obj.asset.json");
@@ -295,7 +295,7 @@ void verify_project_document() {
     fs::remove_all(folder/"Cache"); // Rebuildable data cannot be required to open the project.
     const auto moved=evidence/L"搬移后";fs::rename(folder,moved);
     auto reopened=take(editor::Project::open(moved));
-    auto restored=take(editor::Session::deserialize(take(editor::read_file(take(reopened.resolve(reopened.startup_scene())))),reopened));
+    auto restored=take(editor::Session::deserialize(take(assets::read_file(take(reopened.resolve(reopened.startup_scene())))),reopened));
     require(take(restored->serialize())==saved,"Moving a project or removing Cache broke the scene.");
     fs::rename(moved/"Content/Meshes/Renamed.obj",moved/"Content/Meshes/Renamed.missing");
     take(reopened.refresh());require(!editor::Session::deserialize(saved,reopened,{},editor::LoadPolicy::strict),"A missing resource was silently replaced.");
@@ -314,7 +314,7 @@ void verify_project_document() {
     take(document.world().runtime().with_native<presentation::StaticMeshComponent>(mesh,[](auto& value)->Result<void>{value.material.base_color.x=2;return {};}));
     require(!document.serialize(),"Save produced a material that its own loader rejects.");
     take(document.world().runtime().with_native<presentation::StaticMeshComponent>(mesh,[&](auto& value)->Result<void>{value.material=material;return {};}));
-    take(presentation::set_geometry(document.world().runtime(),mesh,editor::mesh_assets().front().mesh));
+    take(presentation::set_geometry(document.world().runtime(),mesh,assets::mesh_assets().front().mesh));
     require(take(presentation::read_static_mesh(document.world().runtime(),mesh)).mesh.source.empty() && !document.serialize(),
         "Unattributed procedural geometry retained stale provenance or was silently saved.");
     std::ofstream(evidence/"acceptance.txt")<<"Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal.\n";

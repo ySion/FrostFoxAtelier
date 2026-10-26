@@ -1,6 +1,7 @@
 #include "application/application.hpp"
 #include "application/lit_preparation.hpp"
 #include "application/project_runner.hpp"
+#include "assets/file.hpp"
 #include "control/control.hpp"
 #include "atelier/build_info.hpp"
 #include <cstdio>
@@ -122,21 +123,21 @@ int wmain(int argc, wchar_t** argv) {
             if(!view) throw std::runtime_error(view.error().message);
         }
         if(render_performance_output)
-            return profile_editor_render_performance(app,atelier::editor::utf8(render_performance_output->wstring()).c_str());
-        if(sponza) return verify_sponza_window(app,atelier::editor::utf8(argv[2]).c_str());
-        if(physics_examples) return verify_physics_examples_window(app,atelier::editor::utf8(argv[2]).c_str());
-        if(dungeons_acceptance) return verify_dungeons_window(app,atelier::editor::utf8(argv[2]).c_str());
-        if (source) return verify_editor_source(app,atelier::editor::utf8(argv[2]).c_str());
-        if (edit) return verify_editor_edit_mode(app,atelier::editor::utf8(argv[2]).c_str());
-        if (shortcuts) return verify_editor_shortcuts(app,atelier::editor::utf8(argv[2]).c_str());
-        if (surfaces) return verify_editor_surfaces(app,atelier::editor::utf8(argv[2]).c_str());
-        if (tooltips) return verify_editor_tooltips(app,atelier::editor::utf8(argv[2]).c_str());
-        if (dialogs) return verify_editor_dialogs(app,atelier::editor::utf8(argv[2]).c_str());
-        if (snapshot) return capture_editor_snapshot(app,atelier::editor::utf8(argv[2]).c_str());
-        if (acceptance) return verify_editor_window(app, atelier::editor::utf8(argv[2]).c_str());
-        if (ime) return verify_editor_ime(app, atelier::editor::utf8(argv[2]).c_str());
-        if (project_acceptance) return verify_editor_project(app,atelier::editor::utf8(argv[2]).c_str(),argc==4?argv[3]:nullptr);
-        if (scene_lit) return verify_editor_scene_lit(app,atelier::editor::utf8(argv[2]).c_str(),argc==4?argv[3]:nullptr);
+            return profile_editor_render_performance(app,atelier::assets::utf8(render_performance_output->wstring()).c_str());
+        if(sponza) return verify_sponza_window(app,atelier::assets::utf8(argv[2]).c_str());
+        if(physics_examples) return verify_physics_examples_window(app,atelier::assets::utf8(argv[2]).c_str());
+        if(dungeons_acceptance) return verify_dungeons_window(app,atelier::assets::utf8(argv[2]).c_str());
+        if (source) return verify_editor_source(app,atelier::assets::utf8(argv[2]).c_str());
+        if (edit) return verify_editor_edit_mode(app,atelier::assets::utf8(argv[2]).c_str());
+        if (shortcuts) return verify_editor_shortcuts(app,atelier::assets::utf8(argv[2]).c_str());
+        if (surfaces) return verify_editor_surfaces(app,atelier::assets::utf8(argv[2]).c_str());
+        if (tooltips) return verify_editor_tooltips(app,atelier::assets::utf8(argv[2]).c_str());
+        if (dialogs) return verify_editor_dialogs(app,atelier::assets::utf8(argv[2]).c_str());
+        if (snapshot) return capture_editor_snapshot(app,atelier::assets::utf8(argv[2]).c_str());
+        if (acceptance) return verify_editor_window(app, atelier::assets::utf8(argv[2]).c_str());
+        if (ime) return verify_editor_ime(app, atelier::assets::utf8(argv[2]).c_str());
+        if (project_acceptance) return verify_editor_project(app,atelier::assets::utf8(argv[2]).c_str(),argc==4?argv[3]:nullptr);
+        if (scene_lit) return verify_editor_scene_lit(app,atelier::assets::utf8(argv[2]).c_str(),argc==4?argv[3]:nullptr);
         if(!no_control) app.enable_control(control_directory);
         while (app.step()) {}
         return 0;

@@ -25,7 +25,7 @@ bool same(const editor::ToolSettings& a, const editor::ToolSettings& b) {
 }
 }
 void verify_operator_parameters() {
-    using editor::json_format::Json;
+    using assets::json_format::Json;
     using namespace operator_parameters;
     const std::array names{"editor.TransformTool", "editor.PivotMode", "editor.SelectMode", "editor.Orientation", "editor.CameraView",
         "editor.AddKind", "editor.ToolSettings", "editor.SceneAdd", "editor.ViewAxis"};

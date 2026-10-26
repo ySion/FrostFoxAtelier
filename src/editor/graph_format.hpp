@@ -1,5 +1,5 @@
 #pragma once
-#include "editor/json_format.hpp"
+#include "assets/json_format.hpp"
 #include "runtime/runtime.hpp"
 #include "world/diagnostic.hpp"
 #include <array>
@@ -16,7 +16,7 @@ struct GraphNode {
     std::array<float, 2> position{};
     // Saved JSON written over the node's own on save: its whole entry when `node` is null,
     // otherwise the property leaves that did not decode and the input ports that did not connect.
-    json_format::Json kept = json_format::Json::object();
+    assets::json_format::Json kept = assets::json_format::Json::object();
 };
 // A procedural graph file opened into a Runtime. Its roots must not outlive that Runtime.
 struct GraphDocument {
@@ -24,7 +24,7 @@ struct GraphDocument {
     std::vector<GraphNode> nodes;
     // Saved settings written over the graph's own on save: leaves that did not decode, and a
     // display naming no loaded node.
-    json_format::Json kept = json_format::Json::object();
+    assets::json_format::Json kept = assets::json_format::Json::object();
     std::vector<world::Diagnostic> issues; // From the load.
 };
 

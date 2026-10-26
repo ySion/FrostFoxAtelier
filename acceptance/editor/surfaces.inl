@@ -5,7 +5,7 @@ int verify_editor_surfaces(Application& app,const char* output_directory) {
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
     ExternalMouseFilter external_mouse;
-    const auto output=std::filesystem::absolute(editor::wide(output_directory));std::filesystem::create_directories(output);
+    const auto output=std::filesystem::absolute(assets::wide(output_directory));std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::command(app,editor::Command::create_static_mesh)),"Surface scene creation failed.");tick(app);
     const auto point=[&](ui::ControlKey key) {

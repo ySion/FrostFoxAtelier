@@ -199,7 +199,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
     using Clock=std::chrono::steady_clock;
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
     struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
-    const auto output=std::filesystem::path(editor::wide(output_directory));
+    const auto output=std::filesystem::path(assets::wide(output_directory));
     require(output.is_absolute(),"Render performance evidence needs an absolute directory.");
     std::filesystem::create_directories(output);
     const auto project=Access::project_root(app),scene=Access::scene_path(app);
@@ -237,7 +237,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
     };
     Json report{{"schema","atelier.editor.render-performance.v7"},{"status","preparing"},
         {"revision",build_info::revision},{"configuration",build_info::configuration},
-        {"project",editor::utf8(project.wstring())},{"scene",editor::utf8(scene.wstring())},{"scene_sha256",file_hash},
+        {"project",assets::utf8(project.wstring())},{"scene",assets::utf8(scene.wstring())},{"scene_sha256",file_hash},
         {"authoring_baseline",{{"loaded_environment",loaded_environment},{"undo",history},{"redo",redo},{"revision",revision},{"dirty",dirty}}},
         {"gpu_validation",Access::gpu_validation(app)},{"vsync",Access::vsync(app)},
         {"wall_semantics","Intervals between the frame timing ends of consecutive accepted Application steps; include skipped calls, waits and harness work between steps. GPU durations are not FPS."},
@@ -272,7 +272,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
                     std::to_string(record.structure_errors)+" first_error="+(record.first_error?std::string(record.first_error->key()):"none")+
                     " render="+std::to_string(record.count(renderer::phases::render))+" prepare="+std::to_string(record.count(renderer::phases::prepare))+
                     " encode="+std::to_string(record.count(renderer::phases::encode))+" frame="+std::to_string(record.count(renderer::phases::frame))+
-                    " accepted_frame="+std::to_string(app.presented()->drawing->id)+" preparation=\""+editor::utf8(Access::render_notice(app))+"\"");
+                    " accepted_frame="+std::to_string(app.presented()->drawing->id)+" preparation=\""+assets::utf8(Access::render_notice(app))+"\"");
             return frame_end(record);
         };
         // Let the product publish its loaded World into the accepted UI/view.
@@ -389,7 +389,7 @@ int profile_editor_render_performance(Application& app,const char* output_direct
             auto panes=Json::array();
             for(const auto& pane:Access::dock_presentation(app).panes) if(pane.active) {
                 if(pane.bounds.width<=0 || pane.bounds.height<=0) continue;
-                panes.push_back({{"tab",pane.active->key},{"title",editor::utf8(pane.active->title)},
+                panes.push_back({{"tab",pane.active->key},{"title",assets::utf8(pane.active->title)},
                     {"maximized",pane.maximized}});
             }
             return panes;
