@@ -519,6 +519,8 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
 #include "materials.inl"
 #include "cavity.inl"
 
+namespace material_program_e2e { void run(HWND, const std::filesystem::path&); }
+
 int main(int argc, char** argv) try {
     // Automated GPU failures must terminate with diagnostics, never wait for
     // someone to dismiss a CRT dialog while the failed device is still owned.
@@ -531,11 +533,15 @@ int main(int argc, char** argv) try {
     if (argc > 1) {
         const std::string_view mode{argv[1]};
         check((argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
-                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost" || mode == "--scene-lit-sky"),
-              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost|--scene-lit-sky [--output <absolute-directory>]]");
+                  (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--scene-lit-temporal" || mode == "--scene-lit-quality" || mode == "--scene-lit-clustered" || mode == "--scene-lit-shadows" || mode == "--scene-lit-stability" || mode == "--scene-lit-cost" || mode == "--scene-lit-sky" || mode == "--material-programs"),
+              "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--scene-lit-temporal|--scene-lit-quality|--scene-lit-clustered|--scene-lit-shadows|--scene-lit-stability|--scene-lit-cost|--scene-lit-sky|--material-programs [--output <absolute-directory>]]");
         const std::filesystem::path output = argc == 4 ? std::filesystem::path{argv[3]}
-                                                     : std::filesystem::path{"out/scene-lit-20261008"};
-        check(argc != 4 || output.is_absolute(), "SceneLit --output must be an absolute evidence directory");
+            : std::filesystem::path{mode == "--material-programs" ? "out/material-programs" : "out/scene-lit-20261008"};
+        check(argc != 4 || output.is_absolute(), "Renderer --output must be an absolute evidence directory");
+        if(mode=="--material-programs") {
+            Window window;
+            material_program_e2e::run(window.hwnd,output);return 0;
+        }
         if(mode=="--scene-lit-cost") {
             scene_lit_e2e::Fixture fixture(false,output);
             scene_lit_e2e::cost_cases(fixture);fixture.close();return 0;

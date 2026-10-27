@@ -112,6 +112,23 @@ atelier_add_source()
 include(cmake/reflection.cmake)
 include(cmake/foundation.cmake)
 
+add_library(atelier_material STATIC
+    src/material/program.cpp
+    src/material/program_resources.cpp
+    src/material/resources.cpp)
+atelier_target(atelier_material)
+target_include_directories(atelier_material PUBLIC src)
+target_compile_features(atelier_material PUBLIC cxx_std_23)
+target_link_libraries(atelier_material PUBLIC atelier_runtime atelier_source)
+atelier_reflect(atelier_material SOURCE src/material/resources.cpp HEADERS src/material/resources.hpp)
+
+add_executable(atelier_material_program_resources_acceptance acceptance/material/program_resources.cpp)
+atelier_target(atelier_material_program_resources_acceptance)
+target_link_libraries(atelier_material_program_resources_acceptance PRIVATE atelier_material)
+atelier_headless_acceptance(material_program_resources_acceptance
+    COMMAND $<TARGET_FILE:atelier_material_program_resources_acceptance>
+    DEPENDS atelier_material_program_resources_acceptance)
+
 include(cmake/geometry.cmake)
 add_library(atelier_rendering STATIC src/rendering/sky_map.cpp)
 atelier_target(atelier_rendering)

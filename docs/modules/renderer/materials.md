@@ -1,6 +1,6 @@
 # 标准材质
 
-本页是标准材质的当前合同。各验收入口覆盖的内容见 [Renderer 验收](acceptance.md)，编辑与持久格式见[工程工作流](../editor/projects.md)。
+本页的标准材质章节描述当前产品合同；末节单列尚未接入产品消费者的[可编程内核](#可编程内核b1)，不能把内核验收解释为编辑器或光栅/射线路径已切换。各验收入口覆盖的内容见 [Renderer 验收](acceptance.md)，编辑与持久格式见[工程工作流](../editor/projects.md)。
 
 ## 数据与入口
 
@@ -69,3 +69,18 @@ Control 使用相同的资源、编辑和保存入口，`material.inspect` 可�
 ## 范围
 
 当前覆盖标准表面、共享资源、网格默认材质、显式参数覆盖、撤销和保存往返。没有节点图、任意着色器、分层材质、透明折射、虚拟纹理和压缩纹理资产管线；HDR 图片只作天空贴图（见 [Scene Lit](scene-lit.md)），不作材质贴图。Mask 使用当前 mip 与阈值，没有覆盖率保持的 alpha mip 或随机透明度。
+
+## 可编程内核（B1）
+
+[`source::MaterialProgram`](../../../src/source/material_program.hpp) 从自有语言的同一类型化前端生成拥有型 CPU 代码与 HLSL。数值 `Params/defaults()` 和具名纹理记录来自源码；`TextureInput` 是真实注册的计算值，不是资产、Runtime Texture 或 GPU 描述符。字段路径是作者键，局部采样槽只属于当前编译版本，声明重排后须按键重绑。语言范围和数学合同见[材质纯值编译](../../../LANGUAGE.md#材质纯值编译与具名纹理输入)。
+
+[`program_resources.hpp`](../../../src/material/program_resources.hpp) 提供独立的 `MaterialSource` / `MaterialInstance` 业务类型及不可变 `SourceDefinition` / `ProgramSurface`：
+
+- MS 持有程序、静态策略和全部声明纹理的类型化默认合同；MI 单父无环，支持 MS→MI→MI。覆盖保存路径、本地类型化值及 enabled；同值覆盖仍成立，关闭保留作者值，捕获不回写继承值。启用失配阻止发布，休眠失配保留并诊断。
+- 纹理默认声明按 Program 路径归一；SourceState 的根按该顺序配对，InstanceState 的根和纯解析图片按作者项顺序配对。正式对象使用 Runtime 强边，Surface 只持代码、精确图片与采样设置。颜色输入仅 RGB 作 sRGB 解码，alpha 保持线性；显式清空使用 MS 的线性 float4 空值，不回退父图。
+- `resolve_source` / `resolve_instance` 消费明确的定义、父 Surface 和图片，不读目录或活父。`capture_program` 是活对象便利入口：未变复用内容，依赖失效返回错误，不以旧缓存冒充新成功。
+- 同步更新先准备全部可失败内容，再一次提交正式引用与无抛载荷更新。失败保留目标作者态、边和 Surface，不承诺祖先缓存或 Runtime 写代号回滚；宿主可见材质组的 GPU 准备和整体采用仍属 B2。
+
+2026-10-27 的 Dev/Release `all`、`source_material_acceptance` / `jit_acceptance`（含 Source 依赖）、`material_program_resources_acceptance` 及 `renderer_acceptance_material_programs` 已通过；GPU 入口实际使用 GBV。对象入口验证继承、覆盖/清空/恢复、失败保留、精确内容、const 捕获、GC 与 Runtime 关闭后寿命；GPU 每配置保留 72 行场景和 144 行数学独立期望对照，包含字段反序后的重绑。CPU 回调计数仅覆盖 lerp 的 a/b 采样操作数，不是 GPU 指令计数。
+
+当前采样范围为 CPU/compute 的 LOD0 双线性、Repeat/Clamp/Mirror。产品工作室、GBuffer、阴影、射线/DDGI、拾取、Editor/Play、资产 codec 与 Examples 尚未迁移；没有据此获得光栅梯度、多通道整组采用或性能结论。旧固定路径只服务尚未切换的产品消费者，不是新接口兼容层；切换与删除按[分批实施方案](../resources/material-program-plan.md)推进。

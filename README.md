@@ -14,6 +14,7 @@
 | --- | --- | --- |
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
 | 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、跨文件与同模块函数、enum/struct 和原生派生 class、值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
+| 可编程材质内核 | 自有语言纯值计算、具名纹理输入与 HLSL/CPU 执行；MS→MI→MI、稀疏覆盖与拥有型内容；已验证 CPU/compute LOD0，产品渲染与编辑链尚未迁移 | [材质内核与边界](docs/modules/renderer/materials.md#可编程内核b1)、[后续实施](docs/modules/resources/material-program-plan.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、Runtime 资源快照与拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
@@ -109,7 +110,7 @@ pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets world_acceptance,dev:
 
 `-Targets` 中的每一项是 `目标`、`release:目标` 或 `dev:目标`，逗号分隔；名称必须来自 CMake 生成的目标清单，否则脚本失败。汇总目标 `renderer_acceptance` 会被拒绝：它让全部入口共用一个验证级别，应改列需要的 `renderer_acceptance_<入口>`。`-Configs` 默认 `dev,release`，脚本总是先构建这些配置的 `all`。
 
-**GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。`rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit` 用 `gbv`（D3D12 debug layer + GPU-based validation）；其余窗口目标用 `debug`，只开 debug layer，包括 Renderer 的另外七个入口和全部编辑器窗口目标（含 Control 拉起的编辑器）。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证，`scene-lit-stability` 只开 debug layer。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原来的 GBV 运行。
+**GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。`rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit`、`renderer_acceptance_material_programs` 用 `gbv`（D3D12 debug layer + GPU-based validation）；材质程序入口需要验证动态资源索引，不能降为 debug。其余窗口目标用 `debug`，只开 debug layer，包括 Renderer 的其余入口和全部编辑器窗口目标（含 Control 拉起的编辑器）。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证，`scene-lit-stability` 只开 debug layer。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原来的 GBV 运行。
 
 debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 barrier；以下错误只有 GBV 能发现：着色器执行时访问越界、未初始化或已销毁的描述符（bindless 和动态索引尤其如此），描述符类型与着色器声明不符，以及着色器实际访问的资源与其当前状态不符。只出现在编辑器路径（编辑器 UI、弹窗、Control、示例工程场景）或被降级的 Renderer 入口（temporal、quality、stability、clustered、shadows、cost、benchmark）里的这类错误，脚本不再自动发现；改动涉及这些路径的 GPU 资源绑定时，不设该变量直接运行对应目标，按 GBV 复查。
 

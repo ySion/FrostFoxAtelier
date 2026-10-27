@@ -24,9 +24,9 @@ foreach ($item in @($Targets | ForEach-Object { $_ -split ',' } | ForEach-Object
     if ($target -notin $requested[$config]) { $requested[$config].Add($target) }
 }
 if ($ProbeWindowTarget -and $Targets.Count) { throw '-ProbeWindowTarget cannot be combined with -Targets.' }
-# Default GPU validation scope: GBV only for RHI and two Renderer entries; every other
+# Default GPU validation scope: GBV for RHI and selected Renderer entries; every other
 # window target runs with ATELIER_GPU_VALIDATION=debug (the D3D12 debug layer).
-$gbvTargets = @('rhi_acceptance', 'renderer_acceptance_default', 'renderer_acceptance_scene_lit')
+$gbvTargets = @('rhi_acceptance', 'renderer_acceptance_default', 'renderer_acceptance_scene_lit', 'renderer_acceptance_material_programs')
 $results = [System.Collections.Generic.List[object]]::new()
 $lockOwned = $false
 $activator = $null

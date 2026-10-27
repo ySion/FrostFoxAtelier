@@ -4,6 +4,7 @@
 // include source/program.hpp; these types are not the public source API.
 #include "source/program.hpp"
 #include "jit/source_backend.hpp"
+#include "language/declarations.hpp"
 
 #include <array>
 #include <bit>
@@ -69,6 +70,7 @@ struct Binding {
 Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});
 BusinessType value_kind(const Binding&, TypeId);
 TypeId value_type_id(const Binding&, BusinessType);
+Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>&, const Binding&);
 struct EnvironmentView {
     std::vector<BusinessFieldBinding> fields;
     std::vector<BusinessMethodBinding> methods;

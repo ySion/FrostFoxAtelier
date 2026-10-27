@@ -3,6 +3,7 @@
 #include "jit/math_lowering.hpp"
 #include "jit/diagnostic_artifact.hpp"
 #include "language/source.hpp"
+#include "language/material.hpp"
 #include "runtime/value_storage.hpp"
 #include "jit/source_backend_verification.hpp"
 
@@ -177,7 +178,7 @@ public:
           entry_(functions[function]), local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot),
           strong_slots_(strong_base), weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
-          public_entry_(source.exported(function)), protected_values_(function_.uses_scoped_values),
+          public_entry_(source.exported(function)), protected_values_(source.material || function_.uses_scoped_values),
           diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
           debugging_(options.debugging && (source.exports.empty() || !public_entry_)),
           function_index_(function), position_(function_.position) {
@@ -230,6 +231,7 @@ public:
         assign_value_ = declare("business_assign_value", i32, {ptr, i32, ptr, ptr});
         destroy_value_ = declare("business_destroy_value", ir_.getVoidTy(), {ptr, i32, ptr});
         mutate_sequence_ = declare("business_mutate_sequence", i32, {ptr, i32, i32, ptr, ptr, ir_.getInt64Ty()});
+        sample_texture_ = declare("material_sample_texture", i32, {ptr, i32, ptr, ptr});
         if (debugging_) {
             debug_enter_ = declare("business_debug_enter", i32, {ptr, ptr});
             debug_point_ = declare("business_debug_point", i32, {ptr, ptr, i32, i32, i32});
@@ -722,6 +724,7 @@ private:
         ir_.SetInsertPoint(next);
     }
     void clear_slot(std::uint32_t slot) {
+        if (source_.material) return;
         trace_event(DiagnosticCall::root_clear);
         ir_.CreateCall(clear_, {invocation_, ir_.getInt32(slot)});
     }
@@ -741,6 +744,13 @@ private:
     }
     void construct_owned(std::size_t slot, llvm::Value* source = nullptr) {
         const auto& value = owned_.at(slot);
+        if (source_.material) {
+            const auto& layout = source_.value_layouts[value.type.type_index];
+            if (!source) source = ir_.CreateGlobalString(llvm::StringRef(
+                reinterpret_cast<const char*>(layout.initial_value.data()), layout.initial_value.size()));
+            ir_.CreateMemCpy(value.storage, llvm::Align(layout.alignment), source, llvm::Align(1), layout.size);
+            return;
+        }
         checked_call(construct_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage,
             source ? source : llvm::ConstantPointerNull::get(ir_.getPtrTy())});
         ir_.CreateStore(ir_.getTrue(), value.live);
@@ -751,6 +761,7 @@ private:
         return owned_[slot].storage;
     }
     void destroy_owned(std::size_t slot) {
+        if (source_.material) return;
         const auto& value = owned_.at(slot);
         auto* destroy = block("value.destroy");
         auto* next = block("value.cleared");
@@ -1030,6 +1041,17 @@ private:
             temporaries_.push_back(slot);
             return ir_.getInt32(slot);
         }
+        case Kind::texture_sample: {
+            auto* input = input_address(node.right);
+            auto* slot_address = ir_.CreateConstGEP1_64(ir_.getInt8Ty(), input, node.offset);
+            auto* slot = ir_.CreateAlignedLoad(ir_.getInt32Ty(), slot_address, llvm::Align(1));
+            auto* uv = input_address(node.left);
+            llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
+            auto* result = entry_ir.CreateAlloca(llvm::ArrayType::get(ir_.getFloatTy(), 4), nullptr, "sample.result");
+            result->setAlignment(llvm::Align(4));
+            checked_call(sample_texture_, {invocation_, slot, uv, result});
+            return load_value(result, node.type);
+        }
         case Kind::field: return read_field(expression(node.receiver), node.type, node.value);
         case Kind::source_call: {
             llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_, borrow_active_};
@@ -1286,6 +1308,8 @@ private:
             if (managed_value(target.type)) {
                 if (const auto text = direct_text_input(node); text != language::no_node)
                     write_text(target.type, direct ? address : locals_[target.value], function_.expressions[text].value, SequenceMutation::assign_text);
+                else if (source_.material) ir_.CreateMemMove(direct ? address : locals_[target.value], llvm::Align(1),
+                    expression(node.expression), llvm::Align(1), source_.value_layouts[target.type.type_index].size);
                 else checked_call(assign_value_, {invocation_, ir_.getInt32(target.type.type_index),
                     direct ? address : locals_[target.value], expression(node.expression)});
                 clear_temporaries();
@@ -1432,6 +1456,7 @@ private:
     llvm::FunctionCallee read_bool_, write_bool_;
     llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
     llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
+    llvm::FunctionCallee sample_texture_;
     llvm::FunctionCallee debug_enter_, debug_point_, debug_leave_;
     llvm::StructType *debug_frame_type_{}, *debug_local_type_{};
     llvm::AllocaInst *debug_frame_{}, *debug_locals_{};
@@ -1689,6 +1714,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         });
         llvm::orc::SymbolMap symbols;
         const auto bind = [&](const char* name, auto address) {
+            if (!address) return;
             symbols[state->jit->mangleAndIntern(name)] =
                 llvm::orc::ExecutorSymbolDef(ExecutorAddr::fromPtr(address), llvm::JITSymbolFlags::Exported);
         };
@@ -1714,6 +1740,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         if (services.assign_value) bind("business_assign_value", services.assign_value);
         if (services.destroy_value) bind("business_destroy_value", services.destroy_value);
         if (services.mutate_sequence) bind("business_mutate_sequence", services.mutate_sequence);
+        bind("material_sample_texture", services.sample_texture);
         if (options.debugging) {
             bind("business_debug_enter", services.debug_enter);
             bind("business_debug_point", services.debug_point);
@@ -1749,6 +1776,13 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
 }
 
 struct BusinessCode { std::shared_ptr<CompiledBusiness> state; };
+struct MaterialCode {
+    BusinessCode shade, defaults;
+    std::string hlsl;
+    std::vector<language::MaterialTextureInput> textures;
+    std::vector<MaterialTextureInfo> texture_views;
+    std::uint32_t parameters{}, resources{UINT32_MAX};
+};
 struct BusinessCoroutineState {
     std::shared_ptr<CompiledBusiness> code;
     std::vector<BusinessValue> arguments;
@@ -1763,6 +1797,28 @@ struct BusinessCoroutine { std::shared_ptr<BusinessCoroutineState> state; };
 }
 
 namespace {
+std::vector<atelier::language::ValueLayout> source_values(const atelier::source::detail::BusinessEnvironment& environment) {
+    using namespace atelier;
+    using namespace atelier::source::detail;
+    if (environment.value_count && !environment.values) throw std::runtime_error("Missing native value catalog.");
+    std::vector<language::ValueLayout> values;
+    values.reserve(environment.value_count);
+    for (std::uint32_t i = 0; i < environment.value_count; ++i) {
+        const auto& value = environment.values[i];
+        if (!value.name || (value.field_count && !value.fields)) throw std::runtime_error("Invalid native value catalog.");
+        language::ValueLayout layout{value.name, source_type({value.kind, i}).kind, value.size, value.alignment,
+            value.kind == ValueKind::array ? source_type(value.element) : language::ValueType::void_value, {}, value.sequence_view,
+            value.can_own, value.can_mutate, value.math, value.plain_value};
+        for (std::uint32_t j = 0; j < value.field_count; ++j) {
+            const auto& field = value.fields[j];
+            if (!field.name) throw std::runtime_error("Missing native field name.");
+            layout.fields.push_back({field.name, source_type(field.type), field.offset});
+        }
+        values.push_back(std::move(layout));
+    }
+    return values;
+}
+
 std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,
     const atelier::source::detail::BusinessEnvironment* environment,
@@ -1809,20 +1865,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                 }
                 enumerations.push_back({enumeration.name, source_type(enumeration.underlying), items});
             }
-            if (environment->value_count && !environment->values) throw std::runtime_error("Missing native value catalog.");
-            values.reserve(environment->value_count);
-            for (std::uint32_t i = 0; i < environment->value_count; ++i) {
-                const auto& value = environment->values[i];
-                if (!value.name || (value.field_count && !value.fields)) throw std::runtime_error("Invalid native value catalog.");
-                language::ValueLayout layout{value.name, source_type({value.kind, i}).kind, value.size, value.alignment,
-                    value.kind == ValueKind::array ? source_type(value.element) : language::ValueType::void_value, {}, value.sequence_view, value.can_own, value.can_mutate, value.math, value.plain_value};
-                for (std::uint32_t j = 0; j < value.field_count; ++j) {
-                    const auto& field = value.fields[j];
-                    if (!field.name) throw std::runtime_error("Missing native field name.");
-                    layout.fields.push_back({field.name, source_type(field.type), field.offset});
-                }
-                values.push_back(std::move(layout));
-            }
+            values = source_values(*environment);
             fields.reserve(environment->field_count);
             for (std::uint32_t index = 0; index < environment->field_count; ++index) {
                 const auto& field = environment->fields[index];
@@ -1927,6 +1970,79 @@ std::uint32_t atelier_compile_business_entries(const atelier::source::detail::Bu
     return compile_business_impl(services, name, source, size, environment, output, error, capacity,
         entries && count ? entries[0] : nullptr, options, false, entries, count, receiver, location, count == 0);
 }
+
+std::uint32_t atelier_compile_material(const char* name, const char* source, std::uint32_t size,
+    const atelier::source::detail::BusinessEnvironment* environment, void* capture_context,
+    const std::byte* (*capture_default)(void*, std::uint32_t) noexcept,
+    std::uint32_t context, std::uint32_t output_type, std::uint32_t texture_input,
+    std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
+    atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept {
+    if (!error || !capacity) return 1;
+    error[0] = '\0';
+    try {
+        using namespace atelier;
+        using namespace atelier::source::detail;
+        if (!name || !source || !environment || !capture_default || !output || !sample ||
+            context >= environment->value_count || output_type >= environment->value_count || texture_input >= environment->value_count)
+            throw std::runtime_error("Invalid material compiler input.");
+        auto values = source_values(*environment);
+        for (auto& value : values) value.sequence_view = nullptr;
+        auto material = language::compile_material(name, std::string_view(source, size), values, context, output_type, texture_input);
+        if (!material) {
+            const auto& diagnostic = material.error();
+            const auto display_name = diagnostic_source_name(name);
+            std::snprintf(error, capacity, "%s:%zu:%zu: %s", display_name.c_str(), diagnostic.position.line,
+                diagnostic.position.column, diagnostic.message.c_str());
+            return 1;
+        }
+        auto& tree = material->program;
+        const auto copy_fields = [&](auto&& self, language::ValueType type, std::byte* to, const std::byte* from) -> void {
+            if (type == language::ValueType::f32 || type == language::ValueType::u32) {
+                std::memcpy(to, from, sizeof(std::uint32_t)); return;
+            }
+            if (type == language::ValueType::boolean) { *to = *from; return; }
+            for (const auto& field : tree.value_layouts[type.type_index].fields)
+                self(self, field.type, to + field.offset, from + field.offset);
+        };
+        const auto capture_type = [&](auto&& self, language::ValueType type) -> void {
+            if (type.kind != language::ValueType::record) return;
+            auto& layout = tree.value_layouts[type.type_index];
+            if (!layout.initial_value.empty()) return;
+            const auto* bytes = capture_default(capture_context, type.type_index);
+            if (!bytes) throw std::runtime_error("Could not capture material value defaults: " + layout.name);
+            layout.initial_value.resize(layout.size);
+            // Only typed leaves become immutable content, never padding or
+            // unreflected native storage that might contain borrowed addresses.
+            copy_fields(copy_fields, type, layout.initial_value.data(), bytes);
+            for (const auto& field : layout.fields) self(self, field.type);
+        };
+        for (std::size_t i = 0; i < tree.functions.size(); ++i) if (tree.reachable[i]) {
+            capture_type(capture_type, tree.functions[i].result);
+            for (const auto& local : tree.functions[i].locals) capture_type(capture_type, local.type);
+        }
+        auto code = std::make_unique<MaterialCode>();
+        BusinessServices services{};
+        services.sample_texture = sample;
+        language::Environment captured{{}, {}, {}, {}, values};
+        code->shade.state = compile(services, material->program, captured, {});
+        material->program.entry = material->program.exports[1];
+        code->defaults.state = compile(services, material->program, captured, {}, false, code->shade.state);
+        code->hlsl = language::material_hlsl(*material);
+        code->textures = std::move(material->textures);
+        for (const auto& input : code->textures) code->texture_views.push_back({input.key.c_str(), input.slot, input.offset});
+        code->parameters = material->parameters;
+        code->resources = material->resources;
+        *output = code.release();
+        return 0;
+    } catch (const std::exception& failure) { std::snprintf(error, capacity, "%s", failure.what()); }
+    catch (...) { std::snprintf(error, capacity, "%s", "Unknown material compilation failure."); }
+    return 1;
+}
+atelier::source::detail::MaterialCodeView atelier_material_code_view(atelier::source::detail::MaterialCode* code) noexcept {
+    return {&code->shade, &code->defaults, code->hlsl.c_str(), code->texture_views.data(),
+        static_cast<std::uint32_t>(code->texture_views.size()), code->parameters, code->resources};
+}
+void atelier_destroy_material(atelier::source::detail::MaterialCode* code) noexcept { delete code; }
 
 std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessServices* services,
     const char* source_name, const char* source, std::uint32_t source_size,

@@ -139,6 +139,8 @@ atelier_reflect(atelier_world
 
 `SOURCE` 必须在 `compile_commands.json` 中对应唯一真实编译命令，并包含全部待生成头。`BASE_DIR` 默认是项目 `src/`，可显式指定；头文件必须是其下的 `.hpp`。生成头的 include 路径相对此目录，例如 `world/world.gen.hpp`。生成 include 目录通过目标传播给消费者。
 
+配置时会清理该目标生成目录中已不属于本次声明的 `.gen.hpp`，保留仍声明的输出。头文件迁移到另一个目标后，旧目标的公开 include 目录不能继续提供同路径的过期生成头；清理只限该目标拥有的生成目录，不扫描或删除源码头。
+
 执行链如下：
 
 ```text

@@ -1311,6 +1311,18 @@ private:
             return numeric_literal(token);
         }
         if (token.kind != Token::Kind::identifier) reject(token.position, "Expected an expression.");
+        if (environment_.material && token.text == "sample") {
+            consume(); expect("(");
+            const auto input = expression();
+            if (function_.expressions[input].type != environment_.texture_input)
+                reject(token.position, "Material sample requires the registered TextureInput value, not a numeric slot.");
+            expect(",");
+            const auto uv = expression(); expect(")");
+            if (function_.expressions[uv].type != math_named_type("vector2"))
+                reject(token.position, "Material sample coordinates require vector2.");
+            return add(Expression{Expression::Kind::texture_sample, math_named_type("vector4"),
+                token.position, uv, input});
+        }
         if (token.text == "float" || token.text == "double" || token.text == "int" || token.text == "uint") {
             consume(); expect("(");
             const auto argument = expression();

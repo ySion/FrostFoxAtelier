@@ -1326,6 +1326,15 @@
          collect(kernel.lib_bytecode_);
          collect(kernel.lib_reflection_);
          collect(kernel.root_signature_);
+@@ -6694,7 +7103,8 @@
+                     switch(resource_desc.Dimension)
+                     {
+                     case D3D_SRV_DIMENSION_BUFFER:
+                         kernel_parameter.type_ = Kernel::Parameter::kType_Buffer;
++                        kernel_parameter.raw_access_ = (resource_desc.Type == D3D_SIT_BYTEADDRESS);
+                         break;
+                     case D3D_SRV_DIMENSION_TEXTURE2D:
+                         kernel_parameter.type_ = Kernel::Parameter::kType_Texture2D;
 @@ -6828,6 +7237,40 @@
              GFX_ASSERT(global_root_signature_parameters.kernel_parameters.size() == global_root_signature_parameters.descriptor_ranges.size());
          }
@@ -1402,6 +1411,56 @@
                  color_targets[color_target_count++] = rtv_descriptors_.getCPUHandle(back_buffer_rtvs_[back_buffer_index_]);
              }
              D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)render_width, (float)render_height, D3D12_MIN_DEPTH, D3D12_MAX_DEPTH };
+@@ -8510,32 +8962,43 @@
+                             device_->CreateShaderResourceView(nullptr, &dummy_srv_desc, descriptors_.getCPUHandle(parameter.descriptor_slot_ + j));
+                             continue;  // invalid buffer object for shader SRV
+                         }
+-                        if(buffer.stride == 0)
++                        if(!parameter.raw_access_ && buffer.stride == 0)
+                         {
+                             if(!invalidate_descriptor) continue;
+                             GFX_PRINT_ERROR(kGfxResult_InvalidOperation, "Cannot bind buffer object with a stride of 0 as a shader resource for parameter `%s' of program `%s/%s'", parameter.parameter_->name_.c_str(), program.file_path_.c_str(), program.file_name_.c_str());
+                             device_->CreateShaderResourceView(nullptr, &dummy_srv_desc, descriptors_.getCPUHandle(parameter.descriptor_slot_ + j));
+                             continue;  // invalid buffer stride
+                         }
+-                        if(buffer.size < buffer.stride)
++                        if(buffer.size < (parameter.raw_access_ ? 4 : buffer.stride))
+                         {
+                             if(!invalidate_descriptor) continue;
+                             device_->CreateShaderResourceView(nullptr, &dummy_srv_desc, descriptors_.getCPUHandle(parameter.descriptor_slot_ + j));
+                             continue;  // invalid buffer size
+                         }
+                         Buffer &gfx_buffer = buffers_[buffer];
+                         SetObjectName(gfx_buffer, buffer.name);
+                         if(buffer.cpu_access == kGfxCpuAccess_None)
+                             transitionResource(gfx_buffer, GetShaderVisibleResourceState(kernel), kTransitionType_Implicit);
+                         if(!invalidate_descriptor) continue;    // already up to date
+-                        if(buffer.stride != GFX_ALIGN(buffer.stride, 4))
++                        if(!parameter.raw_access_ && buffer.stride != GFX_ALIGN(buffer.stride, 4))
+                             GFX_PRINT_WARNING("Encountered a buffer stride of %u that isn't 4-byte aligned for parameter `%s' of program `%s/%s'; is this intentional?", buffer.stride, parameter.parameter_->name_.c_str(), program.file_path_.c_str(), program.file_name_.c_str());
+                         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+                         srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                         srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+-                        srv_desc.Buffer.FirstElement = gfx_buffer.data_offset_ / buffer.stride;
+-                        srv_desc.Buffer.NumElements = (uint32_t)(buffer.size / buffer.stride);
+-                        srv_desc.Buffer.StructureByteStride = buffer.stride;
++                        if(parameter.raw_access_)
++                        {
++                            srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
++                            srv_desc.Buffer.FirstElement = gfx_buffer.data_offset_ / 4;
++                            srv_desc.Buffer.NumElements = (uint32_t)(buffer.size / 4);
++                            srv_desc.Buffer.StructureByteStride = 0;
++                            srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
++                        }
++                        else
++                        {
++                            srv_desc.Buffer.FirstElement = gfx_buffer.data_offset_ / buffer.stride;
++                            srv_desc.Buffer.NumElements = (uint32_t)(buffer.size / buffer.stride);
++                            srv_desc.Buffer.StructureByteStride = buffer.stride;
++                        }
+                         device_->CreateShaderResourceView(gfx_buffer.resource_, &srv_desc, descriptors_.getCPUHandle(parameter.descriptor_slot_ + j));
+                     }
+             }
 @@ -9338,8 +9789,6 @@
 
      GfxResult createKernel(Program const &program, Kernel &kernel)

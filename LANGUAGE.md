@@ -394,6 +394,40 @@ return 完成原有清理后发布结果；挂起、失败、取消不发布完�
 
 协程入口可以调用同步辅助函数，辅助调用必须在 yield 前结束；源码不能直接调用 async 函数。每个实例始终恢复和清理创建时的整模块版本，包括各同步辅助函数。旧实例挂起时可发布兼容新版本，新实例使用新版本；没有帧迁移。完整状态、准入及关停责任见 [Runtime 协程协议](docs/runtime-model.md#协程核心协议)。
 
+## 材质纯值编译与具名纹理输入
+
+`source::compile_material` 复用同一类型化前端和 CPU 降低逻辑，另从检查后的树生成 HLSL；不是普通 `Program` 的新执行模式。实际输入/输出和采样令牌使用 [`material.Context/Output/TextureInput`](src/material/program.hpp) 的唯一原生注册，编译接口接收实际 TypeId。普通游戏 Source 不因此获得 `sample` 或 GPU 执行。
+
+```source
+struct Params { float cutoff; vector3 tint; };
+struct Textures { material.TextureInput opacity_texture; };
+Params defaults() {
+    Params p;
+    p.cutoff = 0.5;
+    p.tint = vector3(0.2, 0.6, 0.9);
+    return p;
+}
+material.Output shade(material.Context c, Params p, Textures textures) {
+    material.Output o;
+    o.base_color = p.tint;
+    o.coverage = sample(textures.opacity_texture, c.uv).w - p.cutoff;
+    o.normal_world = c.normal_world;
+    return o;
+}
+```
+
+- 必须提供无参数 `Params defaults()`；无纹理使用按值 `Output shade(Context, Params)`，有纹理使用 `Output shade(Context, Params, Textures)`。Params 和 Textures 是本份源码声明的普通结构体；前者只含 float、float 向量及其组合，后者只含实际注册的 TextureInput 叶及嵌套记录。字段路径是所属 MS 内的稳定键，数值/纹理路径重名拒绝；路径变化是接口变化，字段重排、局部参数名和记录类型名变化不改变键，不以 Runtime FieldId、GPU 偏移、slot 或显示名充当键。
+- 源码结构只通过现有类型发布事务预览布局，**不发布或重定义活 Runtime 中的类型**。同名 Params/Textures 的独立材质和改版可共存。布局、参数类型/默认字节、具名纹理 schema、注入资源记录、代码和 HLSL 由返回的不可变内容拥有；不保存 Runtime、根、借用地址或类型解析回调。只捕获可达值类型的默认值，原生默认构造在编译期完成，生成代码中的 plain record 构造与赋值是值复制，不再调用原生生命周期服务。
+- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作为 dot/cross/length、sqrt、floor/ceil/trunc/fract/abs、min/max/clamp/lerp/step。可达代码中的全部循环、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
+- `sample(TextureInput, vector2 UV)` 返回 vector4；数字槽语法不再接受。TextureInput 是编译器注入的 plain value，不是 Runtime Texture 对象或资产键。已有令牌的复制初始化、复制赋值及按值辅助函数沿普通值规则；禁止自行默认构造令牌或包含令牌的记录、读取/写入令牌成员、整数转换和算术。复制已有令牌不改变资源关联，也不能伪造新槽。实际注册的 uint `slot` 字段只提供 CPU 布局，限制由材质 AST 执行，不依赖隐藏标记。`defaults` 及其调用闭包不得持有纹理输入或采样，也不接收运行上下文。
+- `MaterialProgram::textures()` 导出所有声明输入的稳定键和本编译版本 slot；B1 不做逐输入可达性裁剪，也不宣称全部实际采样。每次求值必须恰好绑定每个声明槽一次，包括当前未采样的输入；空输入不能表示为缺槽，同图的不同输入不合并。纹理默认关联、颜色解释、采样设置及线性 float4 空值属于 MS 类型化作者数据，由 material 从冻结快照准备资源环境，不在数值 defaults 或编译器中另造资产加载规则。坏非空键不能当作清空成功。
+- CPU/compute 的 B1 资源环境使用 LOD0 双线性及现有寻址方式，不新增虚拟过滤配置。颜色纹理的 RGB 由采样绑定解码到线性，alpha/数据保持线性；源码编译器不猜测颜色用途。光栅任意 UV 表达式的梯度尚未由此解决，不能以原网格梯度替代。数值合同要求输入、采样、数学中间值及输出在有限 float 域内；CPU 检查输入/采样/输出边界并在失败时保留调用方输出，不是逐运算数值沙箱。后端舍入、融合、次正规值和采样政策可能不同，不承诺逐位相同，阈值邻域须由真实消费者验证。
+- 容许舍入差异不放宽[既有逐分量数学合同](docs/math.md#逐分量函数)：clamp 使用 `max(lo,min(x,hi))`，反向边界返回 lo；lerp 使用 `a*(1-t)+b*t`，有限值在 t=0/1 精确返回端点；fract 使用 `min(x-floor(x),1 的前一浮点数)`，保持严格小于 1。HLSL 按实际使用的标量/向量形状生成值参数辅助函数，操作数只求值一次；lerp/fract 的公式使用 precise 保留运算顺序，不直接替换成语义不同的 HLSL 内建。
+- `MaterialProgram::hlsl(namespace)` 支持多个程序组合；`namespace::ms_shade(environment, context, parameters)` 将每次调用的资源环境显式转传给全局 `atelier_material_sample(environment, local_slot, uv)`，没有全局“当前材质”。资源记录在外层入口内部注入，CPU 按真实 ValueLayout/slot 字段偏移构造，HLSL 按自己的结构生成，公开 evaluate 不接收作者令牌字节。`ms_load_parameters(ByteAddressBuffer, byte_base)` 按捕获的 CPU 偏移生成读取，不假设 CPU 和 HLSL 结构体打包一致。
+- 声明与类型化计算诊断使用已有的真实源位置，包含源名、行列和原因；后端缩短过长源名的中间部分，为行列/原因留出空间。没有精确位置的布局发布错误只附源名，不伪造行列。
+
+公共接口、拥有与失败合同见 [`material_program.hpp`](src/source/material_program.hpp)。内容可在编译 Runtime 关闭后求值，并可跨调用方共享；执行时固定代码所有者，旧内容不会被新编译覆盖。后端 DLL 与采样实现须在使用期间保持装载；每次调用的字节和采样绑定只同步借用。公开 CPU 入口是 `source_material_acceptance`（`atelier_source_minimal --materials`）；它不宣称 GPU 执行通过。真实 GPU 数值/资源环境验证属于 Renderer 消费验收。
+
 ## 执行、诊断与保护
 
 代码必须经过类型检查、LLVM/JIT 编译、链接和发布校验才执行；失败保留已有发布版本。没有解释执行回退。当前每份源码的编译产物拥有所需名称、目录数据和入口可达的全部内部函数；原生对象生命周期、错误首因与代码退休沿[正式执行协议](docs/runtime-model.md#业务执行协议)。

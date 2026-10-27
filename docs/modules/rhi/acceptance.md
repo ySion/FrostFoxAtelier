@@ -1,6 +1,6 @@
 # RHI 验收与证据
 
-最近一次完整 RHI 验收于 2026-10-16 在 Dev、Release 两种配置通过，覆盖基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加本批矩形清除与固定 depth bias。2026-10-19 异步准备与 DXIL 缓存一批只在 Release 下运行了完整矩阵（基线 `80de8156`），Dev 由下一轮集成门禁覆盖，见[异步准备](#异步准备与-dxil-缓存2026-10-19)。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
+最近一次完整 RHI 验收于 2026-10-27 在 Dev、Release 两种配置通过，基于本地 `517627025bcc7fa213490b7a422cd80bdd3abd48` 加未提交 B0 候选，见 [RAW SRV 接入](#raw-srv-接入2026-10-27)。下文基础矩阵保留 2026-10-16 的原始计数，覆盖当时基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加矩形清除与固定 depth bias；2026-10-19 异步准备批次当时仅在 Release 验证。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
 
 ## 命令与环境
 
@@ -77,6 +77,20 @@ cmake --build --preset release --target rhi_acceptance
 本轮真实红绿已通过：相同新增用例在旧 bound 匹配下连续两次退出 1，均报实际状态 0xC0 缺 INDEX_BUFFER（0x2）与 VERTEX_AND_CONSTANT_BUFFER（0x1），并因像素错误失败；改为 installed 匹配后四轮 8,192 像素与四个 compute word 正确，`shared-buffer-reads` 和 Release RHI 主进程、三个后端回归均 PASS。主进程启用 GBV，最终 InfoQueue warning/error 为 0；日志中故意超时、非法输入和 live-object 阳性对照保留，不是忽略了意外错误。
 
 Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_renderer_acceptance`、`atelier_editor` 均以 Jobs=2 构建通过，Dev 不另跑窗口；两配置重放后的 gfx.cpp 散列相同。证据在渲染工作树 `.amp/in/artifacts/p1-installed-ia-20261025/`：`red{,-repeat}-rhi.log`、`green-rhi.log`、`green-rhi-run.log`、两配置构建日志及制品散列；`red-to-green-gfx.diff` 证明生成实现仅有两处匹配差异。此结论只针对该候选和本机硬件，不替代后续独立复审与主线集成。
+
+## RAW SRV 接入（2026-10-27）
+
+可编程材质 B0 的参数加载使用 `ByteAddressBuffer`。固定 gfx 已识别该反射种类，但原 SRV 分支仍按逻辑 stride 创建 Structured 视图；本批补丁复用 `raw_access_`，为 RAW SRV 设置 `R32_TYPELESS`、零结构 stride、RAW 标志和以四字节为单位的范围。RAW 不再使用逻辑 stride 的准入/警告；最小有效范围是一个四字节 word，Structured 分支保持原样。
+
+[资源消费者](../../../acceptance/rhi/resource_cases.cpp)在同一次 compute/readback 中对照 RAW/Structured：84 字节非对称数据、逻辑 stride=12，公开 range 为 offset=48、size=24，RAW 尾视图为 offset=80、size=4。RAW 视图起点遵守 D3D12 的 16 字节对齐；检查跨记录读取、最后 word、视图字节数及 Structured 元素数/stride。尾视图区分错误使用 size<逻辑stride 拒绝完整 word 的实现。八组 uint4 的实际值和独立期望均写日志，另检查真实 GBV InfoQueue。
+
+同一验收源码在旧补丁下的 Release 红轮 `20261027-022408-457-78584` 退出 1：RAW dimensions 实际 `7,2,2,12`、期望 `84,24,2,12`；尾读实际全零、期望 `1601,4,0,0`；Structured 对照正确。仅换入修复补丁后，最终门禁 `20261027-022824-128-78336` 的 Dev/Release `all`、两配置 `rhi_acceptance` 与 `renderer_acceptance_material_programs` 全部通过。八组 RAW/Structured 读回全部匹配；RHI 主进程和材质入口均实际启用 GBV，原 null-list/timeout 后端回归仍为 debug layer，Mesh PS 回归为 GBV。RHI 最终 warning/error 均为 0；既有故意超时、非法输入和 live-object 阳性对照诊断不被删去。
+
+本机为 Windows x64、AMD Radeon RX 6800 XT、驱动 32.0.21045.16010。材质入口每配置检查两个真实程序、三个资源环境、三个 UV 组成的 18 条记录，经过原值、仅换程序索引、仅改参数、失败候选后保持旧内容四阶段，输出 72 行 CPU/GPU/独立期望；只证明 CPU/compute LOD0，不代表光栅、阴影、RT/DDGI 或完整材质系统已迁移，也不是性能采样。
+
+原始证据在渲染工作树 `.amp/in/artifacts/b0-gpu-20261027/`：`final-red-gate/`、`final-red-rhi.log`、`final-green-gate/`、`final-green-{dev,release}-rhi.log`、`final-green-{dev,release}-material/outputs.csv`、源码与制品散列，以及实际生成 gfx.cpp 的 `final-red-to-green-gfx.diff`。验收源码红绿 SHA256 相同：`99a33f94aa70c62d07a737b9f058b0648cc57ce150c05d697714d0c00fd26650`。旧完整补丁另存 `.amp/in/artifacts/b0-raw-srv-before.patch`；非长期兼容实现。
+
+此前两类失效尝试也保留：一次复制补丁保留旧时间戳，Ninja 未重配置、实际仍是旧 gfx，不能算绿轮；一次初版夹具使用非法 offset=12/44，触发 RAW 起点对齐错误及设备移除，不能归因于待验证修复。之后修正夹具、显式按 preset 配置并核对应用补丁 stamp，再重新执行上述同源码红绿；没有降低 GBV 或放宽断言。
 
 ## 绘制前窗口同步
 

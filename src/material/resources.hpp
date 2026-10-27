@@ -6,7 +6,7 @@
 #include "material/resources.gen.hpp"
 
 namespace atelier::material {
-namespace detail { struct Access; }
+namespace detail { struct Access; struct ProgramAccess; }
 AENUM(Name="material.NormalY", DESC="Normal Map 的 Y 通道方向。切换 Positive / Negative 可适配法线贴图的绿色通道约定。")
 enum class NormalY : std::uint32_t {positive,negative};
 
@@ -42,8 +42,15 @@ struct SamplingValues {
 ACLASS(Name="material.Texture", DESC="共享的图片资源。颜色空间由使用它的材质输入决定：颜色图按 sRGB 解码，法线和标量图按线性数据读取。")
 class TextureResource {
     AGENERATED_BODY(TextureResource)
+public:
+    TextureResource() = default;
+    TextureResource(const TextureResource&) = delete;
+    TextureResource(TextureResource&&) = delete;
+    TextureResource& operator=(const TextureResource&) = delete;
+    TextureResource& operator=(TextureResource&&) = delete;
 private:
     friend struct detail::Access;
+    friend struct detail::ProgramAccess;
     String source_;
     ImageRef image_;
 };

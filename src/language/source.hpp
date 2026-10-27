@@ -36,6 +36,7 @@ struct ValueLayout {
     bool can_own{}, can_mutate{};
     math::Type math{};
     bool plain_value{};
+    std::vector<std::byte> initial_value{}; // Material compilation captures plain native defaults, never callbacks.
 };
 inline bool aggregate(ValueType type) noexcept {
     return type.kind == ValueType::record || type.kind == ValueType::array || type.kind == ValueType::string;
@@ -53,6 +54,8 @@ struct Environment {
     std::string_view object_type_name{}; // exact bound Runtime type; optional for callers without object access
     std::span<const EnumBinding> enumerations{};
     std::span<const ValueLayout> values{};
+    bool material{}; // Enables only the controlled sample intrinsic; validation follows typing.
+    ValueType texture_input{}; // Exact registered value type, only meaningful for materials.
 };
 struct SourcePosition { std::size_t offset{}, line{1}, column{1}; };
 struct Diagnostic { SourcePosition position; std::string message; };
@@ -72,7 +75,7 @@ struct Expression {
         literal, local, field, call, unary, binary,
         receiver, null_reference, create_reference, observe_reference, acquire_reference,
         value_field, index, length, string_literal, sequence_mutation, source_call,
-        math_construct, math_intrinsic, scalar_cast
+        math_construct, math_intrinsic, scalar_cast, texture_sample
     };
     Kind kind;
     ValueType type;
@@ -127,6 +130,7 @@ struct Program {
     std::vector<Function> functions;
     std::uint32_t entry{};
     std::vector<bool> reachable;
+    bool material{}; // Set only after validating the complete material subset.
     // Public wrappers share internal typed function bodies in one JIT module.
     std::vector<std::uint32_t> exports;
     bool exported(std::uint32_t index) const {

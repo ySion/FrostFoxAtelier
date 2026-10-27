@@ -122,6 +122,78 @@ RWStructuredBuffer<uint> output_value;
     std::puts("root-budget-compute: globals=64 UAV-table=1 updates/GPU-values=PASS");
 }
 
+void raw_buffer_views() {
+    auto owner = open_context();
+    require(owner.info().gpu_validation, "RAW SRV regression requires GPU validation");
+    const auto gfx = owner.borrow();
+    auto debug = debug_queue(gfx);
+    PipelineDesc desc;
+    desc.source.cs = R"(
+ByteAddressBuffer raw_full, raw_range, raw_tail;
+StructuredBuffer<uint3> structured_full, structured_range;
+RWStructuredBuffer<uint4> result;
+[numthreads(1,1,1)] void main() {
+    result[0] = raw_full.Load4(4);
+    result[1] = uint4(raw_full.Load3(32), raw_full.Load(80));
+    result[2] = raw_range.Load4(4);
+    result[3] = uint4(raw_range.Load3(0), raw_range.Load(20));
+    result[4] = uint4(structured_full[6], structured_full[0].y);
+    result[5] = uint4(structured_range[1], structured_range[0].z);
+    uint full_bytes, range_bytes, count, stride;
+    raw_full.GetDimensions(full_bytes);
+    raw_range.GetDimensions(range_bytes);
+    structured_range.GetDimensions(count, stride);
+    result[6] = uint4(full_bytes, range_bytes, count, stride);
+    uint tail_bytes;
+    raw_tail.GetDimensions(tail_bytes);
+    result[7] = uint4(raw_tail.Load(0), tail_bytes, 0, 0);
+}
+)";
+    auto pipeline = take(owner.prepare(desc));
+    using Triple = std::array<std::uint32_t, 3>;
+    using Quad = std::array<std::uint32_t, 4>;
+    const std::array<Triple, 7> data{{{11,23,47}, {71,101,149}, {211,307,401}, {503,601,709},
+        {809,907,1009}, {1103,1201,1301}, {1409,1511,1601}}};
+    // Both views deliberately retain a logical stride of 12. RAW addressing
+    // uses four-byte words, with the view base aligned to 16 bytes for D3D12.
+    auto full = gfxCreateBuffer<Triple>(gfx, 7, data.data());
+    auto range = gfxCreateBufferRange(gfx, full, 48, 24);
+    auto tail = gfxCreateBufferRange(gfx, full, 80, 4); // One RAW word, smaller than the logical stride.
+    auto result = gfxCreateBuffer<Quad>(gfx, 8);
+    auto readback = gfxCreateBuffer<Quad>(gfx, 8, nullptr, kGfxCpuAccess_Read);
+    require(full && range && tail && result && readback, "RAW/Structured SRV resources unavailable");
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "raw_full", full));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "raw_range", range));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "raw_tail", tail));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "structured_full", full));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "structured_range", range));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "result", result));
+    check(gfxCommandBindKernel(gfx, pipeline.kernel()));
+    check(gfxCommandDispatch(gfx, 1, 1, 1));
+    check(gfxCommandCopyBuffer(gfx, readback, result));
+    const auto finished = owner.finish();
+    if (!finished) check_debug(debug.Get());
+    complete(finished);
+    const auto* values = gfxBufferGetData<Quad>(gfx, readback);
+    require(values != nullptr, "RAW/Structured SRV readback unavailable");
+    const std::array<Quad, 8> expected{{
+        {23,47,71,101}, {401,503,601,1601}, {907,1009,1103,1201}, {809,907,1009,1301},
+        {1409,1511,1601,23}, {1103,1201,1301,1009}, {84,24,2,12}, {1601,4,0,0}}};
+    bool correct = true;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        std::printf("raw-buffer-views[%zu]: actual=%u,%u,%u,%u expected=%u,%u,%u,%u\n", i,
+            values[i][0], values[i][1], values[i][2], values[i][3],
+            expected[i][0], expected[i][1], expected[i][2], expected[i][3]);
+        correct &= values[i] == expected[i];
+    }
+    for (auto buffer : {tail, range, full, result, readback}) check(gfxDestroyBuffer(gfx, buffer));
+    pipeline = {};
+    complete(owner.close());
+    check_debug(debug.Get());
+    require(correct, "RAW byte addressing, range bounds or Structured control disagreed");
+    std::puts("raw-buffer-views: stride=12 range-offset=48 range-bytes=24 tail-offset=80 tail-bytes=4 raw/structured GPU-values/GBV=PASS");
+}
+
 void indirect_constants() {
     auto owner = open_context();
     const auto gfx = owner.borrow();
@@ -503,6 +575,7 @@ float4 main(uint id : SV_VertexID) : SV_Position {
 void resource_cases() {
     root_budget_graphics();
     root_budget_compute();
+    raw_buffer_views();
     indirect_constants();
     indirect_graphics(PipelineKind::vertex, false);
     indirect_graphics(PipelineKind::vertex, true);

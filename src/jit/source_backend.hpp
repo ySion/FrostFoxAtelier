@@ -217,6 +217,8 @@ struct BusinessServices {
     std::uint32_t (*debug_enter)(void*, BusinessDebugFrame*) noexcept{};
     std::uint32_t (*debug_point)(void*, BusinessDebugFrame*, std::uint32_t location, DebugPoint, EntryFailure) noexcept{};
     void (*debug_leave)(void*, BusinessDebugFrame*) noexcept{};
+    // Pure material sampling: one invocation-owned binding, float2 in / float4 out.
+    std::uint32_t (*sample_texture)(void*, std::uint32_t, const float*, float*) noexcept{};
     bool operator==(const BusinessServices&) const = default;
 };
 
@@ -258,6 +260,19 @@ static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_
 struct BusinessCode;
 struct BusinessCoroutine;
 struct CompileLocation { std::uint64_t offset{}, line{}, column{}; };
+struct MaterialCode;
+struct MaterialTextureInfo {
+    const char* key;
+    std::uint32_t slot;
+    std::size_t offset;
+};
+struct MaterialCodeView {
+    BusinessCode* shade;
+    BusinessCode* defaults;
+    const char* hlsl;
+    const MaterialTextureInfo* textures;
+    std::uint32_t texture_count, parameters, resources;
+};
 
 }
 
@@ -297,6 +312,20 @@ extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_business_entri
     std::uint32_t entry_count, bool receiver, atelier::source::detail::BusinessCode** output,
     atelier::source::detail::CompileLocation*, char* error, std::uint32_t error_capacity,
     atelier::source::CompileOptions options = {}) noexcept;
+
+// Detached pure-value compilation. Catalog/default capture is borrowed only
+// during compile; neither the capture callback nor its context is retained.
+// Code, HLSL and metadata are owned by MaterialCode, with no Runtime services.
+extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_material(
+    const char* name, const char* source, std::uint32_t size,
+    const atelier::source::detail::BusinessEnvironment*, void* capture_context,
+    const std::byte* (*capture_default)(void*, std::uint32_t) noexcept,
+    std::uint32_t context, std::uint32_t output_type, std::uint32_t texture_input,
+    std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
+    atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::MaterialCodeView atelier_material_code_view(
+    atelier::source::detail::MaterialCode*) noexcept;
+extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_material(atelier::source::detail::MaterialCode*) noexcept;
 
 // Actual compiled metadata, not caller-provided claims. Null code returns null
 // names/tables, a zero address and null callbacks. Querying acquires no owner.

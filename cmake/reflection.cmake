@@ -55,6 +55,13 @@ function(atelier_reflect target)
         list(APPEND _outputs "${_generated}")
         list(APPEND _inputs "${_header}")
     endforeach()
+    # Retire moved/removed outputs so this target's stale headers cannot shadow
+    # the current producer through its public generated include directory.
+    file(GLOB_RECURSE _previous_headers "${_output}/*.gen.hpp")
+    list(REMOVE_ITEM _previous_headers ${_outputs})
+    if(_previous_headers)
+        file(REMOVE ${_previous_headers})
+    endif()
     list(JOIN _headers_json ",\n" _headers_json)
     _atelier_reflection_json(_source_json "${AR_SOURCE}")
     _atelier_reflection_json(_database_json "${CMAKE_BINARY_DIR}")

@@ -46,16 +46,17 @@ function(atelier_add_renderer)
     atelier_target(atelier_renderer)
     target_include_directories(atelier_renderer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/renderer-generated")
     target_link_libraries(atelier_renderer PUBLIC atelier_rhi atelier_ui_protocol atelier_geometry atelier_foundation atelier_rendering)
-    add_executable(atelier_renderer_acceptance "${PROJECT_SOURCE_DIR}/acceptance/renderer/main.cpp")
+    add_executable(atelier_renderer_acceptance "${PROJECT_SOURCE_DIR}/acceptance/renderer/main.cpp"
+        "${PROJECT_SOURCE_DIR}/acceptance/renderer/material_programs.cpp")
     atelier_target(atelier_renderer_acceptance)
-    target_link_libraries(atelier_renderer_acceptance PRIVATE atelier_renderer)
+    target_link_libraries(atelier_renderer_acceptance PRIVATE atelier_renderer atelier_source atelier_material)
     atelier_deploy_rhi_runtime(atelier_renderer_acceptance)
     file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"
         INPUT "${PROJECT_SOURCE_DIR}/cmake/run-renderer-acceptance.cmake.in")
     # One window target per entry, so a targeted run (and its GPU validation level) can pick entries.
     set(_entries)
     foreach(_mode default scene-lit scene-lit-benchmark scene-lit-temporal scene-lit-quality scene-lit-stability
-            scene-lit-clustered scene-lit-shadows scene-lit-cost scene-lit-sky)
+            scene-lit-clustered scene-lit-shadows scene-lit-cost scene-lit-sky material-programs)
         string(REPLACE "-" "_" _entry "renderer_acceptance_${_mode}")
         add_custom_target(${_entry}
             COMMAND "${CMAKE_COMMAND}" -D "MODE=${_mode}" -P "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"

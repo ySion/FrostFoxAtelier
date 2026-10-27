@@ -88,7 +88,7 @@ bool same_scalar(const Scalar& a, const Scalar& b) {
 }
 bool same_leaves(const std::vector<Scalar>& a, const std::vector<Scalar>& b) { return std::ranges::equal(a, b, same_scalar); }
 }
-namespace {
+namespace detail {
 Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations, const Binding& binding) {
     std::vector<TypeDefinition> definitions;
     for (const auto& declaration : declarations) {
