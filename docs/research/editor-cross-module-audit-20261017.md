@@ -23,7 +23,7 @@ U4 的 DSL 变化片段复用、U5 的真正范围化，以及 F2–F5 的帧率
 - 地牢：3572 个 Entity，3381 个 Mesh instance，481 份几何。
 - 已有独立 CPU 调用中位数：SceneSnapshot 3.984 → 3.062 ms；最大化 Workspace 1.749 → 0.232 ms；正常停靠 Workspace 11.578 → 7.671 ms。最后一项没有接受 UI 帧、UI prepare 或 Present，只能比较同条件调用，不能作为完整产品稳态帧耗时。
 - 审查时同旧 1440p 接受相机的保守视锥统计：668 个可见实例，连续可见几何段 557；后续正式窗口与性能证据见本文末尾。
-- 原始证据见 `out/pipeline-baseline-20261016/scene-cpu-{before,after}.json`；测量范围与本轮之前的优化见 [CPU 链路记录](editor-cpu-pipeline-20261016.md)。
+- 原始证据见 `out/pipeline-baseline-20261016/scene-cpu-{before,after}.json`；这些独立 CPU 调用不包含 UI prepare、实际裁剪或 Present，不作为当前版本的性能结论。
 - P1 表示应优先阻止的正确性/寿命问题；P2 表示明确性能浪费、条件性错误或需要完善的策略；P3 表示非阻塞的边界/维护问题。下文分别标注确定问题、设计缺口与待测影响，避免把推断写成复现结果。
 
 ## 当前帧率实际策略
@@ -166,7 +166,7 @@ U4 的 DSL 变化片段复用、U5 的真正范围化，以及 F2–F5 的帧率
 
 **实际结果：** 2026-10-17 两配置均为 `World acceptance: PASS (16/16)`、exit 0。Dev 空／纯逻辑／纯灯光／清空网格均为 48 bytes、结果容量 0；Release 对应总分配均为 0 bytes。增加 256 个纯逻辑 Entity 前后，稀疏提取在 Dev 均为 8592 bytes、Release 均为 8064 bytes。日志位于 `out/world-w1-20261017/{dev,release}-world.log`；原始 Debug 断言失败保留在 `dev-before.log`。这些分配结果不代表已经测得耗时或 FPS 改善，既有 CPU 对照仍按其历史版本解释。
 
-**实现：** [World::render_items](../../src/world/world.cpp:484)。
+**实现：** [World::render_items](../../src/world/world.cpp)。
 
 ### 已确认保持的边界
 

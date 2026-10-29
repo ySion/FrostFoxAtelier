@@ -12,11 +12,13 @@
 
 以上尚不能确认用户记忆中的具体视频就是某一场分享，也不能推出 IOI 的 SHA 算法、内容寻址格式、ACK 屏障、保留几代基线、资源事务粒度、完整部署拓扑或 GPU 采用规则。资源服务器的明确措辞由第 1 项采访支持；不要用第 5 项的 resource system 偷换证据。
 
-## 本项目现状与此前方案
+## 本项目 2026-10-27 基线与此前方案
+
+以下为研究当日事实，不是现行功能清单。2026-10-29 已完成精确 Source/纹理/网格 Live 及独立大资源预算，见[阶段基线](material-baseline-20261029.md)；独立资源服务仍属[后续设计](../modules/resources/live-resource-reassessment.md)。
 
 - 现有 Live 是编辑器向独立 Play 副本转发操作。命令与 ACK 沿有序链路执行，4 MiB 消息、16 MiB 批次及 256 批/64 MiB 积压限制见 [play_link.hpp](../../src/application/play_link.hpp)。大命令已有私有文件 spill，不表示内容可以逃过批次限额。
 - 现有材质更新主要传作者数据/资源键，再由 Play 的资源会话或目录解析；没有精确跨进程图片版本保证。见 [scene.cpp](../../src/editor/scene.cpp) 的 forward_material/apply_live，以及[既有合同](../modules/editor/projects.md#play-副本与变更批次)。
-- 尚未实现的材质 Live r1 将完整 RGBA8 放入每次材质输入传输，一张 2048×2048 RGBA8 本身已占 16 MiB，加记录即超限。r2 用对端已确认基线复用未变图片，避免普通参数更新反复传图，但真正的新大图仍超限。该修订只是静态合同，不是运行修复。见[材质计划](../modules/resources/material-program-plan.md#资产编辑与单基线迁移)。
+- 当时未实现的材质 Live r1 将完整 RGBA8 放入每次材质输入传输，一张 2048×2048 RGBA8 本身已占 16 MiB，加记录即超限。r2 用对端已确认基线复用未变图片，避免普通参数更新反复传图，但真正的新大图仍超限。该修订只是已撤下的静态提案，不是运行修复。
 - 当前资产路线已区分作者、构建产物与运行消费，Texture 产物及本地 Cook 仍在后续阶段；“暂缓远程资产服务器”不应被解释为必须把全部本地资源字节永久塞进 Live 命令。见[资产路线](../modules/resources/asset-system-plan.md)。
 
 ## 长期判断：本项目建议，不是 IOI 内部实现的断言

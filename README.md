@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
 | 源码与 JIT | bool、32 位整数运算与数值转换、const、for/break/continue、跨文件与同模块函数、enum/struct 和原生派生 class、值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
-| 可编程材质内核 | 自有语言纯值计算、具名纹理输入与 HLSL/CPU 执行；MS→MI→MI、稀疏覆盖与拥有型内容；已验证 CPU/compute LOD0，产品渲染与编辑链尚未迁移 | [材质内核与边界](docs/modules/renderer/materials.md#可编程内核b1)、[后续实施](docs/modules/resources/material-program-plan.md) |
+| 可编程材质 | 自有语言纯值计算、具名纹理与 HLSL/CPU；MS→MI→MI、稀疏作者历史；纹理批次贯通光栅/阴影/DDGI，正式编辑与接受帧拾取已迁移并通过相关双配置端到端验收 | [材质合同与边界](docs/modules/renderer/materials.md)、[阶段基线](docs/research/material-baseline-20261029.md)、[后续资产路线](docs/modules/resources/asset-system-plan.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、Runtime 资源快照与拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编 | [诊断接口与边界](docs/source-diagnostics.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
@@ -402,4 +402,4 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
 
-World 配置通过 **Window → World Settings** 打开，光照、天光、DDGI 与效果写在 Environment 组件上，随 Scene v9 保存并支持同一场景撤销；诊断留在视口。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。
+World 配置通过 **Window → World Settings** 打开，光照、天光、DDGI 与效果写在 Environment 组件上，随当前 Scene 格式保存并支持同一场景撤销；诊断留在视口。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。

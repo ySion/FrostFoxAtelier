@@ -11,7 +11,7 @@
 | Runtime 身份与引用 | 共同类型定义、对象身份、持有/观察引用、GC、引用字段与序列操作，以及原生 Texture/Material | 复用现有 TextureResource 和内容捕获，补齐源码与 UI 消费 |
 | 原生载荷访问 | `Runtime::with_native<T>` 已提供同步、受保护的对象/内联字段访问 | 用现有接口发布和捕获 Texture 内容，不新增私有存储旁路 |
 | 业务语言 | 正式 `source::Program`、原生/描述型对象与同步值能力 | 当前对象环境仍只有一个绑定类型；跨类型对象目录与对象引用字段尚未开放，不能直接编译 `UiState.texture.width` |
-| CPU 资源 | 不可变 `geometry::Mesh`、`material::Image`、`material::Surface` 与共享引用 | 复用已有内容机制；独立内容快照与 Runtime 业务对象分别承担寿命责任 |
+| CPU 资源 | 不可变 `geometry::Mesh`、`material::Image`、`material::ProgramSurface` 与共享引用 | 复用已有内容机制；独立内容快照与 Runtime 业务对象分别承担寿命责任 |
 | UI 内容与绘制 | 不可变 `ui::ColorImage`、UI 帧持有、样式图片及 Renderer 上传/缓存/退休 | 将 Texture 捕获的固定内容版本接到已有图片消费与测量流程 |
 | 布局 | 同步 Measure、content/provider revision、完整几何发布及快照 | 确定固有尺寸政策，并把内容版本与本次几何一起持有 |
 | RHI | gfx 设备资源、Context/Pipeline、窗口/离屏执行、有限排空与退休 | 由现有 Renderer 持有设备表示，保证未编码消费和 Context 的寿命关系 |
