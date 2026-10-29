@@ -195,7 +195,100 @@ void frame_timing() {
         "a World stopped in pre_physics records no simulation");
 }
 
+void before_step_exit(bool close) {
+    PhysicsFixture f;
+    const auto entity = f.make({3, 4, 5}, dynamic_body());
+    f.start();
+    f.advance(1);
+    const auto completed = f.scene->completed_step();
+    const auto pose = take(w::read_transform(f.runtime, entity.id()));
+    const auto handle = f.handle(entity);
+    unsigned exits{}, after_calls{};
+    f.scene->on_before_step([&](std::uint64_t, float) -> atelier::Result<void> {
+        committed(close ? f.world.close() : f.world.stop());
+        ++exits;
+        return {};
+    });
+    f.scene->on_after_step([&](std::uint64_t, float) -> atelier::Result<void> {
+        ++after_calls;
+        return {};
+    });
+    const auto updated = f.world.update(3 * fixed_delta);
+    f.scene->on_before_step({});
+    f.scene->on_after_step({});
+    require(exits == 1, "before-step did not complete exactly one requested World exit");
+    if (!updated) throw std::runtime_error(std::string(close ? "successful before-step close made update fail: " :
+        "successful before-step stop made update fail: ") + updated.error().message);
+    require(!f.world.running() && f.world.closed() == close && f.scene->body_count() == 0 && !f.scene->read_body_state(handle),
+        "successful before-step exit retained World participation or a physical body");
+    require(after_calls == 0 && f.scene->completed_step() == completed && take(w::read_transform(f.runtime, entity.id())) == pose,
+        "successful before-step exit still solved, wrote a pose or called after-step");
+    require(f.scene->last_step().steps == 0 && f.scene->last_step().completed_step == completed && f.scene->last_step().remaining == 0,
+        "successful before-step exit retained the previous step report or pending time");
+    if (!close) {
+        f.start();
+        require(f.handle(entity) != handle && step(f.world, *f.scene, 0).steps == 0,
+            "restart retained a stopped body's handle or pending substeps");
+        require(step(f.world, *f.scene, fixed_delta).steps == 1 && f.scene->completed_step() == completed + 1,
+            "World could not resume after a successful before-step stop");
+    }
+    committed(f.world.close());
+}
+
+void callback_exit(bool contact, bool close) {
+    PhysicsFixture f;
+    p::BodySettings sensor;
+    sensor.motion = p::MotionKind::kinematic; sensor.sensor = true; sensor.half_extents = {10, 1, 1};
+    f.make({}, sensor);
+    const auto left = f.make({-3, 0, 0}, dynamic_body()), right = f.make({3, 0, 0}, dynamic_body());
+    take(f.scene->set_gravity({}));
+    f.start();
+    const auto old_left = f.handle(left), old_right = f.handle(right);
+    unsigned exits{}, after_calls{}, contacts{};
+    const auto exit = [&] { committed(close ? f.world.close() : f.world.stop()); ++exits; };
+    f.scene->on_after_step([&](std::uint64_t, float) -> atelier::Result<void> {
+        ++after_calls;
+        if (!contact && !exits) exit();
+        return {};
+    });
+    f.scene->on_contact([&](const p::ContactEvent&) -> atelier::Result<void> {
+        ++contacts;
+        if (contact && !exits) exit();
+        return {};
+    });
+    // Contact dispatch follows all three solves; after-step stops after the first.
+    take(f.world.update(3.5f * fixed_delta));
+    f.scene->on_after_step({});
+    f.scene->on_contact({});
+    const unsigned completed = contact ? 3u : 1u;
+    require(exits == 1 && !f.world.running() && f.world.closed() == close && f.scene->body_count() == 0 &&
+        !f.scene->read_body_state(old_left) && !f.scene->read_body_state(old_right),
+        "successful after/contact exit retained World participation or a body handle");
+    require(after_calls == completed && contacts == (contact ? 1u : 0u),
+        "successful after/contact exit delivered subsequent callbacks");
+    require(f.scene->completed_step() == completed && f.scene->last_step().completed_step == completed &&
+        f.scene->last_step().steps == completed && f.scene->last_step().remaining == 0 && f.scene->presented_poses().empty(),
+        "successful after/contact exit lost completed solves or retained pending time/presentation");
+    if (!close) {
+        std::vector<p::ContactEvent> restarted;
+        f.scene->on_contact([&](const p::ContactEvent& event) -> atelier::Result<void> { restarted.push_back(event); return {}; });
+        f.start();
+        require(f.handle(left) != old_left && f.handle(right) != old_right && f.scene->body_count() == 3,
+            "restart after a callback exit reused the old body generation");
+        require(step(f.world, *f.scene, 0).steps == 0 && restarted.empty(),
+            "restart dispatched contact events or pending substeps from the stopped run");
+        require(step(f.world, *f.scene, fixed_delta).steps == 1 && restarted.size() == 2 &&
+            std::ranges::all_of(restarted, [&](const auto& event) { return event.phase == p::ContactPhase::began && event.step_id == completed + 1; }),
+            "restart did not produce fresh contacts at the next completed step");
+        f.scene->on_contact({});
+    }
+    committed(f.world.close());
+}
+
 void fixed_step() {
+    callback_exit(false, false);
+    callback_exit(true, false);
+    before_step_exit(false);
     PhysicsFixture f;
     auto entity = f.make({0, 10, 0}, dynamic_body());
     f.start();
@@ -408,6 +501,9 @@ void failed_lifecycle() {
 }
 
 void lifecycle() {
+    callback_exit(false, true);
+    callback_exit(true, true);
+    before_step_exit(true);
     failed_lifecycle();
     PhysicsFixture f;
     auto entity = f.make({0, 4, 0}, dynamic_body());

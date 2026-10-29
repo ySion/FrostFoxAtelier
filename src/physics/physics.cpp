@@ -1105,6 +1105,17 @@ Result<void> PhysicsScene::step(float elapsed) {
     constexpr float fixed = fixed_step;
     constexpr std::uint32_t maximum_steps = 8;
     StepResult result{.runtime_cooks = std::exchange(runtime_cooks_, 0), .completed_step = completed_step_};
+    const auto finish_stopped = [&]() -> Result<void> {
+        // Stop/close removed participation. Discard pending time and events,
+        // including ended events queued by body removal, but keep completed solves.
+        remaining_ = 0;
+        single_step_ = false;
+        tracked_ = false;
+        impl_->ready_events.clear();
+        result.remaining = 0;
+        last_step_ = result;
+        return {};
+    };
     if (!paused_) {
         const float accumulated = remaining_ + elapsed;
         remaining_ = std::min(accumulated, fixed * maximum_steps);
@@ -1127,6 +1138,7 @@ Result<void> PhysicsScene::step(float elapsed) {
             } catch (...) {
                 return failure(ErrorCode::invocation_failed, "Before-step handler threw an unknown exception.");
             }
+            if (!world_.running()) return finish_stopped();
             if (auto followed = follow_handler(*opened); !followed) return followed;
         }
         if(auto input=components_->before_step(fixed); !input) return std::unexpected(input.error());
@@ -1303,6 +1315,7 @@ Result<void> PhysicsScene::step(float elapsed) {
             } catch (...) {
                 return failure(ErrorCode::invocation_failed, "After-step handler threw an unknown exception.");
             }
+            if (!world_.running()) return finish_stopped();
             if (auto followed = follow_handler(*opened); !followed) return followed;
         }
     }
@@ -1329,6 +1342,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         } catch (...) {
             return failure(ErrorCode::invocation_failed, "Contact handler threw an unknown exception.");
         }
+        if (!world_.running()) return finish_stopped();
     }
     last_step_ = result;
     return {};

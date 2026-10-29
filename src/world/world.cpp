@@ -150,7 +150,7 @@ Result<void> World::Impl::admit_edit(ObjectId object) const {
     }
     return {};
 }
-Result<void> World::Impl::relocate(ObjectId edited) {
+Result<void> World::Impl::relocate(ObjectId edited) try {
     const auto systems = simulations;
     for (const auto& entry : systems) {
         if (!entry.simulation || !entry.simulation->relocated) continue;
@@ -165,12 +165,17 @@ Result<void> World::Impl::relocate(ObjectId edited) {
             }
         }
         if (moved.empty()) continue;
-        relocating = true;
+        detail::FlagScope relocating_scope{relocating};
         auto relocated = entry.simulation->relocated(moved);
-        relocating = false;
         if (!relocated) return relocated;
     }
     return {};
+} catch (const std::bad_alloc&) {
+    return error(ErrorCode::capacity_exceeded, "World simulation relocation ran out of memory.");
+} catch (const std::exception& exception) {
+    return error(ErrorCode::invocation_failed, exception.what());
+} catch (...) {
+    return error(ErrorCode::invocation_failed, "World simulation relocation threw an unknown exception.");
 }
 void World::Impl::changed(bool spatial) noexcept {
     schedule_dirty = buckets_dirty = true;
@@ -923,12 +928,12 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
         auto current = read_transform(runtime(), object);
         if (!current) return std::unexpected(current.error());
         if (!std::holds_alternative<float>(value)) return error(ErrorCode::type_mismatch, "Transform fields require float values.");
-        if (auto i = match(types().position_fields)) {
-            std::array fields{&current->position.x, &current->position.y, &current->position.z}; *fields[*i] = std::get<float>(value);
-        } else if (auto i = match(types().rotation_fields)) {
-            std::array fields{&current->rotation.x, &current->rotation.y, &current->rotation.z, &current->rotation.w}; *fields[*i] = std::get<float>(value);
-        } else if (auto i = match(types().scale_fields)) {
-            std::array fields{&current->scale.x, &current->scale.y, &current->scale.z}; *fields[*i] = std::get<float>(value);
+        if (position) {
+            std::array fields{&current->position.x, &current->position.y, &current->position.z}; *fields[*position] = std::get<float>(value);
+        } else if (rotation) {
+            std::array fields{&current->rotation.x, &current->rotation.y, &current->rotation.z, &current->rotation.w}; *fields[*rotation] = std::get<float>(value);
+        } else if (scale) {
+            std::array fields{&current->scale.x, &current->scale.y, &current->scale.z}; *fields[*scale] = std::get<float>(value);
         }
         return set_transform(object, *current);
     }

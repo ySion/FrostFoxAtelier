@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
@@ -498,10 +499,11 @@ void isolated_failures() {
     take(world.set_transform(f.id(), {})); take(world.set_transform(g.id(), {}));
     // A registered simulation owns g's pose, as PhysicsScene does for bodies.
     std::vector<ObjectId> relocations;
-    bool refuse_relocation{}, relocation_reentry_rejected{};
+    bool refuse_relocation{}, throw_relocation{}, relocation_reentry_rejected{};
     take(world.add_simulation({.step = [](float) -> Result<void> { return {}; }, .writes_pose = [g = g.id()](ObjectId entity) { return entity == g; },
         .relocated = [&](std::span<const ObjectId> moved) -> Result<void> {
             relocation_reentry_rejected = !world.set_transform(f.id(), {});
+            if (throw_relocation) throw std::runtime_error("Intentional relocation exception.");
             if (refuse_relocation) return std::unexpected(Error{ErrorCode::unsupported_operation, "Intentional relocation refusal."});
             relocations.assign(moved.begin(), moved.end());
             return {};
@@ -606,6 +608,30 @@ void isolated_failures() {
     reject(world.set_transform(g.id(), {{0, 9, 0}, {}, {1, 1, 1}}), "A refused relocation kept the edit.");
     require(near(take(w::read_transform(runtime, g.id())).position.y, 5), "A refused relocation did not restore the transform.");
     refuse_relocation = false;
+    const auto before_exception = take(w::read_transform(runtime, g.id()));
+    throw_relocation = true;
+    try {
+        const auto failed = world.set_transform(g.id(), {{2, 9, -3}, {0, 0, 1, 0}, {2, 3, 4}});
+        require(!failed && failed.error().code == ErrorCode::invocation_failed && failed.error().message == "Intentional relocation exception.",
+            "A relocation exception did not return its invocation failure.");
+        require(world.running() && relocation_reentry_rejected && take(w::read_transform(runtime, g.id())) == before_exception,
+            "A relocation exception changed the TRS, stopped the World or allowed reentry.");
+        throw_relocation = false;
+        const w::Trs after_exception{{-2, 6, 3}, {}, {1, 2, 1}};
+        take(world.set_transform(g.id(), after_exception));
+        require(take(w::read_transform(runtime, g.id())) == after_exception,
+            "An edit after a relocation exception did not publish its transform.");
+    } catch (const std::exception& exception) {
+        // A broken relocation guard also blocks World destruction. Preserve the
+        // first failure and exit nonzero without unwinding through that World.
+        std::fprintf(stderr, "World acceptance: FAIL (relocation exception recovery): %s\n", exception.what());
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    } catch (...) {
+        std::fputs("World acceptance: FAIL (relocation exception recovery): unknown exception\n", stderr);
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
     events.clear(); committed(world.stop());
     require(events == std::vector<Event>{{'E',m_id},{'E',d_id},{'E',c_id},{'E',b_id},{'E',a_id}}, "Isolation broke End pairing or reverse order.");
     fail_begin = d_id; committed(world.start());

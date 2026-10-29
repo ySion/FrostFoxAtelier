@@ -30,6 +30,8 @@ step 的 CPU 墙钟记为[帧阶段计时](../../foundation.md#帧阶段计时)�
 
 物理失败遵循 World 的[失败策略](../world/README.md#失败策略与诊断)，诊断以 physics 阶段写入同一 World 日志。isolate 下，普通 body 协调失败的 Entity 不保留普通 body，其余 Entity 照常模拟；位姿写入者冲突时拒绝普通 body，保留控制器组件；同一 Entity 上有多个位姿控制器（Character、Ragdoll 任意组合或同类重复）时，该 Entity 上写入位姿或依赖 body 的控制器组件（Character、Ragdoll、Force、KinematicMotion、DistanceConstraint）全部拒绝，与创建先后无关，只读 owner 空间的 Scene Query 照常工作；控制器组件逐项创建、采样与回写，失败项不创建或跳过该步，下一步重新采样；被拒绝的位姿不回写。halt 保持原行为：首个失败使该次 `World::update` 或生命周期调用失败。
 
+前步、后步或接触宿主回调成功调用 `World::stop/close` 后，本次 update 成功结束，不继续求解、回写或派发剩余接触。`last_step` 保留本次已完成的子步与累计步号，剩余时间归零；停止期间产生的待交付 ended 也被丢弃，重启不补旧步或旧事件。World 仍运行时普通对象停用、移除产生的 ended 不受此规则影响。
+
 ### 渲染插值
 
 模拟按 60 Hz 固定步推进，显示帧率更高时 World 的位姿每隔几帧才变一次。`presented_poses()` 给出本帧的呈现位姿，交给 `presentation::Scene::update`（见[呈现位姿](../presentation/README.md#呈现位姿)）：最近一个发布了位姿的固定子步里，每个被 World 接受的 Entity 一条，位置在上一位姿和本步位姿之间线性插值，旋转沿短弧 nlerp，比例为 `remaining / step`（剩余时间除以步长，∈ [0, 1)），所以画面最多比模拟晚一步，不外推。只有呈现结果插值：World 的 TRS、玩法、查询、TRS 逐位比较都看本步的权威位姿。
