@@ -258,5 +258,24 @@ void verify_project_workspace(editor::Project& project) {
         "Refresh or temporary invisibility changed a resource's row identity.");
     workspace.assets.reset(true);workspace.assets.navigate(L"Source");present({1600,1000},1);present({1600,1000},1);
     require(workspace.assets.row_key(unicode_resource)>unicode_key,"Reset reused a previous resource identity.");
+
+    // Path order differs from display-name order and from native-string order at prefix siblings.
+    const std::array<std::filesystem::path,3> directories{
+        "Source/DirectoryLookup/Z-parent/child","Source/DirectoryLookup/Z-parent-2","Source/DirectoryLookup/a-last"};
+    for(const auto& path:directories) std::filesystem::create_directories(project.root()/path);
+    take(project.refresh());workspace.assets.navigate(directories[0]);present({1600,1000},1);
+    take(workspace.assets.set_expanded(directories,true));
+    require(surface.presented()->find(workspace.assets.directory_control(directories[0])),
+        "A newly discovered current directory did not expand its ancestors.");
+    for(const auto* missing:{"Source/DirectoryLookup/A-missing","Source/DirectoryLookup/Z-parent/missing","Source/DirectoryLookup/z-missing"})
+        require(!workspace.assets.set_expanded(std::array{std::filesystem::path{missing}},true),"Directory lookup admitted an absent path.");
+    workspace.assets.navigate(directories[1]);workspace.assets.navigate(directories[2]);present({1600,1000},1);
+    std::filesystem::remove(project.root()/directories[1]);take(project.refresh());present({1600,1000},1);
+    require(workspace.assets.directory()==directories[2],"Refresh discarded a surviving current directory.");
+    workspace.assets.apply({ui::ActionKind::activate,browser::back,{}});present({1600,1000},1);
+    require(workspace.assets.directory()==directories[0],"Back navigation retained a removed directory or lost a surviving one.");
+    std::filesystem::remove_all(project.root()/"Source/DirectoryLookup");take(project.refresh());present({1600,1000},1);
+    require(!workspace.assets.engine() && workspace.assets.directory().empty() &&
+        !workspace.assets.set_expanded(directories,true),"Removed current directories or expansion state survived refresh.");
     std::puts("Project workspace acceptance: PASS (real Table headers, numeric/folder/key sort, column minima, current cell, virtual navigation, view retention, UTF-8 identity, 1/1.5/2 DPI)");
 }

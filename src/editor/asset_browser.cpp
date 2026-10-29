@@ -26,6 +26,10 @@ int compare_names(std::wstring_view a,std::wstring_view b) {
     }
     return a.size()==b.size()?0:a.size()<b.size()?-1:1;
 }
+// Directory lists preserve the Project scan's path order, independently of the result table's sorting.
+bool listed(const std::vector<AssetBrowser::Item>& directories,const std::filesystem::path& path) {
+    return std::ranges::binary_search(directories,path,{},&AssetBrowser::Item::path);
+}
 constexpr std::array column_minima{96.f,64.f,64.f};
 std::optional<std::size_t> column_index(ui::TableKey key) {
     if (key>=browser_control::name_column && key<=browser_control::size_column) return static_cast<std::size_t>(key-browser_control::name_column);
@@ -81,16 +85,16 @@ void AssetBrowser::update_directories(const Project* project) {
         directories_.push_back({entry.key,entry.path,entry.path.filename().wstring(),entry.kind,0});
         targets_.push_back({key_for("nav:"+assets::utf8(entry.path.generic_wstring())),directories_.back()});
         // A directory first appears expanded when it is or holds the current directory.
-        if (!engine_ && std::ranges::none_of(previous,[&](const auto& item){return item.path==entry.path;}))
+        if (!engine_ && !listed(previous,entry.path))
             if (const auto relative=directory_.lexically_relative(entry.path);!relative.empty() && *relative.begin()!=L"..")
                 expansion_.try_emplace(entry.path,true);
     }
     std::erase_if(expansion_,[&](const auto& entry) {
-        return !entry.first.empty() && std::ranges::none_of(directories_,[&](const auto& item){return item.path==entry.first;});
+        return !entry.first.empty() && !listed(directories_,entry.first);
     });
     const auto valid=[&](const Location& location) {
         return location.engine || (has_project_ && (location.directory.empty() ||
-            std::ranges::any_of(directories_,[&](const auto& item){return item.path==location.directory;})));
+            listed(directories_,location.directory)));
     };
     if (!valid({engine_,directory_})) visit({!has_project_,{}},false);
     std::size_t destination{},cursor{};
@@ -134,7 +138,7 @@ const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::direc
 }
 Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> paths,bool expanded) {
     for (const auto& path:paths)
-        if (path.empty()?!has_project_:std::ranges::none_of(directories_,[&](const auto& item){return item.path==path;}))
+        if (path.empty()?!has_project_:!listed(directories_,path))
             return std::unexpected(Error{ErrorCode::invalid_member,"The path is not a directory row of the Asset Browser."});
     for (const auto& path:paths) expansion_[path]=expanded;
     directory_items_dirty_=true;return {};
