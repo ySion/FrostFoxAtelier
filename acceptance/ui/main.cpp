@@ -595,6 +595,7 @@ int main() {
         {"list_and_splitter",list_and_splitter},{"identity_and_lifetime",identity_and_lifetime},
         {"style_and_invalidation",style_and_invalidation},{"visible_range_and_accounting",visible_range_and_accounting},
         {"styled_baseline_placement",styled_baseline_placement},{"single_line_labels",single_line_labels},{"shared_edit_history_and_focus",shared_edit_history_and_focus},
+        {"read_only_code_document",read_only_code_document},
         {"unicode_visual_editing",unicode_visual_editing},{"clipboard_roundtrips",clipboard_roundtrips},
         {"composition_protocol_and_cleanup",composition_protocol_and_cleanup},{"accepted_input_anchor",accepted_input_anchor},
         {"accepted_text_style_snapshot",accepted_text_style_snapshot},{"style_sheets",style_sheets},{"shared_tree_view",shared_tree_view},

@@ -53,5 +53,13 @@
     "version": "3.12.0",
     "url": "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz",
     "sha256": "42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa"
+  },
+  "quill": {
+    "version": "13.1.0",
+    "tag": "v13.1.0",
+    "commit": "78c0696c5be589488d882c280796dfa06bdcd492",
+    "url": "https://codeload.github.com/odygrd/quill/tar.gz/78c0696c5be589488d882c280796dfa06bdcd492",
+    "sha256": "41a26da7c271b0ba583ebf1ac2b5e2efb49b883ed79a9eddd0eb7904e27df9d6",
+    "filename": "quill-78c0696c.tar.gz"
   }
 }

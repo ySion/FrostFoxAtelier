@@ -76,10 +76,21 @@ struct EditorAcceptanceAccess {
     static const auto& project_build(const Application& app) {return app.workspace_.project_build;}
     static bool project_running(const Application& app) {return app.play_.running();}
     static bool output_contains(const Application& app,std::wstring_view text) {
-        for(const auto& row:app.workspace_.output->rows) if(row.cells.front().text.find(text)!=std::wstring::npos) return true;
+        const auto utf8=assets::utf8(text);
+        for(const auto& item:app.workspace_.output.records()) if(item.record.entry.message.find(utf8)!=std::string::npos) return true;
         return false;
     }
-    static const ui::TableData& output(const Application& app) {return *app.workspace_.output;}
+    static const editor::Output& output(const Application& app) {return app.workspace_.output;}
+    static editor::Output& output(Application& app) {return app.workspace_.output;}
+    static bool text_input(const Application& app) {return app.ui_.text_input().has_value();}
+    static void output_layout(Application& app,bool narrow=false) {
+        auto& dock=app.workspace_.dock;dock.select(editor::control::output_tab);
+        if(narrow) {
+            for(const auto& pane:dock_presentation(app).panes) if(pane.active && pane.active->key==editor::control::output_tab && pane.maximized)
+                dock.maximize(editor::control::output_tab);
+            dock.move(editor::control::output_tab,editor::control::scene_tab,ui::DockSide::right,.28f);
+        } else dock.maximize(editor::control::output_tab);
+    }
 
     static auto name_control(const Application& app,ObjectId entity) { return app.workspace_.name_control(entity); }
     static ui::TreeViewport tree_viewport(const Application& app,ui::ControlKey tree) { return app.ui_.tree_viewport(tree); }
@@ -142,7 +153,7 @@ struct EditorAcceptanceAccess {
     static void unchecked_cavity_radius(Application& app,float value) {app.workspace_.view.cavity.radius=value;}
     static std::filesystem::path project_root(const Application& app) {return app.project_?app.project_->root():std::filesystem::path{};}
     static std::filesystem::path scene_path(const Application& app) {return app.scene_path_;}
-    static auto dock_presentation(const Application& app) {
+    static ui::DockSpace::Presentation dock_presentation(const Application& app) {
         const auto size=app.surface_.extent;
         return app.workspace_.dock.presentation(0,{float(size.width)/app.surface_.dpi_scale,float(size.height)/app.surface_.dpi_scale});
     }
@@ -1132,6 +1143,7 @@ RECT await_acceptance_activation(Application& app,const std::filesystem::path& o
 #include "viewport.inl"
 #include "viewport_edit_window.inl"
 #include "scene_lit_window.inl"
+#include "output_window.inl"
 }
 
 void guard_acceptance_native_dialogs() {
@@ -1256,22 +1268,34 @@ int verify_editor_shortcuts(Application& app,const char* output_directory) {
     key('Z',ui::Key::z,true,true);tick(app);
     require(app.document().world().members()->size()==2,"Redo did not restore the duplicate.");
     {
-        // Zero scale is legal but degenerate: Project Output shows one line, counted in place when it recurs.
+        // Zero scale is legal but degenerate: only an explicit domain Repeat may coalesce it.
         auto& document=Access::physics_document(app);const auto copy=document.selection().entity;
         const auto original=*world::read_transform(document.world().runtime(),copy);auto flat=original;flat.scale={0,1,1};
         const auto degenerate=[&] {
-            std::vector<std::wstring> lines;
-            for(const auto& row:Access::output(app).rows)
-                if(row.cells.front().text.find(L"degenerate_value")!=std::wstring::npos) lines.push_back(row.cells.front().text);
-            return lines;
+            std::vector<editor::Output::Row> rows;
+            const auto& output=Access::output(app);
+            for(const auto& row:output.rows()) if(output.record(row.key)->entry.event_code=="world.degenerate_value") rows.push_back(row);
+            return rows;
         };
         const auto flatten=[&](const world::Trs& value) {require(bool(document.set_transform(copy,value)),"A zero or restored scale was rejected.");tick(app);};
+        const auto await_count=[&](std::uint64_t count) {
+            const auto deadline=GetTickCount64()+10000;
+            do {tick(app,1);const auto rows=degenerate();if(rows.size()==1 && rows.front().count==count) return rows;} while(GetTickCount64()<deadline);
+            throw std::runtime_error("Structured zero-scale diagnostic did not arrive with its expected repeat count.");
+        };
         flatten(flat);
-        auto lines=degenerate();
-        require(lines.size()==1 && lines[0].starts_with(L"Diagnostic [warning] degenerate_value in presentation") &&
-            lines[0].find(L" scale: ")!=std::wstring::npos && lines[0].find(L"(×")==std::wstring::npos,"Zero scale did not report one degenerate warning.");
-        flatten(original);flatten(flat);lines=degenerate();
-        require(lines.size()==1 && lines[0].ends_with(L" (×2)"),"A recurring zero scale was not counted on its existing Project Output line.");
+        const auto first=await_count(1);const auto& entry=Access::output(app).record(first.front().key)->entry;
+        const auto field=[&](std::string_view name,std::string_view value) {
+            return std::ranges::any_of(entry.fields,[&](const auto& item) {const auto* text=std::get_if<std::string>(&item.value);return item.key==name && text && *text==value;});
+        };
+        require(entry.severity==logging::Severity::warning && field("phase","presentation") && field("field_path","/scale") && entry.repeat,
+            "Zero scale did not retain typed warning/phase/field/repeat metadata.");
+        flatten(original);flatten(flat);const auto repeated=await_count(2);
+        require(repeated.front().key==first.front().key,"A recurring zero scale replaced its existing projected row.");
+        const auto table=Access::output(app).table();const auto row=std::ranges::find(table->rows,repeated.front().key,&ui::TableRow::key);
+        const auto column=std::ranges::find(table->columns,ui::TableKey{3},&ui::TableColumn::key);
+        require(column!=table->columns.end() && row->cells[static_cast<std::size_t>(column-table->columns.begin())].text.ends_with(L" (×2)"),
+            "The structured repeat count lost its visible ×2 suffix.");
         flatten(original);
     }
     move(x,y);key('X');tick(app);
@@ -1348,6 +1372,22 @@ int verify_editor_edit_mode(Application& app,const char* output_directory) {
     std::ofstream(output/"acceptance.txt")<<"Editor edit-mode window acceptance: PASS\nBuild: "<<atelier::build_info::revision
         <<"\nConfiguration: "<<atelier::build_info::configuration<<"\nNative selection, grouped transforms, parameter tuples, undo/redo, cancellation and resource inspection.\n";
     std::puts("Editor edit-mode window acceptance: PASS");return 0;
+}
+
+int verify_editor_output(Application& app,const char* output_directory) {
+    using Access=atelier::application::EditorAcceptanceAccess;
+    const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);hr(com);
+    struct ComScope {~ComScope(){CoUninitialize();}} com_scope;
+    const auto output=std::filesystem::absolute(atelier::assets::wide(output_directory));
+    std::filesystem::create_directories(output);
+    await_acceptance_activation(app,output,"Output");tick(app);
+    click(app,control::add_static_mesh);
+    verify_output_window(app,output);
+    Access::mark_saved(app);SendMessageW(app.window(),WM_CLOSE,0,0);require(!app.step(),"Output acceptance did not close cleanly.");
+    std::ofstream(output/"acceptance.txt")<<"Editor Output window acceptance: PASS\nBuild: "<<atelier::build_info::revision
+        <<"\nConfiguration: "<<atelier::build_info::configuration<<"\nAccepted frames: "<<app.accepted_frames()
+        <<"\nReal Quill/JSONL, mixed severity, explicit repeat, native filters/empty state, complete Unicode/control body, native copy/read-only, source locate/edit/undo, slow-reader cache eviction and narrow dock.\n";
+    std::puts("Editor Output window acceptance: PASS");return 0;
 }
 
 int verify_editor_source(Application& app,const char* output_directory) {

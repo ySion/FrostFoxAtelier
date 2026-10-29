@@ -39,6 +39,7 @@ struct TableBinding {
 struct CodeBinding {
     std::shared_ptr<ui::CodeDocument> document;
     bool enabled{true};
+    bool read_only{}; // Selection, copy and navigation remain enabled; UI input cannot modify the document.
     bool operator==(const CodeBinding&) const = default;
 };
 // Optional immutable help shared with native controls. It owns text only, never

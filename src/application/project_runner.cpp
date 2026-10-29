@@ -6,11 +6,13 @@
 #include "application/window.hpp"
 #include "application/presentation.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/diagnostics.hpp"
 #include "application/timing.hpp"
 #include "editor/performance.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "renderer/renderer.hpp"
+#include "logging/native.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -45,24 +47,28 @@ std::uint64_t number(std::wstring_view text) {
     }
     return value;
 }
-// The Play report in Project Output: frame statistics of the last window, the
-// means of the top-level phases and any timing structure errors of the run.
-void print_performance(const editor::FramePerformance& performance,std::uint64_t frames) {
+void report_performance(const editor::FramePerformance& performance,std::uint64_t frames) noexcept try {
     const auto& cpu=performance.snapshot().cpu;
-    if(!cpu.samples) {std::printf("Performance: %llu frames, none accepted\n",static_cast<unsigned long long>(frames));return;}
-    const auto& frame=*cpu.phases[timing::frame.index()];
-    auto line=std::format("Performance: {} frames (window {}), frame mean {:.3f} ms, p95 {:.3f} ms, max {:.3f} ms",
-        frames,cpu.samples,frame.mean,frame.p95,frame.max);
-    if(cpu.interval) line+=std::format(", {:.1f} FPS",1000/cpu.interval->mean);
-    std::string phases="Performance phases (mean ms):";
+    logging::Entry entry{.category="runner",.event_code="runner.performance",.message="Run frame performance."};
+    entry.fields={{"frames",frames},{"samples",std::uint64_t{cpu.samples}},{"structure_errors",performance.structure_errors()}};
+    if(cpu.samples) {
+        const auto& frame=*cpu.phases[timing::frame.index()];
+        entry.fields.insert(entry.fields.end(),{{"frame_mean_ms",frame.mean},{"frame_p95_ms",frame.p95},{"frame_max_ms",frame.max},
+            {"unattributed_mean_ms",cpu.unattributed->mean}});
+    }
+    static_cast<void>(logging::submit(std::move(entry)));
     for(const auto* marker:timing::catalog())
-        if(const auto& phase=cpu.phases[marker->index()];phase && marker->parent()==&timing::frame)
-            phases+=std::format(" {} {:.3f}",marker->key(),phase->mean);
-    phases+=std::format(" unattributed {:.3f}",cpu.unattributed->mean);
-    std::printf("%s\n%s\n",line.c_str(),phases.c_str());
-    if(const auto errors=performance.structure_errors())
-        std::printf("Performance: %llu timing structure errors, first %s\n",static_cast<unsigned long long>(errors),
-            performance.first_structure_error()?std::string(performance.first_structure_error()->key()).c_str():"frame");
+        if(const auto& phase=cpu.phases[marker->index()];phase && marker->parent()==&timing::frame) {
+            const std::array fields{logging::Field{"phase",std::string(marker->key())},logging::Field{"mean_ms",phase->mean}};
+            static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"runner","runner.performance_phase",
+                logging::native::Context{fields},"Run phase {} mean {} ms",marker->key(),phase->mean));
+        }
+} catch(...) {std::fputs("Runner performance diagnostic capture failed.\n",stderr);}
+void startup_checkpoint() noexcept {
+    // One startup boundary, not a per-frame barrier. The record must be visible
+    // even if the very next Source invocation never returns.
+    try {if(auto* run=logging::current_run()) static_cast<void>(run->flush());}
+    catch(...) {std::fputs("Runner startup log checkpoint failed.\n",stderr);}
 }
 }
 int run_project_command(std::span<wchar_t*> arguments) {
@@ -95,7 +101,9 @@ int run_project_command(std::span<wchar_t*> arguments) {
             live.emplace(std::make_unique<LiveLink>(live_read,live_write));options.channel=&*live;
         }
         return run_project(options);
-    }catch(const std::exception& error){std::fprintf(stderr,"Project run: %s\n",error.what());return 2;}
+    }catch(const std::exception& error){
+        static_cast<void>(ATELIER_LOG(logging::Severity::error,"runner","runner.command_rejected","Project command: {}",std::string_view(error.what())));return 2;
+    }
 }
 int run_project(const RunOptions& options) {
     struct StopEvent {HANDLE value;~StopEvent(){if(value) CloseHandle(value);}} stop_event{options.stop_event};
@@ -116,24 +124,25 @@ int run_project(const RunOptions& options) {
         if(options.halt) take(document.set_failure_policy(world::FailurePolicy::halt));
         // The editor owns document identities; this copy addresses objects it spawns by runtime handle.
         if(!options.preview_ui) document.enter_play();
-        if(const auto summary=editor::describe_issues(document,document.load_issues(),L"Scene");!summary.empty())
-            {std::printf("%s\n",assets::utf8(summary.front()).c_str());std::fflush(stdout);}
+        report_load(document,project.root());
         // Isolated failures keep Play running; under halt the failing call is reported before it stops the run.
         std::uint64_t dropped{};
         const Report report=[&](std::span<const world::Diagnostic> items) {
-            for(const auto& item:items) std::printf("%s\n",assets::utf8(editor::describe_diagnostic(document,item)).c_str());
-            std::fflush(stdout);
+            report_world(document,items,project.root(),"live");
         };
         const auto report_diagnostics=[&] {
-            report(document.take_diagnostics());
-            if(const auto lost=document.world().dropped_diagnostics();lost!=dropped)
-                {std::printf("Diagnostics: %llu dropped while the log was full.\n",static_cast<unsigned long long>(lost-dropped));dropped=lost;}
-            std::fflush(stdout);
+            drain_world(document,project.root(),dropped);
         };
         struct StopWorld {
-            editor::Session& session;
-            ~StopWorld(){auto stopped=session.stop();if(!stopped) std::fprintf(stderr,"Project stop: %s\n",stopped.error().message.c_str());}
-        } stop_world{document};
+            editor::Session& session;const std::filesystem::path& root;std::uint64_t& dropped;
+            ~StopWorld(){
+                try {
+                    auto stopped=session.stop();drain_world(session,root,dropped);
+                    if(!stopped) static_cast<void>(ATELIER_LOG(logging::Severity::error,"runner","runner.cleanup_failed","Project stop: {}",stopped.error().message));
+                    else if(stopped->notification_error) static_cast<void>(ATELIER_LOG(logging::Severity::error,"runner","runner.cleanup_failed","Project stop notification: {}",stopped->notification_error->message));
+                } catch(...) {std::fputs("Runner World cleanup failed.\n",stderr);}
+            }
+        } stop_world{document,project.root(),dropped};
         editor::ProjectUI project_ui;project_ui.sync(&project);
         ui::Session ui(editor_fonts());
         auto style=ui.style();style.font.family=L"Sarasa UI SC";style.font.size=12.5f;style.caption_scale=1;
@@ -149,7 +158,8 @@ int run_project(const RunOptions& options) {
         effects=[&](const ui::Reply& reply) {
             for(const auto& effect:reply.effects) {
                 if(const auto* action=std::get_if<ui::Action>(&effect)) {
-                    const auto handled=project_ui.event(*action);if(!handled) std::fprintf(stderr,"Project UI: %s\n",handled.error().message.c_str());
+                    const auto handled=project_ui.event(*action);if(!handled)
+                        static_cast<void>(ATELIER_LOG(logging::Severity::error,"runner","runner.ui_action_failed","Project UI: {}",handled.error().message));
                 } else if(window) std::visit([&](const auto& request) {
                     using T=std::decay_t<decltype(request)>;
                     if constexpr(std::same_as<T,ui::ClipboardRequest>) effects(ui.input({.kind=ui::EventKind::clipboard_result,.data=window->clipboard(request)}));
@@ -161,12 +171,14 @@ int run_project(const RunOptions& options) {
                 if(reply.cursor) window->cursor(*reply.cursor);
             }
         };
-        if(project_ui.configured()) {std::printf("Project UI evaluating\n");std::fflush(stdout);}
+        if(project_ui.configured()) {
+            static_cast<void>(ATELIER_LOG(logging::Severity::info,"runner","runner.ui_evaluating","Project UI evaluating"));startup_checkpoint();
+        }
         SceneSnapshot scene;
         std::uint64_t frame{},surface_revision{1},ui_revision{};double elapsed{};bool started{};
         std::optional<atelier::presentation::CameraSnapshot> accepted_camera;
         std::string camera_error;
-        auto previous=std::chrono::steady_clock::now();auto last_report=loaded.build;std::string ui_error;
+        auto previous=std::chrono::steady_clock::now();std::string ui_error;
         RenderClock lighting_clock;LitFallback lit_fallback;std::string render_failure,material_failure;
         const auto prepare_scene=[&] {
             timing::Scope snapshot{phases::scene};
@@ -176,7 +188,7 @@ int run_project(const RunOptions& options) {
             const auto failure=progress?std::string{}:progress.error().cause.message;
             if(failure!=material_failure) {
                 material_failure=failure;
-                if(!failure.empty()) {std::printf("Material preparation failed: %s\n",failure.c_str());std::fflush(stdout);}
+                if(!failure.empty()) static_cast<void>(ATELIER_LOG(logging::Severity::error,"material","material.failed","Material preparation failed: {}",failure));
             }
             return progress && progress->ready;
         };
@@ -201,12 +213,6 @@ int run_project(const RunOptions& options) {
             if(loaded.code) {
                 timing::Scope polling{phases::project};
                 static_cast<void>(loaded.code->poll(project));
-                if(loaded.code->report()!=last_report) {
-                    last_report=loaded.code->report();
-                    if(last_report->error) std::printf("Build: %s\n",last_report->error->message.c_str());
-                    else std::printf("Build published: %llu\n",static_cast<unsigned long long>(last_report->published_version));
-                    std::fflush(stdout);
-                }
             }
             const auto target=renderer?graphics(renderer->target()):renderer::Target{{1280,720},true};
             const auto extent=target.drawable?target.extent:ui::PixelExtent{};
@@ -226,7 +232,10 @@ int run_project(const RunOptions& options) {
             if(prepared && !started && can_start) {
                 if(!options.preview_ui) {auto begun=document.start();report_diagnostics();complete(std::move(begun));}
                 started=true;
-                std::printf("Project started: %s\n",assets::utf8(project.root().wstring()).c_str());std::fflush(stdout);
+                const std::array fields{logging::Field{"project_root",assets::utf8(project.root().generic_wstring())},
+                    logging::Field{"document",document.presentation().identity()},logging::Field{"preview_ui",options.preview_ui}};
+                static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"runner","runner.started",logging::native::Context{fields},
+                    "Project started: {}",assets::utf8(project.root().wstring())));startup_checkpoint();
             }
             if(started && !options.preview_ui) {auto updated=document.update(dt);report_diagnostics();take(std::move(updated));}
             {timing::Scope collecting{phases::gc};take(document.collect_step());}
@@ -263,15 +272,18 @@ int run_project(const RunOptions& options) {
             if(!camera) {accepted_camera.reset();lighting_clock.reset();focus={};view={};}
             if(unavailable!=camera_error) {
                 camera_error=std::move(unavailable);
-                if(!camera_error.empty()) {std::printf("Main camera: %s\n",camera_error.c_str());std::fflush(stdout);}
+                if(!camera_error.empty()) static_cast<void>(ATELIER_LOG(logging::Severity::warning,"runner","runner.camera_unavailable","Main camera: {}",camera_error));
             }
             const bool camera_cut=camera && (!accepted_camera || camera->entity!=accepted_camera->entity ||
                 camera->vertical_fov!=accepted_camera->vertical_fov || camera->near_clip!=accepted_camera->near_clip ||
                 camera->far_clip!=accepted_camera->far_clip);
             if(project_ui.revision()!=ui_revision) {
-                ui_revision=project_ui.revision();std::printf("Project UI published: %llu\n",static_cast<unsigned long long>(ui_revision));std::fflush(stdout);
+                ui_revision=project_ui.revision();
+                const std::array fields{logging::Field{"ui_revision",ui_revision}};
+                static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"runner","runner.ui_published",logging::native::Context{fields},"Project UI published: {}",ui_revision));
             }
-            if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty()) {std::printf("Project UI: %s\n",ui_error.c_str());std::fflush(stdout);}}
+            if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty())
+                static_cast<void>(ATELIER_LOG(logging::Severity::error,"runner","runner.ui_failed","Project UI: {}",ui_error));}
             if(prepared && started) {
                 if(renderer) {
                     const auto& group=*scene.draw();
@@ -287,13 +299,14 @@ int run_project(const RunOptions& options) {
                     const auto drawn=graphics(lit_fallback.render(*renderer,rendered,nullptr));
                     if(drawn.failure!=render_failure) {
                         render_failure=drawn.failure;
-                        if(!render_failure.empty()) {std::printf("Shader preparation failed: %s\n",render_failure.c_str());std::fflush(stdout);}
+                        if(!render_failure.empty()) static_cast<void>(ATELIER_LOG(logging::Severity::error,"material","material.shader_failed","Shader preparation failed: {}",render_failure));
                     }
                     const auto& result=drawn.result;
                     if(result.status==renderer::FrameStatus::accepted) {
                         if(result.accepted_id!=rendered.ui_frame.id || result.accepted_extent!=rendered.ui_frame.extent)
                             throw std::runtime_error("Project renderer accepted a mismatched frame.");
                         if(!ui.accept(prepared)) throw std::runtime_error("Project UI refused the rendered frame.");
+                        if(camera) scene.accept(result.accepted_id,drawn.fallback,drawn.view.shading);
                         lighting_clock.accept(lighting_start,lighting_active && drawn.view.shading==renderer::Shading::scene_lit);
                         if(drawn.view.shading==renderer::Shading::scene_lit) accepted_camera=camera;
                         sampled=result.accepted_id;
@@ -312,9 +325,12 @@ int run_project(const RunOptions& options) {
         }
         {auto stopped=document.stop();report_diagnostics();complete(std::move(stopped));}
         if(!options.report.empty()) take(editor::write_file(options.report,take(document.serialize())));
-        performance.publish();print_performance(performance,frame);
-        std::printf("Project stopped: %llu frames\n",static_cast<unsigned long long>(frame));std::fflush(stdout);
+        performance.publish();report_performance(performance,frame);
+        const std::array fields{logging::Field{"frames",frame},logging::Field{"document",document.presentation().identity()}};
+        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"runner","runner.stopped",logging::native::Context{fields},"Project stopped: {} frames",frame));
         return 0;
-    }catch(const std::exception& error){std::fprintf(stderr,"Project run: %s\n",error.what());std::fflush(stderr);return 1;}
+    }catch(const std::exception& error){
+        static_cast<void>(ATELIER_LOG(logging::Severity::error,"runner","runner.failed","Project run: {}",std::string_view(error.what())));return 1;
+    }
 }
 }

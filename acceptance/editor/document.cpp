@@ -78,6 +78,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "ui_source_patch.inl"
 #include "ui_reload_profile.inl"
 #include "source_editor.inl"
+#include "output.inl"
 #include "viewport_edit.inl"
 #include "entity_composition.inl"
 #include "scene_lit.inl"
@@ -131,6 +132,7 @@ int main(int argc, char** argv) {
         stage="UI source patch";verify_ui_source_patch();
         stage="UI code reuse";verify_ui_code_reuse();
         stage="source editor";verify_source_editor();
+        stage="output projection";verify_output_projection();
         stage="operator parameters";verify_operator_parameters();
         stage="document history";
         {

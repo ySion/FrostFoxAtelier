@@ -88,7 +88,14 @@ private:
     void forward_live() noexcept;
     std::string pending_scene_;
     std::filesystem::path play_snapshot_;
-    std::string play_output_;
+    std::filesystem::path document_root_;
+    std::uint64_t dropped_diagnostics_{};
+    bool play_log_ended_{};
+    std::array<PlayProcess::StreamStatus,2> play_output_status_{};
+    void attach_play_output() noexcept;
+    void consume_play_output() noexcept;
+    void notice(std::string_view,std::wstring_view,logging::Severity = logging::Severity::info) noexcept;
+    void diagnostics() noexcept;
     std::chrono::steady_clock::time_point next_project_poll_{};
     bool source_build_pending_{};
     std::filesystem::path scene_path_;

@@ -1,4 +1,6 @@
 void verify_about(Application& app,std::wstring_view expected_project) {
+    auto* run=atelier::logging::current_run();require(run!=nullptr,"Menu acceptance requires the real host run.");
+    const auto before=run->flush().health.last_record_sequence;
     const auto history=app.document().undo_count();
     key(app,VK_F10);key(app,VK_LEFT);
     if(!app.menu_frame() || !app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)))
@@ -15,6 +17,7 @@ void verify_about(Application& app,std::wstring_view expected_project) {
         atelier::application::EditorAcceptanceAccess::menu_failure(app,"Help click");
     require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
         "Help omitted the About command.");
+    const auto accepted_menu_frame=app.menu_frame()->drawing->id;
     struct DialogLookup { HWND owner{},found{}; } lookup{app.window()};
     const auto thread_id=GetWindowThreadProcessId(app.window(),nullptr);
     std::wstring title,content;
@@ -57,6 +60,32 @@ void verify_about(Application& app,std::wstring_view expected_project) {
         content.contains(atelier::assets::wide(atelier::build_info::revision)),content.contains(atelier::assets::wide(atelier::build_info::configuration)),content.contains(expected_project));
     require(valid,"About did not show this binary's build identity and current project.");
     require(!app.menu_window() && app.document().undo_count()==history,"About changed document history or retained its menu.");
+    static_cast<void>(run->flush());
+    auto opened=atelier::logging::Reader::open(run->info().directory);
+    require(opened.has_value(),"Cannot read menu lifecycle evidence.");
+    bool requested{},accepted{};const auto deadline=GetTickCount64()+5000;
+    do {
+        auto batch=(*opened)->poll();
+        for(const auto& record:batch.records) {
+            if(record.record_sequence<=before) continue;
+            const auto number=[&](std::string_view key,std::uint64_t value) {
+                return std::ranges::any_of(record.entry.fields,[&](const auto& field) {
+                    const auto* found=std::get_if<std::uint64_t>(&field.value);return field.key==key && found && *found==value;
+                });
+            };
+            if(!number("source_control",control::help_menu)) continue;
+            requested|=record.entry.event_code=="menu.requested";
+            // Focus/hover may accept another popup frame after its opening
+            // frame. The opening evidence must name a real, not future frame.
+            accepted|=record.entry.event_code=="menu.frame_accepted" &&
+                std::ranges::any_of(record.entry.fields,[&](const auto& field) {
+                    const auto* frame=std::get_if<std::uint64_t>(&field.value);
+                    return field.key=="frame" && frame && *frame>0 && *frame<=accepted_menu_frame;
+                });
+        }
+        if(batch.status.caught_up) break;
+    } while(GetTickCount64()<deadline);
+    require(requested && accepted,"Menu logs confused a request/visible HWND with the actual accepted popup frame.");
 }
 
 void verify_menu_input_transitions(Application& app) {

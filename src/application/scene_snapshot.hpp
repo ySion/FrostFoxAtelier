@@ -4,9 +4,12 @@
 #include "editor/session.hpp"
 #include "editor/viewport_tool.hpp"
 #include "renderer/renderer.hpp"
+#include "logging/logging.hpp"
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <optional>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -23,6 +26,7 @@ public:
         std::uint64_t identity{};
         std::shared_ptr<const editor::ViewportScene> picking;
         std::shared_ptr<renderer::MaterialBatch> materials;
+        std::uint64_t material_request{};
     };
     // Mesh instances and lights built so far; a frame without changes builds none.
     std::uint64_t built{};
@@ -123,32 +127,50 @@ public:
             const auto matches=[&](const std::optional<Prepared>& group) {
                 return group && group->draw.materials && std::ranges::equal(group->draw.materials->surfaces(),surfaces_);
             };
-            if(matches(pending_)) batch=pending_->draw.materials;
-            else if(matches(adopted_)) batch=adopted_->draw.materials;
+            std::uint64_t preparation{};
+            if(matches(pending_)) {batch=pending_->draw.materials;preparation=pending_->draw.material_request;}
+            else if(matches(adopted_)) {batch=adopted_->draw.materials;preparation=adopted_->draw.material_request;}
             // Keep the previous code jobs alive through submission, so a new
             // parameter/image table can share compilation rather than restart it.
             [[maybe_unused]] const auto previous=pending_?pending_->draw.materials:nullptr;
-            pending_=Prepared{request_,Draw{meshes,lights,identity,picking_,std::move(batch)},{}};
+            pending_=Prepared{request_,Draw{meshes,lights,identity,picking_,std::move(batch),preparation},{}};
             if(!surfaces_.empty() && !pending_->draw.materials) {
+                pending_->draw.material_request=request_;material_event("material.requested");
                 auto submitted=renderer.prepare_materials(surfaces_);
-                if(!submitted) pending_->failure=submitted.error();
+                if(!submitted) {pending_->failure=submitted.error();material_event("material.rejected",&submitted.error());}
                 else pending_->draw.materials=std::make_shared<renderer::MaterialBatch>(std::move(*submitted));
             }
         }
         if(pending_->failure) return std::unexpected(*pending_->failure);
         auto progress=pending_->draw.materials?renderer.preparation(*pending_->draw.materials):
             renderer::Result<renderer::Preparation>{renderer::Preparation{0,0,true}};
-        if(!progress) {pending_->failure=progress.error();return progress;}
+        if(!progress) {pending_->failure=progress.error();material_event("material.rejected",&progress.error());return progress;}
         if(progress->ready) {
+            if(pending_->draw.material_request && (!adopted_ || adopted_->draw.material_request!=pending_->draw.material_request))
+                material_event("material.adopted");
             adopted_=std::move(pending_);pending_.reset();
         }
         return progress;
     }
+    // Called only after the host accepts the rendered frame. Transforms and
+    // selection can replace draw requests without changing the material group.
+    void accept(std::uint64_t frame,bool fallback,renderer::Shading shading) noexcept try {
+        if(!adopted_) return;
+        const auto& draw=adopted_->draw;
+        const auto identity=std::tuple{draw.picking->scene_identity,draw.material_request,fallback,shading};
+        if(accepted_material_==identity) return;
+        accepted_material_=identity;
+        logging::Entry entry{.category="material",.event_code="material.view_accepted",.message="Material group reached an accepted view."};
+        entry.fields={{"document",draw.picking->scene_identity},{"draw_request",adopted_->request},
+            {"request_generation",draw.material_request},{"frame",frame},{"fallback",fallback},{"shading",static_cast<std::uint64_t>(shading)}};
+        static_cast<void>(logging::submit(std::move(entry)));
+    } catch(...) {std::fputs("Material accepted-frame diagnostic capture failed.\n",stderr);}
 private:
     static constexpr std::uint32_t absent=std::numeric_limits<std::uint32_t>::max();
     struct Key { std::uint64_t value{};bool seen{}; };
     struct Synced { std::uint64_t scene,version,world_revision;std::vector<ObjectId> selection; };
     struct Prepared { std::uint64_t request;Draw draw;std::optional<renderer::Error> failure; };
+    std::optional<std::tuple<std::uint64_t,std::uint64_t,bool,renderer::Shading>> accepted_material_;
     std::unordered_map<ObjectId,Key> mesh_keys_,light_keys_;
     std::uint64_t next_key_{1};
     std::vector<std::uint32_t> dense_; // Mesh slot to its index in `meshes`, or absent.
@@ -160,6 +182,17 @@ private:
     std::uint64_t locator_cursor_{},request_{};
     std::shared_ptr<const editor::ViewportScene> picking_;
     std::optional<Prepared> pending_,adopted_;
+    void material_event(std::string_view code,const renderer::Error* error=nullptr) const noexcept {
+        try {
+            logging::Entry entry{.severity=error?logging::Severity::error:logging::Severity::info,.category="material",
+                .event_code=std::string(code),.message=error?error->cause.message:"Material preparation transition."};
+            entry.fields={{"document",picking_->scene_identity},
+                {"draw_request",pending_->request},{"surfaces",std::uint64_t{surfaces_.size()}}};
+            if(pending_->draw.material_request) entry.fields.push_back({"request_generation",pending_->draw.material_request});
+            if(error) {entry.fields.push_back({"terminal",error->terminal});entry.fields.push_back({"error_code",static_cast<std::uint64_t>(error->cause.code)});}
+            static_cast<void>(logging::submit(std::move(entry)));
+        } catch(...) {std::fputs("Material diagnostic capture failed.\n",stderr);}
+    }
     std::uint64_t key(std::unordered_map<ObjectId,Key>& keys,ObjectId object) {
         auto [at,added]=keys.try_emplace(object);
         if(added) at->second.value=next_key_++;

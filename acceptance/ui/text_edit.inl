@@ -28,6 +28,133 @@ struct TextConsumer : Consumer {
     ui::EditToken token() const { const auto value=ui.text_input(); require(value.has_value(),"text binding missing"); return value->token; }
     const std::wstring& value() const { return controls[0].text; }
 };
+void read_only_code_document() {
+    Consumer consumer;
+    const auto document=std::make_shared<ui::CodeDocument>(L"完整正文\nSecond line");
+    auto control=leaf(1,ui::ControlKind::code_editor,10);
+    control.code=document;control.read_only=true;control.layout.height=ui_layout::Axis::fixed(160);
+    consumer.controls={std::move(control)};consumer.prepare();consumer.ui.focus(1);
+    key(consumer.ui,ui::Key::a,true);
+    const auto copy=request_of<ui::ClipboardRequest>(key(consumer.ui,ui::Key::c,true));
+    require(copy.text==L"完整正文\nSecond line","Read-only code did not retain selection and full-text copy.");
+    require(consumer.ui.clipboard_current(copy) && !consumer.ui.text_input(),
+        "Read-only copy did not have independent clipboard authority without enabling IME.");
+    consumer.ui.input({.kind=ui::EventKind::clipboard_result,.data=ui::ClipboardResult{
+        copy.kind,copy.operation_id,copy.token,true,0,{}}});
+    require(!consumer.ui.clipboard_current(copy),"Completed copy retained clipboard authority.");
+    const auto erased=key(consumer.ui,ui::Key::delete_key);
+    require(erased.consumed && erased.effects.empty() && document->text()==L"完整正文\nSecond line",
+        "Read-only Delete changed the document or escaped to the host.");
+    consumer.prepare();
+    require(consumer.frame->find(1)->read_only && !consumer.ui.text_input() && !consumer.frame->input_anchor &&
+        consumer.ui.wants_keyboard() && !consumer.ui.interaction_state().active(),
+        "Read-only code exposed an IME binding or lost passive keyboard ownership.");
+    const auto unchanged=[&](const ui::Reply& reply) {
+        require(reply.consumed && !reply.error && reply.effects.empty() && document->text()==L"完整正文\nSecond line",
+            "Read-only input changed text, emitted an edit/request, or escaped to the host.");
+    };
+    unchanged(consumer.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"不可输入"}}));
+    for (const auto command:{ui::Key::enter,ui::Key::delete_key,ui::Key::backspace}) unchanged(key(consumer.ui,command));
+    for (const auto command:{ui::Key::x,ui::Key::v,ui::Key::z,ui::Key::y}) unchanged(key(consumer.ui,command,true));
+    unchanged(key(consumer.ui,ui::Key::z,true,true));
+    unchanged(consumer.ui.input({.kind=ui::EventKind::composition,
+        .data=ui::CompositionEvent{ui::CompositionKind::start,90,copy.token,{},{}}}));
+    unchanged(consumer.ui.input({.kind=ui::EventKind::composition,
+        .data=ui::CompositionEvent{ui::CompositionKind::end,90,copy.token,std::wstring{L"迟到输入"},{}}}));
+    unchanged(consumer.ui.execute({ui::EditCommandKind::paste,1},consumer.frame->find(1)->incarnation));
+    consumer.controls[0].layout.width=ui_layout::Axis::fixed(-1);accepted(consumer.ui.set_controls(consumer.controls));
+    require(!consumer.ui.prepare(),"Read-only fixture did not suspend frame input.");
+    unchanged(key(consumer.ui,ui::Key::delete_key));unchanged(key(consumer.ui,ui::Key::z,true));
+    consumer.controls[0].layout.width=ui_layout::Axis::fixed(180);consumer.prepare();
+    key(consumer.ui,ui::Key::home,true);key(consumer.ui,ui::Key::right,false,true);
+    require(request_of<ui::ClipboardRequest>(key(consumer.ui,ui::Key::c,true)).text==L"完",
+        "Read-only keyboard navigation did not preserve character selection.");
+    consumer.controls.push_back(leaf(2,ui::ControlKind::button,190,L"Next"));consumer.prepare();
+    require(key(consumer.ui,ui::Key::tab).consumed && consumer.ui.focused_control()==2 && document->text()==L"完整正文\nSecond line",
+        "Read-only Tab inserted indentation or trapped keyboard focus.");
+    require(key(consumer.ui,ui::Key::tab,false,true).consumed && consumer.ui.focused_control()==1,
+        "Read-only code was not reachable by reverse tab navigation.");
+
+    // Change policy while a real public clipboard request is in flight. Both
+    // full and sparse descriptor updates must retire its write authority.
+    for (const auto command:{ui::Key::v,ui::Key::x}) {
+        consumer.controls[0].read_only=false;consumer.prepare();consumer.ui.focus(1);
+        key(consumer.ui,ui::Key::a,true);
+        const auto pending=request_of<ui::ClipboardRequest>(key(consumer.ui,command,true));
+        const auto editable_frame=consumer.frame;
+        consumer.controls[0].read_only=true;
+        if (command==ui::Key::v) accepted(consumer.ui.set_controls(consumer.controls));
+        else accepted(consumer.ui.update_controls(std::span{consumer.controls}.first(1)));
+        require(consumer.ui.focused_control()==1 && !consumer.ui.interaction_state().clipboard && !consumer.ui.text_input(),
+            "Changing read-only policy lost focus or retained a pending clipboard write.");
+        require(!consumer.ui.clipboard_current(pending),"Read-only policy retained native authority for a pending cut/paste.");
+        unchanged(key(consumer.ui,ui::Key::delete_key)); // No newly accepted frame yet.
+        consumer.ui.input({.kind=ui::EventKind::clipboard_result,.data=ui::ClipboardResult{
+            pending.kind,pending.operation_id,pending.token,true,0,L"late paste"}});
+        require(document->text()==L"完整正文\nSecond line","A late clipboard result wrote through read-only policy.");
+        consumer.prepare();
+        require(!editable_frame->find(1)->read_only && consumer.frame->find(1)->read_only,
+            "Read-only policy mutated an earlier accepted frame.");
+        consumer.controls[0].read_only=false;accepted(consumer.ui.set_controls(consumer.controls));
+        unchanged(consumer.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"unaccepted write"}}));
+    }
+    consumer.prepare();consumer.ui.focus(1);key(consumer.ui,ui::Key::a,true);
+    const auto ime_token=consumer.ui.text_input()->token;
+    consumer.ui.input({.kind=ui::EventKind::composition,.data=ui::CompositionEvent{ui::CompositionKind::start,91,ime_token,{},{}}});
+    consumer.ui.input({.kind=ui::EventKind::composition,.data=ui::CompositionEvent{ui::CompositionKind::update,91,ime_token,{},ui::Preedit{L"拼",1,{}}}});
+    consumer.controls[0].read_only=true;
+    const auto cancel=request_of<ui::ImeRequest>(accepted(consumer.ui.set_controls(consumer.controls)));
+    require(cancel.kind==ui::ImeKind::cancel && cancel.composition_id==91 && !consumer.ui.interaction_state().composition,
+        "Read-only policy did not cancel an already active composition.");
+    consumer.prepare();
+    unchanged(consumer.ui.input({.kind=ui::EventKind::composition,
+        .data=ui::CompositionEvent{ui::CompositionKind::end,91,ime_token,std::wstring{L"late IME"},{}}}));
+
+    // Returning to editable mode preserves the document's local history.
+    consumer.controls[0].read_only=false;consumer.prepare();consumer.ui.focus(1);key(consumer.ui,ui::Key::a,true);
+    consumer.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"Changed"}});
+    require(document->text()==L"Changed","Making code editable again did not restore text input.");
+    consumer.controls[0].read_only=true;consumer.prepare();
+    require(key(consumer.ui,ui::Key::z,true).consumed && document->text()==L"Changed","Read-only code consumed existing undo history.");
+    consumer.controls[0].read_only=false;consumer.prepare();key(consumer.ui,ui::Key::z,true);
+    require(document->text()==L"完整正文\nSecond line","Read-only policy destroyed existing editable undo history.");
+    consumer.controls[0].read_only=true;consumer.prepare();unchanged(key(consumer.ui,ui::Key::y,true));
+    consumer.controls[0].read_only=false;consumer.prepare();key(consumer.ui,ui::Key::y,true);
+    require(document->text()==L"Changed","Read-only policy destroyed existing editable redo history.");
+
+    Consumer scroll;
+    std::wstring long_text;for (unsigned i=0;i<60;++i) long_text+=std::wstring(120,L'W')+L"\n";
+    auto viewer=leaf(1,ui::ControlKind::code_editor,10);viewer.read_only=true;
+    viewer.code=std::make_shared<ui::CodeDocument>(std::move(long_text));viewer.layout.height=ui_layout::Axis::fixed(160);
+    scroll.controls={std::move(viewer)};scroll.prepare();scroll.ui.focus(1);
+    key(scroll.ui,ui::Key::end,true);scroll.prepare();
+    const auto before=scroll.frame->find_code(1)->lines.front().row;
+    require(before>0,"Read-only End did not scroll to the document tail.");
+    const auto body=scroll.frame->find_code(1)->body;
+    require(scroll.ui.input({.kind=ui::EventKind::wheel,.x=body.x+4,.y=body.y+4,.wheel=3}).consumed,
+        "Read-only code did not consume wheel scrolling.");scroll.prepare();
+    require(scroll.frame->find_code(1)->lines.front().row<before,"Read-only wheel did not reveal earlier lines.");
+    const auto left=scroll.frame->find_code(1)->lines.front().x;
+    require(scroll.ui.input({.kind=ui::EventKind::wheel,.x=body.x+4,.y=body.y+4,.wheel=-3,.shift=true}).consumed,
+        "Read-only code did not consume horizontal scrolling.");scroll.prepare();
+    require(scroll.frame->find_code(1)->lines.front().x<left,"Read-only horizontal wheel did not reveal long lines.");
+    key(scroll.ui,ui::Key::home,true);scroll.prepare();
+    const auto line=scroll.frame->find_code(1)->lines.front();
+    const float y=line.y+scroll.frame->find_code(1)->line_height*.5f;
+    scroll.ui.input({.kind=ui::EventKind::pointer_down,.x=line.x+1,.y=y});
+    scroll.ui.input({.kind=ui::EventKind::pointer_move,.x=line.x+45,.y=y});
+    scroll.ui.input({.kind=ui::EventKind::pointer_up,.x=line.x+45,.y=y});
+    require(!request_of<ui::ClipboardRequest>(key(scroll.ui,ui::Key::c,true)).text.empty(),
+        "Read-only pointer selection could not be copied.");
+
+    Consumer editable;
+    auto source=leaf(1,ui::ControlKind::code_editor,10);source.code=std::make_shared<ui::CodeDocument>(L"");
+    editable.controls={std::move(source)};editable.prepare();editable.ui.focus(1);
+    editable.ui.input({.kind=ui::EventKind::text,.data=std::wstring{L"Default"}});
+    key(editable.ui,ui::Key::enter);key(editable.ui,ui::Key::tab);
+    require(editable.ui.text_input() && editable.controls[0].code->text()==L"Default\n    ",
+        "The default CodeEditor no longer accepted text, newlines and indentation.");
+}
 void shared_edit_history_and_focus() {
     TextConsumer c(L"位置"); c.command(ui::Key::a,true);
     require(c.ui.wants_keyboard() && !c.ui.interaction_state().active(),"Passive text focus blocks external operations");

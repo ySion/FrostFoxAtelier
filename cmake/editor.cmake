@@ -38,7 +38,7 @@ function(atelier_add_editor)
     atelier_target(atelier_editor_core)
     atelier_reflect(atelier_editor_core SOURCE src/editor/operator_parameters.cpp HEADERS src/editor/operator_parameters.hpp)
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_control_transport ole32 shell32 nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_logging atelier_control_transport ole32 shell32 nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/input.cpp"
@@ -48,12 +48,14 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/src/application/play_process.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/play_link.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/project_runner.cpp"
+        "${PROJECT_SOURCE_DIR}/src/application/diagnostics.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/application.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/recovery.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/editor_control.cpp"
         "${PROJECT_SOURCE_DIR}/src/application/control_artifacts.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
+        "${PROJECT_SOURCE_DIR}/src/editor/output.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/workspace_materials.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/world_panel.cpp"
         "${PROJECT_SOURCE_DIR}/src/editor/performance.cpp"
@@ -70,7 +72,7 @@ function(atelier_add_editor)
     target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
     target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
-    target_link_libraries(atelier_editor_application PUBLIC atelier_editor_core atelier_ui atelier_rhi atelier_control_transport atelier_renderer PRIVATE imm32)
+    target_link_libraries(atelier_editor_application PUBLIC atelier_logging atelier_editor_core atelier_ui atelier_rhi atelier_control_transport atelier_renderer PRIVATE imm32)
     add_executable(atelier_editor
         "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
         "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
@@ -152,6 +154,9 @@ function(atelier_add_editor)
         DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
+        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
+    add_custom_target(editor_output_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-output "${CMAKE_BINARY_DIR}/output-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_ime_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance-ime "${CMAKE_BINARY_DIR}/editor-evidence"

@@ -581,6 +581,18 @@ class procedural.Jitter : procedural.Base { float amount = 0.5f; float evaluate(
         "The default engine root did not prefer the source tree.");
 
     Runtime runtime;
+    {
+        write("procedural/broken.source", "uint procedural.broken() { return missing; }");
+        const auto disk_path=root/"procedural/broken.source";
+        auto file=take(source::read_source_file(disk_path,"engine/procedural/broken.source"));
+        const auto version=file.version;
+        Program diagnostic(runtime);
+        auto failed=Program::prepare(take(diagnostic.request(source::SourceSnapshot{"origin",1,{file}})));
+        require(!failed && failed.error().source && failed.error().source->path==file.path &&
+            failed.error().source->version==version &&
+            std::filesystem::path(std::u8string(failed.error().source->disk_path.begin(),failed.error().source->disk_path.end()))==disk_path,
+            "An engine compile diagnostic lost its saved-file origin or confused it with its virtual engine/ name.");
+    }
     take(runtime.register_type(NativeRegistration<EngineBase>(runtime, "procedural.Base", TypeKind::object).build()));
     Program program(runtime);
     std::vector<source::SourceFile> engine(loaded.begin() + 1, loaded.end());

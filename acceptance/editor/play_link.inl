@@ -4,11 +4,11 @@ using LinkJson=assets::json_format::Json;
 struct LinkPeer {
     std::unique_ptr<application::LiveLink> link;
     std::deque<std::string> arrived;
-    LinkJson next(application::PlayProcess* process=nullptr,std::string* output=nullptr) {
+    LinkJson next(application::PlayProcess* process=nullptr) {
         const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(60);
         while(arrived.empty()) {
             for(auto& text:link->receive()) arrived.push_back(std::move(text));
-            if(process) {process->poll();if(output) *output+=process->take_output();}
+            if(process) process->poll();
             require(std::chrono::steady_clock::now()<until,"The link peer received nothing.");
             if(arrived.empty()) Sleep(2);
         }
@@ -216,21 +216,15 @@ const LinkJson& graph_entity(const LinkJson& graph,std::uint64_t identity) {
 void verify_play_link(const std::filesystem::path& root,editor::Project& project,const std::string& scene,const std::filesystem::path& snapshot) {
     auto loaded=editor::load_project_scene(project,scene);require(loaded.session!=nullptr,"The authoring scene did not load.");
     auto& document=*loaded.session;
-    application::PlayProcess process;std::unique_ptr<application::LiveLink> live;std::string output;
+    application::PlayProcess process;std::unique_ptr<application::LiveLink> live;
     const auto spill=root/"Cache/Play/acceptance";
     take(process.start(root,snapshot,true,0,{},false,false,&live));
     application::PlayLink link;link.open(std::move(live),spill);document.set_live_forwarding(true);
     const auto service=[&] {
-        process.poll();output+=process.take_output();link.poll(process.running(),process.stopping());
+        process.poll();link.poll(process.running(),process.stopping());
         if(!process.running() || !link.divergence().empty()) {
-            std::fwrite(output.data(),1,output.size(),stdout);
             throw std::runtime_error("Play stopped following the document: "+link.divergence());
         }
-    };
-    const auto forward=[&] {
-        link.forward(take(document.take_live_ops()));
-        const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(60);
-        while(link.unacknowledged()) {service();require(std::chrono::steady_clock::now()<until,"Play did not acknowledge a change batch.");Sleep(2);}
     };
     const auto inspect=[&](ObjectId object)->std::optional<LinkJson> {
         const auto identity=*document.document_identity(object);const auto request=link.inspect(identity);
@@ -245,6 +239,20 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
         }
     };
     const auto mover=entity(document);
+    const auto forward=[&] {
+        link.forward(take(document.take_live_ops()));
+        const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(60);
+        while(link.unacknowledged()) {service();require(std::chrono::steady_clock::now()<until,"Play did not acknowledge a change batch.");Sleep(2);}
+        // ACK precedes the frame's camera resolution. Observe an actual tick
+        // boundary so consecutive camera changes cannot coalesce in that frame.
+        const auto ticks=[&] {
+            for(const auto& part:inspect(mover)->at("components")) if(part.at("type")=="project.Move")
+                return part.at("properties").at("ticks").get<std::uint64_t>();
+            throw std::runtime_error("Play lost its ticking Source component.");
+        };
+        const auto previous=ticks();
+        while(ticks()==previous) {require(std::chrono::steady_clock::now()<until,"Play did not finish a frame after its ACK.");Sleep(2);}
+    };
     // Play is still loading: the change waits in the link and applies before Play starts.
     take(document.rename(mover,L"Runner"));forward();
     require(inspect(mover)->at("name")=="Runner","A change made while Play loaded did not reach it.");
@@ -290,8 +298,8 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
         complete(document.undo());forward();
         require(!inspect(imported_environment) && !inspect(imported_camera),"Undo camera import left a root in Play.");
         complete(document.redo());forward();verify_import();
-        require(output.find("reference_dropped")==std::string::npos && output.find("command_rejected")==std::string::npos,
-            "Camera forest import/history reported a dropped reference or rejected command over IPC.");
+        // The end-of-run Reader audit below covers the entire import/history,
+        // including records queued after a successful ACK.
         complete(document.undo());forward();
         std::puts("Camera forest IPC: PASS (Environment-first import, undo, redo, document identities, no rejected command or dropped reference)");
     }
@@ -331,7 +339,6 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     static_cast<void>(take(document.serialize()));document.mark_saved();
     complete(document.undo());forward();
     require(main_reference()==reference(later_camera) && inspect(later_camera),"Undo lost a camera reference when the Environment root precedes its target.");
-    require(output.find("reference_dropped")==std::string::npos,"A valid camera Undo reported a dropped reference before restoring its target.");
     // Scene commands stay available while Play follows the document; their changes are forwarded.
     {
         editor::Workspace workspace;workspace.project_open=true;workspace.project_running=true;workspace.play_pending=0;
@@ -342,40 +349,51 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     }
     process.stop();
     for(const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(10);process.running() && std::chrono::steady_clock::now()<until;Sleep(5))
-        {process.poll();output+=process.take_output();link.poll(process.running(),process.stopping());}
+        {process.poll();link.poll(process.running(),process.stopping());}
     link.poll(process.running(),process.stopping());
     require(!process.running() && process.exit_code()==0 && link.divergence().empty(),"Stopping Play diverged or failed.");
+    // Initial absence plus eight transitions deliberately clear/remove a camera
+    // or its Environment. Other warning/error records remain unexpected.
+    RunLog completed_log(process);completed_log.finish(true,{
+        {"runner","runner.camera_unavailable",logging::Severity::warning,9}});
+    require(!completed_log.count("world.reference_dropped") && !completed_log.count("world.command_rejected"),
+        "Camera forest import/history or Undo reported a dropped reference or rejected command over IPC.");
     require(!link.close() && !std::filesystem::exists(spill),"Stopping Play left its change files.");
 
     // Play's end of the protocol, scripted: spilled batches, inspection and the sequence rule.
     std::unique_ptr<application::LiveLink> raw;take(process.start(root,snapshot,true,0,{},false,false,&raw));
-    LinkPeer play{std::move(raw),{}};output.clear();
+    LinkPeer play{std::move(raw),{}};
     const auto id=std::to_string(*document.document_identity(mover));
     const auto rename=[&](std::string_view name){return LinkJson::array({{{"op","set"},{"id",id},{"name",name}}});};
     const auto file=root/"Cache/Play/raw-batch.json";
     take(editor::write_file(file,LinkJson{{"ops",rename("Spilled")}}.dump()));
     play.send({{"type","batch"},{"seq",1},{"file",assets::utf8(file.wstring())}});
-    auto reply=play.next(&process,&output);
+    auto reply=play.next(&process);
     require(reply.at("type")=="ack" && reply.at("seq")==1 && reply.at("diagnostics").empty() && std::filesystem::exists(file),
         "Play did not acknowledge the spilled batch or deleted sender-owned content.");
     // This scripted sender owns its file just as PlayLink::Pending does.
     require(std::filesystem::remove(file),"The scripted sender could not retire its acknowledged batch.");
     const auto play_name=[&] {
         play.send({{"type","inspect"},{"id",9},{"object",*document.document_identity(mover)}});
-        const auto answer=play.next(&process,&output);require(answer.at("type")=="inspect" && answer.at("id")==9,"Play answered another request.");
+        const auto answer=play.next(&process);require(answer.at("type")=="inspect" && answer.at("id")==9,"Play answered another request.");
         return graph_entity(LinkJson::parse(answer.at("graph").get<std::string>()),*document.document_identity(mover)).at("name").get<std::string>();
     };
     require(play_name()=="Spilled","Play did not apply the spilled batch.");
-    play.send({{"type","batch"},{"seq",3},{"ops",rename("Late")}});reply=play.next(&process,&output);
+    play.send({{"type","batch"},{"seq",3},{"ops",rename("Late")}});reply=play.next(&process);
     require(reply.at("seq")==3 && reply.at("diagnostics").size()==1 && reply.at("diagnostics")[0].at("severity")=="error" &&
         reply.at("diagnostics")[0].at("message").get<std::string>().find("sequence gap: expected batch 2, received 3")!=std::string::npos,
         "Play did not reject a sequence gap.");
-    play.send({{"type","batch"},{"seq",2},{"ops",rename("Later")}});reply=play.next(&process,&output);
+    play.send({{"type","batch"},{"seq",2},{"ops",rename("Later")}});reply=play.next(&process);
     require(reply.at("seq")==2 && reply.at("diagnostics")[0].at("severity")=="error" && play_name()=="Spilled","Play applied a batch after diverging.");
-    play.link->send("{");reply=play.next(&process,&output);
+    play.link->send("{");reply=play.next(&process);
     require(reply.at("type")=="error","Play did not report an unreadable message.");
-    require(output.find("sequence gap")!=std::string::npos,"Play did not report its divergence in its output.");
     process.stop();wait(process,std::chrono::seconds(10));require(process.exit_code()==0,"The scripted Play run failed.");
+    RunLog rejected_log(process);rejected_log.finish(true,{
+        {"runner","runner.camera_unavailable",logging::Severity::warning,1},
+        {"world","world.command_rejected",logging::Severity::error,2,{{"origin",std::string("live")},{"phase",std::string("command")},
+            {"object",std::string("null")},{"entity",std::string("null")}}}});
+    require(rejected_log.has("world.command_rejected",[](const auto& record){return record.entry.message.find("sequence gap: expected batch 2, received 3")!=std::string::npos;}),
+        "Play did not persist its actual sequence-gap diagnostic independently of the ACK.");
     // Throws unless every run left Cache/Play empty.
     std::filesystem::remove(root/"Cache/Play");
 }

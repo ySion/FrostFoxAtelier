@@ -30,7 +30,6 @@ Workspace::Workspace() : dock(1ULL<<48,{
     {world_control::tab,world_control::content,L"World",{280,240}}}) {
     const auto registered=ui_language::register_types(ui_runtime_);
     if (!registered) throw std::runtime_error(registered.error().message);
-    auto messages=std::make_shared<ui::TableData>();messages->columns.push_back({1,L"Message",1000,160,ui::TextAlign::left,false});output=std::move(messages);
     register_builtin_operators(operators);
     reset_layout();
 }
@@ -125,35 +124,12 @@ Context Workspace::operator_context(Session& session,Project* project,bool inter
         region,std::move(asset),
         source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,interactive,viewport_settings};
 }
-void Workspace::log(std::wstring text) {
-    auto messages=std::make_shared<ui::TableData>(*output);
-    std::size_t start{};
-    while(start<text.size()) {
-        const auto end=text.find(L'\n',start);auto line=text.substr(start,end==text.npos?text.size()-start:end-start);
-        if(!line.empty() && line.back()==L'\r') line.pop_back();
-        if(line.size()>2048) {line.resize(2048);if(line.back()>=0xd800 && line.back()<=0xdbff) line.pop_back();line+=L"…";}
-        if(!line.empty()) {messages->rows.push_back({next_output_,{{next_output_,std::move(line)}}});++next_output_;}
-        if(end==text.npos) break;start=end+1;
-    }
-    if(messages->rows.size()>256) messages->rows.erase(messages->rows.begin(),messages->rows.end()-256);
-    // The Message column spans the longest retained line, so details view scrolls instead of clipping it.
-    float width=1000;
-    for(const auto& row:messages->rows) {
-        float estimate=24;
-        for(const auto c:row.cells.front().text) estimate+=c<0x2e80?7.5f:13.f;
-        width=std::max(width,std::min(estimate,32768.f));
-    }
-    messages->columns.front().width=width;
-    output=std::move(messages);
-}
-void Workspace::log_repeated(std::wstring line) {
-    if(line==repeated_line_ && !output->rows.empty() && output->rows.back().key==repeated_row_) {
-        auto messages=std::make_shared<ui::TableData>(*output);
-        messages->rows.back().cells.front().text=line+L" (×"+std::to_wstring(++repeated_count_)+L")";
-        output=std::move(messages);return;
-    }
-    log(line);
-    repeated_line_=std::move(line);repeated_row_=output->rows.back().key;repeated_count_=1;
+bool Workspace::poll_output() {return output.poll();}
+Result<void> Workspace::locate_output() {
+    const auto location=output.selected_source();
+    if(!location) return std::unexpected(Error{ErrorCode::invalid_storage,"The selected record has no source location."});
+    if(auto located=source_editor.locate(*location);!located) return located;
+    dock.select(source_control::tab);return {};
 }
 void Workspace::reset_layout() {
     lighting.cancel();
@@ -195,6 +171,7 @@ std::optional<Workspace::PropertyChoice> Workspace::property_choice(ui::ControlK
     return property_choices_[static_cast<std::size_t>(key-control::property_choice_first)];
 }
 Result<bool> Workspace::apply_ui(const ui::Action& action) {
+    if(output.apply(action)) return true;
     return ui_document_?ui_document_->event(action):Result<bool>{false};
 }
 void Workspace::commit_ui_controls() {
@@ -832,9 +809,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     }
     if (view.key==source_control::tab) {source_editor.append(result,view.content,*ui_document_,project,project_build.get(),project_running);continue;}
     if (view.key==control::output_tab) {
-        const std::array<ui_language::InputValue,1> inputs{ui_language::TableBinding{output,{}}};
-        const std::array<ui_language::KeyBinding,1> keys{{{"messages",control::output_table}}};
-        static_cast<void>(ui_document_->append("ProjectOutput",view.content,keys,inputs,result));continue;
+        output.append(result,view.content,*ui_document_,pane.bounds.height-22);continue;
     }
     if (view.key==control::workbench) { workbench.append(result,view.content,*ui_document_); continue; }
     if (view.key==world_control::tab) {

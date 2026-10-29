@@ -786,6 +786,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             output.push_back(std::move(control));
         } else if (kind==NodeKind::code_editor) {
             auto control=node.control;control.code=node.code.document;control.enabled&=node.code.enabled;
+            control.read_only=node.code.read_only;
             output.push_back(std::move(control));
         } else if (kind==NodeKind::table) {
             auto control=node.control;control.table=node.table.data;control.table_selection=node.table.selection;

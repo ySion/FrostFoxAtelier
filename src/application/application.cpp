@@ -1,10 +1,13 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
 #include "application/presentation.hpp"
+#include "application/diagnostics.hpp"
+#include "logging/native.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "atelier/build_info.hpp"
 #include <windowsx.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -89,20 +92,39 @@ Application::Application(bool validation,bool activate,std::optional<ui::PixelEx
 Application::~Application() {
     if(std::uncaught_exceptions()) preserve_failure("Unhandled editor failure outside the frame loop");
     try { close(); }
-    catch (const std::exception& error) { std::fprintf(stderr, "Editor shutdown: %s\n", error.what()); }
+    catch (const std::exception& error) {
+        static_cast<void>(ATELIER_LOG(logging::Severity::error,"application","application.cleanup_failed","Editor shutdown: {}",std::string_view(error.what())));
+    }
+}
+void Application::notice(std::string_view code,std::wstring_view message,logging::Severity severity) noexcept {
+    try {
+        logging::Entry entry{.severity=severity,.category="application",.event_code=std::string(code),.message=assets::utf8(message)};
+        entry.fields={{"document",document_->presentation().identity()},{"project_root",assets::utf8(document_root_.generic_wstring())}};
+        static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+    } catch(...) {std::fputs("Editor notice capture failed.\n",stderr);}
+}
+void Application::diagnostics() noexcept {
+    try {
+        for(const auto& item:document_->take_diagnostics())
+            static_cast<void>(workspace_.output.submit_owned(world_diagnostic(*document_,item,document_root_)));
+        const auto total=document_->world().dropped_diagnostics();
+        if(total!=dropped_diagnostics_) {
+            logging::Entry entry{.severity=logging::Severity::warning,.category="world",.event_code="world.diagnostics_dropped",
+                .message="World diagnostics exceeded their retention capacity."};
+            entry.fields={{"document",document_->presentation().identity()},{"dropped_total",total},{"dropped_delta",total-dropped_diagnostics_}};
+            static_cast<void>(workspace_.output.submit_owned(std::move(entry)));dropped_diagnostics_=total;
+        }
+    } catch(...) {std::fputs("Editor diagnostic capture failed.\n",stderr);}
 }
 void Application::preserve_failure(std::string_view reason) noexcept {
     if(recovery_.attempted() || !document_ || closed_) return;
+    try {static_cast<void>(logging::submit({.severity=logging::Severity::critical,.category="application",
+        .event_code="application.failure_preserved",.message=std::string(reason)}));}
+    catch(...) {std::fputs("Cannot capture the editor's original failure.\n",stderr);}
     try {
         window_.capture(false);
         window_.cursor(ui::Cursor::arrow);
-        const auto& saved=recovery_.preserve(*document_,project_?project_->root():std::filesystem::path{},scene_path_,reason);
-        if(!saved) std::fprintf(stderr,"Scene recovery failed: %s\n",saved.error().message.c_str());
-        else if(*saved) {
-            std::fprintf(stderr,"Scene recovery saved: %s\n",assets::utf8(saved->value().scene.wstring()).c_str());
-            if(!saved->value().warning.empty()) std::fprintf(stderr,"Scene recovery warning: %s\n",saved->value().warning.c_str());
-        }
-        std::fflush(stderr);
+        static_cast<void>(recovery_.preserve(*document_,project_?project_->root():std::filesystem::path{},scene_path_,reason));
     } catch(const std::exception& error) {
         std::fprintf(stderr,"Scene recovery failed: %s\n",error.what());
     } catch(...) {std::fputs("Scene recovery failed with an unknown error\n",stderr);}
@@ -230,6 +252,19 @@ Result<void> Application::action(const ui::Action& source) {
     std::optional<ui::Action> routed;
     if (source.target) routed.emplace(source.kind,source.target,source.value);
     const auto& event=routed?*routed:source;
+    if(event.key==editor::output_control::locate && event.kind==ui::ActionKind::activate) {
+        auto located=workspace_.locate_output();
+        if(located) pending_source_focus_=true;
+        return located;
+    }
+    if(event.key==editor::output_control::open_directory && event.kind==ui::ActionKind::activate) {
+        const auto directory=workspace_.output.selected_directory();
+        if(directory.empty()) return std::unexpected(Error{ErrorCode::invalid_storage,"This record has no persisted run directory."});
+        const auto opened=reinterpret_cast<std::intptr_t>(ShellExecuteW(window(),L"open",directory.c_str(),nullptr,nullptr,SW_SHOWNORMAL));
+        if(opened<=32) return std::unexpected(Error{ErrorCode::invalid_storage,"Cannot open the original run directory (Shell "+std::to_string(opened)+")."});
+        return {};
+    }
+    if(workspace_.output.apply(event)) return {};
     using namespace editor::control;
     const auto invalid = [] { return std::unexpected(Error{ErrorCode::invalid_definition, "UI action does not match its live binding or value type."}); };
     const auto done = [&](auto result, const wchar_t* message) -> Result<void> {
@@ -784,8 +819,7 @@ bool Application::effects(const ui::Reply& reply) {
                 if (const auto* clipboard = std::get_if<ui::ClipboardRequest>(&request)) {
                     if (cleanup) continue;
                     response.kind = ui::EventKind::clipboard_result;
-                    const auto target = ui_.text_input();
-                    response.data = target && target->token == clipboard->token ? window_.clipboard(*clipboard) :
+                    response.data = ui_.clipboard_current(*clipboard) ? window_.clipboard(*clipboard) :
                         ui::ClipboardResult{clipboard->kind, clipboard->operation_id, clipboard->token, false, ERROR_INVALID_STATE, {}};
                 } else {
                     const auto& ime = std::get<ui::ImeRequest>(request);
@@ -859,18 +893,25 @@ bool Application::over_viewport(float x, float y) const noexcept {
 void Application::request_menu(const ui::ContextMenuRequest& request) {
     const auto frame=ui_.presented();
     const auto* source=frame?frame->find(request.source):nullptr;
-    if (!source || !source->enabled || !live_table_context(*frame,request,false)) return;
+    const std::array fields{logging::Field{"source_control",request.source},logging::Field{"group",request.group},
+        logging::Field{"frame",frame?frame->drawing->id:0},logging::Field{"incarnation",source?source->incarnation:0}};
+    if (!source || !source->enabled || !live_table_context(*frame,request,false)) {
+        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"menu","menu.rejected",logging::native::Context{fields},"Menu source is not live"));return;
+    }
     const auto next=request;
     const auto return_focus=editor::control::is_menu(next.source)?menu_return_focus_:ui_.focused_control();
     // The native menu owns subsequent mouse-up events. Retire the previous
     // gesture and accepted menu before publishing the replacement request.
     // Retain its accepted source and return focus across that cancellation.
     cancel_interaction(ui_.cancel_interaction());
-    if(document_->editing() || viewport_tool_.active()) return;
+    if(document_->editing() || viewport_tool_.active()) {
+        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"menu","menu.rejected",logging::native::Context{fields},"Menu request conflicts with an active edit"));return;
+    }
     workspace_.menu=next; menu_return_focus_=return_focus;menu_incarnation_=source->incarnation;
     menu_requested_=std::chrono::steady_clock::now();
     menu_context_target_=source->context_target; menu_context_group_=source->context_group;
     menu_table_layout_=source->table_layout;
+    static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"menu","menu.requested",logging::native::Context{fields},"Menu request adopted"));
 }
 void Application::close_menu(bool restore_focus) {
     pending_menu_=0;
@@ -1256,7 +1297,7 @@ bool Application::run_step(renderer::Capture* capture) try {
             window_.cancel_close();
         }
     }
-    {timing::Scope project{phases::project};poll_project();}
+    {timing::Scope project{phases::project};poll_project();diagnostics();static_cast<void>(workspace_.poll_output());}
     if(control_) {timing::Scope control{phases::control};control_->poll();}
     const auto title=(project_?project_->name():L"No project")+L" — "+(scene_path_.empty()?L"Untitled":scene_path_.filename().wstring())+
         (document_->dirty()?L" *":L"")+L" — FrostFox Atelier";
@@ -1386,7 +1427,7 @@ bool Application::run_step(renderer::Capture* capture) try {
         // only such a change re-anchors the lighting focus.
         if(workspace_.sync_world(*document_)) sync_world_view();
     }
-    for(const auto& item:document_->take_diagnostics()) workspace_.log_repeated(editor::describe_diagnostic(*document_,item));
+    diagnostics();
     const auto* scene=viewport?scene_.draw():nullptr;
     if(viewport && !scene) {
         // Do not submit a partial first group. Input still belongs to the last
@@ -1438,6 +1479,7 @@ bool Application::run_step(renderer::Capture* capture) try {
         if (rendered.accepted_id != frame.drawing->id || rendered.accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
         if (!ui_.accept(*prepared)) throw std::runtime_error("UI rejected an accepted renderer frame.");
+        if(scene) scene_.accept(rendered.accepted_id,drawn->fallback,drawn->view.shading);
         render_retry_at_={};render_retry_delay_={};
         lighting_clock_.accept(lighting_start,lighting_active && drawn->view.shading==renderer::Shading::scene_lit);
         fallback_presented_=drawn->fallback;
@@ -1490,7 +1532,7 @@ void Application::close() {
     finish_camera_fly(false);
     closed_ = true;
     control_.reset();
-    play_.close();static_cast<void>(live_.close());
+    play_.close();consume_play_output();static_cast<void>(live_.close());
     if(!play_snapshot_.empty()) {std::error_code ignored;std::filesystem::remove(play_snapshot_,ignored);play_snapshot_.clear();}
     close_menu(false);
     for (auto& submenu:submenus_) submenu->close();
@@ -1500,7 +1542,8 @@ void Application::close() {
     if (!cancelled) throw std::runtime_error(cancelled.error().message);
     window_.capture(false);
     project_code_=nullptr;
-    take(completion(document_->close()));
+    diagnostics();
+    const auto closed=document_->close();diagnostics();take(completion(closed));
     scene_.reset();
     const auto stopped = renderer_.close();
     if (!stopped) throw std::runtime_error(stopped.error().cause.message);

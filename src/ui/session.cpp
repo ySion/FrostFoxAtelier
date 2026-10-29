@@ -106,6 +106,7 @@ Result<void> validate_control_properties(const Control& control) {
         (control.action_target && control.kind!=ControlKind::button && control.kind!=ControlKind::checkbox && control.kind!=ControlKind::table) ||
         ((control.kind==ControlKind::table)!=static_cast<bool>(control.table)) ||
         ((control.kind==ControlKind::code_editor)!=static_cast<bool>(control.code)) ||
+        (control.read_only && control.kind!=ControlKind::code_editor) ||
         (control.kind!=ControlKind::table && (control.table_selection!=TableSelection{} || control.table_layout!=TableLayout{})) ||
         static_cast<unsigned>(control.table_layout.view)>static_cast<unsigned>(TableView::tiles) ||
         !std::isfinite(control.table_layout.row_height) || control.table_layout.row_height<12 || control.table_layout.row_height>256 ||
@@ -301,6 +302,7 @@ struct Session::Impl {
             found->second.control.button_behavior!=box.button_behavior || found->second.control.menu_behavior!=box.menu_behavior ||
             found->second.control.radio_group!=box.radio_group || found->second.control.table!=box.table ||
             found->second.control.table_layout!=box.table_layout || found->second.control.code!=box.code || !box.enabled ||
+            found->second.control.read_only!=box.read_only ||
             (box.kind==ControlKind::tree_item && box.parent!=found->second.control.parent)) return false;
         auto key = box.key;
         while (key) {
@@ -709,7 +711,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f || std::abs(bounds.y) > 1e8f ||
                 bounds.width > 1e8f || bounds.height > 1e8f) return std::unexpected(Error{ErrorCode::invalid_control,key});
             state.frame_index = output->controls.size();
-            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code,state.control.tooltip});
+            output->controls.push_back({key,state.control.parent,state.control.kind,bounds,clip,enabled,state.incarnation,state.resolved,state.control.selected,state.control.action_target,state.control.button_behavior,state.control.menu_behavior,state.control.radio_group,state.control.table,state.control.table_selection,state.control.context_target,state.control.context_group,state.control.table_layout,state.control.code,state.control.tooltip,state.control.read_only});
             const auto kind = state.control.kind;
             if (kind==ControlKind::tree_item) {
                 const auto indent=self.states.at(state.control.parent).resolved->tree_indent*scale;
@@ -1052,11 +1054,20 @@ InteractionState Session::interaction_state() const noexcept {
         state.edit && state.edit->clipboard.has_value(),has_popup()};
 }
 bool Session::has_popup() const noexcept { return impl_->popup || (impl_->published && impl_->published->popup); }
+bool Session::clipboard_current(const ClipboardRequest& request) const noexcept {
+    const auto& self=*impl_;
+    if (!self.edit || !self.edit->clipboard || self.focus!=self.edit->key || !self.active()) return false;
+    const auto* box=self.published->find(self.focus);
+    if (!box || !self.current(*box) || (box->read_only && request.kind!=ClipboardKind::copy)) return false;
+    const auto& pending=*self.edit->clipboard;
+    return pending.operation_id==request.operation_id && pending.kind==request.kind && pending.token==request.token &&
+        self.edit->token==request.token;
+}
 std::optional<TextInputState> Session::text_input() const noexcept {
     const auto& self=*impl_;
     if (!self.edit || self.focus!=self.edit->key || !self.active()) return {};
     const auto* box=self.published->find(self.focus);
-    if (!box || !self.current(*box)) return {};
+    if (!box || !self.current(*box) || box->read_only) return {};
     TextInputState value{self.edit->token,self.edit->composition.has_value(),{}};
     const auto& anchor=self.published->input_anchor;
     const auto composition_id=self.edit->composition?self.edit->composition->id:0;

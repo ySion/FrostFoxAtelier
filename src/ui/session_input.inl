@@ -32,6 +32,18 @@ Reply Session::input(const Event& event) {
         const auto released_keyboard=event.kind==EventKind::key_up && event.key==self.keyboard_key?
             std::exchange(self.keyboard_pressed,ControlKey{}):ControlKey{};
         if (released_keyboard) { self.keyboard_key=Key::none; reply.consumed=reply.redraw=true; }
+        const auto* focus_state=self.live(self.focus);
+        const auto* focus_box=self.published?self.published->find(self.focus):nullptr;
+        // A policy change takes effect for writes immediately, but making the
+        // field editable again must wait for its new accepted frame. Consume
+        // forbidden keys even during suspended frames so they cannot reach the host.
+        const bool read_only=focus_state && focus_state->control.kind==ControlKind::code_editor &&
+            (focus_state->control.read_only || (focus_box && focus_box->read_only));
+        if (read_only && (event.kind==EventKind::text || event.kind==EventKind::composition ||
+            (event.kind==EventKind::key_down && (event.key==Key::enter || event.key==Key::delete_key || event.key==Key::backspace ||
+                (event.control && (event.key==Key::x || event.key==Key::v || event.key==Key::z || event.key==Key::y)))))) {
+            reply.consumed=true;return reply;
+        }
         if (!self.active()) return reply;
         if (!std::isfinite(event.x) || !std::isfinite(event.y) || !std::isfinite(event.wheel)) return reply;
         if (event.kind==EventKind::composition) {

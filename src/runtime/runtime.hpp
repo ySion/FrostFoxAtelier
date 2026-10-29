@@ -7,6 +7,7 @@
 #include <array>
 #include <ranges>
 
+#include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -40,6 +41,10 @@ struct SourceLocation {
     std::string path;
     std::uint64_t version{};
     std::size_t offset{}, line{1}, column{1};
+    // Optional original absolute disk path. Only a saved-file snapshot supplies
+    // this association, in which case version is the saved-byte content hash.
+    // Virtual/request-local versions have no implied disk identity.
+    std::string disk_path{};
 };
 struct Error {
     ErrorCode code;
@@ -67,6 +72,21 @@ class ObjectId {
 public:
     ObjectId() = default;
     bool operator==(const ObjectId&) const = default;
+    // Owned ASCII diagnostic text: "null" or decimal "context:index:generation".
+    // Only for correlation within a process run, not persistence or deserialization.
+    // Reads this value alone; does not validate, retain or change object ownership/liveness.
+    // Stale identities keep their text, including after Runtime shutdown.
+    [[nodiscard]] std::string diagnostic_identity() const {
+        if (*this == ObjectId{}) return "null";
+        // Maximum decimal widths of uint64, uint32, uint64, plus two separators.
+        char text[20 + 1 + 10 + 1 + 20];
+        auto* next = std::to_chars(text, text + sizeof(text), context_).ptr;
+        *next++ = ':';
+        next = std::to_chars(next, text + sizeof(text), index_).ptr;
+        *next++ = ':';
+        next = std::to_chars(next, text + sizeof(text), generation_).ptr;
+        return {text, next};
+    }
 private:
     friend struct std::hash<ObjectId>;
     friend class Runtime;

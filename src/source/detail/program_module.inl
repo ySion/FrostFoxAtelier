@@ -4,7 +4,7 @@ Error source_error(const SourceSnapshot& snapshot, std::uint32_t file, language:
     Error error{code, std::move(message)};
     if (file < snapshot.files.size()) {
         const auto& unit = snapshot.files[file];
-        error.source = SourceLocation{unit.path, unit.version, position.offset, position.line, position.column};
+        error.source = SourceLocation{unit.path, unit.version, position.offset, position.line, position.column, unit.disk_path};
     }
     return error;
 }

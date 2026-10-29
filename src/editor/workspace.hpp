@@ -8,6 +8,7 @@
 #include "editor/property_row.hpp"
 #include "editor/asset_browser.hpp"
 #include "editor/source_editor.hpp"
+#include "editor/output.hpp"
 #include "editor/project_code.hpp"
 #include "editor/viewport_tool.hpp"
 #include "ui/session.hpp"
@@ -175,11 +176,9 @@ struct Workspace {
     AssetBrowser assets;
     SourceEditor source_editor;
     std::shared_ptr<const ProjectBuild> project_build;
-    void log(std::wstring);
-    // Repeats of the latest line update it in place with a count, so a failure that
-    // resolves and recurs (a gesture through zero scale) does not flood the output.
-    void log_repeated(std::wstring);
-    std::shared_ptr<const ui::TableData> output;
+    Output output;
+    bool poll_output(); // Service work, including while Output is hidden/minimized.
+    Result<void> locate_output(); // Uses the record's original root/version, never the active project.
     bool source_history() const noexcept {return dock.focused_tab()==source_control::tab;}
     bool project_open{};
     bool scene_available{true},project_running{},project_stopping{},project_ui_configured{};
@@ -250,10 +249,6 @@ private:
     void build_structure_tree(const Session&,ObjectId entity);
     std::vector<std::uint32_t> window_tree(EntityTreeView&,ObjectId primary,std::wstring_view filter,
         ui::TreeViewport,std::span<const ObjectId> pinned);
-    ui::ControlKey next_output_{1};
-    std::wstring repeated_line_;
-    ui::ControlKey repeated_row_{};
-    std::uint64_t repeated_count_{};
     std::vector<ComponentType> component_choices_;
     std::vector<PropertyChoice> property_choices_;
     std::vector<MaterialChoice> material_choices_;

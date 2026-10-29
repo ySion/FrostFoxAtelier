@@ -909,6 +909,40 @@ void verify_reference_definitions() {
     std::cout << "[pass] Published reference cycles instantiate safely and reference records support value operations\n";
 }
 
+void verify_object_diagnostic_identity() {
+    require(ObjectId{}.diagnostic_identity() == "null", "Null object identity has no explicit diagnostic representation.");
+    Runtime runtime;
+    Runtime other;
+    const auto type = take(runtime.register_type({"diagnostic.Object", TypeKind::object, {}, {}, {}}));
+    const auto other_type = take(other.register_type({"diagnostic.Object", TypeKind::object, {}, {}, {}}));
+    auto owner = take(runtime.create(type));
+    const auto identity = owner.id();
+    const auto copied_identity = identity;
+    const auto text = identity.diagnostic_identity();
+    require(text != "null" && text == copied_identity.diagnostic_identity() && text == owner.id().diagnostic_identity(),
+        "Repeated or copied object identity changed its diagnostic representation.");
+    require(std::ranges::count(text, ':') == 2 && !text.starts_with(':') && !text.ends_with(':') &&
+        text.find("::") == std::string::npos && std::ranges::all_of(text, [](char character) {
+            return character == ':' || (character >= '0' && character <= '9');
+        }), "Object diagnostic identity is not three unambiguous ASCII decimal components.");
+    auto peer = take(runtime.create(type));
+    auto foreign = take(other.create(other_type));
+    require(peer.id().diagnostic_identity() != text, "Distinct live objects share a diagnostic identity.");
+    require(foreign.id().diagnostic_identity() != text, "Independent Runtimes share an object diagnostic identity.");
+
+    take(runtime.destroy(identity));
+    require(identity.diagnostic_identity() == text && owner.id().diagnostic_identity() == text,
+        "Destruction changed the diagnostic representation of a stale identity.");
+    auto replacement = take(runtime.create(type));
+    require(replacement.id().diagnostic_identity() != text &&
+        replacement.id().diagnostic_identity() != peer.id().diagnostic_identity(),
+        "Recreation confused a new object with an old or still-live diagnostic identity.");
+    reject(runtime.type_of(identity), ErrorCode::invalid_object, "Diagnostic observation resurrected a destroyed object.");
+    require(identity.diagnostic_identity() == text && runtime.root_count() == 3 && runtime.live_objects() == 2,
+        "Diagnostic observation changed identity, object validity or root ownership.");
+    std::cout << "[pass] Object diagnostic identities distinguish null, live objects, Runtimes and recreated lifetimes\n";
+}
+
 struct RootLifetimeProbe {
     static inline int live{};
     RootLifetimeProbe() { ++live; }
@@ -2138,6 +2172,7 @@ int main() {
         verify_method_results();
         verify_forward_publication();
         verify_reference_definitions();
+        verify_object_diagnostic_identity();
         verify_root_handles();
         verify_reference_graph();
         verify_publication_failures();

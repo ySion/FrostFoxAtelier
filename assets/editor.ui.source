@@ -947,6 +947,35 @@ ui CodePanel(in CodeBinding document, in Text title, in Text status, in Text dia
     Text status { text: input.status; height: 22; classes: "browser-status source-status"; }
 }
 
-ui ProjectOutput(in TableBinding output) {
-    Table messages { model: input.output; expand_height: true; view: "details"; row_height: 23; classes: "asset-table"; }
+ui ProjectOutput(in TableBinding output, in CodeBinding document, in TextEditBinding category, in TextEditBinding search,
+                 in Text level, in Text health, in Text detail, in bool empty, in bool selected, in double list_height,
+                 in ActionBinding next_level, in ActionBinding clear, in ActionBinding locate, in ActionBinding open_directory,
+                 in Text empty_text) {
+    Row filters {
+        height: 28; gap: 4; padding_left: 4; padding_right: 4; align_center: true; classes: "path-bar";
+        Button level { text: input.level; action: input.next_level; width: 98; height: 24; classes: "browser-tool"; }
+        Text category_label { text: "Category"; content_width: 0; single_line: true; }
+        TextField category { edit: input.category; expand_width: true; min_width: 32; height: 24; }
+    }
+    Row search_row {
+        height: 28; gap: 4; padding_left: 4; padding_right: 4; align_center: true; classes: "path-bar";
+        Text find { text: "Find"; width: 30; single_line: true; }
+        TextField search { edit: input.search; expand_width: true; min_width: 32; height: 24; }
+        Button clear { text: "Clear"; action: input.clear; width: 44; height: 24; classes: "browser-tool"; }
+        Button logs { text: "Logs"; action: input.open_directory; width: 44; height: 24; classes: "browser-tool"; }
+    }
+    // Always present and independently scrollable, including an empty filtered view.
+    List health_scroll { height: 40; classes: "browser-status";
+        Text health { text: input.health; content_height: 0; padding_left: 4; padding_right: 4; }
+    }
+    Overlay list { height: input.list_height;
+        Table messages { model: input.output; expand_height: true; view: "details"; row_height: 23; classes: "asset-table"; }
+        Text empty { text: input.empty_text; collapsed: !input.empty; enabled: false;
+            out_of_flow: true; offset_y: 28; padding_left: 8; height: 36; }
+    }
+    Row detail_header { collapsed: !input.selected; height: 26; gap: 4; padding_left: 4; padding_right: 4; align_center: true;
+        Text detail { text: input.detail; expand_width: true; min_width: 32; single_line: true; classes: "source-status"; }
+        Button locate { text: "Locate"; action: input.locate; width: 54; height: 24; classes: "browser-tool"; }
+    }
+    CodeEditor body { document: input.document; collapsed: !input.selected; expand_height: true; classes: "source-code"; }
 }

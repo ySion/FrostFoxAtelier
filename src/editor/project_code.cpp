@@ -3,9 +3,11 @@
 #include "platform/windows_path.hpp"
 #include "procedural/graph.hpp"
 #include "ui_language/component.hpp"
+#include "logging/logging.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdio>
 
 namespace atelier::editor {
 namespace {
@@ -31,7 +33,7 @@ Result<void> validate_ui(const source::SourceFile& file) {
     Runtime runtime;auto registered=ui_language::register_types(runtime);if(!registered) return std::unexpected(registered.error());
     auto module=ui_language::Module::compile(runtime,file.path,file.source);
     const auto reject=[&](std::string message)->Result<void> {
-        SourceLocation location{file.path,file.version};
+        SourceLocation location{file.path,file.version,0,1,1,file.disk_path};
         const auto prefix=file.path+":";
         if(message.starts_with(prefix)) {
             auto text=std::string_view(message).substr(prefix.size());
@@ -81,11 +83,35 @@ Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project
 }
 Result<void> ProjectCode::build(const Project& project) {
     auto next=std::make_shared<ProjectBuild>();next->published_version=report_->published_version;
+    std::uint64_t request_sequence{};
+    std::string_view phase="snapshot";
+    const auto record=[&](std::string_view code,const Error* error=nullptr) noexcept {
+        try {
+            logging::Entry entry{.severity=error?logging::Severity::error:logging::Severity::info,.category="source",
+                .event_code=std::string(code),.message=error?error->message:"Project Source build transition."};
+            entry.fields={{"project_root",assets::utf8(project.root().generic_wstring())},
+                {"phase",std::string(phase)},{"snapshot_version",next->sources?next->sources->version:0},
+                {"published_content_version",next->published_version}};
+            if(request_sequence) entry.fields.push_back({"request_sequence",request_sequence});
+            if(code=="source.published") entry.fields.push_back({"code_version",request_sequence});
+            if(error) {
+                entry.fields.push_back({"error_code",static_cast<std::uint64_t>(error->code)});
+                if(error->source) {
+                    const auto& location=*error->source;
+                    entry.source={location.path,{},{},
+                        location.line<=UINT32_MAX?static_cast<std::uint32_t>(location.line):0,
+                        location.column<=UINT32_MAX?static_cast<std::uint32_t>(location.column):0,location.version,location.offset,location.disk_path};
+                }
+            }
+            static_cast<void>(logging::submit(std::move(entry)));
+        } catch(...) {std::fputs("Source build diagnostic capture failed.\n",stderr);}
+    };
     const auto reject=[&](Error error)->Result<void> {
         if(error.source && !error.message.starts_with(error.source->path+":"))
             error.message=error.source->path+":"+std::to_string(error.source->line)+":"+std::to_string(error.source->column)+": "+error.message;
         next->state=error.code==ErrorCode::rebuild_required?BuildState::rebuild_required:BuildState::failed;
         next->error=std::move(error);
+        record("source.build_rejected",&*next->error);
         report_=next;return std::unexpected(*next->error);
     };
     auto input=snapshot(project);if (!input) return reject(input.error());
@@ -98,7 +124,9 @@ Result<void> ProjectCode::build(const Project& project) {
         if (report_->error) return std::unexpected(*report_->error);
         return {};
     }
+    record("source.build_requested");
     if(next->ui_source && (!ui_same || report_->error)) {
+        phase="ui_validation";
         auto checked=validate_ui(*next->ui_source);if(!checked) return reject(checked.error());
     }
     if (!published_ || !same(*published_->sources,*next->sources)) {
@@ -113,16 +141,22 @@ Result<void> ProjectCode::build(const Project& project) {
         // Request through publish runs synchronously here, and this is the Runtime's only
         // Program, so no other producer can invalidate the candidate; an asynchronous
         // build would need to re-request once when publication reports a stale catalog.
+        phase="request";
         auto request=program_->request(*next->sources);if (!request) return reject(request.error());
+        request_sequence=(*request)->sequence;record("source.requested");phase="prepare";
         auto candidate=source::Program::prepare(*request);if (!candidate) return reject(candidate.error());
+        record("source.prepared");phase="validate";
         auto valid=validate(*candidate);if(!valid) return reject(valid.error());
         const bool rebind=!bound_ || adds_behavior(*candidate);
+        phase="publish";
         auto published=program_->try_publish(*candidate);if (!published) return reject(published.error());
+        record("source.published");phase="bind";
         if (rebind) {auto binding=bind();if (!binding) {bound_=false;return reject(binding.error());}bound_=true;}
         // Published code may fix isolated objects; they resume without a second Begin.
         if (world_.running()) if (auto cleared=world_.clear_faults();!cleared) return reject(cleared.error());
     }
     next->published_version=next->ui_source?source::content_hash(next->ui_source->source,next->sources->version):next->sources->version;
+    phase="ready";record("source.build_ready");
     published_=next;report_=std::move(next);return {};
 }
 // Compatible publications may add classes or lifecycle methods; those need a

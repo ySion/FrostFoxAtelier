@@ -1,6 +1,7 @@
 #pragma once
 #include "editor/project.hpp"
 #include "ui_language/live_document.hpp"
+#include "logging/logging.hpp"
 #include <chrono>
 
 namespace atelier::editor {
@@ -43,6 +44,9 @@ public:
         const Project* = nullptr,const ProjectBuild* = nullptr,bool running=false);
     std::vector<ui::MenuItem> menu_items() const;
     bool locate_problem();
+    // Original absolute path/root, optional Source content version and UTF-8
+    // byte column. Refuses stale locations and never overwrites a dirty draft.
+    Result<void> locate(const logging::SourceLocation&);
     // Last compiler diagnostic is actionable only for the exact saved revision.
     bool problem_current() const noexcept {return problem_line_!=0;}
 private:

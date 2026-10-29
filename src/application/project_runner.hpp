@@ -9,7 +9,8 @@
 
 namespace atelier::editor { class Project; class Session; }
 namespace atelier::application {
-// Prints diagnostics of host work in the frame loop the same way as World diagnostics.
+// Submits owned diagnostics of host work at the same boundary as World diagnostics.
+// Live acknowledgements retain their protocol verdict and are not a log transport.
 using Report=std::function<void(std::span<const world::Diagnostic>)>;
 // Feeds editor changes into the Play copy. The runner calls service once per
 // frame at the host boundary, before start on the first frame and before every

@@ -76,7 +76,7 @@
                         quad(physical,body_clip,appearance.caret);
                         if (visible(physical,body_clip)) output->caret=TextCaret{self.edit->token,physical,body_clip};
                         const auto anchor=composition?paragraph->caret({composition->first-start,false}):caret;
-                        output->input_anchor=TextInputAnchor{self.edit->token,composition?composition->id:0,composition?composition->revision:0,
+                        if (!state.control.read_only) output->input_anchor=TextInputAnchor{self.edit->token,composition?composition->id:0,composition?composition->revision:0,
                             {x+anchor.x*scale,y+anchor.y*scale,anchor.width*scale,line_height*scale},body_clip};
                         if (composition) for (auto range:paragraph->selection(composition->first-start,composition->first-start+static_cast<std::uint32_t>(composition->preedit.text.size())))
                             quad({x+range.x*scale,y+line_height*scale-scale,range.width*scale,scale},body_clip,appearance.caret);

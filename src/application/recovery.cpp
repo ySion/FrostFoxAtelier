@@ -2,7 +2,9 @@
 #include "control/control.hpp"
 #include "editor/project.hpp"
 #include "assets/file.hpp"
+#include "logging/logging.hpp"
 #include <chrono>
+#include <cstdio>
 
 namespace atelier::application {
 const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
@@ -10,6 +12,23 @@ const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
     std::string_view reason,const std::filesystem::path& directory) {
     if(attempted_) return outcome_;
     attempted_=true;
+    struct Report {
+        const Outcome& outcome;const std::filesystem::path& project;const std::filesystem::path& scene;std::string_view reason;
+        ~Report() {
+            try {
+                logging::Entry entry{.severity=!outcome?logging::Severity::error:logging::Severity::info,.category="recovery",
+                    .event_code=!outcome?"recovery.failed":*outcome?"recovery.saved":"recovery.not_needed",
+                    .message=!outcome?outcome.error().message:*outcome?"Authoring scene recovery saved.":"No unsaved scene required recovery."};
+                entry.fields={{"reason",std::string(reason)},{"project_root",assets::utf8(project.generic_wstring())},
+                    {"original_scene",assets::utf8(scene.generic_wstring())}};
+                if(outcome && *outcome) {
+                    entry.fields.push_back({"recovery_scene",assets::utf8(outcome->value().scene.generic_wstring())});
+                    entry.fields.push_back({"metadata_warning",outcome->value().warning});
+                }
+                static_cast<void>(logging::submit(std::move(entry)));
+            } catch(...) {std::fputs("Recovery diagnostic capture failed; inspect the original business failure.\n",stderr);}
+        }
+    } report{outcome_,project,scene,reason};
     try {
         if(!document.dirty()) return outcome_;
         const bool unfinished=document.editing();

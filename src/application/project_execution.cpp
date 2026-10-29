@@ -1,7 +1,9 @@
 #include "application/application.hpp"
+#include "application/diagnostics.hpp"
 #include "assets/file.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 
 namespace atelier::application {
 namespace {
@@ -13,12 +15,53 @@ bool same_sources(const source::SourceSnapshot& a,const source::SourceSnapshot& 
     return true;
 }
 }
+void Application::attach_play_output() noexcept try {
+    play_log_ended_=false;play_output_status_={};
+    const auto attached=workspace_.output.add_run(play_.log_directory());
+    if(!attached) notice("play.log_attachment_failed",assets::wide(attached.error().message),logging::Severity::warning);
+    logging::Entry entry{.category="play",.event_code="play.run_attached",.message="Runner process launched; waiting for its startup evidence."};
+    entry.fields={{"directory",assets::utf8(play_.log_directory().generic_wstring())},
+        {"project_root",assets::utf8(project_->root().generic_wstring())}};
+    static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+} catch(...) {std::fputs("Cannot attach the Runner output; the process launch result is unchanged.\n",stderr);}
+void Application::consume_play_output() noexcept try {
+    if(play_.log_directory().empty()) return;
+    const auto raw=play_.take_raw_output();
+    const auto capture=[&](bool standard_error,const PlayProcess::RawStream& stream,const PlayProcess::StreamStatus& state) {
+        workspace_.output.capture_raw(play_.log_directory(),standard_error,stream.bytes,stream.offset,
+            state.eof || state.read_error || (!play_.running() && !raw.status.pending));
+        auto& previous=play_output_status_[standard_error?1:0];
+        if(previous==state) return;
+        const bool loss=state.dropped_bytes>previous.dropped_bytes || state.abandoned_bytes>previous.abandoned_bytes ||
+            state.read_error!=previous.read_error || state.tail_loss_unknown!=previous.tail_loss_unknown;
+        // Byte counts accompany data records. Publish transport transitions even
+        // with no body, but not a second status record for every successful read.
+        if(loss || state.eof!=previous.eof) {
+            logging::Entry entry{.severity=loss?logging::Severity::warning:logging::Severity::info,
+                .category="process.raw",.event_code="raw.transport",.message=loss?"Raw process output is incomplete.":"Raw process stream reached EOF."};
+            entry.fields={{"directory",assets::utf8(play_.log_directory().generic_wstring())},
+                {"stream",std::string(standard_error?"stderr":"stdout")},{"received_bytes",state.received_bytes},
+                {"dropped_bytes",state.dropped_bytes},{"abandoned_bytes",state.abandoned_bytes},
+                {"read_error",std::uint64_t{state.read_error}},{"eof",state.eof},{"tail_loss_unknown",state.tail_loss_unknown}};
+            static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+        }
+        previous=state;
+    };
+    capture(false,raw.standard_output,raw.status.standard_output);
+    capture(true,raw.standard_error,raw.status.standard_error);
+    if(play_log_ended_ || !raw.status.process_exited) return;
+    play_log_ended_=true;workspace_.output.source_ended(play_.log_directory());
+    logging::Entry entry{.category="play",.event_code="play.process_ended",.message="Runner process ended; retained JSONL tail remains readable."};
+    entry.fields={{"directory",assets::utf8(play_.log_directory().generic_wstring())},{"forced",play_.forced()}};
+    if(play_.exit_code()) entry.fields.push_back({"exit_code",std::uint64_t{*play_.exit_code()}});
+    static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+} catch(...) {std::fputs("Cannot capture the Runner output; its exit result is unchanged.\n",stderr);}
 void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> report) {
     if(!report || workspace_.project_build==report) return;
     workspace_.project_build=std::move(report);
     if(workspace_.project_build->error) workspace_.status=assets::wide(workspace_.project_build->error->message);
     else workspace_.status=L"Project build ready";
-    workspace_.log(workspace_.status);
+    // ProjectCode records the authoritative request/publication, not this UI projection.
 }
 Result<void> Application::build_project(bool rebuild) {
     if(!project_) return failure("Open a project folder first.");
@@ -44,14 +87,14 @@ Result<void> Application::build_project(bool rebuild) {
     if(!rebuild && (document_->undo_count() || document_->redo_count())) {
         publish_build(next.build);
         workspace_.status=L"Project build ready. Rebuild Types to restore placeholder objects; scene Undo/Redo history will be cleared.";
-        workspace_.log(workspace_.status);return {};
+        notice("source.rebuild_required",workspace_.status);return {};
     }
     // A rebuild retains authored values, but its Runtime identities are new.
     // Preserve the unsaved marker independently of the retired history roots.
     if(dirty) next.session->mark_modified();
     workspace_.scene_available=true;pending_scene_=*text;
     publish_document(std::move(next.session),next.code);publish_build(next.build);
-    for(auto& line:editor::describe_issues(*document_,document_->load_issues(),L"Scene "+scene_path_.generic_wstring())) workspace_.log(std::move(line));
+    report_load(*document_,document_root_);
     return {};
 }
 Result<void> Application::create_source(const std::filesystem::path& relative,bool is_ui) {
@@ -64,12 +107,12 @@ Result<void> Application::create_source(const std::filesystem::path& relative,bo
     if(!created) return created;
     if(is_ui) {
         auto configured=project_->set_ui_source(relative);
-        if(!configured) {workspace_.log(L"UI file created; project entry was not changed: "+assets::wide(configured.error().message));return configured;}
+        if(!configured) {notice("source.ui_configuration_failed",L"UI file created; project entry was not changed: "+assets::wide(configured.error().message),logging::Severity::error);return configured;}
         workspace_.project_ui_configured=true;
     }
     const auto path=project_->resolve(relative);if(!path) return std::unexpected(path.error());
     auto opened=open_source(*path);if(!opened) return opened;
-    auto refreshed=project_->refresh();if(!refreshed) workspace_.log(L"Source created; browser refresh failed: "+assets::wide(refreshed.error().message));
+    auto refreshed=project_->refresh();if(!refreshed) notice("source.browser_refresh_failed",L"Source created; browser refresh failed: "+assets::wide(refreshed.error().message),logging::Severity::warning);
     source_build_pending_=true;
     workspace_.status=is_ui?L"Project UI created":L"Component source created. Build, then rebuild types to add the new component.";
     return {};
@@ -89,20 +132,24 @@ Result<void> Application::run_project() {
     const auto path=project_->resolve(relative);if(!path) return std::unexpected(path.error());
     auto saved=editor::write_file(*path,*source,editor::WriteMode::create);if(!saved) return saved;
     std::unique_ptr<LiveLink> link;
+    consume_play_output(); // Consume the previous run before a successful start resets its buffers.
     auto started=play_.start(project_->root(),*path,false,0,{},false,false,&link);
     if(!started) {std::error_code ignored;std::filesystem::remove(*path,ignored);return started;}
+    attach_play_output();
     // Forwarding starts with the snapshot just serialized, so no change falls between them;
     // the pipe holds batches until Play has loaded.
     auto spill=*path;spill.replace_extension();live_.open(std::move(link),std::move(spill));document_->set_live_forwarding(true);
     play_snapshot_=*path;workspace_.project_running=true;workspace_.project_stopping=false;
-    workspace_.log(L"Running "+project_->name());return {};
+    notice("play.launched",L"Running "+project_->name());return {};
 }
 Result<void> Application::preview_project_ui() {
     if(!project_ || project_->ui_source().empty()) return failure("Create a project UI source before previewing.");
     if(play_.running()) return failure("Stop the current run before previewing the project UI.");
+    consume_play_output();
     auto started=play_.start(project_->root(),{},false,0,{},true);if(!started) return started;
+    attach_play_output();
     workspace_.project_running=true;workspace_.project_stopping=false;
-    workspace_.log(L"Previewing "+project_->ui_source().generic_wstring());return {};
+    notice("play.preview_launched",L"Previewing "+project_->ui_source().generic_wstring());return {};
 }
 Result<void> Application::execution_command(editor::Command command) {
     using enum editor::Command;
@@ -126,39 +173,30 @@ Result<void> Application::execution_command(editor::Command command) {
 }
 void Application::poll_project() {
     const bool was_running=play_.running();play_.poll();
-    auto output=play_.take_output();
-    if(!output.empty()) {
-        play_output_+=output;
-        const auto end=play_output_.find_last_of('\n');
-        if(end!=std::string::npos) {
-            try{workspace_.log(assets::wide(std::string_view(play_output_).substr(0,end+1)));}catch(const std::exception&){workspace_.log(L"Runner output contains invalid UTF-8.");}
-            play_output_.erase(0,end+1);
-        }
-        if(play_output_.size()>65536) play_output_.clear();
-    }
+    consume_play_output();
     workspace_.project_running=play_.running();workspace_.project_stopping=play_.stopping();
     live_.poll(play_.running(),play_.stopping());
     if(!live_.divergence().empty() && !workspace_.play_diverged) {
         workspace_.play_diverged=true;document_->set_live_forwarding(false);
-        workspace_.status=L"Play no longer follows the scene: "+assets::wide(live_.divergence());workspace_.log(workspace_.status+L" Restart Play to continue.");
+        workspace_.status=L"Play no longer follows the scene: "+assets::wide(live_.divergence());notice("play.diverged",workspace_.status+L" Restart Play to continue.",logging::Severity::error);
     }
     if(was_running && !play_.running()) {
         workspace_.status=play_.forced()?L"Project stopped: run did not respond to Stop":play_.exit_code().value_or(1)==0?L"Project stopped":L"Project exited with an error; see Project Output";
-        workspace_.log(workspace_.status);
+        notice("play.exited",workspace_.status,play_.exit_code().value_or(1)==0?logging::Severity::info:logging::Severity::warning);
     }
     if(!play_.running() && live_.active()) {
         document_->set_live_forwarding(false);
-        if(const auto error=live_.close()) workspace_.log(L"Cannot remove the run's change files: "+assets::wide(error.message()));
+        if(const auto error=live_.close()) notice("play.cleanup_failed",L"Cannot remove the run's change files: "+assets::wide(error.message()),logging::Severity::warning);
     }
     workspace_.play_pending=live_.active()?std::optional(live_.unacknowledged()):std::nullopt;workspace_.play_diverged=!live_.divergence().empty();
     if(!play_.running() && !play_snapshot_.empty()) {
         std::error_code error;std::filesystem::remove(play_snapshot_,error);
-        if(error) workspace_.log(L"Cannot remove the run snapshot: "+assets::wide(error.message()));
+        if(error) notice("play.cleanup_failed",L"Cannot remove the run snapshot: "+assets::wide(error.message()),logging::Severity::warning);
         play_snapshot_.clear();
     }
     if(restart_play_ && !play_.running()) {
         restart_play_=false;
-        if(auto restarted=run_project();!restarted) {workspace_.status=L"Cannot restart Play: "+assets::wide(restarted.error().message);workspace_.log(workspace_.status);}
+        if(auto restarted=run_project();!restarted) {workspace_.status=L"Cannot restart Play: "+assets::wide(restarted.error().message);notice("play.restart_failed",workspace_.status,logging::Severity::error);}
         else workspace_.status=L"Play restarted";
     }
     if(!project_) return;

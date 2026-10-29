@@ -87,6 +87,7 @@
         } else action(reply,ActionKind::edit_preview,edit->key,edit->buffer().current().text);
     }
     void insert(Reply& reply, std::wstring_view value, detail::TextEdit::Group group) {
+        if (states.at(edit->key).control.read_only) {reply.consumed=true;return;}
         std::wstring normalized;
         if (edit->document) {
             normalized.reserve(value.size());
@@ -137,6 +138,9 @@
         if (edit->buffer().select(position,extend)) { revise(); reply.redraw=true; }
     }
     void clipboard_command(Reply& reply, ClipboardKind kind) {
+        if (kind!=ClipboardKind::copy && states.at(edit->key).control.read_only) {
+            edit->commit_paste=false;reply.consumed=true;return;
+        }
         edit->buffer().break_group(); reply.redraw|=!edit->text_mode; edit->text_mode=true;
         if (edit->composition) return;
         const auto& snapshot=edit->buffer().current();
@@ -168,6 +172,7 @@
     }
     void composition_event(Reply& reply, const CompositionEvent& event) {
         if (!edit || !event.composition_id) return;
+        if (states.at(edit->key).control.read_only) {reply.consumed=true;return;}
         if (event.kind==CompositionKind::start) {
             if (event.token!=edit->token || edit->composition) return;
             edit->text_mode=true; edit->buffer().break_group(); edit->clipboard.reset();

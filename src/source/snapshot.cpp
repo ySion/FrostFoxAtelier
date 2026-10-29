@@ -31,7 +31,7 @@ Result<SourceFile> read_source_file(const std::filesystem::path& path, std::stri
     if (!StringView(std::string_view(text)).is_valid_utf8()) return fail("Source file is not valid UTF-8: " + utf8(path));
     const auto version = content_hash(text);
     if (text.starts_with("\xef\xbb\xbf")) text.erase(0, 3);
-    return SourceFile{std::move(snapshot_path), version, std::move(text)};
+    return SourceFile{std::move(snapshot_path), version, std::move(text), utf8(std::filesystem::absolute(path).lexically_normal())};
 }
 
 Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root) {

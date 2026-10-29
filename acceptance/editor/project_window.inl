@@ -43,6 +43,38 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
         const auto material=document.loaded_material(asset);
         const auto scene=model(document.serialize());const auto history=document.undo_count();
         require(history>0,"Inline MI history fixture has no independent scene edit");
+        const auto accepted_material=[&] {
+            auto* run=atelier::logging::current_run();require(run,"Material acceptance needs the process log.");
+            const auto flushed=run->flush();require(flushed.backend_acknowledged && flushed.sink_flush_succeeded,"Cannot flush material evidence.");
+            auto reader=atelier::logging::Reader::open(run->info().directory);require(reader.has_value(),"Cannot read material evidence.");
+            std::map<std::uint64_t,std::array<unsigned,3>> transitions;
+            const auto deadline=GetTickCount64()+5000;
+            for(;;) {
+                auto batch=(*reader)->poll();
+                for(const auto& record:batch.records) {
+                    const auto& entry=record.entry;
+                    if(entry.category!="material") continue;
+                    const auto number=[&](std::string_view key) {
+                        for(const auto& field:entry.fields) if(field.key==key)
+                            if(const auto* value=std::get_if<std::uint64_t>(&field.value)) return *value;
+                        throw std::runtime_error("Material event omitted its correlation field.");
+                    };
+                    if(number("document")!=document.presentation().identity()) continue;
+                    const auto index=entry.event_code=="material.requested"?0:entry.event_code=="material.adopted"?1:entry.event_code=="material.view_accepted"?2:-1;
+                    if(index<0) continue;
+                    const auto generation=number("request_generation");if(!generation) continue;
+                    ++transitions[generation][static_cast<std::size_t>(index)];
+                    if(index==2) require(number("frame")>0 && number("frame")<=app.presented()->drawing->id,"Material evidence names an unaccepted frame.");
+                }
+                require(!batch.status.incomplete,"Material evidence is incomplete.");
+                if(batch.status.caught_up) break;
+                require(GetTickCount64()<deadline,"Material Reader did not catch up.");
+            }
+            require(!transitions.empty() && transitions.rbegin()->second==std::array<unsigned,3>{1,1,1},
+                "Latest material request did not reach exactly one adopted/accepted-frame transition.");
+            return transitions.rbegin()->first;
+        };
+        const auto first_material=accepted_material();
         const auto roughness=[&](atelier::ObjectId object) {
             const auto view=model(document.inspect_material(object));
             const auto at=std::ranges::find(view.entries,"roughness",&atelier::material::Override::path);
@@ -58,6 +90,8 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
         click(app,field);type(app,L"0.75");key(app,VK_RETURN);
         require(roughness(material)==.75f && document.material_dirty(asset) && document.undo_count()==history && model(document.serialize())==scene,
             "Inline shared MI edit changed scene history or failed to record the asset draft");
+        tick(app,3);
+        require(accepted_material()>first_material,"Replacing a non-fallback material omitted its new accepted-frame identity.");
         key(app,'Z',true);
         std::printf("Inline MI Undo: roughness=%g, scene history=%zu/%zu\n",roughness(material),document.undo_count(),history);std::fflush(stdout);
         require(roughness(material)==.25f && document.undo_count()==history && model(document.serialize())==scene,

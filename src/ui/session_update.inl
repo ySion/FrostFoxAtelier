@@ -164,7 +164,14 @@
             return future && previous && (future->table!=previous->control.table || future->table_layout!=previous->control.table_layout ||
                 (selection && future->table_selection!=previous->control.table_selection));
         };
-        const bool cancelling=(press && (absent(press->key) || table_changed(press->key,false))) || (edit && absent(edit->key));
+        const auto edit_policy_changed=[&](ControlKey key) {
+            const auto* future=lookup(key);const auto* previous=live(key);
+            return future && previous && future->read_only!=previous->control.read_only;
+        };
+        // Retire pending clipboard/IME writes without clearing focus: forbidden
+        // keys must remain owned by this field during the next-frame transition.
+        const bool cancelling=(press && (absent(press->key) || table_changed(press->key,false) || edit_policy_changed(press->key))) ||
+            (edit && (absent(edit->key) || edit_policy_changed(edit->key)));
         const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed) || table_changed(keyboard_pressed,true);
         const auto* future_edit=edit?lookup(edit->key):nullptr;
         const bool refresh_edit=edit && !edit->document && future_edit && !edit->buffer().active() && !edit->composition &&

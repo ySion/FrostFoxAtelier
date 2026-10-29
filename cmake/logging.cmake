@@ -1,0 +1,18 @@
+include("${CMAKE_CURRENT_LIST_DIR}/quill.cmake")
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    include("${CMAKE_CURRENT_LIST_DIR}/json.cmake")
+endif()
+add_library(atelier_logging STATIC
+    "${PROJECT_SOURCE_DIR}/src/logging/logging.cpp"
+    "${PROJECT_SOURCE_DIR}/src/logging/format.cpp"
+    "${PROJECT_SOURCE_DIR}/src/logging/reader.cpp")
+atelier_target(atelier_logging)
+target_compile_features(atelier_logging PUBLIC cxx_std_23)
+target_include_directories(atelier_logging PUBLIC "${PROJECT_SOURCE_DIR}/src")
+# Only native.hpp exposes Quill headers. The owning/domain API is standard-only.
+target_link_libraries(atelier_logging PUBLIC quill::quill PRIVATE nlohmann_json::nlohmann_json bcrypt)
+# CMake normally passes absolute translation-unit paths. Preserve the original
+# compilation working directory for a compiler-provided relative file spelling.
+target_compile_definitions(atelier_logging PRIVATE ATELIER_LOGGING_SOURCE_ROOT="${CMAKE_BINARY_DIR}")
+
+include("${CMAKE_CURRENT_LIST_DIR}/logging-acceptance.cmake")

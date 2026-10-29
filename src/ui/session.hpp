@@ -81,6 +81,7 @@ struct Control {
     TableLayout table_layout;
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
     std::shared_ptr<const Tooltip> tooltip; // Owned documentation, shared across a parameter row and its fields.
+    bool read_only{}; // CodeEditor only: selectable/copyable, without text mutations or an IME binding.
     bool operator==(const Control&) const = default;
 };
 struct Surface {
@@ -109,6 +110,7 @@ struct ControlBox {
     TableLayout table_layout;
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
     std::shared_ptr<const Tooltip> tooltip; // Exact documentation accepted with this geometry.
+    bool read_only{}; // Accepted edit policy; changing it retires pending writes.
 };
 struct EditToken {
     ControlKey key{};
@@ -397,7 +399,10 @@ public:
     bool wants_keyboard() const noexcept;
     InteractionState interaction_state() const noexcept;
     bool has_popup() const noexcept; // Modal barrier includes an opening/closing frame transition.
-    // Live binding plus matching accepted caret only; no pending-frame geometry.
+    // Host checks before executing a clipboard request. Unlike text_input(),
+    // this also authorizes copy from a read-only document without enabling IME.
+    bool clipboard_current(const ClipboardRequest&) const noexcept;
+    // Writable live binding plus matching accepted caret only; no pending-frame geometry.
     std::optional<TextInputState> text_input() const noexcept;
 private:
     struct Impl;

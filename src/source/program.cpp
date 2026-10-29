@@ -54,7 +54,7 @@ SourceLocation resolve_location(const SourceMap* map, std::string_view path, std
             for (std::size_t i = 0; i < mapped; ++i)
                 if (file.source[i] == '\n') { ++line; column = 1; } else ++column;
         }
-        return {file.path, file.version, mapped, line, column};
+        return {file.path, file.version, mapped, line, column, file.disk_path};
     }
     return {std::string(path), version, offset, static_cast<std::size_t>(position.line), static_cast<std::size_t>(position.column)};
 }

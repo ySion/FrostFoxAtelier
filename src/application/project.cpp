@@ -1,5 +1,7 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
+#include "application/diagnostics.hpp"
+#include "logging/native.hpp"
 #include "assets/file.hpp"
 #include <cstdio>
 #include <shobjidl.h>
@@ -69,6 +71,7 @@ bool Application::confirm_discard(bool sources) {
     return saved.has_value();
 }
 void Application::publish_document(std::unique_ptr<editor::Session> next,editor::ProjectCode* code) {
+    const auto previous_document=document_->presentation().identity();
     restart_play_=false;
     finish_camera_fly(false);camera_fly_release_.reset();
     render_retry_at_={};render_retry_delay_={};
@@ -82,8 +85,14 @@ void Application::publish_document(std::unique_ptr<editor::Session> next,editor:
     for (auto& popup:submenus_) popup->reset_document();
     workspace_.reset_document();
     project_code_=nullptr;
-    const auto closed=document_->close();if (!closed) throw std::runtime_error(closed.error().message);
+    diagnostics();
+    const auto closed=document_->close();diagnostics();if (!closed) throw std::runtime_error(closed.error().message);
     document_=std::move(next);project_code_=code;scene_.reset();workspace_.render_notice.clear();camera_.reset();sync_world_view();camera_cut_=true;invalidate_surface();
+    dropped_diagnostics_=0;document_root_=project_?project_->root():std::filesystem::path{};
+    const std::array fields{logging::Field{"previous_document",previous_document},
+        logging::Field{"document",document_->presentation().identity()},logging::Field{"project_root",assets::utf8(document_root_.generic_wstring())},
+        logging::Field{"scene",assets::utf8(scene_path_.generic_wstring())}};
+    static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"application","document.adopted",logging::native::Context{fields},"Editor document adopted"));
 }
 Result<void> Application::open_project(const std::filesystem::path& folder,bool create,ProjectOpenPolicy policy,const std::function<Result<void>(const editor::Session&)>& admit) {
     // A save decision can change the file we are about to open. Read only after
@@ -106,7 +115,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
     if(reproducible && (!candidate.session || candidate.error))
         return candidate.error?std::unexpected(*candidate.error):failed("Project did not produce a complete scene.");
     if(reproducible && admit) if(auto admitted=admit(*candidate.session);!admitted) return admitted;
-    play_.close();
+    play_.close();consume_play_output();
     workspace_.source_editor.clear();
     project_=std::move(*project);scene_path_=initial_scene;workspace_.project_open=true;
     pending_scene_=*content;workspace_.scene_available=candidate.session!=nullptr;
@@ -117,8 +126,9 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
         report->error=candidate.error;report->state=editor::BuildState::failed;candidate.build=std::move(report);
     }
     publish_build(candidate.build);workspace_.project_ui_configured=!project_->ui_source().empty();
-    if(candidate.session && candidate.error) workspace_.log(placeholder_notice);
-    for(auto& line:editor::describe_issues(*document_,document_->load_issues(),L"Scene "+initial_scene.generic_wstring())) workspace_.log(std::move(line));
+    if(workspace_.scene_available && candidate.error) notice("document.placeholders",placeholder_notice,logging::Severity::warning);
+    if(workspace_.scene_available) report_load(*document_,document_root_);
+    else if(candidate.error) notice("document.rejected",assets::wide(candidate.error->message),logging::Severity::error);
     if(candidate.error) {
         workspace_.dock.select(editor::source_control::tab);
         if(candidate.build && candidate.build->sources && !candidate.build->sources->files.empty()) {
@@ -126,7 +136,6 @@ Result<void> Application::load_project(const std::filesystem::path& folder,bool 
             if(source_path) static_cast<void>(open_source(*source_path));
         }
     }
-    std::printf("Project: %s\n",assets::utf8(project_->root().wstring()).c_str());
     return {};
 }
 Result<void> Application::open_scene(const std::filesystem::path& relative) {
@@ -136,10 +145,10 @@ Result<void> Application::open_scene(const std::filesystem::path& relative) {
     auto text=assets::read_file(*path);if (!text) return std::unexpected(text.error());
     auto next=editor::load_project_scene(*project_,*text,editor::LoadPolicy::tolerant,true,editor::SessionRole::editor);
     if(!next.session) {publish_build(next.build);return std::unexpected(*next.error);}
-    play_.close();scene_path_=relative;pending_scene_=*text;workspace_.scene_available=true;
+    play_.close();consume_play_output();scene_path_=relative;pending_scene_=*text;workspace_.scene_available=true;
     publish_document(std::move(next.session),next.code);publish_build(next.build);
-    if(next.error) workspace_.log(placeholder_notice);
-    for(auto& line:editor::describe_issues(*document_,document_->load_issues(),L"Scene "+relative.generic_wstring())) workspace_.log(std::move(line));
+    if(next.error) notice("document.placeholders",placeholder_notice,logging::Severity::warning);
+    report_load(*document_,document_root_);
     return {};
 }
 Result<void> Application::save_scene(const std::filesystem::path& relative) {
@@ -159,7 +168,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     auto pending=document_->issues();
     const auto kept=pending.size();
     std::erase_if(pending,[](const auto& item){return item.kind!=world::DiagnosticKind::reference_dropped;});
-    for(auto& line:editor::describe_issues(*document_,pending,L"Saved "+destination.generic_wstring())) workspace_.log(std::move(line));
+    report_world(*document_,pending,document_root_,"save");
     if(kept) workspace_.status+=L" ("+std::to_wstring(kept)+L" unresolved saved item(s) kept)";
     return {};
 }
@@ -221,7 +230,7 @@ Result<void> Application::project_command(editor::Command command,std::string_vi
     if (!project_) return failed("Open a project folder first.");
     if (command==import_mesh) {
         auto imported=project_->import_mesh(*path);if (!imported) return std::unexpected(imported.error());
-        for(const auto& note:project_->assets().mesh_notes(*imported)) workspace_.log(L"Import Mesh: "+assets::wide(note));
+        for(const auto& note:project_->assets().mesh_notes(*imported)) notice("asset.mesh_import_note",L"Import Mesh: "+assets::wide(note));
         workspace_.assets.reset(true);workspace_.assets.navigate(L"Content/Meshes");return {};
     }
     auto relative=path->is_absolute()?path->lexically_relative(project_->root()):*path;
@@ -257,7 +266,7 @@ Result<void> Application::save_source(editor::SourceEditor::File& file) {
                 std::vector<editor::MissingResource> missing;
                 auto published=document_->publish_material(project_->assets(),asset,std::move(exact),&missing);
                 if(!published) return std::unexpected(published.error());
-                for(const auto& issue:missing) workspace_.log(L"Material Source: "+assets::wide(issue.reason));
+                for(const auto& issue:missing) notice("material.resource_missing",L"Material Source: "+assets::wide(issue.reason),logging::Severity::warning);
                 if(!missing.empty()) workspace_.status=L"Source saved; material diagnostics need attention";
             }
         }

@@ -45,6 +45,8 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 计数和时间累加采用饱和处理，不因统计溢出改变业务结果。`snapshot()` 复制文本与数据，不调用用户观察回调，也不改变执行状态。活动时读取的资源快照对应最近一次边界，计数对应读取时已经执行的操作。
 
+`SourceLocation.path` 是编译快照中的文件名，不保证是磁盘路径（例如引擎文件的 `engine/...`）。`read_source_file` 额外保留绝对 `disk_path`，其 version 是原始磁盘字节的内容摘要；编译错误、运行错误和诊断位置均携带这份来源。虚拟文本不提供磁盘映射，单文本请求的版本仍是请求序号，不能拿来比较磁盘内容。编辑器只对有映射且磁盘摘要仍一致的 Source 记录执行定位；代码复用时位置映射仍属于本次快照，不沿用旧文件来源。
+
 ### 调用计数口径
 
 - `field_read` / `field_write`、`native_call`、`poll`、`object_create`、引用操作及 `root_clear`：现有 Runtime 桥接服务。

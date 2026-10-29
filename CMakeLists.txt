@@ -47,6 +47,7 @@ function(atelier_target target)
     endif()
 endfunction()
 
+include(cmake/logging.cmake)
 include(cmake/unordered_dense.cmake)
 add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp src/foundation/frame_timing.cpp src/foundation/sha256.cpp)
 target_include_directories(atelier_foundation PUBLIC src)
@@ -162,7 +163,7 @@ get_property(_renderer_acceptance GLOBAL PROPERTY ATELIER_RENDERER_ACCEPTANCE)
 set(_window_acceptance
     rhi_acceptance ${_renderer_acceptance} editor_acceptance
     editor_control_acceptance editor_control_path_acceptance editor_camera_projection_acceptance editor_project_acceptance
-    editor_repro_material_acceptance
+    editor_repro_material_acceptance editor_output_acceptance
     editor_shortcuts_acceptance editor_edit_acceptance editor_surfaces_acceptance
     editor_dialogs_acceptance editor_scene_lit_acceptance physics_examples_acceptance
     editor_sponza_acceptance editor_dungeons_acceptance)

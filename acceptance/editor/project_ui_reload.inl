@@ -80,24 +80,18 @@ void verify_project_ui_reload(const std::filesystem::path& evidence) {
     for(const bool preview:{false,true}) {
         take(editor::write_file(path,source(23)));
         application::PlayProcess process;take(process.start(root,{},true,0,{},preview));
-        std::string output;
-        const auto wait_output=[&](std::string_view marker) {
-            const auto deadline=GetTickCount64()+45000;
-            do {
-                process.poll();output+=process.take_output();
-                if(output.find(marker)!=std::string::npos) return;
-                if(!process.running()) break;
-                Sleep(10);
-            } while(GetTickCount64()<deadline);
-            throw std::runtime_error("Project UI runner did not report "+std::string(marker)+": "+output);
-        };
-        wait_output("Project UI published: 1");output.clear();
+        RunLog output(process);
+        output.await("runner.ui_published",[](const auto& record){return RunLog::integer(record,"ui_revision",1);});
         take(editor::write_file(path,source(1)));
-        wait_output("Project UI: Project UI layout failed");
-        require(process.running(),"Bad UI hot reload terminated the run.");output.clear();
+        output.await("runner.ui_failed",[](const auto& record){return record.entry.message.find("layout failed")!=std::string::npos;});
+        require(process.running(),"Bad UI hot reload terminated the run.");
         take(editor::write_file(path,source(31)));
-        wait_output("Project UI published: 2");require(process.running(),"Repaired UI did not keep the run alive.");
+        output.await("runner.ui_published",[](const auto& record){return RunLog::integer(record,"ui_revision",2);});
+        require(process.running(),"Repaired UI did not keep the run alive.");
         process.stop();wait(process,std::chrono::seconds(5));
+        if(preview) output.finish(true,{{"runner","runner.ui_failed",logging::Severity::error,1}});
+        else output.finish(true,{{"runner","runner.ui_failed",logging::Severity::error,1},
+            {"runner","runner.camera_unavailable",logging::Severity::warning,1}});
         require(process.exit_code()==0 && !process.forced(),"UI reload left the run unable to stop normally.");
     }
     std::puts("Project UI reload: PASS (layout/topology rejection, state, suspended surface, cold failure, game and preview recovery)");

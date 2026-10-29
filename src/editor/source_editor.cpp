@@ -128,6 +128,41 @@ bool SourceEditor::locate_problem() {
     while (count && count<bytes.size() && (static_cast<unsigned char>(bytes[count])&0xc0)==0x80) --count;
     file->document->locate(problem_line_,assets::wide(std::string_view(bytes).substr(0,count)).size()+1);return true;
 }
+Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
+    try {
+        if(location.file.empty() || location.file.find('\0')!=std::string::npos)
+            return failure("This record has no usable disk source path.");
+        if(location.version && location.disk_path.empty())
+            return failure("This Source version has no saved-file mapping; it cannot be located on disk.");
+        auto path=std::filesystem::path{assets::wide(location.disk_path.empty()?location.file:location.disk_path)};
+        if(!path.is_absolute()) {
+            const auto root=std::filesystem::path{assets::wide(location.root)};
+            if(!root.is_absolute() || path.has_root_path()) return failure("Relative log source has no original absolute root.");
+            path=root/path;
+        }
+        auto disk=assets::read_file(path,1024*1024);if(!disk) return std::unexpected(disk.error());
+        if(location.version && source::content_hash(*disk)!=*location.version)
+            return failure("The recorded source version is stale; no location was applied.");
+        if(auto opened=open(path);!opened) return opened;
+        auto* file=active();
+        if(!file || file->dirty()) return failure("Save or discard the source draft before locating a recorded position.");
+        if(file->disk!=*disk) if(auto loaded=load(*file,*disk);!loaded) return loaded;
+        auto& buffer=file->document->edit();
+        if(!location.line && location.offset) {
+            if(*location.offset>disk->size()) return failure("The recorded source byte offset is outside the file.");
+            auto offset=static_cast<std::size_t>(*location.offset);
+            while(offset && offset<disk->size() && (static_cast<unsigned char>((*disk)[offset])&0xc0)==0x80) --offset;
+            const auto prefix=normalized(std::string_view(*disk).substr(0,offset));
+            buffer.select({static_cast<std::uint32_t>(prefix.size()),false},false);return {};
+        }
+        const auto row=location.line?location.line:1;
+        if(row>buffer.line_count()) return failure("The recorded source line is outside the file.");
+        const auto bytes=assets::utf8(buffer.line(row-1));
+        auto column=std::min<std::size_t>(location.column?location.column-1:0,bytes.size());
+        while(column && column<bytes.size() && (static_cast<unsigned char>(bytes[column])&0xc0)==0x80) --column;
+        file->document->locate(row,assets::wide(std::string_view(bytes).substr(0,column)).size()+1);return {};
+    } catch(const std::exception& error) {return failure(error.what());}
+}
 void SourceEditor::append(std::vector<ui::Control>& controls,ui::ControlKey parent,ui_language::LiveDocument& live,
     const Project* project,const ProjectBuild* build,bool running) {
     using namespace ui_language;

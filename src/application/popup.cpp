@@ -1,6 +1,8 @@
 #include "application/popup.hpp"
 #include "foundation/frame_timing.hpp"
+#include "logging/native.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 
@@ -174,6 +176,11 @@ void PopupHost::render(renderer::Capture* capture) {
     if(opening_) ++open_present_count_;
     if (result.status==renderer::FrameStatus::accepted) {
         if (!ui_.accept(candidate)) throw std::runtime_error("Popup rejected its accepted GPU frame.");
+        if(opening_) {
+            const std::array fields{logging::Field{"source_control",source_},logging::Field{"surface_revision",revision_},
+                logging::Field{"frame",result.accepted_id},logging::Field{"present_attempts",std::uint64_t{open_present_count_}}};
+            static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info,"menu","menu.frame_accepted",logging::native::Context{fields},"Menu opening frame accepted"));
+        }
         opening_=dirty_=false;
         if(restore_focus_) {
             dirty_|=ui_.focus(restore_focus_).redraw;

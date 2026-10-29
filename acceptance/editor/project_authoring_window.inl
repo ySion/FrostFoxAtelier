@@ -99,10 +99,10 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
         replacement.at("entities").front()["name"]="Restart replacement";
         model(atelier::editor::write_file(folder/"Content/Scenes/RestartTarget.scene",replacement.dump(2)));
         const auto launches=[&] {
-            return std::ranges::count_if(Access::output(app).rows,[](const auto& row){return row.cells.front().text.starts_with(L"Running ");});
+            return std::ranges::count_if(Access::output(app).records(),[](const auto& item){return item.record.entry.event_code=="play.launched";});
         };
         const auto starts=[&] {
-            return std::ranges::count_if(Access::output(app).rows,[](const auto& row){return row.cells.front().text.starts_with(L"Project started:");});
+            return std::ranges::count_if(Access::output(app).records(),[](const auto& item){return item.record.entry.event_code=="runner.started";});
         };
         std::array<bool,3> passed{};
         for(std::size_t scenario=0;scenario<passed.size();++scenario) {

@@ -23,6 +23,9 @@
         if (!state || state->control.kind!=ControlKind::code_editor || event.kind!=EventKind::key_down || event.alt) return false;
         const auto* accepted=published?published->find(focus):nullptr;
         if (!accepted || !current(*accepted)) return false;
+        // A read-only document participates in ordinary Tab focus navigation,
+        // rather than the editable CodeEditor's indentation command.
+        if (state->control.read_only && event.key==Key::tab) return false;
         if (!edit) begin_edit(focus,true);
         auto& buffer=edit->buffer();const auto& selected=buffer.current();
         const auto row=buffer.line_at(selected.caret.offset);
