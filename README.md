@@ -143,7 +143,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 
 唯一版本清单位于 [cmake/toolchain-lock.json](cmake/toolchain-lock.json)，版本升级同时更新锁文件并验证构建环境，不在文档中维护第二份版本表。
 
-通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、Foundation 的 unordered_dense、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库；压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
+通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、Foundation 的 unordered_dense、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库；源码数学验收另按文件锁定 CORE-MATH 的正确舍入 binary64 函数，只链接 `atelier_source_minimal` 与 `atelier_source_measure`，不进入任何产品目标，输出目录保留其 MIT 许可证 `LICENSE.core-math.txt`。压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
 
 原生代码使用 C++23，警告视为错误；编译使用 clang-cl，静态归档使用 llvm-lib，链接使用 lld-link。只维护 CMake 构建定义。IDE 应使用相同 preset 和准备好的工具链环境。
 
@@ -316,6 +316,16 @@ cmake --build --preset release --target atelier_source_minimal
 ```
 
 该测量比较 65,536 个位置在 32 个 Tick 中的向量源码、逐分量源码及 C++ 运算，排除编译与重置时间，并验证结果一致。测量范围和实际数据见[数学研究记录](docs/research/engine-math-design.md)。
+
+超越函数另有两项独立测量：
+
+```powershell
+cmake --build --preset release --target atelier_source_measure
+./out/release/atelier_source_measure.exe --math-timing
+./out/release/atelier_source_measure.exe --math-sweep 1000000000
+```
+
+`--math-timing` 对 2^20 个参数报告 double、float 源码循环和 C++ `std::` double、float 循环的每元素纳秒，取 9 次中位数。`--math-sweep` 把 double 超越函数与 CORE-MATH 的正确舍入值逐个比较，报告最大 ULP 距离、对应参数和非正确舍入的个数；参数数量向上取整到 2^22 的倍数，固定种子与线程数无关。结果见[超越函数](docs/math.md#超越函数)。
 
 ## 执行链路
 

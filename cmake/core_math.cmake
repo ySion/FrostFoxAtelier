@@ -1,0 +1,37 @@
+# Correctly rounded binary64 references for the source math acceptance and measurements only;
+# no product target links this library.
+file(READ "${PROJECT_SOURCE_DIR}/cmake/dependencies-lock.json" _core_math_dependencies)
+string(JSON _core_math_version GET "${_core_math_dependencies}" core_math version)
+string(JSON _core_math_url GET "${_core_math_dependencies}" core_math url)
+string(JSON _core_math_files GET "${_core_math_dependencies}" core_math files)
+string(JSON _core_math_count LENGTH "${_core_math_files}")
+set(_core_math_root "${PROJECT_SOURCE_DIR}/.tools/downloads/core-math-${_core_math_version}")
+math(EXPR _core_math_last "${_core_math_count} - 1")
+foreach(_index RANGE ${_core_math_last})
+    string(JSON _path MEMBER "${_core_math_files}" ${_index})
+    string(JSON _sha GET "${_core_math_files}" "${_path}")
+    if(EXISTS "${_core_math_root}/${_path}")
+        file(SHA256 "${_core_math_root}/${_path}" _actual)
+    else()
+        set(_actual "")
+    endif()
+    if(NOT _actual STREQUAL _sha)
+        file(DOWNLOAD "${_core_math_url}${_path}" "${_core_math_root}/${_path}"
+            EXPECTED_HASH "SHA256=${_sha}" TLS_VERIFY ON STATUS _status)
+        list(GET _status 0 _code)
+        if(NOT _code EQUAL 0)
+            message(FATAL_ERROR "CORE-MATH download failed for ${_path}: ${_status}")
+        endif()
+    endif()
+endforeach()
+
+set(_core_math_sources)
+foreach(_function sin cos exp log atan2 pow)
+    list(APPEND _core_math_sources "${_core_math_root}/src/binary64/${_function}/${_function}.c")
+endforeach()
+add_library(atelier_core_math STATIC EXCLUDE_FROM_ALL ${_core_math_sources})
+set_target_properties(atelier_core_math PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+# Upstream C with its own warnings; FMA matches the source JIT's CPU baseline.
+target_compile_options(atelier_core_math PRIVATE /W0 /O2 -mfma)
+configure_file("${_core_math_root}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.core-math.txt" COPYONLY)

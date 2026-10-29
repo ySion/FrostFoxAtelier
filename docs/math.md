@@ -63,7 +63,7 @@ double energy(const Array<vector3d>& values) {
 | `math.transpose(m)` | 矩阵转置 |
 | `math.transform_point(v, m)`、`math.transform_direction(v, m)` | 同精度 vector3、matrix4，参数顺序符合 `v * M` |
 | `math.sqrt`、`floor`、`ceil`、`trunc`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节 |
-| `math.sin`、`cos`、`atan2`、`exp`、`log`、`pow` | float 标量与向量的逐分量超越函数，见[超越函数](#超越函数) |
+| `math.sin`、`cos`、`atan2`、`exp`、`log`、`pow` | float/double 标量与向量的逐分量超越函数，见[超越函数](#超越函数) |
 
 ### 逐分量函数
 
@@ -90,28 +90,30 @@ double energy(const Array<vector3d>& values) {
 
 ### 超越函数
 
-`math.sin(x)`、`math.cos(x)`、`math.exp(x)`、`math.log(x)`、`math.atan2(y, x)`、`math.pow(x, y)` 只接受 float 标量和 vector2/3/4，标量参数作用于每个分量，其余类型规则同上；double、整数、四元数和矩阵在编译期拒绝。
+`math.sin(x)`、`math.cos(x)`、`math.exp(x)`、`math.log(x)`、`math.atan2(y, x)`、`math.pow(x, y)` 接受 float、double 标量和它们的 vector2/3/4，按参数类型选择 float 或 double 实现；标量参数作用于每个分量，其余类型规则同上，float 与 double 不混合。整数、四元数和矩阵在编译期拒绝。
 
-精度契约：与精确值相差不超过 4 ULP。sin、cos 的准确区间是 |x| ≤ 2^20；超出后结果仍有限且绝对值不超过 1，但不再近似正弦、余弦。下表是当前实现的实测最大误差（release；sin、cos、exp、log 穷举全部 2^32 个 float，atan2、pow 各约 10.4 亿组随机参数，另加 111 万组边界网格）：
+精度契约：与精确值相差不超过结果类型的 4 ULP。sin、cos 的准确区间 float 是 |x| ≤ 2^20，double 是 |x| ≤ 2^40；超出后结果仍有限且绝对值不超过 1，但不再近似正弦、余弦。
 
-| 函数 | 实测最大误差 |
-| --- | --- |
-| `sin` | 1.669 ULP（\|x\| ≤ 1e5 内 1.570） |
-| `cos` | 1.807 ULP（\|x\| ≤ 1e5 内 1.572） |
-| `exp` | 1.009 ULP |
-| `log` | 1.162 ULP |
-| `atan2` | 1.867 ULP |
-| `pow` | 0.565 ULP |
+下表保留实现阶段的 release 测量，不代表每次集成都重跑大规模扫描。float：sin、cos、exp、log 穷举全部 2^32 个 float，atan2、pow 各约 10.4 亿组随机参数，另加 111 万组边界网格，误差相对精确值。double 的[原分支测量](https://ampcode.com/threads/T-01a149c9-15b7-75a9-9a24-80c450cd4aed)使用 `atelier_source_measure --math-sweep`，每函数 1,002,438,656 组参数，覆盖归约边界附近、溢出与次正规区间和随机位模式；sin/cos 的随机输入限于准确区间。double 列记录与 [CORE-MATH](https://core-math.gitlabpages.inria.fr/) 正确舍入结果的相邻浮点数步长距离，是抽样结果，不是全域误差证明或跨 CPU 实测。
+
+| 函数 | float | double |
+| --- | --- | --- |
+| `sin` | 1.669 ULP（\|x\| ≤ 1e5 内 1.570） | 1 ULP（99.43% 正确舍入） |
+| `cos` | 1.807 ULP（\|x\| ≤ 1e5 内 1.572） | 1 ULP（99.43% 正确舍入） |
+| `exp` | 1.009 ULP | 1 ULP（93.90% 正确舍入） |
+| `log` | 1.162 ULP | 1 ULP（97.43% 正确舍入） |
+| `atan2` | 1.867 ULP | 1 ULP（99.97% 正确舍入） |
+| `pow` | 0.565 ULP | 1 ULP（90.95% 正确舍入） |
 
 特殊值按 IEEE 约定，pow 的负底数例外：
 
 - `sin(±0) = ±0`，`cos(±0) = 1`；±∞ 与 NaN 得 NaN。
-- `exp(−∞) = +0`，`exp(+∞) = +∞`；x 大于约 88.72 时溢出为 +∞，下溢先变为次正规数再到 +0。
+- `exp(−∞) = +0`，`exp(+∞) = +∞`；x 大于约 88.72（double 约 709.78）时溢出为 +∞，下溢先变为次正规数再到 +0。
 - `log(±0) = −∞`；负数与 −∞ 得 NaN；`log(+∞) = +∞`，`log(1) = +0`。
-- `atan2` 按 C 标准附录 F，例如 `atan2(±0, −0) = ±π`、`atan2(±0, +0) = ±0`、`atan2(±∞, −∞) = ±3π/4`、`atan2(±∞, +∞) = ±π/4`；结果在 [−float(π), float(π)] 内，float(π) 比 π 略大。任一参数为 NaN 得 NaN。
+- `atan2` 按 C 标准附录 F，例如 `atan2(±0, −0) = ±π`、`atan2(±0, +0) = ±0`、`atan2(±∞, −∞) = ±3π/4`、`atan2(±∞, +∞) = ±π/4`；float 结果在 [−float(π), float(π)] 内，float(π) 比 π 略大；double 结果在 [−double(π), double(π)] 内，double(π) 比 π 略小。任一参数为 NaN 得 NaN。
 - `pow(x, ±0) = 1` 与 `pow(1, y) = 1` 对任意 x、y 成立，含 NaN。x < 0（含 −∞）时得 NaN，即使 y 是整数。±0 都按 +0 处理：`pow(0, y > 0) = +0`，`pow(0, y < 0) = +∞`。底数或指数为 ±∞ 时取极限值；其余情况 NaN 原样传播。
 
-实现全部是调用点上没有函数调用的 IR，使用 FMA，与其他逐分量函数一样随循环向量化，AVX2 主机上一次处理 8 个 float：
+实现全部是调用点上没有函数调用的 IR，使用 FMA，与其他逐分量函数一样随循环向量化，AVX2 主机上一次处理 8 个 float 或 4 个 double。float 版：
 
 - sin、cos：用 FMA 的三段 Cody-Waite 归约 r = x − q·π/2，在 |r| ≤ 0.83 上用 minimax 多项式，按象限选择正弦或余弦多项式及符号。
 - exp：归约为 2^k·e^r，2^k 分两次相乘，次正规结果只舍入一次。
@@ -119,7 +121,15 @@ double energy(const Array<vector3d>& values) {
 - atan2：交换参数使比值 u/v ≤ 1；比值大于 1/2 时用 π/4 + atan((u − v)/(u + v))，此时 u − v 是精确的。
 - pow：在 double 中计算 exp2(y·log2|x|)，最后舍入到 float 一次。
 
-结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令。在相同的默认浮点环境（nearest-even 舍入、FTZ/DAZ 关闭）下，且使用同一套无 fast-math、保留既定运算顺序与显式 FMA 的严格 IR/后端时，同一实现在支持 FMA3 的主机上逐位相同，标量调用与向量化循环也逐位相同；修改浮点环境或放宽编译规则不在此保证内，入口不替宿主隔离或恢复浮点环境。NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
+double 版把归约后的参数和主要项保留为双字，即精确和等于该值的两个 double，由 FMA 的无误差乘法与加法得到：
+
+- sin、cos：π/2 拆成三个 double 常数，x − q·C1 由 FMA 精确得到，q·C2 整个保留为双字，第三段之后的截断远小于 |x| ≤ 2^40 内最小的 |r|（约 2^-60.5，离线用格归约逐个二进制段搜出最难的参数）；在 |r| ≤ 0.786 上分别用正弦、余弦 minimax 多项式。
+- exp：ln2 的高位只有 32 位有效数字，n 乘它是精确的；r 保留为双字，12 项多项式用 Estrin 求值以缩短依赖链；2^k 同样分两次相乘。
+- log：归约同 float，按 fdlibm 的 f − (f²/2 − s·(f²/2 + R)) 形式，s = f/(2 + f)，R 为 7 项多项式。
+- atan2：从最近的 atan(c)（c ∈ {0, 1/4, 1/2, 1}）出发，约化比值 (u − c·v)/(v + c·u) 不超过 0.163，u − c·v 是精确的，除法保留余数；最后以双字加上 π/2 或 π。
+- pow：log|x| 以双字算到约 2^-68 的相对误差，y·log|x| 也保留为双字，交给 exp 的核心；特殊值规则与 float 版相同。
+
+结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令。在相同的默认浮点环境（nearest-even 舍入、FTZ/DAZ 关闭）下，且使用同一套保留既定运算顺序与显式 FMA 的严格 IR/后端时，同一实现在支持 FMA3 的主机上逐位相同，标量调用与向量化循环也逐位相同；修改浮点环境或放宽编译规则不在此保证内，入口不替宿主隔离或恢复浮点环境。`source_acceptance` 检查前端不赋予 fast-math 许可，优化后仍禁止重排、隐式融合、近似或次正规数清零；优化器证明成立的 `nnan/ninf/nsz` 不在此禁令内。NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
 
 ## 调用、生命周期与优化边界
 

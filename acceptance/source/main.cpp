@@ -113,6 +113,7 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--materials") { verify_source_materials(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--projects") { verify_source_projects(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--math") { verify_source_math(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--math-measure") { measure_source_math(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--foundations") { verify_source_foundations(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--diagnostics") { verify_source_diagnostics(); return 0; }

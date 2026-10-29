@@ -1,5 +1,7 @@
 #include "source/program.hpp"
+#include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
+#include "math_reference.hpp"
 
 #include <windows.h>
 #include <psapi.h>
@@ -7,14 +9,18 @@
 #include <mimalloc-stats.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -510,6 +516,134 @@ void measure_compile_units() {
         }
 }
 
+// Every double transcendental against CORE-MATH over random argument pairs: the largest distance from the
+// correctly rounded value and its arguments, with how often the result is not the correctly rounded one.
+void measure_math_sweep(std::uint64_t requested) {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<double>(runtime, "measure.Doubles")}));
+    constexpr std::size_t chunk = std::size_t{1} << 22;
+    constexpr unsigned segments = 64;
+    const std::uint64_t chunks = (requested + chunk - 1) / chunk;
+    const unsigned threads = std::max(1u, std::thread::hardware_concurrency());
+    // Fixed segments with their own seeds, so the arguments do not depend on the thread count.
+    const auto parallel = [&](const auto& work) {
+        std::atomic<unsigned> next{};
+        std::vector<std::jthread> workers;
+        for (unsigned t = 0; t < threads; ++t) workers.emplace_back([&] {
+            for (unsigned s = next++; s < segments; s = next++) work(s * chunk / segments, (s + 1) * chunk / segments, s);
+        });
+    };
+    for (const auto& function : math_reference::functions) {
+        const bool periodic = function.name == "sin" || function.name == "cos";
+        Program kernel(runtime, {});
+        publish(kernel, "sweep.source", "void run(Array<double>& a, const Array<double>& b) { uint i = 0; while (i < a.size()) { a[i] = math." +
+            std::string(function.name) + (function.binary ? "(a[i], b[i])" : "(a[i])") + "; i = i + 1; } }");
+        Array<double> lanes, others;
+        lanes.resize(chunk);
+        others.resize(chunk);
+        std::vector<double> inputs(chunk);
+        struct Tally { std::uint64_t worst{}, inexact{}, beyond{}; double x{}, y{}, result{}, expected{}; };
+        std::vector<Tally> tallies(segments);
+        const auto started = Clock::now();
+        for (std::uint64_t index = 0; index < chunks; ++index) {
+            parallel([&](std::size_t begin, std::size_t end, unsigned s) {
+                std::mt19937_64 random(index * segments + s + 1);
+                for (std::size_t i = begin; i < end; ++i) {
+                    const auto [x, y] = math_reference::random_arguments(function.name, random);
+                    inputs[i] = lanes[i] = x;
+                    others[i] = y;
+                }
+            });
+            take(kernel.entry().invoke({}, std::array{Argument::borrow(lanes), Argument::borrow(std::as_const(others))}));
+            parallel([&](std::size_t begin, std::size_t end, unsigned s) {
+                auto& tally = tallies[s];
+                for (std::size_t i = begin; i < end; ++i) {
+                    const double x = inputs[i], y = others[i], result = lanes[i];
+                    if (periodic && !(std::fabs(x) <= math_reference::periodic_limit)) {
+                        tally.beyond += std::isfinite(x) ? !(std::fabs(result) <= 1) : !std::isnan(result);
+                        continue;
+                    }
+                    const double expected = function.value(x, y);
+                    const auto distance = math_reference::ulp_distance(result, expected);
+                    tally.inexact += distance != 0;
+                    if (distance > tally.worst) tally = {distance, tally.inexact, tally.beyond, x, y, result, expected};
+                }
+            });
+        }
+        const auto seconds = nanoseconds(started) / 1e9;
+        Tally total{};
+        for (const auto& tally : tallies) {
+            total.inexact += tally.inexact;
+            total.beyond += tally.beyond;
+            if (tally.worst >= total.worst) { total.worst = tally.worst; total.x = tally.x; total.y = tally.y; total.result = tally.result; total.expected = tally.expected; }
+        }
+        std::printf("{\"record\":\"math_sweep\",\"function\":\"%.*s\",\"pairs\":%llu,\"max_ulp_from_correctly_rounded\":%llu,"
+            "\"not_correctly_rounded\":%llu,\"periodic_range_violations\":%llu,\"worst_x\":\"%a\",\"worst_y\":\"%a\",\"worst_result\":\"%a\","
+            "\"correctly_rounded\":\"%a\",\"seconds\":%.1f}\n", static_cast<int>(function.name.size()), function.name.data(),
+            static_cast<unsigned long long>(chunks * chunk), static_cast<unsigned long long>(total.worst),
+            static_cast<unsigned long long>(total.inexact), static_cast<unsigned long long>(total.beyond),
+            total.x, total.y, total.result, total.expected, seconds);
+        std::fflush(stdout);
+    }
+}
+
+// Nanoseconds per element over 2^20 arguments for the double and float source kernels and for C++ double and
+// float loops over the same std:: functions; the median of 9 runs each, after one warm-up.
+void measure_math_timing() {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<double>(runtime, "measure.Doubles"), array_definition<float>(runtime, "measure.Floats")}));
+    constexpr std::size_t count = std::size_t{1} << 20;
+    constexpr int samples = 9;
+    std::mt19937_64 random(20261023);
+    const auto uniform = [&](double low, double high) { return low + (high - low) * static_cast<double>(random() >> 11) * 0x1p-53; };
+    const auto median = [](std::vector<double> times) { std::ranges::sort(times); return times[times.size() / 2] / count; };
+    // Each native function is its own lambda type, so the C++ loop inlines the std:: call site.
+    const auto measure = [&](const char* name, const char* call, double low, double high, double second_low, double second_high, auto native) {
+        std::vector<double> first(count), second(count), output(1);
+        for (std::size_t i = 0; i < count; ++i) { first[i] = uniform(low, high); second[i] = uniform(second_low, second_high); }
+        const auto source = [&]<class T>(const char* type) {
+            Program kernel(runtime, {});
+            publish(kernel, "timing.source", std::string("void run(Array<") + type + ">& a, const Array<" + type + ">& b) { uint i = 0; "
+                "while (i < a.size()) { a[i] = " + call + "; i = i + 1; } }");
+            Array<T> lanes, others;
+            for (std::size_t i = 0; i < count; ++i) { lanes.add(static_cast<T>(first[i])); others.add(static_cast<T>(second[i])); }
+            std::vector<double> times;
+            for (int sample = 0; sample <= samples; ++sample) {
+                for (std::size_t i = 0; i < count; ++i) lanes[i] = static_cast<T>(first[i]);
+                const auto started = Clock::now();
+                take(kernel.entry().invoke({}, std::array{Argument::borrow(lanes), Argument::borrow(std::as_const(others))}));
+                if (sample) times.push_back(nanoseconds(started));
+            }
+            return median(times);
+        };
+        const auto cpp = [&]<class T>() {
+            const std::vector<T> lanes(first.begin(), first.end()), others(second.begin(), second.end());
+            std::vector<T> results(count);
+            std::vector<double> times;
+            for (int sample = 0; sample <= samples; ++sample) {
+                const auto started = Clock::now();
+                for (std::size_t i = 0; i < count; ++i) results[i] = native(lanes[i], others[i]);
+                if (sample) times.push_back(nanoseconds(started));
+            }
+            output[0] += results[count / 2];
+            return median(times);
+        };
+        const double source_double = source.template operator()<double>("double"), source_float = source.template operator()<float>("float");
+        const double cpp_double = cpp.template operator()<double>(), cpp_float = cpp.template operator()<float>();
+        std::printf("{\"record\":\"math_timing\",\"function\":\"%s\",\"elements\":%zu,\"source_double_ns\":%.3f,\"source_float_ns\":%.3f,"
+            "\"cpp_double_ns\":%.3f,\"cpp_float_ns\":%.3f,\"checksum\":\"%a\"}\n", name, count, source_double, source_float, cpp_double,
+            cpp_float, output[0]);
+        std::fflush(stdout);
+    };
+    measure("add", "a[i] + b[i]", -1, 1, -1, 1, [](auto x, auto y) { return x + y; });
+    measure("sin", "math.sin(a[i])", -1000, 1000, 0, 0, [](auto x, auto) { return std::sin(x); });
+    measure("cos", "math.cos(a[i])", -1000, 1000, 0, 0, [](auto x, auto) { return std::cos(x); });
+    measure("exp", "math.exp(a[i])", -10, 10, 0, 0, [](auto x, auto) { return std::exp(x); });
+    measure("log", "math.log(a[i])", 1e-3, 1000, 0, 0, [](auto x, auto) { return std::log(x); });
+    measure("atan2", "math.atan2(a[i], b[i])", -1, 1, -1, 1, [](auto y, auto x) { return std::atan2(y, x); });
+    measure("pow", "math.pow(a[i], b[i])", 1e-3, 10, -4, 4, [](auto x, auto y) { return std::pow(x, y); });
+}
+
 void configuration(const Options& settings) {
     std::array<char, 49> cpu{};
     std::array<int, 4> registers{};
@@ -547,6 +681,16 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == "--compile-units") {
             measure_compile_units();
+            std::puts("{\"record\":\"complete\",\"validated\":true}");
+            return 0;
+        }
+        if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--math-sweep") {
+            measure_math_sweep(argc == 3 ? std::stoull(argv[2]) : 1'000'000'000ull);
+            std::puts("{\"record\":\"complete\",\"validated\":true}");
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--math-timing") {
+            measure_math_timing();
             std::puts("{\"record\":\"complete\",\"validated\":true}");
             return 0;
         }

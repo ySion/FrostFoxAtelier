@@ -2,6 +2,7 @@
 #include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
+#include "math_reference.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -153,6 +154,40 @@ private:
     std::map<std::string, std::unique_ptr<Program>> programs_;
 };
 
+// Function calls in the machine code of a borrowed-array loop over the given expression of x, low and high.
+// Its IR must stay strict IEEE: the frontend emits no fast-math flag, and after optimization nothing allows
+// fusing, reordering, approximating or flushing subnormals, which could round differently per host. The optimizer may still add
+// nnan, ninf or nsz where it proves them, which changes no result.
+std::size_t kernel_calls(Runtime& runtime, const std::string& type, std::string_view body) {
+    Program program(runtime, {});
+    auto candidate = take(Program::prepare(take(program.request("kernel.source",
+        "void run(Array<" + type + ">& values, " + type + " low, " + type + " high) { uint i = 0; while (i < values.size()) { " +
+        type + " x = values[i]; values[i] = " + std::string(body) + "; i = i + 1; } }", "run", {.artifacts = true}))));
+    take(program.try_publish(candidate));
+    const auto artifacts = take(take(program.pin()).artifacts());
+    const auto reject = [](const std::string& ir, std::initializer_list<const char*> flags) {
+        for (const auto* flag : flags)
+            if (const auto at = ir.find(flag); at != std::string::npos) {
+                const auto line = ir.rfind('\n', at) + 1;
+                throw std::runtime_error("Math kernel IR carries '" + std::string(flag) + "', which allows host-dependent rounding: " +
+                    ir.substr(line, ir.find('\n', at) - line));
+            }
+    };
+    const std::initializer_list<const char*> rounding{" fast ", " reassoc ", " contract ", " arcp ", " afn ", "llvm.fmuladd", "fp-math\"=\"true\"", "denormal"};
+    reject(artifacts.original_ir, rounding);
+    reject(artifacts.original_ir, {" nnan ", " ninf ", " nsz "});
+    reject(artifacts.optimized_ir, rounding);
+    const auto& assembly = artifacts.assembly;
+    std::size_t count = 0;
+    for (auto at = assembly.find("\tcall\t"); at != std::string::npos; at = assembly.find("\tcall\t", at + 1)) {
+        // A frame larger than a page calls the stack probe before reserving it; that is not a math call.
+        const auto end = assembly.find('\n', at);
+        if (assembly.compare(at, end - at, "\tcall\tr11") == 0 && assembly.find("\tsub\trsp, rax", end) < assembly.find('\n', end + 1)) continue;
+        ++count;
+    }
+    return count;
+}
+
 void verify_elementwise() {
     Runtime runtime;
     take(runtime.register_types({array_definition<float>(runtime, "acceptance.MathFloats")}));
@@ -249,33 +284,19 @@ void verify_elementwise() {
     rejected("matrix4 run(matrix4 m) { return math.abs(m); }", "math.abs", "math.abs requires float or double scalars or vectors.");
     rejected("uint run(uint a) { return math.min(a, 2); }", "math.min", "math.min requires float or double scalars or vectors.");
     rejected("float run(float x) { return math.clamp(x, 0.0); }", "math.clamp", "Math operation argument count mismatch.");
-    rejected("double run(double x) { return math.sin(x); }", "math.sin", "math.sin requires float scalars or vectors.");
-    rejected("vector3d run(vector3d v) { return math.exp(v); }", "math.exp", "math.exp requires float scalars or vectors.");
-    rejected("quaternion run(quaternion q) { return math.cos(q); }", "math.cos", "math.cos requires float scalars or vectors.");
-    rejected("uint run(uint a) { return math.log(a); }", "math.log", "math.log requires float scalars or vectors.");
+    rejected("quaternion run(quaternion q) { return math.cos(q); }", "math.cos", "math.cos requires float or double scalars or vectors.");
+    rejected("uint run(uint a) { return math.log(a); }", "math.log", "math.log requires float or double scalars or vectors.");
     rejected("float run(float x) { return math.atan2(x); }", "math.atan2", "Math operation argument count mismatch.");
     rejected("float run(float x) { return math.pow(x, 2.0d); }", "2.0d", mismatch("math.pow"));
+    rejected("double run(double x) { return math.pow(x, 2.0); }", "2.0", mismatch("math.pow"));
+    rejected("vector3d run(vector3d v, float s) { return math.atan2(v, s); }", "s)", mismatch("math.atan2"));
 
     // A borrowed-array kernel adds no function call over the same loop without built-ins, and agrees with the definitions.
-    const auto calls = [&](const char* name, std::string_view body) {
-        Program program(runtime, {});
-        auto candidate = take(Program::prepare(take(program.request(name, R"(
-            void run(Array<float>& values, float low, float high) {
-                uint i = 0;
-                while (i < values.size()) { float x = values[i]; values[i] = )" + std::string(body) + R"(; i = i + 1; }
-            }
-        )", "run", {.artifacts = true}))));
-        take(program.try_publish(candidate));
-        const auto assembly = take(take(program.pin()).artifacts()).assembly;
-        std::size_t count = 0;
-        for (auto at = assembly.find("\tcall\t"); at != std::string::npos; at = assembly.find("\tcall\t", at + 1)) ++count;
-        return count;
-    };
     constexpr auto kernel_body = "math.lerp(math.clamp(math.floor(x), low, high), math.fract(x), math.smoothstep(low, high, x))"
         " + math.min(x, high) + math.sign(x)";
-    const auto baseline = calls("baseline-kernel.source", "x * low + high");
-    require(calls("elementwise-kernel.source", kernel_body) == baseline, "Element-wise built-ins lowered to a function call.");
-    require(calls("transcendental-kernel.source", "math.sin(x) + math.cos(x) + math.exp(x) + math.log(x) + math.atan2(x, high) + math.pow(x, low)")
+    const auto baseline = kernel_calls(runtime, "float", "x * low + high");
+    require(kernel_calls(runtime, "float", kernel_body) == baseline, "Element-wise built-ins lowered to a function call.");
+    require(kernel_calls(runtime, "float", "math.sin(x) + math.cos(x) + math.exp(x) + math.log(x) + math.atan2(x, high) + math.pow(x, low)")
         == baseline, "Transcendental built-ins lowered to a function call.");
     Program kernel(runtime, {});
     publish(kernel, std::string("void run(Array<float>& values, float low, float high) { uint i = 0; "
@@ -454,6 +475,172 @@ void verify_transcendental() {
     for (std::size_t i = 0; i < 2; ++i)
         require(same(splatted[i], scalar("math.pow(x, y)", pair[i], s) + scalar("math.atan2(x, y)", s, pair[i])),
             "Scalar arguments to math.pow or math.atan2 did not apply to every lane.");
+}
+
+// Double sin/cos/exp/log/atan2/pow: at most 3 ULP from the correctly rounded CORE-MATH value, so within the
+// 4 ULP contract, and identical on the scalar and the vectorized path.
+void verify_transcendental_double() {
+    Runtime runtime;
+    take(runtime.register_types({array_definition<double>(runtime, "acceptance.TranscendentalDoubles")}));
+    constexpr auto inf = std::numeric_limits<double>::infinity();
+    constexpr auto nan = std::numeric_limits<double>::quiet_NaN();
+    constexpr auto tiny = std::numeric_limits<double>::denorm_min();
+    constexpr auto huge = std::numeric_limits<double>::max();
+    std::mt19937_64 random(20261023);
+    const auto step = [](double x, std::int64_t ulps) { return std::bit_cast<double>(std::bit_cast<std::int64_t>(x) + ulps); };
+    // Both signs of every binade including subnormals: its ends and six random mantissas.
+    std::vector<double> binades{nan, inf, -inf};
+    for (std::uint64_t exponent = 0; exponent < 2047; ++exponent)
+        for (int i = 0; i < 8; ++i) {
+            const auto x = std::bit_cast<double>(exponent << 52 | (i == 0 ? 0 : i == 1 ? 0xfffffffffffffull : random() & 0xfffffffffffffull));
+            binades.push_back(x);
+            binades.push_back(-x);
+        }
+    ScalarCalls<double> scalar(runtime, "double");
+    for (const auto& function : math_reference::functions) {
+        const bool periodic = function.name == "sin" || function.name == "cos";
+        std::vector<double> first = binades, second;
+        const auto around = [&](double x, int count) { for (int i = -count; i <= count; ++i) first.push_back(step(x, i)); };
+        if (periodic) {
+            // Doubles nearest to k pi/2, and per binade up to 2^40 the double whose reduced argument cancels most
+            // (found offline by lattice reduction; doubling one keeps it the hardest of the next binade).
+            for (double k = 1; k < 0x1p39; k = k < 1024 ? k + 1 : std::floor(k * 1.0017))
+                around(std::fma(k, 0x1.921fb54442d18p+0, k * 0x1.1a62633145c07p-54), 3);
+            for (const double hard : {0x1.921fb54442d18p+0, 0x1.2d97c7f3321d2p+2, 0x1.dd85a7410f58dp+4, 0x1.6c6cbc45dc8dep+5,
+                     0x1.635e3d74befcap+14, 0x1.67e57cdd4dc54p+15, 0x1.65a1dd290660fp+16, 0x1.bf9b3c6059d24p+17, 0x1.39c6fd67805a7p+18,
+                     0x1.9eb7148f354d6p+20, 0x1.b951f1572eba5p+23, 0x1.5c9508c58aafap+32, 0x1.de5e5054e921bp+34, 0x1.46546a5bd73ccp+35,
+                     0x1.bb23eaa3db16dp+38, 0x1.065c829d68730p+39})
+                for (double x = hard; x <= math_reference::periodic_limit; x *= 2) { around(x, 2); around(-x, 2); }
+        } else if (function.name == "exp") {
+            for (int k = 0; k <= 65536; ++k) first.push_back(-746.0 + k * (1456.0 / 65536));
+            // The overflow threshold, the first subnormal result, and where results round to zero.
+            for (const double edge : {std::log(huge), std::log(0x1p-1022), std::log(tiny), std::log(tiny) - std::log(2.0)}) around(edge, 64);
+        } else if (function.name == "log") {
+            // Within 2^20 ulps of 1, where the result is smallest, and around the reduction boundary sqrt(1/2).
+            for (int i = 0; i < 4096; ++i) {
+                const auto ulps = static_cast<std::int64_t>(random() % (1 << 20)) + 1;
+                first.push_back(step(1.0, ulps));
+                first.push_back(step(1.0, -ulps));
+            }
+            around(std::sqrt(0.5), 16);
+            around(std::sqrt(2.0), 16);
+        } else {
+            // Pairs: the special values crossed, then arguments where each reduction changes.
+            const std::array specials{0.0, -0.0, tiny, -tiny, 2 * tiny, 3 * tiny, -3 * tiny, 0x1p-1022, 1e-300, 0.5, -0.5, 1.0, -1.0,
+                2.0, -3.0, 3.0, 1e300, -1e300, huge, -huge, inf, -inf, nan};
+            first.clear();
+            for (const double a : specials) for (const double b : specials) { first.push_back(a); second.push_back(b); }
+            for (int i = 0; i < 8192; ++i) {
+                if (function.name == "atan2") {
+                    // Ratios at the reduction boundaries 1/8, 0.37, 0.7208 and 1 from both sides, over magnitudes that need scaling.
+                    const double x = std::bit_cast<double>(random() % 0x7ff0000000000000ull);
+                    for (const double ratio : {0.125, step(0.125, 1), step(0.125, -1), 0.37, 0.7208, 1.0, step(1.0, -1), 0.25, 0.5, 2.0, 1e-20}) {
+                        first.push_back((i & 1 ? -1 : 1) * x * ratio);
+                        second.push_back(i & 2 ? -x : x);
+                    }
+                    for (const double ratio : {0.37, 0.7208}) {
+                        first.push_back((i & 1 ? -1 : 1) * step(x * ratio, -1));
+                        second.push_back(i & 2 ? -x : x);
+                    }
+                } else {
+                    // x within 2^20 ulps of 1 with y log x across [-750, 712], and negative bases with integer exponents.
+                    const double x = step(1.0, (i & 1 ? 1 : -1) * (static_cast<std::int64_t>(random() % (1 << 20)) + 1));
+                    first.push_back(x);
+                    second.push_back((-750.0 + 1462.0 * static_cast<double>(random() >> 11) * 0x1p-53) / std::log(x));
+                    first.push_back(-static_cast<double>(random() % 4096 + 1) / 8);
+                    second.push_back(static_cast<double>(i % 7));
+                }
+            }
+        }
+        if (second.size() < first.size()) second.resize(first.size(), 0.0);
+        for (int i = 0; i < 200000; ++i) {
+            const auto [x, y] = math_reference::random_arguments(function.name, random);
+            first.push_back(x);
+            second.push_back(y);
+        }
+        const auto name = std::string(function.name);
+        Program kernel(runtime, {});
+        publish(kernel, "void run(Array<double>& a, const Array<double>& b) { uint i = 0; while (i < a.size()) { a[i] = math." +
+            name + (function.binary ? "(a[i], b[i])" : "(a[i])") + "; i = i + 1; } }");
+        Array<double> lanes, others;
+        for (std::size_t i = 0; i < first.size(); ++i) { lanes.add(first[i]); others.add(second[i]); }
+        take(kernel.entry().invoke({}, std::array{Argument::borrow(lanes), Argument::borrow(std::as_const(others))}));
+        const auto call = "math." + name + (function.binary ? "(x, y)" : "(x)");
+        for (std::size_t i = 0; i < first.size(); ++i) {
+            const double x = first[i], y = second[i], result = lanes[i];
+            const auto fail = [&](const char* reason, double expected) {
+                char text[256];
+                std::snprintf(text, sizeof(text), "%s at (%a, %a) returned %a, expected %a: %s", call.c_str(), x, y, result, expected, reason);
+                throw std::runtime_error(text);
+            };
+            if (i % 61 == 0 && !same(scalar(call.c_str(), x, y), result))
+                fail("the scalar call and the vectorized loop disagree", scalar(call.c_str(), x, y));
+            if (periodic && !(std::fabs(x) <= math_reference::periodic_limit)) {
+                if (std::isfinite(x) ? !(std::fabs(result) <= 1) : !std::isnan(result)) fail("outside the accurate range the result must be finite with magnitude at most 1", 0);
+                continue;
+            }
+            const double expected = function.value(x, y);
+            if (math_reference::ulp_distance(result, expected) > 3) fail("more than 3 ULP from the correctly rounded value", expected);
+        }
+    }
+
+    // Exact results the contract names, including signed zeros and IEEE infinities.
+    struct Exact { const char* call; double x, y, expected; };
+    constexpr double pi = 0x1.921fb54442d18p+1, half_pi = 0x1.921fb54442d18p+0, quarter_pi = 0x1.921fb54442d18p-1, three_quarters_pi = 0x1.2d97c7f3321d2p+1;
+    const std::array exact{
+        Exact{"math.sin(x)", 0.0, 0, 0.0}, Exact{"math.sin(x)", -0.0, 0, -0.0}, Exact{"math.cos(x)", -0.0, 0, 1.0},
+        Exact{"math.sin(x)", inf, 0, nan}, Exact{"math.cos(x)", -inf, 0, nan}, Exact{"math.cos(x)", nan, 0, nan},
+        Exact{"math.exp(x)", -inf, 0, 0.0}, Exact{"math.exp(x)", inf, 0, inf}, Exact{"math.exp(x)", -0.0, 0, 1.0},
+        Exact{"math.exp(x)", 709.79, 0, inf}, Exact{"math.exp(x)", -746.0, 0, 0.0}, Exact{"math.exp(x)", nan, 0, nan},
+        Exact{"math.log(x)", 0.0, 0, -inf}, Exact{"math.log(x)", -0.0, 0, -inf}, Exact{"math.log(x)", -1.0, 0, nan},
+        Exact{"math.log(x)", -inf, 0, nan}, Exact{"math.log(x)", inf, 0, inf}, Exact{"math.log(x)", 1.0, 0, 0.0}, Exact{"math.log(x)", nan, 0, nan},
+        Exact{"math.atan2(x, y)", 0.0, -0.0, pi}, Exact{"math.atan2(x, y)", -0.0, -0.0, -pi}, Exact{"math.atan2(x, y)", 0.0, 0.0, 0.0},
+        Exact{"math.atan2(x, y)", -0.0, 0.0, -0.0}, Exact{"math.atan2(x, y)", -0.0, -2.0, -pi}, Exact{"math.atan2(x, y)", 3.0, 0.0, half_pi},
+        Exact{"math.atan2(x, y)", -3.0, -0.0, -half_pi}, Exact{"math.atan2(x, y)", 1.0, -inf, pi}, Exact{"math.atan2(x, y)", -1.0, inf, -0.0},
+        Exact{"math.atan2(x, y)", -0x1p-60, -1.0, -pi},
+        Exact{"math.atan2(x, y)", inf, -5.0, half_pi}, Exact{"math.atan2(x, y)", -inf, -inf, -three_quarters_pi},
+        Exact{"math.atan2(x, y)", inf, inf, quarter_pi}, Exact{"math.atan2(x, y)", nan, 1.0, nan}, Exact{"math.atan2(x, y)", 1.0, nan, nan},
+        Exact{"math.pow(x, y)", nan, 0.0, 1.0}, Exact{"math.pow(x, y)", 0.0, -0.0, 1.0}, Exact{"math.pow(x, y)", 1.0, nan, 1.0},
+        Exact{"math.pow(x, y)", 1.0, -inf, 1.0}, Exact{"math.pow(x, y)", -2.0, 2.0, nan}, Exact{"math.pow(x, y)", -inf, 3.0, nan},
+        Exact{"math.pow(x, y)", -0.0, 3.0, 0.0}, Exact{"math.pow(x, y)", -0.0, -1.0, inf}, Exact{"math.pow(x, y)", 0.0, -inf, inf},
+        Exact{"math.pow(x, y)", 0.5, inf, 0.0}, Exact{"math.pow(x, y)", 2.0, inf, inf}, Exact{"math.pow(x, y)", 0.5, -inf, inf},
+        Exact{"math.pow(x, y)", inf, -1.0, 0.0}, Exact{"math.pow(x, y)", inf, 0.5, inf}, Exact{"math.pow(x, y)", nan, 1.0, nan},
+        Exact{"math.pow(x, y)", 2.0, nan, nan}, Exact{"math.pow(x, y)", 2.0, 1024.0, inf}, Exact{"math.pow(x, y)", 2.0, 1023.0, 0x1p1023},
+        Exact{"math.pow(x, y)", 2.0, -1075.0, 0.0}, Exact{"math.pow(x, y)", 2.0, -1074.0, tiny}, Exact{"math.pow(x, y)", 2.0, 10.0, 1024.0},
+    };
+    for (const auto& item : exact) {
+        const auto result = scalar(item.call, item.x, item.y);
+        if (same(result, item.expected)) continue;
+        char text[256];
+        std::snprintf(text, sizeof(text), "%s at (%a, %a) returned %a, expected exactly %a.", item.call, item.x, item.y, result, item.expected);
+        throw std::runtime_error(text);
+    }
+
+    // Each vector lane and each scalar argument gives the scalar result bit for bit, and the loop calls no function.
+    struct Lanes { const char* vector; const char* scalar; bool swap; };
+    const math::Vector4d v{0.5, -2.25, 600.0, 1e-3}, w{3.5, 0.25, 1.7, 7.0};
+    for (const auto& item : {Lanes{"math.sin(v)", "math.sin(x)", false}, Lanes{"math.cos(v)", "math.cos(x)", false},
+             Lanes{"math.exp(v)", "math.exp(x)", false}, Lanes{"math.log(w)", "math.log(x)", true},
+             Lanes{"math.atan2(v, w)", "math.atan2(x, y)", false}, Lanes{"math.pow(w, v)", "math.pow(x, y)", true}}) {
+        Program vectors(runtime, {});
+        publish(vectors, std::string("vector4d run(vector4d v, vector4d w) { return ") + item.vector + "; }");
+        const auto lanes = evaluate<math::Vector4d>(runtime, vectors.entry(), std::array{Argument::borrow(v), Argument::borrow(w)});
+        for (std::size_t i = 0; i < 4; ++i)
+            require(same(lanes[i], item.swap ? scalar(item.scalar, w[i], v[i]) : scalar(item.scalar, v[i], w[i])),
+                (std::string("vector4d ") + item.vector + " changed a lane.").c_str());
+    }
+    const math::Vector3d triple{0.75, 6.5, -3.0};
+    const double s = 1.25;
+    for (const auto& item : {Lanes{"math.pow(v, s)", "math.pow(x, y)", false}, Lanes{"math.atan2(s, v)", "math.atan2(x, y)", true}}) {
+        Program splats(runtime, {});
+        publish(splats, std::string("vector3d run(vector3d v, double s) { return ") + item.vector + "; }");
+        const auto lanes = evaluate<math::Vector3d>(runtime, splats.entry(), std::array{Argument::borrow(triple), Argument{Scalar{s}}});
+        for (std::size_t i = 0; i < 3; ++i)
+            require(same(lanes[i], item.swap ? scalar(item.scalar, s, triple[i]) : scalar(item.scalar, triple[i], s)),
+                (std::string("The double scalar argument of ") + item.vector + " did not apply to every lane.").c_str());
+    }
+    require(kernel_calls(runtime, "double", "math.sin(x) + math.cos(x) + math.exp(x) + math.log(x) + math.atan2(x, high) + math.pow(x, low)")
+        == kernel_calls(runtime, "double", "x * low + high"), "Double transcendental built-ins lowered to a function call.");
 }
 }
 
@@ -655,6 +842,7 @@ void verify_source_math() {
         "Async f64 parameter, suspension or result narrowed precision.");
     verify_elementwise();
     verify_transcendental();
+    verify_transcendental_double();
     std::puts("Source math: PASS (compact arrays, float/double, value calls, native interop, stable normalization, transforms, reload, async f64, element-wise and transcendental built-ins)");
 }
 

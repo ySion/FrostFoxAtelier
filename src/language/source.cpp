@@ -1234,8 +1234,6 @@ private:
                 if (math_type(type).vector()) { result_type = type; break; }
             }
             const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
-            if (operation >= MathOperation::sin && lane != ValueType::f32)
-                reject(position, std::string(name) + " requires float scalars or vectors.");
             if (!floating(lane))
                 reject(position, std::string(name) + " requires float or double scalars or vectors.");
             for (const auto argument : arguments) {

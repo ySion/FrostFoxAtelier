@@ -102,7 +102,8 @@ function(atelier_add_source)
         acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp
         acceptance/source/diagnostics.cpp acceptance/source/debugger.cpp acceptance/source/materials.cpp)
     atelier_target(atelier_source_minimal)
-    target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world atelier_material mimalloc psapi)
+    include("${PROJECT_SOURCE_DIR}/cmake/core_math.cmake")
+    target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world atelier_material atelier_core_math mimalloc psapi)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
     target_compile_definitions(atelier_source_minimal PRIVATE "ATELIER_ENGINE_SOURCE_TREE=L\"${engine_tree}\"")
     atelier_headless_acceptance(source_acceptance
@@ -115,7 +116,7 @@ function(atelier_add_source)
     # Standalone performance sweeps; the session acceptance records only its bounded observations.
     add_executable(atelier_source_measure EXCLUDE_FROM_ALL acceptance/source/measure.cpp)
     atelier_target(atelier_source_measure)
-    target_link_libraries(atelier_source_measure PRIVATE atelier_source mimalloc psapi)
+    target_link_libraries(atelier_source_measure PRIVATE atelier_source atelier_core_math mimalloc psapi)
 
     add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
     atelier_llvm_target(atelier_jit_probe)
