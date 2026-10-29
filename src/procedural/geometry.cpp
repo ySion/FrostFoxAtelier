@@ -325,8 +325,6 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         }
         point_base += input.count(Layer::point);
     }
-    for (auto& attribute : result.attributes_)
-        if (attribute.layer == Layer::detail && column_size(attribute.data) == 0) append(attribute.data, nullptr, 1);
     result.vertices_ = static_cast<std::uint32_t>(vertices);
     result.primitives_ = static_cast<std::uint32_t>(primitives);
     result.vertex_points_ = SharedArray<std::uint32_t>{std::move(vertex_points)};

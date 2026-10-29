@@ -556,11 +556,7 @@ void PipelineJob::cancel() noexcept {
 }
 
 Result<TargetInfo> Context::target() const {
-    if (!state_ || !state_->context)
-        return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
-    if (!state_->on_owner())
-        return std::unexpected(Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation, "target requires owner thread"});
-    if (state_->failure != kGfxResult_NoError) return std::unexpected(execution_error(state_->failure));
+    if (const auto admitted = admit("target"); !admitted) return std::unexpected(admitted.error());
     const auto context = state_->context;
     const HWND window = gfxGetWindowHandle(context);
     RECT client{};
@@ -577,11 +573,7 @@ Result<TargetInfo> Context::sync_window_target() {
     return std::unexpected(execution_error(result));
 }
 Result<void> Context::frame(bool vsync, FrameInfo* details) {
-    if (!state_ || !state_->context)
-        return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
-    if (!state_->on_owner())
-        return std::unexpected(Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation, "frame requires owner thread"});
-    if (state_->failure != kGfxResult_NoError) return std::unexpected(execution_error(state_->failure));
+    if (const auto admitted = admit("frame"); !admitted) return std::unexpected(admitted.error());
     const auto rendered = target();
     if (!rendered) return std::unexpected(rendered.error());
     FrameCpuTimings cpu;
@@ -594,11 +586,7 @@ Result<void> Context::frame(bool vsync, FrameInfo* details) {
     return std::unexpected(execution_error(result));
 }
 Result<void> Context::finish() {
-    if (!state_ || !state_->context)
-        return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
-    if (!state_->on_owner())
-        return std::unexpected(Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation, "finish requires owner thread"});
-    if (state_->failure != kGfxResult_NoError) return std::unexpected(execution_error(state_->failure));
+    if (const auto admitted = admit("finish"); !admitted) return std::unexpected(admitted.error());
     const GfxResult result = gfxFinish(state_->context);
     if (result == kGfxResult_NoError) return {};
     state_->failure = result;

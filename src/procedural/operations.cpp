@@ -209,28 +209,24 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
         return failure("Transform needs a finite translation and scale and a nonzero rotation.");
     const auto matrix = math::trs_matrix(translate, *unit_rotation, scale);
     const auto normals = normal_rows(matrix);
-    std::vector<std::pair<std::string, Layer>> targets;
-    for (const auto& attribute : geometry.attributes())
-        targets.emplace_back(std::string{attribute.name.view().std_view()}, attribute.layer);
-    for (const auto& [name, layer] : targets) {
-        const auto* attribute = geometry.find(StringView{name});
-        const auto view = StringView{name};
-        if (std::holds_alternative<SharedArray<Quaternion>>(attribute->data) && name == "orient") {
-            auto& values = *value(geometry.write<Quaternion>(view, layer));
+    for (const auto& attribute : geometry.attributes()) {
+        const auto name = attribute.name.view();
+        if (std::holds_alternative<SharedArray<Quaternion>>(attribute.data) && name == "orient") {
+            auto& values = *value(geometry.write<Quaternion>(name, attribute.layer));
             for (auto& q : values) {
                 q = *unit_rotation * q;
                 if (!math::is_finite(q)) return failure("Transformed orient is not finite.");
             }
             continue;
         }
-        if (!std::holds_alternative<SharedArray<Vector3>>(attribute->data)) continue;
-        const auto usage = attribute->usage;
+        if (!std::holds_alternative<SharedArray<Vector3>>(attribute.data)) continue;
+        const auto usage = attribute.usage;
         if (usage != Usage::point && usage != Usage::vector && usage != Usage::normal) continue;
-        auto& values = *value(geometry.write<Vector3>(view, layer));
+        auto& values = *value(geometry.write<Vector3>(name, attribute.layer));
         for (auto& v : values) {
             v = usage == Usage::point ? math::transform_point(v, matrix)
               : usage == Usage::vector ? math::transform_direction(v, matrix) : transform_normal(v, normals);
-            if (!math::is_finite(v)) return failure("Transformed " + name + " is not finite.");
+            if (!math::is_finite(v)) return failure("Transformed " + std::string{name.std_view()} + " is not finite.");
         }
     }
     if (geometry.count(Layer::instance))

@@ -253,11 +253,11 @@ Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node) {
 }
 
 Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint32_t output, ObjectId to, std::uint32_t input) {
-    for (const auto node : {from, to}) {
-        auto listed = member(runtime, graph, node);
-        if (!listed) return std::unexpected(listed.error());
-        if (!*listed) return error(ErrorCode::invalid_member, "Connected nodes must be in the graph.");
-    }
+    auto listed = contents(runtime, graph);
+    if (!listed) return std::unexpected(listed.error());
+    for (const auto node : {from, to})
+        if (std::ranges::find(listed->nodes, node) == listed->nodes.end())
+            return error(ErrorCode::invalid_member, "Connected nodes must be in the graph.");
     auto from_type = runtime.type_of(from);
     auto to_type = runtime.type_of(to);
     if (!from_type || !to_type) return error(ErrorCode::invalid_object, "A connected node is not alive.");
