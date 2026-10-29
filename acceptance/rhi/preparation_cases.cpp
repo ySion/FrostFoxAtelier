@@ -73,6 +73,7 @@ void write(const std::filesystem::path& file, const std::string& content) {
 }
 std::size_t live_objects(ID3D12InfoQueue* queue) {
     std::size_t count = 0;
+    std::size_t errors = 0;
     for (UINT64 i = 0; i < queue->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
         SIZE_T size = 0;
         check_hr(queue->GetMessage(i, nullptr, &size));
@@ -86,10 +87,25 @@ std::size_t live_objects(ID3D12InfoQueue* queue) {
         case D3D12_MESSAGE_ID_LIVE_ROOTSIGNATURE:
             ++count;
             break;
+        // Expected reports for the fixture's device and non-preparation objects.
+        case D3D12_MESSAGE_ID_LIVE_OBJECT_SUMMARY:
+        case D3D12_MESSAGE_ID_LIVE_DEVICE:
+        case D3D12_MESSAGE_ID_LIVE_COMMANDQUEUE:
+        case D3D12_MESSAGE_ID_LIVE_RESOURCE:
+        case D3D12_MESSAGE_ID_LIVE_DESCRIPTORHEAP:
+        case D3D12_MESSAGE_ID_LIVE_HEAP:
+        case D3D12_MESSAGE_ID_LIVE_MONITOREDFENCE:
+        case D3D12_MESSAGE_ID_LIVE_COMMANDSIGNATURE:
+            break;
         default:
+            if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+                ++errors;
+                std::fprintf(stderr, "D3D12 [%u]: %s\n", static_cast<unsigned>(message->ID), message->pDescription);
+            }
             break;
         }
     }
+    require(errors == 0, "D3D12 debug layer reported warnings/errors during live-object inspection");
     queue->ClearStoredMessages();
     return count;
 }

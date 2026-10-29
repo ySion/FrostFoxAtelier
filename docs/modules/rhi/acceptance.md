@@ -1,6 +1,10 @@
 # RHI 验收与证据
 
-最近一次完整 RHI 验收于 2026-10-27 在 Dev、Release 两种配置通过，基于本地 `517627025bcc7fa213490b7a422cd80bdd3abd48` 加未提交 B0 候选，见 [RAW SRV 接入](#raw-srv-接入2026-10-27)。下文基础矩阵保留 2026-10-16 的原始计数，覆盖当时基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加矩形清除与固定 depth bias；2026-10-19 异步准备批次当时仅在 Release 验证。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
+最近一次完整 RHI 验收于 2026-10-29 在 Dev、Release 两种配置通过，基于 `7ade1ab159a9698583680a3c24af784993a8cd8e` 加权威工作树的未提交候选。日志位于 `out/acceptance-gate/20261029-044219-650-39904/`，两配置主进程与三个后端回归均退出 0，gate 验证级别为 GBV；各回归的实际验证范围见下表。
+
+准备中关闭的存活对象检查现在明确区分预期 LIVE_* 报告和其他 warning/error；后者在清队列前拒绝。真实 InfoQueue 普通 warning 注入在修补前被漏报（`20261029-043215-721-19504`），同一注入修补后使主进程退出 1（`20261029-043800-657-39200`）；临时注入移除后才执行上述正常两配置验收。四类泄漏计数和阳性对照未放宽，未据此声称此前已有隐藏 GPU 警告。
+
+下文基础矩阵保留 2026-10-16 的原始计数，覆盖当时基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加矩形清除与固定 depth bias；2026-10-19 异步准备批次当时仅在 Release 验证，现已随完整入口通过两配置。2026-10-27 的记录见 [RAW SRV 接入](#raw-srv-接入2026-10-27)。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
 
 ## 命令与环境
 
@@ -26,7 +30,7 @@ cmake --build --preset release --target rhi_acceptance
 
 ## 正式验收矩阵
 
-以下场景在最近一次 Dev、Release 验收均通过，各进程退出 0，D3D12 InfoQueue 的 warning/error 均为 0。
+以下场景在最近一次 Dev、Release 验收均通过，各进程退出 0，D3D12 InfoQueue 无非预期 warning/error；存活对象阳性对照的预期 LIVE_* 报告单独计数。
 
 | 场景 | 实际检查 |
 | --- | --- |
@@ -76,7 +80,7 @@ cmake --build --preset release --target rhi_acceptance
 
 本轮真实红绿已通过：相同新增用例在旧 bound 匹配下连续两次退出 1，均报实际状态 0xC0 缺 INDEX_BUFFER（0x2）与 VERTEX_AND_CONSTANT_BUFFER（0x1），并因像素错误失败；改为 installed 匹配后四轮 8,192 像素与四个 compute word 正确，`shared-buffer-reads` 和 Release RHI 主进程、三个后端回归均 PASS。主进程启用 GBV，最终 InfoQueue warning/error 为 0；日志中故意超时、非法输入和 live-object 阳性对照保留，不是忽略了意外错误。
 
-Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_renderer_acceptance`、`atelier_editor` 均以 Jobs=2 构建通过，Dev 不另跑窗口；两配置重放后的 gfx.cpp 散列相同。证据在渲染工作树 `.amp/in/artifacts/p1-installed-ia-20261025/`：`red{,-repeat}-rhi.log`、`green-rhi.log`、`green-rhi-run.log`、两配置构建日志及制品散列；`red-to-green-gfx.diff` 证明生成实现仅有两处匹配差异。此结论只针对该候选和本机硬件，不替代后续独立复审与主线集成。
+Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_renderer_acceptance`、`atelier_editor` 均以 Jobs=2 构建通过，Dev 不另跑窗口；两配置重放后的 gfx.cpp 散列相同。证据在渲染工作树 `.amp/in/artifacts/p1-installed-ia-20261025/`：`red{,-repeat}-rhi.log`、`green-rhi.log`、`green-rhi-run.log`、两配置构建日志及制品散列；`red-to-green-gfx.diff` 证明生成实现仅有两处匹配差异。该修复已完成两轴独立复审并随 `29164fd3` 进入主线；复审是代码与既有日志核对，不是再次运行，GPU 结论仍限于该候选和本机硬件。
 
 ## RAW SRV 接入（2026-10-27）
 
