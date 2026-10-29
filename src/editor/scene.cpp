@@ -5,6 +5,7 @@
 #include "editor/fields.hpp"
 #include "editor/properties.hpp"
 #include "assets/material_format.hpp"
+#include "assets/mesh_format.hpp"
 #include "physics/physics.hpp"
 #include "runtime/value_storage.hpp"
 #include <limits>
@@ -129,10 +130,10 @@ std::string dotted(std::span<const std::string> path) {
 std::string dump_retained(const Json& value) {return value.empty()?std::string{}:value.dump();}
 
 std::vector<detail::ScalarField> business_fields(Runtime& runtime,const world::Types& types,const presentation::Types& shown,TypeId type) {
+    static_cast<void>(shown);
     auto result=take(detail::author_fields(runtime,type));std::vector<FieldId> reserved;
     if(derives(runtime,type,types.entity))
         for(const auto key:{"position","rotation","scale"}) reserved.push_back(take(runtime.find_field(types.entity,key)));
-    if(derives(runtime,type,shown.static_mesh_component)) reserved.push_back(take(runtime.find_field(shown.static_mesh_component,"material")));
     std::erase_if(result,[&](const auto& field){return std::ranges::find(reserved,field.path.front())!=reserved.end();});
     return result;
 }
@@ -446,10 +447,11 @@ struct Session::GraphCodec {
         std::unordered_map<ObjectId,std::wstring> labels;
         std::unordered_set<std::string> material_keys,texture_keys;
         std::unordered_map<ObjectId,std::uint64_t> identities_before;
+        std::unordered_map<ObjectId,std::string> material_parents_before;
         UnavailableResources unavailable_before;
         std::uint64_t next_before{};
         bool published{};
-        explicit Prepared(Session& owner):session(&owner),identities_before(owner.local_ids_),unavailable_before(owner.unavailable_),next_before(owner.next_local_id_) {
+        explicit Prepared(Session& owner):session(&owner),identities_before(owner.local_ids_),material_parents_before(owner.scene_material_parents_),unavailable_before(owner.unavailable_),next_before(owner.next_local_id_) {
             for(const auto& [key,value]:owner.materials_) {static_cast<void>(value);material_keys.insert(key);}
             for(const auto& [key,value]:owner.textures_) {static_cast<void>(value);texture_keys.insert(key);}
         }
@@ -458,7 +460,7 @@ struct Session::GraphCodec {
         Prepared(Prepared&& other) noexcept:session(std::exchange(other.session,nullptr)),objects(std::move(other.objects)),
             roots(std::move(other.roots)),spaces(std::move(other.spaces)),triangle_meshes(std::move(other.triangle_meshes)),resources(std::move(other.resources)),
             anchored(std::move(other.anchored)),project(other.project),labels(std::move(other.labels)),material_keys(std::move(other.material_keys)),texture_keys(std::move(other.texture_keys)),
-            identities_before(std::move(other.identities_before)),unavailable_before(std::move(other.unavailable_before)),
+            identities_before(std::move(other.identities_before)),material_parents_before(std::move(other.material_parents_before)),unavailable_before(std::move(other.unavailable_before)),
             next_before(other.next_before),published(other.published) {}
         ~Prepared() {
             if(!session || published) return;
@@ -473,6 +475,7 @@ struct Session::GraphCodec {
             }
             std::erase_if(session->materials_,[&](const auto& entry){return !material_keys.contains(entry.first);});
             std::erase_if(session->textures_,[&](const auto& entry){return !texture_keys.contains(entry.first);});
+            session->scene_material_parents_.swap(material_parents_before);
             session->unavailable_.swap(unavailable_before);
             // Unpublished objects never acquired a document identity visible to
             // history or authoring. Failed construction must leave metadata intact.
@@ -569,10 +572,17 @@ struct Session::GraphCodec {
         };
         archive_material=[&](ObjectId object)->std::uint64_t {
             if(auto at=ids.find(object);at!=ids.end()) return at->second;
-            take(material::read_material(runtime,object));
+            const auto source=take(material::material_key(runtime,object));
             const auto key=identity(session,object);ids.emplace(object,key);
             graph.materials.emplace(std::to_string(key),take(runtime.hold(object)));
-            Json value=material_definition(session,object,key,persistent);
+            if(source.empty()) {
+                const auto state=take(material::read_instance(runtime,object));
+                const auto parent=session.scene_material_parents_.find(object);
+                if(parent==session.scene_material_parents_.end()) throw std::runtime_error("Scene instance has no author parent identity.");
+                if(parent->second.empty() && state.parent.registered())
+                    static_cast<void>(archive_material(state.parent.id()));
+            }
+            Json value=material_definition(session,object,key);
             merge_retained(value,object);
             material_values.push_back(std::move(value));return key;
         };
@@ -608,11 +618,10 @@ struct Session::GraphCodec {
                 }
                 Json value={{"id",key},{"type",type_name(runtime,state.type)},{"name",assets::utf8(session.name(part.id()))},{"enabled",state.enabled},{"properties",properties(part.id(),state.type)}};
                 if(derives(runtime,state.type,session.presentation_types_.static_mesh_component)) {
-                    auto mesh=take(presentation::read_static_mesh(runtime,part.id()));take(presentation::validate_material(runtime,mesh.material));
+                    auto mesh=take(presentation::read_static_mesh(runtime,part.id()));
                     if(persistent && mesh.mesh.resolved && mesh.mesh.source.empty()) throw std::runtime_error("A procedural mesh has no persistent source; save/import it before archiving.");
                     auto bindings=take(presentation::read_material_bindings(runtime,part.id()));graph.meshes.emplace(key,MeshCopy{mesh,bindings});
-                    value["mesh"]=mesh.mesh.source;value["base_color"]=vector(mesh.material.base_color);value["roughness"]=assets::json_format::number(mesh.material.roughness);
-                    value["metallic"]=assets::json_format::number(mesh.material.metallic);value["emissive"]=vector(mesh.material.emissive);auto entries=Json::array();
+                    value["mesh"]=mesh.mesh.source;auto entries=Json::array();
                     for(const auto& binding:bindings) {
                         Json entry={{"slot",binding.slot},{"resource",std::to_string(ids.at(binding.resource.id()))},{"overridden",binding.overridden}};
                         entries.push_back(std::move(entry));
@@ -633,7 +642,7 @@ struct Session::GraphCodec {
             merge_retained(value,object);
             values.push_back(std::move(value));
         }
-        graph.data={{"version",9},{"next_id",std::to_string(session.next_local_id_)},
+        graph.data={{"version",10},{"next_id",std::to_string(session.next_local_id_)},
             {"roots",std::move(root_keys)},{"entities",std::move(values)},{"materials",std::move(material_values)}};
         if(document && !session.retained_document_.record.empty())
             overlay(graph.data,restore_references(Json::parse(session.retained_document_.record)));
@@ -642,20 +651,26 @@ struct Session::GraphCodec {
     }
 
     // A scene material definition without retained data.
-    static Json material_definition(const Session& session,ObjectId object,std::uint64_t key,bool persistent) {
-        auto& runtime=session.world_.runtime();const auto state=take(material::read_material(runtime,object));
-        Json value={{"id",std::to_string(key)},{"source",state.source}};
-        if(state.source.empty() && persistent) {
-            value["inline"]=assets::material_format::encode(take(session.material_asset(object)));
-            if(state.parent.registered()) {
-                const auto parent_source=take(material::read_material(runtime,state.parent.id())).source;
-                if(parent_source.empty()) throw std::runtime_error("Save the parent material asset before archiving its instance.");
-                value["parent"]=parent_source;auto overrides=Json::array();
-                for(std::size_t i=0;i<material::parameter_names.size();++i) if(state.overrides&(1u<<i)) overrides.push_back(material::parameter_names[i]);
-                value["overrides"]=std::move(overrides);
-            }
+    static Json material_definition(const Session& session,ObjectId object,std::uint64_t key) {
+        auto& runtime=session.world_.runtime();const auto source=take(material::material_key(runtime,object));
+        Json value={{"id",std::to_string(key)},{"source",source}};
+        if(source.empty()) {
+            const auto state=take(material::read_instance(runtime,object));
+            const auto authored=session.scene_material_parents_.find(object);
+            if(authored==session.scene_material_parents_.end()) throw std::runtime_error("Scene instance has no author parent identity.");
+            value["parent"]=authored->second.empty()?ref_key(identity(session,state.parent.id())):Json(authored->second);
+            value["entries"]=assets::material_format::encode_entries(state.entries);
         }
         return value;
+    }
+    // Parents precede their scene children in Live definitions. Named parents
+    // remain asset relationships and are loaded through the ordinary directory.
+    static void material_definitions(const Session& session,ObjectId object,Json& values,std::unordered_set<ObjectId>& seen) {
+        if(!seen.insert(object).second) return;
+        auto value=material_definition(session,object,identity(session,object));
+        if(value.contains("parent") && reference_value(value.at("parent")))
+            material_definitions(session,take(material::read_instance(session.world_.runtime(),object)).parent.id(),values,seen);
+        values.push_back(std::move(value));
     }
     // The graph of an attach change: the Entity record lists only these components.
     static Json live_components(const Session& session,ObjectId entity,std::span<const ObjectId> components) {
@@ -674,6 +689,13 @@ struct Session::GraphCodec {
             parts.push_back(std::move(part));
         }
         if(parts.size()!=components.size()) throw std::runtime_error("Each listed Component must appear once on the Entity.");
+        // Keep scene-local ancestors even if only their child is bound to a slot.
+        for(bool expanded=true;expanded;) {
+            expanded=false;
+            for(const auto& definition:data.at("materials")) if(used.contains(definition.at("id").get<std::string>()))
+                if(const auto parent=definition.find("parent");parent!=definition.end() && reference_value(*parent))
+                    expanded|=used.insert(parent->at("$ref").get<std::string>()).second;
+        }
         Json materials=Json::array();
         for(const auto& definition:data.at("materials")) if(used.contains(definition.at("id").get<std::string>())) materials.push_back(definition);
         data["roots"]=Json::array();data["materials"]=std::move(materials);
@@ -681,11 +703,11 @@ struct Session::GraphCodec {
         return std::move(data);
     }
     // Play forwarding. A keyed op replaces the pending op with the same key.
-    static void live_push(Session& session,std::string key,const Json& op) {
+    static void live_push(Session& session,std::string key,const Json& op,material::ImageRef texture={},std::shared_ptr<const assets::MeshAsset> mesh={}) {
         auto text=op.dump();
         if(text.size()>assets::json_format::maximum_bytes) throw std::runtime_error("A Play change exceeds the 16 MiB limit.");
         if(!key.empty()) std::erase_if(session.live_ops_,[&](const LiveOp& item){return item.key==key;});
-        session.live_ops_.push_back({std::move(key),std::move(text)});
+        session.live_ops_.push_back({std::move(key),{std::move(text),std::move(texture),std::move(mesh)}});
     }
     static std::string live_id(const Session& session,ObjectId object) {return std::to_string(identity(session,object));}
     // The final position among the parent's children, or among the roots.
@@ -722,26 +744,12 @@ struct Session::GraphCodec {
     static Json live_properties(Session& session,ObjectId object,std::span<const world::FieldPath> paths,std::string* key=nullptr) {
         auto& runtime=session.runtime_;const auto type=take(runtime.type_of(object));
         const auto fields=take(detail::author_fields(runtime,type));
-        const auto material_field=derives(runtime,type,session.presentation_types_.static_mesh_component)?
-            std::optional(take(runtime.find_field(session.presentation_types_.static_mesh_component,"material"))):std::nullopt;
         Json op={{"op","set"},{"id",live_id(session,object)}},properties=Json::object();
         if(key) *key="field "+op.at("id").get<std::string>();
-        std::optional<presentation::Material> material;
         for(const auto& path:paths) {
             const auto field=std::ranges::find_if(fields,[&](const auto& item){return std::ranges::equal(item.path,path);});
             if(field==fields.end()) throw std::runtime_error("A changed field is not a scene property.");
             if(key) *key+=" "+dotted(field->names);
-            // The mesh material is a component record; its fields travel as top-level set keys.
-            if(material_field && path.front()==*material_field) {
-                if(!material) material=take(presentation::read_static_mesh(runtime,object)).material;
-                const auto& name=field->names.at(1);
-                if(name=="base_color") op[name]=vector(material->base_color);
-                else if(name=="emissive") op[name]=vector(material->emissive);
-                else if(name=="roughness") op[name]=assets::json_format::number(material->roughness);
-                else if(name=="metallic") op[name]=assets::json_format::number(material->metallic);
-                else throw std::runtime_error("Play cannot follow the field "+dotted(field->names)+".");
-                continue;
-            }
             Json* at=&properties;for(const auto& name:field->names) at=&(*at)[name];
             if(field->form==ValueForm::strong_reference || field->form==ValueForm::weak_reference) {
                 const auto reference=take(runtime.read_reference(object,path));
@@ -771,30 +779,42 @@ struct Session::GraphCodec {
             }};
         read_record(runtime,{type,object},business_fields(runtime,session.types_,session.presentation_types_,type),record,{"properties"},resolve,write,&report);
     }
-    // Scene material definition or inline binding entry to a material object.
-    static ObjectRoot restore_material(Session& session,Project* project,const Json& entry,std::vector<MissingResource>* missing=nullptr) {
+    // Scene instances share the asset entry codec, but their parent may have a
+    // document-local identity. The directory resolver handles ordering/cycles.
+    static ObjectRoot restore_material(Session& session,Project* project,const Json& entry,
+        const std::function<ObjectRoot(std::uint64_t)>& resolve,std::vector<MissingResource>* missing=nullptr,ObjectId existing={}) {
         auto& runtime=session.runtime_;
         if(!project) throw std::runtime_error("Material restoration requires a Project.");
         const auto source=entry.at("source").get<std::string>();
-        if(!source.empty() && entry.contains("inline")) throw std::runtime_error("Material binding has competing sources.");
-        if(entry.contains("parent")) {
-            if(!source.empty()) throw std::runtime_error("A material instance cannot own an asset identity.");
-            auto parent=take(session.material_resource(project->assets(),entry.at("parent").get<std::string>(),missing));
-            auto state=take(material::read_material(runtime,parent.id()));state.source.clear();state.parent=parent;state.overrides=0;
-            state.description=assets::material_format::decode(entry.at("inline")).description;
-            const auto& names=entry.at("overrides");
-            if(!names.is_array() || names.size()>material::parameter_names.size()) throw std::runtime_error("Invalid material overrides.");
-            for(const auto& name:names) {
-                const auto at=std::ranges::find(material::parameter_names,name.get<std::string>());
-                if(at==material::parameter_names.end()) throw std::runtime_error("Unknown material override.");
-                const auto bit=1u<<static_cast<unsigned>(at-material::parameter_names.begin());
-                if(state.overrides&bit) throw std::runtime_error("Duplicate material override.");state.overrides|=bit;
-            }
-            return take(material::create_material(runtime,state));
+        if(!source.empty()) {
+            if(entry.contains("parent") || entry.contains("entries")) throw std::runtime_error("Material binding has competing sources.");
+            auto root=take(session.material_resource(project->assets(),source,missing));
+            if(existing!=ObjectId{} && root.id()!=existing) throw std::runtime_error("Live material identity cannot change its asset.");
+            return root;
         }
-        if(entry.contains("overrides")) throw std::runtime_error("Overrides require a parent material.");
-        return source.empty()?take(session.material_resource(project->assets(),assets::material_format::decode(entry.at("inline")),missing)):
-            take(session.material_resource(project->assets(),source,missing));
+        material::InstanceState state;std::string parent_key;
+        const auto& parent=entry.at("parent");
+        if(parent.is_string()) {
+            parent_key=parent.get<std::string>();
+            if(parent_key.empty()) throw std::runtime_error("A scene instance requires a parent identity.");
+            state.parent=take(session.material_resource(project->assets(),parent_key,missing));
+        } else {fields(parent,{"$ref"});state.parent=resolve(local_key(parent.at("$ref")));}
+        state.entries=assets::material_format::decode_entries(entry.at("entries"));
+        const auto surface=take(material::capture_program(runtime,state.parent.id()));
+        state.textures.resize(state.entries.size());
+        for(std::size_t i=0;i<state.entries.size();++i) {
+            const auto& item=state.entries[i];const auto* binding=std::get_if<material::TextureBinding>(&item.value);
+            if(!item.enabled || !binding || binding->asset_key.empty() ||
+                std::ranges::find(surface->program().textures(),item.path,&source::MaterialTextureInput::key)==surface->program().textures().end()) continue;
+            state.textures[i]=take(session.texture_resource(project->assets(),binding->asset_key,missing,i));
+        }
+        auto root=existing==ObjectId{}?take(material::create_instance(runtime,{},state)):take(runtime.hold(existing));
+        if(existing!=ObjectId{}) {
+            if(!take(material::material_key(runtime,existing)).empty()) throw std::runtime_error("Live scene instance cannot replace a named asset.");
+            take(material::update_instance(runtime,existing,state));
+        }
+        session.scene_material_parents_.insert_or_assign(root.id(),std::move(parent_key));
+        return root;
     }
     // A Play copy's object for a document identity. Unknown identities mean Play
     // diverged; identities whose object the game destroyed are skipped.
@@ -835,7 +855,7 @@ struct Session::GraphCodec {
     static Prepared construct(Session& session,const Graph& graph,Project* project,bool keep_ids,Load& load) {
         const auto& data=graph.data;
         if(!data.is_object()) throw std::runtime_error("Expected a JSON record.");
-        if(assets::json_format::identity(data.at("version"))!=9) throw std::runtime_error("Object graph requires scene format version 9.");
+        if(assets::json_format::identity(data.at("version"))!=10) throw std::runtime_error("Object graph requires scene format version 10.");
         for(const auto& [name,value]:data.items())
             if(name!="version" && name!="next_id" && name!="roots" && name!="entities" && name!="materials") {
                 if(load.document) load.keep({},{name},value,world::DiagnosticKind::unknown_key,"Unknown scene key kept from the saved scene.");
@@ -914,7 +934,7 @@ struct Session::GraphCodec {
                 const auto component=create(part,false,object);
                 const auto component_type=take(runtime.type_of(component));
                 if(derives(runtime,component_type,session.presentation_types_.static_mesh_component))
-                    load.extra(component,part,{"id","type","name","enabled","properties","mesh","base_color","roughness","metallic","emissive","materials"});
+                    load.extra(component,part,{"id","type","name","enabled","properties","mesh","materials"});
                 else if(derives(runtime,component_type,session.presentation_types_.environment_component))
                     load.extra(component,part,{"id","type","name","enabled","properties","sky_map"});
                 else load.extra(component,part,{"id","type","name","enabled","properties"});
@@ -924,10 +944,10 @@ struct Session::GraphCodec {
         const auto report_missing=[&](ObjectId object,std::vector<std::string> base,const Json& entry,const std::vector<MissingResource>& missing) {
             for(const auto& item:missing) {
                 auto at=base;const Json value=item.key;
-                if(item.input) {at.push_back("textures");at.emplace_back(assets::material_format::names[*item.input]);}
+                if(item.input) {at.push_back("textures");at.emplace_back(std::to_string(*item.input));}
                 else at.emplace_back(entry.contains("parent")?"parent":"source");
                 load.report(world::Severity::warning,item.kind,object,std::move(at),&value,item.reason+
-                    (item.input?" The input has no texture":" A default material stands in")+"; the reference is saved unchanged.");
+                    (item.input?" The input uses its engine default texture":" The engine error material stands in")+"; the reference is saved unchanged.");
             }
         };
         std::unordered_map<std::uint64_t,ObjectRoot> material_ids;
@@ -937,11 +957,21 @@ struct Session::GraphCodec {
         std::unordered_set<std::uint64_t> used_materials;
         const auto definitions=data.value("materials",Json::array());
         if(!definitions.is_array() || definitions.size()>maximum_entities*maximum_components) throw std::runtime_error("Invalid scene material directory.");
+        std::unordered_map<std::uint64_t,const Json*> material_records;
         for(const auto& definition:definitions) {
             if(!definition.is_object()) throw std::runtime_error("Expected a JSON record.");
             const auto key=local_key(definition.at("id"));
-            if(ids.contains(key)) throw std::runtime_error("Duplicate graph object identity: "+std::to_string(key));
-            largest=std::max(largest,key);ObjectRoot resource;std::vector<MissingResource> missing;
+            if(ids.contains(key) || !material_records.emplace(key,&definition).second) throw std::runtime_error("Duplicate graph object identity: "+std::to_string(key));
+            largest=std::max(largest,key);
+        }
+        std::unordered_set<std::uint64_t> resolving_materials;
+        std::function<ObjectRoot(std::uint64_t)> restore;
+        restore=[&](std::uint64_t key)->ObjectRoot {
+            if(const auto at=material_ids.find(key);at!=material_ids.end()) return at->second;
+            const auto record=material_records.find(key);
+            if(record==material_records.end()) throw std::runtime_error("Material parent references an unknown scene resource.");
+            if(!resolving_materials.insert(key).second) throw std::runtime_error("Scene material parent cycle.");
+            const auto& definition=*record->second;ObjectRoot resource;std::vector<MissingResource> missing;
             // Play keeps a material it already has; its value changes travel separately.
             const auto live=load.live?live_object(session,key):std::nullopt;
             const bool reused=live && *live!=ObjectId{};
@@ -949,20 +979,33 @@ struct Session::GraphCodec {
                 if(!session.is_material(*live)) throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
                 resource=take(runtime.hold(*live));
             } else if(auto at=graph.materials.find(std::to_string(key));at!=graph.materials.end()) {
-                const auto state=take(material::read_material(runtime,at->second.id()));
-                resource=state.source.empty()?take(material::create_material(runtime,state)):at->second;
+                if(take(material::material_key(runtime,at->second.id())).empty()) {
+                    auto state=take(material::read_instance(runtime,at->second.id()));
+                    if(const auto& parent=definition.at("parent");reference_value(parent)) state.parent=restore(local_key(parent.at("$ref")));
+                    resource=take(material::create_instance(runtime,{},state));
+                    session.scene_material_parents_.emplace(resource.id(),session.scene_material_parents_.at(at->second.id()));
+                } else resource=at->second;
                 copied_materials.emplace(at->second.id(),resource);
                 copied_material_keys.emplace(at->second.id(),key);
-            } else resource=restore_material(session,project,definition,&missing);
+            } else resource=restore_material(session,project,definition,restore,&missing);
+            if(definition.contains("parent") && reference_value(definition.at("parent"))) used_materials.insert(local_key(definition.at("parent").at("$ref")));
             if(!material_objects.insert(resource.id()).second) throw std::runtime_error("One material asset has multiple document identities.");
             ids.emplace(key,resource.id());material_ids.emplace(key,resource);result.resources.push_back(resource);
             if(keep_ids && !reused) {
                 if(!session.local_ids_.emplace(resource.id(),key).second) throw std::runtime_error("One material asset has multiple document identities.");
             } else if(!keep_ids) (void)identity(session,resource.id());
-            load.types.emplace(resource.id(),"material.Material");load.keys.emplace(resource.id(),key);
+            load.types.emplace(resource.id(),type_name(runtime,take(runtime.type_of(resource.id()))));load.keys.emplace(resource.id(),key);
             report_missing(resource.id(),{},definition,missing);
-            load.extra(resource.id(),definition,{"id","source","inline","parent","overrides"});
-        }
+            load.extra(resource.id(),definition,{"id","source","parent","entries"});
+            const auto surface=take(material::capture_program(runtime,resource.id()));
+            // Sparse entries may intentionally be disabled or outlive their declaration.
+            // Required resources and invalid Source definitions were checked above;
+            // resolution diagnostics describe preserved author intent, not load loss.
+            for(const auto& issue:surface->diagnostics()) load.report(world::Severity::info,world::DiagnosticKind::mismatch,
+                resource.id(),{"entries",issue.path},nullptr,issue.message);
+            resolving_materials.erase(key);return resource;
+        };
+        for(const auto& definition:definitions) static_cast<void>(restore(local_key(definition.at("id"))));
         if(next<=largest) throw std::runtime_error("next_id must exceed every document object identity.");
         if(keep_ids && !load.live) session.next_local_id_=next;
         std::unordered_map<std::uint64_t,std::uint64_t> owners;
@@ -1135,7 +1178,7 @@ struct Session::GraphCodec {
                     const auto key=part.at("id").get<std::string>();
                     if(auto at=graph.meshes.find(key);at!=graph.meshes.end()) {
                         const auto& copy=at->second;take(presentation::set_mesh_binding(runtime,object,copy.state.mesh));
-                        take(presentation::set_material(world,object,copy.state.material));auto bindings=copy.bindings;
+                        auto bindings=copy.bindings;
                         for(auto& binding:bindings) {
                             used_materials.insert(copied_material_keys.at(binding.resource.id()));
                             binding.resource=copied_materials.at(binding.resource.id());
@@ -1173,26 +1216,6 @@ struct Session::GraphCodec {
                         }
                         const bool unresolved=!source.empty() && !mesh;
                         take(presentation::set_mesh_binding(runtime,object,{source,std::move(mesh),std::move(defaults)}));
-                        presentation::Material material;std::vector<std::string> applied;
-                        const auto vector_value=[&](const char* name,math::Vector3& target) {
-                            const auto found=part.find(name);if(found==part.end()) return;
-                            std::string problem;
-                            try {target=vector(*found);applied.emplace_back(name);} catch(const std::exception& error) {problem=error.what();}
-                            if(!problem.empty()) load.keep(object,{name},*found,world::DiagnosticKind::mismatch,problem+" The default is used and the saved value is kept.");
-                        };
-                        const auto number_value=[&](const char* name,float& target) {
-                            const auto found=part.find(name);if(found==part.end()) return;
-                            std::string problem;
-                            try {target=std::get<float>(decode_scalar(runtime,Scalar{target},*found));applied.emplace_back(name);} catch(const Mismatch& error) {problem=error.what();}
-                            if(!problem.empty()) load.keep(object,{name},*found,world::DiagnosticKind::mismatch,problem+" The default is used and the saved value is kept.");
-                        };
-                        vector_value("base_color",material.base_color);number_value("roughness",material.roughness);
-                        number_value("metallic",material.metallic);vector_value("emissive",material.emissive);
-                        if(auto set=presentation::set_material(world,object,material);!set) {
-                            load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"material"},nullptr,set.error().message+" Defaults are used and the saved values are kept.");
-                            for(const auto& name:applied) load.store(object,std::array{name},part.at(name));
-                            take(presentation::set_material(world,object,presentation::Material{}));
-                        }
                         std::vector<presentation::MaterialBinding> bindings;
                         if(const auto entries=part.find("materials");entries!=part.end() && !entries->is_array())
                             load.keep(object,{"materials"},*entries,world::DiagnosticKind::mismatch,"Expected a material binding table. Bindings are empty and the saved value is kept.");
@@ -1217,6 +1240,18 @@ struct Session::GraphCodec {
                                 bindings.push_back({slot,std::move(resource),overridden});
                             }
                         }
+                        const auto geometry=take(presentation::read_static_mesh(runtime,object)).mesh.resolved;
+                        bool missing_slot{};
+                        std::erase_if(bindings,[&](const auto& binding) {
+                            std::size_t matches{};
+                            if(geometry) for(std::size_t i=0;i<geometry->materials().size();++i)
+                                matches+=geometry::material_slot_name(*geometry,i)==binding.slot;
+                            if(matches==1) return false;
+                            load.report(world::Severity::warning,world::DiagnosticKind::mismatch,object,{"materials",binding.slot},nullptr,
+                                "The mesh no longer has one matching slot; the author binding is kept without being applied.");
+                            missing_slot=true;return true;
+                        });
+                        if(missing_slot) keep_bindings(object,part.at("materials"));
                         take(presentation::set_material_bindings(runtime,object,bindings));
                     }
                 }
@@ -1426,11 +1461,6 @@ struct Session::GraphCodec {
         }
         return moved?ordinal:world::append;
     }
-    static float live_number(const Json& value) {
-        if(!value.is_number()) throw std::runtime_error("Expected a number.");
-        const auto number=value.get<float>();if(!std::isfinite(number)) throw std::runtime_error("Numbers must be finite.");
-        return number;
-    }
     // One op of a Play change batch; see Session::apply_live.
     static void apply_change(Session& session,Project& project,const Json& op,std::size_t index,std::vector<world::Diagnostic>& out) {
         auto& runtime=session.runtime_;auto& world=session.world_;
@@ -1492,7 +1522,7 @@ struct Session::GraphCodec {
                 else if(derives(runtime,type,session.types_.component)) commit(world::destroy_component(runtime,removed));
                 else throw std::runtime_error("Only an Entity or Component can be removed.");
             } else if(kind=="set") {
-                fields(op,{"op","id","name","enabled","space","properties","base_color","roughness","metallic","emissive","materials","sky_map"});
+                fields(op,{"op","id","name","enabled","space","properties","materials","sky_map"});
                 const auto edited=target(op.at("id"));const auto type=take(runtime.type_of(edited));
                 const bool entity=derives(runtime,type,session.types_.entity);
                 load.policy=LoadPolicy::strict;
@@ -1524,14 +1554,6 @@ struct Session::GraphCodec {
                         return world.write(edited,path,ValueInput{take(runtime.native_type<String>()),&std::get<String>(leaf)});
                     });
                     if(!paths.empty()) take(world.write(edited,std::span<const world::FieldPath>(paths),std::span<const Scalar>(values)));
-                }
-                if(op.contains("base_color") || op.contains("roughness") || op.contains("metallic") || op.contains("emissive")) {
-                    auto material=take(presentation::read_static_mesh(runtime,edited)).material;
-                    if(const auto at=op.find("base_color");at!=op.end()) material.base_color=vector(*at);
-                    if(const auto at=op.find("roughness");at!=op.end()) material.roughness=live_number(*at);
-                    if(const auto at=op.find("metallic");at!=op.end()) material.metallic=live_number(*at);
-                    if(const auto at=op.find("emissive");at!=op.end()) material.emissive=vector(*at);
-                    take(presentation::set_material(world,edited,material));
                 }
                 if(const auto at=op.find("materials");at!=op.end()) {
                     if(!at->is_array() || at->size()>1024) throw std::runtime_error("Expected a material binding table.");
@@ -1591,37 +1613,73 @@ struct Session::GraphCodec {
             } else if(kind=="materials") {
                 fields(op,{"op","materials"});
                 const auto& definitions=op.at("materials");
-                if(!definitions.is_array()) throw std::runtime_error("Expected a material definition list.");
+                if(!definitions.is_array() || definitions.size()>maximum_entities*maximum_components) throw std::runtime_error("Expected a material definition list.");
+                std::unordered_map<std::uint64_t,const Json*> records;
                 for(const auto& definition:definitions) {
-                    fields(definition,{"id","source","inline","parent","overrides"});
+                    fields(definition,{"id","source","parent","entries"});
                     const auto key=local_key(definition.at("id"));
-                    // As in a tolerant load: an unavailable source, parent or texture stands in with a warning.
-                    std::vector<MissingResource> missing;auto restored=restore_material(session,&project,definition,&missing);
-                    for(const auto& item:missing) note(world::Severity::warning,item.kind,"#"+std::to_string(key)+": "+item.reason+
-                        (item.input?" The input has no texture.":" A default material stands in."));
-                    if(const auto live=live_object(session,key);live && *live!=ObjectId{}) {
-                        if(!session.is_material(*live)) throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
-                        if(restored.id()!=*live) take(material::update_material(runtime,*live,take(material::read_material(runtime,restored.id()))));
-                    } else {
-                        if(!session.local_ids_.emplace(restored.id(),key).second) throw std::runtime_error("One material asset has multiple document identities.");
-                        session.live_objects_.insert_or_assign(key,restored.id());session.live_materials_.push_back(std::move(restored));
-                    }
+                    if(!records.emplace(key,&definition).second) throw std::runtime_error("Duplicate Live material identity.");
                 }
-            } else if(kind=="resource") {
-                fields(op,{"op","key","material"});
-                const auto key=op.at("key").get<std::string>();subject+=" "+key;
-                auto asset=assets::material_format::decode(op.at("material"));asset.key=key;
-                const auto catalogued=[&](const std::string& texture){return project.entry(texture)!=nullptr;};
-                if(std::ranges::any_of(asset.textures,[&](const auto& texture){return !texture.empty() && !catalogued(texture);})) take(project.refresh());
-                if(const auto at=session.materials_.find(key);at!=session.materials_.end()) {
-                    material::State state;state.source=key;state.description=asset.description;
-                    for(std::size_t i=0;i<state.textures.size();++i) if(!asset.textures[i].empty()) {
-                        state.textures[i]=take(session.texture_resource(project.assets(),asset.textures[i]));
-                        state.description.textures[i].image=take(material::read_texture(runtime,state.textures[i].id())).image;
+                std::unordered_set<std::uint64_t> visiting,complete;
+                std::function<ObjectRoot(std::uint64_t)> restore;
+                restore=[&](std::uint64_t key)->ObjectRoot {
+                    const auto live=live_object(session,key);
+                    if(live && *live!=ObjectId{} && !session.is_material(*live))
+                        throw std::runtime_error("Document identity #"+std::to_string(key)+" is not a material in Play.");
+                    const auto record=records.find(key);
+                    if(record==records.end() || complete.contains(key)) {
+                        if(!live || *live==ObjectId{}) throw std::runtime_error("Unknown Live material parent.");
+                        return take(runtime.hold(*live));
                     }
-                    take(material::update_material(runtime,at->second.root.id(),state));
-                    session.unavailable_.erase(std::pair{assets::AssetKind::material,std::string(key)});
-                } else take(session.material_resource(project.assets(),asset));
+                    if(!visiting.insert(key).second) throw std::runtime_error("Live material parent cycle.");
+                    // As in a tolerant load: an unavailable source, parent or texture stands in with a warning.
+                    std::vector<MissingResource> missing;
+                    auto restored=restore_material(session,&project,*record->second,restore,&missing,live.value_or(ObjectId{}));
+                    for(const auto& item:missing) note(world::Severity::warning,item.kind,"#"+std::to_string(key)+": "+item.reason+
+                        (item.input?" The input uses its engine default texture.":" The engine error material stands in."));
+                    if(!live || *live==ObjectId{}) {
+                        if(!session.local_ids_.emplace(restored.id(),key).second) throw std::runtime_error("One material asset has multiple document identities.");
+                        session.live_objects_.insert_or_assign(key,restored.id());session.live_materials_.push_back(restored);
+                    }
+                    visiting.erase(key);complete.insert(key);return restored;
+                };
+                for(const auto& definition:definitions) static_cast<void>(restore(local_key(definition.at("id"))));
+            } else if(kind=="texture") {
+                fields(op,{"op","key","width","height","file"});
+                const auto key=op.at("key").get<std::string>();subject+=" "+key;
+                const auto width=assets::json_format::identity(op.at("width")),height=assets::json_format::identity(op.at("height"));
+                if(!width || !height || width>8192 || height>8192) throw std::runtime_error("Invalid Play texture dimensions.");
+                const auto bytes=width*height*4;
+                const auto rgba=take(assets::read_file(assets::wide(op.at("file").get<std::string>()),bytes));
+                if(rgba.size()!=bytes) throw std::runtime_error("Play texture RGBA byte count does not match its dimensions.");
+                auto image=std::make_shared<const material::Image>(static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height),
+                    std::vector<std::uint8_t>(rgba.begin(),rgba.end()));
+                take(session.publish_texture(key,std::move(image)));
+            } else if(kind=="mesh") {
+                fields(op,{"op","key","file"});
+                const auto key=op.at("key").get<std::string>();subject+=" "+key;
+                auto mesh=assets::mesh_format::decode(take(assets::read_file(assets::wide(op.at("file").get<std::string>()),assets::mesh_format::maximum_bytes)));
+                if(mesh.key!=key) throw std::runtime_error("Play mesh content does not match its asset key.");
+                take(project.refresh());take(session.publish_mesh(project.assets(),mesh));
+            } else if(kind=="resource") {
+                fields(op,{"op","key","material","source"});
+                const auto key=op.at("key").get<std::string>();subject+=" "+key;
+                if(key.empty()) throw std::runtime_error("Live asset publication requires an asset key.");
+                auto asset=assets::material_format::decode(op.at("material"));asset.key=key;
+                std::optional<source::SourceFile> exact_source;
+                if(const auto input=op.find("source");input!=op.end()) {
+                    fields(*input,{"path","text"});
+                    auto text=input->at("text").get<std::string>();
+                    if(text.size()>(1u<<20) || !StringView{text}.is_valid_utf8()) throw std::runtime_error("Invalid Live Material Source text.");
+                    exact_source=source::SourceFile{input->at("path").get<std::string>(),source::content_hash(text),std::move(text)};
+                }
+                if(std::holds_alternative<assets::MaterialSourceAsset>(asset.author) && !exact_source)
+                    throw std::runtime_error("Live Material Source publication requires its exact text.");
+                // Refresh only the catalogue for newly created dependencies;
+                // published pixels and Source text above remain authoritative.
+                take(project.refresh());std::vector<MissingResource> missing;
+                take(session.publish_material(project.assets(),asset,std::move(exact_source),&missing));
+                for(const auto& item:missing) note(world::Severity::warning,item.kind,item.reason);
             } else throw std::runtime_error("Unknown change: "+kind);
             for(const auto key:load.dropped) note(world::Severity::warning,world::DiagnosticKind::reference_dropped,
                 "#"+std::to_string(key)+" was destroyed by the game; the reference is null.");
@@ -1666,10 +1724,10 @@ Result<std::string> Session::serialize_live_components(ObjectId entity,std::span
 void Session::set_live_forwarding(bool enabled) {
     forwarding_=enabled;live_ops_.clear();live_failure_.reset();live_leaves_.clear();
 }
-Result<std::vector<std::string>> Session::take_live_ops() {
+Result<std::vector<LiveChange>> Session::take_live_ops() {
     if(live_failure_) return std::unexpected(*live_failure_);
-    std::vector<std::string> result;result.reserve(live_ops_.size());
-    for(auto& op:live_ops_) result.push_back(std::move(op.text));
+    std::vector<LiveChange> result;result.reserve(live_ops_.size());
+    for(auto& op:live_ops_) result.push_back(std::move(op.change));
     live_ops_.clear();return result;
 }
 void Session::forward_change(const Change& change,bool forward) {
@@ -1774,7 +1832,7 @@ void Session::forward_change(const Change& change,bool forward) {
                 Json definitions=Json::array(),table=Json::array();std::unordered_set<ObjectId> defined;
                 for(const auto& binding:bindings) {
                     const auto resource=binding.resource.id();
-                    if(defined.insert(resource).second) definitions.push_back(C::material_definition(*this,resource,C::identity(*this,resource),true));
+                    C::material_definitions(*this,resource,definitions,defined);
                     table.push_back({{"slot",binding.slot},{"resource",C::live_id(*this,resource)},{"overridden",binding.overridden}});
                 }
                 if(!definitions.empty()) push({{"op","materials"},{"materials",std::move(definitions)}});
@@ -1788,15 +1846,102 @@ void Session::forward_change(const Change& change,bool forward) {
 void Session::forward_material(ObjectId object) {
     if(!forwarding_ || live_failure_) return;
     try {
-        const auto state=take(material::read_material(runtime_,object));
-        if(!state.parent.registered() && !state.source.empty())
-            GraphCodec::live_push(*this,"resource "+state.source,{{"op","resource"},{"key",state.source},{"material",assets::material_format::encode(take(material_asset(object)))}});
+        const auto asset_key=take(material::material_key(runtime_,object));
+        if(!asset_key.empty()) {
+            Json op={{"op","resource"},{"key",asset_key},{"material",assets::material_format::encode(take(material_asset(object)))}};
+            if(const auto at=materials_.find(asset_key);at!=materials_.end() && at->second.source_file)
+                op["source"]={{"path",at->second.source_file->path},{"text",at->second.source_file->source}};
+            GraphCodec::live_push(*this,"resource "+asset_key,op);
+        }
         else {
             const auto key=GraphCodec::identity(*this,object);
-            GraphCodec::live_push(*this,"material "+std::to_string(key),
-                {{"op","materials"},{"materials",Json::array({GraphCodec::material_definition(*this,object,key,true)})}});
+            Json definitions=Json::array();std::unordered_set<ObjectId> defined;
+            GraphCodec::material_definitions(*this,object,definitions,defined);
+            GraphCodec::live_push(*this,"material "+std::to_string(key),{{"op","materials"},{"materials",std::move(definitions)}});
         }
     } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
+}
+void Session::forward_texture(std::string_view key,material::ImageRef image) {
+    if(!forwarding_ || live_failure_) return;
+    try {
+        if(!image) throw std::runtime_error("A Play texture publication requires image content.");
+        GraphCodec::live_push(*this,"texture "+std::string(key),{{"op","texture"},{"key",key}},std::move(image));
+    } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
+}
+void Session::forward_mesh(const assets::MeshAsset& asset) {
+    if(!forwarding_ || live_failure_) return;
+    try {
+        GraphCodec::live_push(*this,"mesh "+asset.key,{{"op","mesh"},{"key",asset.key}},{},std::make_shared<const assets::MeshAsset>(asset));
+    } catch(const std::exception& error) {live_failure_=failed(error).error();live_ops_.clear();}
+}
+Result<void> Session::reimport_mesh(Project& project,std::string_view key,const std::filesystem::path& source) {
+    try {
+        if(world_.closed() || world_.running() || editing()) throw std::runtime_error("Finish the active edit and stop the editor World before reimporting.");
+        const auto publication=take(project.reimport_mesh(key,source));
+        for(const auto& texture:publication.textures) take(publish_texture(texture.key,texture.image));
+        // Existing documents may have unsaved author edits. Importing geometry
+        // must not replace those edits with the material file's saved values.
+        std::vector<MissingResource> missing;
+        for(const auto& asset:publication.materials) {
+            auto root=take(material_resource(project.assets(),asset,&missing));forward_material(root.id());
+        }
+        return publish_mesh(project.assets(),publication.mesh);
+    } catch(const std::exception& error) {return failed(error);}
+}
+Result<void> Session::publish_mesh(assets::Reader& reader,const assets::MeshAsset& asset) {
+    try {
+        if(world_.closed() || asset.key.empty() || !asset.mesh) throw std::runtime_error("Mesh publication needs a live Session, asset key and complete geometry.");
+        std::vector<MissingResource> missing;
+        const auto defaults=take(mesh_defaults(reader,asset,&missing));
+        struct Replacement {ObjectId object;std::vector<presentation::MaterialBinding> active;Retained kept;};
+        std::vector<Replacement> replacements;
+        // Include detached history objects with a document identity: later Undo
+        // reattaches the current mesh rather than resurrecting an imported version.
+        std::unordered_set<ObjectId> components;
+        for(const auto& [object,id]:local_ids_) {
+            static_cast<void>(id);const auto type=runtime_.type_of(object);
+            if(type && derives(runtime_,*type,presentation_types_.static_mesh_component)) components.insert(object);
+        }
+        for(const auto& entity:take(world_.members())) for(const auto& component:take(world::components(runtime_,entity.id()))) {
+            if(derives(runtime_,take(runtime_.type_of(component.id())),presentation_types_.static_mesh_component)) components.insert(component.id());
+        }
+        for(const auto object:components) {
+            if(take(presentation::read_static_mesh(runtime_,object)).mesh.source!=asset.key) continue;
+            auto bindings=take(presentation::read_material_bindings(runtime_,object));
+            Retained kept;if(const auto at=retained_.find(object);at!=retained_.end()) kept=at->second;
+            auto record=kept.record.empty()?Json::object():Json::parse(kept.record);
+            if(const auto at=record.find("materials");at!=record.end() && at->is_array()) for(const auto& item:*at) {
+                const auto slot=item.at("slot").get<std::string>();
+                if(std::ranges::find(bindings,slot,&presentation::MaterialBinding::slot)!=bindings.end()) continue;
+                const auto id=take(local_object(local_key(item.at("resource"))));
+                bindings.push_back({slot,take(runtime_.hold(id)),item.value("overridden",false)});
+            }
+            std::vector<presentation::MaterialBinding> active;bool dormant{};
+            for(const auto& binding:bindings) {
+                std::size_t matches{};for(std::size_t i=0;i<asset.mesh->materials().size();++i) matches+=geometry::material_slot_name(*asset.mesh,i)==binding.slot;
+                if(matches==1) active.push_back(binding);else dormant=true;
+            }
+            kept.materials.clear();
+            if(dormant) {
+                auto table=Json::array();
+                for(const auto& binding:bindings) {
+                    table.push_back({{"slot",binding.slot},{"resource",std::to_string(GraphCodec::identity(*this,binding.resource.id()))},{"overridden",binding.overridden}});
+                    kept.materials.push_back(binding.resource);
+                }
+                record["materials"]=std::move(table);
+            } else record.erase("materials");
+            kept.record=dump_retained(record);replacements.push_back({object,std::move(active),std::move(kept)});
+        }
+        take(reader.publish_mesh_content(asset));
+        for(auto& replacement:replacements) {
+            take(presentation::set_mesh_binding(runtime_,replacement.object,{asset.key,asset.mesh,defaults}));
+            take(presentation::set_material_bindings(runtime_,replacement.object,replacement.active));
+            if(replacement.kept.empty()) retained_.erase(replacement.object);
+            else retained_.insert_or_assign(replacement.object,std::move(replacement.kept));
+        }
+        unavailable_.erase(std::pair{assets::AssetKind::mesh,asset.key});
+        ++revision_;forward_mesh(asset);return {};
+    } catch(const std::exception& error) {return failed(error);}
 }
 void Session::forward_edit() {
     if(!forwarding_ || live_failure_) return;
@@ -1906,8 +2051,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         if(object!=ObjectId{} && after.empty()) retained_.erase(object);
         else *entry=std::move(after);
     };
-    // Field paths map to scene record paths: business fields live under
-    // properties; a StaticMeshComponent's material fields are mesh payload keys.
+    // Business field paths map directly to the properties record.
     const auto field=[&](ObjectId object,std::span<const FieldId> path) {
         if(!retained_.contains(object)) return;
         const auto type=runtime_.type_of(object);if(!type || path.empty()) return;
@@ -1917,9 +2061,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
             const auto at=std::ranges::find((*info)->fields,id,&FieldInfo::id);if(at==(*info)->fields.end()) return;
             names.emplace_back(at->name);owner=at->value.type;
         }
-        const auto mesh=runtime_.is_a(*type,presentation_types_.static_mesh_component);
-        if(mesh && *mesh && names[1]=="material" && names.size()>2) drop(object,std::span(names).subspan(2,1));
-        else drop(object,names);
+        drop(object,names);
     };
     static const std::array<std::string,1> space{"space"},name{"name"},sky{"sky_map"};
     static const std::array<std::string,2> body{"properties","body"};
@@ -2013,7 +2155,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                 return {false,path[1]=="position" || path[1]=="rotation" || path[1]=="scale" || path[1]=="origin"?mismatch:unknown_key};
             }
             if(path.front()=="materials" && mesh_unavailable) return {false,mesh_unavailable->kind};
-            constexpr std::array known{"name","enabled","mesh","base_color","roughness","metallic","emissive","materials","sky_map"};
+            constexpr std::array known{"name","enabled","mesh","materials","sky_map"};
             return {false,std::ranges::find(known,path.front())!=known.end()?mismatch:unknown_key};
         };
         std::vector<std::string> path;
@@ -2033,7 +2175,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         if(document) for(const auto& resource:entry->materials) if(runtime_.type_of(resource.id())) {
             const auto key=document_identity(resource.id());
             view.entries.push_back({{"materials",key?std::to_string(*key):std::string("?")},
-                preview(take(material::read_material(world_.runtime(),resource.id())).source),world::DiagnosticKind::unknown_key});
+                preview(take(material::material_key(world_.runtime(),resource.id()))),world::DiagnosticKind::unknown_key});
         }
         return view;
     } catch(const std::exception& error) {return failed(error);}
@@ -2099,7 +2241,8 @@ Result<ObjectId> Session::local_object(std::uint64_t identity) const {
             if(live(entity.id())) return entity.id();
             for(const auto& component:take(world::components(world_.runtime(),entity.id()))) if(live(component.id())) return component.id();
         }
-        throw std::runtime_error("Document identity does not belong to a live Entity or Component.");
+        for(const auto object:candidates) if(is_material(object)) return object;
+        throw std::runtime_error("Document identity does not belong to a live Entity, Component or material.");
     } catch(const std::exception& error) {return failed(error);}
 }
 }

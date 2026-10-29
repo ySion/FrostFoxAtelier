@@ -19,6 +19,14 @@ struct Repro {
     std::vector<assets::MeshAsset> meshes;
     std::vector<std::pair<std::string,rendering::SkyMapRef>> skies;
     std::vector<assets::MaterialAsset> materials;
+    // Exact loaded MS text and active input pixels, not file rereads or history.
+    // These values have no Runtime roots and can outlive the source document.
+    std::vector<language::SourceFile> material_sources;
+    std::vector<assets::TextureAsset> textures;
+    // Typed scene/default/parent closure, including unavailable author references.
+    // Dormant or declaration-mismatched texture entries are not dependencies.
+    std::vector<std::pair<assets::AssetKind,std::string>> references;
+    control::Json material_resources;
     std::vector<assets::EngineDependency> engine_assets;
     control::Json manifest, drafts;
 };

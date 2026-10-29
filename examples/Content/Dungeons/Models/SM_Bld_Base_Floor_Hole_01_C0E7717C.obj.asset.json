@@ -1,4 +1,10 @@
 {
-  "version": 1,
-  "id": "{C0E7717C-BFC1-5C18-998D-CD7177FFC94F}"
+  "id": "{C0E7717C-BFC1-5C18-998D-CD7177FFC94F}",
+  "materials": {
+    "slot_0": "project/{901522A8-F83B-5863-BDEB-881F6B779951}",
+    "slot_1": "project/{172E063D-2C79-57CB-B2EA-8E85FA00A0CD}",
+    "slot_2": "project/{172E063D-2C79-57CB-B2EA-8E85FA00A0CD}",
+    "slot_3": "project/{153BC0D0-B009-5E88-80A0-1272790288B0}"
+  },
+  "version": 1
 }

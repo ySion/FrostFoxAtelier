@@ -1,4 +1,5 @@
 #include "renderer/renderer.hpp"
+#include "assets/builtin_materials.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -16,7 +17,7 @@
 #include <thread>
 
 namespace {
-namespace render = atelier::renderer;
+namespace render { using namespace atelier::renderer; }
 namespace ui = atelier::ui;
 void check(bool condition, const char *text) {
     if (!condition) {
@@ -49,11 +50,18 @@ render::Result<void> wait_preparation(render::Renderer& renderer, const render::
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 }
-// Cases check rendering, not preparation: Lit views wait for their pipelines first.
-render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, const render::Frame& frame,
+// Native batch consumers prepare their own immutable candidates.
+render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, const atelier::renderer::Frame& frame,
                                                     render::Capture* capture = nullptr) {
     if (const auto ready = wait_preparation(renderer, frame.view); !ready) return std::unexpected(ready.error());
     return renderer.render(frame, capture);
+}
+#include "standard_fixture.inl"
+// StandardPBR fixtures explicitly author/prepare their candidates before the
+// native submission. Non-material cases retain the same view and UI snapshots.
+render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, const render::Frame& frame,
+                                                    render::Capture* capture = nullptr) {
+    return prepared_render(renderer,frame.prepare(renderer),capture);
 }
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(window, message, wparam, lparam);
@@ -118,7 +126,7 @@ void snapshot(const render::Capture &c, const char* path = "renderer-acceptance.
         out.write(reinterpret_cast<const char *>(c.rgba.data() + i), 3);
     check(out.good(), "write capture evidence");
 }
-void lit_preparation_case(render::Renderer &renderer) {
+void lit_preparation_case(render::Renderer &renderer, HWND hwnd) {
     const auto extent = take(renderer.target()).extent;
     ui::Frame drawing{.id = 900, .extent = extent, .draws = {}};
     drawing.draws.push_back({{4, 4, 16, 16}, {4, 4, 20, 20}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
@@ -130,8 +138,9 @@ void lit_preparation_case(render::Renderer &renderer) {
     frame.scene_identity = 900;
     render::Capture capture;
     capture.frame_id = 7;
+    (void)frame.prepare(renderer); // Measure view preparation, not MS compilation.
     const auto started = std::chrono::steady_clock::now();
-    const auto first = take(renderer.render(frame, &capture));
+    const auto first = take(renderer.render(frame.prepare(renderer), &capture));
     const auto first_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     check(first.status == render::FrameStatus::not_ready && first.accepted_id == 0 && first.accepted_extent == ui::PixelExtent{} &&
               first.stats.ui_draw_calls == 0 && first.stats.scene_draw_calls == 0 && first.stats.viewport_draw_calls == 0 &&
@@ -139,30 +148,42 @@ void lit_preparation_case(render::Renderer &renderer) {
           "an unprepared Lit frame returns not_ready without encoding, presenting or capturing");
     check(first_ms < 2000, "starting Lit preparation does not wait for compilation");
     const auto progress = take(renderer.preparation(frame.view));
-    check(!progress.ready && progress.total == 34 && progress.done < progress.total,
+    check(!progress.ready && progress.total == 25 && progress.done < progress.total,
           "the default Lit view reports its own pipeline groups while they prepare");
     frame.view.shading = render::Shading::smooth;
     ++drawing.id;
-    const auto studio = take(renderer.render(frame, &capture));
+    const auto studio = take(renderer.render(frame.prepare(renderer), &capture));
     check(studio.status == render::FrameStatus::accepted && capture.frame_id == drawing.id,
           "a studio view renders while Lit pipelines prepare");
     frame.view.shading = render::Shading::scene_lit;
     take(wait_preparation(renderer, frame.view));
     const auto ready_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     ++drawing.id;
-    const auto lit = take(renderer.render(frame, &capture));
+    const auto before_lit = take(renderer.target());
+    const auto lit = take(renderer.render(frame.prepare(renderer), &capture));
+    if (lit.status != render::FrameStatus::accepted || capture.frame_id != drawing.id || lit.stats.scene_draw_calls != 1) {
+        std::fprintf(stderr, "Renderer Lit preparation: status=%s accepted=%llu capture=%llu requested=%llu draws=%llu ui=%llu instances=%llu culled=%llu "
+                    "accepted_extent=%ux%u next=%ux%u before_target=%ux%u drawable=%d visible=%d iconic=%d foreground=%p focus=%p hwnd=%p\n",
+            lit.status == render::FrameStatus::accepted ? "accepted" : lit.status == render::FrameStatus::skipped ? "skipped" : "not_ready",
+            static_cast<unsigned long long>(lit.accepted_id),
+            static_cast<unsigned long long>(capture.frame_id), static_cast<unsigned long long>(drawing.id),
+            lit.stats.scene_draw_calls, lit.stats.ui_draw_calls, lit.stats.scene_instances, lit.stats.scene_culled_instances,
+            lit.accepted_extent.width, lit.accepted_extent.height, lit.next_extent.width, lit.next_extent.height,
+            before_lit.extent.width, before_lit.extent.height, int(before_lit.drawable), int(IsWindowVisible(hwnd)), int(IsIconic(hwnd)),
+            static_cast<void*>(GetForegroundWindow()), static_cast<void*>(GetFocus()), static_cast<void*>(hwnd));
+    }
     check(lit.status == render::FrameStatus::accepted && capture.frame_id == drawing.id && lit.stats.scene_draw_calls == 1,
           "the prepared Lit view renders normally");
-    frame.view.lit.probe_debug = true;
+    frame.view.lit.direct_cluster_inspect = true;
     const auto grown = take(renderer.preparation(frame.view));
     ++drawing.id;
-    const auto pending = take(renderer.render(frame, &capture));
-    check(!grown.ready && grown.total == 35 && grown.done == 34 && pending.status == render::FrameStatus::not_ready &&
+    const auto pending = take(renderer.render(frame.prepare(renderer), &capture));
+    check(!grown.ready && grown.total == 26 && grown.done == 25 && pending.status == render::FrameStatus::not_ready &&
               capture.frame_id == drawing.id - 1,
           "a setting that needs a new group raises total and returns the ready view to not_ready");
     take(wait_preparation(renderer, frame.view));
     ++drawing.id;
-    check(take(renderer.render(frame, &capture)).status == render::FrameStatus::accepted && capture.frame_id == drawing.id,
+    check(take(renderer.render(frame.prepare(renderer), &capture)).status == render::FrameStatus::accepted && capture.frame_id == drawing.id,
           "the view renders once its new group is ready");
     std::printf("Renderer Lit preparation: first-render=not_ready %.1f ms progress=%u/%u studio-while-preparing=accepted ready=%.1f s "
                 "new-group=%u/%u not_ready PASS\n",
@@ -383,11 +404,13 @@ void instance_check_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     using Edit = void (*)(render::MeshInstance&);
     const std::array<std::pair<Edit, const char*>, 5> edits{{
         {[](render::MeshInstance& m) { m.world[13] = std::numeric_limits<float>::quiet_NaN(); }, "NaN world"},
-        {[](render::MeshInstance& m) { m.color.a = 2; }, "color above one"},
-        {[](render::MeshInstance& m) { m.material.emissive[0] = 1e30f; }, "emission above the limit"},
+        {[](render::MeshInstance& m) { m.omit_material_slots = true; }, "missing slot table"},
         {[](render::MeshInstance& m) {
-             m.surfaces = std::make_shared<const std::vector<atelier::material::SurfaceRef>>(2, atelier::material::default_surface());
-         }, "surface count unlike the geometry"},
+             m.material_slots = std::make_shared<const std::vector<std::uint32_t>>(1,~0u);
+         }, "material index outside the ready batch"},
+        {[](render::MeshInstance& m) {
+             m.material_slots = std::make_shared<const std::vector<std::uint32_t>>(2,0);
+         }, "slot count unlike the geometry"},
         {[](render::MeshInstance& m) { m.world[0] = 0; }, "singular world"},
     }};
     for (const auto& [edit, name] : edits) {
@@ -518,6 +541,7 @@ void visibility_cases(render::Renderer& renderer,ui::PixelExtent extent) {
 } // namespace
 #include "materials.inl"
 #include "cavity.inl"
+#include "material_batches.inl"
 
 namespace material_program_e2e { void run(HWND, const std::filesystem::path&); }
 
@@ -540,7 +564,8 @@ int main(int argc, char** argv) try {
         check(argc != 4 || output.is_absolute(), "Renderer --output must be an absolute evidence directory");
         if(mode=="--material-programs") {
             Window window;
-            material_program_e2e::run(window.hwnd,output);return 0;
+            material_program_e2e::run(window.hwnd,output);
+            material_batch_e2e::run(window.hwnd,output);return 0;
         }
         if(mode=="--scene-lit-cost") {
             scene_lit_e2e::Fixture fixture(false,output);
@@ -571,7 +596,7 @@ int main(int argc, char** argv) try {
     Window window;
     auto renderer = take(
         render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
-    lit_preparation_case(renderer);
+    lit_preparation_case(renderer, window.hwnd);
     cavity_cases(renderer,window);
     material_cases(renderer);
     material_transport_cases(renderer);

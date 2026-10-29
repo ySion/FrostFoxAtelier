@@ -37,7 +37,7 @@ public:
     Result<void> run_project();
     Result<void> preview_project_ui();
     Result<void> create_source(const std::filesystem::path& relative,bool project_ui=false);
-    void stop_project() noexcept {play_.stop();}
+    void stop_project() noexcept {restart_play_=false;play_.stop();}
     void close();
     HWND window() const noexcept { return window_.handle(); }
     const editor::Session& document() const noexcept { return *document_; }
@@ -95,7 +95,7 @@ private:
     std::wstring window_title_;
     editor::Camera camera_;
     editor::ViewportTool viewport_tool_;
-    std::optional<editor::ViewportView> accepted_view_;
+    std::optional<editor::ViewportView> accepted_view_; // Owns the accepted camera and CPU draw group, never a GPU batch.
     math::Vector2 pointer_position_{};
     editor::Workspace workspace_;
     ui::Session ui_;
@@ -118,7 +118,7 @@ private:
     bool pending_name_focus_{}; // F2 focuses the Entity name once Parameters is presented.
     bool pending_rename_focus_{}; // Inline tree rename focuses its field once presented.
     renderer::Renderer renderer_;
-    SceneSnapshot scene_;
+    SceneSnapshot scene_; // Pending/adopted batches retire before renderer_ (also on exceptional shutdown).
     bool camera_cut_{true}; // Retained until the renderer accepts the new view.
     std::vector<renderer::OverlayShape> overlay_;
     ui::Surface surface_;
@@ -167,6 +167,7 @@ private:
     bool invoke_menu(const ui::Action&,std::span<const ui::MenuItem>);
     bool effects(const ui::Reply&);
     Result<void> execute(editor::Command,std::string_view asset={});
+    const ui::ControlBox* command_focus() const noexcept;
     editor::Context operator_context(bool interactive);
     Result<editor::OperatorReport> call_operator(const editor::OperatorCall&,bool interactive);
     // UI entry: an unavailable operator is a silent no-op unless the caller reports its reason.

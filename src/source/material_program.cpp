@@ -36,6 +36,22 @@ std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* 
     catch (...) { std::snprintf(samples.error, sizeof(samples.error), "%s", "Material sampler failed."); }
     return 1;
 }
+std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
+    auto& samples = *static_cast<Samples*>(invocation);
+    try {
+        if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) throw std::runtime_error("Material sample_orientation UV is not finite.");
+        const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
+        if (texture == samples.textures.end()) throw std::runtime_error("Missing material texture binding.");
+        if (!texture->orientation) throw std::runtime_error("Missing material sample_orientation callback.");
+        const auto value = take(texture->orientation(texture->data, {uv[0], uv[1]}));
+        for (std::size_t i = 0; i < 2; ++i)
+            if (!std::isfinite(value[i])) throw std::runtime_error("Material sample_orientation result is not finite.");
+        std::memcpy(result, &value, sizeof(value));
+        return 0;
+    } catch (const std::exception& error) { std::snprintf(samples.error, sizeof(samples.error), "%s", error.what()); }
+    catch (...) { std::snprintf(samples.error, sizeof(samples.error), "%s", "Material sample_orientation failed."); }
+    return 1;
+}
 bool finite_value(BusinessType type, const BusinessEnvironment& environment, const std::byte* bytes) {
     if (type == ValueKind::f32) {
         float value; std::memcpy(&value, bytes, sizeof(value));
@@ -75,12 +91,22 @@ std::span<const MaterialParameter> MaterialProgram::parameters() const noexcept 
 std::span<const std::byte> MaterialProgram::default_parameters() const noexcept { return state_->defaults; }
 std::span<const MaterialTextureInput> MaterialProgram::textures() const noexcept { return state_->textures; }
 Result<std::string> MaterialProgram::hlsl(std::string_view name_space) const {
+    return generate_hlsl(name_space, false);
+}
+Result<std::string> MaterialProgram::hlsl_footprint(std::string_view name_space) const {
+    return generate_hlsl(name_space, true);
+}
+Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, bool footprint) const {
     const auto letter = [](char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     if (name_space.empty() || !letter(name_space.front()) || !std::ranges::all_of(name_space,
         [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Material HLSL namespace requires an ASCII identifier."});
-    return "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\nnamespace " +
-        std::string(name_space) + " {\n" + atelier_material_code_view(state_->code.get()).hlsl + "}\n";
+    std::string result = footprint ?
+        "float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1);\n#define ATELIER_MATERIAL_FOOTPRINT 1\n" :
+        "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n#define ATELIER_MATERIAL_FOOTPRINT 0\n";
+    result += "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\n";
+    return result + "namespace " + std::string(name_space) + " {\n" +
+        atelier_material_code_view(state_->code.get()).hlsl + "}\n#undef ATELIER_MATERIAL_FOOTPRINT\n";
 }
 
 Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
@@ -192,7 +218,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
         MaterialCode* code{};
         char error[2048]{};
         if (atelier_compile_material(name.c_str(), source.data(), static_cast<std::uint32_t>(source.size()), &catalog,
-            &defaults, capture, context_type.type_index, output_type.type_index, texture_type.type_index, sample_texture, &code, error, sizeof(error))) {
+            &defaults, capture, context_type.type_index, output_type.type_index, texture_type.type_index,
+            sample_texture, sample_orientation, &code, error, sizeof(error))) {
             if (defaults.failure) std::rethrow_exception(defaults.failure);
             return std::unexpected(Error{ErrorCode::invalid_definition, error});
         }

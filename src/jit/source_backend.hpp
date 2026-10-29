@@ -219,6 +219,8 @@ struct BusinessServices {
     void (*debug_leave)(void*, BusinessDebugFrame*) noexcept{};
     // Pure material sampling: one invocation-owned binding, float2 in / float4 out.
     std::uint32_t (*sample_texture)(void*, std::uint32_t, const float*, float*) noexcept{};
+    // Independent sampler-address query: same binding, float2 in / float2 out.
+    std::uint32_t (*sample_orientation)(void*, std::uint32_t, const float*, float*) noexcept{};
     bool operator==(const BusinessServices&) const = default;
 };
 
@@ -322,6 +324,7 @@ extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t atelier_compile_material(
     const std::byte* (*capture_default)(void*, std::uint32_t) noexcept,
     std::uint32_t context, std::uint32_t output_type, std::uint32_t texture_input,
     std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
+    std::uint32_t (*orientation)(void*, std::uint32_t, const float*, float*) noexcept,
     atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept;
 extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::MaterialCodeView atelier_material_code_view(
     atelier::source::detail::MaterialCode*) noexcept;

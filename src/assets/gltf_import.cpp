@@ -227,48 +227,63 @@ MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_imag
         std::vector<std::string_view> buffers,image_sources;
         for(const auto file:buffer_files) buffers.push_back(result.files[file].bytes);
         for(const auto file:image_files) image_sources.push_back(result.files[file].bytes);
-        const auto decoded=decode_images(image_sources,shared_images,maximum_decoded);
-        // An empty object is the glTF default material, used by primitives without one.
-        const auto surface=[&](const Json& source_material,std::array<std::filesystem::path,material::input_count>& files) {
-            material::Description description;auto& p=description.parameters;
-            const auto texture=[&](material::Input input,const Json& info,std::uint32_t channel) {
-                auto& target=description.texture(input);const auto image=texture_image(info);
-                target.image=decoded[image];target.channel=channel;files[static_cast<std::size_t>(input)]=result.files[image_files[image]].relative;
+        // Decode to validate the same images and byte budget. Author MI values
+        // carry paths/keys, never decoded pixels or a second surface definition.
+        static_cast<void>(decode_images(image_sources,shared_images,maximum_decoded));
+        const auto instance=[&](const Json& source_material,std::array<std::filesystem::path,imported_material_inputs.size()>& files) {
+            MaterialInstanceAsset author;
+            const auto texture=[&](std::size_t input,const Json& info,float channel=0.f) {
+                const auto image=texture_image(info);files[input]=result.files[image_files[image]].relative;
                 const auto& source_texture=element(gltf,"textures",info["index"]);
                 const auto& sampler=source_texture.contains("sampler")?element(gltf,"samplers",source_texture["sampler"]):empty_object;
                 const auto wrap=sampler.value("wrapS",10497);
                 require(wrap==sampler.value("wrapT",10497) && (wrap==10497 || wrap==33071 || wrap==33648),"samplers must use one supported wrap mode for both axes.");
-                target.address=wrap==33071?material::Address::clamp:wrap==33648?material::Address::mirror:material::Address::repeat;
+                const auto address=wrap==33071?material::Address::clamp:wrap==33648?material::Address::mirror:material::Address::repeat;
+                const auto name=std::string(imported_material_inputs[input]);
+                author.entries.push_back({name+"_texture",material::TextureBinding{{},address}});
+                author.entries.push_back({name+"_uv.scale",math::Vector2{1,1}});
+                author.entries.push_back({name+"_uv.offset",math::Vector2{}});
+                author.entries.push_back({name+"_uv.rotation",0.f});
+                if(input==1 || input==2) author.entries.push_back({name+"_channel",channel});
             };
             const auto& pbr=pbr_of(source_material);
-            p.base_color=numbers<4>(pbr,"baseColorFactor",{1,1,1,1});
-            p.metallic=static_cast<float>(number(pbr,"metallicFactor",1));p.roughness=static_cast<float>(number(pbr,"roughnessFactor",1));
-            if(pbr.contains("baseColorTexture")) texture(material::Input::base_color,pbr["baseColorTexture"],0);
+            const auto color=numbers<4>(pbr,"baseColorFactor",{1,1,1,1});
+            const auto metallic=static_cast<float>(number(pbr,"metallicFactor",1)),roughness=static_cast<float>(number(pbr,"roughnessFactor",1));
+            const auto normal_scale=source_material.contains("normalTexture")?static_cast<float>(number(source_material["normalTexture"],"scale",1)):1.f;
+            const auto emissive=numbers<3>(source_material,"emissiveFactor",{0,0,0});
+            const auto cutoff=static_cast<float>(number(source_material,"alphaCutoff",.5));
+            const auto unit=[](float value){return std::isfinite(value) && value>=0 && value<=1;};
+            require(std::ranges::all_of(color,unit) && unit(metallic) && unit(roughness) && unit(cutoff),"invalid material color, factor or alpha cutoff.");
+            require(std::isfinite(normal_scale) && normal_scale>=0 && normal_scale<=16,"invalid normal scale.");
+            require(std::ranges::all_of(emissive,[](float value){return std::isfinite(value) && value>=0 && value<=65504.f;}),"invalid emissive factor.");
+            const bool mask=alpha_mode(source_material)=="MASK",two_sided=source_material.value("doubleSided",false);
+            author.parent_key=mask?(two_sided?"builtin/material/standard-mask-double":"builtin/material/standard-mask-single"):
+                (two_sided?"builtin/material/standard-opaque-double":"builtin/material/standard-opaque-single");
+            // glTF's implicit factors are part of its appearance (not the engine
+            // defaults). Explicit values equal to defaults remain overrides too.
+            author.entries={{"base_color",math::Vector4{color[0],color[1],color[2],color[3]}},
+                {"roughness",roughness},{"metallic",metallic},{"normal_scale",normal_scale},{"normal_y_sign",1.f},
+                {"emissive",math::Vector3{emissive[0],emissive[1],emissive[2]}},{"alpha_cutoff",cutoff}};
+            if(pbr.contains("baseColorTexture")) texture(0,pbr["baseColorTexture"]);
             if(pbr.contains("metallicRoughnessTexture")) {
-                texture(material::Input::roughness,pbr["metallicRoughnessTexture"],1);
-                texture(material::Input::metallic,pbr["metallicRoughnessTexture"],2);
+                texture(1,pbr["metallicRoughnessTexture"],1.f);
+                texture(2,pbr["metallicRoughnessTexture"],2.f);
             }
-            if(source_material.contains("normalTexture")) {
-                texture(material::Input::normal,source_material["normalTexture"],0);
-                p.normal_scale=static_cast<float>(number(source_material["normalTexture"],"scale",1));
-            }
-            p.emissive=numbers<3>(source_material,"emissiveFactor",{0,0,0});
-            if(source_material.contains("emissiveTexture")) texture(material::Input::emissive,source_material["emissiveTexture"],0);
-            if(alpha_mode(source_material)=="MASK") {
-                p.coverage=material::Coverage::mask;p.alpha_cutoff=static_cast<float>(number(source_material,"alphaCutoff",.5));
-            }
-            p.double_sided=p.emission_two_sided=source_material.value("doubleSided",false);
-            return std::make_shared<const material::Surface>(std::move(description));
+            if(source_material.contains("normalTexture")) texture(3,source_material["normalTexture"]);
+            if(source_material.contains("emissiveTexture")) texture(4,source_material["emissiveTexture"]);
+            return author;
         };
         // Slot names are unique: scenes bind materials to slots by name.
-        std::vector<material::Slot> slots;std::vector<std::size_t> slot_of(materials.size(),no_slot);std::unordered_set<std::string> names;
-        const auto add_slot=[&](const std::string& name,const Json& source_material) {
+        std::vector<geometry::MaterialSlot> slots;std::vector<std::size_t> slot_of(materials.size(),no_slot);std::unordered_set<std::string> names;
+        const auto add_slot=[&](const std::string& name,const Json* source_material) {
             auto unique=name;for(std::size_t n=2;!names.insert(unique).second;++n) unique=name+" ("+std::to_string(n)+")";
-            slots.push_back({std::move(unique),surface(source_material,result.textures.emplace_back())});
+            slots.push_back({std::move(unique)});result.textures.emplace_back();
+            if(source_material) result.materials.emplace_back(instance(*source_material,result.textures.back()));
+            else result.materials.emplace_back();
         };
-        for(std::size_t m=0;m<materials.size();++m) if(used[m]) {slot_of[m]=slots.size();add_slot(material_name(materials[m],m),materials[m]);}
+        for(std::size_t m=0;m<materials.size();++m) if(used[m]) {slot_of[m]=slots.size();add_slot(material_name(materials[m],m),&materials[m]);}
         const auto default_slot=slots.size();
-        if(default_used) add_slot("default",empty_object);
+        if(default_used) add_slot("default",nullptr);
         std::vector<geometry::Vertex> vertices;vertices.reserve(corners);std::vector<geometry::MeshPart> parts;
         for(const auto& [index,world]:placed) {
             const std::array<double,9> linear{world[0],world[1],world[2],world[4],world[5],world[6],world[8],world[9],world[10]};
@@ -298,7 +313,7 @@ MeshImport load_gltf(const std::filesystem::path& source,ImageCache* shared_imag
                     return a;
                 };
                 const auto normal=optional("NORMAL","VEC3"),tangent=optional("TANGENT","VEC4"),uv=optional("TEXCOORD_0","VEC2");
-                require(uv || std::ranges::none_of(slots[slot].surface->description().textures,[](const auto& t){return bool(t.image);}),"a textured primitive has no TEXCOORD_0.");
+                require(uv || std::ranges::all_of(result.textures[slot],[](const auto& path){return path.empty();}),"a textured primitive has no TEXCOORD_0.");
                 std::vector<geometry::Vertex> source(position.count);
                 for(std::size_t v=0;v<position.count;++v) {
                     auto& out=source[v];const auto p=floats_at<3>(position,v);

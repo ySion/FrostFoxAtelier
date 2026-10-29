@@ -232,6 +232,7 @@ public:
         destroy_value_ = declare("business_destroy_value", ir_.getVoidTy(), {ptr, i32, ptr});
         mutate_sequence_ = declare("business_mutate_sequence", i32, {ptr, i32, i32, ptr, ptr, ir_.getInt64Ty()});
         sample_texture_ = declare("material_sample_texture", i32, {ptr, i32, ptr, ptr});
+        sample_orientation_ = declare("material_sample_orientation", i32, {ptr, i32, ptr, ptr});
         if (debugging_) {
             debug_enter_ = declare("business_debug_enter", i32, {ptr, ptr});
             debug_point_ = declare("business_debug_point", i32, {ptr, ptr, i32, i32, i32});
@@ -1041,15 +1042,17 @@ private:
             temporaries_.push_back(slot);
             return ir_.getInt32(slot);
         }
-        case Kind::texture_sample: {
+        case Kind::texture_sample: case Kind::texture_orientation: {
+            const bool orientation = node.kind == Kind::texture_orientation;
             auto* input = input_address(node.right);
             auto* slot_address = ir_.CreateConstGEP1_64(ir_.getInt8Ty(), input, node.offset);
             auto* slot = ir_.CreateAlignedLoad(ir_.getInt32Ty(), slot_address, llvm::Align(1));
             auto* uv = input_address(node.left);
             llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
-            auto* result = entry_ir.CreateAlloca(llvm::ArrayType::get(ir_.getFloatTy(), 4), nullptr, "sample.result");
+            auto* result = entry_ir.CreateAlloca(llvm::ArrayType::get(ir_.getFloatTy(), orientation ? 2 : 4), nullptr,
+                orientation ? "orientation.result" : "sample.result");
             result->setAlignment(llvm::Align(4));
-            checked_call(sample_texture_, {invocation_, slot, uv, result});
+            checked_call(orientation ? sample_orientation_ : sample_texture_, {invocation_, slot, uv, result});
             return load_value(result, node.type);
         }
         case Kind::field: return read_field(expression(node.receiver), node.type, node.value);
@@ -1456,7 +1459,7 @@ private:
     llvm::FunctionCallee read_bool_, write_bool_;
     llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
     llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
-    llvm::FunctionCallee sample_texture_;
+    llvm::FunctionCallee sample_texture_, sample_orientation_;
     llvm::FunctionCallee debug_enter_, debug_point_, debug_leave_;
     llvm::StructType *debug_frame_type_{}, *debug_local_type_{};
     llvm::AllocaInst *debug_frame_{}, *debug_locals_{};
@@ -1722,12 +1725,12 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         bind("business_create", state->services.create);
         bind("business_read_float", state->services.read_float);
         bind("business_write_float", state->services.write_float);
-        if (services.read_double) bind("business_read_double", services.read_double);
-        if (services.write_double) bind("business_write_double", services.write_double);
-        if (services.read_value) bind("business_read_value", services.read_value);
-        if (services.write_value) bind("business_write_value", services.write_value);
-        if (services.read_bool) bind("business_read_bool", services.read_bool);
-        if (services.write_bool) bind("business_write_bool", services.write_bool);
+        bind("business_read_double", services.read_double);
+        bind("business_write_double", services.write_double);
+        bind("business_read_value", services.read_value);
+        bind("business_write_value", services.write_value);
+        bind("business_read_bool", services.read_bool);
+        bind("business_write_bool", services.write_bool);
         bind("business_read_uint", state->services.read_uint);
         bind("business_write_uint", state->services.write_uint);
         bind("business_call", state->services.call);
@@ -1736,11 +1739,12 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         bind("business_clear", state->services.clear);
         bind("business_reference", state->services.reference);
         bind("business_same_reference", state->services.same_reference);
-        if (services.construct_value) bind("business_construct_value", services.construct_value);
-        if (services.assign_value) bind("business_assign_value", services.assign_value);
-        if (services.destroy_value) bind("business_destroy_value", services.destroy_value);
-        if (services.mutate_sequence) bind("business_mutate_sequence", services.mutate_sequence);
+        bind("business_construct_value", services.construct_value);
+        bind("business_assign_value", services.assign_value);
+        bind("business_destroy_value", services.destroy_value);
+        bind("business_mutate_sequence", services.mutate_sequence);
         bind("material_sample_texture", services.sample_texture);
+        bind("material_sample_orientation", services.sample_orientation);
         if (options.debugging) {
             bind("business_debug_enter", services.debug_enter);
             bind("business_debug_point", services.debug_point);
@@ -1976,13 +1980,14 @@ std::uint32_t atelier_compile_material(const char* name, const char* source, std
     const std::byte* (*capture_default)(void*, std::uint32_t) noexcept,
     std::uint32_t context, std::uint32_t output_type, std::uint32_t texture_input,
     std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
+    std::uint32_t (*orientation)(void*, std::uint32_t, const float*, float*) noexcept,
     atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept {
     if (!error || !capacity) return 1;
     error[0] = '\0';
     try {
         using namespace atelier;
         using namespace atelier::source::detail;
-        if (!name || !source || !environment || !capture_default || !output || !sample ||
+        if (!name || !source || !environment || !capture_default || !output || !sample || !orientation ||
             context >= environment->value_count || output_type >= environment->value_count || texture_input >= environment->value_count)
             throw std::runtime_error("Invalid material compiler input.");
         auto values = source_values(*environment);
@@ -2023,6 +2028,7 @@ std::uint32_t atelier_compile_material(const char* name, const char* source, std
         auto code = std::make_unique<MaterialCode>();
         BusinessServices services{};
         services.sample_texture = sample;
+        services.sample_orientation = orientation;
         language::Environment captured{{}, {}, {}, {}, values};
         code->shade.state = compile(services, material->program, captured, {});
         material->program.entry = material->program.exports[1];

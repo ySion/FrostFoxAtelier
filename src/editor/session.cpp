@@ -402,11 +402,9 @@ Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset
     auto members=world_.members();
     if (!members) return std::unexpected(members.error());
     if (members->size()>=maximum_entities) return invalid("Editor Entity limit reached.");
-    presentation::Material material;
-    if(asset.mesh && asset.mesh->has_materials()) material.base_color={1,1,1};
     std::vector<presentation::MaterialBinding> defaults;
     if(project) {auto resolved=mesh_defaults(project->assets(),asset);if(!resolved) return std::unexpected(resolved.error());defaults=std::move(*resolved);}
-    auto root=presentation::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},material,asset.key,std::move(defaults)});
+    auto root=presentation::create_static_mesh_entity(world_,{asset.mesh,{position,{},{1.f,1.f,1.f}},asset.key,std::move(defaults)});
     if (!root) return std::unexpected(root.error());
     return attach_created(std::move(*root),asset.name);
 }
@@ -560,7 +558,7 @@ Result<std::vector<ComponentType>> Session::component_types() const {
     return result;
 }
 Result<std::vector<Property>> Session::properties(ObjectId object) const {
-    if (!is_material(object)) if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
+    if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
     auto type=runtime_.type_of(object); if (!type) return std::unexpected(type.error());
     auto fields=detail::scalar_fields(world_.runtime(),*type); if (!fields) return std::unexpected(fields.error());
     std::vector<Property> result;
@@ -576,10 +574,6 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
     return result;
 }
 Result<Scalar> Session::read_property(ObjectId object,std::span<const FieldId> path) const {
-    if(is_material(object)) {
-        auto captured=material::capture(world_.runtime(),object);if(!captured) return std::unexpected(captured.error());
-        return world_.runtime().read(object,path);
-    }
     if (auto ready=admit_property_edit(object); !ready) return std::unexpected(ready.error());
     return world_.read(object,path);
 }
@@ -603,11 +597,6 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
 Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path, std::uint64_t control_session) {
     if (editing()) return invalid("A field edit is already active.");
     if (!control_session) return invalid("A field edit requires a control session.");
-    if(is_material(object)) {
-        auto value=runtime_.read(object,path);if(!value) return std::unexpected(value.error());
-        auto begun=begin_material_edit(object,control_session);if(!begun) return begun;
-        material_edit_->paths={{path.begin(),path.end()}};return {};
-    }
     auto entity=admit_property_edit(object); if (!entity) return std::unexpected(entity.error());
     auto before=world_.read(object,path); if (!before) return std::unexpected(before.error());
     auto root=runtime_.hold(object); if (!root) return std::unexpected(root.error());
@@ -626,13 +615,6 @@ Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::Fi
     for(std::size_t i=1;i<paths.size();++i)
         if(std::ranges::find(paths.begin(),paths.begin()+static_cast<std::ptrdiff_t>(i),paths[i])!=paths.begin()+static_cast<std::ptrdiff_t>(i))
             return invalid("A group edit names the same field more than once.");
-    if(is_material(object)) {
-        for(const auto& path:paths) {
-            auto value=read_property(object,path);if(!value) return std::unexpected(value.error());
-        }
-        if(auto begun=begin_material_edit(object,control_session);!begun) return begun;
-        material_edit_->paths.assign(paths.begin(),paths.end());return {};
-    }
     auto entity=admit_property_edit(object); if (!entity) return std::unexpected(entity.error());
     auto root=runtime_.hold(object); if (!root) return std::unexpected(root.error());
     FieldGroupChange change{std::move(*root),*entity,{paths.begin(),paths.end()},control_session,{},{}};
@@ -644,10 +626,6 @@ Result<void> Session::begin_group_edit(ObjectId object,std::span<const world::Fi
     change.after=change.before;group_.emplace(std::move(change));return {};
 }
 Result<void> Session::preview_group_edit(std::uint64_t control_session,std::span<const Scalar> values) {
-    if(material_editing(control_session)) {
-        auto written=write_group(material_edit_->root.id(),material_edit_->paths,values);
-        if(written) {++revision_;forward_edit();}return written;
-    }
     if (!group_ || group_->control_session!=control_session) return invalid("No matching group edit.");
     if (values.size()!=group_->paths.size()) return invalid("A group edit needs one value per field.");
     auto entity=admit_property_edit(group_->root.id()); if (!entity) return std::unexpected(entity.error());
@@ -661,14 +639,6 @@ Result<void> Session::write_group(ObjectId object,std::span<const world::FieldPa
         if(!detail::finite_scalar(values[i])) return invalid("Property values must be finite.");
         auto value=read_property(object,paths[i]);if(!value) return std::unexpected(value.error());
         if(value->index()!=values[i].index()) return invalid("A group edit value changed its field type.");
-    }
-    // Material rollback also restores override bits and the inherited surface.
-    if(is_material(object)) {
-        auto before=material::read_material(runtime_,object);if(!before) return std::unexpected(before.error());
-        for(std::size_t i=0;i<paths.size();++i) if(auto written=material::write_property(runtime_,object,paths[i],values[i]);!written) {
-            auto restored=material::update_material(runtime_,object,*before);return restored?written:restored;
-        }
-        return {};
     }
     return world_.write(object,paths,values);
 }
@@ -759,12 +729,6 @@ Result<void> Session::preview_edit(std::uint64_t control_session,float value) {
     return preview_edit(control_session,Scalar{value});
 }
 Result<void> Session::preview_edit(std::uint64_t control_session,Scalar value) {
-    if(material_editing(control_session)) {
-        if(material_edit_->paths.size()!=1) return invalid("No single material field is being edited.");
-        if(!detail::finite_scalar(value)) return invalid("Material fields must be finite.");
-        auto changed=material::write_property(runtime_,material_edit_->root.id(),material_edit_->paths.front(),std::move(value));
-        if(changed) {++revision_;forward_edit();}return changed;
-    }
     if (!active_ || active_->control_session!=control_session) return invalid("No matching field edit.");
     auto entity=admit_property_edit(active_->root.id());
     if (!entity) return std::unexpected(entity.error());
@@ -891,7 +855,7 @@ Result<void> Session::reset_position(ObjectId component) {
     remember(std::move(change));
     return {};
 }
-Result<world::Commit> Session::replay(Change& change, bool forward) {
+Result<world::Commit> Session::replay(Change& change, bool forward,Project* project) {
     return std::visit([&](auto& item) -> Result<world::Commit> {
         using T = std::decay_t<decltype(item)>;
         if constexpr (std::is_same_v<T, NameChange>) {
@@ -956,11 +920,10 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
             }
             return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, MaterialValueChange>) {
-            auto state=admit_component_edit(item.component);if(!state) return std::unexpected(state.error());
-            if(state->owner!=item.entity) return invalid("The material instance's owner changed.");
-            auto changed=material::update_material(runtime_,item.root.id(),forward?item.after:item.before);
+            auto admitted=admit_material_edit(item.root.id());if(!admitted) return std::unexpected(admitted.error());
+            auto changed=apply_material_entries(item.root.id(),item.entries,forward,project);
             if(!changed) return std::unexpected(changed.error());
-            set_selection({item.entity,item.component});return world::Commit{true,{}};
+            return world::Commit{true,{}};
         } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
             auto state=admit_component_edit(item.root.id());if(!state) return std::unexpected(state.error());
             if(state->owner!=item.entity) return invalid("The material binding's owning Entity changed.");
@@ -1042,21 +1005,21 @@ Result<world::Commit> Session::replay(Change& change, bool forward) {
         }
     }, change);
 }
-Result<world::Commit> Session::undo() {
+Result<world::Commit> Session::undo(Project* project) {
     if(cursor_) ++revision_;
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (!cursor_) return world::Commit{};
-    auto result = replay(history_[cursor_ - 1].change, false);
+    auto result = replay(history_[cursor_ - 1].change, false,project);
     if (result) {restore(history_[cursor_ - 1].retained,false);--cursor_;forward_change(history_[cursor_].change,false);}
     return result;
 }
-Result<world::Commit> Session::redo() {
+Result<world::Commit> Session::redo(Project* project) {
     if(cursor_<history_.size()) ++revision_;
     auto cancelled = cancel_edit();
     if (!cancelled) return std::unexpected(cancelled.error());
     if (cursor_ == history_.size()) return world::Commit{};
-    auto result = replay(history_[cursor_].change, true);
+    auto result = replay(history_[cursor_].change, true,project);
     if (result) {restore(history_[cursor_].retained,true);++cursor_;forward_change(history_[cursor_-1].change,true);}
     return result;
 }
@@ -1067,7 +1030,7 @@ Result<world::Commit> Session::close() {
     if (!closed) return closed;
     physics_.reset();
     history_.clear(); names_.clear(); retained_.clear(); retained_document_={}; cursor_ = 0; set_selection({});
-    materials_.clear();textures_.clear();unavailable_.clear();
+    materials_.clear();scene_material_parents_.clear();textures_.clear();unavailable_.clear();
     prepared_.reset();
     return closed;
 }
@@ -1102,6 +1065,7 @@ Result<void> Session::collect_step() {
     if (runtime_.collection_phase()==CollectionPhase::idle) {
         std::erase_if(names_,[&](const auto& item){return !runtime_.type_of(item.first);});
         std::erase_if(retained_,[&](const auto& item){return !runtime_.type_of(item.first);});
+        std::erase_if(scene_material_parents_,[&](const auto& item){return !runtime_.type_of(item.first);});
     }
     return {};
 }

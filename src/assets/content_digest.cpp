@@ -23,11 +23,7 @@ public:
     }
     void u32(std::uint32_t value) {for(unsigned i=0;i<4;++i) {u8(static_cast<std::uint8_t>(value));value>>=8;}}
     void size(std::uint64_t value) {for(unsigned i=0;i<8;++i) {u8(static_cast<std::uint8_t>(value));value>>=8;}}
-    void scalar(float value) {
-        if(!std::isfinite(value)) throw std::invalid_argument("Mesh digest requires finite published values.");
-        u32(std::bit_cast<std::uint32_t>(value));
-    }
-    void floats(std::span<const float> values) {for(auto value:values) scalar(value);}
+    void floats(std::span<const float> values) {for(auto value:values) u32(std::bit_cast<std::uint32_t>(value));}
     void text(std::string_view value) {size(value.size());bytes(std::as_bytes(std::span(value)));}
     std::string finish() {flush();return hash_.finish();}
 private:
@@ -62,22 +58,7 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) try {
     out.size(mesh.parts().size());
     for(const auto& p:mesh.parts()) {out.u32(p.first_vertex);out.u32(p.vertex_count);out.u32(p.material);}
     out.size(mesh.materials().size());
-    for(const auto& slot:mesh.materials()) {
-        out.text(slot.name);const auto& d=slot.surface->description();const auto& p=d.parameters;
-        out.floats(p.base_color);out.scalar(p.roughness);out.scalar(p.metallic);out.scalar(p.normal_scale);out.scalar(p.normal_y_sign);
-        out.floats(p.emissive);out.u32(p.coverage==material::Coverage::opaque?0u:1u);out.scalar(p.alpha_cutoff);
-        out.u8(p.double_sided);out.u8(p.emission_two_sided);
-        for(const auto input:{material::Input::base_color,material::Input::roughness,material::Input::metallic,
-                              material::Input::normal,material::Input::emissive,material::Input::opacity}) {
-            const auto& t=d.texture(input);
-            out.u8(bool(t.image));out.floats(t.scale);out.floats(t.offset);out.scalar(t.rotation);
-            out.u32(t.address==material::Address::repeat?0u:t.address==material::Address::clamp?1u:2u);out.u32(t.channel);
-            if(t.image) {
-                out.u32(t.image->width());out.u32(t.image->height());out.size(t.image->pixels().size());
-                out.bytes(std::as_bytes(t.image->pixels()));out.floats(t.image->mean_linear());out.u8(t.image->has_alpha());
-            }
-        }
-    }
+    for(const auto& slot:mesh.materials()) out.text(slot.name);
     out.size(defaults.size());
     for(const auto* key:defaults) {out.u8(key!=nullptr);if(key) out.text(*key);}
     return out.finish();

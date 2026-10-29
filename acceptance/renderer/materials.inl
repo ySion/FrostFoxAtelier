@@ -1,6 +1,6 @@
 void material_cases(render::Renderer& renderer,const std::filesystem::path& output={}) {
     namespace geometry=atelier::geometry;
-    namespace material=atelier::material;
+    namespace material=standard_fixture;
     const auto surface=[](std::array<float,4> color,material::ImageRef image={},material::ImageRef opacity={}) {
         material::Description d;d.parameters.base_color=color;d.parameters.coverage=material::Coverage::mask;
         d.texture(material::Input::base_color).image=std::move(image);d.texture(material::Input::opacity).image=std::move(opacity);
@@ -18,14 +18,18 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     quad(.2f);quad(.6f);
     auto image=std::make_shared<const material::Image>(2,2,std::vector<std::uint8_t>{255,0,0,255, 255,255,255,0, 0,0,255,255, 255,255,0,255});
     std::weak_ptr<const material::Image> observer=image;
-    std::vector<material::Slot> materials{{"cutout",surface({1,1,1,1},image)},{"background",surface({0,1,0,1})}};
+    std::vector<geometry::MaterialSlot> materials{{"cutout"},{"background"}};
+    auto base_surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(
+        std::vector{surface({1,1,1,1},image),surface({0,1,0,1})});
     std::array<render::MeshInstance,1> meshes{};meshes[0].color={1,1,1,1};
+    meshes[0].surfaces=base_surfaces;
     meshes[0].geometry=std::make_shared<const geometry::Mesh>(vertices,std::vector<std::uint8_t>{},std::move(materials),
         std::vector<geometry::MeshPart>{{0,6,0},{6,6,1}});image.reset();
     render::Frame frame{ui_frame,{}, {0,0,float(ui_frame.extent.width),float(ui_frame.extent.height)},meshes};render::Capture capture;
     auto result=take(prepared_render(renderer,frame,&capture));
     const auto x=ui_frame.extent.width/4,y=ui_frame.extent.height/4;
-    check(result.stats.scene_draw_calls==1 && result.stats.material_upload_count>0,"material parts share one draw and bind distinct surfaces");
+    check(result.stats.scene_draw_calls==1 && frame.candidate->batch.surfaces().size()==2,
+        "prepared material parts share one draw and bind distinct authored surfaces");
     for(const auto& point:std::array{std::array{x,y},std::array{x*3,y},std::array{x,y*3},std::array{x*3,y*3}}) {
         const auto* color=pixel(capture,point[0],point[1]);
         std::printf("Material coverage pixel=(%u,%u) rgba=(%u,%u,%u,%u) depth=%.9f\n",
@@ -37,6 +41,22 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     check(pixel(capture,x*3,y)[1]>150 && pixel(capture,x*3,y)[0]<10 && std::abs(depth(capture,x*3,y)-.4f)<1e-5f,
         "alpha cutout exposes background color and depth");
     ++ui_frame.id;result=take(prepared_render(renderer,frame,&capture));check(result.stats.material_upload_count==0,"unchanged material images upload only once");
+    const auto error_material=[&](const char* name) {
+        meshes[0].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(
+            std::vector{std::make_shared<const material::Surface>(
+                standard_fixture::need(atelier::material::default_program_surface())),(*base_surfaces)[1]});
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
+        for(const auto px:{x,x*3}) {
+            const auto* color=pixel(capture,px,y);
+            check(color[0]>color[1]+60&&color[2]>color[1]+60&&std::abs(depth(capture,px,y)-.8f)<1e-5f,
+                "unavailable material uses opaque magenta instead of old textured Mask coverage");
+        }
+        scene_lit_e2e::png(capture,output/name);
+        meshes[0].surfaces=base_surfaces;
+        ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
+        check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"repaired material restores the original cutout");
+    };
+    error_material("material-default-smooth.png");
     frame.view.wireframe=render::Wireframe::only;
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
     check(std::abs(depth(capture,x*3,y)-.4f)<1e-5f,"wire-only depth pass respects material opacity");
@@ -45,7 +65,10 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     auto opaque=std::make_shared<const material::Image>(2,2,std::vector<std::uint8_t>{255,0,0,255, 255,255,255,255, 0,0,255,255, 255,255,0,255});
     auto opacity=std::make_shared<const material::Image>(2,2,std::vector<std::uint8_t>{255,255,255,255, 0,0,0,255, 160,160,160,255, 255,255,255,255});
     std::weak_ptr<const material::Image> opacity_observer=opacity;
-    materials={{"separate opacity",surface({1,1,1,1},opaque,opacity)},{"background",surface({0,1,0,1})}};
+    materials={{"separate opacity"},{"background"}};
+    base_surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(
+        std::vector{surface({1,1,1,1},opaque,opacity),surface({0,1,0,1})});
+    meshes[0].surfaces=base_surfaces;
     meshes[0].geometry=std::make_shared<const geometry::Mesh>(vertices,std::vector<std::uint8_t>{},std::move(materials),
         std::vector<geometry::MeshPart>{{0,6,0},{6,6,1}});opaque.reset();opacity.reset();
     frame.view.shading=render::Shading::smooth;frame.view.wireframe=render::Wireframe::off;
@@ -96,6 +119,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     }
     scene_lit_e2e::png(capture,output/"material-lit-coverage.png");
     frame.view.lit.antialiasing=render::Antialiasing::none;
+    frame.camera_cut=true;error_material("material-default-lit.png");frame.camera_cut=false;
     frame.environment={};
     sunlight[0].direction={.89442719f,0,.4472136f};sunlight[0].casts_shadow=true;
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));const auto unshadowed=pixel(capture,x*3,y)[1];
@@ -106,10 +130,11 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         // A new mesh for the same object at the same snapshot index must be traced, not the previous one.
         const auto cutout=meshes[0].geometry;
         meshes[0].geometry=std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>(vertices.begin()+6,vertices.end()),
-            std::vector<std::uint8_t>{},std::vector<material::Slot>{cutout->materials()[1]},std::vector<geometry::MeshPart>{{0,6,0}});
+            std::vector<std::uint8_t>{},std::vector<geometry::MaterialSlot>{cutout->materials()[1]},std::vector<geometry::MeshPart>{{0,6,0}});
+        meshes[0].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{(*base_surfaces)[1]});
         ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"a replaced mesh at an unchanged index and identity traces its new triangles");
-        meshes[0].geometry=cutout;
+        meshes[0].geometry=cutout;meshes[0].surfaces=base_surfaces;
     }
     sunlight[0].direction={0,0,1};
     ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
@@ -121,8 +146,8 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         std::array<render::MeshInstance,2> siblings{meshes[0],meshes[0]};
         siblings[1].stable_key=2;siblings[1].world[12]=4;
         auto opaque_surfaces=std::make_shared<std::vector<material::SurfaceRef>>();
-        for(const auto& slot:meshes[0].geometry->materials()) {
-            auto d=slot.surface->description();d.parameters.coverage=material::Coverage::opaque;
+        for(const auto& slot:*base_surfaces) {
+            auto d=slot->description();d.parameters.coverage=material::Coverage::opaque;
             opaque_surfaces->push_back(std::make_shared<const material::Surface>(std::move(d)));
         }
         siblings[1].surfaces=opaque_surfaces;frame.meshes=siblings;
@@ -141,11 +166,11 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
     }
     frame.view.lit.shadows=false;
     {
-        auto d=meshes[0].geometry->materials()[0].surface->description();
+        auto d=(*base_surfaces)[0]->description();
         d.parameters.emissive={8,8,8};d.texture(material::Input::emissive).image=d.texture(material::Input::base_color).image;
         auto resolved=std::make_shared<std::vector<material::SurfaceRef>>();
         resolved->push_back(std::make_shared<const material::Surface>(d));
-        resolved->push_back(meshes[0].geometry->materials()[1].surface);
+        resolved->push_back((*base_surfaces)[1]);
         meshes[0].surfaces=resolved;frame.environment={};frame.lights={};
         ++ui_frame.id;take(prepared_render(renderer,frame,&capture));
         check(pixel(capture,x,y)[0]>150&&pixel(capture,x,y)[1]<30,"emissive texture, not a constant color, supplies visible radiance");
@@ -160,7 +185,7 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
         std::vector<geometry::Vertex> back_vertices(front_geometry->vertices().begin(),front_geometry->vertices().end());
         for(auto& vertex:back_vertices)for(auto& n:vertex.normal)n=-n;
         meshes[0].geometry=std::make_shared<const geometry::Mesh>(std::move(back_vertices),std::vector<std::uint8_t>{},
-            std::vector<material::Slot>(front_geometry->materials().begin(),front_geometry->materials().end()),
+            std::vector<geometry::MaterialSlot>(front_geometry->materials().begin(),front_geometry->materials().end()),
             std::vector<geometry::MeshPart>(front_geometry->parts().begin(),front_geometry->parts().end()));
         d.parameters.emission_two_sided=false;
         resolved=std::make_shared<std::vector<material::SurfaceRef>>(*resolved);
@@ -203,14 +228,14 @@ void material_cases(render::Renderer& renderer,const std::filesystem::path& outp
             "packed linear roughness/metallic channels match constant PBR parameters");
 
     }
-    meshes[0].surfaces.reset();
+    meshes[0].surfaces.reset();base_surfaces.reset();
     frame.meshes={};meshes[0].geometry.reset();++ui_frame.id;result=take(prepared_render(renderer,frame));
     check(opacity_observer.expired() && result.stats.cached_material_images==0,"unused geometry and material images retire together");
     std::puts("Material renderer acceptance: PASS (parts, UV wrap, sRGB, diffuse alpha/linear opacity/depth, MatCap/Lit, all AA coverage, emission replacement, normal map, cache/lifetime)");
 }
 
 void material_transport_cases(render::Renderer& renderer,const std::filesystem::path& output={}) {
-    namespace material=atelier::material;
+    namespace material=standard_fixture;
     namespace geometry=atelier::geometry;
     using namespace scene_lit_e2e;
     Room room;auto lights=room_lights();lights.resize(3);
@@ -249,7 +274,7 @@ void material_transport_cases(render::Renderer& renderer,const std::filesystem::
     material::Description cutout;cutout.parameters.coverage=material::Coverage::mask;cutout.parameters.base_color[3]=0;
     const auto invisible=std::make_shared<const material::Surface>(cutout);
     room.meshes[2].geometry=std::make_shared<const geometry::Mesh>(std::move(vertices),std::vector<std::uint8_t>{},
-        std::vector<material::Slot>{{"wall",warm},{"unrelated-cutout",invisible}},std::vector<geometry::MeshPart>{{0,36,0},{36,3,1}});
+        std::vector<geometry::MaterialSlot>{{"wall"},{"unrelated-cutout"}},std::vector<geometry::MeshPart>{{0,36,0},{36,3,1}});
     room.meshes[2].surfaces=std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{warm,invisible});
     ++frame.scene_identity;const auto mixed=capture("material-ddgi-mixed-components.png");
     const auto lm=mean_rgb(mixed,left);

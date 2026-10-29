@@ -111,10 +111,10 @@ void cost_cases(Fixture& f) {
     blocker.world=box(-1,0,2,.2f,3,3);f.room.meshes.push_back(blocker);f.edited();
     pair("cost-visibility-added-blocker",16);
     f.room.meshes.back().world[12]=1;f.edited();pair("cost-visibility-moved-blocker",16);
-    atelier::material::Description mask;mask.parameters.coverage=atelier::material::Coverage::mask;
+    standard_fixture::Description mask;mask.parameters.coverage=atelier::material::Coverage::mask;
     mask.parameters.base_color[3]=0;
-    f.room.meshes.back().surfaces=std::make_shared<const std::vector<atelier::material::SurfaceRef>>(
-        std::vector<atelier::material::SurfaceRef>{std::make_shared<const atelier::material::Surface>(mask)});
+    f.room.meshes.back().surfaces=std::make_shared<const std::vector<standard_fixture::SurfaceRef>>(
+        std::vector<standard_fixture::SurfaceRef>{std::make_shared<const standard_fixture::Surface>(mask)});
     f.edited();pair("cost-visibility-mask-hole",16);
     f.room.meshes.back().surfaces.reset();f.edited();pair("cost-visibility-mask-restored",16);
     f.room.meshes.pop_back();f.edited();pair("cost-visibility-removed-blocker",16);

@@ -7,10 +7,26 @@ void verify_dungeons() {
     const auto manifest=nlohmann::json::parse(take(assets::read_file(folder/"Import/models.json")));
     require(manifest.size()==2314,"Dungeons model library is incomplete.");
     std::size_t models{},textured{};std::unordered_set<const material::Image*> images;
+    editor::Session resolved;
     for(const auto& row:manifest) {
-        const auto mesh=take(project.assets().mesh(row.at("resource").get<std::string>())).mesh;
-        require(mesh->vertices().size()/3==row.at("triangles").get<std::size_t>(),"Converted dungeon model lost triangles.");
-        for(const auto& material:mesh->materials()) if(material.surface->description().texture(atelier::material::Input::base_color).image) {++textured;images.insert(material.surface->description().texture(atelier::material::Input::base_color).image.get());}
+        const auto asset=take(project.assets().mesh(row.at("resource").get<std::string>()));
+        require(asset.mesh->vertices().size()/3==row.at("triangles").get<std::size_t>(),"Converted dungeon model lost triangles.");
+        const auto surfaces=take(resolved.mesh_surfaces(project.assets(),asset));
+        require(surfaces && surfaces->size()==asset.mesh->materials().size(),"Dungeon model lost its resolved material slot table.");
+        for(std::size_t slot=0;slot<surfaces->size();++slot) {
+            const auto name=geometry::material_slot_name(*asset.mesh,slot);
+            const auto binding=std::ranges::find(asset.materials,name,&assets::SlotMaterial::slot);
+            const auto& surface=(*surfaces)[slot];
+            if(binding==asset.materials.end()) {
+                require(surface==take(material::default_world_surface()),"An unbound dungeon slot lost the default grid.");continue;
+            }
+            const auto author=take(project.assets().material(binding->key));
+            const auto root=take(resolved.material_resource(project.assets(),binding->key));
+            require(std::holds_alternative<assets::MaterialInstanceAsset>(author.author) && surface && !surface->uses_default_material() &&
+                surface->diagnostics().empty() && surface==take(material::capture_program(resolved.world().runtime(),root.id())),
+                "Dungeon default material did not resolve its typed MI author data.");
+            if(const auto& image=material_input(*surface,"base_color_texture").image) {++textured;images.insert(image.get());}
+        }
         ++models;
     }
     require(textured>1000 && images.size()>10 && images.size()<100,"Dungeons textures are missing or shared atlases were decoded per model.");

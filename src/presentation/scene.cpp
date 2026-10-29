@@ -99,20 +99,13 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
     if (!*matrix || pass.degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
         return drop();
     const bool moved = !cached || !same_bytes(cached->world, **matrix);
-    std::optional<ValidationFailure> rejected;
     std::optional<Error> unusable;
-    std::shared_ptr<const std::vector<material::SurfaceRef>> uncached;
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> uncached;
     auto read = runtime.with_native<const StaticMeshComponent>(object, [&](const StaticMeshComponent& value) -> Result<bool> {
         const auto& geometry = Access::geometry(value);
         const bool slotted = !Access::material_slots(value).empty() || !Access::default_slots(value).empty();
-        const bool same_base = cached && cached->geometry == geometry && same_bytes(cached->material, value.material);
-        if (!same_base && !valid_materials_.contains(slot, value.material)) {
-            auto invalid = runtime.validate_value(types_.material, std::as_bytes(std::span{&value.material, 1}));
-            if (!invalid) return std::unexpected(invalid.error());
-            if (*invalid) { rejected = std::move(**invalid); return false; }
-            valid_materials_.insert(slot, value.material);
-        }
-        // Unslotted surfaces follow from geometry and Material; slots with a bound
+        const bool same_base = cached && cached->geometry == geometry;
+        // Unslotted surfaces follow from geometry alone; slots with a bound
         // or default material capture their resources on every update.
         if (same_base && !slotted && !slotted_[slot]) return moved;
         auto surfaces = detail::material_surfaces(runtime, object, value);
@@ -120,8 +113,8 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
         if (*surfaces != Access::surfaces(value)) uncached = *surfaces;
         slotted_[slot] = slotted;
         if (same_base && cached->surfaces == *surfaces) return moved;
-        if (!cached) cached.emplace(RenderItem{owner, object, **matrix, geometry, value.material, std::move(*surfaces)});
-        else { cached->geometry = geometry; cached->material = value.material; cached->surfaces = std::move(*surfaces); }
+        if (!cached) cached.emplace(RenderItem{owner, object, **matrix, geometry, std::move(*surfaces)});
+        else { cached->geometry = geometry; cached->surfaces = std::move(*surfaces); }
         return true;
     });
     if (read && uncached)
@@ -129,11 +122,6 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
     if (!read) {
         if (!world_->contain(read.error(), detail::diagnostic(DiagnosticKind::invalid_value, DiagnosticPhase::presentation, object, owner)))
             return std::unexpected(read.error());
-        return drop();
-    }
-    if (rejected) {
-        if (!world_->contain(rejected->error, world::validation_diagnostic(*rejected, DiagnosticPhase::presentation, object, owner, {"material"})))
-            return std::unexpected(rejected->error);
         return drop();
     }
     if (unusable) {
@@ -187,7 +175,6 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         layout_revision_ = world_->revision();
         mesh_slots_.assign(count, {});
         slotted_.assign(count, false);
-        presented_slots_ = 0;
         presented_list_.clear();
         volatile_.clear();
         volatile_flags_.assign(count, false);
@@ -209,7 +196,6 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         for (const auto slot : volatile_) mark(slot);
         std::ranges::sort(dirty_);
     }
-    valid_materials_.resize(count);
     for (const auto slot : dirty_) {
         auto changed = update_mesh(*pass, slot, (*meshes)[slot]);
         if (!changed) return std::unexpected(changed.error());
@@ -239,7 +225,6 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
                 cached.changed = version_ = serial;
             }
         }
-        presented_slots_ = presented_list_.size();
     }
     // Nothing but this update writes while it runs: surface caches and captured material
     // resources, which slotted meshes re-read on every update anyway. Taking the cursor

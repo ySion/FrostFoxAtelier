@@ -1,12 +1,18 @@
 void verify_about(Application& app,std::wstring_view expected_project) {
     const auto history=app.document().undo_count();
     key(app,VK_F10);key(app,VK_LEFT);
+    if(!app.menu_frame() || !app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)))
+        atelier::application::EditorAcceptanceAccess::menu_failure(app,"F10/Left");
     require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
         "File/Help keyboard navigation did not wrap across the menu registry.");
     key(app,VK_RIGHT);
+    if(!app.menu_frame() || !app.menu_frame()->find(control::exit))
+        atelier::application::EditorAcceptanceAccess::menu_failure(app,"Help/Right");
     require(app.menu_frame() && app.menu_frame()->find(control::exit),"Help/File keyboard navigation did not wrap back.");
     key(app,VK_ESCAPE);
     click(app,control::help_menu);
+    if(!app.menu_frame() || !app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)))
+        atelier::application::EditorAcceptanceAccess::menu_failure(app,"Help click");
     require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
         "Help omitted the About command.");
     struct DialogLookup { HWND owner{},found{}; } lookup{app.window()};

@@ -2,6 +2,7 @@
 #include "material/resources.hpp"
 
 #include <cstdio>
+#include <limits>
 
 namespace {
 using namespace atelier;
@@ -17,18 +18,19 @@ void collect(Runtime& runtime) {
     take(runtime.begin_collection());
     while (runtime.collection_phase() != CollectionPhase::idle) (void)take(runtime.collect_step({32}));
 }
-Program compile(std::string_view gain = "0.5", bool renamed = false, bool reversed = false) {
+Program compile(std::string_view gain = "0.5", bool renamed = false, bool reversed = false, bool vector_gain = false) {
     Runtime compiler;
     take(register_program_types(compiler));
     const std::string field = renamed ? "strength" : "gain";
     const std::string text = std::string(reversed ?
         "struct Textures { material.TextureInput data; material.TextureInput color; };\n" :
         "struct Textures { material.TextureInput color; material.TextureInput data; };\n") +
-        "struct Params { float " + field + "; vector3 tint; };\n"
-        "Params defaults() { Params p; p." + field + "=" + std::string(gain) + "; p.tint=vector3(0.2,0.3,0.4); return p; }\n"
+        "struct Params { " + (vector_gain ? "vector2 " : "float ") + field + "; vector3 tint; };\n"
+        "Params defaults() { Params p; p." + field + "=" +
+        (vector_gain ? "vector2(" + std::string(gain) + ",0.0)" : std::string(gain)) + "; p.tint=vector3(0.2,0.3,0.4); return p; }\n"
         "material.Output shade(material.Context c, Params p, Textures textures) {\n"
         "vector4 color=sample(textures.color,c.uv); vector4 data=sample(textures.data,c.uv);\n"
-        "material.Output o; o.base_color=vector3(color.x,color.y,color.z)*p." + field + ";\n"
+        "material.Output o; o.base_color=vector3(color.x,color.y,color.z)*p." + field + (vector_gain ? ".x" : "") + ";\n"
         "o.emissive=vector3(p.tint.x,p.tint.y,color.w); o.coverage=data.w-0.5; o.roughness=data.x; o.metallic=data.y; o.normal_world=c.normal_world; return o; }";
     return take(source::compile_material(compiler, take(compiler.native_type<Context>()),
         take(compiler.native_type<Output>()), take(compiler.native_type<TextureInput>()), "resources.source", text));
@@ -116,7 +118,7 @@ void resources() {
         // Explicit old parent content remains meaningful after a live Source edit.
         const std::array<Override,1> inherited{{{"gain", .9f, false}}};
         const std::array<ImageRef,1> no_images{};
-        near(color_red(take(resolve_instance(initial,inherited,no_images)).surface),red*.5f);
+        near(color_red(take(resolve_instance(initial,inherited,no_images))),red*.5f);
 
         // Clear samples the MS's linear empty value, not parent/default image or
         // another sRGB decode. Disabling restores inheritance without losing it.
@@ -140,6 +142,29 @@ void resources() {
         require(take(read_instance(runtime,b.id())).textures.back().id()==replacement.id(), "Dormant captured texture root was lost.");
         author_b.entries.back().enabled=true; take(update_instance(runtime,b.id(),author_b));
         near(color_red(take(capture_program(runtime,b.id()))),.9f);
+        const auto exact_replacement=take(capture_program(runtime,b.id()));
+        take(runtime.destroy(replacement.id()));
+        const auto replaced_fallback=take(capture_program(runtime,b.id()));
+        near(color_red(replaced_fallback),red*.9f); near(color_red(exact_replacement),.9f);
+        require(replaced_fallback->diagnostics().size()==2 &&
+            replaced_fallback->inputs()[1].image==color_image, "Destroyed MI texture did not inherit the current exact parent image.");
+        auto after_loss=take(read_instance(runtime,b.id())); after_loss.entries[0].value=.85f;
+        require(bool(update_instance(runtime,b.id(),after_loss)), "Editing an MI after its known texture was destroyed must keep using inherited content.");
+        near(color_red(take(capture_program(runtime,b.id()))),red*.85f);
+        after_loss.entries.back().value=TextureBinding{"image/wrong",Address::repeat};
+        require(!update_instance(runtime,b.id(),after_loss), "A destroyed known root was accepted for a different authored key.");
+        auto unavailable=take(create_texture(runtime,"image/unavailable",{}));
+        author_b.entries.back().value=TextureBinding{"image/unavailable",Address::repeat}; author_b.textures.back()=unavailable;
+        take(update_instance(runtime,b.id(),author_b));
+        near(color_red(take(capture_program(runtime,b.id()))),red*.9f);
+        require(std::get<TextureBinding>(take(read_instance(runtime,b.id())).entries.back().value).asset_key=="image/unavailable",
+            "Unavailable image content changed the authored resource key.");
+        author_b.textures.back().reset(); take(update_instance(runtime,b.id(),author_b));
+        near(color_red(take(capture_program(runtime,b.id()))),red*.9f);
+        auto repaired=take(create_texture(runtime,"image/unavailable",pixel({255,16,32,255})));
+        author_b.textures.back()=repaired; take(update_instance(runtime,b.id(),author_b));
+        near(color_red(take(capture_program(runtime,b.id()))),.9f);
+        require(take(read_diagnostics(runtime,b.id())).size()==1, "Repair left a stale local texture diagnostic.");
         author_b.entries.back().value=TextureBinding{"",Address::mirror}; author_b.textures.back().reset();
         take(update_instance(runtime,b.id(),author_b));
 
@@ -147,12 +172,33 @@ void resources() {
         auto bad = author_b;
         bad.entries.back().value=TextureBinding{"image/data",Address::clamp}; bad.textures.back()=color;
         require(!update_instance(runtime,b.id(),bad), "Wrong-key texture root was accepted.");
-        bad=author_b; bad.entries[0].value=math::Vector2{1,2};
-        require(!update_instance(runtime,b.id(),bad), "Enabled numeric type mismatch was accepted.");
-        bad=author_b; bad.entries[1].enabled=true;
-        require(!update_instance(runtime,b.id(),bad), "Unknown enabled input was accepted.");
         require(take(capture_program(runtime,b.id()))==before &&
             std::get<TextureBinding>(take(read_instance(runtime,b.id())).entries.back().value).asset_key.empty(), "Failed candidate replaced author data or Surface.");
+        bad=author_b; bad.entries[0].value=math::Vector2{1,2};
+        require(bool(update_instance(runtime,b.id(),bad)), "Enabled numeric type mismatch must publish the current inherited value with a diagnostic.");
+        near(color_red(take(capture_program(runtime,b.id()))),.1f*.5f);
+        const auto mismatched=take(read_instance(runtime,b.id()));
+        require(mismatched.entries[0].enabled && std::get<math::Vector2>(mismatched.entries[0].value).y==2 &&
+            take(read_diagnostics(runtime,b.id())).size()==2, "Fallback rewrote the enabled author value or lost its diagnostic.");
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+            bad=author_b; bad.entries[0].value=invalid;
+            bad.entries.push_back({"tint",math::Vector3{.8f,.7f,.6f},true}); bad.textures.emplace_back();
+            take(update_instance(runtime,b.id(),bad));
+            const auto resolved=take(capture_program(runtime,b.id()));
+            near(color_red(resolved),.1f*.5f); near(take(resolved->evaluate({})).emissive.x,.8f);
+            require(!std::isfinite(std::get<float>(take(read_instance(runtime,b.id())).entries[0].value)) &&
+                resolved->diagnostics().size()==2, "Nonfinite fallback changed author data or discarded a valid sibling override.");
+        }
+        bad=author_b; bad.entries.push_back({"tint",math::Vector3{.8f,std::numeric_limits<float>::quiet_NaN(),.6f},true}); bad.textures.emplace_back();
+        take(update_instance(runtime,b.id(),bad));
+        near(take(take(capture_program(runtime,b.id()))->evaluate({})).emissive.x,.2f);
+        take(update_instance(runtime,b.id(),author_b));
+        bad=author_b; bad.entries[1].enabled=true;
+        take(update_instance(runtime,b.id(),bad));
+        near(color_red(take(capture_program(runtime,b.id()))),.1f*.9f);
+        require(take(read_instance(runtime,b.id())).entries[1].enabled &&
+            take(read_diagnostics(runtime,b.id())).size()==1, "Removed enabled input lost authored intent or diagnostic.");
+        take(update_instance(runtime,b.id(),author_b));
 
         bad=author_a; bad.parent=b;
         require(!update_instance(runtime,a.id(),bad), "Indirect material cycle was accepted.");
@@ -171,10 +217,19 @@ void resources() {
         require(take(read_instance(runtime,a.id())).parent.id()==source.id() &&
             take(read_instance(runtime,b.id())).parent.id()==a.id(), "Rejected parent update changed formal edges.");
 
-        // A descendant cannot hide an ancestor's enabled mismatch. Earlier
-        // owning content remains usable, but capture must report actual failure.
+        take(update_source(runtime,source.id(),source_state(definition(compile("0.8",false,false,true)),color,data)));
+        const auto retyped=take(capture_program(runtime,b.id()));
+        near(color_red(retyped),.1f*.8f);
+        require(retyped->diagnostics().size()==3 && std::get<float>(take(read_instance(runtime,b.id())).entries[0].value)==.9f,
+            "Source parameter type change lost overrides or failed to report inherited mismatches.");
+
+        // Declaration removal uses current defaults, not the old layout/value.
+        // Earlier owners remain usable without becoming the new publication.
         take(update_source(runtime,source.id(),source_state(changed_def,color,data)));
-        require(!capture_program(runtime,a.id()) && !capture_program(runtime,b.id()), "Old child cache disguised a failed new definition as success.");
+        near(color_red(take(capture_program(runtime,a.id()))),red*.75f);
+        near(color_red(take(capture_program(runtime,b.id()))),.1f*.75f);
+        require(take(read_instance(runtime,a.id())).entries[0].enabled &&
+            !take(read_diagnostics(runtime,a.id())).empty(), "Enabled removed declaration was rewritten or lost its diagnostic.");
         near(color_red(before),.1f*.9f);
         author_a.entries[0].enabled=false; take(update_instance(runtime,a.id(),author_a));
         author_b.entries[0].enabled=false; take(update_instance(runtime,b.id(),author_b));
@@ -186,13 +241,28 @@ void resources() {
         near(color_red(surviving),.1f*.9f);
         require(std::get<float>(take(read_instance(runtime,b.id())).entries[0].value)==.9f, "Declaration restoration lost local value.");
 
-        // Required MS defaults remain dependencies even when this descendant
-        // clears that input. Source replacement also fails atomically.
+        // Missing MS content resolves to its typed empty value, never old pixels.
         const auto old_source=take(capture_program(runtime,source.id()));
         auto missing=source_state(def,color,data); missing.default_textures[0].reset();
-        require(!update_source(runtime,source.id(),missing) && take(capture_program(runtime,source.id()))==old_source, "Missing MS default replaced valid content.");
+        require(bool(update_source(runtime,source.id(),missing)), "Missing MS texture must publish typed default sampling with a diagnostic.");
+        near(color_red(take(capture_program(runtime,source.id()))),.1f*.5f);
+        require(take(capture_program(runtime,source.id()))!=old_source &&
+            take(read_diagnostics(runtime,source.id())).size()==1, "Missing source texture retained stale content or lost its diagnostic.");
+        take(update_source(runtime,source.id(),source_state(def,color,data)));
         take(runtime.destroy(color.id()));
-        require(!capture_program(runtime,b.id()), "Descendant clear concealed a destroyed required MS default.");
+        auto lost=capture_program(runtime,b.id());
+        require(bool(lost), "Destroyed required texture must refresh descendant caches to current defaults.");
+        near(color_red(*lost),.1f*.9f);
+        near(color_red(take(capture_program(runtime,source.id()))),.1f*.5f);
+        require((*lost)->diagnostics().size()==2 &&
+            (*lost)->diagnostics()[0].message.find("image/color")!=std::string::npos, "Ancestor texture loss is invisible in the consumed result.");
+        const auto lost_cursor=take(runtime.change_cursor());
+        require(take(capture_program(runtime,b.id()))==*lost && !runtime.changed_since(source.id(),lost_cursor) &&
+            !runtime.changed_since(a.id(),lost_cursor) && !runtime.changed_since(b.id(),lost_cursor), "Steady fallback capture rewrote caches.");
+        take(update_source(runtime,source.id(),source_state(second_def,color,data)));
+        near(color_red(take(capture_program(runtime,source.id()))),.1f*.75f);
+        require(take(read_source(runtime,source.id())).default_textures[1].id()==color.id(),
+            "Source edit after texture loss erased the known author root or rebound by old slot order.");
         near(color_red(initial),red*.5f); // Previously captured exact image survives.
         surviving=initial;
     }
@@ -223,6 +293,13 @@ void ownership_and_filtering() {
     require(bool(runtime.type_of(source_id)) && bool(runtime.type_of(parent_id)) && bool(runtime.type_of(texture_id)) &&
         bool(runtime.type_of(dormant_id)), "Formal parent/texture edges failed to retain their targets, including dormant captured inputs.");
     auto saved=take(capture_program(runtime,leaf.id()));
+    take(update_texture(runtime,texture_id,pixel({0,128,255,128})));
+    const auto refreshed=take(capture_program(runtime,leaf.id()));
+    near(color_red(refreshed),0);near(take(refreshed->evaluate({})).emissive.z,128.f/255);
+    near(color_red(saved),.5f);
+    require(refreshed!=saved && take(capture_program(runtime,leaf.id()))==refreshed &&
+        take(read_source(runtime,source_id)).default_textures[0].id()==texture_id,
+        "In-place texture publication lost the identity, mutated an old capture or failed to stabilize descendants.");
     leaf.reset(); collect(runtime);
     require(!runtime.type_of(source_id) && !runtime.type_of(parent_id) && !runtime.type_of(texture_id) &&
         !runtime.type_of(dormant_id), "Surface accidentally rooted Runtime objects.");
@@ -237,18 +314,136 @@ void ownership_and_filtering() {
     const std::array<ImageRef,1> local_images{colors};
     const auto red=[&](Address address) {
         const std::array<Override,1> entries{{{"color",TextureBinding{"image/color",address},true}}};
-        return take(take(resolve_instance(base,entries,local_images)).surface->evaluate(context)).base_color.x;
+        return take(take(resolve_instance(base,entries,local_images))->evaluate(context)).base_color.x;
     };
     near(red(Address::repeat),.375f); near(red(Address::clamp),0); near(red(Address::mirror),0);
     context.uv={-.375f,.5f};
     near(red(Address::repeat),.125f); near(red(Address::clamp),.5f); near(red(Address::mirror),.375f);
 }
+
+void whole_material_fallback() {
+    Runtime compiler;
+    take(register_program_types(compiler));
+    auto rejected=source::compile_material(compiler,take(compiler.native_type<Context>()),
+        take(compiler.native_type<Output>()),take(compiler.native_type<TextureInput>()),"broken.source","not a material");
+    require(!rejected, "Invalid material source was silently accepted by the compiler.");
+    auto resolved=resolve_source({},{});
+    require(bool(resolved), "An explicit missing definition must resolve to the engine default material.");
+    auto fallback=*resolved;
+    const auto output=take(fallback->evaluate({}));
+    near(output.base_color.x,1); near(output.base_color.y,0); near(output.base_color.z,1);
+    require(fallback->policy().coverage==Coverage::opaque && fallback->inputs().empty() &&
+        !fallback->diagnostics().empty() && !take(fallback->program().hlsl("engine_default")).empty(),
+        "Whole-material fallback lacks policy, diagnostic, or actual HLSL content.");
+    require(fallback==take(default_program_surface()) && fallback==take(resolve_source({},{})), "Engine default code/content was not reused.");
+
+    Runtime runtime; take(register_resource_types(runtime));
+    const auto def=definition(compile());
+    auto color=take(create_texture(runtime,"image/color",pixel({255,128,0,255})));
+    auto data=take(create_texture(runtime,"image/data",pixel({0,64,128,255})));
+    auto source=take(create_source(runtime,"source",source_state(def,color,data)));
+    auto parent=take(create_instance(runtime,"parent",instance_state(source,{{"gain",.8f,true}})));
+    auto author=instance_state(parent,{{"gain",.6f,true},{"marker",7.f,true}});
+    auto child=take(create_instance(runtime,"child",author));
+    const auto original=take(capture_program(runtime,child.id()));
+    near(color_red(original),.6f);
+    take(update_source(runtime,source.id(),{}));
+    const auto missing=take(capture_program(runtime,child.id()));
+    require(missing->uses_default_material() && std::ranges::equal(missing->parameters(),fallback->parameters()) &&
+        missing->diagnostics().size()==4, "Missing definition mixed an old author layout with default code or hid ancestor diagnostics.");
+    near(color_red(missing),1);
+    require(!take(read_source(runtime,source.id())).definition && take(read_instance(runtime,child.id())).entries.size()==2,
+        "Default publication was written back as authored definition or overrides.");
+    take(update_source(runtime,source.id(),source_state(def,color,data)));
+    near(color_red(take(capture_program(runtime,child.id()))),.6f);
+    take(runtime.destroy(source.id()));
+    auto lost=capture_program(runtime,child.id());
+    require(bool(lost), "An initialized MI with a destroyed ancestor must consume the engine default, not fail or retain old content.");
+    require((*lost)->uses_default_material() && (*lost)->diagnostics()[0].path=="$parent", "Destroyed parent fallback is not visible to descendants.");
+    near(color_red(*lost),1);
+    near(color_red(original),.6f);
+    const auto cursor=take(runtime.change_cursor());
+    require(take(capture_program(runtime,child.id()))==*lost && !runtime.changed_since(parent.id(),cursor) &&
+        !runtime.changed_since(child.id(),cursor), "Steady missing-parent capture rewrote material caches.");
+    auto parent_author=take(read_instance(runtime,parent.id()));
+    require(parent_author.parent.id()==source.id(), "Destroyed parent identity was erased from author state.");
+    parent_author.entries[0].value=.7f;
+    require(bool(update_instance(runtime,parent.id(),parent_author)), "Editing an initialized MI after parent destruction must retain its fallback and author edge.");
+    auto recovered=take(create_source(runtime,"source",source_state(def,color,data)));
+    parent_author.parent=recovered; take(update_instance(runtime,parent.id(),parent_author));
+    near(color_red(take(capture_program(runtime,child.id()))),.6f);
+    parent_author.parent.reset();
+    require(bool(update_instance(runtime,parent.id(),parent_author)), "An explicitly missing parent on an initialized MI must resolve to the engine default.");
+    require(take(capture_program(runtime,child.id()))->uses_default_material(), "Explicit parent absence left descendant old content active.");
+    require(!create_instance(runtime,"invalid",instance_state({})), "An uninitialized instance without a parent was accepted.");
+}
+
+void fallback_boundaries() {
+    Runtime runtime; take(register_resource_types(runtime));
+    const auto def=definition(compile());
+    auto color=take(create_texture(runtime,"image/color",pixel({255,0,0,255})));
+    auto data=take(create_texture(runtime,"image/data",pixel({0,64,128,255})));
+    auto source=take(create_source(runtime,"source",source_state(def,color,data)));
+    auto author=instance_state(source,{{"color",TextureBinding{"image/missing",Address::mirror},true},{"gain",.8f,true}});
+    auto child=take(create_instance(runtime,"child",author));
+    near(color_red(take(capture_program(runtime,child.id()))),.8f);
+    take(update_source(runtime,source.id(),source_state(def,{},{})));
+    auto defaults=take(capture_program(runtime,child.id()));
+    auto output=take(defaults->evaluate({}));
+    near(output.base_color.x,.08f); near(output.emissive.z,.25f);
+    near(output.roughness,.7f); near(output.metallic,.8f); near(output.coverage,.25f);
+    require(defaults->diagnostics().size()==3 && !defaults->inputs()[0].image && !defaults->inputs()[1].image &&
+        take(read_source(runtime,source.id())).definition->textures()[0].binding.asset_key=="image/color",
+        "Typed source defaults concealed missing content or rewrote source author keys.");
+    auto absent=take(create_instance(runtime,"absent",instance_state(source)));
+    require(take(read_instance(runtime,absent.id())).entries.empty(), "Never-authored overrides were materialized by fallback.");
+    take(update_source(runtime,source.id(),source_state(def,color,data)));
+    defaults=take(capture_program(runtime,child.id()));
+    near(color_red(defaults),.8f);
+    require(defaults->diagnostics().size()==1, "Source repair did not clear inherited failure diagnostics.");
+
+    auto malformed=author; malformed.textures.pop_back();
+    require(!update_instance(runtime,child.id(),malformed), "Malformed root table was defaulted instead of rejected.");
+    malformed=author; malformed.entries.push_back(malformed.entries[0]); malformed.textures.emplace_back();
+    require(!update_instance(runtime,child.id(),malformed), "Duplicate author paths were defaulted instead of rejected.");
+    malformed=author; malformed.textures[0]=data;
+    require(!update_instance(runtime,child.id(),malformed), "Wrong-key supplied texture was defaulted instead of rejected.");
+    malformed=author; malformed.textures[1]=color;
+    require(!update_instance(runtime,child.id(),malformed), "Numeric input with a texture root was accepted.");
+    auto bad_source=source_state(def,color,data); bad_source.default_textures.pop_back();
+    require(!update_source(runtime,source.id(),bad_source), "Malformed source roots were defaulted instead of rejected.");
+    const std::array<ImageRef,1> no_image{};
+    require(!resolve_source(def,no_image) && !resolve_source({},no_image) && !resolve_instance(defaults,author.entries,no_image),
+        "Pure resolution accepted malformed image tables.");
+    const std::array<Override,1> cleared{{{"removed",TextureBinding{},false}}};
+    const std::array<ImageRef,1> content{pixel({255,255,255,255})};
+    require(!resolve_instance(defaults,cleared,content), "Dormant deleted clear with supplied image bypassed structural validation.");
+    require(take(capture_program(runtime,child.id()))==defaults, "Structural failure replaced the previous publication.");
+
+    Runtime foreign; take(register_resource_types(foreign));
+    auto foreign_source=take(create_source(foreign,"foreign",{}));
+    malformed=author; malformed.parent=foreign_source;
+    require(!update_instance(runtime,child.id(),malformed) && !capture_program(foreign,source.id()), "Foreign Runtime material identity was defaulted.");
+    auto dead=take(create_source(runtime,"dead",{})); take(runtime.destroy(dead.id()));
+    malformed=author; malformed.parent=dead;
+    require(!update_instance(runtime,child.id(),malformed), "An unrelated destroyed parent identity was defaulted.");
+    auto dead_texture=take(create_texture(runtime,"image/missing",pixel({0,0,0,255}))); take(runtime.destroy(dead_texture.id()));
+    malformed=author; malformed.textures[0]=dead_texture;
+    require(!update_instance(runtime,child.id(),malformed), "An unvalidated destroyed texture identity was defaulted.");
+    require(!capture_program(runtime,ObjectId{}), "Invalid material identity was defaulted.");
+    Context invalid; invalid.uv.x=std::numeric_limits<float>::quiet_NaN();
+    require(!defaults->evaluate(invalid), "Runtime evaluation failure was silently replaced by a material default.");
+    take(runtime.with_native<const MaterialSource>(source.id(),[&](const auto&) -> Result<void> {
+        require(!update_instance(runtime,child.id(),author), "Runtime publication-busy failure was masked by fallback.");
+        return {};
+    }));
+}
 }
 
 int main() {
     try {
-        resources(); ownership_and_filtering();
-        std::puts("Material resources: PASS (MS/MI/MI, sparse intent, exact bindings, explicit parent candidates, atomic target updates, const capture, owning CPU surface; GPU group adoption not covered)");
+        resources(); ownership_and_filtering(); whole_material_fallback(); fallback_boundaries();
+        std::puts("Material resources: PASS (MS/MI/MI, sparse intent, typed/default fallback, ancestor diagnostics, destruction/recovery, structural rejection, const capture, owning CPU/HLSL surface; GPU group adoption not covered)");
         return 0;
     } catch(const std::exception& error) {
         std::fprintf(stderr,"Material resources: FAIL: %s\n",error.what()); return 1;

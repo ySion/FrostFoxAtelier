@@ -38,26 +38,21 @@ Renderer 用上一帧 Frame 里的矩阵算运动向量（`scene_lit.cpp` 中 `p
 
 ## 网格
 
-`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、material、transform、mesh_source 与网格资产的槽默认材质；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
+`create_static_mesh_entity(World&, StaticMeshEntityDesc)` 创建尚未注册的完整 StaticMeshEntity：Entity 自身具有 TRS，仅包含一个 StaticMeshComponent。描述提供共享 mesh、transform、mesh_source 与网格资产的槽默认材质；空网格仍保留组成身份但不产生绘制。工厂失败清理本次对象，成功后由同一 attach 入口发布。
 
-`set_mesh_binding` 同时设置持久来源键、不可变 MeshRef 与该网格的槽默认材质（`MeshBinding::defaults`，不持久化，宿主随网格解析），清理不匹配材质槽；`set_geometry` 清除来源键和默认材质。每个默认材质必须对应新网格中唯一的槽。材质表面按槽依次取显式绑定、默认材质、网格表面乘组件参数。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。`material.Material / material.Texture` 是同一 Runtime 的资源对象，槽绑定强持资源；Renderer 只消费拥有型不可变 Surface 快照，见[项目场景](../world/project-scenes.md)。
+`set_mesh_binding` 同时设置持久来源键、不可变 MeshRef 与该网格的槽默认材质（`MeshBinding::defaults`，不持久化，宿主随网格解析），清理不匹配的活槽绑定；Session 另负责保留 Reimport 后的休眠作者关系。`set_geometry` 清除来源键和默认材质。每个默认材质必须对应新网格中唯一的槽。材质表面按槽依次取显式绑定、默认材质、Default World Grid。二者经 `World::admit_component_edit` 准入，改动后重新求值网格登记的谓词。`read_static_mesh` 支持 Detached 与空网格，供存档读取。MS/MI 共用 Runtime `material.Resource` 角色，槽绑定强持资源，见[项目场景](../world/project-scenes.md)。
 
 `render_items()` 按成员前序与组件顺序提取网格，结果容量等于实际网格数；零网格或纯灯光场景不分配结果存储。空间不可求值时诊断记在失败的 Entity 上，材质记在组件上，该项跳过；零缩放空间中的网格不绘制，报告 `degenerate_value` 警告。
 
-材质与灯参数的校验结果按桶位置缓存：某个位置上的当前值与上次在该位置通过校验的值逐字节相同时，跳过 `validate_value`，其余照常执行。这样做成立，是因为类型校验器是对值字节的纯检查，已发布的类型规则也不再改变，所以不需要按对象身份核对，也不依赖写入通知。Runtime 直接写入和生成代码写入的值，下一次提取时同样会被校验；未通过的值不进入缓存，每次提取都会重新校验并报告。每个网格每次提取只借用一次组件。
+灯参数的校验结果按桶位置缓存：当前值与上次通过校验的值逐字节相同时跳过 `validate_value`，其余照常执行。Runtime 直接写入和生成代码写入的值，下一次提取时同样会被校验；未通过的值不进入缓存。材质按各正式资源的不可变捕获身份复用，未变化的槽表 owner 也复用。
 
 ## 材质
 
-`world.Material` 使用原有反射值类型与 StaticMeshComponent.material 字段，新增参数无需另一套材质对象身份。
+StaticMeshComponent 没有内联固定材质值。显式绑定和默认绑定的正式引用序列均指向 `material.Resource`；MS/MI 作者语义归材质模块，presentation 不持有 GPU 或另一套参数 schema。
 
-| 字段 | 默认值 | 合同 |
-| --- | --- | --- |
-| base_color | (0.19, 0.42, 0.57) | 线性 RGB，每通道硬边界 [0,1] |
-| roughness | 0.65 | 硬边界 [0,1]；0 保留为作者输入，着色器数值处理由 Renderer 负责 |
-| metallic | 0 | 硬边界 [0,1] |
-| emissive | (0,0,0) | 线性 HDR RGB，每通道硬边界 [0,65504]（UI 范围 0–10），与不可变 Surface 的 GBuffer 表达范围一致 |
+`material_surfaces(Runtime&, ObjectId)` 返回共享不可变的 `vector<ProgramSurfaceRef>`；`RenderItem::surfaces` 复用同一结果。每槽用 `capture_program` 捕获完整程序、参数、图片及诊断，正常无绑定槽用 `default_world_surface()`。定义/父链失效的品红替代属于材质解析结果，不在 presentation 重新合成固定参数。
 
-Material 的全部规则都是单字段的反射硬边界（`AFIELD` 的 `LockMin / LockMax / HardMax`），没有跨字段校验器。Runtime 写入越界时夹到边界，NaN/Inf 拒绝；`validate_material(Runtime&, Material)` 用 Runtime 检查一个完整值。`set_material(World&, ObjectId, Material)` 先按完整值检查，失败即拒绝、不夹值，再经整值 `World::write` 写入；`World::write` 的单字段写入与其他字段相同，见 [World 编辑](../world/README.md#编辑呈现与资源)。两者使用宿主边界及原有组成准入，支持同 Runtime Detached 准备，拒绝其他 World 成员。工厂也检查完整 Material。可信原生直接写入不经硬边界，`render_items` 提取时用 Runtime 校验 material，越界项按对象诊断（field 为 `material.<字段>`，value 为越界值）并跳过，不会把无效数据交给 Renderer。
+宿主将这份 CPU 候选冻结为完整 SceneSnapshot，完成 MaterialBatch 准备后采用；只有 Renderer 接受的帧才能替换屏幕拾取快照。presentation 提取成功不表示 GPU 已准备或已显示。材质定义、作者格式和采样合同见[材质系统](../renderer/materials.md)。
 
 ## 灯类型与参数
 

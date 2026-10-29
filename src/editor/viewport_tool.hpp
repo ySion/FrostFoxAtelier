@@ -3,9 +3,12 @@
 #include "editor/camera.hpp"
 #include "editor/operator_parameters.hpp"
 #include "editor/session.hpp"
+#include "geometry/mesh.hpp"
+#include "material/program_resources.hpp"
 #include "renderer/overlay.hpp"
 #include "ui/session.hpp"
 
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -19,7 +22,29 @@ enum class TransformChannel : std::uint8_t { location, rotation, scale };
 math::Vector3 euler_degrees(math::Quaternion) noexcept;
 math::Quaternion from_euler_degrees(math::Vector3) noexcept;
 
-// Camera snapshot for one accepted scene viewport, in physical pixels.
+// Immutable CPU owners of a drawn group. Slots address this exact material
+// table, never live Runtime resources or a mesh's subsequently edited binding.
+// The host retains this with a ViewportView only when that frame is accepted.
+struct ViewportScene {
+    struct Mesh {
+        ObjectId entity;
+        math::Matrix4 world;
+        geometry::MeshRef geometry;
+        std::shared_ptr<const std::vector<std::uint32_t>> material_slots;
+    };
+    struct Locator {
+        ObjectId entity;
+        math::Vector3 position;
+        bool selected{};
+        bool operator==(const Locator&) const = default;
+    };
+    std::uint64_t scene_identity{};
+    std::vector<Mesh> meshes;
+    std::vector<material::ProgramSurfaceRef> materials;
+    std::vector<Locator> locators;
+};
+
+// Camera and owned geometry for one accepted viewport, in physical pixels.
 struct ViewportView {
     ui::Rect bounds;
     float dpi_scale{1};
@@ -29,6 +54,8 @@ struct ViewportView {
     math::Vector3 construction_normal{0,1,0};
     bool orthographic{};
     float far_depth{};
+    std::shared_ptr<const ViewportScene> scene;
+    // Builds the camera only. The producer must attach the exact drawn group.
     static ViewportView make(const Camera&, ui::Rect bounds, float dpi_scale);
     bool contains(float x, float y) const noexcept;
     // Screen position; empty outside the camera's near/far depth interval.
@@ -75,10 +102,9 @@ public:
     Result<void> cancel(Session&);
     // Drop tool state after Session already ended the transaction (undo, selection change...).
     void forget(const Session&) noexcept;
-    // Geometry membership comes from the same frame snapshot as scene rendering.
-    void overlay(const Session&, const ViewportView&, ToolSettings, std::span<const ObjectId> mesh_entities,
-        std::vector<renderer::OverlayShape>&) const;
-    // Topmost Entity under a physical-pixel point.
+    // Locators come from the same owned group as scene rendering.
+    void overlay(const Session&, const ViewportView&, ToolSettings, std::vector<renderer::OverlayShape>&) const;
+    // Topmost Entity under a physical-pixel point in view.scene. No live extraction.
     std::optional<ObjectId> pick(const Session&, const ViewportView&, float x, float y) const;
     std::vector<ObjectId> pick_box(const Session&, const ViewportView&, ui::Rect) const;
 
@@ -126,8 +152,8 @@ private:
     static Result<void> preview_world(Session&,std::uint64_t,std::span<const ObjectId>,std::span<const world::Trs>,bool local_scale=false);
     static std::optional<Targets> targets(const Session&, PivotMode, math::Vector3 cursor);
     struct Hit { ObjectId entity; math::Vector3 position, normal{0,1,0}; };
-    static std::optional<Hit> trace(const Session&,const ViewportView&,float x,float y,bool locators);
-    Result<void> place_cursor(const Session&,const ViewportView&,math::Vector2,ToolSettings,bool control);
+    static std::optional<Hit> trace(const ViewportView&,float x,float y,bool locators);
+    Result<void> place_cursor(const ViewportView&,math::Vector2,ToolSettings,bool control);
     Handle hit(const ViewportView&, const Targets&, TransformTool, math::Vector2, Orientation) const;
     Result<void> begin(Session&, const ViewportView&, ToolSettings, Operation, Handle, bool modal, math::Vector2, bool amend_creation = false);
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine=false);

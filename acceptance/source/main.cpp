@@ -117,7 +117,6 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--foundations") { verify_source_foundations(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--diagnostics") { verify_source_diagnostics(); return 0; }
         if (argc == 2 && std::string_view(argv[1]) == "--debugger") { verify_source_debugger(); return 0; }
-        verify_source_materials();
         verify_source_debugger();
         verify_source_diagnostics();
         verify_source_projects();

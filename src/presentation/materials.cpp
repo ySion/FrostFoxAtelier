@@ -33,7 +33,7 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
             for(std::size_t i=0;i<mesh->materials().size();++i) matches+=material_slot_name(*mesh,i)==binding.slot;
             if(matches!=1) return error(ErrorCode::argument_mismatch,"Material slot is missing or ambiguous: "+binding.slot);
             auto held=runtime.hold(binding.resource.reference());if(!held) return std::unexpected(held.error());
-            auto surface=material::capture(runtime,held->id());if(!surface) return std::unexpected(surface.error());
+            auto surface=material::capture_program(runtime,held->id());if(!surface) return std::unexpected(surface.error());
             names.push_back(binding.slot);flags.push_back(binding.overridden);references.push_back(held->reference());
         }
         auto field=runtime.reference_field(id,Access::materials(value));if(!field) return std::unexpected(field.error());
@@ -44,26 +44,26 @@ Result<void> set_material_bindings(Runtime& runtime,ObjectId id,std::span<const 
         Access::surfaces(value).reset();return {};
     });
 }
-Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime& runtime,ObjectId id) {
+Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material_surfaces(Runtime& runtime,ObjectId id) {
     auto snapshot=runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value) {return detail::material_surfaces(runtime,id,value);});
     if(!snapshot) return snapshot;
     if(auto stored=detail::store_surfaces(runtime,id,*snapshot);!stored) return std::unexpected(stored.error());
     return snapshot;
 }
-Result<void> detail::store_surfaces(Runtime& runtime,ObjectId id,std::shared_ptr<const std::vector<material::SurfaceRef>> snapshot) {
+Result<void> detail::store_surfaces(Runtime& runtime,ObjectId id,std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> snapshot) {
     auto cached=runtime.with_native<const StaticMeshComponent>(id,[&](const StaticMeshComponent& value)->Result<bool> {return Access::surfaces(value)==snapshot;});
     if(!cached) return std::unexpected(cached.error());
     if(*cached) return {};
     return runtime.with_native<StaticMeshComponent>(id,[&](StaticMeshComponent& value)->Result<void> {
-        Access::surfaces(value)=std::move(snapshot);Access::surface_geometry(value)=Access::geometry(value);Access::surface_parameters(value)=value.material;
+        Access::surfaces(value)=std::move(snapshot);Access::surface_geometry(value)=Access::geometry(value);
         return {};
     });
 }
-Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::material_surfaces(Runtime& runtime,ObjectId id,const StaticMeshComponent& value) {
-    using Snapshot=std::shared_ptr<const std::vector<material::SurfaceRef>>;
+Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> detail::material_surfaces(Runtime& runtime,ObjectId id,const StaticMeshComponent& value) {
+    using Snapshot=std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>;
     const auto& mesh=Access::geometry(value);if(!mesh) return Snapshot{};
     const auto& cached=Access::surfaces(value);
-    const bool base_changed=!cached || Access::surface_geometry(value)!=mesh || Access::surface_parameters(value)!=value.material;
+    const bool base_changed=!cached || Access::surface_geometry(value)!=mesh;
     const auto& slots=Access::material_slots(value);const auto& defaults=Access::default_slots(value);
     if(!base_changed && slots.empty() && defaults.empty()) return cached;
     std::optional<ReferenceField> explicit_field,default_field;
@@ -75,18 +75,18 @@ Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::materia
         auto references=runtime.reference_field(id,Access::default_materials(value));if(!references) return std::unexpected(references.error());
         default_field=std::move(*references);
     }
-    std::shared_ptr<std::vector<material::SurfaceRef>> next;
+    std::shared_ptr<std::vector<material::ProgramSurfaceRef>> next;
     const auto writable=[&]() -> auto& {
-        if(!next) next=base_changed?std::make_shared<std::vector<material::SurfaceRef>>(mesh->materials().size()):
-            std::make_shared<std::vector<material::SurfaceRef>>(*cached);
+        if(!next) next=base_changed?std::make_shared<std::vector<material::ProgramSurfaceRef>>(mesh->materials().size()):
+            std::make_shared<std::vector<material::ProgramSurfaceRef>>(*cached);
         return *next;
     };
-    const auto capture=[&](const ReferenceField& sequence,std::size_t index)->Result<material::SurfaceRef> {
+    const auto capture=[&](const ReferenceField& sequence,std::size_t index)->Result<material::ProgramSurfaceRef> {
         auto reference=runtime.sequence_read(sequence,index);if(!reference) return std::unexpected(reference.error());
-        return material::capture(runtime,reference->id());
+        return material::capture_program(runtime,reference->id());
     };
     for(std::size_t i=0;i<mesh->materials().size();++i) {
-        material::SurfaceRef surface;
+        material::ProgramSurfaceRef surface;
         const auto name=material_slot_name(*mesh,i);
         if(const auto at=std::ranges::find(slots,name);at!=slots.end()) {
             auto captured=capture(*explicit_field,static_cast<std::size_t>(at-slots.begin()));if(!captured) return std::unexpected(captured.error());
@@ -95,13 +95,8 @@ Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> detail::materia
             auto captured=capture(*default_field,static_cast<std::size_t>(at-defaults.begin()));if(!captured) return std::unexpected(captured.error());
             surface=*captured;
         } else if(base_changed) {
-            auto description=mesh->materials()[i].surface->description();
-            const auto& p=value.material;
-            for(unsigned channel=0;channel<3;++channel) description.parameters.base_color[channel]*=p.base_color[channel];
-            description.parameters.roughness=p.roughness;description.parameters.metallic=p.metallic;
-            description.parameters.emissive={p.emissive.x,p.emissive.y,p.emissive.z};
-            try {surface=std::make_shared<const material::Surface>(std::move(description));}
-            catch(const std::exception& failure) {return error(ErrorCode::argument_mismatch,failure.what());}
+            auto captured=material::default_world_surface();if(!captured) return std::unexpected(captured.error());
+            surface=*captured;
         } else surface=(*cached)[i];
         if(base_changed || (*cached)[i]!=surface) writable()[i]=std::move(surface);
     }

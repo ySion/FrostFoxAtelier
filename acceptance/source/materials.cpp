@@ -69,6 +69,80 @@ const std::string second = declarations + resources + R"(
         return o;
     }
 )";
+// One real Source module exercises every footprint operation through the public
+// compiler. The point evaluator still uses the existing synchronous sampler;
+// the GPU artifact below must be dispatched/read back to validate changes.
+const std::string footprint_source = R"(
+    struct Params { float mode; float gain; };
+    struct Textures { material.TextureInput warp; material.TextureInput color; };
+    struct Coordinates { vector2 uv; };
+    Params defaults() { Params p; p.gain=1.0; return p; }
+    Coordinates coordinates(material.Context c,Params p) {
+        Coordinates q; q.uv=c.uv;
+        if (p.mode==0.0) { q.uv=vector2(c.uv.x*c.uv.x,c.uv.x*c.uv.y)*p.gain; }
+        if (p.mode==1.0) {
+            if (c.uv.x<0.5) { q.uv=vector2(c.uv.x*2.0,c.uv.y*3.0); }
+            else { q.uv=c.uv*64.0; }
+        }
+        if (p.mode==3.0) { q.uv=vector2(0.25,0.5); }
+        if (p.mode==4.0) {
+            if (c.uv.x>=0.5) { q.uv=vector2(c.normal_world.x,c.normal_world.y); }
+        }
+        if (p.mode==5.0) { q.uv.x=c.normal_world.x*0.0; }
+        if (p.mode==6.0) { q.uv=vector2(math.sqrt(c.uv.x),math.length(c.uv)); }
+        if (p.mode==7.0) { q.uv=vector2(math.lerp(2.0,7.0,c.uv.x),math.clamp(c.uv.y,0.75,0.75)); }
+        if (p.mode==8.0) { q.uv=math.sin(c.uv); q.uv.y=math.cos(c.uv).y; }
+        if (p.mode==9.0) { q.uv=math.fract(c.uv); }
+        if (p.mode==12.0) {
+            vector3 t=vector3(c.tangent_world.x,c.tangent_world.y,c.tangent_world.z);
+            q.uv=vector2(math.dot(c.normal_world,t),math.cross(c.normal_world,t).z)/2.0;
+        }
+        if (p.mode==13.0) {
+            q.uv.x=math.abs(c.position_world.x)+math.min(c.uv.x,c.position_world.y)+math.max(c.uv.y,c.position_world.z);
+            q.uv.y=math.floor(c.uv.x)+math.ceil(c.uv.y)+math.trunc(c.position_world.x)+math.step(c.uv.x,c.uv.y);
+        }
+        return q;
+    }
+    material.Output shade(material.Context c,Params p,Textures textures) {
+        Coordinates q=coordinates(c,p);
+        if (p.mode==2.0 || p.mode==10.0 || p.mode==11.0) {
+            vector4 warped=sample(textures.warp,q.uv);
+            q.uv=vector2(warped.x,warped.y*warped.y);
+            if (p.mode==10.0) { q.uv.x=warped.x*0.0; }
+        }
+        // A skipped RHS must not sample, or import its invalid normal changes.
+        if (p.mode<0.0 && sample(textures.warp,vector2(c.normal_world.x,c.normal_world.y)).x>0.0) {
+            q.uv=-q.uv;
+        }
+        vector4 color=sample(textures.color,q.uv);
+        material.Output o;
+        o.base_color=vector3(color.x,color.y,color.z);
+        o.emissive=vector3(q.uv.x,q.uv.y,0.0);
+        o.coverage=color.w;
+        o.normal_world=c.normal_world;
+        return o;
+    }
+)";
+const std::string orientation_source = R"(
+    struct Params { float enabled; float denominator; };
+    struct Textures { material.TextureInput normal; material.TextureInput unused; };
+    Params defaults() { Params p; p.enabled=1.0; p.denominator=1.0; return p; }
+    vector2 orientation(material.TextureInput input,vector2 uv) {
+        material.TextureInput copied=input;
+        return sample_orientation(copied,uv);
+    }
+    material.Output shade(material.Context c,Params p,Textures textures) {
+        material.Output o; o.coverage=99.0;
+        if (p.enabled>0.0) {
+            vector2 direction=orientation(textures.normal,c.uv/p.denominator);
+            // Feed the piecewise-constant result into a sampled UV so the GPU
+            // trace can observe its zero changes, including at fold points.
+            vector4 color=sample(textures.normal,direction*0.25+vector2(0.5,0.5));
+            o.base_color=vector3(direction.x,direction.y,color.x);
+        }
+        return o;
+    }
+)";
 struct Texture { math::Vector4 value; bool uv_alpha{}; };
 Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
     auto value = static_cast<const Texture*>(data)->value;
@@ -94,7 +168,7 @@ material::Output evaluate(const source::MaterialProgram& program, material::Cont
 }
 
 void verify_source_materials() {
-    std::shared_ptr<const source::MaterialProgram> a, b, revised, reordered, numeric;
+    std::shared_ptr<const source::MaterialProgram> a, b, revised, reordered, numeric, footprint, oriented;
     {
         Runtime runtime;
         take(material::register_program_types(runtime));
@@ -133,6 +207,8 @@ void verify_source_materials() {
                 return o;
             }
         )"));
+        footprint = take(source::compile_material(runtime, context, output, texture_input, "footprint.ms", footprint_source));
+        oriented = take(source::compile_material(runtime, context, output, texture_input, "orientation.ms", orientation_source));
         require(runtime.type_count() == types_before, "Material compilation published/redefined Params into live Runtime.");
         const auto rejected = [&](std::string text, std::string_view reason) {
             auto result = source::compile_material(runtime, context, output, texture_input, "rejected.ms", text);
@@ -166,6 +242,8 @@ void verify_source_materials() {
                 std::string(body) + " material.Output o; return o; }", reason);
         };
         rejected_texture("vector4 x=sample(7,c.uv);", "not a numeric slot");
+        rejected_texture("vector2 x=sample_orientation(7,c.uv);", "not a numeric slot");
+        rejected_texture("vector2 x=sample_orientation(textures.alpha,1.0);", "coordinates require vector2");
         rejected_texture("material.TextureInput forged;", "cannot be default constructed");
         rejected_texture("Textures forged;", "cannot be default constructed");
         rejected_texture("textures.alpha.slot=0;", "members are compiler-owned");
@@ -190,6 +268,10 @@ void verify_source_materials() {
         require(!token_member_error && token_member_error.error().message.contains("token-member.ms:5:") &&
             token_member_error.error().message.contains("members are compiler-owned"),
             "Opaque token member access lost its actual source location/reason.");
+        rejected(R"(struct Params { float cutoff; };
+            float impure(){ material.TextureInput input; return sample_orientation(input,vector2()).x; }
+            Params defaults(){ Params p; p.cutoff=impure(); return p; }
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "defaults cannot contain texture");
 
         const auto declaration_error = source::compile_material(runtime, context, output, texture_input, "declaration.ms",
             "\nstruct Params {\nfloat cutoff\n};");
@@ -224,6 +306,105 @@ void verify_source_materials() {
     require(opposite_result.metallic == 1.0f && opposite_result.base_color == math::Vector3{1,1e8f,1} &&
         opposite_result.coverage == 0.0f && opposite_result.normal_world == math::Vector3{0,0.5f,1},
         "Runtime material parameters lost the opposite lerp endpoint or ordered clamp bounds.");
+
+    struct PointProbe { mutable std::uint32_t calls{}; bool warp{}; } warp_probe{0,true}, color_probe;
+    const auto point_probe = +[](const void* data,math::Vector2 uv) -> Result<math::Vector4> {
+        const auto& probe = *static_cast<const PointProbe*>(data);
+        ++probe.calls;
+        return math::Vector4{uv.x,uv.y*(probe.warp?2.0f:1.0f),0,1};
+    };
+    const std::array<source::MaterialTexture,2> probe_bindings{{
+        {slot(*footprint,"warp"),&warp_probe,point_probe}, {slot(*footprint,"color"),&color_probe,point_probe}}};
+    material::Context probe_context;
+    probe_context.uv={0.25f,0.75f};
+    for (const float mode : {0.0f,1.0f,2.0f,8.0f}) {
+        warp_probe.calls=color_probe.calls=0;
+        const std::array parameters{mode,1.0f};
+        const auto value=evaluate(*footprint,probe_context,probe_bindings,std::as_bytes(std::span(parameters)));
+        const auto expected = mode==0 ? math::Vector2{0.0625f,0.1875f} : mode==1 ? math::Vector2{0.5f,2.25f} :
+            mode==2 ? math::Vector2{0.25f,2.25f} : math::Vector2{std::sin(0.25f),std::cos(0.75f)};
+        require(near(value.emissive.x,expected.x) && near(value.emissive.y,expected.y) &&
+            near(value.base_color.x,expected.x) && near(value.base_color.y,expected.y),
+            "Footprint-capable Source changed point arithmetic, struct/helper flow or sin/cos CPU evaluation.");
+        require(color_probe.calls==1 && warp_probe.calls==(mode==2?1u:0u),
+            "Point evaluation gained neighbor samples or lost its short-circuit.");
+    }
+    require(!footprint->hlsl_footprint("bad::namespace") && !footprint->hlsl("9invalid"),
+        "A material HLSL variant lost namespace validation.");
+
+    // Public compiler/JIT/callback integration. Actual SurfaceInput binding
+    // integration is separately owned by the material resource acceptance.
+    struct OrientationProbe {
+        unsigned address{}; // repeat, clamp, mirror
+        mutable std::uint32_t queries{}, samples{};
+        mutable math::Vector2 sampled_uv{};
+    } orientation_probe;
+    const auto query_orientation = +[](const void* data,math::Vector2 uv) -> Result<math::Vector2> {
+        const auto& probe=*static_cast<const OrientationProbe*>(data);
+        ++probe.queries;
+        math::Vector2 direction{1,1};
+        if (probe.address==2) for (std::size_t axis=0;axis<2;++axis) {
+            double u=uv[axis]; u-=std::floor(u*.5)*2;
+            direction[axis]=u>1?-1.0f:1.0f;
+        }
+        return direction;
+    };
+    const auto orientation_sample = +[](const void* data,math::Vector2 uv) -> Result<math::Vector4> {
+        const auto& probe=*static_cast<const OrientationProbe*>(data);
+        ++probe.samples; probe.sampled_uv=uv;
+        return math::Vector4{0.4f,0.6f,0.8f,1};
+    };
+    std::array<source::MaterialTexture,2> orientation_bindings{{
+        {slot(*oriented,"normal"),&orientation_probe,orientation_sample,query_orientation},
+        {slot(*oriented,"unused"),&orientation_probe,orientation_sample}}};
+    constexpr std::array<math::Vector2,6> orientation_uvs{{{-0.25f,1.25f},{0.25f,0.75f},{-1,-2},{1,2},{2.25f,3.25f},{-2.25f,-3.25f}}};
+    constexpr std::array<math::Vector2,6> mirror_directions{{{-1,-1},{1,1},{1,1},{1,1},{1,-1},{-1,1}}};
+    material::Context orientation_context;
+    for (unsigned address=0;address<3;++address) for (std::size_t i=0;i<orientation_uvs.size();++i) {
+        orientation_probe.address=address; orientation_probe.queries=orientation_probe.samples=0;
+        orientation_context.uv=orientation_uvs[i];
+        const auto value=evaluate(*oriented,orientation_context,orientation_bindings);
+        const auto direction=address==2?mirror_directions[i]:math::Vector2{1,1};
+        require(value.base_color==math::Vector3{direction.x,direction.y,0.4f} && value.coverage==99 &&
+            orientation_probe.queries==1 && orientation_probe.samples==1 &&
+            orientation_probe.sampled_uv==direction*0.25f+math::Vector2{0.5f,0.5f},
+            "sample_orientation lost its typed token, binding, fold convention or value result.");
+    }
+    orientation_bindings[0].orientation=nullptr;
+    const std::array skipped_orientation{0.0f,1.0f};
+    orientation_probe.queries=orientation_probe.samples=0;
+    require(evaluate(*oriented,orientation_context,orientation_bindings,std::as_bytes(std::span(skipped_orientation))).coverage==99 &&
+        orientation_probe.queries==0 && orientation_probe.samples==0,
+        "An unexecuted orientation query incorrectly required a callback.");
+    material::Output orientation_untouched; orientation_untouched.coverage=321;
+    const auto orientation_failure = [&](std::string_view reason,std::span<const std::byte> parameters) {
+        std::array<std::byte,sizeof(material::Output)> before;
+        std::memcpy(before.data(),&orientation_untouched,before.size());
+        auto failed=oriented->evaluate(std::as_bytes(std::span(&orientation_context,1)),parameters,
+            std::as_writable_bytes(std::span(&orientation_untouched,1)),orientation_bindings);
+        require(!failed && failed.error().message.contains(reason) &&
+            std::memcmp(before.data(),&orientation_untouched,before.size())==0,
+            "Orientation failure lost its diagnostic or partially published Output.");
+    };
+    orientation_failure("Missing material sample_orientation callback",oriented->default_parameters());
+    orientation_bindings[0].orientation=+[](const void*,math::Vector2) -> Result<math::Vector2> {
+        return std::unexpected(Error{ErrorCode::invocation_failed,"orientation unavailable"});
+    };
+    orientation_failure("orientation unavailable",oriented->default_parameters());
+    orientation_bindings[0].orientation=+[](const void*,math::Vector2) -> Result<math::Vector2> {
+        return math::Vector2{1,std::numeric_limits<float>::quiet_NaN()};
+    };
+    orientation_failure("sample_orientation result is not finite",oriented->default_parameters());
+    orientation_bindings[0].orientation=+[](const void*,math::Vector2) -> Result<math::Vector2> {
+        throw std::runtime_error("orientation exception");
+    };
+    orientation_failure("orientation exception",oriented->default_parameters());
+    orientation_bindings[0].orientation=query_orientation;
+    orientation_probe.queries=orientation_probe.samples=0;
+    const std::array invalid_orientation_uv{1.0f,0.0f};
+    orientation_failure("sample_orientation UV is not finite",std::as_bytes(std::span(invalid_orientation_uv)));
+    require(orientation_probe.queries==0 && orientation_probe.samples==0,
+        "Nonfinite orientation coordinates reached the host sampler.");
 
     Texture alpha{{0.1f,0.2f,0.3f,0.9f}, true}, color{{0.2f,0.4f,0.6f,0.8f}};
     const auto textures = bindings(*a,color,alpha);
@@ -331,6 +512,122 @@ void verify_source_materials() {
     )";
     hlsl.close();
     require(hlsl.good(), "Could not write generated HLSL validation artifact.");
+
+    // This is an executable GPU validation input, NOT a GPU pass. Dispatch 16
+    // threads with two real mipmapped textures and a Mirror sampler, clear
+    // Counts[32], bind Result[34], Trace[192], then read back gradients/output.
+    // Keep optimized DXIL as evidence that IEEE-bit guards survive fast-math.
+    const auto footprint_path=std::filesystem::temp_directory_path()/"atelier-source-material-footprints.hlsl";
+    std::ofstream footprint_hlsl(footprint_path,std::ios::binary);
+    footprint_hlsl << "// Source below is generated by MaterialProgram::hlsl_footprint.\n"
+        << "// Program-local warp slot=" << slot(*footprint,"warp") << ", color slot=" << slot(*footprint,"color") << "\n"
+        << take(footprint->hlsl_footprint("Footprint")) << take(numeric->hlsl_footprint("FootprintMath"))
+        << take(oriented->hlsl("OrientationPoint")) << take(oriented->hlsl_footprint("OrientationFootprint")) << R"(
+        Texture2D<float4> Images[2] : register(t0);
+        SamplerState Filter : register(s0);
+        RWStructuredBuffer<float4> Result : register(u0);
+        RWStructuredBuffer<float4> Trace : register(u1);
+        RWStructuredBuffer<uint> Counts : register(u2);
+        bool finite2(float2 v) { return all((asuint(v)&0x7f800000u)!=0x7f800000u); }
+        float4 atelier_material_sample(uint environment,uint slot,float2 uv) {
+            return Images[slot].SampleLevel(Filter,uv,0);
+        }
+        float2 atelier_material_sample_orientation(uint environment,uint slot,float2 uv) {
+            // This fixture binds Mirror for every image. Production queries
+            // its actual input table, not a generated author parameter/slot flag.
+            if (!finite2(uv)) return (float2)asfloat(0x7fc00000u);
+            precise float2 folded=uv-floor(uv*0.5)*2.0;
+            return float2(folded.x>1.0?-1.0:1.0,folded.y>1.0?-1.0:1.0);
+        }
+        float4 atelier_material_sample_grad(uint environment,uint slot,float2 uv,float2 d0,float2 d1) {
+            uint index=environment*2+slot;
+            uint call=Counts[index]; Counts[index]=call+1;
+            if (call<3) {
+                Trace[index*6+call*2]=float4(uv,d0);
+                Trace[index*6+call*2+1]=float4(d1,0,0);
+            }
+            uint width,height,levels; Images[slot].GetDimensions(0,width,height,levels);
+            precise float2 x=d0*float2(width,height), y=d1*float2(width,height);
+            if (!finite2(d0) || !finite2(d1) || !finite2(x) || !finite2(y))
+                return Images[slot].SampleLevel(Filter,uv,float(levels-1));
+            return Images[slot].SampleGrad(Filter,uv,d0,d1);
+        }
+        [numthreads(1,1,1)] void main(uint3 id:SV_DispatchThreadID) {
+            if (id.x>=16) return;
+            if (id.x>=14) {
+                float2 uv=id.x==14?float2(-0.25,1.25):float2(-1,2);
+                OrientationPoint::ms_Context p=(OrientationPoint::ms_Context)0; p.ms_uv=uv;
+                OrientationPoint::ms_Output a=OrientationPoint::ms_shade(id.x,p,OrientationPoint::ms_defaults());
+                OrientationFootprint::ms_Context c=(OrientationFootprint::ms_Context)0; c.ms_uv=uv;
+                OrientationFootprint::ms_Context d0=(OrientationFootprint::ms_Context)0, d1=(OrientationFootprint::ms_Context)0;
+                d0.ms_uv=float2(4,asfloat(0x7fc00000u)); d1.ms_uv=float2(-5,asfloat(0x7f800000u));
+                OrientationFootprint::ms_Output b=OrientationFootprint::ms_shade_footprint(id.x,c,d0,d1,OrientationFootprint::ms_defaults());
+                // Point/footprint xy: (-1,-1) for 14; (+1,+1) at folds for 15.
+                // The following texture UV has ZERO gradients despite these
+                // unusable/cross-fold input changes. Inspect Trace, not strings.
+                Result[30+(id.x-14)*2]=float4(a.ms_base_color,a.ms_coverage);
+                Result[31+(id.x-14)*2]=float4(b.ms_base_color,b.ms_coverage);
+                return;
+            }
+            Footprint::ms_Context c=(Footprint::ms_Context)0;
+            Footprint::ms_Context d0=(Footprint::ms_Context)0, d1=(Footprint::ms_Context)0;
+            c.ms_uv=float2(0.25,0.75); c.ms_normal_world=float3(0,0,1);
+            c.ms_geometric_normal_world=float3(0,0,1); c.ms_tangent_world=float4(1,0,0,1);
+            d0.ms_uv=float2(0.125,0.03125); d1.ms_uv=float2(-0.0625,0.25);
+            // 0: nonlinear UV, expected d0=(.0625,.1015625), d1=(-.03125,.015625).
+            // 1: offset crosses branch, but local d0=(2,.09375), d1=(-.125,.75).
+            if (id.x==1) d0.ms_uv.x=1.0;
+            // 2: texture-driven UV; compare second-slot gradients to SAME-gradient
+            // warp offset samples, then the local square rule 2*warp.y*dwarp.y.
+            if (id.x==2) c.ms_uv.y=0.5;
+            // 3/4: bad unused normal (and bad unused UV for constant case) must
+            // not poison constant/selected UV. Constant gradients are both zero.
+            if (id.x>=3 && id.x<=5) {
+                d0.ms_normal_world=(float3)asfloat(0x7fc00000u);
+                d1.ms_normal_world=(float3)asfloat(0x7f800000u);
+            }
+            if (id.x==3) d0.ms_uv.y=asfloat(0x7fc00000u);
+            // 5: 0*unavailable must remain unavailable, not an optimized zero.
+            // 6: zero sqrt/length: d0 valid zero, d1 unavailable (no epsilon).
+            if (id.x==6) { c.ms_uv=0; d0.ms_uv=0; d1.ms_uv=float2(0.25,0); }
+            // 7: t=1 still has dt contribution: x changes .625/-.3125; clamp
+            // equal-bound selects constant lo, y changes zero.
+            if (id.x==7) c.ms_uv.x=1;
+            // 8: sin/cos chain; not a finite difference of neighboring sin/cos.
+            // 9: fract's actually capped x has zero changes; integer y keeps d.
+            if (id.x==9) c.ms_uv=float2(-1e-30,2);
+            // 10: one bad input axis forces one warp sample and BOTH warp result
+            // changes unavailable; multiplication by zero cannot hide either.
+            if (id.x==10) d0.ms_uv.x=asfloat(0x7fc00000u);
+            // 11: finite gradients, offset0 overflows; only offset1 is sampled.
+            // Texel-scale overflow falls back inside the bridge, not generator.
+            if (id.x==11) { c.ms_uv.x=3e38; d0.ms_uv.x=3e38; d1.ms_uv.x=0; }
+            // 12: dot/cross/reduction and division. 13: signed zero abs, min/max
+            // ties select their first operand; discrete operations have zero d.
+            d0.ms_tangent_world=float4(0.25,0.5,0.125,0);
+            d1.ms_tangent_world=float4(-0.5,0.125,0.75,0);
+            if (id.x==13) {
+                c.ms_position_world=float3(asfloat(0x80000000u),0.25,0.75);
+                d0.ms_position_world=float3(0.25,2,3); d1.ms_position_world=float3(-0.5,4,5);
+            }
+            Footprint::ms_Parameters p=Footprint::ms_defaults(); p.ms_mode=float(id.x);
+            Footprint::ms_Output o=Footprint::ms_shade_footprint(id.x,c,d0,d1,p);
+            Result[id.x*2]=float4(o.ms_base_color,o.ms_coverage);
+            Result[id.x*2+1]=float4(o.ms_emissive,o.ms_roughness);
+            if (id.x==0) {
+                FootprintMath::ms_Context m=(FootprintMath::ms_Context)0;
+                m.ms_uv=float2(0.5,0.25);
+                FootprintMath::ms_Context z=(FootprintMath::ms_Context)0;
+                FootprintMath::ms_Output n=FootprintMath::ms_shade_footprint(0,m,z,z,FootprintMath::ms_defaults());
+                // Existing weighted lerp endpoint, inverted clamp and capped
+                // fract must survive the new lowering too, not merely point.
+                Result[28]=float4(n.ms_coverage,n.ms_metallic,n.ms_roughness,n.ms_normal_world.y);
+                Result[29]=float4(n.ms_base_color,n.ms_emissive.x);
+            }
+        }
+    )";
+    footprint_hlsl.close();
+    require(footprint_hlsl.good(),"Could not write generated footprint HLSL validation artifact.");
     auto release_bindings = textures;
     release_bindings[0].data = &b;
     release_bindings[0].sample = [](const void* owner,math::Vector2) -> Result<math::Vector4> {
@@ -343,5 +640,6 @@ void verify_source_materials() {
         std::as_writable_bytes(std::span(&untouched,1)),release_bindings));
     require(!b && near(untouched.coverage,0.5f), "Dropping the last content owner freed an active call's code.");
     std::printf("Material HLSL artifact: %s\n",path.string().c_str());
+    std::printf("Material footprint HLSL artifact (GPU execution still required): %s\n",footprint_path.string().c_str());
     std::puts("Source material consumer: PASS (CPU; GPU execution not covered)");
 }

@@ -84,11 +84,11 @@ static_assert(sizeof(ProbeInspection::Ray)==96);
 struct SceneLit::State {
     rhi::Context& context;
     GfxContext gfx;
-    rhi::Pipeline gbuffer,compose,sun_trace_prepare,sun_trace,cluster_build,cluster_inspect,shadow_depth;
-    rhi::Pipeline probe_copy,probe_trace,probe_update,probe_present,probe_resolve,probe_upsample,probe_exact,ao,ao_depth_reduce,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
+    rhi::Pipeline sun_trace_prepare,cluster_build,cluster_inspect;
+    rhi::Pipeline probe_copy,probe_present,ao,ao_depth_reduce,ao_resolve,depth_first,depth_pyramid,ssr_reset,ssr_classify,ssr_prepare,ssr_trace;
     rhi::Pipeline reflection_resolve,reflection_filter,brdf,taa,bloom_downsample,bloom_blur,tone_map,tone;
     rhi::Pipeline smaa_edges_pass,smaa_weights_pass,smaa_neighborhood,smaa_resolve;
-    rhi::Pipeline probe_debug_surface,probe_debug_geometry,inspect_pass,inspect_update;
+    rhi::Pipeline probe_debug_geometry;
     GfxTexture probe_age,probe_sample_cursor,probe_debug_depth;
     std::array<GfxTimestampQuery,15> queries{}; // FrameStats::scene_lit_gpu_pass_mask scopes.
     std::uint32_t encoded_pass_mask{};
@@ -152,6 +152,7 @@ struct SceneLit::State {
     // Programs keep parameter values. Rebind only after the geometry table changes,
     // including programs prepared later for optional diagnostics.
     std::vector<GfxProgram> geometry_bound_programs;
+    GfxProgram material_program{}; // Value only; a retired batch is never dereferenced.
     GfxBuffer sun_trace_list,sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
     LightFrame light_frame;
     GfxBuffer ray_counters;
@@ -193,10 +194,9 @@ struct SceneLit::State {
         const geometry::Mesh* geometry{};
         std::array<float,16> world{};
         std::array<float,4> normal_x{},normal_y{},normal_z{};
-        std::vector<material::Description> surfaces;
+        std::vector<material::ProgramSurfaceRef> program_surfaces;
         ShadowBounds shadow_bounds;
         bool shadow_dynamic{},shadow_tracked{};
-        bool emitting{};
         bool used{};
     };
     struct ObjectKey {
@@ -263,17 +263,16 @@ struct SceneLit::State {
     // Pipeline groups by the settings that bind them. draw() runs only after
     // the frame's groups are ready, so it never prepares or waits.
     enum Group : std::uint32_t {
-        group_base=1,group_shadow_cache=2,group_cluster_inspect=4,group_probe_inspection=8,group_probe_coverage=16,group_probe_overlay=32,group_end=64
+        group_base=1,group_cluster_inspect=2,group_probe_overlay=4,group_end=8
     };
     struct PendingPipeline { rhi::Pipeline* output; rhi::PipelineJob job; Group group; };
     std::vector<PendingPipeline> pending;
-    std::array<std::uint32_t,6> group_sizes{};
+    std::array<std::uint32_t,3> group_sizes{};
     std::uint32_t submitted{};
     std::optional<Error> preparation_failure;
     static std::uint32_t groups(const ViewSettings& view) {
         const auto& s=view.lit;
-        return group_base|(s.shadows?group_shadow_cache:0u)|(s.direct_cluster_inspect?group_cluster_inspect:0u)|
-            (s.ddgi&&s.probe_inspect?group_probe_inspection:0u)|(s.probe_debug?group_probe_coverage:0u)|
+        return group_base|(s.direct_cluster_inspect?group_cluster_inspect:0u)|
             (view.wireframe!=Wireframe::only&&s.probe_overlay()?group_probe_overlay:0u);
     }
     void submit(Group group,rhi::Pipeline& output,const rhi::PipelineDesc& desc) {
@@ -283,19 +282,16 @@ struct SceneLit::State {
     void submit(Group group,rhi::Pipeline& output,const char* source,const char* entry,const char* name) {
         rhi::PipelineDesc desc;desc.source.cs=source;desc.entry_point=entry;desc.name=name;submit(group,output,desc);
     }
-    void submit_probe_debug(Group group,rhi::Pipeline& pipeline,bool geometry) {
+    void submit_probe_debug(Group group,rhi::Pipeline& pipeline) {
         const std::string source=std::string(shaders::lit_ddgi_debug);
         const std::string vs=source+"\nDDGIDebugVertex main(uint v:SV_VertexID,uint i:SV_InstanceID){return ddgi_debug_vs(v,i);}";
-        const std::string ps=source+(geometry?"\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}":
-            "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}");
-        rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=geometry?vs.c_str():shaders::viewport_vs;
-        desc.source.ps=ps.c_str();desc.name=geometry?"DDGI spatial diagnostics":"DDGI receiver coverage";
+        const std::string ps=source+"\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}";
+        rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();
+        desc.source.ps=ps.c_str();desc.name="DDGI spatial diagnostics";
         require(gfxDrawStateSetColorTarget(desc.draw_state,0,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),"Set DDGI debug color format");
         require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set DDGI debug culling");
-        if(geometry) {
-            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set DDGI debug depth format");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER_EQUAL),"Set DDGI debug reversed depth");
-        } else require(gfxDrawStateSetDepthWriteMask(desc.draw_state,D3D12_DEPTH_WRITE_MASK_ZERO),"Disable diagnostic surface depth writes");
+        require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set DDGI debug depth format");
+        require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER_EQUAL),"Set DDGI debug reversed depth");
         submit(group,pipeline,desc);
     }
     // Workers start jobs in submission order. Under GPU-based validation each
@@ -304,29 +300,11 @@ struct SceneLit::State {
     void submit_group(Group group) {
         switch(group) {
         case group_base: {
-            submit(group,probe_update,shaders::lit_ddgi,"DDGIUpdate","DDGI hit lighting and convolution");
-            submit(group,compose,shaders::lit_clustered,"lit_compose_cs","Scene Lit direct lighting and HDR composition");
-            submit(group,sun_trace,shaders::lit_clustered,"lit_sun_trace_cs","Sun receivers beyond the cascades");
             submit(group,sun_trace_prepare,shaders::lit_clustered,"lit_sun_trace_prepare_cs","Sun trace indirect arguments");
-            submit(group,probe_trace,shaders::lit_ddgi,"DDGITrace","DDGI RT primary trace");
             submit(group,reflection_resolve,shaders::lit_post,"lit_reflection_resolve_cs","SSSR temporal resolve");
-            const std::string vs=std::string(shaders::lit_gbuffer)+"\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
-            const std::string ps=std::string(shaders::lit_gbuffer)+"\nLitGBuffer main(LitRaster i,uint p:SV_PrimitiveID){return lit_gbuffer_ps(i,p);}";
-            rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Scene Lit GBuffer";
-            for(std::uint32_t i=0;i<4;i++)require(gfxDrawStateSetColorTarget(desc.draw_state,i,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set GBuffer format");
-            require(gfxDrawStateSetColorTarget(desc.draw_state,4,DXGI_FORMAT_R32_FLOAT),"Set previous surface depth format");
-            require(gfxDrawStateSetColorTarget(desc.draw_state,5,DXGI_FORMAT_R16G16_FLOAT),"Set geometric normal format");
-            require(gfxDrawStateSetColorTarget(desc.draw_state,6,DXGI_FORMAT_R32G32_UINT),"Set stable surface identity format");
-            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set GBuffer depth");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set GBuffer reversed depth");
-            require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set GBuffer culling");
-            submit(group,gbuffer,desc);
             submit(group,cluster_build,shaders::lit_clustered,"lit_cluster_build_cs","Conservative local light lists");
             submit(group,probe_copy,shaders::lit_ddgi,"DDGICopy","DDGI history transfer");
             submit(group,probe_present,shaders::lit_ddgi,"DDGIPresent","DDGI presentation smoothing");
-            submit(group,probe_resolve,shaders::lit_ddgi,"DDGIResolve","DDGI irradiance gather");
-            submit(group,probe_upsample,shaders::lit_ddgi,"DDGIUpsample","DDGI irradiance upsampling");
-            submit(group,probe_exact,shaders::lit_ddgi,"DDGIExact","DDGI exact receiver gather");
             submit(group,ao,shaders::lit_post,"lit_gtao_cs","Scene Lit GTAO");
             submit(group,ao_depth_reduce,shaders::lit_post,"lit_gtao_depth_cs","GTAO view depth levels");
             submit(group,ao_resolve,shaders::lit_post,"lit_gtao_resolve_cs","GTAO signal reconstruction");
@@ -355,23 +333,8 @@ struct SceneLit::State {
             submit(group,tone,tone_desc);
             break;
         }
-        case group_shadow_cache: {
-            const std::string vs=std::string(shaders::lit_shadow)+"\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}";
-            const std::string ps=std::string(shaders::lit_shadow)+"\nvoid main(LitShadowRaster i,uint p:SV_PrimitiveID){lit_shadow_ps(i,p);}";
-            rhi::PipelineDesc desc;desc.kind=rhi::PipelineKind::vertex;desc.source.vs=vs.c_str();desc.source.ps=ps.c_str();desc.name="Cached shadow depth";
-            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state,DXGI_FORMAT_D32_FLOAT),"Set cached shadow precision");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state,D3D12_COMPARISON_FUNC_GREATER),"Set shadow reversed depth");
-            require(gfxDrawStateSetCullMode(desc.draw_state,D3D12_CULL_MODE_NONE),"Set two-sided shadow coverage");
-            submit(group,shadow_depth,desc);
-            break;
-        }
         case group_cluster_inspect: submit(group,cluster_inspect,shaders::lit_clustered,"lit_cluster_inspect_cs","Direct receiver support inspection");break;
-        case group_probe_inspection:
-            submit(group,inspect_update,shaders::lit_ddgi,"DDGIUpdateInspect","DDGI sampled-hit inspection");
-            submit(group,inspect_pass,shaders::lit_ddgi,"DDGIInspect","DDGI receiver inspection");
-            break;
-        case group_probe_coverage: submit_probe_debug(group,probe_debug_surface,false);break;
-        case group_probe_overlay: submit_probe_debug(group,probe_debug_geometry,true);break;
+        case group_probe_overlay: submit_probe_debug(group,probe_debug_geometry);break;
         case group_end: break;
         }
         submitted|=group;
@@ -492,6 +455,7 @@ struct SceneLit::State {
             });
         }
         gpu.instances=shadow_upload(gpu.instance_table,gpu.previous_instances,shadow_instance_indices);
+        const auto& shadow_depth=material_pipeline(MaterialPass::shadow);
         const auto p=shadow_depth.program();bind_materials(gfx,p,*material_frame);
         bind(p,"lit_instances",gpu_instances);bind(p,"lit_shadow_instances",gpu.instances);
         require(gfxCommandBindKernel(gfx,shadow_depth.kernel()),"Bind cached shadow raster");
@@ -765,6 +729,7 @@ struct SceneLit::State {
     void inspect_probe(const Frame& frame,GfxTexture depth,const FrameStats& stats) {
         const auto& settings=frame.view.lit;
         if(!settings.probe_inspect || !settings.ddgi || !probe_field.total)return;
+        const auto& inspect_pass=material_pipeline(MaterialPass::inspect);
         const auto slot=sequence%readback_count;
         auto& state=*inspection;
         // An unavailable slot drops this diagnostic sample; never wait for it.
@@ -849,7 +814,7 @@ struct SceneLit::State {
                 }
                 bool opaque=true;
                 for(std::size_t j=0;j<mesh.geometry->materials().size();++j)
-                    opaque &= material_frame->surface(i,j).parameters.coverage==material::Coverage::opaque;
+                    opaque &= material_frame->coverage(i,j)==material::Coverage::opaque;
                 slot.geometry->used=true;slot.geometry->next_opaque &= opaque;
                 slot.geometry->current=scene_draws.draws[scene_draws.instance_draws[i]].geometry;
             }
@@ -913,20 +878,19 @@ struct SceneLit::State {
                     object.normal_y[c]=static_cast<float>(inverse->elements[c*4+1]/maximum);object.normal_z[c]=static_cast<float>(inverse->elements[c*4+2]/maximum);}
             }
             instance.normal_x=object.normal_x;instance.normal_y=object.normal_y;instance.normal_z=object.normal_z;
-            const auto descriptions=std::span(material_frame->descriptions).subspan(material_frame->offsets[index],mesh.geometry->materials().size());
-            const bool surface_changed=!inserted&&!surfaces_same&&!std::ranges::equal(object.surfaces,descriptions);
+            const auto programs=std::span<const material::ProgramSurfaceRef>(material_frame->program_slots)
+                .subspan(material_frame->program_offsets[index],mesh.geometry->materials().size());
+            const bool surface_changed=!inserted&&!surfaces_same&&
+                !std::ranges::equal(object.program_surfaces,programs);
             material_changed|=surface_changed;
             bool object_coverage_changed=false;
             if(surface_changed) {
                 // Mask sampling changes ray geometry even when the shared BLAS
                 // remains non-opaque. Color-only edits do not change distances.
-                object_coverage_changed=!std::ranges::equal(object.surfaces,descriptions,[](const auto& a,const auto& b) {
-                    if(a.parameters.coverage!=b.parameters.coverage)return false;
-                    if(a.parameters.coverage==material::Coverage::opaque)return true;
-                    return a.parameters.base_color[3]==b.parameters.base_color[3] &&
-                        a.parameters.alpha_cutoff==b.parameters.alpha_cutoff &&
-                        a.texture(material::Input::base_color)==b.texture(material::Input::base_color) &&
-                        a.texture(material::Input::opacity)==b.texture(material::Input::opacity);
+                // Arbitrary Params/Source may change Mask even if policies do
+                // not. Only an unchanged capture or two Opaque slots is safe.
+                object_coverage_changed=!std::ranges::equal(object.program_surfaces,programs,[](const auto& a,const auto& b) {
+                    return a==b || (a->policy().coverage==material::Coverage::opaque&&b->policy().coverage==material::Coverage::opaque);
                 });
                 coverage_changed|=object_coverage_changed;
             }
@@ -951,17 +915,11 @@ struct SceneLit::State {
                 }
                 shadow_casters.push_back({static_cast<std::uint32_t>(index),object.shadow_bounds,object.shadow_dynamic});
             } else object.shadow_tracked=false;
-            bool emitting=object.emitting;
-            if(!surfaces_same) {
-                emitting=false;
-                for(const auto& surface:descriptions) {
-                    const auto& e=surface.parameters.emissive;emitting|=e[0]>0||e[1]>0||e[2]>0;
-                }
+            // A program's emission cannot be inferred from parameter names.
+            emitter_changed|=inserted||object.geometry!=mesh.geometry.get()||object.world!=mesh.world||surface_changed;
+            if(inserted||surface_changed) {
+                object.program_surfaces.assign(programs.begin(),programs.end());
             }
-            if(emitting||object.emitting)
-                emitter_changed|=inserted||object.geometry!=mesh.geometry.get()||object.world!=mesh.world||surface_changed;
-            if(inserted||surface_changed)object.surfaces.assign(descriptions.begin(),descriptions.end());
-            object.emitting=emitting;
             // Keep geometric motion, but edited material/radiance has no valid
             // previous shading observation, including when seen through SSR.
             instance.geometry={g.slot,static_cast<std::uint32_t>(mesh.stable_key),correspondence&&!surface_changed?1u:0u,static_cast<std::uint32_t>(mesh.stable_key>>32)};
@@ -982,7 +940,7 @@ struct SceneLit::State {
             if(it->second.used){++it;continue;}
             if(shadows_cached&&it->second.shadow_tracked)shadow_changes.push_back({it->second.shadow_bounds,{},true,false,
                 !it->second.shadow_dynamic,it->second.shadow_dynamic});
-            emitter_changed|=it->second.emitting;
+            emitter_changed=true;
             require(gfxTopLevelAccelerationStructureRemoveInstance(gfx,tlas,it->second.instance),"Detach removed RT instance");
             require(gfxDestroyTopLevelAccelerationStructureInstance(gfx,it->second.instance),"Retire removed RT instance");it=objects.erase(it);topology_changed=true;
         }
@@ -1047,8 +1005,23 @@ struct SceneLit::State {
             frame.view.lit.spatial_light_sampling&&!light_frame.spatial_cells.empty()?1u:0u};
         source_counts={light_frame.local_count,light_frame.directional_count,0,0};
     }
+    const rhi::Pipeline& material_pipeline(MaterialPass pass) const {
+        return material_frame->batch->pipeline(pass);
+    }
     void draw(const Frame& frame,ui::PixelExtent next,GfxTexture depth,const SceneLitDraws& scene_draws,const MaterialFrame& materials,FrameStats& stats) {
         material_frame=&materials;
+        const auto& gbuffer=material_pipeline(MaterialPass::gbuffer);
+        const auto& compose=material_pipeline(MaterialPass::compose);
+        const auto& sun_trace=material_pipeline(MaterialPass::sun_trace);
+        const auto& probe_trace=material_pipeline(MaterialPass::probe_trace);
+        const auto& probe_update=material_pipeline(MaterialPass::probe_update);
+        const auto& probe_resolve=material_pipeline(MaterialPass::probe_resolve);
+        const auto& probe_upsample=material_pipeline(MaterialPass::probe_upsample);
+        const auto& probe_exact=material_pipeline(MaterialPass::probe_exact);
+        const auto& inspect_update=material_pipeline(MaterialPass::inspect_update);
+        if(material_program!=gbuffer.program()) {
+            geometry_bound_programs.clear();material_program=gbuffer.program();
+        }
         resources();publish_gpu_sample(stats);encoded_pass_mask=0;begin(1);const auto& settings=frame.view.lit;targets(next);
         if(!settings.probe_inspect || !settings.ddgi || (stats.scene_lit_probe_inspection &&
             (stats.scene_lit_probe_inspection->scene_identity!=frame.scene_identity ||
@@ -1145,6 +1118,7 @@ struct SceneLit::State {
             if(!draw.count)continue;
             const auto p=gbuffer.program();
             bind(p,"lit_vertices",draw.geometry.vertices);bind(p,"lit_faces",draw.geometry.faces);bind(p,"lit_first_triangle",0u);
+            bind(p,"lit_triangle_indices",draw.geometry.indices);
             bind(p,"lit_first_instance",draw.first);
             require(gfxCommandBindIndexBuffer(gfx,draw.geometry.indices),"Bind Scene Lit surface indices");
             require(gfxCommandDrawIndexed(gfx,draw.geometry.triangle_count*3,draw.count),"Draw Scene Lit surface geometry");++stats.scene_draw_calls;
@@ -1353,6 +1327,7 @@ struct SceneLit::State {
         bind(p,"lit_probe_pool",std::array<std::uint32_t,4>{probe_field.width,probe_field.total,0,probe_field.valid?1u:0u});
     }
     void draw_coverage(GfxTexture depth,const SceneLitSettings& settings,FrameStats& stats) {
+        const auto& probe_debug_surface=material_pipeline(MaterialPass::probe_coverage);
         const auto p=probe_debug_surface.program();common(p,depth);bind_probe_debug(p);
         bind(p,"lit_probe_debug_options",std::array<std::uint32_t,4>{(effect_flags&2u)&&probe_field.valid?1u:0u,
             static_cast<std::uint32_t>(settings.probe_coverage),0,0});
@@ -1464,9 +1439,9 @@ struct SceneLit::State {
         for(auto& readback:ray_readback)retire(readback);
         for(auto& q:queries)if(q)require(gfxDestroyTimestampQuery(gfx,std::exchange(q,{})),"Retire Scene Lit timestamp");
         for(auto* s:{&sampler,&shadow_sampler,&sky_sampler})if(*s)require(gfxDestroySamplerState(gfx,std::exchange(*s,{})),"Retire Scene Lit sampler");
-        for(auto* p:{&gbuffer,&cluster_build,&cluster_inspect,&shadow_depth,&compose,&sun_trace_prepare,&sun_trace,&probe_copy,&probe_trace,&probe_update,&probe_present,&probe_resolve,&probe_upsample,&probe_exact,
+        for(auto* p:{&cluster_build,&cluster_inspect,&sun_trace_prepare,&probe_copy,&probe_present,
                     &ao,&ao_depth_reduce,&ao_resolve,&depth_first,&depth_pyramid,&ssr_reset,&ssr_classify,&ssr_prepare,&ssr_trace,&reflection_resolve,&reflection_filter,&brdf,&taa,
-                    &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&probe_debug_surface,&probe_debug_geometry,&inspect_pass,&inspect_update})*p={};
+                    &bloom_downsample,&bloom_blur,&tone_map,&tone,&smaa_edges_pass,&smaa_weights_pass,&smaa_neighborhood,&smaa_resolve,&probe_debug_geometry})*p={};
     }
 };
 

@@ -2,6 +2,7 @@
 
 #include "rhi/rhi.hpp"
 #include "geometry/mesh.hpp"
+#include "material/program_resources.hpp"
 #include "ui/frame.hpp"
 #include "renderer/view_settings.hpp"
 #include "renderer/overlay.hpp"
@@ -12,6 +13,8 @@
 #include <vector>
 
 namespace atelier::renderer {
+
+namespace detail { struct MaterialBatchState; }
 
 struct Error {
     rhi::Error cause;
@@ -33,6 +36,22 @@ struct Preparation {
     std::uint32_t done{}, total{};
     bool ready{};
 };
+// One immutable candidate's material programs, parameters and GPU preparation.
+// Owner-thread only; release before closing its Renderer. Moving the owner does
+// not change its slot order. No Runtime roots or live material objects survive.
+class MaterialBatch {
+public:
+    MaterialBatch();
+    ~MaterialBatch();
+    MaterialBatch(MaterialBatch&&) noexcept;
+    MaterialBatch& operator=(MaterialBatch&&) noexcept;
+    MaterialBatch(const MaterialBatch&) = delete;
+    MaterialBatch& operator=(const MaterialBatch&) = delete;
+    std::span<const material::ProgramSurfaceRef> surfaces() const noexcept;
+private:
+    friend class Renderer;
+    std::unique_ptr<detail::MaterialBatchState> state_;
+};
 struct Target {
     ui::PixelExtent extent;
     bool drawable{};
@@ -47,11 +66,6 @@ struct Camera {
     // plane, zero for a projection carrying its own far plane (or no far limit).
     // A change is a projection change: the producer must set Frame::camera_cut.
     float far_depth{};
-};
-struct Material {
-    float roughness{0.65f};
-    float metallic{};
-    std::array<float, 3> emissive{}; // Linear HDR radiance, before display exposure.
 };
 enum class LightKind : std::uint32_t { point, rectangle, directional };
 struct Light {
@@ -77,15 +91,12 @@ struct MeshInstance {
     // Non-finite, non-affine, singular or GPU-unrepresentable normal transforms
     // reject the entire frame before encoding. Invertible reflected transforms are supported by this boundary.
     std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    ui::Color color{0.2f, 0.45f, 0.75f, 1};
     bool selected{};
     geometry::MeshRef geometry;
-    Material material{};
     std::uint64_t stable_key{}; // Zero allows legacy draws but disables temporal object reuse.
-    // Complete resolved surfaces in geometry material-slot order. Captures own
-    // immutable content; no Runtime objects enter the renderer. Empty uses the
-    // mesh defaults with the instance's existing constant material values.
-    std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces{};
+    // Required complete geometry-slot -> Frame::materials index mapping.
+    // No business material defaults or instance overrides exist at this boundary.
+    std::shared_ptr<const std::vector<std::uint32_t>> material_slots{};
 };
 struct Frame {
     const ui::Frame &ui_frame; // Sole authoritative id/extent; borrowed to return.
@@ -106,6 +117,10 @@ struct Frame {
     // Zero restarts a paused/discontinuous clock; fixed-step producers use 1/60.
     // Only presentation filtering consumes this [0, .1] interval, not sampling confidence.
     float render_delta_seconds{1.f/60.f};
+    // Explicit candidate, borrowed through render(). Its slot order and every
+    // mesh mapping must belong together. Required and ready for any mesh frame;
+    // UI/no-mesh frames may omit it.
+    const MaterialBatch* materials{};
 };
 // not_ready: the view's pipelines are still preparing; nothing was encoded or
 // presented and the frame may be retried, or drawn with another view.
@@ -259,6 +274,18 @@ class Renderer {
     // collects finished ones; views that draw no Lit pass are always ready. A
     // preparation failure is non-terminal and returned again for later Lit views.
     [[nodiscard]] Result<Preparation> preparation(const ViewSettings &view);
+    // Prepares the entire material-dependent raster/ray pipeline set, not a view.
+    // Submission never adopts the candidate. Live batches with the same exact
+    // program set share compilation/PSOs, independently of policy, parameters,
+    // input images and slot order. Images use the existing linear/sRGB mip cache.
+    // The last rendered code set (not its tables/images) stays reusable until
+    // another code set is rendered or Renderer closes.
+    // Unrelated product/UI preparation remains separate.
+    [[nodiscard]] Result<MaterialBatch> prepare_materials(std::span<const material::ProgramSurfaceRef>);
+    // Collects jobs without waiting. Finalization uploads immutable tables;
+    // ready means same-Context ordered use, not GPU completion or presentation.
+    // Recoverable failures stay on this batch; upload failures are terminal.
+    [[nodiscard]] Result<Preparation> preparation(MaterialBatch&);
     // Minimized/zero client size, target mismatch or occluded Present is skipped.
     // A drawn Lit view whose preparation is incomplete returns not_ready.
     // CPU validation failure retains usability. Upload/encoding/execution failure

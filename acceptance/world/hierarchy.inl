@@ -448,11 +448,14 @@ void attachment_space_and_authoring() {
     const auto nonspatial=take(w::create_component(runtime,types.environment_component));
     require(take(w::component_requires_space(runtime,mesh.id())) && take(w::component_requires_space(runtime,light.id())) &&
         !take(w::component_requires_space(runtime,nonspatial.id())),"SpatialComponent did not decide the space requirement.");
-    take(p::set_material(world,mesh.id(),{}));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
+    take(p::set_geometry(runtime,mesh.id(),geometry::cube_mesh()));
+    const auto material_source=take(material::create_source(runtime,"",{mesh_material_definition(),{}}));
+    const std::array<p::MaterialBinding,1> bindings{{{"slot/0",material_source,true}}};
+    take(p::set_material_bindings(runtime,mesh.id(),bindings));const std::array capabilities{w::Attachment{mesh.id()},w::Attachment{light.id()}};
     committed(world.attach_components(prepared_id,capabilities));
-    take(p::set_material(world,mesh.id(),{}));take(p::set_light(world,light.id(),{}));
+    take(p::set_material_bindings(runtime,mesh.id(),bindings));take(p::set_light(world,light.id(),{}));
     committed(world.attach(prepared_id));
-    take(p::set_material(world,mesh.id(),{}));take(p::set_light(world,light.id(),{}));
+    take(p::set_material_bindings(runtime,mesh.id(),bindings));take(p::set_light(world,light.id(),{}));
 
     auto a=take(w::create_entity(runtime)),b=take(w::create_entity(runtime));a_id=a.id();b_id=b.id();
     take(world.set_transform(a_id,{{2,0,0},{},{1,1,1}}));take(world.set_transform(b_id,{{5,0,0},{},{1,1,1}}));

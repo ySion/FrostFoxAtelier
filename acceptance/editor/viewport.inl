@@ -85,9 +85,7 @@ void verify_viewport_display(Application& app,const std::filesystem::path& outpu
         const auto current=model(app.document().presentation().render_items());
         require(current.size()==items.size() && current[0].geometry==items[0].geometry &&
                 current[0].world.elements==items[0].world.elements &&
-                current[0].material.base_color.x==items[0].material.base_color.x &&
-                current[0].material.base_color.y==items[0].material.base_color.y &&
-                current[0].material.base_color.z==items[0].material.base_color.z,
+                current[0].surfaces==items[0].surfaces,
                 "Display mode changed geometry, material or transforms.");
         png(image,output/name);
         return image;

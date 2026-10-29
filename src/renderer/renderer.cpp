@@ -121,22 +121,10 @@ template<std::size_t N> bool same_bits(const std::array<float, N> &a, const std:
         if (!same_bits(a[i], b[i])) return false;
     return true;
 }
-bool same_bits(const ui::Color &a, const ui::Color &b) noexcept {
-    return same_bits(a.r, b.r) && same_bits(a.g, b.g) && same_bits(a.b, b.b) && same_bits(a.a, b.a);
-}
-bool same_bits(const Material &a, const Material &b) noexcept {
-    return same_bits(a.roughness, b.roughness) && same_bits(a.metallic, b.metallic) && same_bits(a.emissive, b.emissive);
-}
 // Everything an instance check reads belongs to the instance itself.
 bool valid_instance(const MeshInstance &mesh) {
-    bool good = bool(mesh.geometry) && valid(mesh.color);
-    if (mesh.surfaces) {
-        good &= mesh.geometry && mesh.surfaces->size() == mesh.geometry->materials().size();
-        for (const auto &surface : *mesh.surfaces) good &= bool(surface);
-    }
-    good &= finite(mesh.material.roughness) && mesh.material.roughness >= 0 && mesh.material.roughness <= 1 &&
-        finite(mesh.material.metallic) && mesh.material.metallic >= 0 && mesh.material.metallic <= 1;
-    for (float e : mesh.material.emissive) good &= finite(e) && e >= 0 && e <= material::emission_limit;
+    bool good = mesh.geometry && mesh.material_slots &&
+        mesh.material_slots->size() == mesh.geometry->materials().size();
     for (float v : mesh.world) good &= finite(v);
     return good && mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
 }
@@ -148,11 +136,9 @@ class MeshChecks {
 public:
     struct Entry {
         std::array<float, 16> world{};
-        ui::Color color{};
-        Material material{};
         std::uint64_t stable_key{};
         geometry::MeshRef geometry;
-        std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces;
+        std::shared_ptr<const std::vector<std::uint32_t>> program_slots;
         std::uint32_t material_slots{};
         std::optional<Instance> prepared; // Set by the first frame that prepares this content.
     };
@@ -179,14 +165,13 @@ public:
         for (const auto i : changed_) {
             const auto &mesh = meshes[i];
             auto &entry = entries_[i];
-            materials_changed |= entry.geometry != mesh.geometry || entry.surfaces != mesh.surfaces ||
-                !same_bits(entry.color, mesh.color) || !same_bits(entry.material, mesh.material);
+            materials_changed |= entry.geometry != mesh.geometry || entry.program_slots != mesh.material_slots;
             // Only acquire allocates; once it succeeds the rest of this position's update cannot throw.
             if (entry.stable_key != mesh.stable_key) {
                 acquire(mesh.stable_key);
                 release(entry.stable_key);
             }
-            entry = {mesh.world, mesh.color, mesh.material, mesh.stable_key, mesh.geometry, mesh.surfaces,
+            entry = {mesh.world, mesh.stable_key, mesh.geometry, mesh.material_slots,
                      static_cast<std::uint32_t>(mesh.geometry->materials().size()), std::nullopt};
         }
         changed_.clear();
@@ -194,16 +179,16 @@ public:
     [[nodiscard]] Entry &operator[](std::size_t i) noexcept { return entries_[i]; }
     // Nonzero stable keys held by more than one position of the committed frame.
     [[nodiscard]] bool duplicate_keys() const noexcept { return duplicates_ != 0; }
-    // The committed geometry, surfaces or constant materials differ from the built material tables.
+    // The committed geometry or slot mapping differs from the built material tables.
     bool materials_changed{true};
 
 private:
     // Every MeshInstance field but selected; a new field must join same() and valid_instance.
-    static_assert(sizeof(MeshInstance) == 152);
+    static_assert(sizeof(MeshInstance) == 112);
     // Checked entries have geometry; a default entry left by a failed commit never matches.
     static bool same(const Entry &entry, const MeshInstance &mesh) noexcept {
-        return entry.geometry && entry.geometry == mesh.geometry && entry.surfaces == mesh.surfaces && entry.stable_key == mesh.stable_key &&
-            same_bits(entry.world, mesh.world) && same_bits(entry.color, mesh.color) && same_bits(entry.material, mesh.material);
+        return entry.geometry && entry.geometry == mesh.geometry && entry.stable_key == mesh.stable_key &&
+            entry.program_slots == mesh.material_slots && same_bits(entry.world, mesh.world);
     }
     void acquire(std::uint64_t key) {
         if (key && ++uses_[key] == 2) ++duplicates_;
@@ -244,9 +229,12 @@ void validate(const Frame &frame, MeshChecks &meshes) {
     good &= finite(frame.camera.far_depth) && frame.camera.far_depth>=0 && frame.camera.far_depth<=1;
     std::uint64_t material_slots=0;
     good &= meshes.check(frame.meshes, material_slots);
-    good &= material_slots<=std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface);
-    static_assert(std::numeric_limits<std::uint32_t>::max()/sizeof(detail::GpuSurface)<(1u<<detail::face_slot_bits),
-        "An accepted Frame's material slots fit GpuFace");
+    for (const auto& mesh : frame.meshes) {
+        good &= bool(mesh.material_slots) && bool(frame.materials);
+        if (frame.materials && mesh.material_slots)
+            for (auto slot : *mesh.material_slots) good &= slot < frame.materials->surfaces().size();
+    }
+    good &= material_slots<(1u<<detail::face_slot_bits);
     for (const auto &draw : ui.draws) {
         good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
             finite(draw.border_width) && draw.border_width >= 0 && !(draw.coverage && draw.image);
@@ -302,7 +290,7 @@ std::optional<std::array<float,16>> prepare_cavity_projection(const Frame& frame
     }
     return result;
 }
-enum class PipelineStyle { ui, surface, cavity_surface, depth, visible_lines, all_lines, background, grid, grid_depth };
+using detail::PipelineStyle;
 Instance prepare_instance(const MeshInstance &mesh) {
     const auto &m = mesh.world;
     const auto normal = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
@@ -376,9 +364,9 @@ struct Renderer::State {
     rhi::Context context;
     GfxContext gfx;
     Options options;
-    rhi::Pipeline scene, scene_depth, visible_lines, all_lines, ui_pipeline;
+    rhi::Pipeline ui_pipeline;
     rhi::Pipeline background, grid, grid_depth;
-    rhi::Pipeline cavity_surface,cavity_composite;
+    rhi::Pipeline cavity_composite;
     GfxTexture cavity_normals,cavity_color;
     ui::PixelExtent cavity_extent{};
     std::optional<std::array<float,16>> cavity_projection;
@@ -386,8 +374,7 @@ struct Renderer::State {
     std::array<float,4> raster_transform{1,1,0,0};
     GfxTexture matcap;
     GfxSamplerState sampler;
-    struct MaterialImage { material::ImageRef owner; GfxTexture texture; bool used{}; };
-    std::map<std::pair<const material::Image*,bool>,MaterialImage> material_images;
+    std::map<std::pair<const material::Image*,bool>,std::shared_ptr<detail::MaterialImageResource>> material_images;
     material::ImageRef white_image;
     // group is this frame's MeshGroup only while that group points back at the entry.
     struct CachedGeometry { geometry::MeshRef source; detail::SceneGeometry gpu; bool used{}; std::uint32_t group{}; };
@@ -404,19 +391,13 @@ struct Renderer::State {
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
-    struct MaterialCaptureKey {
-        geometry::MeshRef geometry;
-        std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces;
-        ui::Color color;
-        float roughness{},metallic{};
-        std::array<float,3> emissive{};
-        bool operator==(const MaterialCaptureKey&) const=default;
-    };
-    std::vector<MaterialCaptureKey> material_keys,next_material_keys;
+    detail::DeviceTable<std::uint32_t> program_indices, program_offsets;
+    std::size_t live_material_batches{};
+    std::vector<std::weak_ptr<detail::MaterialProgramSet>> material_program_sets;
+    // Keep only the last used code set across snapshot retirement/empty views.
+    // It owns no surface tables or images; this is not an unbounded PSO cache.
+    std::shared_ptr<detail::MaterialProgramSet> active_material_programs;
     MeshChecks mesh_checks;
-    std::vector<std::pair<const material::Image*,bool>> used_material_images;
-    std::vector<detail::GpuSurface> next_surfaces;
-    std::vector<std::uint32_t> next_material_indices,next_material_offsets;
     GfxTexture depth;
     ui::PixelExtent depth_extent;
     std::unordered_map<TextureKey, CachedImage, TextureHash> images;
@@ -452,6 +433,8 @@ struct Renderer::State {
         if (owner != std::this_thread::get_id())
             return std::unexpected(
                 error(rhi::ErrorCode::wrong_thread, "Renderer close requires owner thread"));
+        if (live_material_batches)
+            return std::unexpected(error(rhi::ErrorCode::busy, "Release material batches before closing Renderer"));
         if(scene_lit) {
             const auto result=scene_lit->close();
             if(!result)return result;
@@ -467,23 +450,22 @@ struct Renderer::State {
         images.clear();
         for(auto& [key,image]:material_images) {
             (void)key;
-            const auto r=gfxDestroyTexture(gfx,image.texture);
+            const auto r=gfxDestroyTexture(gfx,image->texture);
             if(r) return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material texture retirement failed",true,r));
-            image.texture={};
+            image->texture={};
         }
         material_images.clear();white_image.reset();
-        for(auto* buffer:{&materials.surface_buffer,&materials.index_buffer,&materials.offset_buffer})if(*buffer) {
-            const auto result=gfxDestroyBuffer(gfx,*buffer);
-            if(result)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material table retirement failed",true,result));
-            *buffer={};
-        }
+        active_material_programs.reset();
+        material_program_sets.clear();
         for(auto& material_sampler:materials.samplers)if(material_sampler) {
             const auto result=gfxDestroySamplerState(gfx,material_sampler);
             if(result)return std::unexpected(error(rhi::ErrorCode::execution_failed,"Material sampler retirement failed",true,result));
             material_sampler={};
         }
-        material_keys.clear();next_material_keys.clear();used_material_images.clear();
-        materials.descriptions.clear();materials.textures.clear();materials.surfaces.clear();materials.indices.clear();materials.offsets.clear();++materials.revision;
+        ++materials.revision;
+        materials.batch=nullptr;materials.captured_programs.clear();materials.program_slots.clear();
+        for(const auto r:{program_indices.retire(gfx),program_offsets.retire(gfx)})if(r)
+            return std::unexpected(error(rhi::ErrorCode::execution_failed,"Program slot table retirement failed",true,r));
         if (matcap) {
             const auto r = gfxDestroyTexture(gfx, matcap);
             if (r) return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
@@ -527,15 +509,11 @@ struct Renderer::State {
                     error(rhi::ErrorCode::execution_failed, "Sampler retirement failed", true, r));
             sampler = {};
         }
-        scene = {};
-        scene_depth = {};
-        visible_lines = {};
-        all_lines = {};
         ui_pipeline = {};
         background = {};
         grid = {};
         grid_depth = {};
-        cavity_surface={};cavity_composite={};
+        cavity_composite={};
         auto result = context.close();
         if (!result) return std::unexpected(Error{result.error(), true});
         gfx = {};
@@ -550,37 +528,7 @@ struct Renderer::State {
     }
     void prepare_pipeline(rhi::Pipeline &output, const char *name, const char *vs, const char *ps,
                           PipelineStyle style) {
-        rhi::PipelineDesc desc;
-        desc.kind = rhi::PipelineKind::vertex;
-        desc.name = name;
-        desc.source.vs = vs;
-        desc.source.ps = ps;
-        require(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
-                "Set window color target");
-        if(style==PipelineStyle::cavity_surface)
-            require(gfxDrawStateSetColorTarget(desc.draw_state,1,DXGI_FORMAT_R16G16B16A16_FLOAT),"Set cavity normal target");
-        require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set culling");
-        const bool surface=style==PipelineStyle::surface||style==PipelineStyle::cavity_surface;
-        const bool with_depth = surface || style == PipelineStyle::depth ||
-            style == PipelineStyle::visible_lines || style == PipelineStyle::all_lines || style == PipelineStyle::grid_depth;
-        const bool write_depth = surface || style == PipelineStyle::depth;
-        if (with_depth) {
-            require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT),
-                    "Set depth target");
-            require(gfxDrawStateSetDepthFunction(desc.draw_state,
-                    style == PipelineStyle::all_lines ? D3D12_COMPARISON_FUNC_ALWAYS :
-                    style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_GREATER_EQUAL : D3D12_COMPARISON_FUNC_GREATER),
-                    "Set depth comparison");
-        }
-        require(gfxDrawStateSetDepthWriteMask(desc.draw_state,
-                write_depth ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO), "Set depth writes");
-        if (!surface && style != PipelineStyle::background)
-            require(gfxDrawStateSetBlendMode(desc.draw_state,
-                style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
-                style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
-                style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
-                style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD),
-                "Set pass blending");
+        const auto desc=detail::studio_pipeline(name,vs,ps,style);
         auto prepared = context.prepare(desc);
         if (!prepared) throw Error{prepared.error(), false};
         output = std::move(*prepared);
@@ -636,9 +584,10 @@ struct Renderer::State {
             if(!white_image) white_image=std::make_shared<const material::Image>(1,1,std::vector<std::uint8_t>{255,255,255,255});
             source=white_image;
         }
-        auto [found,inserted]=material_images.try_emplace({source.get(),srgb},MaterialImage{source,{},true});
-        auto& image=found->second;image.used=true;
-        if(!inserted) return image.texture;
+        const auto key=std::pair{source.get(),srgb};
+        if(const auto found=material_images.find(key);found!=material_images.end()) return found->second->texture;
+        const auto found=material_images.emplace(key,std::make_shared<detail::MaterialImageResource>(source,gfx)).first;
+        auto& image=*found->second;
         image.texture=gfxCreateTexture2D(gfx,source->width(),source->height(),
             srgb?DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:DXGI_FORMAT_R8G8B8A8_UNORM,
             gfxCalculateMipCount(source->width(),source->height()));
@@ -649,67 +598,30 @@ struct Renderer::State {
         require(gfxCommandGenerateMips(gfx,image.texture),"Generate material mipmaps");
         ++stats.material_upload_count;return image.texture;
     }
-    void prepare_materials(const Frame& frame) {
-        if(materials.surface_buffer&&!mesh_checks.materials_changed) {
-            for(const auto& key:used_material_images)material_images.at(key).used=true;
-            return;
-        }
-        next_material_keys.clear();next_material_keys.reserve(frame.meshes.size());
-        for(const auto& mesh:frame.meshes) {
-            MaterialCaptureKey key{mesh.geometry,mesh.surfaces,{1,1,1,1},0,0,{}};
-            if(!mesh.surfaces) {key.color=mesh.color;key.roughness=mesh.material.roughness;key.metallic=mesh.material.metallic;key.emissive=mesh.material.emissive;}
-            next_material_keys.push_back(std::move(key));
-        }
-        if(materials.surface_buffer&&material_keys==next_material_keys) {
-            for(const auto& key:used_material_images)material_images.at(key).used=true;
-            next_material_keys.clear();mesh_checks.materials_changed=false;return;
-        }
-        material_keys.swap(next_material_keys);next_material_keys.clear();used_material_images.clear();
-        materials.descriptions.clear();materials.textures.clear();++materials.revision;
-        next_surfaces.clear();next_material_indices.clear();next_material_offsets.clear();
-        std::map<std::pair<const material::Image*,bool>,std::uint32_t> texture_indices;
-        std::map<detail::GpuSurface,std::uint32_t> surface_indices;
-        materials.textures.push_back(material_texture({},true));
-        used_material_images.emplace_back(white_image.get(),true);
-        for(const auto& mesh:frame.meshes) {
-            next_material_offsets.push_back(static_cast<std::uint32_t>(materials.descriptions.size()));
-            for(std::size_t slot=0;slot<mesh.geometry->materials().size();++slot) {
-                const auto value=detail::resolved_surface(mesh,slot);materials.descriptions.push_back(value);
-                const auto& p=value.parameters;detail::GpuSurface gpu{};
-                gpu.base_roughness={p.base_color[0],p.base_color[1],p.base_color[2],p.roughness};
-                gpu.emissive_metallic={p.emissive[0],p.emissive[1],p.emissive[2],p.metallic};
-                gpu.coverage_normal={p.base_color[3],p.alpha_cutoff,p.normal_scale,p.normal_y_sign};
-                gpu.flags={static_cast<std::uint32_t>(p.coverage),p.double_sided?1u:0u,p.emission_two_sided?1u:0u,0};
-                for(std::size_t input=0;input<material::input_count;++input) {
-                    const auto& t=value.textures[input];auto& binding=gpu.inputs[input];
-                    binding.scale_offset={t.scale[0],t.scale[1],t.offset[0],t.offset[1]};
-                    binding.rotation_size={std::cos(t.rotation),std::sin(t.rotation),1,1};
-                    binding.meta={0,t.channel,static_cast<std::uint32_t>(t.address),t.image?1u:0u};
-                    if(t.image) {
-                        const bool srgb=input==0||input==4;
-                        auto [found,added]=texture_indices.try_emplace({t.image.get(),srgb},static_cast<std::uint32_t>(materials.textures.size()));
-                        if(added) {materials.textures.push_back(material_texture(t.image,srgb));used_material_images.emplace_back(t.image.get(),srgb);}
-                        binding.meta[0]=found->second;
-                        binding.rotation_size[2]=static_cast<float>(t.image->width());binding.rotation_size[3]=static_cast<float>(t.image->height());
-                    }
-                }
-                auto [found,added]=surface_indices.try_emplace(gpu,static_cast<std::uint32_t>(next_surfaces.size()));
-                if(added)next_surfaces.push_back(gpu);
-                next_material_indices.push_back(found->second);
-            }
-        }
-        const auto upload=[&]<class T>(GfxBuffer& buffer,std::vector<T>& current,std::vector<T>& next) {
-            if(buffer&&current==next)return;
-            if(buffer)require(gfxDestroyBuffer(gfx,std::exchange(buffer,{})),"Retire material table");
-            buffer=gfxCreateBuffer<T>(gfx,static_cast<std::uint32_t>(next.size()),next.data());allocation(bool(buffer));current.swap(next);
-        };
-        upload(materials.surface_buffer,materials.surfaces,next_surfaces);
-        upload(materials.index_buffer,materials.indices,next_material_indices);
-        upload(materials.offset_buffer,materials.offsets,next_material_offsets);
+    void material_samplers() {
         constexpr D3D12_TEXTURE_ADDRESS_MODE addresses[]{D3D12_TEXTURE_ADDRESS_MODE_WRAP,D3D12_TEXTURE_ADDRESS_MODE_CLAMP,D3D12_TEXTURE_ADDRESS_MODE_MIRROR};
         for(std::size_t i=0;i<materials.samplers.size();++i)if(!materials.samplers[i]) {
             materials.samplers[i]=gfxCreateSamplerState(gfx,D3D12_FILTER_ANISOTROPIC,addresses[i],addresses[i]);allocation(bool(materials.samplers[i]));
         }
+    }
+    void prepare_materials(const Frame& frame) {
+        const auto* batch=frame.materials->state_.get();
+        const bool changed=!materials.batch || mesh_checks.materials_changed || materials.captured_programs!=batch->surfaces;
+        materials.batch=batch;
+        active_material_programs=batch->code;
+        if(changed) {
+            materials.captured_programs=batch->surfaces;
+            materials.program_slots.clear();materials.program_indices.clear();materials.program_offsets.clear();
+            for(const auto& mesh:frame.meshes) {
+                materials.program_offsets.push_back(static_cast<std::uint32_t>(materials.program_slots.size()));
+                for(auto slot:*mesh.material_slots) {
+                    materials.program_slots.push_back(batch->surfaces[slot]);materials.program_indices.push_back(slot);
+                }
+            }
+            ++materials.revision;
+        }
+        materials.program_index_buffer=program_indices.write(gfx,context.info().frames_in_flight,materials.program_indices,changed,"Program material indices");
+        materials.program_offset_buffer=program_offsets.write(gfx,context.info().frames_in_flight,materials.program_offsets,changed,"Program material offsets");
         mesh_checks.materials_changed=false;
     }
     // Returns the image's slot in this frame's ui_textures; a new revision uploads once.
@@ -863,7 +775,6 @@ struct Renderer::State {
             }
         }
         for (auto& [key, geometry] : geometries) { (void)key; geometry.used = false; }
-        for(auto& [key,image]:material_images) { (void)key;image.used=false; }
         if (draw_scene) {
             timing::Scope scene_stage{phases::encode_scene};
             {
@@ -877,12 +788,7 @@ struct Renderer::State {
             const bool jittered=lighting&&(frame.view.lit.antialiasing==Antialiasing::taa||frame.view.lit.antialiasing==Antialiasing::smaa_t2x);
             const bool editing_depth=jittered&&(capture||frame.view.reference_grid||frame.view.origin_axes||
                 frame.view.lit.probe_overlay()||editing_lines);
-            if ((lines_only||editing_depth)&&!scene_depth)
-                prepare_pipeline(scene_depth, "editor scene depth", shaders::scene_vs, shaders::scene_ps, PipelineStyle::depth);
-            if (!lighting && !lines_only && !cavity_projection && !scene)
-                prepare_pipeline(scene, "editor surface", shaders::scene_vs, shaders::scene_ps, PipelineStyle::surface);
             if(cavity_projection) {
-                if(!cavity_surface)prepare_pipeline(cavity_surface,"studio surface normals",shaders::scene_vs,shaders::cavity_surface_ps,PipelineStyle::cavity_surface);
                 if(!cavity_normals) {
                     constexpr float empty[4]{};
                     cavity_normals=gfxCreateTexture2D(gfx,extent.width,extent.height,DXGI_FORMAT_R16G16B16A16_FLOAT,1,empty);
@@ -892,14 +798,6 @@ struct Renderer::State {
                 }
                 require(gfxCommandClearTexture(gfx,cavity_normals),"Clear cavity coverage");
             }
-            if (lines_only) {
-                auto& lines = frame.view.hidden_lines ? visible_lines : all_lines;
-                if (!lines)
-                    prepare_pipeline(lines, "editor scene lines", shaders::scene_vs, shaders::scene_ps,
-                                     frame.view.hidden_lines?PipelineStyle::visible_lines:PipelineStyle::all_lines);
-            }
-            if((lighting||cavity_projection)&&editing_lines&&!visible_lines)
-                prepare_pipeline(visible_lines,"Scene Lit editing lines",shaders::scene_vs,shaders::scene_ps,PipelineStyle::visible_lines);
             if(!lighting)prepare_matcap();
             if (depth_extent != extent) {
                 if (depth) require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
@@ -932,6 +830,14 @@ struct Renderer::State {
                 if (!draw_instances.empty())
                     order = draw_order_slots.write(gfx, context.info().frames_in_flight, draw_instances, true, "Draw order");
             }
+            const auto select=[&](detail::MaterialPass pass)->const rhi::Pipeline& {
+                return materials.batch->pipeline(pass);
+            };
+            const auto& scene=select(detail::MaterialPass::studio);
+            const auto& scene_depth=select(detail::MaterialPass::depth);
+            const auto& cavity_surface=select(detail::MaterialPass::cavity);
+            const auto& visible_lines=select(detail::MaterialPass::visible_lines);
+            const auto& all_lines=select(detail::MaterialPass::all_lines);
             std::array<float,16> view_projection{};
             const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
                 const bool selected_only=(pass==3||(pass==1&&lighting))&&frame.view.wireframe!=Wireframe::overlay;
@@ -975,6 +881,7 @@ struct Renderer::State {
                     const auto& geometry = *group.geometry;
                     require(gfxProgramSetParameter(gfx, program, "vertices", geometry.gpu.vertices), "Bind mesh vertices");
                     require(gfxProgramSetParameter(gfx, program, "faces", geometry.gpu.faces), "Bind mesh triangle records");
+                    require(gfxProgramSetParameter(gfx, program, "triangle_indices", geometry.gpu.indices), "Bind mesh triangle corners");
                     require(gfxProgramSetParameter(gfx, program, "first_triangle", 0u), "Set mesh triangle offset");
                     require(gfxProgramSetParameter(gfx,program,"first_instance",first),"Set mesh instance offset");
                     require(gfxCommandBindIndexBuffer(gfx, geometry.gpu.indices), "Bind mesh indices");
@@ -1021,7 +928,8 @@ struct Renderer::State {
                 if(cavity_projection&&editing_lines)draw_batches(visible_lines,3);
             }
         } else {
-            materials.descriptions.clear();materials.textures.clear();material_keys.clear();next_material_keys.clear();used_material_images.clear();++materials.revision;
+            ++materials.revision;
+            materials.batch=nullptr;materials.captured_programs.clear();materials.program_slots.clear();
             mesh_checks.materials_changed=true;
             if(has_viewport) {
                 if(scene_lit)scene_lit->draw_debug(frame,extent,depth,stats);
@@ -1029,8 +937,9 @@ struct Renderer::State {
             }
         }
         for(auto it=material_images.begin();it!=material_images.end();) {
-            if(it->second.used) {++it;continue;}
-            require(gfxDestroyTexture(gfx,it->second.texture),"Retire unused material texture");it=material_images.erase(it);
+            if(it->second.use_count()>1) {++it;continue;}
+            auto& texture=it->second->texture;
+            require(gfxDestroyTexture(gfx,texture),"Retire unused material texture");texture={};it=material_images.erase(it);
         }
         stats.cached_material_images=material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
@@ -1210,6 +1119,52 @@ Result<Preparation> Renderer::preparation(const ViewSettings &view) {
                                      kGfxResult_OutOfMemory));
     }
 }
+Result<MaterialBatch> Renderer::prepare_materials(std::span<const material::ProgramSurfaceRef> surfaces) {
+    if(!state_)return std::unexpected(error(rhi::ErrorCode::closed,"Renderer is closed"));
+    if(const auto checked=state_->check();!checked)return std::unexpected(checked.error());
+    try {
+        MaterialBatch batch;
+        batch.state_=std::make_unique<detail::MaterialBatchState>(state_->context,state_->live_material_batches);
+        batch.state_->submit(surfaces,state_->material_program_sets);
+        return batch;
+    } catch(const Error& e) { return std::unexpected(e); }
+    catch(const std::bad_alloc&) {
+        return std::unexpected(error(rhi::ErrorCode::creation_failed,"Material batch allocation failed",false,kGfxResult_OutOfMemory));
+    }
+}
+Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
+    if(!state_)return std::unexpected(error(rhi::ErrorCode::closed,"Renderer is closed"));
+    if(const auto checked=state_->check();!checked)return std::unexpected(checked.error());
+    if(!batch.state_||&batch.state_->context!=&state_->context)
+        return std::unexpected(error(rhi::ErrorCode::invalid_argument,"Material batch belongs to another Renderer or is empty"));
+    try {
+        auto& candidate=*batch.state_;
+        if(candidate.failure)return std::unexpected(*candidate.failure);
+        auto result=candidate.code->preparation(state_->context);
+        if(!result) {candidate.failure=result.error();return result;}
+        if(result->ready&&!candidate.ready) {
+            candidate.uploading=true;
+            // A descriptor sentinel keeps entirely empty-input programs valid;
+            // explicit clears return their linear float4, never this white image.
+            if(candidate.images.empty())candidate.images.emplace_back(material::ImageRef{},false);
+            for(const auto& [image,srgb]:candidate.images) {
+                candidate.textures.push_back(state_->material_texture(image,srgb));
+                candidate.image_owners.push_back(state_->material_images.at({image?image.get():state_->white_image.get(),srgb}));
+            }
+            state_->material_samplers();candidate.upload();
+        }
+        return result;
+    }
+    catch(Error e) {
+        e.terminal=batch.state_->uploading;batch.state_->failure=e;
+        if(e.terminal)state_->failure=e;
+        return std::unexpected(std::move(e));
+    } catch(const std::bad_alloc&) {
+        auto e=error(rhi::ErrorCode::creation_failed,"Material batch finalization allocation failed",batch.state_->uploading,kGfxResult_OutOfMemory);
+        batch.state_->failure=e;if(e.terminal)state_->failure=e;
+        return std::unexpected(std::move(e));
+    }
+}
 Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     timing::Scope rendering{phases::render};
     const auto destination = target();
@@ -1241,6 +1196,14 @@ Result<FrameResult> Renderer::render(const Frame &frame, Capture *capture) {
     bool encoding = false;
     try {
         std::optional<timing::Scope> stage{std::in_place, phases::prepare};
+        if(frame.materials) {
+            const auto* batch=frame.materials->state_.get();
+            if(!batch||&batch->context!=&s.context)
+                throw error(rhi::ErrorCode::invalid_argument,"Frame has an empty or foreign material batch");
+            if(batch->failure)return std::unexpected(*batch->failure);
+            if(!batch->ready)
+                return FrameResult{.status=FrameStatus::not_ready,.accepted_extent={},.next_extent=extent,.stats=s.stats};
+        }
         validate(frame, s.mesh_checks);
         if(!std::isfinite(frame.render_delta_seconds) || frame.render_delta_seconds<0 || frame.render_delta_seconds>.1f)
             throw error(rhi::ErrorCode::invalid_argument,"Render delta must be finite and in [0, .1] seconds");

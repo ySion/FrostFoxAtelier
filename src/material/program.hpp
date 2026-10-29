@@ -8,6 +8,8 @@
 
 namespace atelier::material {
 
+inline constexpr float emission_limit = 65504.f; // Linear emission captured in the FP16 GBuffer.
+
 // Opaque, copyable computation token, not a texture object or author binding.
 // The registered uint32 "slot" field supplies its real CPU offset to layout
 // capture. The compiler injects program-local slots using that metadata, not

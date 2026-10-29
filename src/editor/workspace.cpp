@@ -99,12 +99,30 @@ std::optional<OperatorCall> operator_for(Command command) {
     default:return std::nullopt;
     }
 }
-Context Workspace::operator_context(Session& session,Project* project,bool interactive) const {
+Context Workspace::operator_context(Session& session,Project* project,bool interactive,const ui::ControlBox* focused) const {
     const auto* source=source_editor.active();
     const auto source_history=source?HistoryState{source->document->edit().can_undo(),source->document->edit().can_redo()}:HistoryState{};
+    const auto region=region_of(dock.focused_tab());
+    const auto selection=session.selection();
+    std::string asset;
+    if(inspecting_asset && (region==RegionKind::parameters || region==RegionKind::assets)) asset=material_inspection;
+    else if(region==RegionKind::parameters) {
+        ObjectId object{};
+        if(color_edit && color_edit->material_entry && session.owns_edit(control::color_group)) object=color_edit->object;
+        else if(focused && selection.entity!=ObjectId{}) {
+            const auto* target=binding(focused->action_target?focused->action_target:focused->key);
+            if(target && target->component!=ObjectId{}) {
+                // A selection can change before the next frame retires its old field.
+                const auto component=world::inspect_component(session.world().runtime(),target->component);
+                if(component && component->owner==selection.entity &&
+                    (selection.object==selection.entity || selection.object==target->component)) object=target->object;
+            }
+        }
+        if(object!=ObjectId{}) if(auto key=material::material_key(session.world().runtime(),object)) asset=std::move(*key);
+    }
     return {session,project,
-        {session.selection().entity,session.selection().object,{session.selected_entities().begin(),session.selected_entities().end()}},
-        region_of(dock.focused_tab()),inspecting_asset?material_inspection:std::string{},
+        {selection.entity,selection.object,{session.selected_entities().begin(),session.selected_entities().end()}},
+        region,std::move(asset),
         source_history,{workbench.undo_count()!=0,workbench.redo_count()!=0},scene_available,interactive,viewport_settings};
 }
 void Workspace::log(std::wstring text) {
@@ -316,10 +334,10 @@ std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree,ObjectId 
                 rows.push_back(static_cast<std::uint32_t>(row-tree.rows.begin()));
     return ui::tree_window(tree.rows,viewport,rows);
 }
-bool Workspace::command_enabled(Command command,Session& session,Project* project) const {
+bool Workspace::command_enabled(Command command,Session& session,Project* project,const ui::ControlBox* focused) const {
     if(const auto call=operator_for(command)) {
         const auto* info=operators.find(call->id);
-        return info && info->poll(operator_context(session,project,true)).has_value();
+        return info && info->poll(operator_context(session,project,true,focused)).has_value();
     }
     switch (command) {
     case Command::erase_entities: return scene_available && !session.selected_entities().empty();
@@ -349,8 +367,12 @@ bool Workspace::command_enabled(Command command,Session& session,Project* projec
     case Command::edit_project_ui:return project_open && project_ui_configured;
     case Command::show_project_ui:return project_open && project_ui_configured && !project_running;
     case Command::save_scene: case Command::save_scene_as:return project_open && scene_available;
+    case Command::reimport_texture:return project_open && scene_available && !assets.engine() &&
+        assets.selected() && assets.selected()->kind==assets::AssetKind::texture;
+    case Command::reimport_mesh:return project_open && scene_available && !assets.engine() &&
+        assets.selected() && assets.selected()->kind==assets::AssetKind::mesh;
     case Command::open_scene:
-    case Command::import_mesh:case Command::import_texture:case Command::create_material: case Command::refresh_assets: return project_open;
+    case Command::import_mesh:case Command::import_texture:case Command::create_material:case Command::create_material_source: case Command::refresh_assets: return project_open;
     case Command::save_document: return source_history()?source_editor.active()!=nullptr:project_open && scene_available;
     case Command::close_source: case Command::reload_source: return source_editor.active()!=nullptr;
     case Command::selection_grid:case Command::selection_cursor:case Command::cursor_selected:
@@ -555,9 +577,11 @@ std::wstring parameter_label(std::string_view path) {
     return label;
 }
 }
-std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,Project* project,const ui::Session* ui) {
+std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,Project* project,const ui::Session* ui,
+    const ui::ControlBox* command_focus) {
     property_help_.begin();
     sync_world(session);
+    if(!command_focus && frame && ui) command_focus=frame->find(ui->focused_control());
     const auto take = []<class T>(Result<T> value) -> T {
         if (!value) throw std::runtime_error(value.error().message);
         return std::move(*value);
@@ -597,6 +621,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     if(needs_materials) for(const auto component:components) {
         const auto bindings=presentation::read_material_bindings(runtime,component);
         if(bindings) for(const auto& binding:*bindings) live.add(binding.resource.id());
+        if(const auto mesh=presentation::read_static_mesh(runtime,component))
+            for(const auto& binding:mesh->mesh.defaults) live.add(binding.resource.id());
     }
     // Closing/hiding a view is not an object lifetime change. Retire bindings and
     // tree view state together; undo later restores identity with fresh keys.
@@ -680,7 +706,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         const auto at=std::ranges::find(result,key,&ui::Control::key);
         if (at==result.end() || at->layout.height.rule!=ui_layout::SizeRule::fixed) {
             if (reject_ui_controls("Editor chrome bands require fixed heights for the dock host."))
-                return describe(session,size,frame,project,ui);
+                return describe(session,size,frame,project,ui,command_focus);
             throw std::runtime_error(std::string(ui_error()));
         }
         chrome_height+=at->layout.height.value;
@@ -957,34 +983,21 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         }
         return at->second;
     };
-    const auto append_properties=[&](ObjectId object,ObjectId material_component=ObjectId{},std::string_view slot=std::string_view{}) {
-        const bool resource=session.is_material(object);
-        const bool instance=material_component!=ObjectId{};
-        const auto material_state=resource?std::optional(take(material::read_material(runtime,object))):std::nullopt;
-        const auto material_bindings=resource?atelier::Result<std::vector<presentation::MaterialBinding>>{std::vector<presentation::MaterialBinding>{}}:presentation::read_material_bindings(runtime,object);
-        const auto mesh=!resource && material_bindings?std::optional(take(presentation::read_static_mesh(runtime,object))):std::nullopt;
-        // A slot is bound by an explicit material or its mesh default; the component's base parameters reach only the others.
-        const auto bound_slot=[&](const std::string& name) {
-            return std::ranges::find(*material_bindings,name,&presentation::MaterialBinding::slot)!=material_bindings->end() ||
-                std::ranges::find(mesh->mesh.defaults,name,&presentation::MaterialBinding::slot)!=mesh->mesh.defaults.end();
-        };
-        const bool any_slot_bound=mesh && (!material_bindings->empty() || !mesh->mesh.defaults.empty());
-        const bool all_slots_bound=any_slot_bound && mesh->mesh.resolved &&
-            std::ranges::all_of(mesh->mesh.resolved->parts(),[&](const auto& part) {return bound_slot(presentation::material_slot_name(*mesh->mesh.resolved,part.material));});
+    const auto append_properties=[&](ObjectId object) {
+        const auto material_bindings=presentation::read_material_bindings(runtime,object);
+        const auto mesh=material_bindings?std::optional(take(presentation::read_static_mesh(runtime,object))):std::nullopt;
         const auto asset_name=[&](const std::string& key) {
             if(const auto* entry=project?project->entry(key):nullptr) return entry->path.stem().wstring();
             return assets::wide(key);
         };
         const auto property_caption=[&](std::string_view name,std::string_view declared) {
-            auto label=declared.empty()?parameter_label(name):assets::wide(declared);
-            if(any_slot_bound && !all_slots_bound && name.starts_with("material.")) label+=L" (Unbound)";
-            return label;
+            return declared.empty()?parameter_label(name):assets::wide(declared);
         };
         const auto property_key=[&](std::span<const FieldId> path,Binding::Kind kind=Binding::Kind::field) {
-            return instance?bind_material(object,path,kind,material_component,slot):bind(object,path,kind);
+            return bind(object,path,kind);
         };
         const auto type=take(runtime.type_of(object));
-        const auto title=instance?L"Material Overrides · "+assets::wide(slot):object_title(object);
+        const auto title=object_title(object);
         const bool group_matches=lowercase(title).find(folded)!=std::wstring::npos;
         auto component_properties=std::make_shared<std::vector<ui_language::Item>>();
         auto properties=component_properties;
@@ -994,17 +1007,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         for(std::size_t index=0;index<schema.size();++index) {
             const auto& property=schema[index];
             if(parameter_by_category_ && material_object==ObjectId{}) {
-                const std::string_view category=resource?std::string_view{"Material"}:
-                    property.category.empty()?std::string_view{"General"}:std::string_view{property.category};
+                const std::string_view category=property.category.empty()?std::string_view{"General"}:std::string_view{property.category};
                 properties=category_properties(category);
             }
-            if(instance && !property.name.starts_with("parameters.")) continue;
-            if(all_slots_bound && property.name.starts_with("material.")) continue;
-            const auto override_bit=instance?take(material::override_bit(runtime,property.path)):0u;
-            const bool overridden=instance && (material_state->overrides & override_bit)!=0;
-            const bool override_available=instance && (material_state->parent.registered() || !material_state->source.empty());
-            const bool editable=(resource?!session.world().running():entity_status.can_edit) && (!override_available || overridden);
-            const auto override_key=instance?bind_material(object,property.path,Binding::Kind::material_override,material_component,slot):ui::ControlKey{};
+            const bool editable=entity_status.can_edit;
             if(show_position && object==*transform && detail::transform_path(session.types(),property.path)) continue;
             if(light) {
                 const auto& name=property.name;
@@ -1026,13 +1032,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 const bool spatial_position=std::ranges::equal(property.path,session.types().position_fields[0]);
                 const bool spatial_rotation=std::ranges::equal(property.path,session.types().rotation_fields[0]);
                 const bool spatial_scale=std::ranges::equal(property.path,session.types().scale_fields[0]);
-                const bool base_color=(aggregate_type==session.presentation_types().material || aggregate_type==take(runtime.native_type<material::ParameterValues>())) &&
-                    property.path[property.path.size()-2]==take(runtime.find_field(aggregate_type,"base_color"));
-                const bool emission=(aggregate_type==session.presentation_types().material || aggregate_type==take(runtime.native_type<material::ParameterValues>())) &&
-                    property.path[property.path.size()-2]==take(runtime.find_field(aggregate_type,"emissive"));
                 const bool light_color=aggregate_type==session.presentation_types().light_settings &&
                     property.path[property.path.size()-2]==take(runtime.find_field(session.presentation_types().light_settings,"color"));
-                const bool color=base_color || emission || light_color;
+                const bool color=light_color;
                 const auto euler=spatial_rotation?euler_degrees(take(world::read_transform(runtime,object)).rotation):math::Vector3{};
                 std::vector<ui::NumberField> tuple;bool matches=group_matches || lowercase(assets::wide(name+" "+property.label+" "+property.category)).find(folded)!=std::wstring::npos;
                 for(std::size_t lane=0;lane<count && index+lane<schema.size();++lane) {
@@ -1067,8 +1069,6 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         row.swatch=std::array{r,g,b};row.pick={property_key(prefix,Binding::Kind::color_pick),editable};
                         std::ranges::find(bindings_,row.pick.target,&Binding::key)->color_maximum=row.edit.fields.front().maximum;
                     }
-                    row.override_available=override_available; row.overridden=overridden;
-                    row.inherit={instance?override_key:field_key,override_available && !session.world().running()};
                     row.help=property_help_.get(row.key,row.title,assets::wide(take(runtime.describe(type))->name)+L"."+assets::wide(name)+L" : "+assets::wide(parent->name)+(spatial_rotation?L" · Euler (°)":L""),described(property.description,property.range));
                     properties->push_back(std::move(row).item());
                 }
@@ -1111,8 +1111,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             row.key=property_key(property.path,Binding::Kind::property_row);row.title=std::move(caption);row.edit=std::move(edit);
             row.kind=boolean?PropertyRow::Kind::boolean:enumeration?PropertyRow::Kind::enumeration:PropertyRow::Kind::number;
             row.checked=boolean && std::get<bool>(property.value);row.enabled=editable;row.change={key,editable};
-            row.choice=std::move(choice);row.target=key;row.override_available=override_available;row.overridden=overridden;
-            row.inherit={instance?override_key:key,override_available && !session.world().running()};
+            row.choice=std::move(choice);row.target=key;
             row.help=property_help_.get(row.key,row.title,assets::wide(take(runtime.describe(type))->name)+L"."+assets::wide(property.name)+L" : "+assets::wide(take(runtime.describe(property.type))->name),described(property.description,property.range));
             properties->push_back(std::move(row).item());
         }
@@ -1129,15 +1128,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         const auto mark_unavailable=[&](assets::AssetKind kind,std::string_view key,std::wstring& name) {
             if(const auto* item=session.unavailable(kind,key)) name.insert(0,item->kind==world::DiagnosticKind::unreadable_resource?L"(unreadable) ":L"(missing) ");
         };
-        if(resource && !instance) {
-            const auto asset=take(session.material_asset(object));
-            constexpr std::array names{L"Base Color Texture",L"Roughness Texture",L"Metallic Texture",L"Normal Texture",L"Emissive Texture",L"Opacity Texture"};
-            for(std::size_t i=0;i<names.size();++i) {
-                auto name=asset.textures[i].empty()?std::wstring(L"None"):asset_name(asset.textures[i]);
-                mark_unavailable(assets::AssetKind::texture,asset.textures[i],name);
-                selector(bind_material(object,{},Binding::Kind::material_texture,{}, {},i),names[i],std::move(name),"选择材质输入使用的 Texture 资源。None 清除该输入的贴图；修改参与材质撤销与保存。");
-            }
-        } else if(!resource && material_bindings) {
+        if(material_bindings) {
             if(!mesh->mesh.resolved && !mesh->mesh.source.empty() &&
                 (group_matches || lowercase(L"Mesh "+assets::wide(mesh->mesh.source)).find(folded)!=std::wstring::npos)) {
                 PropertyRow row;
@@ -1151,11 +1142,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 const auto slot_name=presentation::material_slot_name(*mesh->mesh.resolved,i);std::wstring choice=L"Mesh Default";
                 const auto at=std::ranges::find(*material_bindings,slot_name,&presentation::MaterialBinding::slot);
                 if(at!=material_bindings->end()) {
-                    auto state=take(material::read_material(runtime,at->resource.id()));
-                    if(state.parent.registered()) state=take(material::read_material(runtime,state.parent.id()));
-                    choice=asset_name(state.source);mark_unavailable(assets::AssetKind::material,state.source,choice);
+                    const auto info=take(session.inspect_material(at->resource.id()));
+                    choice=info.scene?L"Scene Instance":asset_name(info.asset_key);mark_unavailable(assets::AssetKind::material,info.asset_key,choice);
                 } else if(const auto fallback=std::ranges::find(mesh->mesh.defaults,slot_name,&presentation::MaterialBinding::slot);fallback!=mesh->mesh.defaults.end()) {
-                    const auto source=take(material::read_material(runtime,fallback->resource.id())).source;
+                    const auto source=take(material::material_key(runtime,fallback->resource.id()));
                     auto name=asset_name(source);mark_unavailable(assets::AssetKind::material,source,name);choice+=L" · "+name;
                 }
                 selector(bind_material(object,{},Binding::Kind::material_slot,{},slot_name),L"Material · "+assets::wide(slot_name),std::move(choice),"为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
@@ -1163,7 +1153,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         }
         if(!component_properties->empty()) groups->push_back({property_key({},Binding::Kind::property_group),
             {title,double(object==selected?ui::ControlIcon::object:ui::ControlIcon::component),ui_language::ItemList{std::move(component_properties)}}});
-        if(instance || !session.has_retained(object)) return;
+        if(!session.has_retained(object)) return;
         const auto saved=session.retained(object);if(!saved || saved->entries.empty()) return;
         const bool categorized=parameter_by_category_ && material_object==ObjectId{};
         auto saved_rows=categorized?category_properties("Saved Data"):std::make_shared<std::vector<ui_language::Item>>();
@@ -1183,8 +1173,69 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         if(!categorized && !saved_rows->empty()) groups->push_back({bind(object,{},Binding::Kind::saved_data),
             {L"Saved Data · "+title,double(ui::ControlIcon::component),ui_language::ItemList{std::move(saved_rows)}}});
     };
+    const auto append_material=[&](ObjectId object,ObjectId component=ObjectId{},std::string_view slot=std::string_view{}) {
+        const auto material=take(session.inspect_material(object));
+        const auto title=(material.source?L"Material Source":material.scene?L"Scene Material Instance":L"Material Instance")+
+            (slot.empty()?std::wstring{}:L" · "+assets::wide(slot));
+        const bool editable=!material.source && !session.world().running();
+        auto rows=std::make_shared<std::vector<ui_language::Item>>();
+        const auto key=[&](std::string_view path,Binding::Kind kind,std::size_t lane=0) {return bind_material(object,path,kind,component,slot,lane);};
+        const auto lane_value=[](const material::LocalValue& value,std::size_t lane) {
+            return std::visit([&](const auto& v)->double {
+                using T=std::decay_t<decltype(v)>;
+                if constexpr(std::same_as<T,float>) return v;
+                else if constexpr(std::same_as<T,material::TextureBinding>) return 0;
+                else return v[lane];
+            },value);
+        };
+        for(const auto& field:material.declarations) {
+            if(lowercase(title+L" "+assets::wide(field.path)).find(folded)==std::wstring::npos) continue;
+            const auto local=std::ranges::find(material.entries,field.path,&material::Override::path);
+            const bool overridden=local!=material.entries.end() && local->enabled;
+            // Disabled/mismatched local entries remain in the owning view; numbers show effective values.
+            PropertyRow row;row.key=key(field.path,Binding::Kind::property_row);row.title=assets::wide(field.path);
+            row.enabled=editable && overridden;row.override_available=!material.source;row.overridden=overridden;
+            row.inherit={key(field.path,Binding::Kind::material_override),editable};
+            if(!field.components) {
+                row.kind=PropertyRow::Kind::enumeration;row.target=key(field.path,Binding::Kind::material_texture);row.change={row.target,row.enabled};
+                const auto& binding=std::get<material::TextureBinding>(field.value);
+                const auto* entry=project?project->entry(binding.asset_key):nullptr;
+                row.choice=binding.asset_key.empty()?L"None":entry?entry->path.stem().wstring():assets::wide(binding.asset_key);
+                if(session.unavailable(assets::AssetKind::texture,binding.asset_key)) row.choice=L"(missing) "+row.choice;
+            } else {
+                row.edit.enabled=row.enabled;
+                for(std::size_t lane=0;lane<field.components;++lane) {
+                    const auto value=lane_value(field.value,lane),initial=lane_value(field.initial,lane);
+                    row.edit.fields.push_back({key(field.path,Binding::Kind::material_field,lane),field.components==1?L"":std::wstring(1,L"XYZW"[lane]),
+                        value,initial,-std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),.01,.001,static_cast<ui::VectorAxis>(lane+1)});
+                    row.edit.fields.back().single_precision=true;
+                }
+                row.target=row.edit.fields.front().key;row.change={row.target,row.enabled};
+                if(field.components>=3) {
+                    row.swatch=std::array{std::clamp(lane_value(field.value,0),0.,1.),std::clamp(lane_value(field.value,1),0.,1.),std::clamp(lane_value(field.value,2),0.,1.)};
+                    row.pick={key(field.path,Binding::Kind::color_pick),row.enabled};
+                    std::ranges::find(bindings_,row.pick.target,&Binding::key)->color_maximum=std::numeric_limits<float>::max();
+                }
+            }
+            row.help=property_help_.get(row.key,row.title,L"Material declaration · "+assets::wide(field.path),
+                "数值显示当前有效值。关闭覆盖会保留本地值；右键 Discard Local Entry 删除本地条目并恢复继承。");
+            rows->push_back(std::move(row).item());
+        }
+        for(const auto& entry:material.entries) if(std::ranges::find(material.declarations,entry.path,&MaterialParameterView::path)==material.declarations.end()) {
+            PropertyRow row;row.key=key(entry.path,Binding::Kind::property_row);row.title=assets::wide(entry.path)+L" (Undeclared)";
+            row.kind=PropertyRow::Kind::enumeration;row.choice=L"Retained local entry";row.target=row.key;row.enabled=false;row.change={row.key,false};
+            row.override_available=true;row.overridden=entry.enabled;row.inherit={key(entry.path,Binding::Kind::material_override),editable};
+            rows->push_back(std::move(row).item());
+        }
+        for(std::size_t i=0;i<material.diagnostics.size();++i) {
+            const auto& diagnostic=material.diagnostics[i];PropertyRow row;
+            row.key=key(diagnostic.path,Binding::Kind::saved_data,i);row.title=assets::wide(diagnostic.path);row.kind=PropertyRow::Kind::enumeration;
+            row.choice=assets::wide(diagnostic.message);row.target=row.key;row.enabled=false;row.change={row.key,false};rows->push_back(std::move(row).item());
+        }
+        groups->push_back({key({},Binding::Kind::property_group),{title,double(ui::ControlIcon::component),ui_language::ItemList{std::move(rows)}}});
+    };
     if(material_object!=ObjectId{}) {
-        append_properties(material_object);
+        append_material(material_object);
         std::wstring name=assets::wide(material_inspection);
         if(const auto* entry=project?project->entry(material_inspection):nullptr) name=entry->path.stem().wstring();
         const std::array<ui_language::InputValue,7> inputs{name,session.material_dirty(material_inspection),ui_language::ItemList{std::move(groups)},
@@ -1195,8 +1246,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     const auto append_object=[&](ObjectId object) {
         append_properties(object);
         const auto bindings=presentation::read_material_bindings(runtime,object);if(!bindings) return;
-        // Groups follow the mesh's slots. A slot showing its mesh default offers the same overrides; enabling
-        // one binds an instance of the default. Bindings kept for an unavailable mesh follow.
+        // Groups edit the actual shared document identity. Creating a scene MI is explicit in the slot menu.
         const auto mesh=take(presentation::read_static_mesh(runtime,object)).mesh;
         std::vector<const presentation::MaterialBinding*> shown;
         if(mesh.resolved) for(std::size_t i=0;i<mesh.resolved->materials().size();++i) {
@@ -1206,7 +1256,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 shown.push_back(&*fallback);
         }
         for(const auto& binding:*bindings) if(std::ranges::find(shown,&binding)==shown.end()) shown.push_back(&binding);
-        for(const auto* binding:shown) append_properties(binding->resource.id(),object,binding->slot);
+        for(const auto* binding:shown) append_material(binding->resource.id(),object,binding->slot);
     };
     if(inspected!=ObjectId{}) {
         append_object(inspected);
@@ -1301,7 +1351,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         else {
             const auto command_item=[&](Command command) {
                 const auto key=static_cast<ui::ControlKey>(command);const auto* definition=command_definition(key);
-                ui::MenuItem item{key,std::wstring(definition->title),command_enabled(command,session,project),false,{},std::wstring(definition->shortcut),definition->separator};
+                ui::MenuItem item{key,std::wstring(definition->title),command_enabled(command,session,project,command_focus),false,{},std::wstring(definition->shortcut),definition->separator};
                 const auto radio=[&](Command first,bool selected) {item.behavior=ui::MenuBehavior::radio;item.radio_group=static_cast<ui::ControlKey>(first);item.selected=selected;};
                 if(command>=Command::tool_select && command<=Command::tool_scale)
                     radio(Command::tool_select,key-static_cast<ui::ControlKey>(Command::tool_select)==std::size_t(viewport_settings.tool));
@@ -1475,8 +1525,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         item.behavior=ui::MenuBehavior::radio;item.radio_group=source->key;items.push_back(std::move(item));
                     }
                 }
-            } else if(const auto* target=binding(source->context_target);source->kind==ControlKind::combo && target &&
-                (target->kind==Binding::Kind::material_slot || target->kind==Binding::Kind::material_texture)) {
+            } else if(const auto* target=binding(source->context_target);target &&
+                (target->kind==Binding::Kind::material_slot || target->kind==Binding::Kind::material_texture || !target->material_path.empty())) {
                 items=material_menu(*target,session,project);
             } else if (auto asset_items=assets.menu_items(source->key);!asset_items.empty()) items=std::move(asset_items);
             else if (source->key==control::scene_shading) {
@@ -1600,6 +1650,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         ui_language::EditBinding rgb{control::color_group,true,false,{
             field(control::color_rgb,L"R",edit.value[0],edit.maximum,.005,ui::VectorAxis::x),field(control::color_rgb+1,L"G",edit.value[1],edit.maximum,.005,ui::VectorAxis::y),
             field(control::color_rgb+2,L"B",edit.value[2],edit.maximum,.005,ui::VectorAxis::z)}};
+        if(edit.material_entry) for(auto& channel:rgb.fields) {channel.minimum=-edit.maximum;channel.single_precision=true;}
         ui_language::EditBinding hsv_edit{control::color_group+1,true,false,{
             field(control::color_hsv,L"H",hsv[0],360,1,ui::VectorAxis::none),field(control::color_hsv+1,L"S",hsv[1],1,.005,ui::VectorAxis::none),
             field(control::color_hsv+2,L"V",hsv[2],edit.maximum,.005,ui::VectorAxis::none)}};
@@ -1615,7 +1666,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     }
     if (ui_document_->candidate_failed()) {
         reject_ui_controls(std::string(ui_error()));
-        return describe(session,size,frame,project,ui);
+        return describe(session,size,frame,project,ui,command_focus);
     }
     property_help_.end();
     return result;

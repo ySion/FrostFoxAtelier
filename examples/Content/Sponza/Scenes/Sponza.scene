@@ -4,21 +4,10 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "6",
           "materials": [],
           "mesh": "project/{8C05964C-1952-45D6-94BA-718C2AAAD150}",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -42,7 +31,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.65,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -75,21 +63,10 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "7",
           "materials": [],
           "mesh": "project/{701C5C3F-DB7A-4E38-8C57-C4B7298C6A4D}",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -113,7 +90,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.65,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -468,5 +444,5 @@
     "11",
     "13"
   ],
-  "version": 9
+  "version": 10
 }

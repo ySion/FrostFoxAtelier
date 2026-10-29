@@ -84,7 +84,7 @@ constexpr ui::ControlKey command_menu(ui::ControlKey key) {
 struct Workspace {
     struct Binding {
         enum class Kind { object, structure, property_group, field, slider, rotation, property_row, position_default, rotation_default, scale_default, name, navigation,
-            material_slot, material_texture, material_override, color_pick, saved_data };
+            material_slot, material_texture, material_override, material_field, color_pick, saved_data };
         ui::ControlKey key{};
         ObjectId object;
         std::vector<FieldId> path; // Empty for object rows; fields address the actual inspected object.
@@ -93,6 +93,7 @@ struct Workspace {
         std::string slot{};
         std::size_t index{};
         double color_maximum{}; // color_pick reuses the owning numeric property's range.
+        std::string material_path{}; // Stable MS declaration path; index is a vector lane.
     };
     Workspace();
     Workspace(const Workspace&)=delete;
@@ -126,6 +127,7 @@ struct Workspace {
         float x{}, y{};
         std::wstring hex;
         bool composition_failed{};
+        std::optional<material::Override> material_entry; // Keeps vector4 alpha; no fixed material schema.
     };
     std::optional<ColorEdit> color_edit;
     // Inline rename over a tree row: the renamed Entity, drawn once its row is presented.
@@ -145,9 +147,9 @@ struct Workspace {
     // Expands the Entity's Scene Tree ancestors; false when the tree filter hides its row.
     Result<bool> reveal_in_tree(const Session&,ObjectId entity);
     // Commands served by an operator answer with its poll.
-    bool command_enabled(Command,Session&,Project* = nullptr) const;
-    // Built from the focused Dock page until the keymap step; UI calls are interactive.
-    Context operator_context(Session&,Project*,bool interactive) const;
+    bool command_enabled(Command,Session&,Project* = nullptr,const ui::ControlBox* focused = nullptr) const;
+    // The accepted focused control (or a menu's return focus) identifies an inline material document.
+    Context operator_context(Session&,Project*,bool interactive,const ui::ControlBox* focused = nullptr) const;
     Result<bool> apply_view(Session&,const ui::Action&,std::array<float,3> focus = {});
     // Copies the World's environment into the view's author settings; true when they changed.
     bool sync_world(const Session&);
@@ -198,7 +200,8 @@ struct Workspace {
     bool pie_menu() const noexcept { return menu && menu->source==control::viewport &&
         (menu->group==control::viewport_shading_pie || menu->group==control::viewport_axis_pie); }
     // ui supplies tree scroll and focus; trees describe only rows near their viewport.
-    std::vector<ui::Control> describe(Session&, ui_layout::Size, const ui::UiFrame*,Project* = nullptr,const ui::Session* ui = nullptr);
+    std::vector<ui::Control> describe(Session&, ui_layout::Size, const ui::UiFrame*,Project* = nullptr,const ui::Session* ui = nullptr,
+        const ui::ControlBox* command_focus = nullptr);
     void reset_document();
     const Binding* binding(ui::ControlKey) const noexcept;
     ui::ControlKey object_control(ObjectId) const noexcept;
@@ -208,7 +211,7 @@ struct Workspace {
     std::optional<TypeId> component_choice(ui::ControlKey) const noexcept;
     struct PropertyChoice { ObjectId object; std::vector<FieldId> path; EnumValue value; ui::ControlKey field; };
     std::optional<PropertyChoice> property_choice(ui::ControlKey) const;
-    struct MaterialChoice {enum class Kind {assign,clear,edit,texture};Kind kind{};ObjectId object;std::string slot,key;std::size_t index{};};
+    struct MaterialChoice {enum class Kind {assign,clear,edit,texture,create_scene,discard};Kind kind{};ObjectId object;std::string slot{},key{},path{};};
     std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept {return menu_selection_;}
 private:
@@ -256,7 +259,7 @@ private:
     std::vector<MaterialChoice> material_choices_;
     Selection menu_selection_;
     ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
-    ui::ControlKey bind_material(ObjectId,std::span<const FieldId>,Binding::Kind,ObjectId component={},std::string_view slot={},std::size_t index=0);
+    ui::ControlKey bind_material(ObjectId,std::string_view,Binding::Kind,ObjectId component={},std::string_view slot={},std::size_t index=0);
     std::vector<ui::MenuItem> material_menu(const Binding&,const Session&,const Project*);
 };
 // The operator call serving a command, or none; menus and keys call operators directly in later O1 steps.

@@ -1,108 +1,274 @@
 {
-  "alpha_cutoff": 0.5,
-  "base_color": [
-    1.0,
-    1.0,
-    1.0,
-    1.0
-  ],
-  "coverage": "opaque",
-  "double_sided": true,
-  "emission_two_sided": true,
-  "emissive": [
-    0.0,
-    0.0,
-    0.0
-  ],
-  "metallic": 1.0,
-  "normal_scale": 1.0,
-  "normal_y_sign": 1.0,
-  "roughness": 1.0,
-  "textures": {
-    "base_color": {
-      "address": 0,
-      "channel": 0,
-      "offset": [
-        0.0,
-        0.0
-      ],
-      "rotation": 0.0,
-      "scale": [
+  "entries": [
+    {
+      "enabled": true,
+      "path": "base_color",
+      "type": "vector4",
+      "value": [
+        1.0,
+        1.0,
         1.0,
         1.0
-      ],
-      "source": "project/{5EC9FF81-67E4-4664-B075-F65635348936}"
+      ]
     },
-    "emissive": {
-      "address": 0,
-      "channel": 0,
-      "offset": [
-        0.0,
-        0.0
-      ],
-      "rotation": 0.0,
-      "scale": [
-        1.0,
-        1.0
-      ],
-      "source": ""
+    {
+      "enabled": true,
+      "path": "roughness",
+      "type": "float",
+      "value": 1.0
     },
-    "metallic": {
-      "address": 0,
-      "channel": 2,
-      "offset": [
-        0.0,
-        0.0
-      ],
-      "rotation": 0.0,
-      "scale": [
-        1.0,
-        1.0
-      ],
-      "source": "project/{36317EE6-30AA-4BB0-A979-061E709A74B0}"
+    {
+      "enabled": true,
+      "path": "metallic",
+      "type": "float",
+      "value": 1.0
     },
-    "normal": {
-      "address": 0,
-      "channel": 0,
-      "offset": [
-        0.0,
-        0.0
-      ],
-      "rotation": 0.0,
-      "scale": [
-        1.0,
-        1.0
-      ],
-      "source": "project/{4BC7A80C-227D-4B5D-90F4-FFAE69B6A69C}"
+    {
+      "enabled": true,
+      "path": "normal_scale",
+      "type": "float",
+      "value": 1.0
     },
-    "opacity": {
-      "address": 0,
-      "channel": 0,
-      "offset": [
-        0.0,
-        0.0
-      ],
-      "rotation": 0.0,
-      "scale": [
-        1.0,
-        1.0
-      ],
-      "source": ""
+    {
+      "enabled": true,
+      "path": "normal_y_sign",
+      "type": "float",
+      "value": 1.0
     },
-    "roughness": {
-      "address": 0,
-      "channel": 1,
-      "offset": [
+    {
+      "enabled": true,
+      "path": "emissive",
+      "type": "vector3",
+      "value": [
+        0.0,
         0.0,
         0.0
-      ],
-      "rotation": 0.0,
-      "scale": [
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "alpha_cutoff",
+      "type": "float",
+      "value": 0.5
+    },
+    {
+      "enabled": true,
+      "path": "base_color_texture",
+      "type": "texture",
+      "value": {
+        "address": "repeat",
+        "asset_key": "project/{5EC9FF81-67E4-4664-B075-F65635348936}"
+      }
+    },
+    {
+      "enabled": true,
+      "path": "base_color_uv.scale",
+      "type": "vector2",
+      "value": [
         1.0,
         1.0
-      ],
-      "source": "project/{36317EE6-30AA-4BB0-A979-061E709A74B0}"
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "base_color_uv.offset",
+      "type": "vector2",
+      "value": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "base_color_uv.rotation",
+      "type": "float",
+      "value": 0.0
+    },
+    {
+      "enabled": true,
+      "path": "roughness_texture",
+      "type": "texture",
+      "value": {
+        "address": "repeat",
+        "asset_key": "project/{36317EE6-30AA-4BB0-A979-061E709A74B0}"
+      }
+    },
+    {
+      "enabled": true,
+      "path": "roughness_uv.scale",
+      "type": "vector2",
+      "value": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "roughness_uv.offset",
+      "type": "vector2",
+      "value": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "roughness_uv.rotation",
+      "type": "float",
+      "value": 0.0
+    },
+    {
+      "enabled": true,
+      "path": "roughness_channel",
+      "type": "float",
+      "value": 1
+    },
+    {
+      "enabled": true,
+      "path": "metallic_texture",
+      "type": "texture",
+      "value": {
+        "address": "repeat",
+        "asset_key": "project/{36317EE6-30AA-4BB0-A979-061E709A74B0}"
+      }
+    },
+    {
+      "enabled": true,
+      "path": "metallic_uv.scale",
+      "type": "vector2",
+      "value": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "metallic_uv.offset",
+      "type": "vector2",
+      "value": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "metallic_uv.rotation",
+      "type": "float",
+      "value": 0.0
+    },
+    {
+      "enabled": true,
+      "path": "metallic_channel",
+      "type": "float",
+      "value": 2
+    },
+    {
+      "enabled": true,
+      "path": "normal_texture",
+      "type": "texture",
+      "value": {
+        "address": "repeat",
+        "asset_key": "project/{4BC7A80C-227D-4B5D-90F4-FFAE69B6A69C}"
+      }
+    },
+    {
+      "enabled": true,
+      "path": "normal_uv.scale",
+      "type": "vector2",
+      "value": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "normal_uv.offset",
+      "type": "vector2",
+      "value": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "normal_uv.rotation",
+      "type": "float",
+      "value": 0.0
+    },
+    {
+      "enabled": true,
+      "path": "emissive_texture",
+      "type": "texture",
+      "value": {
+        "address": "repeat",
+        "asset_key": ""
+      }
+    },
+    {
+      "enabled": true,
+      "path": "emissive_uv.scale",
+      "type": "vector2",
+      "value": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "emissive_uv.offset",
+      "type": "vector2",
+      "value": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "emissive_uv.rotation",
+      "type": "float",
+      "value": 0.0
+    },
+    {
+      "enabled": true,
+      "path": "opacity_texture",
+      "type": "texture",
+      "value": {
+        "address": "repeat",
+        "asset_key": ""
+      }
+    },
+    {
+      "enabled": true,
+      "path": "opacity_uv.scale",
+      "type": "vector2",
+      "value": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "opacity_uv.offset",
+      "type": "vector2",
+      "value": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "enabled": true,
+      "path": "opacity_uv.rotation",
+      "type": "float",
+      "value": 0.0
+    },
+    {
+      "enabled": true,
+      "path": "opacity_channel",
+      "type": "float",
+      "value": 0
     }
-  },
-  "version": 1
+  ],
+  "parent_key": "builtin/material/standard-opaque-double",
+  "role": "instance",
+  "version": 2
 }

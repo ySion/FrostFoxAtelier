@@ -7,6 +7,7 @@
 #include "editor/workspace.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
+#include "material/resources.hpp"
 #include "editor/graph_format.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/nodes.hpp"
@@ -42,6 +43,9 @@ void changed(Result<world::Commit> result) {
     if (commit.notification_error) throw std::runtime_error(commit.notification_error->message);
 }
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+material::ProgramSurfaceRef snapshot_surface(const application::SceneSnapshot& snapshot,std::size_t mesh=0,std::size_t slot=0) {
+    return snapshot.picking()->materials.at(snapshot.meshes.at(mesh).material_slots->at(slot));
+}
 void collect(editor::Session& document) { for (unsigned step = 0; step < 96; ++step) take(document.collect_step()); }
 void collect(Runtime& runtime) {
     if (runtime.collection_phase()==CollectionPhase::idle) take(runtime.begin_collection());

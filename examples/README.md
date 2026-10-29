@@ -18,6 +18,8 @@
 
 `Config` 保存工程配置，`Source` 保存共享业务源码（当前仅有占位文件），`Content/<名称>/` 收纳场景与资源，`Cache` 是可重建的本地缓存。新增场景保存到 Content；资源身份由 `.asset.json` 保持。克隆时需 `git lfs pull` 取得模型、glTF buffer、HDR 与贴图原文件；各资产许可见其目录。未被场景使用的 Synty 动画在[独立资源目录](../assets/animations/README.md)。
 
-14 个场景均为 Scene v9，包含普通主相机与 Environment 引用；**Project → Run** 使用场景主相机，不自动取景。编辑视口仍使用默认/当前视图：选择 Main Camera 后 **View from Camera** 可观察同一视点；用显示菜单选择 Scene Lit 或 Smooth。打开场景或使用 `--scene-lit-camera` 不拟合 DDGI，只有 **World Settings → Coverage → Fit Scene** 明确修改作者体积并进入撤销历史。
+14 个场景均为 Scene v10，包含普通主相机与 Environment 引用；材质使用 v2 MS/MI 作者格式，组件不再保存固定的颜色、粗糙度、金属度和发光字段。Sponza 引用网格默认 MI；Physic、Scene Lit Room 与 Dungeons 的场景局部 MI 保存原有作者外观，父材质为内置 StandardPBR。未赋材质的槽显示 DefaultWorldGrid，不自动生成白色 MI。
+
+**Project → Run** 使用场景主相机，不自动取景。编辑视口仍使用默认/当前视图：选择 Main Camera 后 **View from Camera** 可观察同一视点；用显示菜单选择 Scene Lit 或 Smooth。打开场景或使用 `--scene-lit-camera` 不拟合 DDGI，只有 **World Settings → Coverage → Fit Scene** 明确修改作者体积并进入撤销历史。
 
 `editor_examples_acceptance` 是无窗口内容验收：逐一严格加载全部场景，检查资源身份、主相机、材质槽及临时保存重开；不修改仓库场景。对应 Sponza、Scene Lit Room、Physic、Dungeons 的窗口验收使用普通工程入口，只在必要的隔离内容副本保存。

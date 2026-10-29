@@ -16,7 +16,6 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     model(access::EditorAcceptanceAccess::command(app,existing?Command::open_project:Command::new_project,atelier::assets::utf8(folder.wstring())));tick(app,4);
     const auto initial_count=entities(app).size();
     require((existing || initial_count==0) && !app.document().dirty(),"Project did not publish its clean initial scene.");
-    verify_about(app,folder.wstring());
     click(app,control::add_static_mesh);
     const auto entity=app.document().selection().entity;
     const auto field=property_control(app,entity,0);
@@ -27,7 +26,109 @@ void verify_project_window(Application& app,const std::filesystem::path& output,
     require(entities(app).size()==initial_count+1 && !app.document().dirty() && model(app.document().serialize())==*saved,
         "Opening the saved project lost scene data.");
     const auto current=model(app.document().world().members())[initial_count].id();
+
+    // Exercise inline material history before unrelated directory navigation.
+    // The selected scene has an independent, undoable edit.
+    {
+        using Access=access::EditorAcceptanceAccess;
+        auto project=model(atelier::editor::Project::open(folder));
+        atelier::assets::MaterialAsset author;
+        std::get<atelier::assets::MaterialInstanceAsset>(author.author).entries={{"roughness",.25f,true}};
+        const auto asset=model(project.create_material("Content/Materials/HistoryOwner.material",author));
+        model(Access::command(app,Command::refresh_assets));
+        auto& document=Access::physics_document(app);
+        const auto mesh=component(app,current,document.presentation_types().static_mesh_component);
+        model(document.assign_material(project,mesh,"slot/0",asset));
+        model(document.rename(current,L"Scene history sentinel"));model(app.save_scene());tick(app,2);
+        const auto material=document.loaded_material(asset);
+        const auto scene=model(document.serialize());const auto history=document.undo_count();
+        require(history>0,"Inline MI history fixture has no independent scene edit");
+        const auto roughness=[&](atelier::ObjectId object) {
+            const auto view=model(document.inspect_material(object));
+            const auto at=std::ranges::find(view.entries,"roughness",&atelier::material::Override::path);
+            require(at!=view.entries.end(),"Inline MI lost its authored roughness");
+            return std::get<float>(at->value);
+        };
+        click(app,app.object_control(current));
+        click(app,static_cast<ControlKey>(Command::show_structure));
+        click(app,Access::structure_control(app,mesh));
+        click(app,static_cast<ControlKey>(Command::show_parameters));
+        const auto field=Access::material_control(app,material,"roughness");
+        require(field && roughness(material)==.25f,"Component Parameters did not expose the shared MI field");
+        click(app,field);type(app,L"0.75");key(app,VK_RETURN);
+        require(roughness(material)==.75f && document.material_dirty(asset) && document.undo_count()==history && model(document.serialize())==scene,
+            "Inline shared MI edit changed scene history or failed to record the asset draft");
+        key(app,'Z',true);
+        std::printf("Inline MI Undo: roughness=%g, scene history=%zu/%zu\n",roughness(material),document.undo_count(),history);std::fflush(stdout);
+        require(roughness(material)==.25f && document.undo_count()==history && model(document.serialize())==scene,
+            "Inline shared MI Undo reached scene history instead of the edited material");
+        click(app,control::edit_menu);
+        const auto* undo=app.menu_frame()?app.menu_frame()->find(control::undo):nullptr;
+        require(undo && !undo->enabled,"Empty inline MI history left the scene Undo menu enabled");
+        key(app,VK_ESCAPE);key(app,'Z',true);
+        require(roughness(material)==.25f && document.undo_count()==history && model(document.serialize())==scene,
+            "Empty inline MI history fell through to the scene");
+        key(app,'Y',true);
+        require(roughness(material)==.75f && document.undo_count()==history && model(document.serialize())==scene,
+            "Inline shared MI Redo did not stay in material history");
+        key(app,'S',true);
+        require(!document.material_dirty(asset) && document.undo_count()==history && model(document.serialize())==scene,
+            "Inline shared MI Ctrl+S saved the scene instead of the material");
+        auto reopened=model(atelier::editor::Project::open(folder));
+        const auto disk=model(reopened.assets().material(asset));
+        const auto& entries=std::get<atelier::assets::MaterialInstanceAsset>(disk.author).entries;
+        const auto at=std::ranges::find(entries,"roughness",&atelier::material::Override::path);
+        require(at!=entries.end() && std::get<float>(at->value)==.75f &&
+            model(atelier::assets::read_file(folder/"Content/Scenes/Main.scene"))==scene,
+            "Inline MI save did not persist its value independently of the unchanged scene");
+        std::puts("Inline shared MI Undo/Redo/Save ownership: PASS");std::fflush(stdout);
+
+        click(app,field);type(app,L"0.5");key(app,VK_RETURN);
+        click(app,static_cast<ControlKey>(Command::show_entities));
+        click(app,app.object_control(current));key(app,'Z',true);
+        require(document.undo_count()==history-1 && document.name(current)!=L"Scene history sentinel" && roughness(material)==.5f,
+            "Scene Tree focus retained the inline material's Undo target");
+        key(app,'Y',true);
+        require(document.undo_count()==history && model(document.serialize())==scene && roughness(material)==.5f,
+            "Scene Tree Redo did not restore its independent scene edit");
+        click(app,property_control(app,current,0));type(app,L"9");key(app,VK_RETURN);
+        key(app,'Z',true);
+        require(x(app,current)==7 && roughness(material)==.5f && document.undo_count()==history,
+            "A scene field in Parameters retained the previous material history target");
+        key(app,'Y',true);key(app,'S',true);
+        const auto scene_position=model(document.serialize());
+        require(x(app,current)==9 && !document.dirty() && document.material_dirty(asset) &&
+            model(atelier::assets::read_file(folder/"Content/Scenes/Main.scene"))==scene_position,
+            "Scene-field Ctrl+S saved the old material target instead of the scene");
+        click(app,static_cast<ControlKey>(Command::show_structure));
+        click(app,Access::structure_control(app,mesh));
+        click(app,static_cast<ControlKey>(Command::show_parameters));
+        click(app,Access::material_control(app,material,"roughness"));key(app,VK_RETURN);key(app,'Z',true);
+        require(roughness(material)==.75f && !document.material_dirty(asset) && model(document.serialize())==scene_position,
+            "Returning to the inline material failed to restore its own saved author state");
+        std::puts("Inline MI selection/focus history isolation: PASS");std::fflush(stdout);
+
+        const auto local=model(document.create_scene_material(mesh,"slot/0"));
+        model(document.set_material_override(local.id(),"roughness",true,&project));model(app.save_scene());tick(app,2);
+        const auto local_history=document.undo_count();
+        click(app,Access::material_control(app,local.id(),"roughness"));type(app,L"0.125");key(app,VK_RETURN);
+        require(roughness(local.id())==.125f && document.undo_count()==local_history+1 && !document.material_dirty(asset),
+            "Scene MI edit did not enter scene history independently of its named parent");
+        key(app,'Z',true);
+        require(roughness(local.id())==.75f && document.undo_count()==local_history && roughness(material)==.75f,
+            "Scene MI Undo used the named parent's asset history");
+        key(app,'Y',true);key(app,'S',true);
+        require(roughness(local.id())==.125f && roughness(material)==.75f && !document.dirty() && !document.material_dirty(asset) &&
+            model(atelier::assets::read_file(folder/"Content/Scenes/Main.scene"))==model(document.serialize()),
+            "Scene MI Redo/Save did not stay in the scene document");
+        std::puts("Scene MI Undo/Redo/Save ownership: PASS");std::fflush(stdout);
+    }
+    click(app,static_cast<ControlKey>(Command::show_entities));
     click(app,app.object_control(current));
+    // Restore the position framed by open_project before the remaining capture cases.
+    click(app,property_control(app,current,0));type(app,L"7");key(app,VK_RETURN);key(app,'S',true);
+    require(x(app,current)==7 && !app.document().dirty(),"Material history fixture did not restore the framed scene position.");
+    verify_about(app,folder.wstring());
     require(app.presented()->find(browser::project)->kind==atelier::ui::ControlKind::tree_item &&
         app.presented()->find(browser::engine)->parent==browser::directories &&
         app.presented()->find(browser::project)->parent==browser::directories &&

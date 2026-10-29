@@ -10,7 +10,6 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
-#include "material/surface.hpp"
 
 namespace atelier::geometry {
 
@@ -31,6 +30,8 @@ struct MeshPart {
     std::uint32_t first_vertex{}, vertex_count{}, material{};
 };
 
+struct MaterialSlot { std::string name; };
+
 struct Bounds {
     std::array<float,3> minimum{}, maximum{};
 };
@@ -43,8 +44,20 @@ public:
     // No masks means all triangle edges. Producers preserve polygon boundaries
     // during triangulation; the renderer never guesses connectivity from positions.
     explicit Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {},
-                  std::vector<material::Slot> materials = {}, std::vector<MeshPart> parts = {},
+                  std::vector<MaterialSlot> materials = {}, std::vector<MeshPart> parts = {},
                   Tangents tangents = Tangents::generate)
+        : Mesh(std::move(vertices),std::move(edge_masks),std::move(materials),std::move(parts),tangents,false) {}
+    // Restores an already published snapshot: validates the triangle partition and
+    // finite, orthonormal tangent frames, but never renormalizes any float bits.
+    // Unlike author construction, slots and parts must already be explicit.
+    [[nodiscard]] static std::shared_ptr<const Mesh> restore_published(std::vector<Vertex> vertices,
+        std::vector<std::uint8_t> edge_masks,std::vector<MaterialSlot> materials,std::vector<MeshPart> parts) {
+        return std::shared_ptr<const Mesh>(new Mesh(std::move(vertices),std::move(edge_masks),
+            std::move(materials),std::move(parts),Tangents::authored,true));
+    }
+private:
+    Mesh(std::vector<Vertex> vertices,std::vector<std::uint8_t> edge_masks,
+         std::vector<MaterialSlot> materials,std::vector<MeshPart> parts,Tangents tangents,bool published)
         : vertices_(std::move(vertices)), edge_masks_(std::move(edge_masks)),
           materials_(std::move(materials)), parts_(std::move(parts)) {
         if (vertices_.empty() || vertices_.size() % 3 != 0 ||
@@ -54,6 +67,8 @@ public:
             throw std::invalid_argument("Mesh requires one edge mask per triangle.");
         for (auto mask : edge_masks_)
             if (mask > 7) throw std::invalid_argument("Mesh edge mask uses only three bits.");
+        if (published && (materials_.empty() || parts_.empty()))
+            throw std::invalid_argument("Published mesh requires explicit material slots and parts.");
         if (materials_.empty()) materials_.push_back({});
         if (parts_.empty()) parts_.push_back({0,static_cast<std::uint32_t>(vertices_.size()),0});
         std::uint64_t end=0;
@@ -63,8 +78,6 @@ public:
             end+=part.vertex_count;
         }
         if (end!=vertices_.size()) throw std::invalid_argument("Mesh parts must cover every vertex exactly once.");
-        for (const auto& slot : materials_)
-            if (!slot.surface) throw std::invalid_argument("Mesh material slot requires an immutable surface.");
         std::copy_n(vertices_.front().position,3,bounds_.minimum.begin());
         bounds_.maximum=bounds_.minimum;
         for (auto& vertex : vertices_) {
@@ -80,24 +93,34 @@ public:
                 if (!std::isfinite(value)) throw std::invalid_argument("Mesh normal must be finite.");
             const double length = std::hypot(double(vertex.normal[0]), double(vertex.normal[1]), double(vertex.normal[2]));
             if (length == 0) throw std::invalid_argument("Mesh normal must be nonzero.");
-            for (float& value : vertex.normal) value = static_cast<float>(value / length);
+            if (published) {
+                for (float value : vertex.tangent)
+                    if (!std::isfinite(value)) throw std::invalid_argument("Published mesh tangent must be finite.");
+                const auto* t=vertex.tangent;const auto* n=vertex.normal;
+                const double tangent_length=std::hypot(double(t[0]),double(t[1]),double(t[2]));
+                const double projection=double(t[0])*n[0]+double(t[1])*n[1]+double(t[2])*n[2];
+                // Published float frames include rounding from normalization/projection.
+                if (std::abs(length-1)>1e-5 || std::abs(tangent_length-1)>1e-5 ||
+                    std::abs(projection)>1e-5 || (t[3]!=1 && t[3]!=-1))
+                    throw std::invalid_argument("Published mesh requires an orthonormal tangent frame and handedness of 1 or -1.");
+            } else for (float& value : vertex.normal) value = static_cast<float>(value / length);
         }
-        if (tangents == Tangents::authored) adopt_tangents(vertices_);
-        else generate_tangents(vertices_);
+        if (!published) {
+            if (tangents == Tangents::authored) adopt_tangents(vertices_);
+            else generate_tangents(vertices_);
+        }
     }
+public:
     Mesh& operator=(const Mesh&) = delete;
     Mesh& operator=(Mesh&&) = delete;
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
     [[nodiscard]] const Bounds& bounds() const noexcept { return bounds_; }
-    [[nodiscard]] std::span<const material::Slot> materials() const noexcept { return materials_; }
+    [[nodiscard]] std::span<const MaterialSlot> materials() const noexcept { return materials_; }
     [[nodiscard]] std::span<const MeshPart> parts() const noexcept { return parts_; }
     [[nodiscard]] std::uint32_t material_slot(std::size_t triangle) const noexcept {
         const auto vertex=triangle*3;
         const auto at=std::upper_bound(parts_.begin(),parts_.end(),vertex,[](std::size_t first,const MeshPart& part){return first<part.first_vertex;});
         return std::prev(at)->material;
-    }
-    [[nodiscard]] bool has_materials() const noexcept {
-        return std::ranges::any_of(materials_, [](const auto& m) { return !m.name.empty(); });
     }
     [[nodiscard]] std::uint8_t edge_mask(std::size_t triangle) const noexcept {
         return edge_masks_.empty() ? std::uint8_t{7} : edge_masks_[triangle];
@@ -105,7 +128,7 @@ public:
 private:
     std::vector<Vertex> vertices_;
     std::vector<std::uint8_t> edge_masks_;
-    std::vector<material::Slot> materials_;
+    std::vector<MaterialSlot> materials_;
     std::vector<MeshPart> parts_;
     Bounds bounds_;
 };

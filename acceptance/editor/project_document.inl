@@ -8,7 +8,7 @@ void verify_project_document() {
                 mesh.mesh==take(assets::Reader{}.mesh(key)).mesh,"Engine-only readers lost built-in identity or shared content.");
             const auto dependency=take(engine.engine_dependency(key,assets::AssetKind::mesh));
             require(dependency.key==key && dependency.kind==assets::AssetKind::mesh && dependency.semantic_version==1 &&
-                dependency.digest_version==1 && dependency.content_sha256.size()==64 &&
+                dependency.digest_version==2 && dependency.digest_version==assets::mesh_digest_version && dependency.content_sha256.size()==64 &&
                 dependency.content_sha256==take(assets::mesh_content_sha256(mesh)),"Engine dependency did not describe its actual published mesh.");
         }
         require(engine.entries().empty() && engine.revision()==0 && !engine.mesh("builtin/unknown") &&
@@ -17,30 +17,47 @@ void verify_project_document() {
         require(!engine.engine_dependency("builtin/unknown",assets::AssetKind::mesh) &&
             !engine.engine_dependency("builtin/cube",assets::AssetKind::texture) &&
             !engine.engine_dependency("project/fake",assets::AssetKind::mesh),"An engine dependency trusted a prefix or a wrong kind.");
-        // The public content contract distinguishes alpha, dormant sampling and slot
-        // relationships, not object identity or the order of the binding vector.
-        material::Description surface;
-        const auto shape=[&](const material::Description& description,std::vector<std::uint8_t> edges) {
-            return std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
+        // v2 hashes geometry, slot relationships and default keys, not MI author values.
+        const auto shape=[](std::vector<std::uint8_t> edges,unsigned change=0) {
+            std::vector<geometry::Vertex> vertices{
                 {{0,0,0},{0,0,1},{0,0},{1,0,0,1}},{{2,0,0},{0,0,1},{1,0},{1,0,0,1}},{{0,3,0},{0,0,1},{0,1},{1,0,0,1}},
-                {{0,0,1},{0,0,1},{0,0},{1,0,0,1}},{{4,0,1},{0,0,1},{1,0},{1,0,0,1}},{{0,5,1},{0,0,1},{0,1},{1,0,0,1}}},
-                std::move(edges),std::vector<material::Slot>{{"paint",std::make_shared<const material::Surface>(description)},{"trim"}},
-                std::vector<geometry::MeshPart>{{0,3,0},{3,3,1}},geometry::Tangents::authored);
+                {{0,0,1},{0,0,1},{0,0},{1,0,0,1}},{{4,0,1},{0,0,1},{1,0},{1,0,0,1}},{{0,5,1},{0,0,1},{0,1},{1,0,0,1}}};
+            if(change==1) vertices[1].position[0]=2.5f;
+            return std::make_shared<const geometry::Mesh>(std::move(vertices),std::move(edges),
+                std::vector<geometry::MaterialSlot>{{"paint"},{change==3?"edge":"trim"}},
+                change==2?std::vector<geometry::MeshPart>{{0,3,1},{3,3,0}}:std::vector<geometry::MeshPart>{{0,3,0},{3,3,1}},
+                geometry::Tangents::authored);
         };
-        assets::MeshAsset content{"first",L"First",shape(surface,{}),{{"paint","project/A"},{"trim","project/B"}}};
+        assets::MeshAsset content{"first",L"First",shape({}),{{"paint","project/A"},{"trim","project/B"}}};
         const auto digest=take(assets::mesh_content_sha256(content));auto other=content;
-        other.key="second";other.name=L"Second";other.mesh=shape(surface,{7,7});std::ranges::reverse(other.materials);
+        other.key="second";other.name=L"Second";other.mesh=shape({7,7});std::ranges::reverse(other.materials);
         require(take(assets::mesh_content_sha256(other))==digest,"Mesh digest depends on identity, implicit edges or binding storage order.");
         std::swap(other.materials[0].key,other.materials[1].key);
         require(take(assets::mesh_content_sha256(other))!=digest,"Mesh digest lost the slot-to-material relationship.");
         other=content;other.materials.push_back({"paint","project/C"});
         require(!assets::mesh_content_sha256(other),"Mesh digest silently overwrote duplicate slot defaults.");
-        for(unsigned change=0;change<3;++change) {
-            other=content;auto changed_surface=surface;
-            if(change==0) changed_surface.parameters.base_color[3]=.375f;
-            if(change==1) changed_surface.texture(material::Input::opacity).offset[1]=.25f;
-            other.mesh=shape(changed_surface,change==2?std::vector<std::uint8_t>{5,3}:std::vector<std::uint8_t>{});
-            require(take(assets::mesh_content_sha256(other))!=digest,"Mesh digest omitted alpha, dormant sampling or visible edges.");
+        for(unsigned change=0;change<4;++change) {
+            other=content;other.mesh=shape(change==0?std::vector<std::uint8_t>{5,3}:std::vector<std::uint8_t>{},change);
+            if(change==3) other.materials[1].slot="edge";
+            require(take(assets::mesh_content_sha256(other))!=digest,"Mesh digest omitted geometry, visible edges, slot names or triangle-to-slot relationships.");
+        }
+        // Material policy and Source content have their own installed dependency digest.
+        const auto opaque=take(engine.engine_dependency("builtin/material/standard-opaque-double",assets::AssetKind::material));
+        const auto masked=take(engine.engine_dependency("builtin/material/standard-mask-double",assets::AssetKind::material));
+        require(opaque.digest_version==assets::material_digest_version && opaque.content_sha256.size()==64 &&
+            opaque==take(assets::Reader{}.engine_dependency(opaque.key,assets::AssetKind::material)) &&
+            masked.content_sha256.size()==64 && masked.content_sha256!=opaque.content_sha256 &&
+            !engine.engine_dependency(opaque.key,assets::AssetKind::mesh),"Material dependency lost its separate content digest or kind.");
+        assets::MaterialAsset material;material.author=assets::MaterialInstanceAsset{opaque.key,
+            {{"base_color",math::Vector4{1,1,1,1}},{"opacity_uv.offset",math::Vector2{},false}}};
+        const auto author=assets::material_format::encode(material);
+        for(unsigned change=0;change<2;++change) {
+            auto edited=material;auto& entries=std::get<assets::MaterialInstanceAsset>(edited.author).entries;
+            if(change==0) std::get<math::Vector4>(entries[0].value).w=.375f;
+            else std::get<math::Vector2>(entries[1].value).y=.25f;
+            const auto encoded=assets::material_format::encode(edited);
+            require(encoded!=author && assets::material_format::encode(assets::material_format::decode(encoded))==encoded &&
+                take(assets::mesh_content_sha256(content))==digest,"MI alpha or dormant sampling was lost or leaked into mesh content.");
         }
     }
     const auto evidence=fs::current_path()/"project-document-evidence"/std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
@@ -191,10 +208,9 @@ void verify_project_document() {
         require(kept->load_issues().size()==1 && kept->load_issues().front().kind==world::DiagnosticKind::mismatch &&
             nlohmann::json::parse(take(kept->serialize()))[at]==invalid[at],"Tolerant scene loading did not keep a mismatched saved value.");
     };
-    for (const auto field:{"position","scale","rotation","base_color"}) {
+    for (const auto field:{"position","scale","rotation"}) {
         auto invalid=serialized;
-        const bool color=std::string_view(field)=="base_color";
-        const auto at=nlohmann::json::json_pointer(color?"/entities/0/components/0/base_color":"/entities/0/space/"+std::string(field));
+        const auto at=nlohmann::json::json_pointer("/entities/0/space/"+std::string(field));
         invalid[at].push_back(999);
         kept_on_save(invalid,at,"Strict scene loading silently truncated a vector.");
     }
@@ -231,8 +247,8 @@ void verify_project_document() {
     require(!project.import_mesh(orphan) && !fs::exists(folder/"Content/Meshes/Orphan.obj") &&
         take(assets::read_file(folder/"Content/Meshes/Orphan.obj.asset.json"))==metadata_text,"Import claimed or replaced orphan resource metadata.");
     {
-        // The orphan is ignored until the import publishes its BMP. Only the final refresh
-        // then reads this unsupported version; a preflight or write failure cannot produce it.
+        // The orphan is absent from the catalogue. The transaction now protects its
+        // identity file during preflight, before publishing the BMP or any other file.
         const auto source=evidence/"refresh-source",target=folder/"Content/Meshes/Refresh";
         std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
         for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
@@ -244,19 +260,20 @@ void verify_project_document() {
         take(project.refresh());const auto revision=project.revision();
         const std::vector<assets::ProjectEntry> entries(project.entries().begin(),project.entries().end());
         const auto rejected=project.import_mesh(source/"Refresh.obj");
-        std::printf("Final-refresh fixture import result: %s\n",rejected?"accepted":rejected.error().message.c_str());
-        require(!rejected && rejected.error().message=="Unsupported resource metadata version.",
-            "Import did not reach the final refresh's newly published BMP metadata.");
+        std::printf("Orphan-texture fixture import result: %s\n",rejected?"accepted":rejected.error().message.c_str());
+        require(!rejected && rejected.error().message.starts_with("Import would overwrite an unrelated or unverified file:") &&
+            rejected.error().message.find("color.bmp.asset.json")!=std::string::npos,
+            "Import did not reject the existing orphan texture identity before publication.");
         require(project.revision()==revision && std::ranges::equal(project.entries(),entries) &&
             take(project.assets().mesh(resource)).mesh==original_mesh && take(assets::read_file(metadata))==metadata_text &&
             take(assets::read_file(target/"color.bmp.asset.json"))==broken &&
             std::ranges::all_of(fs::directory_iterator(target),[](const auto& file){return file.path().filename()==L"color.bmp.asset.json";}),
-            "Final-refresh rollback changed the accepted catalog/cache or kept owned files.");
+            "Rejected orphan texture import changed the accepted catalog/cache or kept owned files.");
         fs::remove(target/"color.bmp.asset.json");
         require(take(project.assets().mesh(take(project.import_mesh(source/"Refresh.obj")))).mesh!=nullptr &&
             fs::exists(target/"Refresh.obj.asset.json") && fs::exists(target/"scene.mtl") && take(assets::read_file(target/"color.bmp"))==bmp,
-            "Final-refresh import could not retry after metadata repair.");
-        std::puts("Import final-refresh rollback: PASS (unsupported BMP metadata; initial refresh accepted; catalog/cache/files preserved; retry)");
+            "Import could not retry after orphan texture metadata repair.");
+        std::puts("Import orphan-texture rejection: PASS (existing identity protected before publication; catalog/cache/files preserved; retry)");
     }
     // The real catalogue, including its tail and imports, is not capped at 10000 entries.
     const auto capacity_entries=10005-project.entries().size();
@@ -310,10 +327,30 @@ void verify_project_document() {
             "Tolerant loading did not keep a missing mesh reference verbatim with one diagnostic.");
     }
     require(take(document.serialize())==saved,"Failed loading changed the original document.");
-    const auto material=take(presentation::read_static_mesh(document.world().runtime(),mesh)).material;
-    take(document.world().runtime().with_native<presentation::StaticMeshComponent>(mesh,[](auto& value)->Result<void>{value.material.base_color.x=2;return {};}));
-    require(!document.serialize(),"Save produced a material that its own loader rejects.");
-    take(document.world().runtime().with_native<presentation::StaticMeshComponent>(mesh,[&](auto& value)->Result<void>{value.material=material;return {};}));
+    {
+        // Material vectors now belong to typed scene MI entries, not mesh-component fields.
+        editor::Session authored;changed(authored.create_static_mesh(assets::mesh_assets().front()));
+        const auto body=component(authored,authored.selection().entity,authored.presentation_types().static_mesh_component);
+        take(authored.assign_material(reopened,body,"slot/0","builtin/material/standard-opaque-double"));
+        const auto instance=take(authored.create_scene_material(body,"slot/0"));
+        take(authored.begin_material_edit(instance.id(),304));
+        take(authored.preview_material_entry(304,{"base_color",math::Vector4{.2f,.3f,.4f,.5f}}));
+        take(authored.commit_material_edit(304));
+        const auto valid=take(authored.serialize());
+        auto copy=take(editor::Session::deserialize(valid,reopened,{},editor::LoadPolicy::strict));
+        require(take(copy->serialize())==valid,"Typed scene MI values did not roundtrip.");
+        auto invalid=nlohmann::json::parse(valid);bool damaged{};
+        for(auto& material:invalid["materials"]) if(material.contains("entries"))
+            for(auto& entry:material["entries"]) if(entry["path"]=="base_color") {entry["value"].push_back(999);damaged=true;}
+        require(damaged && !editor::Session::deserialize(invalid.dump(),reopened,{},editor::LoadPolicy::strict) &&
+            !editor::Session::deserialize(invalid.dump(),reopened),"Scene loading silently truncated a typed MI vector.");
+        const auto original=take(material::read_instance(authored.world().runtime(),instance.id()));auto invalid_state=original;
+        std::get<math::Vector4>(invalid_state.entries.front().value).x=std::numeric_limits<float>::quiet_NaN();
+        take(material::update_instance(authored.world().runtime(),instance.id(),invalid_state));
+        require(!authored.serialize(),"Save produced nonfinite MI author data that its own loader rejects.");
+        take(material::update_instance(authored.world().runtime(),instance.id(),original));
+        require(take(authored.serialize())==valid,"Repairing invalid MI data changed the saved scene.");
+    }
     take(presentation::set_geometry(document.world().runtime(),mesh,assets::mesh_assets().front().mesh));
     require(take(presentation::read_static_mesh(document.world().runtime(),mesh)).mesh.source.empty() && !document.serialize(),
         "Unattributed procedural geometry retained stale provenance or was silently saved.");

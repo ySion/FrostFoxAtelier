@@ -4,7 +4,7 @@
 
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
-光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v9 保存并进入 Session 撤销历史。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
+光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v10 保存并进入 Session 撤销历史。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
 
 实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线。管线按视图设置分组，在 RHI 工作线程上准备，未就绪的帧返回 not_ready（见 [Renderer 合同](contract.md#场景和-ui)）；采样器、查询、读回与查找表在第一个编码的 Lit 帧创建。关闭与尺寸变化沿既有 gfx 退休机制处理。
 
@@ -207,7 +207,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 World 页统一编辑光照与效果的作者配置，进入同一 World 值和 Session 历史，包括 Shadows、DDGI、GTAO、SSSR、Bloom、抗锯齿、曝光和探针命中点的光源候选预算。诊断仅改变视口偏好。Scene View 显示菜单只切换着色与边线预览。Control 临时渲染对照使用独立求值覆盖，不写入场景或撤销历史。
 
-**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v9 保存；`spatial_light_sampling`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。Diagnostics 的 Spatial light sampling 默认开启，关闭后 DDGI 命中点的 fresh RIS 使用完整全局 proposal；此开关由统一 ViewOption/Control 入口读写，不写 World、Scene 或 Session 撤销历史，也不关闭 CPU 网格维护和已有 GPU 缓冲的驻留。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
+**Window → World Settings** 打开可停靠的 World 配置页，分为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 的 `direct_candidates`、覆盖布局与共享传播作者参数随 Scene v10 保存；`spatial_light_sampling`、探针球、接收面指标、体积/重定位叠层以及反馈可见性诊断留在视口。Diagnostics 的 Spatial light sampling 默认开启，关闭后 DDGI 命中点的 fresh RIS 使用完整全局 proposal；此开关由统一 ViewOption/Control 入口读写，不写 World、Scene 或 Session 撤销历史，也不关闭 CPU 网格维护和已有 GPU 缓冲的驻留。本帧 CPU 布局读数仍是瞬时状态。Coverage 提供明确的 Fit Scene 与 Scene + Follow Focus 操作；字段草稿在提交时整体校验，UI 与 Control 不各建一套参数语义。具体页面和交互见[编辑器场景光照](../editor/README.md#场景光照)。
 
 `SceneLitSettings::antialiasing` 为 `Antialiasing::{none,taa,smaa,smaa_t2x}`，菜单显示 Off / TAA / SMAA / SMAA T2x，默认 SMAA。所有模式均使用原生分辨率：
 

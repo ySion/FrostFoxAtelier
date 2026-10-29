@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{A330D762-46C3-5E1F-9824-F31D8F7798D9}"
+  "id": "{A330D762-46C3-5E1F-9824-F31D8F7798D9}",
+  "materials": {
+    "slot_0": "project/{172E063D-2C79-57CB-B2EA-8E85FA00A0CD}"
+  },
+  "version": 1
 }

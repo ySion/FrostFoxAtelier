@@ -1,5 +1,30 @@
-// Real Project/Runtime/World/Session/DSL/SceneSnapshot consumer. No mocks or
-// desktop input. Renderer quality remains the renderer's actual GPU consumer.
+// Real Project/Source compiler/Runtime/Session/DSL/SceneSnapshot consumers.
+// Arbitrary declarations deliberately differ from the installed StandardPBR MS.
+constexpr std::string_view editor_material_source=R"(
+struct Params { float gain; vector2 offset; vector3 tint; vector4 coat; };
+struct Textures { material.TextureInput albedo; };
+Params defaults() { Params p; p.gain=0.4; p.offset=vector2(0.0,0.0);
+    p.tint=vector3(0.2,0.3,0.4); p.coat=vector4(0.1,0.2,0.3,0.7); return p; }
+material.Output shade(material.Context c, Params p, Textures t) {
+    vector4 color=sample(t.albedo,c.uv+p.offset); material.Output o;
+    o.base_color=vector3(color.x*p.tint.x,color.y*p.tint.y,color.z*p.tint.z);
+    o.emissive=vector3(p.coat.x,p.coat.y,p.coat.z); o.roughness=p.gain;
+    o.metallic=p.coat.w; o.coverage=1.0; o.normal_world=c.normal_world; return o;
+})";
+material::LocalValue material_value(const editor::Session& session,ObjectId object,std::string_view path) {
+    const auto view=take(session.inspect_material(object));
+    const auto at=std::ranges::find(view.declarations,path,&editor::MaterialParameterView::path);
+    require(at!=view.declarations.end(),"Material declaration disappeared.");return at->value;
+}
+void edit_material_entry(editor::Session& session,ObjectId object,material::Override entry,std::uint64_t control) {
+    take(session.begin_material_edit(object,control));take(session.preview_material_entry(control,std::move(entry)));take(session.commit_material_edit(control));
+}
+std::string create_editor_material_source(editor::Project& project) {
+    const auto key=take(project.create_material_source("Content/Materials/Arbitrary.ms.material",editor_material_source));
+    auto asset=take(project.assets().material(key));
+    std::get<assets::MaterialSourceAsset>(asset.author).inputs={{"albedo",{},material::TextureColor::linear,{1,1,1,1}}};
+    take(project.save_material(asset));return key;
+}
 void verify_material_resources() {
     namespace fs=std::filesystem;
     const auto evidence=fs::absolute("out/material-resources-"+std::to_string(GetCurrentProcessId())+"-"+
@@ -9,407 +34,374 @@ void verify_material_resources() {
     for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
     take(editor::write_file(evidence/"Red.bmp",bmp));
     const auto texture=take(project.import_texture(evidence/"Red.bmp"));
-    const auto key=take(project.create_material("Content/Materials/./Unused/../Stone.material"));
+    const auto source_key=create_editor_material_source(project);
+    assets::MaterialAsset author;std::get<assets::MaterialInstanceAsset>(author.author).parent_key=source_key;
+    const auto key=take(project.create_material("Content/Materials/./Unused/../Stone.material",author));
     const auto material_path=project.root()/"Content/Materials/Stone.material";
     auto metadata_path=material_path;metadata_path+=L".asset.json";
     const auto material_bytes=take(assets::read_file(material_path)),metadata_bytes=take(assets::read_file(metadata_path));
     const auto catalog_revision=project.revision();
-    require(take(editor::Project::open(project.root())).assets().material(key).has_value(),"Normalized material path did not survive reopening the project.");
-    require(!project.create_material("Content/Materials/Stone.material") &&
-        !project.create_material("Content/Materials/Unused/../Stone.material"),"Material creation overwrote an existing resource.");
+    require(take(editor::Project::open(project.root())).assets().material(key).has_value(),"Normalized material path did not survive reopening.");
+    require(!project.create_material("Content/Materials/Stone.material",author) &&
+        !project.create_material("Content/Materials/Unused/../Stone.material",author),"Material creation overwrote an existing resource.");
     require(project.revision()==catalog_revision && take(assets::read_file(material_path))==material_bytes &&
         take(assets::read_file(metadata_path))==metadata_bytes && !fs::exists(project.root()/"Content/Materials/Unused"),
-        "Rejected material creation changed an existing file, identity or catalog.");
-    require(!project.create_material("Content/../Source/Escaped.material") &&
-        !project.create_material("Content/../../Escaped.material") && !fs::exists(project.root()/"Source/Escaped.material") &&
-        !fs::exists(evidence/"Escaped.material"),"Material path normalization escaped Content.");
-    editor::Session document;auto resource=take(document.material_resource(project.assets(),key));
-    require(take(document.material_resource(project.assets(),key)).id()==resource.id(),"A shared material acquired a second Runtime identity.");
-    take(document.set_material_texture(project,resource.id(),material::Input::base_color,texture));
-    const auto find_property=[&](ObjectId object,std::string_view name) {
-        auto properties=take(document.properties(object));const auto at=std::ranges::find(properties,name,&editor::Property::name);
-        require(at!=properties.end(),"Material reflection is incomplete.");return *at;
-    };
-    const auto roughness=find_property(resource.id(),"parameters.roughness");
-    const auto red=find_property(resource.id(),"parameters.base_color.x");
-    take(document.set_property(resource.id(),roughness.path,Scalar{.4f},110));
-    require(document.material_dirty(key) && !document.dirty(),"Asset editing polluted scene dirty state.");
-    take(document.save_material(project,key));
-    auto& runtime=document.world().runtime();
-    const auto saved_state=take(material::read_material(runtime,resource.id()));
-    const auto saved_surface=take(material::capture(runtime,resource.id()));
-    auto transient_texture=take(material::create_texture(runtime,{},take(project.assets().texture(texture)).image));
-    auto invalid_state=saved_state;invalid_state.textures[0]=std::move(transient_texture);invalid_state.description.parameters.roughness=.2f;
-    require(!material::update_material(runtime,resource.id(),invalid_state),"A persistent material accepted a texture without a persistent source.");
-    const auto retained_state=take(material::read_material(runtime,resource.id()));
-    require(take(material::capture(runtime,resource.id()))==saved_surface && retained_state.description==saved_state.description &&
-        retained_state.textures[0].reference()==saved_state.textures[0].reference() &&
-        take(document.material_asset(resource.id())).textures[0]==texture && !document.material_dirty(key),
-        "Rejected texture binding changed the saved material, references or published surface.");
-    take(document.begin_edit(resource.id(),roughness.path,115));take(document.preview_edit(115,.9f));
-    take(document.set_material_texture(project,resource.id(),material::Input::base_color,texture));
-    require(take(material::capture(document.world().runtime(),resource.id()))->description().parameters.roughness==.4f &&
-        !document.material_dirty(key),"Changing a texture committed a cancelled parameter draft or created no-op history.");
+        "Rejected creation changed the file, identity or catalog.");
+    require(!project.create_material("Content/../Source/Escaped.material",author) &&
+        !project.create_material("Content/../../Escaped.material",author) && !fs::exists(evidence/"Escaped.material"),"Material creation escaped Content.");
+    require(!project.create_material_source("Content/Wrong.material",editor_material_source),"MS creation accepted an MI suffix.");
+    editor::Session document;auto& runtime=document.world().runtime();
+    const auto resource=take(document.open_material(project,key)),source=take(document.open_material(project,source_key));
+    require(take(document.open_material(project,key)).id()==resource.id(),"Shared asset acquired another Runtime identity.");
+    const auto inspection=take(document.inspect_material(resource.id()));
+    require(!inspection.source && !inspection.scene && inspection.parent_key==source_key && inspection.declarations.size()==5 &&
+        inspection.source_file && inspection.source_file->source==editor_material_source && !document.material_sources().empty(),
+        "Owning inspection lost the MI role, arbitrary declarations or exact MS source text.");
+    require(!document.properties(resource.id()) && !document.begin_material_edit(source.id(),100),"A material used fixed reflection editing or an MS accepted MI entries.");
+    take(document.begin_material_edit(resource.id(),101));take(document.preview_material_entry(101,{"gain",.8f,true}));
+    require(std::get<float>(material_value(document,resource.id(),"gain"))==.8f,"Preview did not publish.");
+    take(document.cancel_material_edit());
+    require(take(document.inspect_material(resource.id())).entries.empty() && !document.material_dirty(key),"First preview cancel did not restore absence.");
+    edit_material_entry(document,resource.id(),{"gain",.8f,true},102);
+    require(document.material_dirty(key) && !document.dirty(),"Named MI editing dirtied the scene.");
+    take(document.set_material_override(resource.id(),"gain",false));
+    const auto dormant=take(document.inspect_material(resource.id()));
+    require(!dormant.entries.front().enabled && std::get<float>(dormant.entries.front().value)==.8f &&
+        std::get<float>(material_value(document,resource.id(),"gain"))==.4f,"Disabling an entry erased its value or failed inheritance.");
+    take(document.material_undo(key));require(std::get<float>(material_value(document,resource.id(),"gain"))==.8f,"Named MI undo lost enabled intent.");
+    take(document.material_undo(key,true));take(document.set_material_override(resource.id(),"gain",true));
+    edit_material_entry(document,resource.id(),{"gain",math::Vector2{.1f,.2f},true},103);
+    require(std::get<float>(material_value(document,resource.id(),"gain"))==.4f && !take(document.inspect_material(resource.id())).diagnostics.empty() &&
+        std::holds_alternative<math::Vector2>(take(document.inspect_material(resource.id())).entries.front().value),"Type mismatch erased author data or did not diagnose/inherit.");
+    take(document.material_undo(key));
+    take(document.begin_material_edit(resource.id(),104));
+    require(!document.preview_material_entry(104,{"gain",std::nanf(""),true}),"Nonfinite author value crossed the strict codec boundary.");
+    take(document.cancel_material_edit());
+    take(document.discard_material_override(resource.id(),"gain"));
+    require(take(document.inspect_material(resource.id())).entries.empty(),"Discard left a local entry.");
+    take(document.material_undo(key));require(std::get<float>(material_value(document,resource.id(),"gain"))==.8f,"Discard undo lost the author value.");
+    take(document.set_material_texture(project,resource.id(),"albedo",texture));
+    edit_material_entry(document,resource.id(),{"gain",.75f,true},105);
+    // An out-of-band author change to another path must not be rolled back by parameter history.
+    auto native=take(material::read_instance(runtime,resource.id()));native.entries.push_back({"tint",math::Vector3{.6f,.5f,.4f},true});native.textures.emplace_back();
+    take(material::update_instance(runtime,resource.id(),native));take(document.material_undo(key));
+    require(std::get<float>(material_value(document,resource.id(),"gain"))==.8f &&
+        std::get<math::Vector3>(material_value(document,resource.id(),"tint"))==math::Vector3{.6f,.5f,.4f},"Undo restored an entire stale material instead of one path.");
+    take(document.save_material(project,key));require(!document.material_dirty(key),"Save did not mark the named MI author entries clean.");
+    assets::MaterialAsset child_author;std::get<assets::MaterialInstanceAsset>(child_author.author).parent_key=key;
+    const auto child_key=take(project.create_material("Content/Materials/Child.material",child_author));
+    const auto child=take(document.open_material(project,child_key));
+    require(!take(document.inspect_material(child.id())).scene && take(material::read_instance(runtime,child.id())).parent.id()==resource.id(),"Named MI identity was inferred from parent presence.");
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));const auto entity_a=document.selection().entity;
     const auto a=component(document,entity_a,document.presentation_types().static_mesh_component);
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube")),{2,0,0}));const auto entity_b=document.selection().entity;
     const auto b=component(document,entity_b,document.presentation_types().static_mesh_component);
-    take(document.assign_material(project,a,"slot/0",key));take(document.assign_material(project,b,"slot/0",key));
-    const auto count=document.undo_count();take(document.assign_material(project,a,"slot/0",key));
-    require(document.undo_count()==count,"Idempotent slot assignment created history.");
-    take(document.set_material_override(a,"slot/0",roughness.path,true));
-    const auto instance=take(presentation::read_material_bindings(document.world().runtime(),a)).front().resource;
-    require(instance.id()!=resource.id(),"Instance override changed the shared asset identity.");
-    require(!material::create_instance(document.world().runtime(),instance),"A second material inheritance level was accepted.");
-    auto cyclic=take(material::read_material(document.world().runtime(),instance.id()));cyclic.parent=instance;
-    require(!material::update_material(document.world().runtime(),instance.id(),cyclic),"Material inherited itself.");
-    take(document.set_property(instance.id(),roughness.path,Scalar{.8f},111));
-    const auto override_history=document.undo_count();
-    take(document.begin_edit(instance.id(),roughness.path,116));take(document.preview_edit(116,.1f));
-    take(document.set_material_override(a,"slot/0",roughness.path,true));
-    require(!document.material_editing(116) && document.undo_count()==override_history &&
-        take(material::capture(document.world().runtime(),instance.id()))->description().parameters.roughness==.8f,
-        "Idempotent override assignment retained an unfinished parameter draft.");
-    take(document.set_property(resource.id(),red.path,Scalar{.25f},112));
-    const auto capture=[&](ObjectId id){return take(presentation::material_surfaces(document.world().runtime(),id))->front();};
-    require(capture(a)->description().parameters.roughness==.8f && capture(b)->description().parameters.roughness==.4f &&
-        capture(a)->description().parameters.base_color[0]==.25f && capture(b)->description().parameters.base_color[0]==.25f,
-        "Explicit roughness override stopped inheriting the parent's color.");
-    take(document.material_undo(key));require(capture(a)->description().parameters.base_color[0]==1,"Shared material undo missed its instances.");
-    take(document.material_undo(key,true));
-    take(document.begin_edit(instance.id(),roughness.path,113));take(document.preview_edit(113,.1f));take(document.cancel_edit());
-    require(capture(a)->description().parameters.roughness==.8f,"Cancelling an instance edit lost its original value.");
-    require(!document.set_property(instance.id(),roughness.path,Scalar{std::nanf("")},114),"Invalid material value was published.");
-    require(capture(a)->description().parameters.roughness==.8f,"Rejected value damaged the last valid material.");
-    // Roughness is bounded to 0–1: like every Runtime write, a larger value clamps instead of failing.
-    take(document.begin_edit(instance.id(),roughness.path,117));take(document.preview_edit(117,2.f));
-    require(capture(a)->description().parameters.roughness==1,"A material value above its hard maximum did not clamp to it.");
-    take(document.cancel_edit());
-    take(document.set_material_override(a,"slot/0",roughness.path,false));
-    require(capture(a)->description().parameters.roughness==.4f,"Clearing an override did not restore inheritance.");
-    changed(document.undo());require(capture(a)->description().parameters.roughness==.8f,"Scene undo did not restore override intent.");
-    changed(document.redo());require(capture(a)->description().parameters.roughness==.4f,"Scene redo lost inherited state.");
-    changed(document.undo());
-    application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto surfaces=snapshot.meshes.at(0).surfaces;
-    take(snapshot.refresh(document));require(surfaces && snapshot.meshes.at(0).surfaces==surfaces,"Unchanged material rebuilt renderer snapshots.");
-    // A shared asset edit changes no component byte; the slot surfaces capture finds it.
-    take(document.set_property(resource.id(),red.path,Scalar{.5f},119));
-    const auto built=snapshot.built;take(snapshot.refresh(document));
-    require(snapshot.built>built && snapshot.meshes.at(0).surfaces!=surfaces &&
-        snapshot.meshes.at(0).surfaces->front()->description().parameters.base_color[0]==.5f,
-        "A shared material edit did not reach the renderer snapshot.");
-    take(document.material_undo(key));
+    take(document.assign_material(project,a,"slot/0",child_key));take(document.assign_material(project,b,"slot/0",child_key));
+    const auto count=document.undo_count();take(document.assign_material(project,a,"slot/0",child_key));
+    require(document.undo_count()==count,"Idempotent binding created history.");
+    const auto scene_instance=take(document.create_scene_material(a,"slot/0"));
+    require(take(document.inspect_material(scene_instance.id())).scene && take(material::read_instance(runtime,scene_instance.id())).parent.id()==child.id(),"Scene MI did not inherit the current binding.");
+    const std::array shared{presentation::MaterialBinding{"slot/0",scene_instance,true}};take(presentation::set_material_bindings(runtime,b,shared));
+    take(document.begin_material_edit(scene_instance.id(),106));take(document.preview_material_entry(106,{"offset",math::Vector2{.2f,.3f},true}));take(document.cancel_edit());
+    require(take(document.inspect_material(scene_instance.id())).entries.empty(),"Scene first preview cancel kept a sparse entry.");
+    edit_material_entry(document,scene_instance.id(),{"gain",.9f,true},107);
+    const auto capture=[&](ObjectId mesh){return take(presentation::material_surfaces(runtime,mesh))->front();};
+    require(take(capture(a)->evaluate({})).roughness==.9f && take(capture(b)->evaluate({})).roughness==.9f,"Shared scene MI was not editable.");
+    changed(document.undo());require(take(capture(a)->evaluate({})).roughness==.8f,"Scene undo did not restore inherited current values.");changed(document.redo());
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));const auto surfaces=snapshot.picking();
+    take(snapshot.refresh(document));require(snapshot.picking()==surfaces,"Unchanged program surfaces rebuilt the snapshot.");
+    edit_material_entry(document,resource.id(),{"tint",math::Vector3{.25f,.5f,.75f},true},108);take(snapshot.refresh(document));
+    require(snapshot.picking()!=surfaces && take(snapshot_surface(snapshot)->evaluate({})).base_color.x==.25f,
+        "An ancestor MI edit failed to reach SceneSnapshot.");
     take(document.save_material(project,key));
-    auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
-    auto changed_parent=take(project.assets().material(key));changed_parent.description.parameters.base_color[1]=.35f;
-    take(project.save_material(changed_parent));
-    auto reopened=take(editor::Session::deserialize(take(assets::read_file(project.root()/"Content/Scenes/Main.scene")),project));
-    const auto reopened_entities=take(reopened->world().members());
-    const auto reopened_a=component(*reopened,reopened_entities[0].id(),reopened->presentation_types().static_mesh_component);
-    const auto reopened_b=component(*reopened,reopened_entities[1].id(),reopened->presentation_types().static_mesh_component);
-    const auto reopened_bindings=take(presentation::read_material_bindings(reopened->world().runtime(),reopened_a));
-    require(take(material::read_material(reopened->world().runtime(),reopened_bindings[0].resource.id())).overrides!=0,
-        "Scene serialization inferred away explicit override intent.");
-    require(take(presentation::material_surfaces(reopened->world().runtime(),reopened_a))->front()->description().parameters.roughness==.8f &&
-        take(presentation::material_surfaces(reopened->world().runtime(),reopened_b))->front()->description().parameters.roughness==.4f,
-        "Material inheritance did not survive project save/reopen.");
-    const auto reopened_surface=take(presentation::material_surfaces(reopened->world().runtime(),reopened_a))->front();
-    require(reopened_surface->description().parameters.base_color[1]==.35f,"Saved instance values replaced a later parent-asset change.");
-    reopened.reset();require(bool(reopened_surface->description().textures[0].image),"Closing a Runtime invalidated its published texture content.");
+    const auto serialized=take(document.serialize());take(editor::write_file(project.root()/"Content/Scenes/Main.scene",serialized));
+    auto reopened=take(editor::Session::deserialize(serialized,project,{},editor::LoadPolicy::strict));
+    const auto entities=take(reopened->world().members());
+    const auto reopened_a=component(*reopened,entities[0].id(),reopened->presentation_types().static_mesh_component);
+    const auto reopened_b=component(*reopened,entities[1].id(),reopened->presentation_types().static_mesh_component);
+    const auto ra=take(presentation::read_material_bindings(reopened->world().runtime(),reopened_a)).front().resource;
+    const auto rb=take(presentation::read_material_bindings(reopened->world().runtime(),reopened_b)).front().resource;
+    require(ra.id()==rb.id() && take(reopened->inspect_material(ra.id())).scene && std::get<float>(material_value(*reopened,ra.id(),"gain"))==.9f,
+        "Scene round-trip lost shared MI identity or sparse intent.");
     take(document.select(entity_a));changed(document.duplicate_selected());
     const auto duplicate=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
-    const auto duplicate_material=take(presentation::read_material_bindings(document.world().runtime(),duplicate))[0].resource;
-    require(duplicate_material.id()!=instance.id(),"Duplicating an Entity shared mutable instance overrides.");
-    require(take(material::read_material(document.world().runtime(),duplicate_material.id())).parent.id()==resource.id(),
-        "Duplicating an Entity copied the shared asset.");
-    take(editor::write_file(evidence/"Replacement.mtl","newmtl replacement\nKd 1 1 1\n"));
-    take(editor::write_file(evidence/"Replacement.obj",
-        "mtllib Replacement.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl replacement\nf 1 2 3\n"));
-    const auto replacement=take(project.assets().mesh(take(project.import_mesh(evidence/"Replacement.obj"))));
-    take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{replacement.key,replacement.mesh}));
-    take(document.assign_material(project,duplicate,"replacement",key));
-    const auto original=take(project.assets().mesh("builtin/cube"));
-    take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{original.key,original.mesh}));
-    const auto retained=take(presentation::read_material_bindings(document.world().runtime(),duplicate));
-    require(retained.size()==1 && retained[0].slot=="slot/0" && retained[0].resource.id()==duplicate_material.id(),
-        "Replacing geometry retained a missing slot or discarded a matching instance.");
-    auto swapped=take(editor::Session::deserialize(take(document.serialize()),project));static_cast<void>(swapped);
-    take(presentation::set_mesh_binding(document.world().runtime(),duplicate,{}));
-    require(take(presentation::read_material_bindings(document.world().runtime(),duplicate)).empty(),"Clearing a mesh retained invalid material slots.");
-    auto cleared=take(editor::Session::deserialize(take(document.serialize()),project));static_cast<void>(cleared);
-    {
-        editor::Session local;auto& local_runtime=local.world().runtime();
-        assets::MaterialAsset asset;asset.description.parameters.roughness=.3f;asset.textures[0]=texture;
-        const auto original=take(local.material_resource(project.assets(),asset));
-        changed(local.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
-        const auto original_entity=local.selection().entity;
-        const auto original_mesh=component(local,original_entity,local.presentation_types().static_mesh_component);
-        const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",original,true}}};
-        take(presentation::set_material_bindings(local_runtime,original_mesh,bindings));
-        changed(local.duplicate_selected());
-        const auto copied_mesh=component(local,local.selection().entity,local.presentation_types().static_mesh_component);
-        const auto copied=take(presentation::read_material_bindings(local_runtime,copied_mesh)).front().resource;
-        const auto original_state=take(material::read_material(local_runtime,original.id()));
-        const auto copied_state=take(material::read_material(local_runtime,copied.id()));
-        require(copied.id()!=original.id() && copied_state.source.empty() && !copied_state.parent.registered() &&
-            copied_state.textures[0].reference()==original_state.textures[0].reference(),
-            "Duplicating an inline material shared mutable parameters or copied its texture resource.");
-        const auto properties=take(local.properties(original.id()));
-        const auto field=std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name);
-        require(field!=properties.end(),"Inline material parameters are not reflected.");
-        const auto roughness_of=[&](ObjectId id){return take(material::capture(local_runtime,id))->description().parameters.roughness;};
-        take(local.set_property(copied.id(),field->path,Scalar{.7f},117));
-        require(roughness_of(original.id())==.3f && roughness_of(copied.id())==.7f,"Copied inline material could not be edited independently.");
-        changed(local.undo());require(roughness_of(copied.id())==.3f,"Inline material undo lost the copied value.");
-        changed(local.redo());
-        take(local.set_property(original.id(),field->path,Scalar{.45f},118));
-        require(roughness_of(original.id())==.45f && roughness_of(copied.id())==.7f,"Editing the original changed its inline material copy.");
-        const auto path=project.root()/"Content/Scenes/Inline.scene";
-        take(editor::write_file(path,take(local.serialize())));
-        auto reopened_project=take(editor::Project::open(project.root()));
-        auto reopened_local=take(editor::Session::deserialize(take(assets::read_file(path)),reopened_project));
-        const auto entities=take(reopened_local->world().members());require(entities.size()==2,"Inline material scene lost its Entities.");
-        auto& reopened_runtime=reopened_local->world().runtime();
-        const auto material_of=[&](std::size_t index) {
-            const auto mesh=component(*reopened_local,entities[index].id(),reopened_local->presentation_types().static_mesh_component);
-            return take(presentation::read_material_bindings(reopened_runtime,mesh)).front().resource;
-        };
-        const auto reopened_original=material_of(0),reopened_copy=material_of(1);
-        const auto left=take(material::read_material(reopened_runtime,reopened_original.id())),right=take(material::read_material(reopened_runtime,reopened_copy.id()));
-        require(reopened_original.id()!=reopened_copy.id() && left.description.parameters.roughness==.45f && right.description.parameters.roughness==.7f &&
-            left.textures[0].reference()==right.textures[0].reference(),"Inline material values, independent identities or shared texture were lost on reopening.");
-    }
-    editor::Workspace workspace;workspace.project_open=true;workspace.assets.reset(true);
-    workspace.inspecting_asset=true;workspace.material_inspection=key;
+    const auto copied=take(presentation::read_material_bindings(runtime,duplicate)).front().resource;
+    require(copied.id()!=scene_instance.id() && take(material::read_instance(runtime,copied.id())).parent.id()==child.id(),"Duplicate copied a named ancestor or shared scene author entries.");
+    take(document.clear_material(duplicate,"slot/0"));require(take(presentation::read_material_bindings(runtime,duplicate)).empty(),"Clear did not restore mesh defaults.");
+    editor::Workspace workspace;workspace.project_open=true;workspace.assets.reset(true);workspace.inspecting_asset=true;workspace.material_inspection=key;
     const auto controls=workspace.describe(document,{1200,800},nullptr,&project);
-    require(workspace.ui_error().empty() && !controls.empty(),"Material asset DSL projection failed.");
-    const auto field=workspace.field_control(resource.id(),roughness.path);
-    require(field!=0,"Material fields did not use the shared reflected field bindings.");
-    workspace.inspecting_asset=false;take(document.select(entity_a));
-    const auto instance_controls=workspace.describe(document,{1200,800},nullptr,&project);
-    require(workspace.ui_error().empty() && !instance_controls.empty(),"Material instance DSL projection failed.");
-    take(editor::write_file(evidence/"Two.mtl","newmtl First\nKd 1 1 1\nnewmtl Second\nKd 1 1 1\n"));
-    take(editor::write_file(evidence/"Two.obj","mtllib Two.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nusemtl First\nf 1 2 3\nusemtl Second\nf 2 4 3\n"));
-    const auto two_slots=take(project.assets().mesh(take(project.import_mesh(evidence/"Two.obj"))));
-    changed(document.create_static_mesh(two_slots));const auto partial_entity=document.selection().entity;
-    const auto partial=component(document,partial_entity,document.presentation_types().static_mesh_component);
-    const auto first_slot=presentation::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().front().material);
-    const auto second_slot=presentation::material_slot_name(*two_slots.mesh,two_slots.mesh->parts().back().material);
-    take(document.assign_material(project,partial,first_slot,key));
-    const auto fallback=find_property(partial,"material.roughness");
-    const auto fallback_visible=[&] {
-        const auto projected=workspace.describe(document,{1200,800},nullptr,&project);
-        const auto control=workspace.field_control(partial,fallback.path);
-        return control && std::ranges::find(projected,control,&ui::Control::key)!=projected.end();
+    require(workspace.ui_error().empty() && !controls.empty(),"Arbitrary material DSL projection failed.");
+    const auto bound=[&](std::string_view path,editor::Workspace::Binding::Kind kind) {
+        return std::ranges::any_of(controls,[&](const auto& control) {
+            const auto* binding=workspace.binding(control.key);return binding && binding->object==resource.id() && binding->material_path==path && binding->kind==kind;
+        });
     };
-    require(fallback_visible(),"A partially bound mesh lost its unbound-slot material controls.");
-    take(document.assign_material(project,partial,second_slot,key));
-    require(!fallback_visible(),"A fully bound mesh retained ineffective fallback material controls.");
-    take(document.clear_material(partial,second_slot));
-    require(fallback_visible(),"Clearing a material slot did not restore fallback controls.");
-    const auto before_history=take(material::capture(runtime,resource.id()));
-    take(document.material_undo(key));
-    const auto paused_history=take(material::capture(runtime,resource.id()));
-    take(document.start());const auto running_revision=document.revision();
-    require(!document.material_undo(key) && !document.material_undo(key,true),"Running World accepted material history replay.");
-    require(document.revision()==running_revision && take(material::capture(runtime,resource.id()))==paused_history,
-        "Rejected material history replay changed the material or document revision.");
-    take(document.stop());take(document.material_undo(key,true));
-    require(take(material::capture(runtime,resource.id()))->description()==before_history->description(),
-        "Rejected running history replay advanced its cursor or prevented redo after stop.");
-    const auto old_surface=capture(a);changed(document.close());collect(document);
-    require(old_surface->description().parameters.roughness==.8f && old_surface->description().textures[0].image,
-        "Closing the Runtime invalidated an owning render capture.");
-    // A Radiance .hdr in Content is a sky asset; one key returns one map until refresh sees its file change.
+    require(bound("gain",editor::Workspace::Binding::Kind::material_field) && bound("offset",editor::Workspace::Binding::Kind::material_field),"UI did not create stable-path numeric/vector controls.");
+    workspace.inspecting_asset=false;take(document.select(entity_a));static_cast<void>(workspace.describe(document,{1200,800},nullptr,&project));
+    require(workspace.ui_error().empty(),"Scene MI projection failed.");
+    const auto paused=take(material::capture_program(runtime,resource.id()));take(document.start());const auto revision=document.revision();
+    require(!document.material_undo(key) && !document.material_undo(key,true) && document.revision()==revision &&
+        take(material::capture_program(runtime,resource.id()))==paused,"Running World accepted material history or changed its cursor.");take(document.stop());
+    const auto surviving=capture(a);changed(document.close());collect(document);
+    require(take(surviving->evaluate({})).roughness==.9f && surviving->inputs().front().image,"Closing a document invalidated its owning program capture.");
+
+    // Publication retains identities and exact Source text, independent of newer disk content.
+    {
+        auto published=take(editor::Project::create(evidence/"Publication"));const auto ms=create_editor_material_source(published);
+        auto ms_author=take(published.assets().material(ms));const auto source_path=std::get<assets::MaterialSourceAsset>(ms_author.author).source_path;
+        auto exact=take(published.assets().source(source_path));editor::Session session;auto& r=session.world().runtime();
+        const auto ms_root=take(session.material_resource(published.assets(),ms));const auto old_surface=take(material::capture_program(r,ms_root.id()));
+        exact.source.replace(exact.source.find("p.gain=0.4"),10,"p.gain=0.6");exact.version=atelier::source::content_hash(exact.source);
+        take(editor::write_file(take(published.resolve(source_path)),"newer invalid source"));
+        require(take(session.publish_material(published.assets(),ms_author,exact)).id()==ms_root.id() &&
+            take(session.inspect_material(ms_root.id())).source_file->source==exact.source &&
+            take(take(material::capture_program(r,ms_root.id()))->evaluate({})).roughness==.6f && take(old_surface->evaluate({})).roughness==.4f &&
+            take(assets::read_file(take(published.resolve(source_path))))=="newer invalid source","MS publication reread/wrote disk, replaced its root, or mutated an old capture.");
+        require(!session.publish_material(published.assets(),ms_author) &&
+            std::get<float>(material_value(session,ms_root.id(),"gain"))==.6f,"Strict source failure published fallback over healthy content.");
+        assets::MaterialAsset mi_author;std::get<assets::MaterialInstanceAsset>(mi_author.author).parent_key=ms;
+        const auto mi=take(published.create_material("Content/Shared.material",mi_author));const auto mi_root=take(session.material_resource(published.assets(),mi));
+        edit_material_entry(session,mi_root.id(),{"gain",.8f,true},301);mi_author=take(session.material_asset(mi_root.id()));
+        std::get<assets::MaterialInstanceAsset>(mi_author.author).entries.push_back({"offset",math::Vector2{.3f,.4f},true});
+        require(take(session.publish_material(published.assets(),mi_author)).id()==mi_root.id(),"MI publication replaced its root.");
+        take(session.material_undo(mi));
+        require(std::get<float>(material_value(session,mi_root.id(),"gain"))==.6f &&
+            std::get<math::Vector2>(material_value(session,mi_root.id(),"offset"))==math::Vector2{.3f,.4f},"Publication lost history or Undo rewound an unrelated published path.");
+        changed(session.create_static_mesh(take(published.assets().mesh("builtin/cube"))));
+        const auto mesh=component(session,session.selection().entity,session.presentation_types().static_mesh_component);
+        const auto local=take(session.create_scene_material(mesh,"slot/0"));
+        require(take(session.inspect_material(local.id())).parent_key=="builtin/material/default-grid" &&
+            !take(material::capture_program(r,local.id()))->uses_default_material(),"An unbound scene MI failed to inherit the normal world grid.");
+        const auto grid=take(material::read_instance(r,local.id())).parent;
+        const auto installed=take(published.assets().material("builtin/material/default-grid"));
+        const auto installed_text=*take(session.inspect_material(grid.id())).source_file;
+        const auto grid_surface=take(material::capture_program(r,grid.id()));const auto grid_revision=session.revision();
+        auto changed_author=installed;auto& policy=std::get<assets::MaterialSourceAsset>(changed_author.author).policy;
+        policy.double_sided=!policy.double_sided;
+        auto changed_text=installed_text;changed_text.source+="\n";
+        auto invented=installed;invented.key="builtin/material/not-installed";
+        require(!session.publish_material(published.assets(),changed_author) && !session.publish_material(published.assets(),installed,changed_text) &&
+            !session.publish_material(published.assets(),invented) && !session.begin_material_edit(grid.id(),302) &&
+            session.loaded_material(installed.key)==grid.id() && take(material::capture_program(r,grid.id()))==grid_surface && session.revision()==grid_revision,
+            "Builtin material tampering changed a loaded identity, author content or Source text.");
+        require(take(session.publish_material(published.assets(),installed,installed_text)).id()==grid.id(),
+            "The exact installed MS could not use the ordinary publication path.");
+        assets::MaterialAsset sleeping;auto& entries=std::get<assets::MaterialInstanceAsset>(sleeping.author);entries.parent_key=ms;
+        entries.entries={{"albedo",material::TextureBinding{"project/sleeping"},false},
+            {"removed",material::TextureBinding{"project/removed"},true},{"gain",material::TextureBinding{"project/retyped"},true}};
+        const auto sleepy_key=take(published.create_material("Content/Sleeping.material",sleeping));
+        const auto sleepy=take(session.material_resource(published.assets(),sleepy_key));
+        const auto sleepy_state=take(material::read_instance(r,sleepy.id()));
+        require(sleepy_state.entries.size()==3 && std::ranges::all_of(sleepy_state.textures,[](const auto& root){return !root.registered();}) &&
+            !session.unavailable(assets::AssetKind::texture,"project/sleeping") && !session.unavailable(assets::AssetKind::texture,"project/retyped"),
+            "Dormant/deleted/retyped texture entries eagerly read invalid dependencies.");
+        require(!session.set_material_override(sleepy.id(),"albedo",true,&published) &&
+            !take(session.inspect_material(sleepy.id())).entries.front().enabled,"Failed dormant texture activation changed its author intent.");
+        const auto image=take(published.import_texture(evidence/"Red.bmp"));take(session.set_material_texture(published,sleepy.id(),"albedo",image));
+        take(session.set_material_override(sleepy.id(),"albedo",false,&published));take(session.set_material_override(sleepy.id(),"albedo",true,&published));
+        require(take(material::capture_program(r,sleepy.id()))->inputs().front().image!=nullptr,"Re-enabled texture did not use its current Runtime root.");
+    }
+
+    // Reimport publishes current pixels on the same root, not an author-history snapshot.
+    {
+        auto imports=take(editor::Project::create(evidence/"Reimport"));const auto ms=create_editor_material_source(imports);
+        const auto image_key=take(imports.import_texture(evidence/"Red.bmp"));assets::MaterialAsset asset;
+        auto& instance=std::get<assets::MaterialInstanceAsset>(asset.author);instance.parent_key=ms;instance.entries={{"albedo",material::TextureBinding{image_key},true}};
+        const auto material_key=take(imports.create_material("Content/Shared.material",asset));
+        editor::Session session;auto& r=session.world().runtime();const auto root=take(session.open_material(imports,material_key));
+        changed(session.create_static_mesh(take(imports.assets().mesh("builtin/cube"))));
+        const auto mesh=component(session,session.selection().entity,session.presentation_types().static_mesh_component);take(session.assign_material(imports,mesh,"slot/0",material_key));
+        edit_material_entry(session,root.id(),{"gain",.23f,true},901);take(session.save_material(imports,material_key));
+        const auto texture_root=take(material::read_instance(r,root.id())).textures.front();
+        auto previous=take(material::capture_program(r,root.id()));std::weak_ptr<const material::Image> old_pixels=previous->inputs().front().image;
+        const auto scene=take(session.serialize());const auto history=session.undo_count();
+        auto metadata=take(imports.resolve(imports.entry(image_key)->path));metadata+=L".asset.json";const auto identity=take(assets::read_file(metadata));
+        application::SceneSnapshot view;take(view.refresh(session));
+        auto blue=bmp;for(std::size_t i=54;i<blue.size();i+=4) {blue[i]=char(255);blue[i+2]=0;}take(editor::write_file(evidence/"Blue.bmp",blue));
+        take(session.reimport_texture(imports,image_key,evidence/"Blue.bmp"));take(view.refresh(session));
+        const auto pixels=snapshot_surface(view)->inputs().front().image->pixels();
+        require(take(material::read_instance(r,root.id())).textures.front().id()==texture_root.id() && pixels[0]==0 && pixels[2]==255 &&
+            take(imports.assets().texture(image_key)).image->pixels()[2]==255 && take(assets::read_file(metadata))==identity &&
+            session.undo_count()==history && take(session.serialize())==scene && !session.material_dirty(material_key),"Reimport changed identity/history or did not refresh the displayed program image.");
+        require(previous->inputs().front().image->pixels()[0]==255,"Reimport mutated an in-flight capture.");
+        static_cast<void>(take(material::capture_program(r,root.id())));previous.reset();
+        require(old_pixels.expired(),"Parameter history retained old image content.");
+        take(session.material_undo(material_key));take(view.refresh(session));
+        require(take(snapshot_surface(view)->evaluate({})).roughness==.4f && snapshot_surface(view)->inputs().front().image->pixels()[2]==255,
+            "Parameter Undo reverted imported pixels.");take(session.material_undo(material_key,true));
+        take(editor::write_file(evidence/"Broken.bmp","not an image"));
+        require(!session.reimport_texture(imports,image_key,evidence/"Broken.bmp") && take(assets::read_file(take(imports.resolve(imports.entry(image_key)->path))))==blue,
+            "Failed reimport damaged the committed image.");
+        take(editor::write_file(take(imports.resolve(imports.entry(image_key)->path)),"broken"));auto broken=take(editor::Project::open(imports.root()));
+        auto repaired=take(editor::Session::deserialize(scene,broken));require(repaired->unavailable(assets::AssetKind::texture,image_key)!=nullptr,"Repair fixture did not load a placeholder.");
+        const auto repaired_root=take(repaired->open_material(broken,material_key));const auto placeholder=take(material::read_instance(repaired->world().runtime(),repaired_root.id())).textures.front();
+        take(repaired->reimport_texture(broken,image_key,evidence/"Blue.bmp"));
+        require(!repaired->unavailable(assets::AssetKind::texture,image_key) && take(material::read_instance(repaired->world().runtime(),repaired_root.id())).textures.front().id()==placeholder.id() &&
+            take(material::capture_program(repaired->world().runtime(),repaired_root.id()))->inputs().front().image->pixels()[2]==255,"Reimport did not repair the same placeholder root.");
+    }
+    // Cold invalid Source must not strand an enabled MI texture after only the Source is repaired.
+    {
+        auto recovery=take(editor::Project::create(evidence/"SourceRecovery"));const auto ms=create_editor_material_source(recovery);
+        const auto ms_author=take(recovery.assets().material(ms));
+        const auto source_path=std::get<assets::MaterialSourceAsset>(ms_author.author).source_path;
+        const auto exact=take(recovery.assets().source(source_path));
+        const auto image=take(recovery.import_texture(evidence/"Red.bmp"));
+        assets::MaterialAsset asset;auto& author=std::get<assets::MaterialInstanceAsset>(asset.author);author.parent_key=ms;
+        author.entries={{"albedo",material::TextureBinding{image},true}};
+        const auto mi=take(recovery.create_material("Content/Recovery.material",asset));
+        author.parent_key=mi;author.entries.clear();const auto child=take(recovery.create_material("Content/Child.material",asset));
+        const auto blue=take(recovery.import_texture(evidence/"Blue.bmp"));editor::Session original;
+        changed(original.create_static_mesh(take(recovery.assets().mesh("builtin/cube"))));
+        const auto mesh=component(original,original.selection().entity,original.presentation_types().static_mesh_component);
+        take(original.assign_material(recovery,mesh,"slot/0",child));const auto local=take(original.create_scene_material(mesh,"slot/0"));
+        take(original.set_material_texture(recovery,local.id(),"albedo",blue));const auto saved=take(original.serialize());
+        take(editor::write_file(take(recovery.resolve(source_path)),"not source"));
+        auto loaded=take(editor::Session::deserialize(saved,recovery));auto& session=*loaded;auto& r=session.world().runtime();
+        const auto root=take(session.open_material(recovery,mi)),child_root=take(session.open_material(recovery,child));
+        const auto restored_mesh=component(session,take(session.world().members()).front().id(),session.presentation_types().static_mesh_component);
+        const auto restored_local=take(presentation::read_material_bindings(r,restored_mesh)).front().resource;
+        require(take(material::capture_program(r,root.id()))->uses_default_material(),"Cold Source failure did not reach the recovery fixture.");
+        edit_material_entry(session,root.id(),{"gain",.67f,true},902);
+        edit_material_entry(session,restored_local.id(),{"offset",math::Vector2{.1f,.2f},true},903);
+        const auto before=assets::material_format::encode(take(session.material_asset(root.id())));
+        const auto scene_before=take(session.serialize());const auto history=session.undo_count();
+        take(editor::write_file(take(recovery.resolve(source_path)),exact.source));
+        std::vector<editor::MissingResource> missing;take(session.publish_material(recovery.assets(),ms_author,exact,&missing));
+        editor::Session reopened;const auto reopened_root=take(reopened.open_material(recovery,mi));
+        const auto control=take(material::capture_program(reopened.world().runtime(),reopened_root.id()));
+        require(control->inputs().front().image && take(control->evaluate({})).base_color==math::Vector3{.2f,0,0},
+            "Reopened Source recovery control did not sample the real red image.");
+        const auto repaired=take(material::capture_program(r,root.id()));
+        require(!repaired->uses_default_material() && repaired->inputs().front().image &&
+            take(repaired->evaluate({})).base_color==math::Vector3{.2f,0,0},
+            "Repairing only a cold-invalid MS left its enabled MI texture unbound until reopen.");
+        require(take(take(material::capture_program(r,child_root.id()))->evaluate({})).base_color==math::Vector3{.2f,0,0} &&
+            take(take(material::capture_program(r,restored_local.id()))->evaluate({})).base_color==math::Vector3{0,0,.4f},
+            "Source repair did not reassemble both named descendants and scene-local overrides.");
+        require(missing.empty() && assets::material_format::encode(take(session.material_asset(root.id())))==before && session.material_dirty(mi) &&
+            take(session.serialize())==scene_before && session.undo_count()==history,
+            "Source repair changed unsaved author entries, dirty state or scene history.");
+        take(session.material_undo(mi));changed(session.undo());
+        require(take(take(material::capture_program(r,root.id()))->evaluate({})).roughness==.4f &&
+            take(take(material::capture_program(r,restored_local.id()))->evaluate({})).base_color==math::Vector3{0,0,.4f},
+            "Source repair replaced parameter history or Undo lost a recovered texture.");
+        for(const bool scene_local:{false,true}) {
+            take(editor::write_file(take(recovery.resolve(source_path)),"not source"));
+            auto history=take(editor::Session::deserialize(saved,recovery));auto& runtime=history->world().runtime();
+            const auto history_mesh=component(*history,take(history->world().members()).front().id(),history->presentation_types().static_mesh_component);
+            const auto edited=scene_local?take(presentation::read_material_bindings(runtime,history_mesh)).front().resource:
+                take(history->open_material(recovery,mi));
+            take(history->set_material_override(edited.id(),"albedo",false,&recovery));
+            take(editor::write_file(take(recovery.resolve(source_path)),exact.source));
+            take(history->publish_material(recovery.assets(),ms_author,exact));
+            const auto inherited=take(take(material::capture_program(runtime,edited.id()))->evaluate({})).base_color;
+            if(scene_local) changed(history->undo(&recovery));else take(history->material_undo(mi,false,&recovery));
+            const auto expected=scene_local?math::Vector3{0,0,.4f}:math::Vector3{.2f,0,0};
+            require(take(take(material::capture_program(runtime,edited.id()))->evaluate({})).base_color==expected,
+                "Undo after cold Source repair did not resolve a texture disabled while the Source was invalid.");
+            if(scene_local) changed(history->redo(&recovery));else take(history->material_undo(mi,true,&recovery));
+            require(take(take(material::capture_program(runtime,edited.id()))->evaluate({})).base_color==inherited,
+                "Redo did not restore inherited shading after the recovered texture override.");
+            take(history->reimport_texture(recovery,scene_local?blue:image,evidence/(scene_local?"Red.bmp":"Blue.bmp")));
+            if(scene_local) changed(history->undo(&recovery));else take(history->material_undo(mi,false,&recovery));
+            const auto updated=scene_local?math::Vector3{.2f,0,0}:math::Vector3{0,0,.4f};
+            require(take(take(material::capture_program(runtime,edited.id()))->evaluate({})).base_color==updated,
+                "Texture override Undo restored historical pixels instead of the current reimport.");
+            take(history->reimport_texture(recovery,scene_local?blue:image,evidence/(scene_local?"Blue.bmp":"Red.bmp")));
+        }
+    }
+    // Keep the existing sky-resource contract independent of the material migration.
     const auto radiance=[](std::uint32_t height,char exponent) {
         auto bytes="#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y "+std::to_string(height)+" +X "+std::to_string(2*height)+"\n";
-        for(std::uint32_t i=0;i<2*height*height;++i) bytes+=std::string{char(128),char(128),char(128),exponent};
-        return bytes;
+        for(std::uint32_t i=0;i<2*height*height;++i) bytes+=std::string{char(128),char(128),char(128),exponent};return bytes;
     };
-    fs::create_directories(project.root()/"Content/Sky");
-    const auto sky_file=project.root()/"Content/Sky/Clear.HDR",broken_file=project.root()/"Content/Sky/Broken.hdr";
-    take(editor::write_file(sky_file,radiance(1,char(129))));take(editor::write_file(broken_file,"broken\n"));
-    take(project.refresh());
+    fs::create_directories(project.root()/"Content/Sky");const auto sky_file=project.root()/"Content/Sky/Clear.HDR",broken_file=project.root()/"Content/Sky/Broken.hdr";
+    take(editor::write_file(sky_file,radiance(1,char(129))));take(editor::write_file(broken_file,"broken\n"));take(project.refresh());
     const auto sky_key=[&](std::wstring_view name) {
         const auto at=std::ranges::find_if(project.entries(),[&](const auto& entry){return entry.path.filename()==name;});
-        require(at!=project.entries().end() && at->kind==assets::AssetKind::sky && at->key.starts_with("project/"),"A .hdr file was not catalogued as a sky asset.");
-        return at->key;
+        require(at!=project.entries().end() && at->kind==assets::AssetKind::sky && at->key.starts_with("project/"),"HDR was not catalogued as a sky.");return at->key;
     };
-    const auto clear=sky_key(L"Clear.HDR"),broken=sky_key(L"Broken.hdr");
-    const auto sky=take(project.assets().sky_map(clear));
-    require(sky.key==clear && sky.name==L"Clear" && sky.map && sky.map->width()==2 && take(project.assets().sky_map(clear)).map==sky.map,
-        "A sky asset did not resolve, or one key returned two maps.");
-    take(project.refresh());require(take(project.assets().sky_map(clear)).map==sky.map,"A refresh that saw no change replaced a cached sky map.");
-    take(editor::write_file(sky_file,radiance(2,char(130))));take(project.refresh());
-    const auto rewritten=take(project.assets().sky_map(clear)).map;
-    require(rewritten && rewritten!=sky.map && rewritten->width()==4,"A rewritten sky file did not give a new map after refresh.");
-    const auto sky_error=[&](std::string_view key) {
-        const auto result=project.assets().sky_map(key);require(!result,"An invalid sky map key resolved.");return result.error().message;
-    };
-    const std::string absent="project/{00000000-0000-0000-0000-000000000000}";
-    require(sky_error(absent)=="Sky map key is not a Radiance .hdr asset of this project: "+absent,"A missing sky map key was not named.");
-    require(sky_error(texture).starts_with("Sky map key names Content/") && sky_error(texture).ends_with(", which is not a Radiance .hdr asset."),
-        "A texture key resolved as a sky map or did not name its file.");
-    require(sky_error(broken).starts_with("Sky map Content/Sky/Broken.hdr is not a valid Radiance HDR file: Not a Radiance HDR file."),
-        "A corrupt sky file did not report its path and the decoder's reason.");
-    fs::remove(broken_file);
-    require(sky_error(broken).starts_with("Sky map Content/Sky/Broken.hdr could not be read: "),"An unreadable sky file did not report its path.");
-    std::ofstream(evidence/"acceptance.txt")<<"Material resources acceptance: PASS\nRuntime identity, reflection, texture import, shared edits, explicit inheritance, cancel, Undo/Redo, save/reopen, duplicate, clear mesh, DSL, snapshot lifetime, sky map assets.\n";
+    const auto clear=sky_key(L"Clear.HDR"),broken=sky_key(L"Broken.hdr");const auto sky=take(project.assets().sky_map(clear));
+    require(sky.key==clear && sky.map && sky.map->width()==2 && take(project.assets().sky_map(clear)).map==sky.map,"Sky identity/cache changed.");
+    take(project.refresh());require(take(project.assets().sky_map(clear)).map==sky.map,"Unchanged refresh replaced sky content.");
+    take(editor::write_file(sky_file,radiance(2,char(130))));take(project.refresh());const auto rewritten=take(project.assets().sky_map(clear)).map;
+    require(rewritten!=sky.map && rewritten->width()==4,"Changed sky content was not refreshed.");
+    require(!project.assets().sky_map(texture) && !project.assets().sky_map(broken),"Invalid sky resource resolved.");fs::remove(broken_file);
+    require(!project.assets().sky_map(broken),"Deleted sky remained readable.");
+    std::ofstream(evidence/"acceptance.txt")<<"Material resources acceptance: PASS\nMS/MI ownership, arbitrary paths, sparse history, shared scene MI, typed fallback, DSL, save/reopen, same-root Reimport, sky assets.\n";
     std::puts("Material resources acceptance: PASS");
 }
-// Deleted project resources: strict loading rejects the scene; tolerant loading keeps
-// every reference and the rest of the saved data, and saves the scene unchanged.
 void verify_missing_resources() {
     namespace fs=std::filesystem;
     const auto evidence=fs::absolute("out/missing-resources-"+std::to_string(GetCurrentProcessId())+"-"+
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    auto project=take(editor::Project::create(evidence/"Project"));const auto root=project.root();
+    auto project=take(editor::Project::create(evidence/"Project"));const auto root=project.root();const auto ms=create_editor_material_source(project);
     std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
-    for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
-    take(editor::write_file(evidence/"Red.bmp",bmp));
+    for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}take(editor::write_file(evidence/"Red.bmp",bmp));
+    const auto texture=take(project.import_texture(evidence/"Red.bmp"));assets::MaterialAsset asset;auto& author=std::get<assets::MaterialInstanceAsset>(asset.author);author.parent_key=ms;
+    author.entries={{"albedo",material::TextureBinding{texture},true},{"gain",.6f,true}};
+    const auto stone=take(project.create_material("Content/Stone.material",asset));author.entries.clear();const auto brick=take(project.create_material("Content/Brick.material",asset));
     take(editor::write_file(evidence/"Wall.mtl","newmtl wall\nKd 1 1 1\n"));
     take(editor::write_file(evidence/"Wall.obj","mtllib Wall.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl wall\nf 1 2 3\n"));
-    const auto texture=take(project.import_texture(evidence/"Red.bmp"));
-    const auto stone=take(project.create_material("Content/Materials/Stone.material"));
-    const auto brick=take(project.create_material("Content/Materials/Brick.material"));
-    const auto moss=take(project.create_material("Content/Materials/Moss.material")); // Named only by the mesh that goes missing.
     const auto wall=take(project.assets().mesh(take(project.import_mesh(evidence/"Wall.obj"))));
     const auto wall_slot=presentation::material_slot_name(*wall.mesh,wall.mesh->parts().front().material);
-    editor::Session document;auto& runtime=document.world().runtime();
-    const auto stone_resource=take(document.material_resource(project.assets(),stone));
-    const auto roughness=[&] {
-        const auto properties=take(document.properties(stone_resource.id()));
-        return std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name)->path;
-    }();
-    take(document.set_material_texture(project,stone_resource.id(),material::Input::base_color,texture));
-    take(document.set_property(stone_resource.id(),roughness,Scalar{.4f},201));take(document.save_material(project,stone));
+    editor::Session document;
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
-    const auto textured=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
-    take(document.assign_material(project,textured,"slot/0",stone));
+    const auto textured=component(document,document.selection().entity,document.presentation_types().static_mesh_component);take(document.assign_material(project,textured,"slot/0",stone));
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube")),{2,0,0}));
-    const auto instanced=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
-    take(document.assign_material(project,instanced,"slot/0",brick));take(document.set_material_override(instanced,"slot/0",roughness,true));
-    take(document.set_property(take(presentation::read_material_bindings(runtime,instanced)).front().resource.id(),roughness,Scalar{.8f},202));
-    changed(document.create_static_mesh(wall,{4,0,0}));
-    const auto walled=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
-    take(document.assign_material(project,walled,wall_slot,moss));
-    physics::BodySettings body;body.shape=physics::ShapeKind::triangle_mesh;take(document.configure_body(walled,body));
-    const auto saved=take(document.serialize());take(editor::write_file(root/"Content/Scenes/Main.scene",saved));
-
-    // Move each resource and its metadata aside; a fresh Project has no cached copy.
-    const auto backup=evidence/"Backup";fs::create_directory(backup);
+    const auto instanced=component(document,document.selection().entity,document.presentation_types().static_mesh_component);take(document.assign_material(project,instanced,"slot/0",brick));
+    const auto instance=take(document.create_scene_material(instanced,"slot/0"));edit_material_entry(document,instance.id(),{"gain",.8f,true},201);
+    changed(document.create_static_mesh(wall,{4,0,0}));const auto walled=component(document,document.selection().entity,document.presentation_types().static_mesh_component);
+    take(document.assign_material(project,walled,wall_slot,stone));physics::BodySettings body;body.shape=physics::ShapeKind::triangle_mesh;take(document.configure_body(walled,body));
+    const auto saved=take(document.serialize());const auto backup=evidence/"Backup";fs::create_directory(backup);
     std::vector<std::pair<fs::path,fs::path>> moved;
     for(const auto& key:{texture,brick,wall.key}) {
-        const auto relative=std::ranges::find(project.entries(),key,&assets::ProjectEntry::key)->path;
-        auto metadata=relative;metadata+=L".asset.json";
+        const auto relative=project.entry(key)->path;auto metadata=relative;metadata+=L".asset.json";
         for(const auto& file:{relative,metadata}) {moved.emplace_back(root/file,backup/file.filename());fs::rename(root/file,backup/file.filename());}
     }
-    auto damaged=take(editor::Project::open(root));
-    require(!editor::Session::deserialize(saved,damaged,{},editor::LoadPolicy::strict),"Strict loading accepted a scene with missing resources.");
-    auto kept=take(editor::Session::deserialize(saved,damaged));auto& kept_runtime=kept->world().runtime();
-    require(take(kept->serialize())==saved,"Tolerant loading did not save the references to missing resources verbatim.");
-    const auto issue=[&](std::initializer_list<std::string> field) {
-        return std::ranges::count_if(kept->load_issues(),[&](const auto& item) {
-            return item.kind==world::DiagnosticKind::missing_resource && std::ranges::equal(item.field,field);
-        });
-    };
-    require(kept->load_issues().size()==4 && issue({"textures","base_color"})==1 && issue({"parent"})==1 && issue({"mesh"})==1 &&
-        issue({"properties","body","shape"})==1,"Missing texture, parent material, mesh and collision were not each reported once.");
-    const auto entities=take(kept->world().members());
-    const auto part=[&](std::size_t index){return component(*kept,entities[index].id(),kept->presentation_types().static_mesh_component);};
-    const auto shared=take(presentation::read_material_bindings(kept_runtime,part(0))).front().resource;
-    const auto shared_state=take(material::read_material(kept_runtime,shared.id()));
-    const auto missing_texture=take(material::read_texture(kept_runtime,shared_state.textures[0].id()));
-    require(shared_state.source==stone && shared_state.description.parameters.roughness==.4f && missing_texture.source==texture &&
-        !missing_texture.image && kept->unavailable(assets::AssetKind::texture,texture) && !kept->unavailable(assets::AssetKind::material,stone),
-        "A missing texture replaced its material or lost the material's other parameters.");
-    const auto instance=take(presentation::read_material_bindings(kept_runtime,part(1))).front().resource;
-    const auto instance_state=take(material::read_material(kept_runtime,instance.id()));
-    const auto stand_in=instance_state.parent;
-    require(take(material::capture(kept_runtime,instance.id()))->description().parameters.roughness==.8f &&
-        take(material::read_material(kept_runtime,stand_in.id())).source==brick && kept->unavailable(assets::AssetKind::material,brick),
-        "A missing parent material lost its instance's overrides or reference.");
-    const auto mesh=take(presentation::read_static_mesh(kept_runtime,part(2))).mesh;
-    const auto retained=take(kept->retained(part(2)));
-    require(mesh.source==wall.key && !mesh.resolved && take(presentation::read_material_bindings(kept_runtime,part(2))).empty() &&
-        retained.entries.size()==1 && retained.entries[0].path==std::vector<std::string>{"materials"} &&
-        retained.entries[0].kind==world::DiagnosticKind::missing_resource &&
-        !take(physics::read_settings(kept_runtime,part(2))).cooked_shape,
-        "A missing mesh did not keep its binding table and skip its collision cook.");
-    require(!kept->begin_material_edit(stand_in.id(),203) && !kept->save_material(damaged,brick) &&
-        !kept->assign_material(damaged,part(0),"slot/0",brick) &&
-        !kept->set_material_texture(damaged,shared.id(),material::Input::base_color,texture) &&
-        std::ranges::none_of(take(kept->material_assets()),[&](const auto& asset){return asset.key==brick;}),
-        "A stand-in became editable, saveable or assignable as a project asset.");
-    const auto kept_properties=take(kept->properties(shared.id()));
-    const auto kept_roughness=std::ranges::find(kept_properties,std::string("parameters.roughness"),&editor::Property::name)->path;
-    take(kept->set_property(shared.id(),kept_roughness,Scalar{.5f},204));take(kept->save_material(damaged,stone));
-    const auto stone_file=root/std::ranges::find(damaged.entries(),stone,&assets::ProjectEntry::key)->path;
-    require(assets::material_format::decode(assets::json_format::parse(take(assets::read_file(stone_file)))).textures[0]==texture,
-        "Saving a material dropped the key of its missing texture.");
-    application::SceneSnapshot snapshot;take(snapshot.refresh(*kept));
-    take(kept->discard_retained(part(2)));
-    require(nlohmann::json::parse(take(kept->serialize()))["entities"][2]["components"][0]["materials"].empty(),"Discarding saved data kept the binding table.");
-    changed(kept->undo());require(take(kept->serialize())==saved,"Undoing the discard did not restore the binding table.");
-    take(kept->select(entities[2].id()));changed(kept->duplicate_selected());
-    const auto copied=nlohmann::json::parse(take(kept->serialize()));
-    require(copied["entities"][3]["components"][0]["materials"]==copied["entities"][2]["components"][0]["materials"],
-        "Duplicating a component without its mesh lost the kept binding table.");
-    take(editor::Session::deserialize(copied.dump(),damaged,{},editor::LoadPolicy::tolerant));
-
+    auto damaged=take(editor::Project::open(root));require(!editor::Session::deserialize(saved,damaged,{},editor::LoadPolicy::strict),"Strict load accepted missing resources.");
+    auto kept=take(editor::Session::deserialize(saved,damaged));auto& runtime=kept->world().runtime();
+    require(take(kept->serialize())==saved && !kept->load_issues().empty(),"Tolerant load rewrote author references or hid missing diagnostics.");
+    const auto entities=take(kept->world().members());const auto part=[&](std::size_t i){return component(*kept,entities[i].id(),kept->presentation_types().static_mesh_component);};
+    const auto shared=take(presentation::read_material_bindings(runtime,part(0))).front().resource;
+    const auto shared_state=take(material::read_instance(runtime,shared.id()));
+    require(take(material::read_texture(runtime,shared_state.textures.front().id())).source==texture &&
+        !take(material::read_texture(runtime,shared_state.textures.front().id())).image && kept->unavailable(assets::AssetKind::texture,texture) &&
+        std::get<float>(material_value(*kept,shared.id(),"gain"))==.6f,"Missing image lost its key or unrelated MI parameters.");
+    const auto failed=take(presentation::read_material_bindings(runtime,part(1))).front().resource;
+    const auto failed_state=take(material::read_instance(runtime,failed.id()));
+    require(take(material::capture_program(runtime,failed.id()))->uses_default_material() && failed_state.entries.size()==1 &&
+        take(material::material_key(runtime,failed_state.parent.id()))==brick && take(kept->inspect_material(failed.id())).parent_key==brick,
+        "Missing parent did not retain its key and entries with the default surface.");
+    require(!kept->begin_material_edit(failed_state.parent.id(),202) && !kept->save_material(damaged,brick) &&
+        !kept->assign_material(damaged,part(0),"slot/0",brick) && !kept->set_material_texture(damaged,shared.id(),"albedo",texture),"A stand-in was accepted as a healthy editable asset.");
+    edit_material_entry(*kept,shared.id(),{"gain",.5f,true},203);take(kept->save_material(damaged,stone));
+    require(std::get<material::TextureBinding>(std::get<assets::MaterialInstanceAsset>(take(damaged.assets().material(stone)).author).entries.front().value).asset_key==texture,
+        "Saving dropped an unresolved texture author key.");
+    require(!take(presentation::read_static_mesh(runtime,part(2))).mesh.resolved && kept->has_retained(part(2)) && !take(physics::read_settings(runtime,part(2))).cooked_shape,
+        "Missing mesh did not retain bindings or skip collision cook.");
+    const auto before_discard=take(kept->serialize());take(kept->discard_retained(part(2)));changed(kept->undo());require(take(kept->serialize())==before_discard,"Discard undo lost missing-mesh data.");
+    take(kept->select(entities[2].id()));changed(kept->duplicate_selected());take(editor::Session::deserialize(take(kept->serialize()),damaged));
     for(const auto& [original,aside]:moved) fs::rename(aside,original);
-    auto repaired=take(editor::Project::open(root)); // Cache/Physics has no entry for the wall; loading cooks it.
-    auto restored=take(editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict));
-    const auto restored_entities=take(restored->world().members());
-    const auto restored_part=[&](std::size_t index){return component(*restored,restored_entities[index].id(),restored->presentation_types().static_mesh_component);};
-    const auto restored_shared=take(presentation::read_material_bindings(restored->world().runtime(),restored_part(0))).front().resource;
-    require(take(material::capture(restored->world().runtime(),restored_shared.id()))->description().textures[0].image &&
-        take(presentation::read_material_bindings(restored->world().runtime(),restored_part(2))).size()==1 &&
-        take(physics::read_settings(restored->world().runtime(),restored_part(2))).cooked_shape,
-        "Restored resources did not resolve through the preserved references or rebuild the missing Cook cache.");
-    {
-        const auto stone_file=root/std::ranges::find(repaired.entries(),stone,&assets::ProjectEntry::key)->path;
-        const auto stone_text=take(assets::read_file(stone_file));
-        // A scene that names a material as a mesh leaves only that mesh unavailable.
-        auto misnamed_scene=nlohmann::json::parse(saved);misnamed_scene["entities"][1]["components"][0]["mesh"]=stone;
-        auto misnamed=take(editor::Session::deserialize(misnamed_scene.dump(),repaired));
-        require(misnamed->unavailable(assets::AssetKind::mesh,stone) && !misnamed->unavailable(assets::AssetKind::material,stone) &&
-            misnamed->open_material(repaired,stone) && misnamed->save_material(repaired,stone),
-            "A material key named as a mesh made the healthy material unavailable.");
-        // An undecodable texture file does not block saving a material that references it.
-        const auto texture_file=root/std::ranges::find(repaired.entries(),texture,&assets::ProjectEntry::key)->path;
-        const auto image=take(assets::read_file(texture_file));take(editor::write_file(texture_file,"not an image"));
-        auto undecodable=take(editor::Project::open(root));
-        auto opened=take(editor::Session::deserialize(saved,undecodable));
-        const auto opened_stone=take(opened->open_material(undecodable,stone));
-        const auto opened_properties=take(opened->properties(opened_stone.id()));
-        take(opened->set_property(opened_stone.id(),
-            std::ranges::find(opened_properties,std::string("parameters.roughness"),&editor::Property::name)->path,Scalar{.6f},205));
-        require(opened->unavailable(assets::AssetKind::texture,texture) && opened->save_material(undecodable,stone),
-            "An undecodable texture blocked saving a material that references it.");
-        take(editor::write_file(texture_file,image));take(editor::write_file(stone_file,stone_text));
-    }
-    const auto moss_file=root/std::ranges::find(repaired.entries(),moss,&assets::ProjectEntry::key)->path;
-    take(editor::write_file(moss_file,"{"));
-    require(!editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict),"Strict loading accepted an unreadable material.");
-    auto unreadable=take(editor::Session::deserialize(saved,repaired));const auto& unreadable_issues=unreadable->load_issues();
-    take(editor::write_file(root/"Content/Scenes/Main.scene",take(unreadable->serialize())));
-    require(unreadable_issues.size()==1 && unreadable_issues[0].kind==world::DiagnosticKind::unreadable_resource &&
-        unreadable_issues[0].field==std::vector<std::string>{"source"} && !unreadable->open_material(repaired,moss) &&
-        take(unreadable->serialize())==saved && take(assets::read_file(moss_file))=="{",
-        "An unreadable material did not stand in with its own diagnostic, opened as an asset, or changed when the scene was saved.");
-    const auto wall_file=root/std::ranges::find(repaired.entries(),wall.key,&assets::ProjectEntry::key)->path;
-    take(editor::write_file(wall_file,"f 1 2 3\n"));
-    auto reloaded=take(editor::Project::open(root));auto broken=take(editor::Session::deserialize(saved,reloaded));
-    const auto unreadable_at=[&](std::initializer_list<std::string> field) {
-        return std::ranges::count_if(broken->load_issues(),[&](const auto& item) {
-            return item.kind==world::DiagnosticKind::unreadable_resource && std::ranges::equal(item.field,field);
-        });
-    };
-    const auto broken_wall=component(*broken,take(broken->world().members())[2].id(),broken->presentation_types().static_mesh_component);
-    require(unreadable_at({"mesh"})==1 && unreadable_at({"properties","body","shape"})==1 &&
-        take(broken->retained(broken_wall)).entries.at(0).kind==world::DiagnosticKind::unreadable_resource && take(broken->serialize())==saved,
-        "An unreadable mesh did not stand in with unreadable_resource diagnostics and saved data.");
-    std::ofstream(evidence/"acceptance.txt")<<"Missing resources acceptance: PASS\nStrict rejection, verbatim save, texture/material/mesh stand-ins, kept bindings, skipped collision cook, discard/undo, duplicate, restore, Cook rebuild, unreadable asset.\n";
+    auto repaired=take(editor::Project::open(root));auto restored=take(editor::Session::deserialize(saved,repaired,{},editor::LoadPolicy::strict));
+    const auto restored_entities=take(restored->world().members());const auto restored_wall=component(*restored,restored_entities[2].id(),restored->presentation_types().static_mesh_component);
+    require(take(presentation::read_material_bindings(restored->world().runtime(),restored_wall)).size()==1 && take(physics::read_settings(restored->world().runtime(),restored_wall)).cooked_shape,
+        "Restoring assets failed to resolve bindings or rebuild collision.");
+    // Structural failures are never reclassified as a missing/compile fallback.
+    take(editor::write_file(root/repaired.entry(stone)->path,"{"));editor::Session malformed;std::vector<editor::MissingResource> missing;
+    require(!malformed.material_resource(repaired.assets(),stone,&missing),"Malformed v2 material was hidden by tolerant fallback.");
+    const auto broken_ms=take(repaired.create_material_source("Content/Broken.ms.material","not source"));editor::Session compiler_failure;
+    const auto broken_root=take(compiler_failure.open_material(repaired,broken_ms));
+    const auto broken_view=take(compiler_failure.inspect_material(broken_root.id()));
+    require(broken_view.default_material && !broken_view.diagnostics.empty() && broken_view.source_file && broken_view.source_file->source=="not source",
+        "MS compile failure lost exact source/diagnostic or failed to use the default surface.");
+    editor::Session strict_compiler;
+    require(!strict_compiler.material_resource(repaired.assets(),broken_ms) && !compiler_failure.material_resource(repaired.assets(),broken_ms),
+        "Strict material loading accepted fresh or cached compile fallback.");
+    assets::MaterialAsset cycle;const auto left=take(repaired.create_material("Content/Left.material",cycle));
+    std::get<assets::MaterialInstanceAsset>(cycle.author).parent_key=left;const auto right=take(repaired.create_material("Content/Right.material",cycle));
+    cycle.key=left;std::get<assets::MaterialInstanceAsset>(cycle.author).parent_key=right;take(repaired.save_material(cycle));editor::Session cyclic;
+    require(!cyclic.material_resource(repaired.assets(),left,&missing),"Asset parent cycle was accepted or collapsed into a missing stand-in.");
+    std::ofstream(evidence/"acceptance.txt")<<"Missing resources acceptance: PASS\nPreserved sparse author keys, strict/tolerant load, default surface, same-path edits, missing mesh/collision, restore, structural and parent-cycle rejection.\n";
     std::puts("Missing resources acceptance: PASS");
 }

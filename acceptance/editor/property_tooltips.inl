@@ -4,6 +4,9 @@ void verify_property_tooltips() {
     editor::Session document;
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto mesh=document.selection().entity;
+    const auto mesh_component=component(document,mesh,document.presentation_types().static_mesh_component);
+    const auto material=take(document.create_scene_material(mesh_component,"slot/0"));
+    take(document.set_material_override(material.id(),"cell_size",true));take(document.set_material_override(material.id(),"light",true));
     changed(document.create_light(presentation::LightKind::point));
     const auto light=component(document,document.selection().entity,document.presentation_types().light_component);
     take(document.select(mesh));document.mark_saved();
@@ -95,45 +98,36 @@ void verify_property_tooltips() {
         color_help->identity==assets::wide(light_type->name)+L".settings.color : "+assets::wide(take(runtime.describe(color.value.type))->name),
         "Light Color help used a scalar lane identity or lost its aggregate description and hard-bound note.");
 
-    // Declared field ranges: the number's legal range is the hard bounds, a float with a UI range
-    // gains a slider over it, and the help states both. Vector lanes keep the ladder without a slider.
-    const auto mesh_component=component(document,mesh,document.presentation_types().static_mesh_component);
-    take(document.select(mesh_component));publish();
-    const auto& surface_field=field(take(runtime.type_of(mesh_component)),"material");
-    const auto& roughness=field(document.presentation_types().material,"roughness");
-    const auto& emissive=field(document.presentation_types().material,"emissive");
-    const auto number_at=[&](world::FieldPath path)->const ui::Control& {
-        const auto key=workspace.field_control(mesh_component,path);
-        const auto at=std::ranges::find(controls,key,&ui::Control::key);
-        require(key!=0 && at!=controls.end() && at->kind==ui::ControlKind::number,"A ranged material field has no number control.");
-        return *at;
-    };
+    // Reflected light ranges remain native metadata; material declarations no
+    // longer inherit the removed fixed StandardPBR reflection bounds.
     const auto sliders_beside=[&](const ui::Control& number) {
         return std::ranges::count_if(controls,[&](const auto& control){return control.kind==ui::ControlKind::slider && control.parent==number.parent;});
     };
-    const auto& roughness_number=number_at({surface_field.id,roughness.id});
-    const auto roughness_slider=std::ranges::find_if(controls,[&](const auto& control) {
-        return control.kind==ui::ControlKind::slider && control.parent==roughness_number.parent;
-    });
-    require(roughness_number.minimum==0 && roughness_number.maximum==1 && sliders_beside(roughness_number)==1 &&
-        roughness_slider->minimum==0 && roughness_slider->maximum==1 && roughness_slider->value==roughness_number.value,
-        "Roughness did not take its locked 0–1 range as both legal range and slider.");
-    const auto help_of=[&](std::wstring_view field)->std::shared_ptr<const ui::Tooltip> {
-        for(const auto& control:surface.presented()->controls)
-            if(control.tooltip && control.tooltip->identity.find(field)!=std::wstring::npos) return control.tooltip;
-        throw std::runtime_error("A ranged material row has no help.");
-    };
-    require(help_of(L".material.roughness : ")->description==assets::wide(roughness.description)+L"\n范围 0 – 1，上下限锁定",
-        "Roughness help does not state its locked range.");
     const auto* lanes=take(runtime.describe(document.types().vector3));
     for(const auto& lane:lanes->fields) {
-        const auto& number=number_at({surface_field.id,emissive.id,lane.id});
-        require(number.minimum==0 && number.maximum==65504 && sliders_beside(number)==0,
-            "Emissive lanes did not take the hard bounds 0–65504 without a slider.");
+        const world::FieldPath path{field(take(runtime.type_of(light)),"settings").id,color.id,lane.id};
+        const auto at=std::ranges::find(controls,workspace.field_control(light,path),&ui::Control::key);
+        require(at!=controls.end() && at->kind==ui::ControlKind::number && at->minimum==0 && sliders_beside(*at)==0,
+            "Light Color lanes lost their native hard lower bound or acquired an undeclared slider.");
     }
-    require(help_of(L".material.emissive : ")->description==
-        assets::wide(emissive.description)+L"\n范围 0 – 10，下限锁定，硬上限 65504",
-        "Emissive help does not distinguish its UI range from the hard maximum.");
+    take(document.select(mesh_component));publish();
+    const auto number_at=[&](std::string_view path,std::size_t lane=0)->const ui::Control& {
+        const auto at=std::ranges::find_if(controls,[&](const auto& control) {
+            const auto* binding=workspace.binding(control.key);
+            return control.kind==ui::ControlKind::number && binding && binding->object==material.id() &&
+                binding->kind==editor::Workspace::Binding::Kind::material_field && binding->material_path==path && binding->index==lane;
+        });
+        require(at!=controls.end(),"A declared material parameter has no stable-path number control.");return *at;
+    };
+    const auto scalar_key=number_at("cell_size").key;
+    require(number_at("cell_size").minimum==-std::numeric_limits<float>::max() &&
+        number_at("cell_size").maximum==std::numeric_limits<float>::max() && sliders_beside(number_at("cell_size"))==0,
+        "An arbitrary material scalar acquired a hard-coded StandardPBR range.");
+    for(std::size_t lane=0;lane<3;++lane) require(sliders_beside(number_at("light",lane))==0,"A material vector lane acquired an undeclared slider.");
+    const auto material_help=help_for(label(L"cell_size"));
+    require(material_help->identity==L"Material declaration · cell_size" && !material_help->description.empty(),
+        "Material help did not describe its stable declaration path and override semantics.");
+    publish();require(number_at("cell_size").key==scalar_key,"Material recomposition changed its declaration control identity.");
     take(document.select(ObjectId{}));publish();
     require(!surface.presented()->tooltip && !surface.accept(position_frame) &&
         std::ranges::none_of(surface.presented()->controls,[&](const auto& control) {

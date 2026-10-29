@@ -4,21 +4,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.26,
-            0.3,
-            0.34
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "16",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "35",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -42,7 +37,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.82,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -75,21 +69,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.58,
-            0.12,
-            0.035
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "17",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "36",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -113,7 +102,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.84,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -146,21 +134,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.035,
-            0.22,
-            0.48
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "18",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "37",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -184,7 +167,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.84,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -217,21 +199,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.42,
-            0.43,
-            0.46
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "19",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "38",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -255,7 +232,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.82,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -288,21 +264,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.58,
-            0.6,
-            0.62
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "20",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "39",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -326,7 +297,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.75,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -359,21 +329,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.65,
-            0.28,
-            0.08
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "21",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "40",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.88,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -397,7 +362,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.24,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -430,21 +394,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.55,
-            0.62,
-            0.7
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "22",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "41",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.95,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -468,7 +427,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.14,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -501,21 +459,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.14,
-            0.5,
-            0.33
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "23",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "42",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -539,7 +492,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.9,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -572,21 +524,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.32,
-            0.34,
-            0.38
-          ],
-          "emissive": [
-            0.0,
-            0.0,
-            0.0
-          ],
           "enabled": true,
           "id": "24",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "43",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.72,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -610,7 +557,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.16,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -643,21 +589,16 @@
       "children": [],
       "components": [
         {
-          "base_color": [
-            0.12,
-            0.03,
-            0.01
-          ],
-          "emissive": [
-            3.0,
-            0.45,
-            0.06
-          ],
           "enabled": true,
           "id": "25",
-          "materials": [],
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "44",
+              "slot": "slot/0"
+            }
+          ],
           "mesh": "builtin/cube",
-          "metallic": 0.0,
           "name": "StaticMeshComponent",
           "properties": {
             "body": {
@@ -681,7 +622,6 @@
               "shape": "box"
             }
           },
-          "roughness": 0.75,
           "type": "world.StaticMeshComponent"
         }
       ],
@@ -1077,8 +1017,409 @@
       "type": "world.Entity"
     }
   ],
-  "materials": [],
-  "next_id": "35",
+  "materials": [
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.26,
+            0.3,
+            0.34,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.82
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "35",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.58,
+            0.12,
+            0.035,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.84
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "36",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.035,
+            0.22,
+            0.48,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.84
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "37",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.42,
+            0.43,
+            0.46,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.82
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "38",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.58,
+            0.6,
+            0.62,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.75
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "39",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.65,
+            0.28,
+            0.08,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.24
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.88
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "40",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.55,
+            0.62,
+            0.7,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.14
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.95
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "41",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.14,
+            0.5,
+            0.33,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.9
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "42",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.32,
+            0.34,
+            0.38,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.16
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.72
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "43",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.12,
+            0.03,
+            0.01,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.75
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            3.0,
+            0.45,
+            0.06
+          ]
+        }
+      ],
+      "id": "44",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    }
+  ],
+  "next_id": "45",
   "roots": [
     "1",
     "2",
@@ -1097,5 +1438,5 @@
     "31",
     "33"
   ],
-  "version": 9
+  "version": 10
 }

@@ -255,17 +255,24 @@ int profile_editor_render_performance(Application& app,const char* output_direct
         // Each product step records its own frame; accepted intervals and
         // CPU stages are read from those records, never from a harness clock.
         const auto frame_end=[](const timing::FrameRecord& record) {return record.begin+record.time(timing::frame);};
+        const auto current_group_presented=[&] {
+            const auto& snapshot=Access::scene_snapshot(app);
+            const auto* draw=snapshot.draw();
+            const auto& accepted=Access::accepted_view(app);
+            return draw && accepted && accepted->scene && accepted->scene==draw->picking && draw->picking==snapshot.picking();
+        };
         const auto next_frame=[&](Clock::time_point deadline) {
             const auto before=app.accepted_frames();
-            // A fallback for an unprepared Lit view is not a frame of the measured view.
-            while(app.accepted_frames()==before || Access::fallback_presented(app)) {
+            // Neither a Lit fallback nor a retained group during material preparation
+            // is a frame of the current measured request. Application owns prepare/draw.
+            while(app.accepted_frames()==before || Access::fallback_presented(app) || !current_group_presented()) {
                 require(Clock::now()<deadline,"Render performance timed out waiting for an accepted product frame.");
                 require(app.step(),"Render performance editor closed before completion.");
                 unchanged_author();
                 // A popup renders its own surface within the step. The profile never opens one, so it came from external input.
                 require(!app.menu_window(),"A menu popup opened during measurement (external input); the window must stay untouched while profiling.");
             }
-            require(app.presented() && Access::accepted_view(app),"Accepted Scene View is absent.");
+            require(app.presented() && current_group_presented(),"Accepted Scene View does not own the current adopted draw group.");
             const auto& record=app.frame_record();
             if(record.structure_errors!=0 || record.count(renderer::phases::frame)!=1)
                 throw std::runtime_error("Accepted step did not record exactly one renderer frame phase: structure_errors="+

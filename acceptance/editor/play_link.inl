@@ -36,8 +36,8 @@ void settle(application::PlayLink& link,std::size_t pending=0) {
 // The editor end in-process against a scripted peer: numbering, spilling, splitting and divergence.
 void verify_link_protocol(const std::filesystem::path& root) {
     const auto spill=root/"Cache/Play/link-protocol";
-    const std::string name_op=R"({"op":"set","id":"7","name":"A"})",remove_op=R"({"op":"remove","id":"8"})";
-    const auto large_op=[](std::size_t bytes){return R"({"op":"set","id":"7","name":")"+std::string(bytes,'a')+R"("})";};
+    const editor::LiveChange name_op{R"({"op":"set","id":"7","name":"A"})",{}},remove_op{R"({"op":"remove","id":"8"})",{}};
+    const auto large_op=[](std::size_t bytes){return editor::LiveChange{R"({"op":"set","id":"7","name":")"+std::string(bytes,'a')+R"("})",{}};};
     {
         auto [end,peer]=link_pair();application::PlayLink link;link.open(std::move(end),spill);
         link.forward({name_op,remove_op});link.forward({});
@@ -51,13 +51,14 @@ void verify_link_protocol(const std::filesystem::path& root) {
         const auto spilled=peer.next();
         require(spilled.at("seq")==2 && spilled.contains("file") && !spilled.contains("ops"),"A batch over one message was not spilled to a file.");
         const std::filesystem::path file=assets::wide(spilled.at("file").get<std::string>());
-        require(file.parent_path()==spill && take(assets::read_file(file))==R"({"ops":[)"+five+"]}","The spilled file is not the batch Play applies.");
+        require(file.parent_path()==spill && take(assets::read_file(file))==R"({"ops":[)"+five.text+"]}","The spilled file is not the batch Play applies.");
         // Past the 16 MiB batch limit the ops split at their boundary into consecutive batches.
         link.forward({nine,nine});
         const auto first=peer.next(),second=peer.next();
         require(first.at("seq")==3 && second.at("seq")==4 && link.unacknowledged()==3 &&
-            take(assets::read_file(assets::wide(second.at("file").get<std::string>())))==R"({"ops":[)"+nine+"]}","Oversized ops were not split into consecutive batches.");
+            take(assets::read_file(assets::wide(second.at("file").get<std::string>())))==R"({"ops":[)"+nine.text+"]}","Oversized ops were not split into consecutive batches.");
         peer.send(ack(2));peer.send(ack(3));peer.send(ack(4));settle(link);
+        require(std::filesystem::is_empty(spill),"The sender retained acknowledged batch files.");
         link.forward({name_op});require(peer.next().at("seq")==5,"Batches lost their numbering.");
         peer.send(ack(5,"error"));settle(link);
         require(link.divergence()=="Play change 0 #7: rejected." && link.unacknowledged()==0,"An error acknowledgement did not diverge.");
@@ -89,6 +90,123 @@ void verify_link_protocol(const std::filesystem::path& root) {
         require(link.divergence().empty(),"A closing child diverged within its grace period.");
         Sleep(2100);link.poll(true,false);
     },"closed while Play kept running");
+}
+// Real Session publications through the actual pipe/spill/receiver/ACK path.
+void verify_texture_link(const std::filesystem::path& root) {
+    namespace fs=std::filesystem;
+    auto project=take(editor::Project::create(root));
+    std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
+    for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
+    const auto source=root/"source.bmp";take(editor::write_file(source,bmp));
+    const auto key=take(project.import_texture(source));
+    assets::MaterialAsset asset;
+    std::get<assets::MaterialInstanceAsset>(asset.author).entries.push_back({"base_color_texture",material::TextureBinding{key},true});
+    const auto material_key=take(project.create_material("Content/Shared.material",asset));
+    editor::Session author,play;play.enter_play();
+    auto play_project=take(editor::Project::open(root));
+    const auto author_root=take(author.open_material(project,material_key)),play_root=take(play.open_material(play_project,material_key));
+    const auto capture=[&]{return take(material::capture_program(play.world().runtime(),play_root.id()));};
+    const auto input=[](const material::ProgramSurfaceRef& surface) {
+        const auto declarations=surface->program().textures();
+        const auto at=std::ranges::find(declarations,std::string("base_color_texture"),&source::MaterialTextureInput::key);
+        require(at!=declarations.end(),"The StandardPBR base-color input is missing.");
+        return surface->inputs()[static_cast<std::size_t>(at-declarations.begin())].image;
+    };
+    auto play_before=capture();
+    auto [end,peer]=link_pair();application::PlayLink link;const auto spill=root/"Cache/Play/textures";
+    link.open(std::move(end),spill);application::PlayEnd receiver{std::move(peer.link)};author.set_live_forwarding(true);
+    const auto current=[&]{return input(capture());};
+    std::vector<world::Diagnostic> issues;
+    const auto service=[&]{receiver.service(play,play_project,[&](std::span<const world::Diagnostic> batch){issues.insert(issues.end(),batch.begin(),batch.end());});};
+    const auto flush=[&] {
+        const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+        while(link.unacknowledged() && link.divergence().empty()) {
+            service();link.poll(true,false);require(std::chrono::steady_clock::now()<until,"Resource publication was not acknowledged.");Sleep(2);
+        }
+        require(issues.empty() && link.divergence().empty(),"Resource publication diverged.");
+        require(fs::is_empty(spill),"Acknowledged resource content remained as asset history.");
+    };
+    auto blue=bmp;for(std::size_t i=54;i<blue.size();i+=4) {blue[i]=char(255);blue[i+2]=0;}
+    take(editor::write_file(source,blue));take(author.reimport_texture(project,key,source));
+    link.forward(take(author.take_live_ops()));
+    // The receiver must not reopen this now-different author file or cached Reader.
+    take(editor::write_file(take(project.resolve(project.entry(key)->path)),"changed after publication"));
+    require(link.unacknowledged()==1 && !fs::is_empty(spill),"Texture transfer was not retained before ACK.");
+    flush();require(current()->pixels()[2]==255 && input(play_before)->pixels()[0]==255,
+        "Live reread latest disk or changed an old content owner.");
+    play_before.reset();
+    // More than a full JSON batch: bytes travel separately, command remains tiny.
+    std::vector<std::uint8_t> pixels(2304*2304*4,0);
+    for(std::size_t i=0;i<pixels.size();i+=4) {pixels[i]=17;pixels[i+1]=193;pixels[i+2]=71;pixels[i+3]=255;}
+    pixels[4]=29;pixels[pixels.size()-2]=211;
+    auto large=std::make_shared<const material::Image>(2304,2304,std::move(pixels));
+    take(author.publish_texture(key,large));auto changes=take(author.take_live_ops());
+    require(changes.size()==1 && changes[0].text.size()<1024 && changes[0].texture==large &&
+        large->pixels().size()>application::PlayLink::maximum_batch,"Large texture fixture did not cross the command limit.");
+    link.forward(changes);changes.clear();flush();
+    const auto delivered=current();
+    require(delivered->width()==2304 && std::ranges::equal(delivered->pixels(),large->pixels()),"Large Live texture lost exact RGBA content.");
+    take(author.begin_material_edit(author_root.id(),992));
+    take(author.preview_material_entry(992,{"roughness",.31f,true}));take(author.commit_material_edit(992));
+    changes=take(author.take_live_ops());
+    require(changes.size()==1 && !changes[0].texture,"A parameter edit retransmitted unchanged image bytes.");
+    link.forward(changes);flush();
+    require(current()==delivered && take(capture()->evaluate({})).roughness==.31f,
+        "Parameter update replaced the adopted texture or failed to update Live.");
+    take(author.material_undo(material_key));link.forward(take(author.take_live_ops()));flush();
+    require(current()==delivered && take(capture()->evaluate({})).roughness==.65f,
+        "Parameter Undo revived old Live pixels.");
+
+    const auto mesh_source=root/"shape.obj";
+    const std::string triangle="v -0.0 0 0\nv 1 0 0\nv 0 2 0\nvt 0.1 0.2\nvt 0.8 0.1\nvt 0.3 0.9\nvn 1 2 3\nf 1/1/1 2/2/1 3/3/1\n";
+    take(editor::write_file(mesh_source,triangle));const auto mesh_key=take(project.import_mesh(mesh_source));
+    complete(author.create_static_mesh(take(project.assets().mesh(mesh_key)),{},&project));
+    link.forward(take(author.take_live_ops()));flush();
+    const auto component=take(world::components(play.world().runtime(),entity(play))).front().id();
+    const auto current_mesh=[&]{return take(presentation::read_static_mesh(play.world().runtime(),component)).mesh.resolved;};
+    const auto old_mesh=current_mesh();const auto history=author.undo_count();
+    auto changed=triangle;changed.replace(changed.find("v 1 0 0"),7,"v 3 0 0");take(editor::write_file(mesh_source,changed));
+    take(author.reimport_mesh(project,mesh_key,mesh_source));const auto imported=take(project.assets().mesh(mesh_key));
+    changes=take(author.take_live_ops());require(changes.size()==1 && changes[0].mesh && !changes[0].texture,
+        "Mesh Reimport did not publish a complete separate snapshot.");
+    link.forward(changes);changes.clear();
+    take(editor::write_file(take(project.resolve(project.entry(mesh_key)->path)),"changed after mesh publication"));
+    flush();
+    require(author.undo_count()==history && old_mesh->bounds().maximum[0]==1 && current_mesh()->bounds().maximum[0]==3 &&
+        take(assets::mesh_content_sha256({mesh_key,{},current_mesh(),{}}))==take(assets::mesh_content_sha256(imported)),
+        "Live mesh reread disk, changed float bits, entered Undo or mutated old geometry.");
+
+    // Exercise the receiver's >16 MiB path and a nontrivial published tangent frame.
+    std::vector<geometry::Vertex> vertices;vertices.reserve(360000);
+    for(unsigned i=0;i<120000;++i) vertices.insert(vertices.end(),imported.mesh->vertices().begin(),imported.mesh->vertices().end());
+    auto published=imported;published.materials={{"slot/0",material_key}};
+    published.mesh=geometry::Mesh::restore_published(std::move(vertices),std::vector<std::uint8_t>(120000,5),{{}},{{0,360000,0}});
+    require(published.mesh->vertices().size()*sizeof(geometry::Vertex)>application::PlayLink::maximum_batch,"Mesh fixture did not exceed JSON limits.");
+    take(author.publish_mesh(project.assets(),published));link.forward(take(author.take_live_ops()));flush();
+    const auto received=take(play_project.assets().mesh(mesh_key));
+    require(current_mesh()==received.mesh && received.materials==published.materials &&
+        take(assets::mesh_content_sha256(received))==take(assets::mesh_content_sha256(published)),
+        "Large Live mesh changed geometry bits, edge masks, slots or default identities.");
+    take(play_project.refresh());require(take(play_project.assets().mesh(mesh_key)).mesh==received.mesh,
+        "Catalogue refresh replaced the accepted mesh with later disk data.");
+
+    take(author.publish_texture(key,large));take(author.publish_texture(key,large));changes=take(author.take_live_ops());
+    require(changes.size()==1,"Unsent texture publications did not coalesce.");
+    take(author.publish_mesh(project.assets(),published));auto mesh_changes=take(author.take_live_ops());
+    changes.insert(changes.end(),mesh_changes.begin(),mesh_changes.end());link.forward(changes);
+    require(!fs::is_empty(spill),"Pending resource content disappeared early.");
+    std::filesystem::path mesh_file;
+    for(const auto& file:fs::directory_iterator(spill)) if(file.path().extension()==L".mesh") mesh_file=file.path();
+    require(!mesh_file.empty(),"Mixed resource publication omitted its mesh payload.");
+    const auto rejected=[&](std::string asset_key) {
+        const auto diagnostics=take(play.apply_live(LinkJson{{"ops",LinkJson::array({{{"op","mesh"},{"key",asset_key},
+            {"file",assets::utf8(mesh_file.wstring())}}})}}.dump(),play_project));
+        require(diagnostics.size()==1 && diagnostics[0].severity==world::Severity::error && current_mesh()==received.mesh,
+            "Malformed or wrong-key mesh payload changed the accepted geometry.");
+    };
+    rejected("project/wrong-key");fs::resize_file(mesh_file,12);rejected(mesh_key);
+    require(!link.close() && !fs::exists(spill),"Closing Live leaked pending texture/mesh content.");
+    std::puts("Manual resource reimport/Live: PASS (exact RGBA/mesh bits, >16 MiB, current identity, parameter Undo, ACK/close retirement)");
 }
 const LinkJson& graph_entity(const LinkJson& graph,std::uint64_t identity) {
     for(const auto& item:graph.at("entities")) if(item.at("id")==std::to_string(identity)) return item;
@@ -238,8 +356,10 @@ void verify_play_link(const std::filesystem::path& root,editor::Project& project
     take(editor::write_file(file,LinkJson{{"ops",rename("Spilled")}}.dump()));
     play.send({{"type","batch"},{"seq",1},{"file",assets::utf8(file.wstring())}});
     auto reply=play.next(&process,&output);
-    require(reply.at("type")=="ack" && reply.at("seq")==1 && reply.at("diagnostics").empty() && !std::filesystem::exists(file),
-        "Play did not apply and delete a spilled batch.");
+    require(reply.at("type")=="ack" && reply.at("seq")==1 && reply.at("diagnostics").empty() && std::filesystem::exists(file),
+        "Play did not acknowledge the spilled batch or deleted sender-owned content.");
+    // This scripted sender owns its file just as PlayLink::Pending does.
+    require(std::filesystem::remove(file),"The scripted sender could not retire its acknowledged batch.");
     const auto play_name=[&] {
         play.send({{"type","inspect"},{"id",9},{"object",*document.document_identity(mover)}});
         const auto answer=play.next(&process,&output);require(answer.at("type")=="inspect" && answer.at("id")==9,"Play answered another request.");

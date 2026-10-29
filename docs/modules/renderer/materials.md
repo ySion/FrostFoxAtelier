@@ -1,86 +1,78 @@
-# 标准材质
+# 可编程材质
 
-本页的标准材质章节描述当前产品合同；末节单列尚未接入产品消费者的[可编程内核](#可编程内核b1)，不能把内核验收解释为编辑器或光栅/射线路径已切换。各验收入口覆盖的内容见 [Renderer 验收](acceptance.md)，编辑与持久格式见[工程工作流](../editor/projects.md)。
+本页描述当前 MS/MI 实现。相关双配置 CPU、GPU 与编辑闭环验收已通过；运行结果以 `out/acceptance-gate/` 的逐目标日志为准，不以历史无纹理批次代替当前链路验证。未覆盖的 GPU 分支见 [Renderer 验收](acceptance.md#--material-programs)。语言合同见[材质纯值编译](../../../LANGUAGE.md#材质纯值编译与具名纹理输入)，编辑和文件操作见[工程工作流](../editor/projects.md)。
 
 ## 数据与入口
 
-材质是可共享的表面定义。网格保存命名材质槽及默认表面；StaticMeshComponent 按槽绑定资源。Texture / Material 业务身份与强引用沿现有 Runtime，持久来源沿 Project 的资源身份。GPU 索引只在对应渲染执行域有效，不写入场景文件。
+- **MS（Material Source）** 定义源码、参数默认值、具名纹理输入及静态策略。`source::MaterialProgram` 从同一类型化前端生成 CPU 代码、point HLSL 和 footprint HLSL。
+- **MI（Material Instance）** 引用一个 MS 或 MI；父链无环。作者项为稳定声明路径、类型化本地值和 `enabled`，支持 float、vector2/3/4、纹理键和寻址方式。没有固定参数数量或一层继承限制。
+- Runtime 中的 `material.Source` / `material.Instance` 共用 `material.Resource` 角色；Texture 也是正式 Runtime 对象。`TextureInput` 只是程序局部计算值，不是业务资源或 GPU 描述符。
+- `SourceDefinition`、`ProgramSurface`、`Image` 是不可变内容。`ProgramSurface` 自持代码、参数和精确图片，不持有 Runtime 根；局部槽属于该编译版本，不持久化。声明重排按路径重绑，不能以输入数组下标代替 descriptor 的真实 slot。
 
-```mermaid
-flowchart LR
-    A[Project 资源身份与文件] --> B[Runtime Texture / Material]
-    B --> C[组件槽绑定与参数覆盖]
-    C --> D[World 捕获不可变 Surface]
-    D --> E[Renderer 共享材质表]
-    E --> F[工作室与 Lit GBuffer]
-    E --> G[射线命中与发光采样]
-    E --> H[编辑深度与覆盖]
-```
+网格只保存几何、命名槽及默认材质关联。每槽依次使用组件显式绑定、网格默认材质、内置 **Default World Grid**。损坏材质使用独立的品红错误材质，不把正常未绑定网格当错误。组件没有内联固定 StandardPBR 参数，也不再将组件颜色乘入网格表面。
 
-业务资源可变，帧内 `Surface` / `Image` 不可变。它们只拥有参数与像素，不持有 Runtime 对象。Project 资产身份、Runtime 对象身份与 GPU 表位置各自限定作用域；没有另一套 Material ID 业务世界。MatCap / Smooth / Flat / Scene Lit、Edit / Play 与材质资产彼此独立。
+`resolve_source` / `resolve_instance` 只消费明确的定义、父快照、作者项和图片；`capture_program` 从活 Runtime 捕获并复用未变内容。两条入口都返回 `ProgramSurface`，不会回读磁盘或回写作者值。
 
-网格资产可以为每个槽指定默认材质：glTF 导入为每个用到的材质生成一份 `.material`，记在网格元数据的 `materials` 里。组件的每个槽按顺序取显式绑定、网格默认材质，最后才是网格自带表面乘组件基础色并沿旧标量参数解析（OBJ 与基本体没有默认材质，走最后这条路径），三者都解析到同一表面表。默认材质随网格在运行时解析，不写入场景；编辑共享默认材质会传到所有显示它的网格。部分绘制槽有绑定或默认材质时，组件默认参数标注 `(Unbound)`，只作用于其余槽；全部绘制槽都有后隐藏默认参数，清除绑定会恢复。显式绑定和默认材质的参数来自资源与覆盖，不暴露写入后不生效的参数入口。共享材质编辑、撤销和重做都要求 World 已停止且未关闭；拒绝操作不改变资产、历史游标或文档版本。
+## 作者格式、编辑与历史
 
-实例继承限定为一层，并以显式位记录 11 组标量/颜色参数覆盖；相等的数值也可以是明确覆盖，不能通过比较数值猜测意图。贴图引用与采样设置继承共享材质，不提供实例贴图覆盖。复制 Entity 子树或森林时，每个场景内联材质与参数实例只复制一次，复制范围内的共享关系保留，父资产和 Texture 继续共享。共享材质修改传播到所有未覆盖字段；关闭某项覆盖重新继承父值。原生或源码调用需要通过材质写入/覆盖接口建立这一意图，直接写实例参数字段不会自动建立新的覆盖位。
+唯一材质 codec 为 v2（[`material_format.hpp`](../../../src/assets/material_format.hpp)）：
 
-## 编辑器使用
+| 角色 | 文件 | 作者字段 |
+|---|---|---|
+| MS | `.ms.material` | `source_path`、`policy`、`inputs` |
+| MI | `.material` | `parent_key`、`entries` |
 
-在 Project 或 Asset Browser 菜单中使用 **Import Texture…** 导入图片、**New Material…** 创建 `.material` 资产。选择材质资产后在 Parameters 编辑参数、六个贴图输入与各自的 UV/采样设置。选中网格组件，在 `Material · 槽名` 选择资产；`Edit Shared Material` 编辑共享定义。没有绑定的槽显示 `Mesh Default · 材质名`，即网格的默认材质。
+MS 输入包含 `path`、`binding`、`color`、线性 float4 `empty_value`。MI 项包含 `path`、`type`、`enabled` 和 `value`；纹理 value 为 `asset_key` 与 `address`。Scene v10 保存场景 MI、共享关系与槽绑定。旧格式明确拒绝，不保留兼容 loader。
 
-`Material Overrides · 槽名` 的复选框控制参数组是否覆盖，显示默认材质的槽也一样：勾选时以默认材质为父创建实例。未勾选字段继续继承并显示为只读；勾选后可编辑，取消勾选恢复共享值。共享资产与实例使用各自的文档历史，Ctrl+S 沿当前文档保存。Save Scene / Save Scene As 只写场景，材质草稿继续保留；共享资产需要在其文档中保存或使用 Save All。切换场景、工程或关闭编辑器时，未保存的材质资产单独提示。颜色贴图在 Scene Lit / Smooth / Flat 中可见；MatCap 保留自身预览配色。
+Parameters 按实际声明生成数值、向量、颜色和纹理控件。`Create Scene Material Instance` 从槽当前材质建立子实例；无绑定槽继承 Grid。内置作者不可修改，可建立 MI。MS 文本通过源码编辑入口处理，不能当 MI 参数编辑。
 
-Control 使用相同的资源、编辑和保存入口，`material.inspect` 可按资产或实例对象读取解析值，见 [Editor Control](../editor/control.md)。外部文件改写不会自动替换已打开会话中的贴图；重开工程读取新版本。直接更换材质的贴图绑定会在当前场景立即生效。
+同值覆盖仍是显式作者意图；关闭覆盖保留本地值，丢弃本地项才恢复 absence。首次预览取消恢复原先的缺项状态。删除声明、类型失配和休眠项保留并诊断，不自动删值；休眠或失配纹理不作为执行依赖读取。
 
-## 标准表面
+Scene 的 strict/tolerant 加载都保留这些格式合法的稀疏项，并使用当前继承值；声明失配是信息诊断，不是文件损坏。未知格式、非法类型值、必要资源或 Source 定义失败仍按严格加载规则拒绝。
 
-| 输入 | 参数与贴图语义 |
-|---|---|
-| 基础色 | 线性 RGB 因子乘 sRGB 颜色图；图的 alpha 保持线性 |
-| 粗糙度 | 0～1 因子乘线性图指定通道 |
-| 金属度 | 0～1 因子乘线性图指定通道；可与粗糙度共用同一张打包图 |
-| 法线 | 线性 RGB 切线空间图；强度 0～16，Y 符号 +1/-1 |
-| 自发光 | 每通道 [0,65504] 的线性 HDR RGB 因子乘 sRGB LDR 图；不是曝光后的亮度 |
-| 透明度 | 独立线性图的指定通道，与基础 alpha 相乘后做 Mask |
+参数 Undo 只保存所触及路径的 before/after 作者项及编辑对象根，不保存父材质、完整表面或图片版本。共享资产与场景实例分别使用各自历史；Save Scene 不隐式保存材质资产草稿。复制场景对象保留复制范围内的共享关系，并继续共享命名祖先资产。
+Undo/Redo 重新启用当前声明匹配的纹理项时，宿主传入当前 Project，由 Session 按需装配此前未加载的图片；已有 Texture 根继续使用当前内容，包括后续 Reimport。休眠、失配和空键不触发读取，文件不可用时保留作者项并诊断，不把历史图片或 I/O 加入纯捕获路径。
 
-每个输入具有独立 UV 缩放、旋转（弧度）、偏移和 Repeat / Clamp / Mirror 寻址。标量图可以选择 R/G/B/A。图片为左上原点的不可变 RGBA8，单边最多 8192；PNG/JPEG/BMP 等沿 WIC 解码，不宣称支持 HDR 图文件。缺图以中性输入处理，法线图缺失保留网格法线。Opaque 忽略 alpha；Mask 的覆盖公式为 `base_alpha × color_texture.a × opacity_texture[channel] >= cutoff`，默认阈值 0.5。当前不支持半透明混合、折射或透明排序。
+## 资源发布与默认替代
 
-自发光上限来自现有 FP16 GBuffer 的表达范围，未降低纹理精度；组件的 `world.Material` 参数、不可变 Surface 与 Renderer 的实例入口在同一范围拒绝超界值，避免编辑成功后到捕获或渲染才失败。
+`Session::publish_material` 对同键同角色原位发布，传入的精确 Source 文本优先于磁盘。`publish_texture` / 手动 Texture Reimport 更新同一 Texture 身份；新捕获读新像素，旧快照仍持有旧像素直到消费者退休。模型 Reimport 按真实槽名保留既有 MI，不覆盖用户作者文件；文件失败沿事务回滚。导入不进入参数 Undo，不自动监控文件系统。
 
-内置方块、平面和球提供 UV。OBJ 保留 UV（导入时转换 V 轴）和原始面边界；MTL 的 Kd、d/Tr、map_Kd、map_d 转成同一默认表面，其他 MTL 参数仍不作为标准 PBR 导入。glTF 导入的映射见[文件夹工程](../editor/projects.md)。切线默认在 Mesh 发布时由锁定的 [MikkTSpace](../../../third_party/mikktspace/README.md) 生成，保留作者法线和 lowpoly 硬边；退化 UV 使用稳定的正交回退。生产者也可以用 `geometry::Tangents::authored` 提交作者切线：每个顶点的手性（±1）原样保留，XYZ 对法线正交化并归一化，与法线平行（按切线长度的相对误差判断）或长度为零时使用同一回退；glTF 导入使用这一选项。非均匀缩放、镜像及法线图 UV 旋转通过同一切线帧处理。
+MS 成功发布时，Session 按新声明补齐其已加载命名子链和场景 MI 中已启用、类型匹配且尚未装配的纹理引用。冷加载时 Source 编译失败或声明缺失不会使这些作者键永久停留在空绑定；修复只更新消费资源，不重载子 MI 作者文件、不清除未保存编辑或参数历史，休眠与失配项仍不读取图片。
 
-## 光照、覆盖与历史
+单项不可用时继承当前父内容或输入默认；显式空纹理键读取 MS 的线性 float4 空值，不回退父图。定义或父链无法消费时使用真实 Source 编译的 Opaque 品红程序，且不把子 MI 的布局套入错误程序。Grid 与错误材质均沿普通材质路径执行，Renderer 没有 StandardPBR 或错误标志特判。
 
-工作室、Lit、射线和编辑深度都消费共享材质表。光线命中以重心坐标恢复 UV，并以距离、UV 密度估计贴图 LOD；DDGI 探针命中在命中点读取发光纹理与覆盖。MatCap 保留自身颜色和几何法线语义，但遵循 Mask。点拾取读取相同表面，以与射线覆盖相同的 base-mip 双线性 alpha 判断透明孔洞；屏幕导数仅用于光栅过滤，框选保持几何范围语义。
+默认替代不改写源码、资源键或覆盖值，不创建历史。`ProgramSurface::diagnostics()` 属于该精确结果；Session 另保留原始加载/编译诊断。strict 加载、Repro 完整性与身份/关系校验仍可失败，不能因为存在显示替代而当作输入合法。
 
-着色法线与几何法线分开：法线图参与 BRDF、反射方向和辐照度方向；射线起点偏移、闭合分类、支持平面和历史深度梯度使用几何法线。GBuffer 与历史另外保存 RG16_FLOAT 八面体几何法线。D32_FLOAT 当前深度、R32_FLOAT 前帧深度和 RG32_FLOAT Hi-Z 未降精度。法线 mip 的长度损失向粗糙度加入有界方差，以减轻远处镜面闪点；这是过滤近似。
+Live 将参数命令与精确资源内容分开传输；纹理和网格 spill 文件按在途预算与 ACK/close 寿命管理。Repro 冻结实际可达 MS/MI 父链、Source 文本和活动纹理像素，休眠项仍保留作者数据但不引入执行依赖。它不是通用资源服务或可回退的资产历史。
 
-双面显示、双面发光、几何闭合分别定义：默认双面保留既有场景；单面发光的可见 emission 与 DDGI 探针命中记录的 emission 遵循相同的作者朝向，含镜像变换。阴影射线仍把表面视为遮挡。Mask 面使其所在的连通闭合分量失去“背面即内部”的判据，不影响同一模型中其他独立的完整壳体。
+## GPU 批次与实际显示
 
-网格发光只经 DDGI 到达其他表面：探针射线命中发光面时读取命中点的实际纹理，黑色或被 Mask 裁掉的纹素贡献为零。离屏的纹理发光同样照亮表面；SSSR 的离屏镜面限制见 [Scene Lit](scene-lit.md)。
+`Renderer::prepare_materials(span<ProgramSurfaceRef>)` 返回 move-only、owner-thread 的 `MaterialBatch`。必须调用 `preparation(batch)`；即使复用管线，也要完成该批次的数据表和图片准备。ready 仅表示同 Context 有序可用，不代表 GPU 完成或已呈现。
 
-材质或图片版本变化参与历史兼容性判断；发光变化启动照明响应。Opaque/Mask 变化更新 BLAS 透明性，普通参数和图片替换不重建网格。无 Mask 的几何保留硬件不透明查询路径。
+有网格的 `Frame` 必须提供同 Renderer 的 ready `materials`，每个 `MeshInstance::material_slots` 完整映射几何槽到该批次表。UI/空场景可以没有批次。批次须在 Renderer 关闭前释放。
 
-## 所有权与成本
+17 个材质管线按精确 MaterialProgram 对象集合共享；MI 参数、图片、策略或表顺序改变不重新编译相同集合。Renderer 保留最后实际使用的代码 owner，但不因此保留旧参数/图片表。图片按不可变 owner 和 linear/sRGB 使用方式共享上传及 mip；准备中但未采用的批次也持有图片，不能被旧帧清扫淘汰。退休沿现有 RHI/gfx，不逐图等待 GPU。
 
-默认无绑定材质的稳定捕获直接命中组件缓存，不进行引用字段解析；RT 不透明性聚合复用几何缓存，并在所有共享实例上取交集，不逐帧分配临时哈希表。稳定材质捕获复用 GPU 表和纹理；相机、物体或灯光移动本身不会重新上传材质内容。表内等价表面去重，纹理按不可变 Image owner 与颜色空间缓存，同一图的多个线性标量输入共用上传；同一图同时作为 sRGB 和线性数据使用时具有独立视图资源。所有上传、mip、采样器、加速结构和退休都经既有 RHI/gfx。
+宿主使用 `SceneSnapshot::refresh → prepare → draw()`。候选冻结网格、变换、槽表、光源和 CPU 拾取数据；只有仍属当前请求且 ready 的完整组才能采用。准备期间保留上一完整组，首组未 ready 不提交网格场景；不是将新参数拼到旧程序上。
 
-资源替换先完成解析和验证，再发布内容。持久材质只能引用具有持久来源的 Texture，非法绑定不得污染旧参数、引用或已发布表面。创建材质先规范化路径并验证仍在 Content 内，重复创建不覆盖已有文件与资源身份。旧帧保留旧 CPU 图像，GPU 使用期由 RHI 延迟退休保证。所有者参与缓存键，防止地址复用命中新旧资源。空场景释放未使用的材质图片和场景引用，关闭保持幂等。性能收益须以真实场景测量为准，此处不把减少重复工作等同于已测得帧率提升。
+`ViewportView.scene` 只在 Renderer 接受该帧后替换；`skipped/not_ready` 不改变屏幕拾取快照。点拾取使用这一帧的精确几何、变换、身份和 ProgramSurface，CPU 执行完整 Context 与 LOD0 双线性覆盖；框选保持几何范围语义。
 
-## 范围
+## 采样与各通道
 
-当前覆盖标准表面、共享资源、网格默认材质、显式参数覆盖、撤销和保存往返。没有节点图、任意着色器、分层材质、透明折射、虚拟纹理和压缩纹理资产管线；HDR 图片只作天空贴图（见 [Scene Lit](scene-lit.md)），不作材质贴图。Mask 使用当前 mip 与阈值，没有覆盖率保持的 alpha mip 或随机透明度。
+- 工作室、GBuffer、编辑深度在分派及 discard 前获取透视重心变化，构造完整 Context 的两方向变化，再经程序计算得到最终采样坐标足迹。
+- 阴影与 inline RT 候选使用完整 Context、LOD0 覆盖。接受后的 DDGI 命中按 `.01t` 与命中平面两轴构造足迹进行着色，不用过滤后的 coverage 再否定已接受命中。
+- 非有限最终梯度或纹素尺度溢出读取真实最粗 mip，不把坏梯度交给硬件。
+- `sample_orientation` 查询实际输入的 address：Repeat/Clamp 为正方向；Mirror 按折叠区间返回方向，精确折点取正。footprint 中它是中心值上的分段常量，两方向变化为零。
+- Mask 保留 `coverage >= 0`，Opaque 不用 coverage 裁剪。MatCap 保留自身配色和几何法线预览，但遵循材质 Mask。
 
-## 可编程内核（B1）
+DDGI 的世界尺度为 \(\rho=0.01t\)。两轴沿射线在命中平面的投影及其正交方向，长度分别为 \(\rho/|N\cdot D|\) 与 \(\rho\)；正入射用最长世界边定轴，不封顶有限掠射足迹。有效世界三角形上零足迹给零变化，退化世界几何或溢出给不可用变化；退化 UV chart 不废弃其他有效属性。法线变化对应同次插值归一化，切线 XYZ 不额外归一化，几何法线和手性变化为零。这是局部切平面近似，不是精确射线微分；其他消费者须提供自己的足迹。编译器的局部分支、奇点和非有限传播约定见[语言规范](../../../LANGUAGE.md#材质局部足迹的边界约定)。
 
-[`source::MaterialProgram`](../../../src/source/material_program.hpp) 从自有语言的同一类型化前端生成拥有型 CPU 代码与 HLSL。数值 `Params/defaults()` 和具名纹理记录来自源码；`TextureInput` 是真实注册的计算值，不是资产、Runtime Texture 或 GPU 描述符。字段路径是作者键，局部采样槽只属于当前编译版本，声明重排后须按键重绑。语言范围和数学合同见[材质纯值编译](../../../LANGUAGE.md#材质纯值编译与具名纹理输入)。
+## StandardPBR 与边界
 
-[`program_resources.hpp`](../../../src/material/program_resources.hpp) 提供独立的 `MaterialSource` / `MaterialInstance` 业务类型及不可变 `SourceDefinition` / `ProgramSurface`：
+StandardPBR 是安装的普通 MS，而非全部材质的固定 schema。它提供基础色、粗糙度、金属度、切线空间法线、自发光和透明度六路输入及独立 UV 变换。颜色图仅 RGB 作 sRGB 解码，alpha 保持线性；标量图可选通道。Repeat/Clamp/Mirror 来自输入绑定；未绑定法线的类型化空值为精确中性值，不制造量化默认图片。
 
-- MS 持有程序、静态策略和全部声明纹理的类型化默认合同；MI 单父无环，支持 MS→MI→MI。覆盖保存路径、本地类型化值及 enabled；同值覆盖仍成立，关闭保留作者值，捕获不回写继承值。启用失配阻止发布，休眠失配保留并诊断。
-- 纹理默认声明按 Program 路径归一；SourceState 的根按该顺序配对，InstanceState 的根和纯解析图片按作者项顺序配对。正式对象使用 Runtime 强边，Surface 只持代码、精确图片与采样设置。颜色输入仅 RGB 作 sRGB 解码，alpha 保持线性；显式清空使用 MS 的线性 float4 空值，不回退父图。
-- `resolve_source` / `resolve_instance` 消费明确的定义、父 Surface 和图片，不读目录或活父。`capture_program` 是活对象便利入口：未变复用内容，依赖失效返回错误，不以旧缓存冒充新成功。
-- 同步更新先准备全部可失败内容，再一次提交正式引用与无抛载荷更新。失败保留目标作者态、边和 Surface，不承诺祖先缓存或 Runtime 写代号回滚；宿主可见材质组的 GPU 准备和整体采用仍属 B2。
+图片是左上原点的不可变 RGBA8，单边最多 8192，经 WIC 解码。HDR 图片仍仅用于天空。StandardPBR 法线方差粗糙度修正属于过滤近似；发光范围受 FP16 GBuffer 限制。几何法线继续用于偏移、闭合分类、支持平面和历史深度，着色法线用于 BRDF/反射；Mask 会影响闭合与 RT 不透明性。
 
-2026-10-27 的 Dev/Release `all`、`source_material_acceptance` / `jit_acceptance`（含 Source 依赖）、`material_program_resources_acceptance` 及 `renderer_acceptance_material_programs` 已通过；GPU 入口实际使用 GBV。对象入口验证继承、覆盖/清空/恢复、失败保留、精确内容、const 捕获、GC 与 Runtime 关闭后寿命；GPU 每配置保留 72 行场景和 144 行数学独立期望对照，包含字段反序后的重绑。CPU 回调计数仅覆盖 lerp 的 a/b 采样操作数，不是 GPU 指令计数。
+OBJ/glTF 导入生成普通 MI 与网格默认表；内置几何和模型沿现有 MikkTSpace/作者切线规则。普通参数与图片替换不重建几何；覆盖策略变化更新 RT 不透明性。网格发光经 DDGI 影响其他表面，SSSR 边界见 [Scene Lit](scene-lit.md)。
 
-当前采样范围为 CPU/compute 的 LOD0 双线性、Repeat/Clamp/Mirror。产品工作室、GBuffer、阴影、射线/DDGI、拾取、Editor/Play、资产 codec 与 Examples 尚未迁移；没有据此获得光栅梯度、多通道整组采用或性能结论。旧固定路径只服务尚未切换的产品消费者，不是新接口兼容层；切换与删除按[分批实施方案](../resources/material-program-plan.md)推进。
+没有节点图、透明混合/折射、虚拟纹理、压缩纹理管线、覆盖率保持 alpha mip，或任意 Shader ABI。性能必须另行测量；管线复用和缓存策略本身不等于已获得帧率提升。

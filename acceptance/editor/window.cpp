@@ -32,6 +32,17 @@ struct EditorAcceptanceAccess {
             ", hit="+std::to_string(app.ui_.pointer_target(pointer.x,pointer.y))+", focus="+std::to_string(app.ui_.focused_control())+
             ", wants_keyboard="+std::to_string(app.ui_.wants_keyboard())+", popup="+(app.popup_?std::string(app.popup_->diagnostic()):"missing");
     }
+    static void menu_failure(Application& app,const char* stage) {
+        const auto about=static_cast<ui::ControlKey>(editor::Command::about);
+        auto* host=app.menu_host();const auto* frame=app.menu_frame();
+        const auto contains=[&](ui::ControlKey key) {return std::ranges::any_of(app.workspace_.menu_items,[&](const auto& item){return item.key==key;});};
+        std::fprintf(stderr,"Editor menu check: %s logical=%llu items_exit=%d items_about=%d actual=%llu visible=%d frame=%llu frame_exit=%d frame_about=%d presents=%u foreground=%p focus=%p capture=%p main=%p %s\n",
+            stage,app.workspace_.menu?app.workspace_.menu->source:0ULL,contains(editor::control::exit),contains(about),host?host->source():0ULL,
+            host&&host->visible(),frame?frame->drawing->id:0ULL,frame&&frame->find(editor::control::exit),frame&&frame->find(about),
+            host?host->open_present_count():0,static_cast<void*>(GetForegroundWindow()),static_cast<void*>(GetFocus()),
+            static_cast<void*>(GetCapture()),static_cast<void*>(app.window()),menu_input_diagnostic(app).c_str());
+        std::fflush(stderr);
+    }
     static unsigned menu_presents(Application& app) {return app.menu_host()?app.menu_host()->open_present_count():0;}
     static auto focused(const Application& app) {return app.ui_.focused_control();}
     static void finish_menu_hold(Application& app) {app.menu_requested_-=std::chrono::seconds(1);}
@@ -72,6 +83,14 @@ struct EditorAcceptanceAccess {
 
     static auto name_control(const Application& app,ObjectId entity) { return app.workspace_.name_control(entity); }
     static ui::TreeViewport tree_viewport(const Application& app,ui::ControlKey tree) { return app.ui_.tree_viewport(tree); }
+    static ui::ControlKey material_control(const Application& app,ObjectId object,std::string_view path,std::size_t lane=0) {
+        if(app.presented()) for(const auto& control:app.presented()->controls) {
+            const auto* binding=app.workspace_.binding(control.key);
+            if(binding && binding->kind==editor::Workspace::Binding::Kind::material_field && binding->object==object &&
+                binding->material_path==path && binding->index==lane) return control.key;
+        }
+        return 0;
+    }
     static ui::ControlKey structure_control(const Application& app,ObjectId object) {
         if(app.presented()) for(const auto& row:app.presented()->tree_rows) {
             const auto* binding=app.workspace_.binding(row.key);
@@ -86,11 +105,17 @@ struct EditorAcceptanceAccess {
         }
         return false;
     }
-    // True while the requested Lit view is still preparing; a failed preparation throws.
-    static bool lit_preparing(Application& app) {
+    // A frame of the previous material group is not the requested scene, even
+    // when its view pipelines are ready and the renderer accepts it.
+    static bool view_preparing(Application& app) {
         const auto prepared=app.renderer_.preparation(app.control_?app.control_->view():app.workspace_.view);
         if(!prepared) throw std::runtime_error("Scene Lit preparation failed: "+prepared.error().cause.message);
-        return !prepared->ready || app.fallback_presented_;
+        if(!prepared->ready || app.fallback_presented_) return true;
+        if(app.presented() && app.presented()->find(editor::control::viewport)) {
+            const auto* draw=app.scene_.draw();
+            return !draw || draw->picking!=app.scene_.picking() || !app.accepted_view_ || app.accepted_view_->scene!=draw->picking;
+        }
+        return false;
     }
     static bool fallback_presented(const Application& app) {return app.fallback_presented_;}
     static void frame_failure(Application& app) {
@@ -324,19 +349,19 @@ void require_input_focus(Application& app) {
     require(GetFocus() == app.window() && GetForegroundWindow() == app.window(),
         "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
 }
-// Counts accepted frames of the requested view. A fallback for an unprepared Lit view does
-// not count, and preparation may take minutes (GPU validation warms pipelines up).
+// Count only accepted frames of the current scene and view, not preparation
+// fallbacks. GPU validation may take minutes to warm the pipelines up.
 void tick(Application& app, unsigned count = 2) {
     using Access=atelier::application::EditorAcceptanceAccess;
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::minutes(20);
     unsigned accepted{},attempts{};
     while (accepted < count && attempts < 180) {
-        // Waiting for Scene Lit pipelines does not spend the frame budget.
-        if (!Access::lit_preparing(app)) ++attempts;
+        // Material and view preparation do not spend the frame budget.
+        if (!Access::view_preparing(app)) ++attempts;
         const auto before = app.accepted_frames();
         require(app.step(), "Editor closed during input acceptance.");
-        if (app.accepted_frames() > before && !Access::fallback_presented(app)) ++accepted;
-        require(std::chrono::steady_clock::now() < deadline, "Scene Lit pipelines were not prepared within 20 minutes.");
+        if (app.accepted_frames() > before && !Access::view_preparing(app)) ++accepted;
+        require(std::chrono::steady_clock::now() < deadline, "Scene materials or view pipelines were not prepared within 20 minutes.");
     }
     if (accepted < count) Access::frame_failure(app);
     require(accepted >= count, "Editor did not accept a frame within 180 iterations.");
@@ -587,7 +612,7 @@ void png(const atelier::renderer::Capture& image, const std::filesystem::path& p
 void capture(Application& app, const std::filesystem::path& path) {
     atelier::renderer::Capture image;
     const bool stepped = app.step(&image);
-    require(!atelier::application::EditorAcceptanceAccess::fallback_presented(app), "Capture met a fallback for an unprepared Scene Lit view; tick first.");
+    require(!atelier::application::EditorAcceptanceAccess::view_preparing(app), "Capture met a previous scene or unprepared view; tick first.");
     require(stepped && image.frame_id != 0, "Renderer did not capture an accepted frame.");
     require(image.rgba.size() == static_cast<std::size_t>(image.extent.width) * image.extent.height * 4,
         "Capture has an invalid pixel payload.");

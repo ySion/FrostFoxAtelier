@@ -4,11 +4,25 @@
 
 ## 运行
 
-- `renderer_acceptance` 目标依次运行下面 10 个入口，每个入口一个独立进程，使用真实窗口，限时 1800 s，任一失败即整体失败。每个入口另有单独目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口是 `renderer_acceptance_default`），按改动只跑相关入口时用它。日志写在构建目录的 `renderer-acceptance-<入口>.log`；Scene Lit 入口的图像与 CSV 证据写在 `renderer-evidence/<入口>/`，默认入口的截图直接写在可执行文件目录。也可以直接运行 `atelier_renderer_acceptance --<入口> --output <绝对目录>`，默认入口不带参数。
-- 验证层：默认入口和 Scene Lit 入口都请求 GPU-based validation，`--scene-lit-stability` 请求 D3D12 debug layer，`--scene-lit-benchmark` 关闭验证，计时采样期间不读回图像。环境变量 `ATELIER_GPU_VALIDATION=debug` 把进程内的 GBV 请求降为 debug layer。[验收门禁](../../../tools/acceptance-gate.ps1)只对默认入口和 `--scene-lit` 保留 GBV，其余入口用 debug layer。GBV 下第一次准备 Lit 管线要两分钟左右，所以这两个入口每次要几分钟；其余入口在 debug layer 下多为 5–30 s。
+- `renderer_acceptance` 目标包含下面 11 个入口，每个入口一个独立进程，使用真实窗口，限时 1800 s，任一失败即整体失败。每个入口另有单独目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口是 `renderer_acceptance_default`），按改动只跑相关入口时用它。日志写在构建目录的 `renderer-acceptance-<入口>.log`；Scene Lit 入口的图像与 CSV 证据写在 `renderer-evidence/<入口>/`，默认入口的截图直接写在可执行文件目录。也可以直接运行 `atelier_renderer_acceptance --<入口> --output <绝对目录>`，默认入口不带参数。
+- 验证层：默认入口、`--scene-lit` 和 `--material-programs` 请求 GPU-based validation，[验收门禁](../../../tools/acceptance-gate.ps1)对这三个入口保留 GBV。`--scene-lit-stability` 及门禁中的其余窗口入口使用 D3D12 debug layer；`--scene-lit-benchmark` 关闭验证，计时采样期间不读回图像。直接运行时，环境变量 `ATELIER_GPU_VALIDATION=debug` 会把进程内的 GBV 请求降为 debug layer。GBV 下首次准备 Lit 或材质批次管线可能需要几分钟；其余入口在 debug layer 下多为 5–30 s。
 - 检查不依赖 `assert`，Dev 和 Release 中同样生效。改动核心运行时或构建链时两种配置都要跑。
 - 硬件：RHI 要求同时支持 Mesh Shader、DXR 1.1 inline RayQuery 和 SV_Barycentrics 的 GPU。阈值和下文读数来自 RX 6800 XT，其他 GPU 没有跑过。窗口必须可见，运行期间桌面不能被其他全屏程序占用。
 - 期望值由独立真值或参考帧得出：解析或数值积分的真值、同一场景清历史后收敛的终点、关闭被测效果的对照帧，不取自被测实现。帧间比较用 RGB8 最大通道差，mean/p95 在实际几何像素或指定 ROI 上统计。
+
+## `--material-programs`
+
+`renderer_acceptance_material_programs` 是窗口/GPU 入口，门禁对它保留实际 GBV。`material_programs.cpp` 保留原 72 行 CPU/compute LOD0 与 144 行运行期数学对照，分别写入 `outputs.csv` / `math-outputs.csv`；此处的手工坏 HLSL 仅是直接 RHI 失败对照。
+
+同一入口随后执行 `material_batches.inl` 的公开原生 Renderer 消费：两个真实 MS、不同 Params 布局与具名纹理输入、显式父 Surface 的子/孙/兄弟解析；编译 Runtime 销毁后准备批次。检查 pending 不替换 Capture、准备/取消/CPU 拒绝期间旧整组逐像素不变、缺失/不完整/越界槽表和无 batch 网格帧拒绝、准备完成后颜色/coverage 同时变化，以及 live batch 的 close busy 与无 capture 的在途退休。
+
+默认回退用真实 `compile_material` 的未知标识符错误产生缺失定义，保留 `Broken.source` 与原编译诊断，再由 material 的正常解析入口生成引擎默认 ProgramSurface。该程序与正常程序共用批次和 17 条管线；Smooth 与 GBuffer/TAA 编辑深度检查品红外观和完整 Opaque 覆盖，并在修复后恢复原 Mask 孔洞。它证明前端失败到默认消费，不是自然 DXC/PSO 拒绝或 Editor 自动编译调度的证据。
+
+新组贯通 Smooth、Flat/MatCap/Cavity、编辑线深度、GBuffer、TAA 无抖动编辑深度、程序化阴影孔洞。真实 DDGI 房间验证完全离屏的暖/冷发光、仅参数替换、被 Mask 丢弃的亮发光体不照明；同几何 Opaque/Masked 实例换序仍保留非 opaque 候选执行。新增读回写入 `native-outputs.csv`，图像为同目录 `native-*.png`，程序输入为 `NativeMask.source` / `NativeOpaque.source`。
+
+纹理用非对称红/蓝棋盘和坐标图对照：最终缩放 UV、世界位置、变化的法线/切线及纹理驱动坐标在镜像非均匀变换下仍正确过滤；GBuffer 与编辑深度使用过滤 coverage。相同程序集合的参数/图片修改无需重新准备 PSO，已准备但未采用的图片在旧帧连续绘制后仍有效。同一图片的 linear/sRGB 解释、类型化空值、Repeat/Clamp/Mirror 与 orientation 折点分别检查。DDGI 用 LOD0 仅接受蓝纹素、过滤后为紫色且 coverage 为负的输入，区分正确的命中后过滤、错误的 LOD0 着色及错误的二次 coverage 拒绝。
+
+这证明原生纹理多 pass 与批次寿命；正式 Editor/presentation 绑定、保存/历史、accepted-frame 点击由编辑器与 World 入口验证，原生 CPU `evaluate` 对照不称为点击验收。极端掠射、非有限/溢出梯度到最粗 mip 仍缺定向 GPU 用例；合法 ProgramSurface 自然触发 DXC/PSO 失败仍没有确定性夹具，不以取消、前端拒绝或直接 RHI 的 `#error` 代替。必要回归为两配置此入口与 `renderer_acceptance_default` / `renderer_acceptance_scene_lit`；逐轮实际结果以门禁日志为准。旧图像/光照场景通过验收专用 `standard_fixture.inl` 作者夹具构造真实 StandardPBR MS/MI，再提交同一公开批次 API；生产中不存在固定材质兼容入口。
 
 ## 默认入口
 
@@ -19,6 +33,7 @@ GPU validation，一个 641×385 的窗口，覆盖 Renderer 的帧合同和工�
 - 场景：近处遮挡远处、非对齐宽度的深度读回、left-handed row-major 投影；变换（旋转、非均匀缩放、剪切的逆转置法线、镜像、极端缩放、非法矩阵整帧拒绝后恢复）；网格（只提交可见网格、新版本替换并退休旧 CPU 所有者、缺资源整帧拒绝）；主视锥剔除（可见区间读原实例下标、同几何实例共用 draw、重入镜头、跨眼平面保守保留、空场景清计数）。
 - Scene Lit 异步准备：未就绪的 Lit 帧返回 not_ready，不编码、不 Present、不改 capture；准备期间工作室帧照常接受；开启需要新管线组的设置时 total 增加，帧回到 not_ready，组就绪后恢复。
 - 材质：分区、负 UV 与图像方向、sRGB 与线性 opacity、Mask 在四种 AA 下与公开 FP32 深度一致、Mask 在光栅和射线阴影中一致、同一几何的 Mask/Opaque 实例交换顺序与增删、法线图、打包粗糙度金属度、单面与双面发光、未用图片随几何一起退休。
+- 标准材质默认消费：共享错误 Surface 在 Smooth / Scene Lit 显示品红，完整 Opaque 深度取代原 Mask 孔洞；恢复正常 Surface 后孔洞恢复。图像为 `material-default-smooth.png` / `material-default-lit.png`；资源失效、作者值与诊断的上游行为由 `editor_material_acceptance` / `project_scene_acceptance` 覆盖。
 - 材质光输运：DDGI 射线命中把贴图颜色带到中性接收面；只换贴图内容就更新 DDGI；完全位于视锥上方的贴图发光面经 DDGI 照亮接收面（入口先检查发光面四角都在视锥外）；镜像变换下单面发光仍按作者朝向；被 Mask 裁掉的发光纹素不贡献光。
 - Cavity：保持 FP32 深度和背景、凸凹不换号、ridge 与 valley 独立、零强度不编码 pass、半径与 resize、透视、纯线框跳过、非法参数在编码前拒绝。
 - 选中：四种 AA 和多个相机位置下边线连续；DDGI 叠层后边线和深度不变；跨眼平面、近裁剪面、1e-20/1e20 尺度、镜像和 8 px 线宽下内部不铺色、边线宽度有界；显式线框模式不铺面。
@@ -193,7 +208,7 @@ D3D12 debug layer。同一 Renderer 上依次跑 DDGI 读回诊断、上一节�
 
 原始 P0→P1（2069cc63→9ed0761e）Sponza 两轮数据保存在性能工作树 `.amp/in/sponza/runs/*-{2069cc63,9ed0761e}-*/`：静止／环绕 GPU p50 为 15.857→14.337、24.818→18.727 ms；Smooth／MatCap wall p50 为 4.624→2.937、4.064→2.340 ms。这是另一个历史配对，不与上述修复样本拼算。在渲染工作树另一个 1600×900 Control 流程中，首次上传 CPU 为旧两次均值 688.150→新一次 770.506 ms（+82.356）；完成相同 Lit 流程后进程 Dedicated Usage 为 9,877,245,952→7,342,018,560 B，减少约 2.36 GiB。后者是 Windows 进程显存计数，不是逻辑资源字节；新旧 `scene_lit_resource_bytes` 口径不同，不据其差值计算显存节省。
 
-总负责人已明确接受历史 Dungeon CPU／wall 尾延迟取舍，保留 P1 收益，不扩绑定架构或 P2，不把新一轮匹配基线性能测量设为收敛前置。Room 旧配对的环绕 GPU 3.953→4.003 ms 仍是未归因的小幅差异记录，**不再列为待启动的复测门槛**，也不改称“无回退”。新增 [installed/bound IA 修复及同 command list 验收](../rhi/acceptance.md#只读-buffer-状态合并2026-10-25) 已完成本候选的真实红绿验证，仍待独立复审与主线集成。受影响目标 Dev/Release 构建及 Release RHI GBV、`--scene-lit-shadows`、`--scene-lit-quality`（RT/几何生命周期路径）均通过；本批没有性能测量，不据正确性通过更新上面的历史性能值。原始日志在 `.amp/in/artifacts/p1-installed-ia-20261025/`。
+总负责人已明确接受历史 Dungeon CPU／wall 尾延迟取舍，保留 P1 收益，不扩绑定架构或 P2，不把新一轮匹配基线性能测量设为收敛前置。Room 旧配对的环绕 GPU 3.953→4.003 ms 仍是未归因的小幅差异记录，**不再列为待启动的复测门槛**，也不改称“无回退”。[installed/bound IA 修复及同 command list 验收](../rhi/acceptance.md#只读-buffer-状态合并2026-10-25) 已完成真实红绿验证、两轴独立复审及主线集成；复审核对代码和既有原始日志，不是重复执行。受影响目标 Dev/Release 构建及 Release RHI GBV、`--scene-lit-shadows`、`--scene-lit-quality`（RT/几何生命周期路径）均通过；本批没有性能测量，不据正确性通过更新上面的历史性能值。原始日志在 `.amp/in/artifacts/p1-installed-ia-20261025/`。
 
 ## 未覆盖
 

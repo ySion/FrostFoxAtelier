@@ -12,8 +12,9 @@ void verify_entity_composition() {
         changed(document.reparent(child,parent,world::ReparentRule::keep_local));
         take(document.select_entities(std::array{parent,child},child));
         const auto parent_before=take(world::read_transform(runtime,parent)),child_before=take(world::read_transform(runtime,child));
+        application::SceneSnapshot snapshot;take(snapshot.refresh(document));
         editor::Camera camera;camera.set_view(editor::CameraView::front);
-        const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1);
+        auto view=editor::ViewportView::make(camera,{0,0,1000,700},1);view.scene=snapshot.picking();
         const auto pointer=*view.project(parent_before.position);
         editor::ViewportTool tool;editor::ToolSettings settings;
         settings.tool=editor::TransformTool::move;settings.orientation=editor::Orientation::local;

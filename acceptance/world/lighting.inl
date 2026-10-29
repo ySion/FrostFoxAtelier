@@ -22,9 +22,10 @@ void lit_materials_and_lights() {
         },
         [&](Runtime&,ObjectId object)->Result<void>{ends.push_back(object);return {};}
     }));
-    require(p::Material{}.roughness==.65f && p::Material{}.metallic==0 && p::Material{}.emissive==math::Vector3{},"Material defaults changed unexpectedly.");
-    const p::Material material{{.2f,.3f,.4f},.25f,.75f,{4,8,16}};
-    auto entity=take(p::create_static_mesh_entity(world,{geometry::cube_mesh(),{},material}));
+    auto source_material=take(material::create_source(runtime,"world/source",{mesh_material_definition(),{}}));
+    auto instance=take(material::create_instance(runtime,"",{source_material,{},{}}));
+    const auto initial_surface=take(material::capture_program(runtime,instance.id()));
+    auto entity=take(p::create_static_mesh_entity(world,{geometry::cube_mesh(),{},{},{{"slot/0",instance,false}}}));
     const auto root=take(w::components(runtime,entity.id())).front().id();
     auto point_entity=take(w::create_entity(runtime));
     auto rectangle_entity=take(w::create_entity(runtime));
@@ -59,7 +60,7 @@ void lit_materials_and_lights() {
     committed(world.set_space_reference(rectangle_entity.id(),point_entity.id(),w::ReparentRule::keep_local));
     committed(world.attach(entity.id()));
     const auto roots=runtime.root_count();const auto snapshot=take(scene.light_items());const auto meshes=take(scene.render_items());
-    require(runtime.root_count()==roots && snapshot.size()==3 && meshes.size()==1 && meshes[0].material==material,
+    require(runtime.root_count()==roots && snapshot.size()==3 && meshes.size()==1 && meshes[0].surfaces->front()==initial_surface,
         "Lighting snapshots retained business roots or mixed mesh/light projections.");
     require(snapshot[0].component==rectangle_id && snapshot[1].component==point_id && snapshot[2].component==directional_id &&
         snapshot[0].entity==rectangle_entity.id() && snapshot[0].settings==rect_settings,"Light projection lost identity, order or authored data.");
@@ -77,9 +78,7 @@ void lit_materials_and_lights() {
         "Light registration bypassed World presentation or inherited type queries.");
     w::World other(runtime,types);reject(p::set_light(other,point_id,{}),"Another World edited a registered light.");
     const auto light_field=take(runtime.find_field(types.light_component,"settings"));
-    const auto material_field=take(runtime.find_field(types.static_mesh_component,"material"));
     const auto light_path=[&](std::string_view name){return w::FieldPath{light_field,take(runtime.find_field(types.light_settings,name))};};
-    const auto material_path=[&](std::string_view name){return w::FieldPath{material_field,take(runtime.find_field(types.material,name))};};
     // Hard bounds clamp scalar edits; type validators reject an edit that breaks a valid light and keep its value.
     take(world.write(point_id,light_path("intensity"),-1.f));
     require(take(p::read_light(runtime,point_id)).intensity==0,"Negative intensity was not clamped to its hard minimum.");
@@ -100,25 +99,25 @@ void lit_materials_and_lights() {
     take(world.write(point_id,light_path("range"),point_settings.range));
     take(world.write(point_id,light_path("intensity"),point_settings.intensity));
     require(take(p::read_light(runtime,point_id))==point_settings,"An invalid light could not be repaired through World authoring.");
-    take(world.write(root,material_path("roughness"),1.1f));
-    take(world.write(root,material_path("metallic"),-.1f));
-    auto emissive=material_path("emissive");emissive.push_back(take(runtime.find_field(types.vector3,"x")));
-    take(world.write(root,emissive,-1.f));
-    auto clamped=take(p::read_static_mesh(runtime,root)).material;
-    require(clamped.roughness==1 && clamped.metallic==0 && clamped.emissive.x==0,"Material edits were not clamped to their hard bounds.");
-    take(world.write(root,emissive,std::nextafter(atelier::material::emission_limit,std::numeric_limits<float>::infinity())));
-    require(take(p::read_static_mesh(runtime,root)).material.emissive.x==atelier::material::emission_limit,
-        "Emission above the HDR range was not clamped to the material capture limit.");
-    reject(world.write(root,emissive,std::numeric_limits<float>::infinity()),"Infinite emission was accepted.");
-    take(p::set_material(world,root,material));
-    require(take(p::read_static_mesh(runtime,root)).material==material,"Restoring the Material changed the value.");
-    take(world.write(root,emissive,32.f));take(world.write(root,material_path("roughness"),0.f));
-    require(take(scene.render_items()).front().material.emissive.x==32 && take(scene.render_items()).front().material.roughness==0,"HDR emission or zero roughness was clamped away.");
-    take(p::set_material(world,root,material));
-    auto boundary_material=material;boundary_material.emissive={atelier::material::emission_limit,0,0};
-    take(p::set_material(world,root,boundary_material));
-    require(take(scene.render_items()).front().material==boundary_material,"Representable emission boundary did not survive World extraction.");
-    take(p::set_material(world,root,material));
+    {
+        material::InstanceState authored{source_material,{{"roughness",0.f},{"emission",math::Vector3{32,8,16}}},{{},{}}};
+        take(material::update_instance(runtime,instance.id(),authored));
+        const auto changed=take(scene.render_items()).front().surfaces->front();
+        const auto output=take(changed->evaluate({}));
+        require(output.emissive.x==32 && output.roughness==0 && take(initial_surface->evaluate({})).roughness==.25f,
+            "Program material edits lost HDR/zero roughness or mutated a retained capture.");
+        authored.entries[1].value=math::Vector3{material::emission_limit,0,0};
+        take(material::update_instance(runtime,instance.id(),authored));
+        require(take(take(scene.render_items()).front().surfaces->front()->evaluate({})).emissive.x==material::emission_limit,
+            "Representable emission boundary did not survive World extraction.");
+        authored.entries[0].value=std::numeric_limits<float>::quiet_NaN();
+        take(material::update_instance(runtime,instance.id(),authored));
+        const auto diagnosed=take(scene.render_items()).front().surfaces->front();
+        require(take(diagnosed->evaluate({})).roughness==.25f && !diagnosed->diagnostics().empty() &&
+            std::isnan(std::get<float>(take(material::read_instance(runtime,instance.id())).entries[0].value)),
+            "Presentation did not preserve the program material's diagnosed fallback and authored override.");
+        take(material::update_instance(runtime,instance.id(),{source_material,{},{}}));
+    }
     auto boundary_light=sun_settings;
     boundary_light.intensity=static_cast<float>(atelier::rendering::analytic_light_radiance_limit);
     take(p::set_light(world,directional_id,boundary_light));
@@ -135,17 +134,12 @@ void lit_materials_and_lights() {
     boundary_light.width=std::nextafter(2.f,std::numeric_limits<float>::infinity());
     reject(p::set_light(world,rectangle_id,boundary_light),"Rectangle area-weighted radiance exceeded the shared sampling range.");
     take(p::set_light(world,rectangle_id,rect_settings));
-    auto bad_material=material;bad_material.emissive.y=std::numeric_limits<float>::infinity();
-    reject(p::set_material(world,root,bad_material),"Nonfinite emissive was accepted.");
-    reject(p::create_static_mesh_entity(world,{geometry::cube_mesh(),{},bad_material}),"Factory bypassed expanded Material validation.");
     auto bad_light=point_settings;bad_light.color.z=std::numeric_limits<float>::quiet_NaN();
     reject(p::set_light(world,point_id,bad_light),"Nonfinite light color was accepted.");
     // The typed entries reject a value outside its hard bounds instead of clamping it as a field write does.
-    auto rough=material;rough.roughness=1.5f;
-    reject(p::set_material(world,root,rough),"set_material clamped an out-of-bounds roughness instead of rejecting it.");
     auto dim=point_settings;dim.intensity=-1.f;
     reject(p::set_light(world,point_id,dim),"set_light clamped a negative intensity instead of rejecting it.");
-    require(take(p::read_static_mesh(runtime,root)).material==material && take(p::read_light(runtime,point_id))==point_settings,
+    require(take(p::read_light(runtime,point_id))==point_settings,
         "A rejected typed edit changed its field.");
     // A light already breaking its rules, as a native write can leave it, still has the new value's rules checked.
     take(runtime.with_native<p::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.range=0;return {};}));
@@ -181,50 +175,43 @@ void lit_materials_and_lights() {
     reject(scene.light_items(),"Unsafe native light mutation escaped extraction validation.");take(p::set_light(world,point_id,point_settings));
     take(runtime.with_native<p::LightComponent>(point_id,[](auto& light)->Result<void>{light.settings.intensity=1e38f;return {};}));
     reject(scene.light_items(),"Finite overflowing native light mutation escaped extraction validation.");take(p::set_light(world,point_id,point_settings));
-    take(runtime.with_native<p::StaticMeshComponent>(root,[](auto& mesh)->Result<void>{mesh.material.metallic=2;return {};}));
-    reject(scene.render_items(),"Unsafe native Material mutation escaped extraction validation.");take(p::set_material(world,root,material));
     // The negative intensity persisted from the isolated pass; the analytic overflow (a
-    // LightSettings validator failure) and the Material bound are new causes.
+    // LightSettings validator failure) is a new cause.
     const auto halted=world.take_diagnostics();
-    require(halted.size()==2 && halted[0].object==point_id && halted[0].field==std::vector<std::string>{"settings"} && halted[0].value.empty() &&
-        halted[1].object==root && halted[1].field==std::vector<std::string>{"material","metallic"} && halted[1].value=="2",
+    require(halted.size()==1 && halted[0].object==point_id && halted[0].field==std::vector<std::string>{"settings"} && halted[0].value.empty(),
         "Halted extraction failures were not reported once per persisting cause.");
     take(world.set_failure_policy(w::FailurePolicy::isolate));
-    // Extraction skips validating bytes that already passed at the same bucket position. A
-    // repaired mesh moving onto a position that holds those bytes is drawn and its failure
-    // resolves, exactly as when validated.
-    auto twin=take(p::create_static_mesh_entity(world,{geometry::cube_mesh(),{},material}));
+    auto twin=take(p::create_static_mesh_entity(world,{geometry::cube_mesh()}));
     const auto twin_mesh=take(w::components(runtime,twin.id())).front().id();
     committed(world.attach(twin.id()));
-    const auto set_metallic=[&](float value) {
-        take(runtime.with_native<p::StaticMeshComponent>(twin_mesh,[value](auto& mesh)->Result<void>{mesh.material.metallic=value;return {};}));
-    };
-    require(take(scene.render_items()).size()==2,"A second valid mesh was not drawn.");
+    const auto unbound=take(scene.render_items());
+    require(unbound.size()==2 && unbound[1].surfaces->front()==take(material::default_world_surface()) &&
+        !unbound[1].surfaces->front()->uses_default_material(),"An unbound mesh did not use the ordinary world-grid MS.");
     // Each mesh resolves the slot materials bound to it within its single extraction borrow.
     {
-        material::State warm_state;warm_state.description.parameters.roughness=.2f;
-        material::State cool_state=warm_state;cool_state.description.parameters.roughness=.8f;
-        const auto warm=take(material::create_material(runtime,warm_state)),cool=take(material::create_material(runtime,cool_state));
+        const auto warm=take(material::create_instance(runtime,"",{source_material,{{"roughness",.2f}},{{}}}));
+        const auto cool=take(material::create_instance(runtime,"",{source_material,{{"roughness",.8f}},{{}}}));
         const std::array<p::MaterialBinding,1> warm_binding{{{"slot/0",warm,true}}},cool_binding{{{"slot/0",cool,true}}};
-        take(p::set_material_bindings(runtime,root,warm_binding));take(p::set_material_bindings(runtime,twin_mesh,cool_binding));
+        take(p::set_material_bindings(runtime,root,warm_binding));take(p::set_material_bindings(runtime,twin_mesh,warm_binding));
+        const auto shared=take(scene.render_items());
+        require(shared[0].surfaces->front()==shared[1].surfaces->front(),"Shared MI binding duplicated immutable surface identity.");
+        take(p::set_material_bindings(runtime,twin_mesh,cool_binding));
     }
     const auto slotted=take(scene.render_items());
-    const auto roughness=[](const p::RenderItem& item){return item.surfaces->front()->description().parameters.roughness;};
+    const auto roughness=[](const p::RenderItem& item){return take(item.surfaces->front()->evaluate({})).roughness;};
     require(slotted.size()==2 && roughness(slotted[0])==.2f && roughness(slotted[1])==.8f,
         "Meshes bound to different slot materials did not keep their own surfaces.");
-    set_metallic(2);
-    const auto excluded=take(scene.render_items());const auto persisting=take(scene.render_items());const auto twin_report=world.take_diagnostics();
-    require(excluded.size()==1 && excluded[0].component==root && persisting.size()==1 && twin_report.size()==1 &&
-        twin_report[0].object==twin_mesh && twin_report[0].field==std::vector<std::string>{"material","metallic"} && twin_report[0].repeats==2,
-        "A mesh broken after a valid pass was not isolated and reported on every extraction.");
-    set_metallic(material.metallic);
+    take(p::set_material_bindings(runtime,root,{}));
+    require(roughness(take(scene.render_items()).front())==.25f,"Clearing an explicit binding did not restore its mesh default.");
+    take(runtime.destroy(source_material.id()));
+    const auto fallback=take(scene.render_items());
+    require(fallback.size()==2 && fallback[0].surfaces->front()->uses_default_material() &&
+        !fallback[0].surfaces->front()->diagnostics().empty() && take(p::read_static_mesh(runtime,root)).mesh.defaults.front().resource.id()==instance.id(),
+        "A lost material ancestor did not preserve its binding and capture's diagnosed default.");
     auto parked=take(world.detach(entity.id()));
     const auto recovered=take(scene.render_items());
-    require(recovered.size()==1 && recovered[0].component==twin_mesh && recovered[0].material==material &&
-        world.take_diagnostics().empty(),"A repaired mesh moved onto a validated position was not drawn.");
-    set_metallic(2);
-    require(take(scene.render_items()).empty() && world.take_diagnostics().size()==1,"The repaired pass did not resolve the earlier failure.");
-    set_metallic(material.metallic);
+    require(recovered.size()==1 && recovered[0].component==twin_mesh && recovered[0].surfaces==fallback[1].surfaces &&
+        world.take_diagnostics().empty(),"Moving a mesh to another bucket position changed its captured content.");
     committed(world.restore(parked));parked.root.reset();
     auto twin_removal=take(world.detach(twin.id()));twin_removal.root.reset();twin.reset();
     require(take(scene.render_items()).size()==1 && take(scene.light_items()).size()==3,"Restoring the parked Entity changed extraction.");
@@ -248,9 +235,10 @@ void lit_materials_and_lights() {
     committed(world.close());committed(world.close());reject(scene.light_items(),"Closed World exposed a stale light directory.");
     const auto saved_identity=snapshot.front().component;
     entity.reset();point.reset();rectangle.reset();directional.reset();point_entity.reset();rectangle_entity.reset();directional_entity.reset();light_entity.reset();light_root.reset();bare.reset();stray.reset();collect(runtime);
+    source_material.reset();instance.reset();collect(runtime);
     require(runtime.live_objects()==0 && !runtime.type_of(saved_identity) && snapshot.front().settings==rect_settings,
         "Light snapshots retained business objects or depended on their later state.");
-    std::puts("[pass] Lit data: reflected Material/LightSettings, HDR validation, Source inheritance, TRS extraction, position-cached validation, slot surfaces, identity/history and lifecycle");
+    std::puts("[pass] Lit data: MS/MI ProgramSurface captures, default grid, shared/explicit slots and diagnosed fallback, reflected LightSettings, HDR validation, Source inheritance, TRS extraction, identity/history and lifecycle");
 }
 void environment_and_group_writes() {
     Runtime runtime; const auto types=register_all_types(runtime);
@@ -412,8 +400,11 @@ void presentation_cache() {
     committed(world.reparent(mesh_entity.id(),parent.id(),w::ReparentRule::keep_local));
     committed(world.reparent(light_entity.id(),parent.id(),w::ReparentRule::keep_local));
     committed(world.attach(parent.id()));committed(world.attach(still_entity.id()));committed(world.attach(environment_entity.id()));
+    const auto source_material=take(material::create_source(runtime,"",{mesh_material_definition(),{}}));
+    material::InstanceState defaults{source_material,{{"roughness",.2f}},{{}}};
+    const auto default_material=take(material::create_instance(runtime,"",defaults));
+    take(p::set_mesh_binding(runtime,mesh,{"cache/mesh",geometry::cube_mesh(),{{"slot/0",default_material,false}}}));
     const auto field=[&](TypeId type,std::string_view name){return take(runtime.find_field(type,name));};
-    const w::FieldPath roughness{field(types.static_mesh_component,"material"),field(types.material,"roughness")};
     const w::FieldPath intensity{field(types.light_component,"settings"),field(types.light_settings,"intensity")};
     const w::FieldPath range{field(types.light_component,"settings"),field(types.light_settings,"range")};
     const w::FieldPath exposure{field(types.environment_component,"exposure_ev")};
@@ -433,10 +424,14 @@ void presentation_cache() {
         version=next;
     };
     const auto untouched=slot(still).changed;
-    take(world.write(mesh,roughness,.25f));advanced("A Material edit through World did not advance the version.");
-    require(slot(mesh).changed==version && slot(mesh).item->material.roughness==.25f && slot(still).changed==untouched,
-        "A Material edit did not rebuild exactly its own slot.");
-    take(runtime.write(mesh,roughness,Scalar{.3f}));advanced("A Material write past World did not advance the version.");
+    const auto unbound_surfaces=slot(still).item->surfaces;
+    defaults.entries[0].value=.25f;take(material::update_instance(runtime,default_material.id(),defaults));
+    advanced("Editing a mesh default material did not advance the version.");
+    require(slot(mesh).changed==version && take(slot(mesh).item->surfaces->front()->evaluate({})).roughness==.25f &&
+        slot(still).changed==untouched && slot(still).item->surfaces==unbound_surfaces,
+        "A mesh default edit did not rebuild exactly its own slot.");
+    defaults.entries[0].value=.3f;take(material::update_instance(runtime,default_material.id(),defaults));
+    advanced("Editing a mesh default resource did not advance the version.");
     take(runtime.write(light_id,intensity,Scalar{7.f}));advanced("A light edit past World did not advance the version.");
     require(scene.lights_changed()==version && scene.light_snapshot().front().settings.intensity==7 && slot(still).changed==untouched,
         "A light edit did not refresh the lights alone.");
@@ -449,13 +444,26 @@ void presentation_cache() {
     committed(world.restore(removal));advanced("Restoring a light did not advance the version.");
     committed(world.reparent(light_entity.id(),{},w::ReparentRule::keep_local));advanced("Reparenting a light did not advance the version.");
     require(scene.mesh_layout()==version,"A structural edit did not rebuild the mesh layout.");
-    material::State shared;shared.description.parameters.roughness=.2f;
-    const auto resource=take(material::create_material(runtime,shared));
+    material::InstanceState shared{source_material,{{"roughness",.2f}},{{}}};
+    const auto resource=take(material::create_instance(runtime,"",shared));
     const std::array<p::MaterialBinding,1> binding{{{"slot/0",resource,true}}};
     take(p::set_material_bindings(runtime,mesh,binding));advanced("Binding a slot material did not advance the version.");
-    shared.description.parameters.roughness=.6f;take(material::update_material(runtime,resource.id(),shared));
+    const auto before_edit=slot(mesh).item->surfaces;
+    shared.entries[0].value=.6f;take(material::update_instance(runtime,resource.id(),shared));
     advanced("Editing a bound material resource did not advance the version.");
-    require(slot(mesh).item->surfaces->front()->description().parameters.roughness==.6f,"The bound material edit did not reach the cache.");
+    require(take(slot(mesh).item->surfaces->front()->evaluate({})).roughness==.6f &&
+        take(before_edit->front()->evaluate({})).roughness==.2f,"The bound material edit did not reach the cache or mutated an older capture.");
+    const auto bound_surfaces=slot(mesh).item->surfaces;
+    const auto bound_cursor=take(runtime.change_cursor());
+    for(int frame=0;frame<3;++frame) require(take(scene.update())==version && slot(mesh).item->surfaces==bound_surfaces,
+        "An unchanged bound material rebuilt its surface vector or advanced the version.");
+    runtime.changed_objects(bound_cursor,written);
+    require(written.empty(),"An unchanged bound material capture wrote Runtime objects.");
+    defaults.entries[0].value=.4f;take(material::update_instance(runtime,default_material.id(),defaults));
+    require(take(scene.update())==version && slot(mesh).item->surfaces==bound_surfaces,
+        "An overridden mesh default replaced the explicit material candidate.");
+    take(p::set_material_bindings(runtime,mesh,{}));advanced("Clearing an explicit material did not restore the current mesh default.");
+    require(take(slot(mesh).item->surfaces->front()->evaluate({})).roughness==.4f,"Clearing a binding restored a stale default material.");
     require(world.take_diagnostics().empty(),"Valid presentation edits reported diagnostics.");
     // An isolated item leaves the cache once; while it stays isolated the version
     // holds and every update reports it again.

@@ -126,4 +126,4 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，在行为阶段结束后由宿主边界逐条复核并批量应用；不保存字段地址。已登记模拟系统以 `writes_pose` 声明位姿的 Entity（例如物理 body 或控制器所在的 Entity）拒绝普通平移命令。`apply_simulation_transforms` 接受 Entity 世界位置/旋转，先验证并按空间依赖顺序转换，然后发布，保留局部显示 scale；不进入编辑历史。可选的 `written` 返回实际发布的各 Entity 局部 TRS（逐位即写入值，不含被拒绝的位姿），模拟系统据此识别之后绕过它的写入。被拒绝的命令与位姿按失败策略处理。
 
-端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`。Scene 只读写 v9，见[项目场景](project-scenes.md#scene-v9)。编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)；配置选择与逐次日志遵循根 README 的验收门禁。
+端到端入口为 `world_acceptance`（同时覆盖 presentation）、`project_scene_acceptance` 和 `editor_document_acceptance`。Scene 只读写 v10，见[项目场景](project-scenes.md#scene-v10)。编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)；配置选择与逐次日志遵循根 README 的验收门禁。

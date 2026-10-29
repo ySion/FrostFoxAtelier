@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{EC050D9D-06E4-5801-84AA-1F534B7398A9}"
+  "id": "{EC050D9D-06E4-5801-84AA-1F534B7398A9}",
+  "materials": {
+    "slot_0": "project/{153BC0D0-B009-5E88-80A0-1272790288B0}"
+  },
+  "version": 1
 }

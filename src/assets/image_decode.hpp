@@ -1,5 +1,5 @@
 #pragma once
-#include "material/surface.hpp"
+#include "material/image.hpp"
 #include <cstdint>
 #include <span>
 #include <string>

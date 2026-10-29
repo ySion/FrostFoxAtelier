@@ -1,4 +1,5 @@
 #include "language/material.hpp"
+#include "language/material_footprint.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -17,6 +18,7 @@ class Hlsl {
     const Program& program_;
     std::vector<bool> emitted_;
     std::string text_;
+    std::size_t temporary_{};
     std::string type(ValueType value) const {
         switch (value.kind) {
         case ValueType::f32: return "float";
@@ -97,6 +99,8 @@ class Hlsl {
         case MathOperation::cross: return "cross";
         case MathOperation::length: return "length";
         case MathOperation::square_root: return "sqrt";
+        case MathOperation::sin: return "sin";
+        case MathOperation::cos: return "cos";
         case MathOperation::floor: return "floor";
         case MathOperation::ceil: return "ceil";
         case MathOperation::trunc: return "trunc";
@@ -136,13 +140,14 @@ class Hlsl {
             return result;
         }
         case Kind::texture_sample: return "::atelier_material_sample(ms_environment," + operand(node.right) + "," + operand(node.left) + ")";
+        case Kind::texture_orientation: return "::atelier_material_sample_orientation(ms_environment," + operand(node.right) + "," + operand(node.left) + ")";
         case Kind::scalar_cast: return type(node.type) + "(" + operand(node.left) + ")";
         case Kind::math_construct: case Kind::math_intrinsic: case Kind::source_call: {
+            if (node.arguments.empty() && node.kind == Kind::math_construct) return initial(node.type, nullptr);
             std::string result = node.kind == Kind::source_call ? "ms_f" + std::to_string(node.value) :
                 node.kind == Kind::math_construct ? type(node.type) : intrinsic(node.math_operation);
             result += "(";
             if (node.kind == Kind::source_call) result += "ms_environment";
-            if (node.arguments.empty() && node.kind == Kind::math_construct) result += "0.0";
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 if (i || node.kind == Kind::source_call) result += ",";
                 result += operand(node.arguments[i]);
@@ -178,12 +183,244 @@ class Hlsl {
         default: throw std::logic_error("Unvalidated material statement.");
         }
     }
-    std::string signature(std::size_t index) const {
+    bool continuous(ValueType value) const {
+        return value.kind == ValueType::f32 || (value.kind == ValueType::record && value.type_index != material_.texture_input);
+    }
+    std::string differential_type(ValueType value) const {
+        return (continuous(value) ? "ms_D" : "") + type(value);
+    }
+    std::string field_name(const Function& function, const Expression& node) const {
+        const auto& layout = program_.value_layouts[function.expressions[node.left].type.type_index];
+        const auto field = std::ranges::find_if(layout.fields, [&](const auto& value) { return value.offset == node.offset; });
+        if (field == layout.fields.end()) throw std::logic_error("Missing typed material field.");
+        return (layout.math ? "" : "ms_") + field->name;
+    }
+    void differential_helpers() {
+        // Three ordinary values preserve component locality even in nested
+        // records: projecting UV never inspects a sibling normal's changes.
+        const auto declare = [&](const std::string& value, bool numeric) {
+            const auto d = "ms_D" + value;
+            text_ += "struct " + d + " { " + (numeric ? "precise " : "") + value + " v,d0,d1; };\n";
+            text_ += d + " ms_seed(" + value + " v," + value + " d0," + value + " d1) { " + d +
+                " r; r.v=v; r.d0=d0; r.d1=d1; return r; }\n";
+            text_ += d + " ms_constant(" + value + " v) { return ms_seed(v,(" + value + ")0,(" + value + ")0); }\n";
+            text_ += value + " ms_value(" + d + " v) { return v.v; }\n";
+        };
+        for (std::size_t n = 1; n <= 4; ++n) declare("float" + (n == 1 ? std::string{} : std::to_string(n)), true);
+        for (std::size_t i = 0; i < emitted_.size(); ++i) {
+            if (emitted_[i] && !program_.value_layouts[i].math && i != material_.texture_input)
+                declare(type({ValueType::record, static_cast<std::uint32_t>(i)}), false);
+        }
+        for (const auto* scalar : {"bool", "uint"}) {
+            const std::string value = scalar;
+            text_ += value + " ms_seed(" + value + " v," + value + " d0," + value + " d1) { return v; }\n";
+            text_ += value + " ms_constant(" + value + " v) { return v; }\n";
+            text_ += value + " ms_value(" + value + " v) { return v; }\n";
+        }
+        text_ += detail::material_footprint_scalar_hlsl;
+        const auto lane = [](std::string_view value, char component) {
+            const std::string a(value), c(1, component);
+            return "ms_seed(" + a + ".v." + c + "," + a + ".d0." + c + "," + a + ".d1." + c + ")";
+        };
+        struct Element { const char* name; std::size_t arity; };
+        constexpr Element elements[]{{"add",2},{"sub",2},{"mul",2},{"div",2},{"neg",1},
+            {"sin",1},{"cos",1},{"sqrt",1},{"floor",1},{"ceil",1},{"trunc",1},{"fract",1},
+            {"abs",1},{"min",2},{"max",2},{"step",2},{"clamp",3},{"lerp",3}};
+        constexpr std::string_view components = "xyzw";
+        for (std::size_t n = 2; n <= 4; ++n) {
+            const auto value = "float" + std::to_string(n), d = "ms_D" + value;
+            for (const auto& element : elements) {
+                const auto name = "ms_d" + std::string(element.name);
+                text_ += d + " " + name + "(" + d + " a";
+                if (element.arity >= 2) text_ += "," + d + " b";
+                if (element.arity >= 3) text_ += "," + d + " c";
+                text_ += ") { " + d + " r;\n";
+                for (std::size_t i = 0; i < n; ++i) {
+                    const auto c = components[i];
+                    const std::string temporary = "t" + std::to_string(i);
+                    text_ += "ms_Dfloat " + temporary + "=" + name + "(" + lane("a", c);
+                    if (element.arity >= 2) text_ += "," + lane("b", c);
+                    if (element.arity >= 3) text_ += "," + lane("c", c);
+                    text_ += ");\n";
+                    for (const auto* part : {"v", "d0", "d1"})
+                        text_ += "r." + std::string(part) + "." + c + "=" + temporary + "." + part + ";\n";
+                }
+                text_ += "return r; }\n";
+            }
+            text_ += "ms_Dfloat ms_ddot(" + d + " a," + d + " b) { ms_Dfloat r=ms_dmul(" + lane("a", 'x') + "," + lane("b", 'x') + ");\n";
+            for (std::size_t i = 1; i < n; ++i)
+                text_ += "r=ms_dadd(r,ms_dmul(" + lane("a", components[i]) + "," + lane("b", components[i]) + "));\n";
+            text_ += "r.v=dot(a.v,b.v); return r; }\n";
+            text_ += "float ms_length_change(" + value + " a," + value + " d,float r) {\n"
+                "if (!ms_finite(r)) return ms_unavailable();\n"
+                "if (r==0.0) return all((asuint(d)&0x7fffffffu)==0u) ? 0.0 : ms_unavailable();\n"
+                "precise float sum=ms_change_scale(a.x,d.x);\n";
+            for (std::size_t i = 1; i < n; ++i) {
+                const std::string c(1, components[i]);
+                text_ += "sum=ms_change_add(sum,ms_change_scale(a." + c + ",d." + c + "));\n";
+            }
+            text_ += "if (!ms_finite(sum)) return ms_unavailable(); precise float change=sum/r; return ms_checked(change); }\n";
+            text_ += "ms_Dfloat ms_dlength(" + d + " a) { precise float r=length(a.v);\n"
+                "return ms_seed(r,ms_length_change(a.v,a.d0,r),ms_length_change(a.v,a.d1,r)); }\n";
+        }
+        text_ += "ms_Dfloat3 ms_dcross(ms_Dfloat3 a,ms_Dfloat3 b) { ms_Dfloat3 r;\n";
+        for (std::size_t i = 0; i < 3; ++i) {
+            const auto j = components[(i+1)%3], k = components[(i+2)%3];
+            const auto t = "t" + std::to_string(i);
+            text_ += "ms_Dfloat " + t + "=ms_dsub(ms_dmul(" + lane("a", j) + "," + lane("b", k) + "),ms_dmul(" + lane("a", k) + "," + lane("b", j) + "));\n";
+            for (const auto* part : {"d0", "d1"})
+                text_ += "r." + std::string(part) + "." + components[i] + "=" + t + "." + part + ";\n";
+        }
+        text_ += "r.v=cross(a.v,b.v); return r; }\n";
+        text_ += detail::material_footprint_sample_hlsl;
+    }
+    std::string differential_expression(const Function& function, NodeId id) {
+        const auto& node = function.expressions[id];
+        const auto emit = [&](const std::string& value) {
+            if (node.type == ValueType::void_value) { text_ += value + ";\n"; return std::string{}; }
+            const auto name = "ms_t" + std::to_string(temporary_++);
+            text_ += differential_type(node.type) + " " + name + "=" + value + ";\n";
+            return name;
+        };
+        const auto operand = [&](NodeId value) { return differential_expression(function, value); };
+        const auto broadcast = [&](const std::string& value, ValueType from) {
+            if (from == ValueType::f32 && node.type.kind == ValueType::record && program_.value_layouts[node.type.type_index].math) {
+                const auto target = type(node.type);
+                return "ms_seed((" + target + ")" + value + ".v,(" + target + ")" + value + ".d0,(" + target + ")" + value + ".d1)";
+            }
+            return value;
+        };
+        using Kind = Expression::Kind;
+        switch (node.kind) {
+        case Kind::literal: return emit("ms_constant(" + expression(function, id) + ")");
+        case Kind::local: return emit("ms_v" + std::to_string(node.value));
+        case Kind::value_field: {
+            const auto owner = operand(node.left), field = field_name(function, node);
+            if (!continuous(node.type)) return emit(owner + ".v." + field);
+            return emit("ms_seed(" + owner + ".v." + field + "," + owner + ".d0." + field + "," + owner + ".d1." + field + ")");
+        }
+        case Kind::unary: {
+            const auto value = operand(node.left);
+            if (node.operation == Operation::positive) return value;
+            return emit(node.operation == Operation::negate ? "ms_dneg(" + value + ")" : "(!" + value + ")");
+        }
+        case Kind::binary: {
+            const auto a = operand(node.left);
+            if (node.operation == Operation::logical_and || node.operation == Operation::logical_or) {
+                const auto result = emit(a);
+                text_ += "if (" + std::string(node.operation == Operation::logical_or ? "!" : "") + result + ") {\n";
+                const auto b = operand(node.right);
+                text_ += result + "=" + b + ";\n}\n";
+                return result;
+            }
+            const auto b = operand(node.right);
+            std::string name;
+            switch (node.operation) {
+            case Operation::add: name = "add"; break;
+            case Operation::subtract: name = "sub"; break;
+            case Operation::multiply: name = "mul"; break;
+            case Operation::divide: name = "div"; break;
+            default: break;
+            }
+            if (!name.empty()) return emit("ms_d" + name + "(" + broadcast(a, function.expressions[node.left].type) + "," + broadcast(b, function.expressions[node.right].type) + ")");
+            auto result = "(ms_value(" + a + ")" + operation(node.operation) + "ms_value(" + b + "))";
+            if (function.expressions[node.left].type.kind == ValueType::record)
+                result = (node.operation == Operation::equal ? "all" : "any") + result;
+            return emit(result);
+        }
+        case Kind::scalar_cast: {
+            const auto value = operand(node.left);
+            return function.expressions[node.left].type == ValueType::f32 ? value : emit("ms_constant(float(ms_value(" + value + ")))");
+        }
+        case Kind::texture_sample: case Kind::texture_orientation: {
+            const auto input = operand(node.right); // Same author argument order as CPU sample(input,uv).
+            const auto uv = operand(node.left);
+            if (node.kind == Kind::texture_orientation)
+                return emit("ms_constant(::atelier_material_sample_orientation(ms_environment," + input + ",ms_value(" + uv + ")))");
+            return emit("ms_dsample(ms_environment," + input + "," + uv + ")");
+        }
+        case Kind::math_construct: case Kind::math_intrinsic: case Kind::source_call: {
+            std::vector<std::string> arguments;
+            for (const auto id : node.arguments) arguments.push_back(operand(id));
+            if (node.kind == Kind::math_construct) {
+                if (arguments.empty()) return emit("ms_constant(" + initial(node.type, nullptr) + ")");
+                std::string result = "ms_seed(";
+                for (const auto* part : {"v", "d0", "d1"}) {
+                    if (part != std::string_view("v")) result += ",";
+                    result += type(node.type) + "(";
+                    for (std::size_t i = 0; i < arguments.size(); ++i) {
+                        if (i) result += ",";
+                        result += arguments[i] + "." + part;
+                    }
+                    result += ")";
+                }
+                return emit(result + ")");
+            }
+            auto name = intrinsic(node.math_operation);
+            if (name.starts_with("ms_")) name.erase(0, 3);
+            std::string result = node.kind == Kind::source_call ? "ms_f" + std::to_string(node.value) + "(ms_environment" : "ms_d" + name + "(";
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                if (i || node.kind == Kind::source_call) result += ",";
+                result += node.kind == Kind::math_intrinsic ? broadcast(arguments[i], function.expressions[node.arguments[i]].type) : arguments[i];
+            }
+            return emit(result + ")");
+        }
+        default: throw std::logic_error("Unvalidated material footprint expression.");
+        }
+    }
+    std::string differential_target(const Function& function, NodeId id, std::string_view part) const {
+        const auto& node = function.expressions[id];
+        if (node.kind == Expression::Kind::local)
+            return "ms_v" + std::to_string(node.value) + (continuous(node.type) ? "." + std::string(part) : "");
+        if (node.kind == Expression::Kind::value_field)
+            return differential_target(function, node.left, part) + "." + field_name(function, node);
+        throw std::logic_error("Unvalidated material footprint assignment target.");
+    }
+    void differential_statement(const Function& function, NodeId id) {
+        const auto& node = function.statements[id];
+        using Kind = Statement::Kind;
+        switch (node.kind) {
+        case Kind::block:
+            text_ += "{\n";
+            for (const auto child : node.children) differential_statement(function, child);
+            text_ += "}\n"; break;
+        case Kind::declare: {
+            const auto& local = function.locals[node.target];
+            const auto value = node.expression == no_node ? "ms_constant(" + initial(local.type, nullptr) + ")" : differential_expression(function, node.expression);
+            text_ += differential_type(local.type) + " ms_v" + std::to_string(node.target) + "=" + value + ";\n";
+            break;
+        }
+        case Kind::assign: {
+            const auto value = differential_expression(function, node.expression);
+            const auto changes = continuous(function.expressions[node.target].type);
+            for (const auto* part : {"v", "d0", "d1"}) {
+                text_ += differential_target(function, node.target, part) + "=" + value + (changes ? "." + std::string(part) : "") + ";\n";
+                if (!changes) break;
+            }
+            break;
+        }
+        case Kind::call: (void)differential_expression(function, node.expression); break;
+        case Kind::return_value: {
+            const auto result = node.expression == no_node ? std::string{} : " " + differential_expression(function, node.expression);
+            text_ += "return" + result + ";\n"; break;
+        }
+        case Kind::condition: {
+            const auto condition = differential_expression(function, node.expression);
+            text_ += "if (" + condition + ") {\n";
+            differential_statement(function, node.body); text_ += "}\n";
+            if (node.alternative != no_node) { text_ += "else {\n"; differential_statement(function, node.alternative); text_ += "}\n"; }
+            break;
+        }
+        default: throw std::logic_error("Unvalidated material footprint statement.");
+        }
+    }
+    std::string signature(std::size_t index, bool footprint = false) const {
         const auto& function = program_.functions[index];
-        std::string result = type(function.result) + " ms_f" + std::to_string(index) + "(uint ms_environment";
+        const auto name = [&](ValueType value) { return footprint ? differential_type(value) : type(value); };
+        std::string result = name(function.result) + " ms_f" + std::to_string(index) + "(uint ms_environment";
         for (std::size_t i = 0; i < function.parameters.size(); ++i) {
             result += ",";
-            result += type(function.parameters[i].type) + " ms_v" + std::to_string(i);
+            result += name(function.parameters[i].type) + " ms_v" + std::to_string(i);
         }
         return result + ")";
     }
@@ -202,15 +439,16 @@ class Hlsl {
 public:
     explicit Hlsl(const MaterialModule& material) : material_(material), program_(material.program), emitted_(program_.value_layouts.size()) {}
     static bool supports(MathOperation operation) { return !intrinsic(operation).empty(); }
-    std::string generate() {
-        text_ = "// Generated from typed Source. Sampling is linear-float4, explicit LOD-0.\n";
+    std::string generate(bool footprint = false) {
+        text_ = footprint ? "// Typed Source: center values and two local changes; no implicit derivatives.\n" :
+            "// Generated from typed Source. Sampling is linear-float4, explicit LOD-0.\n";
         std::set<std::pair<MathOperation, std::string>> helpers;
         for (std::size_t i = 0; i < program_.functions.size(); ++i) {
             if (!program_.reachable[i]) continue;
             const auto& function = program_.functions[i];
             declare_type(function.result);
             for (const auto& local : function.locals) declare_type(local.type);
-            for (const auto& node : function.expressions) {
+            if (!footprint) for (const auto& node : function.expressions) {
                 const auto operation = node.math_operation;
                 if (node.kind != Expression::Kind::math_intrinsic || (operation != MathOperation::clamp &&
                     operation != MathOperation::lerp && operation != MathOperation::fract)) continue;
@@ -229,14 +467,17 @@ public:
                 }
             }
         }
+        if (footprint) differential_helpers();
         for (std::size_t i = 0; i < program_.functions.size(); ++i)
-            if (program_.reachable[i]) text_ += signature(i) + ";\n";
+            if (program_.reachable[i]) text_ += signature(i, footprint) + ";\n";
         for (std::size_t i = 0; i < program_.functions.size(); ++i) {
             if (!program_.reachable[i]) continue;
-            text_ += signature(i) + "\n";
-            statement(program_.functions[i], program_.functions[i].body);
+            text_ += signature(i, footprint) + "\n";
+            if (footprint) differential_statement(program_.functions[i], program_.functions[i].body);
+            else statement(program_.functions[i], program_.functions[i].body);
         }
-        text_ += "ms_Output ms_shade(uint environment, ms_Context context, ms_Parameters parameters) {\n";
+        text_ += footprint ? "ms_Output ms_shade_footprint(uint environment, ms_Context context, ms_Context d0, ms_Context d1, ms_Parameters parameters) {\n" :
+            "ms_Output ms_shade(uint environment, ms_Context context, ms_Parameters parameters) {\n";
         if (material_.resources != UINT32_MAX) {
             const auto resource_type = type({ValueType::record, material_.resources});
             text_ += resource_type + " resources = (" + resource_type + ")0;\n";
@@ -246,9 +487,12 @@ public:
                 text_ += path + " = " + std::to_string(input.slot) + "u;\n";
             }
         }
-        text_ += "return ms_f" + std::to_string(program_.exports[0]) + "(environment,context,parameters" +
-            (material_.resources == UINT32_MAX ? "); }\n" : ",resources); }\n");
-        text_ += "ms_Parameters ms_defaults() { return ms_f" + std::to_string(program_.exports[1]) + "(0u); }\n";
+        text_ += "return " + std::string(footprint ? "ms_value(" : "") + "ms_f" + std::to_string(program_.exports[0]) +
+            (footprint ? "(environment,ms_seed(context,d0,d1),ms_constant(parameters)" : "(environment,context,parameters");
+        if (material_.resources != UINT32_MAX) text_ += footprint ? ",ms_constant(resources)" : ",resources";
+        text_ += footprint ? ")); }\n" : "); }\n";
+        text_ += "ms_Parameters ms_defaults() { return " + std::string(footprint ? "ms_value(" : "") +
+            "ms_f" + std::to_string(program_.exports[1]) + (footprint ? "(0u)); }\n" : "(0u); }\n");
         text_ += "ms_Parameters ms_load_parameters(ByteAddressBuffer data, uint base) {\nms_Parameters p = (ms_Parameters)0;\n";
         load_parameters({ValueType::record, material_.parameters}, "p", 0);
         text_ += "return p;\n}\n";
@@ -344,6 +588,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
                 reject(function.position, "Material defaults cannot contain texture inputs.");
             for (const auto& node : function.expressions) {
                 if (node.kind == Expression::Kind::texture_sample) reject(node.position, "Material defaults cannot sample textures.");
+                if (node.kind == Expression::Kind::texture_orientation) reject(node.position, "Material defaults cannot query texture orientation.");
                 if (node.kind == Expression::Kind::source_call) check_defaults(node.value);
             }
         };
@@ -380,7 +625,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
                 case Kind::math_intrinsic:
                     if (!Hlsl::supports(node.math_operation)) reject(node.position, "This math operation is not in the material subset.");
                     break;
-                case Kind::texture_sample:
+                case Kind::texture_sample: case Kind::texture_orientation:
                     node.offset = slot_offset;
                     break;
                 default: reject(node.position, "Operation is not part of the pure material subset.");
@@ -391,5 +636,10 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
         return MaterialModule{std::move(*tree), context, params.type_index, output, texture_input, resources, std::move(textures)};
     } catch (Diagnostic& diagnostic) { return std::unexpected(std::move(diagnostic)); }
 }
-std::string material_hlsl(const MaterialModule& material) { return Hlsl(material).generate(); }
+std::string material_hlsl(const MaterialModule& material) {
+    // Both variants travel through the existing owned HLSL text. No extra JIT
+    // callback, Runtime type or DLL ABI is needed for a GPU-only lowering.
+    return "#if ATELIER_MATERIAL_FOOTPRINT\n" + Hlsl(material).generate(true) +
+        "#else\n" + Hlsl(material).generate() + "#endif\n";
+}
 }

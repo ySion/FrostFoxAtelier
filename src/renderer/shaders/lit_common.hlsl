@@ -200,9 +200,28 @@ float2 lit_triangle_uv(LitRayTriangle face,float2 bary) {
 MaterialSurface lit_ray_material(uint instance_id,LitRayTriangle face) {
     return material_surfaces[material_indices[material_offsets[instance_id]+lit_face_slot(face.face)]];
 }
+MaterialTriangle lit_material_triangle(uint instance_id,LitRayTriangle face) {
+    LitInstance instance=lit_instances[instance_id];
+    MaterialTriangle t;
+    [unroll] for(uint corner=0;corner<3;++corner) {
+        LitVertex v=face.vertices[corner];
+        t.position[corner]=mul(float4(v.position,1),instance.world).xyz;
+        t.normal[corner]=v.normal.x*instance.normal_x.xyz+v.normal.y*instance.normal_y.xyz+v.normal.z*instance.normal_z.xyz;
+        t.uv[corner]=v.uv;
+        t.tangent[corner]=float4(material_transform_tangent(v.tangent.xyz,instance.world),v.tangent.w*instance.normal_x.w);
+    }
+    float3 gn=face.face.normal;
+    t.geometric_normal=gn.x*instance.normal_x.xyz+gn.y*instance.normal_y.xyz+gn.z*instance.normal_z.xyz;
+    return t;
+}
+MaterialContext lit_material_context(uint instance_id,LitRayTriangle face,float2 bary) {
+    return material_triangle_context(lit_material_triangle(instance_id,face),bary);
+}
 bool lit_accept_candidate(uint instance_id,uint primitive,float2 bary) {
     LitRayTriangle face=lit_ray_triangle(instance_id,primitive);
-    return material_covered(lit_ray_material(instance_id,face),lit_triangle_uv(face,bary),0,0,0,false);
+    MaterialSurface surface=lit_ray_material(instance_id,face);
+    if(surface.flags.x==0)return true;
+    return material_shade(surface,lit_material_context(instance_id,face,bary)).ms_coverage>=0;
 }
 bool lit_visible(float3 p,float3 n,float3 l,float distance) {
     lit_count_rays(lit_visibility_counter);
@@ -232,7 +251,7 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
 struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed,double_sided,emission_two_sided; };
-LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float footprint) {
+LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 position,float3 ray_direction,float footprint) {
     LitInstance instance=lit_instances[instance_id];
     LitRayTriangle face=lit_ray_triangle(instance_id,primitive);
     LitVertex a=face.vertices[0],b=face.vertices[1],c=face.vertices[2];
@@ -252,13 +271,12 @@ LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 po
             if(material_surfaces[material_indices[material_offsets[instance_id]+slot]].flags.x!=0) {s.closed=false;break;}
         }
     }
-    float3 edge1=mul(float4(b.position-a.position,0),instance.world).xyz;
-    float3 edge2=mul(float4(c.position-a.position,0),instance.world).xyz;
-    float uv_density=max(length(b.uv-a.uv)/max(length(edge1),1e-6),length(c.uv-a.uv)/max(length(edge2),1e-6));
-    MaterialSample material=material_evaluate(surface,lit_triangle_uv(face,bary),0,0,footprint*uv_density,false);
-    float4 tangent=a.tangent*(1-bary.x-bary.y)+b.tangent*bary.x+c.tangent*bary.y;
-    tangent.xyz=material_transform_tangent(tangent.xyz,instance.world);tangent.w*=instance.normal_x.w;
-    s.normal=material_normal(surface,lit_triangle_uv(face,bary),0,0,footprint*uv_density,false,s.normal,tangent,material.roughness);
-    s.base=material.base;s.roughness=material.roughness;s.metallic=material.metallic;s.emissive=max(material.emissive,0);
+    MaterialTriangle tri=lit_material_triangle(instance_id,face);
+    float2 bx,by;material_ray_barycentrics(tri,ray_direction,footprint,bx,by);
+    MaterialOutput material=material_shade_footprint(surface,material_triangle_context(tri,bary),
+        material_triangle_delta(tri,bary,bx),material_triangle_delta(tri,bary,by));
+    // Coverage already accepted the LOD0 candidate; filtered shading cannot undo it.
+    s.normal=lit_safe_normal(material.ms_normal_world);
+    s.base=material.ms_base_color;s.roughness=saturate(material.ms_roughness);s.metallic=saturate(material.ms_metallic);s.emissive=max(material.ms_emissive,0);
     s.double_sided=surface.flags.y!=0;s.emission_two_sided=surface.flags.z!=0;return s;
 }

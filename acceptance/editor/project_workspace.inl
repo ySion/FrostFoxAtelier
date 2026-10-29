@@ -46,6 +46,19 @@ void verify_project_workspace(editor::Project& project) {
     };
     const auto click=[&](ui::ControlKey key) {
         if (!surface.presented()->find(key)) {
+            // Installed material Sources add real rows; a mesh need not be in
+            // the first virtualized page of the accepted resource table.
+            for(std::size_t attempt=0;!resource_visible(key);++attempt) {
+                const auto* table=surface.presented()->find_table(browser::results);
+                require(table && !table->cells.empty() && attempt<=table->data->rows.size(),"Project resource cannot be revealed by scrolling.");
+                const auto target=std::ranges::find(table->data->rows,key,&ui::TableRow::key);
+                require(target!=table->data->rows.end(),"Project resource is absent from the table model.");
+                const auto first=std::ranges::find(table->data->rows,table->cells.front().row,&ui::TableRow::key);
+                const auto step=table->row_stride/current_scale/48;
+                input({.kind=ui::EventKind::wheel,.x=table->body.x+table->body.width/2,.y=table->body.y+table->body.height/2,
+                    .wheel=target<first?step:-step});
+                present(current_extent,current_scale);
+            }
             const auto* table=surface.presented()->find_table(browser::results);require(table,"Project resource has no accepted table.");
             const auto cell=std::ranges::find(table->cells,key,&ui::TableCellGeometry::row);
             require(cell!=table->cells.end(),"Project resource has no accepted visible cell.");

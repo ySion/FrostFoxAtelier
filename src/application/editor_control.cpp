@@ -6,6 +6,7 @@
 #include "assets/material_format.hpp"
 #include "platform/windows_path.hpp"
 #include "atelier/build_info.hpp"
+#include <Windows.h>
 #include <deque>
 #include <future>
 #include <limits>
@@ -212,14 +213,19 @@ const std::vector<Operation>& operations() {
         {"scene.create","Create one entity, mesh, point/rectangle/directional light; the sky is a World setting (view.set)",true,{{"kind",{{"enum",{"entity","mesh","point","rectangle","directional"}}}},{"mesh",str}},{"kind"}},
         {"scene.rename","Rename one entity through document history; components use their type names",true,{{"object",str},{"name",str}},{"object","name"}},
         {"scene.set_property","Write one reflected property with its exact scalar/enum type",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
-        {"material.create","Create a shared material asset under Content",true,{{"path",str}},{"path"}},
+        {"material.create","Create a named Material Source (.ms.material) or Material Instance under Content",true,
+            {{"path",str},{"role",{{"enum",{"source","instance"}}}},{"source",str},{"parent",str},{"entries",arr}},{"path","role"}},
         {"texture.import","Import a texture with a Project GUID",true,{{"path",str}},{"path"}},
+        {"texture.reimport","Replace an existing texture's content on the same identity without author history",true,{{"asset",str},{"path",str}},{"asset","path"}},
         {"mesh.import","Import an OBJ or glTF mesh with a Project GUID; glTF also publishes one default material per slot",true,{{"path",str}},{"path"}},
-        {"material.inspect","Read a shared asset or instance object and its resolved reflected parameters",false,{{"asset",str},{"object",str}},{}},
-        {"material.set_property","Edit one reflected shared or instance material parameter",true,{{"object",str},{"property",str},{"value",Json::object()}},{"object","property","value"}},
-        {"material.set_texture","Assign a texture asset to one shared material input",true,{{"object",str},{"input",str},{"texture",str}},{"object","input","texture"}},
+        {"mesh.reimport","Replace a mesh on the same identity and publish exact geometry to Editor and Live",true,{{"asset",str},{"path",str}},{"asset","path"}},
+        {"material.inspect","Read owning MS declarations, sparse MI entries, effective values and diagnostics",false,{{"asset",str},{"object",str}},{}},
+        {"material.set_entry","Edit one typed sparse entry {path,type,enabled,value}; one author history entry",true,{{"object",str},{"entry",obj}},{"object","entry"}},
+        {"material.set_texture","Assign a texture asset to an MI declaration path; empty key explicitly clears it",true,{{"object",str},{"path",str},{"texture",str}},{"object","path","texture"}},
         {"material.assign","Assign a shared material to a component slot; empty asset restores its mesh default",true,{{"component",str},{"slot",str},{"asset",str}},{"component","slot","asset"}},
-        {"material.override","Enable or clear explicit instance parameter inheritance override",true,{{"component",str},{"slot",str},{"property",str},{"enabled",{{"type","boolean"}}}},{"component","slot","property","enabled"}},
+        {"material.create_scene","Create a scene MI inheriting the current slot binding or mesh default",true,{{"component",str},{"slot",str}},{"component","slot"}},
+        {"material.override","Enable or disable an MI entry without deleting its local value",true,{{"object",str},{"path",str},{"enabled",{{"type","boolean"}}}},{"object","path","enabled"}},
+        {"material.discard","Remove one sparse MI entry and inherit again",true,{{"object",str},{"path",str}},{"object","path"}},
         {"material.save","Save a shared material asset",true,{{"asset",str}},{"asset"}},
         {"material.undo","Undo one shared material asset edit",true,{{"asset",str}},{"asset"}},
         {"material.redo","Redo one shared material asset edit",true,{{"asset",str}},{"asset"}},
@@ -455,6 +461,23 @@ struct EditorControl::Impl {
     Json object_json(ObjectId id) {
         auto& runtime=app.document_->world().runtime();const auto* type=take(runtime.describe(take(runtime.type_of(id))));
         auto result=object_header(id,type->name);result["type_description"]=type->description;result["properties"]=Json::array();
+        if(app.document_->is_material(id)) {
+            const auto view=take(app.document_->inspect_material(id));
+            result["asset"]=view.asset_key;result["parent"]=view.parent_key;result["role"]=view.source?"source":"instance";
+            result["scene"]=view.scene;result["default_material"]=view.default_material;
+            result["dirty"]=view.scene?app.document_->dirty():app.document_->material_dirty(view.asset_key);
+            result["entries"]=assets::material_format::encode_entries(view.entries);
+            result["declarations"]=Json::array();result["diagnostics"]=Json::array();
+            for(const auto& declaration:view.declarations) {
+                const std::array values{material::Override{declaration.path,declaration.value,true},material::Override{declaration.path,declaration.initial,true}};
+                auto field=assets::material_format::encode_entries(std::span(values).first(1)).front();field.erase("enabled");
+                field["initial"]=assets::material_format::encode_entries(std::span(values).last(1)).front().at("value");
+                field["components"]=declaration.components;result["declarations"].push_back(std::move(field));
+            }
+            for(const auto& diagnostic:view.diagnostics) result["diagnostics"].push_back({{"path",diagnostic.path},{"message",diagnostic.message}});
+            if(view.source_file) result["source"]={{"path",view.source_file->path},{"version",view.source_file->version},{"text",view.source_file->source}};
+            return result;
+        }
         for(const auto& property:take(app.document_->properties(id))) {
             const auto* prop_type=take(runtime.describe(property.type));
             Json field{{"name",property.name},{"label",property.label},{"category",property.category},{"description",property.description},
@@ -484,7 +507,7 @@ struct EditorControl::Impl {
             if(const auto mesh=presentation::read_static_mesh(runtime,id)) {
                 auto defaults=Json::array();
                 for(const auto& binding:mesh->mesh.defaults) {
-                    const auto source=take(material::read_material(runtime,binding.resource.id())).source;
+                    const auto source=take(material::material_key(runtime,binding.resource.id()));
                     defaults.push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",source},
                         {"missing",app.document_->unavailable(assets::AssetKind::material,source)!=nullptr}});
                 }
@@ -492,11 +515,9 @@ struct EditorControl::Impl {
             }
             result["materials"]=Json::array();
             for(const auto& binding:*bindings) {
-                const auto state=take(material::read_material(runtime,binding.resource.id()));
-                const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
-                result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"source",state.source},
-                    {"parent",parent},{"parameter_mask",state.overrides},{"assignment_override",binding.overridden},
-                    {"missing",app.document_->unavailable(assets::AssetKind::material,parent.empty()?state.source:parent)!=nullptr}});
+                const auto view=take(app.document_->inspect_material(binding.resource.id()));
+                result["materials"].push_back({{"slot",binding.slot},{"object",handle(binding.resource.id())},{"asset",view.asset_key},
+                    {"parent",view.parent_key},{"scene",view.scene},{"assignment_override",binding.overridden},{"default_material",view.default_material}});
             }
         }
         return result;
@@ -649,55 +670,45 @@ struct EditorControl::Impl {
             data.drafts.push_back({{"path",control::utf8(file->path.generic_wstring())},{"text",control::utf8(file->document->text())},{"conflict",file->conflict}});
         if(app.project_) {
             data.roots.assign(app.project_->roots().begin(),app.project_->roots().end());
-            // The repro holds what the scene references, whatever else this session loaded: the
-            // components' meshes and sky maps and every material the frozen scene defines (bound
-            // ones, instance parents and inline textures), and the keys a component keeps while it
-            // cannot resolve them. Reader gives each the files of everything it references in turn.
-            // A live reference the catalogue lost fails the export; the key of a stand-in or of
-            // retained data is copied when the catalogue still has it, and otherwise stays in the
-            // scene without files.
+            // snapshot_resources already walked the actual parent/default closure
+            // against compiled declarations. Do not turn dormant author keys into
+            // dependencies or replace its exact Source snapshots with cache contents.
             const auto& doc=*app.document_;
-            std::set<std::filesystem::path> listed;
-            const auto add=[&](const std::string& key) {
-                for(auto& file:take(app.project_->assets().asset_files(key))) if(listed.insert(file).second) data.files.push_back(std::move(file));
+            const auto compare=[](const std::filesystem::path& a,const std::filesystem::path& b) {
+                const auto left=a.generic_wstring(),right=b.generic_wstring();
+                return CompareStringOrdinal(left.c_str(),-1,right.c_str(),-1,TRUE);
             };
-            const auto optional=[&](assets::AssetKind kind,const std::string& key) {
-                if(const auto* entry=key.empty()?nullptr:app.project_->entry(key);entry && entry->kind==kind) add(key);
-            };
-            const auto live=[&](assets::AssetKind kind,const std::string& key) {
-                if(doc.unavailable(kind,key)) optional(kind,key);else if(!key.empty()) add(key);
-            };
-            const auto string_field=[](const Json& object,const char* name) {
-                const auto at=object.find(name);return at!=object.end() && at->is_string()?at->get<std::string>():std::string{};
-            };
-            const auto material_keys=[&](const Json& definition,const auto& reference) {
-                reference(assets::AssetKind::material,string_field(definition,"source"));reference(assets::AssetKind::material,string_field(definition,"parent"));
-                if(const auto value=definition.find("inline");value!=definition.end() && value->is_object())
-                    if(const auto textures=value->find("textures");textures!=value->end() && textures->is_object())
-                        for(const auto& texture:*textures) if(texture.is_object()) reference(assets::AssetKind::texture,string_field(texture,"source"));
-            };
-            for(const auto& mesh:data.meshes) add(mesh.key);
-            for(const auto& [key,map]:data.skies) add(key);
-            const auto scene=assets::json_format::parse(data.scene);
-            if(const auto materials=scene.find("materials");materials!=scene.end()) for(const auto& definition:*materials) material_keys(definition,live);
-            if(const auto entities=scene.find("entities");entities!=scene.end()) for(const auto& entity:*entities) for(const auto& component:entity.at("components")) {
-                optional(assets::AssetKind::mesh,string_field(component,"mesh"));optional(assets::AssetKind::sky,string_field(component,"sky_map"));
-                if(const auto bindings=component.find("materials");bindings!=component.end() && bindings->is_array())
-                    for(const auto& binding:*bindings) if(binding.is_object()) material_keys(binding,optional);
-            }
-            // A mesh's slot defaults are not in the scene; asset_files reaches them through the mesh.
-            auto& runtime=app.document_->world().runtime();
-            for(const auto& entity:take(app.document_->world().members())) for(const auto& component:take(world::components(runtime,entity.id())))
-                if(auto mesh=presentation::read_static_mesh(runtime,component.id())) for(const auto& binding:mesh->mesh.defaults) {
-                    const auto source=take(material::read_material(runtime,binding.resource.id())).source;const auto* entry=app.project_->entry(source);
-                    if(!doc.unavailable(assets::AssetKind::material,source) && (!entry || !listed.contains(entry->path)))
-                        throw Failure("dependency_mismatch","A mesh's default material is no longer in the project: "+source);
+            const auto less=[&](const auto& a,const auto& b){return compare(a,b)==CSTR_LESS_THAN;};
+            std::set<std::filesystem::path,decltype(less)> listed(less);
+            const auto add=[&](const std::filesystem::path& named) {
+                // Raw mesh references may use a different case than the catalogue.
+                // Copy each Windows file once, preserving keyed companions' identities.
+                const auto entries=app.project_->entries();
+                const auto at=std::ranges::find_if(entries,[&](const auto& entry){return compare(named,entry.path)==CSTR_EQUAL;});
+                const auto& path=at==entries.end()?named:at->path;
+                if(!listed.insert(path).second) return;
+                data.files.push_back(path);
+                if(at!=entries.end() && (at->kind==assets::AssetKind::mesh || at->kind==assets::AssetKind::material ||
+                    at->kind==assets::AssetKind::texture || at->kind==assets::AssetKind::sky)) {
+                    auto sidecar=path;sidecar+=L".asset.json";
+                    if(!std::filesystem::exists(platform::windows_file_path(take(app.project_->resolve(sidecar)))))
+                        throw Failure("dependency_mismatch","Asset identity file is missing: "+at->key);
+                    if(listed.insert(sidecar).second) data.files.push_back(std::move(sidecar));
                 }
-            // A referenced material exports its live draft, whose textures may differ from the saved file's.
-            std::erase_if(data.materials,[&](const assets::MaterialAsset& asset) {
-                const auto* entry=app.project_->entry(asset.key);return !entry || !listed.contains(entry->path);
-            });
-            for(const auto& asset:data.materials) for(const auto& texture:asset.textures) live(assets::AssetKind::texture,texture);
+            };
+            for(const auto& [kind,key]:data.references) {
+                if(key.empty() || key.starts_with("builtin/")) continue;
+                const auto* entry=app.project_->entry(key);
+                if(!entry || entry->kind!=kind) {
+                    if(doc.unavailable(kind,key)) continue;
+                    throw Failure("dependency_mismatch","A captured resource is no longer in the project: "+key);
+                }
+                add(entry->path);
+                // Raw geometry companions are not MS/MI execution dependencies.
+                // Use the Reader's prepared mesh closure, never saved material walks.
+                if(kind==assets::AssetKind::mesh && !doc.unavailable(kind,key))
+                    for(const auto& path:take(app.project_->assets().mesh_dependency_files(key))) add(path);
+            }
         }
         auto& job=new_job(id,peer);data.manifest=job.manifest;data.manifest["kind"]="repro";
         data.manifest["original_scene_path"]=control::utf8(app.scene_path_.generic_wstring());data.manifest["original_dirty"]=app.document_->dirty();
@@ -811,18 +822,11 @@ struct EditorControl::Impl {
             return inspect(detail=="summary");
         }
         if(op=="material.inspect") {
-            if(!app.project_) throw Failure("not_ready","No project is open");
             if(args.contains("asset")==args.contains("object")) throw Failure("invalid_request","Specify exactly one material asset or object");
+            if(args.contains("asset") && !app.project_) throw Failure("not_ready","No project is open");
             const auto target=args.contains("asset")?take(doc.open_material(*app.project_,text(args.at("asset")))).id():object(args.at("object"));
             if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
-            const auto state=take(material::read_material(runtime,target));
-            const auto parent=state.parent.registered()?take(material::read_material(runtime,state.parent.id())).source:std::string{};
-            auto result=object_json(target);result["asset"]=state.source;result["parent"]=parent;
-            result["parameter_mask"]=state.overrides;result["missing"]=doc.unavailable(assets::AssetKind::material,parent.empty()?state.source:parent)!=nullptr;
-            auto& textures=result["missing_textures"]=Json::array();
-            for(const auto& texture:state.textures) if(texture.registered())
-                if(auto source=take(material::read_texture(runtime,texture.id())).source;doc.unavailable(assets::AssetKind::texture,source)) textures.push_back(std::move(source));
-            result["dirty"]=state.source.empty()?doc.dirty():doc.material_dirty(state.source);return result;
+            return object_json(target);
         }
         if(op=="job.status" || op=="job.cancel") {
             const auto job_id=text(args.at("job_id"),80);for(auto& job:jobs) if(job->id==job_id) {
@@ -836,46 +840,65 @@ struct EditorControl::Impl {
         }
         idle();
         if(op=="op.call") return call_operator(args);
-        if(op.starts_with("material.") || op=="texture.import" || op=="mesh.import") {
+        if(op.starts_with("material.") || op=="texture.import" || op=="texture.reimport" || op=="mesh.import" || op=="mesh.reimport") {
+            if(op=="material.create_scene") return {{"object",handle(take(doc.create_scene_material(object(args.at("component")),text(args.at("slot")))).id())}};
+            if(op=="material.assign") {
+                const auto component=object(args.at("component"));const auto slot=text(args.at("slot")),asset=text(args.at("asset"));
+                if(asset.empty()) take(doc.clear_material(component,slot));
+                else {
+                    if(!app.project_) throw Failure("not_ready","No project is open");
+                    take(doc.assign_material(*app.project_,component,slot,asset));
+                }
+                return Json::object();
+            }
+            if(op=="material.override" || op=="material.discard" || op=="material.set_entry") {
+                const auto target=object(args.at("object"));
+                if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
+                auto* project=app.project_?&*app.project_:nullptr;
+                if(op=="material.override") take(doc.set_material_override(target,text(args.at("path")),args.at("enabled").get<bool>(),project));
+                else if(op=="material.discard") take(doc.discard_material_override(target,text(args.at("path"))));
+                else {
+                    auto entries=assets::material_format::decode_entries(Json::array({args.at("entry")}));
+                    const auto control=++edit_id;take(doc.begin_material_edit(target,control));
+                    auto changed=doc.preview_material_entry(control,std::move(entries.front()),project);
+                    if(changed) changed=doc.commit_material_edit(control);
+                    if(!changed) {take(doc.cancel_material_edit());take(std::move(changed));}
+                }
+                return Json::object();
+            }
             if(!app.project_) throw Failure("not_ready","No project is open");
             auto& project=*app.project_;
-            if(op=="material.create") return {{"asset",take(project.create_material(control::wide(text(args.at("path")))))}};
+            if(op=="material.create") {
+                const auto role=text(args.at("role"));const auto path=control::wide(text(args.at("path")));
+                if(role=="source") {
+                    if(args.contains("parent") || args.contains("entries")) throw Failure("invalid_request","A Material Source cannot contain instance entries or a parent");
+                    return {{"asset",take(project.create_material_source(path,text(args.value("source",Json("")),control::maximum_message)))}};
+                }
+                if(role!="instance" || args.contains("source")) throw Failure("invalid_request","Expected source or instance author role");
+                assets::MaterialAsset asset;auto& author=std::get<assets::MaterialInstanceAsset>(asset.author);
+                if(args.contains("parent")) author.parent_key=text(args.at("parent"));
+                if(args.contains("entries")) author.entries=assets::material_format::decode_entries(args.at("entries"));
+                return {{"asset",take(project.create_material(path,asset))}};
+            }
             if(op=="texture.import") return {{"asset",take(project.import_texture(control::wide(text(args.at("path")))))}};
+            if(op=="texture.reimport") {
+                const auto key=text(args.at("asset"));
+                take(doc.reimport_texture(project,key,control::wide(text(args.at("path")))));return {{"asset",key}};
+            }
+            if(op=="mesh.reimport") {
+                const auto key=text(args.at("asset"));
+                take(doc.reimport_mesh(project,key,control::wide(text(args.at("path")))));return {{"asset",key}};
+            }
             if(op=="mesh.import") return {{"asset",take(project.import_mesh(control::wide(text(args.at("path")))))}};
             if(op=="material.save") {
                 take(doc.save_material(project,text(args.at("asset"))));const auto refreshed=project.refresh();
                 Json result{{"saved",true}};if(!refreshed) result["catalog_warning"]=refreshed.error().message;return result;
             }
-            if(op=="material.undo" || op=="material.redo") {take(doc.material_undo(text(args.at("asset")),op=="material.redo"));return Json::object();}
-            if(op=="material.assign") {
-                const auto component=object(args.at("component"));const auto slot=text(args.at("slot")),asset=text(args.at("asset"));
-                if(asset.empty()) take(doc.clear_material(component,slot));else take(doc.assign_material(project,component,slot,asset));return Json::object();
-            }
+            if(op=="material.undo" || op=="material.redo") {take(doc.material_undo(text(args.at("asset")),op=="material.redo",&project));return Json::object();}
             if(op=="material.set_texture") {
-                const auto input=text(args.at("input"));const auto at=std::ranges::find(assets::material_format::names,input);
-                if(at==assets::material_format::names.end()) throw Failure("invalid_request","Unknown material input");
-                take(doc.set_material_texture(project,object(args.at("object")),static_cast<material::Input>(at-assets::material_format::names.begin()),text(args.at("texture"))));return Json::object();
+                take(doc.set_material_texture(project,object(args.at("object")),text(args.at("path")),text(args.at("texture"))));return Json::object();
             }
-            auto target=op=="material.override"?ObjectId{}:object(args.at("object"));
-            ObjectId component;std::string slot;
-            if(op=="material.override") {
-                component=object(args.at("component"));slot=text(args.at("slot"));
-                // As in Parameters: a slot showing its mesh default overrides an instance of that default.
-                const auto bindings=take(presentation::read_material_bindings(runtime,component));const auto at=std::ranges::find(bindings,slot,&presentation::MaterialBinding::slot);
-                if(at!=bindings.end()) target=at->resource.id();
-                else {
-                    const auto mesh=take(presentation::read_static_mesh(runtime,component));
-                    const auto fallback=std::ranges::find(mesh.mesh.defaults,slot,&presentation::MaterialBinding::slot);
-                    if(fallback==mesh.mesh.defaults.end()) throw Failure("invalid_request","Assign a material to this slot first");
-                    target=fallback->resource.id();
-                }
-            }
-            if(!doc.is_material(target)) throw Failure("invalid_request","Expected a material object");
-            const auto properties=take(doc.properties(target));const auto name=text(args.at("property"));const auto found=std::ranges::find(properties,name,&editor::Property::name);
-            if(found==properties.end()) throw Failure("unknown_property","Unknown reflected material property");
-            if(op=="material.override") take(doc.set_material_override(component,slot,found->path,args.at("enabled").get<bool>()));
-            else take(doc.set_property(target,found->path,scalar_value(args.at("value"),found->value,runtime),++edit_id));
-            return Json::object();
+            throw Failure("invalid_request","Unknown material operation");
         }
         if(op=="project.open") {replaceable();take(app.open_project(control::wide(text(args.at("path")))));}
         else if(op=="scene.open") {replaceable();take(app.open_scene(control::wide(text(args.at("path")))));}

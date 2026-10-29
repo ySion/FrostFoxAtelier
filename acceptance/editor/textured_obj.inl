@@ -1,34 +1,66 @@
+// Import consumers inspect author paths and the actual compiled input table,
+// never StandardPBR slot numbers or geometry-owned material content.
+template<class T> const T& imported_material_value(const assets::MaterialInstanceAsset& author,std::string_view path) {
+    const auto at=std::ranges::find(author.entries,path,&material::Override::path);
+    require(at!=author.entries.end() && at->enabled && std::holds_alternative<T>(at->value),
+        "An imported MI value is missing, disabled or has the wrong type.");
+    return std::get<T>(at->value);
+}
+const material::SurfaceInput& material_input(const material::ProgramSurface& surface,std::string_view path) {
+    const auto inputs=surface.program().textures();
+    const auto at=std::ranges::find(inputs,path,&source::MaterialTextureInput::key);
+    require(at!=inputs.end() && surface.inputs().size()==inputs.size(),"Resolved material input does not match its Source declaration.");
+    return surface.inputs()[static_cast<std::size_t>(at-inputs.begin())];
+}
+template<class T> T resolved_material_value(const material::ProgramSurface& surface,std::string_view path) {
+    const auto parameters=surface.program().parameters();
+    const auto at=std::ranges::find(parameters,path,&source::MaterialParameter::key);
+    require(at!=parameters.end() && at->components*sizeof(float)==sizeof(T) && at->offset+sizeof(T)<=surface.parameters().size(),
+        "Resolved material parameter does not match its Source declaration.");
+    T result;std::memcpy(&result,surface.parameters().data()+at->offset,sizeof(T));return result;
+}
 void verify_material_picking() {
     namespace mat=atelier::material;
     const std::vector<atelier::geometry::Vertex> vertices{
         {{-1,-1,0},{0,0,-1},{0,1}},{{-1,1,0},{0,0,-1},{0,0}},{{1,1,0},{0,0,-1},{1,0}},
         {{-1,-1,0},{0,0,-1},{0,1}},{{1,1,0},{0,0,-1},{1,0}},{{1,-1,0},{0,0,-1},{1,1}}};
-    mat::Description cutout;cutout.parameters.coverage=mat::Coverage::mask;
-    cutout.texture(mat::Input::opacity).image=std::make_shared<const mat::Image>(2,2,
+    const auto opacity=std::make_shared<const mat::Image>(2,2,
         std::vector<std::uint8_t>{0,0,0,255,255,255,255,255,255,255,255,255,255,255,255,255});
-    const auto mesh=[&](const mat::Description& value) {
-        return std::make_shared<const atelier::geometry::Mesh>(vertices,std::vector<std::uint8_t>{},
-            std::vector<mat::Slot>{{"surface",std::make_shared<const mat::Surface>(value)}});
-    };
-    editor::Session document;
-    changed(document.create_static_mesh({{},L"Cutout",mesh(cutout)}));const auto front=document.selection().entity;
+    const auto mesh=std::make_shared<const atelier::geometry::Mesh>(vertices,std::vector<std::uint8_t>{},
+        std::vector<geometry::MaterialSlot>{{"surface"}});
+    editor::Session document;assets::Reader installed;
+    take(document.publish_texture("fixture/opacity",opacity));
+    assets::MaterialAsset cutout{"fixture/cutout",L"Cutout",assets::MaterialInstanceAsset{"builtin/material/standard-mask-double",
+        {{"opacity_texture",mat::TextureBinding{"fixture/opacity"}}}}};
+    const auto material=take(document.material_resource(installed,cutout));
+    changed(document.create_static_mesh({{},L"Cutout",mesh}));const auto front=document.selection().entity;
     const auto front_component=component(document,front,document.presentation_types().static_mesh_component);
-    changed(document.create_static_mesh({{},L"Receiver",mesh({})},{0,0,.8f}));const auto back=document.selection().entity;
+    const std::array bindings{presentation::MaterialBinding{"surface",material,true}};
+    take(presentation::set_material_bindings(document.world().runtime(),front_component,bindings));
+    changed(document.create_static_mesh({{},L"Receiver",mesh},{0,0,.8f}));const auto back=document.selection().entity;
     editor::Camera camera;require(camera.look_at({0,0,-5},{0,0,0}),"Material picking camera is invalid.");
     auto view=editor::ViewportView::make(camera,{0,0,800,600},1);
+    application::SceneSnapshot snapshot;
+    const auto publish=[&] {take(snapshot.refresh(document));view.scene=snapshot.picking();};
+    publish();
     editor::ViewportTool tool;
     const auto pick=[&](math::Vector3 position) {const auto p=view.project(position);require(p.has_value(),"Material picking point is outside its viewport.");return tool.pick(document,view,p->x,p->y);};
     require(pick({-.5f,.5f,0})==back && pick({.5f,.5f,0})==front,
         "Point picking did not pass through transparent texels to the rear Entity.");
-    cutout.texture(mat::Input::opacity).scale[0]=-1;
-    take(presentation::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
+    auto& author=std::get<assets::MaterialInstanceAsset>(cutout.author);
+    author.entries.push_back({"opacity_uv.scale",math::Vector2{-1,1}});
+    require(take(document.publish_material(installed,cutout)).id()==material.id(),"Changing sampling replaced the material identity.");
+    publish();
     require(pick({-.5f,.5f,0})==front && pick({.5f,.5f,0})==back,
         "Point picking ignored mirrored negative UV repetition.");
-    cutout.parameters.coverage=mat::Coverage::opaque;cutout.parameters.double_sided=false;
-    take(presentation::set_geometry(document.world().runtime(),front_component,mesh(cutout)));
-    take(document.select(back));changed(document.erase_selected());
+    author.parent_key="builtin/material/standard-opaque-single";
+    require(take(document.publish_material(installed,cutout)).id()==material.id(),"Changing the policy Source replaced the material identity.");
+    const auto surface=take(mat::capture_program(document.world().runtime(),material.id()));
+    require(surface->policy().coverage==mat::Coverage::opaque && !surface->policy().double_sided,
+        "Picking material did not resolve its new Source policy.");
+    take(document.select(back));changed(document.erase_selected());publish();
     require(pick({0,0,0})==front,"Single-sided picking discarded the authored front side.");
-    require(camera.look_at({0,0,5},{0,0,0}),"Backface picking camera is invalid.");view=editor::ViewportView::make(camera,{0,0,800,600},1);
+    require(camera.look_at({0,0,5},{0,0,0}),"Backface picking camera is invalid.");view=editor::ViewportView::make(camera,{0,0,800,600},1);publish();
     require(!pick({0,0,0}),"Point picking selected an invisible single-sided backface.");
     std::puts("Material picking acceptance: PASS (transparent holes, UV sampling, source replacement, sidedness)");
 }
@@ -45,11 +77,24 @@ void verify_textured_obj() {
     const std::string obj="mtllib scene.mtl\nv 0 0 0\nv 2 0 0\nv 2 2 0\nv 1 1 0\nv 0 2 0\nvt -1 0\nvt 2 0\nvt 2 1\nvt 0.5 0.5\nvt 0 1\nusemtl red\nf 1/1 2/2 3/3 4/4 5/5\nusemtl other\nf -5/1 -4/2 -2/4\n";
     take(editor::write_file(source/"scene.obj",obj));
     auto project=take(editor::Project::create(evidence/"project"));const auto key=take(project.import_mesh(source/"scene.obj"));
-    auto old=take(project.assets().mesh(key)).mesh;
+    const auto asset=take(project.assets().mesh(key));const auto old=asset.mesh;
+    editor::Session original;
+    const auto original_surfaces=take(original.mesh_surfaces(project.assets(),asset));
+    require(original_surfaces && original_surfaces->size()==3,"OBJ resolved material table lost a geometry slot.");
+    const auto& red=(*original_surfaces)[1];const auto& other=(*original_surfaces)[2];
+    const auto pixels=material_input(*red,"base_color_texture").image;
     require(old->vertices().size()==12 && old->parts().size()==2 && old->materials().size()==3 &&
-        old->materials()[1].surface->description().texture(atelier::material::Input::base_color).image==old->materials()[2].surface->description().texture(atelier::material::Input::base_color).image,"OBJ lost triangles, material parts or shared images.");
-    require(old->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[0]==255,
-        "Decoded material pixel is wrong.");
+        asset.materials.size()==2 && asset.materials[0].slot=="red" && asset.materials[1].slot=="other" &&
+        pixels && pixels==material_input(*other,"base_color_texture").image,"OBJ lost triangles, material parts, default bindings or shared images.");
+    require((*original_surfaces)[0]==take(material::default_world_surface()) && pixels->pixels()[0]==255,
+        "Unbound OBJ slot lost the grid default or the decoded material pixel is wrong.");
+    const auto red_asset=take(project.assets().material(asset.materials[0].key));
+    const auto& red_author=std::get<assets::MaterialInstanceAsset>(red_asset.author);
+    const auto texture_key=imported_material_value<material::TextureBinding>(red_author,"base_color_texture").asset_key;
+    require(imported_material_value<math::Vector4>(red_author,"base_color")==math::Vector4{1,.5f,.25f,1} &&
+        take(red->evaluate({})).base_color==math::Vector3{1,0,0} &&
+        take(material::capture_program(original.world().runtime(),take(original.material_resource(project.assets(),red_asset.key)).id()))==red,
+        "OBJ MI author factors or its resolved StandardPBR result changed.");
     bool negative_uv=false;double area=0;
     for(const auto& vertex:old->vertices()) negative_uv|=vertex.uv[0]<0;
     for(std::size_t i=0;i<9;i+=3) {const auto& a=old->vertices()[i].position;const auto& b=old->vertices()[i+1].position;const auto& c=old->vertices()[i+2].position;
@@ -63,23 +108,44 @@ void verify_textured_obj() {
     const auto sibling_entry=std::ranges::find(project.entries(),fs::path("Content/Meshes/scene/sibling.obj"),&assets::ProjectEntry::path);
     require(sibling_entry!=project.entries().end(),"Shared-texture mesh is absent from the real project catalog.");
     const auto sibling_key=sibling_entry->key;
-    auto sibling_mesh=take(project.assets().mesh(sibling_key)).mesh;
+    // Geometry discovery does not synthesize a second material product path. This
+    // sibling explicitly shares the original named defaults in its real sidecar.
+    auto sibling_metadata=sibling;sibling_metadata+=L".asset.json";
+    auto mapping=nlohmann::json::parse(take(assets::read_file(sibling_metadata)));
+    for(const auto& binding:asset.materials) mapping["materials"][binding.slot]=binding.key;
+    take(editor::write_file(sibling_metadata,mapping.dump(2)));take(project.refresh());
+    const auto sibling_asset=take(project.assets().mesh(sibling_key));const auto sibling_mesh=sibling_asset.mesh;
+    const auto sibling_surfaces=take(original.mesh_surfaces(project.assets(),sibling_asset));
+    require(sibling_asset.materials==asset.materials && (*sibling_surfaces)[1]==red,
+        "Sibling defaults did not resolve to the same material resource.");
     // import_mesh already owns its first bundle; reopen to exercise the project cache.
     auto shared_project=take(editor::Project::open(project.root()));
-    auto shared_a=take(shared_project.assets().mesh(key)).mesh,shared_b=take(shared_project.assets().mesh(sibling_key)).mesh;
-    require(shared_a!=shared_b && shared_a->materials()[1].surface->description().texture(atelier::material::Input::base_color).image==shared_b->materials()[1].surface->description().texture(atelier::material::Input::base_color).image,
+    const auto shared_a=take(shared_project.assets().mesh(key)),shared_b=take(shared_project.assets().mesh(sibling_key));
+    editor::Session shared;
+    const auto surfaces_a=take(shared.mesh_surfaces(shared_project.assets(),shared_a)),surfaces_b=take(shared.mesh_surfaces(shared_project.assets(),shared_b));
+    require(shared_a.mesh!=shared_b.mesh && material_input(*(*surfaces_a)[1],"base_color_texture").image==material_input(*(*surfaces_b)[1],"base_color_texture").image,
         "Different model assets decoded the same atlas more than once.");
     const auto texture=project.root()/"Content/Meshes/scene/color.bmp";
     for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i]=char(255);bmp[i+2]=0;}
     take(editor::write_file(texture,bmp));fs::last_write_time(texture,fs::last_write_time(texture)+std::chrono::seconds(2));take(project.refresh());
-    auto changed=take(project.assets().mesh(key)).mesh;
-    auto sibling_changed=take(project.assets().mesh(sibling_key)).mesh;
-    require(sibling_changed!=sibling_mesh && changed->materials()[1].surface->description().texture(atelier::material::Input::base_color).image==sibling_changed->materials()[1].surface->description().texture(atelier::material::Input::base_color).image &&
-        sibling_mesh->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[0]==255,"Shared atlas refresh lost sharing or retired pixels.");
-    require(changed!=old && changed->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[2]==255 && old->materials()[1].surface->description().texture(atelier::material::Input::base_color).image->pixels()[0]==255,
+    const auto changed_asset=take(project.assets().mesh(key)),sibling_changed=take(project.assets().mesh(sibling_key));
+    editor::Session refreshed;
+    const auto current=take(refreshed.mesh_surfaces(project.assets(),changed_asset)),current_sibling=take(refreshed.mesh_surfaces(project.assets(),sibling_changed));
+    const auto changed_pixels=material_input(*(*current)[1],"base_color_texture").image;
+    require(sibling_changed.mesh!=sibling_mesh && changed_pixels==material_input(*(*current_sibling)[1],"base_color_texture").image &&
+        material_input(*(*sibling_surfaces)[1],"base_color_texture").image==pixels && pixels->pixels()[0]==255,
+        "Shared atlas refresh lost sharing or retired pixels.");
+    require(changed_asset.mesh!=old && changed_pixels!=pixels && changed_pixels->pixels()[2]==255 && pixels->pixels()[0]==255 &&
+        project.entry(texture_key) && changed_asset.key==asset.key && changed_asset.materials==asset.materials &&
+        take(assets::mesh_content_sha256(changed_asset))==take(assets::mesh_content_sha256(asset)),
         "Texture refresh did not publish a new resource while preserving its old owner.");
     take(editor::write_file(project.root()/"Content/Meshes/scene/scene.mtl","newmtl red\nKd 0 1 0\nmap_Kd color.bmp\nnewmtl other\nKd 1 1 1\n"));
-    take(project.refresh());require(take(project.assets().mesh(key)).mesh->materials()[1].surface->description().parameters.base_color[0]==0,"MTL edits did not invalidate the cached mesh.");
+    take(project.refresh());const auto edited=take(project.assets().mesh(key));
+    const auto source_author=assets::load_obj(project.root()/"Content/Meshes/scene/scene.obj");
+    require(edited.mesh!=changed_asset.mesh && imported_material_value<math::Vector4>(*source_author.materials[1],"base_color")==math::Vector4{0,1,0,1} &&
+        assets::material_format::encode(take(project.assets().material(red_asset.key)))==assets::material_format::encode(red_asset) &&
+        take(assets::mesh_content_sha256(edited))==take(assets::mesh_content_sha256(asset)),
+        "MTL refresh failed to invalidate its dependency or silently overwrote the independent MI author data.");
     fs::remove(texture);take(project.refresh());require(!project.assets().mesh(key),"Missing material dependency was silently ignored.");
     take(editor::write_file(source/"bad.obj","mtllib ../outside.mtl\nv 0 0 0\n"));
     require(!project.import_mesh(source/"bad.obj") && !fs::exists(project.root()/"Content/Meshes/bad.obj"),"Unsafe dependency left a published import.");
@@ -110,7 +176,11 @@ void verify_sponza_project() {
     std::size_t triangles{};
     for(std::size_t i=0;i<items.size();++i) {
         const auto& mesh=*items[i].geometry;std::size_t textured{};
-        for(const auto& surface:*items[i].surfaces) textured+=bool(surface->description().texture(atelier::material::Input::base_color).image);
+        require(items[i].surfaces && items[i].surfaces->size()==mesh.materials().size(),"Sponza lost its resolved material slot table.");
+        for(const auto& surface:*items[i].surfaces) {
+            require(surface && !surface->uses_default_material() && surface->diagnostics().empty(),"Sponza material resolution fell back or reported invalid author data.");
+            textured+=bool(material_input(*surface,"base_color_texture").image);
+        }
         const auto state=take(presentation::read_static_mesh(document->world().runtime(),items[i].component));
         const auto* entry=project.entry(state.mesh.source);
         require(mesh.vertices().size()==expected[i].triangles*3 && mesh.materials().size()==expected[i].slots && state.mesh.defaults.size()==expected[i].slots &&
@@ -119,6 +189,15 @@ void verify_sponza_project() {
         for(const auto& slot:entry->materials) {
             const auto* material=project.entry(slot.key);
             require(material && material->path==entry->path.parent_path()/"Materials"/(slot.slot+".material"),"A Sponza slot defaults to another slot's material.");
+            const auto author=take(project.assets().material(slot.key));
+            const auto binding=std::ranges::find(state.mesh.defaults,slot.slot,&presentation::MaterialBinding::slot);
+            require(std::holds_alternative<assets::MaterialInstanceAsset>(author.author) && binding!=state.mesh.defaults.end() &&
+                take(atelier::material::material_key(document->world().runtime(),binding->resource.id()))==slot.key,
+                "Sponza default did not resolve to its typed MI identity.");
+            const auto index=std::ranges::find(mesh.materials(),slot.slot,&geometry::MaterialSlot::name)-mesh.materials().begin();
+            require(index<static_cast<std::ptrdiff_t>(items[i].surfaces->size()) && (*items[i].surfaces)[index]==
+                take(atelier::material::capture_program(document->world().runtime(),binding->resource.id())),
+                "Sponza extraction did not use its default MI's current content.");
         }
         triangles+=mesh.vertices().size()/3;
     }

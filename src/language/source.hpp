@@ -54,7 +54,7 @@ struct Environment {
     std::string_view object_type_name{}; // exact bound Runtime type; optional for callers without object access
     std::span<const EnumBinding> enumerations{};
     std::span<const ValueLayout> values{};
-    bool material{}; // Enables only the controlled sample intrinsic; validation follows typing.
+    bool material{}; // Enables controlled sample/orientation intrinsics; validation follows typing.
     ValueType texture_input{}; // Exact registered value type, only meaningful for materials.
 };
 struct SourcePosition { std::size_t offset{}, line{1}, column{1}; };
@@ -75,7 +75,7 @@ struct Expression {
         literal, local, field, call, unary, binary,
         receiver, null_reference, create_reference, observe_reference, acquire_reference,
         value_field, index, length, string_literal, sequence_mutation, source_call,
-        math_construct, math_intrinsic, scalar_cast, texture_sample
+        math_construct, math_intrinsic, scalar_cast, texture_sample, texture_orientation
     };
     Kind kind;
     ValueType type;

@@ -187,7 +187,7 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
     if(auto refreshed=refresh();!refreshed) return std::unexpected(refreshed.error());
     return target_relative;
 }
-Result<void> Project::refresh() {
+Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_identities) const {
     try {
         std::vector<assets::ProjectEntry> entries;
         std::unordered_set<std::string> keys;
@@ -211,8 +211,9 @@ Result<void> Project::refresh() {
                     auto meta_relative=relative; meta_relative+=L".asset.json";
                     auto metadata=take(resolve(meta_relative));
                     if (!std::filesystem::exists(metadata)) {
+                        if (!create_identities) return failure("Asset identity is missing; refresh the project before importing: "+assets::utf8(meta_relative.generic_wstring()));
                         const auto created=write_file(metadata,Json{{"version",1},{"id",identity()}}.dump(2)+"\n",WriteMode::create);
-                        if (!created && !std::filesystem::exists(metadata)) return created;
+                        if (!created && !std::filesystem::exists(metadata)) return std::unexpected(created.error());
                     }
                     const auto info=read_json(metadata);assets::json_format::fields(info,{"version","id","materials"});
                     if (assets::json_format::identity(info.at("version"))!=1) return failure("Unsupported resource metadata version.");
@@ -235,68 +236,198 @@ Result<void> Project::refresh() {
             }
         }
         std::sort(entries.begin(),entries.end(),[](const auto& a,const auto& b) { return a.path<b.path; });
-        take(assets_.publish(std::move(entries)));
-        roots_=std::move(roots);
-        return {};
+        return entries;
+    } catch (const std::exception& error) { return failure(error.what()); }
+}
+Result<void> Project::refresh() {
+    try {
+        auto roots=std::vector<std::filesystem::path>{"Content","Source","Config"};
+        take(assets_.publish(take(scan_entries(true))));roots_=std::move(roots);return {};
     } catch (const std::exception& error) { return failure(error.what()); }
 }
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
-    std::vector<std::filesystem::path> created;
-    std::string resource;
+    auto published=import_mesh_files(source,{});
+    if(!published) return std::unexpected(published.error());
+    return std::move(published->mesh.key);
+}
+Result<MeshImportPublication> Project::reimport_mesh(std::string_view key,const std::filesystem::path& source) {
+    if(!key.starts_with("project/")) return failure("Reimport requires an existing project mesh identity.");
+    return import_mesh_files(source,key);
+}
+Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::path& source,std::string_view existing_key) {
+    struct Write {
+        std::filesystem::path path;
+        std::string bytes;
+        std::optional<std::string> before;
+        std::filesystem::file_time_type modified{};
+        bool written{};
+    };
+    std::vector<Write> writes;
+    std::vector<std::filesystem::path> directories;
     try {
         if (!assets::is_mesh_path(source)) return failure("Import Mesh accepts Wavefront OBJ or glTF 2.0 (.gltf) geometry and its dependencies.");
+        const std::string requested(existing_key); // The caller may borrow its key from this Reader.
         auto loaded=assets_.prepare_mesh(std::filesystem::absolute(source));
-        take(refresh());
-        // A dependency bundle gets its own namespace. Existing single-file OBJ
-        // imports retain their established location and exclusive-create contract.
-        auto relative=std::filesystem::path("Content/Meshes");
-        if(loaded.files.size()>1) relative/=source.stem();
-        const auto target_relative=relative/source.filename();
-        auto meta_relative=target_relative;meta_relative+=L".asset.json";
-        auto metadata=take(resolve(meta_relative));
-        if(std::filesystem::exists(metadata)) return failure("Mesh metadata already exists at the import destination.");
-        for(const auto& file:loaded.files) if(std::filesystem::exists(take(resolve(relative/file.relative))))
-            return failure("A file already exists at the import destination; no files were changed.");
-        const auto identity_file=[](const std::string& key,Json extra) {
-            extra["version"]=1;extra["id"]=key.substr(8);return extra.dump(2)+"\n";
+        // A read-only scan cannot create unrelated sidecars during a failed import.
+        const auto catalog=take(scan_entries(false));
+        const auto same_path=[](const std::filesystem::path& a,const std::filesystem::path& b) {
+            const auto left=a.lexically_normal().generic_wstring(),right=b.lexically_normal().generic_wstring();
+            return CompareStringOrdinal(left.c_str(),-1,right.c_str(),-1,TRUE)==CSTR_EQUAL;
+        };
+        const auto file_entry=[&](const std::filesystem::path& path)->const assets::ProjectEntry* {
+            const auto at=std::ranges::find_if(catalog,[&](const auto& entry){return same_path(entry.path,path);});
+            return at==catalog.end()?nullptr:&*at;
         };
         const auto sidecar=[](std::filesystem::path path) {path+=L".asset.json";return path;};
-        // A glTF mesh names one generated material per slot as its defaults; each references its
-        // texture files by identities assigned here, so all metadata is known before the first write.
-        std::vector<std::pair<std::filesystem::path,std::string>> generated;Json defaults=Json::object();
-        if(!loaded.textures.empty()) {
-            std::map<std::filesystem::path,std::string> texture_keys;
-            for(const auto& inputs:loaded.textures) for(const auto& file:inputs) if(!file.empty() && !texture_keys.contains(file)) {
-                auto key="project/"+identity();generated.push_back({sidecar(relative/file),identity_file(key,Json::object())});texture_keys.emplace(file,std::move(key));
+        const auto identity_file=[](const std::string& key,Json extra=Json::object()) {
+            extra["version"]=1;extra["id"]=key.substr(8);return extra.dump(2)+"\n";
+        };
+        auto relative=std::filesystem::path("Content/Meshes");
+        if(loaded.files.size()>1) relative/=source.stem();
+        auto target_relative=relative/source.filename();
+        std::string resource=requested.empty()?"project/"+identity():requested;
+        Json metadata=Json::object(),defaults=Json::object();
+        std::vector<std::filesystem::path> owned;
+        std::string dependency_error;
+        if(!requested.empty()) {
+            const auto at=std::ranges::find(catalog,requested,&assets::ProjectEntry::key);
+            if(at==catalog.end() || at->kind!=assets::AssetKind::mesh) return failure("Reimport requires an existing project mesh identity.");
+            target_relative=at->path;relative=target_relative.parent_path();
+            if(!same_path(source.extension(),target_relative.extension())) return failure("Reimport must retain the mesh format (.obj or .gltf).");
+            metadata=read_json(take(resolve(sidecar(target_relative))));
+            owned.push_back(target_relative);
+            // Current raw dependencies, not material closure, prove which existing
+            // files this operation may replace. There is no import ownership history.
+            try {
+                const auto previous=assets_.prepare_mesh(take(resolve(target_relative)));
+                for(const auto& file:previous.files) owned.push_back(relative/file.relative);
+            } catch(const std::exception& error) {
+                dependency_error="Existing mesh dependencies could not be verified: "+std::string(error.what());
+                loaded.notes.push_back(dependency_error+"; only unchanged existing dependencies may be reused.");
             }
-            std::vector<std::wstring> names;const auto& slots=loaded.mesh->materials();
-            for(std::size_t i=0;i<slots.size();++i) {
-                assets::MaterialAsset asset;asset.description=slots[i].surface->description();
-                for(std::size_t input=0;input<material::input_count;++input)
-                    if(const auto& file=loaded.textures[i][input];!file.empty()) asset.textures[input]=texture_keys.at(file);
-                const auto path=relative/"Materials"/material_file(slots[i].name,names);const auto key="project/"+identity();
-                generated.push_back({path,assets::material_format::encode(asset).dump(2)+"\n"});generated.push_back({sidecar(path),identity_file(key,Json::object())});
-                defaults[geometry::material_slot_name(*loaded.mesh,i)]=key;
+            auto main=std::ranges::find(loaded.files,source.filename(),&assets::ImportedFile::relative);
+            if(main==loaded.files.end()) return failure("Prepared mesh has no source file.");
+            main->relative=target_relative.filename();
+        }
+        const auto queue=[&](const std::filesystem::path& relative_path,std::string bytes,bool replace) {
+            auto path=take(resolve(relative_path));
+            if(std::ranges::any_of(writes,[&](const auto& write){return same_path(write.path,path);}))
+                throw std::runtime_error("Import outputs collide: "+assets::utf8(relative_path.generic_wstring()));
+            Write write{std::move(path),std::move(bytes),{}};
+            if(std::filesystem::exists(write.path)) {
+                write.modified=std::filesystem::last_write_time(write.path);
+                write.before=take(assets::read_file(write.path,512ull<<20));
+                if(!replace && (requested.empty() || *write.before!=write.bytes))
+                    throw std::runtime_error("Import would overwrite an unrelated or unverified file: "+assets::utf8(relative_path.generic_wstring())+
+                        (dependency_error.empty()?std::string{}:"; "+dependency_error));
+            }
+            writes.push_back(std::move(write));
+        };
+        // Prepare exact input pixels and persistent texture keys before moving the
+        // immutable file bytes into the common create/replace transaction.
+        std::map<std::filesystem::path,std::string> texture_keys;
+        std::vector<std::string_view> image_bytes;
+        MeshImportPublication result;
+        const auto prepare_texture=[&](const std::filesystem::path& file) {
+            if(file.empty() || texture_keys.contains(file)) return;
+            const auto* existing=file_entry(relative/file);
+            if(existing && existing->kind!=assets::AssetKind::texture) throw std::runtime_error("Imported texture path names another resource kind.");
+            const auto key=existing?existing->key:"project/"+identity();texture_keys.emplace(file,key);
+            const auto bytes=std::ranges::find(loaded.files,file,&assets::ImportedFile::relative);
+            if(bytes==loaded.files.end()) throw std::runtime_error("Imported texture is absent from the prepared bundle.");
+            image_bytes.push_back(bytes->bytes);result.textures.push_back({key,file.stem().wstring(),{}});
+        };
+        for(const auto& inputs:loaded.textures) for(const auto& file:inputs) prepare_texture(file);
+        // Saved or unsaved user MIs may still reference a bundle texture that the
+        // new source material stopped sampling. Publish every existing texture
+        // asset touched by this reimport, not only the new source's active inputs.
+        if(!requested.empty()) for(const auto& file:loaded.files)
+            if(const auto* existing=file_entry(relative/file.relative);existing && existing->kind==assets::AssetKind::texture)
+                prepare_texture(file.relative);
+        const auto images=assets_.prepare_images(image_bytes,2ull<<30);
+        for(std::size_t i=0;i<images.size();++i) result.textures[i].image=images[i];
+        for(auto& file:loaded.files) {
+            const auto path=relative/file.relative;
+            auto filename=path.filename().wstring();for(auto& c:filename) c=static_cast<wchar_t>(std::towlower(c));
+            if(filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp"))
+                return failure("Import dependencies cannot replace identity or temporary files.");
+            const bool replace=std::ranges::any_of(owned,[&](const auto& old){return same_path(old,path);});
+            // A source dependency is not permission to overwrite a hand-edited MI/MS.
+            const auto* existing=file_entry(path);
+            if(existing && existing->kind==assets::AssetKind::material)
+                return failure("Import cannot overwrite an existing material author file.");
+            queue(path,std::move(file.bytes),replace);
+            if(same_path(path,target_relative)) continue;
+            if(assets::is_texture_path(path) || assets::is_mesh_path(path) || assets::is_sky_path(path) || path.extension()==L".material") {
+                if(!file_entry(path)) {
+                    const auto texture=texture_keys.find(file.relative);
+                    const auto key=texture!=texture_keys.end()?texture->second:"project/"+identity();
+                    queue(sidecar(path),identity_file(key),false);
+                }
             }
         }
-        for(const auto& [path,text]:generated) if(std::filesystem::exists(take(resolve(path))))
-            return failure("A file already exists at the import destination; no files were changed.");
-        resource="project/"+identity();assets_.retain_import(resource,target_relative,loaded);
-        created.reserve(loaded.files.size()+generated.size()+1);
-        for(const auto& file:loaded.files) {
-            auto path=take(resolve(relative/file.relative));take(write_file(path,file.bytes,WriteMode::create));created.push_back(std::move(path));
+        assets::Reader current=assets_;take(current.publish(catalog));
+        std::set<std::string> returned_materials,slots;
+        std::vector<std::wstring> names;
+        for(const auto& entry:catalog) if(same_path(entry.path.parent_path(),relative/"Materials")) names.push_back(entry.path.filename().wstring());
+        for(std::size_t i=0;i<loaded.mesh->materials().size();++i) {
+            const auto slot=geometry::material_slot_name(*loaded.mesh,i);
+            if(!slots.insert(slot).second) return failure("Reimport requires unique material slot names.");
+            if(metadata.contains("materials") && metadata["materials"].contains(slot)) {
+                const auto key=metadata["materials"][slot].get<std::string>();defaults[slot]=key;
+                loaded.notes.push_back("Preserved material binding and author values for slot '"+slot+"'; source material changes were not merged.");
+                if(returned_materials.insert(key).second) {
+                    if(auto material=current.material(key)) result.materials.push_back(std::move(*material));
+                    else loaded.notes.push_back("Preserved unavailable material "+key+": "+material.error().message);
+                }
+                continue;
+            }
+            if(loaded.materials.empty() || !loaded.materials[i]) continue;
+            auto author=*loaded.materials[i];
+            for(std::size_t input=0;input<assets::imported_material_inputs.size();++input) if(const auto& file=loaded.textures[i][input];!file.empty()) {
+                const auto path=std::string(assets::imported_material_inputs[input])+"_texture";
+                const auto entry=std::ranges::find(author.entries,path,&material::Override::path);
+                if(entry==author.entries.end() || !std::holds_alternative<material::TextureBinding>(entry->value)) return failure("Imported texture has no typed MI override.");
+                std::get<material::TextureBinding>(entry->value).asset_key=texture_keys.at(file);
+            }
+            auto filename=material_file(slot,names);
+            if(assets::is_material_source_path(filename)) filename=material_file(slot+" (MI)",names);
+            const auto path=relative/"Materials"/filename;const auto key="project/"+identity();
+            assets::MaterialAsset asset{key,path.stem().wstring(),std::move(author)};
+            queue(path,assets::material_format::encode(asset).dump(2)+"\n",false);
+            queue(sidecar(path),identity_file(key),false);defaults[slot]=key;
+            result.materials.push_back(std::move(asset));
         }
-        for(const auto& [path,text]:generated) {
-            auto native=take(resolve(path));take(write_file(native,text,WriteMode::create));created.push_back(std::move(native));
+        if(!defaults.empty()) metadata["materials"]=std::move(defaults);else metadata.erase("materials");
+        queue(sidecar(target_relative),identity_file(resource,std::move(metadata)),!requested.empty());
+        result.notes=loaded.notes;
+        for(const auto& write:writes) for(auto parent=write.path.parent_path();!std::filesystem::exists(parent);parent=parent.parent_path())
+            if(std::ranges::find(directories,parent)==directories.end()) directories.push_back(parent);
+        std::ranges::sort(directories,[](const auto& a,const auto& b){return a.native().size()>b.native().size();});
+        // Every decode, author decision, identity and backup is ready. Both initial
+        // import and explicit reimport use this one transaction and publication.
+        for(auto& write:writes) {
+            if(write.before && *write.before==write.bytes) continue;
+            take(write_file(write.path,write.bytes,write.before?WriteMode::replace:WriteMode::create));write.written=true;
         }
-        take(write_file(metadata,identity_file(resource,defaults.empty()?Json::object():Json{{"materials",defaults}}),WriteMode::create));created.push_back(std::move(metadata));
-        take(refresh());return resource;
+        result.mesh=take(assets_.publish_mesh(take(scan_entries(false)),resource,loaded,result.textures));
+        return result;
     } catch (const std::exception& error) {
-        if(!resource.empty()) assets_.forget_import(resource);
         std::string message=error.what();
-        for(auto it=created.rbegin();it!=created.rend();++it) {
-            std::error_code cleanup;std::filesystem::remove(*it,cleanup);
-            if(cleanup) message+="; import cleanup failed: "+cleanup.message();
+        for(auto it=writes.rbegin();it!=writes.rend();++it) if(it->written) {
+            std::error_code cleanup;
+            if(it->before) {
+                auto restored=write_file(it->path,*it->before);
+                if(!restored) {message+="; import rollback failed: "+restored.error().message;continue;}
+                std::filesystem::last_write_time(it->path,it->modified,cleanup);
+            } else std::filesystem::remove(it->path,cleanup);
+            if(cleanup) message+="; import rollback failed: "+cleanup.message();
+        }
+        for(const auto& directory:directories) {
+            std::error_code cleanup;
+            if(std::filesystem::exists(directory,cleanup) && std::filesystem::is_directory(directory,cleanup))
+                std::filesystem::remove(directory,cleanup); // Only empty directories planned above.
+            if(cleanup) message+="; import directory cleanup failed: "+cleanup.message();
         }
         return failure(std::move(message));
     }

@@ -132,8 +132,12 @@ Result<void> Application::set_camera(const editor::Camera& camera,bool cut) {
     if(camera.state()!=camera_.state()) {camera_=camera;camera_cut_|=cut;}
     return {};
 }
+const ui::ControlBox* Application::command_focus() const noexcept {
+    const auto& frame=ui_.presented();
+    return frame?frame->find(workspace_.menu?menu_return_focus_:ui_.focused_control()):nullptr;
+}
 editor::Context Application::operator_context(bool interactive) {
-    auto context=workspace_.operator_context(*document_,project_?&*project_:nullptr,interactive);
+    auto context=workspace_.operator_context(*document_,project_?&*project_:nullptr,interactive,command_focus());
     context.cursor=viewport_tool_.cursor;
     return context;
 }
@@ -297,11 +301,16 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (ui_.presented() && workspace_.dock.apply(event,*ui_.presented())) return {};
     if(event.kind==ui::ActionKind::activate) if(const auto choice=workspace_.material_choice(event.key)) {
-        if(!project_) return invalid();
         using Kind=editor::Workspace::MaterialChoice::Kind;
-        if(choice->kind==Kind::assign) return document_->assign_material(*project_,choice->object,choice->slot,choice->key);
         if(choice->kind==Kind::clear) return document_->clear_material(choice->object,choice->slot);
-        if(choice->kind==Kind::texture) return document_->set_material_texture(*project_,choice->object,static_cast<material::Input>(choice->index),choice->key);
+        if(choice->kind==Kind::discard) return document_->discard_material_override(choice->object,choice->path);
+        if(choice->kind==Kind::create_scene) {
+            auto created=document_->create_scene_material(choice->object,choice->slot);
+            if(!created) return std::unexpected(created.error());return {};
+        }
+        if(!project_) return invalid();
+        if(choice->kind==Kind::assign) return document_->assign_material(*project_,choice->object,choice->slot,choice->key);
+        if(choice->kind==Kind::texture) return document_->set_material_texture(*project_,choice->object,choice->path,choice->key);
         auto root=document_->open_material(*project_,choice->key);if(!root) return std::unexpected(root.error());
         workspace_.material_inspection=choice->key;workspace_.inspecting_asset=true;return {};
     }
@@ -415,7 +424,25 @@ Result<void> Application::action(const ui::Action& source) {
         if(binding->kind==editor::Workspace::Binding::Kind::material_override) {
             if(event.kind!=ui::ActionKind::activate) return {};
             const auto* enabled=std::get_if<bool>(&event.value);if(!enabled) return invalid();
-            return document_->set_material_override(binding->component,binding->slot,binding->path,*enabled);
+            return document_->set_material_override(binding->object,binding->material_path,*enabled,project_?&*project_:nullptr);
+        }
+        if(binding->kind==editor::Workspace::Binding::Kind::material_field) {
+            if(event.kind==ui::ActionKind::edit_begin) return document_->begin_material_edit(binding->object,event.key);
+            if(event.kind!=ui::ActionKind::edit_preview && event.kind!=ui::ActionKind::edit_commit) return {};
+            const auto* number=std::get_if<double>(&event.value);
+            if(!number || !std::isfinite(*number) || std::abs(*number)>std::numeric_limits<float>::max()) return invalid();
+            auto view=document_->inspect_material(binding->object);if(!view) return std::unexpected(view.error());
+            const auto field=std::ranges::find(view->declarations,binding->material_path,&editor::MaterialParameterView::path);
+            if(field==view->declarations.end() || binding->index>=field->components) return invalid();
+            material::Override entry{field->path,field->value,true};
+            std::visit([&](auto& value) {
+                using T=std::decay_t<decltype(value)>;
+                if constexpr(std::same_as<T,float>) value=static_cast<float>(*number);
+                else if constexpr(!std::same_as<T,material::TextureBinding>) value[binding->index]=static_cast<float>(*number);
+            },entry.value);
+            auto result=document_->preview_material_entry(event.key,std::move(entry));
+            if(result && event.kind==ui::ActionKind::edit_commit) result=document_->commit_material_edit(event.key);
+            return done(result,L"Material parameter updated");
         }
         if (const auto* modifiers=std::get_if<ui::SelectionModifiers>(&event.value);event.kind==ui::ActionKind::select && modifiers &&
             modifiers->double_click && !modifiers->shift && !modifiers->control && binding->kind==editor::Workspace::Binding::Kind::object &&
@@ -503,17 +530,31 @@ Result<void> Application::open_color_edit(ObjectId object,std::span<const FieldI
         !std::isfinite(binding->color_maximum) || binding->color_maximum<=0)
         return std::unexpected(Error{ErrorCode::invalid_definition,"Colour editing requires the owning property's numeric range."});
     edit.maximum=binding->color_maximum;
-    for(std::uint32_t lane=0;lane<3;++lane) {
-        auto path=world::FieldPath(prefix.begin(),prefix.end());
-        auto info=document_->world().runtime().describe(take_type(object,prefix));if(!info) return std::unexpected(info.error());
-        if(lane>=(*info)->fields.size()) return std::unexpected(Error{ErrorCode::invalid_definition,"A colour needs three channels."});
-        path.push_back((*info)->fields[lane].id);
-        auto value=document_->read_property(object,path);if(!value) return std::unexpected(value.error());
-        edit.original[lane]=edit.value[lane]=std::visit([](const auto& v)->double {
-            if constexpr(std::same_as<std::decay_t<decltype(v)>,EnumValue>) return v.bits; else return double(v);},*value);
-        edit.paths.push_back(std::move(path));
+    if(!binding->material_path.empty()) {
+        auto view=document_->inspect_material(object);if(!view) return std::unexpected(view.error());
+        const auto field=std::ranges::find(view->declarations,binding->material_path,&editor::MaterialParameterView::path);
+        if(field==view->declarations.end() || field->components<3 || field->components>4)
+            return std::unexpected(Error{ErrorCode::invalid_definition,"A material colour needs a vector3 or vector4 declaration."});
+        edit.material_entry=material::Override{field->path,field->value,true};
+        std::visit([&](const auto& value) {
+            using T=std::decay_t<decltype(value)>;
+            if constexpr(std::same_as<T,math::Vector3> || std::same_as<T,math::Vector4>)
+                for(std::size_t lane=0;lane<3;++lane) edit.original[lane]=edit.value[lane]=value[lane];
+        },field->value);
+        if(auto begun=document_->begin_material_edit(object,editor::control::color_group);!begun) return begun;
+    } else {
+        for(std::uint32_t lane=0;lane<3;++lane) {
+            auto path=world::FieldPath(prefix.begin(),prefix.end());
+            auto info=document_->world().runtime().describe(take_type(object,prefix));if(!info) return std::unexpected(info.error());
+            if(lane>=(*info)->fields.size()) return std::unexpected(Error{ErrorCode::invalid_definition,"A colour needs three channels."});
+            path.push_back((*info)->fields[lane].id);
+            auto value=document_->read_property(object,path);if(!value) return std::unexpected(value.error());
+            edit.original[lane]=edit.value[lane]=std::visit([](const auto& v)->double {
+                if constexpr(std::same_as<std::decay_t<decltype(v)>,EnumValue>) return v.bits; else return double(v);},*value);
+            edit.paths.push_back(std::move(path));
+        }
+        if(auto begun=document_->begin_group_edit(object,edit.paths,editor::control::color_group);!begun) return begun;
     }
-    if(auto begun=document_->begin_group_edit(object,edit.paths,editor::control::color_group);!begun) return begun;
     // The swatch button routes to this pick key as its action target; anchor the editor under it.
     const ui::ControlBox* box=nullptr;
     if(ui_.presented()) for(const auto& control:ui_.presented()->controls)
@@ -536,6 +577,19 @@ TypeId Application::take_type(ObjectId object,std::span<const FieldId> path) con
 }
 Result<void> Application::apply_color(std::array<double,3> rgb) {
     auto& edit=*workspace_.color_edit;
+    if(edit.material_entry) {
+        for(const auto channel:rgb) if(!std::isfinite(channel) || std::abs(channel)>edit.maximum)
+            return std::unexpected(Error{ErrorCode::argument_mismatch,"Material colour channels must be finite float values."});
+        auto entry=*edit.material_entry;
+        std::visit([&](auto& value) {
+            using T=std::decay_t<decltype(value)>;
+            if constexpr(std::same_as<T,math::Vector3> || std::same_as<T,math::Vector4>)
+                for(std::size_t lane=0;lane<3;++lane) value[lane]=static_cast<float>(rgb[lane]);
+        },entry.value);
+        if(auto applied=document_->preview_material_entry(editor::control::color_group,std::move(entry));!applied) return applied;
+        for(std::size_t lane=0;lane<3;++lane) edit.value[lane]=static_cast<float>(rgb[lane]);
+        edit.hex=editor::color_hex(edit.value);return {};
+    }
     std::vector<Scalar> values;
     for(std::size_t lane=0;lane<3;++lane) {
         const auto value=rgb[lane];
@@ -671,7 +725,7 @@ Result<void> Application::execute(editor::Command command,std::string_view asset
     case build_project:case rebuild_project:case run_project:case stop_project:case restart_project:case show_project_ui:case show_output:
         return execution_command(command);
     case show_code: workspace_.dock.select(editor::source_control::tab);break;
-    case new_project: case open_project: case save_scene: case save_scene_as: case open_scene: case import_mesh:case import_texture:case create_material: case refresh_assets:
+    case new_project: case open_project: case save_scene: case save_scene_as: case open_scene: case import_mesh:case import_texture:case reimport_texture:case reimport_mesh:case create_material:case create_material_source: case refresh_assets:
         workspace_.status=editor::command_definition(static_cast<std::uint64_t>(command))->title;
         return project_command(command,asset_key);
     case exit: PostMessageW(window(),WM_CLOSE,0,0); break;
@@ -1242,17 +1296,20 @@ bool Application::run_step(renderer::Capture* capture) try {
     // After its pipelines are ready this is a bit check; before, the frame draws a fallback.
     if(const auto preparation=renderer_.preparation(control_?control_->view():workspace_.view);!preparation)
         workspace_.render_notice=L"Shader preparation failed: "+widen(preparation.error().cause.message);
-    else workspace_.render_notice=preparation->ready?std::wstring{}:
+    else if(!preparation->ready) workspace_.render_notice=
         L"Compiling shaders "+std::to_wstring(preparation->done)+L"/"+std::to_wstring(preparation->total);
+    // Retain the previous material progress/error until that request is adopted;
+    // the next poll is after layout, which may cancel a live viewport edit.
+    else if(!scene_.picking() || (scene_.draw() && scene_.draw()->picking==scene_.picking())) workspace_.render_notice.clear();
     const auto describe=[&] {
         // Selection/document commands can cancel the business edit before the next UI frame.
         if(workspace_.color_edit && !document_->owns_edit(editor::control::color_group)) workspace_.color_edit.reset();
-        auto controls=workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr,&ui_);
+        auto controls=workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr,&ui_,command_focus());
         if(workspace_.color_edit && (workspace_.color_edit->composition_failed ||
             std::ranges::none_of(controls,[](const auto& control){return control.key==editor::control::color_editor;}))) {
             const auto diagnostic=std::string(workspace_.ui_error());
             if(auto cancelled=finish_color_edit(false);!cancelled) throw std::runtime_error(cancelled.error().message);
-            controls=workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr,&ui_);
+            controls=workspace_.describe(*document_,view_size,ui_.presented().get(),project_?&*project_:nullptr,&ui_,command_focus());
             workspace_.status=L"Colour editor could not open"+(diagnostic.empty()?std::wstring{}:L": "+widen(diagnostic));
         }
         return controls;
@@ -1312,18 +1369,38 @@ bool Application::run_step(renderer::Capture* capture) try {
         status(viewport_tool_.cancel(*document_),L"Viewport changed; edit cancelled");
     viewport_tool_.forget(*document_);
     if(had_viewport_gesture && !viewport_tool_.active()) window_.capture(false);
+    renderer::Result<renderer::Preparation> material_preparation{renderer::Preparation{0,0,true}};
     {
         timing::Scope snapshot{phases::scene};
-        if(viewport) take(scene_.refresh(*document_));
+        if(viewport) {
+            take(scene_.refresh(*document_));
+            material_preparation=scene_.prepare(renderer_);
+            if(!material_preparation) {
+                if(material_preparation.error().terminal) throw std::runtime_error("Renderer stopped: "+material_preparation.error().cause.message);
+                workspace_.render_notice=L"Material preparation failed: "+widen(material_preparation.error().cause.message);
+                if(control_) control_->render_failed(material_preparation.error().cause.message);
+            } else if(!material_preparation->ready) workspace_.render_notice=L"Compiling materials "+
+                std::to_wstring(material_preparation->done)+L"/"+std::to_wstring(material_preparation->total);
+        }
         // Any edit of the Environment (Parameters, deletion, Play) reaches the evaluated view before rendering;
         // only such a change re-anchors the lighting focus.
         if(workspace_.sync_world(*document_)) sync_world_view();
     }
     for(const auto& item:document_->take_diagnostics()) workspace_.log_repeated(editor::describe_diagnostic(*document_,item));
+    const auto* scene=viewport?scene_.draw():nullptr;
+    if(viewport && !scene) {
+        // Do not submit a partial first group. Input still belongs to the last
+        // accepted view, if any; compilation never publishes a picking frame.
+        lighting_clock_.reset();
+        MsgWaitForMultipleObjectsEx(0,nullptr,10,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+        return true;
+    }
+    const bool material_pending=viewport && (!material_preparation || !material_preparation->ready);
     const auto camera = camera_.matrices(std::max(scene_bounds.width,1.f) / std::max(scene_bounds.height,1.f));
-    const auto viewport_view=editor::ViewportView::make(camera_,scene_bounds,window_.dpi_scale());
+    auto viewport_view=editor::ViewportView::make(camera_,scene_bounds,window_.dpi_scale());
+    if(scene) viewport_view.scene=scene->picking;
     overlay_.clear();
-    if(viewport) viewport_tool_.overlay(*document_,viewport_view,workspace_.viewport_settings,scene_.mesh_entities,overlay_);
+    if(viewport) viewport_tool_.overlay(*document_,viewport_view,workspace_.viewport_settings,overlay_);
     const bool projection_cut=accepted_view_ && accepted_view_->orthographic!=viewport_view.orthographic;
     renderer::Capture control_capture;
     const bool capturing_control=control_ && control_->wants_capture();
@@ -1331,11 +1408,12 @@ bool Application::run_step(renderer::Capture* capture) try {
     const auto effective_view=control_?control_->view():workspace_.view;
     const auto lighting_focus=camera_.state().target;
     renderer::Frame render_frame{*frame.drawing, {camera.view.elements, camera.projection.elements,camera.far_depth}, scene_bounds,
-        viewport?std::span<const renderer::MeshInstance>{scene_.meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
-        viewport?std::span<const renderer::Light>{scene_.lights}:std::span<const renderer::Light>{},scene_.identity,camera_cut_ || projection_cut,
+        scene?std::span<const renderer::MeshInstance>{scene->meshes}:std::span<const renderer::MeshInstance>{},effective_view,overlay_,
+        scene?std::span<const renderer::Light>{scene->lights}:std::span<const renderer::Light>{},scene?scene->identity:scene_.identity,camera_cut_ || projection_cut,
         rendering::sky_radiance(effective_view.lit),{lighting_focus.x,lighting_focus.y,lighting_focus.z}};
+    render_frame.materials=scene?scene->materials.get():nullptr;
     const auto lighting_start=Clock::now();
-    const bool lighting_active=viewport && scene_bounds.width>0 && scene_bounds.height>0 && !scene_.meshes.empty() &&
+    const bool lighting_active=scene && scene_bounds.width>0 && scene_bounds.height>0 && !scene->meshes.empty() &&
         effective_view.shading==renderer::Shading::scene_lit && effective_view.wireframe!=renderer::Wireframe::only && effective_view.lit.ddgi;
     render_frame.render_delta_seconds=lighting_clock_.delta(lighting_start,lighting_active);
     auto drawn = lit_fallback_.render(renderer_, render_frame, frame_capture);
@@ -1352,7 +1430,7 @@ bool Application::run_step(renderer::Capture* capture) try {
     frame_statistics_ = rendered.stats;
     workspace_.lighting.performance().observe(drawn_frame,rendered);
     // Control sees a fallback as the requested frame not being ready, so it is neither a Lit sample nor its last frame.
-    if(control_ && drawn->fallback) {
+    if(control_ && (drawn->fallback || material_pending)) {
         if(!drawn->failure.empty()) control_->render_failed(drawn->failure);
         renderer::FrameResult not_ready;not_ready.status=renderer::FrameStatus::not_ready;control_->rendered(render_frame,not_ready,nullptr);
     }
@@ -1368,7 +1446,7 @@ bool Application::run_step(renderer::Capture* capture) try {
         if(viewport) camera_cut_=false;
         ++accepted_frames_;
         if(!frame_capture) sampled_frame_=rendered.accepted_id;
-        if(control_ && !drawn->fallback) {
+        if(control_ && !drawn->fallback && !material_pending) {
             if(capture && capturing_control) {control_capture=*capture;control_->rendered(render_frame,rendered,&control_capture);}
             else control_->rendered(render_frame,rendered,frame_capture);
         }
@@ -1398,7 +1476,7 @@ bool Application::run_step(renderer::Capture* capture) try {
         } else update_menu();
     } else {
         lighting_clock_.reset();
-        if(control_ && !drawn->fallback) control_->rendered(render_frame,rendered,nullptr);
+        if(control_ && !drawn->fallback && !material_pending) control_->rendered(render_frame,rendered,nullptr);
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     return true;

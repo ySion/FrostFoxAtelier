@@ -23,6 +23,14 @@ template<class T> T take(Result<T> value) { if (!value) throw std::runtime_error
 void take(Result<void> value) { if (!value) throw std::runtime_error(value.error().message); }
 void changed(Result<world::Commit> value) { auto commit=take(std::move(value)); if (commit.notification_error) throw std::runtime_error(commit.notification_error->message); }
 void require(bool value,const char* message) { if (!value) throw std::runtime_error(message); }
+void material_float(editor::Session& session,ObjectId object,std::string_view path,float value,std::uint64_t control) {
+    take(session.begin_material_edit(object,control));
+    take(session.preview_material_entry(control,{std::string(path),value,true}));
+    take(session.commit_material_edit(control));
+}
+float roughness(editor::Session& session,ObjectId object) {
+    return take(take(material::capture_program(session.world().runtime(),object))->evaluate({})).roughness;
+}
 struct Entity : world::Entity { std::int32_t health{100}; };
 struct Move : world::Component { float speed{2}; double mass{3.5}; std::uint32_t count{7}; bool allowed{true}; };
 struct Spatial : world::Component { float offset{4}; };
@@ -284,8 +292,8 @@ void verify_codec_graph(editor::Project& project) {
             changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));entities[i]=document.selection().entity;
             meshes[i]=member(document,document.presentation_types().static_mesh_component);
         }
-        material::State state;state.description.parameters.roughness=.3f;
-        const auto shared=take(material::create_material(runtime,state)),independent=take(material::create_material(runtime,state));
+        assets::MaterialAsset author;std::get<assets::MaterialInstanceAsset>(author.author).entries={{"roughness",.3f,true}};
+        const auto shared=take(document.material_resource(project.assets(),author)),independent=take(document.material_resource(project.assets(),author));
         for(std::size_t i=0;i<meshes.size();++i) {
             const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",i==2?independent:shared,true}}};
             take(presentation::set_material_bindings(runtime,meshes[i],bindings));
@@ -300,33 +308,54 @@ void verify_codec_graph(editor::Project& project) {
         const auto members=take(reopened->world().members());
         const auto a=bindings_of(*reopened,members[0].id()),b=bindings_of(*reopened,members[1].id()),c=bindings_of(*reopened,members[2].id());
         require(a.id()==b.id() && a.id()!=c.id(),"Scene reload split a shared inline material or merged equal independent materials.");
-        auto updated=take(material::read_material(reopened->world().runtime(),a.id()));
-        updated.description.parameters.roughness=.6f;take(material::update_material(reopened->world().runtime(),a.id(),updated));
-        require(take(material::capture(reopened->world().runtime(),b.id()))->description().parameters.roughness==.6f &&
-            take(material::capture(reopened->world().runtime(),c.id()))->description().parameters.roughness==.3f,
+        material_float(*reopened,a.id(),"roughness",.6f,830);
+        require(roughness(*reopened,b.id())==.6f && roughness(*reopened,c.id())==.3f,
             "Restored shared material edits did not propagate according to object identity.");
         const auto key=take(project.create_material("Content/Materials/Codec-parent.material"));
-        const auto parent=take(document.material_resource(project.assets(),key));const auto instance=take(material::create_instance(runtime,parent));
+        const auto parent=take(document.material_resource(project.assets(),key));
+        std::get<assets::MaterialInstanceAsset>(author.author)={key,{}};
+        const auto instance=take(document.material_resource(project.assets(),author));
         for(std::size_t i=0;i<2;++i) {
             const std::array<presentation::MaterialBinding,1> bindings{{{"slot/0",instance,true}}};take(presentation::set_material_bindings(runtime,meshes[i],bindings));
         }
         auto instances=take(editor::Session::deserialize(take(document.serialize()),project));
         const auto instance_members=take(instances->world().members());
         const auto left=bindings_of(*instances,instance_members[0].id()),right=bindings_of(*instances,instance_members[1].id());
-        require(left.id()==right.id() && take(material::read_material(instances->world().runtime(),left.id())).parent.id()==take(instances->material_resource(project.assets(),key)).id(),
+        require(left.id()==right.id() && take(material::read_instance(instances->world().runtime(),left.id())).parent.id()==take(instances->material_resource(project.assets(),key)).id(),
             "Shared inline instance identity or its shared GUID parent was lost on reload.");
         const std::array selected{entities[0],entities[1]};take(document.select_entities(selected,entities[1]));changed(document.duplicate_selected());
         const std::vector<ObjectId> copies(document.selected_entities().begin(),document.selected_entities().end());
         const auto copy_a=bindings_of(document,copies[0]),copy_b=bindings_of(document,copies[1]);
-        require(copy_a.id()==copy_b.id() && copy_a.id()!=instance.id() && take(material::read_material(runtime,copy_a.id())).parent.id()==parent.id(),
+        require(copy_a.id()==copy_b.id() && copy_a.id()!=instance.id() && take(material::read_instance(runtime,copy_a.id())).parent.id()==parent.id(),
             "Forest clone lost shared instance aliasing or copied the shared material asset.");
+
+        // A scene parent is an identity edge, not a copied set of resolved values.
+        const auto child=take(document.create_scene_material(meshes[0],"slot/0"));
+        material_float(document,instance.id(),"roughness",.27f,834);
+        auto hierarchy=Json::parse(take(document.serialize()));
+        std::reverse(hierarchy["materials"].begin(),hierarchy["materials"].end());
+        auto ordered=take(editor::Session::deserialize(hierarchy.dump(),project,{},editor::LoadPolicy::strict));
+        const auto ordered_child=take(ordered->local_object(*document.document_identity(child.id())));
+        const auto ordered_parent=take(ordered->local_object(*document.document_identity(instance.id())));
+        require(take(material::read_instance(ordered->world().runtime(),ordered_child)).parent.id()==ordered_parent &&
+            roughness(*ordered,ordered_child)==.27f,"Unordered scene MI ancestry did not restore the shared parent and inherited value.");
+        material_float(*ordered,ordered_parent,"roughness",.42f,835);
+        require(roughness(*ordered,ordered_child)==.42f,"A restored scene child stopped following its parent's new value.");
+        auto cycle=hierarchy;
+        for(auto& definition:cycle["materials"]) if(definition["id"]==std::to_string(*document.document_identity(instance.id())))
+            definition["parent"]={{"$ref",std::to_string(*document.document_identity(child.id()))}};
+        require(!editor::Session::deserialize(cycle.dump(),project),"A scene material parent cycle was accepted.");
+        auto missing=hierarchy;
+        for(auto& definition:missing["materials"]) if(definition["id"]==std::to_string(*document.document_identity(child.id())))
+            definition["parent"]={{"$ref","999999"}};
+        require(!editor::Session::deserialize(missing.dump(),project),"A missing scene-local parent identity was accepted.");
     }
     acceptance_phase="failed graph resource rollback";
     {
         std::string bmp(70,'\0');bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=32;
         for(std::size_t i=54;i<bmp.size();i+=4) {bmp[i+2]=char(255);bmp[i+3]=char(255);}
         const auto path=project.root()/"Codec.bmp";take(editor::write_file(path,bmp));const auto texture=take(project.import_texture(path));
-        assets::MaterialAsset asset;asset.textures[0]=texture;
+        assets::MaterialAsset asset;std::get<assets::MaterialInstanceAsset>(asset.author).entries={{"base_color_texture",material::TextureBinding{texture},true}};
         const auto incoming=take(project.create_material("Content/Materials/Codec-incoming.material",asset));
         const auto retained=take(project.create_material("Content/Materials/Codec-retained.material"));
         editor::Session source;changed(source.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
@@ -334,9 +363,8 @@ void verify_codec_graph(editor::Project& project) {
         changed(source.add_entity());auto invalid=Json::parse(take(source.serialize()));
         invalid["entities"][1]["properties"]["unknown_business_field"]={{"$ref","999999"}};
         editor::Session target;changed(target.add_entity());const auto original=target.selection().entity;
-        const auto resource=take(target.material_resource(project.assets(),retained));const auto properties=take(target.properties(resource.id()));
-        const auto roughness=std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name);
-        require(roughness!=properties.end(),"Material rollback fixture lost roughness reflection.");take(target.set_property(resource.id(),roughness->path,Scalar{.2f},832));
+        const auto resource=take(target.material_resource(project.assets(),retained));
+        material_float(target,resource.id(),"roughness",.2f,832);
         const auto before=take(target.serialize());target.mark_saved();const auto history=target.undo_count(),count=take(target.material_assets()).size();
         for(unsigned i=0;i<8;++i) take(target.collect_step());const auto objects=target.world().runtime().live_objects();
         require(!target.instantiate_subtree(invalid.dump(),project),"Invalid late business data unexpectedly published a graph.");
@@ -393,7 +421,7 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     entity["components"].push_back({{"id",missing_id},{"type","game.Missing"},{"name",""},{"enabled",true},
         {"properties",{{"power",3},{"owner_ref",{{"$ref",entity_id}}}}}});
     entity["components"].push_back({{"id",mesh_id},{"type","game.MissingMesh"},{"name",""},{"enabled",true},{"properties",{{"glow",1.5}}},
-        {"mesh","builtin/cube"},{"base_color",{1,0,0}},{"roughness",.5},{"metallic",0},{"emissive",{0,0,0}},{"materials",Json::array()}});
+        {"mesh","builtin/cube"},{"materials",Json::array()}});
     entity["components"].push_back({{"id",constraint_id},{"type","physics.DistanceConstraintComponent"},{"name",""},{"enabled",true},
         {"properties",{{"target",{{"$ref",move_id}}}}}});
     scene["entities"].push_back({{"id",gone_id},{"type","game.Gone"},{"name","Gone"},{"enabled",true},{"space",nullptr},
@@ -499,9 +527,9 @@ void verify_retained_data(editor::Project& project,const Json& baseline,const st
     rejects(damaged,"A duplicate document identity was accepted.");
     damaged=scene;damaged["entities"][1]["children"]=Json::array({gone_id});
     rejects(damaged,"A composition cycle was accepted.");
-    damaged=scene;damaged["version"]=10;
+    damaged=scene;damaged["version"]=11;
     rejects(damaged,"A newer scene version was accepted.");
-    damaged=scene;damaged["version"]=8;
+    damaged=scene;damaged["version"]=9;
     rejects(damaged,"An older scene version was accepted.");
 }
 // String leaves use the scene codec's shared leaf decoder, which also decodes operator parameters strictly.
@@ -807,13 +835,13 @@ void verify_play_changes(editor::Project& project,const std::shared_ptr<Evidence
         take(b->presentation().environment()).probe_volumes[0].maximum[0]==-10,"A Play set that breaks the Environment's rules was applied.");
     const auto key=take(project.create_material("Content/Materials/Live.material"));
     require(b->loaded_material(key)==ObjectId{},"Play loaded an unreferenced material.");
-    assets::MaterialAsset asset;asset.description.parameters.roughness=.25f;
+    assets::MaterialAsset asset;std::get<assets::MaterialInstanceAsset>(asset.author).entries={{"roughness",.25f,true}};
     applied({{{"op","resource"},{"key",key},{"material",assets::material_format::encode(asset)}}});
     const auto loaded=b->loaded_material(key);
-    require(loaded!=ObjectId{} && take(material::read_material(rb,loaded)).description.parameters.roughness==.25f,"A new material asset did not reach Play.");
-    asset.description.parameters.roughness=.75f;
+    require(loaded!=ObjectId{} && roughness(*b,loaded)==.25f,"A new material asset did not reach Play.");
+    std::get<assets::MaterialInstanceAsset>(asset.author).entries={{"roughness",.75f,true}};
     applied({{{"op","resource"},{"key",key},{"material",assets::material_format::encode(asset)}}});
-    require(b->loaded_material(key)==loaded && take(material::read_material(rb,loaded)).description.parameters.roughness==.75f,
+    require(b->loaded_material(key)==loaded && roughness(*b,loaded)==.75f,
         "A material asset edit did not update the loaded material in place.");
 
     // Added objects Begin once with their editor identity; removal Ends them and frees the identity.
@@ -945,12 +973,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     const auto second=added({0,0,4});
     changed(a.create_static_mesh(take(project.assets().mesh("builtin/cube")),{0,1,0}));const auto mesh=member(a,a.presentation_types().static_mesh_component);
     take(a.assign_material(project,mesh,"slot/0",material_key));
-    const auto property=[&](ObjectId object,std::string_view name) {
-        const auto properties=take(a.properties(object));const auto at=std::ranges::find(properties,name,&editor::Property::name);
-        require(at!=properties.end(),"A forwarded property is missing.");return at->path;
-    };
     const auto shared=take(presentation::read_material_bindings(ra,mesh)).front().resource.id();
-    const auto roughness=property(shared,"parameters.roughness"),mesh_roughness=property(mesh,"material.roughness");
     const auto speed=field(a,move_type,"speed"),mass=field(a,move_type,"mass");
 
     auto play_project=take(editor::Project::open(project.root()));
@@ -961,7 +984,7 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     a.set_live_forwarding(true);
     const auto scene=[](const editor::Session& session){auto value=Json::parse(take(session.serialize()));value.erase("next_id");return value;};
     const auto sync=[&](const std::string& step,bool compare=true) {
-        Json ops=Json::array();for(const auto& op:take(a.take_live_ops())) ops.push_back(Json::parse(op));
+        Json ops=Json::array();for(const auto& op:take(a.take_live_ops())) ops.push_back(Json::parse(op.text));
         const auto issues=take(b->apply_live(Json{{"ops",ops}}.dump(),play_project));
         if(!issues.empty()) throw std::runtime_error(step+": "+issues.front().message);
         if(compare && scene(a)!=scene(*b)) throw std::runtime_error(step+": the Play copy differs from the document.");
@@ -1037,15 +1060,15 @@ void verify_live_forwarding(editor::Project& project,const std::shared_ptr<Evide
     each("Component with a Transform",[&]{take(a.select(plain));changed(a.add_component(body_type));body=member(a,body_type);});
     physics::BodySettings settings;settings.shape=physics::ShapeKind::sphere;settings.radius=.75f;
     each("Body",[&]{take(a.configure_body(body,settings));});
-    each("Mesh material field",[&]{take(a.set_property(mesh,mesh_roughness,Scalar{.3f},205));});
-    each("Material override",[&]{take(a.set_material_override(mesh,"slot/0",roughness,true));});
+    each("Scene instance creation",[&]{take(a.create_scene_material(mesh,"slot/0"));});
     const auto instance=take(presentation::read_material_bindings(ra,mesh)).front().resource.id();
     require(instance!=shared,"The override did not create a material instance.");
-    each("Material instance",[&]{take(a.set_property(instance,roughness,Scalar{.8f},206));});
+    each("Material override",[&]{take(a.set_material_override(instance,"roughness",true));});
+    each("Material instance",[&]{material_float(a,instance,"roughness",.8f,206);});
     const auto shared_roughness=[&](editor::Session& session) {
-        return take(material::read_material(session.world().runtime(),session.loaded_material(material_key))).description.parameters.roughness;
+        return roughness(session,session.loaded_material(material_key));
     };
-    take(a.set_property(shared,roughness,Scalar{.6f},207));sync("Material asset");
+    material_float(a,shared,"roughness",.6f,207);sync("Material asset");
     require(shared_roughness(*b)==.6f,"A material asset edit did not reach Play.");
     take(a.material_undo(material_key));sync("Material asset undo");
     require(shared_roughness(*b)==shared_roughness(a) && shared_roughness(a)!=.6f,"A material asset undo did not reach Play.");
@@ -1079,7 +1102,7 @@ void verify_environment_document(editor::Project& project) {
     acceptance_phase="Environment document";
     using enum world::DiagnosticKind;
     const auto settings=[](const editor::Session& session){return take(session.presentation().environment());};
-    const Json empty_scene={{"version",9},{"next_id","1"},{"roots",Json::array()},{"entities",Json::array()},{"materials",Json::array()}};
+    const Json empty_scene={{"version",10},{"next_id","1"},{"roots",Json::array()},{"entities",Json::array()},{"materials",Json::array()}};
     const auto load=[&](const Json& data){return take(editor::Session::deserialize(data.dump(),project));};
     auto opened=load(empty_scene);
     require(opened->environment()==ObjectId{} && opened->load_issues().empty() && settings(*opened)==rendering::SceneLightingSettings{},
@@ -1095,7 +1118,7 @@ void verify_environment_document(editor::Project& project) {
     changed(opened->redo());require(settings(*opened)==fitted,"Redo did not restore the authored Environment settings.");
     const auto saved=Json::parse(take(opened->serialize()));
     auto reopened=load(saved);
-    require(saved.at("version")==9 && settings(*reopened)==fitted && reopened->load_issues().empty(),"A saved Environment did not reopen with the same settings.");
+    require(saved.at("version")==10 && settings(*reopened)==fitted && reopened->load_issues().empty(),"A saved Environment did not reopen with the same settings.");
     {
         acceptance_phase="Environment sky map";
         const auto environment_record=[](Json& data,const std::string& type="world.EnvironmentComponent")->Json& {
@@ -1236,7 +1259,7 @@ void verify_camera_import(editor::Project& project) {
             play=take(editor::Session::deserialize(take(author.serialize()),project));play->enter_play();author.set_live_forwarding(true);
         }
         const auto sync=[&](const char* step,bool present) {
-            Json ops=Json::array();for(const auto& op:take(author.take_live_ops())) ops.push_back(Json::parse(op));
+            Json ops=Json::array();for(const auto& op:take(author.take_live_ops())) ops.push_back(Json::parse(op.text));
             const auto issues=take(play->apply_live(Json{{"ops",ops}}.dump(),project));
             const auto selected=take(play->main_camera());
             bool correct=issues.empty();
@@ -1267,7 +1290,7 @@ void verify_camera_document(editor::Project& project) {
     a.set_live_forwarding(true);
     const auto in_b=[&](ObjectId object){return take(b->local_object(*a.document_identity(object)));};
     const auto sync=[&] {
-        Json ops=Json::array();for(const auto& op:take(a.take_live_ops())) ops.push_back(Json::parse(op));
+        Json ops=Json::array();for(const auto& op:take(a.take_live_ops())) ops.push_back(Json::parse(op.text));
         const auto issues=take(b->apply_live(Json{{"ops",ops}}.dump(),project));
         if(!issues.empty()) throw std::runtime_error(issues.front().message);
         return ops;
@@ -1312,11 +1335,11 @@ void verify_camera_document(editor::Project& project) {
     changed(a.redo());sync();require(take(b->main_camera())==ObjectId{},"Deletion redo did not clear the Play reference.");
     changed(a.undo());sync();
     const auto saved=take(a.serialize());auto reopened=take(editor::Session::deserialize(saved,project,{},editor::LoadPolicy::strict));
-    require(take(reopened->serialize())==saved && reopened->name(take(reopened->main_camera()))==a.name(second),"Camera fields/reference failed strict Scene v9 roundtrip.");
+    require(take(reopened->serialize())==saved && reopened->name(take(reopened->main_camera()))==a.name(second),"Camera fields/reference failed strict Scene v10 roundtrip.");
     // The game can destroy a target independently; editor Set reports the dropped
     // reference instead of recreating that target or reusing an ObjectId.
     changed(world::destroy_entity(rb,in_b(first)));take(a.set_main_camera(first));
-    Json missing=Json::array();for(const auto& op:take(a.take_live_ops())) missing.push_back(Json::parse(op));
+    Json missing=Json::array();for(const auto& op:take(a.take_live_ops())) missing.push_back(Json::parse(op.text));
     const auto dropped=take(b->apply_live(Json{{"ops",missing}}.dump(),project));
     require(dropped.size()==1 && dropped[0].kind==world::DiagnosticKind::reference_dropped && take(b->main_camera())==ObjectId{},
         "Setting a game-destroyed camera resurrected it or omitted its diagnostic.");
@@ -1338,7 +1361,7 @@ void verify_camera_document(editor::Project& project) {
     require(!retained->has_retained(env) && take(retained->main_camera())==ObjectId{} && retained->serialize(),"Delete left retained data overriding the cleared selection.");
     changed(retained->undo());require(retained->has_retained(env) && take(retained->main_camera())==target,"Delete undo did not restore the graph, selection and retained value together.");
     changed(retained->redo());require(take(retained->main_camera())==ObjectId{} && !retained->has_retained(env),"Delete redo did not clear retained reference data.");
-    std::puts("Camera document: PASS (Scene v9 references, first-Set creation, history, sparse Play forwarding, game deletion, retained data, delete-save-undo)");
+    std::puts("Camera document: PASS (Scene v10 references, first-Set creation, history, sparse Play forwarding, game deletion, retained data, delete-save-undo)");
 }
 void run() {
     verify_stop_reentry();
@@ -1364,7 +1387,7 @@ void run() {
     take(document.preview_edit(13,6.f)); take(document.cancel_edit()); take(document.cancel_edit());
     require(std::get<float>(take(document.read_property(move,speed)))==4,"Cancel failed to restore scalar value.");
     const auto saved=take(document.serialize()); const auto saved_json=Json::parse(saved);
-    require(saved_json["version"]==9 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
+    require(saved_json["version"]==10 && saved_json["entities"][0]["properties"]["health"]==75,"Scene did not save real Entity properties.");
     auto reopened=take(editor::Session::deserialize(saved,project,prepare(evidence)));
     require(Json::parse(take(reopened->serialize()))==saved_json,"Derived scene roundtrip changed type, fields or composition.");
     {

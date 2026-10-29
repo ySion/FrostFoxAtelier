@@ -60,7 +60,7 @@ void verify_gltf_import() {
         {"accessors",{accessor(0,0,"VEC3",5126,4),accessor(0,12,"VEC3",5126,4),accessor(0,24,"VEC4",5126,4),accessor(0,40,"VEC2",5126,4),
             accessor(1,0,"SCALAR",5123,6),accessor(2,0,"VEC3",5126,3),accessor(3,0,"VEC2",5126,3),accessor(4,0,"SCALAR",5125,3)}}};
     take(editor::write_file(source/"scene.gltf",fixture.dump()));
-    const auto close=[](const float* actual,std::initializer_list<double> expected) {
+    const auto close=[](const auto& actual,std::initializer_list<double> expected) {
         std::size_t i=0;for(const double e:expected) if(std::abs(actual[i++]-e)>1e-5) return false;
         return true;
     };
@@ -93,26 +93,39 @@ void verify_gltf_import() {
         close(vertices[10].position,{-1,0,0}) && close(vertices[6].normal,{0,0,1}) && close(vertices[9].normal,{0,0,1}) &&
         close(vertices[6].tangent,{1,0,0,-1}) && close(vertices[9].tangent,{-1,0,0,1}),
         "glTF flat normals or generated tangents ignore the front side or the normal-map convention.");
-    const auto& opaque=mesh.materials()[0].surface->description();const auto& leaf=mesh.materials()[1].surface->description();
-    const auto& roughness=opaque.texture(mat::Input::roughness);const auto& metallic=opaque.texture(mat::Input::metallic);
-    require(roughness.image && roughness.image==metallic.image && roughness.channel==1 && metallic.channel==2 &&
-        roughness.image->pixels()[1]==90 && roughness.image->pixels()[2]==200 &&
-        opaque.parameters.roughness==.5f && opaque.parameters.metallic==1,
+    require(loaded.materials.size()==2 && loaded.materials[0] && loaded.materials[1] && loaded.textures.size()==2,
+        "glTF did not retain its authored material records beside geometry slots.");
+    const auto& opaque=*loaded.materials[0];const auto& leaf=*loaded.materials[1];
+    require(loaded.textures[0][1]==loaded.textures[0][2] && loaded.textures[0][1]==fs::path("textures/packed.bmp") &&
+        imported_material_value<float>(opaque,"roughness_channel")==1 && imported_material_value<float>(opaque,"metallic_channel")==2 &&
+        imported_material_value<float>(opaque,"roughness")==.5f && imported_material_value<float>(opaque,"metallic")==1,
         "glTF metallicRoughness did not map G to roughness and B to metallic with glTF factor defaults.");
-    require(opaque.texture(mat::Input::normal).image && opaque.parameters.normal_scale==.5f &&
-        opaque.texture(mat::Input::base_color).address==mat::Address::clamp && opaque.texture(mat::Input::normal).address==mat::Address::repeat &&
-        close(opaque.parameters.base_color.data(),{1,.5,.25,1}) && close(opaque.parameters.emissive.data(),{.1,.2,.3}),
+    require(loaded.textures[0][3]==fs::path("textures/normal.bmp") && imported_material_value<float>(opaque,"normal_scale")==.5f &&
+        imported_material_value<mat::TextureBinding>(opaque,"base_color_texture").address==mat::Address::clamp &&
+        imported_material_value<mat::TextureBinding>(opaque,"normal_texture").address==mat::Address::repeat &&
+        close(imported_material_value<math::Vector4>(opaque,"base_color"),{1,.5,.25,1}) &&
+        close(imported_material_value<math::Vector3>(opaque,"emissive"),{.1,.2,.3}),
         "glTF base color, emission, normal scale or sampler wrap was not imported.");
-    require(opaque.parameters.coverage==mat::Coverage::opaque && opaque.parameters.double_sided && opaque.parameters.emission_two_sided &&
-        leaf.parameters.coverage==mat::Coverage::mask && std::abs(leaf.parameters.alpha_cutoff-.3f)<1e-6f &&
-        !leaf.parameters.double_sided && !leaf.parameters.emission_two_sided && leaf.parameters.metallic==0,
+    require(opaque.parent_key=="builtin/material/standard-opaque-double" && leaf.parent_key=="builtin/material/standard-mask-single" &&
+        std::abs(imported_material_value<float>(leaf,"alpha_cutoff")-.3f)<1e-6f && imported_material_value<float>(leaf,"metallic")==0,
         "glTF alpha mode, cutoff or sidedness was not imported.");
-    require(leaf.texture(mat::Input::base_color).image==opaque.texture(mat::Input::base_color).image && cache.entries.size()==3,
+    // Import keeps bytes and typed author intent, not pixel owners. Exercise the
+    // same public decoder with those exact bytes and retain its explicit owners.
+    const auto decoded=[&](const assets::MeshImport& imported,assets::ImageCache* images) {
+        std::vector<std::string_view> bytes;
+        for(const auto& path:{imported.textures[0][0],imported.textures[0][1],imported.textures[0][3],imported.textures[1][0]}) {
+            const auto at=std::ranges::find(imported.files,path,&assets::ImportedFile::relative);
+            require(at!=imported.files.end(),"A typed glTF texture has no bytes in its import bundle.");bytes.push_back(at->bytes);
+        }
+        return assets::decode_images(bytes,images);
+    };
+    const auto pixels=decoded(loaded,&cache);
+    require(pixels[1]->pixels()[1]==90 && pixels[1]->pixels()[2]==200,"glTF packed data was modified during decoding.");
+    require(pixels[3]==pixels[0] && cache.entries.size()==3,
         "Images with the same bytes did not share decoded pixels.");
-    require(assets::load_gltf(source/"scene.gltf",&cache).mesh->materials()[0].surface->description().texture(mat::Input::base_color).image==
-        opaque.texture(mat::Input::base_color).image,"A second import did not reuse cached pixels.");
+    require(decoded(assets::load_gltf(source/"scene.gltf",&cache),&cache)[0]==pixels[0],"A second import did not reuse cached pixels.");
     const auto uncached=assets::load_gltf(source/"scene.gltf");
-    require(uncached.mesh->materials()[1].surface->description().texture(mat::Input::base_color).image!=opaque.texture(mat::Input::base_color).image,
+    require(decoded(uncached,nullptr)[3]!=pixels[0],
         "Uncached glTF loads shared pixels through hidden state.");
     {
         const std::string pixels=bmp(1,2,3);const std::array<std::string_view,2> two{pixels,pixels};
@@ -143,9 +156,13 @@ void verify_gltf_import() {
     take(editor::write_file(source/"variant.gltf",variant.dump()));
     {
         const auto implicit=assets::load_gltf(source/"variant.gltf");const auto& fallback=implicit.mesh->materials().back();
-        const auto& p=fallback.surface->description().parameters;
-        require(implicit.mesh->materials().size()==2 && fallback.name=="default" && p.metallic==1 && p.roughness==1 &&
-            !p.double_sided && p.coverage==mat::Coverage::opaque,"A primitive without a material did not get the glTF default material.");
+        require(implicit.mesh->materials().size()==2 && fallback.name=="default" && implicit.materials.size()==2 && !implicit.materials.back() &&
+            std::ranges::all_of(implicit.textures.back(),[](const auto& path){return path.empty();}),
+            "A primitive without a material acquired authored MI values or texture dependencies.");
+        editor::Session unbound;assets::Reader installed;
+        const auto surfaces=take(unbound.mesh_surfaces(installed,{"fixture/implicit",L"Implicit",implicit.mesh,{}}));
+        require(surfaces->size()==2 && surfaces->back()==take(mat::default_world_surface()) && !surfaces->back()->uses_default_material(),
+            "An unbound glTF slot did not resolve to the ordinary DefaultWorldGrid Source.");
     }
     // Scenes bind by slot name, so repeated, empty and implicit-default names become unique.
     variant["materials"][0]["name"]="default";take(editor::write_file(source/"variant.gltf",variant.dump()));
@@ -201,30 +218,51 @@ void verify_gltf_import() {
         listed(project,leaf_key).path==fs::path("Content/Meshes/scene/Materials/leaf.material"),
         "Import Mesh did not publish one material per slot as the mesh's defaults.");
     {
-        // The mesh's file closure reaches its slot default materials, each with its identity file, and
-        // lists a texture that is both a glTF dependency and a material texture once.
-        const auto files=take(project.assets().asset_files(key));
-        const auto once=[&](const fs::path& file){return std::ranges::count(files,fs::path("Content/Meshes/scene")/file)==1;};
-        for(const auto* file:{L"scene.gltf",L"scene.gltf.asset.json",L"scene.bin",L"textures/color map.bmp",L"textures/color map.bmp.asset.json",
-            L"Materials/opaque.material",L"Materials/opaque.material.asset.json",L"Materials/leaf.material",L"Materials/leaf.material.asset.json"})
-            require(once(file),("A glTF mesh's asset files miss or repeat "+assets::utf8(file)).c_str());
-    }
-    {
-        using mat::Input;const auto opaque=take(project.assets().material(opaque_key)),leaf=take(project.assets().material(leaf_key));
+        const auto opaque_asset=take(project.assets().material(opaque_key)),leaf_asset=take(project.assets().material(leaf_key));
+        const auto& opaque=std::get<assets::MaterialInstanceAsset>(opaque_asset.author);
+        const auto& leaf=std::get<assets::MaterialInstanceAsset>(leaf_asset.author);
         const auto file=[&](const std::string& texture){return listed(project,texture).path.filename();};
-        const auto slot=[&](const assets::MaterialAsset& m,Input input){return m.textures[static_cast<std::size_t>(input)];};
-        const auto& p=opaque.description;
-        require(slot(opaque,Input::roughness)==slot(opaque,Input::metallic) && file(slot(opaque,Input::roughness))==L"packed.bmp" &&
-            p.texture(Input::roughness).channel==1 && p.texture(Input::metallic).channel==2 && p.parameters.roughness==.5f && p.parameters.metallic==1 &&
-            file(slot(opaque,Input::base_color))==L"color map.bmp" && p.texture(Input::base_color).address==mat::Address::clamp &&
-            file(slot(opaque,Input::normal))==L"normal.bmp" && p.parameters.normal_scale==.5f && slot(opaque,Input::emissive).empty() &&
-            leaf.description.parameters.coverage==mat::Coverage::mask && std::abs(leaf.description.parameters.alpha_cutoff-.3f)<1e-6f &&
-            file(slot(leaf,Input::base_color))==L"color copy.bmp",
+        const auto texture=[](const assets::MaterialInstanceAsset& m,std::string_view input)->const mat::TextureBinding& {
+            return imported_material_value<mat::TextureBinding>(m,std::string(input)+"_texture");
+        };
+        require(texture(opaque,"roughness").asset_key==texture(opaque,"metallic").asset_key && file(texture(opaque,"roughness").asset_key)==L"packed.bmp" &&
+            imported_material_value<float>(opaque,"roughness_channel")==1 && imported_material_value<float>(opaque,"metallic_channel")==2 &&
+            imported_material_value<float>(opaque,"roughness")==.5f && imported_material_value<float>(opaque,"metallic")==1 &&
+            file(texture(opaque,"base_color").asset_key)==L"color map.bmp" && texture(opaque,"base_color").address==mat::Address::clamp &&
+            file(texture(opaque,"normal").asset_key)==L"normal.bmp" && imported_material_value<float>(opaque,"normal_scale")==.5f &&
+            std::ranges::find(opaque.entries,std::string("emissive_texture"),&mat::Override::path)==opaque.entries.end() &&
+            leaf.parent_key=="builtin/material/standard-mask-single" && std::abs(imported_material_value<float>(leaf,"alpha_cutoff")-.3f)<1e-6f &&
+            file(texture(leaf,"base_color").asset_key)==L"color copy.bmp",
             "Generated materials lost the glTF channels, factors, samplers or their own texture files.");
-        // Texture assets decode through the import's cache: identical bytes share the mesh's pixels.
-        const auto& pixels=asset.mesh->materials()[0].surface->description().texture(Input::base_color).image;
-        require(take(reopened.assets().texture(slot(opaque,Input::base_color))).image==pixels && take(reopened.assets().texture(slot(leaf,Input::base_color))).image==pixels,
-            "A texture asset decoded its own copy of pixels the mesh import already holds.");
+        editor::Session resolved;
+        const auto opaque_root=take(resolved.material_resource(reopened.assets(),opaque_key));
+        const auto leaf_root=take(resolved.material_resource(reopened.assets(),leaf_key));
+        const auto p=take(mat::capture_program(resolved.world().runtime(),opaque_root.id()));
+        const auto l=take(mat::capture_program(resolved.world().runtime(),leaf_root.id()));
+        const auto& packed=material_input(*p,"roughness_texture");
+        const auto& base=material_input(*p,"base_color_texture");
+        require(p->diagnostics().empty() && l->diagnostics().empty() && !p->uses_default_material() && !l->uses_default_material() &&
+            packed.image && packed.image==material_input(*p,"metallic_texture").image && packed.image->pixels()[1]==90 && packed.image->pixels()[2]==200 &&
+            packed.color==mat::TextureColor::linear && base.color==mat::TextureColor::srgb && base.address==mat::Address::clamp &&
+            material_input(*p,"normal_texture").address==mat::Address::repeat &&
+            p->policy().coverage==mat::Coverage::opaque && p->policy().double_sided && p->policy().emission_two_sided &&
+            l->policy().coverage==mat::Coverage::mask && !l->policy().double_sided && !l->policy().emission_two_sided,
+            "Generated MI resolution lost packed channels, input transfer/addressing or MS policy.");
+        const auto shaded=take(p->evaluate({}));
+        const auto linear=[](float value){return value<=.04045f?value/12.92f:std::pow((value+.055f)/1.055f,2.4f);};
+        require(std::abs(shaded.roughness-.5f*90.f/255)<1e-6f && std::abs(shaded.metallic-200.f/255)<1e-6f &&
+            close(shaded.base_color,{1,.5f*linear(128.f/255),.25f*linear(64.f/255)}) && close(shaded.emissive,{.1,.2,.3}) &&
+            std::abs(take(l->evaluate({})).coverage-.7f)<1e-6f,
+            "Generated glTF MI did not execute StandardPBR with its actual factors and texture channels.");
+        // Pixel sharing belongs to resolved material/texture owners, never Mesh.
+        require(base.image && material_input(*l,"base_color_texture").image==base.image &&
+            take(reopened.assets().texture(texture(opaque,"base_color").asset_key)).image==base.image &&
+            take(reopened.assets().texture(texture(leaf,"base_color").asset_key)).image==base.image &&
+            take(project.assets().texture(texture(opaque,"base_color").asset_key)).image==take(project.assets().texture(texture(leaf,"base_color").asset_key)).image,
+            "Identical imported texture bytes did not share pixels in the initial or reopened Project.");
+        require(assets::material_format::encode(take(reopened.assets().material(opaque_key)))==assets::material_format::encode(opaque_asset) &&
+            assets::material_format::encode(take(reopened.assets().material(leaf_key)))==assets::material_format::encode(leaf_asset),
+            "Reopening changed generated material identities or typed author content.");
     }
     // Generated file names stay valid and unique on a case-insensitive file system, beyond ASCII as well.
     variant=fixture;variant["materials"][0]["name"]="Äußen/Top";variant["materials"][2]["name"]="äußen_top";
@@ -276,23 +314,30 @@ void verify_gltf_import() {
     };
     const auto opaque_slot=index("opaque"),leaf_slot=index("leaf");
     const auto opaque_root=take(document.material_resource(project.assets(),opaque_key));
-    const auto captured=[](editor::Session& session,const ObjectRoot& root){return take(material::capture(session.world().runtime(),root.id()));};
+    const auto captured=[](editor::Session& session,const ObjectRoot& root){return take(material::capture_program(session.world().runtime(),root.id()));};
     require(take(presentation::read_material_bindings(runtime,part)).empty() && surfaces(document,part)[opaque_slot]==captured(document,opaque_root) &&
-        surfaces(document,part)[opaque_slot]->description().parameters.roughness==.5f && surfaces(document,part)[opaque_slot]->description().parameters.metallic==1,
+        resolved_material_value<float>(*surfaces(document,part)[opaque_slot],"roughness")==.5f &&
+        resolved_material_value<float>(*surfaces(document,part)[opaque_slot],"metallic")==1,
         "A placed glTF mesh did not show its default materials, or the component's base parameters replaced them.");
     require(*take(document.mesh_surfaces(project.assets(),placed))==surfaces(document,part),"Mesh surfaces without a component differ from a placed mesh's defaults.");
-    const auto roughness_field=[&] {
-        const auto properties=take(document.properties(opaque_root.id()));
-        return std::ranges::find(properties,std::string("parameters.roughness"),&editor::Property::name)->path;
-    }();
+    const auto edit_roughness=[&](ObjectId material,float value,std::uint64_t control) {
+        take(document.begin_material_edit(material,control));
+        take(document.preview_material_entry(control,{"roughness",value}));
+        take(document.commit_material_edit(control));
+    };
     // The extraction cache, not only a fresh capture, must see edits to a default material.
     const auto drawn=[&] {
         const auto items=take(document.presentation().render_items());require(items.size()==1,"The placed glTF mesh is not drawn.");
-        return (*items.front().surfaces)[opaque_slot]->description().parameters.roughness;
+        const auto& surface=(*items.front().surfaces)[opaque_slot];
+        const auto factor=resolved_material_value<float>(*surface,"roughness");
+        require(std::abs(take(surface->evaluate({})).roughness-factor*90.f/255)<1e-6f,
+            "The extracted glTF material no longer executes its G-channel roughness input.");
+        return factor;
     };
     require(drawn()==.5f,"The drawn mesh does not show its default material.");
-    take(document.set_property(opaque_root.id(),roughness_field,Scalar{.2f},301));
-    require(surfaces(document,part)[opaque_slot]->description().parameters.roughness==.2f && drawn()==.2f,"Editing a default material did not reach the mesh that shows it.");
+    edit_roughness(opaque_root.id(),.2f,301);
+    require(resolved_material_value<float>(*surfaces(document,part)[opaque_slot],"roughness")==.2f && drawn()==.2f,
+        "Editing a default material did not reach the mesh that shows it.");
     take(document.material_undo(opaque_key));
     require(drawn()==.5f,"Undoing a default material edit did not reach the drawn mesh.");
     const auto saved=take(document.serialize());const auto scene=nlohmann::json::parse(saved);
@@ -301,18 +346,28 @@ void verify_gltf_import() {
         auto loaded=take(editor::Session::deserialize(saved,project,{},editor::LoadPolicy::strict));
         const auto copy=component(*loaded,take(loaded->world().members()).front().id(),loaded->presentation_types().static_mesh_component);
         require(surfaces(*loaded,copy)[opaque_slot]==captured(*loaded,take(loaded->material_resource(project.assets(),opaque_key))) &&
-            surfaces(*loaded,copy)[opaque_slot]->description().parameters.roughness==.5f,"A reopened scene did not resolve its mesh defaults.");
+            resolved_material_value<float>(*surfaces(*loaded,copy)[opaque_slot],"roughness")==.5f && take(loaded->serialize())==saved,
+            "A reopened scene did not resolve its mesh defaults or changed its saved bindings.");
     }
     // Overriding a defaulted slot binds one instance of the default; Undo, Redo and Clear restore the default.
     const auto history=document.undo_count();
-    take(document.set_material_override(part,"opaque",roughness_field,true));
+    const auto instance=take(document.create_scene_material(part,"opaque"));
     const auto bound=take(presentation::read_material_bindings(runtime,part));
     require(document.undo_count()==history+1 && bound.size()==1 && bound[0].slot=="opaque" && bound[0].overridden &&
-        take(material::read_material(runtime,bound[0].resource.id())).parent.reference()==opaque_root.reference(),
+        bound[0].resource.id()==instance.id() && take(material::read_instance(runtime,instance.id())).entries.empty() &&
+        take(material::read_instance(runtime,instance.id())).parent.id()==opaque_root.id(),
         "Overriding a defaulted slot did not bind one instance of its default material in one history step.");
-    take(document.set_property(bound[0].resource.id(),roughness_field,Scalar{.9f},302));
-    require(surfaces(document,part)[opaque_slot]->description().parameters.roughness==.9f && captured(document,opaque_root)->description().parameters.roughness==.5f,
+    edit_roughness(instance.id(),.9f,302);
+    require(resolved_material_value<float>(*surfaces(document,part)[opaque_slot],"roughness")==.9f && drawn()==.9f &&
+        resolved_material_value<float>(*captured(document,opaque_root),"roughness")==.5f &&
+        take(material::read_instance(runtime,instance.id())).entries.size()==1,
         "An instance override did not stay on its component.");
+    {
+        const auto overridden=take(document.serialize());auto loaded=take(editor::Session::deserialize(overridden,project,{},editor::LoadPolicy::strict));
+        const auto copy=component(*loaded,take(loaded->world().members()).front().id(),loaded->presentation_types().static_mesh_component);
+        require(take(loaded->serialize())==overridden && resolved_material_value<float>(*surfaces(*loaded,copy)[opaque_slot],"roughness")==.9f,
+            "Sparse scene MI overrides did not survive Scene save/reopen.");
+    }
     changed(document.undo());changed(document.undo());
     require(take(presentation::read_material_bindings(runtime,part)).empty() && surfaces(document,part)[opaque_slot]==captured(document,opaque_root),
         "Undoing the override did not return the slot to its mesh default.");
@@ -326,7 +381,8 @@ void verify_gltf_import() {
     mapping["materials"]["leaf"]=opaque_key;take(editor::write_file(sidecar,mapping.dump(2)));
     const auto catalog=project.revision();take(project.refresh());
     const auto remapped=take(project.assets().mesh(key));
-    require(project.revision()>catalog && default_of(remapped,"leaf")==opaque_key && remapped.mesh==placed.mesh,
+    require(project.revision()>catalog && default_of(remapped,"leaf")==opaque_key && remapped.mesh==placed.mesh &&
+        take(assets::mesh_content_sha256(remapped))!=take(assets::mesh_content_sha256(placed)),
         "A changed mesh sidecar was not picked up, or it discarded the cached geometry.");
     {
         auto loaded=take(editor::Session::deserialize(saved,project));

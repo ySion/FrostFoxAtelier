@@ -2,6 +2,7 @@
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
 #include "assets/mesh_import.hpp"
+#include "source/snapshot.hpp"
 
 namespace atelier::assets {
 // Cold-path, bounded-memory canonical encoding of actual content and slot defaults.
@@ -22,24 +23,41 @@ public:
     // Entries have already passed the owner's path, kind and sidecar validation.
     // Borrowed entries/notes expire on publication; returned content keeps its own owners.
     Result<void> publish(std::vector<ProjectEntry>);
+    // Explicit import/reimport publication, after the owner has written the bundle.
+    // Validates on a private candidate, then publishes catalogue, prepared geometry
+    // and exact input pixels together. Failure leaves this Reader unchanged.
+    // Disk-derived dependency caches invalidate even when file stamps match.
+    Result<MeshAsset> publish_mesh(std::vector<ProjectEntry>,std::string_view key,
+        const MeshImport&,std::span<const TextureAsset>);
+    // Exact received content for an existing mesh key. No disk reads/writes,
+    // import, normalization or texture changes. Catalogue refresh retains this
+    // current geometry/default snapshot while the key remains a mesh; an explicit
+    // mesh publication replaces it. Failure leaves this Reader unchanged.
+    Result<void> publish_mesh_content(const MeshAsset&);
     Result<MeshAsset> mesh(std::string_view);
     // Exact installed identity and kind, never a project fallback. SHA failures throw.
     Result<EngineDependency> engine_dependency(std::string_view,AssetKind expected) const;
     Result<TextureAsset> texture(std::string_view);
+    // Author has replaced this existing file after decoding. Publish its exact
+    // pixels and entry, even when a file stamp happens to equal the previous one.
+    Result<void> publish_texture(ProjectEntry,material::ImageRef);
+    // Reads v2 author data only. The file suffix must agree with its MS/MI role.
     Result<MaterialAsset> material(std::string_view);
+    // Exact contained project path, including Content/, or reserved builtin/ Source.
+    // No game-Source scan or compilation; callers retain this saved-text snapshot.
+    Result<source::SourceFile> source(const std::filesystem::path& project_relative) const;
     Result<SkyAsset> sky_map(std::string_view);
     std::span<const std::string> mesh_notes(std::string_view key) const;
-    // Project-relative dependency files, including identities. Preserves the existing
-    // tolerant copying contract: missing/wrong-kind referenced assets have no files,
-    // unreadable assets keep their own files, and builtin prefixes have no files.
-    Result<std::vector<std::filesystem::path>> asset_files(std::string_view key);
-    // Author import preparation uses the same weak image cache as normal reads.
-    // The author owns file writes/rollback, retaining the prepared mesh until refresh
-    // publishes its directory entry, or forgetting it if the import fails.
+    // Owning project-relative raw companions (MTL, bin, source images), excluding
+    // the mesh file/sidecars and never following MS/MI author references. A cold
+    // disk-derived mesh is prepared; received exact content never rereads disk.
+    Result<std::vector<std::filesystem::path>> mesh_dependency_files(std::string_view key);
+    // Candidate preparation shares the Reader's weak image cache. It neither
+    // publishes geometry nor writes files; the owner commits through publish_mesh.
     MeshImport prepare_mesh(const std::filesystem::path& source);
-    void retain_import(std::string key,const std::filesystem::path& relative,MeshImport&);
-    void forget_import(std::string_view key);
+    std::vector<material::ImageRef> prepare_images(std::span<const std::string_view>,std::uint64_t pixel_budget);
 private:
+    void retain_import(std::string key,const std::filesystem::path& relative,MeshImport&);
     Result<std::filesystem::path> resolve(const std::filesystem::path& relative) const;
     std::filesystem::path root_;
     std::vector<ProjectEntry> entries_;
@@ -51,7 +69,12 @@ private:
     std::unordered_map<std::string,std::size_t,KeyHash,std::equal_to<>> entry_index_;
     std::unordered_map<std::string,material::ImageRef> textures_;
     std::unordered_map<std::string,rendering::SkyMapRef> sky_maps_;
-    struct CachedMesh {geometry::MeshRef mesh;std::vector<std::filesystem::path> dependencies;std::vector<std::string> notes;};
+    struct CachedMesh {
+        geometry::MeshRef mesh;
+        std::vector<std::filesystem::path> dependencies;
+        std::vector<std::string> notes;
+        bool exact_content{}; // Received publication, not a disk-derived cache entry.
+    };
     std::unordered_map<std::string,CachedMesh> meshes_;
     ImageCache images_;
 };

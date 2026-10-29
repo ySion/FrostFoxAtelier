@@ -4,7 +4,7 @@
 // Passing these small scenes does not prove 1440p cost or equivalence for every
 // source radius, thin occluder, or grazing receiver.
 void shadow_cases(Fixture& f) {
-    namespace material=atelier::material;
+    namespace material=standard_fixture;
     using atelier::geometry::Mesh;
     using atelier::geometry::Vertex;
     using Stats=render::FrameStats;

@@ -108,7 +108,7 @@ Result<void> Application::execution_command(editor::Command command) {
     using enum editor::Command;
     close_menu(false);
     if(command==stop_project) {this->stop_project();return {};}
-    if(command==restart_project) {restart_play_=true;this->stop_project();return {};}
+    if(command==restart_project) {this->stop_project();restart_play_=true;return {};}
     if(command==show_output) {workspace_.dock.select(editor::control::output_tab);return {};}
     if(command==rebuild_project) {
         if((document_->undo_count() || document_->redo_count()) && MessageBoxW(window(),L"Rebuild the scene with the new types?\n\nCurrent scene values and source documents will be kept. Scene Undo/Redo history will be cleared.",

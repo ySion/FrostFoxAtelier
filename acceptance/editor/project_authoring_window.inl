@@ -93,6 +93,44 @@ void verify_project_authoring_window(Application& app,const std::filesystem::pat
     const auto preview_until=GetTickCount64()+1200;while(GetTickCount64()<preview_until) tick(app,1);
     require(Access::project_running(app),"The real project UI preview did not stay running.");
     app.stop_project();wait([&]{return !Access::project_running(app);},"Project UI preview did not stop.");
+
+    {
+        auto replacement=atelier::control::Json::parse(saved);
+        replacement.at("entities").front()["name"]="Restart replacement";
+        model(atelier::editor::write_file(folder/"Content/Scenes/RestartTarget.scene",replacement.dump(2)));
+        const auto launches=[&] {
+            return std::ranges::count_if(Access::output(app).rows,[](const auto& row){return row.cells.front().text.starts_with(L"Running ");});
+        };
+        const auto starts=[&] {
+            return std::ranges::count_if(Access::output(app).rows,[](const auto& row){return row.cells.front().text.starts_with(L"Project started:");});
+        };
+        std::array<bool,3> passed{};
+        for(std::size_t scenario=0;scenario<passed.size();++scenario) {
+            const auto before_start=starts();model(app.run_project());
+            wait([&]{return starts()==before_start+1 && Access::project_running(app);},"Restart fixture did not start its real Play process.");
+            const auto before=launches();
+            // Use the existing command dispatcher without an intervening app
+            // step: Stop/open must be able to cancel a queued restart before poll.
+            model(Access::command(app,Command::restart_project));
+            if(scenario==1) {app.stop_project();app.stop_project();}
+            if(scenario==2) model(app.open_scene("Content/Scenes/RestartTarget.scene"));
+            if(scenario==0)
+                wait([&]{return starts()==before_start+2 && Access::project_running(app);},"Ordinary Restart did not start its replacement process.");
+            else
+                wait([&]{return !Access::project_running(app) || launches()>before;},"Cancelled Restart did not stop its original process.");
+            const auto settled=GetTickCount64()+400;while(GetTickCount64()<settled) tick(app,1);
+            passed[scenario]=scenario==0?launches()==before+1 && Access::project_running(app):
+                launches()==before && !Access::project_running(app);
+            if(scenario==2) passed[scenario]=passed[scenario] &&
+                app.document().name(entities(app).front().id())==L"Restart replacement";
+            std::printf("Restart %s: %s; additional launches=%lld, running=%d\n",
+                scenario==0?"ordinary":scenario==1?"then explicit Stop":"then scene switch",
+                passed[scenario]?"PASS":"FAIL",static_cast<long long>(launches()-before),int(Access::project_running(app)));
+            std::fflush(stdout);
+            app.stop_project();wait([&]{return !Access::project_running(app);},"Restart fixture could not clean up its real Play process.");
+        }
+        require(passed[0] && passed[1] && passed[2],"Restart intent escaped explicit Stop/document replacement, or ordinary Restart launched incorrectly.");
+    }
     model(app.open_project(folder));tick(app,2);
     const auto reopened=model(app.document().world().members()).front().id();
     const auto reopened_type=model(app.document().world().runtime().find_type("project.Move"));

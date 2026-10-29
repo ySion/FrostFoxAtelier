@@ -266,6 +266,8 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 
 ### 旧 Control op → 操作符
 
+下表是 O1 定稿时的迁移映射，不是当前 Control API 清单。材质部分的固定属性/单层覆盖形状已被 MS/MI 的 typed entry、稳定声明 path 和独立父链取代，后续操作符迁移须复用这些当前 Session 入口；现行命令以 [Control 合同](control.md)为准，不恢复表中的旧材质接口。
+
 | 旧 op | 新调用 |
 | --- | --- |
 | project.open / scene.open / scene.save | `project.open` / `scene.open` / `scene.save` |

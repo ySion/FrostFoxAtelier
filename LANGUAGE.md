@@ -418,15 +418,23 @@ material.Output shade(material.Context c, Params p, Textures textures) {
 
 - 必须提供无参数 `Params defaults()`；无纹理使用按值 `Output shade(Context, Params)`，有纹理使用 `Output shade(Context, Params, Textures)`。Params 和 Textures 是本份源码声明的普通结构体；前者只含 float、float 向量及其组合，后者只含实际注册的 TextureInput 叶及嵌套记录。字段路径是所属 MS 内的稳定键，数值/纹理路径重名拒绝；路径变化是接口变化，字段重排、局部参数名和记录类型名变化不改变键，不以 Runtime FieldId、GPU 偏移、slot 或显示名充当键。
 - 源码结构只通过现有类型发布事务预览布局，**不发布或重定义活 Runtime 中的类型**。同名 Params/Textures 的独立材质和改版可共存。布局、参数类型/默认字节、具名纹理 schema、注入资源记录、代码和 HLSL 由返回的不可变内容拥有；不保存 Runtime、根、借用地址或类型解析回调。只捕获可达值类型的默认值，原生默认构造在编译期完成，生成代码中的 plain record 构造与赋值是值复制，不再调用原生生命周期服务。
-- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作为 dot/cross/length、sqrt、floor/ceil/trunc/fract/abs、min/max/clamp/lerp/step。可达代码中的全部循环、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
+- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作为 dot/cross/length、sqrt/sin/cos、floor/ceil/trunc/fract/abs、min/max/clamp/lerp/step。可达代码中的全部循环、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
 - `sample(TextureInput, vector2 UV)` 返回 vector4；数字槽语法不再接受。TextureInput 是编译器注入的 plain value，不是 Runtime Texture 对象或资产键。已有令牌的复制初始化、复制赋值及按值辅助函数沿普通值规则；禁止自行默认构造令牌或包含令牌的记录、读取/写入令牌成员、整数转换和算术。复制已有令牌不改变资源关联，也不能伪造新槽。实际注册的 uint `slot` 字段只提供 CPU 布局，限制由材质 AST 执行，不依赖隐藏标记。`defaults` 及其调用闭包不得持有纹理输入或采样，也不接收运行上下文。
-- `MaterialProgram::textures()` 导出所有声明输入的稳定键和本编译版本 slot；B1 不做逐输入可达性裁剪，也不宣称全部实际采样。每次求值必须恰好绑定每个声明槽一次，包括当前未采样的输入；空输入不能表示为缺槽，同图的不同输入不合并。纹理默认关联、颜色解释、采样设置及线性 float4 空值属于 MS 类型化作者数据，由 material 从冻结快照准备资源环境，不在数值 defaults 或编译器中另造资产加载规则。坏非空键不能当作清空成功。
-- CPU/compute 的 B1 资源环境使用 LOD0 双线性及现有寻址方式，不新增虚拟过滤配置。颜色纹理的 RGB 由采样绑定解码到线性，alpha/数据保持线性；源码编译器不猜测颜色用途。光栅任意 UV 表达式的梯度尚未由此解决，不能以原网格梯度替代。数值合同要求输入、采样、数学中间值及输出在有限 float 域内；CPU 检查输入/采样/输出边界并在失败时保留调用方输出，不是逐运算数值沙箱。后端舍入、融合、次正规值和采样政策可能不同，不承诺逐位相同，阈值邻域须由真实消费者验证。
+- `sample_orientation(TextureInput, vector2 UV)` 返回实际输入寻址方式的 vector2 方向：Repeat/Clamp 为 `(1,1)`，Mirror 按各轴折叠区间返回 ±1，精确折点取正。CPU 只在实际执行查询时要求该绑定的 orientation 回调，缺失或返回非有限值令本次调用失败，不假定 Repeat；footprint 将它作为中心值上的分段常量，两方向变化为零。
+- `MaterialProgram::textures()` 导出所有声明输入的稳定键和本编译版本 slot；不做逐输入可达性裁剪，也不宣称全部实际采样。每次求值必须恰好绑定每个声明槽一次，包括当前未采样的输入；空输入不能表示为缺槽，同图的不同输入不合并。纹理默认关联、颜色解释、采样设置及线性 float4 空值属于 MS 类型化作者数据，由 material 从冻结快照准备资源环境，不在数值 defaults 或编译器中另造资产加载规则。坏非空键不能当作清空成功。
+- CPU/point 资源环境使用 LOD0 双线性及现有寻址方式；过滤通道使用下述 footprint 入口传播最终 UV 的变化，不以原网格梯度替代。颜色纹理的 RGB 由采样绑定解码到线性，alpha/数据保持线性；源码编译器不猜测颜色用途。数值合同要求输入、采样、数学中间值及输出在有限 float 域内；CPU 检查输入/采样/输出边界并在失败时保留调用方输出，不是逐运算数值沙箱。后端舍入、融合、次正规值和采样政策可能不同，不承诺逐位相同，阈值邻域须由真实消费者验证。
 - 容许舍入差异不放宽[既有逐分量数学合同](docs/math.md#逐分量函数)：clamp 使用 `max(lo,min(x,hi))`，反向边界返回 lo；lerp 使用 `a*(1-t)+b*t`，有限值在 t=0/1 精确返回端点；fract 使用 `min(x-floor(x),1 的前一浮点数)`，保持严格小于 1。HLSL 按实际使用的标量/向量形状生成值参数辅助函数，操作数只求值一次；lerp/fract 的公式使用 precise 保留运算顺序，不直接替换成语义不同的 HLSL 内建。
 - `MaterialProgram::hlsl(namespace)` 支持多个程序组合；`namespace::ms_shade(environment, context, parameters)` 将每次调用的资源环境显式转传给全局 `atelier_material_sample(environment, local_slot, uv)`，没有全局“当前材质”。资源记录在外层入口内部注入，CPU 按真实 ValueLayout/slot 字段偏移构造，HLSL 按自己的结构生成，公开 evaluate 不接收作者令牌字节。`ms_load_parameters(ByteAddressBuffer, byte_base)` 按捕获的 CPU 偏移生成读取，不假设 CPU 和 HLSL 结构体打包一致。
+- `MaterialProgram::hlsl_footprint(namespace)` 生成 `ms_shade_footprint(environment, center, d0, d1, parameters)`；d0/d1 是同形 Context 的零初始化变化量，不是邻点或带默认法线的 Context。分支/短路沿中心值，参数变化为零。`atelier_material_sample_grad(environment, local_slot, uv, d0, d1)` 消费最终 UV 变化；纹理驱动坐标用相同梯度下最多两次偏移采样近似传播。非有限最终梯度及纹素尺度溢出由桥采实际最粗 mip，不传给硬件；它是局部足迹近似，不是跨分支面积积分。两个 HLSL 入口执行 orientation 时共用 `atelier_material_sample_orientation(environment, local_slot, uv)`。真实通道政策及 GPU 覆盖边界见[材质采样](docs/modules/renderer/materials.md#采样与各通道)。
 - 声明与类型化计算诊断使用已有的真实源位置，包含源名、行列和原因；后端缩短过长源名的中间部分，为行列/原因留出空间。没有精确位置的布局发布错误只附源名，不伪造行列。
 
 公共接口、拥有与失败合同见 [`material_program.hpp`](src/source/material_program.hpp)。内容可在编译 Runtime 关闭后求值，并可跨调用方共享；执行时固定代码所有者，旧内容不会被新编译覆盖。后端 DLL 与采样实现须在使用期间保持装载；每次调用的字节和采样绑定只同步借用。公开 CPU 入口是 `source_material_acceptance`（`atelier_source_minimal --materials`）；它不宣称 GPU 执行通过。真实 GPU 数值/资源环境验证属于 Renderer 消费验收。
+
+### 材质局部足迹的边界约定
+
+变化量沿中心所选分支传播，不是不连续函数的数学导数保证。有限 min/max 相等取第一参数；clamp 按上述组合；abs 在正负零取非负侧；floor/ceil/trunc/step 的变化为零。fract 在整数处保留输入变化，仅实际封顶区取零；lerp 保留完整 t 变化，端点也不省略。sqrt/length 中心为零时，该方向输入变化全零才给零，否则不可用，不以 epsilon 伪造可用变化。
+
+不可用变化以非有限值沿实际数据路径传播，无关坏属性不污染常量 UV。最终梯度不可用时保留最粗 mip 的中心采样，跳过偏移采样并使两方向采样变化不可用；仅一个偏移坐标溢出时只令该方向不可用。纹素尺度溢出由采样桥选择最粗 mip，有限偏移仍用同一梯度求差。中心 UV 非有限仍是无效作者结果，不借此修补。生成器用 IEEE 位检查与 precise 中间值保护这些约定，不改变全局 RHI 优化政策；额外采样与寄存器成本未作性能承诺。
 
 ## 执行、诊断与保护
 

@@ -22,10 +22,8 @@ struct Access {
     static const std::vector<std::string>& default_slots(const StaticMeshComponent& value) noexcept {return value.default_slots_;}
     static auto& surfaces(StaticMeshComponent& value) noexcept {return value.surfaces_;}
     static auto& surface_geometry(StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
-    static auto& surface_parameters(StaticMeshComponent& value) noexcept {return value.surface_parameters_;}
     static const auto& surfaces(const StaticMeshComponent& value) noexcept {return value.surfaces_;}
     static const auto& surface_geometry(const StaticMeshComponent& value) noexcept {return value.surface_geometry_;}
-    static const auto& surface_parameters(const StaticMeshComponent& value) noexcept {return value.surface_parameters_;}
     static String& sky_map(EnvironmentComponent& value) noexcept {return value.sky_map_;}
     static const String& sky_map(const EnvironmentComponent& value) noexcept {return value.sky_map_;}
     static rendering::SkyMapRef& sky_map_resolved(EnvironmentComponent& value) noexcept {return value.sky_map_resolved_;}
@@ -48,8 +46,8 @@ template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
 }
 // presentation::material_surfaces inside the caller's read-only borrow of the mesh component;
 // the result equals the component's cache unless something changed. store_surfaces caches it.
-Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&);
-Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::SurfaceRef>>);
+Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&);
+Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>);
 // One EnvironmentComponent per World, disabled components included.
 world::World::Admission unique_environment(world::CapabilityId environments);
 // One CameraComponent per Entity, disabled and derived components included.

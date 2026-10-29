@@ -1,3 +1,7 @@
+material::Output scene_lit_material(const material::ProgramSurfaceRef& surface) {
+    require(surface!=nullptr,"Scene Lit mesh has no captured program surface.");
+    return take(surface->evaluate({}));
+}
 std::filesystem::path scene_lit_example(const std::filesystem::path& requested) {
     return std::filesystem::canonical(requested.empty()?std::filesystem::path{ATELIER_EXAMPLE_PROJECT}:requested);
 }
@@ -25,23 +29,24 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
         std::ranges::count(scene.lights,renderer::LightKind::rectangle,&renderer::Light::kind)==1 &&
         std::ranges::all_of(scene.lights,[](const auto& light){return light.casts_shadow;}),
         "Scene Lit example lost its one directional, two point and one rectangle shadow lights.");
-    require(std::ranges::any_of(scene.meshes,[](const auto& mesh){return mesh.material.metallic>.5f;}) &&
-        std::ranges::any_of(scene.meshes,[](const auto& mesh){return mesh.material.roughness<.2f;}) &&
-        std::ranges::any_of(scene.meshes,[](const auto& mesh){return std::ranges::any_of(mesh.material.emissive,[](float value){return value>1;});}),
+    require(std::ranges::any_of(scene.picking()->materials,[](const auto& surface){return scene_lit_material(surface).metallic>.5f;}) &&
+        std::ranges::any_of(scene.picking()->materials,[](const auto& surface){return scene_lit_material(surface).roughness<.2f;}) &&
+        std::ranges::any_of(scene.picking()->materials,[](const auto& surface){const auto e=scene_lit_material(surface).emissive;return e.x>1 || e.y>1 || e.z>1;}),
         "Scene Lit example lost its real metal, reflection roughness or HDR emission.");
     const auto entity=take(document->world().members()).front().id();
     const auto mesh=component(*document,entity,document->presentation_types().static_mesh_component);
-    const auto fields=take(document->properties(mesh));
-    const auto roughness=std::ranges::find(fields,"material.roughness",&Property::name);
-    require(roughness!=fields.end(),"Scene Lit example floor has no reflected roughness.");
-    take(document->set_property(mesh,roughness->path,.71f,991000));
+    const auto instance=take(document->create_scene_material(mesh,"slot/0"));
+    const auto fields=take(document->inspect_material(instance.id()));
+    require(std::ranges::find(fields.declarations,"roughness",&MaterialParameterView::path)!=fields.declarations.end(),"Scene Lit example floor has no declared roughness.");
+    take(document->begin_material_edit(instance.id(),991000));take(document->preview_material_entry(991000,{"roughness",.71f,true}));
+    take(document->commit_material_edit(991000));
     const auto saved=take(document->serialize());
     const auto saved_path=take(project.resolve("Content/Scenes/Acceptance.scene"));
     take(write_file(saved_path,saved,WriteMode::create));
     auto reopened=take(Session::deserialize(take(assets::read_file(saved_path)),project));
     application::SceneSnapshot restored;take(restored.refresh(*reopened));
     require(take(reopened->serialize())==saved && restored.meshes.size()==10 && restored.lights.size()==4 &&
-        restored.meshes.front().material.roughness==.71f && sky(*reopened)==sky(*document),
+        scene_lit_material(snapshot_surface(restored)).roughness==.71f && sky(*reopened)==sky(*document),
         "Scene Lit example temporary save/reopen lost material or formal light data.");
     // Runtime presentation uses the same World snapshot contract. An editing
     // document's Parameters panel intentionally requires a stopped document.
@@ -54,8 +59,8 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     for(std::size_t i=0;i<running.meshes.size();++i)
         require(running.meshes[i].world==restored.meshes[i].world &&
             running.meshes[i].geometry==restored.meshes[i].geometry &&
-            running.meshes[i].material.roughness==restored.meshes[i].material.roughness &&
-            running.meshes[i].material.emissive==restored.meshes[i].material.emissive,
+            scene_lit_material(snapshot_surface(running,i)).roughness==scene_lit_material(snapshot_surface(restored,i)).roughness &&
+            scene_lit_material(snapshot_surface(running,i)).emissive==scene_lit_material(snapshot_surface(restored,i)).emissive,
             "Unchanged runtime World altered geometry or materials based on execution state.");
     for(std::size_t i=0;i<running.lights.size();++i)
         require(running.lights[i].kind==restored.lights[i].kind &&
@@ -202,7 +207,13 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto edit=[&](ObjectId object,std::string_view name,Scalar value) {
         take(document.set_property(object,property(object,name),std::move(value),edit_session++));
     };
-    edit(mesh,"material.roughness",.27f);edit(mesh,"material.metallic",.6f);edit(mesh,"material.emissive.x",4.f);
+    take(document.assign_material(project,mesh,"slot/0","builtin/material/standard-opaque-double"));
+    const auto instance=take(document.create_scene_material(mesh,"slot/0"));
+    const auto edit_material=[&](std::string path,material::LocalValue value) {
+        const auto control=edit_session++;take(document.begin_material_edit(instance.id(),control));
+        take(document.preview_material_entry(control,{std::move(path),std::move(value),true}));take(document.commit_material_edit(control));
+    };
+    edit_material("roughness",.27f);edit_material("metallic",.6f);edit_material("emissive",math::Vector3{4,0,0});
     std::array<ObjectId,3> light_entities,lights;
     constexpr std::array kinds{presentation::LightKind::point,presentation::LightKind::rectangle,presentation::LightKind::directional};
     for(std::size_t i=0;i<kinds.size();++i) {
@@ -218,16 +229,16 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(std::ranges::any_of(component_types,[&](const auto& type){return type.type==document.presentation_types().light_component;}),
         "Entity Structure cannot discover LightComponent through the shared type list.");
     application::SceneSnapshot snapshot;take(snapshot.refresh(document));
-    require(snapshot.meshes.size()==1 && snapshot.lights.size()==3 && snapshot.meshes[0].material.roughness==.27f &&
-        snapshot.meshes[0].material.emissive[0]==4 && snapshot.lights[1].two_sided && snapshot.lights[1].width==2,
+    require(snapshot.meshes.size()==1 && snapshot.lights.size()==3 && scene_lit_material(snapshot_surface(snapshot)).roughness==.27f &&
+        scene_lit_material(snapshot_surface(snapshot)).emissive.x==4 && snapshot.lights[1].two_sided && snapshot.lights[1].width==2,
         "World material and light values did not reach the formal renderer snapshot.");
     const auto key=snapshot.meshes[0].stable_key,light_key=snapshot.lights[0].stable_key;
     require(key && light_key && key!=light_key,"Opaque component identities collided in the renderer projection.");
     edit(mesh_entity,"position.x",2.f);edit(light_entities[0],"position.x",3.f);take(document.select(mesh_entity));take(snapshot.refresh(document));
     require(snapshot.meshes[0].stable_key==key && snapshot.lights[0].stable_key==light_key &&
         snapshot.meshes[0].world[12]==2 && snapshot.lights[0].position[0]==3,"TRS or selection churn lost component identity or the new pose.");
-    edit(mesh,"material.roughness",.38f);take(snapshot.refresh(document));require(snapshot.meshes[0].material.roughness==.38f,"Material edits did not reach rendering.");
-    changed(document.undo());take(snapshot.refresh(document));require(snapshot.meshes[0].material.roughness==.27f,"Material undo did not reach rendering.");
+    edit_material("roughness",.38f);take(snapshot.refresh(document));require(scene_lit_material(snapshot_surface(snapshot)).roughness==.38f,"Material edits did not reach rendering.");
+    changed(document.undo());take(snapshot.refresh(document));require(scene_lit_material(snapshot_surface(snapshot)).roughness==.27f,"Material undo did not reach rendering.");
     take(document.select(light_entities[0]));changed(document.remove_component(lights[0]));take(snapshot.refresh(document));
     require(snapshot.lights.size()==2,"Removed LightComponent remained in the renderer snapshot.");
     changed(document.undo());take(snapshot.refresh(document));
@@ -236,8 +247,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto text=take(document.serialize());const auto file=take(project.resolve("Content/Scenes/Lighting.scene"));
     take(write_file(file,text,WriteMode::create));auto reopened=take(Session::deserialize(take(assets::read_file(file)),project));
     application::SceneSnapshot loaded;take(loaded.refresh(*reopened));
-    require(loaded.meshes.size()==1 && loaded.lights.size()==3 && loaded.meshes[0].material.emissive[0]==4 &&
-        loaded.meshes[0].material.metallic==.6f && loaded.lights[0].intensity==80 && loaded.lights[2].source_radius==.0046f,
+    require(loaded.meshes.size()==1 && loaded.lights.size()==3 && scene_lit_material(snapshot_surface(loaded)).emissive.x==4 &&
+        scene_lit_material(snapshot_surface(loaded)).metallic==.6f && loaded.lights[0].intensity==80 && loaded.lights[2].source_radius==.0046f,
         "Project scene reopen lost material or light settings.");
     const auto kept_invalid=[&](const nlohmann::json& data,const nlohmann::json::json_pointer& at,const char* message) {
         require(!Session::deserialize(data.dump(),project,{},LoadPolicy::strict),message);
@@ -245,17 +256,38 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         require(!kept->load_issues().empty() && nlohmann::json::parse(take(kept->serialize()))[at]==data[at],
             "Tolerant loading did not keep a saved value rejected by World validation.");
     };
-    auto data=nlohmann::json::parse(text);data["entities"][0]["components"][0]["roughness"]=2;
-    kept_invalid(data,nlohmann::json::json_pointer("/entities/0/components/0/roughness"),"Invalid saved roughness bypassed World validation.");
+    auto data=nlohmann::json::parse(text);std::string roughness_path;
+    for(std::size_t i=0;i<data.at("materials").size();++i) if(data["materials"][i].at("source")=="") {
+        auto& entries=data["materials"][i].at("entries");
+        for(std::size_t j=0;j<entries.size();++j) if(entries[j].at("path")=="roughness") {
+            entries[j]["type"]="vector2";entries[j]["value"]=nlohmann::json::array({2,3});
+            roughness_path="/materials/"+std::to_string(i)+"/entries/"+std::to_string(j);
+        }
+    }
+    require(!roughness_path.empty(),"Saved scene MI lost its roughness entry.");
+    // A declaration mismatch is preserved author intent, not a malformed file.
+    // Both load policies keep it while consuming the current inherited value.
+    for(const auto policy:{LoadPolicy::strict,LoadPolicy::tolerant}) {
+        auto kept=take(Session::deserialize(data.dump(),project,{},policy));
+        const auto items=take(kept->presentation().render_items());
+        require(nlohmann::json::parse(take(kept->serialize()))[nlohmann::json::json_pointer(roughness_path)]==
+            data[nlohmann::json::json_pointer(roughness_path)] &&
+            std::ranges::any_of(kept->load_issues(),[](const auto& issue) {
+                return issue.kind==world::DiagnosticKind::mismatch && issue.severity==world::Severity::info;
+            }) && scene_lit_material(items.front().surfaces->front()).roughness==.65f &&
+            scene_lit_material(items.front().surfaces->front()).metallic==.6f,
+            "A mismatched sparse material entry lost its author value/diagnostic or changed valid material parameters.");
+    }
     data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["range"]=0;
     kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/range"),"Invalid saved light range bypassed World validation.");
     data=nlohmann::json::parse(text);data["entities"][1]["components"][0]["properties"]["settings"]["intensity"]=-1;
     kept_invalid(data,nlohmann::json::json_pointer("/entities/1/components/0/properties/settings/intensity"),"A saved light intensity outside its hard bound loaded without a diagnostic.");
-    data=nlohmann::json::parse(text);auto& unsaved=data["entities"][0]["components"][0];
-    unsaved.erase("roughness");unsaved.erase("metallic");unsaved.erase("emissive");
+    data=nlohmann::json::parse(text);
+    for(auto& definition:data.at("materials")) if(definition.at("source")=="") definition["entries"]=nlohmann::json::array();
     auto defaulted=take(Session::deserialize(data.dump(),project));const auto defaulted_items=take(defaulted->presentation().render_items());
-    require(defaulted_items[0].material.roughness==presentation::Material{}.roughness && defaulted_items[0].material.emissive==math::Vector3{},
-        "Unsaved material fields did not keep World material defaults.");
+    const auto defaults=scene_lit_material(defaulted_items[0].surfaces->front());
+    require(defaults.roughness==.65f && defaults.emissive==math::Vector3{},
+        "Absent material entries did not inherit the actual MS defaults.");
     const auto identity=snapshot.identity;snapshot.reset();take(snapshot.refresh(*reopened));
     require(snapshot.identity!=identity,"Document replacement reused the previous renderer history domain.");
 
@@ -278,8 +310,16 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         if(!frame) throw std::runtime_error("Lighting DSL layout prepare failed: "+error(frame.error()));
         require(surface.accept(*frame),"Lighting DSL candidate accept failed after successful preparation.");
     };
-    take(document.select(light_entities[0]));publish();
     const auto has_text=[&](std::wstring_view text){return std::ranges::any_of(controls,[&](const auto& control){return control.text==text;});};
+    take(document.select(mesh));publish();
+    require(has_text(L"roughness") && has_text(L"metallic") && has_text(L"emissive") &&
+        std::ranges::any_of(controls,[&](const auto& control) {
+            // DSL buttons have their own node key and route clicks to the action target.
+            const auto* binding=workspace.binding(control.action_target);
+            return control.kind==ui::ControlKind::button && control.enabled && binding && binding->object==instance.id() &&
+                binding->material_path=="emissive" && binding->kind==Workspace::Binding::Kind::color_pick;
+        }),"Actual material panel did not expose declared numeric/vector rows and a path-based color control.");
+    take(document.select(light_entities[0]));publish();
     require(has_text(L"Intensity (cd)") && !has_text(L"Width (m)"),"Point light parameters exposed the wrong units or rectangle-only fields.");
     take(document.select(light_entities[1]));publish();require(has_text(L"Intensity (cd/m²)") && has_text(L"Width (m)"),"Rectangle parameters are missing their authored dimensions.");
     take(document.select(light_entities[2]));publish();require(has_text(L"Illuminance (lux)") && !has_text(L"Range (m)"),"Directional parameters exposed a local light range.");
@@ -384,14 +424,14 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(document.redo());workspace.sync_world(document);
     const auto saved=take(document.serialize());auto restored=take(Session::deserialize(saved,project));
     require(settings(*restored)==candidate && take(restored->serialize())==saved && !restored->dirty(),
-        "Scene v9 did not round-trip World authoring values into a clean document.");
+        "Scene v10 did not round-trip World authoring values into a clean document.");
     const auto stable_history=document.undo_count();const auto diagnostic=workspace.view.lit.probe_debug;
     auto diagnostic_view=workspace.view;diagnostic_view.lit.probe_debug=!diagnostic;
     take(workspace.set_view_settings(document,diagnostic_view));
     require(document.undo_count()==stable_history && take(document.serialize())==saved,"Viewport diagnostics entered the scene or Undo stack.");
     const auto saved_json=nlohmann::json::parse(saved);
-    require(saved_json.at("version")==9 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
-        !environment_record(saved_json).contains("probe_debug"),"Scene v9 kept a world section or saved viewport diagnostics.");
+    require(saved_json.at("version")==10 && !saved_json.contains("world") && !environment_record(saved_json).contains("direct_reference") &&
+        !environment_record(saved_json).contains("probe_debug"),"Scene v10 kept a world section or saved viewport diagnostics.");
     // Viewport diagnostics are not Environment fields: strict loading rejects them, tolerant loading keeps them as saved data.
     for(const auto key:{"probe_debug","direct_reference"}) {
         auto json=saved_json;

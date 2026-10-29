@@ -24,7 +24,6 @@ Result<void> detail::light_rules(const LightSettings& settings) {
         return error(ErrorCode::argument_mismatch,message);
     return {};
 }
-Result<void> validate_material(Runtime& runtime,const Material& material) { return detail::check_value(runtime,material); }
 Result<void> validate_light(Runtime& runtime,const LightSettings& settings) { return detail::check_value(runtime,settings); }
 rendering::SceneLightingSettings environment_settings(const EnvironmentComponent& value) noexcept {
     rendering::SceneLightingSettings result;
@@ -101,9 +100,6 @@ template<class Owner,class T> Result<void> set_value(world::World& world,ObjectI
     auto field=runtime.find_field(*owner,name); if (!field) return std::unexpected(field.error());
     return world.write(object,std::span{&*field,1},ValueInput{*type,&value});
 }
-}
-Result<void> set_material(world::World& world,ObjectId object,Material value) {
-    return set_value<StaticMeshComponent>(world,object,"material",value);
 }
 Result<void> set_light(world::World& world,ObjectId object,LightSettings value) {
     return set_value<LightComponent>(world,object,"settings",value);

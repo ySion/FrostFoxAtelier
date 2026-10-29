@@ -56,11 +56,14 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | scene.remove_transform | 移除指定 Entity 的内联空间，一次撤销 |
 | scene.reparent | 调整 Entity 组合 parent；支持 keep_world 和组成 index，一次撤销 |
 | scene.set_space_reference | 设置 Entity 空间参考：继承组合祖先、世界或另一个 Entity；支持 keep_world，一次撤销 |
-| material.create、texture.import、mesh.import | Project 创建 `.material`，或导入图片、OBJ/glTF 网格（glTF 同时为每个槽发布材质并记为网格的默认材质），沿资源 GUID 索引与文件发布规则；重复请求由既有 request_id 合同处理 |
-| material.inspect | 按资产 GUID 或实例对象句柄读取同一 Runtime 材质，返回解析后的属性、父资产、覆盖位与保存状态 |
-| material.set_property、material.set_texture | 通过 Session 编辑材质对象；参数使用发现到的字段名/标量/枚举，贴图使用 input 名与 Texture GUID |
+| material.create | 必填 path 与 role（source / instance）；MS 创建 `.ms.material` 和 Source，MI 可指定 parent 与 typed entries，沿 Project 身份与文件发布规则 |
+| texture.import、mesh.import | 导入图片或 OBJ/glTF 网格；模型导入生成普通 MI 和网格默认关联，重复请求由既有 request_id 合同处理 |
+| texture.reimport、mesh.reimport | 必填 asset 与源文件 path；同身份更新并发布精确内容，不进入参数 Undo，模型按槽名保留用户 MI |
+| material.inspect | 按资产 GUID 或对象句柄读取 MS/MI 的声明、有效值、本地稀疏项、父关系、诊断与保存状态 |
+| material.set_entry、material.set_texture | 前者接受 object 与完整 typed entry（path/type/enabled/value）；后者接受 object/path/texture，空纹理键显式清空，不恢复继承 |
 | material.assign | 按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
-| material.override | 按真实参数字段名启用/取消实例覆盖；只显示网格默认材质的槽同样可用，启用时绑定一个以该默认材质为父的实例；实例句柄由 editor.inspect 的组件 materials 返回，后续用 material.set_property 编辑 |
+| material.create_scene | 按 component/slot 创建场景 MI，继承该槽当前材质；未绑定槽继承 DefaultWorldGrid，返回实例 object 句柄 |
+| material.override、material.discard | 按 object/path 启用或关闭本地项（enabled），关闭保留本地值；discard 才删除本地项并恢复继承 |
 | material.save、material.undo、material.redo | 共享资产独立保存和历史；实例覆盖使用场景历史（`op.call edit.undo / edit.redo`）。保存后目录刷新失败返回 saved 与 catalog_warning |
 | camera.set、camera.look_at | 公共 Camera 状态和观察目标 |
 | view.set | 原子应用显示 patch，与菜单共用 ViewOption 规则 |
@@ -75,7 +78,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。组件目录保留反射参数与材质，组件记录不含 TRS。创建子实体复用 scene.create 和 scene.reparent；没有第二套 create_child 工厂或对象身份。
 
-`editor.inspect` 的对象记录与 `material.inspect` 共享 `type_description` 和 `properties` 输出。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。说明不包含可执行入口，查询不改变场景状态或历史。
+`editor.inspect` 的普通对象记录带 `type_description` 和反射 `properties`。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。材质不以固定 Runtime 字段表达参数，改用下述 `declarations` 与 `entries`。说明不包含可执行入口，查询不改变作者值或历史。
 
 ### 资产目录分页
 
@@ -113,13 +116,13 @@ full 仍返回完整 assets，不静默截断；full/summary 不接受分页参�
 
 结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后仍使用 `scene.set_property` 和 `op.call edit.undo` 等编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
 
-宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing}`，`materials` 每项带 `missing`；`missing` 为 true 表示工程资源缺失或无法读取、当前由占位资源代替（实例按父材质判断），保存仍写回原引用。
+宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing, default_materials}`；默认关联包含 slot/object/source/missing。显式 `materials` 项包含 slot/object/asset/parent/scene/assignment_override/default_material，具体材质诊断由该 object 的 `material.inspect` 返回。替代显示不改写保存引用。
 
 现有真实进程验收 `atelier_editor_control_acceptance editor.exe <输出目录> --descriptions` 同时覆盖空目录、单项分页、名称/类型过滤、详情一致性、非法参数、游标失效、对象删除、占位对象的 `saved_type` / `saved_data` 及查询不改变文档。
 
 2026-10-16 的 Dev／Release 均通过，日志为 `out/direct-clustered-20261016/control-inspection-{dev,release}.log`。真实 3572 实体地牢另验证了 objects → object → 临时修改太阳属性 → render.compare → undo；最终 dirty=false、undo=0，源 Scene 哈希不变。
 
-材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存场景引用到的材质（含网格的默认材质）的实际草稿，并核对已载入贴图内容，原工程不变；会话里载入过但场景没有引用的材质不进入副本。材质范围和一层参数继承合同见[资源工作流](projects.md#材质与贴图资源)。
+材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存场景引用到的材质（含网格默认材质与可达父链）的实际草稿，并核对已载入贴图内容，原工程不变；会话里载入过但场景没有引用的材质不进入副本。MS→MI→MI 继承、稀疏作者项与资源发布合同见[资源工作流](projects.md#材质与贴图资源)。
 
 坐标为米、左手系、+Y 向上，矩阵按行存储、向量左乘。CameraState 的 view 0–6 依次为 perspective/top/front/right/bottom/back/left；yaw/pitch/roll 为弧度，distance 为 0.5–2000 米，vertical_fov 为 1–179 度，near_clip 为 0.001–100000 米，far_clip 不超过 1000000 米且大于 near_clip。恢复时验证相机基底；`camera.set` 必须提供完整状态。视图命令与 UI 使用同一六向相机入口。`view.from_camera` 通过选中 Entity 一次性复制场景相机的位姿（含 roll）和投影，不改作者数据。`scene.main_camera_set` / `scene.main_camera_clear` 编辑场景主相机引用，详见[场景相机](projects.md#场景相机)。
 
@@ -141,7 +144,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 当前不包括布局编辑、Source 文本编辑、Play 命令、鼠标回放或任意 C++/JIT 调用。后续能力按业务名称接入现有权威模块。
 
-`material.inspect` 接受 `asset` 或 `object` 二选一；后者使用组件材质槽返回的对象句柄，可读取实例已解析的属性、父资产和显式覆盖位。实例修改由 `scene.save` 保存，共享资产由 `material.save` 保存。按 `asset` 打开时材质本身必须可读，缺失或无法读取的贴图由占位资源代替；按 `object` 查看场景中的占位材质时，结果的 `missing` 为 true，`missing_textures` 列出不可用贴图的键，保存材质时这些键原样保留。
+`material.inspect` 接受 `asset` 或 `object` 二选一。返回 role、asset、parent、scene、default_material、dirty，以及 `declarations`（path/type/value/initial/components）、`entries`（材质 v2 typed entries）和 `diagnostics`（path/message）；父链中存在已加载 MS 文本时，另带 Session 保有的精确 `source: {path, version, text}`。声明值是当前有效结果，本地项保留 enabled 和休眠/失配值；`properties` 不承载固定材质参数。场景实例由 `scene.save` 保存，共享资产由 `material.save` 保存。不可用输入或父链的默认替代伴随诊断，保存仍保留原资源键，不把替代结果写回作者项。
 
 ## 协议、身份和重试
 
@@ -225,19 +228,21 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 ## 复现工程
 
-repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根（Content，以及存在时的 Examples）只复制场景引用的资产及其引用闭包：根是组件的网格、Environment 的天空贴图、导出场景定义的每个材质（绑定的材质、实例的父材质和内联贴图），以及组件无法解析时保留的键（网格缺失时的材质绑定、占位组件的网格和天空贴图）；网格带上依赖文件和槽的默认材质，材质带上贴图，每个资产连同 `.asset.json` 身份。文档仍在使用、但目录里已经没有的资源（包括网格的默认材质）使导出失败；占位资源和保留数据里的键，目录里还有同类资产就复制，没有就只把键留在场景里；无法读取的资产只复制它自己的文件。引用闭包由 `assets::Reader::asset_files` 给出，新增资产间引用的提交同时扩展它。工程里只有这四类资产会按路径读取；字体、样式和着色器来自编辑器安装目录，Cache 是派生数据，均不进入复现包。没有工程时创建独立工程容器。副本 startup scene 指向当前内存场景。
+repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根只复制 `snapshot_resources` 冻结的类型化 `references` 闭包及身份 sidecar：场景网格、天空、材质、网格默认关系、MS/MI 父链，以及声明匹配且启用的纹理。禁用、已删除声明和改型失配的条目原样保留为作者数据，不因此复制或加载图片。宿主不重新遍历磁盘材质，避免旧文件引用覆盖当前草稿；原始 glTF buffer、OBJ MTL 等伴随文件单独取自 `Reader::mesh_dependency_files`，不递归材质。文档仍在使用但目录已无同类资产时拒绝导出；已知缺失资源的键保留在场景，严格重开仍拒绝缺失的有效依赖。字体、样式和着色器来自安装目录，Cache 是派生数据，不进入复现包。没有工程时创建独立工程容器，副本 startup scene 指向当前内存场景。
+
+工作线程只持有拥有型作者数据与不可变内容，不持有 Runtime 根。`material_sources` 固定 Session 已加载的精确 MS 文本，`textures` 固定有效输入的 RGBA 像素；导出不回读这些内容的新磁盘版本。图片以无损 PNG 编码写入原资产路径，保持文件名和身份，只排列 RGBA/BGRA 通道，不转换颜色空间；重新解码逐像素核对。一个纹理键对应不同已加载像素、或同一 Source 路径对应不同文本时明确拒绝，不能任取一个版本。
 
 保存相机、显示偏好、Entity 选择顺序和检查的 Component、构建身份及资源指纹。publication_version 标识完整已发布构建，source_version 标识项目与引擎源码集，ui_source_version 标识 UI 输入。副本 Source 只包含该成功构建的游戏和 UI 源码；磁盘上新增或修改但未发布的源码移入 unpublished/，内存 Code 草稿另存 drafts.json。没有可用场景或成功发布构建的工程返回 not_ready。这是场景与代码复现，不保存整个桌面、编辑器布局或 GPU 历史。
 
 引擎 `engine/...` Source 仍由安装提供（开发态优先源码树的 `assets/engine`，部署态为可执行文件旁的 `engine`），不复制进副本的项目 Source。manifest 的 `engine_sources` 逐路径记录成功发布时的引擎源码文本 SHA256（按源码读取规则去除 UTF-8 BOM），不是导出时重新读取磁盘的版本。没有工程时记录当前安装的引擎输入。`repro.open` 要求当前安装的引擎源码路径集合和文本指纹完全一致；增删或内容不同返回 `dependency_mismatch`，不替换当前文档。依赖检查至候选编译期间要求安装输入保持不变，不提供并发安装更新的原子快照。不支持用复现包覆盖引擎源码；缺少此依赖字段的旧包须重新导出。
 
-manifest 还必须含 `engine_assets: {version: 1, records: [...]}`，空集合也写出。每条记录为 `key`、`kind: "mesh"`、`semantic_version`、`digest_version`、`content_sha256`；按 key 排序输出，输入顺序无语义。当前只支持精确的 cube、sphere、plane 三个内建键，不承认任意 `builtin/` 前缀。语义版本由生产者维护，摘要描述安装实际发布的不可变内容，编码见[资源读取](projects.md#引擎依赖摘要)。它们不认证任意 C++/shader 实现，也不是安装二进制签名。
+manifest 必须含 `engine_assets: {version: 1, records: [...]}`，空集合也写出。每条记录为 `key`、`kind: "mesh" | "material"`、`semantic_version`、`digest_version`、`content_sha256`；按 key 排序输出，输入顺序无语义。仅接受本安装注册的精确内建网格和材质键，不承认任意 `builtin/` 前缀。mesh 摘要 v2 描述几何、槽及默认关系；material 摘要 v1 包含 MS 作者数据与 Source 文本。未绑定的网格槽声明隐式 DefaultWorldGrid 依赖。语义版本由生产者维护，编码见[资源读取](projects.md#引擎依赖摘要)；它们不认证任意 C++/shader 实现，也不是安装二进制签名。
 
-严格根集是冻结 Scene 的资源位及全部 World 成员（含停用成员）的网格/默认关系，再按身份取相应材质的当前草稿；不包括整个会话材质缓存或全部复制文件。旧磁盘引用被草稿替换后，仍可按宽容规则复制，但不扩大严格集合。普通名字/属性字符串不是资产协议。导出逐份核对加载的引擎网格，再写唯一依赖记录；重开先预检实际 Scene 资源位及其默认材质/贴图中的引擎键，候选发表前使用与导出相同的实际集合收集器，与清单双向比较。因此删一条或清空 records 不能绕过真实使用项，多报未使用项也拒绝。
+严格根集是冻结 Scene 的资源位及全部 World 成员（含停用成员）的网格/默认关系，再按身份取相应材质的当前草稿；不包括整个会话材质缓存或全部复制文件。普通名字/属性字符串不是资产协议。导出逐份核对加载的引擎资源，再写唯一依赖记录；重开先预检实际 Scene 资源位及其默认材质/有效贴图中的引擎键，候选发表前使用与导出相同的实际集合收集器，与清单双向比较。因此删一条或清空 records 不能绕过真实使用项，多报未使用项也拒绝。
 
-缺少 `engine_assets` 的旧包、未知 schema/编码版本返回 `invalid_request` 并要求重新导出；重复键、非正整数版本、非法摘要也是 `invalid_request`。未知/错种类引擎键、语义版本/内容不同、实际集合缺项/多项返回 `dependency_mismatch`。真正文件读取或密码提供者失败为 `storage_error`，不伪装成内容不一致。原有 dirty、材质/Source 草稿与运行 Play 的替换前置拒绝保持不变；依赖失败的原子性发生在可替换文档的候选加载阶段，不关闭旧文档或改变历史、选择和相机。Scene v9、材质 v1 与 `engine_sources` 合同不变。
+`material_resources: {version: 1, records: {...}}` 同样必需，核对可达材质的作者记录（包括休眠条目和 enabled 标记）、父身份、精确 Source 文本及有效图片尺寸/RGBA 摘要。缺少必需依赖字段的旧包、未知 schema/编码版本返回 `invalid_request` 并要求重新导出；重复键、非正整数版本、非法摘要也是 `invalid_request`。未知/错种类引擎键、语义版本/内容不同、实际集合缺项/多项返回 `dependency_mismatch`。真正文件读取或密码提供者失败为 `storage_error`，不伪装成内容不一致。dirty、材质/Source 草稿与运行 Play 的替换前置拒绝保持不变；候选验证失败不关闭旧文档或改变历史、选择和相机。只支持 Scene v10、材质 v2，不提供旧格式转换。
 
-复制期间复核文件集合和内容。在副本中重新加载资源，与文档实际持有的 Mesh 顶点、边、分段、导入材质和图像，以及每个槽的默认材质键比较；天空贴图比较纹素、2^k 缩放、均值和 cube。同键的不同已加载版本都必须匹配，不能只检查第一个；即使依赖文件集合相同，槽→材质关系不同也返回 `dependency_mismatch`。导出不按磁盘新关系重绑当前文档，不改变原文件、dirty 或 Undo；修复依赖或重新打开一致的文档后可重试。材质的当前作者草稿仍只写入副本，缺失资源仍按上述保留键规则导出，严格重开不会把缺失资源当成功。
+复制期间复核普通文件集合和内容，精确 Source/图片快照不与后来改变的源文件混用。在副本中重新加载资源，与文档实际持有的 Mesh 顶点、边、分段、槽和默认材质键比较；天空贴图比较纹素、2^k 缩放、均值和 cube。同键的不同已加载版本都必须匹配，不能只检查第一个；即使依赖文件集合相同，槽→材质关系不同也返回 `dependency_mismatch`。导出不按磁盘新关系重绑当前文档，不改变原文件、dirty 或 Undo。材质当前作者草稿只写入副本；严格加载允许正常保留的休眠/声明失配条目并提供诊断，但不把有效依赖缺失当成功。
 
 不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的任何根（`Project::roots`）内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
 
@@ -307,4 +312,4 @@ DDGI 接线专项沿同一驱动运行：
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v9 保存；`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v10 保存；`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_property` 仍使用字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

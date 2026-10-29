@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{CECC6451-BCA2-55CB-8776-905DB82CB219}"
+  "id": "{CECC6451-BCA2-55CB-8776-905DB82CB219}",
+  "materials": {
+    "slot_0": "project/{061231CF-9E14-56CF-90BB-E38E48CDFE3C}"
+  },
+  "version": 1
 }

@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{EC2800A2-631C-5AF0-B512-12B33058DDCD}"
+  "id": "{EC2800A2-631C-5AF0-B512-12B33058DDCD}",
+  "materials": {
+    "slot_0": "project/{061231CF-9E14-56CF-90BB-E38E48CDFE3C}"
+  },
+  "version": 1
 }

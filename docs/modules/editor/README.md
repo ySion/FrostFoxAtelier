@@ -51,7 +51,7 @@ World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notifi
 
 ## 参数和坐标
 
-材质资源、槽菜单、共享编辑、独立资产历史和实例参数覆盖使用同一 DSL/Runtime/Session 链。Entity 参数区的覆盖复选框明确表达继承意图；资产绑定后隐藏无效的旧整体材质控件。文件入口、Scene v9、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
+MS/MI、槽菜单、共享编辑、独立资产历史和实例覆盖使用同一 DSL/Runtime/Session 链。参数按 MS 声明生成，覆盖复选框明确表达继承意图；组件不再有固定整体材质控件。文件入口、Scene v10、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。
 
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
@@ -192,11 +192,11 @@ GPU 段：
 
 ### 不创建 GPU 的场景 CPU 定位
 
-`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量：World 几何/灯光提取（`render_items`、`light_items`）、材质 Surface；SceneSnapshot 的静止帧（`scene_snapshot`，不重建条目）与变化帧（`scene_snapshot_changed` 与 `scene_snapshot_changed_50`，每个样本经 Runtime 写入交替移动 1 个或 50 个叶网格 Entity，计时包含这些写入）；成对还原的 World 编辑（`enabled_toggle_pair`、`detach_restore_leaf`）与逐 Entity 世界矩阵（`world_matrix_each_entity`）；Play 的 `play_start`、`play_update`、`play_stop`；两种布局的 Workspace 描述与 DSL 提交（`workspace_maximized`、`workspace_docked`），以及无头 Session 上停靠布局的描述、布局与接受（`ui_docked`）。`play_start`/`play_stop` 各测一次，其余每项预热 20 次、采样 121 次；每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构；进程安装与产品相同的阶段目录，SceneSnapshot 的样本像宿主一样在 `app.scene` 下调用 refresh，其中的 `app.scene.extract` 因此不算结构错误。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95；与 Play 进程一样，Play 在从同一源文件另行加载的副本上运行，含动态刚体的场景也不改变被测文档。报告（schema v3）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
+`atelier_editor_document_acceptance --profile-scene-cpu <工程目录> <相对Scene路径> <新建绝对输出.json> [render-performance.json]` 通过正式 Project/Session 加载同一工程，分别测量：World 几何/灯光提取（`render_items`、`light_items`）、材质 Surface；SceneSnapshot 的静止帧（`scene_snapshot`，不重建条目）与变化帧（`scene_snapshot_changed` 与 `scene_snapshot_changed_50`，每个样本经 Runtime 写入交替移动 1 个或 50 个叶网格 Entity，计时包含这些写入）；成对还原的 World 编辑（`enabled_toggle_pair`、`detach_restore_leaf`）与逐 Entity 世界矩阵（`world_matrix_each_entity`）；Play 的 `play_start`、`play_update`、`play_stop`；两种布局的 Workspace 描述与 DSL 提交（`workspace_maximized`、`workspace_docked`），以及无头 Session 上停靠布局的描述、布局与接受（`ui_docked`）。`play_start`/`play_stop` 各测一次，其余每项预热 20 次、采样 121 次；每个样本是一个帧阶段计时 Recorder 帧，包含临时结果析构；进程安装与产品相同的阶段目录，SceneSnapshot 的样本像宿主一样在 `app.scene` 下调用 refresh，其中的 `app.scene.extract` 因此不算结构错误。`play_update` 的每个样本都检查 World 与物理阶段的结构和进入次数，报告其中各 `world.*`、`physics.*` 阶段的中位数与 P95；与 Play 进程一样，Play 在从同一源文件另行加载的副本上运行，含动态刚体的场景也不改变被测文档。报告（schema `atelier.editor.scene-cpu.v4`）的 `timing_scope_ns` 记录同机标定的单个计时作用域开销。结束检查序列化内容、源文件与文档历史不变。
 
 `atelier_editor_document_acceptance --profile-physics-cpu <工程目录> <相对Scene路径> <新建绝对输出.json>` 在 Play 副本上以 1/60 s 的帧逐帧推进（每帧一个固定步），直到连续 120 帧没有活动刚体或满 1800 帧，按帧结束时是否仍有活动刚体把帧分为 active / sleeping 两组，分别报告 `physics.step`、`physics.reconcile`、`physics.solve`、`physics.write_back` 和每帧更新之后在 `app.scene` 下调用的 `SceneSnapshot::refresh`（`snapshot.refresh`）的中位数与 P95；另报 Play 启动耗时 `start_ms`（单独一帧），以及前 5 帧各自的 step 与 solve（`first_frames`），开局建树这类只出现在前几帧的开销在中位数里看不到。进程安装与产品相同的阶段目录，所有耗时都取自帧阶段计时 Recorder，每帧都要求没有结构错误。它只是测量入口，数值不作为通过条件。
 
-报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 Image 身份和 sRGB 模式计数的纹理数；纹理表大小额外包含默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
+报告同时保存实例/唯一网格/相邻几何批次数、实例三角形总量，以及按 ProgramSurface 输入的 Image 身份和颜色空间计数的纹理数；空输入使用类型化值，只有整张图片表为空时才保留一个 sentinel 槽，不额外添加默认白图。可选参数复用已有性能报告的实际相机矩阵和 viewport，调用 Renderer 相同的保守视锥判定，仅输出可见实例、连续几何段和三角形数。当前帧的 `scene_instances` / `scene_culled_instances` 也沿既有原生性能 JSON CPU rows 与 Control `last_frame.frame_stats` 输出。
 
 此 CPU 定位不创建窗口或图形设备，也不提供接受 UI 帧；因此不包含 UI prepare、实际裁剪、Present 或完整帧耗时。尤其正常停靠布局的数值只能用于相同测量条件的前后比较，不能转换为产品 FPS。
 
@@ -334,7 +334,7 @@ Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语�
 `Application::set_style` 直接进入 UI 的整体校验/应用路径，应用不保存另一份主题。颜色复用文字 Coverage，字体族、字重和字号经同一 TextStore 更新度量、caret 和栅格；已接受帧仍保有旧几何与不可变内容。具体样式、版本及状态合同见 [UI 模块](../ui/README.md)。
 窗口验收从同一 Create 菜单添加真实场景成员至 256，再采样列表滚动与位置拖动：每个样本读取该步的产品帧阶段计时记录（`Application::frame_record()`），要求它属于未 Capture 的接受帧且没有结构错误，记录 `app.layout` 与 `render` 阶段。主画布 UI 累计计数按段求差，主 renderer 的 `FrameResult::stats` 按实际采样帧合计；弹出窗口的独立上下文未计入这些既有计数。CPU Coverage 和 renderer cache 的持有峰值分别记录。
 
-视口 locator 与渲染共用 SceneSnapshot 的同帧几何成员；Workspace 仅在已有 UI 引用需要时补查材质成员。两项重复工作清理的生命周期边界、无 GPU 验收和待测范围见 [Editor CPU 候选记录](../../research/editor-cpu-pipeline-20261016.md)。
+视口 locator 与拾取读取 Renderer 已接受帧的 SceneSnapshot CPU owner，不重新提取活 World；Workspace 仅在已有 UI 引用需要时补查材质成员。完整采用与快照寿命见[材质系统](../renderer/materials.md#gpu-批次与实际显示)。
 render 计时包括 Present/等待，R8 上传字节只表示有效 payload，缓存 texel 字节不表示物理显存。验收使用硬件 D3D12 debug/GBV 与 vsync，含 release 配置；数据用于说明该验收负载，不能直接当作关闭验证的产品帧耗时，也没有同负载改前基线可用于百分比提升结论。
 
 2026-10-01 独立菜单增量：dev/release UI 15/15 通过；正式窗口完整链分别接受 2632 / 2631 帧并 PASS。新增断言真实 owned WS_POPUP（非子窗口）、跨编辑器边界点击、显示器工作区约束、F10/Alt 快捷入口、左右键/悬停切换、宿主复用、焦点/捕获清理，以及原参数菜单和下拉业务操作。报告及独立 GPU 截图归档于 `out/native-menu-evidence-20261001/{dev,release}/`。开发版通过后仅调整了发布验收中完整拖动的消息投递时序和接口注释；最终两种配置均重新编译。本轮未运行真实搜狗验收。
@@ -437,7 +437,7 @@ Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合�
 
 ## 场景模型验收
 
-`world_acceptance` 覆盖成员准入、空间求值、生命周期和 presentation；`project_scene_acceptance` 覆盖 Scene v9 往返、文档身份、保留数据、属性与引用历史。场景只接受当前版本，不包含旧格式迁移验收。物理组件的模拟与资产合同由 `physics_acceptance` 覆盖。
+`world_acceptance` 覆盖成员准入、空间求值、生命周期和 presentation；`project_scene_acceptance` 覆盖当前 Scene 往返、文档身份、保留数据、属性与引用历史。场景只接受当前版本，不包含旧格式迁移验收。物理组件的模拟与资产合同由 `physics_acceptance` 覆盖。
 
 `project_integration_acceptance` 使用真实 Source 和独立 headless Play，覆盖构建、热更及作者变更转发。相机引用经文档身份转发，不比较两个 Runtime 的 ObjectId；真实 Source 控制器切镜头仍依赖尚未接入的通用引用能力，不能用原生行为或 IPC 检查代替。
 

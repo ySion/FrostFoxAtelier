@@ -91,14 +91,15 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     std::unordered_set<ObjectId> materials;
     std::unordered_map<const material::Image*,unsigned> image_modes;
     std::size_t triangles{},material_bindings{};
-    for(const auto& mesh:snapshot.meshes) {
+    for(const auto& mesh:snapshot.picking()->meshes) {
         unique.insert(mesh.geometry.get());triangles+=mesh.geometry->vertices().size()/3;
+        require(mesh.material_slots && mesh.material_slots->size()==mesh.geometry->materials().size(),
+            "CPU profile received an unresolved material slot table.");
         for(std::size_t slot=0;slot<mesh.geometry->materials().size();++slot) {
-            const auto& surface=mesh.surfaces?(*mesh.surfaces)[slot]:mesh.geometry->materials()[slot].surface;
-            for(std::size_t input=0;input<static_cast<std::size_t>(material::Input::count);++input) {
-                const auto& image=surface->description().textures[input].image;
-                if(image) image_modes[image.get()]|=input==static_cast<std::size_t>(material::Input::base_color) ||
-                    input==static_cast<std::size_t>(material::Input::emissive)?2u:1u;
+            const auto& surface=snapshot.picking()->materials.at(mesh.material_slots->at(slot));
+            require(surface!=nullptr,"CPU profile received an empty resolved material.");
+            for(const auto& input:surface->inputs()) {
+                if(input.image) image_modes[input.image.get()]|=input.color==material::TextureColor::srgb?2u:1u;
             }
         }
     }
@@ -107,11 +108,13 @@ void profile_scene_cpu(const std::filesystem::path& root,std::string_view scene,
     for(const auto& item:geometry) for(const auto& binding:take(presentation::read_material_bindings(document->world().runtime(),item.component))) {
         materials.insert(binding.resource.id());++material_bindings;
     }
-    Json report{{"schema","atelier.editor.scene-cpu.v3"},{"project",assets::utf8(root.wstring())},{"scene",scene},
+    // MaterialBatch deduplicates by image and declared transfer function. Empty
+    // inputs use typed values; only an entirely empty table needs one sentinel.
+    Json report{{"schema","atelier.editor.scene-cpu.v4"},{"project",assets::utf8(root.wstring())},{"scene",scene},
         {"gpu",false},{"samples",121},{"warmup",20},{"source_bytes",source.size()},
         {"entities",take(document->world().members()).size()},{"selected_entities",document->selected_entities().size()},{"meshes",snapshot.meshes.size()},
         {"unique_geometries",unique.size()},{"instance_triangles",triangles},
-        {"unique_sampled_images",sampled_images},{"material_texture_table_entries",sampled_images+1},
+        {"unique_sampled_images",sampled_images},{"material_texture_table_entries",std::max(std::size_t{1},sampled_images)},
         {"material_bindings",material_bindings},{"unique_bound_materials",materials.size()},
         {"semantics","Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."}};
     if(!camera_report.empty()) {

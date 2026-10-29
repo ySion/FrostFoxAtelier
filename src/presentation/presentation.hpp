@@ -3,7 +3,7 @@
 
 #include "world/world.hpp"
 #include "geometry/mesh.hpp"
-#include "material/resources.hpp"
+#include "material/program_resources.hpp"
 #include <cstring>
 #include <optional>
 #include <type_traits>
@@ -25,42 +25,24 @@ class StaticMeshEntity : public world::Entity {
     AGENERATED_BODY(StaticMeshEntity)
 };
 
-ASTRUCT(Name="world.Material", DESC="网格组件的基础表面参数。已绑定材质槽的参数沿 Material 资源及实例覆盖编辑。")
-struct Material {
-    AGENERATED_BODY(Material)
-public:
-    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="表面的线性 RGB 基础色，每个分量在 0–1 之间。它是材质颜色，不是曝光后的屏幕颜色。")
-    math::Vector3 base_color{.19f, .42f, .57f};
-    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="表面 Roughness，范围 0–1。较小值使反射更集中，较大值使高光更宽、更柔。")
-    float roughness{.65f};
-    AFIELD(Min="0", Max="1", LockMin, LockMax, DESC="表面 Metallic，范围 0–1。0 表示非金属，1 表示金属，影响基础色参与漫反射和镜面反射的方式。")
-    float metallic{};
-    AFIELD(Min="0", Max="10", LockMin, HardMax="65504", DESC="表面自身发出的线性 HDR RGB 辐射。它可以大于 1，不是显示亮度；当前每通道上限为 65504。")
-    math::Vector3 emissive{};
-    bool operator==(const Material&) const = default;
-};
 ACLASS(Name="world.StaticMeshComponent", DESC="显示网格资源，并按材质槽绑定 Material。可同时启用 Body 碰撞，空间变换来自所属 Entity。")
 class StaticMeshComponent : public world::PrimitiveComponent {
     AGENERATED_BODY(StaticMeshComponent)
-public:
-    AFIELD(Category="Material", DESC="组件的基础表面参数。若使用材质槽资源，请编辑对应的共享 Material 或实例覆盖。")
-    Material material;
 private:
     friend struct detail::Access;
     AFIELD(Name="mesh_source", Hidden)
     String mesh_source_;
     geometry::MeshRef geometry_;
-    AFIELD(Name="materials", Hidden, Sequence="material.Material")
+    AFIELD(Name="materials", Hidden, Sequence="material.Resource")
     ReferenceSequence materials_;
     std::vector<std::string> material_slots_;
     std::vector<bool> material_overrides_;
     // The mesh asset's default material per slot, resolved with the mesh and never saved.
-    AFIELD(Name="default_materials", Hidden, Sequence="material.Material")
+    AFIELD(Name="default_materials", Hidden, Sequence="material.Resource")
     ReferenceSequence default_materials_;
     std::vector<std::string> default_slots_;
-    std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces_;
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surfaces_;
     geometry::MeshRef surface_geometry_;
-    Material surface_parameters_;
 };
 
 AENUM(Name="world.LightKind", DESC="Point 点光、Rectangle 矩形面光或 Directional 平行光。不同种类使用不同的强度单位和形状参数；天光在 Environment 中设置。")
@@ -205,17 +187,15 @@ private:
 // The renderer's view of an Environment's authored values.
 [[nodiscard]] rendering::SceneLightingSettings environment_settings(const EnvironmentComponent&) noexcept;
 
-[[nodiscard]] Result<void> validate_material(Runtime&, const Material&);
 [[nodiscard]] Result<void> validate_light(Runtime&, const LightSettings&);
 // Reads authored settings, including detached/disabled objects. Does not root them.
 [[nodiscard]] Result<LightSettings> read_light(Runtime&, ObjectId light_component);
 // Typed whole-value authoring: a value that fails its type rules is rejected, not clamped;
 // World::write then applies it with the World's admissions and exact restore.
-[[nodiscard]] Result<void> set_material(world::World&, ObjectId static_mesh_component, Material);
 [[nodiscard]] Result<void> set_light(world::World&, ObjectId light_component, LightSettings);
 
 struct Types {
-    TypeId static_mesh_component, material, static_mesh_entity;
+    TypeId static_mesh_component, static_mesh_entity;
     TypeId light_kind, light_settings, light_component;
     TypeId environment_component, camera_component;
 };
@@ -230,7 +210,6 @@ struct MaterialBinding {
 struct StaticMeshEntityDesc {
     geometry::MeshRef mesh;
     world::Trs transform{};
-    Material material{};
     std::string_view mesh_source{};
     std::vector<MaterialBinding> default_materials{}; // See MeshBinding::defaults.
 };
@@ -244,8 +223,9 @@ struct RenderItem {
     ObjectId entity, component;
     math::Matrix4 world;
     geometry::MeshRef geometry;
-    Material material;
-    std::shared_ptr<const std::vector<material::SurfaceRef>> surfaces{};
+    // Exact immutable candidates. The host's MaterialBatch chooses the adopted
+    // group; presentation neither owns GPU resources nor publishes that group.
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surfaces{};
 };
 struct LightRenderItem {
     ObjectId entity, component;
@@ -279,7 +259,7 @@ struct CameraSnapshot {
 // `defaults` are the mesh asset's slot materials (overridden false). They are not saved: hosts
 // resolve them from the mesh source wherever they resolve the mesh. An explicit binding wins.
 struct MeshBinding { std::string source; geometry::MeshRef resolved; std::vector<MaterialBinding> defaults{}; };
-struct StaticMeshState { MeshBinding mesh; Material material; };
+struct StaticMeshState { MeshBinding mesh; };
 // Source and resolved immutable content change together. Bare set_geometry
 // clears provenance. These snapshots also support detached and null-mesh data.
 [[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
@@ -293,7 +273,8 @@ struct SkyMapBinding { std::string source; rendering::SkyMapRef resolved; };
 using geometry::material_slot_name;
 [[nodiscard]] Result<std::vector<MaterialBinding>> read_material_bindings(Runtime&,ObjectId);
 [[nodiscard]] Result<void> set_material_bindings(Runtime&,ObjectId,std::span<const MaterialBinding>);
-[[nodiscard]] Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> material_surfaces(Runtime&,ObjectId);
+// Shares unchanged captures; normally unbound slots use the engine world-grid MS.
+[[nodiscard]] Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material_surfaces(Runtime&,ObjectId);
 
 namespace detail {
 // Values that passed validation, by bucket position. Validators are pure checks
@@ -343,7 +324,6 @@ public:
     [[nodiscard]] const Types& types() const noexcept { return types_; }
     [[nodiscard]] world::CapabilityId meshes() const noexcept { return meshes_; }
     [[nodiscard]] world::CapabilityId lights() const noexcept { return lights_; }
-    [[nodiscard]] world::CapabilityId environments() const noexcept { return environments_; }
     [[nodiscard]] world::CapabilityId cameras() const noexcept { return cameras_; }
     // Unique in the process: no later Scene takes it, so consumers of the cache
     // can tell a replaced document from the one they synchronized with.
@@ -356,7 +336,7 @@ public:
     // a mesh slot is read again when its component or an Entity on its spatial
     // chain was written, the lights when any light or Entity on a light's chain
     // was, and everything after World::revision advances; only changed meshes are
-    // validated and rebuilt. Slots whose surfaces come from bound or default materials and
+    // rebuilt. Slots whose surfaces come from bound or default materials and
     // slots not in the cache (isolated, degenerate) are read on every update, as
     // are the lights while one is not drawn, so failures are reported as by
     // extraction on every update and persistent ones keep counting repeats.
@@ -406,11 +386,9 @@ private:
     Types types_;
     world::CapabilityId meshes_, lights_, environments_, cameras_;
     // Aligned with the meshes and lights buckets at each extraction call.
-    mutable detail::PassedValues<Material> valid_materials_;
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
     mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from bound or default materials.
-    mutable std::size_t presented_slots_{}; // Slots with a presented matrix after the latest update.
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
     // Writes stamped after `cursor_` are not yet read; valid while `tracked_`.

@@ -2,6 +2,7 @@
 #include "editor/commands.hpp"
 #include "ui_language/live_document.hpp"
 #include "assets/file.hpp"
+#include "assets/builtin_materials.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
@@ -155,7 +156,10 @@ void AssetBrowser::sort_items() {
 void AssetBrowser::update_items(const Project* project) {
     if (!items_dirty_ && catalog_revision_==(project?project->revision():0)) return;
     items_.clear();
-    if (engine_) for (const auto& asset:assets::mesh_assets()) items_.push_back({asset.key,{},asset.name,assets::AssetKind::mesh,0});
+    if (engine_) {
+        for(const auto& asset:assets::mesh_assets()) items_.push_back({asset.key,{},asset.name,assets::AssetKind::mesh,0});
+        for(const auto& asset:assets::material_assets()) items_.push_back({asset.key,{},asset.name,assets::AssetKind::material,0});
+    }
     else if (project) for (const auto& entry:project->entries())
         if (entry.path.parent_path()==directory_) items_.push_back({entry.key,entry.path,entry.path.filename().wstring(),entry.kind,entry.bytes});
     const auto query=folded(query_);
@@ -229,7 +233,11 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         items.back().icon=ui::ControlIcon::plus;
         items.push_back({id::rename,L"Rename",can_rename(),false,{},L"F2"});
         items.back().icon=ui::ControlIcon::rename;
-        for (const auto command:{Command::import_mesh,Command::import_texture,Command::create_material,Command::refresh_assets}) {
+        items.push_back({static_cast<ui::ControlKey>(Command::reimport_texture),L"Reimport Texture From...",
+            has_project_ && !engine_ && selected_ && selected_->kind==assets::AssetKind::texture,false,{}});
+        items.push_back({static_cast<ui::ControlKey>(Command::reimport_mesh),L"Reimport Mesh From...",
+            has_project_ && !engine_ && selected_ && selected_->kind==assets::AssetKind::mesh,false,{}});
+        for (const auto command:{Command::import_mesh,Command::import_texture,Command::create_material_source,Command::create_material,Command::refresh_assets}) {
             const auto* definition=command_definition(static_cast<ui::ControlKey>(command));
             items.push_back({static_cast<ui::ControlKey>(command),std::wstring(definition->title),has_project_,false,{},std::wstring(definition->shortcut),command==Command::import_mesh});
         }

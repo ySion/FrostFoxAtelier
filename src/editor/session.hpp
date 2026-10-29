@@ -52,6 +52,25 @@ struct ResourceLess {
 };
 using UnavailableResources = std::map<std::pair<assets::AssetKind, std::string>, MissingResource, ResourceLess>;
 
+// Resource publications own their exact content until sent; ordinary changes
+// carry only JSON text. Resource keys are part of that text.
+struct LiveChange {std::string text;material::ImageRef texture;std::shared_ptr<const assets::MeshAsset> mesh{};};
+
+// Owning inspection data; paths are declarations, never Runtime fields or slots.
+struct MaterialParameterView {
+    std::string path;
+    std::uint32_t components{}; // 0 is a texture binding.
+    material::LocalValue value,initial;
+};
+struct MaterialView {
+    std::string asset_key,parent_key;
+    bool source{},scene{},default_material{};
+    std::optional<source::SourceFile> source_file;
+    std::vector<MaterialParameterView> declarations;
+    std::vector<material::Override> entries;
+    std::vector<material::AuthorDiagnostic> diagnostics;
+};
+
 // One document writer. History retains ordinary roots and removal records;
 // evicting history never explicitly destroys a game object.
 class Session final {
@@ -139,17 +158,27 @@ public:
     // without history; commit records one entry against the values seen at begin.
     Result<void> begin_group_edit(ObjectId, std::span<const world::FieldPath>, std::uint64_t control_session);
     Result<void> preview_group_edit(std::uint64_t control_session, std::span<const Scalar>);
+    // Explicit import publication, never a parameter-history entry. Existing
+    // resource roots retain identity and future captures resolve current pixels.
+    Result<void> reimport_texture(Project&,std::string_view key,const std::filesystem::path& source);
+    Result<void> publish_texture(std::string_view key,material::ImageRef);
+    Result<void> reimport_mesh(Project&,std::string_view key,const std::filesystem::path& source);
+    Result<void> publish_mesh(assets::Reader&,const assets::MeshAsset&);
     // With a missing list, materials and textures the reader cannot provide become
     // stand-ins and are reported there; without one they fail. Stand-ins are never
     // edited or saved as assets.
     Result<ObjectRoot> material_resource(assets::Reader&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
     Result<ObjectRoot> material_resource(assets::Reader&,const assets::MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
+    // Publish author content on the existing asset identity, without history. A
+    // supplied MS snapshot is authoritative: never reread newer text from disk.
+    Result<ObjectRoot> publish_material(assets::Reader&,const assets::MaterialAsset&,
+        std::optional<source::SourceFile> exact_source = {},std::vector<MissingResource>* missing = nullptr);
     // The mesh asset's default material per slot, as this document's shared material assets.
     // Unavailable ones always stand in and are reported in `missing` when given.
     Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&,const assets::MeshAsset&,std::vector<MissingResource>* missing = nullptr);
     // What each slot shows where no component binds it: the default material, else the imported surface.
     // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
-    Result<std::shared_ptr<const std::vector<material::SurfaceRef>>> mesh_surfaces(assets::Reader&,const assets::MeshAsset&);
+    Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces(assets::Reader&,const assets::MeshAsset&);
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
     Result<ObjectRoot> open_material(Project&,std::string_view key);
@@ -157,17 +186,23 @@ public:
     const MissingResource* unavailable(assets::AssetKind,std::string_view key) const;
     Result<assets::MaterialAsset> material_asset(ObjectId) const;
     Result<std::vector<assets::MaterialAsset>> material_assets() const;
+    std::vector<source::SourceFile> material_sources() const;
+    Result<MaterialView> inspect_material(ObjectId) const;
     std::vector<ObjectId> material_objects() const;
     Result<void> begin_material_edit(ObjectId,std::uint64_t control_session);
-    Result<void> preview_material(std::uint64_t,const material::State&);
+    Result<void> preview_material_entry(std::uint64_t,material::Override,Project* = nullptr);
     Result<void> commit_material_edit(std::uint64_t);
     Result<void> cancel_material_edit();
-    Result<void> set_material_texture(Project&,ObjectId,material::Input,std::string_view key);
+    Result<void> set_material_texture(Project&,ObjectId,std::string_view path,std::string_view key);
     Result<void> assign_material(Project&,ObjectId component,std::string_view slot,std::string_view key);
     Result<void> clear_material(ObjectId component,std::string_view slot);
-    Result<void> set_material_override(ObjectId component,std::string_view slot,std::span<const FieldId>,bool);
+    Result<ObjectRoot> create_scene_material(ObjectId component,std::string_view slot);
+    // Project resolves a newly enabled texture that has not been loaded before.
+    Result<void> set_material_override(ObjectId,std::string_view path,bool,Project* = nullptr);
+    Result<void> discard_material_override(ObjectId,std::string_view path);
     Result<void> save_material(Project&,std::string_view key);
-    Result<void> material_undo(std::string_view key,bool redo=false);
+    // The current Project resolves newly active texture keys; history owns no images.
+    Result<void> material_undo(std::string_view key,bool redo=false,Project* = nullptr);
     bool material_dirty(std::string_view key) const;
     std::vector<std::string> dirty_materials() const;
     bool material_editing(std::uint64_t control_session) const noexcept;
@@ -175,8 +210,8 @@ public:
     bool is_material(ObjectId) const;
     bool material_can_undo(std::string_view key,bool redo=false) const;
     bool owns_edit(std::uint64_t control_session) const noexcept;
-    Result<world::Commit> undo();
-    Result<world::Commit> redo();
+    Result<world::Commit> undo(Project* = nullptr);
+    Result<world::Commit> redo(Project* = nullptr);
     Result<world::Commit> close();
     Result<world::Commit> start();
     Result<void> update(float);
@@ -202,10 +237,10 @@ public:
     // recorded as Play change ops with the values it left. Previews and cancels are
     // recorded too; a later preview of the same target replaces the earlier op.
     void set_live_forwarding(bool);
-    // The ops recorded since the last call, in order, each one JSON text. A change
+    // The ops recorded since the last call, in order, with owning texture content. A change
     // that cannot be described stops recording, and every later call fails until
     // forwarding is set again: Play no longer follows the document.
-    Result<std::vector<std::string>> take_live_ops();
+    Result<std::vector<LiveChange>> take_live_ops();
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
     Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
@@ -224,7 +259,7 @@ public:
     std::size_t placeholder_count() const noexcept;
     std::optional<std::uint64_t> document_identity(ObjectId) const;
     Result<ObjectId> local_object(std::uint64_t) const;
-    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || group_ || transform_ || (material_edit_ && material_edit_->component!=ObjectId{}); }
+    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || group_ || transform_ || (material_edit_ && material_edit_->scene); }
     void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
     void mark_modified() noexcept { if(saved_cursor_) {saved_cursor_.reset();++revision_;} }
     // Monotonic authoring observation token, independent of undo cursor reuse.
@@ -288,7 +323,8 @@ private:
     struct NameChange { ObjectRoot root; std::wstring before, after; };
     struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
     struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<presentation::MaterialBinding> before,after;};
-    struct MaterialValueChange {ObjectRoot root;ObjectId entity,component;material::State before,after;};
+    struct MaterialEntryChange {std::string path;std::optional<material::Override> before,after;};
+    struct MaterialValueChange {ObjectRoot root;std::vector<MaterialEntryChange> entries;};
     // Undo and redo restore the stored map, so the scene sees the same pointer again.
     struct SkyMapChange {ObjectRoot root;ObjectId entity;presentation::SkyMapBinding before,after;};
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
@@ -337,7 +373,7 @@ private:
     std::unordered_map<std::uint64_t,ObjectId> live_objects_;
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
     // Document side of Play: pending ops; a keyed op is a preview its next preview replaces.
-    struct LiveOp {std::string key,text;};
+    struct LiveOp {std::string key;LiveChange change;};
     bool forwarding_{};
     std::vector<LiveOp> live_ops_;
     std::optional<Error> live_failure_;
@@ -345,13 +381,26 @@ private:
     std::unordered_map<ObjectId,unsigned> live_leaves_;
     struct GraphCodec;
     std::uint64_t next_name_{1};
-    struct MaterialDocument {ObjectRoot root;material::State saved;std::vector<material::State> history;std::size_t cursor{};};
+    struct MaterialDocument {
+        ObjectRoot root;
+        assets::MaterialAsset author;
+        std::optional<source::SourceFile> source_file;
+        std::vector<material::AuthorDiagnostic> diagnostics;
+        std::vector<material::Override> saved;
+        std::vector<MaterialValueChange> history;
+        std::size_t cursor{};
+    };
     std::unordered_map<std::string,MaterialDocument> materials_;
+    std::unordered_map<ObjectId,std::string> scene_material_parents_; // Non-owning; survives parent loss.
+    std::vector<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
     std::unordered_map<std::string,ObjectRoot> textures_;
     UnavailableResources unavailable_;
     const MissingResource& remember_unavailable(const assets::Reader&,assets::AssetKind,std::string_view key,const Error&);
-    struct MaterialEdit {ObjectRoot root;material::State before;std::uint64_t control{};std::vector<world::FieldPath> paths;ObjectId entity,component;};
+    struct MaterialEdit {ObjectRoot root;std::uint64_t control{};bool scene{};std::vector<MaterialEntryChange> entries;};
     std::optional<MaterialEdit> material_edit_;
+    Result<void> apply_material_entries(ObjectId,std::span<const MaterialEntryChange>,bool forward,Project* = nullptr);
+    Result<void> preview_material_entry(std::uint64_t,std::string_view,std::optional<material::Override>);
+    Result<void> admit_material_edit(ObjectId) const;
     Result<ObjectRoot> texture_resource(assets::Reader&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);
     Result<void> replace_material_bindings(ObjectId,std::vector<presentation::MaterialBinding>);
     Result<void> admit_entity_edit(ObjectId) const;
@@ -378,11 +427,14 @@ private:
     void forward_edit();
     // A material asset as a resource op, or a scene material as its definition.
     void forward_material(ObjectId);
+    // A texture publication retains this exact immutable image, not its latest file.
+    void forward_texture(std::string_view key,material::ImageRef);
+    void forward_mesh(const assets::MeshAsset&);
     void remember(Change);
     // Releases retained data at the paths a committed change wrote.
     std::vector<RetainedSwap> release(const Change&);
     void restore(std::span<const RetainedSwap>, bool forward);
     static Result<void> validate_name(std::wstring_view);
-    Result<world::Commit> replay(Change&, bool forward);
+    Result<world::Commit> replay(Change&, bool forward,Project*);
 };
 }

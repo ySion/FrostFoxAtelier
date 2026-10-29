@@ -4,7 +4,6 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
-#include <unordered_set>
 
 namespace atelier::editor {
 namespace {
@@ -256,14 +255,27 @@ ViewportTool::Handle ViewportTool::hit(const ViewportView& view,const Targets& s
     });return best;
 }
 std::optional<ObjectId> ViewportTool::pick(const Session& session,const ViewportView& view,float x,float y) const {
-    const auto found=trace(session,view,x,y,true);return found?std::optional(found->entity):std::nullopt;
+    if(!view.scene || view.scene->scene_identity!=session.presentation().identity()) return {};
+    const auto found=trace(view,x,y,true);return found?std::optional(found->entity):std::nullopt;
 }
-std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,const ViewportView& view,float x,float y,bool locators) {
+std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view,float x,float y,bool locators) {
+    if(!view.scene) return {};
     const auto ray=view.ray(x,y);float nearest=std::numeric_limits<float>::max();std::optional<Hit> found;
-    const auto items=session.presentation().render_items();if(!items) return {};
-    std::unordered_set<ObjectId> rendered;
-    for(const auto& item:*items) {
-        rendered.insert(item.entity);const auto inverse=math::try_inverse(item.world);if(!inverse) continue;
+    for(const auto& item:view.scene->meshes) {
+        const auto inverse=math::try_inverse(item.world);if(!inverse) continue;
+        const auto& m=item.world;
+        const auto normal_transform=math::normal_transform({m[0],m[1],m[2],m[4],m[5],m[6],m[8],m[9],m[10]});
+        if(!normal_transform) continue;
+        const auto normal=[&](V3 n) {
+            const auto& a=normal_transform->matrix;
+            return V3{n.x*a[0]+n.y*a[3]+n.z*a[6],n.x*a[1]+n.y*a[4]+n.z*a[7],n.x*a[2]+n.y*a[5]+n.z*a[8]};
+        };
+        // Same common scale as material_transform_tangent: it avoids overflow
+        // without normalizing individual corners before interpolation.
+        float scale{};for(std::size_t row=0;row<3;++row) for(std::size_t column=0;column<3;++column)
+            scale=std::max(scale,std::abs(m[row*4+column]));
+        auto tangent_matrix=m;
+        for(std::size_t row=0;row<3;++row) for(std::size_t column=0;column<3;++column) tangent_matrix[row*4+column]/=scale;
         const ViewportView::Ray local{math::transform_point(ray.origin,*inverse),math::transform_direction(ray.direction,*inverse)};
         const auto vertices=item.geometry->vertices();
         for(std::size_t i=0;i<vertices.size();i+=3) {
@@ -271,45 +283,56 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const Session& session,cons
             const auto t=triangle(local,at(i),at(i+1),at(i+2));
             if(t && t->distance<nearest) {
                 const auto slot=item.geometry->material_slot(i/3);
-                const auto& surface=(item.surfaces?(*item.surfaces)[slot]:item.geometry->materials()[slot].surface)->description();
-                if(!surface.parameters.double_sided) {
-                    auto normal=math::cross(at(i+1)-at(i),at(i+2)-at(i));
-                    V3 authored{};
-                    for(std::size_t vertex=i;vertex<i+3;++vertex) {
-                        const auto& n=vertices[vertex].normal;authored+=V3{n[0],n[1],n[2]};
-                    }
-                    if(math::dot(normal,authored)<0)normal=-normal;
-                    if(math::dot(normal,local.direction)>=0)continue;
+                const auto& surface=*view.scene->materials[(*item.material_slots)[slot]];
+                // Renderer orients each face toward its authored vertex normals
+                // before applying the inverse transpose, including reflections.
+                const auto position=[&](std::size_t n){const auto& p=vertices[n].position;return math::Vector3d{p[0],p[1],p[2]};};
+                auto face=math::cross(position(i+1)-position(i),position(i+2)-position(i));
+                math::Vector3d authored{};
+                for(std::size_t n=i;n<i+3;++n) {const auto& a=vertices[n].normal;authored+=math::Vector3d{a[0],a[1],a[2]};}
+                if(math::dot(face,authored)<0) face=-face;
+                face=math::try_normalize(face).value_or(math::Vector3d{});
+                material::Context context;
+                context.geometric_normal_world=math::try_normalize(normal({float(face.x),float(face.y),float(face.z)})).value_or(V3{});
+                if(!surface.policy().double_sided && math::dot(context.geometric_normal_world,ray.direction)>=0) continue;
+                const std::array weights{1-t->u-t->v,t->u,t->v};
+                V3 shading{},tangent{};float handedness{};
+                std::array<V3,3> positions;
+                for(std::size_t corner=0;corner<3;++corner) {
+                    const auto& vertex=vertices[i+corner];const auto weight=weights[corner];
+                    positions[corner]=math::transform_point(at(i+corner),item.world);
+                    context.uv+=V2{vertex.uv[0],vertex.uv[1]}*weight;
+                    shading+=normal({vertex.normal[0],vertex.normal[1],vertex.normal[2]})*weight;
+                    tangent+=math::transform_direction(V3{vertex.tangent[0],vertex.tangent[1],vertex.tangent[2]},tangent_matrix)*weight;
+                    handedness+=vertex.tangent[3]*normal_transform->mirror*weight;
                 }
-                std::array<double,2> uv{};
-                for(std::size_t axis=0;axis<2;++axis)
-                    uv[axis]=vertices[i].uv[axis]*(1.-t->u-t->v)+vertices[i+1].uv[axis]*t->u+vertices[i+2].uv[axis]*t->v;
-                if(!material::covered(surface,uv))continue;
-                const auto point=ray.origin+ray.direction*t->distance;
+                context.position_world=positions[0]+(positions[1]-positions[0])*t->u+(positions[2]-positions[0])*t->v;
+                context.normal_world=math::try_normalize(shading).value_or(V3{});
+                context.tangent_world={tangent.x,tangent.y,tangent.z,handedness<0?-1.f:1.f};
+                if(surface.policy().coverage==material::Coverage::mask) {
+                    const auto output=surface.evaluate(context);
+                    if(!output || !(output->coverage>=0)) continue; // Includes NaN, as in the raster/ray consumers.
+                }
+                const auto point=context.position_world;
                 if(view.project(point)) {
-                    // World normal of the hit face, facing the viewer.
-                    const auto edge1=math::transform_direction(at(i+1)-at(i),item.world),edge2=math::transform_direction(at(i+2)-at(i),item.world);
-                    auto normal=math::try_normalize(math::cross(edge1,edge2)).value_or(V3{0,1,0});
-                    if(math::dot(normal,ray.direction)>0) normal=-normal;
-                    nearest=t->distance;found=Hit{item.entity,point,normal};
+                    auto facing=context.geometric_normal_world;
+                    if(math::dot(facing,ray.direction)>0) facing=-facing;
+                    nearest=t->distance;found=Hit{item.entity,point,facing};
                 }
             }
         }
     }
     if(!locators) return found;
-    const auto members=session.world().members();if(!members) return found;
-    for(const auto& entity:*members) if(!rendered.contains(entity.id())) {
-        const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
-        const auto matrix=world::world_matrix(session.world().runtime(),entity.id());if(!matrix) continue;
-        const V3 origin{(*matrix)[12],(*matrix)[13],(*matrix)[14]};const auto p=view.project(origin);
+    for(const auto& locator:view.scene->locators) {
+        const auto origin=locator.position;const auto p=view.project(origin);
         const auto depth=math::dot(origin-ray.origin,ray.direction);
-        if(p && length(*p-V2{x,y})<=8*view.dpi_scale && depth<nearest && depth>=0) {nearest=depth;found=Hit{entity.id(),origin};}
+        if(p && length(*p-V2{x,y})<=8*view.dpi_scale && depth<nearest && depth>=0) {nearest=depth;found=Hit{locator.entity,origin};}
     }
     return found;
 }
-Result<void> ViewportTool::place_cursor(const Session& session,const ViewportView& view,V2 p,ToolSettings settings,bool control) {
+Result<void> ViewportTool::place_cursor(const ViewportView& view,V2 p,ToolSettings settings,bool control) {
     std::optional<V3> position;V3 normal=view.construction_normal;
-    if(settings.cursor_surface) if(const auto hit=trace(session,view,p.x,p.y,false)) {position=hit->position;normal=hit->normal;}
+    if(settings.cursor_surface) if(const auto hit=trace(view,p.x,p.y,false)) {position=hit->position;normal=hit->normal;}
     if(!position) position=on_plane(view,p,{},view.construction_normal);
     if(!position) position=on_plane(view,p,cursor,view.forward);
     if(!position) return invalid("The cursor cannot be placed on the current construction plane.");
@@ -350,11 +373,12 @@ Result<void> ViewportTool::snap_selection(Session& session,ToolSettings settings
     const auto cancelled=session.cancel_edit();return cancelled?result:cancelled;
 }
 std::vector<ObjectId> ViewportTool::pick_box(const Session& session,const ViewportView& view,ui::Rect box) const {
-    std::vector<ObjectId> found;const auto items=session.presentation().render_items();if(!items) return found;
+    std::vector<ObjectId> found;
+    if(!view.scene || view.scene->scene_identity!=session.presentation().identity()) return found;
     const auto intersects=[&](float left,float top,float right,float bottom) {
         return left<=box.x+box.width && right>=box.x && top<=box.y+box.height && bottom>=box.y;
     };
-    for(const auto& item:*items) {
+    for(const auto& item:view.scene->meshes) {
         if(std::ranges::find(found,item.entity)!=found.end()) continue;
         float left=std::numeric_limits<float>::max(),top=left,right=-left,bottom=-left;
         for(const auto& vertex:item.geometry->vertices()) {
@@ -362,14 +386,13 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session,const Viewpo
             if(!projected) continue;
             left=std::min(left,projected->x);right=std::max(right,projected->x);top=std::min(top,projected->y);bottom=std::max(bottom,projected->y);
         }
-        if(left<=right && intersects(left,top,right,bottom)) found.push_back(item.entity);
+        const auto origin=view.project({item.world[12],item.world[13],item.world[14]});
+        if((left<=right && intersects(left,top,right,bottom)) || (origin && intersects(origin->x,origin->y,origin->x,origin->y)))
+            found.push_back(item.entity);
     }
-    const auto members=session.world().members();if(!members) return found;
-    for(const auto& entity:*members) {
-        if(std::ranges::find(found,entity.id())!=found.end()) continue;
-        const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
-        const auto matrix=world::world_matrix(session.world().runtime(),entity.id());if(!matrix) continue;
-        const auto p=view.project({(*matrix)[12],(*matrix)[13],(*matrix)[14]});if(p && intersects(p->x,p->y,p->x,p->y)) found.push_back(entity.id());
+    for(const auto& locator:view.scene->locators) {
+        const auto p=view.project(locator.position);
+        if(p && intersects(p->x,p->y,p->x,p->y)) found.push_back(locator.entity);
     }
     return found;
 }
@@ -617,7 +640,7 @@ Result<bool> ViewportTool::pointer(Session& session,const ViewportView& view,con
             const auto operation=hover_>=Handle::scale_x?Operation::scale:hover_>=Handle::rotate_x?Operation::rotate:Operation::move;
             const auto result=begin(session,view,settings,operation,hover_,false,p);if(!result) return std::unexpected(result.error());
         } else {
-            const auto placed=place_cursor(session,view,p,settings,event.control);if(!placed) return std::unexpected(placed.error());
+            const auto placed=place_cursor(view,p,settings,event.control);if(!placed) return std::unexpected(placed.error());
         }
         return true;
     }
@@ -673,15 +696,11 @@ Result<bool> ViewportTool::key(Session& session,const ViewportView& view,const u
     }
     return false;
 }
-void ViewportTool::overlay(const Session& session,const ViewportView& view,ToolSettings settings,std::span<const ObjectId> mesh_entities,std::vector<Shape>& out) const {
+void ViewportTool::overlay(const Session& session,const ViewportView& view,ToolSettings settings,std::vector<Shape>& out) const {
     const auto stroke=[&](V2 a,V2 b,float width,ui::Color color){out.push_back({Shape::Kind::segment,{a.x,a.y,b.x,b.y},width*view.dpi_scale,color});};
-    const std::unordered_set<ObjectId> rendered(mesh_entities.begin(),mesh_entities.end());
-    const auto members=session.world().members();
-    if(members) for(const auto& entity:*members) if(!rendered.contains(entity.id())) {
-        const auto spatial=world::has_transform(session.world().runtime(),entity.id());if(!spatial || !*spatial) continue;
-        const auto matrix=world::world_matrix(session.world().runtime(),entity.id());if(!matrix) continue;
-        const auto p=view.project({(*matrix)[12],(*matrix)[13],(*matrix)[14]});if(!p) continue;
-        const float r=6*view.dpi_scale;const ui::Color color=session.is_selected(entity.id())?picked:srgb(0xd8,0xdc,0xe0);
+    if(view.scene) for(const auto& locator:view.scene->locators) {
+        const auto p=view.project(locator.position);if(!p) continue;
+        const float r=6*view.dpi_scale;const ui::Color color=locator.selected?picked:srgb(0xd8,0xdc,0xe0);
         stroke(*p-V2{r,0},*p+V2{r,0},1.5f,color);stroke(*p-V2{0,r},*p+V2{0,r},1.5f,color);
     }
     if(const auto selected=targets(session,settings.pivot,cursor))

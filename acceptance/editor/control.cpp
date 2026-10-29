@@ -25,7 +25,7 @@ constexpr std::array<unsigned char,70> tiny_png{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x
 constexpr std::string_view published_code="class project.ControlProbe : world.Component { float speed = 1.0f; void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); } }\n";
 constexpr std::string_view published_ui="ui ProjectUI(in Text title, in double elapsed, in double entities) { Column hud { Text title { text: input.title; } } }\n";
 void project_fixture(const std::filesystem::path& project) {
-    write(project/"Content/Scenes/Main.scene",Json{{"version",9},{"next_id","1"},{"roots",Json::array()},{"entities",Json::array()},{"materials",Json::array()}}.dump());
+    write(project/"Content/Scenes/Main.scene",Json{{"version",10},{"next_id","1"},{"roots",Json::array()},{"entities",Json::array()},{"materials",Json::array()}}.dump());
     write(project/"Source/Published.source",published_code);write(project/"Source/Published.ui.source",published_ui);
     std::filesystem::create_directories(project/"Cache");
     write(project/"Config/Project.json",Json{{"version",1},{"name","Control review"},{"startup_scene","Content/Scenes/Main.scene"},{"ui_source","Source/Published.ui.source"}}.dump());
@@ -90,6 +90,44 @@ Json discover_editor(const Process& editor,const std::filesystem::path& director
 }
 void error(const Json& result,std::string_view expected) {require(result.value("status","")=="error" && result.at("error").at("code").get<std::string>()==expected,result.dump());}
 Json selection(const std::string& entity) {return {{"selection",{{"entities",Json::array({entity})}}}};}
+const Json& material_entry(const Json& material,std::string_view path) {
+    const auto& entries=material.at("entries");
+    const auto at=std::ranges::find_if(entries,[&](const Json& entry){return entry.at("path").get_ref<const std::string&>()==path;});
+    require(at!=entries.end(),"Material lacks the sparse author entry "+std::string(path));return *at;
+}
+bool material_issue(const Json& material,std::string_view text) {
+    return std::ranges::any_of(material.at("diagnostics"),[&](const Json& issue){return issue.at("message").get<std::string>().find(text)!=std::string::npos;});
+}
+void no_project_scene_material(Driver& d) {
+    const auto initial=d.inspect();
+    require(initial.at("project")=="" && initial.at("entities").empty(),"Scene MI fixture requires an empty no-project document");
+    d.ok("scene.create",{{"kind","mesh"},{"mesh","builtin/cube"}});
+    const auto cube=d.inspect().at("entities").front();const auto component=cube.at("components").front().at("handle");
+    std::cout<<"No-project scene MI: create_scene on builtin cube\n"<<std::flush;
+    const auto instance=d.ok("material.create_scene",{{"component",component},{"slot","slot/0"}}).at("object");
+    const auto inspect=[&]{return d.ok("material.inspect",{{"object",instance}});};
+    const auto created=inspect();
+    require(created.at("scene")==true && created.at("parent")=="builtin/material/default-grid" && created.at("entries").empty(),
+        "A no-project scene MI did not inherit Grid without copying defaults");
+    d.ok("material.set_entry",{{"object",instance},{"entry",{{"path","cell_size"},{"type","float"},{"enabled",true},{"value",2.5}}}});
+    d.ok("material.override",{{"object",instance},{"path","cell_size"},{"enabled",false}});
+    const auto dormant=material_entry(inspect(),"cell_size");
+    require(dormant.at("value")==2.5 && dormant.at("enabled")==false,"No-project override disable lost its authored value");
+    d.ok("material.discard",{{"object",instance},{"path","cell_size"}});
+    require(inspect().at("entries").empty(),"No-project discard retained the local entry");
+    d.op("edit.undo");require(material_entry(inspect(),"cell_size")==dormant,"Scene Undo did not restore the dormant MI entry");
+    d.op("edit.redo");require(inspect().at("entries").empty(),"Scene Redo did not discard the MI entry again");
+    d.ok("material.assign",{{"component",component},{"slot","slot/0"},{"asset",""}});
+    require(d.ok("editor.inspect",{{"detail","object"},{"object",component}}).at("object").at("materials").empty(),
+        "Use Mesh Default did not clear the no-project scene binding");
+    error(d.call("material.create",{{"role","instance"},{"path","Content/Materials/NeedsProject.material"}}),"not_ready");
+    const auto undo=d.inspect().at("undo").get<std::size_t>()-initial.at("undo").get<std::size_t>();
+    for(std::size_t i=0;i<undo;++i) d.op("edit.undo");
+    const auto restored=d.inspect();
+    require(restored.at("entities").empty() && restored.at("dirty")==initial.at("dirty") && restored.at("undo")==initial.at("undo"),
+        "No-project material commands did not undo back to the initial document");
+    std::cout<<"No-project scene MI commands: PASS\n"<<std::flush;
+}
 void repro_engine_assets(Driver& d,const std::filesystem::path& root) {
     const auto exported=[&] {
         const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Engine repro export did not start");
@@ -99,11 +137,19 @@ void repro_engine_assets(Driver& d,const std::filesystem::path& root) {
     const auto empty=exported();
     require(read(empty/"manifest.json").at("engine_assets")==Json{{"version",1},{"records",Json::array()}},
         "An empty no-project document acquired unused installation assets");
+    require(read(empty/"manifest.json").at("material_resources")==Json{{"version",1},{"records",Json::object()}},
+        "An empty repro omitted its current, empty material digest set");
     for(const auto* key:{"builtin/plane","builtin/cube","builtin/sphere"}) d.ok("scene.create",{{"kind","mesh"},{"mesh",key}});
     const auto bundle=exported();const auto original=read(bundle/"manifest.json");
     const auto records=original.at("engine_assets").at("records");
-    require(records.size()==3 && records[0].at("key")=="builtin/cube" && records[1].at("key")=="builtin/plane" &&
-        records[2].at("key")=="builtin/sphere","No-project export did not freeze exactly its three actual engine meshes");
+    require(records.size()==4 && records[0].at("key")=="builtin/cube" && records[1].at("key")=="builtin/material/default-grid" &&
+        records[2].at("key")=="builtin/plane" && records[3].at("key")=="builtin/sphere",
+        "No-project export did not freeze its three meshes and their implicit DefaultWorldGrid MS");
+    for(const auto& record:records) {
+        const bool material=record.at("key")=="builtin/material/default-grid";
+        require(record.at("kind")==Json(material?"material":"mesh") && record.at("digest_version")==Json(material?1:2),
+            "Engine manifest did not identify material digest v1 and mesh digest v2");
+    }
     const auto copy=root/"EngineRepro";
     std::filesystem::copy(bundle,copy,std::filesystem::copy_options::recursive);
     const auto scene_path=copy/"Project"/wide(original.at("scene").get<std::string>());
@@ -134,7 +180,7 @@ void repro_engine_assets(Driver& d,const std::filesystem::path& root) {
     const auto rejected=[&](const Json& manifest,const Json& value,std::string_view code) {
         publish(manifest,value);rejected_open(code);
     };
-    for(unsigned change=0;change<12;++change) {
+    for(unsigned change=0;change<21;++change) {
         auto manifest=original;auto& engine=manifest.at("engine_assets");auto& items=engine.at("records");
         std::string_view code="dependency_mismatch";
         if(change==0) items.erase(items.begin());
@@ -145,10 +191,19 @@ void repro_engine_assets(Driver& d,const std::filesystem::path& root) {
         if(change==5) items[0]["content_sha256"]=std::string(64,'0');
         if(change==6) {manifest.erase("engine_assets");code="invalid_request";}
         if(change==7) {engine["version"]=2;code="invalid_request";}
-        if(change==8) {items[0]["digest_version"]=2;code="invalid_request";}
+        if(change==8) {items[0]["digest_version"]=3;code="invalid_request";}
         if(change==9) {items[0]["semantic_version"]=1.5;code="invalid_request";}
         if(change==10) items[0]["key"]="builtin/unknown";
         if(change==11) {items[0]["content_sha256"]="not-a-digest";code="invalid_request";}
+        if(change==12) {items[1]["digest_version"]=2;code="invalid_request";}
+        if(change==13) {items[1]["kind"]="mesh";items[1]["digest_version"]=2;}
+        if(change==14) items[1]["content_sha256"]=std::string(64,'0');
+        if(change==15) {manifest.erase("material_resources");code="invalid_request";}
+        if(change==16) {manifest["material_resources"]["version"]=2;code="invalid_request";}
+        if(change==17) manifest["material_resources"]["records"]["project/unused"]=std::string(64,'0');
+        if(change==18) {manifest["material_resources"]["records"]=Json::array();code="invalid_request";}
+        if(change==19) {manifest["material_resources"]["records"]["project/unused"]="not-a-digest";code="invalid_request";}
+        if(change==20) items.erase(items.begin()+1); // The implicit grid is still an actual dependency.
         rejected(manifest,scene,code);
     }
     auto unused=scene;unused["roots"]=Json::array();unused["entities"]=Json::array();
@@ -182,32 +237,34 @@ void repro_engine_assets(Driver& d,const std::filesystem::path& root) {
     // A cached but unused material and an obsolete disk texture are not roots.
     // Only the referenced, published draft belongs to the frozen document.
     const auto project=root/"EngineDraftProject";project_fixture(project);d.ok("project.open",{{"path",utf8(project.wstring())}});
-    const auto used=d.ok("material.create",{{"path","Content/Materials/Used.material"}}).at("asset");
-    const auto cached=d.ok("material.create",{{"path","Content/Materials/Cached.material"}}).at("asset");
+    const auto used=d.ok("material.create",{{"path","Content/Materials/Used.material"},{"role","instance"}}).at("asset");
+    const auto cached=d.ok("material.create",{{"path","Content/Materials/Cached.material"},{"role","instance"}}).at("asset");
     for(const auto* name:{"Used","Cached"}) {
         const auto file=project/"Content/Materials"/(std::string(name)+".material");auto value=read(file);
-        value["textures"]["base_color"]["source"]="builtin/unknown";write(file,value.dump(2));
+        value["entries"]=Json::array({{{"path","base_color_texture"},{"type","texture"},{"enabled",true},
+            {"value",{{"asset_key","builtin/unknown"},{"address","repeat"}}}}});write(file,value.dump(2));
     }
     d.ok("project.open",{{"path",utf8(project.wstring())}});
     d.ok("material.inspect",{{"asset",cached}});
     const auto loaded=d.ok("material.inspect",{{"asset",used}});
-    require(loaded.at("missing_textures")==Json::array({"builtin/unknown"}),"Unknown-engine draft fixture did not retain its missing texture");
+    require(material_issue(loaded,"builtin/unknown"),"Unknown-engine draft fixture did not retain its missing texture diagnostic");
     d.ok("scene.create",{{"kind","mesh"}});
     const auto component=d.inspect().at("entities")[0].at("components")[0].at("handle");
     d.ok("material.assign",{{"component",component},{"slot","slot/0"},{"asset",used}});d.ok("scene.save");
     error(d.call("repro.export"),"dependency_mismatch");
-    d.ok("material.set_texture",{{"object",loaded.at("handle")},{"input","base_color"},{"texture",""}});
+    d.ok("material.set_texture",{{"object",loaded.at("handle")},{"path","base_color_texture"},{"texture",""}});
     const auto draft=exported();
     require(!std::filesystem::exists(draft/"Project/Content/Materials/Cached.material") &&
-        read(draft/"Project/Content/Materials/Used.material").at("textures").at("base_color").at("source")=="" &&
-        read(project/"Content/Materials/Used.material").at("textures").at("base_color").at("source")=="builtin/unknown",
+        material_entry(read(draft/"Project/Content/Materials/Used.material"),"base_color_texture").at("value").at("asset_key")=="" &&
+        material_entry(read(project/"Content/Materials/Used.material"),"base_color_texture").at("value").at("asset_key")=="builtin/unknown",
         "Frozen draft roots included an unused cache, ignored the live draft or changed its source file");
     d.ok("material.undo",{{"asset",used}});d.ok("repro.open",{{"directory",utf8(draft.wstring())}});
-    require(d.ok("material.inspect",{{"asset",used}}).at("missing_textures").empty(),"Published draft did not reopen strictly");
-    write(root/"engine-assets.json",Json{{"status","passed"},{"records",records},{"cases",{"no-project-empty-and-three-meshes",
+    require(d.ok("material.inspect",{{"asset",used}}).at("diagnostics").empty(),"Published draft did not reopen strictly");
+    write(root/"engine-assets.json",Json{{"status","passed"},{"records",records},{"cases",{"no-project-empty-and-three-meshes-with-grid",
         "missing-and-extra-records","schema-kind-version-digest","saved-history-selection-camera-preserved","unknown-actual-resource",
         "duplicate-json-field-invalid-request","missing-manifest-storage-error","valid-manifest-reopen",
-        "disabled-members","ordinary-name","unused-cache-and-superseded-disk-not-roots","referenced-draft"}}}.dump(2));
+        "required-material-digests","material-kind-and-digest-v1","mesh-digest-v2","disabled-members","ordinary-name",
+        "unused-cache-and-superseded-disk-not-roots","referenced-draft"}}}.dump(2));
 }
 // One operator registry serves menus, keys and Control; the context override lasts one call.
 void verify_operators(Driver& d,const std::string& entity) {
@@ -473,8 +530,8 @@ Json verify_object_directory(Driver& d,const Json& full,const Json& capabilities
 void repro_lighting_agreement(Driver& d,const std::filesystem::path& repro,const std::filesystem::path& root) {
     const auto original=read(repro/"manifest.json");
     const auto original_scene=read(repro/"Project"/wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema")==6 && original_scene.at("version")==9 && !original_scene.contains("world"),
-        "Current repro export did not identify view schema 6 and Scene v9");
+    require(original.at("view_schema")==6 && original_scene.at("version")==10 && !original_scene.contains("world"),
+        "Current repro export did not identify view schema 6 and Scene v10");
     const auto copy=root/"LightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro),atelier::platform::windows_file_path(copy),
         std::filesystem::copy_options::recursive);
@@ -498,7 +555,7 @@ void repro_lighting_agreement(Driver& d,const std::filesystem::path& repro,const
     };
     auto unmarked=original;unmarked.erase("view_schema");rejected(unmarked,original_scene);
     for(unsigned schema:{5u,7u}) {auto other=original;other["view_schema"]=schema;rejected(other,original_scene);}
-    auto old_scene=original_scene;old_scene["version"]=8;rejected(original,old_scene,"operation_failed");
+    for(unsigned version:{8u,9u}) {auto old_scene=original_scene;old_scene["version"]=version;rejected(original,old_scene,"operation_failed");}
     for(const auto& [name,value]:Json{{"ssil",false},{"shadow_bias",.002},{"shadow_light_budget",16},{"shadow_samples",64},
         {"direct_reference",true},{"direct_clustered",false},{"direct_shadow_cache",true}}.items()) {
         auto retired=original;retired["view"][name]=value;rejected(retired,original_scene);
@@ -564,9 +621,9 @@ void repro_material_draft(Driver& d,const std::filesystem::path& project,const s
     d.ok("project.open",{{"path",utf8(project.wstring())}});
     write(root/"Draft.png",std::string(tiny_png.begin(),tiny_png.end()));
     const auto texture=d.ok("texture.import",{{"path",utf8((root/"Draft.png").wstring())}}).at("asset").get<std::string>();
-    const auto asset=d.ok("material.create",{{"path","Content/Materials/Draft.material"}}).at("asset").get<std::string>();
-    const auto unused=d.ok("material.create",{{"path","Content/Materials/Unused.material"}}).at("asset").get<std::string>();
-    d.ok("material.set_texture",{{"object",d.ok("material.inspect",{{"asset",asset}}).at("handle")},{"input","base_color"},{"texture",texture}});
+    const auto asset=d.ok("material.create",{{"path","Content/Materials/Draft.material"},{"role","instance"}}).at("asset").get<std::string>();
+    const auto unused=d.ok("material.create",{{"path","Content/Materials/Unused.material"},{"role","instance"}}).at("asset").get<std::string>();
+    d.ok("material.set_texture",{{"object",d.ok("material.inspect",{{"asset",asset}}).at("handle")},{"path","base_color_texture"},{"texture",texture}});
     d.ok("material.save",{{"asset",asset}});
     const auto entity=d.ok("scene.create",{{"kind","mesh"}}).at("object");Json component;
     for(const auto& item:d.inspect().at("entities")) if(item.at("handle")==entity) component=item.at("components")[0].at("handle");
@@ -575,20 +632,176 @@ void repro_material_draft(Driver& d,const std::filesystem::path& project,const s
     for(const auto* file:{L"Content/Textures/Draft.png",L"Content/Textures/Draft.png.asset.json"}) std::filesystem::remove(atelier::platform::windows_file_path(project/file));
     d.ok("project.open",{{"path",utf8(project.wstring())}});
     const auto opened=d.ok("material.inspect",{{"asset",asset}});
-    require(opened.at("missing_textures")==Json::array({texture}),"The draft fixture did not lose its texture: "+opened.dump());
+    require(material_issue(opened,texture),"The draft fixture did not lose its texture: "+opened.dump());
     d.ok("material.inspect",{{"asset",unused}});
-    d.ok("material.set_texture",{{"object",opened.at("handle")},{"input","base_color"},{"texture",""}});
+    d.ok("material.set_texture",{{"object",opened.at("handle")},{"path","base_color_texture"},{"texture",""}});
     const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Draft repro export did not start");
     const auto done=d.wait(id);require(done.at("status")=="ok","A material draft without its missing texture did not export: "+done.dump());
     const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
-    require(read(bundle/"Project/Content/Materials/Draft.material").at("textures").at("base_color").at("source")=="" && read(saved).dump()==saved_text,
+    require(material_entry(read(bundle/"Project/Content/Materials/Draft.material"),"base_color_texture").at("value").at("asset_key")=="" && read(saved).dump()==saved_text,
         "A draft repro did not carry the draft, or changed the saved material");
     require(!std::filesystem::exists(atelier::platform::windows_file_path(bundle/"Project/Content/Materials/Unused.material")) &&
         std::ranges::none_of(read(bundle/"manifest.json").at("input_files"),[](const Json& file){return file.at("path").get<std::string>().starts_with("Content/Materials/Unused");}),
         "A repro copied a material the session loaded but the scene does not reference");
     d.ok("material.undo",{{"asset",asset}});
     d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
-    require(d.ok("material.inspect",{{"asset",asset}}).at("missing_textures").empty(),"A draft repro did not reopen without the missing texture");
+    require(d.ok("material.inspect",{{"asset",asset}}).at("diagnostics").empty(),"A draft repro did not reopen without the missing texture");
+}
+// Exercise the real author/Runtime/export/strict-load path. Pixel expectations
+// come from this RGBA fixture, not from another call to the exporter's decoder.
+void repro_material_inputs(Driver& d,const std::filesystem::path& root) {
+    const auto project=root/"Project";project_fixture(project);
+    d.ok("project.open",{{"path",utf8(project.wstring())}});
+    const std::array<std::uint8_t,16> first_pixels{17,53,201,0,254,1,127,85,64,192,9,170,203,87,38,255};
+    const std::array<std::uint8_t,16> next_pixels{225,13,87,255,41,219,3,170,99,7,181,85,6,149,231,0};
+    const auto bitmap=[](const std::array<std::uint8_t,16>& rgba) {
+        BITMAPV5HEADER header{};header.bV5Size=sizeof(header);header.bV5Width=2;header.bV5Height=-2;
+        header.bV5Planes=1;header.bV5BitCount=32;header.bV5Compression=BI_BITFIELDS;header.bV5SizeImage=16;
+        header.bV5RedMask=0x00ff0000;header.bV5GreenMask=0x0000ff00;header.bV5BlueMask=0x000000ff;header.bV5AlphaMask=0xff000000;
+        header.bV5CSType=LCS_sRGB;header.bV5Intent=LCS_GM_IMAGES;
+        BITMAPFILEHEADER file{};file.bfType=0x4d42;file.bfOffBits=static_cast<DWORD>(sizeof(file)+sizeof(header));file.bfSize=file.bfOffBits+16;
+        std::string bytes(reinterpret_cast<const char*>(&file),sizeof(file));bytes.append(reinterpret_cast<const char*>(&header),sizeof(header));
+        for(std::size_t i=0;i<rgba.size();i+=4) for(const auto channel:{2u,1u,0u,3u}) bytes.push_back(static_cast<char>(rgba[i+channel]));
+        return bytes;
+    };
+    write(root/"Active.bmp",bitmap(first_pixels));write(root/"Dormant.bmp",bitmap(next_pixels));
+    const auto texture=d.ok("texture.import",{{"path",utf8((root/"Active.bmp").wstring())}}).at("asset").get<std::string>();
+    const auto dormant=d.ok("texture.import",{{"path",utf8((root/"Dormant.bmp").wstring())}}).at("asset").get<std::string>();
+    const std::string source_text=R"(struct Params { float gain; };
+struct Inputs { material.TextureInput pigment; material.TextureInput dormant; };
+Params defaults() { Params p; p.gain=0.75; return p; }
+material.Output shade(material.Context context,Params p,Inputs inputs) {
+    vector4 color=sample(inputs.pigment,context.uv);
+    material.Output result; result.base_color=vector3(color.x,color.y,color.z)*p.gain;
+    result.roughness=0.5; result.normal_world=context.normal_world; return result;
+}
+)";
+    const std::string source_file="Content/Materials/Frozen.ms.material",parent_file="Content/Materials/Parent.material",
+        leaf_file="Content/Materials/Leaf.material",texture_file="Content/Textures/Active.bmp";
+    const auto source=d.ok("material.create",{{"path",source_file},{"role","source"},{"source",source_text}}).at("asset").get<std::string>();
+    auto source_author=read(project/source_file);const auto source_path=source_author.at("source_path").get<std::string>();
+    source_author["policy"]["double_sided"]=true;
+    source_author["inputs"]=Json::array();
+    for(const auto* path:{"pigment","dormant"}) source_author["inputs"].push_back({{"path",path},
+        {"binding",{{"asset_key",""},{"address","repeat"}}},{"color",std::string_view(path)=="pigment"?"srgb":"linear"},
+        {"empty_value",{1.0,1.0,1.0,1.0}}});
+    write(project/source_file,source_author.dump(2));
+    const auto parent=d.ok("material.create",{{"path",parent_file},{"role","instance"},{"parent",source},
+        {"entries",Json::array({{{"path","gain"},{"type","float"},{"enabled",true},{"value",0.5}}})}}).at("asset").get<std::string>();
+    const auto binding=[](std::string path,std::string key,bool enabled=true) {
+        return Json{{"path",std::move(path)},{"type","texture"},{"enabled",enabled},{"value",{{"asset_key",std::move(key)},{"address","repeat"}}}};
+    };
+    const auto leaf=d.ok("material.create",{{"path",leaf_file},{"role","instance"},{"parent",parent},
+        {"entries",Json::array({binding("pigment",texture),binding("dormant",dormant,false),
+            binding("gain","builtin/not-a-texture"),binding("removed","builtin/removed-input")})}}).at("asset").get<std::string>();
+    const auto unused=d.ok("material.create",{{"path","Content/Materials/Unused.ms.material"},{"role","source"}}).at("asset").get<std::string>();
+    d.ok("material.inspect",{{"asset",unused}}); // Cached Source text must not enter this scene's closure.
+    const auto opened=d.ok("material.inspect",{{"asset",leaf}});const auto handle=opened.at("handle");
+    require(opened.at("source").at("text")==source_text && !opened.at("default_material").get<bool>(),"Custom MS did not load its exact saved text");
+    // Keep a real texture root in the disabled entry before freezing. A root or
+    // a cached image is not itself a strict execution dependency.
+    d.ok("material.set_texture",{{"object",handle},{"path","dormant"},{"texture",dormant}});
+    d.ok("material.override",{{"object",handle},{"path","dormant"},{"enabled",false}});d.ok("material.save",{{"asset",leaf}});
+    const auto entity=d.ok("scene.create",{{"kind","mesh"},{"mesh","builtin/cube"}}).at("object");Json component;
+    for(const auto& item:d.inspect().at("entities")) if(item.at("handle")==entity) component=item.at("components")[0].at("handle");
+    d.ok("material.assign",{{"component",component},{"slot","slot/0"},{"asset",leaf}});d.ok("scene.save");
+    const auto parent_author=read(project/parent_file),leaf_author=read(project/leaf_file);
+    const auto hash_json=[](const Json& value) {const auto text=value.dump();return sha256(std::as_bytes(std::span(text)));};
+    const auto expected=[&](const std::array<std::uint8_t,16>& pixels) {
+        Json inputs=Json::object();for(const auto* path:{"pigment","dormant"}) inputs[path]={{"key",""},{"image",nullptr}};
+        Json records=Json::object();
+        records[source]=hash_json({{"author",source_author},{"inputs",inputs},{"source",{{"path",source_path},{"text",source_text}}}});
+        records[parent]=hash_json({{"author",parent_author},{"inputs",Json::object()},{"parent",source}});
+        records[leaf]=hash_json({{"author",leaf_author},{"parent",parent},{"inputs",{{"pigment",{{"key",texture},
+            {"image",{{"width",2},{"height",2},{"rgba_sha256",sha256(std::as_bytes(std::span(pixels)))}}}}}}}});
+        return Json{{"version",1},{"records",std::move(records)}};
+    };
+    const auto exported=[&](const std::array<std::uint8_t,16>& pixels) {
+        const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Material input repro export did not start");
+        const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
+        const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
+        const auto manifest=read(bundle/"manifest.json");
+        require(manifest.at("material_resources")==expected(pixels),"Repro digests changed MS text/policy, sparse entries, parents or exact RGBA pixels");
+        require(sha256_file(bundle/"Project"/wide(source_path))==sha256(std::as_bytes(std::span(source_text))),"Repro reread the MS Source instead of freezing its loaded text");
+        require(read(bundle/"Project"/leaf_file)==leaf_author && read(bundle/"Project"/parent_file)==parent_author &&
+            read(bundle/"Project"/source_file)==source_author,"Repro lost sparse author entries or a reachable parent");
+        std::set<std::string> files;
+        for(const auto& file:manifest.at("files")) files.insert(file.at("path").get<std::string>());
+        require(files.contains("Project/"+texture_file) && files.contains("Project/"+texture_file+".asset.json") &&
+            files.contains("Project/"+source_file+".asset.json") && files.contains("Project/"+parent_file+".asset.json"),
+            "Repro omitted an active image or a material ancestor's identity");
+        require(std::ranges::none_of(files,[](const auto& path){return path.starts_with("Project/Content/Textures/Dormant") ||
+            path.starts_with("Project/Content/Materials/Unused");}),"Dormant pixels or cached MS author/text entered the execution closure");
+        const auto& engine=manifest.at("engine_assets").at("records");
+        require(engine.size()==1 && engine[0].at("key")=="builtin/cube","Mismatched texture keys or an unused default material entered the engine closure");
+        return bundle;
+    };
+    const auto first=exported(first_pixels);
+    const auto parent_handle=d.ok("material.inspect",{{"asset",parent}}).at("handle");
+    d.ok("material.set_entry",{{"object",parent_handle},{"entry",{{"path","gain"},{"type","float"},{"enabled",true},{"value",0.25}}}});
+    const auto before_reimport=d.inspect();const auto identity_hash=sha256_file(project/(texture_file+".asset.json"));
+    write(root/"Replacement.bmp",bitmap(next_pixels));
+    require(d.ok("texture.reimport",{{"asset",texture},{"path",utf8((root/"Replacement.bmp").wstring())}}).at("asset")==texture,
+        "Texture Reimport changed its asset identity");
+    const auto after_reimport=d.inspect();
+    for(const auto* field:{"undo","redo","dirty","dirty_materials"}) require(before_reimport.at(field)==after_reimport.at(field),"Texture Reimport entered parameter history");
+    require(sha256_file(project/(texture_file+".asset.json"))==identity_hash,"Texture Reimport rewrote its identity sidecar");
+    d.ok("material.undo",{{"asset",parent}});
+    require(!d.ok("material.inspect",{{"asset",parent}}).at("dirty").get<bool>(),"Parameter Undo did not restore the saved author values");
+    // Saved files now disagree with the loaded MS and imported pixels. Neither
+    // this ordinary parameter Undo nor exporting may restore/read those files.
+    const auto disk_text=source_text+"\n// saved after the MS was loaded\n";
+    write(project/wide(source_path),disk_text);write(project/texture_file,bitmap(first_pixels));
+    const auto disk_image=sha256_file(project/texture_file);
+    const auto frozen=exported(next_pixels);const auto manifest=read(frozen/"manifest.json");
+    require(sha256_file(project/wide(source_path))==sha256(std::as_bytes(std::span(disk_text))) && sha256_file(project/texture_file)==disk_image,
+        "Export modified the source project's saved Source or texture");
+    const auto reopened=[&](const std::filesystem::path& bundle) {
+        d.ok("repro.open",{{"directory",utf8(bundle.wstring())}});
+        const auto view=d.ok("material.inspect",{{"asset",leaf}});
+        require(view.at("source").at("text")==source_text && view.at("entries")==leaf_author.at("entries") && !view.at("default_material").get<bool>(),
+            "Strict repro reopen lost loaded Source, dormant author intent or the active material");
+        require(std::ranges::any_of(view.at("declarations"),[](const Json& value){return value.at("path")=="gain" && value.at("value")==0.5;}),
+            "A mismatched texture entry replaced its inherited numeric declaration");
+    };
+    reopened(first);exported(first_pixels); // The earlier immutable export still owns the earlier pixels.
+    reopened(frozen);exported(next_pixels);
+    const auto changed=root/"ChangedBundle";
+    std::filesystem::copy(atelier::platform::windows_file_path(frozen),atelier::platform::windows_file_path(changed),std::filesystem::copy_options::recursive);
+    const auto bytes=[](const std::filesystem::path& path) {
+        std::ifstream stream(atelier::platform::windows_file_path(path),std::ios::binary);require(bool(stream),"Cannot read material repro fixture");
+        return std::string(std::istreambuf_iterator<char>(stream),{});
+    };
+    auto observations=Json::array();d.settle();
+    for(const auto* kind:{"source-text","policy","disabled-entry","parent","pixels"}) {
+        std::string relative,contents;
+        if(std::string_view(kind)=="source-text") {relative=source_path;contents=source_text+"\n// valid changed Source\n";}
+        else if(std::string_view(kind)=="policy") {relative=source_file;auto author=source_author;author["policy"]["double_sided"]=false;contents=author.dump(2);}
+        else if(std::string_view(kind)=="disabled-entry") {
+            relative=leaf_file;auto author=leaf_author;
+            for(auto& entry:author.at("entries")) if(entry.at("path")=="dormant") entry["value"]["asset_key"]="builtin/still-disabled";
+            contents=author.dump(2);
+        } else if(std::string_view(kind)=="parent") {relative=leaf_file;auto author=leaf_author;author["parent_key"]=source;contents=author.dump(2);}
+        else {relative=texture_file;contents=bitmap(first_pixels);}
+        const auto target=changed/"Project"/wide(relative);write(target,contents);auto modified=manifest;bool listed=false;
+        for(auto& file:modified.at("files")) if(file.at("path")=="Project/"+relative) {
+            file["sha256"]=sha256_file(target);file["bytes"]=std::filesystem::file_size(atelier::platform::windows_file_path(target));listed=true;
+        }
+        require(listed,"Changed material input is absent from the manifest");write(changed/"manifest.json",modified.dump(2));
+        const auto before=d.inspect();const auto token=d.token;
+        const auto response=d.call("repro.open",{{"directory",utf8(changed.wstring())}});error(response,"dependency_mismatch");
+        const auto after=d.inspect();
+        for(const auto* field:{"project","scene_path","entities","selection","camera","view","dirty","dirty_materials","undo","redo"})
+            require(before.at(field)==after.at(field),"Rejected material repro changed "+std::string(field));
+        require(d.token==token,"Rejected material repro changed the accepted state token");
+        observations.push_back({{"case",kind},{"response",response}});write(target,bytes(frozen/"Project"/wide(relative)));
+    }
+    write(changed/"manifest.json",manifest.dump(2));reopened(changed);exported(next_pixels);
+    write(root/"material-inputs.json",Json{{"status","passed"},{"first_rgba",sha256(std::as_bytes(std::span(first_pixels)))},
+        {"reimported_rgba",sha256(std::as_bytes(std::span(next_pixels)))},{"material_resources",manifest.at("material_resources")},
+        {"rejected",std::move(observations)},{"cases",{"MS-loaded-text","source-and-parent-closure","exact-RGBA-and-alpha",
+            "manual-reimport-then-parameter-undo","immutable-earlier-export","disabled-retained-root","mismatched-and-removed-texture-paths",
+            "unused-cached-MS-excluded","strict-reopen-and-reexport","content-digests-beyond-file-hashes","rejected-candidate-preserves-state"}}}.dump(2));
 }
 void repro_lighting(const std::filesystem::path& executable,const std::filesystem::path& root) {
     const auto project=root/"Project",directory=root/"Control";project_fixture(project);
@@ -605,9 +818,11 @@ void repro_lighting(const std::filesystem::path& executable,const std::filesyste
     repro_lighting_agreement(d,wide(exported.at("result").at("directory").get<std::string>()),root);
     repro_sky(d,project);
     repro_material_draft(d,project,root);
+    repro_material_inputs(d,root/"MaterialInputs");
     d.client.reset();editor.close();
     write(root/"result.json",Json{{"status","passed"},{"cases",{"current-schema-and-format-only","retired-view-keys-rejected",
-        "rejected-repro-preserves-state","view-and-environment-agreement","selection-resolved-before-replacement","current-repro-reopen","sky-map-and-rotation","material-draft-dependencies"}}}.dump(2));
+        "rejected-repro-preserves-state","view-and-environment-agreement","selection-resolved-before-replacement","current-repro-reopen","sky-map-and-rotation",
+        "material-draft-dependencies","material-exact-inputs-and-strict-reopen"}}}.dump(2));
     std::cout<<"Editor Repro Lighting E2E: PASS | "<<utf8(root.wstring())<<'\n';
 }
 void reject_nested_destination(const std::filesystem::path& executable,const std::filesystem::path& root) {
@@ -652,12 +867,14 @@ void repro_examples(const std::filesystem::path& executable,const std::filesyste
         Driver d(discover_editor(editor,directory));d.settle();
         Json resources;std::set<std::string> inputs;
         const auto exported=[&] {
-            const auto id=unique_id();require(d.call("repro.export",Json::object(),id).at("status")=="pending","Examples repro export did not start");
+            const auto id=unique_id();const auto started=d.call("repro.export",Json::object(),id);
+            require(started.at("status")=="pending",started.dump());
             const auto done=d.wait(id);require(done.at("status")=="ok",done.dump());
             const std::filesystem::path bundle=wide(done.at("result").at("directory").get<std::string>());
             const auto manifest=read(bundle/"manifest.json");
             std::set<std::string> copied;std::map<std::string,std::string> hashes;
             for(const auto& file:manifest.at("input_files")) {copied.insert(file.at("path").get<std::string>());hashes[file.at("path").get<std::string>()]=file.at("sha256").get<std::string>();}
+            require(!copied.contains(sponza+"NewSponza/"+alias),"An Examples repro copied a case alias instead of its catalogue path");
             // Each asset arrives with the identity file the source project gave it.
             const auto asset=[&](const std::string& path) {
                 return copied.contains(path) && hashes.contains(path+".asset.json") && hashes.at(path+".asset.json")==sha256_file(project/(path+".asset.json"));
@@ -791,18 +1008,18 @@ void repro_gltf_defaults(const std::filesystem::path& executable,const std::file
     const auto draft_source=bundle/"Project"/trim;const auto saved_material=sha256_file(draft_source);
     const auto trim_key=defaults.at("trim").get<std::string>();
     const auto handle=d.ok("material.inspect",{{"asset",trim_key}}).at("handle");
-    d.ok("material.set_property",{{"object",handle},{"property","parameters.roughness"},{"value",0.625}});
+    d.ok("material.set_entry",{{"object",handle},{"entry",{{"path","roughness"},{"type","float"},{"enabled",true},{"value",0.625}}}});
     const auto draft_bundle=exported();
-    require(read(draft_bundle/"Project"/trim).at("roughness")==0.625 && sha256_file(draft_source)==saved_material &&
+    require(material_entry(read(draft_bundle/"Project"/trim),"roughness").at("value")==0.625 && sha256_file(draft_source)==saved_material &&
         d.ok("material.inspect",{{"asset",trim_key}}).at("dirty")==true,"Repro lost or saved the source material draft");
     d.ok("material.undo",{{"asset",trim_key}});d.ok("repro.open",{{"directory",utf8(draft_bundle.wstring())}});
     const auto reopened_material=d.ok("material.inspect",{{"asset",trim_key}});
-    require(std::ranges::any_of(reopened_material.at("properties"),[](const Json& p){return p.at("name")=="parameters.roughness" && p.at("value")==0.625;}),
+    require(std::ranges::any_of(reopened_material.at("declarations"),[](const Json& p){return p.at("path")=="roughness" && p.at("value")==0.625;}),
         "Repro did not load the frozen material draft");
     // A component keeps its material bindings while its mesh is missing. Only the scene names the
     // bound material then, and the repro still carries it.
     d.ok("project.open",{{"path",utf8(project.wstring())}});
-    const auto bound=d.ok("material.create",{{"path","Content/Materials/Bound.material"}}).at("asset").get<std::string>();
+    const auto bound=d.ok("material.create",{{"path","Content/Materials/Bound.material"},{"role","instance"}}).at("asset").get<std::string>();
     const auto entity=d.ok("scene.create",{{"kind","mesh"},{"mesh",mesh}}).at("object");Json component;
     for(const auto& item:d.inspect().at("entities")) if(item.at("handle")==entity) component=item.at("components")[0].at("handle");
     d.ok("material.assign",{{"component",component},{"slot","paint"},{"asset",bound}});d.ok("scene.save");
@@ -1121,7 +1338,7 @@ int wmain(int argc,wchar_t** argv) {
         const auto empty=d.settle();const auto builtins=d.ok("editor.inspect",{{"detail","assets"}});
         require(empty.at("project")=="" && builtins.at("assets")==empty.at("assets") && builtins.at("next_cursor").is_null(),
             "No-project assets query did not return the builtin catalog");
-        if(!descriptions) repro_engine_assets(d,root);
+        if(!descriptions) {no_project_scene_material(d);repro_engine_assets(d,root);repro_material_inputs(d,root/"MaterialInputs");}
         d.ok("project.open",{{"path",utf8(project.wstring())}});d.settle();
         verify_asset_directory(d,editor.window(),project,caps);
         auto initial=d.inspect();unsigned stable{};
@@ -1152,7 +1369,7 @@ int wmain(int argc,wchar_t** argv) {
                 restored.at("undo")==initial.at("undo") && restored.at("view")==initial.at("view"),
                 "Description inspection or cleanup changed saved document state.");
             // Placeholders report the saved type they stand in for and the data they keep.
-            write(project/"Content/Scenes/Placeholder.scene",Json{{"version",9},{"next_id","3"},{"roots",{"1"}},{"materials",Json::array()},
+            write(project/"Content/Scenes/Placeholder.scene",Json{{"version",10},{"next_id","3"},{"roots",{"1"}},{"materials",Json::array()},
                 {"entities",{{{"id","1"},{"type","world.Entity"},{"name","Holder"},{"enabled",true},{"properties",Json::object()},{"children",Json::array()},{"space",nullptr},
                     {"components",{{{"id","2"},{"type","project.Gone"},{"name",""},{"enabled",true},{"properties",{{"strength",3}}}}}}}}}}.dump());
             d.ok("scene.open",{{"path","Content/Scenes/Placeholder.scene"}});

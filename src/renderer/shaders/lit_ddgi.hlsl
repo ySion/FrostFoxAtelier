@@ -136,7 +136,7 @@ DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, 
     hit.radiance_distance = float4(0, 0, 0, distance);
     LitSurface surface = lit_hit_surface(query.CommittedInstanceID(),
         query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(),
-        position + direction * distance, distance*.01);
+        position + direction * distance, direction, distance*.01);
     // Only a closed component's geometric backface is evidence of an interior.
     // The local authored orientation uses inverse-transpose, including mirrors.
     if (surface.closed && dot(surface.geometric_normal, direction) > 0) {

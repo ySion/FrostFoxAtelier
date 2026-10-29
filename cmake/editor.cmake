@@ -87,6 +87,9 @@ function(atelier_add_editor)
     add_custom_target(editor_control_path_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-path-acceptance" --repro-paths
         DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
+    add_custom_target(editor_repro_material_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/repro-material-acceptance" --repro-lighting
+        DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_camera_projection_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/camera-projection-acceptance" --camera-projection
         DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
@@ -116,12 +119,21 @@ function(atelier_add_editor)
     atelier_headless_acceptance(project_scene_acceptance
         COMMAND $<TARGET_FILE:atelier_project_scene_acceptance>
         DEPENDS atelier_project_scene_acceptance)
+    add_executable(atelier_mesh_reimport_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/mesh_reimport.cpp")
+    atelier_target(atelier_mesh_reimport_acceptance)
+    target_link_libraries(atelier_mesh_reimport_acceptance PRIVATE atelier_editor_core nlohmann_json::nlohmann_json)
+    atelier_headless_acceptance(mesh_reimport_acceptance
+        COMMAND $<TARGET_FILE:atelier_mesh_reimport_acceptance>
+        DEPENDS atelier_mesh_reimport_acceptance)
     add_executable(atelier_project_integration_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_execution.cpp")
     atelier_target(atelier_project_integration_acceptance)
     target_link_libraries(atelier_project_integration_acceptance PRIVATE atelier_editor_application)
     add_dependencies(atelier_project_integration_acceptance atelier_editor)
     atelier_headless_acceptance(project_integration_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
+        DEPENDS atelier_project_integration_acceptance)
+    atelier_headless_acceptance(project_texture_reimport_acceptance
+        COMMAND $<TARGET_FILE:atelier_project_integration_acceptance> --textures
         DEPENDS atelier_project_integration_acceptance)
     add_custom_target(physics_examples_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --physics-examples

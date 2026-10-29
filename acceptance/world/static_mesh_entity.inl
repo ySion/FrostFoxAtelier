@@ -9,7 +9,9 @@ void static_mesh_entity_creation() {
     auto mesh = std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{
         {{0,0,0},{0,0,1}}, {{2,0,0},{0,0,1}}, {{0,3,0},{0,0,1}}});
     std::weak_ptr<const geometry::Mesh> resource = mesh;
-    p::StaticMeshEntityDesc description{mesh, {{4,5,6},{0,0,0,2},{2,3,4}}, {{.2f,.4f,.6f}}};
+    auto material_source = take(material::create_source(runtime,"",{mesh_material_definition(),{}}));
+    const auto surface = take(material::capture_program(runtime,material_source.id()));
+    p::StaticMeshEntityDesc description{mesh, {{4,5,6},{0,0,0,2},{2,3,4}}, {}, {{"slot/0",material_source,false}}};
     std::vector<std::pair<char,ObjectId>> events;
     take(world.bind_behavior(types.entity, {
         .begin = [&](Runtime&, ObjectId id) -> Result<void> {
@@ -53,14 +55,14 @@ void static_mesh_entity_creation() {
     auto draws = take(scene.render_items());
     require(draws.size() == 1 && draws[0].entity == entity_id && draws[0].component == component_id &&
         draws[0].geometry == mesh && draws[0].geometry->vertices().size() == 3 &&
-        draws[0].material.base_color == description.material.base_color &&
+        draws[0].surfaces->front() == surface &&
         near(draws[0].world[12],4) && near(draws[0].world[13],5) && near(draws[0].world[14],6),
         "Factory projection substituted a cube or lost initial material/transform.");
 
     // One existing Entity removal record retains the entire creation for an
     // editor's single create/undo/redo transaction, including shared mesh content.
     auto removal = take(world.detach(entity_id));
-    entity.reset(); mesh.reset(); description.mesh.reset(); draws.clear();
+    entity.reset(); mesh.reset(); description.mesh.reset(); description.default_materials.clear(); draws.clear();
     collect(runtime);
     require(!resource.expired() && take(w::components(runtime,entity_id)).front().id() == component_id,
         "Whole-Entity creation history failed to retain the component/resource.");
@@ -86,10 +88,11 @@ void static_mesh_entity_creation() {
     reject(p::create_static_mesh_entity(world,invalid), "Factory accepted non-finite scale.");
     invalid = description; invalid.transform.rotation = {0,0,0,0};
     reject(p::create_static_mesh_entity(world,invalid), "Factory accepted a zero quaternion.");
-    invalid = description; invalid.material.base_color.x = std::numeric_limits<float>::quiet_NaN();
-    reject(p::create_static_mesh_entity(world,invalid), "Factory accepted non-finite material.");
-    invalid = description; invalid.material.base_color.z = 1.1f;
-    reject(p::create_static_mesh_entity(world,invalid), "Factory accepted out-of-range material.");
+    invalid = description; invalid.mesh = geometry::cube_mesh(); invalid.default_materials = {{"missing",material_source,false}};
+    reject(p::create_static_mesh_entity(world,invalid), "Factory accepted a material default for a missing slot.");
+    invalid.default_materials = {{"slot/0",{},false}};
+    reject(p::create_static_mesh_entity(world,invalid), "Factory accepted an invalid material resource identity.");
+    invalid.default_materials.clear();
     require(runtime.live_objects() == objects_before && runtime.root_count() == roots_before,
         "Invalid description changed object lifetime or roots.");
     invalid = description; invalid.mesh_source = std::string_view("mesh\0key", 8);

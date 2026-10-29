@@ -17,13 +17,18 @@ void verify_examples() {
         require(std::ranges::any_of(project.entries(),[&](const auto& entry){
             return entry.path==folder && entry.kind==assets::AssetKind::folder;
         }),"An example is absent from the ordinary Content catalog.");
+    editor::Session resources;
     for(const auto& entry:project.entries()) if(entry.key.starts_with("project/")) {
         for(const auto& binding:entry.materials) {
             const auto* listed=project.entry(binding.key);
             require(listed && listed->kind==assets::AssetKind::material,"An example mesh names a missing default material.");
-            for(const auto& texture:take(project.assets().material(binding.key)).textures)
-                require(texture.empty() || (project.entry(texture) && project.entry(texture)->kind==assets::AssetKind::texture),
-                    "An example default material names a missing texture.");
+            const auto root=take(resources.material_resource(project.assets(),binding.key));
+            const auto surface=take(material::capture_program(resources.world().runtime(),root.id()));
+            require(surface->diagnostics().empty() && !surface->uses_default_material(),"An example default material failed to resolve.");
+            for(const auto& declaration:take(resources.inspect_material(root.id())).declarations)
+                if(const auto* texture=std::get_if<material::TextureBinding>(&declaration.value);texture && !texture->asset_key.empty())
+                    require(project.entry(texture->asset_key) && project.entry(texture->asset_key)->kind==assets::AssetKind::texture,
+                        "An example default material names a missing texture.");
         }
     }
     std::size_t scenes{};
@@ -51,10 +56,13 @@ void verify_examples() {
             }
         }
         require(loaded_bindings==saved_bindings,"An example lost an explicit material binding.");
-        const auto fields=take(document->properties(meshes.front().component));
-        const auto roughness=std::ranges::find(fields,"material.roughness",&editor::Property::name);
-        require(roughness!=fields.end(),"An example has no editable material.");
-        take(document->set_property(meshes.front().component,roughness->path,.61f,881001));
+        const auto instance=take(document->create_scene_material(meshes.front().component,
+            presentation::material_slot_name(*meshes.front().geometry,0)));
+        const auto fields=take(document->inspect_material(instance.id()));
+        const auto number=std::ranges::find_if(fields.declarations,[](const auto& field){return std::holds_alternative<float>(field.value);});
+        require(number!=fields.declarations.end(),"An example has no editable numeric material declaration.");
+        take(document->begin_material_edit(instance.id(),881001));
+        take(document->preview_material_entry(881001,{number->path,.61f,true}));take(document->commit_material_edit(881001));
         const auto saved=take(document->serialize());const auto path=output/entry.path;
         take(editor::write_file(path,saved));
         auto reopened=take(editor::Session::deserialize(take(assets::read_file(path)),project,{},editor::LoadPolicy::strict));

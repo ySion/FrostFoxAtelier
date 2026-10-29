@@ -89,28 +89,31 @@ MeshImport load_obj(const std::filesystem::path& source,ImageCache* shared_image
         require(image_bytes+loaded->pixels().size()<=768ull*1024*1024,"Decoded OBJ textures exceed 768 MiB.");
         image_bytes+=loaded->pixels().size();images.emplace(key,loaded);return loaded;
     };
-    std::vector<material::Slot> materials(1);
-    std::vector<material::Description> descriptions(1);
+    struct AuthorMaterial {std::array<float,4> color{1,1,1,1};bool color_alpha{};};
+    std::vector<geometry::MaterialSlot> materials(1);
+    std::vector<AuthorMaterial> authors(1);
+    result.materials.emplace_back();result.textures.emplace_back();
     std::unordered_map<std::string,std::uint32_t> material_names;
     const auto mtl=[&](const std::filesystem::path& relative) {
         const auto slot=read(relative);std::istringstream input(result.files[slot].bytes);input.imbue(std::locale::classic());
-        std::string line,kind;material::Description* current=nullptr;
+        std::string line,kind;AuthorMaterial* current=nullptr;std::size_t current_slot{};
         while(std::getline(input,line)) {
             if(auto p=line.find('#');p!=line.npos) line.resize(p);
             std::istringstream row(line);row.imbue(std::locale::classic());if(!(row>>kind)) continue;
             if(kind=="newmtl") {
                 auto name=rest(row);require(!name.empty() && material_names.size()<1024,"Invalid or excessive MTL material names.");
                 require(material_names.emplace(name,static_cast<std::uint32_t>(materials.size())).second,"Duplicate MTL material name.");
-                materials.push_back({std::move(name)});descriptions.emplace_back();current=&descriptions.back();
+                current_slot=materials.size();materials.push_back({std::move(name)});authors.emplace_back();current=&authors.back();
+                result.materials.emplace_back(MaterialInstanceAsset{});result.textures.emplace_back();
             } else {
                 require(current!=nullptr,"MTL property precedes newmtl.");
-                if(kind=="Kd") for(unsigned i=0;i<3;++i) current->parameters.base_color[i]=scalar(row);
-                else if(kind=="d" || kind=="Tr") {const auto v=scalar(row);current->parameters.base_color[3]=kind=="d"?v:1-v;}
+                if(kind=="Kd") for(unsigned i=0;i<3;++i) current->color[i]=scalar(row);
+                else if(kind=="d" || kind=="Tr") {const auto v=scalar(row);current->color[3]=kind=="d"?v:1-v;}
                 else if(kind.starts_with("map_") || kind=="bump") {
                     auto name=rest(row);require(!name.empty() && name.front()!='-',"MTL map options are not supported.");
                     const auto path=relative.parent_path()/relative_path(name);
-                    if(kind=="map_Kd") current->texture(material::Input::base_color).image=image(path);
-                    else if(kind=="map_d") current->texture(material::Input::opacity).image=image(path);
+                    if(kind=="map_Kd") {current->color_alpha=image(path)->has_alpha();result.textures[current_slot][0]=path;}
+                    else if(kind=="map_d") {static_cast<void>(image(path));result.textures[current_slot][5]=path;}
                     else static_cast<void>(read(path)); // Preserve unrendered source maps during import.
                 } else if(kind!="Ka" && kind!="Ks" && kind!="Ke" && kind!="Ns" && kind!="Ni" && kind!="Tf" && kind!="illum")
                     throw std::runtime_error("Unsupported MTL record: "+kind);
@@ -142,7 +145,7 @@ MeshImport load_obj(const std::filesystem::path& source,ImageCache* shared_image
                 std::ranges::copy(positions.at(index(std::string_view(token).substr(0,a),positions.size())),vertex.position);
                 if(a!=token.npos && a+1<(b==token.npos?token.size():b))
                     std::ranges::copy(uv.at(index(std::string_view(token).substr(a+1,b==token.npos?token.npos:b-a-1),uv.size())),vertex.uv);
-                else require(std::ranges::none_of(descriptions[material].textures,[](const auto& t){return bool(t.image);}),"Textured OBJ face requires UV indices.");
+                else require(std::ranges::all_of(result.textures[material],[](const auto& path){return path.empty();}),"Textured OBJ face requires UV indices.");
                 const bool normal=b!=token.npos && b+1<token.size();
                 if(normal) std::ranges::copy(normals.at(index(std::string_view(token).substr(b+1),normals.size())),vertex.normal);
                 face.push_back(vertex);has_normal.push_back(normal);
@@ -165,13 +168,24 @@ MeshImport load_obj(const std::filesystem::path& source,ImageCache* shared_image
             }
         } else if(kind!="o" && kind!="g" && kind!="s") throw std::runtime_error("Unsupported OBJ record: "+kind);
     }
-    for(std::size_t i=0;i<materials.size();++i) {
-        auto& value=descriptions[i];
-        const auto& color=value.texture(material::Input::base_color).image;
-        bool alpha=value.parameters.base_color[3]<1 || bool(value.texture(material::Input::opacity).image);
-        if(color)alpha|=color->has_alpha();
-        if(alpha)value.parameters.coverage=material::Coverage::mask;
-        materials[i].surface=std::make_shared<const material::Surface>(std::move(value));
+    for(std::size_t i=1;i<materials.size();++i) {
+        const auto& value=authors[i];const auto& color=value.color;auto& instance=*result.materials[i];
+        require(std::ranges::all_of(color,[](float v){return v>=0 && v<=1;}),"Invalid MTL base color or opacity.");
+        const bool alpha=color[3]<1 || value.color_alpha || !result.textures[i][5].empty();
+        instance.parent_key=alpha?"builtin/material/standard-mask-double":"builtin/material/standard-opaque-double";
+        // MTL's supported appearance is authored data, including explicit white.
+        // Keep the import's established PBR defaults independently of the mesh.
+        instance.entries={{"base_color",math::Vector4{color[0],color[1],color[2],color[3]}},
+            {"roughness",.65f},{"metallic",0.f},{"normal_scale",1.f},{"normal_y_sign",1.f},
+            {"emissive",math::Vector3{}},{"alpha_cutoff",.5f}};
+        for(std::size_t input=0;input<imported_material_inputs.size();++input) if(!result.textures[i][input].empty()) {
+            const auto name=std::string(imported_material_inputs[input]);
+            instance.entries.push_back({name+"_texture",material::TextureBinding{{},material::Address::repeat}});
+            instance.entries.push_back({name+"_uv.scale",math::Vector2{1,1}});
+            instance.entries.push_back({name+"_uv.offset",math::Vector2{}});
+            instance.entries.push_back({name+"_uv.rotation",0.f});
+            if(input==5) instance.entries.push_back({"opacity_channel",0.f});
+        }
     }
     result.mesh=std::make_shared<const geometry::Mesh>(std::move(vertices),std::move(masks),std::move(materials),std::move(parts));
     return result;

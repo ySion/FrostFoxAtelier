@@ -562,7 +562,10 @@ struct Fixture {
         frame.camera_cut = true; ++frame.scene_identity; edited();
     }
     Region region(Vec3 point) const { return project_region(frame.camera,frame.scene_viewport,drawing.extent,point); }
-    void close() { check(bool(renderer.close()), "SceneLit drains GPU resources before HWND destruction"); }
+    void close() {
+        frame.release_materials();
+        check(bool(renderer.close()), "SceneLit drains GPU resources before HWND destruction");
+    }
 };
 
 std::array<double,3> lighting_mean(Fixture& f,const char* name,Region region,unsigned settle=64,unsigned samples=16) {

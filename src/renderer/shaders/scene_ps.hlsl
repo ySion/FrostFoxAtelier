@@ -15,17 +15,34 @@ struct SceneFace {
     uint material_index;
     uint edge_mask;
     float3 normal; // Shading normal: the face normal in Flat shading.
+    float3 geometric_normal;
     float3 eye_geometric_normal;
     float3 edge_function;
+    MaterialContext center,dx,dy;
 };
 SceneFace scene_face(SceneOutput input, uint primitive, float3 barycentrics) {
+    // Unconditional derivatives of the actual perspective triangle weights,
+    // before policy/author dispatch and any discard (including editing passes).
+    float2 bx=ddx(barycentrics.yz),by=ddy(barycentrics.yz);
     Face record = faces[first_triangle + primitive];
     Instance instance = instances[input.instance];
     float3 gn = record.normal.x * instance.normal_x + record.normal.y * instance.normal_y + record.normal.z * instance.normal_z;
     SceneFace face;
+    MaterialTriangle tri;tri.geometric_normal=gn;
+    [unroll] for(uint corner=0;corner<3;++corner) {
+        Vertex v=vertices[triangle_indices[(first_triangle+primitive)*3+corner]];
+        tri.position[corner]=mul(float4(v.position,1),instance.world).xyz;
+        tri.normal[corner]=v.normal.x*instance.normal_x+v.normal.y*instance.normal_y+v.normal.z*instance.normal_z;
+        tri.uv[corner]=v.uv;
+        tri.tangent[corner]=float4(material_transform_tangent(v.tangent.xyz,instance.world),v.tangent.w*instance.tangent_sign);
+    }
+    face.center=material_triangle_context(tri,barycentrics.yz);
+    face.dx=material_triangle_delta(tri,barycentrics.yz,bx);
+    face.dy=material_triangle_delta(tri,barycentrics.yz,by);
     face.material_index = material_indices[material_offsets[input.instance] + (record.slot_edges & 0x1fffffffu)];
     face.edge_mask = display.z != 0 ? 7 : record.slot_edges >> 29;
     face.normal = display.x == 1 ? gn : input.normal;
+    face.geometric_normal = gn;
     face.eye_geometric_normal = mul(float4(gn, 0), view).xyz;
     face.edge_function = barycentrics / input.clip_w;
     return face;
@@ -37,17 +54,14 @@ float4 scene_color(SceneOutput input, SceneFace face) {
     MaterialSurface material=material_surfaces[face.material_index];
     float3 eye_direction=projection[2][3]!=0?-input.eye_position:float3(0,0,-1);
     if(material.flags.y==0&&dot(face.eye_geometric_normal,eye_direction)<=0)discard;
-    float2 uv_dx=ddx(input.uv),uv_dy=ddy(input.uv);
-    if(!material_covered(material,input.uv,uv_dx,uv_dy,0,true))discard;
+    MaterialOutput result=material_shade_footprint(material,face.center,face.dx,face.dy);
+    if(material.flags.x!=0&&!(result.ms_coverage>=0))discard;
     if(display.w==2)return 0;
-    float4 diffuse=float4(material.base_roughness.rgb*material_read(material,0,input.uv,uv_dx,uv_dy,0,true).rgb,1);
+    float4 diffuse=float4(result.ms_base_color,1);
     float3 color = 0;
     if (display.w == 0) {
         float3 normal = unit_normal(face.normal);
-        if(display.x!=2) {
-            float roughness=material.base_roughness.w;
-            normal=material_normal(material,input.uv,uv_dx,uv_dy,0,true,normal,input.tangent,roughness);
-        }
+        if(display.x!=1&&display.x!=2)normal=unit_normal(result.ms_normal_world);
         if(material.flags.y!=0&&dot(face.eye_geometric_normal,eye_direction)<0)normal=-normal;
         if (display.x == 2) {
             float3 eye_normal = unit_normal(mul(normal, (float3x3)view));

@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{FAA3D718-B1C8-5AD6-8194-99086094118D}"
+  "id": "{FAA3D718-B1C8-5AD6-8194-99086094118D}",
+  "materials": {
+    "slot_0": "project/{061231CF-9E14-56CF-90BB-E38E48CDFE3C}"
+  },
+  "version": 1
 }

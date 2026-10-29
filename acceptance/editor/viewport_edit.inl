@@ -7,7 +7,8 @@ void verify_rotated_viewport_transforms() {
         {.761490941f,.141828924f,-.176239014f,.607417405f},{1.f,.999999762f,.999999881f}};
     take(document.set_transform(entity,authored));
     const auto original=take(world::read_transform(document.world().runtime(),entity));
-    Camera camera;const auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));
+    Camera camera;auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);view.scene=snapshot.picking();
     ViewportTool tool;ToolSettings settings{TransformTool::transform,PivotMode::median};
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
         return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,{500,350});
@@ -43,7 +44,8 @@ void verify_mirrored_viewport_transforms() {
     // One mirrored axis: an unbiased decomposition reports (-1,1,1) plus a half turn instead.
     const world::Trs mirrored{{1,2,3},from_euler_degrees({0,30,0}),{1,-1,1}};
     take(document.set_transform(entity,mirrored));
-    Camera camera;const auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));
+    Camera camera;auto view=ViewportView::make(camera,{0,0,1000,700},1.5f);view.scene=snapshot.picking();
     ViewportTool tool;ToolSettings settings{TransformTool::transform,PivotMode::median};
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
         return tool.key(document,view,{.kind=ui::EventKind::key_down,.key=key},code,settings,{500,350});
@@ -94,7 +96,8 @@ void verify_viewport_local_constraints() {
     Session document;changed(document.create_static_mesh(assets::mesh_assets().front()));const auto entity=document.selection().entity;
     take(document.set_transform(entity,{{},from_euler_degrees({0,0,90}),{1,1,1}}));
     const auto before=take(world::read_transform(document.world().runtime(),entity));
-    Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));
+    Camera camera;camera.set_view(CameraView::front);auto view=ViewportView::make(camera,{0,0,1000,700},1);view.scene=snapshot.picking();
     const auto center=*view.project({}),travel=center+math::Vector2{60,0};
     ViewportTool tool;ToolSettings settings;settings.tool=TransformTool::select;settings.orientation=Orientation::local;
     const auto key=[&](std::uint32_t code,ui::Key key=ui::Key::none) {
@@ -112,7 +115,8 @@ void verify_viewport_local_constraints() {
             "Local middle-click movement changed direction after selecting its constraint.");
         else require(preview.scale.x==1 && std::abs(preview.scale.y-1)>.1f && preview.scale.z==1,
             "Middle-click Scale constrained the world-axis index instead of the Local axis.");
-        std::vector<renderer::OverlayShape> shapes;const std::array meshes{entity};tool.overlay(document,view,settings,meshes,shapes);
+        take(snapshot.refresh(document));view.scene=snapshot.picking();
+        std::vector<renderer::OverlayShape> shapes;tool.overlay(document,view,settings,shapes);
         require(std::ranges::any_of(shapes,[](const auto& shape) {
             return shape.kind==renderer::OverlayShape::Kind::segment && std::abs(shape.points[2]-shape.points[0])>700 &&
                 std::abs(shape.points[3]-shape.points[1])<.01f && shape.color.g>shape.color.r;
@@ -125,7 +129,8 @@ void verify_viewport_gesture_input() {
     using namespace editor;
     Session document;changed(document.create_static_mesh(assets::mesh_assets().front()));const auto first=document.selection().entity;
     changed(document.create_static_mesh(assets::mesh_assets().front(),{2,0,0}));const auto second=document.selection().entity;take(document.select(first));
-    Camera camera;camera.set_view(CameraView::front);const auto view=ViewportView::make(camera,{0,0,1000,700},1);
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));
+    Camera camera;camera.set_view(CameraView::front);auto view=ViewportView::make(camera,{0,0,1000,700},1);view.scene=snapshot.picking();
     const auto center=*view.project({});auto pointer=center;
     ViewportTool tool;ToolSettings settings;settings.tool=TransformTool::select;settings.grid_spacing=.25f;
     const auto key=[&](std::uint32_t code,ui::Event event=ui::Event{.kind=ui::EventKind::key_down}) {
@@ -192,6 +197,7 @@ void verify_viewport_gesture_input() {
     require(!tool.active() && !document.editing() && document.undo_count()==history+1,
         "Arming a box select during a transform left a second gesture after confirmation.");
     changed(document.undo());
+    take(snapshot.refresh(document));view.scene=snapshot.picking();
     pointer={100,100};take(key('B'));
     take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_down,.x=pointer.x,.y=pointer.y},settings));
     pointer={900,600};take(tool.pointer(document,view,{.kind=ui::EventKind::pointer_move,.x=pointer.x,.y=pointer.y},settings));
@@ -232,8 +238,9 @@ void verify_viewport_duplication() {
     const auto original_mesh=take(presentation::read_static_mesh(document.world().runtime(),component(document,first,document.presentation_types().static_mesh_component)));
     require(take(presentation::read_static_mesh(document.world().runtime(),component(document,copies[0],document.presentation_types().static_mesh_component))).mesh.resolved==original_mesh.mesh.resolved,
         "Duplicating an Entity unnecessarily copied its immutable mesh resource.");
+    application::SceneSnapshot snapshot;take(snapshot.refresh(document));
     editor::ViewportTool tool;editor::Camera camera;
-    const auto view=editor::ViewportView::make(camera,{0,0,1000,700},1.f);
+    auto view=editor::ViewportView::make(camera,{0,0,1000,700},1.f);view.scene=snapshot.picking();
     take(tool.place_duplicates(document,view,{}, {500,350}));
     const auto event=[&](ui::Event e,std::uint32_t key=0){take(tool.key(document,view,e,key,{}, {500,350}));};
     event({.kind=ui::EventKind::key_down},'X');
@@ -295,7 +302,9 @@ void verify_viewport_editing() {
     const auto root=[&](ObjectId entity){return entity;};
     const auto transform=[&](ObjectId entity){return take(world::read_transform(document.world().runtime(),root(entity)));};
     const auto first_root=root(first),second_root=root(second);
-    Camera camera;const auto view=ViewportView::make(camera,{30,40,1000,700},1.5f);
+    // CPU acceptance explicitly publishes a frozen scene at presentation boundaries.
+    application::SceneSnapshot overlay_scene;take(overlay_scene.refresh(document));
+    Camera camera;auto view=ViewportView::make(camera,{30,40,1000,700},1.5f);view.scene=overlay_scene.picking();
     ViewportTool tool;ToolSettings settings{TransformTool::select,PivotMode::median};
     const auto point=[&](ObjectId entity){return *view.project(transform(entity).position);};
     const auto pointer=[&](ui::EventKind kind,math::Vector2 p,bool shift=false,bool control=false,ui::PointerButton button=ui::PointerButton::secondary) {
@@ -413,9 +422,9 @@ void verify_viewport_editing() {
     require(document.selection().object==second_root && transform(second)==before_second,"Euler history lost the inspected Component or its transform.");
     take(pointer(ui::EventKind::pointer_down,{view.bounds.x+1,view.bounds.y+1}));
     take(pointer(ui::EventKind::pointer_move,{view.bounds.x+view.bounds.width-1,view.bounds.y+view.bounds.height-1}));
-    application::SceneSnapshot overlay_scene;take(overlay_scene.refresh(document));
+    take(overlay_scene.refresh(document));view.scene=overlay_scene.picking();
     require(overlay_scene.mesh_entities.size()==overlay_scene.meshes.size(),"Overlay membership diverged from the render snapshot.");
-    std::vector<renderer::OverlayShape> shapes;tool.overlay(document,view,settings,overlay_scene.mesh_entities,shapes);
+    std::vector<renderer::OverlayShape> shapes;tool.overlay(document,view,settings,shapes);
     require(std::ranges::any_of(shapes,[](const auto& shape){return shape.kind==renderer::OverlayShape::Kind::rectangle;}),"Box selection has no visible accepted geometry.");
     take(pointer(ui::EventKind::pointer_up,{view.bounds.x+view.bounds.width-1,view.bounds.y+view.bounds.height-1}));
     require(document.selected_entities().size()==2,"Box selection missed real projected geometry.");
@@ -426,13 +435,14 @@ void verify_viewport_editing() {
     changed(document.undo());
     require(take(document.world().members()).size()==2 && document.is_selected(first) && document.is_selected(second) && document.selection().entity==second,
         "Multi-delete undo lost Entity identity, active member or membership.");
-    take(overlay_scene.refresh(document));
+    take(overlay_scene.refresh(document));view.scene=overlay_scene.picking();
     require(std::ranges::find(overlay_scene.mesh_entities,first)!=overlay_scene.mesh_entities.end() &&
         std::ranges::find(overlay_scene.mesh_entities,second)!=overlay_scene.mesh_entities.end(),"Undo did not republish overlay membership.");
     // Runtime writes need no Session revision. Extraction must still reread
     // author values, including after rejecting an invalid transient value.
     const auto runtime_position=take(world::read_transform(document.world().runtime(),first)).position;
     const auto runtime_revision=document.revision();
+    const auto frozen_point=point(first);const auto frozen_view=view;
     const auto write_position=[&](math::Vector3 position) {
         take(document.world().runtime().with_native<world::Entity>(first,[&](auto& entity)->Result<void>{entity.position=position;return {};}));
     };
@@ -441,6 +451,8 @@ void verify_viewport_editing() {
     require(document.revision()==runtime_revision &&
         overlay_scene.meshes[moved].world[12]==runtime_position.x+7,
         "Scene extraction cached a direct Runtime transform behind Session revision.");
+    require(frozen_view.scene!=overlay_scene.picking() && tool.pick(document,frozen_view,frozen_point.x,frozen_point.y)==first,
+        "Refreshing a candidate changed picking in an already published viewport.");
     // The World isolates the invalid Entity: the rest of the scene still extracts.
     write_position({std::numeric_limits<float>::infinity(),0,0});take(overlay_scene.refresh(document));
     require(std::ranges::find(overlay_scene.mesh_entities,first)==overlay_scene.mesh_entities.end() &&
@@ -479,6 +491,7 @@ void verify_viewport_editing() {
     }
     {
         // Surface placement orients the cursor frame: local Z follows the hit face normal.
+        take(overlay_scene.refresh(document));view.scene=overlay_scene.picking();
         settings.cursor_surface=true;
         const auto face=view.project(transform(second).position+math::Vector3{0,.5f,0});require(face.has_value(),"Top face is off screen.");
         take(pointer(ui::EventKind::pointer_down,*face,false,false,ui::PointerButton::primary));
@@ -490,7 +503,7 @@ void verify_viewport_editing() {
     require(std::abs(converted.x-angles.x)<.001f && std::abs(converted.y-angles.y)<.001f && std::abs(converted.z-angles.z)<.001f,
         "Euler parameter conversion disagrees with native XYZ rotation.");
     for(const auto preset:{CameraView::top,CameraView::bottom,CameraView::front,CameraView::back,CameraView::right,CameraView::left}) {
-        camera.set_view(preset);const auto orthographic=ViewportView::make(camera,view.bounds,view.dpi_scale);
+        camera.set_view(preset);auto orthographic=ViewportView::make(camera,view.bounds,view.dpi_scale);orthographic.scene=overlay_scene.picking();
         const auto a=orthographic.ray(400,300),b=orthographic.ray(420,300);
         require(orthographic.orthographic && math::dot(a.direction,b.direction)>.99999f && a.origin!=b.origin,
             "Orthographic camera rays are not parallel and position-dependent.");
@@ -508,13 +521,14 @@ void verify_viewport_editing() {
             {{-2,-1,2},{1,0,-1}},{{-2,1,2},{1,0,-1}},{{2,1,6},{1,0,-1}},
             {{-2,-1,2},{1,0,-1}},{{2,1,6},{1,0,-1}},{{2,-1,6},{1,0,-1}}});
         changed(clipped.create_static_mesh({{},L"Far crossing",mesh}));const auto entity=clipped.selection().entity;
+        application::SceneSnapshot clipped_scene;take(clipped_scene.refresh(clipped));
         for(const auto kind:{CameraView::perspective,CameraView::front}) {
             Camera limited;auto state=limited.state();state.view=kind;state.target={0,0,1};state.yaw=std::numbers::pi_v<float>;
             state.pitch=state.roll=0;state.distance=1;state.vertical_fov=60;state.near_clip=.25f;state.far_clip=8;
             require(limited.set_state(state),"Far picking camera was rejected.");
-            const auto full=ViewportView::make(limited,{0,0,800,600},1);
+            auto full=ViewportView::make(limited,{0,0,800,600},1);full.scene=clipped_scene.picking();
             state.far_clip=4;require(limited.set_state(state),"Finite far clipping camera was rejected.");
-            const auto bounded=ViewportView::make(limited,full.bounds,1);
+            auto bounded=ViewportView::make(limited,full.bounds,1);bounded.scene=clipped_scene.picking();
             const auto inside=full.project({-.5f,0,3.5f}),outside=full.project({.5f,0,4.5f});
             require(inside && outside && tool.pick(clipped,full,inside->x,inside->y)==entity &&
                 tool.pick(clipped,full,outside->x,outside->y)==entity,"Picking control missed the crossing polygon.");
@@ -524,7 +538,7 @@ void verify_viewport_editing() {
         }
     }
     settings.tool=TransformTool::transform;shapes.clear();take(overlay_scene.refresh(document));
-    tool.overlay(document,view,settings,overlay_scene.mesh_entities,shapes);
+    view.scene=overlay_scene.picking();tool.overlay(document,view,settings,shapes);
     require(shapes.size()>100,"Universal handle did not expose axes, planes and rotation rings.");
     Workspace workspace;
     const std::array fonts{(editor::asset_directory()/"fonts/SarasaUiSC-Regular.ttf").wstring()};ui::Session ui(fonts);

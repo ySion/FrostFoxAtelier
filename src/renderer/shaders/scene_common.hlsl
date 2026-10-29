@@ -10,6 +10,7 @@ struct SceneOutput {
     float2 uv : TEXCOORD3;
     float4 tangent:TEXCOORD5;
     float3 eye_position:TEXCOORD6;
+    float3 world_position:TEXCOORD7;
 };
 // The shared indexed mesh: welded vertices read by SV_VertexID, one record per
 // triangle at first_triangle plus the draw's SV_PrimitiveID.
@@ -26,6 +27,7 @@ struct Instance {
 };
 StructuredBuffer<Vertex> vertices;
 StructuredBuffer<Face> faces;
+StructuredBuffer<uint> triangle_indices;
 uint first_triangle;
 StructuredBuffer<Instance> instances;
 // Shading, wireframe, triangle edges, pass (surface / wire lines / depth / studio overlay).

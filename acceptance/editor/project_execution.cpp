@@ -278,10 +278,14 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
     std::printf("Project integration: PASS (Source classes, files, properties, scene, hot update, diagnostics, saved data across Source changes, placeholders, UI, process, stop, relocation)\nEvidence: %s\n",assets::utf8(moved.wstring()).c_str());
 }
 }
-int main() {
+int main(int argc,char** argv) {
     try {
         application::install_frame_timing();
         const auto root=std::filesystem::current_path()/"project-integration-evidence"/(std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+        if(argc==2 && std::string_view(argv[1])=="--textures") {
+            verify_texture_link(root);return 0;
+        }
+        require(argc==1,"Expected no arguments or --textures.");
         run(root);return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"Project integration: FAIL: %s\n",error.what());return 1;}
 }

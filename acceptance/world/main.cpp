@@ -75,6 +75,27 @@ void publish(source::Program& program, std::string_view text) {
     auto candidate = take(source::Program::prepare(take(program.request("world-acceptance.source", text))));
     take(program.try_publish(candidate));
 }
+material::DefinitionRef mesh_material_definition() {
+    static const auto definition = [] {
+        Runtime compiler;
+        take(material::register_program_types(compiler));
+        const auto program = take(source::compile_material(compiler,
+            take(compiler.native_type<material::Context>()), take(compiler.native_type<material::Output>()),
+            take(compiler.native_type<material::TextureInput>()), "world-material.source", R"(
+                struct Params { vector3 tint; float roughness; float metallic; vector3 emission; };
+                Params defaults() {
+                    Params p; p.tint=vector3(0.2,0.3,0.4); p.roughness=0.25;
+                    p.metallic=0.75; p.emission=vector3(4.0,8.0,16.0); return p;
+                }
+                material.Output shade(material.Context c, Params p) {
+                    material.Output o; o.base_color=p.tint; o.roughness=p.roughness;
+                    o.metallic=p.metallic; o.emissive=p.emission; o.coverage=1.0; o.normal_world=c.normal_world; return o;
+                }
+            )"));
+        return take(material::make_definition(program, {}, {}));
+    }();
+    return definition;
+}
 std::vector<ObjectRoot> add_shape(Runtime& runtime, const AllTypes& types, w::World& world, ObjectId entity) {
     std::vector<ObjectRoot> roots;
     roots.push_back(take(w::create_component(runtime, types.component)));

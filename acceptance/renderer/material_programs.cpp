@@ -1,5 +1,5 @@
 #include "material/program.hpp"
-#include "material/surface.hpp"
+#include "material/program_resources.hpp"
 #include "source/material_program.hpp"
 #include "rhi/rhi.hpp"
 #include "../rhi/support.hpp"

@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{CAE7410C-CD81-547C-B9CB-45F01EF359AB}"
+  "id": "{CAE7410C-CD81-547C-B9CB-45F01EF359AB}",
+  "materials": {
+    "slot_0": "project/{F600309F-980D-5564-AC5F-22B9F2E4B799}"
+  },
+  "version": 1
 }

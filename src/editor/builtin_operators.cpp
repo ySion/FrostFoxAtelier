@@ -87,9 +87,9 @@ OperatorInfo history(bool redo) {
         },
         [redo](OperatorHost& host, const Context& context, ValueInput) -> Result<void> {
             if (context.region == RegionKind::code) return host.source_history(redo);
-            if (!context.asset.empty()) return context.document.material_undo(context.asset, redo);
+            if (!context.asset.empty()) return context.document.material_undo(context.asset, redo, context.project);
             if (context.region == RegionKind::controls) return host.workbench_history(redo);
-            auto moved = committed(redo ? context.document.redo() : context.document.undo());
+            auto moved = committed(redo ? context.document.redo(context.project) : context.document.undo(context.project));
             host.scene_changed();
             return moved;
         }};

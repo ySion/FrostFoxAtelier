@@ -1,4 +1,7 @@
 {
-  "version": 1,
-  "id": "{F370B27E-8AC4-564E-99E9-1925449C9160}"
+  "id": "{F370B27E-8AC4-564E-99E9-1925449C9160}",
+  "materials": {
+    "slot_0": "project/{061231CF-9E14-56CF-90BB-E38E48CDFE3C}"
+  },
+  "version": 1
 }

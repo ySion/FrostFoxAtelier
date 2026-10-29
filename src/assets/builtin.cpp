@@ -1,4 +1,7 @@
 #include "assets/reader.hpp"
+#include "assets/builtin_materials.hpp"
+#include "assets/material_format.hpp"
+#include "foundation/sha256.hpp"
 #include <numbers>
 
 namespace atelier::assets {
@@ -49,6 +52,25 @@ std::span<const MeshAsset> mesh_assets() {
     return assets;
 }
 Result<EngineDependency> Reader::engine_dependency(std::string_view key,AssetKind expected) const {
+    for(const auto& asset:material_assets()) if(asset.key==key) {
+        if(expected!=AssetKind::material) return std::unexpected(Error{ErrorCode::invalid_definition,
+            "Installed engine asset is a material, not the requested kind: "+std::string(key)});
+        const auto* author=std::get_if<MaterialSourceAsset>(&asset.author);
+        if(!author) return std::unexpected(Error{ErrorCode::invalid_definition,"Installed material catalogue requires an MS definition."});
+        const auto source_file=builtin_material_source(author->source_path);
+        if(!source_file) return std::unexpected(Error{ErrorCode::invalid_definition,"Installed material Source is missing: "+author->source_path});
+        std::string encoded;
+        try {
+            // v1 material digest: canonical JSON author data plus the actual Source
+            // bytes. No runtime IDs, compiled code, display name or project fallback.
+            encoded=json_format::Json{{"domain","Atelier.MaterialSource"},{"digest_version",material_digest_version},
+                {"key",asset.key},{"author",material_format::encode(asset)},
+                {"source_path",source_file->path},{"source",source_file->source}}.dump();
+        } catch(const std::exception& error) {
+            return std::unexpected(Error{ErrorCode::invalid_definition,error.what()});
+        }
+        return EngineDependency{asset.key,AssetKind::material,1,material_digest_version,foundation::sha256(std::as_bytes(std::span(encoded)))};
+    }
     const auto at=std::ranges::find(producers,key,&Producer::key);
     if(at==producers.end()) return std::unexpected(Error{ErrorCode::invalid_definition,"Unknown installed engine asset: "+std::string(key)});
     if(expected!=AssetKind::mesh) return std::unexpected(Error{ErrorCode::invalid_definition,"Installed engine asset is a mesh, not the requested kind: "+std::string(key)});

@@ -8,9 +8,8 @@ using detail::Access;
 using detail::error;
 
 Result<Types> register_types(Runtime& runtime) {
-    if(auto ready=material::register_types(runtime);!ready) return std::unexpected(ready.error());
+    if(auto ready=material::register_resource_types(runtime);!ready) return std::unexpected(ready.error());
     std::vector<TypeDefinition> definitions;
-    definitions.push_back(reflection::Definition<Material>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
     definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
     definitions.push_back(reflection::Definition<LightKind>::build(runtime));
@@ -28,9 +27,9 @@ Result<Types> register_types(Runtime& runtime) {
     auto ids = runtime.register_types(std::move(definitions));
     if (!ids) return std::unexpected(ids.error());
     Types types;
-    types.material = (*ids)[0]; types.static_mesh_component = (*ids)[1]; types.static_mesh_entity = (*ids)[2];
-    types.light_kind = (*ids)[3]; types.light_settings = (*ids)[4]; types.light_component = (*ids)[5];
-    types.environment_component = (*ids)[9]; types.camera_component = (*ids)[10];
+    types.static_mesh_component = (*ids)[0]; types.static_mesh_entity = (*ids)[1];
+    types.light_kind = (*ids)[2]; types.light_settings = (*ids)[3]; types.light_component = (*ids)[4];
+    types.environment_component = (*ids)[8]; types.camera_component = (*ids)[9];
     return types;
 }
 
@@ -38,7 +37,6 @@ Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMe
     if (world.closed()) return error(ErrorCode::unsupported_operation, "World is closed.");
     auto transform = world::canonical_transform(description.transform);
     if (!transform) return std::unexpected(transform.error());
-    if (auto valid = validate_material(world.runtime(), description.material); !valid) return std::unexpected(valid.error());
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;
@@ -62,11 +60,6 @@ Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMe
     if (!component) return std::unexpected(component.error());
     created.component = std::move(*component);
     if (auto placed = world.set_transform(created.entity.id(), *transform); !placed) return std::unexpected(placed.error());
-    auto configured = runtime.with_native<StaticMeshComponent>(created.component.id(), [&](StaticMeshComponent& value) -> Result<void> {
-        value.material = description.material;
-        return {};
-    });
-    if (!configured) return std::unexpected(configured.error());
     auto geometry = set_mesh_binding(runtime, created.component.id(), {std::string(description.mesh_source),description.mesh,description.default_materials});
     if (!geometry) return std::unexpected(geometry.error());
     const std::array composition{world::Attachment{created.component.id()}};
@@ -84,7 +77,7 @@ Result<StaticMeshState> read_static_mesh(Runtime& runtime,ObjectId object) {
     auto status=world::inspect_component(runtime,object);
     if (!status) return std::unexpected(status.error());
     return runtime.with_native<const StaticMeshComponent>(object,[&](const StaticMeshComponent& component)->Result<StaticMeshState> {
-        StaticMeshState state{{std::string(Access::mesh_source(component).view().std_view()),Access::geometry(component)},component.material};
+        StaticMeshState state{{std::string(Access::mesh_source(component).view().std_view()),Access::geometry(component)}};
         auto field=runtime.reference_field(object,Access::default_materials(component));if(!field) return std::unexpected(field.error());
         const auto& slots=Access::default_slots(component);state.mesh.defaults.reserve(slots.size());
         for(std::size_t i=0;i<slots.size();++i) {
@@ -109,7 +102,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         std::size_t matches{};
         if(binding.resolved) for(std::size_t j=0;j<binding.resolved->materials().size();++j) matches+=material_slot_name(*binding.resolved,j)==item.slot;
         if(matches!=1 || !unique.insert(item.slot).second) return error(ErrorCode::argument_mismatch,"Default material slot is missing, ambiguous or repeated: "+item.slot);
-        if(auto surface=material::capture(runtime,item.resource.id());!surface) return std::unexpected(surface.error());
+        if(auto surface=material::capture_program(runtime,item.resource.id());!surface) return std::unexpected(surface.error());
         default_slots.push_back(item.slot);defaults.push_back(item.resource.reference());
     }
     auto owner = world::admit_component_edit(runtime, object);

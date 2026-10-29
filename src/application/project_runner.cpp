@@ -167,7 +167,19 @@ int run_project(const RunOptions& options) {
         std::optional<atelier::presentation::CameraSnapshot> accepted_camera;
         std::string camera_error;
         auto previous=std::chrono::steady_clock::now();auto last_report=loaded.build;std::string ui_error;
-        RenderClock lighting_clock;LitFallback lit_fallback;std::string render_failure;
+        RenderClock lighting_clock;LitFallback lit_fallback;std::string render_failure,material_failure;
+        const auto prepare_scene=[&] {
+            timing::Scope snapshot{phases::scene};
+            auto refreshed=scene.refresh(document,false);report_diagnostics();take(std::move(refreshed));
+            const auto progress=scene.prepare(*renderer);
+            if(!progress && progress.error().terminal) throw std::runtime_error("Renderer stopped: "+progress.error().cause.message);
+            const auto failure=progress?std::string{}:progress.error().cause.message;
+            if(failure!=material_failure) {
+                material_failure=failure;
+                if(!failure.empty()) {std::printf("Material preparation failed: %s\n",failure.c_str());std::fflush(stdout);}
+            }
+            return progress && progress->ready;
+        };
         timing::Recorder recorder;editor::FramePerformance performance;
         while(!options.frames || frame<options.frames) {
             if(options.stop_event && WaitForSingleObject(options.stop_event,0)==WAIT_OBJECT_0) break;
@@ -208,13 +220,19 @@ int run_project(const RunOptions& options) {
                     take(document.world().members()).size(),effects));
             }();
             if(options.channel && !options.preview_ui) {timing::Scope linking{phases::control};options.channel->service(document,project,report);}
-            if(prepared && !started) {
+            // The first complete material group is prepared before Begin can
+            // start simulation. Headless execution has no GPU preparation gate.
+            const bool can_start=!renderer || started || (prepared && prepare_scene());
+            if(prepared && !started && can_start) {
                 if(!options.preview_ui) {auto begun=document.start();report_diagnostics();complete(std::move(begun));}
                 started=true;
                 std::printf("Project started: %s\n",assets::utf8(project.root().wstring()).c_str());std::fflush(stdout);
             }
             if(started && !options.preview_ui) {auto updated=document.update(dt);report_diagnostics();take(std::move(updated));}
             {timing::Scope collecting{phases::gc};take(document.collect_step());}
+            // Begin/update may have authored a different request. Freeze it
+            // now; pending preparation leaves the previous complete group live.
+            if(renderer && started) static_cast<void>(prepare_scene());
             // Reference writes do not change World revision. Resolve after every update,
             // including its late flush; only value snapshots survive this boundary.
             std::optional<atelier::presentation::CameraSnapshot> camera;
@@ -254,17 +272,17 @@ int run_project(const RunOptions& options) {
                 ui_revision=project_ui.revision();std::printf("Project UI published: %llu\n",static_cast<unsigned long long>(ui_revision));std::fflush(stdout);
             }
             if(project_ui.diagnostic()!=ui_error) {ui_error=project_ui.diagnostic();if(!ui_error.empty()) {std::printf("Project UI: %s\n",ui_error.c_str());std::fflush(stdout);}}
-            if(prepared) {
+            if(prepared && started) {
                 if(renderer) {
-                    if(camera) {timing::Scope snapshot{phases::scene};auto refreshed=scene.refresh(document);report_diagnostics();take(std::move(refreshed));}
-                    for(auto& mesh:scene.meshes) mesh.selected=false;
+                    const auto& group=*scene.draw();
                     renderer::Frame rendered{*prepared->drawing,matrices,
                         camera?ui::Rect{0,0,static_cast<float>(extent.width),static_cast<float>(extent.height)}:ui::Rect{},
-                        camera?std::span<const renderer::MeshInstance>{scene.meshes}:std::span<const renderer::MeshInstance>{},
-                        view,{},camera?std::span<const renderer::Light>{scene.lights}:std::span<const renderer::Light>{},
-                        scene.identity,camera_cut,rendering::sky_radiance(view.lit),focus};
+                        camera?std::span<const renderer::MeshInstance>{group.meshes}:std::span<const renderer::MeshInstance>{},
+                        view,{},camera?std::span<const renderer::Light>{group.lights}:std::span<const renderer::Light>{},
+                        group.identity,camera_cut,rendering::sky_radiance(view.lit),focus};
+                    rendered.materials=camera?group.materials.get():nullptr;
                     const auto lighting_start=RenderClock::Clock::now();
-                    const bool lighting_active=target.drawable && camera && !scene.meshes.empty() && view.lit.ddgi;
+                    const bool lighting_active=target.drawable && camera && !group.meshes.empty() && view.lit.ddgi;
                     rendered.render_delta_seconds=lighting_clock.delta(lighting_start,lighting_active);
                     const auto drawn=graphics(lit_fallback.render(*renderer,rendered,nullptr));
                     if(drawn.failure!=render_failure) {
@@ -286,9 +304,10 @@ int run_project(const RunOptions& options) {
                 }
             } else lighting_clock.reset();
             if(window) static_cast<void>(window->text_input(ui.text_input()));
-            ++frame;
+            if(started) ++frame; // Startup compilation is not a simulated/rendered frame budget.
             performance.observe(timed.finish(),sampled);
-            if(!renderer && !options.frames) Sleep(4);
+            if(!started) Sleep(10);
+            else if(!renderer && !options.frames) Sleep(4);
             else if(!target.drawable) Sleep(16);
         }
         {auto stopped=document.stop();report_diagnostics();complete(std::move(stopped));}
