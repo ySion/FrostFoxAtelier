@@ -61,8 +61,11 @@ void roundtrip(const fs::path& root) {
     std::string native_text{"原生\0text", sizeof("原生\0text") - 1};
     std::vector<log::Field> fields{{"phase", std::string{"native"}}, {"context", std::uint64_t{97}}};
     const log::native::Context context{fields, log::Repeat{"native/97", 5}};
+    // Keep the next two physical lines adjacent: source_location must match __LINE__ + 1.
+    // clang-format off
     const auto native_line = __LINE__ + 1;
     const auto native = ATELIER_LOG_WITH(log::Severity::error, "acceptance.cpu", "text.native", context, "native {} / {}", std::string_view{native_text}, 37);
+    // clang-format on
     require(native.status == log::SubmitStatus::accepted, "Native format record was not admitted.");
     const auto expected_native = std::string{"native "} + native_text + " / 37";
     native_text.assign(native_text.size(), 'z');

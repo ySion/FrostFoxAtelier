@@ -1,0 +1,45 @@
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++23
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+UseTab: Never
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# Owner-approved presentation choices.
+ColumnLimit: 120
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortFunctionsOnASingleLine:
+  Empty: true
+  Inline: true
+  Other: false
+BreakTemplateDeclarations: Yes
+
+SortIncludes:
+  Enabled: false
+IncludeBlocks: Preserve
+SortUsingDeclarations: Never
+QualifierAlignment: Leave
+InsertBraces: false
+RemoveBracesLLVM: false
+RemoveParentheses: Leave
+RemoveSemicolon: false
+BreakStringLiterals: false
+RawStringFormats: []
+ReflowComments: Never
+AlignTrailingComments:
+  Kind: Never
+FixNamespaceComments: false
+LineEnding: DeriveLF
+
+StatementMacros:
+  - ACLASS
+  - ASTRUCT
+  - AENUM
+  - AFIELD
+  - AFUNCTION
+  - AGENERATED_BODY
