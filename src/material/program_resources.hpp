@@ -7,7 +7,9 @@
 #include <variant>
 
 namespace atelier::material {
-namespace detail { struct ProgramAccess; }
+namespace detail {
+struct ProgramAccess;
+}
 
 enum class Address : std::uint32_t { repeat, clamp, mirror };
 enum class Coverage : std::uint32_t { opaque, mask };
@@ -31,7 +33,11 @@ struct TextureDefault {
     math::Vector4 empty_value{}; // Already linear; an explicit clear samples this.
 };
 using LocalValue = std::variant<float, math::Vector2, math::Vector3, math::Vector4, TextureBinding>;
-struct Override { std::string path; LocalValue value; bool enabled{true}; };
+struct Override {
+    std::string path;
+    LocalValue value;
+    bool enabled{true};
+};
 struct AuthorDiagnostic {
     std::string path, message;
     bool operator==(const AuthorDiagnostic&) const = default;
@@ -47,9 +53,10 @@ public:
     const Policy& policy() const noexcept { return policy_; }
     // Normalized to program().textures() order, not the caller's author order.
     std::span<const TextureDefault> textures() const noexcept { return textures_; }
+
 private:
-    friend Result<std::shared_ptr<const SourceDefinition>> make_definition(
-        std::shared_ptr<const source::MaterialProgram>, Policy, std::span<const TextureDefault>);
+    friend Result<std::shared_ptr<const SourceDefinition>>
+        make_definition(std::shared_ptr<const source::MaterialProgram>, Policy, std::span<const TextureDefault>);
     SourceDefinition(std::shared_ptr<const source::MaterialProgram>, Policy, std::vector<TextureDefault>);
     std::shared_ptr<const source::MaterialProgram> program_;
     Policy policy_;
@@ -57,7 +64,7 @@ private:
 };
 using DefinitionRef = std::shared_ptr<const SourceDefinition>;
 Result<DefinitionRef> make_definition(std::shared_ptr<const source::MaterialProgram>, Policy,
-    std::span<const TextureDefault>);
+                                      std::span<const TextureDefault>);
 
 struct SurfaceInput {
     ImageRef image;
@@ -84,9 +91,11 @@ public:
     // Owns code, exact images and a prebuilt synchronous sampler table. No
     // Runtime, ObjectRoot, borrowed author storage or GPU handles survive here.
     Result<Output> evaluate(const Context&) const;
+
 private:
     friend struct detail::ProgramAccess;
-    ProgramSurface(DefinitionRef, std::vector<std::byte>, std::vector<SurfaceInput>, std::vector<AuthorDiagnostic>, bool);
+    ProgramSurface(DefinitionRef, std::vector<std::byte>, std::vector<SurfaceInput>, std::vector<AuthorDiagnostic>,
+                   bool);
     DefinitionRef definition_;
     std::vector<std::byte> parameters_;
     std::vector<SurfaceInput> inputs_;
@@ -104,7 +113,7 @@ Result<ProgramSurfaceRef> default_program_surface();
 // Normally unbound geometry uses this ordinary world-space grid MS, distinct
 // from the diagnostic magenta material. The asset catalogue exposes the same
 // source and policy; neither compiler nor Renderer has a grid special case.
-inline constexpr Policy default_world_policy{Coverage::opaque,true,true};
+inline constexpr Policy default_world_policy{Coverage::opaque, true, true};
 std::string_view default_world_source() noexcept;
 Result<ProgramSurfaceRef> default_world_surface();
 
@@ -118,7 +127,7 @@ Result<ProgramSurfaceRef> default_world_surface();
 // default. The host retains the original compiler/source error separately.
 Result<ProgramSurfaceRef> resolve_source(DefinitionRef, std::span<const ImageRef>);
 Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, std::span<const Override>,
-    std::span<const ImageRef> local_images);
+                                           std::span<const ImageRef> local_images);
 
 // The nonempty shared role contains the actual resource edges and publication.
 // Runtime constructs/destroys the real registered type; no virtual interface.
@@ -129,6 +138,7 @@ public:
     Material(Material&&) = delete;
     Material& operator=(const Material&) = delete;
     Material& operator=(Material&&) = delete;
+
 private:
     friend struct detail::ProgramAccess;
     std::string asset_key_;
@@ -147,6 +157,7 @@ public:
     MaterialSource(MaterialSource&&) = delete;
     MaterialSource& operator=(const MaterialSource&) = delete;
     MaterialSource& operator=(MaterialSource&&) = delete;
+
 private:
     friend struct detail::ProgramAccess;
     DefinitionRef definition_;
@@ -158,6 +169,7 @@ public:
     MaterialInstance(MaterialInstance&&) = delete;
     MaterialInstance& operator=(const MaterialInstance&) = delete;
     MaterialInstance& operator=(MaterialInstance&&) = delete;
+
 private:
     friend struct detail::ProgramAccess;
     ReferenceSlot parent_;

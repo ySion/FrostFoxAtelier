@@ -15,24 +15,56 @@ namespace atelier::language {
 
 // Compiler classifications, not a separate registry of business types.
 struct ValueType {
-    enum Kind { f32, u32, i32, boolean, void_value, strong_reference, weak_reference, null_reference, enumeration, record, array, string, f64 };
+    enum Kind {
+        f32,
+        u32,
+        i32,
+        boolean,
+        void_value,
+        strong_reference,
+        weak_reference,
+        null_reference,
+        enumeration,
+        record,
+        array,
+        string,
+        f64
+    };
     Kind kind{void_value};
     std::uint32_t type_index{}; // index in the enum or value catalog, selected by kind
     constexpr ValueType(Kind value = void_value, std::uint32_t index = 0) : kind(value), type_index(index) {}
     bool operator==(const ValueType&) const = default;
 };
-struct ParameterType { ValueType type; ParameterPassing passing{ParameterPassing::value}; };
-struct EnumItem { std::string_view name; std::uint32_t bits; };
-struct EnumBinding { std::string_view name; ValueType underlying; std::span<const EnumItem> values; };
-struct FieldBinding { std::string_view name; ValueType type; bool constrained{}; };
-struct ValueField { std::string name; ValueType type; std::size_t offset; };
+struct ParameterType {
+    ValueType type;
+    ParameterPassing passing{ParameterPassing::value};
+};
+struct EnumItem {
+    std::string_view name;
+    std::uint32_t bits;
+};
+struct EnumBinding {
+    std::string_view name;
+    ValueType underlying;
+    std::span<const EnumItem> values;
+};
+struct FieldBinding {
+    std::string_view name;
+    ValueType type;
+    bool constrained{};
+};
+struct ValueField {
+    std::string name;
+    ValueType type;
+    std::size_t offset;
+};
 struct ValueLayout {
     std::string name;
     ValueType::Kind kind;
     std::size_t size, alignment;
     ValueType element;
     std::vector<ValueField> fields;
-    void (*sequence_view)(const void*, const void**, std::size_t*) noexcept{};
+    void (*sequence_view)(const void*, const void**, std::size_t*) noexcept {};
     bool can_own{}, can_mutate{};
     math::Type math{};
     bool plain_value{};
@@ -57,25 +89,95 @@ struct Environment {
     bool material{}; // Enables controlled sample/orientation intrinsics; validation follows typing.
     ValueType texture_input{}; // Exact registered value type, only meaningful for materials.
 };
-struct SourcePosition { std::size_t offset{}, line{1}, column{1}; };
-struct Diagnostic { SourcePosition position; std::string message; };
+struct SourcePosition {
+    std::size_t offset{}, line{1}, column{1};
+};
+struct Diagnostic {
+    SourcePosition position;
+    std::string message;
+};
 
 using NodeId = std::size_t;
 inline constexpr NodeId no_node = std::numeric_limits<NodeId>::max();
 enum class Operation {
-    add, subtract, multiply, positive, negate, equal, not_equal, less, less_equal, greater, greater_equal, divide,
-    remainder, bitwise_and, bitwise_or, bitwise_xor, bitwise_not, shift_left, shift_right,
-    logical_not, logical_and, logical_or
+    add,
+    subtract,
+    multiply,
+    positive,
+    negate,
+    equal,
+    not_equal,
+    less,
+    less_equal,
+    greater,
+    greater_equal,
+    divide,
+    remainder,
+    bitwise_and,
+    bitwise_or,
+    bitwise_xor,
+    bitwise_not,
+    shift_left,
+    shift_right,
+    logical_not,
+    logical_and,
+    logical_or
 };
 // square_root and every later operation are element-wise over float/double scalars and vectors.
-enum class MathOperation { dot, cross, length, normalize_or_zero, conjugate, rotate, transpose, transform_point, transform_direction, square_root,
-    floor, ceil, trunc, fract, abs, sign, min, max, clamp, lerp, step, smoothstep, sin, cos, atan2, exp, log, pow };
+enum class MathOperation {
+    dot,
+    cross,
+    length,
+    normalize_or_zero,
+    conjugate,
+    rotate,
+    transpose,
+    transform_point,
+    transform_direction,
+    square_root,
+    floor,
+    ceil,
+    trunc,
+    fract,
+    abs,
+    sign,
+    min,
+    max,
+    clamp,
+    lerp,
+    step,
+    smoothstep,
+    sin,
+    cos,
+    atan2,
+    exp,
+    log,
+    pow
+};
 struct Expression {
     enum class Kind {
-        literal, local, field, call, unary, binary,
-        receiver, null_reference, create_reference, observe_reference, acquire_reference,
-        value_field, index, length, string_literal, sequence_mutation, source_call,
-        math_construct, math_intrinsic, scalar_cast, texture_sample, texture_orientation
+        literal,
+        local,
+        field,
+        call,
+        unary,
+        binary,
+        receiver,
+        null_reference,
+        create_reference,
+        observe_reference,
+        acquire_reference,
+        value_field,
+        index,
+        length,
+        string_literal,
+        sequence_mutation,
+        source_call,
+        math_construct,
+        math_intrinsic,
+        scalar_cast,
+        texture_sample,
+        texture_orientation
     };
     Kind kind;
     ValueType type;
@@ -134,8 +236,11 @@ struct Program {
     // Public wrappers share internal typed function bodies in one JIT module.
     std::vector<std::uint32_t> exports;
     bool exported(std::uint32_t index) const {
-        if (exports.empty()) return index == entry;
-        for (auto item : exports) if (item == index) return true;
+        if (exports.empty())
+            return index == entry;
+        for (auto item : exports)
+            if (item == index)
+                return true;
         return false;
     }
 };
@@ -147,9 +252,11 @@ struct Program {
 // LLVM object is owned here. Source/Environment storage is borrowed only during
 // compilation; the returned typed tree owns everything needed for lowering.
 // allow_declarations checks a module that selects no entry, with or without functions.
-[[nodiscard]] std::expected<Program, Diagnostic> compile_source(
-    std::string_view source_name, std::string_view source, Environment environment, std::string_view entry_name = {},
-    bool allow_declarations = false);
-[[nodiscard]] std::expected<void, Diagnostic> export_functions(Program&, std::span<const std::string_view>, bool receiver);
+[[nodiscard]] std::expected<Program, Diagnostic> compile_source(std::string_view source_name, std::string_view source,
+                                                                Environment environment,
+                                                                std::string_view entry_name = {},
+                                                                bool allow_declarations = false);
+[[nodiscard]] std::expected<void, Diagnostic> export_functions(Program&, std::span<const std::string_view>,
+                                                               bool receiver);
 
 }

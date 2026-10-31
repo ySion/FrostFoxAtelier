@@ -6,14 +6,16 @@
 #include <memory>
 #include <optional>
 
-namespace atelier::source { class Program; }
+namespace atelier::source {
+class Program;
+}
 
 namespace atelier::procedural {
 
 struct NodeStatus {
-    std::optional<Error> error;   // Set while the node or an input it reads fails.
-    std::uint64_t evaluations{};  // Calls of evaluate.
-    std::uint64_t cache_hits{};   // Results found in the cache instead.
+    std::optional<Error> error; // Set while the node or an input it reads fails.
+    std::uint64_t evaluations{}; // Calls of evaluate.
+    std::uint64_t cache_hits{}; // Results found in the cache instead.
     // The last actual node run, including argument setup and failures; empty if never run
     // or that run was unmeasured. Idle, cached and blocked nodes retain their previous time.
     std::optional<std::chrono::nanoseconds> time;
@@ -31,7 +33,7 @@ public:
     // `program` supplies the evaluate methods of PointNode types and must outlive the
     // evaluator; without one those nodes fail.
     Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program = nullptr,
-        std::size_t cache_bytes = std::size_t{256} << 20);
+              std::size_t cache_bytes = std::size_t{256} << 20);
     ~Evaluator();
     Evaluator(const Evaluator&) = delete;
     Evaluator& operator=(const Evaluator&) = delete;
@@ -44,6 +46,7 @@ public:
     [[nodiscard]] const Geometry* output() const noexcept;
     // Null for nodes not in the graph at the last evaluation.
     [[nodiscard]] const NodeStatus* status(ObjectId node) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -13,19 +13,35 @@
 
 namespace {
 using namespace atelier;
-void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
-template<class T> T take(Result<T> value) {
-    if (!value) throw std::runtime_error(value.error().message);
+void require(bool value, const char* message) {
+    if (!value)
+        throw std::runtime_error(message);
+}
+template <class T>
+T take(Result<T> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
-void take(Result<void> value) { if (!value) throw std::runtime_error(value.error().message); }
-bool near(float a, float b) { return std::abs(a - b) < 0.00001f; }
+void take(Result<void> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
+}
+bool near(float a, float b) {
+    return std::abs(a - b) < 0.00001f;
+}
 struct UnusedDefault {
     float value;
-    UnusedDefault() { throw std::runtime_error("Unrelated native constructor must not run during material compilation."); }
+    UnusedDefault() {
+        throw std::runtime_error("Unrelated native constructor must not run during material compilation.");
+    }
 };
-struct GenericOutput { float value{7}; };
-struct VectorCoverage { math::Vector2 coverage{2,3}; };
+struct GenericOutput {
+    float value{7};
+};
+struct VectorCoverage {
+    math::Vector2 coverage{2, 3};
+};
 const std::string declarations = R"(
     struct Mask { float cutoff; vector2 scale; };
     struct Params { float gain; vector3 tint; Mask mask; };
@@ -181,10 +197,14 @@ const std::string orientation_source = R"(
         return o;
     }
 )";
-struct Texture { math::Vector4 value; bool uv_alpha{}; };
+struct Texture {
+    math::Vector4 value;
+    bool uv_alpha{};
+};
 Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
     auto value = static_cast<const Texture*>(data)->value;
-    if (static_cast<const Texture*>(data)->uv_alpha) value.w = uv.x;
+    if (static_cast<const Texture*>(data)->uv_alpha)
+        value.w = uv.x;
     return value;
 }
 std::uint32_t slot(const source::MaterialProgram& program, std::string_view key) {
@@ -192,15 +212,19 @@ std::uint32_t slot(const source::MaterialProgram& program, std::string_view key)
     require(found != program.textures().end(), "Material lost a declared texture key.");
     return found->slot;
 }
-std::array<source::MaterialTexture,3> bindings(const source::MaterialProgram& program, const Texture& color, const Texture& alpha) {
-    return {{{slot(program,"surface.color"),&color,sample}, {slot(program,"alpha"),&alpha,sample},
-        {slot(program,"unused"),&color,sample}}};
+std::array<source::MaterialTexture, 3> bindings(const source::MaterialProgram& program, const Texture& color,
+                                                const Texture& alpha) {
+    return {{{slot(program, "surface.color"), &color, sample},
+             {slot(program, "alpha"), &alpha, sample},
+             {slot(program, "unused"), &color, sample}}};
 }
 material::Output evaluate(const source::MaterialProgram& program, material::Context context,
-    std::span<const source::MaterialTexture> textures, std::span<const std::byte> parameters = {}) {
+                          std::span<const source::MaterialTexture> textures,
+                          std::span<const std::byte> parameters = {}) {
     material::Output output;
-    take(program.evaluate(std::as_bytes(std::span(&context, 1)), parameters.empty() ? program.default_parameters() : parameters,
-        std::as_writable_bytes(std::span(&output, 1)), textures));
+    take(program.evaluate(std::as_bytes(std::span(&context, 1)),
+                          parameters.empty() ? program.default_parameters() : parameters,
+                          std::as_writable_bytes(std::span(&output, 1)), textures));
     return output;
 }
 std::string coverage_body(const source::MaterialProgram& program) {
@@ -210,16 +234,21 @@ std::string coverage_body(const source::MaterialProgram& program) {
     constexpr std::string_view begin = "#if ATELIER_MATERIAL_COVERAGE\n";
     const auto first = hlsl.find(begin), last = hlsl.find("#elif ATELIER_MATERIAL_FOOTPRINT\n");
     require(first != std::string::npos && last != std::string::npos && first < last &&
-        hlsl.contains("#define ATELIER_MATERIAL_COVERAGE 1\n"), "Coverage HLSL did not select its owning lowering.");
+                hlsl.contains("#define ATELIER_MATERIAL_COVERAGE 1\n"),
+            "Coverage HLSL did not select its owning lowering.");
     auto body = hlsl.substr(first + begin.size(), last - first - begin.size());
     require(body.contains("float ms_coverage(") && body.contains("ms_load_parameters(") &&
-        !body.contains("ms_Output") && !body.contains("ms_shade(") && !body.contains("atelier_material_sample_grad"),
-        "Coverage HLSL retained a full shading/footprint entry instead of a scalar dependency slice.");
+                !body.contains("ms_Output") && !body.contains("ms_shade(") &&
+                !body.contains("atelier_material_sample_grad"),
+            "Coverage HLSL retained a full shading/footprint entry instead of a scalar dependency slice.");
     return body;
 }
 std::size_t occurrences(std::string_view text, std::string_view token) {
     std::size_t count{}, position{};
-    while ((position = text.find(token, position)) != std::string_view::npos) { ++count; position += token.size(); }
+    while ((position = text.find(token, position)) != std::string_view::npos) {
+        ++count;
+        position += token.size();
+    }
     return count;
 }
 }
@@ -230,43 +259,54 @@ void verify_source_materials() {
     {
         Runtime runtime;
         take(material::register_program_types(runtime));
-        take(NativeRegistration<UnusedDefault>{runtime,"unused.Value",TypeKind::record}
-            .field<&UnusedDefault::value>("value",{TypeReference::native<float>()},offsetof(UnusedDefault,value)).publish());
-        take(NativeRegistration<GenericOutput>{runtime,"generic.Output",TypeKind::record}
-            .field<&GenericOutput::value>("value",{TypeReference::native<float>()},offsetof(GenericOutput,value)).publish());
-        take(NativeRegistration<VectorCoverage>{runtime,"generic.VectorCoverage",TypeKind::record}
-            .field<&VectorCoverage::coverage>("coverage",{TypeReference::native<math::Vector2>()},offsetof(VectorCoverage,coverage)).publish());
+        take(
+            NativeRegistration<UnusedDefault>{runtime, "unused.Value", TypeKind::record}
+                .field<&UnusedDefault::value>("value", {TypeReference::native<float>()}, offsetof(UnusedDefault, value))
+                .publish());
+        take(
+            NativeRegistration<GenericOutput>{runtime, "generic.Output", TypeKind::record}
+                .field<&GenericOutput::value>("value", {TypeReference::native<float>()}, offsetof(GenericOutput, value))
+                .publish());
+        take(NativeRegistration<VectorCoverage>{runtime, "generic.VectorCoverage", TypeKind::record}
+                 .field<&VectorCoverage::coverage>("coverage", {TypeReference::native<math::Vector2>()},
+                                                   offsetof(VectorCoverage, coverage))
+                 .publish());
         const auto context = take(runtime.native_type<material::Context>());
         const auto output = take(runtime.native_type<material::Output>());
         const auto texture_input = take(runtime.native_type<material::TextureInput>());
         const auto types_before = runtime.type_count();
         // Each select uses the previous value in both arms. Start small so a
         // recurrence regression fails before the 32-branch case exhausts memory.
-        for (const std::size_t count : {8u,16u,32u}) {
+        for (const std::size_t count : {8u, 16u, 32u}) {
             std::string text = "struct Params {\n";
-            for (std::size_t i = 0; i < count; ++i) text += "float m" + std::to_string(i) + ";\n";
+            for (std::size_t i = 0; i < count; ++i)
+                text += "float m" + std::to_string(i) + ";\n";
             text += "}; Params defaults(){ Params p; return p; }\n"
-                "material.Output shade(material.Context c,Params p){ float v=c.uv.x;\n";
+                    "material.Output shade(material.Context c,Params p){ float v=c.uv.x;\n";
             for (std::size_t i = 0; i < count; ++i)
                 text += "if(p.m" + std::to_string(i) + ">0.0){ v=v+0.01; }\n";
             text += "material.Output o; o.coverage=v; return o; }\n";
-            const auto sequential = take(source::compile_material(runtime,context,output,texture_input,"sequential-coverage.ms",text));
+            const auto sequential =
+                take(source::compile_material(runtime, context, output, texture_input, "sequential-coverage.ms", text));
             const auto body = coverage_body(*sequential);
-            require(body.size() <= 8192 + count * 2048 && occurrences(body,"if (") <= count * 2,
-                "Coverage generation duplicated the shared preceding DAG across sequential branches.");
-            material::Context c; c.uv.x = 0.25f;
+            require(body.size() <= 8192 + count * 2048 && occurrences(body, "if (") <= count * 2,
+                    "Coverage generation duplicated the shared preceding DAG across sequential branches.");
+            material::Context c;
+            c.uv.x = 0.25f;
             std::vector<float> parameters(count);
-            for (const unsigned mode : {0u,1u,2u}) {
+            for (const unsigned mode : {0u, 1u, 2u}) {
                 float expected = c.uv.x;
                 for (std::size_t i = 0; i < count; ++i) {
                     parameters[i] = mode == 1 || (mode == 2 && i % 2 == 0) ? 1.0f : 0.0f;
-                    if (parameters[i] > 0) expected += 0.01f;
+                    if (parameters[i] > 0)
+                        expected += 0.01f;
                 }
-                require(near(evaluate(*sequential,c,{},std::as_bytes(std::span(parameters))).coverage,expected),
-                    "Sequential coverage branches lost their independent parameter decisions.");
+                require(near(evaluate(*sequential, c, {}, std::as_bytes(std::span(parameters))).coverage, expected),
+                        "Sequential coverage branches lost their independent parameter decisions.");
             }
         }
-        const auto lazy_shared = take(source::compile_material(runtime,context,output,texture_input,"lazy-shared-coverage.ms",R"(
+        const auto lazy_shared =
+            take(source::compile_material(runtime, context, output, texture_input, "lazy-shared-coverage.ms", R"(
             struct Params { float gate; float a; float b; };
             struct Textures { material.TextureInput input; };
             Params defaults(){ Params p; return p; }
@@ -281,21 +321,24 @@ void verify_source_materials() {
         const auto lazy_body = coverage_body(*lazy_shared);
         const auto branch = lazy_body.find("if ("), sampled = lazy_body.find("::atelier_material_sample(");
         require(branch != std::string::npos && sampled != std::string::npos &&
-            occurrences(lazy_body,"::atelier_material_sample(") == 1,
-            "Sharing a preceding conditional value duplicated its branch-only sample.");
-        const auto opening = lazy_body.find('{',branch);
+                    occurrences(lazy_body, "::atelier_material_sample(") == 1,
+                "Sharing a preceding conditional value duplicated its branch-only sample.");
+        const auto opening = lazy_body.find('{', branch);
         auto closing = opening;
         std::size_t depth = 1;
         while (depth && closing != std::string::npos && ++closing < lazy_body.size()) {
-            if (lazy_body[closing] == '{') ++depth;
-            if (lazy_body[closing] == '}') --depth;
+            if (lazy_body[closing] == '{')
+                ++depth;
+            if (lazy_body[closing] == '}')
+                --depth;
         }
         require(!depth && opening < sampled && sampled < closing,
-            "Sharing a preceding conditional value made its internal sample eager.");
+                "Sharing a preceding conditional value made its internal sample eager.");
         const std::string unused_loop = "float unused_loop(float x){ while(x>0.0){x=x-1.0;} return x; }";
         a = take(source::compile_material(runtime, context, output, texture_input, "mask-a.ms", first + unused_loop));
         b = take(source::compile_material(runtime, context, output, texture_input, "mask-b.ms", second));
-        reordered = take(source::compile_material(runtime, context, output, texture_input, "reordered.ms", declarations + R"(
+        reordered =
+            take(source::compile_material(runtime, context, output, texture_input, "reordered.ms", declarations + R"(
             struct ColorInputs { material.TextureInput color; };
             struct Textures { ColorInputs surface; material.TextureInput unused; material.TextureInput alpha; };
         )" + first_body));
@@ -321,10 +364,14 @@ void verify_source_materials() {
                 return o;
             }
         )"));
-        footprint = take(source::compile_material(runtime, context, output, texture_input, "footprint.ms", footprint_source));
-        oriented = take(source::compile_material(runtime, context, output, texture_input, "orientation.ms", orientation_source));
-        coverage = take(source::compile_material(runtime, context, output, texture_input, "coverage.ms", coverage_source));
-        overwritten = take(source::compile_material(runtime, context, output, texture_input, "overwritten.ms", declarations + resources + R"(
+        footprint =
+            take(source::compile_material(runtime, context, output, texture_input, "footprint.ms", footprint_source));
+        oriented = take(
+            source::compile_material(runtime, context, output, texture_input, "orientation.ms", orientation_source));
+        coverage =
+            take(source::compile_material(runtime, context, output, texture_input, "coverage.ms", coverage_source));
+        overwritten = take(source::compile_material(runtime, context, output, texture_input, "overwritten.ms",
+                                                    declarations + resources + R"(
             float kept_argument(float discarded,float kept) { return kept; }
             material.Output replace(material.Output o,float value) { o.coverage=value; return o; }
             material.Output shade(material.Context c,Params p,Textures textures) {
@@ -336,41 +383,64 @@ void verify_source_materials() {
                 return copied;
             }
         )"));
-        generic = take(source::compile_material(runtime, context, take(runtime.native_type<GenericOutput>()), texture_input,
-            "generic.ms", declarations + "generic.Output shade(material.Context c,Params p){ generic.Output o; return o; }"));
-        vector_output = take(source::compile_material(runtime, context, take(runtime.native_type<VectorCoverage>()), texture_input,
-            "vector-output.ms", declarations + "generic.VectorCoverage shade(material.Context c,Params p){ generic.VectorCoverage o; return o; }"));
-        require(runtime.type_count() == types_before, "Material compilation published/redefined Params into live Runtime.");
+        generic = take(source::compile_material(
+            runtime, context, take(runtime.native_type<GenericOutput>()), texture_input, "generic.ms",
+            declarations + "generic.Output shade(material.Context c,Params p){ generic.Output o; return o; }"));
+        vector_output = take(source::compile_material(
+            runtime, context, take(runtime.native_type<VectorCoverage>()), texture_input, "vector-output.ms",
+            declarations +
+                "generic.VectorCoverage shade(material.Context c,Params p){ generic.VectorCoverage o; return o; }"));
+        require(runtime.type_count() == types_before,
+                "Material compilation published/redefined Params into live Runtime.");
         const auto rejected = [&](std::string text, std::string_view reason) {
             auto result = source::compile_material(runtime, context, output, texture_input, "rejected.ms", text);
             require(!result, "Material accepted an operation outside its pure subset.");
             require(result.error().message.contains(reason), result.error().message.c_str());
             require(runtime.type_count() == types_before, "Rejected material polluted the Runtime type directory.");
         };
-        rejected(declarations + unused_loop + "material.Output shade(material.Context c,Params p){ material.Output o; o.coverage=unused_loop(c.uv.x); return o; }", "loops");
+        rejected(
+            declarations + unused_loop +
+                "material.Output shade(material.Context c,Params p){ material.Output o; o.coverage=unused_loop(c.uv.x); return o; }",
+            "loops");
         rejected(unused_loop + R"(struct Params { float cutoff; };
             Params defaults(){ Params p; p.cutoff=unused_loop(1.0); return p; }
-            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "loops");
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })",
+                 "loops");
         rejected(first + "float unused_bad(){ return missing_name(); }", "Unknown source function");
         rejected(first + "float unused_recursive(float x){ return unused_recursive(x); }", "Recurs");
-        rejected(declarations + "material.Output shade(material.Context c,Params p){ while(c.uv.x>0.0) {} material.Output o; return o; }", "loops");
-        rejected(declarations + "material.Output shade(material.Context c,Params p){ uint x=1; material.Output o; return o; }", "float");
-        rejected(declarations + "material.Output shade(material.Context c,Params p){ material.Output o; o.coverage=host_call(); return o; }", "Unknown source function");
+        rejected(
+            declarations +
+                "material.Output shade(material.Context c,Params p){ while(c.uv.x>0.0) {} material.Output o; return o; }",
+            "loops");
+        rejected(declarations +
+                     "material.Output shade(material.Context c,Params p){ uint x=1; material.Output o; return o; }",
+                 "float");
+        rejected(
+            declarations +
+                "material.Output shade(material.Context c,Params p){ material.Output o; o.coverage=host_call(); return o; }",
+            "Unknown source function");
         rejected(declarations + "material.Output shade(material.Context c,Params p){ return shade(c,p); }", "Recurs");
         rejected(R"(struct Params { float cutoff; };
             Params defaults(){ material.TextureInput input; Params p; return p; }
-            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "defaults cannot contain texture");
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })",
+                 "defaults cannot contain texture");
         rejected(R"(struct Params { bool enabled; };
             Params defaults(){ Params p; return p; }
-            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "parameters require float");
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })",
+                 "parameters require float");
         rejected(R"(struct Params { float cutoff; };
             float impure(){ material.TextureInput input; return sample(input,vector2()).w; }
             Params defaults(){ Params p; p.cutoff=impure(); return p; }
-            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "defaults cannot contain texture");
-        rejected(declarations + "async material.Output shade(material.Context c,Params p){ yield; material.Output o; return o; }", "async");
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })",
+                 "defaults cannot contain texture");
+        rejected(declarations +
+                     "async material.Output shade(material.Context c,Params p){ yield; material.Output o; return o; }",
+                 "async");
         const auto rejected_texture = [&](std::string_view body, std::string_view reason) {
-            rejected(declarations + resources + "material.Output shade(material.Context c,Params p,Textures textures){" +
-                std::string(body) + " material.Output o; return o; }", reason);
+            rejected(declarations + resources +
+                         "material.Output shade(material.Context c,Params p,Textures textures){" + std::string(body) +
+                         " material.Output o; return o; }",
+                     reason);
         };
         rejected_texture("vector4 x=sample(7,c.uv);", "not a numeric slot");
         rejected_texture("vector2 x=sample_orientation(7,c.uv);", "not a numeric slot");
@@ -384,125 +454,143 @@ void verify_source_materials() {
             struct FakeInput { uint slot; };
             material.Output shade(material.Context c,Params p){
                 FakeInput fake; vector4 x=sample(fake,c.uv); material.Output o; return o;
-            })", "registered TextureInput");
+            })",
+                 "registered TextureInput");
         rejected(R"(struct Params { material.TextureInput texture; };
             Params defaults(){ Params p; return p; }
-            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "not texture inputs");
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })",
+                 "not texture inputs");
         rejected(declarations + R"(struct Textures { float input; };
-            material.Output shade(material.Context c,Params p,Textures textures){ material.Output o; return o; })", "require TextureInput leaves");
+            material.Output shade(material.Context c,Params p,Textures textures){ material.Output o; return o; })",
+                 "require TextureInput leaves");
         rejected(declarations + R"(struct Textures { material.TextureInput tint; };
-            material.Output shade(material.Context c,Params p,Textures textures){ material.Output o; return o; })", "key conflict: tint");
-        const auto token_member_error = source::compile_material(runtime, context, output, texture_input, "token-member.ms",
+            material.Output shade(material.Context c,Params p,Textures textures){ material.Output o; return o; })",
+                 "key conflict: tint");
+        const auto token_member_error = source::compile_material(
+            runtime, context, output, texture_input, "token-member.ms",
             "struct Params { float cutoff; };\nstruct Textures { material.TextureInput input; };\n"
             "Params defaults(){ Params p; return p; }\nmaterial.Output shade(material.Context c,Params p,Textures textures){\n"
             "material.Output o; o.coverage=float(textures.input.slot); return o; }");
         require(!token_member_error && token_member_error.error().message.contains("token-member.ms:5:") &&
-            token_member_error.error().message.contains("members are compiler-owned"),
-            "Opaque token member access lost its actual source location/reason.");
+                    token_member_error.error().message.contains("members are compiler-owned"),
+                "Opaque token member access lost its actual source location/reason.");
         rejected(R"(struct Params { float cutoff; };
             float impure(){ material.TextureInput input; return sample_orientation(input,vector2()).x; }
             Params defaults(){ Params p; p.cutoff=impure(); return p; }
-            material.Output shade(material.Context c,Params p){ material.Output o; return o; })", "defaults cannot contain texture");
+            material.Output shade(material.Context c,Params p){ material.Output o; return o; })",
+                 "defaults cannot contain texture");
 
-        const auto declaration_error = source::compile_material(runtime, context, output, texture_input, "declaration.ms",
-            "\nstruct Params {\nfloat cutoff\n};");
+        const auto declaration_error = source::compile_material(
+            runtime, context, output, texture_input, "declaration.ms", "\nstruct Params {\nfloat cutoff\n};");
         require(!declaration_error && declaration_error.error().message.contains("declaration.ms:4:1: Expected ';'"),
-            "Material declaration diagnostic lost its actual source/line/column/cause.");
+                "Material declaration diagnostic lost its actual source/line/column/cause.");
         const auto long_name = std::string(4096, 'x') + "/diagnostic-tail.ms";
-        const auto typed_error = source::compile_material(runtime, context, output, texture_input, long_name,
-            "struct Params { float cutoff; };\nParams defaults(){ Params p; return p; }\n"
-            "material.Output shade(material.Context c,Params p){\nmaterial.Output o;\n"
-            "o.coverage = missing_name();\nreturn o;\n}");
-        require(!typed_error && typed_error.error().message.contains("diagnostic-tail.ms:5:14: Unknown source function 'missing_name'"),
-            "Long material source name displaced the typed diagnostic's location/cause.");
-        const auto publication_error = source::compile_material(runtime, context, output, texture_input, "recursive-layout.ms",
-            "struct Params { Params child; };");
+        const auto typed_error =
+            source::compile_material(runtime, context, output, texture_input, long_name,
+                                     "struct Params { float cutoff; };\nParams defaults(){ Params p; return p; }\n"
+                                     "material.Output shade(material.Context c,Params p){\nmaterial.Output o;\n"
+                                     "o.coverage = missing_name();\nreturn o;\n}");
+        require(!typed_error && typed_error.error().message.contains(
+                                    "diagnostic-tail.ms:5:14: Unknown source function 'missing_name'"),
+                "Long material source name displaced the typed diagnostic's location/cause.");
+        const auto publication_error = source::compile_material(
+            runtime, context, output, texture_input, "recursive-layout.ms", "struct Params { Params child; };");
         require(!publication_error && publication_error.error().message.starts_with("recursive-layout.ms: ") &&
-            !publication_error.error().message.contains(":1:1:"),
-            "Material layout publication lost source identity or fabricated an exact position.");
+                    !publication_error.error().message.contains(":1:1:"),
+                "Material layout publication lost source identity or fabricated an exact position.");
     } // All content below is used after its compilation Runtime is destroyed.
 
     require(!coverage->hlsl_coverage("bad::namespace"), "Coverage HLSL lost namespace validation.");
     const auto a_coverage = coverage_body(*a), b_coverage = coverage_body(*b);
-    require(occurrences(a_coverage,"::atelier_material_sample(") == 1 && b_coverage.contains("::atelier_material_sample("),
-        "Coverage did not remove unrelated sampling or lost a required helper/token sample.");
+    require(occurrences(a_coverage, "::atelier_material_sample(") == 1 &&
+                b_coverage.contains("::atelier_material_sample("),
+            "Coverage did not remove unrelated sampling or lost a required helper/token sample.");
     const auto constant_coverage = coverage_body(*oriented), replaced_coverage = coverage_body(*overwritten);
     require(!constant_coverage.contains("::atelier_material_sample") && !constant_coverage.contains("if (") &&
-        !replaced_coverage.contains("::atelier_material_sample"),
-        "Coverage retained unrelated orientation/branches, overwritten values or unused helper arguments.");
+                !replaced_coverage.contains("::atelier_material_sample"),
+            "Coverage retained unrelated orientation/branches, overwritten values or unused helper arguments.");
     const auto control_coverage = coverage_body(*coverage), math_coverage = coverage_body(*numeric);
     require(control_coverage.contains("if (") && control_coverage.contains("::atelier_material_sample(") &&
-        !control_coverage.contains("sin(") && !math_coverage.contains("floor("),
-        "Coverage lost control dependencies or retained unrelated shading math.");
+                !control_coverage.contains("sin(") && !math_coverage.contains("floor("),
+            "Coverage lost control dependencies or retained unrelated shading math.");
     require(coverage_body(*footprint).contains("sin("), "Coverage dropped a helper's texture-coordinate dependency.");
     for (const auto& program : {generic, vector_output}) {
         const auto unsupported = program->hlsl_coverage("Unsupported");
         require(!unsupported && unsupported.error().code == ErrorCode::invalid_type &&
-            unsupported.error().message.contains("float coverage"), "An unsupported coverage output lost its explicit failure.");
+                    unsupported.error().message.contains("float coverage"),
+                "An unsupported coverage output lost its explicit failure.");
         take(program->hlsl("GenericPoint"));
         take(program->hlsl_footprint("GenericFootprint"));
     }
     material::Context coverage_context;
-    coverage_context.uv = {0.25f,0.75f};
+    coverage_context.uv = {0.25f, 0.75f};
     GenericOutput generic_result;
     generic_result.value = -1;
-    take(generic->evaluate(std::as_bytes(std::span(&coverage_context,1)),generic->default_parameters(),
-        std::as_writable_bytes(std::span(&generic_result,1))));
+    take(generic->evaluate(std::as_bytes(std::span(&coverage_context, 1)), generic->default_parameters(),
+                           std::as_writable_bytes(std::span(&generic_result, 1))));
     require(generic_result.value == 7, "Adding coverage restricted generic CPU Output evaluation/defaults.");
-    const Texture coverage_texture{{0.2f,0.4f,0.6f,0.8f}};
-    const std::array<source::MaterialTexture,2> coverage_bindings{{
-        {slot(*coverage,"keep"),&coverage_texture,sample}, {slot(*coverage,"discarded"),&coverage_texture,sample}}};
-    constexpr std::array coverage_expected{1.0f,-0.25f,0.25f,-0.25f,0.75f,0.25f,0.25f,-1.25f};
+    const Texture coverage_texture{{0.2f, 0.4f, 0.6f, 0.8f}};
+    const std::array<source::MaterialTexture, 2> coverage_bindings{
+        {{slot(*coverage, "keep"), &coverage_texture, sample},
+         {slot(*coverage, "discarded"), &coverage_texture, sample}}};
+    constexpr std::array coverage_expected{1.0f, -0.25f, 0.25f, -0.25f, 0.75f, 0.25f, 0.25f, -1.25f};
     for (std::size_t i = 0; i < coverage_expected.size(); ++i) {
         coverage_context.uv.x = i == 7 ? 0.75f : 0.25f;
-        const std::array parameters{i == 7 ? 2.0f : static_cast<float>(i)-1.0f,0.5f};
-        require(evaluate(*coverage,coverage_context,coverage_bindings,std::as_bytes(std::span(parameters))).coverage == coverage_expected[i],
+        const std::array parameters{i == 7 ? 2.0f : static_cast<float>(i) - 1.0f, 0.5f};
+        require(
+            evaluate(*coverage, coverage_context, coverage_bindings, std::as_bytes(std::span(parameters))).coverage ==
+                coverage_expected[i],
             "Coverage fixture changed native/nested defaults, snapshots, whole-record replacement or early returns.");
     }
-    const auto overwritten_bindings = bindings(*overwritten,coverage_texture,coverage_texture);
-    require(evaluate(*overwritten,coverage_context,overwritten_bindings).coverage == coverage_context.uv.y,
-        "Coverage fixture changed unused argument/overwritten record semantics.");
+    const auto overwritten_bindings = bindings(*overwritten, coverage_texture, coverage_texture);
+    require(evaluate(*overwritten, coverage_context, overwritten_bindings).coverage == coverage_context.uv.y,
+            "Coverage fixture changed unused argument/overwritten record semantics.");
 
     material::Context numeric_context;
-    numeric_context.uv = {0.5f,0.25f};
-    const auto numeric_result = evaluate(*numeric,numeric_context,{});
-    require(numeric_result.coverage == 0.5f && numeric_result.normal_world == math::Vector3{1,0.5f,1},
-        "Material clamp changed Source's inverted-bound contract.");
-    require(numeric_result.metallic == 1.0f && numeric_result.base_color == math::Vector3{1,1e8f,1},
-        "Material lerp lost the exact t=1 endpoint.");
-    const auto below_one = std::nextafter(1.0f,0.0f);
-    require(numeric_result.roughness == below_one && numeric_result.emissive == math::Vector3{below_one,0.75f,0.75f},
-        "Material fract lost Source's strictly-below-one cap.");
-    const std::array opposite{1.0f,1e8f,0.0f,-1e-30f,0.0f,1.0f};
-    const auto opposite_result = evaluate(*numeric,numeric_context,{},std::as_bytes(std::span(opposite)));
-    require(opposite_result.metallic == 1.0f && opposite_result.base_color == math::Vector3{1,1e8f,1} &&
-        opposite_result.coverage == 0.0f && opposite_result.normal_world == math::Vector3{0,0.5f,1},
-        "Runtime material parameters lost the opposite lerp endpoint or ordered clamp bounds.");
+    numeric_context.uv = {0.5f, 0.25f};
+    const auto numeric_result = evaluate(*numeric, numeric_context, {});
+    require(numeric_result.coverage == 0.5f && numeric_result.normal_world == math::Vector3{1, 0.5f, 1},
+            "Material clamp changed Source's inverted-bound contract.");
+    require(numeric_result.metallic == 1.0f && numeric_result.base_color == math::Vector3{1, 1e8f, 1},
+            "Material lerp lost the exact t=1 endpoint.");
+    const auto below_one = std::nextafter(1.0f, 0.0f);
+    require(numeric_result.roughness == below_one && numeric_result.emissive == math::Vector3{below_one, 0.75f, 0.75f},
+            "Material fract lost Source's strictly-below-one cap.");
+    const std::array opposite{1.0f, 1e8f, 0.0f, -1e-30f, 0.0f, 1.0f};
+    const auto opposite_result = evaluate(*numeric, numeric_context, {}, std::as_bytes(std::span(opposite)));
+    require(opposite_result.metallic == 1.0f && opposite_result.base_color == math::Vector3{1, 1e8f, 1} &&
+                opposite_result.coverage == 0.0f && opposite_result.normal_world == math::Vector3{0, 0.5f, 1},
+            "Runtime material parameters lost the opposite lerp endpoint or ordered clamp bounds.");
 
-    struct PointProbe { mutable std::uint32_t calls{}; bool warp{}; } warp_probe{0,true}, color_probe;
-    const auto point_probe = +[](const void* data,math::Vector2 uv) -> Result<math::Vector4> {
+    struct PointProbe {
+        mutable std::uint32_t calls{};
+        bool warp{};
+    } warp_probe{0, true}, color_probe;
+    const auto point_probe = +[](const void* data, math::Vector2 uv) -> Result<math::Vector4> {
         const auto& probe = *static_cast<const PointProbe*>(data);
         ++probe.calls;
-        return math::Vector4{uv.x,uv.y*(probe.warp?2.0f:1.0f),0,1};
+        return math::Vector4{uv.x, uv.y * (probe.warp ? 2.0f : 1.0f), 0, 1};
     };
-    const std::array<source::MaterialTexture,2> probe_bindings{{
-        {slot(*footprint,"warp"),&warp_probe,point_probe}, {slot(*footprint,"color"),&color_probe,point_probe}}};
+    const std::array<source::MaterialTexture, 2> probe_bindings{
+        {{slot(*footprint, "warp"), &warp_probe, point_probe}, {slot(*footprint, "color"), &color_probe, point_probe}}};
     material::Context probe_context;
-    probe_context.uv={0.25f,0.75f};
-    for (const float mode : {0.0f,1.0f,2.0f,8.0f}) {
-        warp_probe.calls=color_probe.calls=0;
-        const std::array parameters{mode,1.0f};
-        const auto value=evaluate(*footprint,probe_context,probe_bindings,std::as_bytes(std::span(parameters)));
-        const auto expected = mode==0 ? math::Vector2{0.0625f,0.1875f} : mode==1 ? math::Vector2{0.5f,2.25f} :
-            mode==2 ? math::Vector2{0.25f,2.25f} : math::Vector2{std::sin(0.25f),std::cos(0.75f)};
-        require(near(value.emissive.x,expected.x) && near(value.emissive.y,expected.y) &&
-            near(value.base_color.x,expected.x) && near(value.base_color.y,expected.y),
-            "Footprint-capable Source changed point arithmetic, struct/helper flow or sin/cos CPU evaluation.");
-        require(color_probe.calls==1 && warp_probe.calls==(mode==2?1u:0u),
-            "Point evaluation gained neighbor samples or lost its short-circuit.");
+    probe_context.uv = {0.25f, 0.75f};
+    for (const float mode : {0.0f, 1.0f, 2.0f, 8.0f}) {
+        warp_probe.calls = color_probe.calls = 0;
+        const std::array parameters{mode, 1.0f};
+        const auto value = evaluate(*footprint, probe_context, probe_bindings, std::as_bytes(std::span(parameters)));
+        const auto expected = mode == 0   ? math::Vector2{0.0625f, 0.1875f}
+                              : mode == 1 ? math::Vector2{0.5f, 2.25f}
+                              : mode == 2 ? math::Vector2{0.25f, 2.25f}
+                                          : math::Vector2{std::sin(0.25f), std::cos(0.75f)};
+        require(near(value.emissive.x, expected.x) && near(value.emissive.y, expected.y) &&
+                    near(value.base_color.x, expected.x) && near(value.base_color.y, expected.y),
+                "Footprint-capable Source changed point arithmetic, struct/helper flow or sin/cos CPU evaluation.");
+        require(color_probe.calls == 1 && warp_probe.calls == (mode == 2 ? 1u : 0u),
+                "Point evaluation gained neighbor samples or lost its short-circuit.");
     }
     require(!footprint->hlsl_footprint("bad::namespace") && !footprint->hlsl("9invalid"),
-        "A material HLSL variant lost namespace validation.");
+            "A material HLSL variant lost namespace validation.");
 
     // Public compiler/JIT/callback integration. Actual SurfaceInput binding
     // integration is separately owned by the material resource acceptance.
@@ -511,155 +599,171 @@ void verify_source_materials() {
         mutable std::uint32_t queries{}, samples{};
         mutable math::Vector2 sampled_uv{};
     } orientation_probe;
-    const auto query_orientation = +[](const void* data,math::Vector2 uv) -> Result<math::Vector2> {
-        const auto& probe=*static_cast<const OrientationProbe*>(data);
+    const auto query_orientation = +[](const void* data, math::Vector2 uv) -> Result<math::Vector2> {
+        const auto& probe = *static_cast<const OrientationProbe*>(data);
         ++probe.queries;
-        math::Vector2 direction{1,1};
-        if (probe.address==2) for (std::size_t axis=0;axis<2;++axis) {
-            double u=uv[axis]; u-=std::floor(u*.5)*2;
-            direction[axis]=u>1?-1.0f:1.0f;
-        }
+        math::Vector2 direction{1, 1};
+        if (probe.address == 2)
+            for (std::size_t axis = 0; axis < 2; ++axis) {
+                double u = uv[axis];
+                u -= std::floor(u * .5) * 2;
+                direction[axis] = u > 1 ? -1.0f : 1.0f;
+            }
         return direction;
     };
-    const auto orientation_sample = +[](const void* data,math::Vector2 uv) -> Result<math::Vector4> {
-        const auto& probe=*static_cast<const OrientationProbe*>(data);
-        ++probe.samples; probe.sampled_uv=uv;
-        return math::Vector4{0.4f,0.6f,0.8f,1};
+    const auto orientation_sample = +[](const void* data, math::Vector2 uv) -> Result<math::Vector4> {
+        const auto& probe = *static_cast<const OrientationProbe*>(data);
+        ++probe.samples;
+        probe.sampled_uv = uv;
+        return math::Vector4{0.4f, 0.6f, 0.8f, 1};
     };
-    std::array<source::MaterialTexture,2> orientation_bindings{{
-        {slot(*oriented,"normal"),&orientation_probe,orientation_sample,query_orientation},
-        {slot(*oriented,"unused"),&orientation_probe,orientation_sample}}};
-    constexpr std::array<math::Vector2,6> orientation_uvs{{{-0.25f,1.25f},{0.25f,0.75f},{-1,-2},{1,2},{2.25f,3.25f},{-2.25f,-3.25f}}};
-    constexpr std::array<math::Vector2,6> mirror_directions{{{-1,-1},{1,1},{1,1},{1,1},{1,-1},{-1,1}}};
+    std::array<source::MaterialTexture, 2> orientation_bindings{
+        {{slot(*oriented, "normal"), &orientation_probe, orientation_sample, query_orientation},
+         {slot(*oriented, "unused"), &orientation_probe, orientation_sample}}};
+    constexpr std::array<math::Vector2, 6> orientation_uvs{
+        {{-0.25f, 1.25f}, {0.25f, 0.75f}, {-1, -2}, {1, 2}, {2.25f, 3.25f}, {-2.25f, -3.25f}}};
+    constexpr std::array<math::Vector2, 6> mirror_directions{{{-1, -1}, {1, 1}, {1, 1}, {1, 1}, {1, -1}, {-1, 1}}};
     material::Context orientation_context;
-    for (unsigned address=0;address<3;++address) for (std::size_t i=0;i<orientation_uvs.size();++i) {
-        orientation_probe.address=address; orientation_probe.queries=orientation_probe.samples=0;
-        orientation_context.uv=orientation_uvs[i];
-        const auto value=evaluate(*oriented,orientation_context,orientation_bindings);
-        const auto direction=address==2?mirror_directions[i]:math::Vector2{1,1};
-        require(value.base_color==math::Vector3{direction.x,direction.y,0.4f} && value.coverage==99 &&
-            orientation_probe.queries==1 && orientation_probe.samples==1 &&
-            orientation_probe.sampled_uv==direction*0.25f+math::Vector2{0.5f,0.5f},
-            "sample_orientation lost its typed token, binding, fold convention or value result.");
-    }
-    orientation_bindings[0].orientation=nullptr;
-    const std::array skipped_orientation{0.0f,1.0f};
-    orientation_probe.queries=orientation_probe.samples=0;
-    require(evaluate(*oriented,orientation_context,orientation_bindings,std::as_bytes(std::span(skipped_orientation))).coverage==99 &&
-        orientation_probe.queries==0 && orientation_probe.samples==0,
+    for (unsigned address = 0; address < 3; ++address)
+        for (std::size_t i = 0; i < orientation_uvs.size(); ++i) {
+            orientation_probe.address = address;
+            orientation_probe.queries = orientation_probe.samples = 0;
+            orientation_context.uv = orientation_uvs[i];
+            const auto value = evaluate(*oriented, orientation_context, orientation_bindings);
+            const auto direction = address == 2 ? mirror_directions[i] : math::Vector2{1, 1};
+            require(value.base_color == math::Vector3{direction.x, direction.y, 0.4f} && value.coverage == 99 &&
+                        orientation_probe.queries == 1 && orientation_probe.samples == 1 &&
+                        orientation_probe.sampled_uv == direction * 0.25f + math::Vector2{0.5f, 0.5f},
+                    "sample_orientation lost its typed token, binding, fold convention or value result.");
+        }
+    orientation_bindings[0].orientation = nullptr;
+    const std::array skipped_orientation{0.0f, 1.0f};
+    orientation_probe.queries = orientation_probe.samples = 0;
+    require(
+        evaluate(*oriented, orientation_context, orientation_bindings, std::as_bytes(std::span(skipped_orientation)))
+                    .coverage == 99 &&
+            orientation_probe.queries == 0 && orientation_probe.samples == 0,
         "An unexecuted orientation query incorrectly required a callback.");
-    material::Output orientation_untouched; orientation_untouched.coverage=321;
-    const auto orientation_failure = [&](std::string_view reason,std::span<const std::byte> parameters) {
-        std::array<std::byte,sizeof(material::Output)> before;
-        std::memcpy(before.data(),&orientation_untouched,before.size());
-        auto failed=oriented->evaluate(std::as_bytes(std::span(&orientation_context,1)),parameters,
-            std::as_writable_bytes(std::span(&orientation_untouched,1)),orientation_bindings);
+    material::Output orientation_untouched;
+    orientation_untouched.coverage = 321;
+    const auto orientation_failure = [&](std::string_view reason, std::span<const std::byte> parameters) {
+        std::array<std::byte, sizeof(material::Output)> before;
+        std::memcpy(before.data(), &orientation_untouched, before.size());
+        auto failed =
+            oriented->evaluate(std::as_bytes(std::span(&orientation_context, 1)), parameters,
+                               std::as_writable_bytes(std::span(&orientation_untouched, 1)), orientation_bindings);
         require(!failed && failed.error().message.contains(reason) &&
-            std::memcmp(before.data(),&orientation_untouched,before.size())==0,
-            "Orientation failure lost its diagnostic or partially published Output.");
+                    std::memcmp(before.data(), &orientation_untouched, before.size()) == 0,
+                "Orientation failure lost its diagnostic or partially published Output.");
     };
-    orientation_failure("Missing material sample_orientation callback",oriented->default_parameters());
-    orientation_bindings[0].orientation=+[](const void*,math::Vector2) -> Result<math::Vector2> {
-        return std::unexpected(Error{ErrorCode::invocation_failed,"orientation unavailable"});
+    orientation_failure("Missing material sample_orientation callback", oriented->default_parameters());
+    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> {
+        return std::unexpected(Error{ErrorCode::invocation_failed, "orientation unavailable"});
     };
-    orientation_failure("orientation unavailable",oriented->default_parameters());
-    orientation_bindings[0].orientation=+[](const void*,math::Vector2) -> Result<math::Vector2> {
-        return math::Vector2{1,std::numeric_limits<float>::quiet_NaN()};
+    orientation_failure("orientation unavailable", oriented->default_parameters());
+    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> {
+        return math::Vector2{1, std::numeric_limits<float>::quiet_NaN()};
     };
-    orientation_failure("sample_orientation result is not finite",oriented->default_parameters());
-    orientation_bindings[0].orientation=+[](const void*,math::Vector2) -> Result<math::Vector2> {
-        throw std::runtime_error("orientation exception");
-    };
-    orientation_failure("orientation exception",oriented->default_parameters());
-    orientation_bindings[0].orientation=query_orientation;
-    orientation_probe.queries=orientation_probe.samples=0;
-    const std::array invalid_orientation_uv{1.0f,0.0f};
-    orientation_failure("sample_orientation UV is not finite",std::as_bytes(std::span(invalid_orientation_uv)));
-    require(orientation_probe.queries==0 && orientation_probe.samples==0,
-        "Nonfinite orientation coordinates reached the host sampler.");
+    orientation_failure("sample_orientation result is not finite", oriented->default_parameters());
+    orientation_bindings[0].orientation =
+        +[](const void*, math::Vector2) -> Result<math::Vector2> { throw std::runtime_error("orientation exception"); };
+    orientation_failure("orientation exception", oriented->default_parameters());
+    orientation_bindings[0].orientation = query_orientation;
+    orientation_probe.queries = orientation_probe.samples = 0;
+    const std::array invalid_orientation_uv{1.0f, 0.0f};
+    orientation_failure("sample_orientation UV is not finite", std::as_bytes(std::span(invalid_orientation_uv)));
+    require(orientation_probe.queries == 0 && orientation_probe.samples == 0,
+            "Nonfinite orientation coordinates reached the host sampler.");
 
-    Texture alpha{{0.1f,0.2f,0.3f,0.9f}, true}, color{{0.2f,0.4f,0.6f,0.8f}};
-    const auto textures = bindings(*a,color,alpha);
+    Texture alpha{{0.1f, 0.2f, 0.3f, 0.9f}, true}, color{{0.2f, 0.4f, 0.6f, 0.8f}};
+    const auto textures = bindings(*a, color, alpha);
     require(a->textures().size() == 3 && a->textures()[0].key == "alpha" && a->textures()[1].key == "surface.color" &&
-        a->textures()[2].key == "unused" && revised->textures().empty(),
-        "Material lost its declared resource schema or confused numeric-only and textured entries.");
-    require(a->parameter_layout().size == 28 && a->parameters().size() == 4 &&
-        a->parameters()[1].key == "tint" && a->parameters()[1].offset == 4 && a->parameters()[1].components == 3 &&
-        a->parameters()[2].key == "mask.cutoff" && a->parameters()[2].offset == 16 &&
-        a->parameters()[3].key == "mask.scale" && a->parameters()[3].offset == 20,
-        "Material parameter paths, types or packed CPU offsets differ from Source declarations.");
+                a->textures()[2].key == "unused" && revised->textures().empty(),
+            "Material lost its declared resource schema or confused numeric-only and textured entries.");
+    require(a->parameter_layout().size == 28 && a->parameters().size() == 4 && a->parameters()[1].key == "tint" &&
+                a->parameters()[1].offset == 4 && a->parameters()[1].components == 3 &&
+                a->parameters()[2].key == "mask.cutoff" && a->parameters()[2].offset == 16 &&
+                a->parameters()[3].key == "mask.scale" && a->parameters()[3].offset == 20,
+            "Material parameter paths, types or packed CPU offsets differ from Source declarations.");
     material::Context context;
-    context.uv = {0.25f,0.75f}; context.normal_world = {0.0f,1.0f,0.0f};
+    context.uv = {0.25f, 0.75f};
+    context.normal_world = {0.0f, 1.0f, 0.0f};
     const auto out_a = evaluate(*a, context, textures), out_b = evaluate(*b, context, textures);
-    require(near(out_a.coverage,-0.25f) && near(out_a.base_color.x,0.05f) && near(out_a.base_color.z,0.15f) &&
-        near(out_a.roughness,0.65f) && out_a.normal_world == context.normal_world,
-        "Detached material A lost sampling, parameters or registered native defaults.");
-    require(near(out_b.coverage,0.25f) && near(out_b.base_color.x,0.35f) && near(out_b.emissive.x,0.2f),
-        "Same-layout material B did not run its distinct branch/helper logic.");
-    const auto reordered_bindings = bindings(*reordered,color,alpha);
-    const auto reordered_result = evaluate(*reordered,context,reordered_bindings);
-    require(slot(*a,"alpha") != slot(*reordered,"alpha") && reordered_result.coverage == out_a.coverage &&
-        reordered_result.base_color == out_a.base_color,
-        "A source field reorder changed stable keys or reused an old program's slots.");
+    require(near(out_a.coverage, -0.25f) && near(out_a.base_color.x, 0.05f) && near(out_a.base_color.z, 0.15f) &&
+                near(out_a.roughness, 0.65f) && out_a.normal_world == context.normal_world,
+            "Detached material A lost sampling, parameters or registered native defaults.");
+    require(near(out_b.coverage, 0.25f) && near(out_b.base_color.x, 0.35f) && near(out_b.emissive.x, 0.2f),
+            "Same-layout material B did not run its distinct branch/helper logic.");
+    const auto reordered_bindings = bindings(*reordered, color, alpha);
+    const auto reordered_result = evaluate(*reordered, context, reordered_bindings);
+    require(slot(*a, "alpha") != slot(*reordered, "alpha") && reordered_result.coverage == out_a.coverage &&
+                reordered_result.base_color == out_a.base_color,
+            "A source field reorder changed stable keys or reused an old program's slots.");
     auto shared_image = textures;
     shared_image[1].data = shared_image[0].data;
-    shared_image[1].sample = [](const void* data,math::Vector2 uv) -> Result<math::Vector4> {
+    shared_image[1].sample = [](const void* data, math::Vector2 uv) -> Result<math::Vector4> {
         auto value = static_cast<const Texture*>(data)->value;
         value.w -= uv.x;
         return value;
     };
-    const auto shared_result = evaluate(*a,context,shared_image);
-    require(near(shared_result.coverage,0.05f) && shared_result.base_color == out_a.base_color,
-        "Two inputs using the same image lost their independent sampling environments.");
-    context.uv = {0.75f,0.25f};
-    require(near(evaluate(*b,context,textures).coverage,1.0f), "Material B branch used the wrong operands.");
+    const auto shared_result = evaluate(*a, context, shared_image);
+    require(near(shared_result.coverage, 0.05f) && shared_result.base_color == out_a.base_color,
+            "Two inputs using the same image lost their independent sampling environments.");
+    context.uv = {0.75f, 0.25f};
+    require(near(evaluate(*b, context, textures).coverage, 1.0f), "Material B branch used the wrong operands.");
     context.uv.x = 0.5f;
-    require(evaluate(*a,context,textures).coverage == 0.0f, "Masked equality boundary was not preserved.");
-    require(near(evaluate(*revised,context,{}).coverage,-0.25f), "Same-named revised Params lost its independent layout/code.");
-    std::vector<std::byte> changed(a->default_parameters().begin(),a->default_parameters().end());
+    require(evaluate(*a, context, textures).coverage == 0.0f, "Masked equality boundary was not preserved.");
+    require(near(evaluate(*revised, context, {}).coverage, -0.25f),
+            "Same-named revised Params lost its independent layout/code.");
+    std::vector<std::byte> changed(a->default_parameters().begin(), a->default_parameters().end());
     const float cutoff = 0.625f;
-    std::memcpy(changed.data()+16,&cutoff,sizeof(cutoff));
-    require(near(evaluate(*a,context,textures,changed).coverage,-0.125f) && evaluate(*a,context,textures).coverage == 0.0f,
-        "Parameter override changed compiled/default content or required recompilation.");
-    material::Output untouched; untouched.coverage = 123;
-    auto missing = a->evaluate(std::as_bytes(std::span(&context,1)),a->default_parameters(),
-        std::as_writable_bytes(std::span(&untouched,1)),std::span(textures).first(1));
+    std::memcpy(changed.data() + 16, &cutoff, sizeof(cutoff));
+    require(near(evaluate(*a, context, textures, changed).coverage, -0.125f) &&
+                evaluate(*a, context, textures).coverage == 0.0f,
+            "Parameter override changed compiled/default content or required recompilation.");
+    material::Output untouched;
+    untouched.coverage = 123;
+    auto missing = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                               std::as_writable_bytes(std::span(&untouched, 1)), std::span(textures).first(1));
     require(!missing && missing.error().message.contains("alpha") && untouched.coverage == 123,
-        "Missing texture binding did not fail atomically.");
-    auto unsampled = a->evaluate(std::as_bytes(std::span(&context,1)),a->default_parameters(),
-        std::as_writable_bytes(std::span(&untouched,1)),std::span(textures).first(2));
+            "Missing texture binding did not fail atomically.");
+    auto unsampled = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                                 std::as_writable_bytes(std::span(&untouched, 1)), std::span(textures).first(2));
     require(!unsampled && unsampled.error().message.contains("unused") && untouched.coverage == 123,
-        "Declared but unsampled texture input silently escaped the binding contract.");
-    const std::array duplicate{textures[0],textures[1],textures[2],textures[1]};
-    auto duplicated = a->evaluate(std::as_bytes(std::span(&context,1)),a->default_parameters(),
-        std::as_writable_bytes(std::span(&untouched,1)),duplicate);
-    require(!duplicated && duplicated.error().message.contains("Duplicate material texture input: alpha") && untouched.coverage == 123,
-        "Duplicate named texture binding did not fail atomically.");
+            "Declared but unsampled texture input silently escaped the binding contract.");
+    const std::array duplicate{textures[0], textures[1], textures[2], textures[1]};
+    auto duplicated = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                                  std::as_writable_bytes(std::span(&untouched, 1)), duplicate);
+    require(!duplicated && duplicated.error().message.contains("Duplicate material texture input: alpha") &&
+                untouched.coverage == 123,
+            "Duplicate named texture binding did not fail atomically.");
     auto bad = textures;
     bad[1].sample = [](const void*, math::Vector2) -> Result<math::Vector4> {
-        return std::unexpected(Error{ErrorCode::invocation_failed,"texture unavailable"});
+        return std::unexpected(Error{ErrorCode::invocation_failed, "texture unavailable"});
     };
-    auto failed = a->evaluate(std::as_bytes(std::span(&context,1)),a->default_parameters(),
-        std::as_writable_bytes(std::span(&untouched,1)),bad);
+    auto failed = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                              std::as_writable_bytes(std::span(&untouched, 1)), bad);
     require(!failed && failed.error().message == "texture unavailable" && untouched.coverage == 123,
-        "Sampler failure changed the caller output or lost its diagnostic.");
+            "Sampler failure changed the caller output or lost its diagnostic.");
     auto changed_bindings = textures;
-    Texture brighter{{0.8f,0.1f,0.4f,0.7f}};
+    Texture brighter{{0.8f, 0.1f, 0.4f, 0.7f}};
     changed_bindings[0].data = &brighter;
-    require(near(evaluate(*a,context,changed_bindings).base_color.z,0.6f) &&
-        near(evaluate(*a,context,textures).base_color.z,0.15f), "A previous invocation leaked its texture environment.");
+    require(near(evaluate(*a, context, changed_bindings).base_color.z, 0.6f) &&
+                near(evaluate(*a, context, textures).base_color.z, 0.15f),
+            "A previous invocation leaked its texture environment.");
     auto nan_bindings = textures;
-    nan_bindings[0].sample = [](const void*,math::Vector2) -> Result<math::Vector4> {
-        return math::Vector4{std::numeric_limits<float>::quiet_NaN(),0,0,1};
+    nan_bindings[0].sample = [](const void*, math::Vector2) -> Result<math::Vector4> {
+        return math::Vector4{std::numeric_limits<float>::quiet_NaN(), 0, 0, 1};
     };
-    require(!a->evaluate(std::as_bytes(std::span(&context,1)),a->default_parameters(),
-        std::as_writable_bytes(std::span(&untouched,1)),nan_bindings) && untouched.coverage == 123,
-        "Nonfinite samples were silently published.");
+    require(!a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                         std::as_writable_bytes(std::span(&untouched, 1)), nan_bindings) &&
+                untouched.coverage == 123,
+            "Nonfinite samples were silently published.");
 
     // Actual generated modules are composed, not hand-written stand-ins. The
     // artifact can also be compiled by pinned DXC, without GPU execution.
-    const auto path = std::filesystem::temp_directory_path()/"atelier-source-materials.hlsl";
-    std::ofstream hlsl(path,std::ios::binary);
+    const auto path = std::filesystem::temp_directory_path() / "atelier-source-materials.hlsl";
+    std::ofstream hlsl(path, std::ios::binary);
     hlsl << take(a->hlsl("MaterialA")) << take(b->hlsl("MaterialB")) << take(numeric->hlsl("MaterialMath")) << R"(
         ByteAddressBuffer Parameters : register(t0);
         Texture2D<float4> Textures[16] : register(t1);
@@ -688,11 +792,12 @@ void verify_source_materials() {
     // Dispatch eight threads with keep=(.2,.4,.6,.8), a finite discarded image,
     // Parameters={0,.5}, and Result[8]. x/y/z must agree, w must be one. This
     // composes the actual point and sliced programs; it is not a GPU pass here.
-    const auto coverage_path=std::filesystem::temp_directory_path()/"atelier-source-material-coverage.hlsl";
-    std::ofstream coverage_hlsl(coverage_path,std::ios::binary);
+    const auto coverage_path = std::filesystem::temp_directory_path() / "atelier-source-material-coverage.hlsl";
+    std::ofstream coverage_hlsl(coverage_path, std::ios::binary);
     coverage_hlsl << take(coverage->hlsl("Point")) << take(coverage->hlsl_coverage("Coverage"))
-        << take(footprint->hlsl_coverage("CoordinateCoverage"))
-        << take(overwritten->hlsl_coverage("Overwritten")) << take(oriented->hlsl_coverage("Constant")) << R"(
+                  << take(footprint->hlsl_coverage("CoordinateCoverage"))
+                  << take(overwritten->hlsl_coverage("Overwritten")) << take(oriented->hlsl_coverage("Constant"))
+                  << R"(
         Texture2D<float4> Images[2] : register(t0);
         ByteAddressBuffer Parameters : register(t2);
         SamplerState Filter : register(s0);
@@ -719,18 +824,20 @@ void verify_source_materials() {
         }
     )";
     coverage_hlsl.close();
-    require(coverage_hlsl.good(),"Could not write generated coverage HLSL validation artifact.");
+    require(coverage_hlsl.good(), "Could not write generated coverage HLSL validation artifact.");
 
     // This is an executable GPU validation input, NOT a GPU pass. Dispatch 16
     // threads with two real mipmapped textures and a Mirror sampler, clear
     // Counts[32], bind Result[34], Trace[192], then read back gradients/output.
     // Keep optimized DXIL as evidence that IEEE-bit guards survive fast-math.
-    const auto footprint_path=std::filesystem::temp_directory_path()/"atelier-source-material-footprints.hlsl";
-    std::ofstream footprint_hlsl(footprint_path,std::ios::binary);
+    const auto footprint_path = std::filesystem::temp_directory_path() / "atelier-source-material-footprints.hlsl";
+    std::ofstream footprint_hlsl(footprint_path, std::ios::binary);
     footprint_hlsl << "// Source below is generated by MaterialProgram::hlsl_footprint.\n"
-        << "// Program-local warp slot=" << slot(*footprint,"warp") << ", color slot=" << slot(*footprint,"color") << "\n"
-        << take(footprint->hlsl_footprint("Footprint")) << take(numeric->hlsl_footprint("FootprintMath"))
-        << take(oriented->hlsl("OrientationPoint")) << take(oriented->hlsl_footprint("OrientationFootprint")) << R"(
+                   << "// Program-local warp slot=" << slot(*footprint, "warp")
+                   << ", color slot=" << slot(*footprint, "color") << "\n"
+                   << take(footprint->hlsl_footprint("Footprint")) << take(numeric->hlsl_footprint("FootprintMath"))
+                   << take(oriented->hlsl("OrientationPoint")) << take(oriented->hlsl_footprint("OrientationFootprint"))
+                   << R"(
         Texture2D<float4> Images[2] : register(t0);
         SamplerState Filter : register(s0);
         RWStructuredBuffer<float4> Result : register(u0);
@@ -835,20 +942,21 @@ void verify_source_materials() {
         }
     )";
     footprint_hlsl.close();
-    require(footprint_hlsl.good(),"Could not write generated footprint HLSL validation artifact.");
+    require(footprint_hlsl.good(), "Could not write generated footprint HLSL validation artifact.");
     auto release_bindings = textures;
     release_bindings[0].data = &b;
-    release_bindings[0].sample = [](const void* owner,math::Vector2) -> Result<math::Vector4> {
+    release_bindings[0].sample = [](const void* owner, math::Vector2) -> Result<math::Vector4> {
         auto* program = static_cast<const std::shared_ptr<const source::MaterialProgram>*>(owner);
         const_cast<std::shared_ptr<const source::MaterialProgram>*>(program)->reset();
-        return math::Vector4{0.2f,0.4f,0.6f,0.8f};
+        return math::Vector4{0.2f, 0.4f, 0.6f, 0.8f};
     };
     const auto* active = b.get();
-    take(active->evaluate(std::as_bytes(std::span(&context,1)),b->default_parameters(),
-        std::as_writable_bytes(std::span(&untouched,1)),release_bindings));
-    require(!b && near(untouched.coverage,0.5f), "Dropping the last content owner freed an active call's code.");
-    std::printf("Material HLSL artifact: %s\n",path.string().c_str());
-    std::printf("Material footprint HLSL artifact (GPU execution still required): %s\n",footprint_path.string().c_str());
-    std::printf("Material coverage HLSL artifact (GPU execution still required): %s\n",coverage_path.string().c_str());
+    take(active->evaluate(std::as_bytes(std::span(&context, 1)), b->default_parameters(),
+                          std::as_writable_bytes(std::span(&untouched, 1)), release_bindings));
+    require(!b && near(untouched.coverage, 0.5f), "Dropping the last content owner freed an active call's code.");
+    std::printf("Material HLSL artifact: %s\n", path.string().c_str());
+    std::printf("Material footprint HLSL artifact (GPU execution still required): %s\n",
+                footprint_path.string().c_str());
+    std::printf("Material coverage HLSL artifact (GPU execution still required): %s\n", coverage_path.string().c_str());
     std::puts("Source material consumer: PASS (CPU; GPU execution not covered)");
 }

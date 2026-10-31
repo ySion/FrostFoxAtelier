@@ -18,8 +18,12 @@ inline constexpr std::uint32_t search_width = SEARCHTEX_WIDTH;
 inline constexpr std::uint32_t search_height = SEARCHTEX_HEIGHT;
 inline constexpr std::uint32_t search_pitch = SEARCHTEX_PITCH;
 
-inline std::span<const unsigned char> area_bytes() noexcept { return areaTexBytes; }
-inline std::span<const unsigned char> search_bytes() noexcept { return searchTexBytes; }
+inline std::span<const unsigned char> area_bytes() noexcept {
+    return areaTexBytes;
+}
+inline std::span<const unsigned char> search_bytes() noexcept {
+    return searchTexBytes;
+}
 
 static_assert(sizeof(areaTexBytes) == area_height * area_pitch);
 static_assert(sizeof(searchTexBytes) == search_height * search_pitch);

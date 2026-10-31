@@ -110,7 +110,8 @@ private:
     friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
     void fail(const Marker& marker) noexcept {
         ++record_.structure_errors;
-        if (!record_.first_error) record_.first_error = &marker;
+        if (!record_.first_error)
+            record_.first_error = &marker;
     }
     FrameRecord record_;
     std::uint64_t frames_{};
@@ -123,7 +124,8 @@ private:
 class Scope {
 public:
     explicit Scope(const Marker& marker) noexcept : recorder_(detail::bound) {
-        if (!recorder_) return;
+        if (!recorder_)
+            return;
         if (marker.index_ == unregistered || marker.parent_index_ != recorder_->current_) {
             recorder_->fail(marker);
             recorder_ = nullptr;
@@ -135,7 +137,8 @@ public:
         start_ = Clock::now();
     }
     ~Scope() {
-        if (!recorder_) return;
+        if (!recorder_)
+            return;
         recorder_->record_.duration[index_] += Clock::now() - start_;
         ++recorder_->record_.entries[index_];
         recorder_->current_ = previous_;

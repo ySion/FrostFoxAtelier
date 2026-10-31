@@ -14,13 +14,28 @@ rhi::PipelineDesc shadow_pipeline(const char* vs, const char* ps);
 
 // These are the existing material consumers, not arbitrary shader stages.
 enum class MaterialPass : std::size_t {
-    studio, cavity, depth, visible_lines, all_lines, gbuffer, shadow,
-    compose, sun_trace, probe_trace, probe_update, probe_resolve, probe_upsample,
-    probe_exact, inspect, inspect_update, probe_coverage, count
+    studio,
+    cavity,
+    depth,
+    visible_lines,
+    all_lines,
+    gbuffer,
+    shadow,
+    compose,
+    sun_trace,
+    probe_trace,
+    probe_update,
+    probe_resolve,
+    probe_upsample,
+    probe_exact,
+    inspect,
+    inspect_update,
+    probe_coverage,
+    count
 };
 struct ProgramSurfaceRecord {
     std::uint32_t program{}, parameter_base{}, input_base{};
-    std::array<std::uint32_t,3> flags{}; // Masked, double sided, two-sided emission.
+    std::array<std::uint32_t, 3> flags{}; // Masked, double sided, two-sided emission.
 };
 static_assert(sizeof(ProgramSurfaceRecord) == 24);
 struct ProgramInputRecord {
@@ -34,7 +49,8 @@ struct MaterialImageResource {
     material::ImageRef owner;
     GfxContext retirement_context;
     GfxTexture texture{};
-    MaterialImageResource(material::ImageRef image,GfxContext gfx) : owner(std::move(image)),retirement_context(gfx) {}
+    MaterialImageResource(material::ImageRef image, GfxContext gfx)
+        : owner(std::move(image)), retirement_context(gfx) {}
     ~MaterialImageResource();
     MaterialImageResource(const MaterialImageResource&) = delete;
     MaterialImageResource& operator=(const MaterialImageResource&) = delete;
@@ -46,8 +62,11 @@ struct MaterialProgramSet {
     // One bit per program: any Surface using it is Mask, across all definitions.
     // This classification is part of the compiled pipeline-set identity.
     std::vector<bool> masked_programs;
-    std::array<rhi::Pipeline,static_cast<std::size_t>(MaterialPass::count)> pipelines;
-    struct Pending { MaterialPass pass; rhi::PipelineJob job; };
+    std::array<rhi::Pipeline, static_cast<std::size_t>(MaterialPass::count)> pipelines;
+    struct Pending {
+        MaterialPass pass;
+        rhi::PipelineJob job;
+    };
     std::vector<Pending> pending;
     std::optional<Error> failure;
     void submit(rhi::Context&);
@@ -65,7 +84,7 @@ struct MaterialBatchState {
     std::vector<ProgramSurfaceRecord> records;
     std::vector<std::byte> parameters;
     std::vector<ProgramInputRecord> inputs;
-    std::vector<std::pair<material::ImageRef,bool>> images;
+    std::vector<std::pair<material::ImageRef, bool>> images;
     std::vector<std::shared_ptr<MaterialImageResource>> image_owners;
     std::vector<GfxTexture> textures;
     std::shared_ptr<MaterialProgramSet> code;
@@ -77,11 +96,9 @@ struct MaterialBatchState {
     ~MaterialBatchState();
     MaterialBatchState(const MaterialBatchState&) = delete;
     MaterialBatchState& operator=(const MaterialBatchState&) = delete;
-    void submit(std::span<const material::ProgramSurfaceRef>,std::vector<std::weak_ptr<MaterialProgramSet>>&);
+    void submit(std::span<const material::ProgramSurfaceRef>, std::vector<std::weak_ptr<MaterialProgramSet>>&);
     void upload(); // Called only after pipelines and Renderer-owned images are ready.
-    const rhi::Pipeline& pipeline(MaterialPass pass) const {
-        return code->pipelines[static_cast<std::size_t>(pass)];
-    }
+    const rhi::Pipeline& pipeline(MaterialPass pass) const { return code->pipelines[static_cast<std::size_t>(pass)]; }
 };
 
 } // namespace atelier::renderer::detail

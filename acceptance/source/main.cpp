@@ -25,17 +25,20 @@ using namespace atelier;
 using source::Program;
 
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
 
-template<class T>
+template <class T>
 T take(Result<T> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+    if (!result)
+        throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
 
 void take(Result<void> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+    if (!result)
+        throw std::runtime_error(result.error().message);
 }
 
 void publish(Program& program, std::string_view name, std::string_view source_text) {
@@ -50,18 +53,18 @@ void verify_public_program() {
     const auto bound = take(program.bind<std::uint32_t, std::uint32_t>());
     const std::array arguments{Scalar{std::uint32_t{41}}};
     require(std::get<std::uint32_t>(*take(bound.invoke({}, arguments))) == 42,
-        "Public source binding returned an incorrect scalar.");
+            "Public source binding returned an incorrect scalar.");
     const auto old = take(program.pin());
     publish(program, "public-replacement.source", "uint adjust(uint value) { return value + 2; }");
     require(std::get<std::uint32_t>(*take(bound.invoke({}, arguments))) == 43 &&
-        std::get<std::uint32_t>(*take(old.invoke({}, arguments))) == 42,
-        "Public entry and lease did not select their respective versions.");
+                std::get<std::uint32_t>(*take(old.invoke({}, arguments))) == 42,
+            "Public entry and lease did not select their respective versions.");
 
-    auto incompatible = Program::prepare(take(program.request("public-wrong-kind.source",
-        "async uint adjust(uint value) { yield; return value; }")));
+    auto incompatible = Program::prepare(
+        take(program.request("public-wrong-kind.source", "async uint adjust(uint value) { yield; return value; }")));
     require(!incompatible, "Compatible publication accepted a different execution kind.");
     require(std::get<std::uint32_t>(*take(bound.invoke({}, arguments))) == 43,
-        "Rejected compilation changed the published version.");
+            "Rejected compilation changed the published version.");
 
     Coroutine task;
     {
@@ -74,9 +77,8 @@ void verify_public_program() {
         require(task.state() == CoroutineState::ready, "Creation executed an async body.");
         require(take(task.resume()) == CoroutineState::suspended, "Public async entry did not suspend.");
     }
-    require(take(task.resume()) == CoroutineState::completed &&
-        std::get<std::uint32_t>(*take(task.result())) == 7,
-        "Suspended public coroutine lost its parameters or code after program close.");
+    require(take(task.resume()) == CoroutineState::completed && std::get<std::uint32_t>(*take(task.result())) == 7,
+            "Suspended public coroutine lost its parameters or code after program close.");
 
     Program void_program(runtime, {});
     publish(void_program, "public-void.source", "void complete() {}");
@@ -86,20 +88,21 @@ void verify_public_program() {
     publish(floats, "public-float.source", "float identity(float value) { return value; }");
     const auto float_entry = take(floats.bind<float, float>());
     Program wide(runtime, {});
-    publish(wide, "public-wide.source",
+    publish(
+        wide, "public-wide.source",
         "float last(float a, float b, float c, float d, float e, float f, float g, float h, float i, float j) { return j; }");
     for (const auto bits : {0x80000000u, 0x7fc54321u}) {
         const std::array value{Scalar{std::bit_cast<float>(bits)}};
         auto result = take(float_entry.invoke({}, value));
         require(result && std::holds_alternative<float>(*result) &&
-            std::bit_cast<std::uint32_t>(std::get<float>(*result)) == bits,
-            "Public inline argument conversion changed float bits.");
+                    std::bit_cast<std::uint32_t>(std::get<float>(*result)) == bits,
+                "Public inline argument conversion changed float bits.");
         std::array<Scalar, 10> many_arguments{};
         many_arguments.back() = value.front();
         result = take(wide.entry().invoke({}, many_arguments));
         require(result && std::holds_alternative<float>(*result) &&
-            std::bit_cast<std::uint32_t>(std::get<float>(*result)) == bits,
-            "Public expanded argument conversion changed float bits.");
+                    std::bit_cast<std::uint32_t>(std::get<float>(*result)) == bits,
+                "Public expanded argument conversion changed float bits.");
     }
     take(runtime.check_code_publication());
 }
@@ -111,13 +114,34 @@ void measure_source_math();
 
 int main(int argc, char** argv) {
     try {
-        if (argc == 2 && std::string_view(argv[1]) == "--materials") { verify_source_materials(); return 0; }
-        if (argc == 2 && std::string_view(argv[1]) == "--projects") { verify_source_projects(); return 0; }
-        if (argc == 2 && std::string_view(argv[1]) == "--math") { verify_source_math(); return 0; }
-        if (argc == 2 && std::string_view(argv[1]) == "--math-measure") { measure_source_math(); return 0; }
-        if (argc == 2 && std::string_view(argv[1]) == "--foundations") { verify_source_foundations(); return 0; }
-        if (argc == 2 && std::string_view(argv[1]) == "--diagnostics") { verify_source_diagnostics(); return 0; }
-        if (argc == 2 && std::string_view(argv[1]) == "--debugger") { verify_source_debugger(); return 0; }
+        if (argc == 2 && std::string_view(argv[1]) == "--materials") {
+            verify_source_materials();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--projects") {
+            verify_source_projects();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--math") {
+            verify_source_math();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--math-measure") {
+            measure_source_math();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--foundations") {
+            verify_source_foundations();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--diagnostics") {
+            verify_source_diagnostics();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--debugger") {
+            verify_source_debugger();
+            return 0;
+        }
         verify_source_debugger();
         verify_source_diagnostics();
         verify_source_projects();

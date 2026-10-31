@@ -5,7 +5,9 @@
 
 namespace atelier::source {
 
-struct MaterialLayout { std::size_t size{}, alignment{}; };
+struct MaterialLayout {
+    std::size_t size{}, alignment{};
+};
 struct MaterialParameter {
     // Persistent B0 key is the declared field path, never a Runtime FieldId or
     // GPU offset. Changing the path is an explicit parameter-interface change.
@@ -38,9 +40,10 @@ class MaterialProgram final {
     struct State;
     std::shared_ptr<const State> state_;
     explicit MaterialProgram(std::shared_ptr<const State>);
-    friend Result<std::shared_ptr<const MaterialProgram>> compile_material(
-        Runtime&, TypeId, TypeId, TypeId, std::string_view, std::string_view);
+    friend Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId, TypeId, TypeId,
+                                                                           std::string_view, std::string_view);
     Result<std::string> generate_hlsl(std::string_view name_space, bool footprint, bool coverage = false) const;
+
 public:
     MaterialLayout context_layout() const noexcept;
     MaterialLayout output_layout() const noexcept;
@@ -86,7 +89,7 @@ public:
     // output unchanged. Byte spans have the captured sizes, may be unaligned.
     // CPU/HLSL use float math; no bit-identity promise near rounding boundaries.
     Result<void> evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
-        std::span<std::byte> output, std::span<const MaterialTexture> textures = {}) const;
+                          std::span<std::byte> output, std::span<const MaterialTexture> textures = {}) const;
 };
 
 // Runtime supplies the actual registered Context/Output and value layouts only
@@ -100,6 +103,7 @@ public:
 // no numeric slots, loops, objects, async or host calls. Resource defaults,
 // sampling and empty values belong to MS author data.
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId context, TypeId output,
-    TypeId texture_input, std::string_view source_name, std::string_view source);
+                                                                TypeId texture_input, std::string_view source_name,
+                                                                std::string_view source);
 
 }

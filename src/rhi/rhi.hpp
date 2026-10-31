@@ -11,13 +11,24 @@
 
 namespace atelier::rhi {
 
-namespace detail { struct ContextState; struct PreparationJob; class Preparer; }
+namespace detail {
+struct ContextState;
+struct PreparationJob;
+class Preparer;
+}
 
 enum class Validation { disabled, debug_layer, gpu };
 enum class PipelineKind { vertex, mesh, compute };
 enum class ErrorCode {
-    invalid_argument, unsupported, creation_failed, shader_failed,
-    execution_failed, timeout, wrong_thread, busy, closed
+    invalid_argument,
+    unsupported,
+    creation_failed,
+    shader_failed,
+    execution_failed,
+    timeout,
+    wrong_thread,
+    busy,
+    closed
 };
 
 struct Error {
@@ -26,7 +37,8 @@ struct Error {
     std::string message;
 };
 
-template<class T> using Result = std::expected<T, Error>;
+template <class T>
+using Result = std::expected<T, Error>;
 
 struct ContextOptions {
     std::uint32_t width = 64;
@@ -87,8 +99,7 @@ public:
 
 private:
     friend class Context;
-    Pipeline(std::shared_ptr<detail::ContextState> state, GfxProgram program,
-             GfxKernel kernel) noexcept;
+    Pipeline(std::shared_ptr<detail::ContextState> state, GfxProgram program, GfxKernel kernel) noexcept;
     void reset() noexcept;
     std::shared_ptr<detail::ContextState> state_;
     GfxProgram program_;

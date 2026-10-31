@@ -6,15 +6,17 @@
 namespace atelier::math {
 namespace detail {
 
-template<class T>
+template <class T>
 TypeDefinition components(Runtime& runtime) {
     NativeRegistration<T> registration(runtime, std::string(name(type_of<T>)), TypeKind::record);
     using Scalar = typename T::Scalar;
     const ValueDefinition scalar{TypeReference::native<Scalar>()};
     registration.template field<&T::x>("x", scalar, offsetof(T, x));
     registration.template field<&T::y>("y", scalar, offsetof(T, y));
-    if constexpr (requires { &T::z; }) registration.template field<&T::z>("z", scalar, offsetof(T, z));
-    if constexpr (requires { &T::w; }) registration.template field<&T::w>("w", scalar, offsetof(T, w));
+    if constexpr (requires { &T::z; })
+        registration.template field<&T::z>("z", scalar, offsetof(T, z));
+    if constexpr (requires { &T::w; })
+        registration.template field<&T::w>("w", scalar, offsetof(T, w));
     auto definition = registration.build();
     // Initialization only writes components; the default member initializers
     // make the C++ default constructor nontrivial without introducing effects.
@@ -22,7 +24,7 @@ TypeDefinition components(Runtime& runtime) {
     return definition;
 }
 
-template<class T, std::size_t... I>
+template <class T, std::size_t... I>
 TypeDefinition matrix(Runtime& runtime, std::index_sequence<I...>) {
     auto definition = NativeRegistration<T>(runtime, std::string(name(type_of<T>)), TypeKind::record).build();
     using Scalar = typename T::Scalar;
@@ -30,9 +32,13 @@ TypeDefinition matrix(Runtime& runtime, std::index_sequence<I...>) {
         std::string field{"m00"};
         field[1] += static_cast<char>(Index / 4);
         field[2] += static_cast<char>(Index % 4);
-        definition.fields.push_back({std::move(field), {TypeReference::native<Scalar>()},
-            [](void* storage) noexcept -> void* { return &static_cast<T*>(storage)->elements[Index]; },
-            atelier::detail::representation<Scalar>(), true, offsetof(T, elements) + Index * sizeof(Scalar)});
+        definition.fields.push_back(
+            {std::move(field),
+             {TypeReference::native<Scalar>()},
+             [](void* storage) noexcept -> void* { return &static_cast<T*>(storage)->elements[Index]; },
+             atelier::detail::representation<Scalar>(),
+             true,
+             offsetof(T, elements) + Index * sizeof(Scalar)});
     };
     (add.template operator()<I>(), ...);
     definition.native.value_operations_preserve_borrows = true;

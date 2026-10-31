@@ -12,14 +12,18 @@ using namespace atelier;
 using source::Program;
 
 void require(bool value, const char* message) {
-    if (!value) throw std::runtime_error(message);
+    if (!value)
+        throw std::runtime_error(message);
 }
-template<class T> T take(Result<T> value) {
-    if (!value) throw std::runtime_error(value.error().message);
+template <class T>
+T take(Result<T> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
 void take(Result<void> value) {
-    if (!value) throw std::runtime_error(value.error().message);
+    if (!value)
+        throw std::runtime_error(value.error().message);
 }
 void code_state(std::uintptr_t address, bool live) {
     require(address != 0, "Shutdown code address is missing.");
@@ -27,9 +31,9 @@ void code_state(std::uintptr_t address, bool live) {
     const auto* function = RtlLookupFunctionEntry(address, &image, nullptr);
     MEMORY_BASIC_INFORMATION memory{};
     require(VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) == sizeof(memory),
-        "Shutdown code memory query failed.");
+            "Shutdown code memory query failed.");
     require(live ? function && memory.State == MEM_COMMIT : !function && memory.State == MEM_FREE,
-        "Shutdown retired code too early or retained code after the last owner.");
+            "Shutdown retired code too early or retained code after the last owner.");
 }
 
 struct HostOwner;
@@ -59,7 +63,8 @@ struct HostOwner {
 
     HostOwner() {
         type = take(NativeRegistration<Signal>{*runtime, "stage.Signal", TypeKind::object}
-            .method<&Signal::signal>("signal").publish());
+                        .method<&Signal::signal>("signal")
+                        .publish());
         program.emplace(*runtime, type);
         receiver = take(runtime->create(type));
     }
@@ -74,22 +79,27 @@ struct HostOwner {
         return entry.start(receiver.id(), arguments);
     }
     void request_stop() noexcept {
-        if (stopping) return;
+        if (stopping)
+            return;
         stopping = true;
         program->close();
         lease = {};
-        for (auto& task : tasks) task.cancel();
+        for (auto& task : tasks)
+            task.cancel();
     }
     Result<void> finish_shutdown() {
-        if (!runtime) return {};
+        if (!runtime)
+            return {};
         require(stopping, "Shutdown must first stop new work.");
         // Covers synchronous execution and native/traversal callbacks as well
         // as the tasks owned here. Busy must leave Runtime and frames intact.
         auto quiet = runtime->check_code_publication();
-        if (!quiet) return quiet;
+        if (!quiet)
+            return quiet;
         for (const auto& task : tasks)
             require(task.state() != CoroutineState::running, "A running task reached shutdown teardown.");
-        for (auto& task : tasks) task = {};
+        for (auto& task : tasks)
+            task = {};
         pending = {};
         request.reset();
         lease = {};
@@ -109,8 +119,10 @@ struct ActiveOwner {
 };
 
 void Signal::signal(std::uint32_t mode) {
-    if (mode == 2) throw std::runtime_error("Shutdown fixture failure.");
-    if (mode != 1) return;
+    if (mode == 2)
+        throw std::runtime_error("Shutdown fixture failure.");
+    if (mode != 1)
+        return;
     require(active_owner != nullptr, "Shutdown callback has no host owner.");
     auto& owner = *active_owner;
     owner.request_stop();
@@ -154,7 +166,8 @@ void verify_mixed_shutdown() {
     }
     require(take(owner.tasks[3].resume()) == CoroutineState::completed, "Completion setup failed.");
     require(!owner.tasks[4].resume() && owner.tasks[4].state() == CoroutineState::failed, "Failure setup failed.");
-    owner.request = take(owner.program->request("pending-shutdown.source", "async uint run(uint mode) { return mode; }"));
+    owner.request =
+        take(owner.program->request("pending-shutdown.source", "async uint run(uint mode) { return mode; }"));
     owner.pending = take(Program::prepare(owner.request));
     owner.candidate_address = owner.pending.address();
 
@@ -164,16 +177,16 @@ void verify_mixed_shutdown() {
     owner.program->close(); // Closing remains idempotent after active work exits.
     for (std::size_t index = 0; index < 3; ++index)
         require(owner.tasks[index].state() == CoroutineState::cancelled && !owner.tasks[index].result(),
-            "Shutdown left an unfinished task or committed a cancelled result.");
+                "Shutdown left an unfinished task or committed a cancelled result.");
     require(owner.tasks[3].state() == CoroutineState::completed &&
-        std::get<std::uint32_t>(*take(owner.tasks[3].result())) == 100,
-        "Shutdown changed an already completed result.");
+                std::get<std::uint32_t>(*take(owner.tasks[3].result())) == 100,
+            "Shutdown changed an already completed result.");
     auto failed = owner.tasks[4].result();
     require(!failed && failed.error().message == "Shutdown fixture failure.", "Shutdown replaced an existing failure.");
     require(!owner.program->request("closed.source", "void closed() {}") && !Program::prepare(owner.request),
-        "Closed program accepted a new request or prepared an old request.");
+            "Closed program accepted a new request or prepared an old request.");
     require(!owner.program->try_publish(owner.pending) && owner.pending,
-        "Closed publication succeeded or consumed its candidate.");
+            "Closed publication succeeded or consumed its candidate.");
     const std::array arguments{Scalar{std::uint32_t{0}}};
     require(!owner.entry.start(owner.receiver.id(), arguments), "Closed stable entry accepted work.");
     require(owner.runtime->root_count() == 1, "Cancelled tasks retained roots beyond the host receiver.");
@@ -195,7 +208,7 @@ void verify_synchronous_shutdown() {
     const std::array arguments{Scalar{std::uint32_t{1}}};
     const auto result = take(owner.entry.invoke(owner.receiver.id(), arguments));
     require(result && std::get<std::uint32_t>(*result) == 23 && owner.busy_in_callback,
-        "Closing during a synchronous callback invalidated the active call or Runtime.");
+            "Closing during a synchronous callback invalidated the active call or Runtime.");
     code_state(owner.current_address, false);
     require(!owner.entry.invoke(owner.receiver.id(), arguments), "Closed synchronous entry accepted another call.");
     take(owner.finish_shutdown());
@@ -205,5 +218,6 @@ void verify_synchronous_shutdown() {
 void verify_source_shutdown() {
     verify_mixed_shutdown();
     verify_synchronous_shutdown();
-    std::puts("Source shutdown: PASS (mixed states, deferred cancellation, synchronous callback, code/root retirement)");
+    std::puts(
+        "Source shutdown: PASS (mixed states, deferred cancellation, synchronous callback, code/root retirement)");
 }

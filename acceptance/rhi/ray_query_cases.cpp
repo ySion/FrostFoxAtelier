@@ -9,14 +9,19 @@
 namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
-template<class T> T take(Result<T> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+template <class T>
+T take(Result<T> result) {
+    if (!result)
+        throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
 void complete(Result<void> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+    if (!result)
+        throw std::runtime_error(result.error().message);
 }
-struct Vertex { float x, y, z; };
+struct Vertex {
+    float x, y, z;
+};
 struct Hit {
     std::uint32_t hit, instance, primitive, visible;
     float u, v, distance, padding;
@@ -27,19 +32,16 @@ void verify(const Hit* hits, float first_distance) {
     require(hits != nullptr, "inline RayQuery readback unavailable");
     for (std::uint32_t i = 0; i < ray_count; ++i) {
         const bool expected_hit = i < 2;
-        require(hits[i].hit == std::uint32_t(expected_hit) &&
-                hits[i].visible == std::uint32_t(expected_hit),
+        require(hits[i].hit == std::uint32_t(expected_hit) && hits[i].visible == std::uint32_t(expected_hit),
                 "inline RayQuery closest-hit/first-hit visibility mismatch");
         if (expected_hit) {
             require(hits[i].instance == (i == 0 ? 17u : 29u) && hits[i].primitive == 1,
                     "inline RayQuery instance/nearest primitive mismatch");
-            require(std::abs(hits[i].u - 0.25f) < 0.0001f &&
-                    std::abs(hits[i].v - 0.25f) < 0.0001f &&
-                    std::abs(hits[i].distance - (first_distance + float(i))) < 0.0001f,
+            require(std::abs(hits[i].u - 0.25f) < 0.0001f && std::abs(hits[i].v - 0.25f) < 0.0001f &&
+                        std::abs(hits[i].distance - (first_distance + float(i))) < 0.0001f,
                     "inline RayQuery barycentric/closest distance mismatch");
         } else {
-            require(hits[i].instance == UINT32_MAX && hits[i].primitive == UINT32_MAX &&
-                    hits[i].distance == -1.0f,
+            require(hits[i].instance == UINT32_MAX && hits[i].primitive == UINT32_MAX && hits[i].distance == -1.0f,
                     "inline RayQuery miss metadata mismatch");
         }
     }
@@ -97,8 +99,8 @@ float origin_shift;
 )";
     auto pipeline = take(owner.prepare(desc));
     // Far primitive comes first so nearest distance cannot be inferred from ordering.
-    const std::array<Vertex, 6> initial_vertices = {{
-        {-1,-1,5}, {3,-1,5}, {-1,3,5}, {-1,-1,2}, {3,-1,2}, {-1,3,2}}};
+    const std::array<Vertex, 6> initial_vertices = {
+        {{-1, -1, 5}, {3, -1, 5}, {-1, 3, 5}, {-1, -1, 2}, {3, -1, 2}, {-1, 3, 2}}};
     auto vertices = gfxCreateBuffer<Vertex>(gfx, initial_vertices.size(), initial_vertices.data());
     // Geometry takes ownership of its buffer handles; a range shares mesh storage
     // while leaving the original mesh handle available to ordinary rendering.
@@ -107,20 +109,20 @@ float origin_shift;
     auto blas = gfxCreateBottomLevelAccelerationStructure(gfx);
     auto tlas = gfxCreateTopLevelAccelerationStructure(gfx);
     std::array<GfxTopLevelAccelerationStructureInstance, 2> instances = {
-        gfxCreateTopLevelAccelerationStructureInstance(gfx),
-        gfxCreateTopLevelAccelerationStructureInstance(gfx)};
+        gfxCreateTopLevelAccelerationStructureInstance(gfx), gfxCreateTopLevelAccelerationStructureInstance(gfx)};
     auto output = gfxCreateBuffer<Hit>(gfx, ray_count);
     auto initial_readback = gfxCreateBuffer<Hit>(gfx, ray_count, nullptr, kGfxCpuAccess_Read);
     auto readback = gfxCreateBuffer<Hit>(gfx, ray_count, nullptr, kGfxCpuAccess_Read);
-    require(vertices && geometry_vertices && geometry && blas && tlas && instances[0] && instances[1] && output && initial_readback && readback,
+    require(vertices && geometry_vertices && geometry && blas && tlas && instances[0] && instances[1] && output &&
+                initial_readback && readback,
             "inline RayQuery resources unavailable");
     check(gfxGeometrySetOpaque(gfx, geometry, true));
     check(gfxBottomLevelAccelerationStructureAddGeometry(gfx, blas, geometry));
-    const GfxBuildBottomLevelASFlags flags = kGfxBuildBottomLevelASFlag_Updateable |
-                                           kGfxBuildBottomLevelASFlag_FastTrace;
+    const GfxBuildBottomLevelASFlags flags =
+        kGfxBuildBottomLevelASFlag_Updateable | kGfxBuildBottomLevelASFlag_FastTrace;
     check(gfxBuildBottomLevelAccelerationStructures(gfx, &blas, &flags, 1));
     for (std::uint32_t i = 0; i < instances.size(); ++i) {
-        const std::array<float, 12> transform = {1,0,0,8.0f * float(i), 0,1,0,0, 0,0,1,float(i)};
+        const std::array<float, 12> transform = {1, 0, 0, 8.0f * float(i), 0, 1, 0, 0, 0, 0, 1, float(i)};
         check(gfxTopLevelAccelerationStructureInstanceSetBottomLevelAccelerationStructure(gfx, instances[i], blas));
         check(gfxTopLevelAccelerationStructureInstanceSetTransform(gfx, instances[i], transform.data()));
         check(gfxTopLevelAccelerationStructureInstanceSetInstanceID(gfx, instances[i], i == 0 ? 17 : 29));
@@ -129,7 +131,7 @@ float origin_shift;
     }
     check(gfxTopLevelAccelerationStructureBuild(gfx, tlas));
     require(gfxBottomLevelAccelerationStructureGetDataSize(gfx, blas) > 0 &&
-            gfxTopLevelAccelerationStructureGetDataSize(gfx, tlas) > 0,
+                gfxTopLevelAccelerationStructureGetDataSize(gfx, tlas) > 0,
             "inline RayQuery acceleration structures were not built");
     check(gfxProgramSetParameter(gfx, pipeline.program(), "scene", tlas));
     check(gfxProgramSetParameter(gfx, pipeline.program(), "output_hits", output));
@@ -140,7 +142,8 @@ float origin_shift;
 
     // Build, trace, update and trace share one submission; GPU ordering must suffice.
     auto updated_vertices = initial_vertices;
-    for (auto& vertex : updated_vertices) vertex.z += 1.0f;
+    for (auto& vertex : updated_vertices)
+        vertex.z += 1.0f;
     auto replacement = gfxCreateBuffer<Vertex>(gfx, updated_vertices.size(), updated_vertices.data());
     require(replacement, "inline RayQuery updated geometry buffer unavailable");
     auto replacement_range = gfxCreateBufferRange(gfx, replacement, 0, replacement.getSize());
@@ -148,7 +151,7 @@ float origin_shift;
     check(gfxGeometryTrianglesUpdate(gfx, geometry, replacement_range, sizeof(Vertex)));
     check(gfxUpdateBottomLevelAccelerationStructures(gfx, &blas, 1));
     for (std::uint32_t i = 0; i < instances.size(); ++i) {
-        const std::array<float, 12> transform = {1,0,0,4.0f + 8.0f * float(i), 0,1,0,0, 0,0,1,1.0f + float(i)};
+        const std::array<float, 12> transform = {1, 0, 0, 4.0f + 8.0f * float(i), 0, 1, 0, 0, 0, 0, 1, 1.0f + float(i)};
         check(gfxTopLevelAccelerationStructureInstanceSetTransform(gfx, instances[i], transform.data()));
     }
     check(gfxTopLevelAccelerationStructureUpdate(gfx, tlas));
@@ -158,12 +161,14 @@ float origin_shift;
     check(gfxCommandCopyBuffer(gfx, readback, output));
     // CPU identities retire now; encoded GPU work must retain their physical resources.
     check(gfxDestroyTopLevelAccelerationStructure(gfx, tlas));
-    for (auto instance : instances) check(gfxDestroyTopLevelAccelerationStructureInstance(gfx, instance));
+    for (auto instance : instances)
+        check(gfxDestroyTopLevelAccelerationStructureInstance(gfx, instance));
     check(gfxDestroyBottomLevelAccelerationStructure(gfx, blas));
     check(gfxDestroyGeometry(gfx, geometry));
     // Successful original-handle destruction also checks that AS range ownership
     // did not consume the mesh handles shared with the raster path.
-    for (auto buffer : {vertices, replacement, output}) check(gfxDestroyBuffer(gfx, buffer));
+    for (auto buffer : {vertices, replacement, output})
+        check(gfxDestroyBuffer(gfx, buffer));
     pipeline = {};
     complete(owner.finish());
     verify(gfxBufferGetData<Hit>(gfx, initial_readback), 2.0f);
@@ -172,6 +177,7 @@ float origin_shift;
     check(gfxDestroyBuffer(gfx, readback));
     complete(owner.close());
     check_debug(debug.Get());
-    std::puts("inline-ray-query: compute-SM6.5 BLAS/TLAS-build/trace/update/trace single-submission hit/miss/mask/instance/primitive/barycentric/closest-distance/first-hit-visibility retirement-before-finish=PASS");
+    std::puts(
+        "inline-ray-query: compute-SM6.5 BLAS/TLAS-build/trace/update/trace single-submission hit/miss/mask/instance/primitive/barycentric/closest-distance/first-hit-visibility retirement-before-finish=PASS");
 }
 } // namespace rhi_acceptance

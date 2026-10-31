@@ -11,7 +11,8 @@ namespace {
 struct NativeOwner {
     GfxContext value;
     ~NativeOwner() {
-        if (value && gfxDestroyContext(value) != kGfxResult_NoError) std::abort();
+        if (value && gfxDestroyContext(value) != kGfxResult_NoError)
+            std::abort();
     }
     void close() {
         check(gfxDestroyContext(value));
@@ -25,7 +26,8 @@ void null_list() {
     auto debug = debug_queue(original.value);
     original.close();
     NativeOwner interop{gfxCreateContext(device.Get())};
-    require(interop.value && !gfxGetCommandList(interop.value), "expected legal interop context without a command list");
+    require(interop.value && !gfxGetCommandList(interop.value),
+            "expected legal interop context without a command list");
     GfxProgramDesc desc;
     desc.cs = increment_source;
     auto program = gfxCreateProgram(interop.value, desc, "null-list");
@@ -58,7 +60,8 @@ void mesh_pixel() {
     require(compute && mesh && gfxKernelGetPipelineState(gfx, mesh), "regression pipeline preparation failed");
     std::uint32_t zero = 0;
     auto counter = gfxCreateBuffer<std::uint32_t>(gfx, 1, &zero);
-    auto target = gfxCreateTexture2D(gfx, 64, 32, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    auto target = gfxCreateTexture2D(gfx, 64, 32, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr,
+                                     D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     auto readback = gfxCreateBuffer(gfx, 64 * 32 * 4, nullptr, kGfxCpuAccess_Read);
     require(counter && target && readback, "regression resources unavailable");
     check(gfxProgramSetParameter(gfx, compute_program, "counter", counter));
@@ -74,7 +77,8 @@ void mesh_pixel() {
     const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
     require(pixels != nullptr, "regression readback unavailable");
     for (std::uint32_t pixel = 0; pixel < 64 * 32; ++pixel)
-        require(pixels[pixel * 4] == 1 && pixels[pixel * 4 + 1] == 0 && pixels[pixel * 4 + 2] == 0 && pixels[pixel * 4 + 3] == 255,
+        require(pixels[pixel * 4] == 1 && pixels[pixel * 4 + 1] == 0 && pixels[pixel * 4 + 2] == 0 &&
+                    pixels[pixel * 4 + 3] == 255,
                 "mesh PS did not consume the compute-produced SRV");
     check(gfxDestroyBuffer(gfx, counter));
     check(gfxDestroyBuffer(gfx, readback));
@@ -111,7 +115,7 @@ void timeout_once() {
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ComPtr<ID3D12Resource> external_readback;
     check_hr(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
-                                              nullptr, IID_PPV_ARGS(&external_readback)));
+                                             nullptr, IID_PPV_ARGS(&external_readback)));
     auto readback = gfxCreateBuffer<std::uint32_t>(gfx, external_readback.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
     std::uint32_t zero = 0;
     auto counter = gfxCreateBuffer<std::uint32_t>(gfx, 1, &zero);
@@ -153,16 +157,22 @@ void timeout_once() {
     external_readback->Unmap(0, &written);
     require(increments == 1, "destroy replayed or discarded already-submitted work");
     check_debug(debug.Get());
-    std::printf("timeout: bounded=PASS retained=PASS poisoned-admission=PASS drain-only=PASS increments=%u debug-errors=0\n", increments);
+    std::printf(
+        "timeout: bounded=PASS retained=PASS poisoned-admission=PASS drain-only=PASS increments=%u debug-errors=0\n",
+        increments);
 }
 } // namespace
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "expected --null-list, --mesh-pixel-state or --timeout");
-        if (std::strcmp(argv[1], "--null-list") == 0) null_list();
-        else if (std::strcmp(argv[1], "--mesh-pixel-state") == 0) mesh_pixel();
-        else if (std::strcmp(argv[1], "--timeout") == 0) timeout_once();
-        else throw std::runtime_error("unknown regression case");
+        if (std::strcmp(argv[1], "--null-list") == 0)
+            null_list();
+        else if (std::strcmp(argv[1], "--mesh-pixel-state") == 0)
+            mesh_pixel();
+        else if (std::strcmp(argv[1], "--timeout") == 0)
+            timeout_once();
+        else
+            throw std::runtime_error("unknown regression case");
         std::puts("gfx regression: PASS");
         return 0;
     } catch (const std::exception& error) {

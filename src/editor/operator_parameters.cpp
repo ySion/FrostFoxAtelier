@@ -13,7 +13,8 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<ToolSettings>::build(runtime));
     definitions.push_back(reflection::Definition<SceneAdd>::build(runtime));
     definitions.push_back(reflection::Definition<ViewAxis>::build(runtime));
-    if (auto registered = runtime.register_types(std::move(definitions)); !registered) return std::unexpected(registered.error());
+    if (auto registered = runtime.register_types(std::move(definitions)); !registered)
+        return std::unexpected(registered.error());
     return {};
 }
 }

@@ -15,6 +15,7 @@ public:
     Sha256& operator=(const Sha256&) = delete;
     void add(std::span<const std::byte>);
     std::string finish();
+
 private:
     void* algorithm_{};
     void* hash_{};

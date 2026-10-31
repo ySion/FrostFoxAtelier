@@ -37,7 +37,10 @@ static_assert(sizeof(CacheHeader) == 56);
 class Sha256 {
 public:
     Sha256() { ok_ = BCRYPT_SUCCESS(BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &hash_, nullptr, 0, nullptr, 0, 0)); }
-    ~Sha256() { if (hash_) BCryptDestroyHash(hash_); }
+    ~Sha256() {
+        if (hash_)
+            BCryptDestroyHash(hash_);
+    }
     Sha256(const Sha256&) = delete;
     Sha256& operator=(const Sha256&) = delete;
     void add(const void* data, std::size_t size) {
@@ -49,7 +52,8 @@ public:
             size -= chunk;
         }
     }
-    template<class Char> void add_text(std::basic_string_view<Char> text) {
+    template <class Char>
+    void add_text(std::basic_string_view<Char> text) {
         const std::uint64_t size = text.size();
         add(&size, sizeof size);
         add(text.data(), text.size() * sizeof(Char));
@@ -74,8 +78,10 @@ std::optional<Digest> checksum(std::string_view bytecode, std::string_view refle
 }
 
 std::string utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (text.empty())
+        return {};
+    const int size =
+        WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
     std::string result(static_cast<std::size_t>(std::max(size, 0)), '\0');
     WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size, nullptr, nullptr);
     return result;
@@ -114,30 +120,40 @@ private:
 // process holds open simply stay; every failure here leaves compilation intact.
 void trim(const std::filesystem::path& directory) {
     std::error_code error;
-    struct Entry { std::filesystem::file_time_type time; std::filesystem::path path; std::uintmax_t size; };
+    struct Entry {
+        std::filesystem::file_time_type time;
+        std::filesystem::path path;
+        std::uintmax_t size;
+    };
     std::vector<Entry> entries;
     std::uintmax_t total = 0;
     for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
         std::error_code entry_error;
-        if (!it->is_regular_file(entry_error)) continue;
+        if (!it->is_regular_file(entry_error))
+            continue;
         const auto size = it->file_size(entry_error);
         const auto time = it->last_write_time(entry_error);
-        if (entry_error) continue;
+        if (entry_error)
+            continue;
         entries.push_back({time, it->path(), size});
         total += size;
     }
-    if (total <= cache_limit) return;
+    if (total <= cache_limit)
+        return;
     std::ranges::sort(entries, {}, &Entry::time);
     for (const auto& entry : entries) {
-        if (total <= cache_trim_target) break;
-        if (std::filesystem::remove(entry.path, error)) total -= entry.size;
+        if (total <= cache_trim_target)
+            break;
+        if (std::filesystem::remove(entry.path, error))
+            total -= entry.size;
     }
 }
 
 // Any unreadable, truncated or inconsistent entry is a miss; compilation then overwrites it.
 std::optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary | std::ios::ate);
-    if (!in) return std::nullopt;
+    if (!in)
+        return std::nullopt;
     const auto size = static_cast<std::uint64_t>(in.tellg());
     CacheHeader header{};
     if (size < sizeof header || !in.seekg(0).read(reinterpret_cast<char*>(&header), sizeof header) ||
@@ -146,7 +162,8 @@ std::optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path
         header.reflection_size != size - sizeof header - header.bytecode_size)
         return std::nullopt;
     std::string payload(static_cast<std::size_t>(size - sizeof header), '\0');
-    if (!in.read(payload.data(), static_cast<std::streamsize>(payload.size()))) return std::nullopt;
+    if (!in.read(payload.data(), static_cast<std::streamsize>(payload.size())))
+        return std::nullopt;
     const std::string_view bytecode(payload.data(), header.bytecode_size);
     const std::string_view reflection(payload.data() + header.bytecode_size, header.reflection_size);
     CompiledShader cached;
@@ -160,12 +177,13 @@ std::optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path
     return cached;
 }
 
-void store(const std::filesystem::path& directory, const std::filesystem::path& file,
-           std::string_view bytecode, std::string_view reflection) {
+void store(const std::filesystem::path& directory, const std::filesystem::path& file, std::string_view bytecode,
+           std::string_view reflection) {
     static std::once_flag trimmed;
     std::call_once(trimmed, [&] { trim(directory); });
     const auto digest = checksum(bytecode, reflection);
-    if (!digest) return;
+    if (!digest)
+        return;
     const CacheHeader header{cache_magic, cache_format, bytecode.size(), reflection.size(), *digest};
     std::error_code error;
     std::filesystem::create_directories(directory, error);
@@ -183,7 +201,8 @@ void store(const std::filesystem::path& directory, const std::filesystem::path& 
         }
     }
     std::filesystem::rename(temporary, file, error);
-    if (error) std::filesystem::remove(temporary, error);
+    if (error)
+        std::filesystem::remove(temporary, error);
 }
 } // namespace
 
@@ -192,17 +211,20 @@ Result<ShaderCompiler> ShaderCompiler::open(std::filesystem::path cache) {
     if (FAILED(DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&compiler.utils_))) ||
         FAILED(DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler.compiler_))) ||
         FAILED(compiler.utils_->CreateDefaultIncludeHandler(&compiler.includes_)))
-        return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_InternalError, "DXC instance creation failed"});
+        return std::unexpected(
+            Error{ErrorCode::creation_failed, kGfxResult_InternalError, "DXC instance creation failed"});
     ComPtr<IDxcVersionInfo> version;
     ComPtr<IDxcVersionInfo2> commit;
     UINT32 major = 0, minor = 0, commits = 0;
     char* hash = nullptr;
     if (SUCCEEDED(compiler.compiler_.As(&version)) && SUCCEEDED(version->GetVersion(&major, &minor)) &&
         SUCCEEDED(version.As(&commit)) && SUCCEEDED(commit->GetCommitInfo(&commits, &hash)) && hash)
-        compiler.identity_ = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(commits) + "." + hash;
+        compiler.identity_ =
+            std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(commits) + "." + hash;
     CoTaskMemFree(hash);
     // Without a compiler identity a cached entry could outlive the compiler that produced it.
-    if (!compiler.identity_.empty()) compiler.cache_ = std::move(cache);
+    if (!compiler.identity_.empty())
+        compiler.cache_ = std::move(cache);
     return compiler;
 }
 
@@ -218,7 +240,8 @@ Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
         Sha256 key;
         key.add(&cache_format, sizeof cache_format);
         key.add_text(std::string_view(identity_));
-        for (const auto* argument : arguments) key.add_text(std::wstring_view(argument));
+        for (const auto* argument : arguments)
+            key.add_text(std::wstring_view(argument));
         key.add_text(std::string_view(source.text));
         if (const auto digest = key.finish()) {
             std::string name;
@@ -228,7 +251,8 @@ Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
                 name += digits[byte & 15];
             }
             entry = cache_ / (name + ".bin");
-            if (auto cached = load(*utils_.Get(), entry)) return std::move(*cached);
+            if (auto cached = load(*utils_.Get(), entry))
+                return std::move(*cached);
         }
     }
 
@@ -236,29 +260,36 @@ Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
     IncludeProbe probe(*includes_.Get());
     ComPtr<IDxcResult> result;
     if (FAILED(compiler_->Compile(&buffer, arguments.data(), static_cast<UINT32>(arguments.size()), &probe,
-                                  IID_PPV_ARGS(&result))) || !result)
-        return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InternalError, "DXC could not run for `" + utf8(source.name) + "'"});
+                                  IID_PPV_ARGS(&result))) ||
+        !result)
+        return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InternalError,
+                                     "DXC could not run for `" + utf8(source.name) + "'"});
     HRESULT status = E_FAIL;
     result->GetStatus(&status);
     ComPtr<IDxcBlobEncoding> diagnostics;
     result->GetErrorBuffer(&diagnostics);
     std::string text = diagnostics ? std::string(bytes(*diagnostics.Get())) : std::string{};
-    while (!text.empty() && (text.back() == '\0' || text.back() == '\n' || text.back() == '\r')) text.pop_back();
+    while (!text.empty() && (text.back() == '\0' || text.back() == '\n' || text.back() == '\r'))
+        text.pop_back();
     const auto described = "`" + utf8(source.name) + "' for entry point `" + utf8(source.entry) + "'";
     if (FAILED(status))
         return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
                                      "Failed to compile " + described + (text.empty() ? "" : ":\n" + text)});
-    if (!text.empty()) std::fprintf(stderr, "Compiled %s with warning(s):\n%s\n", described.c_str(), text.c_str());
+    if (!text.empty())
+        std::fprintf(stderr, "Compiled %s with warning(s):\n%s\n", described.c_str(), text.c_str());
     CompiledShader compiled;
     ComPtr<IDxcBlob> reflection;
     result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&compiled.bytecode), nullptr);
     result->GetOutput(DXC_OUT_REFLECTION, IID_PPV_ARGS(&reflection), nullptr);
     if (!compiled.bytecode || !reflection)
-        return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InternalError, "DXC returned no bytecode or reflection for " + described});
+        return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InternalError,
+                                     "DXC returned no bytecode or reflection for " + described});
     const DxcBuffer reflection_buffer{reflection->GetBufferPointer(), reflection->GetBufferSize(), DXC_CP_ACP};
     if (FAILED(utils_->CreateReflection(&reflection_buffer, IID_PPV_ARGS(&compiled.reflection))))
-        return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InternalError, "DXC reflection is unreadable for " + described});
-    if (!entry.empty() && !probe.used) store(cache_, entry, bytes(*compiled.bytecode.Get()), bytes(*reflection.Get()));
+        return std::unexpected(
+            Error{ErrorCode::shader_failed, kGfxResult_InternalError, "DXC reflection is unreadable for " + described});
+    if (!entry.empty() && !probe.used)
+        store(cache_, entry, bytes(*compiled.bytecode.Get()), bytes(*reflection.Get()));
     return compiled;
 }
 

@@ -6,22 +6,33 @@
 
 namespace atelier::acceptance::foundation {
 
-AENUM(Name="foundation.Quality") enum class Quality : int { common, rare };
+AENUM(Name = "foundation.Quality")
+enum class Quality : int { common, rare };
 
-ASTRUCT(Name="foundation.Item") struct Item {
+ASTRUCT(Name = "foundation.Item")
+struct Item {
     AGENERATED_BODY(Item)
-    AFIELD() String name;
-    AFIELD() std::int32_t count{};
-    AFIELD() Quality quality{};
+    AFIELD()
+    String name;
+    AFIELD()
+    std::int32_t count{};
+    AFIELD()
+    Quality quality{};
 };
 
-ACLASS(Name="foundation.Inventory") struct Inventory {
+ACLASS(Name = "foundation.Inventory")
+struct Inventory {
     AGENERATED_BODY(Inventory)
-    AFIELD() String label;
-    AFIELD() Array<Item> items;
-    AFIELD() Array<String> tags;
-    AFIELD() Array<Array<std::int32_t>> batches;
-    AFIELD(Strong="core.Object") ReferenceSlot owner;
+    AFIELD()
+    String label;
+    AFIELD()
+    Array<Item> items;
+    AFIELD()
+    Array<String> tags;
+    AFIELD()
+    Array<Array<std::int32_t>> batches;
+    AFIELD(Strong = "core.Object")
+    ReferenceSlot owner;
 };
 
 }

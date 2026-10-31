@@ -7,17 +7,25 @@
 #include <span>
 
 namespace atelier::language {
-struct SourcePiece { std::size_t begin{}, end{}, offset{}; std::uint32_t file{}; };
+struct SourcePiece {
+    std::size_t begin{}, end{}, offset{};
+    std::uint32_t file{};
+};
 struct MappedSource {
     std::string text;
     std::vector<SourcePiece> pieces;
     void append(const MappedSource&);
     void append(const SourceFile&, std::uint32_t file, std::size_t begin, std::size_t end);
 };
-struct ModuleDiagnostic { std::uint32_t file{}; Diagnostic diagnostic; };
+struct ModuleDiagnostic {
+    std::uint32_t file{};
+    Diagnostic diagnostic;
+};
 // Syntax only; types, defaults and bounds resolve when the snapshot is prepared.
 struct ClassField {
-    std::string name, type; MappedSource initializer; SourcePosition position;
+    std::string name, type;
+    MappedSource initializer;
+    SourcePosition position;
     // An initializer spelled exactly `name(arguments)` or `name::item` also keeps that shape:
     // math vector and enum fields require it, scalar fields fold the whole initializer.
     std::string initializer_name, initializer_item;
@@ -28,8 +36,17 @@ struct ClassField {
     std::optional<SourcePosition> range; // the first range attribute
 };
 // Signatures omit parameter names, so renaming a parameter stays compatible.
-struct ClassMethod { std::string name; MappedSource source; SourcePosition position; std::string signature; std::vector<std::string> parameters; };
-struct FunctionDeclaration { std::string name, signature; std::vector<std::string> parameters; };
+struct ClassMethod {
+    std::string name;
+    MappedSource source;
+    SourcePosition position;
+    std::string signature;
+    std::vector<std::string> parameters;
+};
+struct FunctionDeclaration {
+    std::string name, signature;
+    std::vector<std::string> parameters;
+};
 // A top-level struct, enum, constant or function. uses names every other top-level
 // declaration its text spells, so a compile unit needs only the closure of its own uses.
 struct TopLevel {

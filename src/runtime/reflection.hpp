@@ -5,7 +5,8 @@
 namespace atelier::reflection {
 // Generated specializations produce the existing TypeDefinition. They hold no
 // Runtime, TypeId, object state or automatic registration side effects.
-template<class T> struct Definition {
+template <class T>
+struct Definition {
     static TypeDefinition build(Runtime&);
 };
 }

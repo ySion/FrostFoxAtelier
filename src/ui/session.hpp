@@ -15,7 +15,9 @@
 
 namespace atelier::ui {
 
-namespace detail { class TextSnapshot; }
+namespace detail {
+class TextSnapshot;
+}
 
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
 enum class DragAxis { horizontal, vertical };
@@ -32,7 +34,7 @@ struct Tooltip {
     std::wstring title, identity, description;
     bool operator==(const Tooltip&) const = default;
 };
-inline constexpr std::uint32_t maximum_tree_rows=1u<<18;
+inline constexpr std::uint32_t maximum_tree_rows = 1u << 18;
 
 struct Control {
     ControlKey key{}, parent{}; // Unique live keys; parent precedes child in the input.
@@ -69,7 +71,8 @@ struct Control {
     // tree_item only: the host's primary row. Becoming primary, including a new
     // primary row, scrolls it into view once; hosts keep it described.
     bool tree_primary{};
-    bool tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
+    bool
+        tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
@@ -238,11 +241,37 @@ struct UiFrame {
 };
 
 // expand: a tree row requests the bool expansion state; the host owns it.
-enum class ActionKind { activate, select, edit_begin, edit_preview, edit_commit, edit_cancel, context_menu, dismiss, reset, drag_begin, drag_preview, drag_commit, drag_cancel, table_sort, table_column_resize, expand };
-struct ContextMenuRequest { ControlKey source{}, group{}; float x{}, y{}; std::optional<TableSelection> table{}; }; // Accepted client pixels.
-struct DragPoint { float x{}, y{}; }; // Accepted-frame client pixels.
-struct SelectionModifiers { bool shift{}, control{}, double_click{}; }; // double_click: second click of a native double click.
-using ActionValue = std::variant<std::monostate,double,std::wstring,bool,ContextMenuRequest,DragPoint,TableSelection,TableSort,TableColumnResize,SelectionModifiers>;
+enum class ActionKind {
+    activate,
+    select,
+    edit_begin,
+    edit_preview,
+    edit_commit,
+    edit_cancel,
+    context_menu,
+    dismiss,
+    reset,
+    drag_begin,
+    drag_preview,
+    drag_commit,
+    drag_cancel,
+    table_sort,
+    table_column_resize,
+    expand
+};
+struct ContextMenuRequest {
+    ControlKey source{}, group{};
+    float x{}, y{};
+    std::optional<TableSelection> table{};
+}; // Accepted client pixels.
+struct DragPoint {
+    float x{}, y{};
+}; // Accepted-frame client pixels.
+struct SelectionModifiers {
+    bool shift{}, control{}, double_click{};
+}; // double_click: second click of a native double click.
+using ActionValue = std::variant<std::monostate, double, std::wstring, bool, ContextMenuRequest, DragPoint,
+                                 TableSelection, TableSort, TableColumnResize, SelectionModifiers>;
 struct Action {
     ActionKind kind{};
     ControlKey key{};
@@ -292,23 +321,46 @@ struct CompositionEvent {
     std::optional<std::wstring> result;
     std::optional<Preedit> preedit; // Missing differs from an empty preedit.
 };
-using PlatformRequest = std::variant<ClipboardRequest,ImeRequest>;
-using Effect = std::variant<Action,PlatformRequest>;
+using PlatformRequest = std::variant<ClipboardRequest, ImeRequest>;
+using Effect = std::variant<Action, PlatformRequest>;
 
-enum class ErrorCode { invalid_surface, unavailable_surface, invalid_control, layout_failed,
-                       text_failed, capacity_exceeded, invalid_style, invalid_text, platform_failed };
+enum class ErrorCode {
+    invalid_surface,
+    unavailable_surface,
+    invalid_control,
+    layout_failed,
+    text_failed,
+    capacity_exceeded,
+    invalid_style,
+    invalid_text,
+    platform_failed
+};
 struct Error {
     ErrorCode code{};
     ControlKey key{};
     std::uint32_t native_code{};
 };
-template<class T> using Result = std::expected<T, Error>;
+template <class T>
+using Result = std::expected<T, Error>;
 
 // Validate a producer's descriptor before publishing it. This does not inspect
 // tree row order, table contents or solve layout; Session remains the complete batch boundary.
 Result<void> validate_control_properties(const Control&);
 enum class Capture { unchanged, acquire, release };
-enum class Cursor { arrow, text, drag_horizontal, resize_horizontal, resize_vertical, move, pan, crosshair, orbit, translate, rotate, scale };
+enum class Cursor {
+    arrow,
+    text,
+    drag_horizontal,
+    resize_horizontal,
+    resize_vertical,
+    move,
+    pan,
+    crosshair,
+    orbit,
+    translate,
+    rotate,
+    scale
+};
 struct Reply {
     bool consumed{}, redraw{};
     Capture capture{Capture::unchanged};
@@ -316,12 +368,48 @@ struct Reply {
     std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
     std::optional<Error> error; // Input/platform failure; the edit and its history remain intact.
 };
-enum class EventKind { pointer_move, pointer_leave, pointer_down, pointer_up, wheel, key_down, key_up,
-                       text, focus_lost, capture_lost, clipboard_result, ime_result, composition };
+enum class EventKind {
+    pointer_move,
+    pointer_leave,
+    pointer_down,
+    pointer_up,
+    wheel,
+    key_down,
+    key_up,
+    text,
+    focus_lost,
+    capture_lost,
+    clipboard_result,
+    ime_result,
+    composition
+};
 enum class PointerButton { primary, secondary, middle };
-enum class Key { none, backspace, delete_key, enter, escape, tab, left, right, home, end,
-                 space, a, z, y, c, x, v, up, down, menu, f10, page_up, page_down };
-using InputData = std::variant<std::monostate,std::wstring,ClipboardResult,ImeResult,CompositionEvent>;
+enum class Key {
+    none,
+    backspace,
+    delete_key,
+    enter,
+    escape,
+    tab,
+    left,
+    right,
+    home,
+    end,
+    space,
+    a,
+    z,
+    y,
+    c,
+    x,
+    v,
+    up,
+    down,
+    menu,
+    f10,
+    page_up,
+    page_down
+};
+using InputData = std::variant<std::monostate, std::wstring, ClipboardResult, ImeResult, CompositionEvent>;
 struct Event {
     EventKind kind{};
     float x{}, y{}; // Client physical pixels; never reinterpret using a future frame.
@@ -381,7 +469,7 @@ public:
     bool accept(std::shared_ptr<const UiFrame>);
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
     // Topmost enabled target in the accepted frame; zero while input is suspended.
-    ControlKey pointer_target(float x,float y) const;
+    ControlKey pointer_target(float x, float y) const;
     TreeViewport tree_viewport(ControlKey tree) const noexcept;
     Reply input(const Event&);
     // Clear only passive help, including when an outer host consumes the input.
@@ -394,7 +482,8 @@ public:
     // A transition finishes the previous draft. Same focus preserves its draft,
     // selection and composition; text fields bind input immediately, numbers passively.
     Reply focus(ControlKey);
-    Reply execute(EditCommand, std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.
+    Reply execute(EditCommand,
+                  std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.
     ControlKey focused_control() const noexcept;
     bool wants_keyboard() const noexcept;
     InteractionState interaction_state() const noexcept;
@@ -404,6 +493,7 @@ public:
     bool clipboard_current(const ClipboardRequest&) const noexcept;
     // Writable live binding plus matching accepted caret only; no pending-frame geometry.
     std::optional<TextInputState> text_input() const noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -11,17 +11,28 @@ int wmain(int argc, wchar_t** argv) {
         const auto root = fs::absolute(argv[2]);
         require(!fs::exists(root), "Refusing to overwrite an earlier acceptance run.");
         fs::create_directories(root);
-        if (name == L"roundtrip") roundtrip(root);
-        else if (name == L"boundaries") boundaries(root);
-        else if (name == L"file-failures") file_failures(root);
-        else if (name == L"threads") threads(root);
-        else if (name == L"producer-churn") producer_churn(root);
-        else if (name == L"reader") reader_cases(root);
-        else if (name == L"rotation") rotation(root);
-        else if (name == L"dll") dll(root, argv[3]);
-        else if (name == L"unexpected-warning") return unexpected_warning(root);
-        else if (name == L"pressure") return pressure(root);
-        else throw std::runtime_error("Unknown logging acceptance case.");
+        if (name == L"roundtrip")
+            roundtrip(root);
+        else if (name == L"boundaries")
+            boundaries(root);
+        else if (name == L"file-failures")
+            file_failures(root);
+        else if (name == L"threads")
+            threads(root);
+        else if (name == L"producer-churn")
+            producer_churn(root);
+        else if (name == L"reader")
+            reader_cases(root);
+        else if (name == L"rotation")
+            rotation(root);
+        else if (name == L"dll")
+            dll(root, argv[3]);
+        else if (name == L"unexpected-warning")
+            return unexpected_warning(root);
+        else if (name == L"pressure")
+            return pressure(root);
+        else
+            throw std::runtime_error("Unknown logging acceptance case.");
         std::printf("Logging acceptance: PASS case=%s\n", selected.c_str());
         return 0;
     } catch (const std::exception& error) {

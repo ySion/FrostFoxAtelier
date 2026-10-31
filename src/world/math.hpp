@@ -21,7 +21,7 @@ struct Trs {
 // A reflection takes the scale signs of `preferred` when their parity matches
 // (keeping an object's own mirrored axes), otherwise it negates X.
 [[nodiscard]] Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& parent,
-    math::Vector3 preferred = {1.f, 1.f, 1.f});
+                                             math::Vector3 preferred = {1.f, 1.f, 1.f});
 // True when the 3x3 part has a zero determinant, as the renderer and physics require.
 [[nodiscard]] bool singular(const math::Matrix4&) noexcept;
 

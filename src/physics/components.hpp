@@ -20,11 +20,12 @@ public:
     Result<void> before_step(float fixed);
     Result<void> append_poses(std::vector<world::SimulationPose>&);
     Result<void> after_step();
-    Result<void> removed(ObjectId,bool detached);
+    Result<void> removed(ObjectId, bool detached);
     ObjectId bound_pose_writer(ObjectId) const;
     void clear() noexcept;
-    Result<QueryResult> execute_query(ObjectId,QueryIgnore = {});
+    Result<QueryResult> execute_query(ObjectId, QueryIgnore = {});
     Result<QueryResult> read_query_result(ObjectId) const;
+
 private:
     enum class Kind { character, ragdoll, distance, force, kinematic, query };
     struct Entry {
@@ -48,7 +49,7 @@ private:
     std::uint64_t next_revision_{1};
     bool contained_{};
     void release(const Entry&) noexcept;
-    void clear_query(ObjectId,bool clear_request) noexcept;
-    Result<void> sample_query(ObjectId,QueryIgnore = {});
+    void clear_query(ObjectId, bool clear_request) noexcept;
+    Result<void> sample_query(ObjectId, QueryIgnore = {});
 };
 }

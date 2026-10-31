@@ -36,7 +36,7 @@ struct SceneLitSettings : rendering::SceneLightingSettings {
     bool probe_feedback_visibility{true}; // False is a diagnostic moment-only comparison.
     ProbeHistory probe_history{ProbeHistory::live}; // Diagnostic isolation; never persisted in World.
     bool probe_inspect{}; // Bounded asynchronous inspection of one physical client pixel.
-    std::array<std::uint32_t,2> probe_inspect_pixel{};
+    std::array<std::uint32_t, 2> probe_inspect_pixel{};
     std::int32_t probe_inspect_source{-1}; // Physical probe slot; -1 selects a receiver contributor automatically.
     bool probe_debug{}; // Actual receiver coverage, independent of the lighting histories.
     ProbeCoverage probe_coverage{ProbeCoverage::status};
@@ -50,15 +50,20 @@ struct SceneLitSettings : rendering::SceneLightingSettings {
 };
 
 inline const char* probe_settings_error(const SceneLitSettings& settings) noexcept {
-    if(const auto* error=rendering::probe_layout_error(settings)) return error;
-    if(settings.probe_coverage>ProbeCoverage::dominance || settings.probe_history>ProbeHistory::hold_distance || settings.probe_debug_volume < -1 ||
-       settings.probe_debug_volume>=static_cast<std::int32_t>(probe_volume_limit) || settings.probe_inspect_source < -1 ||
-       settings.probe_inspect_source>=static_cast<std::int32_t>(probe_resident_limit)) return "Invalid DDGI diagnostic selection";
+    if (const auto* error = rendering::probe_layout_error(settings))
+        return error;
+    if (settings.probe_coverage > ProbeCoverage::dominance || settings.probe_history > ProbeHistory::hold_distance ||
+        settings.probe_debug_volume < -1 ||
+        settings.probe_debug_volume >= static_cast<std::int32_t>(probe_volume_limit) ||
+        settings.probe_inspect_source < -1 ||
+        settings.probe_inspect_source >= static_cast<std::int32_t>(probe_resident_limit))
+        return "Invalid DDGI diagnostic selection";
     return nullptr;
 }
-inline const char* probe_focus_error(const SceneLitSettings& settings,const std::array<float,3>& focus) noexcept {
-    if(const auto* error=probe_settings_error(settings)) return error;
-    return rendering::scene_lighting_focus_error(settings,focus);
+inline const char* probe_focus_error(const SceneLitSettings& settings, const std::array<float, 3>& focus) noexcept {
+    if (const auto* error = probe_settings_error(settings))
+        return error;
+    return rendering::scene_lighting_focus_error(settings, focus);
 }
 
 // Evaluated frame settings: World authoring values plus per-view preferences.
@@ -69,7 +74,7 @@ struct ViewSettings {
     Shading shading{Shading::smooth};
     Wireframe wireframe{Wireframe::off};
     bool hidden_lines{true}; // In wire-only mode, hide edges behind scene surfaces.
-    bool triangle_edges{};   // Otherwise respect the producer's polygon edge mask.
+    bool triangle_edges{}; // Otherwise respect the producer's polygon edge mask.
     float wire_width{1.25f};
     float wire_opacity{0.7f};
     // Studio background preference. Scene Lit always resolves a black background.

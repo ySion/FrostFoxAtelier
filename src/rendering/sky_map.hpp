@@ -32,6 +32,7 @@ public:
     // Solid-angle box-filtered source radiance, unscaled RGBA float, cube_size^2 per face in
     // D3D face order +X -X +Y -Y +Z -Z.
     std::span<const float> cube() const noexcept { return cube_; }
+
 private:
     std::uint32_t width_{}, height_{};
     std::vector<std::uint16_t> pixels_;

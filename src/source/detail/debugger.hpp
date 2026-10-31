@@ -9,7 +9,9 @@ struct DebugVariableMetadata {
     DebugStorage storage;
     ParameterPassing passing;
 };
-struct DebugFunctionMetadata { std::vector<DebugVariableMetadata> variables; };
+struct DebugFunctionMetadata {
+    std::vector<DebugVariableMetadata> variables;
+};
 struct DebugTables {
     std::vector<DebugFunctionMetadata> functions;
     std::vector<std::uint32_t> sites;
@@ -32,11 +34,12 @@ struct DebugSessionState {
     bool active{}, entry_stopped{}, error_stopped{}, handler_failed{};
 };
 std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo&);
-std::shared_ptr<const DebugMetadata> make_debug_metadata(const DiagnosticMetadata&,
-    const BusinessCodeInfo&, std::shared_ptr<const DebugTables> = {});
+std::shared_ptr<const DebugMetadata> make_debug_metadata(const DiagnosticMetadata&, const BusinessCodeInfo&,
+                                                         std::shared_ptr<const DebugTables> = {});
 
 struct DebugAccess {
-    static Result<std::shared_ptr<DebugSessionState>> begin(Debugger*, const std::shared_ptr<const DebugMetadata>&, bool supported);
+    static Result<std::shared_ptr<DebugSessionState>> begin(Debugger*, const std::shared_ptr<const DebugMetadata>&,
+                                                            bool supported);
     static Error reject(Debugger*, Error);
     static void status(DebugSessionState&, DebugStatus) noexcept;
     static void finish(DebugSessionState&, DebugStatus) noexcept;
@@ -50,17 +53,24 @@ void debug_leave(void*, BusinessDebugFrame*) noexcept;
 class DebugScope final {
     std::shared_ptr<DebugSessionState> state_;
     DebugStatus terminal_{DebugStatus::failed};
+
 public:
     explicit DebugScope(std::shared_ptr<DebugSessionState> state) noexcept : state_(std::move(state)) {}
-    ~DebugScope() { if (state_) DebugAccess::finish(*state_, terminal_); }
+    ~DebugScope() {
+        if (state_)
+            DebugAccess::finish(*state_, terminal_);
+    }
     std::shared_ptr<DebugSessionState> state() const noexcept { return state_; }
-    template<class T> Result<T> complete(Result<T> result) {
-        terminal_ = result ? DebugStatus::completed : result.error().code == ErrorCode::execution_aborted ?
-            DebugStatus::cancelled : DebugStatus::failed;
+    template <class T>
+    Result<T> complete(Result<T> result) {
+        terminal_ = result                                                ? DebugStatus::completed
+                    : result.error().code == ErrorCode::execution_aborted ? DebugStatus::cancelled
+                                                                          : DebugStatus::failed;
         return result;
     }
     void transfer(DebugStatus status) noexcept {
-        if (state_) DebugAccess::status(*state_, status);
+        if (state_)
+            DebugAccess::status(*state_, status);
         state_.reset();
     }
 };

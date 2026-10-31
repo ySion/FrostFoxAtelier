@@ -20,12 +20,15 @@ void shadow_cases();
 void preparation_cases();
 }
 namespace {
-template<class T> T take(Result<T> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+template <class T>
+T take(Result<T> result) {
+    if (!result)
+        throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
 void check(Result<void> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+    if (!result)
+        throw std::runtime_error(result.error().message);
 }
 void fixture(const std::filesystem::path& path, const char* source) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -152,8 +155,10 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
     constexpr std::uint32_t image_bytes = width * height * 4;
     const GfxContext gfx = context.borrow();
     const float depth_clear[4] = {1, 0, 0, 0};
-    auto color = gfxCreateTexture2D(gfx, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    auto depth = gfxCreateTexture2D(gfx, width, height, DXGI_FORMAT_D32_FLOAT, 1, depth_clear, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    auto color = gfxCreateTexture2D(gfx, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr,
+                                    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    auto depth = gfxCreateTexture2D(gfx, width, height, DXGI_FORMAT_D32_FLOAT, 1, depth_clear,
+                                    D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
     require(color && depth, "render target creation failed");
     std::array<Readbacks, frames> outputs;
     std::array<std::uint32_t, 128> large{};
@@ -197,9 +202,11 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
         rhi_acceptance::check(gfxCommandCopyBuffer(gfx, out.parameters, 16, b, 0, 16));
         rhi_acceptance::check(gfxCommandCopyBuffer(gfx, out.parameters, 32, mesh_args, 0, 12));
         rhi_acceptance::check(gfxCommandCopyBuffer(gfx, out.parameters, 44, draw_args, 0, 16));
-        for (auto buffer : {a, b, mesh_args, draw_args}) rhi_acceptance::check(gfxDestroyBuffer(gfx, buffer));
+        for (auto buffer : {a, b, mesh_args, draw_args})
+            rhi_acceptance::check(gfxDestroyBuffer(gfx, buffer));
         check(context.frame());
-        if (frame == 1) vertex = take(context.prepare(graphics_desc(PipelineKind::vertex)));
+        if (frame == 1)
+            vertex = take(context.prepare(graphics_desc(PipelineKind::vertex)));
     }
     check(context.finish());
     std::uint64_t color_samples = 0, depth_samples = 0, parameter_samples = 0;
@@ -211,9 +218,11 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
         const auto* parameters = gfxBufferGetData<std::uint32_t>(gfx, out.parameters);
         require(red && green && z && parameters, "readback mapping failed");
         for (std::uint32_t pixel = 0; pixel < width * height; ++pixel) {
-            require(red[pixel * 4] == 40 + frame && red[pixel * 4 + 1] == 0 && red[pixel * 4 + 2] == 0 && red[pixel * 4 + 3] == 255,
+            require(red[pixel * 4] == 40 + frame && red[pixel * 4 + 1] == 0 && red[pixel * 4 + 2] == 0 &&
+                        red[pixel * 4 + 3] == 255,
                     "mesh pixel result mismatch");
-            require(green[pixel * 4] == 0 && green[pixel * 4 + 1] == 80 + frame && green[pixel * 4 + 2] == 0 && green[pixel * 4 + 3] == 255,
+            require(green[pixel * 4] == 0 && green[pixel * 4 + 1] == 80 + frame && green[pixel * 4 + 2] == 0 &&
+                        green[pixel * 4 + 3] == 255,
                     "vertex pixel result mismatch");
             require(std::fabs(z[pixel] - 0.25f) < 0.00001f, "depth result mismatch");
             color_samples += 2;
@@ -224,13 +233,14 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
             require(parameters[i] == expected[i], "compute/indirect parameter mismatch");
             ++parameter_samples;
         }
-        for (auto buffer : {out.mesh_color, out.vertex_color, out.depth, out.parameters}) rhi_acceptance::check(gfxDestroyBuffer(gfx, buffer));
+        for (auto buffer : {out.mesh_color, out.vertex_color, out.depth, out.parameters})
+            rhi_acceptance::check(gfxDestroyBuffer(gfx, buffer));
     }
     rhi_acceptance::check(gfxDestroyTexture(gfx, color));
     rhi_acceptance::check(gfxDestroyTexture(gfx, depth));
-    std::printf("scene: frames=%u color-pixels=%llu depth-pixels=%llu parameter-words=%llu mismatches=0\n",
-        frames, static_cast<unsigned long long>(color_samples), static_cast<unsigned long long>(depth_samples),
-        static_cast<unsigned long long>(parameter_samples));
+    std::printf("scene: frames=%u color-pixels=%llu depth-pixels=%llu parameter-words=%llu mismatches=0\n", frames,
+                static_cast<unsigned long long>(color_samples), static_cast<unsigned long long>(depth_samples),
+                static_cast<unsigned long long>(parameter_samples));
     std::puts("same-frame-rebinding=PASS cross-frame-constants=PASS early-release=PASS pipeline-replacement=PASS");
 }
 } // namespace
@@ -239,10 +249,14 @@ int main() {
     try {
         for (unsigned test = 0; test < 4; ++test) {
             ContextOptions invalid;
-            if (test == 0) invalid.width = 0;
-            if (test == 1) invalid.wait_timeout_ms = 0;
-            if (test == 2) invalid.wait_timeout_ms = INFINITE;
-            if (test == 3) invalid.validation = static_cast<Validation>(999);
+            if (test == 0)
+                invalid.width = 0;
+            if (test == 1)
+                invalid.wait_timeout_ms = 0;
+            if (test == 2)
+                invalid.wait_timeout_ms = INFINITE;
+            if (test == 3)
+                invalid.validation = static_cast<Validation>(999);
             auto rejected = Context::open(invalid);
             require(!rejected && rejected.error().code == ErrorCode::invalid_argument,
                     "invalid context input was not rejected before creation");
@@ -252,7 +266,8 @@ int main() {
         auto context = take(Context::open(options));
         for (unsigned repeat = 0; repeat < 2; ++repeat) {
             const auto target = take(context.sync_window_target());
-            require(!target.windowed && target.drawable && target.width == options.width && target.height == options.height,
+            require(!target.windowed && target.drawable && target.width == options.width &&
+                        target.height == options.height,
                     "headless target synchronization changed the target");
             require(gfxGetRecordingFrameSequence(context.borrow()) == 1, "headless synchronization advanced a frame");
         }
@@ -271,8 +286,8 @@ int main() {
         std::thread worker([&] {
             auto result = context.finish();
             const auto synced = context.sync_window_target();
-            wrong_thread = !result && result.error().code == ErrorCode::wrong_thread && !context.borrow() &&
-                           !synced && synced.error().code == ErrorCode::wrong_thread;
+            wrong_thread = !result && result.error().code == ErrorCode::wrong_thread && !context.borrow() && !synced &&
+                           synced.error().code == ErrorCode::wrong_thread;
         });
         worker.join();
         require(wrong_thread, "foreign thread entered the execution domain");
@@ -287,7 +302,8 @@ int main() {
         require(!context.borrow(), "closed context remained borrowable");
         for (unsigned repeat = 0; repeat < 2; ++repeat) {
             const auto synced = context.sync_window_target();
-            require(!synced && synced.error().code == ErrorCode::closed, "closed target synchronization was not rejected");
+            require(!synced && synced.error().code == ErrorCode::closed,
+                    "closed target synchronization was not rejected");
         }
         check(context.close());
         check_debug(debug.Get());

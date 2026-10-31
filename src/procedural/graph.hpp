@@ -11,7 +11,9 @@
 
 namespace atelier::procedural {
 
-namespace detail { struct Access; }
+namespace detail {
+struct Access;
+}
 class Evaluator;
 
 // Host resources a graph reads by persistent key. revision() changes whenever some key
@@ -25,16 +27,17 @@ public:
 
 // Every member shares one access level, so the type stays standard layout and Source reads
 // `seed` at its published offset.
-ASTRUCT(Name="procedural.Context", DESC="一次求值交给节点的上下文：图的随机种子，以及按键解析资源的入口。")
+ASTRUCT(Name = "procedural.Context", DESC = "一次求值交给节点的上下文：图的随机种子，以及按键解析资源的入口。")
 struct Context {
     AGENERATED_BODY(Context)
 public:
     [[nodiscard]] std::uint32_t seed() const noexcept { return seed_; }
     // Resolves a mesh and records it as something the evaluating node's result depends on.
     [[nodiscard]] Result<Reference> mesh(StringView key) const;
+
 private:
     friend class Evaluator;
-    AFIELD(Name="seed", DESC="图的随机种子。节点把它与自己的 seed 参数混合。")
+    AFIELD(Name = "seed", DESC = "图的随机种子。节点把它与自己的 seed 参数混合。")
     std::uint32_t seed_{};
     const Resources* resources_{};
     std::vector<Reference>* dependencies_{};
@@ -49,18 +52,19 @@ struct Connection {
 // method evaluate declares the ports, in parameter order: const procedural.Context& is
 // the context, const procedural.Geometry& an input port, const procedural.Geometries&
 // an input port taking any number of connections, and procedural.Geometry& an output.
-ACLASS(Name="procedural.Node", DESC="程序化图中的节点。公开字段是参数，端口来自 evaluate 方法的签名。")
+ACLASS(Name = "procedural.Node", DESC = "程序化图中的节点。公开字段是参数，端口来自 evaluate 方法的签名。")
 class Node {
     AGENERATED_BODY(Node)
 public:
     Node() = default;
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
+
 private:
     friend struct detail::Access;
-    AFIELD(Name="inputs", Hidden, Sequence="procedural.Node")
-    ReferenceSequence inputs_;              // Upstream node of each connection, ordered by input port.
-    std::vector<Connection> connections_;   // Parallel to inputs_.
+    AFIELD(Name = "inputs", Hidden, Sequence = "procedural.Node")
+    ReferenceSequence inputs_; // Upstream node of each connection, ordered by input port.
+    std::vector<Connection> connections_; // Parallel to inputs_.
 };
 
 // The base of Source attribute nodes, which rewrite point columns of their input `input` into
@@ -69,25 +73,27 @@ private:
 // column `name` (added with T's default value, zero or the identity rotation, when missing) and
 // `const Array<T>& name` reads one that must exist. Borrowed columns keep their length, so the
 // point count is the input's.
-ACLASS(Name="procedural.PointNode", DESC="自有语言属性节点的基类：按 evaluate 的参数名读写输入几何的点属性列，点数不变。")
+ACLASS(Name = "procedural.PointNode",
+       DESC = "自有语言属性节点的基类：按 evaluate 的参数名读写输入几何的点属性列，点数不变。")
 class PointNode : public Node {
     AGENERATED_BODY(PointNode)
 };
 
-ACLASS(Name="procedural.Graph", DESC="程序化图：一组节点及其连接，display 节点的输出是图的结果。")
+ACLASS(Name = "procedural.Graph", DESC = "程序化图：一组节点及其连接，display 节点的输出是图的结果。")
 class Graph {
     AGENERATED_BODY(Graph)
 public:
     Graph() = default;
     Graph(const Graph&) = delete;
     Graph& operator=(const Graph&) = delete;
-    AFIELD(DESC="图的随机种子，经 Context 交给每个节点。")
+    AFIELD(DESC = "图的随机种子，经 Context 交给每个节点。")
     std::uint32_t seed{};
+
 private:
     friend struct detail::Access;
-    AFIELD(Name="nodes", Hidden, Sequence="procedural.Node")
+    AFIELD(Name = "nodes", Hidden, Sequence = "procedural.Node")
     ReferenceSequence nodes_;
-    AFIELD(Name="display", Hidden, Strong="procedural.Node")
+    AFIELD(Name = "display", Hidden, Strong = "procedural.Node")
     ReferenceSlot display_;
 };
 
@@ -100,9 +106,9 @@ enum class Slot : std::uint8_t { context, input, inputs, output };
 // by the evaluator, so `evaluate` is null and `parameters` empty.
 struct Ports {
     MethodId evaluate;
-    std::vector<Slot> parameters;     // Of evaluate, in order.
-    std::vector<std::string> inputs;  // Input port names.
-    std::vector<bool> multiple;       // Per input port: takes any number of connections.
+    std::vector<Slot> parameters; // Of evaluate, in order.
+    std::vector<std::string> inputs; // Input port names.
+    std::vector<bool> multiple; // Per input port: takes any number of connections.
     std::vector<std::string> outputs; // Output port names.
 };
 // The ports of a node type, or why it cannot be a node; an unnamed port parameter fails.
@@ -128,7 +134,8 @@ Result<ObjectRoot> add_node(Runtime& runtime, ObjectId graph, TypeId type);
 // Also disconnects the node's outputs and clears it as the display node.
 Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node);
 // Both nodes must be in the graph. A single input port replaces its connection; a cycle fails.
-Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint32_t output, ObjectId to, std::uint32_t input);
+Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint32_t output, ObjectId to,
+                     std::uint32_t input);
 Result<void> disconnect(Runtime& runtime, ObjectId from, std::uint32_t output, ObjectId to, std::uint32_t input);
 // A null node clears the display.
 Result<void> set_display(Runtime& runtime, ObjectId graph, ObjectId node);

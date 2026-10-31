@@ -22,7 +22,9 @@ struct Failure final : std::runtime_error {
     Failure(std::string category, std::string message)
         : std::runtime_error(std::move(message)), code(std::move(category)) {}
 };
-struct Peer final { std::atomic_bool connected{true}; };
+struct Peer final {
+    std::atomic_bool connected{true};
+};
 
 std::filesystem::path default_directory();
 std::string unique_id();
@@ -47,6 +49,7 @@ public:
     void stop() noexcept;
     const Json& identity() const noexcept;
     const std::filesystem::path& directory() const noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -61,6 +64,7 @@ public:
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
     Json call(Json request);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

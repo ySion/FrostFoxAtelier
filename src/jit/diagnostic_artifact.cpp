@@ -28,7 +28,7 @@
 namespace atelier::source::detail {
 namespace {
 
-template<class T>
+template <class T>
 T take(llvm::Expected<T> value) {
     if (!value)
         throw std::runtime_error("JIT object disassembly: " + llvm::toString(value.takeError()));
@@ -55,16 +55,17 @@ std::string disassemble_object(llvm::MemoryBufferRef object) {
     const auto triple = file->makeTriple();
     std::string error;
     const auto* target = llvm::TargetRegistry::lookupTarget(triple, error);
-    if (!target) throw std::runtime_error("JIT object disassembly: " + error);
+    if (!target)
+        throw std::runtime_error("JIT object disassembly: " + error);
 
     std::unique_ptr<llvm::MCRegisterInfo> registers(target->createMCRegInfo(triple));
     std::unique_ptr<llvm::MCInstrInfo> instructions(target->createMCInstrInfo());
     std::unique_ptr<llvm::MCSubtargetInfo> subtarget(target->createMCSubtargetInfo(triple, "", ""));
     if (!registers || !instructions || !subtarget)
         throw std::runtime_error("LLVM x64 disassembler metadata is unavailable.");
-    std::unique_ptr<llvm::MCAsmInfo> assembly(
-        target->createMCAsmInfo(*registers, triple, llvm::MCTargetOptions{}));
-    if (!assembly) throw std::runtime_error("LLVM x64 assembly metadata is unavailable.");
+    std::unique_ptr<llvm::MCAsmInfo> assembly(target->createMCAsmInfo(*registers, triple, llvm::MCTargetOptions{}));
+    if (!assembly)
+        throw std::runtime_error("LLVM x64 assembly metadata is unavailable.");
 
     llvm::MCContext context(triple, *assembly, *registers, *subtarget);
     std::unique_ptr<llvm::MCDisassembler> disassembler(target->createMCDisassembler(*subtarget, context));
@@ -77,11 +78,14 @@ std::string disassemble_object(llvm::MemoryBufferRef object) {
 
     std::vector<CodeSymbol> symbols;
     for (const auto& symbol : file->symbols()) {
-        if (take(symbol.getType()) != llvm::object::SymbolRef::ST_Function) continue;
+        if (take(symbol.getType()) != llvm::object::SymbolRef::ST_Function)
+            continue;
         const auto section = take(symbol.getSection());
-        if (section == file->section_end() || !section->isText()) continue;
+        if (section == file->section_end() || !section->isText())
+            continue;
         const auto name = take(symbol.getName());
-        if (name.empty()) continue;
+        if (name.empty())
+            continue;
         // A COFF symbol's value is relative to its defining section.
         const auto offset = take(symbol.getValue());
         if (offset > section->getSize())
@@ -89,8 +93,10 @@ std::string disassemble_object(llvm::MemoryBufferRef object) {
         symbols.push_back({section->getIndex(), offset, name});
     }
     std::sort(symbols.begin(), symbols.end(), [](const CodeSymbol& left, const CodeSymbol& right) {
-        if (left.section_index != right.section_index) return left.section_index < right.section_index;
-        if (left.offset != right.offset) return left.offset < right.offset;
+        if (left.section_index != right.section_index)
+            return left.section_index < right.section_index;
+        if (left.offset != right.offset)
+            return left.offset < right.offset;
         return left.name < right.name;
     });
 
@@ -101,15 +107,18 @@ std::string disassemble_object(llvm::MemoryBufferRef object) {
               "; Operands covered by the listed relocations remain unresolved until linking.\n";
     bool decoded_instruction = false;
     for (const auto& section : file->sections()) {
-        if (!section.isText()) continue;
+        if (!section.isText())
+            continue;
         const auto contents = take(section.getContents());
-        if (contents.empty()) continue;
+        if (contents.empty())
+            continue;
         const auto name = take(section.getName());
         const auto section_index = section.getIndex();
-        const llvm::ArrayRef<std::uint8_t> bytes(
-            reinterpret_cast<const std::uint8_t*>(contents.data()), contents.size());
+        const llvm::ArrayRef<std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(contents.data()),
+                                                 contents.size());
         output << "\nSection " << name << " (#" << section_index << ", " << bytes.size() << " bytes):\n";
-        auto symbol = std::lower_bound(symbols.begin(), symbols.end(), section_index,
+        auto symbol = std::lower_bound(
+            symbols.begin(), symbols.end(), section_index,
             [](const CodeSymbol& candidate, std::uint64_t index) { return candidate.section_index < index; });
         const auto print_symbols = [&](std::uint64_t offset) {
             while (symbol != symbols.end() && symbol->section_index == section_index && symbol->offset <= offset) {
@@ -122,18 +131,20 @@ std::string disassemble_object(llvm::MemoryBufferRef object) {
             print_symbols(offset);
             llvm::MCInst instruction;
             std::uint64_t size = 0;
-            const auto status = disassembler->getInstruction(
-                instruction, size, bytes.drop_front(offset), offset, llvm::nulls());
+            const auto status =
+                disassembler->getInstruction(instruction, size, bytes.drop_front(offset), offset, llvm::nulls());
             if (status == llvm::MCDisassembler::Fail || !size || size > bytes.size() - offset)
-                throw std::runtime_error("Could not decode JIT object section " + name.str() +
-                    " at byte offset " + std::to_string(offset) + ".");
+                throw std::runtime_error("Could not decode JIT object section " + name.str() + " at byte offset " +
+                                         std::to_string(offset) + ".");
             output << "  " << llvm::format_hex(offset, 10) << ": ";
             for (std::uint64_t index = 0; index < size; ++index)
                 output << llvm::format_hex_no_prefix(bytes[offset + index], 2) << ' ';
-            if (size < 15) output.indent(static_cast<unsigned>((15 - size) * 3));
+            if (size < 15)
+                output.indent(static_cast<unsigned>((15 - size) * 3));
             // x86 PC-relative operands use the end of the instruction as their base.
             printer->printInst(&instruction, offset + size, "", *subtarget, output);
-            if (status == llvm::MCDisassembler::SoftFail) output << " ; invalid instruction encoding";
+            if (status == llvm::MCDisassembler::SoftFail)
+                output << " ; invalid instruction encoding";
             output << '\n';
             decoded_instruction = true;
             offset += size;
@@ -142,14 +153,17 @@ std::string disassemble_object(llvm::MemoryBufferRef object) {
 
         bool has_relocations = false;
         for (const auto& relocation : section.relocations()) {
-            if (!has_relocations) output << "\n  Relocations (section-relative offsets):\n";
+            if (!has_relocations)
+                output << "\n  Relocations (section-relative offsets):\n";
             has_relocations = true;
             llvm::SmallString<32> type;
             relocation.getTypeName(type);
             output << "    +" << llvm::format_hex(relocation.getOffset(), 10) << ' ' << type << ' ';
             const auto target_symbol = relocation.getSymbol();
-            if (target_symbol == file->symbol_end()) output << "<no symbol>";
-            else output << take(target_symbol->getName());
+            if (target_symbol == file->symbol_end())
+                output << "<no symbol>";
+            else
+                output << take(target_symbol->getName());
             output << '\n';
         }
     }

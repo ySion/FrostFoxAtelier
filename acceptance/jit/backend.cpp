@@ -38,16 +38,19 @@ using llvm::orc::ResourceTrackerSP;
 using llvm::orc::ThreadSafeModule;
 
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
 
 void take(llvm::Error error) {
-    if (error) throw std::runtime_error(llvm::toString(std::move(error)));
+    if (error)
+        throw std::runtime_error(llvm::toString(std::move(error)));
 }
 
-template<class T>
+template <class T>
 T take(llvm::Expected<T> result) {
-    if (!result) throw std::runtime_error(llvm::toString(result.takeError()));
+    if (!result)
+        throw std::runtime_error(llvm::toString(result.takeError()));
     return std::move(*result);
 }
 
@@ -55,7 +58,6 @@ void pass(const ProbeCallbacks& callbacks, const char* message) {
     const auto line = std::string("[pass] ") + message;
     callbacks.log(line.c_str());
 }
-
 
 enum class FailureStage { none, finalization, emission };
 
@@ -70,29 +72,32 @@ struct FailureProbe {
 llvm::orc::shared::CWrapperFunctionBuffer reject_finalization(const char* data, std::size_t size) {
     using namespace llvm::orc::shared;
     return WrapperFunction<SPSError(SPSExecutorAddr)>::handle(
-        data, size, [](ExecutorAddr address) -> llvm::Error {
-            auto& probe = *address.toPtr<FailureProbe*>();
-            DWORD64 image_base{};
-            probe.registered_before_failure =
-                RtlLookupFunctionEntry(probe.code.getValue(), &image_base, nullptr) != nullptr;
-            return llvm::make_error<llvm::StringError>("Injected allocation finalization failure.",
-                                                       llvm::inconvertibleErrorCode());
-        }).release();
+               data, size,
+               [](ExecutorAddr address) -> llvm::Error {
+                   auto& probe = *address.toPtr<FailureProbe*>();
+                   DWORD64 image_base{};
+                   probe.registered_before_failure =
+                       RtlLookupFunctionEntry(probe.code.getValue(), &image_base, nullptr) != nullptr;
+                   return llvm::make_error<llvm::StringError>("Injected allocation finalization failure.",
+                                                              llvm::inconvertibleErrorCode());
+               })
+        .release();
 }
 
 // Exercise actual ORC failure boundaries, after the real unwind install action.
 class MaterializationFailurePlugin final : public llvm::orc::LinkGraphLinkingLayer::Plugin {
 public:
     explicit MaterializationFailurePlugin(FailureProbe& probe) : probe_(probe) {}
-    void modifyPassConfig(llvm::orc::MaterializationResponsibility& responsibility,
-                          llvm::jitlink::LinkGraph& graph,
+    void modifyPassConfig(llvm::orc::MaterializationResponsibility& responsibility, llvm::jitlink::LinkGraph& graph,
                           llvm::jitlink::PassConfiguration& config) override {
-        if (probe_.module.empty() || !graph.getName().starts_with(probe_.module)) return;
+        if (probe_.module.empty() || !graph.getName().starts_with(probe_.module))
+            return;
         probe_.responsibility = &responsibility;
         config.PostAllocationPasses.push_back([this](llvm::jitlink::LinkGraph& allocated) -> llvm::Error {
             auto* entry = allocated.findDefinedSymbolByName(allocated.intern(probe_.module + "_entry"));
-            if (!entry) return llvm::make_error<llvm::StringError>("Failure probe entry is missing.",
-                                                                  llvm::inconvertibleErrorCode());
+            if (!entry)
+                return llvm::make_error<llvm::StringError>("Failure probe entry is missing.",
+                                                           llvm::inconvertibleErrorCode());
             probe_.code = entry->getAddress();
             return llvm::Error::success();
         });
@@ -101,7 +106,8 @@ public:
                 using namespace llvm::orc::shared;
                 auto action = WrapperFunctionCall::Create<SPSArgList<SPSExecutorAddr>>(
                     ExecutorAddr::fromPtr(&reject_finalization), ExecutorAddr::fromPtr(&probe_));
-                if (!action) return action.takeError();
+                if (!action)
+                    return action.takeError();
                 fixed.allocActions().push_back({std::move(*action), {}});
                 return llvm::Error::success();
             });
@@ -112,20 +118,20 @@ public:
             DWORD64 image_base{};
             probe_.registered_before_failure =
                 RtlLookupFunctionEntry(probe_.code.getValue(), &image_base, nullptr) != nullptr;
-            return llvm::make_error<llvm::StringError>("Injected emission failure.",
-                                                       llvm::inconvertibleErrorCode());
+            return llvm::make_error<llvm::StringError>("Injected emission failure.", llvm::inconvertibleErrorCode());
         }
         return llvm::Error::success();
     }
     llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility& responsibility) override {
-        if (probe_.responsibility == &responsibility) probe_.responsibility = nullptr;
+        if (probe_.responsibility == &responsibility)
+            probe_.responsibility = nullptr;
         return llvm::Error::success();
     }
     llvm::Error notifyRemovingResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey) override {
         return llvm::Error::success();
     }
-    void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey,
-                                    llvm::orc::ResourceKey) override {}
+    void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey, llvm::orc::ResourceKey) override {}
+
 private:
     FailureProbe& probe_;
 };
@@ -144,8 +150,7 @@ CodeRange unwind_range(ExecutorAddr address) {
     const auto* entry = RtlLookupFunctionEntry(address.getValue(), &image_base, nullptr);
     require(entry != nullptr, "Windows did not register the generated function's unwind table.");
     // UnwindData is an RVA, so zero can name the allocation's first byte.
-    require(entry->BeginAddress < entry->EndAddress,
-            "Invalid generated RUNTIME_FUNCTION entry.");
+    require(entry->BeginAddress < entry->EndAddress, "Invalid generated RUNTIME_FUNCTION entry.");
     const CodeRange range{image_base + entry->BeginAddress, image_base + entry->EndAddress};
     require(range.begin <= address.getValue() && address.getValue() < range.end,
             "The unwind entry does not cover the generated function.");
@@ -154,14 +159,14 @@ CodeRange unwind_range(ExecutorAddr address) {
 
 bool executable(DWORD protection) noexcept {
     const auto access = protection & 0xff;
-    return access == PAGE_EXECUTE || access == PAGE_EXECUTE_READ ||
-           access == PAGE_EXECUTE_READWRITE || access == PAGE_EXECUTE_WRITECOPY;
+    return access == PAGE_EXECUTE || access == PAGE_EXECUTE_READ || access == PAGE_EXECUTE_READWRITE ||
+           access == PAGE_EXECUTE_WRITECOPY;
 }
 
 bool writable(DWORD protection) noexcept {
     const auto access = protection & 0xff;
-    return access == PAGE_READWRITE || access == PAGE_WRITECOPY ||
-           access == PAGE_EXECUTE_READWRITE || access == PAGE_EXECUTE_WRITECOPY;
+    return access == PAGE_READWRITE || access == PAGE_WRITECOPY || access == PAGE_EXECUTE_READWRITE ||
+           access == PAGE_EXECUTE_WRITECOPY;
 }
 
 MEMORY_BASIC_INFORMATION memory_info(ExecutorAddr address) {
@@ -176,8 +181,7 @@ void verify_retired(ExecutorAddr address) {
     require(RtlLookupFunctionEntry(address.getValue(), &image_base, nullptr) == nullptr,
             "An unloaded code allocation still has a Windows unwind entry.");
     const auto info = memory_info(address);
-    require(info.State != MEM_COMMIT || !executable(info.Protect),
-            "An unloaded code allocation remains executable.");
+    require(info.State != MEM_COMMIT || !executable(info.Protect), "An unloaded code allocation remains executable.");
 }
 
 void configure_function(llvm::Function& function) {
@@ -208,29 +212,26 @@ ThreadSafeModule create_module(LLJIT& jit, const std::string& stem, std::uint32_
     auto* i32 = builder.getInt32Ty();
     auto* i64 = builder.getInt64Ty();
     auto* ptr = builder.getPtrTy();
-    auto* record = llvm::StructType::get(*context,
-        {builder.getDoubleTy(), i64, builder.getFloatTy(), i32,
-         llvm::ArrayType::get(builder.getInt8Ty(), 8)});
+    auto* record = llvm::StructType::get(*context, {builder.getDoubleTy(), i64, builder.getFloatTy(), i32,
+                                                    llvm::ArrayType::get(builder.getInt8Ty(), 8)});
     const auto* layout = module->getDataLayout().getStructLayout(record);
     require(layout->getSizeInBytes() == sizeof(ProbeRecord) &&
-            layout->getElementOffset(0) == offsetof(ProbeRecord, total) &&
-            layout->getElementOffset(1) == offsetof(ProbeRecord, checksum) &&
-            layout->getElementOffset(2) == offsetof(ProbeRecord, amount) &&
-            layout->getElementOffset(3) == offsetof(ProbeRecord, count),
+                layout->getElementOffset(0) == offsetof(ProbeRecord, total) &&
+                layout->getElementOffset(1) == offsetof(ProbeRecord, checksum) &&
+                layout->getElementOffset(2) == offsetof(ProbeRecord, amount) &&
+                layout->getElementOffset(3) == offsetof(ProbeRecord, count),
             "LLVM record layout differs from the native record.");
 
     auto* label_data = llvm::ConstantDataArray::getString(*context, stem);
-    new llvm::GlobalVariable(*module, label_data->getType(), true,
-        llvm::GlobalValue::ExternalLinkage, label_data, stem + "_label");
-    auto* counter = new llvm::GlobalVariable(*module, i64, false,
-        llvm::GlobalValue::ExternalLinkage, builder.getInt64(0), stem + "_counter");
-    auto* signature = llvm::FunctionType::get(i32,
-        {i32, i32, builder.getFloatTy(), builder.getDoubleTy(), i64, ptr, ptr, ptr}, false);
+    new llvm::GlobalVariable(*module, label_data->getType(), true, llvm::GlobalValue::ExternalLinkage, label_data,
+                             stem + "_label");
+    auto* counter = new llvm::GlobalVariable(*module, i64, false, llvm::GlobalValue::ExternalLinkage,
+                                             builder.getInt64(0), stem + "_counter");
+    auto* signature = llvm::FunctionType::get(
+        i32, {i32, i32, builder.getFloatTy(), builder.getDoubleTy(), i64, ptr, ptr, ptr}, false);
     auto native_calculate = module->getOrInsertFunction("atelier_jit_native_calculate", signature);
-    auto host_bias = module->getOrInsertFunction("atelier_jit_host_bias",
-        llvm::FunctionType::get(i64, {i64}, false));
-    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage,
-                                         stem + "_entry", *module);
+    auto host_bias = module->getOrInsertFunction("atelier_jit_host_bias", llvm::FunctionType::get(i64, {i64}, false));
+    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, stem + "_entry", *module);
     configure_function(*entry);
     auto* begin = llvm::BasicBlock::Create(*context, "entry", entry);
     auto* success = llvm::BasicBlock::Create(*context, "success", entry);
@@ -239,7 +240,8 @@ ThreadSafeModule create_module(LLJIT& jit, const std::string& stem, std::uint32_
     auto* temporary = builder.CreateAlloca(record, nullptr, "native_result");
     temporary->setAlignment(llvm::Align(alignof(ProbeRecord)));
     llvm::SmallVector<llvm::Value*, 8> arguments;
-    for (auto& argument : entry->args()) arguments.push_back(&argument);
+    for (auto& argument : entry->args())
+        arguments.push_back(&argument);
     arguments[6] = temporary;
     auto* status = builder.CreateCall(native_calculate, arguments);
     builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(native_success)), success, failure);
@@ -252,14 +254,14 @@ ThreadSafeModule create_module(LLJIT& jit, const std::string& stem, std::uint32_
     auto* count = builder.CreateStructGEP(record, temporary, 3);
     builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i32, count), builder.getInt32(version)), count);
     builder.CreateMemCpy(entry->getArg(6), llvm::MaybeAlign(alignof(ProbeRecord)), temporary,
-                        llvm::MaybeAlign(alignof(ProbeRecord)), sizeof(ProbeRecord));
+                         llvm::MaybeAlign(alignof(ProbeRecord)), sizeof(ProbeRecord));
     builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i64, counter), builder.getInt64(1)), counter);
     builder.CreateRet(builder.getInt32(native_success));
 
-    auto capture = module->getOrInsertFunction("atelier_jit_native_capture",
-        llvm::FunctionType::get(i32, {ptr}, false));
+    auto capture =
+        module->getOrInsertFunction("atelier_jit_native_capture", llvm::FunctionType::get(i32, {ptr}, false));
     auto* inner = llvm::Function::Create(llvm::FunctionType::get(i32, {i32, ptr}, false),
-        llvm::GlobalValue::ExternalLinkage, stem + "_inner", *module);
+                                         llvm::GlobalValue::ExternalLinkage, stem + "_inner", *module);
     configure_function(*inner);
     auto* inner_begin = llvm::BasicBlock::Create(*context, "entry", inner);
     auto* recurse = llvm::BasicBlock::Create(*context, "recurse", inner);
@@ -273,20 +275,21 @@ ThreadSafeModule create_module(LLJIT& jit, const std::string& stem, std::uint32_
     builder.SetInsertPoint(leaf);
     builder.CreateRet(builder.CreateCall(capture, {inner->getArg(1)}));
 
-    auto* outer = llvm::Function::Create(llvm::FunctionType::get(i32, {ptr}, false),
-        llvm::GlobalValue::ExternalLinkage, stem + "_outer", *module);
+    auto* outer = llvm::Function::Create(llvm::FunctionType::get(i32, {ptr}, false), llvm::GlobalValue::ExternalLinkage,
+                                         stem + "_outer", *module);
     configure_function(*outer);
     builder.SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", outer));
     auto* snapshot = builder.CreateAlloca(llvm::ArrayType::get(builder.getInt8Ty(), stack_bytes));
     snapshot->setAlignment(llvm::Align(32));
     auto* frames = builder.CreateCall(inner, {builder.getInt32(3), snapshot});
-    builder.CreateMemCpy(outer->getArg(0), llvm::MaybeAlign(alignof(StackSnapshot)), snapshot,
-                        llvm::MaybeAlign(32), sizeof(StackSnapshot));
+    builder.CreateMemCpy(outer->getArg(0), llvm::MaybeAlign(alignof(StackSnapshot)), snapshot, llvm::MaybeAlign(32),
+                         sizeof(StackSnapshot));
     builder.CreateRet(builder.CreateAdd(frames, builder.getInt32(17)));
 
     std::string diagnostic;
     llvm::raw_string_ostream errors(diagnostic);
-    if (llvm::verifyModule(*module, &errors)) throw std::runtime_error(diagnostic);
+    if (llvm::verifyModule(*module, &errors))
+        throw std::runtime_error(diagnostic);
     return ThreadSafeModule(std::move(module), std::move(context));
 }
 
@@ -316,8 +319,8 @@ Unit add_unit(LLJIT& jit, std::uint32_t version, std::size_t stack_bytes = sizeo
 }
 
 void verify_calls(const Unit& unit, std::uint32_t version) {
-    using Entry = std::uint32_t (*)(std::uint32_t, std::int32_t, float, double,
-        std::uint64_t, const ProbeRecord*, ProbeRecord*, ProbeDiagnostic*);
+    using Entry = std::uint32_t (*)(std::uint32_t, std::int32_t, float, double, std::uint64_t, const ProbeRecord*,
+                                    ProbeRecord*, ProbeDiagnostic*);
     const auto function = unit.entry.toPtr<Entry>();
     const auto before = *unit.counter.toPtr<const std::uint64_t*>();
     const ProbeRecord input{2.5, 100, 3.0f, 6};
@@ -326,8 +329,8 @@ void verify_calls(const Unit& unit, std::uint32_t version) {
     for (const std::uint64_t offset : {40ull, 0x100000028ull}) {
         require(function(0, -3, 1.25f, 2.0, offset, &input, &output, &diagnostic) == native_success,
                 "Mixed-register/stack native call failed.");
-        require(output.total == 2.0 && output.amount == 4.25f &&
-                output.checksum == 101 + offset * 3 && output.count == 7 + version,
+        require(output.total == 2.0 && output.amount == 4.25f && output.checksum == 101 + offset * 3 &&
+                    output.count == 7 + version,
                 "Mixed scalar, 64-bit return or aligned-record ABI mismatch.");
         require(diagnostic.cleanups == 1 && diagnostic.message[0] == '\0',
                 "Successful native call did not clean up exactly once.");
@@ -379,8 +382,7 @@ __declspec(noinline) void verify_cross_unit(LLJIT& jit, const Unit& callee) {
     llvm::IRBuilder<> builder(*context);
     auto* signature = llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, false);
     auto target = module->getOrInsertFunction(callee.stem + "_outer", signature);
-    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage,
-                                         "cross_unit_entry", *module);
+    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, "cross_unit_entry", *module);
     configure_function(*entry);
     builder.SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", entry));
     auto* result = builder.CreateCall(target, {entry->getArg(0)});
@@ -441,8 +443,7 @@ void verify_rejected_candidates(LLJIT& jit, std::string& asynchronous_error) {
     llvm::IRBuilder<> builder(*missing_context);
     auto* signature = llvm::FunctionType::get(builder.getInt32Ty(), false);
     auto missing = module->getOrInsertFunction("atelier_deliberately_missing_symbol", signature);
-    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage,
-                                         "missing_external_v3", *module);
+    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, "missing_external_v3", *module);
     configure_function(*entry);
     builder.SetInsertPoint(llvm::BasicBlock::Create(*missing_context, "entry", entry));
     builder.CreateRet(builder.CreateCall(missing));
@@ -489,8 +490,9 @@ void run(const ProbeCallbacks& callbacks) {
         auto unit = add_unit(*baseline, 0);
         DWORD64 image_base{};
         const bool registered = RtlLookupFunctionEntry(unit.entry.getValue(), &image_base, nullptr) != nullptr;
-        callbacks.log(registered ? "[info] Default LLJIT registers Windows unwind tables."
-                                 : "[info] Default LLJIT lacks Windows unwind registration; using allocation-owned COFF tables.");
+        callbacks.log(
+            registered ? "[info] Default LLJIT registers Windows unwind tables."
+                       : "[info] Default LLJIT lacks Windows unwind registration; using allocation-owned COFF tables.");
         take(unit.tracker->remove());
     }
 
@@ -513,9 +515,8 @@ void run(const ProbeCallbacks& callbacks) {
     builder.setPlatformSetUp(llvm::orc::setUpInactivePlatform);
     std::string asynchronous_error;
     auto jit = take(builder.create());
-    jit->getExecutionSession().setErrorReporter([&](llvm::Error error) {
-        asynchronous_error = llvm::toString(std::move(error));
-    });
+    jit->getExecutionSession().setErrorReporter(
+        [&](llvm::Error error) { asynchronous_error = llvm::toString(std::move(error)); });
     define_callbacks(*jit, callbacks);
     auto first = add_unit(*jit, 1);
     auto second = add_unit(*jit, 2);
@@ -551,10 +552,12 @@ void run(const ProbeCallbacks& callbacks) {
     auto removed = jit->lookup(first.stem + "_entry");
     require(!removed, "Removed code remains visible in the symbol table.");
     llvm::consumeError(removed.takeError());
-    for (const auto address : retired_addresses) verify_retired(address);
+    for (const auto address : retired_addresses)
+        verify_retired(address);
     require(retained_version == "probe_v1", "Independent version metadata was lost during code retirement.");
     verify_calls(second, 2);
-    pass(callbacks, "Tracker removal revokes symbols, unwind entries and executable storage without damaging another unit");
+    pass(callbacks,
+         "Tracker removal revokes symbols, unwind entries and executable storage without damaging another unit");
 
     for (std::uint32_t version = 3; version <= 6; ++version) {
         auto temporary = add_unit(*jit, version);
@@ -586,13 +589,14 @@ void run(const ProbeCallbacks& callbacks) {
 
 }
 
-std::uint32_t atelier_run_jit_acceptance(const ProbeCallbacks* callbacks,
-    char* error, std::uint32_t error_capacity) noexcept {
-    if (!error || error_capacity == 0) return 1;
+std::uint32_t atelier_run_jit_acceptance(const ProbeCallbacks* callbacks, char* error,
+                                         std::uint32_t error_capacity) noexcept {
+    if (!error || error_capacity == 0)
+        return 1;
     error[0] = '\0';
     try {
-        require(callbacks && callbacks->host_bias && callbacks->native_calculate &&
-                callbacks->native_capture && callbacks->log,
+        require(callbacks && callbacks->host_bias && callbacks->native_calculate && callbacks->native_capture &&
+                    callbacks->log,
                 "Invalid JIT acceptance callbacks.");
         run(*callbacks);
         return 0;

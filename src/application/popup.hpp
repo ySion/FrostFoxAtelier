@@ -9,10 +9,11 @@ namespace atelier::application {
 // this surface uses the ordinary Session/SS/renderer and its own accepted frame.
 class PopupHost final {
 public:
-    PopupHost(HWND owner,std::span<const std::wstring> fonts,bool validation);
+    PopupHost(HWND owner, std::span<const std::wstring> fonts, bool validation);
     ~PopupHost() = default; // Renderer member retires before the Window member.
-    void update(ui::ControlKey source,RECT anchor,bool below,std::span<const ui::MenuItem>,
-                const ui::Style&,std::shared_ptr<const ui::StyleSheet>,std::shared_ptr<ui_language::Component>,bool center_first_item = false);
+    void update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem>, const ui::Style&,
+                std::shared_ptr<const ui::StyleSheet>, std::shared_ptr<ui_language::Component>,
+                bool center_first_item = false);
     void render(renderer::Capture* = nullptr);
     void hide();
     void reset_document(); // Retire JIT scopes before the owner Runtime is closed.
@@ -24,6 +25,7 @@ public:
     const std::shared_ptr<const ui::UiFrame>& presented() const noexcept { return ui_.presented(); }
     ui::Reply input(ui::Event);
     ui::ControlKey source() const noexcept { return source_; }
+
 private:
     friend struct EditorAcceptanceAccess;
     Window window_;
@@ -32,8 +34,8 @@ private:
     renderer::Renderer renderer_;
     std::vector<ui::MenuItem> items_;
     std::vector<ui::Control> controls_;
-    ui::ControlKey next_key_{1ULL<<62};
-    std::map<ui::ControlKey,ui::ControlKey> row_keys_;
+    ui::ControlKey next_key_{1ULL << 62};
+    std::map<ui::ControlKey, ui::ControlKey> row_keys_;
     std::shared_ptr<ui_language::Component> component_;
     std::unique_ptr<ui_language::Instance> instance_;
     std::string diagnostic_;

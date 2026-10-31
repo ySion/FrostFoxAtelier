@@ -9,9 +9,10 @@
 namespace atelier {
 
 // Synchronous borrow. Constness belongs to T, not to the descriptor.
-template<class T>
+template <class T>
 class Span {
     static_assert(std::is_object_v<T> && !std::is_volatile_v<T>);
+
 public:
     static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
@@ -20,8 +21,10 @@ public:
         if ((!data && size) || size > static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(T))
             throw std::invalid_argument("Invalid Span storage.");
     }
-    template<std::size_t N> constexpr Span(T (&data)[N]) noexcept : data_(data), size_(N) {}
-    template<class U> requires std::is_convertible_v<U(*)[], T(*)[]>
+    template <std::size_t N>
+    constexpr Span(T (&data)[N]) noexcept : data_(data), size_(N) {}
+    template <class U>
+        requires std::is_convertible_v<U (*)[], T (*)[]>
     constexpr Span(Span<U> other) noexcept : data_(other.data()), size_(other.size()) {}
 
     [[nodiscard]] constexpr T* data() const noexcept { return data_; }
@@ -30,7 +33,8 @@ public:
     [[nodiscard]] constexpr T* begin() const noexcept { return data_; }
     [[nodiscard]] constexpr T* end() const noexcept { return size_ ? data_ + size_ : data_; }
     [[nodiscard]] constexpr T& operator[](std::size_t index) const {
-        if (index >= size_) throw std::out_of_range("Span index.");
+        if (index >= size_)
+            throw std::out_of_range("Span index.");
         return data_[index];
     }
     [[nodiscard]] constexpr Span slice(std::size_t first, std::size_t count = npos) const {

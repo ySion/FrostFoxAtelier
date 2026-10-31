@@ -17,14 +17,26 @@ struct MoveEffect {
     MoveEffect& operator=(const MoveEffect&) = default;
     MoveEffect(MoveEffect&& other) noexcept : value(other.value) { ++moves; }
 };
-struct ReferencingValue { ReferenceSlot target; };
-struct ForwardMethodHost { void inspect(const ReferencingValue&) {} };
-void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
-template<class T> T take(Result<T> value) {
-    if (!value) throw std::runtime_error(value.error().message);
+struct ReferencingValue {
+    ReferenceSlot target;
+};
+struct ForwardMethodHost {
+    void inspect(const ReferencingValue&) {}
+};
+void require(bool condition, const char* message) {
+    if (!condition)
+        throw std::runtime_error(message);
+}
+template <class T>
+T take(Result<T> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
-void take(Result<void> value) { if (!value) throw std::runtime_error(value.error().message); }
+void take(Result<void> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
+}
 void publish(Program& program, std::string_view source) {
     auto candidate = take(Program::prepare(take(program.request("owned-values.source", source))));
     take(program.try_publish(candidate));
@@ -34,41 +46,50 @@ void publish(Program& program, std::string_view source) {
 void verify_source_owned_values() {
     {
         Runtime untrusted;
-        take(untrusted.register_types({reflection::Definition<Particle>::build(untrusted),
-            reflection::Definition<Position>::build(untrusted), string_definition(untrusted),
-            array_definition<Particle>(untrusted, "owned.Particles"),
-            NativeRegistration<MoveEffect>{untrusted, "owned.MoveEffect", TypeKind::record}.build(),
-            array_definition<MoveEffect>(untrusted, "owned.MoveEffects")}));
+        take(untrusted.register_types(
+            {reflection::Definition<Particle>::build(untrusted), reflection::Definition<Position>::build(untrusted),
+             string_definition(untrusted), array_definition<Particle>(untrusted, "owned.Particles"),
+             NativeRegistration<MoveEffect>{untrusted, "owned.MoveEffect", TypeKind::record}.build(),
+             array_definition<MoveEffect>(untrusted, "owned.MoveEffects")}));
         Program rejected(untrusted, {});
-        require(!Program::prepare(take(rejected.request("untrusted-value.source",
-            "void bad() { Array<borrow.Particle> values; }"))),
-            "Nontrivial value operations without a preservation promise were admitted.");
-        require(!Program::prepare(take(rejected.request("untrusted-move.source",
-            "void bad() { Array<owned.MoveEffect> values; values.resize(1); values.reserve(8); }"))) && MoveEffect::moves == 0,
-            "Trivial copying incorrectly vouched for a nontrivial Array relocation constructor.");
+        require(!Program::prepare(
+                    take(rejected.request("untrusted-value.source", "void bad() { Array<borrow.Particle> values; }"))),
+                "Nontrivial value operations without a preservation promise were admitted.");
+        require(!Program::prepare(take(rejected.request(
+                    "untrusted-move.source",
+                    "void bad() { Array<owned.MoveEffect> values; values.resize(1); values.reserve(8); }"))) &&
+                    MoveEffect::moves == 0,
+                "Trivial copying incorrectly vouched for a nontrivial Array relocation constructor.");
     }
     Runtime runtime;
     // The method appears before the referenced record's final GC layout.
-    auto invalid_batch = runtime.register_types({
-        NativeRegistration<ForwardMethodHost>{runtime, "owned.ForwardHost", TypeKind::object}
-            .method<&ForwardMethodHost::inspect>("inspect", true).build(),
-        NativeRegistration<ReferencingValue>{runtime, "owned.ReferencingValue", TypeKind::record}
-            .field<&ReferencingValue::target>("target", {TypeReference{"core.Object"}, ValueForm::strong_reference}).build()});
+    auto invalid_batch = runtime.register_types(
+        {NativeRegistration<ForwardMethodHost>{runtime, "owned.ForwardHost", TypeKind::object}
+             .method<&ForwardMethodHost::inspect>("inspect", true)
+             .build(),
+         NativeRegistration<ReferencingValue>{runtime, "owned.ReferencingValue", TypeKind::record}
+             .field<&ReferencingValue::target>("target", {TypeReference{"core.Object"}, ValueForm::strong_reference})
+             .build()});
     require(!invalid_batch && !runtime.native_type<ForwardMethodHost>() && !runtime.native_type<ReferencingValue>(),
-        "A forward method dependency admitted GC-bearing storage or partly published the batch.");
+            "A forward method dependency admitted GC-bearing storage or partly published the batch.");
     auto particle = reflection::Definition<Particle>::build(runtime);
     // Its instrumented operations change counters and may throw, but do not
     // retain addresses, run game callbacks or invalidate unrelated storage.
     particle.native.value_operations_preserve_borrows = true;
-    take(runtime.register_types({std::move(particle), reflection::Definition<Position>::build(runtime),
-        reflection::Definition<Algorithms>::build(runtime), string_definition(runtime),
-        array_definition<Particle>(runtime, "owned.Particles"), array_definition<std::int32_t>(runtime, "owned.Ints"), array_definition<float>(runtime, "owned.Floats"),
-        array_definition<String>(runtime, "owned.Strings"), array_definition<Array<float>>(runtime, "owned.Batches")}));
+    take(runtime.register_types(
+        {std::move(particle), reflection::Definition<Position>::build(runtime),
+         reflection::Definition<Algorithms>::build(runtime), string_definition(runtime),
+         array_definition<Particle>(runtime, "owned.Particles"), array_definition<std::int32_t>(runtime, "owned.Ints"),
+         array_definition<float>(runtime, "owned.Floats"), array_definition<String>(runtime, "owned.Strings"),
+         array_definition<Array<float>>(runtime, "owned.Batches")}));
     const auto host_type = take(runtime.native_type<Algorithms>());
     auto host = take(runtime.create(host_type));
     Array<Particle> input;
     input.resize(3);
-    for (auto& item : input) { item.count = 1; item.name = String{"original/name/火花"}; }
+    for (auto& item : input) {
+        item.count = 1;
+        item.name = String{"original/name/火花"};
+    }
     const auto baseline = Particle::live;
     const auto* data = input.data();
     const std::array arguments{Argument::borrow(std::as_const(input)), Argument{Scalar{std::uint32_t{0}}}};
@@ -101,12 +122,13 @@ void verify_source_owned_values() {
     )");
     const auto entry = take(program.bind<std::uint32_t, const Array<Particle>&, std::uint32_t>());
     require(std::get<std::uint32_t>(*take(entry.invoke(host.id(), arguments))) == 3,
-        "Source scope, nested scope, copy assignment or sequence clear has an incorrect lifetime.");
-    auto early = arguments; early[1] = Argument{Scalar{std::uint32_t{1}}};
+            "Source scope, nested scope, copy assignment or sequence clear has an incorrect lifetime.");
+    auto early = arguments;
+    early[1] = Argument{Scalar{std::uint32_t{1}}};
     require(std::get<std::uint32_t>(*take(entry.invoke(host.id(), early))) == 7,
-        "Early return lost its staged result or native call.");
+            "Early return lost its staged result or native call.");
     require(Particle::live == baseline && input.data() == data && input[0].count == 1 && Algorithms::calls == 2,
-        "Owned local cleanup damaged the caller, leaked elements or skipped native code.");
+            "Owned local cleanup damaged the caller, leaked elements or skipped native code.");
 
     Program loops(runtime, host_type);
     publish(loops, R"(
@@ -124,8 +146,9 @@ void verify_source_owned_values() {
         }
     )");
     const std::array loop_arguments{Scalar{std::uint32_t{128}}};
-    require(std::get<std::uint32_t>(*take(loops.entry().invoke(host.id(), loop_arguments))) == 3 && Particle::live == baseline,
-        "Loop-owned values survived iteration scope exit.");
+    require(std::get<std::uint32_t>(*take(loops.entry().invoke(host.id(), loop_arguments))) == 3 &&
+                Particle::live == baseline,
+            "Loop-owned values survived iteration scope exit.");
 
     Program strings(runtime, host_type);
     publish(strings, R"(
@@ -157,7 +180,7 @@ void verify_source_owned_values() {
         }
     )");
     require(std::get<std::uint32_t>(*take(strings.entry().invoke(host.id(), std::array<Scalar, 0>{}))) == 20,
-        "String literals, temporaries, deep nested values or native const borrows are incorrect.");
+            "String literals, temporaries, deep nested values or native const borrows are incorrect.");
 
     Program fail(runtime, host_type);
     constexpr std::array failures{
@@ -169,10 +192,12 @@ void verify_source_owned_values() {
     for (const auto* source : failures) {
         publish(fail, source);
         require(!fail.entry().invoke(host.id(), borrowed) && Particle::live == baseline && input[0].count == 1,
-            "Failure did not unwind owned values or modified an independent source.");
+                "Failure did not unwind owned values or modified an independent source.");
     }
     require(Algorithms::failures == 1, "Native failure scenario did not execute.");
-    publish(fail, "void fail(const Array<borrow.Particle>& input) { String text = \"heap/copy/failure/value\"; Array<borrow.Particle> local = input; }");
+    publish(
+        fail,
+        "void fail(const Array<borrow.Particle>& input) { String text = \"heap/copy/failure/value\"; Array<borrow.Particle> local = input; }");
     Particle::copy_budget = 1;
     auto failed_copy = fail.entry().invoke(host.id(), borrowed);
     Particle::copy_budget = -1;
@@ -181,17 +206,16 @@ void verify_source_owned_values() {
     const auto old = take(strings.pin());
     publish(strings, "uint strings() { String value = \"new\"; return value.size(); }");
     require(std::get<std::uint32_t>(*take(strings.entry().invoke(host.id(), std::array<Scalar, 0>{}))) == 3 &&
-        std::get<std::uint32_t>(*take(old.invoke(host.id(), std::array<Scalar, 0>{}))) == 20,
-        "Owned-value operations lost their immutable code-version environment.");
+                std::get<std::uint32_t>(*take(old.invoke(host.id(), std::array<Scalar, 0>{}))) == 20,
+            "Owned-value operations lost their immutable code-version environment.");
 
     Program rejected(runtime, host_type);
-    constexpr std::array invalid{
-        "void bad(Array<borrow.Particle>& input) { input.clear(); }",
-        "void bad() { Array<float> values; self.unsafe(); }",
-        "async void bad() { String value; yield; }",
-        "void bad() { String value = \"text\"; value[0] = 97; }",
-        "void bad() { String value; borrow.Algorithms other = self; }",
-        "void bad() { String value = \"bad\\q\"; }"};
+    constexpr std::array invalid{"void bad(Array<borrow.Particle>& input) { input.clear(); }",
+                                 "void bad() { Array<float> values; self.unsafe(); }",
+                                 "async void bad() { String value; yield; }",
+                                 "void bad() { String value = \"text\"; value[0] = 97; }",
+                                 "void bad() { String value; borrow.Algorithms other = self; }",
+                                 "void bad() { String value = \"bad\\q\"; }"};
     for (const auto* source : invalid) {
         auto candidate = Program::prepare(take(rejected.request("invalid-owned.source", source)));
         require(!candidate, "Unsupported mutation, call effect or escaping lifetime was admitted.");
@@ -210,9 +234,10 @@ void verify_source_owned_values() {
     )");
     const std::array writable{Argument::borrow(input)};
     require(std::get<std::int32_t>(*take(references.entry().invoke(host.id(), writable))) == 17 &&
-        input[0].count == 7 && input.data() == data && Particle::live == baseline,
-        "Native record/element/field references did not preserve caller storage and aliasing.");
+                input[0].count == 7 && input.data() == data && Particle::live == baseline,
+            "Native record/element/field references did not preserve caller storage and aliasing.");
     input.clear();
     require(Particle::live == 0, "Source-owned value acceptance left native resources alive.");
-    std::puts("Source owned values: PASS (RAII, native algorithms, literals, deep copies, loops, early/error cleanup, versions)");
+    std::puts(
+        "Source owned values: PASS (RAII, native algorithms, literals, deep copies, loops, early/error cleanup, versions)");
 }

@@ -12,23 +12,28 @@ auto invalid_slot() {
 
 Result<ExecutionScope> ExecutionScope::enter(Runtime& runtime) {
     auto ready = runtime.enter_execution();
-    if (!ready) return std::unexpected(std::move(ready.error()));
+    if (!ready)
+        return std::unexpected(std::move(ready.error()));
     return ExecutionScope(runtime);
 }
 
-ExecutionScope::~ExecutionScope() { if (runtime_) runtime_->leave_execution(); }
+ExecutionScope::~ExecutionScope() {
+    if (runtime_)
+        runtime_->leave_execution();
+}
 
-ExecutionScope::ExecutionScope(ExecutionScope&& other) noexcept
-    : runtime_(std::exchange(other.runtime_, nullptr)) {}
+ExecutionScope::ExecutionScope(ExecutionScope&& other) noexcept : runtime_(std::exchange(other.runtime_, nullptr)) {}
 
 Result<ExecutionInspection> ExecutionInspection::enter(Runtime& runtime) {
     auto ready = runtime.enter_execution_inspection();
-    if (!ready) return std::unexpected(std::move(ready.error()));
+    if (!ready)
+        return std::unexpected(std::move(ready.error()));
     return ExecutionInspection(runtime);
 }
 
 ExecutionInspection::~ExecutionInspection() noexcept {
-    if (runtime_) runtime_->leave_execution_inspection();
+    if (runtime_)
+        runtime_->leave_execution_inspection();
 }
 
 ExecutionInspection::ExecutionInspection(ExecutionInspection&& other) noexcept
@@ -41,46 +46,60 @@ ExecutionFrame::ExecutionFrame(ExecutionScope& scope, std::span<ObjectReference>
     : runtime_(*scope.runtime_), references_(slots) {}
 
 ExecutionFrame::~ExecutionFrame() {
-    for (auto& root : slots_) root.reset();
-    for (auto& reference : references_) reference = {};
+    for (auto& root : slots_)
+        root.reset();
+    for (auto& reference : references_)
+        reference = {};
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object_id) {
-    if (slot >= size()) return invalid_slot();
+    if (slot >= size())
+        return invalid_slot();
     auto root = runtime_.hold(object_id);
-    if (!root) return std::unexpected(std::move(root.error()));
-    if (references_.empty()) slots_[slot] = std::move(*root);
-    else references_[slot] = root->reference();
+    if (!root)
+        return std::unexpected(std::move(root.error()));
+    if (references_.empty())
+        slots_[slot] = std::move(*root);
+    else
+        references_[slot] = root->reference();
     return {};
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& reference) {
-    if (slot >= size()) return invalid_slot();
+    if (slot >= size())
+        return invalid_slot();
     if (!references_.empty()) {
         auto valid = runtime_.validate_reference(reference);
-        if (!valid) return valid;
+        if (!valid)
+            return valid;
         if (reference.description().form != ValueForm::strong_reference)
             return std::unexpected(Error{ErrorCode::type_mismatch, "Holding slots require a strong reference."});
         references_[slot] = reference;
         return {};
     }
     auto root = runtime_.hold(reference);
-    if (!root) return std::unexpected(std::move(root.error()));
+    if (!root)
+        return std::unexpected(std::move(root.error()));
     slots_[slot] = std::move(*root);
     return {};
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId declared_type) {
-    if (slot >= size()) return invalid_slot();
+    if (slot >= size())
+        return invalid_slot();
     auto root = runtime_.hold(object, declared_type);
-    if (!root) return std::unexpected(std::move(root.error()));
-    if (references_.empty()) slots_[slot] = std::move(*root);
-    else references_[slot] = root->reference();
+    if (!root)
+        return std::unexpected(std::move(root.error()));
+    if (references_.empty())
+        slots_[slot] = std::move(*root);
+    else
+        references_[slot] = root->reference();
     return {};
 }
 
 Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
-    if (slot >= size()) return invalid_slot();
+    if (slot >= size())
+        return invalid_slot();
     if (!references_.empty()) {
         if (references_[slot].description().type == TypeId{})
             return std::unexpected(Error{ErrorCode::invalid_object, "Execution reference slot is empty."});
@@ -92,43 +111,58 @@ Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
 }
 
 Result<void> ExecutionFrame::create(std::uint32_t slot, TypeId type) {
-    if (slot >= size()) return invalid_slot();
+    if (slot >= size())
+        return invalid_slot();
     auto root = runtime_.create(type);
-    if (!root) return std::unexpected(std::move(root.error()));
-    if (references_.empty()) slots_[slot] = std::move(*root);
-    else references_[slot] = root->reference();
+    if (!root)
+        return std::unexpected(std::move(root.error()));
+    if (references_.empty())
+        slots_[slot] = std::move(*root);
+    else
+        references_[slot] = root->reference();
     return {};
 }
 
 Result<ObjectId> ExecutionFrame::object(std::uint32_t slot) const {
     const auto value = reference(slot);
-    if (!value) return std::unexpected(value.error());
+    if (!value)
+        return std::unexpected(value.error());
     return value->id();
 }
 
 Result<ObjectRoot> ExecutionFrame::take(std::uint32_t slot) {
     const auto identity = object(slot);
-    if (!identity) return std::unexpected(identity.error());
+    if (!identity)
+        return std::unexpected(identity.error());
     const auto type = runtime_.type_of(*identity);
-    if (!type) return std::unexpected(type.error());
+    if (!type)
+        return std::unexpected(type.error());
     if (!references_.empty()) {
         auto root = runtime_.hold(references_[slot]);
-        if (root) references_[slot] = {};
+        if (root)
+            references_[slot] = {};
         return root;
     }
     return std::move(slots_[slot]);
 }
 
 Result<void> ExecutionFrame::clear(std::uint32_t slot) {
-    if (slot >= size()) return invalid_slot();
-    if (references_.empty()) slots_[slot].reset();
-    else references_[slot] = {};
+    if (slot >= size())
+        return invalid_slot();
+    if (references_.empty())
+        slots_[slot].reset();
+    else
+        references_[slot] = {};
     return {};
 }
 
 bool ExecutionFrame::empty() const noexcept {
-    for (const auto& root : slots_) if (root.registered()) return false;
-    for (const auto& reference : references_) if (reference.description().type != TypeId{}) return false;
+    for (const auto& root : slots_)
+        if (root.registered())
+            return false;
+    for (const auto& reference : references_)
+        if (reference.description().type != TypeId{})
+            return false;
     return true;
 }
 
@@ -143,14 +177,20 @@ struct Coroutine::Control {
 };
 
 Result<Coroutine> Coroutine::create(Runtime& runtime, std::unique_ptr<CoroutineFrame> frame) {
-    if (!frame) return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine requires an owned frame."});
+    if (!frame)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine requires an owned frame."});
     return Coroutine(std::make_shared<Control>(runtime, std::move(frame)));
 }
 
-Coroutine::~Coroutine() { cancel(); }
+Coroutine::~Coroutine() {
+    cancel();
+}
 Coroutine::Coroutine(Coroutine&& other) noexcept : control_(std::move(other.control_)) {}
 Coroutine& Coroutine::operator=(Coroutine&& other) noexcept {
-    if (this != &other) { cancel(); control_ = std::move(other.control_); }
+    if (this != &other) {
+        cancel();
+        control_ = std::move(other.control_);
+    }
     return *this;
 }
 
@@ -160,9 +200,14 @@ CoroutineState Coroutine::state() const noexcept {
 
 void Coroutine::cancel() noexcept {
     const auto active = control_;
-    if (!active) return;
-    if (active->state == CoroutineState::running) { active->cancel_requested = true; return; }
-    if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended) return;
+    if (!active)
+        return;
+    if (active->state == CoroutineState::running) {
+        active->cancel_requested = true;
+        return;
+    }
+    if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended)
+        return;
     active->state = CoroutineState::cancelled;
     active->frame->on_terminal(active->state, nullptr);
     active->frame.reset();
@@ -171,18 +216,24 @@ void Coroutine::cancel() noexcept {
 Result<CoroutineState> Coroutine::resume() {
     // A callback can destroy/move the public owner. Only this pin is used below.
     const auto active = control_;
-    if (!active) return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine is empty."});
+    if (!active)
+        return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine is empty."});
     if (active->state == CoroutineState::running)
         return std::unexpected(Error{ErrorCode::busy, "Coroutine is already running."});
     if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended)
         return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine has already terminated."});
     auto scope = ExecutionScope::enter(active->runtime);
-    if (!scope) return std::unexpected(std::move(scope.error()));
+    if (!scope)
+        return std::unexpected(std::move(scope.error()));
     active->state = CoroutineState::running;
     Result<CoroutineStep> step;
-    try { step = active->frame->resume(); }
-    catch (const std::exception& error) { step = std::unexpected(Error{ErrorCode::invocation_failed, error.what()}); }
-    catch (...) { step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine raised an unknown exception."}); }
+    try {
+        step = active->frame->resume();
+    } catch (const std::exception& error) {
+        step = std::unexpected(Error{ErrorCode::invocation_failed, error.what()});
+    } catch (...) {
+        step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine raised an unknown exception."});
+    }
     if (step && (step->state != CoroutineState::suspended && step->state != CoroutineState::completed))
         step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine body returned an invalid state."});
     if (step && step->state == CoroutineState::suspended && step->result)
@@ -211,7 +262,8 @@ Result<CoroutineState> Coroutine::resume() {
 }
 
 Result<std::optional<Scalar>> Coroutine::result() const {
-    if (control_ && control_->error) return std::unexpected(*control_->error);
+    if (control_ && control_->error)
+        return std::unexpected(*control_->error);
     if (!control_ || control_->state != CoroutineState::completed)
         return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine has no completed result."});
     return control_->result;

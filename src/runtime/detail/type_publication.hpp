@@ -11,6 +11,7 @@ class TypePublication final {
     struct State;
     std::unique_ptr<State> state_;
     TypePublication();
+
 public:
     ~TypePublication();
     static Result<std::shared_ptr<TypePublication>> prepare(Runtime&, std::vector<TypeDefinition>);

@@ -13,15 +13,14 @@ using world::Response;
 using world::PhysicsMaterial;
 using world::BodySettings;
 
-[[nodiscard]] Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh,
-    math::Vector3 scale, std::string_view source_key);
-[[nodiscard]] Result<void> validate_cooked_triangle_mesh(std::string_view bytes,
-    const geometry::MeshRef& mesh, math::Vector3 scale, std::string_view source_key);
+[[nodiscard]] Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh, math::Vector3 scale,
+                                                     std::string_view source_key);
+[[nodiscard]] Result<void> validate_cooked_triangle_mesh(std::string_view bytes, const geometry::MeshRef& mesh,
+                                                         math::Vector3 scale, std::string_view source_key);
 
 struct Types {
-    TypeId character_component{}, ragdoll_component{}, ragdoll_part_component{},
-        distance_constraint_component{}, force_component{}, kinematic_motion_component{},
-        scene_query_component{};
+    TypeId character_component{}, ragdoll_component{}, ragdoll_part_component{}, distance_constraint_component{},
+        force_component{}, kinematic_motion_component{}, scene_query_component{};
 };
 [[nodiscard]] Result<Types> register_types(Runtime&);
 [[nodiscard]] Result<void> configure(Runtime&, ObjectId component, BodySettings);
@@ -127,7 +126,9 @@ public:
 // Persistent query exclusions may change while active and affect the next sample.
 [[nodiscard]] Result<void> set_query_ignored_entities(Runtime&, ObjectId component, std::span<const ObjectId> entities);
 [[nodiscard]] Result<std::vector<ObjectId>> query_ignored_entities(Runtime&, ObjectId component);
-namespace detail { class ComponentSimulation; }
+namespace detail {
+class ComponentSimulation;
+}
 struct ConstraintHandle {
     std::uint64_t scene{}, revision{};
     bool operator==(const ConstraintHandle&) const = default;
@@ -191,9 +192,9 @@ class SceneQueryComponent : public world::Component {
 public:
     ReferenceSequence ignored_entities;
     TraceSettings settings;
-    math::Vector3 start{}, end{0,0,10}; // Owner Entity-local endpoints; overlap uses start.
+    math::Vector3 start{}, end{0, 0, 10}; // Owner Entity-local endpoints; overlap uses start.
     bool automatic{true}, ignore_self{true};
-    void request_query() noexcept { pending_=true; }
+    void request_query() noexcept { pending_ = true; }
     bool query_ready() const noexcept { return ready_; }
     bool has_hit() const noexcept { return hit_; }
     bool has_blocking_hit() const noexcept { return blocking_; }
@@ -202,6 +203,7 @@ public:
     float hit_distance() const noexcept { return distance_; }
     math::Vector3 hit_point() const noexcept { return point_; }
     math::Vector3 hit_normal() const noexcept { return normal_; }
+
 private:
     friend class detail::ComponentSimulation;
     bool pending_{}, ready_{}, hit_{}, blocking_{}, overflow_{};
@@ -258,36 +260,31 @@ public:
     // A Primitive selects its own body; an Entity selects its unique active body.
     [[nodiscard]] Result<BodyHandle> body_handle(ObjectId entity_or_primitive) const;
     [[nodiscard]] Result<BodyState> read_body_state(BodyHandle) const;
-    [[nodiscard]] Result<void> set_kinematic_target(BodyHandle, math::Vector3 position,
-        math::Quaternion rotation);
-    [[nodiscard]] Result<void> teleport(BodyHandle, math::Vector3 position,
-        math::Quaternion rotation, bool preserve_velocity = false);
-    [[nodiscard]] Result<ConstraintHandle> create_distance_constraint(BodyHandle first,
-        BodyHandle second, float minimum, float maximum);
+    [[nodiscard]] Result<void> set_kinematic_target(BodyHandle, math::Vector3 position, math::Quaternion rotation);
+    [[nodiscard]] Result<void> teleport(BodyHandle, math::Vector3 position, math::Quaternion rotation,
+                                        bool preserve_velocity = false);
+    [[nodiscard]] Result<ConstraintHandle> create_distance_constraint(BodyHandle first, BodyHandle second,
+                                                                      float minimum, float maximum);
     // Explicit removal or endpoint removal wakes the surviving endpoints.
     [[nodiscard]] Result<void> destroy_constraint(ConstraintHandle);
     // Character and ragdoll Entities must be active spatial members of this World.
     [[nodiscard]] Result<SpecialHandle> create_character(ObjectId entity, CharacterSettings = {});
     [[nodiscard]] Result<SpecialHandle> character_handle(ObjectId entity) const;
-    [[nodiscard]] Result<void> set_character_input(SpecialHandle, math::Vector3 planar_velocity,
-        bool jump = false);
+    [[nodiscard]] Result<void> set_character_input(SpecialHandle, math::Vector3 planar_velocity, bool jump = false);
     [[nodiscard]] Result<CharacterState> read_character_state(SpecialHandle) const;
     [[nodiscard]] Result<void> destroy_character(SpecialHandle);
-    [[nodiscard]] Result<SpecialHandle> create_ragdoll(ObjectId entity,
-        std::span<const RagdollPart> parts);
+    [[nodiscard]] Result<SpecialHandle> create_ragdoll(ObjectId entity, std::span<const RagdollPart> parts);
     [[nodiscard]] Result<SpecialHandle> ragdoll_handle(ObjectId entity) const;
     [[nodiscard]] Result<RagdollPose> read_ragdoll_pose(SpecialHandle) const;
     [[nodiscard]] Result<void> destroy_ragdoll(SpecialHandle);
-    [[nodiscard]] Result<QueryResult> raycast(math::Vector3 start, math::Vector3 end,
-        QueryFilter filter = {}) const;
-    [[nodiscard]] Result<QueryResult> sweep_sphere(math::Vector3 start, math::Vector3 end,
-        float radius, QueryFilter filter = {}) const;
-    [[nodiscard]] Result<QueryResult> overlap_sphere(math::Vector3 center,
-        float radius, QueryFilter filter = {}) const;
+    [[nodiscard]] Result<QueryResult> raycast(math::Vector3 start, math::Vector3 end, QueryFilter filter = {}) const;
+    [[nodiscard]] Result<QueryResult> sweep_sphere(math::Vector3 start, math::Vector3 end, float radius,
+                                                   QueryFilter filter = {}) const;
+    [[nodiscard]] Result<QueryResult> overlap_sphere(math::Vector3 center, float radius, QueryFilter filter = {}) const;
     // Channel multi returns touches through the first block; object-type multi
     // returns all matching bodies. Test/single channel modes ignore touches.
-    [[nodiscard]] Result<QueryResult> trace(math::Vector3 start, math::Vector3 end,
-        const TraceSettings& = {}, QueryIgnore = {}) const;
+    [[nodiscard]] Result<QueryResult> trace(math::Vector3 start, math::Vector3 end, const TraceSettings& = {},
+                                            QueryIgnore = {}) const;
     // Component must be active and reconciled by World::update(0). Manual sampling works
     // while paused. Returned snapshots own values, never the hit Entities/bodies.
     [[nodiscard]] Result<QueryResult> execute_query(ObjectId component, QueryIgnore = {});
@@ -316,7 +313,7 @@ private:
     [[nodiscard]] Result<void> reconcile(ObjectId entity);
     [[nodiscard]] Result<void> reconcile_component(ObjectId entity, ObjectId component);
     [[nodiscard]] ObjectId pose_writer(ObjectId entity) const noexcept;
-    [[nodiscard]] Result<bool> controller_transform_matches(ObjectId,math::Vector3,math::Quaternion) const;
+    [[nodiscard]] Result<bool> controller_transform_matches(ObjectId, math::Vector3, math::Quaternion) const;
     void remove(ObjectId component) noexcept;
     void remove_special(ObjectId entity) noexcept;
     // Drops the interpolation of an Entity that physics no longer drives.

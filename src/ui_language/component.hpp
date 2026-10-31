@@ -5,7 +5,12 @@
 #include "ui/controls.hpp"
 
 namespace atelier::ui_language {
-namespace detail { struct InstanceData; struct DefinitionState; struct PreparedUpdate; struct ScopeLifetime; }
+namespace detail {
+struct InstanceData;
+struct DefinitionState;
+struct PreparedUpdate;
+struct ScopeLifetime;
+}
 
 // A sampled edit reference: field keys are owned by the host's existing typed
 // property/transaction routes. Neither the component nor this value retains Entities.
@@ -44,7 +49,7 @@ struct CodeBinding {
 };
 // Optional immutable help shared with native controls. It owns text only, never
 // an Entity or borrowed reflection metadata. Null means no local help.
-using TooltipBinding=std::shared_ptr<const ui::Tooltip>;
+using TooltipBinding = std::shared_ptr<const ui::Tooltip>;
 // One flattened host row (see ui::flatten_tree); TreeItem copies it into its descriptor.
 struct TreeRowBinding {
     std::uint32_t index{}, depth{};
@@ -58,11 +63,13 @@ struct ItemList {
     std::shared_ptr<const std::vector<Item>> values;
     bool operator==(const ItemList&) const;
 };
-using InputValue=std::variant<bool,double,EditBinding,std::wstring,TextEditBinding,ui::ControlKey,ItemList,ActionBinding,TableBinding,CodeBinding,TooltipBinding,TreeRowBinding>;
+using InputValue = std::variant<bool, double, EditBinding, std::wstring, TextEditBinding, ui::ControlKey, ItemList,
+                                ActionBinding, TableBinding, CodeBinding, TooltipBinding, TreeRowBinding>;
 struct KeyBinding {
     // A node in this component, or a dotted path through named static component
     // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.
-    std::string node; ui::ControlKey key{}, label{}, body{};
+    std::string node;
+    ui::ControlKey key{}, label{}, body{};
     bool operator==(const KeyBinding&) const = default;
 };
 struct Item {
@@ -78,7 +85,7 @@ struct Statistics {
     std::uint64_t binding_evaluations{}, event_evaluations{}, publications{}, node_creations{}, node_removals{};
     ObjectId instance;
     // Actual Context lifetimes in this root's entire subtree, including refused candidates.
-    std::uint64_t scope_creations{},scope_retirements{};
+    std::uint64_t scope_creations{}, scope_retirements{};
 };
 
 // Call during the host Runtime's existing bootstrap, before its first object.
@@ -88,9 +95,11 @@ Result<TypeId> register_types(Runtime&);
 // share code and metadata; close all instances/components before the Runtime.
 class Component {
 public:
-    static Result<std::shared_ptr<Component>> compile(Runtime&,std::string_view name,std::string_view source,std::string_view entry={});
+    static Result<std::shared_ptr<Component>> compile(Runtime&, std::string_view name, std::string_view source,
+                                                      std::string_view entry = {});
     ~Component();
     const Declaration& declaration() const noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -108,10 +117,14 @@ class Module {
 public:
     // Reuse only identical dispatch code from the active module in this Runtime.
     // Every revision still lowers/validates the whole graph and owns fresh metadata.
-    static Result<std::shared_ptr<Module>> compile(Runtime&,std::string_view name,std::string_view source,const Module* previous=nullptr);
+    static Result<std::shared_ptr<Module>> compile(Runtime&, std::string_view name, std::string_view source,
+                                                   const Module* previous = nullptr);
     std::shared_ptr<Component> find(std::string_view) const;
-    struct Compilation {std::size_t compiled{},reused{};};
-    Compilation compilation() const noexcept {return compilation_;}
+    struct Compilation {
+        std::size_t compiled{}, reused{};
+    };
+    Compilation compilation() const noexcept { return compilation_; }
+
 private:
     std::vector<std::shared_ptr<Component>> components_;
     Compilation compilation_;
@@ -127,10 +140,11 @@ private:
 // dynamically mounted children. Call commit_controls() after Session effects.
 class Instance {
 public:
-    static Result<std::unique_ptr<Instance>> create(std::shared_ptr<Component>,ui::ControlKey parent,
-        ui::ControlKey& next_key,std::span<const KeyBinding>,std::span<const InputValue>);
+    static Result<std::unique_ptr<Instance>> create(std::shared_ptr<Component>, ui::ControlKey parent,
+                                                    ui::ControlKey& next_key, std::span<const KeyBinding>,
+                                                    std::span<const InputValue>);
     ~Instance();
-    Result<void> update(std::span<const InputValue>,std::shared_ptr<Component> definition={});
+    Result<void> update(std::span<const InputValue>, std::shared_ptr<Component> definition = {});
     // Re-evaluate local events, or keep an already prepared snapshot unchanged.
     Result<void> update();
     Result<bool> event(const ui::Action&);
@@ -142,11 +156,13 @@ public:
     void commit_controls() noexcept;
     void reject_controls() noexcept;
     void close() noexcept;
+
 private:
     std::unique_ptr<detail::InstanceData> data_;
     explicit Instance(std::unique_ptr<detail::InstanceData>);
-    static Result<std::unique_ptr<Instance>> create_bounded(std::shared_ptr<Component>,ui::ControlKey,
-        ui::ControlKey&,std::span<const KeyBinding>,std::span<const InputValue>,std::size_t,std::shared_ptr<detail::ScopeLifetime>);
+    static Result<std::unique_ptr<Instance>> create_bounded(std::shared_ptr<Component>, ui::ControlKey, ui::ControlKey&,
+                                                            std::span<const KeyBinding>, std::span<const InputValue>,
+                                                            std::size_t, std::shared_ptr<detail::ScopeLifetime>);
     std::span<const InputValue> inputs() const noexcept;
     bool has_pending() const noexcept;
     bool changes_controls() const noexcept;

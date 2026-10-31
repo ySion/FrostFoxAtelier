@@ -37,13 +37,13 @@ inline constexpr std::uint32_t invalid_storage = 2;
 // Only fixed-width scalars and caller-owned storage cross this DLL/JIT seam.
 // No C++ exception or allocation ownership crosses it.
 extern "C" {
-ATELIER_JIT_NATIVE_CLIENT std::uint32_t atelier_jit_native_calculate(
-    std::uint32_t fail, std::int32_t value, float fraction, double scale,
-    std::uint64_t offset, const atelier::jit_acceptance::ProbeRecord* input,
-    atelier::jit_acceptance::ProbeRecord* output,
-    atelier::jit_acceptance::ProbeDiagnostic* diagnostic) noexcept;
-ATELIER_JIT_NATIVE_CLIENT std::uint32_t atelier_jit_native_capture(
-    atelier::jit_acceptance::StackSnapshot* snapshot) noexcept;
+ATELIER_JIT_NATIVE_CLIENT std::uint32_t
+atelier_jit_native_calculate(std::uint32_t fail, std::int32_t value, float fraction, double scale, std::uint64_t offset,
+                             const atelier::jit_acceptance::ProbeRecord* input,
+                             atelier::jit_acceptance::ProbeRecord* output,
+                             atelier::jit_acceptance::ProbeDiagnostic* diagnostic) noexcept;
+ATELIER_JIT_NATIVE_CLIENT std::uint32_t
+atelier_jit_native_capture(atelier::jit_acceptance::StackSnapshot* snapshot) noexcept;
 }
 
 #undef ATELIER_JIT_NATIVE_CLIENT

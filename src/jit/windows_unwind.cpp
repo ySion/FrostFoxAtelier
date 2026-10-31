@@ -19,23 +19,27 @@ llvm::orc::shared::CWrapperFunctionBuffer register_unwind_table(const char* data
     using namespace llvm::orc;
     using namespace llvm::orc::shared;
     return WrapperFunction<SPSError(SPSExecutorAddrRange, SPSExecutorAddr)>::handle(
-        data, size, [](ExecutorAddrRange range, ExecutorAddr base) -> llvm::Error {
-            auto* table = range.Start.toPtr<RUNTIME_FUNCTION*>();
-            if (!RtlAddFunctionTable(table, static_cast<DWORD>(range.size() / sizeof(*table)), base.getValue()))
-                return llvm::make_error<llvm::StringError>("RtlAddFunctionTable failed.",
-                                                           llvm::inconvertibleErrorCode());
-            return llvm::Error::success();
-        }).release();
+               data, size,
+               [](ExecutorAddrRange range, ExecutorAddr base) -> llvm::Error {
+                   auto* table = range.Start.toPtr<RUNTIME_FUNCTION*>();
+                   if (!RtlAddFunctionTable(table, static_cast<DWORD>(range.size() / sizeof(*table)), base.getValue()))
+                       return llvm::make_error<llvm::StringError>("RtlAddFunctionTable failed.",
+                                                                  llvm::inconvertibleErrorCode());
+                   return llvm::Error::success();
+               })
+        .release();
 }
 
 llvm::orc::shared::CWrapperFunctionBuffer unregister_unwind_table(const char* data, std::size_t size) {
     using namespace llvm::orc::shared;
     return WrapperFunction<SPSError(SPSExecutorAddr)>::handle(
-        data, size, [](ExecutorAddr table) -> llvm::Error {
-            if (!RtlDeleteFunctionTable(table.toPtr<RUNTIME_FUNCTION*>()))
-                llvm::report_fatal_error("Cannot revoke Windows unwind table before freeing JIT code.");
-            return llvm::Error::success();
-        }).release();
+               data, size,
+               [](ExecutorAddr table) -> llvm::Error {
+                   if (!RtlDeleteFunctionTable(table.toPtr<RUNTIME_FUNCTION*>()))
+                       llvm::report_fatal_error("Cannot revoke Windows unwind table before freeing JIT code.");
+                   return llvm::Error::success();
+               })
+        .release();
 }
 
 class WindowsUnwindPlugin final : public llvm::orc::LinkGraphLinkingLayer::Plugin {
@@ -44,7 +48,8 @@ public:
                           llvm::jitlink::PassConfiguration& config) override {
         config.PostAllocationPasses.push_back([](llvm::jitlink::LinkGraph& graph) -> llvm::Error {
             auto* image_base = llvm::jitlink::GetImageBaseSymbol{}(graph);
-            if (!image_base) return llvm::Error::success();
+            if (!image_base)
+                return llvm::Error::success();
             auto start = std::numeric_limits<std::uint64_t>::max();
             std::uint64_t end{};
             for (const auto* block : graph.blocks()) {
@@ -60,7 +65,8 @@ public:
         config.PostFixupPasses.push_back([](llvm::jitlink::LinkGraph& graph) -> llvm::Error {
             using namespace llvm::orc::shared;
             auto* section = graph.findSectionByName(".pdata");
-            if (!section || section->blocks().empty()) return llvm::Error::success();
+            if (!section || section->blocks().empty())
+                return llvm::Error::success();
             const auto range = llvm::jitlink::SectionRange(*section).getRange();
             std::uint64_t bytes{};
             for (const auto* block : section->blocks()) {
@@ -71,8 +77,7 @@ public:
                 bytes += block->getSize();
             }
             auto* image_base = llvm::jitlink::GetImageBaseSymbol{}(graph);
-            if (!image_base || bytes == 0 || bytes != range.size() ||
-                bytes / sizeof(RUNTIME_FUNCTION) > MAXDWORD ||
+            if (!image_base || bytes == 0 || bytes != range.size() || bytes / sizeof(RUNTIME_FUNCTION) > MAXDWORD ||
                 range.Start.getValue() % alignof(RUNTIME_FUNCTION) != 0)
                 return llvm::make_error<llvm::StringError>("Invalid or noncontiguous COFF unwind table.",
                                                            llvm::inconvertibleErrorCode());
@@ -80,9 +85,8 @@ public:
             const auto count = bytes / sizeof(*table);
             // Working and executor storage coincide for the selected in-process manager.
             // Final page protection has not been applied yet.
-            std::sort(table, table + count, [](const auto& a, const auto& b) {
-                return a.BeginAddress < b.BeginAddress;
-            });
+            std::sort(table, table + count,
+                      [](const auto& a, const auto& b) { return a.BeginAddress < b.BeginAddress; });
             for (std::uint64_t i = 0; i < count; ++i) {
                 if (table[i].BeginAddress >= table[i].EndAddress ||
                     (i != 0 && table[i - 1].EndAddress > table[i].BeginAddress))
@@ -92,10 +96,12 @@ public:
             const auto base = image_base->getAddress();
             auto install = WrapperFunctionCall::Create<SPSArgList<SPSExecutorAddrRange, SPSExecutorAddr>>(
                 ExecutorAddr::fromPtr(&register_unwind_table), range, base);
-            if (!install) return install.takeError();
+            if (!install)
+                return install.takeError();
             auto revoke = WrapperFunctionCall::Create<SPSArgList<SPSExecutorAddr>>(
                 ExecutorAddr::fromPtr(&unregister_unwind_table), range.Start);
-            if (!revoke) return revoke.takeError();
+            if (!revoke)
+                return revoke.takeError();
             // Both payloads fit the pinned SDK's 24-byte inline buffer.
             if (install->getArgData().capacity() > 24 || revoke->getArgData().capacity() > 24)
                 return llvm::make_error<llvm::StringError>("Unwind actions spilled their inline buffers.",
@@ -107,14 +113,11 @@ public:
 
     // Ownership, failure cleanup and tracker transfers follow the allocation,
     // not a second plugin-side registry.
-    llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override {
-        return llvm::Error::success();
-    }
+    llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override { return llvm::Error::success(); }
     llvm::Error notifyRemovingResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey) override {
         return llvm::Error::success();
     }
-    void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey,
-                                    llvm::orc::ResourceKey) override {}
+    void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey, llvm::orc::ResourceKey) override {}
 };
 
 }

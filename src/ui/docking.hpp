@@ -7,7 +7,7 @@ enum class DockSide { tabs, left, right, top, bottom };
 struct DockTab {
     ControlKey key{}, content{};
     std::wstring title;
-    ui_layout::Size minimum{220,140}; // Includes pane chrome; shrinks only if the host is smaller.
+    ui_layout::Size minimum{220, 140}; // Includes pane chrome; shrinks only if the host is smaller.
     std::vector<std::string> classes{};
 };
 // Single-host split tree. Owns geometry and tab placement, never the views' state.
@@ -19,25 +19,28 @@ public:
     DockSpace(const DockSpace&) = delete;
     DockSpace& operator=(const DockSpace&) = delete;
     void reset(); // All registered views reopen in one group; host can dock its default arrangement.
-    bool move(ControlKey tab, ControlKey target_tab, DockSide, float fraction=.5f);
+    bool move(ControlKey tab, ControlKey target_tab, DockSide, float fraction = .5f);
     bool select(ControlKey);
     bool close(ControlKey);
     void maximize(ControlKey); // Toggle display isolation, preserving the tree and ratios.
     void cycle(int direction);
-    static ControlKey add_tab_button(ControlKey pane) { return pane+11; }
-    static ControlKey collapse_first_button(ControlKey divider) { return divider+11; }
-    static ControlKey collapse_second_button(ControlKey divider) { return divider+12; }
-    static ControlKey divider_grip(ControlKey divider) { return divider+13; }
+    static ControlKey add_tab_button(ControlKey pane) { return pane + 11; }
+    static ControlKey collapse_first_button(ControlKey divider) { return divider + 11; }
+    static ControlKey collapse_second_button(ControlKey divider) { return divider + 12; }
+    static ControlKey divider_grip(ControlKey divider) { return divider + 13; }
     bool visible(ControlKey) const noexcept;
     ControlKey focused_tab() const noexcept { return focused_; }
     ControlKey pane(ControlKey tab) const noexcept;
     ControlKey divider(ControlKey tab, DragAxis axis) const noexcept;
-    static ControlKey maximize_button(ControlKey pane) { return pane+3; }
-    static ControlKey menu_button(ControlKey pane) { return pane+4; }
+    static ControlKey maximize_button(ControlKey pane) { return pane + 3; }
+    static ControlKey menu_button(ControlKey pane) { return pane + 4; }
     void focus_control(ControlKey, const UiFrame&);
     bool apply(const Action&, const UiFrame&);
-    std::vector<MenuItem> menu_items(ControlKey source,const UiFrame*);
-    struct PresentedTab { const DockTab* view{}; ControlKey wrapper{}, close{}; };
+    std::vector<MenuItem> menu_items(ControlKey source, const UiFrame*);
+    struct PresentedTab {
+        const DockTab* view{};
+        ControlKey wrapper{}, close{};
+    };
     struct Pane {
         ControlKey key{}, parent{};
         Rect bounds;
@@ -57,6 +60,7 @@ public:
     // by the consumer; this model no longer assembles controls or styles.
     Presentation presentation(ControlKey parent, ui_layout::Size) const;
     bool dragging() const noexcept { return drag_.has_value() || resize_.has_value(); }
+
 private:
     struct Node {
         ControlKey key{};
@@ -66,11 +70,21 @@ private:
         float fraction{.5f};
         unsigned collapsed{}; // 0 none, 1 first, 2 second; fraction always retains expanded geometry.
         std::unique_ptr<Node> first, second;
-        bool split() const noexcept { return first!=nullptr; }
+        bool split() const noexcept { return first != nullptr; }
     };
-    struct Drop { ControlKey pane{}, before{}; DockSide side{}; Rect preview{}; };
-    struct Drag { ControlKey tab{}; std::optional<Drop> target; };
-    struct Resize { ControlKey source{}; Rect preview; };
+    struct Drop {
+        ControlKey pane{}, before{};
+        DockSide side{};
+        Rect preview{};
+    };
+    struct Drag {
+        ControlKey tab{};
+        std::optional<Drop> target;
+    };
+    struct Resize {
+        ControlKey source{};
+        Rect preview;
+    };
     ControlKey base_{}, next_{}, focused_{}, maximized_{}, menu_pane_{};
     bool menu_add_{}, menu_type_{};
     std::vector<ControlKey> closed_tabs_;
@@ -84,12 +98,12 @@ private:
     Node* owner(ControlKey) const noexcept;
     Node* parent(ControlKey) const noexcept;
     void reveal(ControlKey);
-    void collapse(Node&,unsigned);
+    void collapse(Node&, unsigned);
     void normalize(std::unique_ptr<Node>&);
-    bool place(ControlKey,ControlKey,DockSide,ControlKey before=0,float fraction=.5f);
-    void remove(Node&,ControlKey);
+    bool place(ControlKey, ControlKey, DockSide, ControlKey before = 0, float fraction = .5f);
+    void remove(Node&, ControlKey);
     ui_layout::Size minimum(const Node&) const;
-    std::optional<Drop> destination(ControlKey,const DragPoint&,const UiFrame&) const;
-    void present_node(Presentation&,const Node&,ControlKey,Rect) const;
+    std::optional<Drop> destination(ControlKey, const DragPoint&, const UiFrame&) const;
+    void present_node(Presentation&, const Node&, ControlKey, Rect) const;
 };
 } // namespace atelier::ui

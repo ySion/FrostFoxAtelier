@@ -21,14 +21,15 @@ class ProjectCode final {
 public:
     explicit ProjectCode(world::World&);
     Result<void> build(const Project&);
-    Result<void> poll(const Project&,bool force=false);
-    const std::shared_ptr<const ProjectBuild>& report() const noexcept {return report_;}
+    Result<void> poll(const Project&, bool force = false);
+    const std::shared_ptr<const ProjectBuild>& report() const noexcept { return report_; }
     // Last successful publication, independent of a later failed build report.
-    const std::shared_ptr<const ProjectBuild>& published_build() const noexcept {return published_;}
+    const std::shared_ptr<const ProjectBuild>& published_build() const noexcept { return published_; }
     static Result<source::SourceSnapshot> snapshot(const Project&);
     static Result<std::optional<source::SourceFile>> ui_snapshot(const Project&);
     static std::string component_source(std::string_view name);
     static std::string ui_source();
+
 private:
     struct Stamp {
         std::filesystem::path path;
@@ -57,10 +58,10 @@ struct ProjectDocument {
 };
 // With allow_failed_build, a Source build failure still produces a document without
 // a code owner: project types are absent, so their objects load as placeholders.
-ProjectDocument load_project_scene(Project&,std::string_view,LoadPolicy=LoadPolicy::tolerant,bool allow_failed_build=false,
-    SessionRole=SessionRole::runtime);
+ProjectDocument load_project_scene(Project&, std::string_view, LoadPolicy = LoadPolicy::tolerant,
+                                   bool allow_failed_build = false, SessionRole = SessionRole::runtime);
 // Project Output lines for a load: one summary, then one line per diagnostic.
-std::vector<std::wstring> describe_issues(const Session&,std::span<const world::Diagnostic>,std::wstring_view source);
+std::vector<std::wstring> describe_issues(const Session&, std::span<const world::Diagnostic>, std::wstring_view source);
 // One Project Output line for a World object diagnostic.
-std::wstring describe_diagnostic(const Session&,const world::Diagnostic&);
+std::wstring describe_diagnostic(const Session&, const world::Diagnostic&);
 }

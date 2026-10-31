@@ -8,10 +8,18 @@
 namespace atelier::ui {
 
 enum class StyleState : std::uint16_t {
-    none=0, enabled=1, disabled=2, hover=4, pressed=8, focus=16, selected=32, invalid=64, modified=128
+    none = 0,
+    enabled = 1,
+    disabled = 2,
+    hover = 4,
+    pressed = 8,
+    focus = 16,
+    selected = 32,
+    invalid = 64,
+    modified = 128
 };
 constexpr StyleState operator|(StyleState a, StyleState b) noexcept {
-    return static_cast<StyleState>(static_cast<unsigned>(a)|static_cast<unsigned>(b));
+    return static_cast<StyleState>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
 }
 
 // Unspecified properties fall back to lower rules. Clear an override by removing
@@ -53,9 +61,18 @@ struct StyleSelector {
     std::vector<std::string> classes;
     StyleState states{};
 };
-struct StyleRule { StyleSelector selector; StyleProperties properties; };
-struct StyleDiagnostic { std::size_t line{}, column{}; std::string message; };
-struct NamedImage { std::string name; std::shared_ptr<const ColorImage> image; };
+struct StyleRule {
+    StyleSelector selector;
+    StyleProperties properties;
+};
+struct StyleDiagnostic {
+    std::size_t line{}, column{};
+    std::string message;
+};
+struct NamedImage {
+    std::string name;
+    std::shared_ptr<const ColorImage> image;
+};
 
 // Complete value used by measurement, painting and the accepted frame.
 struct ResolvedStyle {
@@ -71,11 +88,11 @@ struct ResolvedStyle {
     IconPlacement icon_placement{IconPlacement::leading};
     TextAlign icon_align{TextAlign::center}; // Uncaptioned icons; text keeps its own alignment.
     float indicator_size{14};
-    Color indicator_background{0,0,0,0}, indicator_border{0,0,0,0};
+    Color indicator_background{0, 0, 0, 0}, indicator_border{0, 0, 0, 0};
     std::optional<Color> indicator_foreground;
     ui_layout::Insets padding;
     Color foreground, border, selection, caret, scrollbar;
-    Color accent{.25f,.5f,.7f,1};
+    Color accent{.25f, .5f, .7f, 1};
     float accent_width{};
     std::optional<Color> background;
     float border_width{}, caret_width{1};
@@ -83,7 +100,7 @@ struct ResolvedStyle {
     float scrollbar_width{3}, scrollbar_inset{1}, scrollbar_min_thumb{12};
     float scrollbar_button_size{}; // Zero follows width; thin (<8 DIP) bars omit step buttons.
     float tree_row_height{20}, tree_indent{18};
-    Color tree_alternate{.20f,.20f,.20f,1}, tree_line{.38f,.38f,.38f,1};
+    Color tree_alternate{.20f, .20f, .20f, 1}, tree_line{.38f, .38f, .38f, 1};
     std::shared_ptr<const ColorImage> image;
     std::shared_ptr<const ColorImage> scrollbar_image;
     bool operator==(const ResolvedStyle&) const = default;
@@ -93,12 +110,13 @@ struct ResolvedStyle {
 // objects, GPU handles, global class registry or language runtime is required.
 class StyleSheet {
 public:
-    using Result=std::expected<std::shared_ptr<const StyleSheet>,StyleDiagnostic>;
+    using Result = std::expected<std::shared_ptr<const StyleSheet>, StyleDiagnostic>;
     static Result create(std::vector<StyleRule>);
-    static Result parse(std::string_view utf8, std::span<const NamedImage> images={});
+    static Result parse(std::string_view utf8, std::span<const NamedImage> images = {});
     static bool valid_properties(const StyleProperties&) noexcept;
     static bool valid_class(std::string_view) noexcept;
     std::span<const StyleRule> rules() const noexcept { return rules_; }
+
 private:
     explicit StyleSheet(std::vector<StyleRule> rules) : rules_(std::move(rules)) {}
     std::vector<StyleRule> rules_;

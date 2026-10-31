@@ -21,7 +21,7 @@ struct Collection {
 };
 struct Publication {
     std::vector<Collection> collections; // Ordered by reference key, then chunk.
-    std::uint64_t dropped{};             // Degenerate instances left out.
+    std::uint64_t dropped{}; // Degenerate instances left out.
 };
 
 // Groups the instance layer by reference and chunk (floor(translation / chunk_size)).

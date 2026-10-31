@@ -10,21 +10,37 @@ namespace {
 using namespace atelier;
 using namespace atelier::acceptance::borrow;
 using source::Program;
-struct WrappedParticle { Particle value; };
-struct ReferencingField { ReferenceSlot target; };
-void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
-template<class T> T take(Result<T> value) {
-    if (!value) throw std::runtime_error(value.error().message);
+struct WrappedParticle {
+    Particle value;
+};
+struct ReferencingField {
+    ReferenceSlot target;
+};
+void require(bool value, const char* message) {
+    if (!value)
+        throw std::runtime_error(message);
+}
+template <class T>
+T take(Result<T> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
-void take(Result<void> value) { if (!value) throw std::runtime_error(value.error().message); }
+void take(Result<void> value) {
+    if (!value)
+        throw std::runtime_error(value.error().message);
+}
 void publish(Program& program, std::string_view source, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request("value-fields.source", source, entry))));
     take(program.try_publish(candidate));
 }
-std::uint32_t number(const std::optional<Scalar>& value) { return std::get<std::uint32_t>(*value); }
+std::uint32_t number(const std::optional<Scalar>& value) {
+    return std::get<std::uint32_t>(*value);
+}
 const FieldInfo& field(const TypeInfo& type, std::string_view name) {
-    for (const auto& value : type.fields) if (value.name == name) return value;
+    for (const auto& value : type.fields)
+        if (value.name == name)
+            return value;
     throw std::runtime_error("Missing composed source field.");
 }
 // Host-owned, correctly aligned storage; Runtime owns the value's lifecycle contract.
@@ -35,8 +51,9 @@ struct StoredValue {
     StoredValue(Runtime& owner, TypeId id, const void* source = nullptr)
         : runtime(owner), type(*take(owner.describe(id))),
           data(static_cast<std::byte*>(::operator new(type.size, std::align_val_t{type.alignment}))) {
-        const auto result = source ? runtime.copy_construct_value(id, bytes(),
-            {static_cast<const std::byte*>(source), type.size}) : runtime.initialize_value(id, bytes());
+        const auto result =
+            source ? runtime.copy_construct_value(id, bytes(), {static_cast<const std::byte*>(source), type.size})
+                   : runtime.initialize_value(id, bytes());
         if (!result) {
             ::operator delete(data, std::align_val_t{type.alignment});
             throw std::runtime_error(result.error().message);
@@ -44,11 +61,15 @@ struct StoredValue {
     }
     StoredValue(const StoredValue&) = delete;
     ~StoredValue() {
-        if (!runtime.destroy_value(type.id, bytes())) std::terminate();
+        if (!runtime.destroy_value(type.id, bytes()))
+            std::terminate();
         ::operator delete(data, std::align_val_t{type.alignment});
     }
     std::span<std::byte> bytes() const { return {data, type.size}; }
-    template<class T> T& at(std::size_t offset) const { return *reinterpret_cast<T*>(data + offset); }
+    template <class T>
+    T& at(std::size_t offset) const {
+        return *reinterpret_cast<T*>(data + offset);
+    }
 };
 constexpr std::string_view schema = R"(
     struct composed.Bundle { composed.Payload payload; uint processed; };
@@ -115,9 +136,11 @@ void verify_source_value_fields() {
     auto particle = reflection::Definition<Particle>::build(runtime);
     particle.native.value_operations_preserve_borrows = true;
     take(runtime.register_types({std::move(particle), reflection::Definition<Position>::build(runtime),
-        reflection::Definition<Algorithms>::build(runtime), string_definition(runtime),
-        array_definition<Particle>(runtime, "composed.Particles"), array_definition<float>(runtime, "composed.Floats"),
-        array_definition<Array<float>>(runtime, "composed.Batches"), array_definition<String>(runtime, "composed.Strings")}));
+                                 reflection::Definition<Algorithms>::build(runtime), string_definition(runtime),
+                                 array_definition<Particle>(runtime, "composed.Particles"),
+                                 array_definition<float>(runtime, "composed.Floats"),
+                                 array_definition<Array<float>>(runtime, "composed.Batches"),
+                                 array_definition<String>(runtime, "composed.Strings")}));
     Program dependency(runtime, {});
     publish(dependency, "struct shared.Point { uint revision; }; uint marker() { return 0; }");
     const auto host_type = take(runtime.native_type<Algorithms>());
@@ -129,10 +152,10 @@ void verify_source_value_fields() {
     const auto base = *field(info, "payload").offset;
     const auto offset = [&](std::string_view name) { return base + *field(payload, name).offset; };
     require(!info.native_storage && info.alignment == alignof(Particle) && info.value_operations_preserve_borrows &&
-        field(payload, "title").value.type == take(runtime.native_type<String>()) &&
-        field(payload, "particles").value.type == take(runtime.native_type<Array<Particle>>()) &&
-        field(payload, "prior").value.type == take(runtime.find_type("shared.Point")),
-        "Composed fields lost shared type identities, transitive ownership or native alignment.");
+                field(payload, "title").value.type == take(runtime.native_type<String>()) &&
+                field(payload, "particles").value.type == take(runtime.native_type<Array<Particle>>()) &&
+                field(payload, "prior").value.type == take(runtime.find_type("shared.Point")),
+            "Composed fields lost shared type identities, transitive ownership or native alignment.");
 
     // Reject unsupported declarations before object creation seals registration.
     Program rejected(runtime, {});
@@ -148,8 +171,8 @@ void verify_source_value_fields() {
         "struct Bad { String text; }; async void run() { Bad local; yield; }"};
     for (const auto* source : invalid) {
         require(!Program::prepare(take(rejected.request("invalid-fields.source", source))) &&
-            runtime.types().size() == type_count && !runtime.find_type("Bad"),
-            "Rejected value composition published types or escaped its ownership/borrow contract.");
+                    runtime.types().size() == type_count && !runtime.find_type("Bad"),
+                "Rejected value composition published types or escaped its ownership/borrow contract.");
     }
     const auto host = take(runtime.create(host_type));
     {
@@ -163,20 +186,23 @@ void verify_source_value_fields() {
         leader.name.assign("host/leader/long-name");
         particles.resize(2);
         particles[0].name.assign("host/particle/long-name");
-        names.add(String{"host/first/long-name"}); names.add(String{"host/second/long-name"});
-        batches.resize(2); batches[0].add(1.0f); batches[1].add(2.0f);
+        names.add(String{"host/first/long-name"});
+        names.add(String{"host/second/long-name"});
+        batches.resize(2);
+        batches[0].add(1.0f);
+        batches[1].add(2.0f);
         input.at<std::uint32_t>(offset("prior")) = 4;
         const auto* particles_data = particles.data();
         const auto baseline = Particle::live;
         std::array args{Argument::borrow(bundle, input.data, input.data), Argument{Scalar{std::uint32_t{0}}}};
         require(number(take(program.entry().invoke(host.id(), args))) == 3 && Particle::live == baseline,
-            "Composed scoped values, nested assignments or helper cleanup failed.");
+                "Composed scoped values, nested assignments or helper cleanup failed.");
         args[1] = Argument{Scalar{std::uint32_t{1}}};
         require(number(take(program.entry().invoke(host.id(), args))) == 2 && Particle::live == baseline,
-            "Early return retained composed owned fields.");
+                "Early return retained composed owned fields.");
         args[1] = Argument{Scalar{std::uint32_t{2}}};
         require(!program.entry().invoke(host.id(), args) && Particle::live == baseline,
-            "Helper failure did not clean both frames' composed values.");
+                "Helper failure did not clean both frames' composed values.");
         args[1] = Argument{Scalar{std::uint32_t{0}}};
         Particle::copy_budget = 2; // leader and one array element construct before the failure
         const auto failed = program.entry().invoke(host.id(), args);
@@ -187,47 +213,56 @@ void verify_source_value_fields() {
         Particle::copy_budget = -1;
         require(!failed_assignment && Particle::live == baseline, "Failed composed assignment left live owned fields.");
         require(particles.data() == particles_data && particles.size() == 2 && particles[0].count == 5 &&
-            title.view() == "host/original/long-title" && leader.name.view() == "host/leader/long-name" &&
-            particles[0].name.view() == "host/particle/long-name" && names[0].view() == "host/first/long-name" &&
-            batches[0].size() == 1 && input.at<std::uint32_t>(*field(info, "processed").offset) == 5,
-            "Borrowed leaf writes, failure side effects or independent copies changed host storage incorrectly.");
+                    title.view() == "host/original/long-title" && leader.name.view() == "host/leader/long-name" &&
+                    particles[0].name.view() == "host/particle/long-name" &&
+                    names[0].view() == "host/first/long-name" && batches[0].size() == 1 &&
+                    input.at<std::uint32_t>(*field(info, "processed").offset) == 5,
+                "Borrowed leaf writes, failure side effects or independent copies changed host storage incorrectly.");
         {
             StoredValue copied(runtime, bundle, input.data);
             require(copied.at<Array<Particle>>(offset("particles")).data() != particles_data &&
-                copied.at<String>(offset("title")).c_str() != title.c_str(), "Host Runtime copy shared owned field buffers.");
+                        copied.at<String>(offset("title")).c_str() != title.c_str(),
+                    "Host Runtime copy shared owned field buffers.");
             title.assign("host/updated/long-title");
             take(runtime.assign_value(bundle, copied.bytes(), input.bytes()));
             require(copied.at<String>(offset("title")).view() == title.view(), "Host assignment lost composed fields.");
         }
         require(Particle::live == baseline, "Host Runtime destruction leaked composed fields.");
         const auto old = take(program.pin());
-        publish(program, std::string(schema) + "uint process(composed.Bundle& input, uint mode) { return input.payload.names.size(); }");
+        publish(program, std::string(schema) +
+                             "uint process(composed.Bundle& input, uint mode) { return input.payload.names.size(); }");
         require(number(take(program.entry().invoke(host.id(), args))) == 2 && take(runtime.describe(bundle)) == &info,
-            "Compatible update changed composed type identity.");
+                "Compatible update changed composed type identity.");
         title.assign("host/original/long-title");
         require(number(take(old.invoke(host.id(), args))) == 3 && Particle::live == baseline,
-            "Retired code lost composed value metadata or cleanup.");
+                "Retired code lost composed value metadata or cleanup.");
     }
     require(Particle::live == initial_live, "Composed host storage retained native fields after scope exit.");
 
     // Layout eligibility does not grant untrusted native lifecycle effects.
     Runtime untrusted;
     auto wrapper = NativeRegistration<WrappedParticle>{untrusted, "unsafe.Wrapper", TypeKind::record}
-        .field<&WrappedParticle::value>("value").build();
+                       .field<&WrappedParticle::value>("value")
+                       .build();
     wrapper.native.value_operations_preserve_borrows = true;
-    take(untrusted.register_types({reflection::Definition<Particle>::build(untrusted),
-        reflection::Definition<Position>::build(untrusted), string_definition(untrusted), std::move(wrapper),
-        NativeRegistration<ReferencingField>{untrusted, "unsafe.References", TypeKind::record}
-            .field<&ReferencingField::target>("target", {TypeReference{"core.Object"}, ValueForm::strong_reference}).build()}));
+    take(untrusted.register_types(
+        {reflection::Definition<Particle>::build(untrusted), reflection::Definition<Position>::build(untrusted),
+         string_definition(untrusted), std::move(wrapper),
+         NativeRegistration<ReferencingField>{untrusted, "unsafe.References", TypeKind::record}
+             .field<&ReferencingField::target>("target", {TypeReference{"core.Object"}, ValueForm::strong_reference})
+             .build()}));
     Program unsafe(untrusted, {});
-    require(!Program::prepare(take(unsafe.request("unsafe-fields.source",
-        "struct Bad { borrow.Particle particle; }; void run() { Bad local; }"))) && !untrusted.find_type("Bad"),
-        "Composition granted ownership to native operations without a borrow-preservation contract.");
+    require(!Program::prepare(take(unsafe.request(
+                "unsafe-fields.source", "struct Bad { borrow.Particle particle; }; void run() { Bad local; }"))) &&
+                !untrusted.find_type("Bad"),
+            "Composition granted ownership to native operations without a borrow-preservation contract.");
     require(!Program::prepare(take(unsafe.request("unsafe-nested-assignment.source",
-        "void run() { unsafe.Wrapper local; local.value = local.value; }"))),
-        "Outer ownership incorrectly granted safe assignment to an untrusted native field.");
-    require(!Program::prepare(take(unsafe.request("gc-fields.source",
-        "struct Bad { unsafe.References value; }; void run() {}"))) && !untrusted.find_type("Bad"),
-        "Source value composition admitted a nested GC reference.");
-    std::puts("Source value fields: PASS (shared storage, deep copies, scoped cleanup, partial failure, nested mutation, frozen types)");
+                                                  "void run() { unsafe.Wrapper local; local.value = local.value; }"))),
+            "Outer ownership incorrectly granted safe assignment to an untrusted native field.");
+    require(!Program::prepare(
+                take(unsafe.request("gc-fields.source", "struct Bad { unsafe.References value; }; void run() {}"))) &&
+                !untrusted.find_type("Bad"),
+            "Source value composition admitted a nested GC reference.");
+    std::puts(
+        "Source value fields: PASS (shared storage, deep copies, scoped cleanup, partial failure, nested mutation, frozen types)");
 }

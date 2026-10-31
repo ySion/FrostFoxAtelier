@@ -44,9 +44,18 @@ public:
     Change erase(bool backwards);
     Change history(bool redo);
     void break_group() noexcept { merge_ = false; }
+
 private:
-    struct Selection { TextPosition caret, anchor; bool operator==(const Selection&) const = default; };
-    struct Entry { std::uint32_t first; std::wstring removed, inserted; Selection before, after; Group group; };
+    struct Selection {
+        TextPosition caret, anchor;
+        bool operator==(const Selection&) const = default;
+    };
+    struct Entry {
+        std::uint32_t first;
+        std::wstring removed, inserted;
+        Selection before, after;
+        Group group;
+    };
     Snapshot current_;
     std::wstring original_;
     std::vector<std::uint32_t> boundaries_;

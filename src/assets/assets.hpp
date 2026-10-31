@@ -20,8 +20,8 @@ struct EngineDependency {
     std::string content_sha256;
     bool operator==(const EngineDependency&) const = default;
 };
-inline constexpr std::uint32_t mesh_digest_version=2;
-inline constexpr std::uint32_t material_digest_version=1;
+inline constexpr std::uint32_t mesh_digest_version = 2;
+inline constexpr std::uint32_t material_digest_version = 1;
 // A mesh slot's default material: the material asset key its sidecar names for the slot.
 struct SlotMaterial {
     std::string slot;
@@ -42,7 +42,11 @@ struct SkyAsset {
     std::wstring name;
     rendering::SkyMapRef map;
 };
-struct TextureAsset {std::string key;std::wstring name;material::ImageRef image;};
+struct TextureAsset {
+    std::string key;
+    std::wstring name;
+    material::ImageRef image;
+};
 struct MaterialSourceAsset {
     std::string source_path; // Explicit project-relative Source path, or a reserved builtin/ Source path.
     material::Policy policy;
@@ -56,7 +60,7 @@ struct MaterialInstanceAsset {
 struct MaterialAsset {
     std::string key;
     std::wstring name;
-    std::variant<MaterialSourceAsset,MaterialInstanceAsset> author{MaterialInstanceAsset{}};
+    std::variant<MaterialSourceAsset, MaterialInstanceAsset> author{MaterialInstanceAsset{}};
 };
 struct ProjectEntry {
     std::filesystem::path path; // Relative to the project root; never a Runtime ID.

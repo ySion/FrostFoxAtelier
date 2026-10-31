@@ -14,14 +14,17 @@
 
 namespace atelier::renderer {
 
-namespace detail { struct MaterialBatchState; }
+namespace detail {
+struct MaterialBatchState;
+}
 
 struct Error {
     rhi::Error cause;
     // Once encoding/uploads start, failure permits only close/destruction.
     bool terminal{};
 };
-template <class T> using Result = std::expected<T, Error>;
+template <class T>
+using Result = std::expected<T, Error>;
 
 struct Options {
     rhi::Validation validation{rhi::Validation::disabled};
@@ -48,6 +51,7 @@ public:
     MaterialBatch(const MaterialBatch&) = delete;
     MaterialBatch& operator=(const MaterialBatch&) = delete;
     std::span<const material::ProgramSurfaceRef> surfaces() const noexcept;
+
 private:
     friend class Renderer;
     std::unique_ptr<detail::MaterialBatchState> state_;
@@ -99,9 +103,9 @@ struct MeshInstance {
     std::shared_ptr<const std::vector<std::uint32_t>> material_slots{};
 };
 struct Frame {
-    const ui::Frame &ui_frame; // Sole authoritative id/extent; borrowed to return.
+    const ui::Frame& ui_frame; // Sole authoritative id/extent; borrowed to return.
     Camera camera;
-    ui::Rect scene_viewport;     // Physical pixels, top-left origin.
+    ui::Rect scene_viewport; // Physical pixels, top-left origin.
     std::span<const MeshInstance> meshes; // Borrowed draw snapshots; no business object ownership.
     ViewSettings view{};
     std::span<const OverlayShape> overlay{};
@@ -116,7 +120,7 @@ struct Frame {
     // Active rendering time since the last accepted frame, independent of Play.
     // Zero restarts a paused/discontinuous clock; fixed-step producers use 1/60.
     // Only presentation filtering consumes this [0, .1] interval, not sampling confidence.
-    float render_delta_seconds{1.f/60.f};
+    float render_delta_seconds{1.f / 60.f};
     // Explicit candidate, borrowed through render(). Its slot order and every
     // mesh mapping must belong together. Required and ready for any mesh frame;
     // UI/no-mesh frames may omit it.
@@ -129,53 +133,59 @@ enum class FrameStatus { accepted, skipped, not_ready };
 // encoded commands, including an occluded Present; pre-encoding skips have zero
 // activity. Legacy counts are not GPU timings. Errors provide no complete statistics.
 struct ProbeVolumeStats {
-    bool enabled{},rolling{};
-    std::array<float,3> minimum{},maximum{},spacing{};
-    std::array<std::uint32_t,3> counts{};
-    std::uint32_t resident{},updated{},reset_probes{}; // CPU schedule, not GPU-valid probe counts.
+    bool enabled{}, rolling{};
+    std::array<float, 3> minimum{}, maximum{}, spacing{};
+    std::array<std::uint32_t, 3> counts{};
+    std::uint32_t resident{}, updated{}, reset_probes{}; // CPU schedule, not GPU-valid probe counts.
 };
 // One receiver's actual gather inputs. Linear irradiance, not display RGB.
 // Identity: volume, physical probe, support stage (0 unused, 1 pending,
 // 2 inside, 3 unobserved, 4 zero weight, 5 occluded, 6 contributor), update age.
 struct ProbeContribution {
-    std::array<std::uint32_t,4> identity{};
-    std::array<float,4> irradiance{}; // RGB and directional observation count.
-    std::array<float,4> weights{}; // Spatial, facing squared, moment visibility, unnormalized visible weight within volume.
-    std::array<float,4> position{}; // Probe world XYZ and normalized receiver distance.
-    std::array<float,4> transport{}; // Authoritative RGB / observations before presentation smoothing.
-    std::array<std::uint32_t,4> response{}; // Requested epoch, min/max effective observations over tile, active visit cursor.
+    std::array<std::uint32_t, 4> identity{};
+    std::array<float, 4> irradiance{}; // RGB and directional observation count.
+    std::array<float, 4>
+        weights{}; // Spatial, facing squared, moment visibility, unnormalized visible weight within volume.
+    std::array<float, 4> position{}; // Probe world XYZ and normalized receiver distance.
+    std::array<float, 4> transport{}; // Authoritative RGB / observations before presentation smoothing.
+    std::array<std::uint32_t, 4>
+        response{}; // Requested epoch, min/max effective observations over tile, active visit cursor.
 };
 struct ProbeInspection {
-    std::uint64_t sequence{},frame_id{},scene_identity{};
-    std::array<std::uint32_t,2> pixel{};
+    std::uint64_t sequence{}, frame_id{}, scene_identity{};
+    std::array<std::uint32_t, 2> pixel{};
     ProbeHistory history{ProbeHistory::live};
     std::int32_t requested_probe{-1}; // -1 automatic; explicit requests never fall back to another probe.
-    std::uint32_t rays{},updates{};
-    std::array<ProbeVolumeStats,probe_volume_limit> volumes{};
+    std::uint32_t rays{}, updates{};
+    std::array<ProbeVolumeStats, probe_volume_limit> volumes{};
     // Receiver identity: gather status, selected volume, contributors, reserved.
     // Irradiance RGB / coverage; weights: sum, dominance; position: world XYZ.
     ProbeContribution receiver{};
-    std::array<ProbeContribution,probe_volume_limit*8> probes{};
+    std::array<ProbeContribution, probe_volume_limit * 8> probes{};
     struct Ray {
-        std::array<std::uint32_t,4> identity{}; // Source, kind, ray ordinal, valid record.
-        std::array<float,4> direct{}; // Local diffuse/specular, directional diffuse/specular luminance.
-        std::array<float,4> surface{}; // World hit XYZ, roughness.
-        std::array<float,4> sampling{}; // Reservoir weight, full receiver proposal PMF, feedback luminance, primary hit distance.
-        std::array<float,4> endpoint_distance{}; // Selected local endpoint XYZ, hit-to-endpoint distance; w=-1 if none.
-        std::array<float,4> source_parameters{}; // Radius, range, area, attenuation minimum distance squared (zero for mesh sources).
+        std::array<std::uint32_t, 4> identity{}; // Source, kind, ray ordinal, valid record.
+        std::array<float, 4> direct{}; // Local diffuse/specular, directional diffuse/specular luminance.
+        std::array<float, 4> surface{}; // World hit XYZ, roughness.
+        std::array<float, 4>
+            sampling{}; // Reservoir weight, full receiver proposal PMF, feedback luminance, primary hit distance.
+        std::array<float, 4>
+            endpoint_distance{}; // Selected local endpoint XYZ, hit-to-endpoint distance; w=-1 if none.
+        std::array<float, 4>
+            source_parameters{}; // Radius, range, area, attenuation minimum distance squared (zero for mesh sources).
     };
     std::uint32_t traced_probe{~0u};
-    std::array<Ray,256> ray_samples{};
+    std::array<Ray, 256> ray_samples{};
 };
 struct FrameStats {
-    std::array<ProbeVolumeStats,probe_volume_limit> scene_lit_probe_volumes{};
+    std::array<ProbeVolumeStats, probe_volume_limit> scene_lit_probe_volumes{};
     // Optional completed inspection; owns its exact sampled layout and frame.
     std::shared_ptr<const ProbeInspection> scene_lit_probe_inspection;
     std::uint64_t ui_draw_calls{};
     std::uint64_t ui_quads{}; // Visible instances that overlap their clip; all share one draw.
     std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
-    std::uint64_t scene_instances{}, scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.
+    std::uint64_t scene_instances{},
+        scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.
     std::uint64_t material_upload_count{}; // New immutable scene image versions, including neutral defaults.
     std::uint64_t cached_material_images{}; // Excludes UI textures and gfx's retirement queue.
     std::uint64_t viewport_draw_calls{}; // Background and reference guides; excludes scene geometry.
@@ -185,7 +195,7 @@ struct FrameStats {
     // Current renderer cache only, excluding gfx's in-flight retirement queue.
     std::uint64_t cached_coverage_count{};
     std::uint64_t cached_coverage_texel_bytes{}; // Logical R8 texels, not physical VRAM.
-    std::uint64_t cached_coverage_cpu_bytes{};   // Owned pixels.size(), including CPU row padding.
+    std::uint64_t cached_coverage_cpu_bytes{}; // Owned pixels.size(), including CPU row padding.
     std::uint64_t image_upload_count{};
     std::uint64_t image_upload_bytes{}; // Tight RGBA8 payload.
     std::uint64_t cached_image_count{};
@@ -193,40 +203,49 @@ struct FrameStats {
     std::uint64_t cached_image_cpu_bytes{};
     // Completed, raw GPU sample. All passes, subpasses and counters refer to
     // gpu_sample_frame_id; may lag this return and repeat until a new completion.
-    std::array<float, 8> scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct lighting and HDR composition, DDGI, GTAO, SSSR, HDR resolve, bloom/tone/SMAA/display.
+    std::array<float, 8>
+        scene_lit_gpu_ms{}; // GBuffer, AS/uploads, direct lighting and HDR composition, DDGI, GTAO, SSSR, HDR resolve, bloom/tone/SMAA/display.
     std::array<float, 2> scene_lit_ddgi_gpu_ms{}; // Update/transfer, receiver gather; subsets of DDGI time.
-    std::array<float, 2> scene_lit_ddgi_update_gpu_ms{}; // Primary trace, hit lighting/convolution; subsets of update/transfer (copy excluded).
+    std::array<float, 2>
+        scene_lit_ddgi_update_gpu_ms{}; // Primary trace, hit lighting/convolution; subsets of update/transfer (copy excluded).
     float scene_lit_direct_cluster_gpu_ms{}; // Light list construction; subset of direct lighting.
     float scene_lit_direct_shading_gpu_ms{}; // Light evaluation fused with HDR composition; subset of direct lighting.
     // Completed conservative receiver clusters, not per-pixel light counts.
-    std::uint32_t scene_lit_direct_cluster_cells{},scene_lit_direct_cluster_overflows{},scene_lit_direct_cluster_max_sources{};
+    std::uint32_t scene_lit_direct_cluster_cells{}, scene_lit_direct_cluster_overflows{},
+        scene_lit_direct_cluster_max_sources{};
     // Optional completed counts at actual GBuffer receivers: 0..64, then >64.
     // Conservative local analytic support only; no directional sources or visibility test.
-    std::array<std::uint32_t,66> scene_lit_direct_receiver_histogram{};
+    std::array<std::uint32_t, 66> scene_lit_direct_receiver_histogram{};
     std::uint32_t scene_lit_direct_receiver_max_sources{};
     float scene_lit_shadow_cache_gpu_ms{}; // Atlas updates only; subset of direct lighting.
-    std::uint32_t scene_lit_shadow_cache_faces{},scene_lit_shadow_cache_reused_faces{};
-    std::uint32_t scene_lit_shadow_cache_static_updates{},scene_lit_shadow_cache_dynamic_updates{},scene_lit_shadow_cache_draws{};
+    std::uint32_t scene_lit_shadow_cache_faces{}, scene_lit_shadow_cache_reused_faces{};
+    std::uint32_t scene_lit_shadow_cache_static_updates{}, scene_lit_shadow_cache_dynamic_updates{},
+        scene_lit_shadow_cache_draws{};
     // Dropped lights cast shadows but did not fit the atlas; they contribute no direct light.
-    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{},scene_lit_shadow_cache_dropped_lights{},scene_lit_shadow_cache_near_plane_faces{};
+    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{}, scene_lit_shadow_cache_dropped_lights{},
+        scene_lit_shadow_cache_near_plane_faces{};
     // Missing taps: point-light taps without a drawn face. A sun receiver beyond
     // every cascade traces instead, counted in the direct part of shadow rays.
-    std::uint32_t scene_lit_shadow_cache_missing_taps{},scene_lit_shadow_cache_plane_fallbacks{};
+    std::uint32_t scene_lit_shadow_cache_missing_taps{}, scene_lit_shadow_cache_plane_fallbacks{};
     // Faces deferred by the per-frame redraw budget, their longest consecutive deferral
     // in frames, the 128² atlas cells held by requested faces, and lights withheld
     // from direct light until all of their faces are drawn.
-    std::uint32_t scene_lit_shadow_cache_deferred_faces{},scene_lit_shadow_cache_deferral_frames{},scene_lit_shadow_cache_atlas_cells{};
+    std::uint32_t scene_lit_shadow_cache_deferred_faces{}, scene_lit_shadow_cache_deferral_frames{},
+        scene_lit_shadow_cache_atlas_cells{};
     std::uint32_t scene_lit_shadow_cache_pending_lights{};
     // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
     // 10..11 DDGI update, 12 light lists, 13 shadow atlas updates, 14 direct shading and composition.
     // A skipped scope still has timestamp overhead.
     std::uint32_t scene_lit_gpu_pass_mask{};
-    std::array<std::uint64_t, 2> scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
+    std::array<std::uint64_t, 2>
+        scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
     std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
-    std::uint32_t scene_lit_reflection_work_items{}; // Pixels SSSR classified for hierarchy traversal in that completed sample.
-    std::uint32_t scene_lit_light_sources{},scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
-    std::uint32_t scene_lit_spatial_sources{},scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
+    std::uint32_t
+        scene_lit_reflection_work_items{}; // Pixels SSSR classified for hierarchy traversal in that completed sample.
+    std::uint32_t scene_lit_light_sources{}, scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
+    std::uint32_t scene_lit_spatial_sources{},
+        scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
     std::uint64_t scene_lit_spatial_bytes{}; // Three current logical GPU buffers, including empty sentinels.
     bool scene_lit_spatial_changed{}; // Proposal buffers uploaded in this encoded render.
     std::uint64_t scene_lit_history_resets{}; // Reset events in this encoded render; ordinary next frame is zero.
@@ -237,7 +256,7 @@ struct FrameResult {
     FrameStatus status{FrameStatus::skipped};
     std::uint64_t accepted_id{};
     ui::PixelExtent accepted_extent; // Actual target BEFORE recording/Present.
-    ui::PixelExtent next_extent;     // Resize during Present applies to NEXT frame.
+    ui::PixelExtent next_extent; // Resize during Present applies to NEXT frame.
     FrameStats stats{};
 };
 // Explicit diagnostic capture stalls the GPU once; normal rendering does not.
@@ -258,22 +277,22 @@ struct Capture {
 // Renderer owns GPU objects, rendering, Present, resize and GPU retirement;
 // application owns Runtime identities, camera state, input and accepted hit data.
 class Renderer {
-  public:
+public:
     Renderer();
     ~Renderer();
-    Renderer(Renderer &&) noexcept;
-    Renderer &operator=(Renderer &&) noexcept;
-    Renderer(const Renderer &) = delete;
-    Renderer &operator=(const Renderer &) = delete;
+    Renderer(Renderer&&) noexcept;
+    Renderer& operator=(Renderer&&) noexcept;
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
 
-    [[nodiscard]] static Result<Renderer> open(HWND window, const Options &options = {});
+    [[nodiscard]] static Result<Renderer> open(HWND window, const Options& options = {});
     [[nodiscard]] Result<Target> target() const;
     // Match the native client before preparing its UI frame; no Present is needed.
     [[nodiscard]] Result<Target> sync_window_target();
     // Never waits for compilation. Starts this view's missing pipeline groups and
     // collects finished ones; views that draw no Lit pass are always ready. A
     // preparation failure is non-terminal and returned again for later Lit views.
-    [[nodiscard]] Result<Preparation> preparation(const ViewSettings &view);
+    [[nodiscard]] Result<Preparation> preparation(const ViewSettings& view);
     // Prepares the entire material-dependent raster/ray pipeline set, not a view.
     // Submission never adopts the candidate. Live batches with the same exact
     // program set share compilation/PSOs, independently of policy, parameters,
@@ -290,10 +309,10 @@ class Renderer {
     // A drawn Lit view whose preparation is incomplete returns not_ready.
     // CPU validation failure retains usability. Upload/encoding/execution failure
     // is terminal. Switch the application's hit frame ONLY on accepted.
-    [[nodiscard]] Result<FrameResult> render(const Frame &frame, Capture *capture = nullptr);
+    [[nodiscard]] Result<FrameResult> render(const Frame& frame, Capture* capture = nullptr);
     [[nodiscard]] Result<void> close();
 
-  private:
+private:
     struct State;
     std::unique_ptr<State> state_;
 };

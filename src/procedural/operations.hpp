@@ -17,9 +17,9 @@ Result<Geometry> grid(math::Vector2 size, std::uint32_t rows, std::uint32_t colu
 Result<Geometry> line(math::Vector3 start, math::Vector3 end, std::uint32_t count);
 
 struct ScatterSettings {
-    float density{1};       // Points per unit area before elimination.
+    float density{1}; // Points per unit area before elimination.
     std::uint32_t seed{};
-    float min_distance{};   // 0 keeps every point.
+    float min_distance{}; // 0 keeps every point.
 };
 // Points on triangle primitives. Triangle t draws its count and positions from
 // hash(seed, t) alone: round(area * density) rounds up with probability equal to the
@@ -50,9 +50,11 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
 // default 0 when absent) picks the reference. Detail attributes carry over; the output
 // has no points. Non-finite inputs and out-of-range variants fail.
 Result<Geometry> copy_to_points(const Geometry& points, std::span<const Reference> references,
-    StringView variant = "variant");
+                                StringView variant = "variant");
 
-struct Bounds { math::Vector3 minimum, maximum; };
+struct Bounds {
+    math::Vector3 minimum, maximum;
+};
 // Of the points; empty geometry has none.
 [[nodiscard]] std::optional<Bounds> bounds(const Geometry& geometry) noexcept;
 

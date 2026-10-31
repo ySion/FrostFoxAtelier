@@ -15,6 +15,7 @@ public:
     ExecutionScope(const ExecutionScope&) = delete;
     ExecutionScope& operator=(const ExecutionScope&) = delete;
     ExecutionScope& operator=(ExecutionScope&&) = delete;
+
 private:
     friend class ExecutionFrame;
     explicit ExecutionScope(Runtime& runtime) noexcept : runtime_(&runtime) {}
@@ -33,6 +34,7 @@ public:
     ExecutionInspection(const ExecutionInspection&) = delete;
     ExecutionInspection& operator=(const ExecutionInspection&) = delete;
     ExecutionInspection& operator=(ExecutionInspection&&) = delete;
+
 private:
     explicit ExecutionInspection(Runtime& runtime) noexcept : runtime_(&runtime) {}
     Runtime* runtime_;
@@ -89,10 +91,12 @@ public:
     // The owner resolves failure/cancellation precedence before destruction.
     // This notification cannot resume, throw or change the terminal result.
     virtual void on_terminal(CoroutineState, const Error*) noexcept {}
+
 protected:
     // Cooperatively cancel after a successful resume step. Execution failures
     // still win, and the owner discards any result before destroying the frame.
     void request_cancel() noexcept { cancel_requested_ = true; }
+
 private:
     friend class Coroutine;
     bool cancel_requested_{};
@@ -118,6 +122,7 @@ public:
     void cancel() noexcept;
     [[nodiscard]] CoroutineState state() const noexcept;
     [[nodiscard]] Result<std::optional<Scalar>> result() const;
+
 private:
     struct Control;
     explicit Coroutine(std::shared_ptr<Control> control) noexcept : control_(std::move(control)) {}

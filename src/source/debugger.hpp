@@ -2,13 +2,19 @@
 #include "source/diagnostics.hpp"
 
 namespace atelier::source {
-namespace detail { struct DebugSessionState; struct DebugAccess; }
+namespace detail {
+struct DebugSessionState;
+struct DebugAccess;
+}
 
 enum class DebugAction { continue_execution, step_into, step_over, step_out, abort };
 enum class DebugStatus { unused, ready, running, paused, suspended, completed, failed, cancelled, rejected };
 enum class DebugStopReason { entry, breakpoint, step, error };
 enum class DebugValueState { available, uninitialized, out_of_scope, unavailable };
-struct DebugCommand { std::uint64_t stop_id{}; DebugAction action{DebugAction::continue_execution}; };
+struct DebugCommand {
+    std::uint64_t stop_id{};
+    DebugAction action{DebugAction::continue_execution};
+};
 struct DebugBreakpoint {
     std::string path;
     std::uint64_t source_version{}; // Exact source identity, including a literal zero version.
@@ -54,6 +60,7 @@ using DebugHandler = std::function<DebugCommand(const DebugSnapshot&)>;
 class Debugger final {
     friend struct detail::DebugAccess;
     std::shared_ptr<detail::DebugSessionState> state_;
+
 public:
     explicit Debugger(DebugHandler = {}, DebugOptions = {});
     Result<void> set_breakpoints(std::vector<DebugBreakpoint>);

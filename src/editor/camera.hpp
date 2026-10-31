@@ -4,13 +4,26 @@
 #include "math/math.hpp"
 #include <string_view>
 
-namespace atelier::presentation { struct CameraSnapshot; }
+namespace atelier::presentation {
+struct CameraSnapshot;
+}
 namespace atelier::editor {
 constexpr std::wstring_view camera_view_name(CameraView view) noexcept {
-    switch(view) {
-    case CameraView::perspective:return L"Persp";case CameraView::top:return L"Top";
-    case CameraView::front:return L"Front";case CameraView::right:return L"Right";
-    case CameraView::bottom:return L"Bottom";case CameraView::back:return L"Back";case CameraView::left:return L"Left";
+    switch (view) {
+    case CameraView::perspective:
+        return L"Persp";
+    case CameraView::top:
+        return L"Top";
+    case CameraView::front:
+        return L"Front";
+    case CameraView::right:
+        return L"Right";
+    case CameraView::bottom:
+        return L"Bottom";
+    case CameraView::back:
+        return L"Back";
+    case CameraView::left:
+        return L"Left";
     }
     return {};
 }
@@ -51,12 +64,15 @@ public:
     math::Vector3 up_hint() const noexcept;
     math::Vector3 construction_normal() const noexcept;
     CameraMatrices matrices(float aspect) const noexcept;
-    CameraState state() const noexcept { return {view_, target_, yaw_, pitch_, distance_,roll_,vertical_fov_,near_clip_,far_clip_}; }
+    CameraState state() const noexcept {
+        return {view_, target_, yaw_, pitch_, distance_, roll_, vertical_fov_, near_clip_, far_clip_};
+    }
     bool set_state(const CameraState&) noexcept;
+
 private:
     CameraView view_{CameraView::perspective};
     math::Vector3 target_;
     float yaw_{}, pitch_{}, distance_{};
-    float roll_{},vertical_fov_{45},near_clip_{.05f},far_clip_{30000};
+    float roll_{}, vertical_fov_{45}, near_clip_{.05f}, far_clip_{30000};
 };
 }

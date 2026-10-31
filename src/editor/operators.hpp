@@ -16,10 +16,10 @@ namespace atelier::editor {
 class Project;
 enum class OperatorFlag : std::uint32_t {
     none = 0,
-    undo = 1,              // At most one scene history entry per call.
-    history = 2,           // Moves the scene history cursor only (edit.undo / edit.redo).
+    undo = 1, // At most one scene history entry per call.
+    history = 2, // Moves the scene history cursor only (edit.undo / edit.redo).
     replaces_document = 4, // Asks the host to replace the document after the call returns.
-    prompts = 8,           // Transitional: interactive calls may ask for a missing path or name.
+    prompts = 8, // Transitional: interactive calls may ask for a missing path or name.
 };
 constexpr OperatorFlag operator|(OperatorFlag a, OperatorFlag b) noexcept {
     return static_cast<OperatorFlag>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
@@ -27,22 +27,35 @@ constexpr OperatorFlag operator|(OperatorFlag a, OperatorFlag b) noexcept {
 constexpr bool has_flag(OperatorFlag set, OperatorFlag flag) noexcept {
     return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(flag)) != 0;
 }
-enum class RegionKind : std::uint32_t { none, viewport, scene_tree, structure, parameters, assets, code, output, world, controls };
+enum class RegionKind : std::uint32_t {
+    none,
+    viewport,
+    scene_tree,
+    structure,
+    parameters,
+    assets,
+    code,
+    output,
+    world,
+    controls
+};
 std::span<const std::string_view> region_names() noexcept; // Indexed by RegionKind.
 
 struct SelectionContext {
-    ObjectId active;                // Active Entity.
-    ObjectId object;                // Inspected Entity or one of the active Entity's components.
+    ObjectId active; // Active Entity.
+    ObjectId object; // Inspected Entity or one of the active Entity's components.
     std::vector<ObjectId> entities; // Selected Entities; active is the last when present.
 };
-struct HistoryState { bool undo{}, redo{}; };
+struct HistoryState {
+    bool undo{}, redo{};
+};
 struct Context {
     Session& document;
     Project* project{};
     SelectionContext selection;
     RegionKind region{};
     std::string asset; // Material asset key while Parameters inspects that asset.
-    HistoryState source_history;    // The Code page's active document; both false without one.
+    HistoryState source_history; // The Code page's active document; both false without one.
     HistoryState workbench_history; // The Controls page samples.
     bool scene_available{true}; // False while a project has no loadable scene.
     bool interactive{};
@@ -93,6 +106,7 @@ public:
     Result<void> add(OperatorInfo); // Rejects duplicate or malformed IDs and illegal flag combinations.
     const OperatorInfo* find(std::string_view id) const noexcept;
     std::span<const OperatorInfo> all() const noexcept { return operators_; }
+
 private:
     std::vector<OperatorInfo> operators_;
 };

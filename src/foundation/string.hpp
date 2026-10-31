@@ -31,21 +31,33 @@ public:
     [[nodiscard]] constexpr const char* begin() const noexcept { return data_; }
     [[nodiscard]] constexpr const char* end() const noexcept { return data_ + size_; }
     [[nodiscard]] constexpr char operator[](std::size_t index) const {
-        if (index >= size_) throw std::out_of_range("StringView index.");
+        if (index >= size_)
+            throw std::out_of_range("StringView index.");
         return data_[index];
     }
     [[nodiscard]] constexpr StringView slice(std::size_t first, std::size_t count = npos) const {
-        if (first > size_ || (count != npos && count > size_ - first)) throw std::out_of_range("StringView slice.");
+        if (first > size_ || (count != npos && count > size_ - first))
+            throw std::out_of_range("StringView slice.");
         return {data_ + first, count == npos ? size_ - first : count};
     }
-    [[nodiscard]] constexpr bool starts_with(StringView value) const noexcept { return std_view().starts_with(value.std_view()); }
-    [[nodiscard]] constexpr bool ends_with(StringView value) const noexcept { return std_view().ends_with(value.std_view()); }
-    [[nodiscard]] constexpr std::size_t find(StringView value, std::size_t from = 0) const noexcept { return std_view().find(value.std_view(), from); }
+    [[nodiscard]] constexpr bool starts_with(StringView value) const noexcept {
+        return std_view().starts_with(value.std_view());
+    }
+    [[nodiscard]] constexpr bool ends_with(StringView value) const noexcept {
+        return std_view().ends_with(value.std_view());
+    }
+    [[nodiscard]] constexpr std::size_t find(StringView value, std::size_t from = 0) const noexcept {
+        return std_view().find(value.std_view(), from);
+    }
     [[nodiscard]] constexpr bool contains(StringView value) const noexcept { return find(value) != npos; }
     [[nodiscard]] constexpr std::string_view std_view() const noexcept { return {data_, size_}; }
     [[nodiscard]] bool is_valid_utf8() const noexcept;
-    friend constexpr bool operator==(StringView left, StringView right) noexcept { return left.std_view() == right.std_view(); }
-    friend constexpr auto operator<=>(StringView left, StringView right) noexcept { return left.std_view() <=> right.std_view(); }
+    friend constexpr bool operator==(StringView left, StringView right) noexcept {
+        return left.std_view() == right.std_view();
+    }
+    friend constexpr auto operator<=>(StringView left, StringView right) noexcept {
+        return left.std_view() <=> right.std_view();
+    }
 
 private:
     const char* data_{""};
@@ -71,12 +83,15 @@ public:
     [[nodiscard]] std::size_t capacity() const noexcept { return heap_ ? buffer_.capacity : inline_capacity; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
     [[nodiscard]] const char* c_str() const noexcept { return heap_ ? heap_ : buffer_.inline_bytes; }
-    [[nodiscard]] StringView view() const & noexcept { return {c_str(), size()}; }
-    StringView view() const && = delete;
+    [[nodiscard]] StringView view() const& noexcept { return {c_str(), size()}; }
+    StringView view() const&& = delete;
     [[nodiscard]] char operator[](std::size_t index) const { return StringView{c_str(), size()}[index]; }
     void reserve(std::size_t bytes);
     void squeeze();
-    void clear() noexcept { size_ = 0; mutable_data()[0] = '\0'; }
+    void clear() noexcept {
+        size_ = 0;
+        mutable_data()[0] = '\0';
+    }
     void release() noexcept;
     void swap(String& other) noexcept;
     void assign(StringView text);

@@ -20,6 +20,7 @@ public:
     LayoutNodeId() = default;
     bool operator==(const LayoutNodeId&) const = default;
     explicit operator bool() const noexcept { return document_ != 0; }
+
 private:
     friend class LayoutDocument;
     friend struct LayoutView;
@@ -31,13 +32,34 @@ private:
 };
 
 enum class ErrorCode {
-    invalid_input, invalid_node, invalid_structure, root_operation,
-    capacity_exceeded, unsupported_dependency, busy, measurement_failed,
-    invalid_measurement, numeric_overflow, revision_exhausted
+    invalid_input,
+    invalid_node,
+    invalid_structure,
+    root_operation,
+    capacity_exceeded,
+    unsupported_dependency,
+    busy,
+    measurement_failed,
+    invalid_measurement,
+    numeric_overflow,
+    revision_exhausted
 };
 enum class InputField {
-    none, kind, width, height, padding, gap, alignment, anchor, content,
-    columns, table_row, wrap, flow, grid, cell
+    none,
+    kind,
+    width,
+    height,
+    padding,
+    gap,
+    alignment,
+    anchor,
+    content,
+    columns,
+    table_row,
+    wrap,
+    flow,
+    grid,
+    cell
 };
 struct Error {
     ErrorCode code;
@@ -49,7 +71,8 @@ struct Error {
 };
 std::string_view describe(ErrorCode) noexcept;
 std::string_view describe(InputField) noexcept;
-template<class T> using Result = std::expected<T, Error>;
+template <class T>
+using Result = std::expected<T, Error>;
 
 struct Size {
     float width{}, height{};
@@ -79,12 +102,11 @@ struct Axis {
     static Axis content(float minimum = 0, std::optional<float> maximum = {}) {
         return {SizeRule::content, 0, minimum, maximum};
     }
-    static Axis expand(float weight = 1, float minimum = 0,
-                       std::optional<float> maximum = {}) {
+    static Axis expand(float weight = 1, float minimum = 0, std::optional<float> maximum = {}) {
         return {SizeRule::expand, weight, minimum, maximum};
     }
-    static Axis flex(Basis basis, float grow_weight = 1, float shrink_weight = 1,
-                     float minimum = 0, std::optional<float> maximum = {}) {
+    static Axis flex(Basis basis, float grow_weight = 1, float shrink_weight = 1, float minimum = 0,
+                     std::optional<float> maximum = {}) {
         return {SizeRule::flex, 0, minimum, maximum, basis, grow_weight, shrink_weight};
     }
     bool operator==(const Axis&) const = default;
@@ -179,7 +201,9 @@ struct MeasureQuery {
     bool first_baseline{};
     bool operator==(const MeasureQuery&) const = default;
 };
-struct MeasureError { std::uint32_t code{}; };
+struct MeasureError {
+    std::uint32_t code{};
+};
 struct MeasuredSize {
     float width{}, height{};
     std::optional<float> first_baseline;
@@ -203,14 +227,14 @@ struct LayoutView {
     // O(1). Uses this publication, including nodes removed since it was published.
     const LayoutBox* find(LayoutNodeId) const noexcept;
     LayoutView() = default;
+
 private:
     friend class LayoutDocument;
     friend struct LayoutSnapshot;
-    LayoutView(std::uint64_t publication, std::uint64_t input, std::uint64_t provider,
-               Size viewport, std::span<const LayoutBox> boxes,
-               std::span<const std::uint32_t> index)
-        : publication(publication), input_revision(input), provider_revision(provider),
-          viewport(viewport), boxes(boxes), index_(index) {}
+    LayoutView(std::uint64_t publication, std::uint64_t input, std::uint64_t provider, Size viewport,
+               std::span<const LayoutBox> boxes, std::span<const std::uint32_t> index)
+        : publication(publication), input_revision(input), provider_revision(provider), viewport(viewport),
+          boxes(boxes), index_(index) {}
     std::span<const std::uint32_t> index_;
 };
 struct LayoutSnapshot {
@@ -219,13 +243,14 @@ struct LayoutSnapshot {
     std::vector<LayoutBox> boxes; // Geometry only; does not retain text/resources.
     LayoutView view() const noexcept;
     const LayoutBox* find(LayoutNodeId node) const noexcept { return view().find(node); }
+
 private:
     friend class LayoutDocument;
     std::vector<std::uint32_t> index_;
 };
 struct Stats {
-    std::uint64_t computes{}, publications{}, measure_calls{}, intrinsic_queries{},
-        width_queries{}, cache_hits{}, node_visits{};
+    std::uint64_t computes{}, publications{}, measure_calls{}, intrinsic_queries{}, width_queries{}, cache_hits{},
+        node_visits{};
     // Internal node/work buffers; excludes public track descriptors, provider,
     // owned snapshots, returned identity arrays and the owner allocation itself.
     std::uint64_t buffer_allocations{}, buffer_bytes_allocated{}, buffer_bytes{}, peak_buffer_bytes{};
@@ -257,13 +282,11 @@ public:
     std::size_t node_count() const noexcept;
     std::uint64_t input_revision() const noexcept;
     Result<void> set_root(const RootInput&);
-    Result<LayoutNodeId> create(LayoutNodeId parent, const NodeInput&,
-                                std::size_t position = append_position);
+    Result<LayoutNodeId> create(LayoutNodeId parent, const NodeInput&, std::size_t position = append_position);
     Result<NodeInput> input(LayoutNodeId) const;
     Result<void> update(LayoutNodeId, const NodeInput&);
     // Position is interpreted in the destination AFTER removing the moved node.
-    Result<void> move(LayoutNodeId, LayoutNodeId parent,
-                      std::size_t position = append_position);
+    Result<void> move(LayoutNodeId, LayoutNodeId parent, std::size_t position = append_position);
     Result<void> remove(LayoutNodeId); // Removes the entire subtree, never root.
     // Replace the complete tree below root in one input transaction. Entry order
     // defines sibling order; omitted identities retire, retained identities survive.
@@ -277,6 +300,7 @@ public:
     LayoutView view() const noexcept;
     LayoutSnapshot snapshot() const;
     Stats stats() const noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -304,6 +328,7 @@ public:
     Result<double> offset(std::size_t row) const;
     std::size_t size() const noexcept { return heights_.size(); }
     std::size_t storage_bytes() const noexcept { return (heights_.capacity() + sums_.capacity()) * sizeof(double); }
+
 private:
     double prefix(std::size_t count) const noexcept;
     double extent() const noexcept;

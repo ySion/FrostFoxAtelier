@@ -16,7 +16,9 @@ struct NativeEvent {
     std::wstring text;
     std::optional<ui::CompositionEvent> composition;
     std::uint32_t error{};
-    struct Motion {float x{},y{};};
+    struct Motion {
+        float x{}, y{};
+    };
     std::optional<Motion> relative_motion;
 };
 struct NativeInputStatistics {
@@ -24,7 +26,7 @@ struct NativeInputStatistics {
 };
 // Shared translation for editor and project windows. The caller handles
 // surface changes and application commands before dispatching UI input.
-std::optional<ui::Event> input_event(NativeEvent,HWND);
+std::optional<ui::Event> input_event(NativeEvent, HWND);
 
 // Owns only the native window. WM_CLOSE requests shutdown; the application must
 // close the renderer before this owner destroys the HWND.
@@ -42,7 +44,7 @@ public:
     // callbacks, including callback failures. The consumer never runs from WndProc.
     void poll(const std::function<void(NativeEvent&&)>&);
     bool closing() const noexcept { return closing_; }
-    void cancel_close() noexcept { closing_=false; }
+    void cancel_close() noexcept { closing_ = false; }
     float dpi_scale() const noexcept;
     void capture(bool enabled);
     // Raw mouse ownership is bounded by capture/focus; disabling also restores the pointer.
@@ -52,11 +54,16 @@ public:
     ui::ImeResult ime(const ui::ImeRequest&);
     std::uint32_t text_input(const std::optional<ui::TextInputState>&);
     const NativeInputStatistics& input_statistics() const noexcept { return input_statistics_; }
+
 private:
     HWND handle_{};
     HCURSOR cursor_{}, adjustment_cursor_{};
     int cursor_size_{};
-    struct ToolCursor {ui::Cursor intent;UINT dpi;HCURSOR handle;};
+    struct ToolCursor {
+        ui::Cursor intent;
+        UINT dpi;
+        HCURSOR handle;
+    };
     std::vector<ToolCursor> tool_cursors_; // Owned, keyed by semantic intent and display DPI.
     bool closing_{}, releasing_capture_{};
     bool popup_{};

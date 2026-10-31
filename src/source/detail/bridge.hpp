@@ -81,11 +81,21 @@ struct EnvironmentView {
     explicit EnvironmentView(const Binding&);
     BusinessEnvironment view(const char* object_type_name) const;
 };
-inline BusinessValue scalar(float value) { return {ValueKind::f32, std::bit_cast<std::uint32_t>(value)}; }
-inline BusinessValue scalar(double value) { return {ValueKind::f64, std::bit_cast<std::uint64_t>(value)}; }
-inline BusinessValue scalar(std::uint32_t value) { return {ValueKind::u32, value}; }
-inline BusinessValue scalar(std::int32_t value) { return {ValueKind::i32, std::bit_cast<std::uint32_t>(value)}; }
-inline BusinessValue scalar(bool value) { return {ValueKind::boolean, value ? 1u : 0u}; }
+inline BusinessValue scalar(float value) {
+    return {ValueKind::f32, std::bit_cast<std::uint32_t>(value)};
+}
+inline BusinessValue scalar(double value) {
+    return {ValueKind::f64, std::bit_cast<std::uint64_t>(value)};
+}
+inline BusinessValue scalar(std::uint32_t value) {
+    return {ValueKind::u32, value};
+}
+inline BusinessValue scalar(std::int32_t value) {
+    return {ValueKind::i32, std::bit_cast<std::uint32_t>(value)};
+}
+inline BusinessValue scalar(bool value) {
+    return {ValueKind::boolean, value ? 1u : 0u};
+}
 BusinessValue scalar(const Scalar&, const Binding&);
 std::optional<Scalar> scalar_value(BusinessValue, const Binding* = nullptr);
 struct AbiArguments {
@@ -112,7 +122,7 @@ struct InvocationObserver {
     Result<void> (*begin)(void*, Invocation&){};
     Result<void> (*poll)(void*, Invocation&){};
     Result<void> (*finish)(void*, Invocation&){};
-    void (*complete)(void*, const Invocation&, bool success) noexcept{};
+    void (*complete)(void*, const Invocation&, bool success) noexcept {};
 };
 struct Invocation {
     Runtime& runtime;
@@ -138,16 +148,17 @@ struct Invocation {
     ErrorCode error_code{ErrorCode::invocation_failed};
     char error[512]{};
     Invocation(Runtime&, const Binding&, BusinessFrameLayout, InvocationObserver = {}, BusinessTrace* = nullptr,
-        std::shared_ptr<DebugSessionState> = {}, ExecutionScope* = nullptr);
+               std::shared_ptr<DebugSessionState> = {}, ExecutionScope* = nullptr);
     bool resources_cleared() const noexcept;
     void record_resources(bool cleared) const noexcept;
     void fail(ErrorCode, const char*) noexcept;
 };
-template<class Operation>
+template <class Operation>
 std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
     try {
         auto result = operation();
-        if (result) return 0;
+        if (result)
+            return 0;
         invocation.fail(result.error().code, result.error().message.c_str());
     } catch (const std::exception& error) {
         invocation.fail(ErrorCode::invocation_failed, error.what());
@@ -167,7 +178,8 @@ std::uint32_t read_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noe
 std::uint32_t write_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
 std::uint32_t read_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
 std::uint32_t write_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
-std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t, BusinessValue*) noexcept;
+std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t,
+                          BusinessValue*) noexcept;
 std::uint32_t begin(void*) noexcept;
 std::uint32_t poll(void*) noexcept;
 std::uint32_t finish(void*) noexcept;
@@ -179,23 +191,23 @@ extern const BusinessServices services;
 bool same_environment(const Binding&, const BusinessEnvironment&);
 Result<void> check_source_arguments(const Binding&, const BusinessSignature&, std::span<const BusinessValue>);
 Result<void> check_source_receiver(const Binding&, ObjectId);
-Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*,
-    BusinessFrameLayout, bool requires_receiver, ObjectId, std::span<const BusinessValue>,
-    InvocationObserver = {}, void* result_data = nullptr, BusinessTrace* = nullptr, std::shared_ptr<DebugSessionState> = {},
-    std::uint32_t* failure_site = nullptr);
-Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId,
-    std::span<const BusinessValue>, InvocationObserver = {});
+Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*, BusinessFrameLayout,
+                                       bool requires_receiver, ObjectId, std::span<const BusinessValue>,
+                                       InvocationObserver = {}, void* result_data = nullptr, BusinessTrace* = nullptr,
+                                       std::shared_ptr<DebugSessionState> = {}, std::uint32_t* failure_site = nullptr);
+Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId, std::span<const BusinessValue>,
+                                    InvocationObserver = {});
 
 struct ProgramAccess {
     using Compiler = decltype(&atelier_compile_business);
     static Result<BusinessValue> invoke(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
-        InvocationObserver = {});
+                                        InvocationObserver = {});
     static Result<BusinessValue> invoke(const Program::Lease&, ObjectId, std::span<const BusinessValue>,
-        InvocationObserver = {});
+                                        InvocationObserver = {});
     static Result<Coroutine> start(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
-        InvocationObserver = {});
+                                   InvocationObserver = {});
     static Result<Coroutine> start(const Program::Lease&, ObjectId, std::span<const BusinessValue>,
-        InvocationObserver = {});
+                                   InvocationObserver = {});
     static BusinessFrameLayout layout(const Program::Lease&) noexcept;
     static Result<Program::Candidate> prepare(const Program::Request&, Compiler);
     static Result<void> compatible(const Program&, BusinessCode*, std::string_view);
@@ -203,6 +215,8 @@ struct ProgramAccess {
     static void set_request_sequence(Program&, std::uint64_t) noexcept;
     static std::uint64_t published_sequence(const Program&) noexcept;
     static Result<Coroutine> start_version(std::shared_ptr<const Program::Version>, ObjectId,
-        std::span<const BusinessValue>, InvocationObserver, std::shared_ptr<DiagnosticState> = {}, std::shared_ptr<DebugSessionState> = {});
+                                           std::span<const BusinessValue>, InvocationObserver,
+                                           std::shared_ptr<DiagnosticState> = {},
+                                           std::shared_ptr<DebugSessionState> = {});
 };
 }

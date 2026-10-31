@@ -16,7 +16,8 @@ struct MaterialModule {
 // Uses the same typed Source tree and captured Runtime value layouts. No Runtime
 // object, identity resolver or native method is part of the resulting program.
 std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name, std::string_view source,
-    std::span<const ValueLayout> values, std::uint32_t context, std::uint32_t output, std::uint32_t texture_input);
+                                                           std::span<const ValueLayout> values, std::uint32_t context,
+                                                           std::uint32_t output, std::uint32_t texture_input);
 // Called after capturing initial_value for the reachable value layouts. The
 // owned text selects coverage-only with ATELIER_MATERIAL_COVERAGE, otherwise
 // ATELIER_MATERIAL_FOOTPRINT selects point (0) or two local changes (1).

@@ -21,20 +21,26 @@ constexpr std::size_t measured_cycles = 32;
 constexpr std::int64_t live_byte_tolerance = 64 * 1024;
 
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
-template<class T> T take(Result<T> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+template <class T>
+T take(Result<T> result) {
+    if (!result)
+        throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
 void take(Result<void> result) {
-    if (!result) throw std::runtime_error(result.error().message);
+    if (!result)
+        throw std::runtime_error(result.error().message);
 }
 double elapsed_ns(Clock::time_point start) {
     return std::chrono::duration<double, std::nano>(Clock::now() - start).count();
 }
 
-struct Snapshot { std::int64_t live_bytes{}, private_bytes{}; };
+struct Snapshot {
+    std::int64_t live_bytes{}, private_bytes{};
+};
 Snapshot snapshot() {
     // Checkpoint-only: flush mimalloc's page counters outside timed work.
     // This changes retained pages, so PrivateUsage is not an untouched peak.
@@ -45,9 +51,9 @@ Snapshot snapshot() {
     PROCESS_MEMORY_COUNTERS_EX memory{};
     memory.cb = sizeof(memory);
     require(GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),
-        sizeof(memory)) != 0, "Session process memory query failed.");
-    return {stats.malloc_normal.current + stats.malloc_huge.current,
-        static_cast<std::int64_t>(memory.PrivateUsage)};
+                                 sizeof(memory)) != 0,
+            "Session process memory query failed.");
+    return {stats.malloc_normal.current + stats.malloc_huge.current, static_cast<std::int64_t>(memory.PrivateUsage)};
 }
 void verify_statistics() {
     const auto before = snapshot();
@@ -56,7 +62,7 @@ void verify_statistics() {
     ::operator delete(block);
     const auto released = snapshot();
     require(allocated.live_bytes >= before.live_bytes + 4096 && released.live_bytes < allocated.live_bytes,
-        "Session allocator statistics did not observe an actual allocation and release.");
+            "Session allocator statistics did not observe an actual allocation and release.");
 }
 void code_state(std::uintptr_t address, bool live) {
     require(address != 0, "Session code address is missing.");
@@ -64,15 +70,17 @@ void code_state(std::uintptr_t address, bool live) {
     const auto* unwind = RtlLookupFunctionEntry(address, &image, nullptr);
     MEMORY_BASIC_INFORMATION memory{};
     require(VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) == sizeof(memory),
-        "Session code memory query failed.");
+            "Session code memory query failed.");
     require(live ? unwind && memory.State == MEM_COMMIT : !unwind && memory.State == MEM_FREE,
-        "Session code or unwind metadata has an incorrect lifetime.");
+            "Session code or unwind metadata has an incorrect lifetime.");
 }
 void collect_to_rest(Runtime& runtime) {
-    while (runtime.collection_phase() != CollectionPhase::idle) take(runtime.collect_step({4096}));
+    while (runtime.collection_phase() != CollectionPhase::idle)
+        take(runtime.collect_step({4096}));
     // A fresh cycle also collects objects created during the previous sweep.
     take(runtime.begin_collection());
-    while (runtime.collection_phase() != CollectionPhase::idle) take(runtime.collect_step({4096}));
+    while (runtime.collection_phase() != CollectionPhase::idle)
+        take(runtime.collect_step({4096}));
 }
 
 struct Counter {
@@ -82,20 +90,22 @@ struct Counter {
     ~Counter() noexcept { --live; }
 };
 TypeId register_counter(Runtime& runtime, bool native) {
-    if (native) return take(NativeRegistration<Counter>{runtime, "session.Counter", TypeKind::object}
-        .field<&Counter::value>("value").publish());
+    if (native)
+        return take(NativeRegistration<Counter>{runtime, "session.Counter", TypeKind::object}
+                        .field<&Counter::value>("value")
+                        .publish());
     TypeDefinition definition;
     definition.name = "session.Counter";
     definition.fields = {{"value", {take(runtime.native_type<std::uint32_t>())}}};
     return take(runtime.register_type(std::move(definition)));
 }
 void publish(Program& program, std::uint32_t generation) {
-    const auto source_text = std::string(
-        "async uint work(uint seed, uint steps) {"
-        " session.Counter held = new session.Counter(); held.value = seed;"
-        " uint index = 0; while (index < steps) {"
-        " held.value = held.value + 1; yield; index = index + 1; }"
-        " self.value = self.value + 1; return held.value + ") + std::to_string(generation) + "; }";
+    const auto source_text = std::string("async uint work(uint seed, uint steps) {"
+                                         " session.Counter held = new session.Counter(); held.value = seed;"
+                                         " uint index = 0; while (index < steps) {"
+                                         " held.value = held.value + 1; yield; index = index + 1; }"
+                                         " self.value = self.value + 1; return held.value + ") +
+                             std::to_string(generation) + "; }";
     auto candidate = take(Program::prepare(take(program.request("continuous.source", source_text))));
     take(program.try_publish(candidate));
 }
@@ -121,20 +131,26 @@ void advance(Runtime& runtime, std::vector<Pending>& tasks, std::uint32_t curren
         } else {
             const auto state = take(pending.task.resume());
             ++pending.resumes;
-            if (state == CoroutineState::suspended) { ++index; continue; }
+            if (state == CoroutineState::suspended) {
+                ++index;
+                continue;
+            }
             require(state == CoroutineState::completed, "Session task entered an unexpected terminal state.");
             const auto result = take(pending.task.result());
             require(result && std::get<std::uint32_t>(*result) == pending.seed + pending.steps + pending.generation,
-                "Session task lost its state or resumed a different code version.");
+                    "Session task lost its state or resumed a different code version.");
             ++totals.completed;
-            if (pending.generation != current) ++totals.old_completions;
+            if (pending.generation != current)
+                ++totals.old_completions;
         }
         if (pending.task.state() == CoroutineState::cancelled)
             require(!pending.task.result(), "Cancelled session task published a result.");
-        if (index + 1 != tasks.size()) tasks[index] = std::move(tasks.back());
+        if (index + 1 != tasks.size())
+            tasks[index] = std::move(tasks.back());
         tasks.pop_back();
     }
-    if (runtime.collection_phase() == CollectionPhase::idle) take(runtime.begin_collection());
+    if (runtime.collection_phase() == CollectionPhase::idle)
+        take(runtime.begin_collection());
     require(take(runtime.collect_step({16})).work_done <= 16, "Session GC exceeded its work budget.");
     ++totals.gc_steps;
 }
@@ -153,7 +169,8 @@ void verify_session(bool native) {
         Program program(runtime, type);
         std::uint32_t generation = 1000;
         publish(program, generation);
-        const auto entry = take(program.bind<std::uint32_t, std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
+        const auto entry =
+            take(program.bind<std::uint32_t, std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
         std::vector<Pending> tasks;
         tasks.reserve(128); // A fixed bounded workload; capacity is outside checkpoints.
 
@@ -181,27 +198,33 @@ void verify_session(bool native) {
                 }
                 advance(runtime, tasks, generation, totals);
                 const auto duration = elapsed_ns(started);
-                if (cycle >= warmup_cycles) totals.max_tick_ns = std::max(totals.max_tick_ns, duration);
+                if (cycle >= warmup_cycles)
+                    totals.max_tick_ns = std::max(totals.max_tick_ns, duration);
                 ++totals.ticks;
             }
-            while (!tasks.empty()) advance(runtime, tasks, generation, totals);
+            while (!tasks.empty())
+                advance(runtime, tasks, generation, totals);
             collect_to_rest(runtime);
             require(runtime.root_count() == 1 && runtime.live_objects() == 1 && runtime.pending_reclamation() == 0,
-                "Session checkpoint retained task roots or objects.");
+                    "Session checkpoint retained task roots or objects.");
             require(std::get<std::uint32_t>(take(runtime.read(receiver.id(), field))) == totals.completed,
-                "Session completion effects do not match validated results.");
+                    "Session completion effects do not match validated results.");
             require(Counter::live == (native ? 1u : 0u), "Session native object lifetime count drifted.");
-            for (const auto address : addresses) code_state(address, true);
+            for (const auto address : addresses)
+                code_state(address, true);
             const auto started = Clock::now();
-            for (std::size_t index = 0; index < 4; ++index) leases[index] = {};
+            for (std::size_t index = 0; index < 4; ++index)
+                leases[index] = {};
             const auto duration = elapsed_ns(started);
-            for (std::size_t index = 0; index < 4; ++index) code_state(addresses[index], false);
+            for (std::size_t index = 0; index < 4; ++index)
+                code_state(addresses[index], false);
             totals.retired_versions += 4;
             leases[4] = {};
             code_state(addresses[4], true); // Only Program retains the current unit.
 
             const auto memory = snapshot();
-            if (cycle + 1 == warmup_cycles) baseline = maximum = memory;
+            if (cycle + 1 == warmup_cycles)
+                baseline = maximum = memory;
             if (cycle >= warmup_cycles) {
                 const auto sample = cycle - warmup_cycles;
                 retirement_ns[sample] = duration;
@@ -209,18 +232,18 @@ void verify_session(bool native) {
                 maximum.live_bytes = std::max(maximum.live_bytes, memory.live_bytes);
                 maximum.private_bytes = std::max(maximum.private_bytes, memory.private_bytes);
                 std::printf("{\"kind\":\"source_session_checkpoint\",\"model\":\"%s\",\"cycle\":%zu,"
-                    "\"live_byte_delta\":%lld,\"private_byte_delta\":%lld,\"retire_four_ns\":%.0f,"
-                    "\"roots\":1,\"objects\":1}\n", model, sample,
-                    static_cast<long long>(memory.live_bytes - baseline.live_bytes),
-                    static_cast<long long>(memory.private_bytes - baseline.private_bytes), duration);
+                            "\"live_byte_delta\":%lld,\"private_byte_delta\":%lld,\"retire_four_ns\":%.0f,"
+                            "\"roots\":1,\"objects\":1}\n",
+                            model, sample, static_cast<long long>(memory.live_bytes - baseline.live_bytes),
+                            static_cast<long long>(memory.private_bytes - baseline.private_bytes), duration);
                 require(memory.live_bytes <= baseline.live_bytes + live_byte_tolerance,
-                    "Session live allocation drift exceeded the 64-KiB checkpoint tolerance.");
+                        "Session live allocation drift exceeded the 64-KiB checkpoint tolerance.");
             }
         }
         require(totals.completed && totals.cancelled_ready && totals.cancelled_suspended && totals.old_completions,
-            "Session missed completion, cancellation or old-version execution.");
+                "Session missed completion, cancellation or old-version execution.");
         require(totals.created == totals.completed + totals.cancelled_ready + totals.cancelled_suspended,
-            "Session lost a task owner.");
+                "Session lost a task owner.");
 
         // Finish the same long-lived host with both ready and suspended work.
         for (std::uint32_t index = 0; index < 32; ++index) {
@@ -243,26 +266,27 @@ void verify_session(bool native) {
         receiver.reset();
         collect_to_rest(runtime);
         require(runtime.root_count() == 0 && runtime.live_objects() == 0 && runtime.pending_reclamation() == 0,
-            "Session shutdown retained runtime resources.");
+                "Session shutdown retained runtime resources.");
     }
     require(Counter::live == 0, "Session Runtime destruction leaked native objects.");
     const auto elapsed = elapsed_ns(session_started);
     std::sort(retirement_ns.begin(), retirement_ns.end());
     const auto median = (retirement_ns[measured_cycles / 2 - 1] + retirement_ns[measured_cycles / 2]) / 2;
     std::printf("{\"kind\":\"source_session_summary\",\"model\":\"%s\",\"ticks\":%zu,"
-        "\"tasks\":%u,\"completed\":%u,\"cancelled_ready\":%u,\"cancelled_suspended\":%u,"
-        "\"completed_old_version\":%u,\"gc_steps\":%zu,\"retired_old_versions\":%zu,"
-        "\"max_live_byte_delta\":%lld,\"final_live_byte_delta\":%lld,\"live_byte_tolerance\":%lld,"
-        "\"max_private_byte_delta\":%lld,\"final_private_byte_delta\":%lld,"
-        "\"retire_four_median_ns\":%.0f,\"retire_four_max_ns\":%.0f,\"max_tick_ns\":%.0f,"
-        "\"wall_ns\":%.0f,\"shutdown_roots\":0,\"shutdown_objects\":0,\"status\":\"PASS\"}\n",
-        model, totals.ticks, totals.created, totals.completed, totals.cancelled_ready, totals.cancelled_suspended,
-        totals.old_completions, totals.gc_steps, totals.retired_versions,
-        static_cast<long long>(maximum.live_bytes - baseline.live_bytes),
-        static_cast<long long>(final.live_bytes - baseline.live_bytes), static_cast<long long>(live_byte_tolerance),
-        static_cast<long long>(maximum.private_bytes - baseline.private_bytes),
-        static_cast<long long>(final.private_bytes - baseline.private_bytes),
-        median, retirement_ns.back(), totals.max_tick_ns, elapsed);
+                "\"tasks\":%u,\"completed\":%u,\"cancelled_ready\":%u,\"cancelled_suspended\":%u,"
+                "\"completed_old_version\":%u,\"gc_steps\":%zu,\"retired_old_versions\":%zu,"
+                "\"max_live_byte_delta\":%lld,\"final_live_byte_delta\":%lld,\"live_byte_tolerance\":%lld,"
+                "\"max_private_byte_delta\":%lld,\"final_private_byte_delta\":%lld,"
+                "\"retire_four_median_ns\":%.0f,\"retire_four_max_ns\":%.0f,\"max_tick_ns\":%.0f,"
+                "\"wall_ns\":%.0f,\"shutdown_roots\":0,\"shutdown_objects\":0,\"status\":\"PASS\"}\n",
+                model, totals.ticks, totals.created, totals.completed, totals.cancelled_ready,
+                totals.cancelled_suspended, totals.old_completions, totals.gc_steps, totals.retired_versions,
+                static_cast<long long>(maximum.live_bytes - baseline.live_bytes),
+                static_cast<long long>(final.live_bytes - baseline.live_bytes),
+                static_cast<long long>(live_byte_tolerance),
+                static_cast<long long>(maximum.private_bytes - baseline.private_bytes),
+                static_cast<long long>(final.private_bytes - baseline.private_bytes), median, retirement_ns.back(),
+                totals.max_tick_ns, elapsed);
 }
 }
 

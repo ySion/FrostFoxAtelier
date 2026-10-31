@@ -2,7 +2,9 @@
 #include "language/source.hpp"
 
 namespace atelier::language::detail {
-struct Rejected { Diagnostic diagnostic; };
+struct Rejected {
+    Diagnostic diagnostic;
+};
 [[noreturn]] inline void reject(SourcePosition position, std::string message) {
     throw Rejected{{position, std::move(message)}};
 }
@@ -10,30 +12,38 @@ struct Rejected { Diagnostic diagnostic; };
 inline bool letter(char value) noexcept {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || value == '_';
 }
-inline bool digit(char value) noexcept { return value >= '0' && value <= '9'; }
+inline bool digit(char value) noexcept {
+    return value >= '0' && value <= '9';
+}
 inline bool reserved(std::string_view value) noexcept {
-    return value == "bool" || value == "true" || value == "false" || value == "for" || value == "break" || value == "continue" ||
-        value == "void" || value == "float" || value == "double" || value == "uint" || value == "int" || value == "const" || value == "if" ||
-        value == "else" || value == "while" || value == "return" || value == "self" ||
-        value == "weak" || value == "null" || value == "new" || value == "observe" || value == "try_acquire" ||
-        value == "async" || value == "yield" || value == "struct" || value == "enum" || value == "class";
+    return value == "bool" || value == "true" || value == "false" || value == "for" || value == "break" ||
+           value == "continue" || value == "void" || value == "float" || value == "double" || value == "uint" ||
+           value == "int" || value == "const" || value == "if" || value == "else" || value == "while" ||
+           value == "return" || value == "self" || value == "weak" || value == "null" || value == "new" ||
+           value == "observe" || value == "try_acquire" || value == "async" || value == "yield" || value == "struct" ||
+           value == "enum" || value == "class";
 }
 // Naming projection only; the parser also checks the accessor's signature.
 inline std::string property_name(std::string_view name) {
     const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
     const auto member = name.substr(start);
-    if ((!member.starts_with("Get") && !member.starts_with("Set")) || member.size() == 3) return {};
+    if ((!member.starts_with("Get") && !member.starts_with("Set")) || member.size() == 3)
+        return {};
     const auto suffix = member.substr(3);
-    if (!letter(suffix.front()) || reserved(suffix)) return {};
+    if (!letter(suffix.front()) || reserved(suffix))
+        return {};
     return std::string(name.substr(0, start)) + std::string(suffix);
 }
 // The project collector and typed parser use the same accessor eligibility rule.
-inline std::string property_name(std::string_view name, std::size_t parameters, bool void_result, bool writable_parameter) {
+inline std::string property_name(std::string_view name, std::size_t parameters, bool void_result,
+                                 bool writable_parameter) {
     auto alias = property_name(name);
-    if (alias.empty()) return {};
+    if (alias.empty())
+        return {};
     const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
     const bool getter = name.substr(start).starts_with("Get");
-    if (getter ? (parameters != 0 || void_result) : (parameters != 1 || !void_result || writable_parameter)) return {};
+    if (getter ? (parameters != 0 || void_result) : (parameters != 1 || !void_result || writable_parameter))
+        return {};
     return alias;
 }
 struct Token {
@@ -48,71 +58,100 @@ public:
     explicit Lexer(std::string_view source) : source_(source) {}
     Token next() {
         for (;;) {
-            while (peek() == ' ' || peek() == '\t' || peek() == '\r' || peek() == '\n' ||
-                   peek() == '\v' || peek() == '\f') advance();
+            while (peek() == ' ' || peek() == '\t' || peek() == '\r' || peek() == '\n' || peek() == '\v' ||
+                   peek() == '\f')
+                advance();
             if (peek() == '/' && peek(1) == '/') {
-                while (!at_end() && peek() != '\n') advance();
+                while (!at_end() && peek() != '\n')
+                    advance();
             } else if (peek() == '/' && peek(1) == '*') {
                 const auto start = position_;
-                advance(); advance();
-                while (!at_end() && !(peek() == '*' && peek(1) == '/')) advance();
-                if (at_end()) reject(start, "Unterminated block comment.");
-                advance(); advance();
-            } else break;
+                advance();
+                advance();
+                while (!at_end() && !(peek() == '*' && peek(1) == '/'))
+                    advance();
+                if (at_end())
+                    reject(start, "Unterminated block comment.");
+                advance();
+                advance();
+            } else
+                break;
         }
         const auto start = position_;
-        if (at_end()) return {Token::Kind::end, {}, start};
+        if (at_end())
+            return {Token::Kind::end, {}, start};
         const auto first = peek();
         if (first == '"') {
             advance();
             while (!at_end() && peek() != '"') {
-                if (peek() == '\n' || peek() == '\r' || peek() == '\0') reject(start, "Invalid character in string literal.");
-                if (peek() == '\\') { advance(); if (at_end()) break; }
+                if (peek() == '\n' || peek() == '\r' || peek() == '\0')
+                    reject(start, "Invalid character in string literal.");
+                if (peek() == '\\') {
+                    advance();
+                    if (at_end())
+                        break;
+                }
                 advance();
             }
-            if (at_end()) reject(start, "Unterminated string literal.");
+            if (at_end())
+                reject(start, "Unterminated string literal.");
             advance();
             return token(Token::Kind::string, start);
         }
         if (letter(first)) {
-            do { advance(); } while (letter(peek()) || digit(peek()));
+            do {
+                advance();
+            } while (letter(peek()) || digit(peek()));
             return token(Token::Kind::identifier, start);
         }
         if (digit(first)) {
-            do { advance(); } while (digit(peek()));
+            do {
+                advance();
+            } while (digit(peek()));
             if (peek() == '.') {
                 advance();
-                while (digit(peek())) advance();
+                while (digit(peek()))
+                    advance();
             }
             if (peek() == 'e' || peek() == 'E') {
                 advance();
-                if (peek() == '+' || peek() == '-') advance();
-                if (!digit(peek())) reject(start, "A numeric exponent requires digits.");
-                while (digit(peek())) advance();
+                if (peek() == '+' || peek() == '-')
+                    advance();
+                if (!digit(peek()))
+                    reject(start, "A numeric exponent requires digits.");
+                while (digit(peek()))
+                    advance();
             }
-            if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D') advance();
-            if (letter(peek()) || digit(peek())) reject(start, "Invalid numeric literal suffix.");
+            if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D')
+                advance();
+            if (letter(peek()) || digit(peek()))
+                reject(start, "Invalid numeric literal suffix.");
             return token(Token::Kind::number, start);
         }
         if (first == '=' || first == '!' || first == '<' || first == '>') {
             advance();
-            if (peek() == '=') advance();
-            else if ((first == '<' || first == '>') && peek() == first) advance();
+            if (peek() == '=')
+                advance();
+            else if ((first == '<' || first == '>') && peek() == first)
+                advance();
             return token(Token::Kind::punctuation, start);
         }
         if (first == '+' || first == '-') {
             advance();
-            if (peek() == first) reject(start, "Increment and decrement operators are not supported; use assignment.");
+            if (peek() == first)
+                reject(start, "Increment and decrement operators are not supported; use assignment.");
             return token(Token::Kind::punctuation, start);
         }
         if (first == '&' || first == '|') {
             advance();
-            if (peek() == first) advance();
+            if (peek() == first)
+                advance();
             return token(Token::Kind::punctuation, start);
         }
         if (first == ':') {
             advance();
-            if (peek() == ':') advance();
+            if (peek() == ':')
+                advance();
             return token(Token::Kind::punctuation, start);
         }
         if (std::string_view("(){}[];.,*/%^~").find(first) != std::string_view::npos) {
@@ -121,6 +160,7 @@ public:
         }
         reject(start, "Unsupported source character.");
     }
+
 private:
     bool at_end() const noexcept { return position_.offset == source_.size(); }
     char peek(std::size_t ahead = 0) const noexcept {
@@ -128,8 +168,11 @@ private:
     }
     void advance() noexcept {
         const auto value = source_[position_.offset++];
-        if (value == '\n') { ++position_.line; position_.column = 1; }
-        else ++position_.column;
+        if (value == '\n') {
+            ++position_.line;
+            position_.column = 1;
+        } else
+            ++position_.column;
     }
     Token token(Token::Kind kind, SourcePosition start) const {
         return {kind, source_.substr(start.offset, position_.offset - start.offset), start};
@@ -145,12 +188,23 @@ inline std::string string_value(const Token& token) {
         char c = token.text[i];
         if (c == '\\') {
             switch (c = token.text[++i]) {
-            case '\\': case '"': break;
-            case 'n': c = '\n'; break;
-            case 'r': c = '\r'; break;
-            case 't': c = '\t'; break;
-            case '0': c = '\0'; break;
-            default: reject(token.position, "Unsupported string escape.");
+            case '\\':
+            case '"':
+                break;
+            case 'n':
+                c = '\n';
+                break;
+            case 'r':
+                c = '\r';
+                break;
+            case 't':
+                c = '\t';
+                break;
+            case '0':
+                c = '\0';
+                break;
+            default:
+                reject(token.position, "Unsupported string escape.");
             }
         }
         value.push_back(c);
@@ -161,9 +215,14 @@ inline std::string string_value(const Token& token) {
 class Tokens {
 public:
     explicit Tokens(std::string_view source) : lexer_(source), token_(lexer_.next()) {}
-    Token consume() { auto previous = token_; token_ = lexer_.next(); return previous; }
+    Token consume() {
+        auto previous = token_;
+        token_ = lexer_.next();
+        return previous;
+    }
     bool accept(std::string_view text) {
-        if (token_.text != text) return false;
+        if (token_.text != text)
+            return false;
         consume();
         return true;
     }
@@ -176,7 +235,8 @@ public:
             ++token_.position.column;
             return first;
         }
-        if (token_.text != text) reject(token_.position, "Expected '" + std::string(text) + "'.");
+        if (token_.text != text)
+            reject(token_.position, "Expected '" + std::string(text) + "'.");
         return consume();
     }
     Token identifier() {
@@ -186,7 +246,10 @@ public:
     }
     std::string qualified_identifier() {
         std::string name(identifier().text);
-        while (accept(".")) { name += '.'; name += identifier().text; }
+        while (accept(".")) {
+            name += '.';
+            name += identifier().text;
+        }
         return name;
     }
     Lexer lexer_;

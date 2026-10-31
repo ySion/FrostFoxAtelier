@@ -3,10 +3,18 @@
 #include "source/diagnostic_types.hpp"
 
 namespace atelier::source {
-namespace detail { struct DiagnosticState; struct DiagnosticAccess; }
-struct DiagnosticOptions { bool timing{}; };
+namespace detail {
+struct DiagnosticState;
+struct DiagnosticAccess;
+}
+struct DiagnosticOptions {
+    bool timing{};
+};
 enum class DiagnosticStatus { unused, ready, running, suspended, completed, failed, cancelled, rejected };
-struct DiagnosticLocation { std::string function; SourceLocation source; };
+struct DiagnosticLocation {
+    std::string function;
+    SourceLocation source;
+};
 struct DiagnosticResources {
     std::size_t objects{}, roots{}, pending_reclamation{};
     CollectionPhase collection_phase{CollectionPhase::idle};
@@ -33,6 +41,7 @@ struct DiagnosticReport {
 class Diagnostics final {
     friend struct detail::DiagnosticAccess;
     std::shared_ptr<detail::DiagnosticState> state_;
+
 public:
     explicit Diagnostics(DiagnosticOptions = {});
     [[nodiscard]] DiagnosticReport snapshot() const;

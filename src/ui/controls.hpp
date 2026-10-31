@@ -5,13 +5,17 @@
 namespace atelier::ui {
 
 enum class VectorAxis { none, x, y, z, w };
-inline constexpr float single_line_height=23;
-inline constexpr float scalar_field_width=140; // One tuple column in a default-width Parameters pane.
-inline constexpr float stow_rail_width=12, stow_collapsed_height=12, stow_arrow_region_height=12;
+inline constexpr float single_line_height = 23;
+inline constexpr float scalar_field_width = 140; // One tuple column in a default-width Parameters pane.
+inline constexpr float stow_rail_width = 12, stow_collapsed_height = 12, stow_arrow_region_height = 12;
 // Shared number/text editor geometry. Content may grow for larger fonts.
-ui_layout::NodeInput single_line_layout(float width=0);
+ui_layout::NodeInput single_line_layout(float width = 0);
 // Slider endpoints are a navigation range; the number retains its legal range.
-struct SliderRange { ControlKey key{}; double minimum{}, maximum{1}; bool operator==(const SliderRange&) const = default; };
+struct SliderRange {
+    ControlKey key{};
+    double minimum{}, maximum{1};
+    bool operator==(const SliderRange&) const = default;
+};
 // A scalar/vector row is a composition of ordinary controls. All keys belong
 // to the caller; field keys remain stable when the row wraps or is regrouped.
 struct NumberField {
@@ -34,7 +38,7 @@ struct ParameterRow {
 };
 // Common caption/body composition for numbers, text and choices. body_key is
 // a row with a 23 DIP minimum height; callers append their ordinary controls to it.
-void append_parameter_row(std::vector<Control>&, const ParameterRow&, float body_minimum=144);
+void append_parameter_row(std::vector<Control>&, const ParameterRow&, float body_minimum = 144);
 // Append 1–4 fields. The caption uses group_key when supplied; its context menu
 // and Ctrl+middle reset address that stable identity. The host owns group undo.
 void append_number_row(std::vector<Control>&, ParameterRow, std::span<const NumberField>);
@@ -55,7 +59,7 @@ struct MenuItem {
 };
 
 // Tree hosts flatten their own hierarchy; Session lays out only described rows.
-inline constexpr std::uint32_t no_tree_node=std::numeric_limits<std::uint32_t>::max();
+inline constexpr std::uint32_t no_tree_node = std::numeric_limits<std::uint32_t>::max();
 // Host nodes in depth-first preorder: a parent precedes its subtree. text is read only while filtering.
 struct TreeNode {
     std::uint32_t parent{no_tree_node};

@@ -23,8 +23,20 @@ inline constinit timing::Marker late{"world.late", "Late", &update};
 inline constinit timing::Marker late_tick{"world.late.tick", "Tick", &late};
 inline constinit timing::Marker late_commands{"world.late.commands", "Commands", &late};
 inline constinit timing::Marker late_flush{"world.late.flush", "Flush", &late};
-inline constexpr std::array<timing::Marker*, 16> markers{&update, &schedule,
-    &pre_physics, &pre_physics_tick, &pre_physics_tasks, &pre_physics_commands, &pre_physics_flush, &simulation,
-    &post_physics, &post_physics_tick, &post_physics_commands, &post_physics_flush,
-    &late, &late_tick, &late_commands, &late_flush};
+inline constexpr std::array<timing::Marker*, 16> markers{&update,
+                                                         &schedule,
+                                                         &pre_physics,
+                                                         &pre_physics_tick,
+                                                         &pre_physics_tasks,
+                                                         &pre_physics_commands,
+                                                         &pre_physics_flush,
+                                                         &simulation,
+                                                         &post_physics,
+                                                         &post_physics_tick,
+                                                         &post_physics_commands,
+                                                         &post_physics_flush,
+                                                         &late,
+                                                         &late_tick,
+                                                         &late_commands,
+                                                         &late_flush};
 }

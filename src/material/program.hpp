@@ -21,6 +21,7 @@ inline constexpr float emission_limit = 65504.f; // Linear emission captured in 
 class TextureInput final {
 public:
     TextureInput() = default;
+
 private:
     friend Result<void> register_program_types(Runtime&);
     std::uint32_t slot_;

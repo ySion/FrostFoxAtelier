@@ -2,7 +2,9 @@
 
 #include <string>
 
-namespace llvm { class MemoryBufferRef; }
+namespace llvm {
+class MemoryBufferRef;
+}
 
 namespace atelier::source::detail {
 

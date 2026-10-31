@@ -21,7 +21,8 @@ public:
         bool fallback{};
         std::string failure;
     };
-    renderer::Result<Drawn> render(renderer::Renderer&,renderer::Frame,renderer::Capture*);
+    renderer::Result<Drawn> render(renderer::Renderer&, renderer::Frame, renderer::Capture*);
+
 private:
     std::optional<renderer::ViewSettings> last_lit_;
 };

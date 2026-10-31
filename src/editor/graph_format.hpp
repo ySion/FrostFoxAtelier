@@ -11,8 +11,8 @@ namespace atelier::editor {
 // A node of a procedural graph document. Its name and canvas position are document data, not
 // node fields, so moving a node on the canvas does not stamp it.
 struct GraphNode {
-    std::string name;                 // [A-Za-z_][A-Za-z0-9_]*, unique in its document.
-    ObjectRoot node;                  // Null when the Runtime has no node type of the saved name.
+    std::string name; // [A-Za-z_][A-Za-z0-9_]*, unique in its document.
+    ObjectRoot node; // Null when the Runtime has no node type of the saved name.
     std::array<float, 2> position{};
     // Saved JSON written over the node's own on save: its whole entry when `node` is null,
     // otherwise the property leaves that did not decode and the input ports that did not connect.

@@ -8,16 +8,17 @@
 
 namespace atelier::editor {
 namespace output_control {
-inline constexpr ui::ControlKey table=691,base=1ULL<<38;
-inline constexpr ui::ControlKey level=base,category=base+1,search=base+2,body=base+3,
-    locate=base+4,open_directory=base+5,health=base+6,clear_filters=base+7,empty=base+8;
+inline constexpr ui::ControlKey table = 691, base = 1ULL << 38;
+inline constexpr ui::ControlKey level = base, category = base + 1, search = base + 2, body = base + 3,
+                                locate = base + 4, open_directory = base + 5, health = base + 6,
+                                clear_filters = base + 7, empty = base + 8;
 }
 
 // One UI-thread projection, independent of the logging backend's worker. Disk
 // readers and explicitly unpersisted owned records share the same cache/model.
 class Output {
 public:
-    static constexpr std::size_t maximum_records=4096,maximum_body_bytes=8*1024*1024;
+    static constexpr std::size_t maximum_records = 4096, maximum_body_bytes = 8 * 1024 * 1024;
     struct Item {
         ui::TableKey key{};
         logging::Record record;
@@ -25,17 +26,18 @@ public:
         std::optional<logging::SubmitStatus> rejection;
     };
     struct Row {
-        ui::TableKey key{},record_key{};
+        ui::TableKey key{}, record_key{};
         std::uint64_t count{1};
     };
     struct Statistics {
         std::size_t body_bytes{};
-        std::uint64_t evicted_records{},evicted_body_bytes{},invalid_owned{},duplicate_owned{},uncertain_submissions{};
+        std::uint64_t evicted_records{}, evicted_body_bytes{}, invalid_owned{}, duplicate_owned{},
+            uncertain_submissions{};
     };
     Output();
     ~Output();
-    Output(const Output&)=delete;
-    Output& operator=(const Output&)=delete;
+    Output(const Output&) = delete;
+    Output& operator=(const Output&) = delete;
     logging::Result<void> add_run(std::filesystem::path);
     void source_ended(const std::filesystem::path&);
     logging::SubmitResult submit_owned(logging::Entry);
@@ -43,8 +45,8 @@ public:
     // child JSONL. Retains at most three UTF-8 bytes per stream across chunks;
     // invalid bytes and literal backslashes are reversibly escaped. Offsets are
     // original byte positions; ended flushes a final fragment without a newline.
-    void capture_raw(const std::filesystem::path& directory,bool standard_error,
-        std::string_view bytes,std::uint64_t offset,bool ended);
+    void capture_raw(const std::filesystem::path& directory, bool standard_error, std::string_view bytes,
+                     std::uint64_t offset, bool ended);
     // Standalone consumer seam only. Missing stream identity is assigned here;
     // recent 4096 supplied identities are checked before repeat counting. The
     // local assigned stream never accepts caller replay, even after eviction.
@@ -52,20 +54,21 @@ public:
     bool accept_owned(logging::Record);
     bool poll(); // At most one Reader budget (256 KiB / 256 lines) per call.
     bool apply(const ui::Action&);
-    void filter(logging::Severity minimum,std::wstring category={},std::wstring text={});
+    void filter(logging::Severity minimum, std::wstring category = {}, std::wstring text = {});
     bool select(ui::TableKey);
-    const std::deque<Item>& records() const noexcept {return records_;}
+    const std::deque<Item>& records() const noexcept { return records_; }
     const std::vector<Row>& rows() const;
     const logging::Record* record(ui::TableKey) const;
     const logging::Record* selected_record() const;
     std::optional<logging::SourceLocation> selected_source() const;
     std::filesystem::path selected_directory() const;
     const logging::ReaderStatus* source_status(const std::filesystem::path&) const;
-    const Statistics& statistics() const noexcept {return statistics_;}
+    const Statistics& statistics() const noexcept { return statistics_; }
     const std::wstring& health_text() const;
     std::shared_ptr<const ui::TableData> table() const;
     std::shared_ptr<ui::CodeDocument> body() const;
-    void append(std::vector<ui::Control>&,ui::ControlKey,ui_language::LiveDocument&,float height);
+    void append(std::vector<ui::Control>&, ui::ControlKey, ui_language::LiveDocument&, float height);
+
 private:
     struct Stream;
     std::vector<std::unique_ptr<Stream>> streams_;
@@ -73,24 +76,24 @@ private:
     bool pending_change_{};
     std::string memory_run_;
     std::optional<logging::RunInfo> host_;
-    std::uint64_t sequence_{},next_key_{1};
-    using Identity=std::tuple<std::string,std::uint32_t,std::uint64_t,std::uint64_t>;
+    std::uint64_t sequence_{}, next_key_{1};
+    using Identity = std::tuple<std::string, std::uint32_t, std::uint64_t, std::uint64_t>;
     std::set<Identity> owned_identities_;
     std::deque<Identity> owned_order_;
     std::deque<Item> records_;
     Statistics statistics_;
     std::size_t unpersisted_{};
     logging::Severity minimum_{logging::Severity::trace};
-    std::array<float,5> widths_{82,130,600,240,220};
-    std::wstring category_,query_,attachment_error_;
+    std::array<float, 5> widths_{82, 130, 600, 240, 220};
+    std::wstring category_, query_, attachment_error_;
     mutable bool dirty_{true};
     mutable bool health_dirty_{true};
     mutable std::vector<Row> rows_;
     mutable std::shared_ptr<const ui::TableData> table_;
     mutable std::shared_ptr<ui::CodeDocument> body_;
-    mutable ui::TableKey selected_{},body_key_{};
+    mutable ui::TableKey selected_{}, body_key_{};
     mutable std::wstring health_;
-    void retain(logging::Record,std::filesystem::path = {},std::optional<logging::SubmitStatus> = {});
+    void retain(logging::Record, std::filesystem::path = {}, std::optional<logging::SubmitStatus> = {});
     void rebuild() const;
     void update_health() const;
     const Item* item(ui::TableKey) const;

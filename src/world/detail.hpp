@@ -9,9 +9,18 @@
 
 namespace atelier::world::detail {
 
-struct WorldLifetime { bool open{true}; };
-struct EntityData { World* world{}; bool enabled{}; bool transitioning{}; };
-struct ComponentData { ObjectId owner; bool enabled{}; };
+struct WorldLifetime {
+    bool open{true};
+};
+struct EntityData {
+    World* world{};
+    bool enabled{};
+    bool transitioning{};
+};
+struct ComponentData {
+    ObjectId owner;
+    bool enabled{};
+};
 struct FlagScope {
     bool& flag;
     explicit FlagScope(bool& value) : flag(value) { flag = true; }
@@ -54,7 +63,9 @@ struct Access {
     static bool transitioning(const Entity& value) noexcept { return value.transitioning_; }
 };
 
-inline std::unexpected<Error> error(ErrorCode code, std::string message) { return std::unexpected(Error{code, std::move(message)}); }
+inline std::unexpected<Error> error(ErrorCode code, std::string message) {
+    return std::unexpected(Error{code, std::move(message)});
+}
 Result<EntityData> entity_data(Runtime&, ObjectId);
 Result<ComponentData> component_data(Runtime&, ObjectId);
 Result<void> validate_tree(Runtime&, ObjectId entity, std::span<const ObjectRoot>);
@@ -67,12 +78,16 @@ Result<void> validate_object(Runtime&, ObjectId, TypeId);
 // The validator registered with BodySettings.
 Result<void> body_rules(const BodySettings&);
 // Checks a native value against its reflected type's hard bounds and validators.
-template<class T> Result<void> check_value(Runtime& runtime, const T& value) {
+template <class T>
+Result<void> check_value(Runtime& runtime, const T& value) {
     auto type = runtime.native_type<T>();
-    if (!type) return std::unexpected(type.error());
+    if (!type)
+        return std::unexpected(type.error());
     auto failure = runtime.validate_value(*type, std::as_bytes(std::span{&value, 1}));
-    if (!failure) return std::unexpected(failure.error());
-    if (*failure) return std::unexpected((*failure)->error);
+    if (!failure)
+        return std::unexpected(failure.error());
+    if (*failure)
+        return std::unexpected((*failure)->error);
     return {};
 }
 Result<void> queue_translation(Runtime&, ObjectId component, math::Vector3);
@@ -108,8 +123,8 @@ struct SpaceGraph {
 // only a chain whose own TRS or parent matrix changed.
 struct SpaceCache {
     struct Entry {
-        Trs local;                 // As read in pass `checked`.
-        ObjectId parent;           // Resolved spatial parent; null is world space.
+        Trs local; // As read in pass `checked`.
+        ObjectId parent; // Resolved spatial parent; null is world space.
         std::uint64_t checked{}, version{}, parent_version{};
         math::Matrix4 world{};
         bool spatial{}, composed{};
@@ -124,17 +139,21 @@ struct SpaceCache {
     Map<ObjectId, Error> failures;
     SpaceGraph relations;
     std::vector<ObjectId> path;
-    std::uint64_t pass{1};         // Above every fresh entry's `checked` and `failed`.
-    ObjectId failed;               // The Entity whose relation or TRS failed the latest matrix().
+    std::uint64_t pass{1}; // Above every fresh entry's `checked` and `failed`.
+    ObjectId failed; // The Entity whose relation or TRS failed the latest matrix().
     explicit SpaceCache(Runtime& runtime) : relations(runtime) {}
     void clear() noexcept;
-    void begin_pass() noexcept { ++pass; failures.clear(); }
+    void begin_pass() noexcept {
+        ++pass;
+        failures.clear();
+    }
     Result<math::Matrix4> matrix(ObjectId);
     Result<ObjectId> parent(ObjectId);
     // The visited chain of the latest matrix() call in this pass.
     [[nodiscard]] const Entry* entry(ObjectId id) const noexcept { return entries.find(id); }
     // The topmost node with a zero scale axis on that chain, else `object`.
     [[nodiscard]] ObjectId degenerate_root(ObjectId object) const noexcept;
+
 private:
     Result<Entry*> resolve(ObjectId);
 };
@@ -144,9 +163,20 @@ private:
 namespace atelier::world {
 
 struct World::Impl {
-    struct Task { ObjectId object, entity; Coroutine coroutine; };
-    struct Pending { std::uint64_t serial; Request request; ObjectId owner; bool member_required{}; };
-    struct Scheduled { ObjectId object, entity; const Behavior* behavior{}; };
+    struct Task {
+        ObjectId object, entity;
+        Coroutine coroutine;
+    };
+    struct Pending {
+        std::uint64_t serial;
+        Request request;
+        ObjectId owner;
+        bool member_required{};
+    };
+    struct Scheduled {
+        ObjectId object, entity;
+        const Behavior* behavior{};
+    };
     // An isolated behavior failure. Begin-faulted objects never began; Tick-
     // faulted objects began and still receive End. Cleared when the object
     // leaves running participation or by clear_faults().
@@ -165,13 +195,16 @@ struct World::Impl {
         TypeId type;
         const Behavior* behavior{};
         ObjectId parent;
-        ObjectId origin;            // Explicit non-world spatial origin, if any.
-        std::size_t size{1};        // Members in its composition subtree, itself included.
+        ObjectId origin; // Explicit non-world spatial origin, if any.
+        std::size_t size{1}; // Members in its composition subtree, itself included.
         bool enabled{}, eligible{}, begun{};
         Fault fault{};
         std::vector<ComponentState> components;
     };
-    struct Bucket { TypeId type; std::vector<ObjectId> objects; };
+    struct Bucket {
+        TypeId type;
+        std::vector<ObjectId> objects;
+    };
 
     Runtime& runtime;
     Types types;
@@ -188,7 +221,10 @@ struct World::Impl {
     std::uint64_t revision{1}; // World::revision; advanced by changed().
     std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
     std::vector<Bucket> buckets;
-    struct Registration { TypeId type; CapabilityPredicate predicate; };
+    struct Registration {
+        TypeId type;
+        CapabilityPredicate predicate;
+    };
     std::vector<Registration> registrations;
     std::vector<std::vector<CapabilityMember>> capable; // Rebuilt with `buckets`.
     static constexpr std::uint32_t bit(CapabilityId id) noexcept { return 1u << id.value; }
@@ -196,26 +232,42 @@ struct World::Impl {
     // Tick prerequisite edges, both directions; only between current participants.
     std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites, dependents;
     void forget_prerequisites(ObjectId) noexcept;
-    struct SimulationEntry { std::uint64_t id; std::shared_ptr<const Simulation> simulation; };
+    struct SimulationEntry {
+        std::uint64_t id;
+        std::shared_ptr<const Simulation> simulation;
+    };
     std::vector<SimulationEntry> simulations;
     std::uint64_t next_simulation{1};
     detail::SpaceCache space;
     std::vector<Task> tasks;
-    struct Translation { ObjectId component, entity; math::Vector3 delta; };
+    struct Translation {
+        ObjectId component, entity;
+        math::Vector3 delta;
+    };
     std::vector<Translation> translations;
-    struct TranslationChange { ObjectId entity; Trs value; };
+    struct TranslationChange {
+        ObjectId entity;
+        Trs value;
+    };
     std::vector<TranslationChange> translation_changes;
     Result<void> apply_translations();
-    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase, std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
+    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase,
+                             std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
     Map<ObjectId, Trs> pose_targets;
     std::vector<std::pair<ObjectId, Trs>> pose_locals;
     std::vector<Pending> pending;
     std::uint64_t next_request{1};
-    struct Binding { TypeId type; Behavior behavior; };
+    struct Binding {
+        TypeId type;
+        Behavior behavior;
+    };
     std::deque<Binding> behaviors;
     Result<const Behavior*> behavior(TypeId) const;
     LifecycleObserver observer;
-    struct Subscription { std::uint64_t id; std::shared_ptr<LifecycleObserver> observer; };
+    struct Subscription {
+        std::uint64_t id;
+        std::shared_ptr<LifecycleObserver> observer;
+    };
     std::vector<Subscription> subscriptions;
     std::uint64_t next_subscription{1};
 
@@ -227,11 +279,18 @@ struct World::Impl {
     // one entry; a pass without it resolves it. Presentation and lighting
     // passes are extraction calls; physics and command passes are updates.
     struct DiagnosticKey {
-        ObjectId object; DiagnosticKind kind; DiagnosticPhase phase; std::string field;
+        ObjectId object;
+        DiagnosticKind kind;
+        DiagnosticPhase phase;
+        std::string field;
         bool operator==(const DiagnosticKey&) const = default;
     };
-    struct DiagnosticKeyHash { std::size_t operator()(const DiagnosticKey&) const noexcept; };
-    struct Recent { std::uint64_t serial, pass; };
+    struct DiagnosticKeyHash {
+        std::size_t operator()(const DiagnosticKey&) const noexcept;
+    };
+    struct Recent {
+        std::uint64_t serial, pass;
+    };
     std::unordered_map<DiagnosticKey, Recent, DiagnosticKeyHash> recent;
     std::array<std::uint64_t, std::size_t(DiagnosticPhase::lifecycle) + 1> passes{};
     void begin_pass(DiagnosticPhase) noexcept;
@@ -241,7 +300,7 @@ struct World::Impl {
     // level failure, which is not reported as an object diagnostic).
     bool contain(const Error&, Diagnostic);
     bool contain(const Error&, DiagnosticKind, DiagnosticPhase, ObjectId object, ObjectId entity,
-        std::vector<std::string> field = {}, Severity = Severity::error);
+                 std::vector<std::string> field = {}, Severity = Severity::error);
     // A broken World index is a World-level failure; once seen, nothing is isolated.
     mutable bool invariant_failed{};
     Error inconsistent(const char* message) const {
@@ -280,7 +339,10 @@ struct World::Impl {
     void rebuild_schedule();
     void rebuild_buckets();
 
-    struct AdmissionEntry { TypeId type; Admission admission; };
+    struct AdmissionEntry {
+        TypeId type;
+        Admission admission;
+    };
     std::vector<AdmissionEntry> admissions;
     // Runs each admission on the candidates of its type; empty selections are skipped.
     Result<void> check_admissions(std::span<const ObjectId> candidates, ObjectId proposed_owner = {});
@@ -288,7 +350,8 @@ struct World::Impl {
     // Whether an edit of this member component runs admissions; detached composition does not.
     Result<bool> admitted(ObjectId component) const;
     // Shared by World::write: write, then type rules and admissions; `restore` undoes a rejected edit.
-    template<class Write, class Restore> Result<void> checked_write(ObjectId, bool entity, Write&&, Restore&&);
+    template <class Write, class Restore>
+    Result<void> checked_write(ObjectId, bool entity, Write&&, Restore&&);
     Result<void> check_edit(ObjectId component);
     void cancel_tasks(ObjectId target = {}, bool entity = true) noexcept;
     void halt() noexcept;

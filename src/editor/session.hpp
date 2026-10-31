@@ -17,8 +17,18 @@ struct Parameter {
     float minimum{-10000.f}, maximum{10000.f}, drag_step{.01f};
     float default_value{};
 };
-struct ComponentType { TypeId type; std::string name; };
-struct Property { std::string name; world::FieldPath path; TypeId type; Scalar value; std::string label,category,description; FieldRange range{}; };
+struct ComponentType {
+    TypeId type;
+    std::string name;
+};
+struct Property {
+    std::string name;
+    world::FieldPath path;
+    TypeId type;
+    Scalar value;
+    std::string label, category, description;
+    FieldRange range{};
+};
 struct Selection {
     ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;
@@ -30,7 +40,11 @@ enum class LoadPolicy { tolerant, strict };
 enum class SessionRole { runtime, editor };
 // Saved scene data the loader could not apply, addressed by its scene record path
 // (for example properties.speed, space or name). It is written back on save.
-struct RetainedEntry { std::vector<std::string> path; std::string value; world::DiagnosticKind kind{}; };
+struct RetainedEntry {
+    std::vector<std::string> path;
+    std::string value;
+    world::DiagnosticKind kind{};
+};
 struct RetainedView {
     std::string type; // Original type of a placeholder object; empty when the type resolved.
     std::vector<RetainedEntry> entries;
@@ -48,23 +62,30 @@ struct MissingResource {
 // leaves only the mesh unavailable.
 struct ResourceLess {
     using is_transparent = void;
-    bool operator()(std::pair<assets::AssetKind, std::string_view> a, std::pair<assets::AssetKind, std::string_view> b) const noexcept { return a < b; }
+    bool operator()(std::pair<assets::AssetKind, std::string_view> a,
+                    std::pair<assets::AssetKind, std::string_view> b) const noexcept {
+        return a < b;
+    }
 };
 using UnavailableResources = std::map<std::pair<assets::AssetKind, std::string>, MissingResource, ResourceLess>;
 
 // Resource publications own their exact content until sent; ordinary changes
 // carry only JSON text. Resource keys are part of that text.
-struct LiveChange {std::string text;material::ImageRef texture;std::shared_ptr<const assets::MeshAsset> mesh{};};
+struct LiveChange {
+    std::string text;
+    material::ImageRef texture;
+    std::shared_ptr<const assets::MeshAsset> mesh{};
+};
 
 // Owning inspection data; paths are declarations, never Runtime fields or slots.
 struct MaterialParameterView {
     std::string path;
     std::uint32_t components{}; // 0 is a texture binding.
-    material::LocalValue value,initial;
+    material::LocalValue value, initial;
 };
 struct MaterialView {
-    std::string asset_key,parent_key;
-    bool source{},scene{},default_material{};
+    std::string asset_key, parent_key;
+    bool source{}, scene{}, default_material{};
     std::optional<source::SourceFile> source_file;
     std::vector<MaterialParameterView> declarations;
     std::vector<material::Override> entries;
@@ -98,7 +119,9 @@ public:
     // Entity-level multi-selection; the active Entity (selection().entity) is the
     // last entry when it is one of them. Selection is view state, not history.
     std::span<const ObjectId> selected_entities() const noexcept { return selected_entities_; }
-    bool is_selected(ObjectId entity) const noexcept { return std::ranges::find(selected_entities_,entity)!=selected_entities_.end(); }
+    bool is_selected(ObjectId entity) const noexcept {
+        return std::ranges::find(selected_entities_, entity) != selected_entities_.end();
+    }
     std::wstring_view name(ObjectId) const noexcept;
     // The document's EnvironmentComponent, disabled or not; null without one.
     ObjectId environment() const;
@@ -126,12 +149,13 @@ public:
     Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
     Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
     Result<world::Commit> duplicate_selected(); // Fresh Entity/Component identities; immutable resources stay shared.
-    Result<world::Commit> reparent(ObjectId child,ObjectId parent,
-        world::ReparentRule = world::ReparentRule::keep_world,std::size_t index = world::append);
-    Result<void> set_transform(ObjectId,world::Trs);
+    Result<world::Commit> reparent(ObjectId child, ObjectId parent,
+                                   world::ReparentRule = world::ReparentRule::keep_world,
+                                   std::size_t index = world::append);
+    Result<void> set_transform(ObjectId, world::Trs);
     Result<void> remove_transform(ObjectId);
-    Result<world::Commit> set_space_reference(ObjectId,std::optional<ObjectId>,
-        world::ReparentRule = world::ReparentRule::keep_world);
+    Result<world::Commit> set_space_reference(ObjectId, std::optional<ObjectId>,
+                                              world::ReparentRule = world::ReparentRule::keep_world);
     Result<world::Commit> add_component(TypeId);
     Result<world::Commit> remove_component(ObjectId);
     Result<std::vector<ComponentType>> component_types() const;
@@ -142,9 +166,10 @@ public:
     // Whole-TRS edit of several Entities (viewport handles, modal G/R/S,
     // Euler fields). Preview writes complete transforms in the same order;
     // commit_edit records one history entry, cancel_edit restores all.
-    Result<void> begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session, bool amend_creation = false);
+    Result<void> begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session,
+                                 bool amend_creation = false);
     // Bounds |scale|: negative axes mirror and zero is stored, as World accepts them.
-    static constexpr float maximum_scale=10000.f;
+    static constexpr float maximum_scale = 10000.f;
     // Stable gesture origin; previews never feed their converted values back into the next preview.
     Result<world::Trs> original_transform(std::uint64_t control_session, ObjectId component) const;
     Result<void> preview_transform(std::uint64_t control_session, std::span<const world::Trs>);
@@ -160,55 +185,60 @@ public:
     Result<void> preview_group_edit(std::uint64_t control_session, std::span<const Scalar>);
     // Explicit import publication, never a parameter-history entry. Existing
     // resource roots retain identity and future captures resolve current pixels.
-    Result<void> reimport_texture(Project&,std::string_view key,const std::filesystem::path& source);
-    Result<void> publish_texture(std::string_view key,material::ImageRef);
-    Result<void> reimport_mesh(Project&,std::string_view key,const std::filesystem::path& source);
-    Result<void> publish_mesh(assets::Reader&,const assets::MeshAsset&);
+    Result<void> reimport_texture(Project&, std::string_view key, const std::filesystem::path& source);
+    Result<void> publish_texture(std::string_view key, material::ImageRef);
+    Result<void> reimport_mesh(Project&, std::string_view key, const std::filesystem::path& source);
+    Result<void> publish_mesh(assets::Reader&, const assets::MeshAsset&);
     // With a missing list, materials and textures the reader cannot provide become
     // stand-ins and are reported there; without one they fail. Stand-ins are never
     // edited or saved as assets.
-    Result<ObjectRoot> material_resource(assets::Reader&,std::string_view key,std::vector<MissingResource>* missing = nullptr);
-    Result<ObjectRoot> material_resource(assets::Reader&,const assets::MaterialAsset&,std::vector<MissingResource>* missing = nullptr);
+    Result<ObjectRoot> material_resource(assets::Reader&, std::string_view key,
+                                         std::vector<MissingResource>* missing = nullptr);
+    Result<ObjectRoot> material_resource(assets::Reader&, const assets::MaterialAsset&,
+                                         std::vector<MissingResource>* missing = nullptr);
     // Publish author content on the existing asset identity, without history. A
     // supplied MS snapshot is authoritative: never reread newer text from disk.
-    Result<ObjectRoot> publish_material(assets::Reader&,const assets::MaterialAsset&,
-        std::optional<source::SourceFile> exact_source = {},std::vector<MissingResource>* missing = nullptr);
+    Result<ObjectRoot> publish_material(assets::Reader&, const assets::MaterialAsset&,
+                                        std::optional<source::SourceFile> exact_source = {},
+                                        std::vector<MissingResource>* missing = nullptr);
     // The mesh asset's default material per slot, as this document's shared material assets.
     // Unavailable ones always stand in and are reported in `missing` when given.
-    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&,const assets::MeshAsset&,std::vector<MissingResource>* missing = nullptr);
+    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&, const assets::MeshAsset&,
+                                                                     std::vector<MissingResource>* missing = nullptr);
     // What each slot shows where no component binds it: the default material, else the imported surface.
     // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
-    Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces(assets::Reader&,const assets::MeshAsset&);
+    Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces(assets::Reader&,
+                                                                                          const assets::MeshAsset&);
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
-    Result<ObjectRoot> open_material(Project&,std::string_view key);
+    Result<ObjectRoot> open_material(Project&, std::string_view key);
     // The unavailable Mesh, Material, Texture or sky map a stand-in in this document replaces.
-    const MissingResource* unavailable(assets::AssetKind,std::string_view key) const;
+    const MissingResource* unavailable(assets::AssetKind, std::string_view key) const;
     Result<assets::MaterialAsset> material_asset(ObjectId) const;
     Result<std::vector<assets::MaterialAsset>> material_assets() const;
     std::vector<source::SourceFile> material_sources() const;
     Result<MaterialView> inspect_material(ObjectId) const;
     std::vector<ObjectId> material_objects() const;
-    Result<void> begin_material_edit(ObjectId,std::uint64_t control_session);
-    Result<void> preview_material_entry(std::uint64_t,material::Override,Project* = nullptr);
+    Result<void> begin_material_edit(ObjectId, std::uint64_t control_session);
+    Result<void> preview_material_entry(std::uint64_t, material::Override, Project* = nullptr);
     Result<void> commit_material_edit(std::uint64_t);
     Result<void> cancel_material_edit();
-    Result<void> set_material_texture(Project&,ObjectId,std::string_view path,std::string_view key);
-    Result<void> assign_material(Project&,ObjectId component,std::string_view slot,std::string_view key);
-    Result<void> clear_material(ObjectId component,std::string_view slot);
-    Result<ObjectRoot> create_scene_material(ObjectId component,std::string_view slot);
+    Result<void> set_material_texture(Project&, ObjectId, std::string_view path, std::string_view key);
+    Result<void> assign_material(Project&, ObjectId component, std::string_view slot, std::string_view key);
+    Result<void> clear_material(ObjectId component, std::string_view slot);
+    Result<ObjectRoot> create_scene_material(ObjectId component, std::string_view slot);
     // Project resolves a newly enabled texture that has not been loaded before.
-    Result<void> set_material_override(ObjectId,std::string_view path,bool,Project* = nullptr);
-    Result<void> discard_material_override(ObjectId,std::string_view path);
-    Result<void> save_material(Project&,std::string_view key);
+    Result<void> set_material_override(ObjectId, std::string_view path, bool, Project* = nullptr);
+    Result<void> discard_material_override(ObjectId, std::string_view path);
+    Result<void> save_material(Project&, std::string_view key);
     // The current Project resolves newly active texture keys; history owns no images.
-    Result<void> material_undo(std::string_view key,bool redo=false,Project* = nullptr);
+    Result<void> material_undo(std::string_view key, bool redo = false, Project* = nullptr);
     bool material_dirty(std::string_view key) const;
     std::vector<std::string> dirty_materials() const;
     bool material_editing(std::uint64_t control_session) const noexcept;
     ObjectId loaded_material(std::string_view key) const;
     bool is_material(ObjectId) const;
-    bool material_can_undo(std::string_view key,bool redo=false) const;
+    bool material_can_undo(std::string_view key, bool redo = false) const;
     bool owns_edit(std::uint64_t control_session) const noexcept;
     Result<world::Commit> undo(Project* = nullptr);
     Result<world::Commit> redo(Project* = nullptr);
@@ -228,11 +258,11 @@ public:
     // the game already destroyed the target, warning command_rejected when Play
     // cannot follow the edit, error command_rejected when Play diverged. See
     // docs/modules/editor/projects.md for the batch format.
-    Result<std::vector<world::Diagnostic>> apply_live(std::string_view batch,Project&);
+    Result<std::vector<world::Diagnostic>> apply_live(std::string_view batch, Project&);
     // Editor-side graphs for add and attach changes: identities are kept and
     // references leaving the graph are written as document identities.
     Result<std::string> serialize_live_subtree(ObjectId root) const;
-    Result<std::string> serialize_live_components(ObjectId entity,std::span<const ObjectId> components) const;
+    Result<std::string> serialize_live_components(ObjectId entity, std::span<const ObjectId> components) const;
     // While forwarding, each applied change, undo and redo of this document is also
     // recorded as Play change ops with the values it left. Previews and cancels are
     // recorded too; a later preview of the same target replaces the earlier op.
@@ -243,9 +273,10 @@ public:
     Result<std::vector<LiveChange>> take_live_ops();
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
-    Result<world::Commit> instantiate_subtree(std::string_view,Project&,ObjectId parent = {});
-    static Result<std::unique_ptr<Session>> deserialize(std::string_view,Project&,Prepare = {},LoadPolicy = LoadPolicy::tolerant,
-        SessionRole = SessionRole::runtime);
+    Result<world::Commit> instantiate_subtree(std::string_view, Project&, ObjectId parent = {});
+    static Result<std::unique_ptr<Session>> deserialize(std::string_view, Project&, Prepare = {},
+                                                        LoadPolicy = LoadPolicy::tolerant,
+                                                        SessionRole = SessionRole::runtime);
     // Diagnostics recorded by the load that created this document.
     std::span<const world::Diagnostic> load_issues() const noexcept { return load_issues_; }
     // Current unresolved data of the document; entries disappear when edited or discarded.
@@ -259,18 +290,34 @@ public:
     std::size_t placeholder_count() const noexcept;
     std::optional<std::uint64_t> document_identity(ObjectId) const;
     Result<ObjectId> local_object(std::uint64_t) const;
-    bool dirty() const noexcept { return !saved_cursor_ || *saved_cursor_!=cursor_ || active_ || group_ || transform_ || (material_edit_ && material_edit_->scene); }
-    void mark_saved() noexcept { if(saved_cursor_!=cursor_) {saved_cursor_=cursor_;++revision_;} }
-    void mark_modified() noexcept { if(saved_cursor_) {saved_cursor_.reset();++revision_;} }
+    bool dirty() const noexcept {
+        return !saved_cursor_ || *saved_cursor_ != cursor_ || active_ || group_ || transform_ ||
+               (material_edit_ && material_edit_->scene);
+    }
+    void mark_saved() noexcept {
+        if (saved_cursor_ != cursor_) {
+            saved_cursor_ = cursor_;
+            ++revision_;
+        }
+    }
+    void mark_modified() noexcept {
+        if (saved_cursor_) {
+            saved_cursor_.reset();
+            ++revision_;
+        }
+    }
     // Monotonic authoring observation token, independent of undo cursor reuse.
     std::uint64_t revision() const noexcept { return revision_; }
-    bool editing() const noexcept { return active_.has_value() || transform_.has_value() || material_edit_.has_value() || group_.has_value(); }
+    bool editing() const noexcept {
+        return active_.has_value() || transform_.has_value() || material_edit_.has_value() || group_.has_value();
+    }
     std::size_t undo_count() const noexcept { return cursor_; }
     std::size_t redo_count() const noexcept { return history_.size() - cursor_; }
     // History entries ever recorded; eviction at the history limit does not lower it.
     std::uint64_t recorded() const noexcept { return recorded_; }
     static constexpr std::size_t maximum_entities = 8192;
     static constexpr std::size_t maximum_components = 1024;
+
 private:
     struct ReferenceFieldChange {
         ObjectRoot root;
@@ -284,27 +331,39 @@ private:
         std::vector<world::EntityRemoval> removals;
         std::optional<ReferenceFieldChange> cleared_camera;
     };
-    struct ComponentChange { bool added{}; world::ComponentRemoval removal; bool created_transform{}; };
+    struct ComponentChange {
+        bool added{};
+        world::ComponentRemoval removal;
+        bool created_transform{};
+    };
     struct ReparentChange {
-        struct Entry {ObjectRoot root;world::Trs before,after;};
+        struct Entry {
+            ObjectRoot root;
+            world::Trs before, after;
+        };
         ObjectRoot root;
-        ObjectId before_parent,after_parent;
-        std::size_t before_index{},after_index{};
+        ObjectId before_parent, after_parent;
+        std::size_t before_index{}, after_index{};
         std::vector<Entry> transforms;
     };
     struct TransformPresenceChange {
         ObjectRoot root;
-        std::optional<world::Trs> before,after;
-        std::optional<ObjectId> before_origin,after_origin;
+        std::optional<world::Trs> before, after;
+        std::optional<ObjectId> before_origin, after_origin;
     };
-    struct SpaceReferenceChange {ObjectRoot root;std::optional<ObjectId> before_origin,after_origin;world::Trs before,after;bool spatial{};};
+    struct SpaceReferenceChange {
+        ObjectRoot root;
+        std::optional<ObjectId> before_origin, after_origin;
+        world::Trs before, after;
+        bool spatial{};
+    };
     struct FieldChange {
         ObjectRoot root;
         ObjectId entity;
         world::FieldPath path;
         std::uint64_t control_session{};
         // TRS is one invariant group; ordinary business properties keep exact scalar types.
-        std::variant<world::Trs,Scalar> before, after;
+        std::variant<world::Trs, Scalar> before, after;
     };
     struct FieldGroupChange {
         ObjectRoot root;
@@ -314,21 +373,49 @@ private:
         std::vector<Scalar> before, after;
     };
     struct TransformChange {
-        struct Entry { ObjectRoot root; ObjectId entity; world::Trs before, after; };
+        struct Entry {
+            ObjectRoot root;
+            ObjectId entity;
+            world::Trs before, after;
+        };
         std::vector<Entry> entries;
         std::uint64_t control_session{};
         Selection inspection;
         bool amend_creation{}; // Initial placement belongs to the immediately preceding creation entry.
     };
-    struct NameChange { ObjectRoot root; std::wstring before, after; };
-    struct BodyChange { ObjectRoot root; ObjectId entity; physics::BodySettings before, after; };
-    struct MaterialBindingChange {ObjectRoot root;ObjectId entity;std::vector<presentation::MaterialBinding> before,after;};
-    struct MaterialEntryChange {std::string path;std::optional<material::Override> before,after;};
-    struct MaterialValueChange {ObjectRoot root;std::vector<MaterialEntryChange> entries;};
+    struct NameChange {
+        ObjectRoot root;
+        std::wstring before, after;
+    };
+    struct BodyChange {
+        ObjectRoot root;
+        ObjectId entity;
+        physics::BodySettings before, after;
+    };
+    struct MaterialBindingChange {
+        ObjectRoot root;
+        ObjectId entity;
+        std::vector<presentation::MaterialBinding> before, after;
+    };
+    struct MaterialEntryChange {
+        std::string path;
+        std::optional<material::Override> before, after;
+    };
+    struct MaterialValueChange {
+        ObjectRoot root;
+        std::vector<MaterialEntryChange> entries;
+    };
     // Undo and redo restore the stored map, so the scene sees the same pointer again.
-    struct SkyMapChange {ObjectRoot root;ObjectId entity;presentation::SkyMapBinding before,after;};
+    struct SkyMapChange {
+        ObjectRoot root;
+        ObjectId entity;
+        presentation::SkyMapBinding before, after;
+    };
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
-    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange, MaterialBindingChange, MaterialValueChange,ReparentChange,TransformPresenceChange,SpaceReferenceChange,FieldGroupChange,SkyMapChange,RetainedChange,ReferenceFieldChange>;
+    using Change =
+        std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange,
+                     MaterialBindingChange, MaterialValueChange, ReparentChange, TransformPresenceChange,
+                     SpaceReferenceChange, FieldGroupChange, SkyMapChange, RetainedChange, ReferenceFieldChange>;
     // Sparse scene-record JSON text the loader could not apply. On the document entry,
     // materials are unreferenced definitions kept for write-back; on a component, they
     // are the scene materials its kept binding table names.
@@ -337,8 +424,14 @@ private:
         std::vector<ObjectRoot> materials;
         bool empty() const noexcept { return type.empty() && record.empty() && slots.empty() && materials.empty(); }
     };
-    struct RetainedSwap { ObjectId object; Retained before, after; };
-    struct Entry { Change change; std::vector<RetainedSwap> retained; };
+    struct RetainedSwap {
+        ObjectId object;
+        Retained before, after;
+    };
+    struct Entry {
+        Change change;
+        std::vector<RetainedSwap> retained;
+    };
     static constexpr std::size_t history_limit = 128;
     Runtime runtime_;
     world::Types types_;
@@ -359,26 +452,29 @@ private:
     std::optional<FieldChange> active_;
     std::optional<FieldGroupChange> group_;
     std::optional<TransformChange> transform_;
-    std::unordered_map<ObjectId,std::wstring> names_; // Non-owning IDs; prune after collection.
+    std::unordered_map<ObjectId, std::wstring> names_; // Non-owning IDs; prune after collection.
     // Non-owning IDs like names_; entries travel with their object through history.
-    std::unordered_map<ObjectId,Retained> retained_;
+    std::unordered_map<ObjectId, Retained> retained_;
     Retained retained_document_;
     std::vector<world::Diagnostic> load_issues_;
     // Document-local identities never confer Runtime validity or World membership.
     // Detached history objects retain their ID; IDs are never reused.
-    mutable std::unordered_map<ObjectId,std::uint64_t> local_ids_;
+    mutable std::unordered_map<ObjectId, std::uint64_t> local_ids_;
     mutable std::uint64_t next_local_id_{1};
     bool play_{};
     // Play copy: document identity to object, including objects the game destroyed.
-    std::unordered_map<std::uint64_t,ObjectId> live_objects_;
+    std::unordered_map<std::uint64_t, ObjectId> live_objects_;
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
     // Document side of Play: pending ops; a keyed op is a preview its next preview replaces.
-    struct LiveOp {std::string key;LiveChange change;};
+    struct LiveOp {
+        std::string key;
+        LiveChange change;
+    };
     bool forwarding_{};
     std::vector<LiveOp> live_ops_;
     std::optional<Error> live_failure_;
     // TRS leaves (1 position, 2 rotation, 4 scale) the active edit's previews sent, per Entity.
-    std::unordered_map<ObjectId,unsigned> live_leaves_;
+    std::unordered_map<ObjectId, unsigned> live_leaves_;
     struct GraphCodec;
     std::uint64_t next_name_{1};
     struct MaterialDocument {
@@ -390,19 +486,27 @@ private:
         std::vector<MaterialValueChange> history;
         std::size_t cursor{};
     };
-    std::unordered_map<std::string,MaterialDocument> materials_;
-    std::unordered_map<ObjectId,std::string> scene_material_parents_; // Non-owning; survives parent loss.
+    std::unordered_map<std::string, MaterialDocument> materials_;
+    std::unordered_map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
     std::vector<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
-    std::unordered_map<std::string,ObjectRoot> textures_;
+    std::unordered_map<std::string, ObjectRoot> textures_;
     UnavailableResources unavailable_;
-    const MissingResource& remember_unavailable(const assets::Reader&,assets::AssetKind,std::string_view key,const Error&);
-    struct MaterialEdit {ObjectRoot root;std::uint64_t control{};bool scene{};std::vector<MaterialEntryChange> entries;};
+    const MissingResource& remember_unavailable(const assets::Reader&, assets::AssetKind, std::string_view key,
+                                                const Error&);
+    struct MaterialEdit {
+        ObjectRoot root;
+        std::uint64_t control{};
+        bool scene{};
+        std::vector<MaterialEntryChange> entries;
+    };
     std::optional<MaterialEdit> material_edit_;
-    Result<void> apply_material_entries(ObjectId,std::span<const MaterialEntryChange>,bool forward,Project* = nullptr);
-    Result<void> preview_material_entry(std::uint64_t,std::string_view,std::optional<material::Override>);
+    Result<void> apply_material_entries(ObjectId, std::span<const MaterialEntryChange>, bool forward,
+                                        Project* = nullptr);
+    Result<void> preview_material_entry(std::uint64_t, std::string_view, std::optional<material::Override>);
     Result<void> admit_material_edit(ObjectId) const;
-    Result<ObjectRoot> texture_resource(assets::Reader&,std::string_view,std::vector<MissingResource>* missing = nullptr,std::size_t input = 0);
-    Result<void> replace_material_bindings(ObjectId,std::vector<presentation::MaterialBinding>);
+    Result<ObjectRoot> texture_resource(assets::Reader&, std::string_view,
+                                        std::vector<MissingResource>* missing = nullptr, std::size_t input = 0);
+    Result<void> replace_material_bindings(ObjectId, std::vector<presentation::MaterialBinding>);
     Result<void> admit_entity_edit(ObjectId) const;
     Result<world::ComponentStatus> admit_component_edit(ObjectId) const;
     Result<ObjectId> admit_property_edit(ObjectId) const;
@@ -410,31 +514,35 @@ private:
     Result<void> apply_reference(const ReferenceFieldChange&, bool forward);
     Result<std::optional<ReferenceFieldChange>> main_camera_removal(std::span<const ObjectId>);
     Result<void> apply_group(const FieldGroupChange&, bool forward);
-    Result<void> write_group(ObjectId,std::span<const world::FieldPath>,std::span<const Scalar>);
-    Result<world::Commit> attach_created(ObjectRoot,std::wstring_view);
-    struct EnvironmentEdit { std::vector<world::FieldPath> paths; std::vector<Scalar> values; };
+    Result<void> write_group(ObjectId, std::span<const world::FieldPath>, std::span<const Scalar>);
+    Result<world::Commit> attach_created(ObjectRoot, std::wstring_view);
+    struct EnvironmentEdit {
+        std::vector<world::FieldPath> paths;
+        std::vector<Scalar> values;
+    };
     Result<EnvironmentEdit> environment_edit(const rendering::SceneLightingSettings&) const;
     // The owning Entity of an Environment that World settings may change.
     Result<ObjectId> admit_environment_edit(ObjectId) const;
     // A Detached Entity holding a new Environment with these values and sky map.
-    Result<ObjectRoot> create_environment(std::span<const world::FieldPath>,std::span<const Scalar>,const presentation::SkyMapBinding* = nullptr);
+    Result<ObjectRoot> create_environment(std::span<const world::FieldPath>, std::span<const Scalar>,
+                                          const presentation::SkyMapBinding* = nullptr);
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
     void forget_entity(ObjectId) noexcept;
     // Record the values a change left in the World (forward: after it is applied or redone).
-    void forward_change(const Change&,bool forward);
+    void forward_change(const Change&, bool forward);
     // Record the current values of the active edit's targets as replaceable ops.
     void forward_edit();
     // A material asset as a resource op, or a scene material as its definition.
     void forward_material(ObjectId);
     // A texture publication retains this exact immutable image, not its latest file.
-    void forward_texture(std::string_view key,material::ImageRef);
+    void forward_texture(std::string_view key, material::ImageRef);
     void forward_mesh(const assets::MeshAsset&);
     void remember(Change);
     // Releases retained data at the paths a committed change wrote.
     std::vector<RetainedSwap> release(const Change&);
     void restore(std::span<const RetainedSwap>, bool forward);
     static Result<void> validate_name(std::wstring_view);
-    Result<world::Commit> replay(Change&, bool forward,Project*);
+    Result<world::Commit> replay(Change&, bool forward, Project*);
 };
 }

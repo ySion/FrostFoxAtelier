@@ -6,99 +6,117 @@ using atelier::material::Image;
 using atelier::material::ImageRef;
 using atelier::material::Address;
 using atelier::material::Coverage;
-enum class Input { base_color,roughness,metallic,normal,emissive,opacity };
+enum class Input { base_color, roughness, metallic, normal, emissive, opacity };
 struct Texture {
     ImageRef image;
-    std::array<float,2> scale{1,1},offset{};
+    std::array<float, 2> scale{1, 1}, offset{};
     float rotation{};
     Address address{Address::repeat};
     std::uint32_t channel{};
-    bool operator==(const Texture&) const=default;
+    bool operator==(const Texture&) const = default;
 };
 struct Parameters {
-    std::array<float,4> base_color{1,1,1,1};
-    float roughness{.65f},metallic{},normal_scale{1},normal_y_sign{1};
-    std::array<float,3> emissive{};
+    std::array<float, 4> base_color{1, 1, 1, 1};
+    float roughness{.65f}, metallic{}, normal_scale{1}, normal_y_sign{1};
+    std::array<float, 3> emissive{};
     Coverage coverage{Coverage::opaque};
     float alpha_cutoff{.5f};
-    bool double_sided{true},emission_two_sided{true};
-    bool operator==(const Parameters&) const=default;
+    bool double_sided{true}, emission_two_sided{true};
+    bool operator==(const Parameters&) const = default;
 };
 struct Description {
     Parameters parameters;
-    std::array<Texture,6> textures;
-    bool operator==(const Description&) const=default;
-    Texture& texture(Input input) {return textures[static_cast<std::size_t>(input)];}
-    const Texture& texture(Input input) const {return textures[static_cast<std::size_t>(input)];}
+    std::array<Texture, 6> textures;
+    bool operator==(const Description&) const = default;
+    Texture& texture(Input input) { return textures[static_cast<std::size_t>(input)]; }
+    const Texture& texture(Input input) const { return textures[static_cast<std::size_t>(input)]; }
 };
-template<class T,class E> T need(std::expected<T,E> result) {
-    if(!result)throw std::runtime_error(result.error().message);
-    if constexpr(!std::is_void_v<T>)return std::move(*result);
+template <class T, class E>
+T need(std::expected<T, E> result) {
+    if (!result)
+        throw std::runtime_error(result.error().message);
+    if constexpr (!std::is_void_v<T>)
+        return std::move(*result);
 }
 atelier::material::ProgramSurfaceRef capture(const Description& value) {
-    namespace m=atelier::material;
-    namespace math=atelier::math;
-    static const auto program=[] {
-        atelier::Runtime compiler;need(m::register_program_types(compiler));
-        const auto catalog=atelier::assets::material_assets();
-        const auto& author=std::get<atelier::assets::MaterialSourceAsset>(catalog.front().author);
-        const auto file=atelier::assets::builtin_material_source(author.source_path);
-        check(bool(file),"StandardPBR source belongs to the real builtin catalog");
-        return need(atelier::source::compile_material(compiler,need(compiler.native_type<m::Context>()),
-            need(compiler.native_type<m::Output>()),need(compiler.native_type<m::TextureInput>()),file->path,file->source));
+    namespace m = atelier::material;
+    namespace math = atelier::math;
+    static const auto program = [] {
+        atelier::Runtime compiler;
+        need(m::register_program_types(compiler));
+        const auto catalog = atelier::assets::material_assets();
+        const auto& author = std::get<atelier::assets::MaterialSourceAsset>(catalog.front().author);
+        const auto file = atelier::assets::builtin_material_source(author.source_path);
+        check(bool(file), "StandardPBR source belongs to the real builtin catalog");
+        return need(atelier::source::compile_material(
+            compiler, need(compiler.native_type<m::Context>()), need(compiler.native_type<m::Output>()),
+            need(compiler.native_type<m::TextureInput>()), file->path, file->source));
     }();
-    const auto& p=value.parameters;
-    const auto catalog=atelier::assets::material_assets();
-    const auto& author=std::get<atelier::assets::MaterialSourceAsset>(catalog[
-        (p.coverage==Coverage::mask?2:0)+(p.double_sided?0:1)].author);
-    const auto definition=need(m::make_definition(program,{p.coverage,p.double_sided,p.emission_two_sided},author.inputs));
-    const auto parent=need(m::resolve_source(definition,std::vector<ImageRef>(definition->textures().size())));
+    const auto& p = value.parameters;
+    const auto catalog = atelier::assets::material_assets();
+    const auto& author = std::get<atelier::assets::MaterialSourceAsset>(
+        catalog[(p.coverage == Coverage::mask ? 2 : 0) + (p.double_sided ? 0 : 1)].author);
+    const auto definition =
+        need(m::make_definition(program, {p.coverage, p.double_sided, p.emission_two_sided}, author.inputs));
+    const auto parent = need(m::resolve_source(definition, std::vector<ImageRef>(definition->textures().size())));
     std::vector<m::Override> entries;
     std::vector<ImageRef> images;
-    const auto add=[&](std::string path,m::LocalValue v,ImageRef image={}) {
-        entries.push_back({std::move(path),std::move(v),true});images.push_back(std::move(image));
+    const auto add = [&](std::string path, m::LocalValue v, ImageRef image = {}) {
+        entries.push_back({std::move(path), std::move(v), true});
+        images.push_back(std::move(image));
     };
-    add("base_color",math::Vector4{p.base_color[0],p.base_color[1],p.base_color[2],p.base_color[3]});
-    add("roughness",p.roughness);add("metallic",p.metallic);
-    add("emissive",math::Vector3{p.emissive[0],p.emissive[1],p.emissive[2]});
-    add("alpha_cutoff",p.alpha_cutoff);add("normal_scale",p.normal_scale);add("normal_y_sign",p.normal_y_sign);
-    constexpr const char* names[]{"base_color","roughness","metallic","normal","emissive","opacity"};
-    for(std::size_t i=0;i<value.textures.size();++i) {
-        const auto& t=value.textures[i];const std::string name=names[i];
-        add(name+"_texture",m::TextureBinding{t.image?"acceptance/texture":"",t.address},t.image);
-        add(name+"_uv.scale",math::Vector2{t.scale[0],t.scale[1]});
-        add(name+"_uv.offset",math::Vector2{t.offset[0],t.offset[1]});add(name+"_uv.rotation",t.rotation);
-        if(i==1||i==2||i==5)add(name+"_channel",float(t.channel));
+    add("base_color", math::Vector4{p.base_color[0], p.base_color[1], p.base_color[2], p.base_color[3]});
+    add("roughness", p.roughness);
+    add("metallic", p.metallic);
+    add("emissive", math::Vector3{p.emissive[0], p.emissive[1], p.emissive[2]});
+    add("alpha_cutoff", p.alpha_cutoff);
+    add("normal_scale", p.normal_scale);
+    add("normal_y_sign", p.normal_y_sign);
+    constexpr const char* names[]{"base_color", "roughness", "metallic", "normal", "emissive", "opacity"};
+    for (std::size_t i = 0; i < value.textures.size(); ++i) {
+        const auto& t = value.textures[i];
+        const std::string name = names[i];
+        add(name + "_texture", m::TextureBinding{t.image ? "acceptance/texture" : "", t.address}, t.image);
+        add(name + "_uv.scale", math::Vector2{t.scale[0], t.scale[1]});
+        add(name + "_uv.offset", math::Vector2{t.offset[0], t.offset[1]});
+        add(name + "_uv.rotation", t.rotation);
+        if (i == 1 || i == 2 || i == 5)
+            add(name + "_channel", float(t.channel));
     }
-    auto result=need(m::resolve_instance(parent,entries,images));
-    check(result->diagnostics().empty(),"fixture StandardPBR MI resolves every typed author entry");
+    auto result = need(m::resolve_instance(parent, entries, images));
+    check(result->diagnostics().empty(), "fixture StandardPBR MI resolves every typed author entry");
     return result;
 }
 class Surface {
 public:
-    explicit Surface(Description value={}):value_(std::move(value)){}
-    explicit Surface(atelier::material::ProgramSurfaceRef value):authored_(false),program_(std::move(value)){}
-    const Description& description() const {return value_;}
-    bool describes(const Description& value) const {return authored_&&value_==value;}
+    explicit Surface(Description value = {}) : value_(std::move(value)) {}
+    explicit Surface(atelier::material::ProgramSurfaceRef value) : authored_(false), program_(std::move(value)) {}
+    const Description& description() const { return value_; }
+    bool describes(const Description& value) const { return authored_ && value_ == value; }
     atelier::material::ProgramSurfaceRef program() const {
-        if(!program_)program_=capture(value_);
+        if (!program_)
+            program_ = capture(value_);
         return program_;
     }
+
 private:
     Description value_;
     bool authored_{true};
     mutable atelier::material::ProgramSurfaceRef program_;
 };
-using SurfaceRef=std::shared_ptr<const Surface>;
+using SurfaceRef = std::shared_ptr<const Surface>;
 }
 
 namespace render {
 // Compact author fixture notation, NOT aliases of the removed product material
 // API. prepare() below is the only conversion into native draw snapshots.
-struct Material {float roughness{.65f},metallic{};std::array<float,3> emissive{};};
+struct Material {
+    float roughness{.65f}, metallic{};
+    std::array<float, 3> emissive{};
+};
 struct MeshInstance {
-    std::array<float,16> world{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
-    ui::Color color{.2f,.45f,.75f,1};
+    std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    ui::Color color{.2f, .45f, .75f, 1};
     bool selected{};
     atelier::geometry::MeshRef geometry;
     Material material{};
@@ -116,60 +134,80 @@ struct Frame : atelier::renderer::Frame {
         std::vector<atelier::renderer::MeshInstance> meshes;
     };
     mutable std::unique_ptr<Candidate> candidate;
-    Frame(const ui::Frame& drawing,Camera view_camera,ui::Rect viewport,std::span<const MeshInstance> instances)
-        :atelier::renderer::Frame{drawing,view_camera,viewport,{}},meshes(instances){}
-    Frame(const Frame& other):atelier::renderer::Frame(other),meshes(other.meshes){}
-    void release_materials() const {candidate.reset();}
+    Frame(const ui::Frame& drawing, Camera view_camera, ui::Rect viewport, std::span<const MeshInstance> instances)
+        : atelier::renderer::Frame{drawing, view_camera, viewport, {}}, meshes(instances) {}
+    Frame(const Frame& other) : atelier::renderer::Frame(other), meshes(other.meshes) {}
+    void release_materials() const { candidate.reset(); }
     atelier::renderer::Frame prepare(Renderer& renderer) const {
-        auto native=static_cast<const atelier::renderer::Frame&>(*this);
-        if(meshes.empty()) {candidate.reset();native.meshes={};native.materials=nullptr;return native;}
-        if(!candidate)candidate=std::make_unique<Candidate>();
-        auto& old=*candidate;
+        auto native = static_cast<const atelier::renderer::Frame&>(*this);
+        if (meshes.empty()) {
+            candidate.reset();
+            native.meshes = {};
+            native.materials = nullptr;
+            return native;
+        }
+        if (!candidate)
+            candidate = std::make_unique<Candidate>();
+        auto& old = *candidate;
         std::vector<standard_fixture::SurfaceRef> authors;
         std::vector<atelier::material::ProgramSurfaceRef> surfaces;
         std::vector<atelier::renderer::MeshInstance> draws;
-        for(const auto& mesh:meshes) {
-            const auto count=mesh.surfaces?mesh.surfaces->size():(mesh.geometry?mesh.geometry->materials().size():1);
-            auto slots=std::make_shared<std::vector<std::uint32_t>>();
-            for(std::size_t i=0;i<count;++i) {
+        for (const auto& mesh : meshes) {
+            const auto count =
+                mesh.surfaces ? mesh.surfaces->size() : (mesh.geometry ? mesh.geometry->materials().size() : 1);
+            auto slots = std::make_shared<std::vector<std::uint32_t>>();
+            for (std::size_t i = 0; i < count; ++i) {
                 standard_fixture::SurfaceRef author;
-                if(mesh.surfaces)author=(*mesh.surfaces)[i];
+                if (mesh.surfaces)
+                    author = (*mesh.surfaces)[i];
                 else {
                     standard_fixture::Description d;
-                    d.parameters.base_color={mesh.color.r,mesh.color.g,mesh.color.b,mesh.color.a};
-                    d.parameters.roughness=mesh.material.roughness;d.parameters.metallic=mesh.material.metallic;
-                    d.parameters.emissive=mesh.material.emissive;
+                    d.parameters.base_color = {mesh.color.r, mesh.color.g, mesh.color.b, mesh.color.a};
+                    d.parameters.roughness = mesh.material.roughness;
+                    d.parameters.metallic = mesh.material.metallic;
+                    d.parameters.emissive = mesh.material.emissive;
                     // Preserve capture identity through object reordering and
                     // deduplicate equal fixture values on the first submission.
-                    const auto same=[&](const auto& item){return item->describes(d);};
-                    if(const auto found=std::ranges::find_if(old.authors,same);found!=old.authors.end())author=*found;
-                    else if(const auto current=std::ranges::find_if(authors,same);current!=authors.end())author=*current;
-                    else author=std::make_shared<const standard_fixture::Surface>(std::move(d));
+                    const auto same = [&](const auto& item) { return item->describes(d); };
+                    if (const auto found = std::ranges::find_if(old.authors, same); found != old.authors.end())
+                        author = *found;
+                    else if (const auto current = std::ranges::find_if(authors, same); current != authors.end())
+                        author = *current;
+                    else
+                        author = std::make_shared<const standard_fixture::Surface>(std::move(d));
                 }
-                check(bool(author),"fixture has an explicit StandardPBR author for every slot");
+                check(bool(author), "fixture has an explicit StandardPBR author for every slot");
                 slots->push_back(static_cast<std::uint32_t>(surfaces.size()));
-                surfaces.push_back(author->program());authors.push_back(std::move(author));
+                surfaces.push_back(author->program());
+                authors.push_back(std::move(author));
             }
-            std::shared_ptr<const std::vector<std::uint32_t>> mapping=slots;
-            if(mesh.material_slots)mapping=mesh.material_slots;
-            else if(draws.size()<old.meshes.size()&&old.meshes[draws.size()].material_slots&&
-                *old.meshes[draws.size()].material_slots==*slots)mapping=old.meshes[draws.size()].material_slots;
-            if(mesh.omit_material_slots)mapping.reset();
-            draws.push_back({mesh.world,mesh.selected,mesh.geometry,mesh.stable_key,std::move(mapping)});
+            std::shared_ptr<const std::vector<std::uint32_t>> mapping = slots;
+            if (mesh.material_slots)
+                mapping = mesh.material_slots;
+            else if (draws.size() < old.meshes.size() && old.meshes[draws.size()].material_slots &&
+                     *old.meshes[draws.size()].material_slots == *slots)
+                mapping = old.meshes[draws.size()].material_slots;
+            if (mesh.omit_material_slots)
+                mapping.reset();
+            draws.push_back({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, std::move(mapping)});
         }
-        if(!std::ranges::equal(old.batch.surfaces(),surfaces)) {
+        if (!std::ranges::equal(old.batch.surfaces(), surfaces)) {
             // Submit before retiring the old batch: the exact live code-set owner
             // is reused for MI/texture edits. Wait only at this acceptance boundary.
-            auto next=take(renderer.prepare_materials(surfaces));
-            const auto deadline=std::chrono::steady_clock::now()+std::chrono::minutes(20);
-            while(!take(renderer.preparation(next)).ready) {
-                check(std::chrono::steady_clock::now()<deadline,"fixture material preparation deadline");
-                pump();std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            auto next = take(renderer.prepare_materials(surfaces));
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
+            while (!take(renderer.preparation(next)).ready) {
+                check(std::chrono::steady_clock::now() < deadline, "fixture material preparation deadline");
+                pump();
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            old.batch=std::move(next);
+            old.batch = std::move(next);
         }
-        old.authors=std::move(authors);old.meshes=std::move(draws);
-        native.meshes=old.meshes;native.materials=&old.batch;return native;
+        old.authors = std::move(authors);
+        old.meshes = std::move(draws);
+        native.meshes = old.meshes;
+        native.materials = &old.batch;
+        return native;
     }
 };
 }

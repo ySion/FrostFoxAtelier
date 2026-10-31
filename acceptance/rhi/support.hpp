@@ -11,10 +11,15 @@
 namespace rhi_acceptance {
 using Microsoft::WRL::ComPtr;
 inline void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
-inline void check(GfxResult result) { require(result == kGfxResult_NoError, "gfx operation failed"); }
-inline void check_hr(HRESULT result) { require(SUCCEEDED(result), "native D3D12 operation failed"); }
+inline void check(GfxResult result) {
+    require(result == kGfxResult_NoError, "gfx operation failed");
+}
+inline void check_hr(HRESULT result) {
+    require(SUCCEEDED(result), "native D3D12 operation failed");
+}
 inline ComPtr<ID3D12InfoQueue> debug_queue(GfxContext context) {
     ComPtr<ID3D12InfoQueue> queue;
     check_hr(gfxGetDevice(context)->QueryInterface(IID_PPV_ARGS(&queue)));
@@ -46,14 +51,18 @@ inline GfxContext open_native() {
     check_hr(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&factory)));
     for (UINT i = 0;; ++i) {
         ComPtr<IDXGIAdapter1> adapter;
-        const HRESULT result = factory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
-        if (result == DXGI_ERROR_NOT_FOUND) break;
+        const HRESULT result =
+            factory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
+        if (result == DXGI_ERROR_NOT_FOUND)
+            break;
         check_hr(result);
         DXGI_ADAPTER_DESC1 desc{};
         check_hr(adapter->GetDesc1(&desc));
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            continue;
         auto context = gfxCreateContext(64, 32, kGfxCreateContextFlag_EnableDebugLayer, adapter.Get());
-        if (context) return context;
+        if (context)
+            return context;
     }
     throw std::runtime_error("hardware gfx context unavailable");
 }
@@ -65,7 +74,8 @@ inline void print_adapter(GfxContext context) {
     LARGE_INTEGER version{};
     check_hr(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &version));
     std::printf("adapter=%s vendor=0x%04x driver=%u.%u.%u.%u frames=%u\n", context.getName(), context.getVendorId(),
-        static_cast<unsigned>(HIWORD(version.HighPart)), static_cast<unsigned>(LOWORD(version.HighPart)),
-        static_cast<unsigned>(HIWORD(version.LowPart)), static_cast<unsigned>(LOWORD(version.LowPart)), gfxGetBackBufferCount(context));
+                static_cast<unsigned>(HIWORD(version.HighPart)), static_cast<unsigned>(LOWORD(version.HighPart)),
+                static_cast<unsigned>(HIWORD(version.LowPart)), static_cast<unsigned>(LOWORD(version.LowPart)),
+                gfxGetBackBufferCount(context));
 }
 } // namespace rhi_acceptance

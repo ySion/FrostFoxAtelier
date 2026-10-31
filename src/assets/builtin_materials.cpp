@@ -2,9 +2,9 @@
 
 namespace atelier::assets {
 namespace {
-constexpr std::string_view standard_path="builtin/material/standard-pbr.source";
-constexpr std::string_view grid_path="builtin/material/default-grid.source";
-constexpr std::string_view standard=R"source(
+constexpr std::string_view standard_path = "builtin/material/standard-pbr.source";
+constexpr std::string_view grid_path = "builtin/material/default-grid.source";
+constexpr std::string_view standard = R"source(
 struct UvTransform { vector2 scale; vector2 offset; float rotation; };
 struct Params {
     vector4 base_color;
@@ -93,30 +93,40 @@ material.Output shade(material.Context context,Params p,Textures textures) {
     return result;
 }
 )source";
-MaterialAsset standard_material(std::string key,std::wstring name,material::Policy policy) {
-    MaterialSourceAsset source;source.source_path=standard_path;source.policy=policy;
-    for(const std::string_view input:{"base_color","roughness","metallic","normal","emissive","opacity"}) {
-        const bool color=input=="base_color" || input=="emissive";
-        source.inputs.push_back({std::string(input)+"_texture",{},color?material::TextureColor::srgb:material::TextureColor::linear,
-            input=="normal"?math::Vector4{.5f,.5f,1,1}:math::Vector4{1,1,1,1}});
+MaterialAsset standard_material(std::string key, std::wstring name, material::Policy policy) {
+    MaterialSourceAsset source;
+    source.source_path = standard_path;
+    source.policy = policy;
+    for (const std::string_view input : {"base_color", "roughness", "metallic", "normal", "emissive", "opacity"}) {
+        const bool color = input == "base_color" || input == "emissive";
+        source.inputs.push_back({std::string(input) + "_texture",
+                                 {},
+                                 color ? material::TextureColor::srgb : material::TextureColor::linear,
+                                 input == "normal" ? math::Vector4{.5f, .5f, 1, 1} : math::Vector4{1, 1, 1, 1}});
     }
-    return {std::move(key),std::move(name),std::move(source)};
+    return {std::move(key), std::move(name), std::move(source)};
 }
 }
 std::span<const MaterialAsset> material_assets() {
     static const std::array assets{
-        standard_material("builtin/material/standard-opaque-double",L"Standard PBR · Opaque / Two Sided",{material::Coverage::opaque,true,true}),
-        standard_material("builtin/material/standard-opaque-single",L"Standard PBR · Opaque / One Sided",{material::Coverage::opaque,false,false}),
-        standard_material("builtin/material/standard-mask-double",L"Standard PBR · Masked / Two Sided",{material::Coverage::mask,true,true}),
-        standard_material("builtin/material/standard-mask-single",L"Standard PBR · Masked / One Sided",{material::Coverage::mask,false,false}),
-        MaterialAsset{"builtin/material/default-grid",L"Default World Grid",MaterialSourceAsset{std::string(grid_path),material::default_world_policy,{}}}};
+        standard_material("builtin/material/standard-opaque-double", L"Standard PBR · Opaque / Two Sided",
+                          {material::Coverage::opaque, true, true}),
+        standard_material("builtin/material/standard-opaque-single", L"Standard PBR · Opaque / One Sided",
+                          {material::Coverage::opaque, false, false}),
+        standard_material("builtin/material/standard-mask-double", L"Standard PBR · Masked / Two Sided",
+                          {material::Coverage::mask, true, true}),
+        standard_material("builtin/material/standard-mask-single", L"Standard PBR · Masked / One Sided",
+                          {material::Coverage::mask, false, false}),
+        MaterialAsset{"builtin/material/default-grid", L"Default World Grid",
+                      MaterialSourceAsset{std::string(grid_path), material::default_world_policy, {}}}};
     return assets;
 }
 std::optional<source::SourceFile> builtin_material_source(std::string_view path) {
-    if(path==standard_path) return source::SourceFile{std::string(path),source::content_hash(standard),std::string(standard)};
-    if(path==grid_path) {
-        const auto text=material::default_world_source();
-        return source::SourceFile{std::string(path),source::content_hash(text),std::string(text)};
+    if (path == standard_path)
+        return source::SourceFile{std::string(path), source::content_hash(standard), std::string(standard)};
+    if (path == grid_path) {
+        const auto text = material::default_world_source();
+        return source::SourceFile{std::string(path), source::content_hash(text), std::string(text)};
     }
     return std::nullopt;
 }

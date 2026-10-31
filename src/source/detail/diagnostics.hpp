@@ -23,8 +23,8 @@ struct DiagnosticState {
     DiagnosticResources before, after;
 };
 struct DiagnosticAccess {
-    static Result<std::shared_ptr<DiagnosticState>> begin(Diagnostics*,
-        const std::shared_ptr<const DiagnosticMetadata>&, const Runtime&, bool supported);
+    static Result<std::shared_ptr<DiagnosticState>>
+    begin(Diagnostics*, const std::shared_ptr<const DiagnosticMetadata>&, const Runtime&, bool supported);
     static Error reject(Diagnostics*, Error);
     static void running(DiagnosticState&, bool resume = false) noexcept;
     static void pause(DiagnosticState&, const Runtime&, DiagnosticStatus) noexcept;
@@ -41,11 +41,13 @@ class DiagnosticScope final {
     const Runtime& runtime_;
     DiagnosticStatus terminal_{DiagnosticStatus::failed};
     bool completed_{};
+
 public:
     DiagnosticScope(std::shared_ptr<DiagnosticState> state, const Runtime& runtime) noexcept
         : state_(std::move(state)), runtime_(runtime) {}
     ~DiagnosticScope() {
-        if (!state_) return;
+        if (!state_)
+            return;
         if (!completed_) {
             // Unwinding must not allocate; preserve an already recorded cause.
             if (!state_->failed) {
@@ -59,15 +61,19 @@ public:
     }
     BusinessTrace* trace() const noexcept { return state_ ? &state_->trace : nullptr; }
     std::shared_ptr<DiagnosticState> state() const noexcept { return state_; }
-    template<class T> Result<T> complete(Result<T> result) {
+    template <class T>
+    Result<T> complete(Result<T> result) {
         completed_ = true;
-        terminal_ = result ? DiagnosticStatus::completed : result.error().code == ErrorCode::execution_aborted ?
-            DiagnosticStatus::cancelled : DiagnosticStatus::failed;
-        if (state_ && !result) DiagnosticAccess::fail(*state_, result.error());
+        terminal_ = result                                                ? DiagnosticStatus::completed
+                    : result.error().code == ErrorCode::execution_aborted ? DiagnosticStatus::cancelled
+                                                                          : DiagnosticStatus::failed;
+        if (state_ && !result)
+            DiagnosticAccess::fail(*state_, result.error());
         return result;
     }
     void transfer(DiagnosticStatus status) noexcept {
-        if (state_) DiagnosticAccess::pause(*state_, runtime_, status);
+        if (state_)
+            DiagnosticAccess::pause(*state_, runtime_, status);
         state_.reset();
     }
 };

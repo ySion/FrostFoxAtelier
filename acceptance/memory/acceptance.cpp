@@ -19,7 +19,8 @@ namespace atelier::acceptance {
 namespace {
 
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
 
 void require_mimalloc(const void* block) {
@@ -52,14 +53,14 @@ void verify_default_allocator() {
         const auto nothrow = std::unique_ptr<AlignedValue>{new (std::nothrow) AlignedValue};
         std::vector<int> values(1024, 7);
         std::string text(1024, 'x');
-        const std::array<const void*, 7> blocks{scalar.get(), array.get(), aligned.get(),
-            aligned_array.get(), nothrow.get(), values.data(), text.data()};
+        const std::array<const void*, 7> blocks{scalar.get(),  array.get(),   aligned.get(), aligned_array.get(),
+                                                nothrow.get(), values.data(), text.data()};
         for (const void* block : blocks) {
             require_mimalloc(block);
         }
         for (const auto* block : {aligned.get(), aligned_array.get(), nothrow.get()}) {
             require(reinterpret_cast<std::uintptr_t>(block) % alignof(AlignedValue) == 0,
-                "Over-aligned allocation lost its alignment.");
+                    "Over-aligned allocation lost its alignment.");
         }
         require(*scalar == 42 && aligned->value == 42 && text.back() == 'x', "C++ allocation corrupted contents.");
     }

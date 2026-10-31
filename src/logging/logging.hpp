@@ -49,8 +49,7 @@ struct SourceLocation {
     // the compiler's file name. Only with this mapping is version a disk hash.
     std::string disk_path{};
 };
-[[nodiscard]] SourceLocation native_source(
-    std::source_location location = std::source_location::current());
+[[nodiscard]] SourceLocation native_source(std::source_location location = std::source_location::current());
 
 // At most 64 unique, named scalar fields, also bounded by the record byte budget.
 // No callbacks, pointers, reflection,
@@ -112,19 +111,31 @@ struct Record {
 };
 
 enum class ErrorCode : std::uint8_t {
-    invalid_options, already_started, directory_in_use, io_failed,
-    backend_start_failed, unsupported_schema, invalid_manifest
+    invalid_options,
+    already_started,
+    directory_in_use,
+    io_failed,
+    backend_start_failed,
+    unsupported_schema,
+    invalid_manifest
 };
 struct Error {
     ErrorCode code{};
     std::string message;
     std::optional<std::uint32_t> native_code{};
 };
-template<class T> using Result = std::expected<T, Error>;
+template <class T>
+using Result = std::expected<T, Error>;
 
 enum class SubmitStatus : std::uint8_t {
-    accepted, filtered, no_active_run, queue_full, producer_limit,
-    record_too_large, invalid_record, internal_failure
+    accepted,
+    filtered,
+    no_active_run,
+    queue_full,
+    producer_limit,
+    record_too_large,
+    invalid_record,
+    internal_failure
 };
 struct SubmitResult {
     SubmitStatus status{SubmitStatus::no_active_run};
@@ -135,9 +146,17 @@ struct SubmitResult {
 };
 
 enum class FacilityFault : std::uint8_t {
-    encoding_failed, output_too_large, invalid_utf8, file_open_failed,
-    file_write_failed, file_flush_failed, rotation_failed, retention_failed,
-    summary_failed, allocation_failed, lifecycle_violation
+    encoding_failed,
+    output_too_large,
+    invalid_utf8,
+    file_open_failed,
+    file_write_failed,
+    file_flush_failed,
+    rotation_failed,
+    retention_failed,
+    summary_failed,
+    allocation_failed,
+    lifecycle_violation
 };
 struct FacilityIssue {
     FacilityFault fault{};
@@ -213,6 +232,7 @@ public:
     [[nodiscard]] FlushReport flush();
     // Requires all producers quiescent. Idempotent; final health stays queryable.
     [[nodiscard]] FlushReport finish();
+
 private:
     friend Result<std::unique_ptr<Run>> start_run(RunOptions);
     Run();
@@ -239,9 +259,18 @@ struct ReadBudget {
     std::chrono::milliseconds time{2};
 };
 enum class ReaderFault : std::uint8_t {
-    io_failed, invalid_json, invalid_record, unsupported_schema, oversized_line,
-    incomplete_line, rotation_loss, sequence_gap, duplicate_record, out_of_order,
-    invalid_summary, missing_final_summary
+    io_failed,
+    invalid_json,
+    invalid_record,
+    unsupported_schema,
+    oversized_line,
+    incomplete_line,
+    rotation_loss,
+    sequence_gap,
+    duplicate_record,
+    out_of_order,
+    invalid_summary,
+    missing_final_summary
 };
 struct ReaderIssue {
     ReaderFault fault{};
@@ -301,6 +330,7 @@ public:
     // Next polls drain available input, classify a partial tail/missing final
     // summary as incomplete, and can finish without a normal-shutdown marker.
     void source_ended() noexcept;
+
 private:
     Reader();
     struct Impl;

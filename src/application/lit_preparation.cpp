@@ -5,43 +5,53 @@
 namespace atelier::application {
 namespace {
 std::wstring environment(const wchar_t* name) {
-    std::wstring value(32768,L'\0');
-    const auto count=GetEnvironmentVariableW(name,value.data(),static_cast<DWORD>(value.size()));
-    if(!count || count>=value.size()) return {};
+    std::wstring value(32768, L'\0');
+    const auto count = GetEnvironmentVariableW(name, value.data(), static_cast<DWORD>(value.size()));
+    if (!count || count >= value.size())
+        return {};
     value.resize(count);
     return value;
 }
 }
 std::filesystem::path shader_cache_directory() {
-    if(auto host=environment(L"ATELIER_SHADER_CACHE");!host.empty()) return host;
-    const auto local=environment(L"LOCALAPPDATA");
-    return local.empty()?std::filesystem::path{}:std::filesystem::path(local)/L"FrostFoxAtelier"/L"ShaderCache";
+    if (auto host = environment(L"ATELIER_SHADER_CACHE"); !host.empty())
+        return host;
+    const auto local = environment(L"LOCALAPPDATA");
+    return local.empty() ? std::filesystem::path{} : std::filesystem::path(local) / L"FrostFoxAtelier" / L"ShaderCache";
 }
 void isolate_shader_cache() {
-    if(environment(L"ATELIER_SHADER_CACHE").empty())
-        SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",(editor::asset_directory()/L"shader-cache").c_str());
+    if (environment(L"ATELIER_SHADER_CACHE").empty())
+        SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE", (editor::asset_directory() / L"shader-cache").c_str());
 }
-renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer,renderer::Frame frame,renderer::Capture* capture) {
-    auto result=renderer.render(frame,capture);
-    if(result && result->status!=renderer::FrameStatus::not_ready) {
-        if(result->status==renderer::FrameStatus::accepted && frame.view.shading==renderer::Shading::scene_lit) last_lit_=frame.view;
-        return Drawn{*result,frame.view,false,{}};
+renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer, renderer::Frame frame,
+                                                         renderer::Capture* capture) {
+    auto result = renderer.render(frame, capture);
+    if (result && result->status != renderer::FrameStatus::not_ready) {
+        if (result->status == renderer::FrameStatus::accepted && frame.view.shading == renderer::Shading::scene_lit)
+            last_lit_ = frame.view;
+        return Drawn{*result, frame.view, false, {}};
     }
     std::string failure;
-    if(!result) {
+    if (!result) {
         // Other recoverable failures keep the caller's retry path.
-        if(result.error().terminal || renderer.preparation(frame.view)) return std::unexpected(result.error());
-        failure=result.error().cause.message;last_lit_.reset();
+        if (result.error().terminal || renderer.preparation(frame.view))
+            return std::unexpected(result.error());
+        failure = result.error().cause.message;
+        last_lit_.reset();
     }
-    if(last_lit_ && *last_lit_!=frame.view) {
-        auto lit=frame;lit.view=*last_lit_;
-        auto drawn=renderer.render(lit,nullptr);
-        if(!drawn) return std::unexpected(drawn.error());
-        if(drawn->status!=renderer::FrameStatus::not_ready) return Drawn{*drawn,lit.view,true,{}};
+    if (last_lit_ && *last_lit_ != frame.view) {
+        auto lit = frame;
+        lit.view = *last_lit_;
+        auto drawn = renderer.render(lit, nullptr);
+        if (!drawn)
+            return std::unexpected(drawn.error());
+        if (drawn->status != renderer::FrameStatus::not_ready)
+            return Drawn{*drawn, lit.view, true, {}};
     }
-    frame.view.shading=renderer::Shading::smooth;
-    auto drawn=renderer.render(frame,nullptr);
-    if(!drawn) return std::unexpected(drawn.error());
-    return Drawn{*drawn,frame.view,true,std::move(failure)};
+    frame.view.shading = renderer::Shading::smooth;
+    auto drawn = renderer.render(frame, nullptr);
+    if (!drawn)
+        return std::unexpected(drawn.error());
+    return Drawn{*drawn, frame.view, true, std::move(failure)};
 }
 }

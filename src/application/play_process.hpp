@@ -24,7 +24,7 @@ public:
         bool operator==(const StreamStatus&) const = default;
     };
     struct OutputStatus {
-        StreamStatus standard_output,standard_error;
+        StreamStatus standard_output, standard_error;
         bool process_exited{};
         bool pending{}; // Pipe handles still need polling, independently of buffered bytes already available to take.
     };
@@ -33,20 +33,21 @@ public:
         std::uint64_t offset{}; // Byte offset in this stream; gaps identify precisely where retention dropped bytes.
     };
     struct RawOutput {
-        RawStream standard_output,standard_error;
+        RawStream standard_output, standard_error;
         OutputStatus status;
     };
-    static constexpr std::size_t output_capacity=64*1024; // Retained bytes per stream.
-    static constexpr std::size_t output_budget=64*1024; // At most 16 reads and this many bytes per poll, shared by both streams.
+    static constexpr std::size_t output_capacity = 64 * 1024; // Retained bytes per stream.
+    static constexpr std::size_t output_budget =
+        64 * 1024; // At most 16 reads and this many bytes per poll, shared by both streams.
 
-    PlayProcess()=default;
+    PlayProcess() = default;
     ~PlayProcess();
-    PlayProcess(const PlayProcess&)=delete;
-    PlayProcess& operator=(const PlayProcess&)=delete;
+    PlayProcess(const PlayProcess&) = delete;
+    PlayProcess& operator=(const PlayProcess&) = delete;
     // A successful start resets the previous run's output and counters; take its remaining bytes first.
-    Result<void> start(const std::filesystem::path& project,const std::filesystem::path& scene,
-        bool headless=false,std::uint64_t frames=0,const std::filesystem::path& report={},bool preview_ui=false,bool halt=false,
-        std::unique_ptr<LiveLink>* live=nullptr);
+    Result<void> start(const std::filesystem::path& project, const std::filesystem::path& scene, bool headless = false,
+                       std::uint64_t frames = 0, const std::filesystem::path& report = {}, bool preview_ui = false,
+                       bool halt = false, std::unique_ptr<LiveLink>* live = nullptr);
     void stop() noexcept;
     // Never waits for output. After process exit, subsequent polls finish the pipes before running becomes false.
     void poll() noexcept;
@@ -54,13 +55,14 @@ public:
     // At most eight poll budgets are read, without waiting for pipe data. Remaining bytes are accounted
     // as abandoned where measurable; unobserved EOF is marked unknown. Buffered bytes remain available.
     void close() noexcept;
-    bool running() const noexcept {return process_!=nullptr;}
-    bool stopping() const noexcept {return stopping_;}
-    bool forced() const noexcept {return forced_;}
-    std::optional<DWORD> exit_code() const noexcept {return exit_code_;}
-    const std::filesystem::path& log_directory() const noexcept {return log_directory_;}
+    bool running() const noexcept { return process_ != nullptr; }
+    bool stopping() const noexcept { return stopping_; }
+    bool forced() const noexcept { return forced_; }
+    std::optional<DWORD> exit_code() const noexcept { return exit_code_; }
+    const std::filesystem::path& log_directory() const noexcept { return log_directory_; }
     OutputStatus output_status() const noexcept;
     RawOutput take_raw_output();
+
 private:
     friend struct PlayProcessAcceptanceAccess; // Attaches real child-process pipes for CPU transport acceptance.
     struct OutputPipe {
@@ -68,10 +70,10 @@ private:
         std::string bytes; // Capacity is reserved before launch; byte draining never allocates.
         StreamStatus status;
     };
-    HANDLE process_{},job_{},stop_{};
+    HANDLE process_{}, job_{}, stop_{};
     std::filesystem::path log_directory_;
-    std::array<OutputPipe,2> output_;
-    bool stopping_{},forced_{},exited_{};
+    std::array<OutputPipe, 2> output_;
+    bool stopping_{}, forced_{}, exited_{};
     std::optional<DWORD> exit_code_;
     std::chrono::steady_clock::time_point stop_deadline_{};
     void drain() noexcept;

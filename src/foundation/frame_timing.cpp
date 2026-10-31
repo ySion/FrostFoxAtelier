@@ -14,20 +14,26 @@ const FrameRecord empty_record{};
 constinit thread_local Recorder* detail::bound{};
 
 void install(std::initializer_list<std::span<Marker* const>> modules) {
-    if (frozen) throw std::logic_error("The frame timing catalog is already installed.");
+    if (frozen)
+        throw std::logic_error("The frame timing catalog is already installed.");
     std::array<Marker*, capacity> order{};
     std::size_t size{};
     // Roll back before building the message, which can throw.
     const auto reject = [&](std::string_view reason, std::string_view key = {}) {
-        for (std::size_t i = 0; i < size; ++i) order[i]->index_ = order[i]->parent_index_ = unregistered;
+        for (std::size_t i = 0; i < size; ++i)
+            order[i]->index_ = order[i]->parent_index_ = unregistered;
         throw std::invalid_argument(std::string(reason).append(key));
     };
     const auto add = [&](Marker* marker) {
-        if (!marker) reject("A frame timing marker is null.");
-        if (size == capacity) reject("The frame timing catalog exceeds its capacity.");
-        if (marker->index_ != unregistered) reject("Frame timing marker is registered twice: ", marker->key_);
+        if (!marker)
+            reject("A frame timing marker is null.");
+        if (size == capacity)
+            reject("The frame timing catalog exceeds its capacity.");
+        if (marker->index_ != unregistered)
+            reject("Frame timing marker is registered twice: ", marker->key_);
         for (std::size_t i = 0; i < size; ++i)
-            if (order[i]->key_ == marker->key_) reject("Frame timing key is not unique: ", marker->key_);
+            if (order[i]->key_ == marker->key_)
+                reject("Frame timing key is not unique: ", marker->key_);
         if (marker != &frame && (!marker->parent_ || marker->parent_->index_ == unregistered))
             reject("Frame timing parent must be registered before ", marker->key_);
         marker->index_ = static_cast<std::uint8_t>(size);
@@ -36,17 +42,22 @@ void install(std::initializer_list<std::span<Marker* const>> modules) {
     };
     add(&frame);
     for (const auto module : modules)
-        for (auto* marker : module) add(marker);
-    for (std::size_t i = 0; i < size; ++i) installed[i] = order[i];
+        for (auto* marker : module)
+            add(marker);
+    for (std::size_t i = 0; i < size; ++i)
+        installed[i] = order[i];
     installed_size = size;
     frozen = true;
 }
 
-std::span<const Marker* const> catalog() noexcept { return {installed.data(), installed_size}; }
+std::span<const Marker* const> catalog() noexcept {
+    return {installed.data(), installed_size};
+}
 
 std::size_t depth(const Marker& marker) noexcept {
     std::size_t result{};
-    for (auto* parent = marker.parent(); parent; parent = parent->parent()) ++result;
+    for (auto* parent = marker.parent(); parent; parent = parent->parent())
+        ++result;
     return result;
 }
 
@@ -62,19 +73,22 @@ Recorder::Frame::Frame(Recorder& recorder) noexcept : recorder_(&recorder) {
     record.sequence = ++recorder.frames_;
     recorder.open_ = true;
     recorder.current_ = frame.index();
-    if (!frame.registered()) recorder.fail(frame);
+    if (!frame.registered())
+        recorder.fail(frame);
     detail::bound = &recorder;
     record.begin = Clock::now();
 }
 
 const FrameRecord& Recorder::Frame::finish() noexcept {
-    if (!recorder_) return empty_record;
+    if (!recorder_)
+        return empty_record;
     auto& recorder = *recorder_;
     auto& record = recorder.record_;
     if (frame.registered()) {
         record.duration[frame.index()] = Clock::now() - record.begin;
         record.entries[frame.index()] = 1;
-        if (recorder.current_ != frame.index()) recorder.fail(frame);
+        if (recorder.current_ != frame.index())
+            recorder.fail(frame);
     }
     recorder.current_ = unregistered;
     recorder.open_ = false;
@@ -85,7 +99,8 @@ const FrameRecord& Recorder::Frame::finish() noexcept {
 
 void record(const Marker& marker, std::chrono::nanoseconds duration) noexcept {
     auto* recorder = detail::bound;
-    if (!recorder) return;
+    if (!recorder)
+        return;
     if (marker.index_ == unregistered || marker.parent_index_ != recorder->current_) {
         recorder->fail(marker);
         return;

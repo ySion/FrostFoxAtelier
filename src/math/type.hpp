@@ -19,11 +19,17 @@ struct Type {
     }
     constexpr std::size_t components() const noexcept {
         switch (shape) {
-        case Shape::vector2: return 2;
-        case Shape::vector3: return 3;
-        case Shape::vector4: case Shape::quaternion: return 4;
-        case Shape::matrix4: return 16;
-        default: return 0;
+        case Shape::vector2:
+            return 2;
+        case Shape::vector3:
+            return 3;
+        case Shape::vector4:
+        case Shape::quaternion:
+            return 4;
+        case Shape::matrix4:
+            return 16;
+        default:
+            return 0;
         }
     }
     constexpr std::size_t scalar_size() const noexcept { return precision == Precision::f64 ? 8 : 4; }
@@ -34,12 +40,18 @@ struct Type {
 constexpr std::string_view name(Type type) noexcept {
     const bool wide = type.precision == Precision::f64;
     switch (type.shape) {
-    case Shape::vector2: return wide ? "math.vector2d" : "math.vector2";
-    case Shape::vector3: return wide ? "math.vector3d" : "math.vector3";
-    case Shape::vector4: return wide ? "math.vector4d" : "math.vector4";
-    case Shape::quaternion: return wide ? "math.quaterniond" : "math.quaternion";
-    case Shape::matrix4: return wide ? "math.matrix4d" : "math.matrix4";
-    default: return {};
+    case Shape::vector2:
+        return wide ? "math.vector2d" : "math.vector2";
+    case Shape::vector3:
+        return wide ? "math.vector3d" : "math.vector3";
+    case Shape::vector4:
+        return wide ? "math.vector4d" : "math.vector4";
+    case Shape::quaternion:
+        return wide ? "math.quaterniond" : "math.quaternion";
+    case Shape::matrix4:
+        return wide ? "math.matrix4d" : "math.matrix4";
+    default:
+        return {};
     }
 }
 constexpr std::string_view short_name(Type type) noexcept {

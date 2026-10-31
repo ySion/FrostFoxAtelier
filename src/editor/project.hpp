@@ -18,8 +18,7 @@ public:
     static Result<Project> create(const std::filesystem::path&);
     static Result<Project> open(const std::filesystem::path&);
     static bool is_scene_path(const std::filesystem::path& path) {
-        return !path.empty() && path.extension()==L".scene" &&
-            *path.begin()==L"Content";
+        return !path.empty() && path.extension() == L".scene" && *path.begin() == L"Content";
     }
     const std::filesystem::path& root() const noexcept { return root_; }
     const std::filesystem::path& startup_scene() const noexcept { return startup_; }
@@ -42,20 +41,20 @@ public:
     // their GUIDs. Removed slot defaults disappear, but their files remain.
     // No import history, source-value merge or rename inference. Unverified changed
     // dependencies/collisions fail; unchanged files may be reused without ownership.
-    Result<MeshImportPublication> reimport_mesh(std::string_view key,const std::filesystem::path& source);
+    Result<MeshImportPublication> reimport_mesh(std::string_view key, const std::filesystem::path& source);
     Result<std::string> import_texture(const std::filesystem::path&);
     // Explicit author operation: decode before replacing the same asset file.
     // The identity sidecar is unchanged; returned pixels are this exact import.
-    Result<assets::TextureAsset> reimport_texture(std::string_view key,const std::filesystem::path& source);
-    Result<std::string> create_material(const std::filesystem::path&,const assets::MaterialAsset& = {});
+    Result<assets::TextureAsset> reimport_texture(std::string_view key, const std::filesystem::path& source);
+    Result<std::string> create_material(const std::filesystem::path&, const assets::MaterialAsset& = {});
     // Creates the MS and its sibling .source file together; empty text uses a
     // small editable shader. Material Source files stay outside gameplay Source.
-    Result<std::string> create_material_source(const std::filesystem::path&,std::string_view text = {});
+    Result<std::string> create_material_source(const std::filesystem::path&, std::string_view text = {});
     Result<void> save_material(const assets::MaterialAsset&);
     // Fresh, deterministic compiler inputs. UI declarations have their own
     // configured entry and are not parsed as gameplay Source functions.
     Result<std::vector<std::filesystem::path>> source_paths() const;
-    Result<void> create_source(const std::filesystem::path& relative,std::string_view);
+    Result<void> create_source(const std::filesystem::path& relative, std::string_view);
     Result<void> set_ui_source(const std::filesystem::path& relative);
     // Rename a project file or folder in place. Mesh/material/texture keys come from
     // their sidecar identity, which moves with them, so scene references survive.
@@ -64,9 +63,10 @@ public:
     Result<std::filesystem::path> cook_collision(std::string_view mesh_key, math::Vector3 scale);
     // Cooked collision for the mesh at this scale; a missing or stale cache entry is rebuilt and written back.
     Result<std::shared_ptr<const std::string>> collision(std::string_view mesh_key, math::Vector3 scale);
+
 private:
     Result<std::vector<assets::ProjectEntry>> scan_entries(bool create_identities) const;
-    Result<MeshImportPublication> import_mesh_files(const std::filesystem::path&,std::string_view existing_key);
+    Result<MeshImportPublication> import_mesh_files(const std::filesystem::path&, std::string_view existing_key);
     std::filesystem::path root_, startup_, ui_source_;
     std::wstring name_;
     std::vector<std::filesystem::path> roots_;
