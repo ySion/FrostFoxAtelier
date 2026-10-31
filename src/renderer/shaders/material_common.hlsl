@@ -1,7 +1,8 @@
 #ifndef MATERIAL_PROGRAMS
 // Non-material entry points share these helpers but cannot shade a surface.
-// There is deliberately no implementation of either shade function without a
+// There is deliberately no implementation of the material evaluators without a
 // batch's generated program prefix. Any reachable call requires that prefix.
+#define MATERIAL_HAS_MASKED 1
 struct MaterialContext {
     float2 ms_uv;
     float3 ms_position_world,ms_normal_world,ms_geometric_normal_world;
@@ -18,7 +19,21 @@ StructuredBuffer<uint> material_indices;
 StructuredBuffer<uint> material_offsets;
 MaterialOutput material_shade(MaterialSurface surface,MaterialContext input);
 MaterialOutput material_shade_footprint(MaterialSurface surface,MaterialContext input,MaterialContext dx,MaterialContext dy);
+float material_coverage(MaterialSurface surface,MaterialContext input);
 bool material_finite2(float2 value) { return all((asuint(value)&0x7fffffffu)<0x7f800000u); }
+#endif
+#ifndef MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE
+#define MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE 0
+#endif
+// Real material classification stays intact. Only probe transport/inspection
+// opts into the GI approximation; direct shadows and receiver gathers do not.
+// Template flags and candidate bodies must agree so all candidate state dies.
+#if MATERIAL_HAS_MASKED && !MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE
+#define MATERIAL_TEST_RAY_CANDIDATES 1
+#define MATERIAL_COVERAGE_RAY_FLAGS 0
+#else
+#define MATERIAL_TEST_RAY_CANDIDATES 0
+#define MATERIAL_COVERAGE_RAY_FLAGS RAY_FLAG_FORCE_OPAQUE
 #endif
 float3 material_transform_tangent(float3 tangent,row_major float4x4 world) {
     float3x3 basis=(float3x3)world;

@@ -35,6 +35,6 @@ void lit_shadow_ps(LitShadowRaster input,uint primitive:SV_PrimitiveID) {
     LitInstance object=lit_instances[input.instance];
     float3 n=lit_faces[input.first_triangle+primitive].normal;
     float3 gn=n.x*object.normal_x.xyz+n.y*object.normal_y.xyz+n.z*object.normal_z.xyz;
-    MaterialOutput result=material_shade(surface,material_context(input.uv,input.world_position,input.normal,gn,input.tangent));
-    if(!(result.ms_coverage>=0))discard;
+    float coverage=material_coverage(surface,material_context(input.uv,input.world_position,input.normal,gn,input.tangent));
+    if(!(coverage>=0))discard;
 }

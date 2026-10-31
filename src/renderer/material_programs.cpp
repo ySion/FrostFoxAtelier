@@ -85,20 +85,26 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
     invalid(!input.empty() && input.size() <= std::numeric_limits<std::uint32_t>::max()/sizeof(ProgramSurfaceRecord),
         "Material batch needs a representable nonempty Surface table");
     surfaces.assign(input.begin(),input.end());
-    std::map<const source::MaterialProgram*,material::DefinitionRef> unique;
+    struct ProgramUse { material::DefinitionRef definition; bool masked{}; };
+    std::map<const source::MaterialProgram*,ProgramUse> unique;
     for (const auto& surface : surfaces) {
         invalid(bool(surface),"Material batch has a missing Surface");
-        unique.try_emplace(&surface->program(),surface->definition());
+        auto& use=unique.try_emplace(&surface->program(),ProgramUse{surface->definition()}).first->second;
+        // Different definitions can share a program. Never let the first
+        // (possibly Opaque) definition hide another instance's Mask policy.
+        use.masked |= surface->policy().coverage==material::Coverage::mask;
     }
     std::vector<material::DefinitionRef> definitions;
+    std::vector<bool> masked_programs;
     std::map<const source::MaterialProgram*,std::uint32_t> indices;
-    for (const auto& [program,definition] : unique) {
-        indices.emplace(program,static_cast<std::uint32_t>(definitions.size()));definitions.push_back(definition);
+    for (const auto& [program,use] : unique) {
+        indices.emplace(program,static_cast<std::uint32_t>(definitions.size()));definitions.push_back(use.definition);
+        masked_programs.push_back(use.masked);
     }
     for (auto it=sets.begin();it!=sets.end();) {
         auto existing=it->lock();
         if (!existing) {it=sets.erase(it);continue;}
-        if (!existing->failure && std::ranges::equal(existing->definitions,definitions,
+        if (!existing->failure && existing->masked_programs==masked_programs && std::ranges::equal(existing->definitions,definitions,
             [](const auto& a,const auto& b){return &a->program()==&b->program();}))code=std::move(existing);
         ++it;
     }
@@ -130,6 +136,7 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
     if (inputs.empty())inputs.emplace_back();
     if (!code) {
         code=std::make_shared<MaterialProgramSet>();code->definitions=std::move(definitions);
+        code->masked_programs=std::move(masked_programs);
         code->submit(context);sets.push_back(code);
     }
 }
@@ -184,6 +191,8 @@ float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,f
     return material_textures[index].SampleGrad(material_repeat_sampler,uv,d0,d1);
 }
 )hlsl";
+    prefix += std::ranges::any_of(masked_programs,[](bool masked){return masked;}) ?
+        "#define MATERIAL_HAS_MASKED 1\n" : "#define MATERIAL_HAS_MASKED 0\n";
     for (std::size_t i=0; i<definitions.size(); ++i) {
         auto hlsl = definitions[i]->program().hlsl("MaterialProgram"+std::to_string(i));
         if (!hlsl) throw Error{{rhi::ErrorCode::invalid_argument,kGfxResult_InvalidParameter,hlsl.error().message},false};
@@ -191,6 +200,11 @@ float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,f
         auto footprint=definitions[i]->program().hlsl_footprint("MaterialFootprint"+std::to_string(i));
         if (!footprint) throw Error{{rhi::ErrorCode::invalid_argument,kGfxResult_InvalidParameter,footprint.error().message},false};
         prefix += *footprint;
+        if (masked_programs[i]) {
+            auto coverage=definitions[i]->program().hlsl_coverage("MaterialCoverage"+std::to_string(i));
+            if (!coverage) throw Error{{rhi::ErrorCode::invalid_argument,kGfxResult_InvalidParameter,coverage.error().message},false};
+            prefix += *coverage;
+        }
     }
     // Reuse the actual generated engine value declarations, not parameter or
     // Context packing assumptions. Each MS still has its own Params layout.
@@ -203,6 +217,18 @@ StructuredBuffer<uint> material_indices;
 StructuredBuffer<uint> material_offsets;
 ByteAddressBuffer material_parameters;
 )hlsl";
+    prefix += "float material_coverage(MaterialSurface surface,MaterialContext input) {\n"
+        "if(surface.flags.x==0)return 1;\nswitch(surface.program) {\n";
+    for (std::size_t i=0; i<definitions.size(); ++i) {
+        if (!masked_programs[i])continue;
+        const auto ns="MaterialCoverage"+std::to_string(i);
+        prefix += "case "+std::to_string(i)+": {\n"+ns+"::ms_Context c;\n";
+        for (const auto* field : {"uv","position_world","normal_world","geometric_normal_world","tangent_world"})
+            prefix += "c.ms_"+std::string(field)+"=input.ms_"+field+";\n";
+        prefix += "return "+ns+"::ms_coverage(surface.input_base,c,"+
+            ns+"::ms_load_parameters(material_parameters,surface.parameter_base)); }\n";
+    }
+    prefix += "}\nreturn 1;\n}\n";
     for (bool footprint : {false,true}) {
         prefix += footprint ? "MaterialOutput material_shade_footprint(MaterialSurface surface,MaterialContext input,MaterialContext dx,MaterialContext dy) {\n" :
             "MaterialOutput material_shade(MaterialSurface surface,MaterialContext input) {\n";
@@ -230,7 +256,11 @@ ByteAddressBuffer material_parameters;
         pending.push_back({pass,std::move(*job)});
     };
     const auto compute = [&](MaterialPass pass,const char* source,const char* entry) {
-        const std::string text = prefix+source;
+        // Only probe transport/inspection approximates Mask as solid geometry.
+        // Camera direct lighting and receiver gathers retain LOD0 candidates.
+        const bool gi_internal=pass==MaterialPass::probe_trace || pass==MaterialPass::probe_update ||
+            pass==MaterialPass::inspect || pass==MaterialPass::inspect_update;
+        const std::string text = prefix+(gi_internal?"#define MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE 1\n":"")+source;
         rhi::PipelineDesc desc; desc.source.cs=text.c_str(); desc.entry_point=entry; desc.name=entry;
         submit(pass,desc);
     };

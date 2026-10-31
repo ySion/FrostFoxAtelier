@@ -40,9 +40,12 @@ struct MaterialImageResource {
     MaterialImageResource& operator=(const MaterialImageResource&) = delete;
 };
 struct MaterialProgramSet {
-    // Canonical program order, independent of MI count, policy and slot order.
+    // Canonical program order, independent of MI count and slot order.
     // Definitions retain the exact code without borrowing a compilation Runtime.
     std::vector<material::DefinitionRef> definitions;
+    // One bit per program: any Surface using it is Mask, across all definitions.
+    // This classification is part of the compiled pipeline-set identity.
+    std::vector<bool> masked_programs;
     std::array<rhi::Pipeline,static_cast<std::size_t>(MaterialPass::count)> pipelines;
     struct Pending { MaterialPass pass; rhi::PipelineJob job; };
     std::vector<Pending> pending;

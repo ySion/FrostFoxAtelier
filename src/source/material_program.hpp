@@ -40,7 +40,7 @@ class MaterialProgram final {
     explicit MaterialProgram(std::shared_ptr<const State>);
     friend Result<std::shared_ptr<const MaterialProgram>> compile_material(
         Runtime&, TypeId, TypeId, TypeId, std::string_view, std::string_view);
-    Result<std::string> generate_hlsl(std::string_view name_space, bool footprint) const;
+    Result<std::string> generate_hlsl(std::string_view name_space, bool footprint, bool coverage = false) const;
 public:
     MaterialLayout context_layout() const noexcept;
     MaterialLayout output_layout() const noexcept;
@@ -59,6 +59,14 @@ public:
     // float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv).
     // Each call's environment selects its resource binding base, not global state.
     Result<std::string> hlsl(std::string_view name_space) const;
+    // Same Context/Parameters and loader, with float ms_coverage(uint environment,
+    // ms_Context,ms_Parameters). Emits only the data/control dependencies of the
+    // top-level float Output.coverage, including defaults, overwrites and helper
+    // returns; unrelated shading/samples are removed before HLSL compilation.
+    // Uses the point sampling/orientation bridges above, never SampleGrad.
+    // An Output without that field still compiles/evaluates normally; only this
+    // request fails with invalid_type. Does not change textures() or CPU policy.
+    Result<std::string> hlsl_coverage(std::string_view name_space) const;
     // Same plain Context/Params/Output and parameter loader, but the entry is
     // ms_shade_footprint(uint,ms_Context center,ms_Context d0,ms_Context d1,ms_Parameters).
     // d0/d1 are zero-initialized changes, NOT neighboring/default Contexts;

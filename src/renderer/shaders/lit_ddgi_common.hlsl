@@ -211,16 +211,20 @@ bool ddgi_segment_visible(float3 from, float3 to, bool record_queries) {
     ray.TMin = 1e-4;
     ray.TMax = distance - 1e-4;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
-             RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+             RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | MATERIAL_COVERAGE_RAY_FLAGS> query;
     if (record_queries) lit_count_rays(lit_visibility_counter);
     query.TraceRayInline(lit_scene, 0, 255, ray);
-    while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
-        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
+    while(query.Proceed()) {
+#if MATERIAL_TEST_RAY_CANDIDATES
+        if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit();
+#endif
+    }
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
 
 // Only the screen resolve opts in. Feedback and diagnostics retain independent
-// exact queries; constant-disabled callers compile out these resources entirely.
+// queries with their entry point's coverage policy; disabled callers compile out this cache.
 Texture2D<float4> lit_probe_visibility_offsets;
 struct DDGIVisibilityCache {
     uint2 previous, current; // x: visible; y: queried. Black light is still valid.

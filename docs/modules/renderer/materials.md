@@ -1,10 +1,10 @@
 # 可编程材质
 
-本页描述当前 MS/MI 实现。相关双配置 CPU、GPU 与编辑闭环验收已通过；运行结果以 `out/acceptance-gate/` 的逐目标日志为准，不以历史无纹理批次代替当前链路验证。未覆盖的 GPU 分支见 [Renderer 验收](acceptance.md#--material-programs)。语言合同见[材质纯值编译](../../../LANGUAGE.md#材质纯值编译与具名纹理输入)，编辑和文件操作见[工程工作流](../editor/projects.md)。
+本页描述当前 MS/MI 实现。CPU、GPU 与编辑闭环的实际验收结果以 `out/acceptance-gate/` 的逐目标日志为准，不以历史无纹理批次代替当前链路验证。未覆盖的 GPU 分支见 [Renderer 验收](acceptance.md#--material-programs)。语言合同见[材质纯值编译](../../../LANGUAGE.md#材质纯值编译与具名纹理输入)，编辑和文件操作见[工程工作流](../editor/projects.md)。
 
 ## 数据与入口
 
-- **MS（Material Source）** 定义源码、参数默认值、具名纹理输入及静态策略。`source::MaterialProgram` 从同一类型化前端生成 CPU 代码、point HLSL 和 footprint HLSL。
+- **MS（Material Source）** 定义源码、参数默认值、具名纹理输入及静态策略。`source::MaterialProgram` 从同一类型化前端生成 CPU 代码、point HLSL、coverage-only HLSL 和 footprint HLSL。
 - **MI（Material Instance）** 引用一个 MS 或 MI；父链无环。作者项为稳定声明路径、类型化本地值和 `enabled`，支持 float、vector2/3/4、纹理键和寻址方式。没有固定参数数量或一层继承限制。
 - Runtime 中的 `material.Source` / `material.Instance` 共用 `material.Resource` 角色；Texture 也是正式 Runtime 对象。`TextureInput` 只是程序局部计算值，不是业务资源或 GPU 描述符。
 - `SourceDefinition`、`ProgramSurface`、`Image` 是不可变内容。`ProgramSurface` 自持代码、参数和精确图片，不持有 Runtime 根；局部槽属于该编译版本，不持久化。声明重排按路径重绑，不能以输入数组下标代替 descriptor 的真实 slot。
@@ -51,7 +51,15 @@ Live 将参数命令与精确资源内容分开传输；纹理和网格 spill �
 
 有网格的 `Frame` 必须提供同 Renderer 的 ready `materials`，每个 `MeshInstance::material_slots` 完整映射几何槽到该批次表。UI/空场景可以没有批次。批次须在 Renderer 关闭前释放。
 
-17 个材质管线按精确 MaterialProgram 对象集合共享；MI 参数、图片、策略或表顺序改变不重新编译相同集合。Renderer 保留最后实际使用的代码 owner，但不因此保留旧参数/图片表。图片按不可变 owner 和 linear/sRGB 使用方式共享上传及 mip；准备中但未采用的批次也持有图片，不能被旧帧清扫淘汰。退休沿现有 RHI/gfx，不逐图等待 GPU。
+17 个材质管线按精确 MaterialProgram 对象集合及**每个程序是否被任一 Mask 表面使用**的分类共享。分类遍历整个 Surface 表，同一程序经不同 SourceDefinition 使用不同 Policy 时取所有实例的并集，不取去重后的第一个定义。分类变化必须选择匹配的 program set/PSO，不能只按程序指针复用；仍存活的同分类管线可复用。MI 参数、图片、表顺序和不改变上述分类的策略修改不重新编译相同集合。
+
+全 Opaque 集合在 RayQuery 模板标志中设置 `RAY_FLAG_FORCE_OPAQUE`，并在编译期移除所有 candidate 检查；含 Mask 的集合只为实际需要 Mask 的程序生成 coverage-only 分派。`MATERIAL_HAS_MASKED` 始终表达整个材质集合的真实分类，不因某个管线采用近似而改写。
+
+**只有 GI 内部管线把 Mask 当作不透明几何**：`MaterialProgramSet::submit` 的 compute 拼接在公共材质 prefix 与 shader source 之间，为 `probe_trace` / `probe_update` / `inspect` / `inspect_update`（入口 `DDGITrace` / `DDGIUpdate` / `DDGIInspect` / `DDGIUpdateInspect`）加入 `#define MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE 1`。其余管线默认该宏为 0，包括相机直接光 `sun_trace` / `compose`、接收面 `probe_resolve` / `probe_upsample` / `probe_exact` 和接收面覆盖显示；shadow atlas 也不采用此宏。
+
+`MATERIAL_TEST_RAY_CANDIDATES` 由 `MATERIAL_HAS_MASKED && !MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE` 决定，同时控制 `lit_accept_candidate` 和四个 RayQuery 的候选代码；为 0 时模板标志 `MATERIAL_COVERAGE_RAY_FLAGS` 为 `RAY_FLAG_FORCE_OPAQUE`。因此 GI 主射线、命中点光源可见性和反馈 LOS 都裁掉候选，而相机直接阴影、shadow atlas 和接收面 LOS 仍正确评估 Mask。没有运行时近似开关，也不更改材质表、BLAS 策略、闭合或双面合同。
+
+Renderer 保留最后实际使用的代码 owner，但不因此保留旧参数/图片表。图片按不可变 owner 和 linear/sRGB 使用方式共享上传及 mip；准备中但未采用的批次也持有图片，不能被旧帧清扫淘汰。退休沿现有 RHI/gfx，不逐图等待 GPU。
 
 宿主使用 `SceneSnapshot::refresh → prepare → draw()`。候选冻结网格、变换、槽表、光源和 CPU 拾取数据；只有仍属当前请求且 ready 的完整组才能采用。准备期间保留上一完整组，首组未 ready 不提交网格场景；不是将新参数拼到旧程序上。
 
@@ -60,12 +68,26 @@ Live 将参数命令与精确资源内容分开传输；纹理和网格 spill �
 ## 采样与各通道
 
 - 工作室、GBuffer、编辑深度在分派及 discard 前获取透视重心变化，构造完整 Context 的两方向变化，再经程序计算得到最终采样坐标足迹。
-- 阴影与 inline RT 候选使用完整 Context、LOD0 覆盖。接受后的 DDGI 命中按 `.01t` 与命中平面两轴构造足迹进行着色，不用过滤后的 coverage 再否定已接受命中。
+- 相机直接阴影、shadow atlas 与接收面 inline RT 候选使用完整 Context、LOD0 覆盖。`MaterialProgram::hlsl_coverage(namespace)` 提供 `ms_Context`、`ms_Parameters`、`ms_load_parameters` 和返回 float 的 `ms_coverage(environment, context, parameters)`；Renderer 以 `MaterialCoverageN` 及 `material_coverage(surface, context)` 分派，不为候选调用完整 `material_shade`。其具名纹理仍经 `atelier_material_sample` 读取同一输入表，沿真实 linear/sRGB、寻址和空值合同在 LOD0 采样；没有候选 footprint 或独立 coverage 参数表。
+- DDGI 内部遍历按上述不透明近似提交命中，之后仍按 `.01t` 与命中平面两轴构造足迹执行完整材质着色，不用过滤后的 coverage 再否定已提交命中。主表面的 footprint 覆盖与保留候选路径的 LOD0 覆盖是不同采样合同，不能互相替换。
 - 非有限最终梯度或纹素尺度溢出读取真实最粗 mip，不把坏梯度交给硬件。
 - `sample_orientation` 查询实际输入的 address：Repeat/Clamp 为正方向；Mirror 按折叠区间返回方向，精确折点取正。footprint 中它是中心值上的分段常量，两方向变化为零。
-- Mask 保留 `coverage >= 0`，Opaque 不用 coverage 裁剪。MatCap 保留自身配色和几何法线预览，但遵循材质 Mask。
+- 除 GI 内部近似外，Mask 保留 `coverage >= 0`，Opaque 不用 coverage 裁剪。MatCap 保留自身配色和几何法线预览，但遵循材质 Mask。
+
+GI 近似会把叶片、栅栏等镂空处视为实体遮挡；被相机 Mask 丢弃的区域也可能以其完整材质参与间接反射或发光。这是为限制 GI 遍历候选状态而接受的质量取舍，不是精确 alpha 传输；直接光阴影、主视图镂空、CPU 拾取和接收面 LOS 不采用该近似。
 
 DDGI 的世界尺度为 \(\rho=0.01t\)。两轴沿射线在命中平面的投影及其正交方向，长度分别为 \(\rho/|N\cdot D|\) 与 \(\rho\)；正入射用最长世界边定轴，不封顶有限掠射足迹。有效世界三角形上零足迹给零变化，退化世界几何或溢出给不可用变化；退化 UV chart 不废弃其他有效属性。法线变化对应同次插值归一化，切线 XYZ 不额外归一化，几何法线和手性变化为零。这是局部切平面近似，不是精确射线微分；其他消费者须提供自己的足迹。编译器的局部分支、奇点和非有限传播约定见[语言规范](../../../LANGUAGE.md#材质局部足迹的边界约定)。
+
+### Coverage 与策略切换验收
+
+既有 `renderer_acceptance_material_programs`（可执行文件 `--material-programs`）包含：
+
+- 真实图片与两份 Source 程序的 GPU coverage-only / 完整 point / CPU 数值对照，包括 Context 分支、参数改变后选择另一纹理输入、程序索引交换、三种寻址、颜色空间和 `coverage == 0`；输出到 `outputs.csv`，组合源码为 `composed.hlsl`。
+- 同一两程序集合 Opaque → Mask → Opaque 的真实双平面场景，以前板/后板深度及绿色后板的直接阴影明暗检查 program-set 失效。参数字节、图片和其他策略均相同；未使用的首个同程序定义保持 Opaque，后续 caster 改为 Mask，并反转表顺序。只按程序指针复用或只检查首个定义，会令旧 Opaque PSO 的常量 coverage 错误遮暗相机镂空露出的后板。阶段为 `native-policy-*`，输出 PNG 和 `native-outputs.csv`；返回 Opaque 还检查匹配分类的即时复用。
+- 原有 `native-shadow-blocked` / `native-shadow-hole` 保留直接阴影的遮挡与镂空检查。`native-ddgi-masked` / `native-ddgi-shared-mask` 则明确检查 GI 近似：负 coverage 的亮发光面仍照亮接收面，共享 Opaque sibling 与实例顺序不改变这一行为。
+- `native-ddgi-footprint` 用红蓝棋盘采样后的非线性乘积发光：LOD0 红蓝中心都为零，过滤后接近均匀白色参考发光面；检查 GI 不透明命中仍先过滤纹理再执行完整材质计算，且不以负的过滤 coverage 丢弃命中。该检查不再依靠候选 Mask 筛选出单一颜色。
+
+这些入口不新增生产导出 API。性能、驱动 scratch 和长期真实场景稳定性需单独测量；验收源码的存在不代表本次运行已通过。
 
 ## StandardPBR 与边界
 

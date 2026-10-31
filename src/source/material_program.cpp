@@ -82,6 +82,7 @@ struct MaterialProgram::State {
     std::vector<MaterialTextureInput> textures;
     std::vector<std::byte> defaults;
     std::vector<std::byte> resource_values;
+    bool supports_coverage{};
 };
 MaterialProgram::MaterialProgram(std::shared_ptr<const State> state) : state_(std::move(state)) {}
 MaterialLayout MaterialProgram::context_layout() const noexcept { return state_->context; }
@@ -96,17 +97,24 @@ Result<std::string> MaterialProgram::hlsl(std::string_view name_space) const {
 Result<std::string> MaterialProgram::hlsl_footprint(std::string_view name_space) const {
     return generate_hlsl(name_space, true);
 }
-Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, bool footprint) const {
+Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) const {
+    return generate_hlsl(name_space, false, true);
+}
+Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, bool footprint, bool coverage) const {
     const auto letter = [](char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     if (name_space.empty() || !letter(name_space.front()) || !std::ranges::all_of(name_space,
         [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Material HLSL namespace requires an ASCII identifier."});
+    if (coverage && !state_->supports_coverage)
+        return std::unexpected(Error{ErrorCode::invalid_type, "Material coverage requires a top-level float coverage field in Output."});
     std::string result = footprint ?
         "float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1);\n#define ATELIER_MATERIAL_FOOTPRINT 1\n" :
         "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n#define ATELIER_MATERIAL_FOOTPRINT 0\n";
+    result += coverage ? "#define ATELIER_MATERIAL_COVERAGE 1\n" : "#define ATELIER_MATERIAL_COVERAGE 0\n";
     result += "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\n";
     return result + "namespace " + std::string(name_space) + " {\n" +
-        atelier_material_code_view(state_->code.get()).hlsl + "}\n#undef ATELIER_MATERIAL_FOOTPRINT\n";
+        atelier_material_code_view(state_->code.get()).hlsl +
+        "}\n#undef ATELIER_MATERIAL_FOOTPRINT\n#undef ATELIER_MATERIAL_COVERAGE\n";
 }
 
 Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
@@ -229,6 +237,9 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
         const auto& c = binding.values[context_type.type_index];
         const auto& o = binding.values[output_type.type_index];
         const auto& p = binding.values[view.parameters];
+        state->supports_coverage = std::ranges::any_of(o.fields, [](const auto& field) {
+            return field.name == "coverage" && field.type == ValueKind::f32;
+        });
         if (!std::ranges::any_of(*declarations, [&](const auto& declaration) { return declaration.name == p.name && !declaration.enumeration; }))
             return fail(Error{ErrorCode::invalid_definition, "Material Params must be declared by this source."});
         if (view.resources != UINT32_MAX) {

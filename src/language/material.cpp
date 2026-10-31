@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -13,6 +14,397 @@ namespace atelier::language {
 namespace {
 [[noreturn]] void reject(SourcePosition position, std::string message) { throw Diagnostic{position, std::move(message)}; }
 std::string number(std::uint32_t bits) { return "asfloat(" + std::to_string(bits) + "u)"; }
+
+// The material subset is acyclic and pure. Execute its typed value/assignment
+// semantics into a field-sensitive DAG, then emit only the coverage root. A
+// selection is lazy control flow, not an eager HLSL ternary: samples in skipped
+// branches (including short-circuit operands and early returns) stay skipped.
+class Coverage {
+    using Value = std::vector<NodeId>;
+    struct Node { Expression expression; NodeId condition{no_node}; };
+    struct Flow {
+        std::vector<Value> locals;
+        // Snapshot returned values before later assignments. Locals may keep
+        // evolving on the fallthrough path; the final lazy selection excludes
+        // that continuation on every path which has already returned.
+        NodeId returned{no_node};
+        Value result;
+    };
+    const MaterialModule& material_;
+    const Program& program_;
+    std::vector<Node> nodes_;
+    std::map<std::pair<ValueType::Kind, std::uint64_t>, NodeId> literals_;
+    std::vector<std::vector<std::uint64_t>> required_;
+
+    bool record(ValueType type) const {
+        return type.kind == ValueType::record && type.type_index != material_.texture_input;
+    }
+    std::size_t width(ValueType type) const {
+        if (!record(type)) return type == ValueType::void_value ? 0 : 1;
+        std::size_t count{};
+        for (const auto& field : program_.value_layouts[type.type_index].fields) count += width(field.type);
+        return count;
+    }
+    std::size_t field_begin(ValueType owner, std::size_t offset) const {
+        std::size_t begin{};
+        for (const auto& field : program_.value_layouts[owner.type_index].fields) {
+            if (field.offset == offset) return begin;
+            begin += width(field.type);
+        }
+        throw std::logic_error("Missing typed coverage field.");
+    }
+    NodeId add(Expression expression) {
+        nodes_.push_back({std::move(expression)});
+        return nodes_.size() - 1;
+    }
+    NodeId literal(ValueType type, std::uint64_t bits) {
+        const auto key = std::pair{type.kind, bits};
+        if (const auto found = literals_.find(key); found != literals_.end()) return found->second;
+        Expression value{Expression::Kind::literal, type, {}};
+        value.bits = bits;
+        const auto id = add(std::move(value));
+        literals_.emplace(key, id);
+        return id;
+    }
+    NodeId boolean(bool value) { return literal(ValueType::boolean, value); }
+    NodeId select(NodeId condition, NodeId yes, NodeId no) {
+        if (yes == no) return yes;
+        if (condition == boolean(true)) return yes;
+        if (condition == boolean(false)) return no;
+        if (yes == boolean(true) && no == boolean(false)) return condition;
+        nodes_.push_back({Expression{Expression::Kind::literal, nodes_[yes].expression.type, {}, yes, no}, condition});
+        return nodes_.size() - 1;
+    }
+    Value select(NodeId condition, const Value& yes, const Value& no) {
+        Value value;
+        for (std::size_t i = 0; i < yes.size(); ++i) value.push_back(select(condition, yes[i], no[i]));
+        return value;
+    }
+    Value initial(ValueType type, const std::byte* bytes = nullptr) {
+        if (!record(type)) {
+            std::uint32_t bits{};
+            if (bytes) {
+                if (type == ValueType::boolean) bits = *bytes != std::byte{};
+                else std::memcpy(&bits, bytes, sizeof(bits));
+            }
+            return {literal(type, bits)};
+        }
+        const auto& layout = program_.value_layouts[type.type_index];
+        if (!bytes && !layout.initial_value.empty()) bytes = layout.initial_value.data();
+        Value value;
+        for (const auto& field : layout.fields) {
+            const auto child = initial(field.type, bytes ? bytes + field.offset : nullptr);
+            value.insert(value.end(), child.begin(), child.end());
+        }
+        return value;
+    }
+    Value unpack(NodeId id) {
+        const auto type = nodes_[id].expression.type;
+        if (!record(type)) return {id};
+        Value value;
+        for (const auto& field : program_.value_layouts[type.type_index].fields) {
+            Expression access{Expression::Kind::value_field, field.type, {}, id};
+            access.offset = field.offset;
+            const auto child = unpack(add(std::move(access)));
+            value.insert(value.end(), child.begin(), child.end());
+        }
+        return value;
+    }
+    NodeId pack(ValueType type, const Value& value) {
+        if (!record(type)) return value[0];
+        Expression construct{Expression::Kind::math_construct, type, {}};
+        construct.arguments = value;
+        return add(std::move(construct));
+    }
+    NodeId binary(Operation operation, NodeId left, NodeId right, ValueType type = ValueType::f32) {
+        Expression expression{Expression::Kind::binary, type, {}, left, right};
+        expression.operation = operation;
+        return add(std::move(expression));
+    }
+    Value expression(const Function& function, NodeId id, const Flow& flow) {
+        const auto& node = function.expressions[id];
+        const auto operand = [&](NodeId child) { return expression(function, child, flow); };
+        using Kind = Expression::Kind;
+        switch (node.kind) {
+        case Kind::literal: return {literal(node.type, node.bits)};
+        case Kind::local: return flow.locals[node.value];
+        case Kind::value_field: {
+            const auto owner = operand(node.left);
+            const auto begin = field_begin(function.expressions[node.left].type, node.offset);
+            return Value(owner.begin() + begin, owner.begin() + begin + width(node.type));
+        }
+        case Kind::unary: case Kind::scalar_cast: {
+            Value value;
+            for (const auto child : operand(node.left)) {
+                auto scalar = node;
+                scalar.type = record(node.type) ? ValueType::f32 : node.type;
+                scalar.left = child;
+                value.push_back(add(std::move(scalar)));
+            }
+            return value;
+        }
+        case Kind::binary: {
+            const auto left = operand(node.left), right = operand(node.right);
+            if (node.operation == Operation::logical_and) return {select(left[0], right[0], boolean(false))};
+            if (node.operation == Operation::logical_or) return {select(left[0], boolean(true), right[0])};
+            Value value;
+            const auto count = std::max(left.size(), right.size());
+            const auto scalar = record(node.type) ? ValueType{ValueType::f32} : node.type;
+            for (std::size_t i = 0; i < count; ++i)
+                value.push_back(binary(node.operation, left[left.size() == 1 ? 0 : i], right[right.size() == 1 ? 0 : i], scalar));
+            if (node.type == ValueType::boolean && count > 1) {
+                auto result = value[0];
+                for (std::size_t i = 1; i < count; ++i)
+                    result = binary(node.operation == Operation::equal ? Operation::logical_and : Operation::logical_or,
+                        result, value[i], ValueType::boolean);
+                return {result};
+            }
+            return value;
+        }
+        case Kind::math_construct: {
+            if (node.arguments.empty()) return initial(node.type);
+            Value value;
+            for (const auto child : node.arguments) {
+                const auto part = operand(child);
+                value.insert(value.end(), part.begin(), part.end());
+            }
+            return value;
+        }
+        case Kind::source_call: {
+            std::vector<Value> arguments;
+            for (const auto child : node.arguments) arguments.push_back(operand(child));
+            return invoke(program_.functions[node.value], std::move(arguments));
+        }
+        case Kind::math_intrinsic: {
+            std::vector<Value> arguments;
+            for (const auto child : node.arguments) arguments.push_back(operand(child));
+            if (node.math_operation == MathOperation::cross) {
+                Value value;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    const auto j = (i + 1) % 3, k = (i + 2) % 3;
+                    value.push_back(binary(Operation::subtract,
+                        binary(Operation::multiply, arguments[0][j], arguments[1][k]),
+                        binary(Operation::multiply, arguments[0][k], arguments[1][j])));
+                }
+                return value;
+            }
+            if (node.math_operation >= MathOperation::square_root) {
+                Value value;
+                for (std::size_t i = 0; i < width(node.type); ++i) {
+                    auto scalar = node;
+                    scalar.type = ValueType::f32;
+                    scalar.arguments.clear();
+                    for (const auto& argument : arguments) scalar.arguments.push_back(argument[argument.size() == 1 ? 0 : i]);
+                    value.push_back(add(std::move(scalar)));
+                }
+                return value;
+            }
+            auto operation = node; // dot/length consume all lanes, unlike element-wise operations.
+            for (std::size_t i = 0; i < arguments.size(); ++i)
+                operation.arguments[i] = pack(function.expressions[node.arguments[i]].type, arguments[i]);
+            return unpack(add(std::move(operation)));
+        }
+        case Kind::texture_sample: case Kind::texture_orientation: {
+            auto sample = node;
+            sample.left = pack(function.expressions[node.left].type, operand(node.left));
+            sample.right = operand(node.right)[0];
+            return unpack(add(std::move(sample)));
+        }
+        default: throw std::logic_error("Unvalidated coverage expression.");
+        }
+    }
+    std::pair<std::uint32_t, std::size_t> target(const Function& function, NodeId id) const {
+        const auto& node = function.expressions[id];
+        if (node.kind == Expression::Kind::local) return {node.value, 0};
+        auto result = target(function, node.left);
+        result.second += field_begin(function.expressions[node.left].type, node.offset);
+        return result;
+    }
+    void statement(const Function& function, NodeId id, Flow& flow) {
+        const auto& node = function.statements[id];
+        using Kind = Statement::Kind;
+        switch (node.kind) {
+        case Kind::block:
+            for (const auto child : node.children) {
+                if (flow.returned == boolean(true)) break;
+                statement(function, child, flow);
+            }
+            break;
+        case Kind::declare:
+            flow.locals[node.target] = node.expression == no_node ? initial(function.locals[node.target].type) :
+                expression(function, node.expression, flow);
+            break;
+        case Kind::assign: {
+            const auto value = expression(function, node.expression, flow);
+            const auto [local, begin] = target(function, node.target);
+            std::copy(value.begin(), value.end(), flow.locals[local].begin() + begin);
+            break;
+        }
+        case Kind::call: break; // No observable side effects in the validated pure subset.
+        case Kind::return_value: {
+            const auto value = node.expression == no_node ? Value{} : expression(function, node.expression, flow);
+            flow.result = flow.returned == no_node ? value : select(flow.returned, flow.result, value);
+            flow.returned = boolean(true);
+            break;
+        }
+        case Kind::condition: {
+            const auto condition = expression(function, node.expression, flow)[0];
+            Flow yes{flow.locals, no_node, {}}, no{flow.locals, no_node, {}};
+            statement(function, node.body, yes);
+            if (node.alternative != no_node) statement(function, node.alternative, no);
+            for (std::size_t i = 0; i < flow.locals.size(); ++i) {
+                // Branch-local declarations cannot escape their lexical scope.
+                if (!flow.locals[i].empty()) flow.locals[i] = select(condition, yes.locals[i], no.locals[i]);
+            }
+            if (yes.returned == no_node && no.returned == no_node) break;
+            auto value = yes.returned == no_node ? no.result : no.returned == no_node ? yes.result :
+                select(condition, yes.result, no.result);
+            auto returned = select(condition, yes.returned == no_node ? boolean(false) : yes.returned,
+                no.returned == no_node ? boolean(false) : no.returned);
+            if (flow.returned != no_node) {
+                value = select(flow.returned, flow.result, value);
+                returned = select(flow.returned, boolean(true), returned);
+            }
+            flow.result = std::move(value);
+            flow.returned = returned;
+            break;
+        }
+        default: throw std::logic_error("Unvalidated coverage statement.");
+        }
+    }
+    Value invoke(const Function& function, std::vector<Value> arguments) {
+        Flow flow{std::move(arguments), no_node, {}};
+        flow.locals.resize(function.locals.size());
+        statement(function, function.body, flow);
+        return flow.result;
+    }
+    const std::vector<std::uint64_t>& required(NodeId id) {
+        auto& result = required_[id];
+        if (!result.empty()) return result;
+        // Nodes are appended after their operands. Memoized bitsets describe
+        // must-execute dependencies, avoiding repeated walks of the shared DAG.
+        result.resize(id / 64 + 1);
+        result[id / 64] |= std::uint64_t{1} << (id % 64);
+        const auto include = [&](NodeId child) {
+            if (child == no_node) return;
+            const auto& dependencies = required(child);
+            for (std::size_t i = 0; i < dependencies.size(); ++i) result[i] |= dependencies[i];
+        };
+        const auto& node = nodes_[id];
+        if (node.condition == no_node) {
+            include(node.expression.left);
+            include(node.expression.right);
+            for (const auto argument : node.expression.arguments) include(argument);
+        } else {
+            include(node.condition);
+            const auto& yes = required(node.expression.left);
+            const auto& no = required(node.expression.right);
+            // A nested select requires its condition and only the INTERSECTION
+            // of its arms. Union would make branch-only sampling eager.
+            for (std::size_t i = 0; i < std::min(yes.size(), no.size()); ++i) result[i] |= yes[i] & no[i];
+        }
+        return result;
+    }
+    NodeId emit(NodeId id, Function& function, std::vector<Statement>& statements, std::vector<NodeId>& available) const {
+        if (available[id] != no_node) return available[id];
+        const auto& node = nodes_[id];
+        auto expression = node.expression;
+        const auto add_expression = [&](Expression value) {
+            function.expressions.push_back(std::move(value));
+            return function.expressions.size() - 1;
+        };
+        const auto add_block = [&](std::vector<Statement> children) {
+            Statement block{Statement::Kind::block, {}, no_node, no_node, no_node, no_node, {}};
+            for (auto& child : children) {
+                block.children.push_back(function.statements.size());
+                function.statements.push_back(std::move(child));
+            }
+            function.statements.push_back(std::move(block));
+            return function.statements.size() - 1;
+        };
+        NodeId condition = no_node;
+        if (node.condition != no_node) {
+            condition = emit(node.condition, function, statements, available);
+            const auto& yes = required_[node.expression.left];
+            const auto& no = required_[node.expression.right];
+            // Materialize shared must-execute values at this common dominator
+            // before copying the scope. Emit consumers first so a shared select
+            // retains its own lazy branches, rather than expanding in each arm.
+            for (std::size_t i = std::min(yes.size(), no.size()); i-- > 0;) {
+                auto common = yes[i] & no[i];
+                while (common) {
+                    const auto bit = static_cast<std::size_t>(std::bit_width(common) - 1);
+                    emit(i * 64 + bit, function, statements, available);
+                    common &= ~(std::uint64_t{1} << bit);
+                }
+            }
+        } else {
+            if (expression.left != no_node) expression.left = emit(expression.left, function, statements, available);
+            if (expression.right != no_node) expression.right = emit(expression.right, function, statements, available);
+            for (auto& argument : expression.arguments) argument = emit(argument, function, statements, available);
+            if (expression.kind == Expression::Kind::literal || expression.kind == Expression::Kind::local)
+                return available[id] = add_expression(std::move(expression));
+        }
+        const auto local = static_cast<std::uint32_t>(function.locals.size());
+        function.locals.push_back({"coverage", expression.type});
+        const auto reference = add_expression(Expression{Expression::Kind::local, expression.type, {}, no_node, no_node, local});
+        Statement declare{Statement::Kind::declare, {}, no_node, no_node, no_node, no_node, {}};
+        declare.target = local;
+        if (condition == no_node) declare.expression = add_expression(std::move(expression));
+        statements.push_back(std::move(declare));
+        if (condition != no_node) {
+            Statement branch{Statement::Kind::condition, {}, no_node, no_node, no_node, no_node, {}};
+            branch.expression = condition;
+            const auto arm = [&](NodeId value) {
+                // Only definitions dominating this arm are reusable. Never hoist
+                // a sample out of its controlling branch to share a temporary.
+                auto scoped = available;
+                std::vector<Statement> body;
+                Statement assign{Statement::Kind::assign, {}, no_node, no_node, no_node, no_node, {}};
+                assign.target = reference;
+                assign.expression = emit(value, function, body, scoped);
+                body.push_back(std::move(assign));
+                return add_block(std::move(body));
+            };
+            branch.body = arm(node.expression.left);
+            branch.alternative = arm(node.expression.right);
+            statements.push_back(std::move(branch));
+        }
+        return available[id] = reference;
+    }
+public:
+    explicit Coverage(const MaterialModule& material) : material_(material), program_(material.program) {}
+    Function generate(std::size_t offset) {
+        const auto& shade = program_.functions[program_.exports[0]];
+        std::vector<Value> arguments;
+        Function result;
+        result.function_name = "coverage";
+        result.result = ValueType::f32;
+        result.parameters = shade.parameters;
+        result.locals.assign(shade.locals.begin(), shade.locals.begin() + shade.parameters.size());
+        for (std::size_t i = 0; i < shade.parameters.size(); ++i)
+            arguments.push_back(unpack(add(Expression{Expression::Kind::local, shade.parameters[i].type, {},
+                no_node, no_node, static_cast<std::uint32_t>(i)})));
+        const auto value = invoke(shade, std::move(arguments));
+        const auto root = value[field_begin(shade.result, offset)];
+        required_.resize(nodes_.size());
+        required(root);
+        std::vector<NodeId> available(nodes_.size(), no_node);
+        std::vector<Statement> body;
+        Statement returned{Statement::Kind::return_value, {}, no_node, no_node, no_node, no_node, {}};
+        returned.expression = emit(root, result, body, available);
+        body.push_back(std::move(returned));
+        Statement block{Statement::Kind::block, {}, no_node, no_node, no_node, no_node, {}};
+        for (auto& child : body) {
+            block.children.push_back(result.statements.size());
+            result.statements.push_back(std::move(child));
+        }
+        result.body = result.statements.size();
+        result.statements.push_back(std::move(block));
+        return result;
+    }
+};
+
 class Hlsl {
     const MaterialModule& material_;
     const Program& program_;
@@ -439,7 +831,7 @@ class Hlsl {
 public:
     explicit Hlsl(const MaterialModule& material) : material_(material), program_(material.program), emitted_(program_.value_layouts.size()) {}
     static bool supports(MathOperation operation) { return !intrinsic(operation).empty(); }
-    std::string generate(bool footprint = false) {
+    std::string generate(bool footprint = false, bool coverage = false) {
         text_ = footprint ? "// Typed Source: center values and two local changes; no implicit derivatives.\n" :
             "// Generated from typed Source. Sampling is linear-float4, explicit LOD-0.\n";
         std::set<std::pair<MathOperation, std::string>> helpers;
@@ -476,7 +868,8 @@ public:
             if (footprint) differential_statement(program_.functions[i], program_.functions[i].body);
             else statement(program_.functions[i], program_.functions[i].body);
         }
-        text_ += footprint ? "ms_Output ms_shade_footprint(uint environment, ms_Context context, ms_Context d0, ms_Context d1, ms_Parameters parameters) {\n" :
+        text_ += coverage ? "float ms_coverage(uint environment, ms_Context context, ms_Parameters parameters) {\n" :
+            footprint ? "ms_Output ms_shade_footprint(uint environment, ms_Context context, ms_Context d0, ms_Context d1, ms_Parameters parameters) {\n" :
             "ms_Output ms_shade(uint environment, ms_Context context, ms_Parameters parameters) {\n";
         if (material_.resources != UINT32_MAX) {
             const auto resource_type = type({ValueType::record, material_.resources});
@@ -491,7 +884,7 @@ public:
             (footprint ? "(environment,ms_seed(context,d0,d1),ms_constant(parameters)" : "(environment,context,parameters");
         if (material_.resources != UINT32_MAX) text_ += footprint ? ",ms_constant(resources)" : ",resources";
         text_ += footprint ? ")); }\n" : "); }\n";
-        text_ += "ms_Parameters ms_defaults() { return " + std::string(footprint ? "ms_value(" : "") +
+        if (!coverage) text_ += "ms_Parameters ms_defaults() { return " + std::string(footprint ? "ms_value(" : "") +
             "ms_f" + std::to_string(program_.exports[1]) + (footprint ? "(0u)); }\n" : "(0u); }\n");
         text_ += "ms_Parameters ms_load_parameters(ByteAddressBuffer data, uint base) {\nms_Parameters p = (ms_Parameters)0;\n";
         load_parameters({ValueType::record, material_.parameters}, "p", 0);
@@ -637,9 +1030,29 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
     } catch (Diagnostic& diagnostic) { return std::unexpected(std::move(diagnostic)); }
 }
 std::string material_hlsl(const MaterialModule& material) {
-    // Both variants travel through the existing owned HLSL text. No extra JIT
+    // All variants travel through the existing owned HLSL text. No extra JIT
     // callback, Runtime type or DLL ABI is needed for a GPU-only lowering.
-    return "#if ATELIER_MATERIAL_FOOTPRINT\n" + Hlsl(material).generate(true) +
+    std::string coverage = "#error Material coverage requires a top-level float coverage field in Output.\n";
+    const auto& fields = material.program.value_layouts[material.output].fields;
+    const auto field = std::ranges::find_if(fields, [](const auto& value) {
+        return value.name == "coverage" && value.type == ValueType::f32;
+    });
+    if (field != fields.end()) {
+        MaterialModule projected;
+        projected.context = material.context;
+        projected.parameters = material.parameters;
+        projected.output = material.output;
+        projected.texture_input = material.texture_input;
+        projected.resources = material.resources;
+        projected.textures = material.textures;
+        projected.program.value_layouts = material.program.value_layouts;
+        projected.program.functions.push_back(Coverage(material).generate(field->offset));
+        projected.program.reachable = {true};
+        projected.program.exports = {0};
+        coverage = Hlsl(projected).generate(false, true);
+    }
+    return "#if ATELIER_MATERIAL_COVERAGE\n" + coverage +
+        "#elif ATELIER_MATERIAL_FOOTPRINT\n" + Hlsl(material).generate(true) +
         "#else\n" + Hlsl(material).generate() + "#endif\n";
 }
 }

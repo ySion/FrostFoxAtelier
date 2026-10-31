@@ -217,19 +217,26 @@ MaterialTriangle lit_material_triangle(uint instance_id,LitRayTriangle face) {
 MaterialContext lit_material_context(uint instance_id,LitRayTriangle face,float2 bary) {
     return material_triangle_context(lit_material_triangle(instance_id,face),bary);
 }
+#if MATERIAL_TEST_RAY_CANDIDATES
 bool lit_accept_candidate(uint instance_id,uint primitive,float2 bary) {
     LitRayTriangle face=lit_ray_triangle(instance_id,primitive);
     MaterialSurface surface=lit_ray_material(instance_id,face);
     if(surface.flags.x==0)return true;
-    return material_shade(surface,lit_material_context(instance_id,face,bary)).ms_coverage>=0;
+    return material_coverage(surface,lit_material_context(instance_id,face,bary))>=0;
 }
+#endif
 bool lit_visible(float3 p,float3 n,float3 l,float distance) {
     lit_count_rays(lit_visibility_counter);
     RayDesc ray; ray.Origin=p+n*lit_controls.y; ray.Direction=l;
     ray.TMin=lit_controls.y; ray.TMax=max(ray.TMin,distance-lit_controls.y*2);
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-    query.TraceRayInline(lit_scene,0,255,ray); while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
-        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES|MATERIAL_COVERAGE_RAY_FLAGS> query;
+    query.TraceRayInline(lit_scene,0,255,ray);
+    while(query.Proceed()) {
+#if MATERIAL_TEST_RAY_CANDIDATES
+        if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit();
+#endif
+    }
     return query.CommittedStatus()==COMMITTED_NOTHING;
 }
 bool lit_visible_target(float3 p, float3 n, float3 target) {
@@ -245,9 +252,14 @@ bool lit_visible_target(float3 p, float3 n, float3 target) {
     ray.TMin = bias;
     ray.TMax = distance - bias;
     lit_count_rays(lit_visibility_counter);
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-    query.TraceRayInline(lit_scene, 0, 255, ray); while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
-        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH|RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES|MATERIAL_COVERAGE_RAY_FLAGS> query;
+    query.TraceRayInline(lit_scene, 0, 255, ray);
+    while(query.Proceed()) {
+#if MATERIAL_TEST_RAY_CANDIDATES
+        if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit();
+#endif
+    }
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }
 struct LitSurface { float3 position,normal,geometric_normal,base,emissive; float roughness,metallic; bool closed,double_sided,emission_two_sided; };
@@ -275,7 +287,7 @@ LitSurface lit_hit_surface(uint instance_id,uint primitive,float2 bary,float3 po
     float2 bx,by;material_ray_barycentrics(tri,ray_direction,footprint,bx,by);
     MaterialOutput material=material_shade_footprint(surface,material_triangle_context(tri,bary),
         material_triangle_delta(tri,bary,bx),material_triangle_delta(tri,bary,by));
-    // Coverage already accepted the LOD0 candidate; filtered shading cannot undo it.
+    // A committed hit (coverage-tested or GI-opaque) cannot be rejected by filtered shading.
     s.normal=lit_safe_normal(material.ms_normal_world);
     s.base=material.ms_base_color;s.roughness=saturate(material.ms_roughness);s.metallic=saturate(material.ms_metallic);s.emissive=max(material.ms_emissive,0);
     s.double_sided=surface.flags.y!=0;s.emission_two_sided=surface.flags.z!=0;return s;

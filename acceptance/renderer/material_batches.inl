@@ -48,7 +48,8 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
             "o.emissive=vector3(p.emission.x*color.x,p.emission.y*color.y,p.emission.z*color.z); o.roughness=0.8; o.metallic=0.0;\n"
             "if (p.mode<0.0) { o.base_color=vector3(data.x,color.x,0.0); }\n"
             "if (p.mode<-1.5) { vector2 oriented=uv*p.frequency; if (p.mode<-2.5) { oriented=vector2(1.0,2.0); }\n"
-            "vector2 sign=sample_orientation(t.aColor,oriented); o.base_color=vector3(sign.x*0.5+0.5,sign.y*0.5+0.5,0.0); }\n"+
+            "vector2 sign=sample_orientation(t.aColor,oriented); o.base_color=vector3(sign.x*0.5+0.5,sign.y*0.5+0.5,0.0); }\n"
+            "if (p.mode<-3.5) { o.base_color=vector3(); o.emissive=p.emission*(4.0*color.x*color.z); }\n"+
             (masked?"vector4 mask=sample(t.zCoverage,uv*p.frequency); o.coverage=p.cutoff-mask.x+c.position_world.y*0.125;\n":"o.coverage=-1.0;\n")+
             "o.normal_world=c.normal_world; return o; }";
         std::ofstream file(output/(std::string(name)+".source"));file<<text;
@@ -323,6 +324,53 @@ void run(HWND window,const std::filesystem::path& output) {
     check(pixel(capture,x*3,y)[1]<unshadowed*.3f,"atlas shadow pass evaluates the procedural cutout at caster coordinates");
     sunlight[0].direction={0,0,1};draw("native-shadow-hole",true);
     check(pixel(capture,x*3,y)[1]>unshadowed*.7f,"procedural shadow hole exposes the rear receiver");
+    {
+        // Exactly two program identities, unlike the full table with its error
+        // program. The unused first NativeMask definition stays Opaque while
+        // the actual caster changes policy. A stale Opaque PSO still opens the
+        // camera hole but its constant coverage entry shadows the green rear.
+        check(&table[2]->program()==&table[0]->program() &&
+            std::ranges::equal(table[2]->parameters(),table[0]->parameters()),
+            "policy transition keeps exact program identity and parameter bytes");
+        check(std::ranges::equal(table[2]->inputs(),table[0]->inputs(),[](const auto& a,const auto& b) {
+            return a.image==b.image&&a.address==b.address&&a.color==b.color&&
+                a.empty_value.x==b.empty_value.x&&a.empty_value.y==b.empty_value.y&&
+                a.empty_value.z==b.empty_value.z&&a.empty_value.w==b.empty_value.w;
+        }) && table[2]->policy().coverage==material::Coverage::opaque &&
+            table[0]->policy().coverage==material::Coverage::mask &&
+            table[2]->policy().double_sided==table[0]->policy().double_sided &&
+            table[2]->policy().emission_two_sided==table[0]->policy().emission_two_sided,
+            "coverage policy is the only changed material input");
+        std::array policy_table{table[2],table[1],table[2]};
+        auto opaque_policy=take(renderer.prepare_materials(policy_table));wait(renderer,opaque_policy);
+        meshes[0].material_slots=slots({2,1});frame.materials=&opaque_policy;++frame.scene_identity;
+        draw("native-policy-opaque",true);
+        check(std::abs(depth(capture,x,y)-.8f)<1e-5f&&std::abs(depth(capture,x*3,y)-.8f)<1e-5f&&
+            pixel(capture,x*3,y)[0]>pixel(capture,x*3,y)[1]+20,"Opaque caster hides the green rear plane");
+
+        policy_table[2]=table[0];
+        auto mask_policy=take(renderer.prepare_materials(policy_table));wait(renderer,mask_policy);
+        frame.materials=&mask_policy;++frame.scene_identity;
+        draw("native-policy-mask",true);coverage();
+        check(pixel(capture,x*3,y)[1]>unshadowed*.7f&&pixel(capture,x*3,y)[1]>pixel(capture,x*3,y)[0]+20,
+            "Opaque-to-Mask invalidates shadow coverage PSOs despite identical programs and an Opaque first definition");
+        std::swap(policy_table[0],policy_table[2]);
+        auto reordered=take(renderer.prepare_materials(policy_table));
+        check(take(renderer.preparation(reordered)).ready,"coverage classification is independent of first definition and surface order");
+        frame.materials=&reordered;meshes[0].material_slots=slots({0,1});++frame.scene_identity;
+        draw("native-policy-mask-reordered",true);coverage();
+        check(pixel(capture,x*3,y)[1]>unshadowed*.7f&&pixel(capture,x*3,y)[1]>pixel(capture,x*3,y)[0]+20,
+            "Mask-first table preserves the same camera and direct-shadow hole");
+
+        policy_table={table[2],table[1],table[2]};
+        auto opaque_again=take(renderer.prepare_materials(policy_table));
+        check(take(renderer.preparation(opaque_again)).ready,"returning to Opaque reuses only the matching retained classification");
+        frame.materials=&opaque_again;meshes[0].material_slots=slots({2,1});++frame.scene_identity;
+        draw("native-policy-opaque-restored",true);
+        check(std::abs(depth(capture,x,y)-.8f)<1e-5f&&std::abs(depth(capture,x*3,y)-.8f)<1e-5f&&
+            pixel(capture,x*3,y)[0]>pixel(capture,x*3,y)[1]+20,"Mask-to-Opaque restores the solid caster with the same programs");
+        meshes[0].material_slots=slots({0,1});frame.materials=&batch;++frame.scene_identity;
+    }
     const auto ready_busy=renderer.close();
     check(!ready_busy&&ready_busy.error().cause.code==atelier::rhi::ErrorCode::busy&&!ready_busy.error().terminal,
         "close checks live batches before destroying already-used Scene Lit resources");
@@ -371,6 +419,14 @@ void run(HWND window,const std::filesystem::path& output) {
     lit.ddgi=true;const auto warm=transport("native-ddgi-warm");
     room.meshes[7].material_slots=slots({5});const auto cool=transport("native-ddgi-cool");
     check(warm[0]>warm[2]+20&&cool[2]>cool[0]+20,"arbitrary program emission and exact texture replacement reach DDGI receivers");
+    material::Context emitter_point;emitter_point.position_world={0,6,0};
+    const auto rejected_point=need(table[6]->evaluate(emitter_point));
+    check(rejected_point.coverage<0&&rejected_point.emissive.x>0,
+        "the GI approximation fixture really has negative point coverage and nonzero emission");
+    room.meshes[7].material_slots=slots({6});++frame.scene_identity;
+    const auto masked=transport("native-ddgi-masked");
+    check(masked[0]>10&&masked[1]>10&&masked[2]>10,
+        "GI-only opaque traversal keeps full emission from a camera-discarded Mask surface");
     {
         std::vector<std::uint8_t> pixels(256*256*4);
         for(unsigned v=0;v<256;++v)for(unsigned u=0;u<256;++u) {
@@ -380,32 +436,36 @@ void run(HWND window,const std::filesystem::path& output) {
         const auto image=std::make_shared<const material::Image>(256,256,std::move(pixels));
         auto emitter=texture_override(texture_override(table[4],"aColor",image),"zCoverage",image);
         emitter=need(material::resolve_instance(emitter,std::array{material::Override{"frequency",64.f,true},
-            material::Override{"cutoff",-.35f,true}},std::array<material::ImageRef,2>{}));
+            material::Override{"cutoff",-.35f,true},material::Override{"mode",-4.f,true}},std::array<material::ImageRef,3>{}));
         material::Context c;c.position_world={0,6,0};c.normal_world=c.geometric_normal_world={0,-1,0};
         c.uv={4.5f/(256*64),.5f/(256*64)};
-        check(need(emitter->evaluate(c)).coverage>0,"LOD0 blue emitter texels are accepted");
+        const auto blue=need(emitter->evaluate(c));
+        check(blue.coverage>0&&blue.emissive.x==0,"LOD0 blue texel passes coverage but its red-blue product emits zero");
         c.uv.x=.5f/(256*64);
-        check(need(emitter->evaluate(c)).coverage<0,"LOD0 red emitter texels are rejected");
+        const auto red=need(emitter->evaluate(c));
+        check(red.coverage<0&&red.emissive.x==0,"LOD0 red texel fails coverage and its red-blue product emits zero");
         auto filtered_table=table;filtered_table[4]=emitter;
         auto filtered=take(renderer.prepare_materials(filtered_table));
         check(take(renderer.preparation(filtered)).ready,"DDGI texture edits reuse the same program set");
         frame.materials=&filtered;room.meshes[7].material_slots=slots({4});++frame.scene_identity;
         const auto mixed=transport("native-ddgi-footprint");
-        // LOD0-only shading would be blue, while rechecking filtered coverage
-        // (now negative) would erase the accepted hit. Correct shading is purple.
-        check(mixed[0]>10&&mixed[2]>10&&std::abs(mixed[0]-mixed[2])<8,
-            "accepted DDGI hits filter final UV using ray-plane footprints without rechecking coverage");
-        frame.materials=&batch;
+        // Filtering before the nonlinear red-blue product yields white emission
+        // like the uniform reference. LOD0 is mostly black, even without Mask
+        // candidate rejection; rechecking negative filtered coverage erases it.
+        for(unsigned channel=0;channel<3;++channel)
+            check(mixed[channel]>masked[channel]*.8f,
+                "GI-opaque hits still filter final UV before material math and never recheck filtered coverage");
+        check(std::abs(mixed[0]-mixed[2])<8,"filtered red-blue product produces neutral emission");
+        frame.materials=&batch;room.meshes[7].material_slots=slots({6});
     }
-    room.meshes[7].material_slots=slots({6});++frame.scene_identity;
-    const auto masked=transport("native-ddgi-masked");check(masked[0]<2&&masked[1]<2&&masked[2]<2,"inline candidate coverage rejects a bright but discarded emitter");
-    // A shared opaque instance must not mark the visible Mask emitter's BLAS
-    // opaque. Put that sibling far beyond the probe domain and swap order.
+    // GI's solid approximation must not depend on which instance first uses a
+    // shared BLAS. Direct-shadow Mask behavior is checked above, separately.
     auto emitter=room.meshes[7];emitter.stable_key=900;emitter.world[12]=1000;emitter.material_slots=slots({2});
     room.meshes.push_back(emitter);frame.meshes=room.meshes;
     for(unsigned order=0;order<2;++order) {
         ++frame.scene_identity;const auto value=transport("native-ddgi-shared-mask");
-        check(value[0]<2&&value[1]<2&&value[2]<2,"shared BLAS opacity is the intersection of every instance policy");
+        check(value[0]>10&&value[1]>10&&value[2]>10,
+            "GI keeps the masked emitter's full shading with a shared Opaque sibling in either instance order");
         std::swap(room.meshes[7],room.meshes.back());
     }
     // Last use is deliberately NOT captured/finished. Releasing the batch must
@@ -418,6 +478,6 @@ void run(HWND window,const std::filesystem::path& output) {
     check(take(renderer.preparation(reused)).ready,
         "the last rendered program-set owner remains reusable after batch and image retirement");
     reused={};take(renderer.close());
-    std::puts("Native material batches: PASS (pending/old group, cancellation, full slot maps, studio/cavity/GBuffer/edit depth/shadow/inline DDGI, shared policy intersection, in-flight retirement; no Editor binding/history or natural backend rejection proof)");
+    std::puts("Native material batches: PASS (pending/old group, cancellation, full slot maps, studio/cavity/GBuffer/edit depth/shadow/inline DDGI, Opaque-Mask-Opaque shadow invalidation, GI-only opaque approximation with footprint shading, shared geometry, in-flight retirement; no Editor binding/history or natural backend rejection proof)");
 }
 } // namespace material_batch_e2e

@@ -123,13 +123,17 @@ DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, 
     float far_scale=max(1e-3,max(far_corner.x,max(far_corner.y,far_corner.z)));
     float scene_distance=far_scale*length(far_corner/far_scale);
     ray.TMax = max(scene_distance+max(1e-3,scene_distance*1e-5),ray.TMin*2);
-    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES|MATERIAL_COVERAGE_RAY_FLAGS> query;
     // Both fixed geometry and random illumination rays count as probe rays.
     // Secondary shadow rays are counted separately by lit_visible().
     lit_count_rays(1);
     query.TraceRayInline(lit_scene, 0, 255, ray);
-    while(query.Proceed()) { if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
-        lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit(); }
+    while(query.Proceed()) {
+#if MATERIAL_TEST_RAY_CANDIDATES
+        if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            lit_accept_candidate(query.CandidateInstanceID(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))query.CommitNonOpaqueTriangleHit();
+#endif
+    }
     hit.radiance_distance = float4(record_surface ? ddgi_finite_radiance(lit_sky_incident(direction)) : 0, ray.TMax);
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return hit;
     float distance = query.CommittedRayT();
@@ -152,8 +156,8 @@ DDGIRayHit ddgi_trace_ray(float3 position, float3 direction, DDGIVolume volume, 
         } else return hit;
     }
     if (record_surface) {
-        // Mesh emission reaches the scene only through probes, as the camera
-        // sees it: single-sided backs never emit, two-sided ones by material.
+        // GI treats Mask as solid, but retains material emission and sidedness:
+        // single-sided backs never emit, two-sided ones by material.
         hit.radiance_distance.rgb = ddgi_finite_radiance(surface.emissive);
         hit.base_roughness = float4(surface.base, surface.roughness);
         hit.normal_metallic = float4(surface.normal, surface.metallic);

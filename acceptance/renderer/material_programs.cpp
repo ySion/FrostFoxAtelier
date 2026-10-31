@@ -51,6 +51,14 @@ Params defaults() {
     p.weights = vector4(0.1, 0.2, 0.3, 0.4);
     return p;
 }
+struct Layer { material.Output output; };
+Layer coverage_layer(material.Context c, Params p, vector4 color, vector4 data) {
+    Layer layer;
+    layer.output.coverage = data.w - p.cutoff;
+    if (c.uv.x < 0.0) { layer.output.coverage = p.cutoff - data.w; return layer; }
+    if (p.cutoff < 0.0) { layer.output.coverage = color.x + p.cutoff; }
+    return layer;
+}
 material.Output shade(material.Context c, Params p, Textures textures) {
     vector2 uv = c.uv + p.shift;
     vector4 color = sample(textures.color, uv);
@@ -61,7 +69,8 @@ constexpr std::string_view outputs = R"source(
     o.emissive = vector3(color.x, color.y, color.z) * p.gain;
     o.roughness = p.weights.x + data.x * p.weights.y;
     o.metallic = p.weights.z + data.y * p.weights.w;
-    o.coverage = data.w - p.cutoff;
+    Layer layer = coverage_layer(c, p, color, data);
+    o.coverage = layer.output.coverage;
     o.normal_world = c.normal_world;
     return o;
 }
@@ -126,6 +135,7 @@ Compiled compile(const std::filesystem::path& evidence) {
         (void)texture_slots(*program);
         result.programs[i] = std::move(program);
         result.adapters += adapter(runtime, context, name, true) + adapter(runtime, output, name, false);
+        result.adapters += adapter(runtime, context, "Coverage" + name, true);
     }
     return result; // Both Runtime and temporary source strings die before any evaluation/HLSL emission.
 }
@@ -202,6 +212,8 @@ material::Output expected(const Record& record, const Environment& environment) 
     result.roughness = .1f + samples[1].x * .2f;
     result.metallic = .3f + samples[1].y * .4f;
     result.coverage = samples[1].w - record.cutoff;
+    if (record.context.uv.x < 0) result.coverage = record.cutoff - samples[1].w;
+    else if (record.cutoff < 0) result.coverage = samples[0].x + record.cutoff;
     result.normal_world = record.context.normal_world;
     return result;
 }
@@ -318,7 +330,8 @@ struct Device {
             static_cast<std::uint32_t>(values.size()), values.data());
         require(bool(result), "named binding buffer unavailable"); buffers.push_back(result); return result;
     }
-    std::vector<material::Output> dispatch(std::span<const Record> input, GfxBuffer bindings, std::uint32_t program_count) {
+    std::vector<material::Output> dispatch(std::span<const Record> input, GfxBuffer bindings, std::uint32_t program_count,
+                                         std::vector<float>* coverage = nullptr) {
         const auto gfx = owner.borrow();
         std::vector<material::Context> contexts;
         std::vector<std::byte> parameters;
@@ -333,7 +346,7 @@ struct Device {
         auto parameter_buffer = buffer(parameters.size(), parameters.data());
         auto record_buffer = gfxCreateBuffer<std::array<std::uint32_t, 4>>(gfx, static_cast<std::uint32_t>(records.size()), records.data());
         require(bool(record_buffer), "B0 record buffer unavailable"); buffers.push_back(record_buffer);
-        auto result = buffer(input.size() * sizeof(material::Output));
+        auto result = buffer(input.size() * (sizeof(material::Output) + (coverage ? sizeof(float) : 0)));
         auto readback = buffer(result.getSize(), nullptr, kGfxCpuAccess_Read);
         const auto program = pipeline.program();
         check(gfxProgramSetParameter(gfx, program, "contexts", context_buffer));
@@ -354,6 +367,10 @@ struct Device {
         require(mapped != nullptr, "B0 output readback unavailable");
         std::vector<material::Output> output(input.size());
         std::memcpy(output.data(), mapped, output.size() * sizeof(material::Output));
+        if (coverage) {
+            coverage->resize(input.size());
+            std::memcpy(coverage->data(), mapped + output.size() * sizeof(material::Output), coverage->size() * sizeof(float));
+        }
         rhi_acceptance::check_debug(debug.Get());
         return output;
     }
@@ -519,11 +536,17 @@ void run(HWND window, const std::filesystem::path& evidence) {
         require(program->parameters().size()==5 && defaults==expected_defaults, "mixed parameter defaults differ from source declarations");
     }
     std::string shader = std::string(sampling_shader) + need(programs[0]->hlsl("ProgramA")) +
-        need(programs[1]->hlsl("ProgramB")) + compiled.adapters;
+        need(programs[1]->hlsl("ProgramB")) + need(programs[0]->hlsl_coverage("CoverageProgramA")) +
+        need(programs[1]->hlsl_coverage("CoverageProgramB")) + compiled.adapters;
     shader += "[numthreads(32,1,1)] void main(uint3 id:SV_DispatchThreadID) {\n"
         "if(id.x>=record_count)return; uint4 r=records[id.x]; uint base=id.x*" + std::to_string(sizeof(material::Output)) + ";\n"
+        "uint coverage_base=record_count*" + std::to_string(sizeof(material::Output)) + "+id.x*4;\n"
         "if(r.x==0)store_ProgramA(base,ProgramA::ms_shade(r.y,load_ProgramA(r.w),ProgramA::ms_load_parameters(parameters,r.z)));\n"
-        "else store_ProgramB(base,ProgramB::ms_shade(r.y,load_ProgramB(r.w),ProgramB::ms_load_parameters(parameters,r.z)));\n}\n";
+        "else store_ProgramB(base,ProgramB::ms_shade(r.y,load_ProgramB(r.w),ProgramB::ms_load_parameters(parameters,r.z)));\n"
+        "float coverage;\n"
+        "if(r.x==0)coverage=CoverageProgramA::ms_coverage(r.y,load_CoverageProgramA(r.w),CoverageProgramA::ms_load_parameters(parameters,r.z));\n"
+        "else coverage=CoverageProgramB::ms_coverage(r.y,load_CoverageProgramB(r.w),CoverageProgramB::ms_load_parameters(parameters,r.z));\n"
+        "results.Store(coverage_base,asuint(coverage));\n}\n";
     write(evidence / "composed.hlsl", shader);
 
     auto first = std::make_shared<const material::Image>(2,2,std::vector<std::uint8_t>{
@@ -570,9 +593,10 @@ void run(HWND window, const std::filesystem::path& evidence) {
     const auto binding_buffer=device.bindings(programs);
     device.pipeline=need(device.prepare(shader));
     std::ofstream log(evidence / "outputs.csv");
-    log << "stage,record,program,environment,cpu_base_r,gpu_base_r,expected_base_r,cpu_coverage,gpu_coverage,expected_coverage\n" << std::setprecision(9);
+    log << "stage,record,program,environment,cpu_base_r,gpu_base_r,expected_base_r,cpu_coverage,gpu_coverage,expected_coverage,gpu_coverage_only\n" << std::setprecision(9);
     const auto verify = [&](const char* stage) {
-        const auto gpu=device.dispatch(records,binding_buffer,static_cast<std::uint32_t>(programs.size()));
+        std::vector<float> coverage;
+        const auto gpu=device.dispatch(records,binding_buffer,static_cast<std::uint32_t>(programs.size()),&coverage);
         for(std::size_t i=0;i<records.size();++i) {
             const auto& record=records[i];const auto& environment=environments[record.environment];
             const auto slots=texture_slots(*programs[record.program]);
@@ -583,9 +607,12 @@ void run(HWND window, const std::filesystem::path& evidence) {
             const auto wanted=expected(record,environment);
             log << stage << ',' << i << ',' << record.program << ',' << record.environment << ','
                 << cpu.base_color.x << ',' << gpu[i].base_color.x << ',' << wanted.base_color.x << ','
-                << cpu.coverage << ',' << gpu[i].coverage << ',' << wanted.coverage << '\n';
+                << cpu.coverage << ',' << gpu[i].coverage << ',' << wanted.coverage << ',' << coverage[i] << '\n';
             log.flush(); require(log.good(),"B0 numeric evidence write failed");
             compare(cpu,wanted,2e-6f); compare(gpu[i],wanted,3e-3f); // D3D texture decode/filter precision is not CPU bit identity.
+            require(std::isfinite(coverage[i]) && std::abs(coverage[i]-gpu[i].coverage)<=2e-6f &&
+                (coverage[i]>=0)==(gpu[i].coverage>=0),
+                "coverage-only GPU entry must match full point coverage, including branches and cutoff equality");
         }
     };
     verify("original");
@@ -594,6 +621,13 @@ void run(HWND window, const std::filesystem::path& evidence) {
     records[0].tint={.7f,.1f,.3f};
     parameter(*programs[records[0].program],records[0].parameters,"tint",std::array{.7f,.1f,.3f});
     verify("parameter-only");
+    // Change the coverage branch and its texture dependency without compiling
+    // either GPU entry again. Every resource environment exercises this path.
+    for(auto& record:records) if(record.context.uv.x>0.3f) {
+        record.cutoff=-.25f;
+        parameter(*programs[record.program],record.parameters,"cutoff",std::array{record.cutoff});
+    }
+    verify("coverage-parameter-branch");
     require(device.submissions==1,"index/parameter edits must use the original prepared pipeline");
 
     {
@@ -617,6 +651,6 @@ void run(HWND window, const std::filesystem::path& evidence) {
     const bool math_correct = math_cases(device, environments, evidence);
     device.close();
     require(math_correct, "Source math semantics or single operand evaluation disagreed");
-    std::puts("Material programs: PASS (CPU/compute LOD0, two real programs, index swap, parameters, independent bindings, mixed layout, Runtime lifetime, failed candidates, GBV; raster/RT not migrated)");
+    std::puts("Material programs: PASS (CPU/compute LOD0, coverage-only/full point parity, branches, two real programs, index swap, parameters, independent bindings, mixed layout, Runtime lifetime, failed candidates, GBV)");
 }
 } // namespace material_program_e2e

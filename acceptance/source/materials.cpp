@@ -24,6 +24,8 @@ struct UnusedDefault {
     float value;
     UnusedDefault() { throw std::runtime_error("Unrelated native constructor must not run during material compilation."); }
 };
+struct GenericOutput { float value{7}; };
+struct VectorCoverage { math::Vector2 coverage{2,3}; };
 const std::string declarations = R"(
     struct Mask { float cutoff; vector2 scale; };
     struct Params { float gain; vector3 tint; Mask mask; };
@@ -66,6 +68,42 @@ const std::string second = declarations + resources + R"(
         o.emissive = vector3(sample(copied.surface.color,c.uv).x,0.0,0.0);
         o.coverage = margin(c.uv,p,copied.alpha);
         o.normal_world = c.normal_world;
+        return o;
+    }
+)";
+const std::string coverage_source = R"(
+    struct Params { float mode; float cutoff; };
+    struct Textures { material.TextureInput keep; material.TextureInput discarded; };
+    struct Layer { material.Output output; vector2 uv; };
+    Params defaults() { Params p; p.cutoff=0.5; return p; }
+    float kept_argument(float discarded,float kept) { return kept; }
+    Layer layer(material.Context c,Params p,Textures textures) {
+        Layer l; l.uv=c.uv;
+        l.output.base_color=math.sin(vector3(sample(textures.discarded,c.uv).x,0.5,0.75));
+        if (p.mode<0.0) { return l; }
+        l.output.coverage=sample(textures.discarded,c.uv).w;
+        l.output.coverage=kept_argument(sample(textures.discarded,c.uv).w,l.uv.x);
+        if (p.mode==1.0) { l.output.coverage=l.uv.y; }
+        if (p.mode==2.0) {
+            if (l.uv.x<0.5) { return l; }
+            l.output.coverage=-0.75;
+            return l;
+        }
+        return l;
+    }
+    material.Output shade(material.Context c,Params p,Textures textures) {
+        Layer l=layer(c,p,textures);
+        material.Output o=l.output;
+        if (p.mode<0.0) { return o; }
+        float previous=o.coverage;
+        o.coverage=31.0;
+        if (p.mode==3.0) {
+            material.Output replacement;
+            replacement.coverage=previous+p.cutoff;
+            o=replacement;
+        } else { o.coverage=previous-p.cutoff; }
+        if (p.mode==4.0 && sample(textures.keep,c.uv).w>0.5) { o.coverage=-o.coverage; }
+        if (p.mode==5.0 || sample(textures.keep,c.uv).x<0.0) { o.coverage=previous; return o; }
         return o;
     }
 )";
@@ -165,19 +203,95 @@ material::Output evaluate(const source::MaterialProgram& program, material::Cont
         std::as_writable_bytes(std::span(&output, 1)), textures));
     return output;
 }
+std::string coverage_body(const source::MaterialProgram& program) {
+    // The owning text carries mutually exclusive lowerings through the existing
+    // DLL ABI. Inspect the selected branch, not inactive point/footprint text.
+    const auto hlsl = take(program.hlsl_coverage("CoverageCheck"));
+    constexpr std::string_view begin = "#if ATELIER_MATERIAL_COVERAGE\n";
+    const auto first = hlsl.find(begin), last = hlsl.find("#elif ATELIER_MATERIAL_FOOTPRINT\n");
+    require(first != std::string::npos && last != std::string::npos && first < last &&
+        hlsl.contains("#define ATELIER_MATERIAL_COVERAGE 1\n"), "Coverage HLSL did not select its owning lowering.");
+    auto body = hlsl.substr(first + begin.size(), last - first - begin.size());
+    require(body.contains("float ms_coverage(") && body.contains("ms_load_parameters(") &&
+        !body.contains("ms_Output") && !body.contains("ms_shade(") && !body.contains("atelier_material_sample_grad"),
+        "Coverage HLSL retained a full shading/footprint entry instead of a scalar dependency slice.");
+    return body;
+}
+std::size_t occurrences(std::string_view text, std::string_view token) {
+    std::size_t count{}, position{};
+    while ((position = text.find(token, position)) != std::string_view::npos) { ++count; position += token.size(); }
+    return count;
+}
 }
 
 void verify_source_materials() {
     std::shared_ptr<const source::MaterialProgram> a, b, revised, reordered, numeric, footprint, oriented;
+    std::shared_ptr<const source::MaterialProgram> coverage, overwritten, generic, vector_output;
     {
         Runtime runtime;
         take(material::register_program_types(runtime));
         take(NativeRegistration<UnusedDefault>{runtime,"unused.Value",TypeKind::record}
             .field<&UnusedDefault::value>("value",{TypeReference::native<float>()},offsetof(UnusedDefault,value)).publish());
+        take(NativeRegistration<GenericOutput>{runtime,"generic.Output",TypeKind::record}
+            .field<&GenericOutput::value>("value",{TypeReference::native<float>()},offsetof(GenericOutput,value)).publish());
+        take(NativeRegistration<VectorCoverage>{runtime,"generic.VectorCoverage",TypeKind::record}
+            .field<&VectorCoverage::coverage>("coverage",{TypeReference::native<math::Vector2>()},offsetof(VectorCoverage,coverage)).publish());
         const auto context = take(runtime.native_type<material::Context>());
         const auto output = take(runtime.native_type<material::Output>());
         const auto texture_input = take(runtime.native_type<material::TextureInput>());
         const auto types_before = runtime.type_count();
+        // Each select uses the previous value in both arms. Start small so a
+        // recurrence regression fails before the 32-branch case exhausts memory.
+        for (const std::size_t count : {8u,16u,32u}) {
+            std::string text = "struct Params {\n";
+            for (std::size_t i = 0; i < count; ++i) text += "float m" + std::to_string(i) + ";\n";
+            text += "}; Params defaults(){ Params p; return p; }\n"
+                "material.Output shade(material.Context c,Params p){ float v=c.uv.x;\n";
+            for (std::size_t i = 0; i < count; ++i)
+                text += "if(p.m" + std::to_string(i) + ">0.0){ v=v+0.01; }\n";
+            text += "material.Output o; o.coverage=v; return o; }\n";
+            const auto sequential = take(source::compile_material(runtime,context,output,texture_input,"sequential-coverage.ms",text));
+            const auto body = coverage_body(*sequential);
+            require(body.size() <= 8192 + count * 2048 && occurrences(body,"if (") <= count * 2,
+                "Coverage generation duplicated the shared preceding DAG across sequential branches.");
+            material::Context c; c.uv.x = 0.25f;
+            std::vector<float> parameters(count);
+            for (const unsigned mode : {0u,1u,2u}) {
+                float expected = c.uv.x;
+                for (std::size_t i = 0; i < count; ++i) {
+                    parameters[i] = mode == 1 || (mode == 2 && i % 2 == 0) ? 1.0f : 0.0f;
+                    if (parameters[i] > 0) expected += 0.01f;
+                }
+                require(near(evaluate(*sequential,c,{},std::as_bytes(std::span(parameters))).coverage,expected),
+                    "Sequential coverage branches lost their independent parameter decisions.");
+            }
+        }
+        const auto lazy_shared = take(source::compile_material(runtime,context,output,texture_input,"lazy-shared-coverage.ms",R"(
+            struct Params { float gate; float a; float b; };
+            struct Textures { material.TextureInput input; };
+            Params defaults(){ Params p; return p; }
+            material.Output shade(material.Context c,Params p,Textures textures){
+                float v=0.0;
+                if(p.gate>0.0){ v=sample(textures.input,c.uv).w; }
+                if(p.a>0.0){ v=v+0.01; }
+                if(p.b>0.0){ v=v+0.01; }
+                material.Output o; o.coverage=v; return o;
+            }
+        )"));
+        const auto lazy_body = coverage_body(*lazy_shared);
+        const auto branch = lazy_body.find("if ("), sampled = lazy_body.find("::atelier_material_sample(");
+        require(branch != std::string::npos && sampled != std::string::npos &&
+            occurrences(lazy_body,"::atelier_material_sample(") == 1,
+            "Sharing a preceding conditional value duplicated its branch-only sample.");
+        const auto opening = lazy_body.find('{',branch);
+        auto closing = opening;
+        std::size_t depth = 1;
+        while (depth && closing != std::string::npos && ++closing < lazy_body.size()) {
+            if (lazy_body[closing] == '{') ++depth;
+            if (lazy_body[closing] == '}') --depth;
+        }
+        require(!depth && opening < sampled && sampled < closing,
+            "Sharing a preceding conditional value made its internal sample eager.");
         const std::string unused_loop = "float unused_loop(float x){ while(x>0.0){x=x-1.0;} return x; }";
         a = take(source::compile_material(runtime, context, output, texture_input, "mask-a.ms", first + unused_loop));
         b = take(source::compile_material(runtime, context, output, texture_input, "mask-b.ms", second));
@@ -209,6 +323,23 @@ void verify_source_materials() {
         )"));
         footprint = take(source::compile_material(runtime, context, output, texture_input, "footprint.ms", footprint_source));
         oriented = take(source::compile_material(runtime, context, output, texture_input, "orientation.ms", orientation_source));
+        coverage = take(source::compile_material(runtime, context, output, texture_input, "coverage.ms", coverage_source));
+        overwritten = take(source::compile_material(runtime, context, output, texture_input, "overwritten.ms", declarations + resources + R"(
+            float kept_argument(float discarded,float kept) { return kept; }
+            material.Output replace(material.Output o,float value) { o.coverage=value; return o; }
+            material.Output shade(material.Context c,Params p,Textures textures) {
+                material.Output o; o.coverage=sample(textures.alpha,c.uv).w;
+                material.Output copied=o;
+                o.coverage=sample(textures.surface.color,c.uv).w;
+                vector2 lanes=vector2(sample(textures.surface.color,c.uv).x,c.uv.y);
+                copied=replace(copied,kept_argument(sample(textures.unused,c.uv).w,lanes.y));
+                return copied;
+            }
+        )"));
+        generic = take(source::compile_material(runtime, context, take(runtime.native_type<GenericOutput>()), texture_input,
+            "generic.ms", declarations + "generic.Output shade(material.Context c,Params p){ generic.Output o; return o; }"));
+        vector_output = take(source::compile_material(runtime, context, take(runtime.native_type<VectorCoverage>()), texture_input,
+            "vector-output.ms", declarations + "generic.VectorCoverage shade(material.Context c,Params p){ generic.VectorCoverage o; return o; }"));
         require(runtime.type_count() == types_before, "Material compilation published/redefined Params into live Runtime.");
         const auto rejected = [&](std::string text, std::string_view reason) {
             auto result = source::compile_material(runtime, context, output, texture_input, "rejected.ms", text);
@@ -290,6 +421,47 @@ void verify_source_materials() {
             !publication_error.error().message.contains(":1:1:"),
             "Material layout publication lost source identity or fabricated an exact position.");
     } // All content below is used after its compilation Runtime is destroyed.
+
+    require(!coverage->hlsl_coverage("bad::namespace"), "Coverage HLSL lost namespace validation.");
+    const auto a_coverage = coverage_body(*a), b_coverage = coverage_body(*b);
+    require(occurrences(a_coverage,"::atelier_material_sample(") == 1 && b_coverage.contains("::atelier_material_sample("),
+        "Coverage did not remove unrelated sampling or lost a required helper/token sample.");
+    const auto constant_coverage = coverage_body(*oriented), replaced_coverage = coverage_body(*overwritten);
+    require(!constant_coverage.contains("::atelier_material_sample") && !constant_coverage.contains("if (") &&
+        !replaced_coverage.contains("::atelier_material_sample"),
+        "Coverage retained unrelated orientation/branches, overwritten values or unused helper arguments.");
+    const auto control_coverage = coverage_body(*coverage), math_coverage = coverage_body(*numeric);
+    require(control_coverage.contains("if (") && control_coverage.contains("::atelier_material_sample(") &&
+        !control_coverage.contains("sin(") && !math_coverage.contains("floor("),
+        "Coverage lost control dependencies or retained unrelated shading math.");
+    require(coverage_body(*footprint).contains("sin("), "Coverage dropped a helper's texture-coordinate dependency.");
+    for (const auto& program : {generic, vector_output}) {
+        const auto unsupported = program->hlsl_coverage("Unsupported");
+        require(!unsupported && unsupported.error().code == ErrorCode::invalid_type &&
+            unsupported.error().message.contains("float coverage"), "An unsupported coverage output lost its explicit failure.");
+        take(program->hlsl("GenericPoint"));
+        take(program->hlsl_footprint("GenericFootprint"));
+    }
+    material::Context coverage_context;
+    coverage_context.uv = {0.25f,0.75f};
+    GenericOutput generic_result;
+    generic_result.value = -1;
+    take(generic->evaluate(std::as_bytes(std::span(&coverage_context,1)),generic->default_parameters(),
+        std::as_writable_bytes(std::span(&generic_result,1))));
+    require(generic_result.value == 7, "Adding coverage restricted generic CPU Output evaluation/defaults.");
+    const Texture coverage_texture{{0.2f,0.4f,0.6f,0.8f}};
+    const std::array<source::MaterialTexture,2> coverage_bindings{{
+        {slot(*coverage,"keep"),&coverage_texture,sample}, {slot(*coverage,"discarded"),&coverage_texture,sample}}};
+    constexpr std::array coverage_expected{1.0f,-0.25f,0.25f,-0.25f,0.75f,0.25f,0.25f,-1.25f};
+    for (std::size_t i = 0; i < coverage_expected.size(); ++i) {
+        coverage_context.uv.x = i == 7 ? 0.75f : 0.25f;
+        const std::array parameters{i == 7 ? 2.0f : static_cast<float>(i)-1.0f,0.5f};
+        require(evaluate(*coverage,coverage_context,coverage_bindings,std::as_bytes(std::span(parameters))).coverage == coverage_expected[i],
+            "Coverage fixture changed native/nested defaults, snapshots, whole-record replacement or early returns.");
+    }
+    const auto overwritten_bindings = bindings(*overwritten,coverage_texture,coverage_texture);
+    require(evaluate(*overwritten,coverage_context,overwritten_bindings).coverage == coverage_context.uv.y,
+        "Coverage fixture changed unused argument/overwritten record semantics.");
 
     material::Context numeric_context;
     numeric_context.uv = {0.5f,0.25f};
@@ -513,6 +685,42 @@ void verify_source_materials() {
     hlsl.close();
     require(hlsl.good(), "Could not write generated HLSL validation artifact.");
 
+    // Dispatch eight threads with keep=(.2,.4,.6,.8), a finite discarded image,
+    // Parameters={0,.5}, and Result[8]. x/y/z must agree, w must be one. This
+    // composes the actual point and sliced programs; it is not a GPU pass here.
+    const auto coverage_path=std::filesystem::temp_directory_path()/"atelier-source-material-coverage.hlsl";
+    std::ofstream coverage_hlsl(coverage_path,std::ios::binary);
+    coverage_hlsl << take(coverage->hlsl("Point")) << take(coverage->hlsl_coverage("Coverage"))
+        << take(footprint->hlsl_coverage("CoordinateCoverage"))
+        << take(overwritten->hlsl_coverage("Overwritten")) << take(oriented->hlsl_coverage("Constant")) << R"(
+        Texture2D<float4> Images[2] : register(t0);
+        ByteAddressBuffer Parameters : register(t2);
+        SamplerState Filter : register(s0);
+        RWStructuredBuffer<float4> Result : register(u0);
+        float4 atelier_material_sample(uint environment,uint slot,float2 uv) {
+            return Images[environment+slot].SampleLevel(Filter,uv,0);
+        }
+        [numthreads(1,1,1)] void main(uint3 id:SV_DispatchThreadID) {
+            if (id.x>=8) return;
+            const float expected[8]={1.0,-0.25,0.25,-0.25,0.75,0.25,0.25,-1.25};
+            Coverage::ms_Context c=(Coverage::ms_Context)0;
+            c.ms_uv=float2(id.x==7?0.75:0.25,0.75);
+            Coverage::ms_Parameters p=Coverage::ms_load_parameters(Parameters,0);
+            p.ms_mode=id.x==7?2.0:float(id.x)-1.0;
+            Point::ms_Context pc=(Point::ms_Context)0; pc.ms_uv=c.ms_uv;
+            Point::ms_Parameters pp=Point::ms_load_parameters(Parameters,0); pp.ms_mode=p.ms_mode;
+            float full=Point::ms_shade(0,pc,pp).ms_coverage;
+            float sliced=Coverage::ms_coverage(0,c,p);
+            Overwritten::ms_Context oc=(Overwritten::ms_Context)0; oc.ms_uv=c.ms_uv;
+            float replaced=Overwritten::ms_coverage(0,oc,(Overwritten::ms_Parameters)0);
+            float constant=Constant::ms_coverage(0,(Constant::ms_Context)0,(Constant::ms_Parameters)0);
+            Result[id.x]=float4(full,sliced,expected[id.x],
+                full==sliced && sliced==expected[id.x] && replaced==c.ms_uv.y && constant==99.0 ? 1.0 : 0.0);
+        }
+    )";
+    coverage_hlsl.close();
+    require(coverage_hlsl.good(),"Could not write generated coverage HLSL validation artifact.");
+
     // This is an executable GPU validation input, NOT a GPU pass. Dispatch 16
     // threads with two real mipmapped textures and a Mirror sampler, clear
     // Counts[32], bind Result[34], Trace[192], then read back gradients/output.
@@ -641,5 +849,6 @@ void verify_source_materials() {
     require(!b && near(untouched.coverage,0.5f), "Dropping the last content owner freed an active call's code.");
     std::printf("Material HLSL artifact: %s\n",path.string().c_str());
     std::printf("Material footprint HLSL artifact (GPU execution still required): %s\n",footprint_path.string().c_str());
+    std::printf("Material coverage HLSL artifact (GPU execution still required): %s\n",coverage_path.string().c_str());
     std::puts("Source material consumer: PASS (CPU; GPU execution not covered)");
 }
