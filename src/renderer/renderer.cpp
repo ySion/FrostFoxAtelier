@@ -684,14 +684,17 @@ struct Renderer::State {
         white_image.reset();
         active_material_programs.reset();
         material_program_sets.clear();
-        for (auto& material_sampler : materials.samplers)
-            if (material_sampler) {
-                const auto result = gfxDestroySamplerState(gfx, material_sampler);
+        const auto retire = [this](auto& handle, auto destroy, const char* message) -> Result<void> {
+            if (handle) {
+                const auto result = destroy(gfx, handle);
                 if (result)
-                    return std::unexpected(
-                        error(rhi::ErrorCode::execution_failed, "Material sampler retirement failed", true, result));
-                material_sampler = {};
+                    return std::unexpected(error(rhi::ErrorCode::execution_failed, message, true, result));
+                handle = {};
             }
+            return {};
+        };
+        for (auto& material_sampler : materials.samplers)
+            ATELIER_TRY(retire(material_sampler, gfxDestroySamplerState, "Material sampler retirement failed"));
         ++materials.revision;
         materials.batch = nullptr;
         materials.captured_programs.clear();
@@ -700,42 +703,14 @@ struct Renderer::State {
             if (r)
                 return std::unexpected(
                     error(rhi::ErrorCode::execution_failed, "Program slot table retirement failed", true, r));
-        if (matcap) {
-            const auto r = gfxDestroyTexture(gfx, matcap);
-            if (r)
-                return std::unexpected(error(rhi::ErrorCode::execution_failed, "MatCap retirement failed", true, r));
-            matcap = {};
-        }
-        if (depth) {
-            const auto r = gfxDestroyTexture(gfx, depth);
-            if (r)
-                return std::unexpected(error(rhi::ErrorCode::execution_failed, "Depth retirement failed", true, r));
-            depth = {};
-        }
-        if (cavity_normals) {
-            const auto r = gfxDestroyTexture(gfx, cavity_normals);
-            if (r)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Cavity normal retirement failed", true, r));
-            cavity_normals = {};
-        }
-        if (cavity_color) {
-            const auto r = gfxDestroyTexture(gfx, cavity_color);
-            if (r)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Cavity color retirement failed", true, r));
-            cavity_color = {};
-        }
+        ATELIER_TRY(retire(matcap, gfxDestroyTexture, "MatCap retirement failed"));
+        ATELIER_TRY(retire(depth, gfxDestroyTexture, "Depth retirement failed"));
+        ATELIER_TRY(retire(cavity_normals, gfxDestroyTexture, "Cavity normal retirement failed"));
+        ATELIER_TRY(retire(cavity_color, gfxDestroyTexture, "Cavity color retirement failed"));
         for (auto& [key, geometry] : geometries) {
             (void)key;
             for (auto* buffer : {&geometry.gpu.vertices, &geometry.gpu.indices, &geometry.gpu.faces}) {
-                if (!*buffer)
-                    continue;
-                const auto r = gfxDestroyBuffer(gfx, *buffer);
-                if (r)
-                    return std::unexpected(
-                        error(rhi::ErrorCode::execution_failed, "Geometry retirement failed", true, r));
-                *buffer = {};
+                ATELIER_TRY(retire(*buffer, gfxDestroyBuffer, "Geometry retirement failed"));
             }
         }
         geometries.clear();
@@ -746,12 +721,7 @@ struct Renderer::State {
                     error(rhi::ErrorCode::execution_failed, "Scene frame slot retirement failed", true, r));
         if (const auto r = ui_slots.retire(gfx))
             return std::unexpected(error(rhi::ErrorCode::execution_failed, "UI frame slot retirement failed", true, r));
-        if (sampler) {
-            const auto r = gfxDestroySamplerState(gfx, sampler);
-            if (r)
-                return std::unexpected(error(rhi::ErrorCode::execution_failed, "Sampler retirement failed", true, r));
-            sampler = {};
-        }
+        ATELIER_TRY(retire(sampler, gfxDestroySamplerState, "Sampler retirement failed"));
         ui_pipeline = {};
         background = {};
         grid = {};
