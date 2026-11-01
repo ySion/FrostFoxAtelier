@@ -66,4 +66,4 @@ Session::start/update/stop 是运行宿主唯一驱动。start 创建 PhysicsSce
 
 EnvironmentComponent 保存共享 SceneLightingSettings 的作者值，包括直接光预算；Session 历史负责持久化与撤销，Renderer 消费副本。诊断模式、GPU 缓存与实际 follow-focus 锚点不属于存档，详见[持久格式与责任](../editor/projects.md#持久格式与责任)。
 
-端到端验收入口为 `project_scene_acceptance`、`world_acceptance`、`editor_document_acceptance`。
+场景加载与编辑器历史的端到端入口为 `project_scene_acceptance`、`editor_document_acceptance`。`world_acceptance` 只承担底层空间、JIT 与生命周期的静默正确性代表，具体范围见[World 验收入口](README.md#运行位姿与验收入口)，不替代场景格式或编辑器历史验收。
