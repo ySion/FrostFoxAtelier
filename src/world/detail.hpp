@@ -128,12 +128,8 @@ Result<void> body_rules(const BodySettings&);
 // Checks a native value against its reflected type's hard bounds and validators.
 template <class T>
 Result<void> check_value(Runtime& runtime, const T& value) {
-    auto type = runtime.native_type<T>();
-    if (!type)
-        return std::unexpected(type.error());
-    auto failure = runtime.validate_value(*type, std::as_bytes(std::span{&value, 1}));
-    if (!failure)
-        return std::unexpected(failure.error());
+    ATELIER_TRY_BIND(type, runtime.native_type<T>());
+    ATELIER_TRY_BIND(failure, runtime.validate_value(*type, std::as_bytes(std::span{&value, 1})));
     if (*failure)
         return std::unexpected((*failure)->error);
     return {};

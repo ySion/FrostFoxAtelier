@@ -151,9 +151,7 @@ Result<void> World::Impl::admit(bool mutation) const {
 }
 
 Result<std::size_t> World::Impl::member(ObjectId object) const {
-    auto entity = detail::entity_data(runtime, object);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, detail::entity_data(runtime, object));
     if (entity->world != &world)
         return error(ErrorCode::invalid_member,
                      entity->world ? "Entity belongs to another World." : "Entity is not a World member.");
@@ -164,21 +162,15 @@ Result<std::size_t> World::Impl::member(ObjectId object) const {
 }
 
 Result<ObjectId> World::Impl::component_owner(ObjectId object) const {
-    auto component = detail::component_data(runtime, object);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, detail::component_data(runtime, object));
     if (component->owner == ObjectId{})
         return error(ErrorCode::invalid_member, "Component is not attached.");
-    auto found = member(component->owner);
-    if (!found)
-        return std::unexpected(found.error());
+    ATELIER_TRY_BIND(found, member(component->owner));
     return component->owner;
 }
 
 Result<detail::EntityData> World::Impl::composition_entity(ObjectId object) const {
-    auto entity = detail::entity_data(runtime, object);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, detail::entity_data(runtime, object));
     if (entity->transitioning)
         return error(ErrorCode::busy, "Entity is transitioning.");
     if (entity->world && entity->world != &world)
@@ -187,31 +179,20 @@ Result<detail::EntityData> World::Impl::composition_entity(ObjectId object) cons
 }
 
 Result<detail::ComponentData> World::Impl::composition_component(ObjectId object) const {
-    auto component = detail::component_data(runtime, object);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, detail::component_data(runtime, object));
     if (component->owner != ObjectId{}) {
-        auto entity = composition_entity(component->owner);
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, composition_entity(component->owner));
     }
     return component;
 }
 
 Result<void> World::Impl::admit_edit(ObjectId object) const {
-    if (auto ready = admit(); !ready)
-        return ready;
-    auto entity = detail::is(runtime, object, types.entity);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY(admit());
+    ATELIER_TRY_BIND(entity, detail::is(runtime, object, types.entity));
     if (*entity) {
-        auto data = composition_entity(object);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, composition_entity(object));
     } else {
-        auto data = composition_component(object);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, composition_component(object));
     }
     return {};
 }
@@ -230,18 +211,14 @@ Result<void> World::Impl::relocate(ObjectId edited) try {
                     moved.push_back(member.id());
                     break;
                 }
-                auto parent = spatial_parent(runtime, node);
-                if (!parent)
-                    return std::unexpected(parent.error());
+                ATELIER_TRY_BIND(parent, spatial_parent(runtime, node));
                 node = *parent;
             }
         }
         if (moved.empty())
             continue;
         detail::FlagScope relocating_scope{relocating};
-        auto relocated = entry.simulation->relocated(moved);
-        if (!relocated)
-            return relocated;
+        ATELIER_TRY_BIND(relocated, entry.simulation->relocated(moved));
     }
     return {};
 } catch (const std::bad_alloc&) {
@@ -278,25 +255,15 @@ World::Impl::ComponentState* World::Impl::component_state(ObjectId entity, Objec
 }
 
 Result<std::vector<World::Impl::ComponentState>> World::Impl::derive_components(ObjectId entity) const {
-    auto group = components(runtime, entity);
-    if (!group)
-        return std::unexpected(group.error());
+    ATELIER_TRY_BIND(group, components(runtime, entity));
     std::vector<ComponentState> result;
     result.reserve(group->size());
     for (const auto& root : *group) {
         const auto object = root.id();
-        auto type = runtime.type_of(object);
-        if (!type)
-            return std::unexpected(type.error());
-        auto binding = behavior(*type);
-        if (!binding)
-            return std::unexpected(binding.error());
-        auto data = detail::component_data(runtime, object);
-        if (!data)
-            return std::unexpected(data.error());
-        auto capabilities = capabilities_of(object, *type);
-        if (!capabilities)
-            return std::unexpected(capabilities.error());
+        ATELIER_TRY_BIND(type, runtime.type_of(object));
+        ATELIER_TRY_BIND(binding, behavior(*type));
+        ATELIER_TRY_BIND(data, detail::component_data(runtime, object));
+        ATELIER_TRY_BIND(capabilities, capabilities_of(object, *type));
         result.push_back({object, *type, *binding, *capabilities, data->enabled, false});
     }
     return result;
@@ -306,15 +273,11 @@ Result<std::uint32_t> World::Impl::capabilities_of(ObjectId component, TypeId ty
     std::uint32_t result{};
     for (std::uint32_t i = 0; i < registrations.size(); ++i) {
         const auto& registration = registrations[i];
-        auto matches = runtime.is_a(type, registration.type);
-        if (!matches)
-            return std::unexpected(matches.error());
+        ATELIER_TRY_BIND(matches, runtime.is_a(type, registration.type));
         if (!*matches)
             continue;
         if (registration.predicate) {
-            auto present = registration.predicate(runtime, component);
-            if (!present)
-                return std::unexpected(present.error());
+            ATELIER_TRY_BIND(present, registration.predicate(runtime, component));
             if (!*present)
                 continue;
         }
@@ -324,18 +287,10 @@ Result<std::uint32_t> World::Impl::capabilities_of(ObjectId component, TypeId ty
 }
 
 Result<World::Impl::MemberState> World::Impl::derive(ObjectId entity, ObjectId parent, ObjectId origin) const {
-    auto type = runtime.type_of(entity);
-    if (!type)
-        return std::unexpected(type.error());
-    auto binding = behavior(*type);
-    if (!binding)
-        return std::unexpected(binding.error());
-    auto data = detail::entity_data(runtime, entity);
-    if (!data)
-        return std::unexpected(data.error());
-    auto group = derive_components(entity);
-    if (!group)
-        return std::unexpected(group.error());
+    ATELIER_TRY_BIND(type, runtime.type_of(entity));
+    ATELIER_TRY_BIND(binding, behavior(*type));
+    ATELIER_TRY_BIND(data, detail::entity_data(runtime, entity));
+    ATELIER_TRY_BIND(group, derive_components(entity));
     MemberState state;
     state.type = *type;
     state.behavior = *binding;
@@ -347,9 +302,7 @@ Result<World::Impl::MemberState> World::Impl::derive(ObjectId entity, ObjectId p
 }
 
 Result<void> World::Impl::rederive(ObjectId entity) {
-    auto next = derive_components(entity);
-    if (!next)
-        return std::unexpected(next.error());
+    ATELIER_TRY_BIND(next, derive_components(entity));
     auto* state = state_of(entity);
     if (!state)
         return std::unexpected(inconsistent("World member index is inconsistent."));
@@ -630,8 +583,7 @@ FailurePolicy World::failure_policy() const noexcept {
 }
 
 Result<void> World::set_failure_policy(FailurePolicy policy) {
-    if (auto ready = impl_->admit(); !ready)
-        return ready;
+    ATELIER_TRY(impl_->admit());
     if (impl_->running)
         return error(ErrorCode::busy, "Stop the World before changing its failure policy.");
     if (policy != FailurePolicy::isolate && policy != FailurePolicy::halt)
@@ -657,24 +609,20 @@ bool World::contain(const Error& failure, Diagnostic diagnostic) {
 }
 
 Result<std::span<const Member>> World::members() const {
-    if (auto ready = impl_->admit(false); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(impl_->admit(false));
     return std::span<const Member>{impl_->members};
 }
 
 Result<CapabilityId> World::register_capability(TypeId type, CapabilityPredicate predicate) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (!predicate)
         for (std::uint32_t i = 0; i < state.registrations.size(); ++i)
             if (state.registrations[i].type == type && !state.registrations[i].predicate)
                 return CapabilityId{i};
     if (state.registrations.size() >= 32)
         return error(ErrorCode::capacity_exceeded, "A World supports at most 32 capability registrations.");
-    auto component = runtime().is_a(type, types().component);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, runtime().is_a(type, types().component));
     if (!*component)
         return error(ErrorCode::type_mismatch, "A capability requires a Component type.");
     const auto id = CapabilityId{std::uint32_t(state.registrations.size())};
@@ -700,8 +648,7 @@ Result<CapabilityId> World::register_capability(TypeId type, CapabilityPredicate
 }
 
 Result<std::span<const CapabilityMember>> World::members(CapabilityId id) const {
-    if (auto ready = impl_->admit(false); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(impl_->admit(false));
     if (id.value >= impl_->registrations.size())
         return error(ErrorCode::argument_mismatch, "Unknown capability registration.");
     if (impl_->buckets_dirty)
@@ -711,23 +658,17 @@ Result<std::span<const CapabilityMember>> World::members(CapabilityId id) const 
 
 Result<void> World::reevaluate_capabilities(ObjectId component) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return ready;
-    auto owner = state.component_owner(component);
-    if (!owner)
-        return std::unexpected(owner.error());
+    ATELIER_TRY(state.admit());
+    ATELIER_TRY_BIND(owner, state.component_owner(component));
     return state.rederive(*owner);
 }
 
 Result<void> World::add_admission(TypeId type, Admission admission) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return ready;
+    ATELIER_TRY(state.admit());
     if (!admission)
         return error(ErrorCode::argument_mismatch, "An admission needs a check.");
-    auto component = runtime().is_a(type, types().component);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, runtime().is_a(type, types().component));
     if (!*component)
         return error(ErrorCode::type_mismatch, "Admission requires a Component type.");
     state.admissions.push_back({type, std::move(admission)});
@@ -741,18 +682,12 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates,
     for (const auto& [type, admission] : admissions) {
         selected.clear();
         for (const auto object : candidates) {
-            auto object_type = runtime.type_of(object);
-            if (!object_type)
-                return std::unexpected(object_type.error());
-            auto matches = runtime.is_a(*object_type, type);
-            if (!matches)
-                return std::unexpected(matches.error());
+            ATELIER_TRY_BIND(object_type, runtime.type_of(object));
+            ATELIER_TRY_BIND(matches, runtime.is_a(*object_type, type));
             if (*matches) {
                 auto owner = proposed_owner;
                 if (owner == ObjectId{}) {
-                    auto data = detail::component_data(runtime, object);
-                    if (!data)
-                        return std::unexpected(data.error());
+                    ATELIER_TRY_BIND(data, detail::component_data(runtime, object));
                     owner = data->owner;
                 }
                 selected.push_back({object, owner});
@@ -789,18 +724,12 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidate
 Result<bool> World::Impl::admitted(ObjectId component) const {
     if (admissions.empty())
         return false;
-    auto data = detail::component_data(runtime, component);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY_BIND(data, detail::component_data(runtime, component));
     if (data->owner == ObjectId{} || !positions.contains(data->owner))
         return false;
-    auto type = runtime.type_of(component);
-    if (!type)
-        return std::unexpected(type.error());
+    ATELIER_TRY_BIND(type, runtime.type_of(component));
     for (const auto& entry : admissions) {
-        auto matches = runtime.is_a(*type, entry.type);
-        if (!matches)
-            return std::unexpected(matches.error());
+        ATELIER_TRY_BIND(matches, runtime.is_a(*type, entry.type));
         if (*matches)
             return true;
     }
@@ -808,17 +737,14 @@ Result<bool> World::Impl::admitted(ObjectId component) const {
 }
 
 Result<void> World::Impl::check_edit(ObjectId component) {
-    auto checked = admitted(component);
-    if (!checked)
-        return std::unexpected(checked.error());
+    ATELIER_TRY_BIND(checked, admitted(component));
     if (!*checked)
         return {};
     return check_admissions(std::span<const ObjectId>{&component, 1});
 }
 
 Result<World::SpatialPass> World::spatial_pass(DiagnosticPhase phase) const {
-    if (auto ready = impl_->admit(false); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(impl_->admit(false));
     impl_->begin_pass(phase);
     impl_->space.begin_pass();
     return SpatialPass{*impl_, phase};
@@ -858,9 +784,7 @@ Result<ObjectId> World::SpatialPass::parent(ObjectId entity) {
 }
 
 Result<std::optional<World::Orientation>> World::SpatialPass::orientation(ObjectId entity) {
-    auto matrix = this->matrix(entity);
-    if (!matrix)
-        return std::unexpected(matrix.error());
+    ATELIER_TRY_BIND(matrix, this->matrix(entity));
     if (!*matrix)
         return std::nullopt;
     // The chain was validated in this pass. An odd sign pattern is -1 times a
@@ -869,9 +793,7 @@ Result<std::optional<World::Orientation>> World::SpatialPass::orientation(Object
     const auto composed = [&]() -> Result<void> {
         for (auto node = entity; node != ObjectId{};) {
             const auto* entry = impl_->space.entry(node);
-            auto canonical = canonical_transform(entry->local);
-            if (!canonical)
-                return std::unexpected(canonical.error());
+            ATELIER_TRY_BIND(canonical, canonical_transform(entry->local));
             const auto& q = canonical->rotation;
             const auto& s = canonical->scale;
             std::array negative{s.x < 0, s.y < 0, s.z < 0};
@@ -907,9 +829,7 @@ Result<std::optional<World::Orientation>> World::SpatialPass::orientation(Object
 }
 
 Result<std::optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId entity) {
-    auto matrix = this->matrix(entity);
-    if (!matrix)
-        return std::unexpected(matrix.error());
+    ATELIER_TRY_BIND(matrix, this->matrix(entity));
     if (!*matrix)
         return std::nullopt;
     math::Quaterniond result;
@@ -933,8 +853,7 @@ Result<std::optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId e
 
 Result<std::uint64_t> World::add_simulation(Simulation simulation) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (!simulation.step || !simulation.writes_pose)
         return error(ErrorCode::argument_mismatch, "A simulation needs step and writes_pose.");
     std::erase_if(state.simulations, [](const Impl::SimulationEntry& entry) { return !entry.simulation; });
@@ -952,18 +871,14 @@ void World::remove_simulation(std::uint64_t id) noexcept {
 }
 
 Result<std::vector<ObjectId>> World::query(TypeId type, bool include_derived) const {
-    if (auto ready = impl_->admit(false); !ready)
-        return std::unexpected(ready.error());
-    auto info = runtime().describe(type);
-    if (!info)
-        return std::unexpected(info.error());
+    ATELIER_TRY(impl_->admit(false));
+    ATELIER_TRY_BIND(info, runtime().describe(type));
     if (impl_->buckets_dirty)
         impl_->rebuild_buckets();
     std::vector<ObjectId> result;
     for (const auto& bucket : impl_->buckets) {
-        auto matches = include_derived ? runtime().is_a(bucket.type, type) : Result<bool>{bucket.type == type};
-        if (!matches)
-            return std::unexpected(matches.error());
+        ATELIER_TRY_BIND(matches,
+                         include_derived ? runtime().is_a(bucket.type, type) : Result<bool>{bucket.type == type});
         if (*matches)
             result.insert(result.end(), bucket.objects.begin(), bucket.objects.end());
     }
@@ -972,14 +887,9 @@ Result<std::vector<ObjectId>> World::query(TypeId type, bool include_derived) co
 
 Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Attachment> incoming, std::size_t index) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
-    auto entity = state.composition_entity(entity_id);
-    if (!entity)
-        return std::unexpected(entity.error());
-    auto existing = components(runtime(), entity_id);
-    if (!existing)
-        return std::unexpected(existing.error());
+    ATELIER_TRY(state.admit());
+    ATELIER_TRY_BIND(entity, state.composition_entity(entity_id));
+    ATELIER_TRY_BIND(existing, components(runtime(), entity_id));
     if (index == append)
         index = existing->size();
     if (index > existing->size())
@@ -996,14 +906,10 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     for (const auto& item : incoming) {
         if (!seen.add(item.component))
             return error(ErrorCode::invalid_member, "Component is already present or duplicated.");
-        auto data = detail::component_data(runtime(), item.component);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, detail::component_data(runtime(), item.component));
         if (data->owner != ObjectId{})
             return error(ErrorCode::invalid_member, "Component already has an owner.");
-        auto held = runtime().hold(item.component, types().component);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime().hold(item.component, types().component));
         references.push_back(held->reference());
         roots.push_back(std::move(*held));
     }
@@ -1011,18 +917,12 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     // before their owner's Transform. Complete spatial requirements are checked
     // by attach_batch before any member, observer or behavior is published.
     if (entity->world)
-        if (auto valid = detail::requires_space(runtime(), entity_id, roots); !valid)
-            return std::unexpected(valid.error());
+        ATELIER_TRY(detail::requires_space(runtime(), entity_id, roots));
     if (entity->world)
-        if (auto admitted = state.check_admissions(roots, entity_id); !admitted)
-            return std::unexpected(admitted.error());
-    auto held = runtime().hold(entity_id, types().entity);
-    if (!held)
-        return std::unexpected(held.error());
+        ATELIER_TRY(state.check_admissions(roots, entity_id));
+    ATELIER_TRY_BIND(held, runtime().hold(entity_id, types().entity));
     auto changed = runtime().with_native<Entity>(entity_id, [&](Entity& value) -> Result<void> {
-        auto sequence = runtime().reference_field(entity_id, Access::sequence(value));
-        if (!sequence)
-            return std::unexpected(sequence.error());
+        ATELIER_TRY_BIND(sequence, runtime().reference_field(entity_id, Access::sequence(value)));
         std::vector<ReferenceChange> changes;
         changes.reserve(incoming.size() + 1);
         changes.push_back(SequenceSplice{*sequence, index, 0, references});
@@ -1057,30 +957,19 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
 
 Result<ComponentRemoval> World::remove_component(ObjectId object) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
-    auto data = state.composition_component(object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY(state.admit());
+    ATELIER_TRY_BIND(data, state.composition_component(object));
     const auto owner = data->owner;
     if (owner == ObjectId{})
         return error(ErrorCode::invalid_member, "Component is not attached.");
-    auto entity = state.composition_entity(owner);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, state.composition_entity(owner));
     const bool registered = entity->world != nullptr;
-    auto group = components(runtime(), owner);
-    if (!group)
-        return std::unexpected(group.error());
+    ATELIER_TRY_BIND(group, components(runtime(), owner));
     const auto at = std::ranges::find_if(*group, [&](const ObjectRoot& item) { return item.id() == object; });
     if (at == group->end())
         return error(ErrorCode::invalid_member, "Component is absent from its owner's composition.");
-    auto root = runtime().hold(object, types().component);
-    if (!root)
-        return std::unexpected(root.error());
-    auto status = inspect_component(runtime(), object);
-    if (!status)
-        return std::unexpected(status.error());
+    ATELIER_TRY_BIND(root, runtime().hold(object, types().component));
+    ATELIER_TRY_BIND(status, inspect_component(runtime(), object));
     ComponentRemoval result;
     result.root = std::move(*root);
     result.owner = owner;
@@ -1136,22 +1025,16 @@ namespace detail {
 Result<void> queue_translation(Runtime& runtime, ObjectId object, math::Vector3 delta) {
     if (!std::isfinite(delta.x) || !std::isfinite(delta.y) || !std::isfinite(delta.z))
         return error(ErrorCode::argument_mismatch, "Translation must be finite.");
-    auto component = component_data(runtime, object);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, component_data(runtime, object));
     if (component->owner == ObjectId{})
         return error(ErrorCode::invalid_member, "Translation requires an owned Component.");
-    auto entity = entity_data(runtime, component->owner);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, entity_data(runtime, component->owner));
     if (!entity->world)
         return error(ErrorCode::invalid_member, "Translation requires World membership.");
     auto& state = Access::state(*entity->world);
     if (!state.running || state.closing || state.transitioning || !state.dispatch_depth)
         return error(ErrorCode::busy, "translate_owner requires a running World behavior phase.");
-    auto spatial = has_transform(runtime, component->owner);
-    if (!spatial)
-        return std::unexpected(spatial.error());
+    ATELIER_TRY_BIND(spatial, has_transform(runtime, component->owner));
     if (!*spatial)
         return error(ErrorCode::invalid_member, "Translation requires an Entity Transform.");
     state.translations.push_back({object, component->owner, delta});
@@ -1161,23 +1044,17 @@ Result<void> queue_translation(Runtime& runtime, ObjectId object, math::Vector3 
 Result<void> queue_request(Runtime& runtime, ObjectId object, RequestKind kind, bool enabled) {
     auto owner = object;
     if (kind != RequestKind::destroy_entity && kind != RequestKind::entity_enabled) {
-        auto component = component_data(runtime, object);
-        if (!component)
-            return std::unexpected(component.error());
+        ATELIER_TRY_BIND(component, component_data(runtime, object));
         owner = component->owner;
     }
-    auto entity = owner == ObjectId{} ? Result<EntityData>{EntityData{}} : entity_data(runtime, owner);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, owner == ObjectId{} ? Result<EntityData>{EntityData{}} : entity_data(runtime, owner));
     if (!entity->world)
         return error(ErrorCode::invalid_member, "World requests require World membership.");
     Request request;
     request.kind = kind;
     request.target = object;
     request.enabled = enabled;
-    auto queued = entity->world->request(request);
-    if (!queued)
-        return std::unexpected(queued.error());
+    ATELIER_TRY_BIND(queued, entity->world->request(request));
     return {};
 }
 }
@@ -1199,9 +1076,7 @@ Result<void> World::Impl::apply_translations() {
     changes.reserve(translations.size());
     // Each command is checked alone: a rejected one is reported and dropped.
     const auto check = [&](const Translation& command) -> Result<void> {
-        auto owner = component_owner(command.component);
-        if (!owner)
-            return std::unexpected(owner.error());
+        ATELIER_TRY_BIND(owner, component_owner(command.component));
         if (*owner != command.entity)
             return error(ErrorCode::invalid_member, "Translation receiver changed owner.");
         for (const auto& entry : simulations)
@@ -1211,12 +1086,8 @@ Result<void> World::Impl::apply_translations() {
                     "translate_owner cannot move an Entity whose pose a simulation writes; use that system's actions.");
         auto found = std::ranges::find(changes, command.entity, &TranslationChange::entity);
         if (found == changes.end()) {
-            auto matrix = world_matrix(runtime, command.entity);
-            if (!matrix)
-                return std::unexpected(matrix.error());
-            auto value = relative_transform(*matrix, math::Matrix4::identity());
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(matrix, world_matrix(runtime, command.entity));
+            ATELIER_TRY_BIND(value, relative_transform(*matrix, math::Matrix4::identity()));
             changes.push_back({command.entity, *value});
             found = std::prev(changes.end());
         }
@@ -1224,9 +1095,7 @@ Result<void> World::Impl::apply_translations() {
         value.position.x += command.delta.x;
         value.position.y += command.delta.y;
         value.position.z += command.delta.z;
-        auto canonical = canonical_transform(value);
-        if (!canonical)
-            return std::unexpected(canonical.error());
+        ATELIER_TRY_BIND(canonical, canonical_transform(value));
         found->value = *canonical;
         return {};
     };
@@ -1247,14 +1116,9 @@ Result<void> World::Impl::apply_translations() {
 // editable so their faults can be repaired one field at a time.
 template <class Write, class Restore>
 Result<void> World::Impl::checked_write(ObjectId object, bool entity, Write&& write, Restore&& restore) {
-    auto before = runtime.validate(object);
-    if (!before)
-        return std::unexpected(before.error());
-    auto candidate = entity ? Result<bool>{false} : admitted(object);
-    if (!candidate)
-        return std::unexpected(candidate.error());
-    if (auto written = write(); !written)
-        return written;
+    ATELIER_TRY_BIND(before, runtime.validate(object));
+    ATELIER_TRY_BIND(candidate, entity ? Result<bool>{false} : admitted(object));
+    ATELIER_TRY(write());
     const auto reject = [&](Error failure) -> Result<void> {
         if (auto restored = restore(); !restored)
             return error(restored.error().code, "The rejected value could not be restored (" +
@@ -1282,9 +1146,7 @@ static Result<void> restore_scalar(Runtime& runtime, ObjectId object, std::span<
             if constexpr (std::is_same_v<T, EnumValue>)
                 return runtime.restore(object, path, ValueOutput{value.type, &value.bits});
             else {
-                auto type = runtime.native_type<T>();
-                if (!type)
-                    return std::unexpected(type.error());
+                ATELIER_TRY_BIND(type, runtime.native_type<T>());
                 return runtime.restore(object, path, ValueOutput{*type, &value});
             }
         },
@@ -1292,29 +1154,19 @@ static Result<void> restore_scalar(Runtime& runtime, ObjectId object, std::span<
 }
 
 Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
-    if (auto ready = impl_->admit(false); !ready)
-        return std::unexpected(ready.error());
-    auto entity = detail::is(runtime(), component, types().entity);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY(impl_->admit(false));
+    ATELIER_TRY_BIND(entity, detail::is(runtime(), component, types().entity));
     if (*entity) {
-        auto data = impl_->composition_entity(component);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, impl_->composition_entity(component));
     } else {
-        auto data = impl_->composition_component(component);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, impl_->composition_component(component));
     }
     return runtime().read(component, path);
 }
 
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
-    if (auto ready = impl_->admit_edit(object); !ready)
-        return ready;
-    auto transform = detail::is(runtime(), object, types().entity);
-    if (!transform)
-        return std::unexpected(transform.error());
+    ATELIER_TRY(impl_->admit_edit(object));
+    ATELIER_TRY_BIND(transform, detail::is(runtime(), object, types().entity));
     const auto match = [&](const auto& paths) -> std::optional<std::size_t> {
         for (std::size_t i = 0; i < paths.size(); ++i)
             if (std::ranges::equal(path, paths[i]))
@@ -1325,9 +1177,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
     const auto rotation = match(types().rotation_fields);
     const auto scale = match(types().scale_fields);
     if (*transform && (position || rotation || scale)) {
-        auto current = read_transform(runtime(), object);
-        if (!current)
-            return std::unexpected(current.error());
+        ATELIER_TRY_BIND(current, read_transform(runtime(), object));
         if (!std::holds_alternative<float>(value))
             return error(ErrorCode::type_mismatch, "Transform fields require float values.");
         if (position) {
@@ -1342,22 +1192,17 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
         }
         return set_transform(object, *current);
     }
-    auto previous = runtime().read(object, path);
-    if (!previous)
-        return std::unexpected(previous.error());
+    ATELIER_TRY_BIND(previous, runtime().read(object, path));
     return impl_->checked_write(
         object, *transform, [&] { return runtime().write(object, path, value); },
         [&] { return restore_scalar(runtime(), object, path, *previous); });
 }
 
 Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std::span<const Scalar> values) {
-    if (auto ready = impl_->admit_edit(object); !ready)
-        return ready;
+    ATELIER_TRY(impl_->admit_edit(object));
     if (paths.empty() || paths.size() != values.size())
         return error(ErrorCode::argument_mismatch, "A group write needs one value per field.");
-    auto entity = detail::is(runtime(), object, types().entity);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, detail::is(runtime(), object, types().entity));
     const auto transform = [&](const FieldPath& path, const auto& leaves) {
         return std::ranges::any_of(leaves,
                                    [&](const auto& leaf) { return !path.empty() && leaf.front() == path.front(); });
@@ -1374,17 +1219,14 @@ Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std
     std::vector<Scalar> previous;
     previous.reserve(paths.size());
     for (const auto& path : paths) {
-        auto value = runtime().read(object, path);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, runtime().read(object, path));
         previous.push_back(*value);
     }
     std::size_t written = 0;
     const auto restore = [&]() -> Result<void> {
         while (written > 0) {
             --written;
-            if (auto restored = restore_scalar(runtime(), object, paths[written], previous[written]); !restored)
-                return restored;
+            ATELIER_TRY(restore_scalar(runtime(), object, paths[written], previous[written]));
         }
         return {};
     };
@@ -1405,11 +1247,8 @@ Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std
 }
 
 Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
-    if (auto ready = impl_->admit_edit(object); !ready)
-        return ready;
-    auto entity = detail::is(runtime(), object, types().entity);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY(impl_->admit_edit(object));
+    ATELIER_TRY_BIND(entity, detail::is(runtime(), object, types().entity));
     const auto transform = [&](const auto& leaves) {
         return std::ranges::any_of(leaves,
                                    [&](const auto& leaf) { return !path.empty() && leaf.front() == path.front(); });
@@ -1418,9 +1257,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
         (transform(types().position_fields) || transform(types().rotation_fields) || transform(types().scale_fields)))
         return error(ErrorCode::unsupported_operation,
                      "Transform fields are written as scalars or with set_transform.");
-    auto info = runtime().describe(value.type);
-    if (!info)
-        return std::unexpected(info.error());
+    ATELIER_TRY_BIND(info, runtime().describe(value.type));
     struct Previous {
         Runtime& runtime;
 
@@ -1446,11 +1283,9 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
             ::operator delete(storage.data(), alignment);
         }
     } previous{runtime(), **info};
-    if (auto made = runtime().initialize_value(value.type, previous.storage); !made)
-        return made;
+    ATELIER_TRY(runtime().initialize_value(value.type, previous.storage));
     previous.live = true;
-    if (auto read = runtime().read(object, path, ValueOutput{value.type, previous.storage.data()}); !read)
-        return read;
+    ATELIER_TRY(runtime().read(object, path, ValueOutput{value.type, previous.storage.data()}));
     return impl_->checked_write(
         object, *entity, [&] { return runtime().write(object, path, value); },
         [&] { return runtime().restore(object, path, ValueOutput{value.type, previous.storage.data()}); });

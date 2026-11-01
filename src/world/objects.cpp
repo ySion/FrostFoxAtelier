@@ -68,9 +68,7 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
     definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
     definitions.push_back(reflection::Definition<SpatialComponent>::build(runtime));
-    auto ids = runtime.register_types(std::move(definitions));
-    if (!ids)
-        return std::unexpected(ids.error());
+    ATELIER_TRY_BIND(ids, runtime.register_types(std::move(definitions)));
     Types types;
     types.vector3 = *vector;
     types.quaternion = *quaternion;
@@ -80,24 +78,17 @@ Result<Types> register_types(Runtime& runtime) {
     types.collision_component = (*ids)[8];
     types.spatial_component = (*ids)[9];
     const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
-        auto outer = runtime.find_field(types.entity, name);
-        if (!outer)
-            return std::unexpected(outer.error());
+        ATELIER_TRY_BIND(outer, runtime.find_field(types.entity, name));
         constexpr std::array names{"x", "y", "z", "w"};
         for (std::size_t i = 0; i < paths.size(); ++i) {
-            auto field = runtime.find_field(record, names[i]);
-            if (!field)
-                return std::unexpected(field.error());
+            ATELIER_TRY_BIND(field, runtime.find_field(record, names[i]));
             paths[i] = {*outer, *field};
         }
         return {};
     };
-    if (auto result = make_paths(types.position_fields, types.vector3, "position"); !result)
-        return std::unexpected(result.error());
-    if (auto result = make_paths(types.rotation_fields, types.quaternion, "rotation"); !result)
-        return std::unexpected(result.error());
-    if (auto result = make_paths(types.scale_fields, types.vector3, "scale"); !result)
-        return std::unexpected(result.error());
+    ATELIER_TRY(make_paths(types.position_fields, types.vector3, "position"));
+    ATELIER_TRY(make_paths(types.rotation_fields, types.quaternion, "rotation"));
+    ATELIER_TRY(make_paths(types.scale_fields, types.vector3, "scale"));
     return types;
 }
 
@@ -153,16 +144,12 @@ Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
 }
 
 Result<bool> is(Runtime& runtime, ObjectId object, TypeId expected) {
-    auto actual = runtime.type_of(object);
-    if (!actual)
-        return std::unexpected(actual.error());
+    ATELIER_TRY_BIND(actual, runtime.type_of(object));
     return runtime.is_a(*actual, expected);
 }
 
 Result<void> validate_object(Runtime& runtime, ObjectId object, TypeId expected) {
-    auto matches = is(runtime, object, expected);
-    if (!matches)
-        return std::unexpected(matches.error());
+    ATELIER_TRY_BIND(matches, is(runtime, object, expected));
     if (!*matches)
         return error(ErrorCode::type_mismatch, "Object does not derive from the required World type.");
     return {};
@@ -171,30 +158,20 @@ Result<void> validate_object(Runtime& runtime, ObjectId object, TypeId expected)
 }
 
 Result<ObjectRoot> create_entity(Runtime& runtime, TypeId actual) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return std::unexpected(ready.error());
-    auto base = runtime.native_type<Entity>();
-    if (!base)
-        return std::unexpected(base.error());
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY_BIND(base, runtime.native_type<Entity>());
     if (actual == TypeId{})
         actual = *base;
-    auto matches = runtime.is_a(actual, *base);
-    if (!matches)
-        return std::unexpected(matches.error());
+    ATELIER_TRY_BIND(matches, runtime.is_a(actual, *base));
     if (!*matches)
         return error(ErrorCode::type_mismatch, "create_entity requires an Entity type.");
     return runtime.create(actual);
 }
 
 Result<ObjectRoot> create_component(Runtime& runtime, TypeId actual) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return std::unexpected(ready.error());
-    auto base = runtime.native_type<Component>();
-    if (!base)
-        return std::unexpected(base.error());
-    auto matches = runtime.is_a(actual, *base);
-    if (!matches)
-        return std::unexpected(matches.error());
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY_BIND(base, runtime.native_type<Component>());
+    ATELIER_TRY_BIND(matches, runtime.is_a(actual, *base));
     if (!*matches)
         return error(ErrorCode::type_mismatch, "create_component requires a Component type.");
     return runtime.create(actual);
@@ -211,19 +188,14 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
             return EntityStatus{};
         return std::unexpected(type.error());
     }
-    auto data = detail::entity_data(runtime, object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY_BIND(data, detail::entity_data(runtime, object));
     if (data->transitioning)
         return error(ErrorCode::busy, "Entity is transitioning.");
-    auto eligible = effective_enabled(runtime, object);
-    if (!eligible)
-        return std::unexpected(eligible.error());
+    ATELIER_TRY_BIND(eligible, effective_enabled(runtime, object));
     EntityStatus status{EntityState::detached, *type, data->enabled, false, *eligible};
     if (data->world) {
         const auto& state = Access::state(*data->world);
-        if (auto ready = state.admit(false); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(state.admit(false));
         const auto* member = state.state_of(object);
         if (!member)
             return std::unexpected(state.inconsistent("World member index is inconsistent."));
@@ -245,20 +217,15 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
             return ComponentStatus{};
         return std::unexpected(type.error());
     }
-    auto data = detail::component_data(runtime, object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY_BIND(data, detail::component_data(runtime, object));
     ComponentStatus status{true, *type, data->owner, data->enabled, false};
     if (data->owner != ObjectId{}) {
-        auto entity = detail::entity_data(runtime, data->owner);
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, detail::entity_data(runtime, data->owner));
         if (entity->transitioning)
             return error(ErrorCode::busy, "Component owner is transitioning.");
         if (entity->world) {
             const auto& state = Access::state(*entity->world);
-            if (auto ready = state.admit(false); !ready)
-                return std::unexpected(ready.error());
+            ATELIER_TRY(state.admit(false));
             // Components without a game updater still have activation eligibility.
             const auto* member = state.state_of(data->owner);
             if (!member)
@@ -277,24 +244,15 @@ Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
         if (Access::transitioning(entity))
             return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity)) {
-            if (auto ready = Access::state(*world).admit(false); !ready)
-                return std::unexpected(ready.error());
+            ATELIER_TRY(Access::state(*world).admit(false));
         }
-        auto field = runtime.reference_field(object, Access::sequence(entity));
-        if (!field)
-            return std::unexpected(field.error());
-        auto count = runtime.sequence_size(*field);
-        if (!count)
-            return std::unexpected(count.error());
+        ATELIER_TRY_BIND(field, runtime.reference_field(object, Access::sequence(entity)));
+        ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
         std::vector<ObjectRoot> result;
         result.reserve(*count);
         for (std::size_t i = 0; i < *count; ++i) {
-            auto reference = runtime.sequence_read(*field, i);
-            if (!reference)
-                return std::unexpected(reference.error());
-            auto root = runtime.hold(*reference);
-            if (!root)
-                return std::unexpected(root.error());
+            ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
+            ATELIER_TRY_BIND(root, runtime.hold(*reference));
             result.push_back(std::move(*root));
         }
         return result;
@@ -310,64 +268,45 @@ Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
 }
 
 Result<World*> admit_component_edit(Runtime& runtime, ObjectId object) {
-    auto component = detail::component_data(runtime, object);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, detail::component_data(runtime, object));
     if (component->owner == ObjectId{})
         return nullptr;
-    auto owner = detail::entity_data(runtime, component->owner);
-    if (!owner)
-        return std::unexpected(owner.error());
+    ATELIER_TRY_BIND(owner, detail::entity_data(runtime, component->owner));
     if (owner->transitioning)
         return error(ErrorCode::busy, "Entity is transitioning.");
     if (owner->world)
-        if (auto ready = Access::state(*owner->world).admit(); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(Access::state(*owner->world).admit());
     return owner->world;
 }
 
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return std::unexpected(ready.error());
-    auto data = detail::entity_data(runtime, object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY_BIND(data, detail::entity_data(runtime, object));
     if (data->transitioning)
         return error(ErrorCode::busy, "Entity is transitioning.");
     if (data->world) {
-        if (auto ready = Access::state(*data->world).admit(); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(Access::state(*data->world).admit());
     }
     // Hold and validate the complete composition before any exit or unlink.
-    auto owned = detail::subtree(runtime, object);
-    if (!owned)
-        return std::unexpected(owned.error());
+    ATELIER_TRY_BIND(owned, detail::subtree(runtime, object));
     std::vector<std::vector<ObjectRoot>> groups;
     groups.reserve(owned->size());
     std::unordered_map<ObjectId, bool> component_ids;
     for (const auto& root : *owned) {
-        auto entity = detail::entity_data(runtime, root.id());
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, detail::entity_data(runtime, root.id()));
         if (entity->transitioning)
             return error(ErrorCode::busy, "Subtree Entity is transitioning.");
         if (entity->world != data->world)
             return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
-        auto group = components(runtime, root.id());
-        if (!group)
-            return std::unexpected(group.error());
+        ATELIER_TRY_BIND(group, components(runtime, root.id()));
         for (const auto& component : *group) {
-            auto capability = detail::component_data(runtime, component.id());
-            if (!capability)
-                return std::unexpected(capability.error());
+            ATELIER_TRY_BIND(capability, detail::component_data(runtime, component.id()));
             if (capability->owner != root.id() || !component_ids.emplace(component.id(), true).second)
                 return error(ErrorCode::invalid_member, "Subtree has an inconsistent or duplicate component owner.");
         }
         groups.push_back(std::move(*group));
     }
-    auto entity_type = runtime.native_type<Entity>();
-    if (!entity_type)
-        return std::unexpected(entity_type.error());
+    ATELIER_TRY_BIND(entity_type, runtime.native_type<Entity>());
     auto null_owner = runtime.null_reference(*entity_type);
     auto null_weak = runtime.null_reference(*entity_type, ValueForm::weak_reference);
     if (!null_owner)
@@ -376,15 +315,11 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
         return std::unexpected(null_weak.error());
     Commit committed{true, {}};
     if (data->world) {
-        auto removed = data->world->detach(object);
-        if (!removed)
-            return std::unexpected(removed.error());
+        ATELIER_TRY_BIND(removed, data->world->detach(object));
         committed.notification_error = std::move(removed->commit.notification_error);
     } else {
         // A detached child remains owned until explicitly removed from its parent.
-        auto unlinked = detail::unlink_parent(runtime, object);
-        if (!unlinked)
-            return std::unexpected(unlinked.error());
+        ATELIER_TRY_BIND(unlinked, detail::unlink_parent(runtime, object));
     }
     const auto cleanup = [&](auto&& operation) {
         try {
@@ -419,9 +354,7 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
                     return std::unexpected(parent.error());
                 if (!origin)
                     return std::unexpected(origin.error());
-                auto count = runtime.sequence_size(*child_sequence);
-                if (!count)
-                    return std::unexpected(count.error());
+                ATELIER_TRY_BIND(count, runtime.sequence_size(*child_sequence));
                 std::vector<ReferenceChange> changes;
                 changes.reserve(groups[i].size() + 4);
                 changes.push_back(SequenceSplice{*sequence, 0, groups[i].size(), {}});
@@ -436,9 +369,7 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
                         return std::unexpected(owner.error());
                     changes.push_back(ReferenceWrite{*owner, *null_owner});
                 }
-                auto cleared = runtime.apply_reference_changes(changes);
-                if (!cleared)
-                    return cleared;
+                ATELIER_TRY_BIND(cleared, runtime.apply_reference_changes(changes));
                 Access::explicit_origin(entity) = false;
                 Access::world_origin(entity) = false;
                 return {};
@@ -456,42 +387,28 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
 }
 
 Result<Commit> destroy_component(Runtime& runtime, ObjectId object) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return std::unexpected(ready.error());
-    auto data = detail::component_data(runtime, object);
-    if (!data)
-        return std::unexpected(data.error());
-    auto root = runtime.hold(object);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY_BIND(data, detail::component_data(runtime, object));
+    ATELIER_TRY_BIND(root, runtime.hold(object));
     ObjectRoot owner_root;
     Commit committed{true, {}};
     bool removed{};
     if (data->owner != ObjectId{}) {
-        auto entity = detail::entity_data(runtime, data->owner);
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, detail::entity_data(runtime, data->owner));
         if (entity->transitioning)
             return error(ErrorCode::busy, "Component owner is transitioning.");
-        auto held = runtime.hold(data->owner);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime.hold(data->owner));
         owner_root = std::move(*held);
         if (entity->world) {
-            auto removal = entity->world->remove_component(object);
-            if (!removal)
-                return std::unexpected(removal.error());
+            ATELIER_TRY_BIND(removal, entity->world->remove_component(object));
             committed.notification_error = std::move(removal->commit.notification_error);
         } else {
-            auto group = components(runtime, data->owner);
-            if (!group)
-                return std::unexpected(group.error());
+            ATELIER_TRY_BIND(group, components(runtime, data->owner));
             const auto at = std::ranges::find_if(*group, [&](const ObjectRoot& item) { return item.id() == object; });
             if (at == group->end())
                 return error(ErrorCode::invalid_member, "Component is absent from its owner's composition.");
-            auto cleared = detail::clear_component(runtime, data->owner, object, std::size_t(at - group->begin()));
-            if (!cleared)
-                return std::unexpected(cleared.error());
+            ATELIER_TRY_BIND(cleared,
+                             detail::clear_component(runtime, data->owner, object, std::size_t(at - group->begin())));
         }
         removed = true;
     }

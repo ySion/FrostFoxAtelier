@@ -11,25 +11,16 @@ using detail::error;
 
 Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
-    auto entity_kind = detail::is(runtime(), object, types().entity);
-    if (!entity_kind)
-        return std::unexpected(entity_kind.error());
+    ATELIER_TRY(state.admit());
+    ATELIER_TRY_BIND(entity_kind, detail::is(runtime(), object, types().entity));
     if (*entity_kind) {
-        auto data = state.composition_entity(object);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, state.composition_entity(object));
         if (data->enabled == enabled)
             return Commit{};
         if (!data->world) {
-            auto owned = detail::subtree(runtime(), object);
-            if (!owned)
-                return std::unexpected(owned.error());
+            ATELIER_TRY_BIND(owned, detail::subtree(runtime(), object));
             for (const auto& root : *owned) {
-                auto member = state.composition_entity(root.id());
-                if (!member)
-                    return std::unexpected(member.error());
+                ATELIER_TRY_BIND(member, state.composition_entity(root.id()));
                 if (member->world)
                     return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
             }
@@ -38,9 +29,7 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         std::size_t count{};
         std::vector<bool> before;
         if (data->world) {
-            auto at = state.member(object);
-            if (!at)
-                return std::unexpected(at.error());
+            ATELIER_TRY_BIND(at, state.member(object));
             first = *at;
             count = state.states[first].size;
             before.reserve(count);
@@ -87,21 +76,15 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
             }
         return state.finish(true, std::move(failure));
     }
-    auto data = state.composition_component(object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY_BIND(data, state.composition_component(object));
     if (data->enabled == enabled)
         return Commit{};
     bool registered{};
     bool owner_enabled{};
     if (data->owner != ObjectId{}) {
-        auto owner = state.composition_entity(data->owner);
-        if (!owner)
-            return std::unexpected(owner.error());
+        ATELIER_TRY_BIND(owner, state.composition_entity(data->owner));
         registered = owner->world != nullptr;
-        auto eligible = effective_enabled(runtime(), data->owner);
-        if (!eligible)
-            return std::unexpected(eligible.error());
+        ATELIER_TRY_BIND(eligible, effective_enabled(runtime(), data->owner));
         owner_enabled = *eligible;
     }
     {
@@ -234,8 +217,7 @@ std::optional<Error> World::Impl::shutdown() {
 
 Result<Commit> World::start() {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (state.running)
         return Commit{};
     state.running = true;
@@ -249,8 +231,7 @@ Result<Commit> World::start() {
 
 Result<Commit> World::clear_faults() {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     bool cleared = false;
     const auto clear = [&](Impl::Fault& fault) {
         cleared |= fault != Impl::Fault::none;
@@ -269,8 +250,7 @@ Result<Commit> World::clear_faults() {
 
 Result<Commit> World::stop() {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (!state.running)
         return Commit{};
     auto failure = state.shutdown();
@@ -281,8 +261,7 @@ Result<Commit> World::close() {
     auto& state = *impl_;
     if (state.closed)
         return Commit{};
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     state.closing = true;
     state.lifetime->open = false;
     // closing blocks mutation, but deactivated observers still need read-only
@@ -333,9 +312,7 @@ Result<const World::Behavior*> World::Impl::behavior(TypeId type) const {
         const auto found = std::ranges::find(behaviors, type, &Binding::type);
         if (found != behaviors.end())
             return &found->behavior;
-        auto info = runtime.describe(type);
-        if (!info)
-            return std::unexpected(info.error());
+        ATELIER_TRY_BIND(info, runtime.describe(type));
         if (!(*info)->base)
             return nullptr;
         type = *(*info)->base;
@@ -343,14 +320,9 @@ Result<const World::Behavior*> World::Impl::behavior(TypeId type) const {
 }
 
 Result<void> World::bind_behavior(TypeId type, Behavior binding) {
-    if (auto ready = impl_->admit(); !ready)
-        return ready;
-    auto component = runtime().is_a(type, types().component);
-    if (!component)
-        return std::unexpected(component.error());
-    auto entity = runtime().is_a(type, types().entity);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY(impl_->admit());
+    ATELIER_TRY_BIND(component, runtime().is_a(type, types().component));
+    ATELIER_TRY_BIND(entity, runtime().is_a(type, types().entity));
     if (!*component && !*entity)
         return error(ErrorCode::type_mismatch, "Behavior requires an Entity or Component type.");
     auto& state = *impl_;
@@ -392,19 +364,15 @@ Result<void> World::bind_behavior(TypeId type, Behavior binding) {
 
 Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return ready;
+    ATELIER_TRY(state.admit());
     if (object == prerequisite)
         return error(ErrorCode::argument_mismatch, "An object cannot be its own tick prerequisite.");
     for (const auto id : {object, prerequisite}) {
-        auto entity = detail::is(runtime(), id, types().entity);
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, detail::is(runtime(), id, types().entity));
         if (*entity) {
-            if (auto at = state.member(id); !at)
-                return std::unexpected(at.error());
-        } else if (auto owner = state.component_owner(id); !owner)
-            return std::unexpected(owner.error());
+            ATELIER_TRY(state.member(id));
+        } else
+            ATELIER_TRY(state.component_owner(id));
     }
     if (const auto found = state.prerequisites.find(object);
         found != state.prerequisites.end() && std::ranges::find(found->second, prerequisite) != found->second.end())
@@ -429,15 +397,13 @@ Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite
 }
 
 Result<void> World::observe_lifecycle(LifecycleObserver observer) {
-    if (auto ready = impl_->admit(); !ready)
-        return ready;
+    ATELIER_TRY(impl_->admit());
     impl_->observer = std::move(observer);
     return {};
 }
 
 Result<std::uint64_t> World::subscribe_lifecycle(LifecycleObserver observer) {
-    if (auto ready = impl_->admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(impl_->admit());
     if (!observer)
         return error(ErrorCode::argument_mismatch, "Lifecycle subscription is empty.");
     if (impl_->next_subscription == std::numeric_limits<std::uint64_t>::max())
@@ -462,49 +428,32 @@ void World::unsubscribe_lifecycle(std::uint64_t id) noexcept {
 
 Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return ready;
+    ATELIER_TRY(state.admit());
     if (!starter)
         return error(ErrorCode::argument_mismatch, "Task starter is empty.");
-    auto entity_kind = detail::is(runtime(), object, types().entity);
-    if (!entity_kind)
-        return std::unexpected(entity_kind.error());
+    ATELIER_TRY_BIND(entity_kind, detail::is(runtime(), object, types().entity));
     ObjectId entity_id;
     if (*entity_kind) {
-        auto member = state.member(object);
-        if (!member)
-            return std::unexpected(member.error());
-        auto status = inspect_entity(runtime(), object);
-        if (!status)
-            return std::unexpected(status.error());
+        ATELIER_TRY_BIND(member, state.member(object));
+        ATELIER_TRY_BIND(status, inspect_entity(runtime(), object));
         if (status->state != EntityState::active)
             return error(ErrorCode::invalid_member, "Tasks require an active Entity.");
         entity_id = object;
     } else {
-        auto owner = state.component_owner(object);
-        if (!owner)
-            return std::unexpected(owner.error());
-        auto status = inspect_component(runtime(), object);
-        if (!status)
-            return std::unexpected(status.error());
+        ATELIER_TRY_BIND(owner, state.component_owner(object));
+        ATELIER_TRY_BIND(status, inspect_component(runtime(), object));
         if (!status->valid || !status->active)
             return error(ErrorCode::invalid_member, "Tasks require an active Component.");
         entity_id = *owner;
     }
     if (const auto* fault = state.fault_of(object, entity_id); fault && *fault != Impl::Fault::none)
         return error(ErrorCode::invalid_member, "Tasks require an object without an isolated failure.");
-    auto root = runtime().hold(object);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(root, runtime().hold(object));
     state.tasks.reserve(state.tasks.size() + 1);
-    auto execution = ExecutionScope::enter(runtime());
-    if (!execution)
-        return std::unexpected(execution.error());
+    ATELIER_TRY_BIND(execution, ExecutionScope::enter(runtime()));
     detail::DispatchScope dispatch{state.dispatch_depth};
     try {
-        auto task = starter(runtime(), object);
-        if (!task)
-            return std::unexpected(task.error());
+        ATELIER_TRY_BIND(task, starter(runtime(), object));
         if (task->state() != CoroutineState::ready && task->state() != CoroutineState::suspended)
             return error(ErrorCode::argument_mismatch, "World accepts only ready or suspended tasks.");
         state.tasks.push_back({object, entity_id, std::move(*task)});
@@ -620,8 +569,7 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
 
 Result<void> World::update(float amount) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return ready;
+    ATELIER_TRY(state.admit());
     if (state.updating)
         return error(ErrorCode::busy, "World update cannot be nested.");
     if (!std::isfinite(amount) || amount < 0.f)
@@ -684,9 +632,7 @@ Result<std::uint64_t> World::request(Request command) {
     Impl::Pending pending{state.next_request, command, {}, false};
     switch (command.kind) {
     case RequestKind::attach_entity: {
-        auto entity = detail::entity_data(runtime(), command.target);
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, detail::entity_data(runtime(), command.target));
         if (entity->world)
             return error(ErrorCode::invalid_member, "Queued attach requires a detached Entity.");
         break;
@@ -694,19 +640,13 @@ Result<std::uint64_t> World::request(Request command) {
     case RequestKind::detach_entity:
     case RequestKind::destroy_entity:
     case RequestKind::entity_enabled: {
-        auto member = state.member(command.target);
-        if (!member)
-            return std::unexpected(member.error());
+        ATELIER_TRY_BIND(member, state.member(command.target));
         pending.member_required = true;
         break;
     }
     case RequestKind::attach_component: {
-        auto member = state.member(command.entity);
-        if (!member)
-            return std::unexpected(member.error());
-        auto component = detail::component_data(runtime(), command.target);
-        if (!component)
-            return std::unexpected(component.error());
+        ATELIER_TRY_BIND(member, state.member(command.entity));
+        ATELIER_TRY_BIND(component, detail::component_data(runtime(), command.target));
         if (component->owner != ObjectId{})
             return error(ErrorCode::invalid_member, "Queued component attach requires an unowned component.");
         pending.owner = command.entity;
@@ -715,9 +655,7 @@ Result<std::uint64_t> World::request(Request command) {
     case RequestKind::remove_component:
     case RequestKind::destroy_component:
     case RequestKind::component_enabled: {
-        auto owner = state.component_owner(command.target);
-        if (!owner)
-            return std::unexpected(owner.error());
+        ATELIER_TRY_BIND(owner, state.component_owner(command.target));
         pending.owner = *owner;
         pending.member_required = true;
         break;
@@ -742,37 +680,27 @@ Result<Commit> World::Impl::apply_request(const Pending& item) {
     }
     if (item.member_required) {
         if (item.owner != ObjectId{}) {
-            auto owner = component_owner(command.target);
-            if (!owner)
-                return std::unexpected(owner.error());
+            ATELIER_TRY_BIND(owner, component_owner(command.target));
             if (*owner != item.owner)
                 return error(ErrorCode::invalid_member, "Queued component operation has a different owner.");
         } else {
-            auto at = member(command.target);
-            if (!at)
-                return std::unexpected(at.error());
+            ATELIER_TRY_BIND(at, member(command.target));
         }
     }
     switch (command.kind) {
     case RequestKind::attach_entity:
         return world.attach(command.target, command.index, command.parent);
     case RequestKind::detach_entity: {
-        auto removed = world.detach(command.target);
-        if (!removed)
-            return std::unexpected(removed.error());
+        ATELIER_TRY_BIND(removed, world.detach(command.target));
         return std::move(removed->commit);
     }
     case RequestKind::attach_component: {
-        auto at = member(item.owner);
-        if (!at)
-            return std::unexpected(at.error());
+        ATELIER_TRY_BIND(at, member(item.owner));
         const std::array added{Attachment{command.target}};
         return world.attach_components(item.owner, added, command.index);
     }
     case RequestKind::remove_component: {
-        auto removed = world.remove_component(command.target);
-        if (!removed)
-            return std::unexpected(removed.error());
+        ATELIER_TRY_BIND(removed, world.remove_component(command.target));
         return std::move(removed->commit);
     }
     case RequestKind::destroy_entity:
@@ -823,8 +751,7 @@ Result<std::vector<RequestCompletion>> World::flush() {
     auto& state = *impl_;
     if (state.dispatch_depth || state.transitioning || state.flushing)
         return error(ErrorCode::busy, "Cannot recursively flush World requests.");
-    if (auto ready = runtime().check_code_publication(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(runtime().check_code_publication());
     std::vector<RequestCompletion> completed;
     completed.reserve(state.pending.size());
     auto pending = std::move(state.pending);

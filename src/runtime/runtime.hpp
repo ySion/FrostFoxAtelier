@@ -3,6 +3,7 @@
 #include "runtime/parameter.hpp"
 #include "runtime/value_storage.hpp"
 #include "foundation/hash.hpp"
+#include "foundation/result.hpp"
 #include "math/type.hpp"
 #include <array>
 #include <ranges>

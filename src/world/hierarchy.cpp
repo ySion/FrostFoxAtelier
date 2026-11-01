@@ -14,23 +14,14 @@ Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
         if (Access::transitioning(entity))
             return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity))
-            if (auto ready = Access::state(*world).admit(false); !ready)
-                return std::unexpected(ready.error());
-        auto field = runtime.reference_field(object, Access::children(entity));
-        if (!field)
-            return std::unexpected(field.error());
-        auto count = runtime.sequence_size(*field);
-        if (!count)
-            return std::unexpected(count.error());
+            ATELIER_TRY(Access::state(*world).admit(false));
+        ATELIER_TRY_BIND(field, runtime.reference_field(object, Access::children(entity)));
+        ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
         std::vector<ObjectRoot> result;
         result.reserve(*count);
         for (std::size_t i = 0; i < *count; ++i) {
-            auto reference = runtime.sequence_read(*field, i);
-            if (!reference)
-                return std::unexpected(reference.error());
-            auto held = runtime.hold(*reference);
-            if (!held)
-                return std::unexpected(held.error());
+            ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
+            ATELIER_TRY_BIND(held, runtime.hold(*reference));
             result.push_back(std::move(*held));
         }
         return result;
@@ -64,15 +55,12 @@ Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
         return std::unexpected(component.error());
     if (!spatial)
         return std::unexpected(spatial.error());
-    if (auto valid = detail::validate_object(runtime, object, *component); !valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(detail::validate_object(runtime, object, *component));
     return detail::is(runtime, object, *spatial);
 }
 
 Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
-    auto entity = detail::entity_data(runtime, object);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, detail::entity_data(runtime, object));
     if (entity->world && !entity->transitioning) {
         // Members use the World's eligibility, maintained with every enablement or composition change.
         const auto& state = Access::state(*entity->world);
@@ -84,14 +72,10 @@ Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     for (auto node = object; node != ObjectId{};) {
         if (!seen.insert(node).second)
             return error(ErrorCode::invalid_member, "Composition contains a cycle.");
-        auto data = detail::entity_data(runtime, node);
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, detail::entity_data(runtime, node));
         if (!data->enabled)
             return false;
-        auto parent = parent_entity(runtime, node);
-        if (!parent)
-            return std::unexpected(parent.error());
+        ATELIER_TRY_BIND(parent, parent_entity(runtime, node));
         node = *parent;
     }
     return true;
@@ -115,12 +99,8 @@ namespace detail {
 Result<SpaceNode*> SpaceGraph::node(ObjectId object) {
     if (auto found = nodes.find(object); found != nodes.end())
         return &found->second;
-    auto parent_id = parent_entity(runtime, object);
-    if (!parent_id)
-        return std::unexpected(parent_id.error());
-    auto origin = space_reference(runtime, object);
-    if (!origin)
-        return std::unexpected(origin.error());
+    ATELIER_TRY_BIND(parent_id, parent_entity(runtime, object));
+    ATELIER_TRY_BIND(origin, space_reference(runtime, object));
     auto value = runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<SpaceNode> {
         return SpaceNode{*parent_id,
                          *origin,
@@ -134,17 +114,13 @@ Result<SpaceNode*> SpaceGraph::node(ObjectId object) {
 }
 
 Result<ObjectId> SpaceGraph::parent(ObjectId object) {
-    auto current = node(object);
-    if (!current)
-        return std::unexpected(current.error());
+    ATELIER_TRY_BIND(current, node(object));
     auto* world = (*current)->world;
     if ((*current)->origin) {
         const auto origin = *(*current)->origin;
         if (origin == ObjectId{})
             return origin;
-        auto target = node(origin);
-        if (!target)
-            return std::unexpected(target.error());
+        ATELIER_TRY_BIND(target, node(origin));
         if (!(*target)->spatial || (*target)->world != world)
             return error(ErrorCode::invalid_member,
                          "Spatial origin requires a spatial Entity with the same World membership.");
@@ -157,9 +133,7 @@ Result<ObjectId> SpaceGraph::parent(ObjectId object) {
     for (auto id = (*current)->parent; id != ObjectId{};) {
         if (!parent_seen.add(id))
             return error(ErrorCode::invalid_member, "Composition contains a cycle.");
-        auto ancestor = node(id);
-        if (!ancestor)
-            return std::unexpected(ancestor.error());
+        ATELIER_TRY_BIND(ancestor, node(id));
         if ((*ancestor)->world != world)
             return error(ErrorCode::invalid_member, "Composition crosses World membership.");
         if ((*ancestor)->spatial)
@@ -184,24 +158,16 @@ Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
         }
         if (!matrix_seen.add(id))
             return error(ErrorCode::invalid_member, "Spatial references contain a cycle.");
-        auto value = node(id);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, node(id));
         if (!(*value)->spatial)
             return error(ErrorCode::invalid_member, "Entity has no Transform.");
         matrix_path.push_back(id);
-        auto next = parent(id);
-        if (!next)
-            return std::unexpected(next.error());
+        ATELIER_TRY_BIND(next, parent(id));
         id = *next;
     }
     for (auto it = matrix_path.rbegin(); it != matrix_path.rend(); ++it) {
-        auto local = canonical_transform(nodes.at(*it).local);
-        if (!local)
-            return std::unexpected(local.error());
-        auto composed = multiply(transform_matrix(*local), result);
-        if (!composed)
-            return std::unexpected(composed.error());
+        ATELIER_TRY_BIND(local, canonical_transform(nodes.at(*it).local));
+        ATELIER_TRY_BIND(composed, multiply(transform_matrix(*local), result));
         result = *composed;
         matrices.emplace(*it, result);
     }
@@ -232,14 +198,10 @@ void SpaceCache::clear() noexcept {
 Result<SpaceCache::Entry*> SpaceCache::resolve(ObjectId object) {
     if (auto* found = entries.find(object))
         return found;
-    auto node = relations.node(object);
-    if (!node)
-        return std::unexpected(node.error());
+    ATELIER_TRY_BIND(node, relations.node(object));
     Entry entry;
     entry.spatial = (*node)->spatial;
-    auto parent = relations.parent(object);
-    if (!parent)
-        return std::unexpected(parent.error());
+    ATELIER_TRY_BIND(parent, relations.parent(object));
     entry.parent = *parent;
     return entries.try_emplace(object, entry).value;
 }
@@ -258,9 +220,7 @@ ObjectId SpaceCache::degenerate_root(ObjectId object) const noexcept {
 }
 
 Result<ObjectId> SpaceCache::parent(ObjectId object) {
-    auto entry = resolve(object);
-    if (!entry)
-        return std::unexpected(entry.error());
+    ATELIER_TRY_BIND(entry, resolve(object));
     return (*entry)->parent;
 }
 
@@ -270,9 +230,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     ObjectId composed{};
     for (auto id = object;;) {
         failed = id;
-        auto entry = resolve(id);
-        if (!entry)
-            return std::unexpected(entry.error());
+        ATELIER_TRY_BIND(entry, resolve(id));
         if (!(*entry)->spatial)
             return error(ErrorCode::invalid_member, "Entity has no Transform.");
         if ((*entry)->checked == pass && (*entry)->composed) {
@@ -354,19 +312,11 @@ Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
         pending.pop_back();
         if (!seen.insert(id).second)
             return error(ErrorCode::invalid_member, "Composition contains a cycle or duplicate child.");
-        auto type = runtime.native_type<Entity>();
-        if (!type)
-            return std::unexpected(type.error());
-        auto held = runtime.hold(id, *type);
-        if (!held)
-            return std::unexpected(held.error());
-        auto owned = children(runtime, id);
-        if (!owned)
-            return std::unexpected(owned.error());
+        ATELIER_TRY_BIND(type, runtime.native_type<Entity>());
+        ATELIER_TRY_BIND(held, runtime.hold(id, *type));
+        ATELIER_TRY_BIND(owned, children(runtime, id));
         for (auto it = owned->rbegin(); it != owned->rend(); ++it) {
-            auto parent = parent_entity(runtime, it->id());
-            if (!parent)
-                return std::unexpected(parent.error());
+            ATELIER_TRY_BIND(parent, parent_entity(runtime, it->id()));
             if (*parent != id)
                 return error(ErrorCode::invalid_member, "Composition child has a different parent.");
             pending.push_back(it->id());
@@ -377,15 +327,11 @@ Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
 }
 
 Result<void> requires_space(Runtime& runtime, ObjectId entity, std::span<const ObjectRoot> group) {
-    auto spatial = has_transform(runtime, entity);
-    if (!spatial)
-        return std::unexpected(spatial.error());
+    ATELIER_TRY_BIND(spatial, has_transform(runtime, entity));
     if (*spatial)
         return {};
     for (const auto& item : group) {
-        auto needs = component_requires_space(runtime, item.id());
-        if (!needs)
-            return std::unexpected(needs.error());
+        ATELIER_TRY_BIND(needs, component_requires_space(runtime, item.id()));
         if (*needs)
             return error(ErrorCode::invalid_member,
                          "Spatial capability requires its owner Entity to have a Transform.");
@@ -398,35 +344,23 @@ Result<void> validate_tree(Runtime& runtime, ObjectId entity, std::span<const Ob
     for (const auto& item : group) {
         if (!seen.insert(item.id()).second)
             return error(ErrorCode::invalid_member, "Component appears twice in its Entity.");
-        auto data = component_data(runtime, item.id());
-        if (!data)
-            return std::unexpected(data.error());
+        ATELIER_TRY_BIND(data, component_data(runtime, item.id()));
         if (data->owner != entity)
             return error(ErrorCode::invalid_member, "Component owner differs from its composition.");
     }
-    if (auto valid = requires_space(runtime, entity, group); !valid)
-        return valid;
-    auto spatial = has_transform(runtime, entity);
-    if (!spatial)
-        return std::unexpected(spatial.error());
+    ATELIER_TRY(requires_space(runtime, entity, group));
+    ATELIER_TRY_BIND(spatial, has_transform(runtime, entity));
     if (*spatial) {
-        auto value = read_transform(runtime, entity);
-        if (!value)
-            return std::unexpected(value.error());
-        if (auto canonical = canonical_transform(*value); !canonical)
-            return std::unexpected(canonical.error());
+        ATELIER_TRY_BIND(value, read_transform(runtime, entity));
+        ATELIER_TRY(canonical_transform(*value));
     }
     return {};
 }
 
 Result<void> clear_component(Runtime& runtime, ObjectId entity, ObjectId object, std::size_t index) {
     return runtime.with_native<Entity>(entity, [&](Entity&) -> Result<void> {
-        auto type = runtime.native_type<Entity>();
-        if (!type)
-            return std::unexpected(type.error());
-        auto null_owner = runtime.null_reference(*type);
-        if (!null_owner)
-            return std::unexpected(null_owner.error());
+        ATELIER_TRY_BIND(type, runtime.native_type<Entity>());
+        ATELIER_TRY_BIND(null_owner, runtime.null_reference(*type));
         auto sequence = runtime.with_native<Entity>(
             entity, [&](Entity& value) { return runtime.reference_field(entity, Access::sequence(value)); });
         auto owner = runtime.with_native<Component>(
@@ -476,9 +410,7 @@ Result<math::Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
 namespace {
 Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, std::size_t index) {
     return runtime.with_native<Entity>(object, [&](Entity&) -> Result<void> {
-        auto old_parent = parent_entity(runtime, object);
-        if (!old_parent)
-            return std::unexpected(old_parent.error());
+        ATELIER_TRY_BIND(old_parent, parent_entity(runtime, object));
         std::vector<ObjectRoot> old_roots;
         std::vector<ObjectRoot> new_roots;
         std::vector<ObjectReference> old_references;
@@ -489,9 +421,7 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
                 id, [&](Entity& value) { return runtime.reference_field(id, Access::children(value)); });
         };
         if (*old_parent != ObjectId{}) {
-            auto previous = children(runtime, *old_parent);
-            if (!previous)
-                return std::unexpected(previous.error());
+            ATELIER_TRY_BIND(previous, children(runtime, *old_parent));
             old_roots = std::move(*previous);
             bool found = false;
             for (const auto& child : old_roots) {
@@ -505,9 +435,7 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
                 return error(ErrorCode::invalid_member, "Entity is absent from its parent's composition.");
         }
         if (parent != ObjectId{}) {
-            auto next = children(runtime, parent);
-            if (!next)
-                return std::unexpected(next.error());
+            ATELIER_TRY_BIND(next, children(runtime, parent));
             new_roots = std::move(*next);
             for (const auto& child : new_roots)
                 if (child.id() != object)
@@ -516,31 +444,19 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
                 index = new_references.size();
             if (index > new_references.size())
                 return error(ErrorCode::argument_mismatch, "Child insertion index is out of range.");
-            auto held = runtime.hold(object);
-            if (!held)
-                return std::unexpected(held.error());
+            ATELIER_TRY_BIND(held, runtime.hold(object));
             new_references.insert(new_references.begin() + std::ptrdiff_t(index), held->reference());
-            auto field = sequence(parent);
-            if (!field)
-                return std::unexpected(field.error());
+            ATELIER_TRY_BIND(field, sequence(parent));
             changes.push_back(SequenceSplice{*field, 0, new_roots.size(), new_references});
         }
         if (*old_parent != ObjectId{} && *old_parent != parent) {
-            auto field = sequence(*old_parent);
-            if (!field)
-                return std::unexpected(field.error());
+            ATELIER_TRY_BIND(field, sequence(*old_parent));
             changes.push_back(SequenceSplice{*field, 0, old_roots.size(), old_references});
         }
-        auto type = runtime.native_type<Entity>();
-        if (!type)
-            return std::unexpected(type.error());
-        auto reference = runtime.null_reference(*type, ValueForm::weak_reference);
-        if (!reference)
-            return std::unexpected(reference.error());
+        ATELIER_TRY_BIND(type, runtime.native_type<Entity>());
+        ATELIER_TRY_BIND(reference, runtime.null_reference(*type, ValueForm::weak_reference));
         if (parent != ObjectId{}) {
-            auto held = runtime.hold(parent);
-            if (!held)
-                return std::unexpected(held.error());
+            ATELIER_TRY_BIND(held, runtime.hold(parent));
             reference = runtime.observe(held->reference());
             if (!reference)
                 return std::unexpected(reference.error());
@@ -583,9 +499,7 @@ Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph&
                                                              std::span<const ObjectRoot> affected, ReparentRule rule) {
     std::vector<std::pair<ObjectId, Trs>> changes;
     for (const auto& root : affected) {
-        auto value = candidate.node(root.id());
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, candidate.node(root.id()));
         if (!(*value)->spatial)
             continue;
         if (rule == ReparentRule::keep_world) {
@@ -602,17 +516,13 @@ Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph&
                     return std::unexpected(original.error());
                 if (!origin)
                     return std::unexpected(origin.error());
-                auto local = relative_transform(*original, *origin, (*value)->local.scale);
-                if (!local)
-                    return std::unexpected(local.error());
+                ATELIER_TRY_BIND(local, relative_transform(*original, *origin, (*value)->local.scale));
                 (*value)->local = *local;
                 candidate.invalidate();
                 changes.emplace_back(root.id(), *local);
             }
         }
-        auto valid = candidate.matrix(root.id());
-        if (!valid)
-            return std::unexpected(valid.error());
+        ATELIER_TRY_BIND(valid, candidate.matrix(root.id()));
     }
     return changes;
 }
@@ -625,22 +535,14 @@ Result<void> unlink_parent(Runtime& runtime, ObjectId object) {
 }
 
 Result<void> World::set_transform(ObjectId object, Trs value) {
-    if (auto ready = impl_->admit_edit(object); !ready)
-        return ready;
-    auto data = impl_->composition_entity(object);
-    if (!data)
-        return std::unexpected(data.error());
-    auto canonical = canonical_transform(value);
-    if (!canonical)
-        return std::unexpected(canonical.error());
+    ATELIER_TRY(impl_->admit_edit(object));
+    ATELIER_TRY_BIND(data, impl_->composition_entity(object));
+    ATELIER_TRY_BIND(canonical, canonical_transform(value));
     detail::SpaceGraph graph{runtime()};
-    auto node = graph.node(object);
-    if (!node)
-        return std::unexpected(node.error());
+    ATELIER_TRY_BIND(node, graph.node(object));
     (*node)->spatial = true;
     (*node)->local = *canonical;
-    if (auto valid = graph.matrix(object); !valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(graph.matrix(object));
     Trs previous;
     bool was_spatial{};
     const auto assign = [&](const Trs& trs, bool spatial) {
@@ -669,23 +571,14 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
 }
 
 Result<void> World::remove_transform(ObjectId object) {
-    if (auto ready = impl_->admit_edit(object); !ready)
-        return ready;
-    auto data = impl_->composition_entity(object);
-    if (!data)
-        return std::unexpected(data.error());
-    auto spatial = has_transform(runtime(), object);
-    if (!spatial)
-        return std::unexpected(spatial.error());
+    ATELIER_TRY(impl_->admit_edit(object));
+    ATELIER_TRY_BIND(data, impl_->composition_entity(object));
+    ATELIER_TRY_BIND(spatial, has_transform(runtime(), object));
     if (!*spatial)
         return {};
-    auto group = components(runtime(), object);
-    if (!group)
-        return std::unexpected(group.error());
+    ATELIER_TRY_BIND(group, components(runtime(), object));
     for (const auto& root : *group) {
-        auto needs = component_requires_space(runtime(), root.id());
-        if (!needs)
-            return std::unexpected(needs.error());
+        ATELIER_TRY_BIND(needs, component_requires_space(runtime(), root.id()));
         if (*needs)
             return error(ErrorCode::invalid_member,
                          "Remove spatial capabilities before removing the Entity Transform.");
@@ -694,9 +587,7 @@ Result<void> World::remove_transform(ObjectId object) {
     if (!data->world) {
         std::unordered_set<ObjectId> seen{object};
         for (;;) {
-            auto parent = parent_entity(runtime(), root);
-            if (!parent)
-                return std::unexpected(parent.error());
+            ATELIER_TRY_BIND(parent, parent_entity(runtime(), root));
             if (*parent == ObjectId{})
                 break;
             if (!seen.insert(*parent).second)
@@ -704,9 +595,7 @@ Result<void> World::remove_transform(ObjectId object) {
             root = *parent;
         }
     }
-    auto all = detail::subtree(runtime(), root);
-    if (!all)
-        return std::unexpected(all.error());
+    ATELIER_TRY_BIND(all, detail::subtree(runtime(), root));
     std::vector<ObjectId> candidates;
     for (const auto& item : *all)
         candidates.push_back(item.id());
@@ -714,31 +603,21 @@ Result<void> World::remove_transform(ObjectId object) {
         for (const auto& member : impl_->members)
             candidates.push_back(member.id());
     detail::SpaceGraph candidate{runtime()};
-    auto parent = parent_entity(runtime(), object);
-    if (!parent)
-        return std::unexpected(parent.error());
+    ATELIER_TRY_BIND(parent, parent_entity(runtime(), object));
     // Removing space also repairs an expired former origin. Its old matrix is
     // irrelevant; surviving default inheritance is evaluated in the final graph.
     candidate.nodes.emplace(object, detail::SpaceNode{*parent, {}, false, {}, data->world});
     for (const auto id : candidates) {
-        auto current = candidate.node(id);
-        if (!current)
-            return std::unexpected(current.error());
+        ATELIER_TRY_BIND(current, candidate.node(id));
         if (!(*current)->spatial)
             continue;
-        if (auto valid = candidate.matrix(id); !valid)
-            return std::unexpected(valid.error());
+        ATELIER_TRY(candidate.matrix(id));
     }
-    auto reference = runtime().null_reference(types().entity, ValueForm::weak_reference);
-    if (!reference)
-        return std::unexpected(reference.error());
+    ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
     return runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
-        auto field = runtime().reference_field(object, Access::origin(entity));
-        if (!field)
-            return std::unexpected(field.error());
+        ATELIER_TRY_BIND(field, runtime().reference_field(object, Access::origin(entity)));
         const ReferenceChange change = ReferenceWrite{*field, *reference};
-        if (auto cleared = runtime().apply_reference_changes({&change, 1}); !cleared)
-            return cleared;
+        ATELIER_TRY(runtime().apply_reference_changes({&change, 1}));
         Access::explicit_origin(entity) = false;
         Access::world_origin(entity) = false;
         Access::spatial(entity) = false;
@@ -751,28 +630,21 @@ Result<void> World::remove_transform(ObjectId object) {
 }
 
 Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectId> origin, ReparentRule rule) {
-    if (auto ready = impl_->admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(impl_->admit());
     if (rule != ReparentRule::keep_local && rule != ReparentRule::keep_world)
         return error(ErrorCode::argument_mismatch, "Unknown reparent rule.");
-    auto data = impl_->composition_entity(object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY_BIND(data, impl_->composition_entity(object));
     auto current = space_reference(runtime(), object);
     if (!current && (rule != ReparentRule::keep_local || current.error().code != ErrorCode::invalid_object))
         return std::unexpected(current.error());
-    auto spatial = has_transform(runtime(), object);
-    if (!spatial)
-        return std::unexpected(spatial.error());
+    ATELIER_TRY_BIND(spatial, has_transform(runtime(), object));
     if (!*spatial)
         return error(ErrorCode::invalid_member, "Spatial reference requires an Entity Transform.");
     if (current && *current == origin)
         return Commit{};
     detail::SpaceGraph before{runtime()};
     detail::SpaceGraph candidate{runtime()};
-    auto parent = parent_entity(runtime(), object);
-    if (!parent)
-        return std::unexpected(parent.error());
+    ATELIER_TRY_BIND(parent, parent_entity(runtime(), object));
     // Rebinding can repair an expired weak origin without evaluating its old space.
     auto node = runtime().with_native<const Entity>(object, [&](const Entity& entity) -> Result<detail::SpaceNode> {
         return detail::SpaceNode{*parent,
@@ -784,30 +656,19 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
     if (!node)
         return std::unexpected(node.error());
     candidate.nodes.emplace(object, *node);
-    auto group = detail::subtree(runtime(), object);
-    if (!group)
-        return std::unexpected(group.error());
-    auto changes = preserve_space(before, candidate, *group, rule);
-    if (!changes)
-        return std::unexpected(changes.error());
-    auto reference = runtime().null_reference(types().entity, ValueForm::weak_reference);
-    if (!reference)
-        return std::unexpected(reference.error());
+    ATELIER_TRY_BIND(group, detail::subtree(runtime(), object));
+    ATELIER_TRY_BIND(changes, preserve_space(before, candidate, *group, rule));
+    ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
     if (origin && *origin != ObjectId{}) {
-        auto held = runtime().hold(*origin, types().entity);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime().hold(*origin, types().entity));
         reference = runtime().observe(held->reference());
         if (!reference)
             return std::unexpected(reference.error());
     }
     auto published = runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
-        auto field = runtime().reference_field(object, Access::origin(entity));
-        if (!field)
-            return std::unexpected(field.error());
+        ATELIER_TRY_BIND(field, runtime().reference_field(object, Access::origin(entity)));
         const ReferenceChange change = ReferenceWrite{*field, *reference};
-        if (auto changed = runtime().apply_reference_changes({&change, 1}); !changed)
-            return changed;
+        ATELIER_TRY(runtime().apply_reference_changes({&change, 1}));
         Access::explicit_origin(entity) = origin.has_value();
         Access::world_origin(entity) = origin && *origin == ObjectId{};
         if (auto* member = data->world ? impl_->state_of(object) : nullptr)
@@ -835,8 +696,7 @@ Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> 
 
 Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase,
                                       std::vector<std::pair<ObjectId, Trs>>* written) {
-    if (auto ready = admit(); !ready)
-        return ready;
+    ATELIER_TRY(admit());
     if (!running)
         return error(ErrorCode::busy, "Simulation writes require a running World.");
     // A rejected pose is reported and excluded; conversion then restarts so no
@@ -856,16 +716,11 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
                 continue;
             const auto& pose = poses[i];
             auto value = [&]() -> Result<Trs> {
-                if (auto at = member(pose.entity); !at)
-                    return std::unexpected(at.error());
+                ATELIER_TRY(member(pose.entity));
                 if (desired.contains(pose.entity))
                     return error(ErrorCode::invalid_member, "An Entity has multiple simulation pose writers.");
-                auto matrix = space.matrix(pose.entity);
-                if (!matrix)
-                    return std::unexpected(matrix.error());
-                auto original = relative_transform(*matrix, math::Matrix4::identity());
-                if (!original)
-                    return std::unexpected(original.error());
+                ATELIER_TRY_BIND(matrix, space.matrix(pose.entity));
+                ATELIER_TRY_BIND(original, relative_transform(*matrix, math::Matrix4::identity()));
                 return canonical_transform({pose.position, pose.rotation, original->scale});
             }();
             if (!value) {
@@ -887,16 +742,12 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
                 continue;
             const auto& pose = poses[i];
             auto local = [&]() -> Result<Trs> {
-                auto parent = space.parent(pose.entity);
-                if (!parent)
-                    return std::unexpected(parent.error());
+                ATELIER_TRY_BIND(parent, space.parent(pose.entity));
                 // matrix() composed this chain in the first loop, so the walk ends.
                 bool below_target = false;
                 for (auto node = *parent; node != ObjectId{} && !below_target;) {
                     below_target = desired.contains(node);
-                    auto next = space.parent(node);
-                    if (!next)
-                        return std::unexpected(next.error());
+                    ATELIER_TRY_BIND(next, space.parent(node));
                     node = *next;
                 }
                 if (below_target && !candidate) {
@@ -905,15 +756,12 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
                     for (const auto [id, value] : desired)
                         candidate->matrices.emplace(id, transform_matrix(value));
                 }
-                auto origin = *parent == ObjectId{} ? Result<math::Matrix4>{math::Matrix4::identity()}
-                              : below_target        ? candidate->matrix(*parent)
-                                                    : space.matrix(*parent);
-                if (!origin)
-                    return std::unexpected(origin.error());
+                ATELIER_TRY_BIND(origin, *parent == ObjectId{} ? Result<math::Matrix4>{math::Matrix4::identity()}
+                                         : below_target        ? candidate->matrix(*parent)
+                                                               : space.matrix(*parent));
                 const auto& authored = space.entry(pose.entity)->local;
-                auto value = relative_transform(transform_matrix(*desired.find(pose.entity)), *origin, authored.scale);
-                if (!value)
-                    return std::unexpected(value.error());
+                ATELIER_TRY_BIND(
+                    value, relative_transform(transform_matrix(*desired.find(pose.entity)), *origin, authored.scale));
                 for (std::size_t axis = 0; axis < 3; ++axis)
                     if (std::abs(value->scale[axis] - authored.scale[axis]) >
                         1e-5f * std::max(1.f, std::abs(authored.scale[axis])))
@@ -931,8 +779,7 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
             locals.emplace_back(pose.entity, *local);
         }
         if (!restart) {
-            if (auto published = publish_transforms(runtime, locals); !published)
-                return published;
+            ATELIER_TRY(publish_transforms(runtime, locals));
             if (written)
                 written->swap(locals);
             return {};
@@ -942,24 +789,17 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
 
 Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule rule, std::size_t index) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (rule != ReparentRule::keep_local && rule != ReparentRule::keep_world)
         return error(ErrorCode::argument_mismatch, "Unknown reparent rule.");
-    auto data = state.composition_entity(object);
-    if (!data)
-        return std::unexpected(data.error());
+    ATELIER_TRY_BIND(data, state.composition_entity(object));
     if (parent != ObjectId{}) {
-        auto destination = state.composition_entity(parent);
-        if (!destination)
-            return std::unexpected(destination.error());
+        ATELIER_TRY_BIND(destination, state.composition_entity(parent));
         if (destination->world != data->world)
             return error(ErrorCode::invalid_member,
                          "Reparent requires the same World membership; attach a detached subtree explicitly.");
     }
-    auto previous = parent_entity(runtime(), object);
-    if (!previous)
-        return std::unexpected(previous.error());
+    ATELIER_TRY_BIND(previous, parent_entity(runtime(), object));
     if (*previous == parent && index == append)
         return Commit{};
     ObjectId root_before{};
@@ -982,25 +822,19 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
         if (destination < roots.size())
             root_before = roots[destination];
     } else if (parent != ObjectId{} && parent == *previous && index != append) {
-        auto siblings = children(runtime(), parent);
-        if (!siblings)
-            return std::unexpected(siblings.error());
+        ATELIER_TRY_BIND(siblings, children(runtime(), parent));
         auto found = std::ranges::find_if(*siblings, [&](const auto& item) { return item.id() == object; });
         if (found != siblings->end() && std::size_t(found - siblings->begin()) == index)
             return Commit{};
     }
-    auto owned = detail::subtree(runtime(), object);
-    if (!owned)
-        return std::unexpected(owned.error());
+    ATELIER_TRY_BIND(owned, detail::subtree(runtime(), object));
     for (const auto& root : *owned)
         if (root.id() == parent)
             return error(ErrorCode::invalid_member, "Composition reparent would create a cycle.");
     std::vector<bool> eligibility;
     eligibility.reserve(owned->size());
     for (const auto& root : *owned) {
-        auto active = effective_enabled(runtime(), root.id());
-        if (!active)
-            return std::unexpected(active.error());
+        ATELIER_TRY_BIND(active, effective_enabled(runtime(), root.id()));
         eligibility.push_back(*active);
     }
     std::vector<std::pair<ObjectId, Trs>> transforms;
@@ -1010,21 +844,15 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
     if (data->world || rule == ReparentRule::keep_world) {
         detail::SpaceGraph before{runtime()};
         detail::SpaceGraph candidate{runtime()};
-        auto node = candidate.node(object);
-        if (!node)
-            return std::unexpected(node.error());
+        ATELIER_TRY_BIND(node, candidate.node(object));
         (*node)->parent = parent;
-        auto changes = preserve_space(before, candidate, *owned, rule);
-        if (!changes)
-            return std::unexpected(changes.error());
+        ATELIER_TRY_BIND(changes, preserve_space(before, candidate, *owned, rule));
         transforms = std::move(*changes);
     }
     // The member range moves before the next sibling, or to its new parent's subtree end.
     ObjectId next_sibling{};
     if (data->world && parent != ObjectId{}) {
-        auto siblings = children(runtime(), parent);
-        if (!siblings)
-            return std::unexpected(siblings.error());
+        ATELIER_TRY_BIND(siblings, children(runtime(), parent));
         std::vector<ObjectId> others;
         others.reserve(siblings->size());
         for (const auto& child : *siblings)
@@ -1034,8 +862,7 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
         if (at < others.size())
             next_sibling = others[at];
     }
-    if (auto changed = assign_parent(runtime(), object, parent, index); !changed)
-        return std::unexpected(changed.error());
+    ATELIER_TRY(assign_parent(runtime(), object, parent, index));
     if (data->world) {
         detail::FlagScope transition{state.transitioning};
         const auto first = *state.positions.find(object);
@@ -1150,53 +977,37 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
             if (index < state.members.size() && state.states[index].parent != ObjectId{})
                 return error(ErrorCode::argument_mismatch, "Root insertion index must be at a root boundary.");
         } else {
-            if (auto member = state.member(attachment.parent); !member)
-                return std::unexpected(member.error());
+            ATELIER_TRY(state.member(attachment.parent));
             auto count = parent_sizes.find(attachment.parent);
             if (count == parent_sizes.end()) {
-                auto children = world::children(runtime, attachment.parent);
-                if (!children)
-                    return std::unexpected(children.error());
+                ATELIER_TRY_BIND(children, world::children(runtime, attachment.parent));
                 count = parent_sizes.emplace(attachment.parent, children->size()).first;
             }
             if (attachment.index != append && attachment.index > count->second)
                 return error(ErrorCode::argument_mismatch, "Child insertion index is out of range.");
         }
-        auto previous = parent_entity(runtime, attachment.entity);
-        if (!previous)
-            return std::unexpected(previous.error());
+        ATELIER_TRY_BIND(previous, parent_entity(runtime, attachment.entity));
         if (*previous != ObjectId{})
             return error(ErrorCode::invalid_member, "Attach requires detached composition roots.");
-        auto tree = detail::subtree(runtime, attachment.entity);
-        if (!tree)
-            return std::unexpected(tree.error());
+        ATELIER_TRY_BIND(tree, detail::subtree(runtime, attachment.entity));
         result.ranges.emplace_back(result.incoming.size(), tree->size());
         for (auto& root : *tree) {
             if (!ids.insert(root.id()).second)
                 return error(ErrorCode::invalid_member, "Attach contains overlapping subtrees.");
-            auto data = state.composition_entity(root.id());
-            if (!data)
-                return std::unexpected(data.error());
+            ATELIER_TRY_BIND(data, state.composition_entity(root.id()));
             if (data->world)
                 return error(ErrorCode::invalid_member, "Entity is already a World member.");
-            auto group = components(runtime, root.id());
-            if (!group)
-                return std::unexpected(group.error());
-            if (auto valid = detail::validate_tree(runtime, root.id(), *group); !valid)
-                return std::unexpected(valid.error());
+            ATELIER_TRY_BIND(group, components(runtime, root.id()));
+            ATELIER_TRY(detail::validate_tree(runtime, root.id(), *group));
             for (auto& capability : *group)
                 result.capabilities.push_back(std::move(capability));
-            auto parent = parent_entity(runtime, root.id());
-            if (!parent)
-                return std::unexpected(parent.error());
+            ATELIER_TRY_BIND(parent, parent_entity(runtime, root.id()));
             std::optional<ObjectId> origin;
             const auto planned = origins.find(root.id());
             if (planned != origins.end())
                 origin = planned->second;
             else {
-                auto existing = space_reference(runtime, root.id());
-                if (!existing)
-                    return std::unexpected(existing.error());
+                ATELIER_TRY_BIND(existing, space_reference(runtime, root.id()));
                 origin = *existing;
             }
             auto node =
@@ -1224,10 +1035,8 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
     // Every prospective parent, origin and membership is now in one graph.
     for (const auto& root : result.incoming)
         if (result.space.nodes.at(root.id()).spatial)
-            if (auto valid = result.space.matrix(root.id()); !valid)
-                return std::unexpected(valid.error());
-    if (auto admitted = state.check_admissions(result.capabilities); !admitted)
-        return std::unexpected(admitted.error());
+            ATELIER_TRY(result.space.matrix(root.id()));
+    ATELIER_TRY(state.check_admissions(result.capabilities));
     return result;
 }
 }
@@ -1235,11 +1044,8 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
 Result<std::vector<std::pair<ObjectId, math::Matrix4>>>
 World::attachment_world_matrices(std::span<const EntityAttachment> attachments,
                                  std::span<const SpaceReference> spaces) const {
-    if (auto ready = impl_->admit(false); !ready)
-        return std::unexpected(ready.error());
-    auto graph = prepare_attachment_graph(impl_->world, attachments, spaces);
-    if (!graph)
-        return std::unexpected(graph.error());
+    ATELIER_TRY(impl_->admit(false));
+    ATELIER_TRY_BIND(graph, prepare_attachment_graph(impl_->world, attachments, spaces));
     std::vector<std::pair<ObjectId, math::Matrix4>> matrices;
     for (const auto& root : graph->incoming) {
         const auto at = graph->space.matrices.find(root.id());
@@ -1252,13 +1058,10 @@ World::attachment_world_matrices(std::span<const EntityAttachment> attachments,
 Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments,
                                    std::span<const SpaceReference> spaces) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (attachments.empty() && spaces.empty())
         return Commit{};
-    auto candidate = prepare_attachment_graph(*this, attachments, spaces);
-    if (!candidate)
-        return std::unexpected(candidate.error());
+    ATELIER_TRY_BIND(candidate, prepare_attachment_graph(*this, attachments, spaces));
     auto& incoming = candidate->incoming;
     auto& tree_ranges = candidate->ranges;
     struct ParentPlan {
@@ -1278,9 +1081,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         if (parent != ObjectId{}) {
             auto at = parent_positions.find(parent);
             if (at == parent_positions.end()) {
-                auto existing = children(runtime(), parent);
-                if (!existing)
-                    return std::unexpected(existing.error());
+                ATELIER_TRY_BIND(existing, children(runtime(), parent));
                 const auto position = parents.size();
                 parents.push_back({parent, std::move(*existing), {}, {}});
                 at = parent_positions.emplace(parent, position).first;
@@ -1298,9 +1099,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     arriving_index.reserve(incoming.size());
     for (std::size_t i = 0; i < incoming.size(); ++i) {
         const auto& node = candidate->space.nodes.at(incoming[i].id());
-        auto derived = state.derive(incoming[i].id(), node.parent, node.origin.value_or(ObjectId{}));
-        if (!derived)
-            return std::unexpected(derived.error());
+        ATELIER_TRY_BIND(derived, state.derive(incoming[i].id(), node.parent, node.origin.value_or(ObjectId{})));
         arriving.push_back(std::move(*derived));
         arriving_index.emplace(incoming[i].id(), i);
     }
@@ -1325,15 +1124,11 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             insertions.push_back({attachment.index == append ? state.members.size() : attachment.index, 0, i});
             continue;
         }
-        auto parent = state.member(attachment.parent);
-        if (!parent)
-            return std::unexpected(parent.error());
+        ATELIER_TRY_BIND(parent, state.member(attachment.parent));
         const auto& plan = parents[parent_positions.at(attachment.parent)];
         const auto child = attachment.index == append ? plan.existing.size() : attachment.index;
-        auto at = child < plan.existing.size() ? state.member(plan.existing[child].id())
-                                               : Result<std::size_t>{*parent + state.states[*parent].size};
-        if (!at)
-            return std::unexpected(at.error());
+        ATELIER_TRY_BIND(at, child < plan.existing.size() ? state.member(plan.existing[child].id())
+                                                          : Result<std::size_t>{*parent + state.states[*parent].size});
         std::size_t depth = 1;
         for (auto id = state.states[*parent].parent; id != ObjectId{};
              id = state.states[*state.positions.find(id)].parent)
@@ -1419,13 +1214,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
                 return std::unexpected(unchanged.error());
             if (*unchanged)
                 continue;
-            auto reference = runtime().null_reference(types().entity, ValueForm::weak_reference);
-            if (!reference)
-                return std::unexpected(reference.error());
+            ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
             if (attachment.parent != ObjectId{}) {
-                auto held = runtime().hold(attachment.parent);
-                if (!held)
-                    return std::unexpected(held.error());
+                ATELIER_TRY_BIND(held, runtime().hold(attachment.parent));
                 reference = runtime().observe(held->reference());
                 if (!reference)
                     return std::unexpected(reference.error());
@@ -1438,13 +1229,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             relation_changes.push_back(ReferenceWrite{*slot, *reference});
         }
         for (const auto& plan : spaces) {
-            auto reference = runtime().null_reference(types().entity, ValueForm::weak_reference);
-            if (!reference)
-                return std::unexpected(reference.error());
+            ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
             if (plan.origin && *plan.origin != ObjectId{}) {
-                auto held = runtime().hold(*plan.origin, types().entity);
-                if (!held)
-                    return std::unexpected(held.error());
+                ATELIER_TRY_BIND(held, runtime().hold(*plan.origin, types().entity));
                 reference = runtime().observe(held->reference());
                 if (!reference)
                     return std::unexpected(reference.error());
@@ -1458,8 +1245,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             relation_changes.push_back(ReferenceWrite{*slot, *reference});
         }
         detail::FlagScope transition{state.transitioning};
-        if (auto changed = runtime().apply_reference_changes(relation_changes); !changed)
-            return changed;
+        ATELIER_TRY(runtime().apply_reference_changes(relation_changes));
         for (const auto& flags : origin_flags) {
             Access::explicit_origin(*flags.entity) = flags.explicit_origin;
             Access::world_origin(*flags.entity) = flags.world_origin;
@@ -1518,16 +1304,13 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
 }
 
 Result<EntityRemoval> World::detach(ObjectId object) {
-    auto removed = detach_batch(std::span<const ObjectId>{&object, 1});
-    if (!removed)
-        return std::unexpected(removed.error());
+    ATELIER_TRY_BIND(removed, detach_batch(std::span<const ObjectId>{&object, 1}));
     return std::move(removed->front());
 }
 
 Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId> roots) {
     auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(state.admit());
     if (roots.empty())
         return std::vector<EntityRemoval>{};
     struct ParentPlan {
@@ -1553,14 +1336,10 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
     std::unordered_set<ObjectId> ids;
     std::unordered_set<ObjectId> root_ids;
     for (const auto object : roots) {
-        auto at = state.member(object);
-        if (!at)
-            return std::unexpected(at.error());
+        ATELIER_TRY_BIND(at, state.member(object));
         const auto count = state.states[*at].size;
         const auto parent = state.states[*at].parent;
-        auto held = runtime().hold(object);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime().hold(object));
         EntityRemoval removal;
         removal.root = std::move(*held);
         removal.index = *at;
@@ -1570,9 +1349,7 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         if (parent != ObjectId{}) {
             auto plan = parent_positions.find(parent);
             if (plan == parent_positions.end()) {
-                auto existing = children(runtime(), parent);
-                if (!existing)
-                    return std::unexpected(existing.error());
+                ATELIER_TRY_BIND(existing, children(runtime(), parent));
                 const auto position = parents.size();
                 parents.push_back({parent, std::move(*existing), {}});
                 plan = parent_positions.emplace(parent, position).first;
@@ -1587,8 +1364,7 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             const auto id = state.members[i].id();
             if (!ids.insert(id).second)
                 return error(ErrorCode::invalid_member, "Detach contains overlapping subtrees.");
-            if (auto member = state.composition_entity(id); !member)
-                return std::unexpected(member.error());
+            ATELIER_TRY(state.composition_entity(id));
         }
         root_ids.insert(object);
         ranges.push_back({*at, count, parent});
@@ -1611,9 +1387,7 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             if (!root_ids.contains(child.id()))
                 plan.references.push_back(child.reference());
     }
-    auto null_parent = runtime().null_reference(types().entity, ValueForm::weak_reference);
-    if (!null_parent)
-        return std::unexpected(null_parent.error());
+    ATELIER_TRY_BIND(null_parent, runtime().null_reference(types().entity, ValueForm::weak_reference));
     std::ranges::sort(ranges, {}, &Range::at);
     std::vector<ObjectId> exiting;
     for (auto range = ranges.rbegin(); range != ranges.rend(); ++range)
@@ -1675,8 +1449,7 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             changes.push_back(ReferenceWrite{*slot, *null_parent});
         }
         detail::FlagScope transition{state.transitioning};
-        if (auto changed = runtime().apply_reference_changes(changes); !changed)
-            return changed;
+        ATELIER_TRY(runtime().apply_reference_changes(changes));
         for (auto* entity : entities)
             Access::member_world(*entity) = nullptr;
         // Departing member roots stay alive until the detached notifications finish.
@@ -1726,8 +1499,7 @@ Result<Commit> World::restore(const EntityRemoval& removal) {
 }
 
 Result<Commit> World::restore(std::span<const EntityRemoval> removals) {
-    if (auto ready = impl_->admit(); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(impl_->admit());
     std::vector<std::size_t> order;
     order.reserve(removals.size());
     for (std::size_t i = 0; i < removals.size(); ++i) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/result.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
