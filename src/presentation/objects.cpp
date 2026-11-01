@@ -99,14 +99,23 @@ Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMe
 Result<void> set_geometry(Runtime& runtime, ObjectId object, geometry::MeshRef geometry) {
     return set_mesh_binding(runtime, object, {{}, std::move(geometry)});
 }
-Result<StaticMeshState> read_static_mesh(Runtime& runtime, ObjectId object) {
+Result<geometry::MeshSource> read_mesh_source(Runtime& runtime, ObjectId object) {
     auto status = world::inspect_component(runtime, object);
     if (!status)
         return std::unexpected(status.error());
     return runtime.with_native<const StaticMeshComponent>(
+        object, [](const StaticMeshComponent& component) -> Result<geometry::MeshSource> {
+            return geometry::MeshSource{std::string(Access::mesh_source(component).view().std_view()),
+                                        Access::geometry(component)};
+        });
+}
+Result<StaticMeshState> read_static_mesh(Runtime& runtime, ObjectId object) {
+    auto mesh = read_mesh_source(runtime, object);
+    if (!mesh)
+        return std::unexpected(mesh.error());
+    return runtime.with_native<const StaticMeshComponent>(
         object, [&](const StaticMeshComponent& component) -> Result<StaticMeshState> {
-            StaticMeshState state{
-                {std::string(Access::mesh_source(component).view().std_view()), Access::geometry(component)}};
+            StaticMeshState state{{std::move(mesh->source), std::move(mesh->resolved)}};
             auto field = runtime.reference_field(object, Access::default_materials(component));
             if (!field)
                 return std::unexpected(field.error());

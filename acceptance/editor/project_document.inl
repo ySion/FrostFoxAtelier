@@ -180,7 +180,8 @@ void verify_project_document() {
         require(restored_settings.shape == physics::ShapeKind::triangle_mesh && !restored_settings.cooked_shape,
                 "Built-in triangle collision required a project Cook cache after reopening.");
         auto& simulation = const_cast<world::World&>(reopened->world());
-        auto physics_scene = take(physics::PhysicsScene::create(simulation, reopened->physics_types()));
+        auto physics_scene =
+            take(physics::PhysicsScene::create(simulation, reopened->physics_types(), presentation::read_mesh_source));
         changed(simulation.start());
         take(simulation.update(1.f / 60.f));
         require(physics_scene->body_count() == 1, "Reopened built-in triangle collision did not create a body.");
@@ -231,7 +232,8 @@ void verify_project_document() {
         require(take(restored_physics->serialize()) == physical_scene,
                 "Physics body settings changed across scene save and reopen.");
         auto& simulation = const_cast<world::World&>(restored_physics->world());
-        auto physics_scene = take(physics::PhysicsScene::create(simulation, restored_physics->physics_types()));
+        auto physics_scene = take(physics::PhysicsScene::create(simulation, restored_physics->physics_types(),
+                                                                presentation::read_mesh_source));
         changed(simulation.start());
         take(simulation.update(1.f / 60.f));
         require(physics_scene->body_count() == 1, "Reopened collision asset did not create a World body.");

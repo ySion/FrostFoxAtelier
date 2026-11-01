@@ -1,7 +1,6 @@
 #include "physics/physics.hpp"
 #include "physics/components.hpp"
 #include "physics/timing.hpp"
-#include "presentation/presentation.hpp"
 #include "runtime/native.hpp"
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
@@ -656,10 +655,12 @@ struct PhysicsScene::Impl {
     }
 };
 
-PhysicsScene::PhysicsScene(world::World& world, Types types, Capacity capacity)
-    : world_(world), types_(types), capacity_(capacity), impl_(std::make_unique<Impl>(capacity)),
-      components_(std::make_unique<detail::ComponentSimulation>(world, *this)), scene_id_(next_scene_id++) {}
-Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types, Capacity capacity) {
+PhysicsScene::PhysicsScene(world::World& world, Types types, MeshReader mesh_reader, Capacity capacity)
+    : world_(world), types_(types), mesh_reader_(mesh_reader), capacity_(capacity),
+      impl_(std::make_unique<Impl>(capacity)), components_(std::make_unique<detail::ComponentSimulation>(world, *this)),
+      scene_id_(next_scene_id++) {}
+Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, Types types, MeshReader mesh_reader,
+                                                           Capacity capacity) {
     if (world.closed())
         return failure(ErrorCode::unsupported_operation, "Cannot attach physics to a closed World.");
     auto actual = world.runtime().native_type<CharacterComponent>();
@@ -697,7 +698,7 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
         return std::unexpected(acquired.error());
     std::unique_ptr<PhysicsScene> result;
     try {
-        result.reset(new PhysicsScene(world, types, capacity));
+        result.reset(new PhysicsScene(world, types, mesh_reader, capacity));
     } catch (...) {
         release_jolt();
         throw;
@@ -785,7 +786,7 @@ void PhysicsScene::forget_pose(ObjectId entity) noexcept {
     if (!impl_->history.erase(entity))
         return;
     std::erase_if(impl_->interpolated, [&](const Impl::Interpolated& item) { return item.entity == entity; });
-    std::erase_if(presented_, [&](const presentation::PresentedPose& item) { return item.entity == entity; });
+    std::erase_if(presented_, [&](const world::PresentedPose& item) { return item.entity == entity; });
 }
 void PhysicsScene::hold_poses(std::span<const world::SimulationPose> poses) {
     // One compaction for the whole batch; every interpolated and presented Entity has a history entry.
@@ -795,7 +796,7 @@ void PhysicsScene::hold_poses(std::span<const world::SimulationPose> poses) {
             held.insert(pose.entity);
     if (!held.empty()) {
         std::erase_if(impl_->interpolated, [&](const Impl::Interpolated& item) { return held.contains(item.entity); });
-        std::erase_if(presented_, [&](const presentation::PresentedPose& item) { return held.contains(item.entity); });
+        std::erase_if(presented_, [&](const world::PresentedPose& item) { return held.contains(item.entity); });
     }
     for (const auto& [entity, where, orientation] : poses) {
         const Impl::Pose pose{where, orientation};
@@ -1089,11 +1090,11 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     geometry::MeshRef mesh;
     std::string source;
     if (settings->shape == ShapeKind::triangle_mesh) {
-        auto binding = presentation::read_static_mesh(runtime, component);
+        auto binding = mesh_reader_(runtime, component);
         if (!binding)
             return std::unexpected(binding.error());
-        mesh = binding->mesh.resolved;
-        source = binding->mesh.source;
+        mesh = std::move(binding->resolved);
+        source = std::move(binding->source);
         if (!mesh)
             return failure(ErrorCode::invalid_member, "Triangle collision requires this Primitive's mesh resource.");
     }

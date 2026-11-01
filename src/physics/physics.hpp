@@ -1,6 +1,5 @@
 #pragma once
 
-#include "presentation/presentation.hpp"
 #include "world/world.hpp"
 #include "geometry/mesh.hpp"
 #include <unordered_set>
@@ -12,6 +11,10 @@ using world::MotionKind;
 using world::Response;
 using world::PhysicsMaterial;
 using world::BodySettings;
+
+// Reads the exact Primitive's source and immutable geometry at a host boundary.
+// The required reader must not mutate the World or return material/Runtime roots.
+using MeshReader = Result<geometry::MeshSource> (&)(Runtime&, ObjectId component);
 
 [[nodiscard]] Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh, math::Vector3 scale,
                                                      std::string_view source_key);
@@ -237,7 +240,7 @@ struct Capacity {
 // call World APIs; a failure there stops the World.
 class PhysicsScene final {
 public:
-    [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types, Capacity = {});
+    [[nodiscard]] static Result<std::unique_ptr<PhysicsScene>> create(world::World&, Types, MeshReader, Capacity = {});
     ~PhysicsScene();
     PhysicsScene(const PhysicsScene&) = delete;
     PhysicsScene& operator=(const PhysicsScene&) = delete;
@@ -247,11 +250,12 @@ public:
     // The latest step World::update ran; completed_step is cumulative.
     [[nodiscard]] const StepResult& last_step() const noexcept { return last_step_; }
     // Poses to draw this frame for the Entities the latest fixed step published, for
-    // presentation::Scene::update: each between its previous and its current simulated
+    // presentation: each between its previous and its current simulated
     // pose by the fraction of a step left over, so the image trails the simulation by
     // up to one step. Empty while paused. Simulated Entities below a moved one are listed
     // with equal poses. A created, teleported or relocated Entity starts again from its new pose.
-    [[nodiscard]] std::span<const presentation::PresentedPose> presented_poses() const noexcept { return presented_; }
+    // Borrowed until the scene's next update, pose/lifecycle edit, pause or destruction.
+    [[nodiscard]] std::span<const world::PresentedPose> presented_poses() const noexcept { return presented_; }
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
     [[nodiscard]] Result<void> add_force(ObjectId entity, math::Vector3);
     [[nodiscard]] Result<void> add_impulse(ObjectId entity, math::Vector3);
@@ -304,7 +308,7 @@ public:
 private:
     friend class detail::ComponentSimulation;
     struct Impl;
-    explicit PhysicsScene(world::World&, Types, Capacity);
+    explicit PhysicsScene(world::World&, Types, MeshReader, Capacity);
     [[nodiscard]] Result<void> step(float elapsed);
     // Lookup failures answer true, so an unknown Entity is never translated.
     [[nodiscard]] bool writes_pose(ObjectId entity) const;
@@ -328,6 +332,7 @@ private:
     [[nodiscard]] Result<void> follow_handler(std::uint64_t opened);
     world::World& world_;
     Types types_;
+    MeshReader mesh_reader_;
     Capacity capacity_;
     std::unique_ptr<Impl> impl_;
     std::unique_ptr<detail::ComponentSimulation> components_;
@@ -337,7 +342,7 @@ private:
     // World buckets of the components that can claim an Entity's physics pose.
     world::CapabilityId primitives_, characters_, ragdolls_;
     StepResult last_step_{};
-    std::vector<presentation::PresentedPose> presented_;
+    std::vector<world::PresentedPose> presented_;
     float remaining_{};
     std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
     // Writes stamped after cursor_ are reconciled by the next step while tracked_; a

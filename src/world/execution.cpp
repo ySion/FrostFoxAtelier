@@ -540,13 +540,14 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
             return execution.error();
         detail::DispatchScope dispatch{dispatch_depth};
         // Registration arrays cannot change under this guard. Member roots keep
-        // their composition alive; each invocation also owns its receiver root.
+        // their composition alive and ExecutionScope prevents GC, but a previous
+        // native Tick may still explicitly destroy the next receiver.
         // An isolated failure stops that object's Tick from the next schedule.
         for (const auto& item : updates[std::size_t(phase)]) {
             const auto object = item.object;
-            auto root = runtime.hold(object);
-            if (!root) {
-                failure = root.error();
+            auto type = runtime.type_of(object);
+            if (!type) {
+                failure = type.error();
                 break;
             }
             const auto& tick = phase == TickPhase::pre_physics    ? item.behavior->tick

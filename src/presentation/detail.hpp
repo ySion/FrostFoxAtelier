@@ -88,7 +88,7 @@ public:
         math::Matrix4 matrix; // Row-vector world matrix * matrix is the drawn matrix.
         math::Quaternion rotation;
     };
-    explicit Presented(std::span<const PresentedPose>);
+    explicit Presented(std::span<const world::PresentedPose>);
     [[nodiscard]] bool empty() const noexcept { return offsets_.empty(); }
     [[nodiscard]] std::span<const ObjectId> entities() const noexcept { return entities_; }
     // The offset of the nearest listed Entity on the spatial chain of `entity`,

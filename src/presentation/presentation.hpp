@@ -340,6 +340,8 @@ struct StaticMeshState {
 // Source and resolved immutable content change together. Bare set_geometry
 // clears provenance. These snapshots also support detached and null-mesh data.
 [[nodiscard]] Result<void> set_mesh_binding(Runtime&, ObjectId, MeshBinding);
+// Geometry consumers capture the exact component's key/content without reading or rooting its materials.
+[[nodiscard]] Result<geometry::MeshSource> read_mesh_source(Runtime&, ObjectId);
 [[nodiscard]] Result<StaticMeshState> read_static_mesh(Runtime&, ObjectId);
 // An Environment's sky map: the persistent asset key and the map it resolved to, null when
 // the key is empty or did not resolve (the sky then renders as map = 1). Only this pair
@@ -384,16 +386,6 @@ struct MeshSlot {
     std::uint64_t changed{}; // Scene::update serial that last changed `item` or `presented`.
 };
 
-// A simulated Entity drawn this frame at position/rotation instead of the World
-// pose it was simulated to (world_position/world_rotation).
-struct PresentedPose {
-    ObjectId entity;
-    math::Vector3 position;
-    math::Quaternion rotation;
-    math::Vector3 world_position;
-    math::Quaternion world_rotation;
-};
-
 // The presentation of one World; a World without a Scene created by its host is
 // not presented. Creating it registers the mesh (a mesh needs
 // geometry), light and Environment capabilities and the one-Environment
@@ -429,7 +421,7 @@ public:
     // world pose to its presented pose, or left at its World matrix when the two
     // are equal. Hosts list every simulated Entity below a moved one. Authoritative
     // items and render_items() never include presented poses.
-    [[nodiscard]] Result<std::uint64_t> update(std::span<const PresentedPose> presented = {}) const;
+    [[nodiscard]] Result<std::uint64_t> update(std::span<const world::PresentedPose> presented = {}) const;
     // The cache as of the latest update, by mesh bucket position.
     [[nodiscard]] std::span<const MeshSlot> mesh_slots() const noexcept { return mesh_slots_; }
     // Serial of the latest update that rebuilt every slot after the mesh bucket

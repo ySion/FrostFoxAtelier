@@ -1624,7 +1624,7 @@ Result<world::Commit> Session::start() {
         return invalid("Finish the active edit before starting the World.");
     if (world_.running() || world_.closed())
         return world_.start();
-    auto scene = physics::PhysicsScene::create(world_, physics_types_);
+    auto scene = physics::PhysicsScene::create(world_, physics_types_, presentation::read_mesh_source);
     if (!scene)
         return std::unexpected(scene.error());
     physics_ = std::move(*scene);

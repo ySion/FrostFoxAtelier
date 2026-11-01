@@ -426,14 +426,15 @@ void contact_capacity() {
     {
         PhysicsFixture f;
         f.scene.reset();
-        require(!p::PhysicsScene::create(f.world, f.physics_types, {.bodies = ~0u}),
+        require(!p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source, {.bodies = ~0u}),
                 "A capacity above Jolt's limits was accepted.");
-        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types));
+        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source));
         const auto derived = f.scene->capacity();
         require(derived.bodies == 4096 && derived.body_pairs == 8 * 4096 && derived.contact_constraints == 2 * 4096,
                 "A small World did not derive the default physics capacity.");
         f.scene.reset();
-        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, {.body_pairs = 1, .contact_constraints = 3}));
+        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source,
+                                               {.body_pairs = 1, .contact_constraints = 3}));
         require(f.scene->capacity().body_pairs == 4 && f.scene->capacity().contact_constraints == 4,
                 "capacity() did not report Jolt's minimum buffers.");
     }
@@ -441,7 +442,8 @@ void contact_capacity() {
     {
         PhysicsFixture f;
         f.scene.reset();
-        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, {.contact_constraints = 8}));
+        f.scene =
+            take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source, {.contact_constraints = 8}));
         require(f.scene->capacity().contact_constraints == 8 && f.scene->capacity().body_pairs == 8 * 4096,
                 "An explicit physics capacity was not kept.");
         take(f.world.set_failure_policy(w::FailurePolicy::halt));
@@ -467,7 +469,8 @@ void contact_capacity() {
     {
         PhysicsFixture f;
         f.scene.reset();
-        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, {.contact_constraints = 4}));
+        f.scene =
+            take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source, {.contact_constraints = 4}));
         auto floor = f.ground();
         std::vector<PhysicsFixture::Entity> falling, resting;
         for (unsigned i = 0; i < 28; ++i)

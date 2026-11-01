@@ -279,7 +279,7 @@ void query_components() {
             "Saved hit handle remained valid after body removal.");
     require(!take(f.scene->execute_query(query.id())).has_hit, "Removed target was still hittable.");
     w::World other{f.runtime, f.world_types};
-    auto other_scene = take(p::PhysicsScene::create(other, f.physics_types));
+    auto other_scene = take(p::PhysicsScene::create(other, f.physics_types, pr::read_mesh_source));
     require(!other_scene->execute_query(query.id()) && !other_scene->read_query_result(query.id()),
             "Foreign scene exposed a component result.");
     committed(f.world.stop());

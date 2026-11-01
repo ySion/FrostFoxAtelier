@@ -12,7 +12,7 @@ struct PhysicsFixture {
     p::Types physics_types = take(p::register_types(runtime));
     w::World world{runtime, world_types};
     pr::Scene shown = take(pr::Scene::create(world, presentation_types));
-    std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types));
+    std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
 
     struct Entity {
         atelier::ObjectRoot entity, body;
@@ -456,7 +456,7 @@ void world_ownership() {
     f.start();
     w::World other(f.runtime, f.world_types);
     committed(other.start());
-    auto other_scene = take(p::PhysicsScene::create(other, f.physics_types));
+    auto other_scene = take(p::PhysicsScene::create(other, f.physics_types, pr::read_mesh_source));
     require(!other_scene->create_character(owner.id()), "same Runtime does not allow characters from another World");
     const std::array<p::RagdollPart, 1> parts{{{"hip", -1, {}}}};
     require(!other_scene->create_ragdoll(owner.id(), parts), "same Runtime does not allow ragdolls from another World");
@@ -602,8 +602,8 @@ void lifecycle() {
     f.scene.reset();
     other.advance(1);
     require(other.state(other_entity).linear_velocity.y < 0, "destroying one scene keeps other scenes alive");
-    f.scene = take(p::PhysicsScene::create(f.world, f.physics_types));
-    require(f.scene->body_count() == 1, "new scene reconciles an already running World");
+    f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source));
+    require(f.scene->body_count() == 1, "new scene cannot reconcile analytic bodies");
     // Direct field writes do not notify, so each step samples the bodies of active Primitives.
     const auto body_field = take(f.runtime.find_field(f.world_types.primitive_component, "body"));
     const std::array enabled{body_field,
@@ -631,14 +631,14 @@ void lifecycle() {
     // A scene recreated on one World reuses its capability registrations instead of exhausting them.
     for (int i = 0; i < 40; ++i) {
         f.scene.reset();
-        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types));
+        f.scene = take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source));
     }
     require(bodies() == 2, "recreated scenes lost a body");
     require(take(f.world.members(f.shown.meshes())).empty() && take(f.world.members(f.shown.lights())).empty(),
             "a physics capability made a Primitive count as presented");
     committed(f.world.close());
     committed(f.world.close());
-    require(f.scene->body_count() == 0 && !p::PhysicsScene::create(f.world, f.physics_types),
+    require(f.scene->body_count() == 0 && !p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source),
             "closed World cleans bodies and refuses new scenes");
 }
 

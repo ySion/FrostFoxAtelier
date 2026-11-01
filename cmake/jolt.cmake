@@ -43,11 +43,11 @@ function(atelier_add_jolt)
         "${PROJECT_SOURCE_DIR}/src/physics/physics.cpp")
     atelier_target(atelier_physics)
     target_include_directories(atelier_physics PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_physics PUBLIC atelier_presentation PRIVATE Jolt::Jolt)
+    target_link_libraries(atelier_physics PUBLIC atelier_world atelier_geometry PRIVATE Jolt::Jolt)
 
     add_executable(atelier_physics_acceptance "${PROJECT_SOURCE_DIR}/acceptance/physics/main.cpp")
     atelier_target(atelier_physics_acceptance)
-    target_link_libraries(atelier_physics_acceptance PRIVATE atelier_physics)
+    target_link_libraries(atelier_physics_acceptance PRIVATE atelier_physics atelier_presentation)
     atelier_headless_acceptance(physics_acceptance
         COMMAND $<TARGET_FILE:atelier_physics_acceptance>
         DEPENDS atelier_physics_acceptance)

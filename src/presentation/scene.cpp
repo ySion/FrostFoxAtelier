@@ -67,7 +67,7 @@ bool same_light(const LightRenderItem& a, const LightRenderItem& b) noexcept {
 }
 }
 
-detail::Presented::Presented(std::span<const PresentedPose> poses) {
+detail::Presented::Presented(std::span<const world::PresentedPose> poses) {
     offsets_.reserve(poses.size());
     entities_.reserve(poses.size());
     for (const auto& pose : poses) {
@@ -314,7 +314,7 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
     return {};
 }
 
-Result<std::uint64_t> Scene::update(std::span<const PresentedPose> presented) const {
+Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presented) const {
     const auto serial = ++serial_;
     // A still frame shares one empty table instead of building its own.
     static const detail::Presented still{{}};

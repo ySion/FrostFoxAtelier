@@ -139,6 +139,38 @@ void frame_phases() {
             "Running rebind did not pair End through the current binding.");
     committed(world.close());
 
+    // Execution prevents GC, not explicit native destruction. The next Tick must
+    // still reject a dead receiver before entering even a callback that ignores it.
+    {
+        w::World invalidated(runtime, types);
+        auto owner = take(w::create_entity(runtime));
+        auto first = take(w::create_component(runtime, types.counter));
+        auto next = take(w::create_component(runtime, types.counter));
+        committed(
+            invalidated.attach_components(owner.id(), std::array{w::Attachment{first.id()}, w::Attachment{next.id()}}));
+        committed(invalidated.attach(owner.id()));
+        bool gc_blocked = false, dead_ticked = false;
+        take(invalidated.bind_behavior(types.counter, {.tick = [&](Runtime& rt, ObjectId id, float) -> Result<void> {
+                                           if (id == first.id()) {
+                                               const auto gc = rt.begin_collection();
+                                               gc_blocked = !gc && gc.error().code == ErrorCode::busy;
+                                               return rt.destroy(next.id());
+                                           }
+                                           dead_ticked = true;
+                                           return {};
+                                       }}));
+        take(invalidated.add_tick_prerequisite(next.id(), first.id()));
+        committed(invalidated.start());
+        const auto updated = invalidated.update(.25f);
+        const bool stopped = !invalidated.running();
+        // Close before assertions so the intentionally invalid component cannot
+        // hide an assertion failure in fixture teardown. The owner remains live.
+        const auto closed = invalidated.close();
+        require(!updated && updated.error().code == ErrorCode::invalid_object && stopped && !dead_ticked && gc_blocked,
+                "Tick lost its live receiver check or execution-time GC barrier.");
+        require(bool(closed) && invalidated.closed(), "A stopped World with a dead Tick receiver did not close.");
+    }
+
     // Capability buckets are registered per World and re-evaluated on demand.
     w::World shown(runtime, types);
     auto owner = take(w::create_entity(runtime));

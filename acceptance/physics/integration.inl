@@ -7,14 +7,21 @@ void simulate_world() {
     (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
     w::World world(runtime, world_types);
-    auto scene = take(p::PhysicsScene::create(world, physics_types));
+    auto scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
 
     pr::StaticMeshEntityDesc floor_desc;
     floor_desc.mesh = atelier::geometry::cube_mesh();
     floor_desc.transform.position = {0, -.5f, 0};
     floor_desc.transform.scale = {8, 1, 8};
+    floor_desc.mesh_source = "acceptance/floor";
     auto floor = take(pr::create_static_mesh_entity(world, floor_desc));
     auto floor_body = take(runtime.hold(mesh_component(runtime, floor.id())));
+    auto floor_sibling = take(w::create_component(runtime, world_types.collision_component));
+    committed(world.attach_components(floor.id(), std::array{w::Attachment{floor_sibling.id()}}));
+    committed(world.set_enabled(floor_sibling.id(), false));
+    const auto captured = take(pr::read_mesh_source(runtime, floor_body.id()));
+    require(captured.source == floor_desc.mesh_source && captured.resolved == floor_desc.mesh,
+            "geometry reading loses its exact source or immutable content");
     p::BodySettings floor_settings;
     floor_settings.shape = p::ShapeKind::triangle_mesh;
     auto invalid_mesh = floor_settings;
@@ -60,13 +67,23 @@ void simulate_world() {
     require(!overlap.hits.empty() && overlap.hits.front().body.entity == entity.id(),
             "sphere overlap returns Entity identity");
     const auto floor_mesh = mesh_component(runtime, floor.id());
-    auto vertices = floor_desc.mesh->vertices();
-    take(pr::set_geometry(runtime, floor_mesh,
-                          std::make_shared<const atelier::geometry::Mesh>(
-                              std::vector<atelier::geometry::Vertex>(vertices.begin(), vertices.end()))));
+    require(!pr::read_mesh_source(runtime, floor.id()) && !pr::read_mesh_source(runtime, floor_sibling.id()),
+            "geometry reading borrowed a sibling mesh for an Entity or a non-mesh Primitive");
+    require(!take(scene->raycast({3, 4, 0}, {3, -2, 0})).hits.empty(), "original floor must reach x = 3");
+    const auto old_vertices = captured.resolved->vertices();
+    std::vector<atelier::geometry::Vertex> vertices(old_vertices.begin(), old_vertices.end());
+    for (auto& vertex : vertices)
+        vertex.position[0] *= .5f;
+    auto narrower = std::make_shared<const atelier::geometry::Mesh>(std::move(vertices));
+    take(pr::set_mesh_binding(runtime, floor_mesh, {captured.source, narrower}));
     step(world, *scene, 0);
     require(scene->body_count() == 3, "active static mesh replacement rebuilds its body");
     require(!scene->read_body_state(first_handle), "mesh replacement invalidates old body handle");
+    require(take(scene->raycast({3, 4, 0}, {3, -2, 0})).hits.empty() &&
+                take(pr::read_mesh_source(runtime, floor_mesh)).source == captured.source &&
+                take(pr::read_mesh_source(runtime, floor_mesh)).resolved == narrower &&
+                captured.resolved == floor_desc.mesh,
+            "same-key mesh replacement reused old collision content or rewrote an earlier snapshot");
     std::vector<p::ContactPhase> contacts;
     scene->on_contact([&](const p::ContactEvent& event) -> atelier::Result<void> {
         require((event.first.entity == floor.id() && event.second.entity == entity.id()) ||
@@ -136,7 +153,7 @@ void simulate_filter_and_trigger() {
     (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
     w::World world(runtime, world_types);
-    auto scene = take(p::PhysicsScene::create(world, physics_types));
+    auto scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
     auto create = [&](atelier::math::Vector3 position, p::BodySettings settings) {
         auto entity = take(w::create_entity(runtime));
         auto body = take(w::create_component(runtime, world_types.collision_component));
@@ -245,7 +262,7 @@ void simulate_cooked_assets() {
         take(p::configure(runtime, body.id(), settings));
         committed(world.attach(ground.id()));
         committed(world.start());
-        auto scene = p::PhysicsScene::create(world, physics_types);
+        auto scene = p::PhysicsScene::create(world, physics_types, pr::read_mesh_source);
         if (!scene)
             return std::nullopt;
         take(world.update(1.f / 60));
@@ -283,7 +300,7 @@ void simulate_special_systems() {
     (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
     w::World world(runtime, world_types);
-    auto scene = take(p::PhysicsScene::create(world, physics_types));
+    auto scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
     auto make_entity = [&](atelier::math::Vector3 position, bool body_enabled, p::BodySettings settings = {}) {
         auto entity = take(w::create_entity(runtime));
         auto body = take(w::create_component(runtime, world_types.collision_component));

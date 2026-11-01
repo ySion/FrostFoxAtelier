@@ -1,6 +1,8 @@
 # 物理场景验收
 
-场景由正式 Runtime、World 和 `PhysicsScene` 公开接口构建，使用仓库锁定的真实 Jolt。入口为 `acceptance/physics/main.cpp`；`scenarios.inl` 提供独立模块场景，`integration.inl` 保留静态网格、触发、Cook 和专用系统组合消费者。验收目标只链接 `atelier_physics`，不自行初始化 Jolt 或访问后端内部对象。
+场景由正式 Runtime、World 和 `PhysicsScene` 公开接口构建，使用仓库锁定的真实 Jolt。入口为 `acceptance/physics/main.cpp`；`scenarios.inl` 提供独立模块场景，`integration.inl` 保留静态网格、触发、Cook 和专用系统组合消费者。验收宿主显式链接 `atelier_physics` 与 `atelier_presentation`，不自行初始化 Jolt 或访问后端内部对象。
+
+Physics 本身只依赖 World、geometry 和 Jolt。创建 `PhysicsScene` 时，宿主必须传入 `MeshReader` 函数引用；编辑器及本验收接入 `presentation::read_mesh_source`，按实际 Primitive 身份取得拥有型 `geometry::MeshSource`（source + 不可变 MeshRef），不读取或持有默认材质。插值交换值 `world::PresentedPose` 同时携带显示位姿与权威位姿；Physics 的返回 span 在下一次更新、姿态/生命周期编辑、暂停或析构时失效，插值与位姿权威规则未变。
 
 ## 运行
 
@@ -23,7 +25,7 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 | 场景名 | 构建的物理场景 | 主要检查 |
 | --- | --- | --- |
-| `world_mesh` | 三角网格地面、球、箱体 | 下落与支撑高度、Entity 位姿回写、网格替换、动态三角网格拒绝、前后步回调、接触和停止清理 |
+| `world_mesh` | 三角网格地面、球、箱体 | 下落与支撑高度、Entity 位姿回写；source + MeshRef 精确匹配；拒绝 Entity/非网格 Primitive 的几何读取；同 source 不同 MeshRef 的非对称替换改变射线结果、保留旧快照并使旧句柄失效；动态三角网格拒绝、前后步回调、接触和停止清理 |
 | `rigid_shapes` | Box/Sphere/Capsule 下落及运动学平台 | 重力、各形状支撑高度、休眠、静态体拒绝施力、运动学目标、非法配置不覆盖原值 |
 | `forces` | 零重力下三个相同动态体 | 等效力与冲量、延迟消费且只消费一次、传送保留/清除速度、自定义重力、NaN 拒绝 |
 | `primitive_composition` | Entity 子树中的网格刚体、动态碰撞子实体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |

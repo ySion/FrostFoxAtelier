@@ -274,6 +274,15 @@ struct SimulationPose {
     math::Vector3 position;
     math::Quaternion rotation;
 };
+// A simulated Entity drawn this frame at position/rotation instead of the World
+// pose it was simulated to (world_position/world_rotation). Values only; no roots.
+struct PresentedPose {
+    ObjectId entity;
+    math::Vector3 position;
+    math::Quaternion rotation;
+    math::Vector3 world_position;
+    math::Quaternion world_rotation;
+};
 // World registration notifications: whole Entity groups enter in forward order
 // and leave in reverse order. Detached composition does not emit these events.
 enum class Lifecycle { attached, activated, deactivated, detached };

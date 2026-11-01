@@ -160,6 +160,12 @@ private:
 
 using MeshRef = std::shared_ptr<const Mesh>;
 
+// A captured source key and its exact immutable CPU content, without material or Runtime ownership.
+struct MeshSource {
+    std::string source;
+    MeshRef resolved;
+};
+
 // Names, not slot positions, are the persistent correspondence. Empty imported
 // names use the reserved slot/<index> spelling until assigned a named asset.
 [[nodiscard]] inline std::string material_slot_name(const Mesh& mesh, std::size_t index) {
