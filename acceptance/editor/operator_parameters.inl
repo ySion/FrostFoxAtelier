@@ -316,7 +316,6 @@ void verify_operator_parameters() {
         return editor::call(registry, host, context(), {std::move(id), std::move(args), {}});
     };
     host.panels.dock.reset();
-    require(registry.find("layout.show") && registry.find("layout.cycle_tab"), "Layout operators are not registered.");
     take(call("layout.show", {{"tab", "code"}}));
     require(host.panels.dock.focused_tab() == editor::source_control::tab,
             "layout.show did not select the requested page.");
@@ -458,9 +457,6 @@ void verify_operator_parameters() {
         editor::Session edited({}, editor::SessionRole::editor);
         Host controls(edited);
         auto& rt = edited.world().runtime();
-        for (const auto id : {"scene.snap_selection", "scene.transform_clear", "scene.select_all",
-                              "cursor.to_selection", "cursor.to_grid", "cursor.reset"})
-            require(registry.find(id), "An explicit-target viewport operator is not registered.");
         changed(edited.add_entity());
         const auto first = edited.selection().entity;
         const world::Trs first_pose{{1.25f, 2.75f, -.6f}, editor::from_euler_degrees({10, 0, 20}), {2, 3, 4}};
@@ -533,7 +529,6 @@ void verify_operator_parameters() {
     {
         editor::Session erased({}, editor::SessionRole::editor);
         Host controls(erased);
-        require(registry.find("scene.delete"), "scene.delete is not registered.");
         changed(erased.add_entity());
         const auto parent = erased.selection().entity;
         changed(erased.add_component(parent, erased.presentation_types().camera_component));
@@ -573,7 +568,6 @@ void verify_operator_parameters() {
     {
         editor::Session copied({}, editor::SessionRole::editor);
         Host controls(copied);
-        require(registry.find("scene.duplicate"), "scene.duplicate is not registered.");
         changed(copied.add_entity());
         const auto source = copied.selection().entity;
         take(copied.set_transform(source, {{3, -2, 5}, {}, {2, 1, 3}}));
@@ -614,7 +608,6 @@ void verify_operator_parameters() {
     {
         editor::Session composed({}, editor::SessionRole::editor);
         Host controls(composed);
-        require(registry.find("scene.add_component"), "scene.add_component is not registered.");
         changed(composed.add_entity());
         const auto target = composed.selection().entity;
         changed(composed.add_entity());
@@ -646,7 +639,6 @@ void verify_operator_parameters() {
     {
         editor::Session transformed({}, editor::SessionRole::editor);
         Host controls(transformed);
-        require(registry.find("scene.transform_set"), "scene.transform_set is not registered.");
         changed(transformed.add_entity());
         const auto target = transformed.selection().entity;
         changed(transformed.add_entity());
@@ -685,7 +677,6 @@ void verify_operator_parameters() {
     {
         editor::Session spaces({}, editor::SessionRole::editor);
         Host controls(spaces);
-        require(registry.find("scene.space_reference_set"), "scene.space_reference_set is not registered.");
         changed(spaces.add_entity());
         const auto parent = spaces.selection().entity;
         take(spaces.set_transform(parent, {{10, 0, 0}, {}, {1, 1, 1}}));
@@ -738,7 +729,6 @@ void verify_operator_parameters() {
     {
         editor::Session named({}, editor::SessionRole::editor);
         Host controls(named);
-        require(registry.find("scene.rename"), "scene.rename is not registered.");
         changed(named.add_entity());
         const auto target = named.selection().entity;
         const std::wstring before(named.name(target));
@@ -768,7 +758,6 @@ void verify_operator_parameters() {
         require(named.name(target) == L"房间 · North", "Rename Redo did not restore the Unicode label.");
     }
     {
-        require(registry.find("scene.set_properties"), "scene.set_properties is not registered.");
         const auto folder = std::filesystem::current_path() / "out/operator-patch-evidence" /
                             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         auto project = take(editor::Project::create(folder));

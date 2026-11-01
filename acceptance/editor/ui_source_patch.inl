@@ -210,11 +210,15 @@ ui Late() { Text label { text: "Late"; height: 17; } }
         // The input was accepted before the file poll in this frame. A refused
         // source candidate must not undo that legitimate user operation.
         click(first);
+        const auto active_roots = runtime.root_count();
+        const auto active_objects = runtime.live_objects();
         auto invalid = source;
         replace(invalid, "ui Unrelated()", "ui Missing()");
         stage(invalid);
         draw();
         unchanged(5, 2);
+        require(runtime.root_count() == active_roots && runtime.live_objects() == active_objects,
+                "Failed UI candidate retained Runtime scopes.");
         require(live.revision() == revision && !live.diagnostic().empty() && !find(L"First").selected,
                 "Late region rejection lost the old event or committed half a source revision.");
         invalid = source;

@@ -2691,42 +2691,6 @@ int wmain(int argc, wchar_t** argv) {
         editor.close();
         require(discover(directory).empty(), "Closed editor descriptor remained live");
         reject_nested_destination(argv[1], root);
-        std::ofstream report(root / "result.json");
-        report << Json{{"status", "passed"},
-                       {"cases",
-                        {"discovery",
-                         "capabilities",
-                         "idempotency",
-                         "request-retention",
-                         "job-retention",
-                         "stale-token",
-                         "create",
-                         "select",
-                         "property",
-                         "transform",
-                         "undo-redo",
-                         "camera",
-                         "display-policy",
-                         "repro-dirty-scene",
-                         "published-source-set",
-                         "published-ui",
-                         "repro-file-set",
-                         "failed-open-preserves-document",
-                         "nested-output",
-                         "repro-reopen",
-                         "current-lighting-repro",
-                         "rejected-repro-preserves-camera-selection",
-                         "sky-world-setting",
-                         "multi-point-capture",
-                         "cancel",
-                         "invalid-edit-preserves-job",
-                         "context-change",
-                         "timeout",
-                         "disconnect",
-                         "clean-close"}},
-                       {"repro", utf8(repro.wstring())},
-                       {"comparison", compared.at("result").at("directory")}}
-                      .dump(2);
         std::cout << "Editor Control E2E: PASS | " << utf8(root.wstring()) << '\n';
         return 0;
     } catch (const std::exception& error) {

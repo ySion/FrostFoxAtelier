@@ -558,8 +558,6 @@ void verify_material_resources() {
     require(!project.assets().sky_map(texture) && !project.assets().sky_map(broken), "Invalid sky resource resolved.");
     fs::remove(broken_file);
     require(!project.assets().sky_map(broken), "Deleted sky remained readable.");
-    std::ofstream(evidence / "acceptance.txt")
-        << "Material resources acceptance: PASS\nMS/MI ownership, arbitrary paths, sparse history, shared scene MI, typed fallback, DSL, save/reopen, same-root Reimport, sky assets.\n";
     std::puts("Material resources acceptance: PASS");
 }
 

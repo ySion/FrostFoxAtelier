@@ -490,7 +490,5 @@ void verify_project_document() {
     require(take(presentation::read_static_mesh(document.world().runtime(), mesh)).mesh.source.empty() &&
                 !document.serialize(),
             "Unattributed procedural geometry retained stale provenance or was silently saved.");
-    std::ofstream(evidence / "acceptance.txt")
-        << "Project document acceptance: PASS\nCreate/open; UTF-8; OBJ import; stable resource ID; full composition; dirty undo; version/read/write failure; moved project; missing resource; Cache removal.\n";
     std::puts("Project document acceptance: PASS");
 }

@@ -30,7 +30,6 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <windows.h>
-#include <psapi.h>
 
 namespace {
 using namespace atelier;
@@ -162,10 +161,6 @@ int main(int argc, char** argv) {
             verify_scene_lit_application(argc == 3 ? std::filesystem::path{argv[2]} : std::filesystem::path{});
             return 0;
         }
-        if (argc == 3 && std::string_view(argv[1]) == "--profile-json") {
-            profile_project_json(argv[2]);
-            return 0;
-        }
         if ((argc == 5 || argc == 6) && std::string_view(argv[1]) == "--profile-scene-cpu") {
             profile_scene_cpu(argv[2], argv[3], argv[4],
                               argc == 6 ? std::filesystem::path(argv[5]) : std::filesystem::path{});
@@ -175,14 +170,10 @@ int main(int argc, char** argv) {
             profile_physics_cpu(argv[2], argv[3], argv[4]);
             return 0;
         }
-        if (argc == 3 && std::string_view(argv[1]) == "--profile-ui-reload") {
-            profile_ui_reload(argv[2]);
-            return 0;
-        }
         // Each check runs once in the acceptance gate: a mode run by its own target is not repeated here.
         require(
             argc == 1,
-            "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --procedural-graph | --examples | --physics-examples | --textured-obj | --gltf | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json | --profile-ui-reload output.csv]");
+            "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --procedural-graph | --examples | --physics-examples | --textured-obj | --gltf | --viewport-edit | --scene-lit [source-project] | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json]");
         stage = "operator parameters";
         verify_operator_parameters();
         stage = "project document";

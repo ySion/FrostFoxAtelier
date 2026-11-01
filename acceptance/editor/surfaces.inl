@@ -27,8 +27,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::escape}, VK_ESCAPE);
         Access::input(app, {.kind = ui::EventKind::key_up, .key = ui::Key::escape}, VK_ESCAPE);
     };
-    std::ofstream report(output / "surfaces.csv");
-    report << "menu,open,presents\n";
     unsigned redundant_presents{};
     HWND retained{};
     for (unsigned run = 0; run < 6; ++run) {
@@ -51,8 +49,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         const auto presents = Access::menu_presents(app);
         if (run && presents != 1)
             ++redundant_presents;
-        report << menu << ',' << run << ',' << presents << '\n';
-        report.flush();
         escape();
         tick(app, 1);
     }
@@ -69,8 +65,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         require(retained == app.menu_window(), "Menu remeasurement replaced the native popup.");
         escape();
         tick(app, 1);
-        report << "menu-measurement,surface-invalidation-reopen,passed\n";
-        report.flush();
     }
     // A retained checkbox updates its accepted row without reopening the surface.
     {
@@ -157,9 +151,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     for (unsigned step = 1; step <= 8; ++step) {
         pointer(ui::EventKind::pointer_move, {begin.x - 12.f * step, begin.y});
         tick(app, 1);
-        report << "dock_step," << step << ',' << app.docking().dragging() << ',' << (GetCapture() == app.window())
-               << '\n';
-        report.flush();
         require(app.docking().dragging() && GetCapture() == app.window(),
                 "Dock shrink lost its drag or native capture before release.");
         if (app.presented()->find(control::viewport)->bounds != original)
@@ -170,8 +161,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     tick(app);
     const auto committed = app.presented()->find(control::viewport)->bounds;
     require(committed.width < original.width - 40, "Dock release did not commit the requested resize.");
-    report << "dock_resized_during_drag," << resized_during_drag << "\n";
-    report.flush();
     capture(app, output / "divider-committed.png");
     for (unsigned reason = 0; reason < 3; ++reason) {
         const auto key = app.docking().divider(control::scene_tab, ui::DragAxis::vertical);
@@ -226,8 +215,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         require(missing() == 0, "Docked Scene Tree omitted a visible row.");
         require(bool(Access::invoke(app, "layout.maximize")), "Scene Tree did not maximize.");
         tick(app, 1);
-        report << "tree_rows_missing_first_grown_frame," << missing() << '\n';
-        report.flush();
+        static_cast<void>(missing());
         tick(app, 1);
         require(missing() == 0, "Scene Tree did not complete its rows on the frame after growing.");
         require(bool(Access::invoke(app, "layout.maximize")), "Scene Tree did not restore.");
@@ -374,8 +362,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             tick(app, 1);
             require(Access::camera_view(app) == stopped && GetCapture() != app.window(),
                     "Ended camera gesture resumed on late movement.");
-            report << "camera," << gesture << ',' << ending << ",idle\n";
-            report.flush();
         }
     require(app.document().undo_count() == history, "Camera gestures entered scene history.");
     require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Lighting page command failed.");
@@ -497,8 +483,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             "Changing the volume did not replace the DSL row bindings.");
     require(app.document().undo_count() == world_history + 1,
             "World controls did not commit exactly one scene history entry.");
-    report << "lighting,preview-cancel-commit-close-slot-switch,passed\n";
-    report.flush();
     require(bool(Access::invoke(app, "layout.show", {{"tab", "parameters"}})), "Parameters did not reopen.");
     tick(app, 1);
     const auto entity = app.document().selection().entity;
@@ -553,8 +537,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     Access::mark_saved(app);
     PostMessageW(app.window(), WM_CLOSE, 0, 0);
     require(!app.step(), "A native close request could not pass the render retry gate.");
-    report << "render-retry,validation-control-recovery-close,passed\n";
-    report.flush();
     std::printf(
         "Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens; external mouse messages dropped %u\n",
         resized_during_drag, redundant_presents, ExternalMouseFilter::discarded);

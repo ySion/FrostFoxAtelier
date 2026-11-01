@@ -946,9 +946,6 @@ void verify_viewport_editing() {
         throw std::runtime_error("Shading pie projection: items=" + std::to_string(workspace.menu_items.size()) +
                                  ", popup=" + std::to_string(ui.presented()->popup) +
                                  ", error=" + std::string(workspace.ui_error()));
-    require(workspace.menu_items.size() == 4 && ui.presented()->popup == control::viewport_pie &&
-                ui.presented()->find(control::shading_preset_first),
-            "Shading pie was not projected through Source/JIT.");
     for (const auto& item : workspace.menu_items) {
         const auto* box = ui.presented()->find(item.key);
         require(box && box->bounds.x + box->bounds.width <= box->clip.right + 1 &&
