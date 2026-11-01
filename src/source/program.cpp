@@ -414,9 +414,10 @@ struct Program::Version {
         }
     }
 
-    template <class T>
-    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments,
-                                                Diagnostics* diagnostics, Debugger* debugger) const {
+    // Keep captures on this stack until the body has released its arguments.
+    // The caller pins this Version; successful starts transfer captures to their frame.
+    template <class T, class F>
+    Result<T> invoke_captured(Diagnostics* diagnostics, Debugger* debugger, F&& body) const {
         auto activation = ExecutionScope::enter(*contract->binding.runtime);
         if (!activation)
             return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
@@ -426,70 +427,89 @@ struct Program::Version {
         DiagnosticScope scope(std::move(*capture), *contract->binding.runtime);
         auto session = DebugAccess::begin(debugger, debug, info.debugging);
         if (!session)
-            return scope.complete(Result<std::optional<Scalar>>{std::unexpected(std::move(session.error()))});
+            return scope.complete(Result<T>{std::unexpected(std::move(session.error()))});
         DebugScope debug_scope(std::move(*session));
-        return scope.complete(debug_scope.complete([&]() -> Result<std::optional<Scalar>> {
-            if (aggregate(info.signature.result))
-                return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                             "Aggregate source results require typed value output storage."});
-            const AbiArguments encoded(contract->binding, declaration->signature, arguments);
-            if (!encoded.status)
-                return std::unexpected(encoded.status.error());
-            auto result = invoke(receiver, encoded.values, {}, nullptr, scope.trace(), debug_scope.state());
-            if (!result)
-                return std::unexpected(result.error());
-            auto decoded = detail::scalar_value(*result, &contract->binding);
-            if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
-                (info.signature.result != ValueKind::void_value && !decoded))
-                return std::unexpected(
-                    Error{ErrorCode::invocation_failed, "Compiled source returned an invalid scalar value."});
-            return decoded;
-        }()));
+        auto result = body(scope, debug_scope);
+        if constexpr (std::same_as<T, Coroutine>) {
+            if (result) {
+                scope.transfer(DiagnosticStatus::ready);
+                debug_scope.transfer(DebugStatus::ready);
+                return result;
+            }
+        }
+        return scope.complete(debug_scope.complete(std::move(result)));
+    }
+
+    template <class T>
+    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments,
+                                                Diagnostics* diagnostics, Debugger* debugger) const {
+        return invoke_captured<std::optional<Scalar>>(
+            diagnostics, debugger,
+            [&](DiagnosticScope& scope, DebugScope& debug_scope) -> Result<std::optional<Scalar>> {
+                if (aggregate(info.signature.result))
+                    return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                                 "Aggregate source results require typed value output storage."});
+                const AbiArguments encoded(contract->binding, declaration->signature, arguments);
+                if (!encoded.status)
+                    return std::unexpected(encoded.status.error());
+                auto result = invoke(receiver, encoded.values, {}, nullptr, scope.trace(), debug_scope.state());
+                if (!result)
+                    return std::unexpected(result.error());
+                auto decoded = detail::scalar_value(*result, &contract->binding);
+                if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
+                    (info.signature.result != ValueKind::void_value && !decoded))
+                    return std::unexpected(
+                        Error{ErrorCode::invocation_failed, "Compiled source returned an invalid scalar value."});
+                return decoded;
+            });
     }
 
     template <class T>
     Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output,
                                Diagnostics* diagnostics, Debugger* debugger) const {
-        auto activation = ExecutionScope::enter(*contract->binding.runtime);
-        if (!activation)
-            return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
-        auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
-        if (!capture)
-            return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
-        DiagnosticScope scope(std::move(*capture), *contract->binding.runtime);
-        auto session = DebugAccess::begin(debugger, debug, info.debugging);
-        if (!session)
-            return scope.complete(Result<void>{std::unexpected(std::move(session.error()))});
-        DebugScope debug_scope(std::move(*session));
-        return scope.complete(debug_scope.complete([&]() -> Result<void> {
-            const auto kind = info.signature.result;
-            const auto& binding = contract->binding;
-            if (!aggregate(kind) || kind.type_index >= binding.values.size() ||
-                !(binding.values[kind.type_index].math || binding.values[kind.type_index].plain_value))
-                return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                             "Typed value output requires a math or plain record source result."});
-            const auto& value = binding.values[kind.type_index];
-            if (output.type != value.type || !output.data ||
-                reinterpret_cast<std::uintptr_t>(output.data) % value.alignment != 0)
-                return std::unexpected(
-                    Error{ErrorCode::argument_mismatch,
-                          "Source output storage does not match its declared value type and alignment."});
-            const AbiArguments encoded(binding, declaration->signature, arguments);
-            if (!encoded.status)
-                return std::unexpected(encoded.status.error());
-            // Only the returned representation enters this buffer. Constructing a
-            // native value here would execute an unrelated default constructor.
-            ::atelier::detail::ValueStorage staging_owner;
-            auto* staged = staging_owner.prepare(value.size, value.alignment);
-            auto result = invoke(receiver, encoded.values, {}, staged, scope.trace(), debug_scope.state());
-            if (!result)
-                return std::unexpected(result.error());
-            if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
-                return std::unexpected(
-                    Error{ErrorCode::invocation_failed, "Compiled aggregate result changed its typed output storage."});
-            std::memcpy(output.data, staged, value.size);
-            return {};
-        }()));
+        return invoke_captured<void>(
+            diagnostics, debugger, [&](DiagnosticScope& scope, DebugScope& debug_scope) -> Result<void> {
+                const auto kind = info.signature.result;
+                const auto& binding = contract->binding;
+                if (!aggregate(kind) || kind.type_index >= binding.values.size() ||
+                    !(binding.values[kind.type_index].math || binding.values[kind.type_index].plain_value))
+                    return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                                 "Typed value output requires a math or plain record source result."});
+                const auto& value = binding.values[kind.type_index];
+                if (output.type != value.type || !output.data ||
+                    reinterpret_cast<std::uintptr_t>(output.data) % value.alignment != 0)
+                    return std::unexpected(
+                        Error{ErrorCode::argument_mismatch,
+                              "Source output storage does not match its declared value type and alignment."});
+                const AbiArguments encoded(binding, declaration->signature, arguments);
+                if (!encoded.status)
+                    return std::unexpected(encoded.status.error());
+                // Only the returned representation enters this buffer. Constructing a
+                // native value here would execute an unrelated default constructor.
+                ::atelier::detail::ValueStorage staging_owner;
+                auto* staged = staging_owner.prepare(value.size, value.alignment);
+                auto result = invoke(receiver, encoded.values, {}, staged, scope.trace(), debug_scope.state());
+                if (!result)
+                    return std::unexpected(result.error());
+                if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
+                    return std::unexpected(Error{ErrorCode::invocation_failed,
+                                                 "Compiled aggregate result changed its typed output storage."});
+                std::memcpy(output.data, staged, value.size);
+                return {};
+            });
+    }
+
+    static Result<Coroutine> start_values(std::shared_ptr<const Version> version, ObjectId receiver,
+                                          std::span<const Scalar> arguments, Diagnostics* diagnostics,
+                                          Debugger* debugger) {
+        return version->invoke_captured<Coroutine>(
+            diagnostics, debugger, [&](DiagnosticScope& scope, DebugScope& debug_scope) -> Result<Coroutine> {
+                const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
+                if (!encoded.status)
+                    return std::unexpected(encoded.status.error());
+                return ProgramAccess::start_version(version, receiver, encoded.values, {}, scope.state(),
+                                                    debug_scope.state());
+            });
     }
 
     Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
@@ -822,8 +842,6 @@ Result<std::vector<DiagnosticLocation>> Program::Lease::debug_sites() const {
     std::vector<DiagnosticLocation> sites;
     sites.reserve(version->debug->tables->sites.size());
     for (const auto index : version->debug->tables->sites) {
-        if (index >= version->debug->locations->size())
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Compiled debug site has no source location."});
         sites.push_back((*version->debug->locations)[index]);
     }
     return sites;
@@ -950,29 +968,7 @@ Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scala
     if (!version)
         return std::unexpected(reject_invocation(
             diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
-    auto activation = ExecutionScope::enter(*version->contract->binding.runtime);
-    if (!activation)
-        return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
-    auto capture = DiagnosticAccess::begin(diagnostics, version->diagnostic, *version->contract->binding.runtime,
-                                           version->info.diagnostics);
-    if (!capture)
-        return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
-    DiagnosticScope scope(std::move(*capture), *version->contract->binding.runtime);
-    auto session = DebugAccess::begin(debugger, version->debug, version->info.debugging);
-    if (!session)
-        return scope.complete(Result<Coroutine>{std::unexpected(std::move(session.error()))});
-    DebugScope debug_scope(std::move(*session));
-    auto result = [&]() -> Result<Coroutine> {
-        const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
-        if (!encoded.status)
-            return std::unexpected(encoded.status.error());
-        return ProgramAccess::start_version(version, receiver, encoded.values, {}, scope.state(), debug_scope.state());
-    }();
-    if (!result)
-        return scope.complete(debug_scope.complete(std::move(result)));
-    scope.transfer(DiagnosticStatus::ready);
-    debug_scope.transfer(DebugStatus::ready);
-    return result;
+    return Version::start_values(version, receiver, arguments, diagnostics, debugger);
 }
 
 Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
@@ -981,29 +977,7 @@ Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scala
     if (!version)
         return std::unexpected(
             reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
-    auto activation = ExecutionScope::enter(*version->contract->binding.runtime);
-    if (!activation)
-        return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
-    auto capture = DiagnosticAccess::begin(diagnostics, version->diagnostic, *version->contract->binding.runtime,
-                                           version->info.diagnostics);
-    if (!capture)
-        return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
-    DiagnosticScope scope(std::move(*capture), *version->contract->binding.runtime);
-    auto session = DebugAccess::begin(debugger, version->debug, version->info.debugging);
-    if (!session)
-        return scope.complete(Result<Coroutine>{std::unexpected(std::move(session.error()))});
-    DebugScope debug_scope(std::move(*session));
-    auto result = [&]() -> Result<Coroutine> {
-        const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
-        if (!encoded.status)
-            return std::unexpected(encoded.status.error());
-        return ProgramAccess::start_version(version, receiver, encoded.values, {}, scope.state(), debug_scope.state());
-    }();
-    if (!result)
-        return scope.complete(debug_scope.complete(std::move(result)));
-    scope.transfer(DiagnosticStatus::ready);
-    debug_scope.transfer(DebugStatus::ready);
-    return result;
+    return Version::start_values(version, receiver, arguments, diagnostics, debugger);
 }
 
 Program::Program(Runtime& runtime, TypeId type)

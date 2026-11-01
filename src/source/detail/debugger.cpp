@@ -50,7 +50,7 @@ class SnapshotBuilder {
     }
 
     DiagnosticLocation location(std::uint32_t index) {
-        if (!metadata_.locations || index >= metadata_.locations->size())
+        if (index >= metadata_.locations->size())
             return {};
         const auto& original = (*metadata_.locations)[index];
         return {text(original.function), source_location(original.source)};
@@ -304,10 +304,6 @@ public:
             auto& output = result_.frames.emplace_back();
             output.activation_id = frame->activation;
             output.location = location(frame->location);
-            if (frame->function >= metadata_.tables->functions.size()) {
-                result_.truncated = true;
-                continue;
-            }
             const auto& variables = metadata_.tables->functions[frame->function].variables;
             for (std::size_t i = 0; i < variables.size(); ++i) {
                 if (values_ == options_.max_values || !frame->locals) {
@@ -319,8 +315,7 @@ public:
         }
         if (invocation_.failed) {
             result_.error = Error{invocation_.error_code, text(invocation_.error)};
-            if (invocation_.debug_top && metadata_.locations &&
-                invocation_.debug_top->location < metadata_.locations->size())
+            if (invocation_.debug_top && invocation_.debug_top->location < metadata_.locations->size())
                 result_.error->source = source_location((*metadata_.locations)[invocation_.debug_top->location].source);
         }
         return std::move(result_);
@@ -355,13 +350,8 @@ std::uint32_t debug_enter(void* context, BusinessDebugFrame* frame) noexcept {
     const auto& state = invocation.debugger;
     if (!state || !state->active)
         return 0;
-    if (!frame || !state->metadata || !state->metadata->tables ||
-        frame->function >= state->metadata->tables->functions.size()) {
+    if (!frame || frame->function >= state->metadata->tables->functions.size()) {
         invocation.fail(ErrorCode::invalid_definition, "Generated debug frame has invalid metadata.");
-        return 1;
-    }
-    if (invocation.next_debug_activation == std::numeric_limits<std::uint64_t>::max()) {
-        invocation.fail(ErrorCode::capacity_exceeded, "Debug activation identities are exhausted.");
         return 1;
     }
     frame->previous = invocation.debug_top;
@@ -391,8 +381,7 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
     } else if (invocation.failed || invocation.debug_aborted)
         return 1;
     try {
-        if (!frame || frame != invocation.debug_top || !state->metadata || !state->metadata->locations ||
-            location >= state->metadata->locations->size()) {
+        if (!frame || frame != invocation.debug_top || location >= state->metadata->locations->size()) {
             invocation.fail(ErrorCode::invalid_definition,
                             "Generated debug point has invalid frame or source metadata.");
             return 1;
@@ -420,10 +409,6 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
         }
         if (!reason || !state->handler || state->handler_failed)
             return point == DebugPoint::error ? 1 : 0;
-        if (state->next_stop_id == std::numeric_limits<std::uint64_t>::max()) {
-            invocation.fail(ErrorCode::capacity_exceeded, "Debug stop identities are exhausted.");
-            return 1;
-        }
         auto inspection = ExecutionInspection::enter(invocation.runtime);
         if (!inspection) {
             state->handler_failed = true;

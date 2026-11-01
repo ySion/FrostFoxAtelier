@@ -61,8 +61,6 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     for (const auto site : tables->sites)
         if (site >= info.location_count)
             throw std::runtime_error("Compiled debug site has no source location.");
-    std::sort(tables->sites.begin(), tables->sites.end());
-    tables->sites.erase(std::unique(tables->sites.begin(), tables->sites.end()), tables->sites.end());
     return tables;
 }
 
@@ -110,9 +108,6 @@ DebugAccess::begin(Debugger* debugger, const std::shared_ptr<const DebugMetadata
     for (const auto& breakpoint : state->breakpoints) {
         bool bound = false;
         for (const auto site : state->metadata->tables->sites) {
-            if (site >= locations.size())
-                return std::unexpected(
-                    Error{ErrorCode::invalid_definition, "Compiled debug site has no mapped source location."});
             const auto& source = locations[site].source;
             if (source.path == breakpoint.path && source.version == breakpoint.source_version &&
                 source.line == breakpoint.line && (breakpoint.column == 0 || source.column == breakpoint.column)) {
