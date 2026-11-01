@@ -161,6 +161,8 @@ Scene 统一写出 v10：顶层 `materials` 按文档 ID 保存具名资产引�
 
 ## 持久格式与责任
 
+本节记录现行格式与加载行为；已裁定的跨模块规则只见[持久化格式规则](../../persistence.md)。下述额外宽容、占位与恢复行为尚待产品审查，本次规则同步没有修改这些实现。
+
 - Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 只读写 `version: 10`，其他版本拒绝。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。float 字段写成能读回同一 float 的十进制，通常是最短形式（`0.2f` 写作 `0.2`，不写成扩为 double 后的 `0.20000000298023224`），double 字段写成 double 的最短表示；Scene 与材质文件共用这一写法。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene v10 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。

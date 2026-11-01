@@ -1,5 +1,7 @@
 # 项目类型、场景与运行会话
 
+本页描述现行 Scene 实现。跨模块的已裁定规则见[持久化格式规则](../../persistence.md)；下述额外宽容加载与原生基类占位仍是待另审的产品候选，不能视为符合新规则或已经完成清理。
+
 ## 准备与所有权
 
 `editor::Session::Prepare` 在 Session 注册 World/Physics 类型并构造 World 后、创建首个对象前调用一次，用于准备项目 Source 类型、Program 和生命周期入口，并返回代码拥有者。Session 保持代码存活至 World 完成 End；Runtime 最后销毁。失败候选沿相同 RAII 清理。
