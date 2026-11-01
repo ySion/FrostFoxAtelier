@@ -9,6 +9,23 @@
 
 namespace atelier::world::detail {
 
+// Translate only the invocation. Callers retain their guards and failure policy.
+template <class Call>
+std::optional<Error> callback_error(Call&& call, const char* exhausted, const char* unknown) {
+    try {
+        auto result = call();
+        if (!result)
+            return result.error();
+    } catch (const std::bad_alloc&) {
+        return Error{ErrorCode::capacity_exceeded, exhausted};
+    } catch (const std::exception& exception) {
+        return Error{ErrorCode::invocation_failed, exception.what()};
+    } catch (...) {
+        return Error{ErrorCode::invocation_failed, unknown};
+    }
+    return {};
+}
+
 struct WorldLifetime {
     bool open{true};
 };

@@ -485,18 +485,9 @@ std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     const auto invoke = [&](const LifecycleObserver& callback) {
         if (!callback)
             return;
-        std::optional<Error> error;
-        try {
-            auto result = callback(world, event, object);
-            if (!result)
-                error = result.error();
-        } catch (const std::bad_alloc&) {
-            error = Error{ErrorCode::capacity_exceeded, "World lifecycle observer ran out of memory."};
-        } catch (const std::exception& exception) {
-            error = Error{ErrorCode::invocation_failed, exception.what()};
-        } catch (...) {
-            error = Error{ErrorCode::invocation_failed, "World lifecycle observer threw an unknown exception."};
-        }
+        auto error = detail::callback_error([&] { return callback(world, event, object); },
+                                            "World lifecycle observer ran out of memory.",
+                                            "World lifecycle observer threw an unknown exception.");
         if (error && !contain(*error, DiagnosticKind::observer_failed, DiagnosticPhase::lifecycle, object, owner()) &&
             !failure)
             failure = std::move(error);

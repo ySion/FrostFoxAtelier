@@ -118,21 +118,12 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
     if (!execution)
         return execution.error();
     detail::DispatchScope dispatch{dispatch_depth};
-    try {
-        if (item.behavior) {
-            const auto& callback = beginning ? item.behavior->begin : item.behavior->end;
-            if (callback) {
-                auto result = callback(runtime, item.object);
-                if (!result)
-                    return result.error();
-            }
-        }
-    } catch (const std::bad_alloc&) {
-        return Error{ErrorCode::capacity_exceeded, "World object lifecycle callback ran out of memory."};
-    } catch (const std::exception& exception) {
-        return Error{ErrorCode::invocation_failed, exception.what()};
-    } catch (...) {
-        return Error{ErrorCode::invocation_failed, "World object lifecycle callback threw an unknown exception."};
+    if (item.behavior) {
+        const auto& callback = beginning ? item.behavior->begin : item.behavior->end;
+        if (callback)
+            return detail::callback_error([&] { return callback(runtime, item.object); },
+                                          "World object lifecycle callback ran out of memory.",
+                                          "World object lifecycle callback threw an unknown exception.");
     }
     return {};
 }
@@ -507,18 +498,9 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
             const auto& tick = phase == TickPhase::pre_physics    ? item.behavior->tick
                                : phase == TickPhase::post_physics ? item.behavior->post_physics_tick
                                                                   : item.behavior->late_tick;
-            std::optional<Error> error;
-            try {
-                auto invoked = tick(runtime, object, amount);
-                if (!invoked)
-                    error = invoked.error();
-            } catch (const std::bad_alloc&) {
-                error = Error{ErrorCode::capacity_exceeded, "World object Tick ran out of memory."};
-            } catch (const std::exception& exception) {
-                error = Error{ErrorCode::invocation_failed, exception.what()};
-            } catch (...) {
-                error = Error{ErrorCode::invocation_failed, "World object Tick threw an unknown exception."};
-            }
+            auto error = detail::callback_error([&] { return tick(runtime, object, amount); },
+                                                "World object Tick ran out of memory.",
+                                                "World object Tick threw an unknown exception.");
             if (!error)
                 continue;
             if (!contain(*error, DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) {
@@ -598,18 +580,9 @@ Result<void> World::update(float amount) {
             return {};
         if (std::ranges::none_of(state.simulations, [&](const auto& entry) { return entry.simulation == system; }))
             continue;
-        std::optional<Error> failure;
-        try {
-            auto stepped = system->step(amount);
-            if (!stepped)
-                failure = stepped.error();
-        } catch (const std::bad_alloc&) {
-            failure = Error{ErrorCode::capacity_exceeded, "World simulation step ran out of memory."};
-        } catch (const std::exception& exception) {
-            failure = Error{ErrorCode::invocation_failed, exception.what()};
-        } catch (...) {
-            failure = Error{ErrorCode::invocation_failed, "World simulation step threw an unknown exception."};
-        }
+        auto failure =
+            detail::callback_error([&] { return system->step(amount); }, "World simulation step ran out of memory.",
+                                   "World simulation step threw an unknown exception.");
         if (failure)
             return fail(std::move(*failure));
     }
