@@ -203,7 +203,7 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 
 本地历史保存插入/删除片段及前后选区，避免每次编辑复制整份文字；连续同类插入、连续Backspace或连续Delete可合组，导航/选择/pointer/快捷键/平台操作断组，无计时阈值。cut、paste和每次IME确认各占一组。undo+redo总计最多64组、历史UTF-16文字最多64KiB；淘汰最老完整组，original独立保留保证Esc可恢复。text_edit为4096码元、number为64码元；超长插入、孤立代理项、控制字符或换行整笔拒绝。
 
-索引为UTF-16码元，编辑端点来自系统ICU的extended grapheme边界。DirectWrite同一layout负责点命中、带视觉affinity的caret和`HitTestTextRange`多矩形选择，不能用两个x表示双向选区。Windows SDK的`icu.h/icu.lib`仅为UI私有依赖，不新建文字渲染器或系统控件镜像。既有验收环境报告ICU 72.1、Unicode 15.1；覆盖非BMP代理对、组合重音、variation selector、明确ZWJ序列和双向混排。正式消费者每次运行输出实际 ICU/Unicode 版本，不据历史结果宣称所有版本与字体均已验收。一手依据：[Windows ICU](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)、[ICU边界分析](https://unicode-org.github.io/icu/userguide/boundaryanalysis/)。
+索引为UTF-16码元，编辑端点来自系统ICU的extended grapheme边界。DirectWrite同一layout负责点命中、带视觉affinity的caret和`HitTestTextRange`多矩形选择，不能用两个x表示双向选区。Windows SDK的`icu.h/icu.lib`仅为UI私有依赖，不新建文字渲染器或系统控件镜像。历史验收环境报告ICU 72.1、Unicode 15.1，曾覆盖非BMP代理对、组合重音、variation selector、明确ZWJ序列和双向混排；当前消费者不再保留这些矩阵，也不据历史结果宣称所有版本与字体均已验收。一手依据：[Windows ICU](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)、[ICU边界分析](https://unicode-org.github.io/icu/userguide/boundaryanalysis/)。
 
 ## 剪贴板、组合与平台位置
 
@@ -219,7 +219,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 本轮只支持[IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition)实测需要的`dwCharPos=0`；Window把bounds左上和clip转换成屏幕坐标，填[IMECHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition)的pt、cLineHeight和rcDocument。其他offset或无有效快照明确返回0，不夹到offset0，也不以显示caret冒充起点；没有预建逐字符坐标数组。此合同修复本身不证明真实输入法的组合链已经通过。
 
-UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败和过期边界；真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。S2 的历史环境与限制见[编辑器集成记录](../editor/README.md#s2-集成状态与输入法验收)；2026-10-01 参数控件增量已重跑双配置真实搜狗，结果见[本轮验收](../../research/houdini-controls-20261001.md#参数控件复刻增量验收)，不扩展到其他输入法。
+历史UI验收中的组合事件与剪贴板结果采用生产协议注入，当前消费者不再保留失败和过期边界矩阵。真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。S2 的历史环境与限制见[编辑器集成记录](../editor/README.md#s2-集成状态与输入法验收)；2026-10-01 参数控件增量已重跑双配置真实搜狗，结果见[本轮验收](../../research/houdini-controls-20261001.md#参数控件复刻增量验收)，不扩展到其他输入法。
 
 ## CPU绘制与文字寿命
 
@@ -241,15 +241,19 @@ UI验收中的组合事件与剪贴板结果是生产协议注入，用于失败
 
 ## 限额与验收
 
-正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。当前源码包含 27 组场景，数量以[消费者的 cases 列表](../../../acceptance/ui/main.cpp)为准。2026-10-17 Dev/Release 均为 **27/27**，新增的两组完整树同步场景覆盖身份/草稿保持、结构失败恢复及大量兄弟节点写入范围，日志与布局核心结果见[完整树批次验收](../ui-layout/acceptance.md#完整树批次增量)。本次没有运行原生窗口/GPU 验收。
+正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。[消费者的 cases 列表](../../../acceptance/ui/main.cpp)包含 4 组场景，承载以下 5 个代表，不创建原生窗口或 GPU 设备：
+
+- K6：移除并重用控件 key，Session 析构后旧帧仍拥有文字 Coverage；释放最后一帧后弱引用过期。
+- K6：真实 Session/TextStore 析构后，旧帧的 DirectWrite 段落仍能查询输入文字 `ABCDEFGHIJKLMN` 的第三个字符位置。
+- K4：一张半透明红到透明的渐变图；输入 alpha 为 128/255，独立 sRGB 编码公式推出首端红色 188、alpha 128，末端 alpha 0。
+- K3：高 100 DIP 的列表，底部布局边距 3 与样式边距 20，滚至末尾后尾行底部为 `(100−3−20)×1.5=115.5` 物理像素。
+- K3：固定 640×480、DPI 1.5 的右下角 Tooltip，显示边界位于输入客户区以内；等待只用于到达显示态，不检验延迟合同。
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
-正式消费者使用真实 Session、LayoutDocument 和 DirectWrite，覆盖文字/样式/接受帧寿命、DPI 与失败恢复、稀疏更新、编辑历史及 Unicode、剪贴板/组合协议、树/表格、按钮与菜单行为，以及单行标签省略。交互状态查询回归位于同目标的[文字编辑场景](../../../acceptance/ui/text_edit.inl)。检查在 Dev/Release 中均有效；组合协议注入不算真实系统输入法通过。
+正式消费者使用真实 Session、LayoutDocument 和 DirectWrite，检查在 Dev/Release 中均有效。撤销重做由 Editor 验收负责；基础层不重复保留历史、普通交互、错误/拒绝、计数、规模与参数矩阵。菜单形状指纹和产品输出互比不作为独立真值；产品协议与功能不因验收缩减而改变。
 
-Tooltip 验收覆盖延迟、禁用行继承、接受帧父链、取消后的候选、长说明裁剪、DPI、缓存和输入清理；共享菜单覆盖 checkbox/radio 标记以及 Popup 表单的文本、数值、滑条和限于弹窗内的 Tab 导航；树视图覆盖 Esc、失焦与失去捕获后的 `drag_cancel`。
-
-历史 S1 的 256 行/96 DIP 窗口首屏栅格化 4 行、裁剪 252 行，滚尾再返回累计栅格化 8 行；S2 的 4096 宽字符/100 DIP 字段保持完整编辑，覆盖率宽度不超过 100 像素。这些是固定场景证据。正式窗口、搜索业务及本机搜狗真实输入的范围见[编辑器端到端验收](../editor/README.md)，不从 UI 协议场景推断其他系统输入法已通过。
+历史 S1 的 256 行/96 DIP 窗口首屏栅格化 4 行、裁剪 252 行，滚尾再返回累计栅格化 8 行；S2 的 4096 宽字符/100 DIP 字段保持完整编辑，覆盖率宽度不超过 100 像素。这些是固定历史证据，不是当前保留用例。正式窗口、搜索业务及本机搜狗真实输入的范围见[编辑器端到端验收](../editor/README.md)，不从 UI 协议场景推断其他系统输入法已通过。
 
 模块、renderer及正式编辑器使用同一源码树和项目固定工具链构建；阶段验收范围与证据见[SS文档](style-sheets.md#验收)。
 
