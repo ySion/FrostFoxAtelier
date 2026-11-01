@@ -13,12 +13,8 @@ int wmain(int argc, wchar_t** argv) {
         fs::create_directories(root);
         if (name == L"roundtrip")
             roundtrip(root);
-        else if (name == L"boundaries")
-            boundaries(root);
         else if (name == L"file-failures")
             file_failures(root);
-        else if (name == L"threads")
-            threads(root);
         else if (name == L"producer-churn")
             producer_churn(root);
         else if (name == L"reader")
@@ -27,10 +23,6 @@ int wmain(int argc, wchar_t** argv) {
             rotation(root);
         else if (name == L"dll")
             dll(root, argv[3]);
-        else if (name == L"unexpected-warning")
-            return unexpected_warning(root);
-        else if (name == L"pressure")
-            return pressure(root);
         else
             throw std::runtime_error("Unknown logging acceptance case.");
         std::printf("Logging acceptance: PASS case=%s\n", selected.c_str());

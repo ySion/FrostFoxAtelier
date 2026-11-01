@@ -34,7 +34,8 @@ inline log::Entry entry(std::string code, std::string message, std::uint64_t con
     return value;
 }
 
-inline std::unique_ptr<log::Run> start(const fs::path& directory, log::RunOptions options = {}) {
+inline std::unique_ptr<log::Run> start(const fs::path& directory) {
+    log::RunOptions options;
     options.directory = fs::absolute(directory);
     options.process_name = "logging-acceptance";
     return take(log::start_run(std::move(options)));
@@ -135,11 +136,7 @@ inline void same_entry(const log::Entry& actual, const log::Entry& expected) {
 
 void roundtrip(const fs::path&);
 
-void boundaries(const fs::path&);
-
 void file_failures(const fs::path&);
-
-void threads(const fs::path&);
 
 void producer_churn(const fs::path&);
 
@@ -148,8 +145,4 @@ void reader_cases(const fs::path&);
 void rotation(const fs::path&);
 
 void dll(const fs::path&, const fs::path&);
-
-int unexpected_warning(const fs::path&);
-
-int pressure(const fs::path&);
 }

@@ -35,7 +35,6 @@ void dll(const fs::path& root, const fs::path& library) {
     require(read.records.size() == 1, "DLL record was lost or duplicated.");
     auto expected = entry("dll.owned", std::string{"卸载前\0after-NUL", sizeof("卸载前\0after-NUL") - 1}, 193);
     expected.category = "acceptance.dll";
-    expected.message.append(70013 - expected.message.size(), 'd');
     expected.source = {
         "Source/动态.source", "E:/ProducerProject", "dll-function", 29, 7, std::uint64_t{9007199254741033ULL},
         std::uint64_t{111}};

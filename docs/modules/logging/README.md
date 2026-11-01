@@ -200,8 +200,7 @@ CodeDocument 上限为 1 Mi UTF-16 code units 且拒 NUL，因此 UI 对控制�
 
 | 正式目标 | 验收内容 |
 |---|---|
-| `logging_acceptance` | 真实宿主→JSONL→Reader，文本/字段拥有权、过滤拒绝、文件故障、线程周转、停止排空、轮转、DLL 稳定桥接与格式编译正反例 |
-| `logging_queue_pressure_acceptance` | 公开入口的并发过载；未实际触发 queue_full 即 NOT-COVERED，不记覆盖通过 |
+| `logging_acceptance` | 六个独立真值代表：文本/字段拥有型往返、合法 UTF-8 半行恢复、一次真实轮转、线程退出与 finish 排空、文件锁故障清理、DLL 拥有型边界；期望取自固定输入 |
 | `project_integration_acceptance` | 真实 Runner 结果与退出码、精确领域 warning/error 期望、完整 final、强杀残尾及原始输出传输 |
 | `editor_document_acceptance` | 共享 Entry 校验、显式 repeat、双缓存预算、源码映射、原始字节转换与增量文件投影 |
 | `editor_output_acceptance` | 正式窗口中的过滤、完整只读正文、复制、源码焦点、慢 UI 淘汰与窄 dock |

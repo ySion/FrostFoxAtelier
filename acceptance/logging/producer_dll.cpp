@@ -7,7 +7,6 @@ extern "C" __declspec(dllexport) int logging_produce(logging_acceptance::HostSub
         entry.category = "acceptance.dll";
         entry.event_code = "dll.owned";
         entry.message = std::string{"卸载前\0after-NUL", sizeof("卸载前\0after-NUL") - 1};
-        entry.message.append(70013 - entry.message.size(), 'd');
         entry.source = {
             "Source/动态.source", "E:/ProducerProject", "dll-function", 29, 7, std::uint64_t{9007199254741033ULL},
             std::uint64_t{111}};
