@@ -269,15 +269,15 @@ void verify_declarative_parameters() {
             "ToolShelf's Source node statistics did not account for the complete shelf subtree.");
     struct ShelfIdentity {
         ui::ControlKey target, key;
-        editor::CommandGroup group;
+        editor::MenuGroup group;
     };
     std::vector<ShelfIdentity> tools;
-    for (const auto& definition : editor::command_definitions) {
-        if (definition.group != editor::CommandGroup::create && definition.group != editor::CommandGroup::view)
+    for (const auto& definition : editor::menu_bindings) {
+        if (definition.group != editor::MenuGroup::create && definition.group != editor::MenuGroup::view)
             continue;
-        if (definition.group == editor::CommandGroup::view && definition.shelf_title.empty())
+        if (definition.group == editor::MenuGroup::view && definition.shelf_title.empty())
             continue;
-        const auto target = static_cast<ui::ControlKey>(definition.id);
+        const auto target = workspace.operator_control(definition.call);
         const auto tool = std::ranges::find(controls, target, &ui::Control::action_target);
         require(tool != controls.end() && std::ranges::count(controls, target, &ui::Control::action_target) == 1 &&
                     in_shelf(tool->key) && tool->key != target,
@@ -289,8 +289,8 @@ void verify_declarative_parameters() {
         publish();
         for (const auto& tool : tools) {
             const auto item = std::ranges::find(controls, tool.key, &ui::Control::key);
-            const bool visible = tool.group == (page == editor::control::shelf_create ? editor::CommandGroup::create
-                                                                                      : editor::CommandGroup::view);
+            const bool visible = tool.group == (page == editor::control::shelf_create ? editor::MenuGroup::create
+                                                                                      : editor::MenuGroup::view);
             require(item != controls.end() && item->action_target == tool.target &&
                         (ui.presented()->find(tool.key) != nullptr) == visible,
                     "Shelf category switching recreated its tools or published a hidden category.");
@@ -453,7 +453,7 @@ void verify_declarative_parameters() {
     const auto restored_x = workspace.field_control(other_root, document.parameters()[0].path);
     require(restored_x && restored_x != other_x && ui.presented()->find(restored_x),
             "Restoring World membership failed to rebind the selected Entity with fresh field keys.");
-    changed(document.erase_selected());
+    changed(document.erase_entities(document.selected_entities()));
     publish();
     require(!ui.presented()->find(restored_x), "Deleting the selected Entity kept a live field route.");
     // Exercise the remaining editor regions through the real authoring file,

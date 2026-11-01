@@ -11,7 +11,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(assets::wide(output_directory));
     std::filesystem::create_directories(output);
     tick(app);
-    require(bool(Access::command(app, editor::Command::create_static_mesh)), "Surface scene creation failed.");
+    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Surface scene creation failed.");
     tick(app);
     const auto point = [&](ui::ControlKey key) {
         const auto* control = app.presented()->find(key);
@@ -64,7 +64,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         pointer(ui::EventKind::pointer_down, p);
         pointer(ui::EventKind::pointer_up, p);
         tick(app, 1);
-        require(app.menu_frame() && app.menu_frame()->find(control::exit),
+        require(app.menu_frame() && app.menu_frame()->find(Access::operator_item(app, "app.quit")),
                 "Retained File menu lost its visible root after measurement surface invalidation.");
         require(retained == app.menu_window(), "Menu remeasurement replaced the native popup.");
         escape();
@@ -202,8 +202,8 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         const auto members = model(app.document().world().members()).size();
         constexpr unsigned created = 120; // Stays below Session's 128 undo entries so undo removes them all.
         for (unsigned i = 0; i < created; ++i)
-            require(bool(Access::command(app, editor::Command::create_entity)), "Scene Tree population failed.");
-        require(bool(Access::command(app, editor::Command::show_entities)), "Scene Tree did not open.");
+            require(bool(Access::invoke(app, "scene.add", {{"kind", "entity"}})), "Scene Tree population failed.");
+        require(bool(Access::invoke(app, "layout.show", {{"tab", "scene_tree"}})), "Scene Tree did not open.");
         tick(app, 2);
         const auto missing = [&] {
             const auto viewport = Access::tree_viewport(app, control::entity_tree);
@@ -224,17 +224,17 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             return absent;
         };
         require(missing() == 0, "Docked Scene Tree omitted a visible row.");
-        require(bool(Access::command(app, editor::Command::maximize_pane)), "Scene Tree did not maximize.");
+        require(bool(Access::invoke(app, "layout.maximize")), "Scene Tree did not maximize.");
         tick(app, 1);
         report << "tree_rows_missing_first_grown_frame," << missing() << '\n';
         report.flush();
         tick(app, 1);
         require(missing() == 0, "Scene Tree did not complete its rows on the frame after growing.");
-        require(bool(Access::command(app, editor::Command::maximize_pane)), "Scene Tree did not restore.");
+        require(bool(Access::invoke(app, "layout.maximize")), "Scene Tree did not restore.");
         tick(app, 2);
         require(missing() == 0, "Restored Scene Tree omitted a visible row.");
         for (unsigned i = 0; i < created; ++i)
-            require(bool(Access::command(app, editor::Command::undo)), "Scene Tree population did not undo.");
+            require(bool(Access::invoke(app, "edit.undo")), "Scene Tree population did not undo.");
         require(model(app.document().world().members()).size() == members,
                 "Undoing Scene Tree population left Entities behind.");
         model(Access::select_entity(app, selected));
@@ -378,7 +378,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             report.flush();
         }
     require(app.document().undo_count() == history, "Camera gestures entered scene history.");
-    require(bool(Access::command(app, editor::Command::show_world_settings)), "Lighting page command failed.");
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Lighting page command failed.");
     tick(app, 1);
     capture(app, output / "world-lighting.png");
     const auto press_tab = [&](ui::ControlKey key) {
@@ -483,7 +483,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     tick(app, 1);
     require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0] == 10 && control_reply().at("status") == "ok",
             "Closing Lighting committed a pending number or kept Control busy.");
-    require(bool(Access::command(app, editor::Command::show_world_settings)), "Lighting page did not reopen.");
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Lighting page did not reopen.");
     tick(app, 1);
     const auto slot = point(editor::world_control::slot);
     pointer(ui::EventKind::pointer_down, slot);
@@ -499,7 +499,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             "World controls did not commit exactly one scene history entry.");
     report << "lighting,preview-cancel-commit-close-slot-switch,passed\n";
     report.flush();
-    require(bool(Access::command(app, editor::Command::show_parameters)), "Parameters did not reopen.");
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "parameters"}})), "Parameters did not reopen.");
     tick(app, 1);
     const auto entity = app.document().selection().entity;
     const auto position_key = property_control(app, entity, 0);

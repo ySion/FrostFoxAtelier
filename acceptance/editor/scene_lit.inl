@@ -141,12 +141,12 @@ void verify_environment_sky_application() {
     lighting.sky_intensity = .1f;
     const auto history = document.undo_count();
     take(document.select(entity));
-    require(!document.add_component(document.presentation_types().environment_component) &&
+    require(!document.add_component(entity, document.presentation_types().environment_component) &&
                 document.undo_count() == history,
             "A second Environment was accepted on the same Entity.");
     changed(document.add_entity());
     const auto other = document.selection().entity;
-    require(!document.add_component(document.presentation_types().environment_component),
+    require(!document.add_component(other, document.presentation_types().environment_component),
             "A second Environment was accepted in the World.");
     changed(sky_world->set_enabled(environment, false));
     require(sky(document) == dark, "A disabled Environment kept its sky.");
@@ -160,7 +160,7 @@ void verify_environment_sky_application() {
             "A disabled Environment accepted a World Settings edit or did not name the fix.");
     require(!document.set_sky_map({}) && document.undo_count() == disabled_history,
             "A disabled Environment accepted a sky map.");
-    require(!document.add_component(document.presentation_types().environment_component),
+    require(!document.add_component(other, document.presentation_types().environment_component),
             "A disabled Environment did not keep the only Environment slot.");
     changed(sky_world->set_enabled(environment, true));
     changed(sky_world->set_enabled(entity, false));
@@ -171,7 +171,7 @@ void verify_environment_sky_application() {
     require(sky(document) == radiance && take(document.presentation().environment()) == lighting,
             "A re-enabled Environment did not restore its sky or kept a refused edit.");
     take(document.select(other));
-    changed(document.erase_selected());
+    changed(document.erase_entities(document.selected_entities()));
     take(snapshot.refresh(document));
     changed(document.create_light(presentation::LightKind::point));
     const auto point = component(document, document.selection().entity, document.presentation_types().light_component);
@@ -261,7 +261,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto folder = std::filesystem::current_path() / "out/scene-lit-application-evidence" /
                         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project = take(Project::create(folder));
-    Session document;
+    Session document({}, SessionRole::editor);
     auto& runtime = document.world().runtime();
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto mesh_entity = document.selection().entity;
@@ -414,7 +414,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     take(snapshot.refresh(*reopened));
     require(snapshot.identity != identity, "Document replacement reused the previous renderer history domain.");
 
-    Workspace workspace;
+    operator_parameters::Host host(document);
+    auto& workspace = host.panels;
     const std::array fonts{(asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
     const auto theme = ui::StyleSheet::parse(take(assets::read_file(asset_directory() / "editor.ss")));
@@ -468,50 +469,53 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     require(has_text(L"Illuminance (lux)") && !has_text(L"Range (m)"),
             "Directional parameters exposed a local light range.");
     const auto history = document.undo_count();
-    require(take(workspace.apply_view(document, {ui::ActionKind::activate, control::shading_scene_lit, {}})) &&
+    require(take(workspace.apply_view(document, host, {ui::ActionKind::activate, control::shading_scene_lit, {}})) &&
                 workspace.view.shading == renderer::Shading::scene_lit,
             "The formal display command did not select Scene Lit.");
-    require(!take(workspace.apply_view(document, {ui::ActionKind::activate, control::guide_background, true})) &&
+    require(!take(workspace.apply_view(document, host, {ui::ActionKind::activate, control::guide_background, true})) &&
                 workspace.view.background == renderer::Background::gradient,
             "Scene Lit can enable a studio gradient or destroys the stored studio preference.");
     const auto antialiasing = workspace.view.lit.antialiasing;
     constexpr std::array effects{ViewOption::shadows, ViewOption::ddgi, ViewOption::gtao, ViewOption::sssr,
                                  ViewOption::bloom};
     for (const auto effect : effects) {
-        require(take(workspace.apply_view(document, {ui::ActionKind::activate, world_control::field(effect), false})),
-                "Scene Lit effect toggle was not routed.");
-        require(take(workspace.apply_view(document, {ui::ActionKind::activate, world_control::field(effect), false})),
-                "Repeated Scene Lit toggle was rejected.");
+        require(
+            take(workspace.apply_view(document, host, {ui::ActionKind::activate, world_control::field(effect), false})),
+            "Scene Lit effect toggle was not routed.");
+        require(
+            take(workspace.apply_view(document, host, {ui::ActionKind::activate, world_control::field(effect), false})),
+            "Repeated Scene Lit toggle was rejected.");
     }
     require(!workspace.view.lit.shadows && !workspace.view.lit.ddgi && !workspace.view.lit.gtao &&
                 !workspace.view.lit.sssr && !workspace.view.lit.bloom &&
                 workspace.view.lit.antialiasing == antialiasing,
             "Scene Lit effect toggles were coupled, changed AA policy or were non-idempotent.");
-    require(take(workspace.apply_view(document,
+    require(take(workspace.apply_view(document, host,
                                       {ui::ActionKind::activate, world_control::field(ViewOption::gtao), true})) &&
                 workspace.view.lit.gtao && !workspace.view.lit.sssr && !workspace.view.lit.bloom,
             "Enabling GTAO did not change only GTAO through the formal view action.");
-    require(take(workspace.apply_view(document,
+    require(take(workspace.apply_view(document, host,
                                       {ui::ActionKind::activate, world_control::field(ViewOption::gtao), false})) &&
                 !workspace.view.lit.gtao && document.undo_count() > history,
             "Disabling GTAO enabled another effect or did not enter scene history.");
     for (std::uint64_t i = 0; i < 4; ++i) {
-        require(take(workspace.apply_view(document,
+        require(
+            take(workspace.apply_view(document, host,
+                                      {ui::ActionKind::activate,
+                                       world_control::choice(ViewOption::antialiasing, static_cast<unsigned>(i)),
+                                       {}})) &&
+                take(workspace.apply_view(document, host,
                                           {ui::ActionKind::activate,
                                            world_control::choice(ViewOption::antialiasing, static_cast<unsigned>(i)),
                                            {}})) &&
-                    take(workspace.apply_view(
-                        document, {ui::ActionKind::activate,
-                                   world_control::choice(ViewOption::antialiasing, static_cast<unsigned>(i)),
-                                   {}})) &&
-                    workspace.view.lit.antialiasing == static_cast<renderer::Antialiasing>(i) &&
-                    document.undo_count() > history,
-                "World AA choices did not route through scene history.");
+                workspace.view.lit.antialiasing == static_cast<renderer::Antialiasing>(i) &&
+                document.undo_count() > history,
+            "World AA choices did not route through scene history.");
     }
     const auto set_world_number = [&](ViewOption option, double value) {
         const auto key = world_control::field(option);
-        take(workspace.apply_view(document, {ui::ActionKind::edit_begin, key, {}}));
-        require(take(workspace.apply_view(document, {ui::ActionKind::edit_commit, key, value})),
+        take(workspace.apply_view(document, host, {ui::ActionKind::edit_begin, key, {}}));
+        require(take(workspace.apply_view(document, host, {ui::ActionKind::edit_commit, key, value})),
                 "World numeric setting was not routed.");
     };
     set_world_number(ViewOption::exposure_ev, 2);
@@ -549,7 +553,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         const auto old_view = workspace.view;
         const auto revision = workspace.view_revision();
         const auto edit = [&](ui::ActionKind kind, ui::ControlKey key, double value = 0) {
-            return workspace.apply_view(document, {kind, key, value});
+            return workspace.apply_view(document, host, {kind, key, value});
         };
         take(edit(ui::ActionKind::edit_begin, count0));
         take(edit(ui::ActionKind::edit_preview, count0, 10));
@@ -573,7 +577,7 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
                     workspace.view == before_invalid && !workspace.lighting.editing(),
                 "Invalid bounds left a partial publication or live draft.");
         take(edit(ui::ActionKind::edit_begin, count0));
-        take(workspace.apply_view(document, {ui::ActionKind::activate, world_control::slot_first + 1, {}}));
+        take(workspace.apply_view(document, host, {ui::ActionKind::activate, world_control::slot_first + 1, {}}));
         publish();
         take(edit(ui::ActionKind::edit_commit, count0, 12));
         take(edit(ui::ActionKind::edit_begin, count0));
@@ -664,11 +668,11 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         require(position != schema.end() && position->label == "Position (m)" && position->category == "Transform",
                 "AFIELD metadata did not reach the real entity parameter schema.");
         const auto key = workspace.field_control(root, document.types().position_fields[0]);
-        take(workspace.apply_view(document, {ui::ActionKind::activate, control::group_categories, true}));
+        take(workspace.apply_view(document, host, {ui::ActionKind::activate, control::group_categories, true}));
         publish();
         require(has_text(L"Transform") && workspace.field_control(root, document.types().position_fields[0]) == key,
                 "Category grouping changed the property target or omitted reflected groups.");
-        take(workspace.apply_view(document, {ui::ActionKind::activate, control::group_components, true}));
+        take(workspace.apply_view(document, host, {ui::ActionKind::activate, control::group_components, true}));
         publish();
         require(workspace.field_control(root, document.types().position_fields[0]) == key,
                 "Component grouping lost field identity.");

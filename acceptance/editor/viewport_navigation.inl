@@ -36,17 +36,24 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
                     Access::camera_view(app) == camera,
                 "Background fly request changed desktop input ownership or the camera.");
     }
-    for (const auto command : editor::camera_commands) {
+    for (const auto [view, expected] :
+         std::array<std::pair<const char*, editor::CameraView>, 7>{{{"perspective", editor::CameraView::perspective},
+                                                                    {"top", editor::CameraView::top},
+                                                                    {"front", editor::CameraView::front},
+                                                                    {"right", editor::CameraView::right},
+                                                                    {"bottom", editor::CameraView::bottom},
+                                                                    {"back", editor::CameraView::back},
+                                                                    {"left", editor::CameraView::left}}}) {
         pointer(ui::EventKind::pointer_move, origin);
         key(VK_OEM_3);
         key(VK_OEM_3, true);
         tick(app, 3);
         require(Access::menu_open(app) && app.presented()->popup == control::viewport_pie,
                 "Accent-grave did not open the viewport axis pie.");
-        if (command == editor::Command::view_perspective)
+        if (expected == editor::CameraView::perspective)
             capture(app, output / "view-axis-pie.png");
-        click(centre(static_cast<ui::ControlKey>(command)));
-        require(!Access::menu_open(app) && Access::camera_mode(app) == *editor::camera_view_command(command),
+        click(centre(Access::operator_item(app, "view.axis", {{"view", view}})));
+        require(!Access::menu_open(app) && Access::camera_mode(app) == expected,
                 "Axis pie selected the wrong camera view or retained the menu.");
         for (const auto value : Access::camera_view(app))
             require(std::isfinite(value), "Axis camera produced a non-finite view basis.");
@@ -75,7 +82,7 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
         tick(app, 2);
         require(Access::camera_mode(app) == preset, "Ctrl+Numpad did not select the opposite axis view.");
     }
-    require(bool(Access::command(app, editor::Command::reset_camera)), "Camera reset failed.");
+    require(bool(Access::invoke(app, "view.reset")), "Camera reset failed.");
     tick(app, 2);
     const auto menu_point = [&](ui::ControlKey key, bool indicator) {
         const auto frame = app.menu_frame();
@@ -129,7 +136,7 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
     require(Access::scene_lit_view(app).cavity.ridge == 1, "Cavity ridge cleanup failed.");
     require(!app.presented()->find(control::viewport_fps), "FPS overlay was enabled by default.");
     click(centre(control::scene_guides));
-    click(menu_point(control::command_key(editor::Command::show_fps), true));
+    click(menu_point(Access::operator_item(app, "view.toggle", {{"option", "fps"}}), true));
     require(Access::menu_open(app) && app.presented()->find(control::viewport_fps),
             "FPS checkbox did not retain the menu and show the HUD.");
     key(VK_ESCAPE, false, false, ui::Key::escape);
@@ -150,7 +157,7 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
             "FPS HUD did not render as passive text inside the viewport.");
     capture(app, output / "viewport-fps.png");
     require(Access::fps_text(app).empty(), "Diagnostic readback contaminated the live FPS sample.");
-    require(bool(Access::command(app, editor::Command::show_fps)), "FPS command failed.");
+    require(bool(Access::invoke(app, "view.toggle", {{"option", "fps"}})), "FPS command failed.");
     tick(app, 2);
     require(!app.presented()->find(control::viewport_fps) && Access::fps_text(app).empty(),
             "Disabling FPS retained the overlay or sampler.");
@@ -186,7 +193,7 @@ void verify_viewport_fly(Application& app, const std::filesystem::path& output) 
     };
     const auto history = app.document().undo_count();
     const auto cursor = Access::cursor_position(app);
-    require(bool(Access::command(app, editor::Command::reset_camera)), "Fly camera setup failed.");
+    require(bool(Access::invoke(app, "view.reset")), "Fly camera setup failed.");
     tick(app, 2);
     const auto ordinary_mode_coverage = text_coverage(*app.presented(), control::viewport_hud);
     const auto ordinary_hint_coverage = text_coverage(*app.presented(), control::viewport_hint);
@@ -326,7 +333,7 @@ void verify_viewport_fly(Application& app, const std::filesystem::path& output) 
     require(GetCapture() != app.window() && Access::camera_view(app) == clicked &&
                 Access::cursor_position(app) == cursor,
             "Fly left-click confirmation changed the view or placed the scene cursor.");
-    require(bool(Access::command(app, editor::Command::reset_camera)), "Post-fly camera reset failed.");
+    require(bool(Access::invoke(app, "view.reset")), "Post-fly camera reset failed.");
     tick(app, 2);
     require(app.document().undo_count() == history && Access::cursor_position(app) == cursor,
             "Fly navigation changed scene history or placed the 3D cursor.");

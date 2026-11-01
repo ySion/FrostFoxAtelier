@@ -34,7 +34,7 @@ void verify_pane_handles(Application& app, const std::filesystem::path& output, 
     click_outer(DockSpace::collapse_second_button(vertical), true);
     require(!app.presented()->find(field) && app.presented()->find(control::viewport), "Collapse second side failed.");
     // Showing a registered view must reveal all its collapsed ancestors.
-    click(app, control::show_parameters);
+    click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
     require(app.presented()->find(field) && app.presented()->find(parameters)->bounds == parameter_bounds,
             "Show Parameters did not reveal a collapsed ancestor.");
     click_outer(DockSpace::divider_grip(horizontal), true);
@@ -66,7 +66,7 @@ void verify_docking(Application& app, const std::filesystem::path& output, ateli
     SetWindowPos(app.window(), nullptr, 0, 0, static_cast<int>(1280 * dpi), static_cast<int>(840 * dpi),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     tick(app, 3);
-    click(app, control::reset_layout);
+    click(app, operator_item(app, "layout.reset"));
     const auto field = property_control(app, entity, 0);
     const auto value = x(app, entity);
     const auto history = app.document().undo_count();
@@ -178,7 +178,7 @@ void verify_docking(Application& app, const std::filesystem::path& output, ateli
     key(app, VK_ESCAPE);
     key(app, 'Z', true);
     require(app.control_workbench().values().position[0] == 0, "Reopened sample could not undo its edit.");
-    click(app, control::reset_layout);
+    click(app, operator_item(app, "layout.reset"));
     require(app.presented()->find(control::viewport) && app.presented()->find(field) && !app.workbench_visible() &&
                 app.document().undo_count() == history,
             "Default layout restoration changed document state.");
@@ -190,7 +190,7 @@ void verify_docking(Application& app, const std::filesystem::path& output, ateli
     }
     require(!app.presented()->find(control::viewport) && !app.presented()->find(field),
             "Closing the final pane left stale content.");
-    click(app, control::reset_layout);
+    click(app, operator_item(app, "layout.reset"));
     require(app.presented()->find(field) && app.presented()->find(control::viewport),
             "Empty workspace could not restore its views.");
 }

@@ -1,5 +1,7 @@
 #include "editor/operators.hpp"
 #include "editor/properties.hpp"
+#include "editor/project.hpp"
+#include "assets/builtin_materials.hpp"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -15,43 +17,48 @@ Error invalid(std::string message) {
 Error rejected(std::string message) {
     return Error{ErrorCode::argument_mismatch, std::move(message)};
 }
-// A live value of an operator's parameter record in owned, aligned storage.
+// A live parameter or result record in owned, aligned storage.
 class Parameters {
 public:
-    Parameters(Runtime& runtime, TypeId type, std::span<std::byte> bytes, std::align_val_t alignment) noexcept
-        : runtime(runtime), type(type), bytes(bytes), alignment(alignment) {}
+    Parameters(Runtime& runtime, TypeId type, const TypeInfo& info)
+        : runtime(runtime), type(type), alignment{info.alignment},
+          bytes{static_cast<std::byte*>(::operator new(info.size, alignment)), info.size} {}
     Parameters(const Parameters&) = delete;
     Parameters& operator=(const Parameters&) = delete;
     ~Parameters() {
-        (void)runtime.destroy_value(type, bytes);
+        root.reset();
+        if (initialized)
+            (void)runtime.destroy_value(type, bytes);
         ::operator delete(bytes.data(), alignment);
     }
     Runtime& runtime;
     const TypeId type;
-    const std::span<std::byte> bytes;
     const std::align_val_t alignment;
+    const std::span<std::byte> bytes;
+    bool initialized{};
+    ValueRoot root;
 };
-// Default-constructed parameters of `op`, resolved by name in this document's Runtime.
-Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, const OperatorInfo& op) {
-    const auto type = runtime.find_type(op.parameters);
+// Default-constructed record, resolved by name in this document's Runtime.
+Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, std::string_view name) {
+    const auto type = runtime.find_type(name);
     if (!type)
-        return std::unexpected(
-            invalid("Operator " + op.id + " takes " + op.parameters + ", which this document does not publish."));
+        return std::unexpected(invalid("This document does not publish operator record " + std::string(name)));
     const auto info = runtime.describe(*type);
     if (!info)
         return std::unexpected(info.error());
     if ((*info)->kind != TypeKind::record)
-        return std::unexpected(invalid("Operator parameters must be a record: " + op.parameters));
-    // Rooting references inside parameter values arrives with the first reference parameter.
-    if ((*info)->contains_references)
-        return std::unexpected(invalid("Operator parameters cannot hold references yet: " + op.parameters));
-    const std::align_val_t alignment{(*info)->alignment};
-    const std::span bytes{static_cast<std::byte*>(::operator new((*info)->size, alignment)), (*info)->size};
-    if (auto ready = runtime.initialize_value(*type, bytes); !ready) {
-        ::operator delete(bytes.data(), alignment);
+        return std::unexpected(invalid("Operator parameters and results must be records: " + std::string(name)));
+    auto value = std::make_unique<Parameters>(runtime, *type, **info);
+    if (auto ready = runtime.initialize_value(*type, value->bytes); !ready)
         return std::unexpected(ready.error());
+    value->initialized = true;
+    if ((*info)->contains_references) {
+        auto root = runtime.root_value(*type, value->bytes);
+        if (!root)
+            return std::unexpected(root.error());
+        value->root = std::move(*root);
     }
-    return std::make_unique<Parameters>(runtime, *type, bytes, alignment);
+    return value;
 }
 bool valid_id(std::string_view id) {
     const auto dot = id.find('.');
@@ -67,6 +74,13 @@ bool valid_id(std::string_view id) {
     return part(id.substr(0, dot)) && part(id.substr(dot + 1));
 }
 Result<void> admit(const Context& context, const ContextOverride& changes) {
+    if (changes.asset && !changes.asset->empty() && context.document.loaded_material(*changes.asset) == ObjectId{} &&
+        !(context.project && context.project->entry(*changes.asset)) &&
+        std::ranges::find(assets::mesh_assets(), *changes.asset, &assets::MeshAsset::key) ==
+            assets::mesh_assets().end() &&
+        std::ranges::find(assets::material_assets(), *changes.asset, &assets::MaterialAsset::key) ==
+            assets::material_assets().end())
+        return std::unexpected(rejected("Context asset is not in the document or its asset catalogue."));
     if (!changes.selection)
         return {};
     const auto& selection = *changes.selection;
@@ -145,8 +159,26 @@ const OperatorInfo* OperatorRegistry::find(std::string_view id) const noexcept {
     const auto found = std::ranges::find(operators_, id, &OperatorInfo::id);
     return found == operators_.end() ? nullptr : &*found;
 }
+Result<std::optional<bool>> operator_state(const OperatorInfo& info, const Context& context,
+                                           const assets::json_format::Json& args) {
+    if (!info.state)
+        return std::optional<bool>{};
+    if (info.parameters.empty())
+        return info.state(context, {});
+    auto& runtime = context.document.world().runtime();
+    auto value = parameters(runtime, info.parameters);
+    if (!value)
+        return std::unexpected(value.error());
+    if (info.seed)
+        if (auto seeded = info.seed(context, {(*value)->type, (*value)->bytes.data()}); !seeded)
+            return std::unexpected(seeded.error());
+    if (auto decoded = decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, args, {}); !decoded)
+        return std::unexpected(decoded.error());
+    return info.state(context, {(*value)->type, (*value)->bytes.data()});
+}
 Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host, const Context& base,
-                            const OperatorCall& request) {
+                            const OperatorCall& request, const ResolveReference& resolve) {
+    host.begin_operator();
     const auto* info = registry.find(request.id);
     if (!info)
         return std::unexpected(rejected("Unknown operator: " + request.id));
@@ -161,36 +193,99 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         context.selection = *request.context.selection;
     if (request.context.region)
         context.region = *request.context.region;
+    if (request.context.asset)
+        context.asset = *request.context.asset;
     if (auto available = info->poll(context); !available)
-        return OperatorReport{OperatorStatus::unavailable, available.error().message};
+        return OperatorReport{OperatorStatus::failed, available.error().message};
     // A replacing operator only files a host request, so the Session stays valid here.
     auto& document = context.document;
+    auto& runtime = document.world().runtime();
     std::unique_ptr<Parameters> value;
-    if (!info->parameters.empty()) {
-        auto& runtime = document.world().runtime();
-        auto made = parameters(runtime, *info);
+    std::vector<PropertyPatch> patch;
+    if (info->parameters == "@context.object") {
+        const auto object = context.selection.object;
+        const auto type = runtime.type_of(object);
+        if (!type)
+            return std::unexpected(type.error());
+        const auto entity = runtime.is_a(*type, document.types().entity);
+        if (!entity)
+            return std::unexpected(entity.error());
+        // Reject even empty Transform records before ending the host's interaction.
+        // Inherited field identity, not its spelling, distinguishes Transform from business fields.
+        if (*entity)
+            for (const auto& [name, _] : request.args.items()) {
+                const auto field = runtime.find_field(*type, name);
+                if (field && (*field == document.types().position_fields.front().front() ||
+                              *field == document.types().rotation_fields.front().front() ||
+                              *field == document.types().scale_fields.front().front()))
+                    return std::unexpected(rejected("Transform fields require scene.transform_set/clear/remove."));
+            }
+        const auto decoded =
+            decode_properties(runtime, PropertyTarget{*type, object}, request.args, {},
+                              [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
+                                  const auto* scalar = std::get_if<Scalar>(&leaf);
+                                  if (!scalar)
+                                      return std::unexpected(rejected("A property patch supports Scalar leaves only."));
+                                  patch.push_back({{path.begin(), path.end()}, *scalar});
+                                  return {};
+                              });
+        if (!decoded)
+            return std::unexpected(decoded.error());
+    } else if (!info->parameters.empty()) {
+        auto made = parameters(runtime, info->parameters);
         if (!made)
             return std::unexpected(made.error());
         value = std::move(*made);
         if (info->seed)
             if (auto seeded = info->seed(context, ValueOutput{value->type, value->bytes.data()}); !seeded)
                 return std::unexpected(seeded.error());
-        if (auto decoded = decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args);
+        const ResolveReference reference = [&](const auto& json, TypeId type,
+                                               ValueForm form) -> std::optional<ObjectReference> {
+            if (json.is_null()) {
+                auto null = runtime.null_reference(type, form);
+                return null ? std::optional{*null} : std::nullopt;
+            }
+            return resolve ? resolve(json, type, form) : std::nullopt;
+        };
+        if (auto decoded =
+                decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args, reference);
             !decoded)
             return std::unexpected(decoded.error());
+    }
+    std::unique_ptr<Parameters> output;
+    if (!info->result.empty()) {
+        auto made = parameters(runtime, info->result);
+        if (!made)
+            return std::unexpected(made.error());
+        output = std::move(*made);
     }
     if (auto ended = host.end_interaction(); !ended)
         return std::unexpected(ended.error());
     const auto recorded = document.recorded(), undo = document.undo_count(), redo = document.redo_count();
     if (auto executed =
-            info->execute(host, context, value ? ValueInput{value->type, value->bytes.data()} : ValueInput{});
+            info->execute(host, context, {value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch},
+                          output ? ValueOutput{output->type, output->bytes.data()} : ValueOutput{});
         !executed)
         return std::unexpected(executed.error());
     if (auto violation = history_violation(*info, recorded, undo, redo, document.recorded(), document.undo_count(),
                                            document.redo_count());
         !violation.empty())
         return std::unexpected(invalid(std::move(violation)));
-    return OperatorReport{OperatorStatus::finished, {}};
+    if (host.operator_cancelled())
+        return OperatorReport{OperatorStatus::cancelled, {}};
+    OperatorReport report{OperatorStatus::finished, {}};
+    if (output) {
+        auto fields = detail::author_fields(runtime, output->type);
+        if (!fields)
+            return std::unexpected(fields.error());
+        if (std::ranges::any_of(*fields, [](const auto& field) { return field.form != ValueForm::inline_value; }))
+            return std::unexpected(invalid("Operator results cannot contain references."));
+        auto encoded = encode_properties(runtime, PropertyTarget{output->type, {}, output->bytes}, *fields, {});
+        if (!encoded)
+            return std::unexpected(encoded.error());
+        report.result = std::move(*encoded);
+    }
+    return report;
 }
 namespace {
 using assets::json_format::Json;
@@ -219,58 +314,71 @@ Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<F
         const auto leaf = runtime.describe(field.value.type);
         if (!leaf)
             return std::unexpected(leaf.error());
-        if (field.value.form != ValueForm::inline_value)
-            return std::unexpected(invalid("Operator parameters cannot hold references yet: " + field.name));
         path.push_back(field.id);
         Json schema;
-        switch ((*leaf)->kind) {
-        case TypeKind::record: {
-            auto nested = record_schema(value, field.value.type, path, defaults);
-            if (!nested)
-                return nested;
-            schema = std::move(*nested);
-            break;
-        }
-        case TypeKind::string: {
-            schema = {{"type", "string"}};
-            if (!defaults)
-                break;
-            String text;
-            if (auto read = runtime.read(value.type, value.bytes, path, ValueOutput{field.value.type, &text}); !read)
-                return std::unexpected(read.error());
-            schema["default"] = std::string(text.c_str(), text.size());
-            break;
-        }
-        case TypeKind::scalar:
-        case TypeKind::enumeration: {
-            const auto current = runtime.read(value.type, value.bytes, path);
-            if (!current)
-                return std::unexpected(current.error());
-            if ((*leaf)->enumeration) {
-                auto names = Json::array();
-                for (const auto& member : (*leaf)->enumeration->values)
-                    names.push_back(member.first);
-                schema = {{"enum", std::move(names)}};
-            } else {
-                const bool number = std::holds_alternative<float>(*current) || std::holds_alternative<double>(*current);
-                schema = {{"type", std::holds_alternative<bool>(*current) ? "boolean" : number ? "number" : "integer"}};
-            }
-            const auto bound = [&](const char* key, const std::optional<Scalar>& limit) {
-                if (limit)
-                    schema[key] = scalar_json(runtime, *limit);
-            };
-            bound("minimum", field.range.hard_min);
-            bound("maximum", field.range.hard_max);
-            bound("ui_min", field.range.ui_min);
-            bound("ui_max", field.range.ui_max);
+        if (field.value.form != ValueForm::inline_value) {
+            schema = {{"type", Json::array({"string", "null"})},
+                      {"reference", (*leaf)->name},
+                      {"weak", field.value.form == ValueForm::weak_reference}};
             if (defaults)
-                schema["default"] = scalar_json(runtime, *current);
-            break;
-        }
-        default:
-            return std::unexpected(
-                invalid("Operator parameters hold records, strings, scalars and enums only: " + field.name));
-        }
+                schema["default"] = nullptr;
+        } else
+            switch ((*leaf)->kind) {
+            case TypeKind::record: {
+                if (field.value.type == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{})) {
+                    schema = {{"type", "array"}, {"format", "material.entries"}, {"default", Json::array()}};
+                    break;
+                }
+                auto nested = record_schema(value, field.value.type, path, defaults);
+                if (!nested)
+                    return nested;
+                schema = std::move(*nested);
+                break;
+            }
+            case TypeKind::string: {
+                schema = {{"type", "string"}};
+                if (!defaults)
+                    break;
+                String text;
+                if (auto read = runtime.read(value.type, value.bytes, path, ValueOutput{field.value.type, &text});
+                    !read)
+                    return std::unexpected(read.error());
+                schema["default"] = std::string(text.c_str(), text.size());
+                break;
+            }
+            case TypeKind::scalar:
+            case TypeKind::enumeration: {
+                const auto current = runtime.read(value.type, value.bytes, path);
+                if (!current)
+                    return std::unexpected(current.error());
+                if ((*leaf)->enumeration) {
+                    auto names = Json::array();
+                    for (const auto& member : (*leaf)->enumeration->values)
+                        names.push_back(member.first);
+                    schema = {{"enum", std::move(names)}};
+                } else {
+                    const bool number =
+                        std::holds_alternative<float>(*current) || std::holds_alternative<double>(*current);
+                    schema = {{"type", std::holds_alternative<bool>(*current) ? "boolean"
+                                       : number                               ? "number"
+                                                                              : "integer"}};
+                }
+                const auto bound = [&](const char* key, const std::optional<Scalar>& limit) {
+                    if (limit)
+                        schema[key] = scalar_json(runtime, *limit);
+                };
+                bound("minimum", field.range.hard_min);
+                bound("maximum", field.range.hard_max);
+                bound("ui_min", field.range.ui_min);
+                bound("ui_max", field.range.ui_max);
+                if (defaults)
+                    schema["default"] = scalar_json(runtime, *current);
+                break;
+            }
+            default:
+                return std::unexpected(
+                    invalid("Operator parameters hold records, strings, scalars and enums only: " + field.name));
+            }
         path.pop_back();
         if (!field.description.empty())
             schema["description"] = field.description;
@@ -282,7 +390,9 @@ Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<F
 Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const OperatorInfo& op) {
     if (op.parameters.empty())
         return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
-    auto value = parameters(runtime, op);
+    if (op.parameters == "@context.object")
+        return Json{{"dynamic", "context.object"}};
+    auto value = parameters(runtime, op.parameters);
     if (!value)
         return std::unexpected(value.error());
     std::vector<FieldId> path;
@@ -292,6 +402,18 @@ Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const Opera
     (*schema)["title"] = op.parameters;
     if (op.seed)
         (*schema)["seeded"] = true;
+    return schema;
+}
+Result<assets::json_format::Json> result_schema(Runtime& runtime, const OperatorInfo& op) {
+    if (op.result.empty())
+        return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
+    auto value = parameters(runtime, op.result);
+    if (!value)
+        return std::unexpected(value.error());
+    std::vector<FieldId> path;
+    auto schema = record_schema(**value, (*value)->type, path, false);
+    if (schema)
+        (*schema)["title"] = op.result;
     return schema;
 }
 }

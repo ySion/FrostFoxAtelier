@@ -1,5 +1,6 @@
 #pragma once
 #include "editor/project.hpp"
+#include "editor/operators.hpp"
 #include "ui_language/live_document.hpp"
 #include "logging/logging.hpp"
 #include <chrono>
@@ -41,7 +42,8 @@ public:
     File* active() const noexcept;
     const std::vector<std::unique_ptr<File>>& files() const noexcept { return files_; }
     void poll(bool composing = false);
-    void append(std::vector<ui::Control>&, ui::ControlKey, ui_language::LiveDocument&, const Project* = nullptr,
+    void append(std::vector<ui::Control>&, ui::ControlKey, ui_language::LiveDocument&,
+                const std::function<ui_language::ActionBinding(OperatorCall)>&, const Project* = nullptr,
                 const ProjectBuild* = nullptr, bool running = false);
     std::vector<ui::MenuItem> menu_items() const;
     bool locate_problem();

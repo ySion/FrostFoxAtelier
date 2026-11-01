@@ -94,11 +94,6 @@ struct ViewOptionInfo {
 std::span<const ViewOptionInfo> view_options() noexcept;
 const ViewOptionInfo* view_option(ViewOption) noexcept;
 const ViewOptionInfo* view_option(std::string_view) noexcept;
-struct ViewOptionAlias {
-    std::string_view name;
-    ViewOption option;
-};
-std::span<const ViewOptionAlias> view_option_aliases() noexcept;
 bool world_option(ViewOption) noexcept;
 double view_value(const renderer::ViewSettings&, ViewOption) noexcept;
 // UI and control callers use the same typed operation. Callers applying batches

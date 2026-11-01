@@ -173,13 +173,6 @@ constexpr std::array options{
 #undef VFIELD
 #undef FIELD
 #undef ENUM
-#define ALIAS(id)                                                                                                      \
-    ViewOptionAlias {                                                                                                  \
-        "probe_" #id, probe_volume_option(0, ProbeVolumeField::id)                                                     \
-    }
-constexpr std::array aliases{ALIAS(min_x), ALIAS(min_y),   ALIAS(min_z),   ALIAS(max_x),  ALIAS(max_y),
-                             ALIAS(max_z), ALIAS(count_x), ALIAS(count_y), ALIAS(count_z)};
-#undef ALIAS
 constexpr bool volume_option(ViewOption option) {
     return option >= ViewOption::volume_first && option <= ViewOption::volume_last;
 }
@@ -204,9 +197,6 @@ bool world_option(ViewOption option) noexcept {
 std::span<const ViewOptionInfo> view_options() noexcept {
     return options;
 }
-std::span<const ViewOptionAlias> view_option_aliases() noexcept {
-    return aliases;
-}
 const ViewOptionInfo* view_option(ViewOption option) noexcept {
     const auto found = std::ranges::find(options, option, &ViewOptionInfo::option);
     return found == options.end() ? nullptr : &*found;
@@ -215,9 +205,6 @@ const ViewOptionInfo* view_option(std::string_view name) noexcept {
     for (const auto& value : options)
         if (value.name == name)
             return &value;
-    for (const auto& alias : aliases)
-        if (alias.name == name)
-            return view_option(alias.option);
     return nullptr;
 }
 double view_value(const renderer::ViewSettings& view, ViewOption option) noexcept {

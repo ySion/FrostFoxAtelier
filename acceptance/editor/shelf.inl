@@ -48,13 +48,13 @@ void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
         }
         return nullptr;
     };
-    const auto verify_commands = [&](atelier::editor::CommandGroup group) {
-        for (const auto& definition : atelier::editor::command_definitions) {
+    const auto verify_commands = [&](atelier::editor::MenuGroup group) {
+        for (const auto& definition : atelier::editor::menu_bindings) {
             // The shelf lists every Create command and the View commands that declare a shelf title.
-            if (definition.group != atelier::editor::CommandGroup::create &&
-                (definition.group != atelier::editor::CommandGroup::view || definition.shelf_title.empty()))
+            if (definition.group != atelier::editor::MenuGroup::create &&
+                (definition.group != atelier::editor::MenuGroup::view || definition.shelf_title.empty()))
                 continue;
-            const auto target = static_cast<ControlKey>(definition.id);
+            const auto target = Access::operator_item(app, definition.call.id, definition.call.args);
             const auto* current = shelf_tool(target);
             if ((current != nullptr) != (definition.group == group))
                 throw std::runtime_error("The presented shelf included a hidden category or omitted a tool: " +
@@ -71,16 +71,16 @@ void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
                 require(previous->second == current->key, "Changing shelf categories recreated a command control.");
         }
     };
-    verify_commands(atelier::editor::CommandGroup::create);
-    const auto* tool = command_tool(app, control::add_entity);
-    require(tool && tool->key != control::add_entity,
-            "DSL shelf command retained its command ID as the visual identity.");
+    verify_commands(atelier::editor::MenuGroup::create);
+    const auto add_entity = Access::operator_item(app, "scene.add", {{"kind", "entity"}});
+    const auto* tool = command_tool(app, add_entity);
+    require(tool && tool->key != add_entity, "DSL shelf command retained its command ID as the visual identity.");
     require(std::abs(shelf.height / dpi - 56) < .1f && std::abs(tool->bounds.width / dpi - 64) < .1f &&
                 tool->style->icon_placement == atelier::ui::IconPlacement::above && tool->style->font.size == 10.5f,
             "Tool shelf did not use the compact icon-over-caption layout.");
     // The icon and caption must both activate the same command exactly once.
     for (bool icon : {true, false}) {
-        const auto bounds = command_tool(app, control::add_entity)->bounds;
+        const auto bounds = command_tool(app, add_entity)->bounds;
         click_at(app, {static_cast<LONG>(bounds.x + bounds.width * .5f),
                        static_cast<LONG>(icon ? bounds.y + 10 * dpi : bounds.y + bounds.height - 6 * dpi)});
         require(entities(app).size() == members + 1 && app.document().undo_count() == history + 1,
@@ -88,7 +88,7 @@ void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
         require(app.presented()->find(control::parameter_list) && !app.presented()->find(control::position_fold) &&
                     !app.presented()->find(control::add_component),
                 "An empty Entity acquired spatial controls or parameter-side component commands.");
-        click(app, control::undo);
+        click(app, operator_item(app, "edit.undo"));
         click(app, app.object_control(selected));
         require(app.presented()->find(control::position_fold) &&
                     app.presented()->find(property_control(app, selected, 0)),
@@ -100,20 +100,21 @@ void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
     key(app, VK_END);
     require(app.presented()->find(control::shelf_view)->selected,
             "Shelf Tab/End did not enter and switch the category group.");
-    verify_commands(atelier::editor::CommandGroup::view);
+    verify_commands(atelier::editor::MenuGroup::view);
     key(app, VK_HOME);
     require(app.presented()->find(control::shelf_create)->selected, "Shelf Home did not select Create.");
-    verify_commands(atelier::editor::CommandGroup::create);
+    verify_commands(atelier::editor::MenuGroup::create);
     key(app, VK_RIGHT);
     require(app.presented()->find(control::shelf_view)->selected, "Shelf Right did not select View.");
     key(app, VK_LEFT);
     require(app.presented()->find(control::shelf_create)->selected, "Shelf Left did not select Create.");
     key(app, VK_END);
-    verify_commands(atelier::editor::CommandGroup::view);
+    verify_commands(atelier::editor::MenuGroup::view);
+    const auto focus = Access::operator_item(app, "view.frame_selected");
     click(app, control::shelf_handle);
     verify_stow_alignment(app);
     require(std::abs(app.presented()->find(control::shelf)->bounds.height / dpi - 12) < .1f &&
-                !app.presented()->find(control::shelf_tabs) && !command_tool(app, control::focus) &&
+                !app.presented()->find(control::shelf_tabs) && !command_tool(app, focus) &&
                 app.presented()->find(control::file_menu) && app.presented()->find(control::shelf_handle),
             "Stowing the shelf hid its restore handle, retained hidden commands, or changed the menubar.");
     require(std::abs(app.presented()->find(control::viewport)->bounds.y - viewport.y + 44 * dpi) < .1f,
@@ -121,12 +122,12 @@ void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
     capture(app, output / "shelf-collapsed.png");
     key(app, VK_SPACE);
     verify_stow_alignment(app);
-    require(app.presented()->find(control::shelf_view)->selected && command_tool(app, control::focus) &&
+    require(app.presented()->find(control::shelf_view)->selected && command_tool(app, focus) &&
                 app.presented()->find(control::shelf)->bounds == shelf,
             "Keyboard expansion lost the shelf category or dimensions.");
-    verify_commands(atelier::editor::CommandGroup::view);
+    verify_commands(atelier::editor::MenuGroup::view);
     click(app, control::shelf_create);
-    verify_commands(atelier::editor::CommandGroup::create);
+    verify_commands(atelier::editor::MenuGroup::create);
     // Properties share one scroll area. Selection and filtering retain the
     // document field identity without inventing fixed content-page choices.
     const auto field = property_control(app, selected, 0);

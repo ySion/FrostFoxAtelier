@@ -5,20 +5,20 @@ void verify_about(Application& app, std::wstring_view expected_project) {
     const auto history = app.document().undo_count();
     key(app, VK_F10);
     key(app, VK_LEFT);
-    if (!app.menu_frame() || !app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)))
+    if (!app.menu_frame() || !app.menu_frame()->find(Access::operator_item(app, "app.about")))
         atelier::application::EditorAcceptanceAccess::menu_failure(app, "F10/Left");
-    require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
+    require(app.menu_frame() && app.menu_frame()->find(Access::operator_item(app, "app.about")),
             "File/Help keyboard navigation did not wrap across the menu registry.");
     key(app, VK_RIGHT);
-    if (!app.menu_frame() || !app.menu_frame()->find(control::exit))
+    if (!app.menu_frame() || !app.menu_frame()->find(Access::operator_item(app, "app.quit")))
         atelier::application::EditorAcceptanceAccess::menu_failure(app, "Help/Right");
-    require(app.menu_frame() && app.menu_frame()->find(control::exit),
+    require(app.menu_frame() && app.menu_frame()->find(Access::operator_item(app, "app.quit")),
             "Help/File keyboard navigation did not wrap back.");
     key(app, VK_ESCAPE);
     click(app, control::help_menu);
-    if (!app.menu_frame() || !app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)))
+    if (!app.menu_frame() || !app.menu_frame()->find(Access::operator_item(app, "app.about")))
         atelier::application::EditorAcceptanceAccess::menu_failure(app, "Help click");
-    require(app.menu_frame() && app.menu_frame()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
+    require(app.menu_frame() && app.menu_frame()->find(Access::operator_item(app, "app.about")),
             "Help omitted the About command.");
     const auto accepted_menu_frame = app.menu_frame()->drawing->id;
     struct DialogLookup {
@@ -67,7 +67,7 @@ void verify_about(Application& app, std::wstring_view expected_project) {
     });
     {
         const ExpectedNativeDialogs expected;
-        click(app, static_cast<ControlKey>(atelier::editor::Command::about));
+        click(app, operator_item(app, "app.about"));
     }
     dismiss.request_stop();
     dismiss.join();
@@ -157,11 +157,12 @@ void verify_menu_input_transitions(Application& app) {
     tick(app, 1);
     require(entities(app).size() == member_count && app.document().undo_count() == history,
             "Menu switching executed a command from the retired dropdown before its replacement was accepted.");
-    require(app.menu_frame() && live_menu()->find(control::undo), "Menu switching lost the requested Edit dropdown.");
+    require(app.menu_frame() && live_menu()->find(Access::operator_item(app, "edit.undo")),
+            "Menu switching lost the requested Edit dropdown.");
     key(ui::Key::escape, VK_ESCAPE);
     require(!app.menu_window(), "Escape did not close the replacement menu.");
 
-    click_control(editor::menu_key(editor::CommandGroup::view));
+    click_control(editor::menu_key(editor::MenuGroup::view));
     key(ui::Key::home, VK_HOME);
     for (unsigned i = 0; i < 4; ++i)
         key(ui::Key::down, VK_DOWN);
@@ -169,7 +170,7 @@ void verify_menu_input_transitions(Application& app) {
     require(live_menu()->find(control::viewport_camera), "View menu is missing its Camera View branch.");
     key(ui::Key::right, VK_RIGHT);
     require(app.menu_window() != parent &&
-                live_menu()->find(static_cast<ControlKey>(editor::Command::view_perspective)),
+                live_menu()->find(Access::operator_item(app, "view.axis", {{"view", "perspective"}})),
             "Right from a top-level menu branch switched menu groups instead of opening its child.");
     key(ui::Key::escape, VK_ESCAPE);
     require(app.menu_window() == parent && live_menu()->find(control::viewport_camera),
@@ -178,7 +179,7 @@ void verify_menu_input_transitions(Application& app) {
     require(!app.menu_window(), "Escape did not close the View root menu.");
 
     click_control(control::viewport_select_menu);
-    click_control(static_cast<ControlKey>(editor::Command::select_box));
+    click_control(operator_item(app, "view.select_box"));
     require(!app.menu_window() && Access::tool_active(app) && GetCapture() == app.window(),
             "Closing the Select menu released the new Box Select tool's mouse capture.");
     const auto viewport = centre(app, control::viewport);
@@ -203,7 +204,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     };
     const auto closed_titles = [&] {
         require(!app.menu_window(), "Menu remained open after dismissal.");
-        for (const auto& group : atelier::editor::command_groups) {
+        for (const auto& group : atelier::editor::menu_groups) {
             const auto key = group.key;
             const auto* box = app.presented()->find(key);
             const auto& style = *box->style;
@@ -212,7 +213,8 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
                     "Closed menu title retained an active face from logical focus.");
         }
     };
-    require(app.presented()->find(control::file_menu) && !app.presented()->find(control::undo),
+    require(app.presented()->find(control::file_menu) &&
+                !app.presented()->find(Access::operator_item(app, "edit.undo")),
             "Main commands were not moved into the menubar.");
     const auto field = property_control(app, entity, 0);
     const auto pane = app.docking().pane(control::scene_tab);
@@ -231,13 +233,13 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     require(app.presented()->find(pane)->bounds == expanded, "Restoring the menubar changed the pane geometry.");
     click(app, control::menu_bar_handle);
     key(app, VK_F10);
-    require(app.presented()->find(control::file_menu) && app.menu_frame() && live_menu()->find(control::exit),
+    require(app.presented()->find(control::file_menu) && app.menu_frame() &&
+                live_menu()->find(Access::operator_item(app, "app.quit")),
             "F10 did not reveal the stowed menubar and open File.");
     key(app, VK_LEFT);
-    require(live_menu()->find(static_cast<ControlKey>(atelier::editor::Command::about)),
-            "Left from File did not wrap to Help.");
+    require(live_menu()->find(Access::operator_item(app, "app.about")), "Left from File did not wrap to Help.");
     key(app, VK_RIGHT);
-    require(live_menu()->find(control::exit), "Right from Help did not wrap to File.");
+    require(live_menu()->find(Access::operator_item(app, "app.quit")), "Right from Help did not wrap to File.");
     key(app, VK_ESCAPE);
     verify_about(app, L"No project open");
     closed_titles();
@@ -248,16 +250,10 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
         const auto original = x(app, entity);
         const auto before_history = app.document().undo_count();
         const auto from = centre(app, field);
-        auto physical = from;
-        ClientToScreen(app.window(), &physical);
-        require(SetCursorPos(physical.x, physical.y) != FALSE, "Cannot align menu-transition gesture.");
-        tick(app, 2);
-        SendMessageW(app.window(), middle ? WM_MBUTTONDOWN : WM_LBUTTONDOWN, middle ? MK_MBUTTON : MK_LBUTTON,
-                     MAKELPARAM(from.x, from.y));
+        mouse(app, middle ? WM_MBUTTONDOWN : WM_LBUTTONDOWN, from);
         const auto dx = static_cast<LONG>(std::lround(24 * dpi_before));
-        require(SetCursorPos(physical.x + dx, physical.y) != FALSE, "Cannot align menu-transition drag.");
-        SendMessageW(app.window(), WM_MOUSEMOVE, middle ? MK_MBUTTON : MK_LBUTTON, MAKELPARAM(from.x + dx, from.y));
-        tick(app, 2);
+        mouse(app, WM_MOUSEMOVE, {from.x + dx, from.y});
+        tick(app, 1);
         require(app.document().editing() && x(app, entity) != original,
                 "Menu-transition drag did not start an actual edit.");
         key(app, VK_F10);
@@ -280,7 +276,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     click(app, field);
     key(app, VK_ESCAPE);
     key(app, VK_F10);
-    require(app.menu_frame() && live_menu()->find(control::exit), "F10 did not open File.");
+    require(app.menu_frame() && live_menu()->find(Access::operator_item(app, "app.quit")), "F10 did not open File.");
     const auto native_popup = app.menu_window();
     key(app, VK_ESCAPE);
     const auto menu_pane = app.docking().pane(control::scene_tab);
@@ -309,12 +305,14 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
             "Dropdown is not an independently owned native popup window.");
     require(GetFocus() == app.window() && GetCapture() == app.window(), "Menu stole owner focus or lost capture.");
     key(app, VK_RIGHT);
-    require(live_menu()->find(control::undo), "Right arrow did not switch to Edit.");
+    require(live_menu()->find(Access::operator_item(app, "edit.undo")), "Right arrow did not switch to Edit.");
     key(app, VK_RIGHT);
-    require(live_menu()->find(control::add_entity) && app.menu_window() == native_popup,
+    require(live_menu()->find(Access::operator_item(app, "scene.add", {{"kind", "entity"}})) &&
+                app.menu_window() == native_popup,
             "Menu switching rebuilt its native host.");
     mouse(app, WM_MOUSEMOVE, centre(app, control::view_menu));
-    require(live_menu()->find(control::focus), "Menubar hover did not switch the open dropdown.");
+    require(live_menu()->find(Access::operator_item(app, "view.frame_selected")),
+            "Menubar hover did not switch the open dropdown.");
     atelier::renderer::Capture menu_pixels;
     app.capture_menu(menu_pixels);
     require(menu_pixels.extent.width > 0 && !menu_pixels.rgba.empty(), "Native menu did not render through the GPU.");
@@ -351,7 +349,8 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
         SendMessageW(app.window(), WM_SYSKEYUP, 'W', LPARAM{1} << 29);
         tick(app, 2);
     }
-    require(app.menu_frame() && live_menu()->find(control::reset_layout), "Alt+W did not open Window.");
+    require(app.menu_frame() && live_menu()->find(Access::operator_item(app, "layout.reset")),
+            "Alt+W did not open Window.");
     key(app, VK_ESCAPE);
     RECT previous{};
     GetWindowRect(app.window(), &previous);

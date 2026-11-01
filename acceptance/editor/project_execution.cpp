@@ -529,7 +529,8 @@ void run(const std::filesystem::path& root) {
         throw std::runtime_error("Initial project: " + loaded.error->message);
     auto& document = *loaded.session;
     complete(document.create_static_mesh(assets::mesh_assets().front()));
-    complete(document.add_component(take(document.world().runtime().find_type("project.Move"))));
+    complete(document.add_component(document.selection().entity,
+                                    take(document.world().runtime().find_type("project.Move"))));
     require(std::get<float>(field(document, "speed")) == 2 && std::get<bool>(field(document, "moving")),
             "Runtime did not initialize source field defaults.");
     const auto original = take(document.serialize());

@@ -94,6 +94,37 @@ void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> repo
         workspace_.status = L"Project build ready";
     // ProjectCode records the authoritative request/publication, not this UI projection.
 }
+Result<void> Application::apply_document_request(const editor::DocumentRequest& request) {
+    using Kind = editor::DocumentRequest::Kind;
+    close_menu(false);
+    if (request.kind == Kind::open_scene)
+        return open_scene(request.path, request.interactive);
+    if (request.kind == Kind::new_project || request.kind == Kind::open_project)
+        return open_project(request.path, request.kind == Kind::new_project, ProjectOpenPolicy::allow_repair, {},
+                            request.interactive);
+    if (request.rebuild) {
+        if (play_.running())
+            return failure("Stop the project before rebuilding its types.");
+        if (request.interactive && (document_->undo_count() || document_->redo_count()) &&
+            MessageBoxW(
+                window(),
+                L"Rebuild the scene with the new types?\n\nCurrent scene values and source documents will be kept. Scene Undo/Redo history will be cleared.",
+                L"Rebuild project types", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+            cancel_operator();
+            return {};
+        }
+        const auto edit = ui_.commit_edit();
+        if (!edit || !effects(*edit))
+            return failure("Finish the current edit before rebuilding types.");
+    }
+    for (const auto& file : workspace_.source_editor.files()) {
+        const auto relative = file->path.lexically_relative(project_->root());
+        if (file->dirty() && !relative.empty() && *relative.begin() == L"Source")
+            if (auto saved = save_source(*file, request.interactive); !saved)
+                return saved;
+    }
+    return build_project(request.rebuild);
+}
 Result<void> Application::build_project(bool rebuild) {
     if (!project_)
         return failure("Open a project folder first.");
@@ -251,45 +282,25 @@ Result<void> Application::preview_project_ui() {
     notice("play.preview_launched", L"Previewing " + project_->ui_source().generic_wstring());
     return {};
 }
-Result<void> Application::execution_command(editor::Command command) {
-    using enum editor::Command;
+void Application::stop_play(bool restart) {
     close_menu(false);
-    if (command == stop_project) {
-        this->stop_project();
-        return {};
-    }
-    if (command == restart_project) {
-        this->stop_project();
-        restart_play_ = true;
-        return {};
-    }
-    if (command == show_output) {
-        workspace_.dock.select(editor::control::output_tab);
-        return {};
-    }
-    if (command == rebuild_project) {
-        if ((document_->undo_count() || document_->redo_count()) &&
-            MessageBoxW(
-                window(),
-                L"Rebuild the scene with the new types?\n\nCurrent scene values and source documents will be kept. Scene Undo/Redo history will be cleared.",
-                L"Rebuild project types", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
-            return {};
-        const auto edit = ui_.commit_edit();
-        if (!edit || !effects(*edit))
-            return failure("Finish the current edit before rebuilding types.");
-    }
+    stop_project();
+    restart_play_ = restart;
+}
+Result<void> Application::start_play(bool preview_ui, bool interactive) {
+    close_menu(false);
     if (project_)
         for (const auto& file : workspace_.source_editor.files()) {
             const auto relative = file->path.lexically_relative(project_->root());
             if (file->dirty() && !relative.empty() && *relative.begin() == L"Source") {
-                auto saved = save_source(*file);
+                auto saved = save_source(*file, interactive);
                 if (!saved)
                     return saved;
             }
         }
-    if (command == show_project_ui)
+    if (preview_ui)
         return preview_project_ui();
-    return command == run_project ? this->run_project() : this->build_project(command == rebuild_project);
+    return this->run_project();
 }
 void Application::poll_project() {
     const bool was_running = play_.running();

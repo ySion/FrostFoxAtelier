@@ -1,7 +1,6 @@
 void verify_project_window(Application& app, const std::filesystem::path& output, bool existing = false) {
     namespace access = atelier::application;
     namespace browser = atelier::editor::browser_control;
-    using atelier::editor::Command;
     const auto has_resource = [&](ControlKey key) { return app.presented()->find(key) || row_table(app, key); };
     const auto selected_resource = [&](ControlKey key) {
         if (const auto* control = app.presented()->find(key))
@@ -16,13 +15,13 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         std::filesystem::remove_all(folder);
     std::filesystem::remove_all(moved);
     access::EditorAcceptanceAccess::mark_saved(app);
-    model(access::EditorAcceptanceAccess::command(app, existing ? Command::open_project : Command::new_project,
-                                                  atelier::assets::utf8(folder.wstring())));
+    model(Access::invoke(app, existing ? "project.open" : "project.new",
+                         {{"path", atelier::assets::utf8(folder.wstring())}}));
     tick(app, 4);
     const auto initial_count = entities(app).size();
     require((existing || initial_count == 0) && !app.document().dirty(),
             "Project did not publish its clean initial scene.");
-    click(app, control::add_static_mesh);
+    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
     const auto entity = app.document().selection().entity;
     const auto field = property_control(app, entity, 0);
     click(app, field);
@@ -48,7 +47,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         atelier::assets::MaterialAsset author;
         std::get<atelier::assets::MaterialInstanceAsset>(author.author).entries = {{"roughness", .25f, true}};
         const auto asset = model(project.create_material("Content/Materials/HistoryOwner.material", author));
-        model(Access::command(app, Command::refresh_assets));
+        model(Access::invoke(app, "asset.refresh"));
         auto& document = Access::physics_document(app);
         const auto mesh = component(app, current, document.presentation_types().static_mesh_component);
         model(document.assign_material(project, mesh, "slot/0", asset));
@@ -114,9 +113,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
             return std::get<float>(at->value);
         };
         click(app, app.object_control(current));
-        click(app, static_cast<ControlKey>(Command::show_structure));
+        click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
         click(app, Access::structure_control(app, mesh));
-        click(app, static_cast<ControlKey>(Command::show_parameters));
+        click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
         const auto field = Access::material_control(app, material, "roughness");
         require(field && roughness(material) == .25f, "Component Parameters did not expose the shared MI field");
         click(app, field);
@@ -135,7 +134,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         require(roughness(material) == .25f && document.undo_count() == history && model(document.serialize()) == scene,
                 "Inline shared MI Undo reached scene history instead of the edited material");
         click(app, control::edit_menu);
-        const auto* undo = app.menu_frame() ? app.menu_frame()->find(control::undo) : nullptr;
+        const auto* undo = app.menu_frame() ? app.menu_frame()->find(Access::operator_item(app, "edit.undo")) : nullptr;
         require(undo && !undo->enabled, "Empty inline MI history left the scene Undo menu enabled");
         key(app, VK_ESCAPE);
         key(app, 'Z', true);
@@ -161,7 +160,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         click(app, field);
         type(app, L"0.5");
         key(app, VK_RETURN);
-        click(app, static_cast<ControlKey>(Command::show_entities));
+        click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
         click(app, app.object_control(current));
         key(app, 'Z', true);
         require(document.undo_count() == history - 1 && document.name(current) != L"Scene history sentinel" &&
@@ -182,9 +181,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         require(x(app, current) == 9 && !document.dirty() && document.material_dirty(asset) &&
                     model(atelier::assets::read_file(folder / "Content/Scenes/Main.scene")) == scene_position,
                 "Scene-field Ctrl+S saved the old material target instead of the scene");
-        click(app, static_cast<ControlKey>(Command::show_structure));
+        click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
         click(app, Access::structure_control(app, mesh));
-        click(app, static_cast<ControlKey>(Command::show_parameters));
+        click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
         click(app, Access::material_control(app, material, "roughness"));
         key(app, VK_RETURN);
         key(app, 'Z', true);
@@ -218,7 +217,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         std::puts("Scene MI Undo/Redo/Save ownership: PASS");
         std::fflush(stdout);
     }
-    click(app, static_cast<ControlKey>(Command::show_entities));
+    click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
     click(app, app.object_control(current));
     // Restore the position framed by open_project before the remaining capture cases.
     click(app, property_control(app, current, 0));
@@ -319,7 +318,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     const auto selection_folder =
         std::filesystem::path{"Content"} / ("AcceptanceSelection-" + std::to_string(GetTickCount64()));
     std::filesystem::create_directories(folder / selection_folder);
-    model(access::EditorAcceptanceAccess::command(app, Command::refresh_assets));
+    model(Access::invoke(app, "asset.refresh"));
     tick(app, 2);
     const auto content_tree = access::EditorAcceptanceAccess::directory_key(app, "Content");
     const auto selected_tree = access::EditorAcceptanceAccess::directory_key(app, selection_folder);
@@ -367,13 +366,13 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     require(app.menu_frame() && app.menu_frame()->find(browser::open)->enabled,
             "A real table-row context menu lost its folder target.");
     require(std::filesystem::remove(folder / selection_folder), "Cannot remove the context-menu directory fixture.");
-    model(access::EditorAcceptanceAccess::command(app, Command::refresh_assets));
+    model(Access::invoke(app, "asset.refresh"));
     tick(app, 2);
     require(!app.menu_frame() && !has_resource(directory) && !action_enabled(browser::open) &&
                 entities(app).size() == initial_count + 1 && app.document().selection().entity == current,
             "A refreshed table retained a stale row menu or changed the scene.");
     std::filesystem::create_directories(folder / selection_folder);
-    model(access::EditorAcceptanceAccess::command(app, Command::refresh_assets));
+    model(Access::invoke(app, "asset.refresh"));
     tick(app, 2);
     click(app, directory);
     click(app, browser::open);
@@ -381,7 +380,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
             "Open did not enter the recreated directory.");
     require(std::filesystem::remove(folder / selection_folder),
             "Cannot remove the empty directory acceptance fixture.");
-    model(access::EditorAcceptanceAccess::command(app, Command::refresh_assets));
+    model(Access::invoke(app, "asset.refresh"));
     tick(app, 2);
     require(app.presented()->find(browser::project)->selected,
             "Refreshing a removed directory did not return to Project.");
@@ -389,8 +388,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     require(!action_enabled(browser::open), "Refreshing retained an executable removed directory.");
     const auto external = std::filesystem::absolute(output / "Imported.obj");
     model(atelier::editor::write_file(external, "v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n"));
-    model(
-        access::EditorAcceptanceAccess::command(app, Command::import_mesh, atelier::assets::utf8(external.wstring())));
+    model(Access::invoke(app, "asset.import", {{"kind", "mesh"}, {"path", atelier::assets::utf8(external.wstring())}}));
     tick(app, 3);
     require(app.presented()->find(access::EditorAcceptanceAccess::directory_key(app, "Content/Meshes"))->selected,
             "Import did not reveal the project's mesh folder.");
@@ -415,11 +413,11 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     require(x(app, imported_entity) == 2.5f && app.document().undo_count() == import_history + 1,
             "Imported Entity parameter edit did not create one document transaction.");
     click(app, app.object_control(imported_entity));
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(x(app, imported_entity) == 0, "Undo did not restore the imported Entity's position.");
-    click(app, control::redo);
+    click(app, operator_item(app, "edit.redo"));
     require(x(app, imported_entity) == 2.5f, "Redo did not restore the imported Entity's edit.");
-    click(app, control::focus);
+    click(app, operator_item(app, "view.frame_selected"));
     // Selected geometry keeps its orange edges even when the display overlay is off.
     click(app, control::tree_world);
     require(app.document().selection().entity == atelier::ObjectId{},
@@ -462,7 +460,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
                 model(app.document().serialize()) == display_document && app.document().undo_count() == display_history,
             "Wireframe changed selection or persistent project state.");
     choose(control::scene_shading, control::edges_first);
-    model(access::EditorAcceptanceAccess::command(app, Command::save_scene));
+    model(Access::invoke(app, "scene.save"));
     tick(app, 2);
     saved = app.document().serialize();
     require(saved.has_value(), "Cannot inspect the saved imported scene.");
@@ -477,10 +475,10 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     const auto metadata = folder / "Content/Meshes/Imported.obj.asset.json";
     const auto metadata_text = model(atelier::assets::read_file(metadata));
     model(atelier::editor::write_file(metadata, "{broken"));
-    model(access::EditorAcceptanceAccess::command(app, Command::create_entity));
+    model(Access::invoke(app, "scene.add", {{"kind", "entity"}}));
     saved = app.document().serialize();
     require(saved.has_value(), "Cannot inspect the modified scene.");
-    model(access::EditorAcceptanceAccess::command(app, Command::save_scene));
+    model(Access::invoke(app, "scene.save"));
     require(!app.document().dirty() && app.status_text().starts_with(L"Scene saved; asset refresh failed:") &&
                 model(atelier::assets::read_file(folder / "Content/Scenes/Main.scene")) == *saved,
             "A failed catalog refresh misreported or undid the successful scene save.");

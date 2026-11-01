@@ -46,6 +46,11 @@ using EncodeReference = std::function<assets::json_format::Json(ObjectId)>;
 [[nodiscard]] Result<assets::json_format::Json> encode_properties(Runtime&, ObjectId object,
                                                                   std::span<const detail::ScalarField> fields,
                                                                   const EncodeReference& reference);
+// The same encoder for a caller-owned parameter/result record. Array and sequence
+// fields are object-only, as in the Runtime's indexed read interface.
+[[nodiscard]] Result<assets::json_format::Json> encode_properties(Runtime&, const PropertyTarget&,
+                                                                  std::span<const detail::ScalarField> fields,
+                                                                  const EncodeReference& reference);
 
 // Strict decoding of a sparse properties record, through the same leaf decoder as scene loads.
 // An unknown field, a value of another type, a value outside a hard bound and a write the target

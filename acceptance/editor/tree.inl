@@ -42,7 +42,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
     key(app, VK_LEFT);
     require(!app.presented()->find(entity_key), "World collapse did not hide its Entities");
     key(app, 'W', true);
-    click(app, control::show_entities);
+    click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
     require(!row(control::tree_world).expanded && !app.presented()->find(entity_key),
             "Reopening Scene Tree lost its expansion state");
     click(app, control::tree_world);
@@ -54,7 +54,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
     const auto root =
         component_object(app.document(), entity, app.document().presentation_types().static_mesh_component);
     const auto members = model(atelier::world::components(app.document().world().runtime(), entity)).size();
-    click(app, static_cast<ControlKey>(atelier::editor::Command::show_structure));
+    click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
     const auto structure_entity = Access::structure_control(app, entity),
                structure_root = Access::structure_control(app, root);
     require(structure_entity && structure_root && child_of(structure_root, structure_entity) &&
@@ -119,7 +119,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
                     root,
             "Undoing structure creation changed the Entity's original root or composition.");
     capture(app, output / "entity-structure.png");
-    click(app, control::show_entities);
+    click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
     click(app, app.object_control(entity));
     const auto in_scene_tree = [&](ControlKey key) {
         while (const auto* box = app.presented()->find(key)) {
@@ -133,7 +133,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
     };
     require(!in_scene_tree(control::add_component) && row(entity_key).disclosure.width == 0,
             "Scene Tree acquired component structure or its add command from the independent Entity Structure pane.");
-    click(app, control::reset_layout);
+    click(app, operator_item(app, "layout.reset"));
     require(app.document().selection().entity == entity && app.document().undo_count() == history,
             "Tree navigation/filtering polluted scene history");
 }

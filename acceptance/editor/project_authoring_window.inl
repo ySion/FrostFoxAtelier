@@ -1,6 +1,5 @@
 void verify_project_authoring_window(Application& app, const std::filesystem::path& output) {
     using Access = atelier::application::EditorAcceptanceAccess;
-    using atelier::editor::Command;
     namespace source = atelier::editor::source_control;
     const auto folder = output / (L"Project-" + std::to_wstring(GetTickCount64()));
     Access::mark_saved(app);
@@ -20,11 +19,11 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
 )"));
     model(app.build_project(true));
     tick(app, 2);
-    click(app, control::add_static_mesh);
+    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
     const auto entity = app.document().selection().entity;
-    click(app, static_cast<ControlKey>(Command::show_parameters));
+    click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
     require(!app.presented()->find(control::add_component), "Parameters still exposes component creation.");
-    click(app, static_cast<ControlKey>(Command::show_structure));
+    click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
     click(app, control::add_component);
     const auto choice = Access::menu_item(app, L"project.Move");
     require(choice, "Project component was absent from Add Component.");
@@ -79,7 +78,7 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     key(app, 'Z', true);
     require(std::get<bool>(model(app.document().read_property(component, moving))),
             "Source checkbox undo did not restore its field.");
-    click(app, static_cast<ControlKey>(Command::save_scene));
+    click(app, operator_item(app, "scene.save"));
     const auto saved = model(atelier::assets::read_file(folder / "Content/Scenes/Main.scene"));
     const auto saved_history = app.document().undo_count();
     capture(app, output / "project-components.png");
@@ -164,9 +163,9 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
             wait([&] { return starts() == before_start + 1 && Access::project_running(app); },
                  "Restart fixture did not start its real Play process.");
             const auto before = launches();
-            // Use the existing command dispatcher without an intervening app
+            // Use the operator dispatcher without an intervening app
             // step: Stop/open must be able to cancel a queued restart before poll.
-            model(Access::command(app, Command::restart_project));
+            model(Access::invoke(app, "play.restart"));
             if (scenario == 1) {
                 app.stop_project();
                 app.stop_project();
@@ -214,29 +213,29 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     require(retained, "Reopening lost the Source component or its authored property.");
     capture(app, output / "project-reopened.png");
 
-    click(app, atelier::editor::menu_key(atelier::editor::CommandGroup::create));
-    click(app, static_cast<ControlKey>(Command::create_camera));
+    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::create));
+    click(app, operator_item(app, "scene.add", {{"kind", "camera"}}));
     const auto camera = app.document().selection().entity;
     require(model(app.document().main_camera()) == atelier::ObjectId{},
             "Create Camera implicitly selected a main camera.");
     model(Access::physics_document(app).set_transform(camera, {{0, 0, -8}, {}, {1, 1, 1}}));
     tick(app, 2);
-    click(app, atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
-    click(app, static_cast<ControlKey>(Command::set_main_camera));
+    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::edit));
+    click(app, operator_item(app, "scene.main_camera_set"));
     require(model(app.document().main_camera()) == camera, "Set as Main Camera did not select the authored camera.");
     const auto camera_history = app.document().undo_count();
     const auto camera_document = model(app.document().serialize());
-    click(app, atelier::editor::menu_key(atelier::editor::CommandGroup::window));
-    click(app, static_cast<ControlKey>(Command::show_scene));
+    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::window));
+    click(app, operator_item(app, "layout.show", {{"tab", "viewport"}}));
     click(app, control::viewport_camera);
-    click(app, static_cast<ControlKey>(Command::view_from_camera));
+    click(app, operator_item(app, "view.from_camera"));
     require(atelier::math::length(Access::camera_eye(app) - atelier::math::Vector3{0, 0, -8}) < .001f &&
                 app.document().undo_count() == camera_history && model(app.document().serialize()) == camera_document,
             "View from Camera changed the scene or failed to copy its pose.");
-    model(Access::command(app, Command::show_world_settings));
+    model(Access::invoke(app, "layout.show", {{"tab", "world"}}));
     tick(app, 2);
     click(app, atelier::editor::world_control::lighting_tab);
-    const auto* clear = command_tool(app, static_cast<ControlKey>(Command::clear_main_camera));
+    const auto* clear = command_tool(app, Access::operator_item(app, "scene.main_camera_clear"));
     require(clear && clear->enabled, "World Settings did not expose an enabled Clear Main Camera button.");
     const auto clear_key = clear->key;
     capture(app, output / "main-camera-selected.png");
@@ -244,7 +243,7 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     require(model(app.document().main_camera()) == atelier::ObjectId{} &&
                 app.document().undo_count() == camera_history + 1,
             "World Settings Clear did not create one author transaction.");
-    clear = command_tool(app, static_cast<ControlKey>(Command::clear_main_camera));
+    clear = command_tool(app, Access::operator_item(app, "scene.main_camera_clear"));
     require(clear && !clear->enabled, "Clear Main Camera remained enabled for an empty selection.");
     capture(app, output / "main-camera-cleared.png");
     key(app, 'Z', true);

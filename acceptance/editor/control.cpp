@@ -156,8 +156,8 @@ struct Driver {
         require(stable == 5, "The editor state token did not settle after start");
         return state;
     }
-    Json op(std::string id, Json context = Json::object()) {
-        return ok("op.call", {{"id", std::move(id)}, {"context", std::move(context)}});
+    Json op(std::string id, Json args = Json::object(), Json context = Json::object()) {
+        return ok("op.call", {{"id", std::move(id)}, {"args", std::move(args)}, {"context", std::move(context)}});
     }
     Json try_op(std::string id, Json args, Json context = Json::object()) {
         return call("op.call", {{"id", std::move(id)}, {"args", std::move(args)}, {"context", std::move(context)}});
@@ -208,7 +208,7 @@ void no_project_scene_material(Driver& d) {
     const auto initial = d.inspect();
     require(initial.at("project") == "" && initial.at("entities").empty(),
             "Scene MI fixture requires an empty no-project document");
-    d.ok("scene.create", {{"kind", "mesh"}, {"mesh", "builtin/cube"}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", "builtin/cube"}}}});
     const auto cube = d.inspect().at("entities").front();
     const auto component = cube.at("components").front().at("handle");
     std::cout << "No-project scene MI: create_scene on builtin cube\n" << std::flush;
@@ -234,8 +234,7 @@ void no_project_scene_material(Driver& d) {
     d.ok("material.assign", {{"component", component}, {"slot", "slot/0"}, {"asset", ""}});
     require(d.ok("editor.inspect", {{"detail", "object"}, {"object", component}}).at("object").at("materials").empty(),
             "Use Mesh Default did not clear the no-project scene binding");
-    error(d.call("material.create", {{"role", "instance"}, {"path", "Content/Materials/NeedsProject.material"}}),
-          "not_ready");
+    error(d.try_op("asset.new_material", {{"path", "Content/Materials/NeedsProject.material"}}), "poll_failed");
     const auto undo = d.inspect().at("undo").get<std::size_t>() - initial.at("undo").get<std::size_t>();
     for (std::size_t i = 0; i < undo; ++i)
         d.op("edit.undo");
@@ -260,7 +259,7 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
     require(read(empty / "manifest.json").at("material_resources") == Json{{"version", 1}, {"records", Json::object()}},
             "An empty repro omitted its current, empty material digest set");
     for (const auto* key : {"builtin/plane", "builtin/cube", "builtin/sphere"})
-        d.ok("scene.create", {{"kind", "mesh"}, {"mesh", key}});
+        d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", key}}}});
     const auto bundle = exported();
     const auto original = read(bundle / "manifest.json");
     const auto records = original.at("engine_assets").at("records");
@@ -293,10 +292,10 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
         d.op("edit.undo");
     d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
     const auto entity = d.inspect().at("entities")[0].at("handle").get<std::string>();
-    d.ok("scene.rename", {{"object", entity}, {"name", "Saved with history"}});
-    d.ok("scene.save");
-    d.op("scene.select", selection(entity));
-    d.ok("camera.look_at", {{"eye", {7, 4, -9}}, {"target", {1, 0, 2}}});
+    d.op("scene.rename", {{"name", "Saved with history"}}, selection(entity));
+    d.op("scene.save");
+    d.op("scene.select", Json::object(), selection(entity));
+    d.op("view.look_at", {{"eye", {{"x", 7}, {"y", 4}, {"z", -9}}}, {"target", {{"x", 1}, {"z", 2}}}});
     d.settle();
     const auto rejected_open = [&](std::string_view code) {
         const auto before = d.inspect();
@@ -433,11 +432,13 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
     // Only the referenced, published draft belongs to the frozen document.
     const auto project = root / "EngineDraftProject";
     project_fixture(project);
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
-    const auto used =
-        d.ok("material.create", {{"path", "Content/Materials/Used.material"}, {"role", "instance"}}).at("asset");
-    const auto cached =
-        d.ok("material.create", {{"path", "Content/Materials/Cached.material"}, {"role", "instance"}}).at("asset");
+    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto used = d.op("asset.new_material", {{"path", "Content/Materials/Used.material"}}, {{"asset", ""}})
+                          .at("result")
+                          .at("asset");
+    const auto cached = d.op("asset.new_material", {{"path", "Content/Materials/Cached.material"}}, {{"asset", ""}})
+                            .at("result")
+                            .at("asset");
     for (const auto* name : {"Used", "Cached"}) {
         const auto file = project / "Content/Materials" / (std::string(name) + ".material");
         auto value = read(file);
@@ -447,15 +448,15 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                                          {"value", {{"asset_key", "builtin/unknown"}, {"address", "repeat"}}}}});
         write(file, value.dump(2));
     }
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     d.ok("material.inspect", {{"asset", cached}});
     const auto loaded = d.ok("material.inspect", {{"asset", used}});
     require(material_issue(loaded, "builtin/unknown"),
             "Unknown-engine draft fixture did not retain its missing texture diagnostic");
-    d.ok("scene.create", {{"kind", "mesh"}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}});
     const auto component = d.inspect().at("entities")[0].at("components")[0].at("handle");
     d.ok("material.assign", {{"component", component}, {"slot", "slot/0"}, {"asset", used}});
-    d.ok("scene.save");
+    d.op("scene.save");
     error(d.call("repro.export"), "dependency_mismatch");
     d.ok("material.set_texture", {{"object", loaded.at("handle")}, {"path", "base_color_texture"}, {"texture", ""}});
     const auto draft = exported();
@@ -467,7 +468,7 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                         .at("value")
                         .at("asset_key") == "builtin/unknown",
             "Frozen draft roots included an unused cache, ignored the live draft or changed its source file");
-    d.ok("material.undo", {{"asset", used}});
+    d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", used}});
     d.ok("repro.open", {{"directory", utf8(draft.wstring())}});
     require(d.ok("material.inspect", {{"asset", used}}).at("diagnostics").empty(),
             "Published draft did not reopen strictly");
@@ -493,9 +494,13 @@ void verify_operators(Driver& d, const std::string& entity) {
     };
     for (const auto& info : listed.at("operators")) {
         const auto& parameters = info.at("parameters");
-        require(!info.at("title").get<std::string>().empty() && parameters.at("type") == "object" &&
-                    parameters.at("additionalProperties") == false,
-                "Operator lacks a title or a closed parameter schema: " + info.dump());
+        require(!info.at("title").get<std::string>().empty(), "Operator lacks a title: " + info.dump());
+        if (info.at("id") == "scene.set_properties")
+            require(parameters == Json{{"dynamic", "context.object"}},
+                    "Property patch schema must resolve from the inspected object's actual type: " + info.dump());
+        else
+            require(parameters.at("type") == "object" && parameters.at("additionalProperties") == false,
+                    "Operator lacks a closed parameter schema: " + info.dump());
     }
     require(find("edit.undo").at("flags") == Json::array({"history"}) &&
                 find("edit.redo").at("flags") == Json::array({"history"}) &&
@@ -509,15 +514,15 @@ void verify_operators(Driver& d, const std::string& entity) {
                 std::ranges::find(regions, Json("code")) != regions.end(),
             "Context schema lacks regions");
 
-    d.op("scene.select", selection(entity));
-    d.op("scene.select", {{"selection", {{"entities", Json::array()}}}});
+    d.op("scene.select", Json::object(), selection(entity));
+    d.op("scene.select", Json::object(), {{"selection", {{"entities", Json::array()}}}});
     auto before = d.inspect();
     require(before.at("selection").empty(), "scene.select did not clear the selection");
     auto unavailable = d.try_op("view.frame_selected", Json::object());
     error(unavailable, "poll_failed");
     require(unavailable.at("error").at("message").get<std::string>().find("Select an Entity") != std::string::npos,
             "Poll failure did not give its reason: " + unavailable.dump());
-    d.op("view.frame_selected", selection(entity));
+    d.op("view.frame_selected", Json::object(), selection(entity));
     auto after = d.inspect();
     require(after.at("camera") != before.at("camera") && after.at("selection").empty() &&
                 after.at("undo") == before.at("undo"),
@@ -532,12 +537,13 @@ void verify_operators(Driver& d, const std::string& entity) {
     after = d.inspect();
     require(after.at("undo") == undo && after.at("redo") == redo, "edit.redo did not restore the cursor");
     // A plain Entity has no spatial capabilities, so its Transform can come and go.
-    const auto plain = d.ok("scene.create", {{"kind", "entity"}}).at("object").get<std::string>();
+    const auto plain =
+        d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "entity"}}}}).at("active").get<std::string>();
     error(d.try_op("scene.transform_remove", Json::object(), selection(plain)), "poll_failed");
-    d.op("scene.transform_add", selection(plain));
+    d.op("scene.transform_add", Json::object(), selection(plain));
     error(d.try_op("scene.transform_add", Json::object(), selection(plain)), "poll_failed");
-    d.op("scene.select", {{"selection", {{"entities", Json::array()}}}});
-    d.op("scene.transform_remove", selection(plain));
+    d.op("scene.select", Json::object(), {{"selection", {{"entities", Json::array()}}}});
+    d.op("scene.transform_remove", Json::object(), selection(plain));
     after = d.inspect();
     require(after.at("undo") == undo + 3 && after.at("redo") == 0 && after.at("selection").empty(),
             "scene.transform_add/remove did not record one entry each for their context Entity");
@@ -572,7 +578,7 @@ void verify_operators(Driver& d, const std::string& entity) {
             "scene.add did not add and select one Entity in one history entry");
     d.op("edit.undo");
     require(d.inspect().at("undo") == entries, "Undo did not remove the added Entity");
-    d.op("scene.select", selection(entity));
+    d.op("scene.select", Json::object(), selection(entity));
     require(d.inspect().at("selection") == Json::array({entity}), "scene.select did not restore the selection");
 }
 void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path& project, const Json& capabilities) {
@@ -655,18 +661,18 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
         error(d.call("editor.inspect", {{"detail", detail}, {"limit", 1}}), "invalid_request");
     require(d.token == token && d.inspect().at("entities") == full.at("entities"),
             "Asset queries or rejected parameters mutated the document");
-    d.ok("scene.create", {{"kind", "mesh"}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}});
     const auto created = d.inspect();
     const auto object_cursor = d.ok("editor.inspect", {{"detail", "objects"}, {"limit", 1}}).at("next_cursor");
     error(d.call("editor.inspect", {{"detail", "assets"}, {"cursor", object_cursor}}), "invalid_request");
-    d.ok("scene.rename", {{"object", created.at("entities")[0].at("handle")}, {"name", "Assets cursor edit"}});
-    d.op("scene.select", selection(created.at("entities")[0].at("handle").get<std::string>()));
-    d.ok("camera.look_at", {{"eye", {3, 4, -6}}, {"target", {0, 0, 0}}});
+    d.op("scene.rename", {{"name", "Assets cursor edit"}}, selection(created.at("entities")[0].at("handle")));
+    d.op("scene.select", Json::object(), selection(created.at("entities")[0].at("handle").get<std::string>()));
+    d.op("view.look_at", {{"eye", {{"x", 3}, {"y", 4}, {"z", -6}}}});
     require(page({{"limit", 1}, {"cursor", cursor}}) == continuation,
             "Ordinary scene/selection/camera edits invalidated assets cursor");
     d.op("edit.undo");
     d.op("edit.undo");
-    d.ok("camera.set", {{"state", full.at("camera")}});
+    d.op("view.camera_set", {{"state", full.at("camera")}});
     refresh();
     require(page({{"limit", 1}, {"cursor", cursor}}) == continuation, "Unchanged refresh invalidated assets cursor");
     // Inspection must not scan the disk, decode a new asset, or publish a failed refresh.
@@ -682,10 +688,10 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
     refresh();
     error(d.call("editor.inspect", {{"detail", "assets"}, {"cursor", cursor}}), "stale_cursor");
     const auto changed_cursor = page({{"limit", 1}}).at("next_cursor");
-    d.ok("scene.open", {{"path", "Content/Scenes/Main.scene"}});
+    d.op("scene.open", {{"path", "Content/Scenes/Main.scene"}});
     error(d.call("editor.inspect", {{"detail", "assets"}, {"cursor", changed_cursor}}), "stale_cursor");
     const auto scene_cursor = page({{"limit", 1}}).at("next_cursor");
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     error(d.call("editor.inspect", {{"detail", "assets"}, {"cursor", scene_cursor}}), "stale_cursor");
     // A real catalog beyond the old limit; page through its final item, not just its first page.
     const auto large = project / "Content/Catalog";
@@ -856,8 +862,8 @@ Json verify_object_directory(Driver& d, const Json& full, const Json& capabiliti
 void repro_lighting_agreement(Driver& d, const std::filesystem::path& repro, const std::filesystem::path& root) {
     const auto original = read(repro / "manifest.json");
     const auto original_scene = read(repro / "Project" / wide(original.at("scene").get<std::string>()));
-    require(original.at("view_schema") == 6 && original_scene.at("version") == 10 && !original_scene.contains("world"),
-            "Current repro export did not identify view schema 6 and Scene v10");
+    require(original.at("view_schema") == 7 && original_scene.at("version") == 10 && !original_scene.contains("world"),
+            "Current repro export did not identify view schema 7 and Scene v10");
     const auto copy = root / "LightingRepro";
     std::filesystem::copy(atelier::platform::windows_file_path(repro), atelier::platform::windows_file_path(copy),
                           std::filesystem::copy_options::recursive);
@@ -888,7 +894,7 @@ void repro_lighting_agreement(Driver& d, const std::filesystem::path& repro, con
     auto unmarked = original;
     unmarked.erase("view_schema");
     rejected(unmarked, original_scene);
-    for (unsigned schema : {5u, 7u}) {
+    for (unsigned schema : {6u, 8u}) {
         auto other = original;
         other["view_schema"] = schema;
         rejected(other, original_scene);
@@ -956,7 +962,7 @@ void repro_sky(Driver& d, const std::filesystem::path& project) {
     environment_of(scene)["sky_map"] = key;
     environment_of(scene)["properties"]["sky_rotation"] = 30;
     write(project / "Content/Scenes/Main.scene", scene.dump(2));
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     std::string content;
     const auto exported = [&] {
         const auto id = unique_id();
@@ -988,32 +994,36 @@ void repro_sky(Driver& d, const std::filesystem::path& project) {
 // missing still exports, the copy holds the draft and reopens strictly, and the source asset stays
 // unchanged. A material the session loaded but the scene does not reference stays out.
 void repro_material_draft(Driver& d, const std::filesystem::path& project, const std::filesystem::path& root) {
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     write(root / "Draft.png", std::string(tiny_png.begin(), tiny_png.end()));
-    const auto texture =
-        d.ok("texture.import", {{"path", utf8((root / "Draft.png").wstring())}}).at("asset").get<std::string>();
-    const auto asset = d.ok("material.create", {{"path", "Content/Materials/Draft.material"}, {"role", "instance"}})
+    const auto texture = d.op("asset.import", {{"kind", "texture"}, {"path", utf8((root / "Draft.png").wstring())}})
+                             .at("result")
+                             .at("asset")
+                             .get<std::string>();
+    const auto asset = d.op("asset.new_material", {{"path", "Content/Materials/Draft.material"}}, {{"asset", ""}})
+                           .at("result")
                            .at("asset")
                            .get<std::string>();
-    const auto unused = d.ok("material.create", {{"path", "Content/Materials/Unused.material"}, {"role", "instance"}})
+    const auto unused = d.op("asset.new_material", {{"path", "Content/Materials/Unused.material"}}, {{"asset", ""}})
+                            .at("result")
                             .at("asset")
                             .get<std::string>();
     d.ok("material.set_texture", {{"object", d.ok("material.inspect", {{"asset", asset}}).at("handle")},
                                   {"path", "base_color_texture"},
                                   {"texture", texture}});
     d.ok("material.save", {{"asset", asset}});
-    const auto entity = d.ok("scene.create", {{"kind", "mesh"}}).at("object");
+    const auto entity = d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}}).at("active");
     Json component;
     for (const auto& item : d.inspect().at("entities"))
         if (item.at("handle") == entity)
             component = item.at("components")[0].at("handle");
     d.ok("material.assign", {{"component", component}, {"slot", "slot/0"}, {"asset", asset}});
-    d.ok("scene.save");
+    d.op("scene.save");
     const auto saved = project / "Content/Materials/Draft.material";
     const auto saved_text = read(saved).dump();
     for (const auto* file : {L"Content/Textures/Draft.png", L"Content/Textures/Draft.png.asset.json"})
         std::filesystem::remove(atelier::platform::windows_file_path(project / file));
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     const auto opened = d.ok("material.inspect", {{"asset", asset}});
     require(material_issue(opened, texture), "The draft fixture did not lose its texture: " + opened.dump());
     d.ok("material.inspect", {{"asset", unused}});
@@ -1036,7 +1046,7 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
                                              "Content/Materials/Unused");
                                      }),
             "A repro copied a material the session loaded but the scene does not reference");
-    d.ok("material.undo", {{"asset", asset}});
+    d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", asset}});
     d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
     require(d.ok("material.inspect", {{"asset", asset}}).at("diagnostics").empty(),
             "A draft repro did not reopen without the missing texture");
@@ -1046,7 +1056,7 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
 void repro_material_inputs(Driver& d, const std::filesystem::path& root) {
     const auto project = root / "Project";
     project_fixture(project);
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     const std::array<std::uint8_t, 16> first_pixels{17, 53, 201, 0, 254, 1, 127, 85, 64, 192, 9, 170, 203, 87, 38, 255};
     const std::array<std::uint8_t, 16> next_pixels{225, 13, 87, 255, 41, 219, 3, 170, 99, 7, 181, 85, 6, 149, 231, 0};
     const auto bitmap = [](const std::array<std::uint8_t, 16>& rgba) {
@@ -1077,10 +1087,14 @@ void repro_material_inputs(Driver& d, const std::filesystem::path& root) {
     };
     write(root / "Active.bmp", bitmap(first_pixels));
     write(root / "Dormant.bmp", bitmap(next_pixels));
-    const auto texture =
-        d.ok("texture.import", {{"path", utf8((root / "Active.bmp").wstring())}}).at("asset").get<std::string>();
-    const auto dormant =
-        d.ok("texture.import", {{"path", utf8((root / "Dormant.bmp").wstring())}}).at("asset").get<std::string>();
+    const auto texture = d.op("asset.import", {{"kind", "texture"}, {"path", utf8((root / "Active.bmp").wstring())}})
+                             .at("result")
+                             .at("asset")
+                             .get<std::string>();
+    const auto dormant = d.op("asset.import", {{"kind", "texture"}, {"path", utf8((root / "Dormant.bmp").wstring())}})
+                             .at("result")
+                             .at("asset")
+                             .get<std::string>();
     const std::string source_text = R"(struct Params { float gain; };
 struct Inputs { material.TextureInput pigment; material.TextureInput dormant; };
 Params defaults() { Params p; p.gain=0.75; return p; }
@@ -1093,7 +1107,8 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     const std::string source_file = "Content/Materials/Frozen.ms.material",
                       parent_file = "Content/Materials/Parent.material", leaf_file = "Content/Materials/Leaf.material",
                       texture_file = "Content/Textures/Active.bmp";
-    const auto source = d.ok("material.create", {{"path", source_file}, {"role", "source"}, {"source", source_text}})
+    const auto source = d.op("asset.new_material_source", {{"path", source_file}, {"source", source_text}})
+                            .at("result")
                             .at("asset")
                             .get<std::string>();
     auto source_author = read(project / source_file);
@@ -1107,11 +1122,11 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
                                            {"empty_value", {1.0, 1.0, 1.0, 1.0}}});
     write(project / source_file, source_author.dump(2));
     const auto parent =
-        d.ok("material.create",
+        d.op("asset.new_material",
              {{"path", parent_file},
-              {"role", "instance"},
-              {"parent", source},
-              {"entries", Json::array({{{"path", "gain"}, {"type", "float"}, {"enabled", true}, {"value", 0.5}}})}})
+              {"entries", Json::array({{{"path", "gain"}, {"type", "float"}, {"enabled", true}, {"value", 0.5}}})}},
+             {{"asset", source}})
+            .at("result")
             .at("asset")
             .get<std::string>();
     const auto binding = [](std::string path, std::string key, bool enabled = true) {
@@ -1120,16 +1135,17 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
                     {"enabled", enabled},
                     {"value", {{"asset_key", std::move(key)}, {"address", "repeat"}}}};
     };
-    const auto leaf = d.ok("material.create",
+    const auto leaf = d.op("asset.new_material",
                            {{"path", leaf_file},
-                            {"role", "instance"},
-                            {"parent", parent},
                             {"entries", Json::array({binding("pigment", texture), binding("dormant", dormant, false),
                                                      binding("gain", "builtin/not-a-texture"),
-                                                     binding("removed", "builtin/removed-input")})}})
+                                                     binding("removed", "builtin/removed-input")})}},
+                           {{"asset", parent}})
+                          .at("result")
                           .at("asset")
                           .get<std::string>();
-    const auto unused = d.ok("material.create", {{"path", "Content/Materials/Unused.ms.material"}, {"role", "source"}})
+    const auto unused = d.op("asset.new_material_source", {{"path", "Content/Materials/Unused.ms.material"}})
+                            .at("result")
                             .at("asset")
                             .get<std::string>();
     d.ok("material.inspect", {{"asset", unused}}); // Cached Source text must not enter this scene's closure.
@@ -1142,13 +1158,14 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     d.ok("material.set_texture", {{"object", handle}, {"path", "dormant"}, {"texture", dormant}});
     d.ok("material.override", {{"object", handle}, {"path", "dormant"}, {"enabled", false}});
     d.ok("material.save", {{"asset", leaf}});
-    const auto entity = d.ok("scene.create", {{"kind", "mesh"}, {"mesh", "builtin/cube"}}).at("object");
+    const auto entity =
+        d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", "builtin/cube"}}}}).at("active");
     Json component;
     for (const auto& item : d.inspect().at("entities"))
         if (item.at("handle") == entity)
             component = item.at("components")[0].at("handle");
     d.ok("material.assign", {{"component", component}, {"slot", "slot/0"}, {"asset", leaf}});
-    d.ok("scene.save");
+    d.op("scene.save");
     const auto parent_author = read(project / parent_file), leaf_author = read(project / leaf_file);
     const auto hash_json = [](const Json& value) {
         const auto text = value.dump();
@@ -1215,15 +1232,13 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     const auto before_reimport = d.inspect();
     const auto identity_hash = sha256_file(project / (texture_file + ".asset.json"));
     write(root / "Replacement.bmp", bitmap(next_pixels));
-    require(d.ok("texture.reimport", {{"asset", texture}, {"path", utf8((root / "Replacement.bmp").wstring())}})
-                    .at("asset") == texture,
-            "Texture Reimport changed its asset identity");
+    d.op("asset.reimport", {{"path", utf8((root / "Replacement.bmp").wstring())}}, {{"asset", texture}});
     const auto after_reimport = d.inspect();
     for (const auto* field : {"undo", "redo", "dirty", "dirty_materials"})
         require(before_reimport.at(field) == after_reimport.at(field), "Texture Reimport entered parameter history");
     require(sha256_file(project / (texture_file + ".asset.json")) == identity_hash,
             "Texture Reimport rewrote its identity sidecar");
-    d.ok("material.undo", {{"asset", parent}});
+    d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", parent}});
     require(!d.ok("material.inspect", {{"asset", parent}}).at("dirty").get<bool>(),
             "Parameter Undo did not restore the saved author values");
     // Saved files now disagree with the loaded MS and imported pixels. Neither
@@ -1336,14 +1351,14 @@ void repro_lighting(const std::filesystem::path& executable, const std::filesyst
                    root / "editor.log");
     Driver d(discover_editor(editor, directory));
     d.settle();
-    d.ok("scene.create", {{"kind", "mesh"}});
-    d.ok("camera.look_at", {{"eye", {8, 5, -10}}, {"target", {1, 2, 3}}});
-    const auto removed = d.call("view.set", {{"patch", {{"direct_reference", true}}}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}});
+    d.op("view.look_at", {{"eye", {{"x", 8}, {"y", 5}, {"z", -10}}}, {"target", {{"x", 1}, {"y", 2}, {"z", 3}}}});
+    const auto removed = d.try_op("view.set", {{"direct_reference", true}});
     error(removed, "invalid_request");
-    require(removed.at("error").at("message").get<std::string>().find("was removed") != std::string::npos,
-            "Control did not report the direct reference diagnostic as removed: " + removed.dump());
-    d.ok("view.set", {{"patch", {{"direct_candidates", 16}, {"exposure_ev", 1.25}}}});
-    d.ok("scene.save");
+    require(removed.at("error").at("message").get<std::string>().find("direct_reference") != std::string::npos,
+            "Control did not identify the rejected direct reference diagnostic: " + removed.dump());
+    d.op("view.set", {{"direct_candidates", 16}, {"exposure_ev", 1.25}});
+    d.op("scene.save");
     const auto id = unique_id();
     require(d.call("repro.export", Json::object(), id).at("status") == "pending",
             "Lighting repro export did not start");
@@ -1547,9 +1562,11 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
                    root / "editor.log");
     Driver d(discover_editor(editor, directory));
     d.settle();
-    const auto mesh =
-        d.ok("mesh.import", {{"path", utf8((source / "scene.gltf").wstring())}}).at("asset").get<std::string>();
-    d.ok("scene.create", {{"kind", "mesh"}, {"mesh", mesh}});
+    const auto mesh = d.op("asset.import", {{"kind", "mesh"}, {"path", utf8((source / "scene.gltf").wstring())}})
+                          .at("result")
+                          .at("asset")
+                          .get<std::string>();
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", mesh}}}});
     const std::string folder = "Content/Meshes/scene/", material = folder + "Materials/paint.material",
                       trim = folder + "Materials/trim.material";
     const auto identity = read(project / (folder + "scene.gltf.asset.json")), defaults = identity.at("materials");
@@ -1637,7 +1654,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     write(project / (folder + "scene.bin"), changed);
     refresh();
     const bool content_rejected = rejected("same-key-changed-content");
-    d.ok("scene.create", {{"kind", "mesh"}, {"mesh", mesh}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", mesh}}}});
     write(project / (folder + "scene.bin"), bin);
     refresh();
     const bool versions_rejected = rejected("same-key-mixed-loaded-versions");
@@ -1645,7 +1662,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     exported();
     require(relationship_rejected && content_rejected && versions_rejected,
             "Repro accepted dependency drift; see dependency-consistency.json");
-    d.ok("scene.create", {{"kind", "mesh"}, {"mesh", mesh}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", mesh}}}});
     require(read(exported() / "manifest.json").at("resources").size() == 1,
             "Equal loaded content must export once per key");
     d.op("edit.undo");
@@ -1671,7 +1688,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
                 sha256_file(draft_source) == saved_material &&
                 d.ok("material.inspect", {{"asset", trim_key}}).at("dirty") == true,
             "Repro lost or saved the source material draft");
-    d.ok("material.undo", {{"asset", trim_key}});
+    d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", trim_key}});
     d.ok("repro.open", {{"directory", utf8(draft_bundle.wstring())}});
     const auto reopened_material = d.ok("material.inspect", {{"asset", trim_key}});
     require(std::ranges::any_of(reopened_material.at("declarations"),
@@ -1679,21 +1696,23 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
             "Repro did not load the frozen material draft");
     // A component keeps its material bindings while its mesh is missing. Only the scene names the
     // bound material then, and the repro still carries it.
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
-    const auto bound = d.ok("material.create", {{"path", "Content/Materials/Bound.material"}, {"role", "instance"}})
+    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto bound = d.op("asset.new_material", {{"path", "Content/Materials/Bound.material"}}, {{"asset", ""}})
+                           .at("result")
                            .at("asset")
                            .get<std::string>();
-    const auto entity = d.ok("scene.create", {{"kind", "mesh"}, {"mesh", mesh}}).at("object");
+    const auto entity =
+        d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", mesh}}}}).at("active");
     Json component;
     for (const auto& item : d.inspect().at("entities"))
         if (item.at("handle") == entity)
             component = item.at("components")[0].at("handle");
     d.ok("material.assign", {{"component", component}, {"slot", "paint"}, {"asset", bound}});
-    d.ok("scene.save");
+    d.op("scene.save");
     // Missing defaults remain missing, rather than being rebound or preventing diagnostic export.
     const auto trim_bytes = read(project / trim).dump();
     std::filesystem::remove(project / trim);
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     const auto missing_id = unique_id();
     require(d.call("repro.export", Json::object(), missing_id).at("status") == "pending",
             "Missing-default export did not start");
@@ -1710,7 +1729,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
             "Strict missing-default reopen replaced the document");
     write(project / trim, trim_bytes);
     std::filesystem::remove(atelier::platform::windows_file_path(project / (folder + "scene.gltf")));
-    d.ok("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", utf8(project.wstring())}});
     const auto id = unique_id();
     require(d.call("repro.export", Json::object(), id).at("status") == "pending",
             "Missing-mesh repro export did not start");
@@ -1762,7 +1781,7 @@ void repro_paths(const std::filesystem::path& executable, const std::filesystem:
                    root / "editor.log");
     Driver d(discover_editor(editor, directory));
     d.settle();
-    d.ok("scene.create", {{"kind", "mesh"}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}});
     const auto unpublished = std::filesystem::path("Source") / (std::wstring(72, L'u') + L".source");
     write(project / unpublished, "invalid saved source");
     std::this_thread::sleep_for(750ms);
@@ -1796,7 +1815,7 @@ void repro_paths(const std::filesystem::path& executable, const std::filesystem:
         const auto reopened = d.inspect();
         require(reopened.at("entities").size() == 1 && !reopened.at("dirty").get<bool>(),
                 "Deep-path repro did not reopen");
-        d.ok("scene.save");
+        d.op("scene.save");
     }
     const auto instance = d.descriptor.at("instance_id").get<std::string>();
     const auto request_path = repro / "Project/Cache" / (std::wstring(80, L'q') + L".request.json");
@@ -1856,40 +1875,38 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
     require(!summary.contains("entities") && !summary.contains("assets") && !summary.contains("component_types") &&
                 summary.at("view") == state.at("view") && summary.contains("last_frame"),
             "Summary inspection enumerated the document or omitted view state");
-    d.ok("scene.create", {{"kind", "mesh"}});
-    d.ok("camera.look_at", {{"eye", {5, 4, -7}}, {"target", {0, 0, 0}}});
+    d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}});
+    d.op("view.look_at", {{"eye", {{"x", 5}, {"y", 4}, {"z", -7}}}});
     Json patch{{"shading", "scene_lit"},
                {"ddgi", true},
                {"gtao", false},
                {"sssr", false},
                {"bloom", false},
-               {"probe_count_x", 3},
-               {"probe_count_y", 3},
-               {"probe_count_z", 3},
+               {"probe_volume_0_count_x", 3},
+               {"probe_volume_0_count_y", 3},
+               {"probe_volume_0_count_z", 3},
                {"probe_update_budget", 27},
                {"probe_rays", 32},
-               {"probe_min_x", -2},
-               {"probe_min_y", -2},
-               {"probe_min_z", -2},
-               {"probe_max_x", 2},
-               {"probe_max_y", 2},
-               {"probe_max_z", 2},
+               {"probe_volume_0_min_x", -2},
+               {"probe_volume_0_min_y", -2},
+               {"probe_volume_0_min_z", -2},
+               {"probe_volume_0_max_x", 2},
+               {"probe_volume_0_max_y", 2},
+               {"probe_volume_0_max_z", 2},
                {"probe_visualization", "state"},
                {"probe_volume", true},
                {"probe_relocation", true},
                {"probe_xray", true},
                {"probe_radius", .12}};
-    d.ok("view.set", {{"patch", patch}});
+    d.op("view.set", patch);
     state = d.inspect();
     const auto base_view = state.at("view"), entities = state.at("entities"), undo = state.at("undo");
     const auto token = d.token;
-    d.ok("view.set", {{"patch", patch}});
+    d.op("view.set", patch);
     require(d.token == token, "Repeated DDGI view patch changed the state token");
-    error(d.call("view.set", {{"patch", {{"probe_radius", 0}, {"probe_debug", true}}}}), "operation_failed");
+    error(d.try_op("view.set", {{"probe_radius", 0}, {"probe_debug", true}}), "operation_failed");
     require(d.inspect().at("view") == base_view, "Rejected debug patch partially mutated the view");
-    error(d.call("view.set", {{"patch", {{"probe_visualization", "unknown"}}}}), "invalid_request");
-    error(d.call("view.set", {{"patch", {{"probe_min_x", -3}, {"probe_volume_0_min_x", -3}}}}), "invalid_request");
-    require(d.inspect().at("view") == base_view, "Duplicate slot-zero aliases partially published settings");
+    error(d.try_op("view.set", {{"probe_visualization", "unknown"}}), "invalid_request");
     const auto id = unique_id();
     const Json cases = Json::array({{{"name", "probe-state"}, {"patch", Json::object()}},
                                     {{"name", "probe-age"}, {"patch", {{"probe_visualization", "update_age"}}}},
@@ -1910,14 +1927,13 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
             "DDGI diagnostic comparison changed scene, undo or base display policy");
     write(root / "captures.json", compared.dump(2));
     write(root / "capabilities.json", capabilities.dump(2));
-    d.ok("view.set",
-         {{"patch", {{"probe_bounce", .5}, {"indirect_gain", 1.25}, {"probe_feedback_visibility", false}}}});
-    d.ok("view.layout", {{"layout", "fit_scene"}});
+    d.op("view.set", {{"probe_bounce", .5}, {"indirect_gain", 1.25}, {"probe_feedback_visibility", false}});
+    d.ok("op.call", {{"id", "view.lighting_fit"}, {"args", {{"mode", "scene"}}}});
     state = d.inspect();
     require(state.at("view").at("probe_volume_0_placement") == "fixed" && state.at("view").at("probe_bounce") == .5 &&
                 state.at("view").at("indirect_gain") == 1.25,
             "Fit Scene changed propagation preferences");
-    d.ok("view.layout", {{"layout", "scene_focus"}});
+    d.ok("op.call", {{"id", "view.lighting_fit"}, {"args", {{"mode", "scene_focus"}}}});
     state = d.inspect();
     const auto focus_view = state.at("view");
     const auto layout_token = d.token;
@@ -1926,18 +1942,18 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
                 focus_view.at("probe_volume_1_placement") == "fixed" && state.at("entities") == entities &&
                 state.at("undo").get<unsigned>() == undo.get<unsigned>() + 3,
             "Scene+Focus layout lost a volume or did not commit to scene history");
-    d.ok("view.layout", {{"layout", "scene_focus"}});
+    d.ok("op.call", {{"id", "view.lighting_fit"}, {"args", {{"mode", "scene_focus"}}}});
     require(d.token == layout_token, "Repeated layout changed the state token");
     for (const auto& invalid : std::vector<Json>{
              {{"probe_volume_0_count_y", 4}},
              {{"probe_volume_0_count_x", 32}, {"probe_volume_0_count_y", 32}, {"probe_volume_0_count_z", 32}},
              {{"probe_volume_0_max_x", -6}},
              {{"probe_volume_2_placement", "follow_focus"}, {"probe_volume_2_count_x", 3}}}) {
-        error(d.call("view.set", {{"patch", invalid}}), "operation_failed");
+        error(d.try_op("view.set", invalid), "operation_failed");
         require(d.ok("editor.inspect", {{"detail", "summary"}}).at("view") == focus_view && d.token == layout_token,
                 "Rejected volume configuration changed state or token");
     }
-    d.ok("camera.look_at", {{"eye", {12, 4, -7}}, {"target", {7, 0, 0}}});
+    d.op("view.look_at", {{"eye", {{"x", 12}, {"y", 4}, {"z", -7}}}, {"target", {{"x", 7}}}});
     const auto capture_id = unique_id();
     pending = d.call("render.capture", {{"sample_frames", {2}}, {"timeout_ms", 120000}}, capture_id);
     require(pending.at("status") == "pending", pending.dump());
@@ -1954,31 +1970,31 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
     const Json tiny{{"probe_volume_0_count_x", 5},   {"probe_volume_0_count_y", 5},   {"probe_volume_0_count_z", 5},
                     {"probe_volume_0_min_x", -.004}, {"probe_volume_0_min_y", -.004}, {"probe_volume_0_min_z", -.004},
                     {"probe_volume_0_max_x", .004},  {"probe_volume_0_max_y", .004},  {"probe_volume_0_max_z", .004}};
-    d.ok("camera.look_at", {{"eye", {100005, 4, -7}}, {"target", {100000, 0, 0}}});
+    d.op("view.look_at", {{"eye", {{"x", 100005}, {"y", 4}, {"z", -7}}}, {"target", {{"x", 100000}}}});
     const auto far_state = d.ok("editor.inspect", {{"detail", "summary"}});
     const auto far_token = d.token;
-    error(d.call("view.set", {{"patch", tiny}}), "operation_failed");
+    error(d.try_op("view.set", tiny), "operation_failed");
     require(d.ok("editor.inspect", {{"detail", "summary"}}).at("view") == far_state.at("view") && d.token == far_token,
             "World-precision failure published unusable view settings");
-    d.ok("camera.look_at", {{"eye", {5, 4, -7}}, {"target", {0, 0, 0}}});
-    d.ok("view.set", {{"patch", tiny}});
+    d.op("view.look_at", {{"eye", {{"x", 5}, {"y", 4}, {"z", -7}}}});
+    d.op("view.set", tiny);
     const auto small_state = d.ok("editor.inspect", {{"detail", "summary"}});
     const auto small_token = d.token;
-    error(d.call("camera.look_at", {{"eye", {100005, 4, -7}}, {"target", {100000, 0, 0}}}), "operation_failed");
+    error(d.try_op("view.look_at", {{"eye", {{"x", 100005}, {"y", 4}, {"z", -7}}}, {"target", {{"x", 100000}}}}),
+          "operation_failed");
     auto far_camera = small_state.at("camera");
-    far_camera["target"] = Json::array({100000, 0, 0});
-    error(d.call("camera.set", {{"state", far_camera}}), "operation_failed");
+    far_camera["target"] = {{"x", 100000}, {"y", 0}, {"z", 0}};
+    error(d.try_op("view.camera_set", {{"state", far_camera}}), "operation_failed");
     require(d.ok("editor.inspect", {{"detail", "summary"}}).at("camera") == small_state.at("camera") &&
                 d.token == small_token,
             "World-precision failure published an unusable camera");
-    d.ok("view.layout", {{"layout", "scene_focus"}});
-    d.ok("view.set", {{"patch",
-                       {{"probe_volume_2_enabled", true},
-                        {"probe_volume_3_enabled", true},
-                        {"probe_volume_2_count_x", 3},
-                        {"probe_volume_3_count_x", 2},
-                        {"probe_debug_volume", 2},
-                        {"probe_coverage", "contributors"}}}});
+    d.ok("op.call", {{"id", "view.lighting_fit"}, {"args", {{"mode", "scene_focus"}}}});
+    d.op("view.set", {{"probe_volume_2_enabled", true},
+                      {"probe_volume_3_enabled", true},
+                      {"probe_volume_2_count_x", 3},
+                      {"probe_volume_3_count_x", 2},
+                      {"probe_debug_volume", 2},
+                      {"probe_coverage", "contributors"}});
     const auto repro_view = d.inspect().at("view");
     const auto export_id = unique_id();
     require(d.call("repro.export", Json::object(), export_id).at("status") == "pending",
@@ -1989,17 +2005,9 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
     auto manifest = read(repro / "manifest.json");
     require(manifest.at("view") == repro_view, "Repro lost canonical volume settings");
     d.op("edit.undo");
-    d.ok("scene.save", {{"path", "Content/Scenes/Editing.scene"}});
+    d.op("scene.save", {{"path", "Content/Scenes/Editing.scene"}});
     d.ok("repro.open", {{"directory", utf8(repro.wstring())}});
     require(d.inspect().at("view") == repro_view, "Repro did not restore all four volume settings");
-    for (const char* field : {"min_x", "min_y", "min_z", "max_x", "max_y", "max_z", "count_x", "count_y", "count_z"}) {
-        const auto canonical = std::string("probe_volume_0_") + field;
-        manifest["view"][std::string("probe_") + field] = manifest.at("view").at(canonical);
-        manifest["view"].erase(canonical);
-    }
-    write(repro / "manifest.json", manifest.dump(2));
-    d.ok("repro.open", {{"directory", utf8(repro.wstring())}});
-    require(d.inspect().at("view") == repro_view, "Legacy slot-zero names changed canonical repro settings");
     d.client.reset();
     editor.close();
     require(read(project / "Content/Scenes/Main.scene").at("entities").empty(),
@@ -2009,7 +2017,7 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
                {"cases",
                 {"shared-schema", "summary-inspection", "idempotent-patch", "atomic-rejection", "real-render-compare",
                  "coverage-presets", "rolling-focus-capture", "focus-precision-atomicity", "four-volume-repro",
-                 "legacy-aliases", "history-and-scene-isolation", "clean-close"}}}
+                 "history-and-scene-isolation", "clean-close"}}}
               .dump(2));
     std::cout << "Editor DDGI Control E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
@@ -2022,18 +2030,17 @@ void camera_projection(const std::filesystem::path& executable, const std::files
                    root / "editor.log");
     Driver d(discover_editor(editor, directory));
     const auto initial = d.settle().at("camera");
-    const auto mesh = d.ok("scene.create", {{"kind", "mesh"}}).at("object");
+    const auto mesh = d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}}).at("active");
     // A normal authoring range with a known front face 2.5 metres from the eye.
-    d.ok("scene.transform",
-         {{"object", mesh}, {"position", {0, 0, -3}}, {"rotation", {0, 0, 0, 1}}, {"scale", {.5, .5, 1}}});
-    d.op("scene.select", {{"selection", {{"entities", Json::array()}}}});
-    d.ok("scene.save");
+    d.op("scene.transform_set", {{"position", {{"z", -3}}}, {"scale", {{"x", .5}, {"y", .5}}}}, selection(mesh));
+    d.op("scene.select", Json::object(), {{"selection", {{"entities", Json::array()}}}});
+    d.op("scene.save");
     auto cases = Json::array();
     for (const unsigned view : {0u, 2u}) {
         const std::string name = view == 0 ? "perspective" : "orthographic";
         auto camera = initial;
-        camera["view"] = view;
-        camera["target"] = {0, 0, -1};
+        camera["view"] = view == 0 ? "perspective" : "front";
+        camera["target"] = {{"x", 0}, {"y", 0}, {"z", -1}};
         camera["yaw"] = 0;
         camera["pitch"] = 0;
         camera["roll"] = 0;
@@ -2041,14 +2048,14 @@ void camera_projection(const std::filesystem::path& executable, const std::files
         camera["vertical_fov"] = 60;
         camera["near_clip"] = .25;
         camera["far_clip"] = 6.5;
-        d.ok("camera.set", {{"state", camera}});
+        d.op("view.camera_set", {{"state", camera}});
         const auto accepted = d.settle().at("camera");
         require(accepted.at("near_clip").get<float>() == .25f && accepted.at("far_clip").get<float>() == 6.5f &&
-                    accepted.at("view") == view && accepted.at("vertical_fov") == 60,
+                    accepted.at("view") == camera.at("view") && accepted.at("vertical_fov") == 60,
                 "Control changed camera projection parameters");
         auto invalid = accepted;
         invalid["far_clip"] = invalid.at("near_clip");
-        error(d.call("camera.set", {{"state", invalid}}), "invalid_request");
+        error(d.try_op("view.camera_set", {{"state", invalid}}), "invalid_request");
         require(d.inspect().at("camera") == accepted, "Rejected equal clip planes changed the camera");
         const auto export_id = unique_id();
         require(d.call("repro.export", Json::object(), export_id).at("status") == "pending",
@@ -2081,7 +2088,7 @@ void camera_projection(const std::filesystem::path& executable, const std::files
             }
             write(repro / "manifest.json", manifest.dump(2));
         }
-        d.ok("camera.set", {{"state", initial}});
+        d.op("view.camera_set", {{"state", initial}});
         // Switching view kind updates its derived grid plane on the next editor step.
         require(d.settle().at("camera") == initial, "Camera did not reset before repro reopen");
         d.ok("repro.open", {{"directory", utf8(repro.wstring())}});
@@ -2115,7 +2122,7 @@ void camera_projection(const std::filesystem::path& executable, const std::files
                          {"capture", captured.at("result")}});
         auto shortened = accepted;
         shortened["far_clip"] = 2;
-        d.ok("camera.set", {{"state", shortened}});
+        d.op("view.camera_set", {{"state", shortened}});
         d.settle();
         const auto clipped_id = unique_id();
         require(d.call("render.capture", {{"sample_frames", {1}}}, clipped_id).at("status") == "pending",
@@ -2134,7 +2141,7 @@ void camera_projection(const std::filesystem::path& executable, const std::files
                         clipped_sample.at("camera").at("far_depth").get<float>() == .125f,
                     "Perspective far edit changed P instead of its derived clip boundary");
         cases.back()["far_clipped_capture"] = clipped.at("result");
-        d.ok("camera.set", {{"state", accepted}});
+        d.op("view.camera_set", {{"state", accepted}});
         d.settle();
         std::cout << "Camera Control " << name
                   << ": PASS (set, equality rejected, export/open, captured geometry=" << geometry << ")\n"
@@ -2212,7 +2219,12 @@ int wmain(int argc, wchar_t** argv) {
         }
         Driver d(descriptor);
         const auto caps = d.ok("capabilities");
-        require(caps.at("operations").size() >= 20, "Capabilities are incomplete");
+        require(std::ranges::any_of(caps.at("operations"),
+                                    [](const Json& op) {
+                                        return op.at("op") == "op.call" && op.at("requires_state_token") == true &&
+                                               op.at("args").at("required") == Json::array({"id"});
+                                    }),
+                "Capabilities omitted the stateful operator call contract");
         verify_option_descriptions(caps);
         const auto empty = d.settle();
         const auto builtins = d.ok("editor.inspect", {{"detail", "assets"}});
@@ -2224,8 +2236,18 @@ int wmain(int argc, wchar_t** argv) {
             repro_engine_assets(d, root);
             repro_material_inputs(d, root / "MaterialInputs");
         }
-        d.ok("project.open", {{"path", utf8(project.wstring())}});
+        const auto opened = d.ok("op.call", {{"id", "project.open"}, {"args", {{"path", utf8(project.wstring())}}}});
+        require(opened.at("status") == "finished" && opened.at("selection").empty(),
+                "Project open did not complete its replacement before returning the operator report");
         d.settle();
+        const auto before_missing = d.inspect();
+        error(d.try_op("scene.open", Json::object()), "invalid_request");
+        const auto after_missing = d.inspect();
+        require(after_missing.at("project") == before_missing.at("project") &&
+                    after_missing.at("scene_path") == before_missing.at("scene_path") &&
+                    after_missing.at("undo") == before_missing.at("undo") &&
+                    after_missing.at("redo") == before_missing.at("redo"),
+                "A noninteractive missing scene path replaced or edited the document");
         verify_asset_directory(d, editor.window(), project, caps);
         auto initial = d.inspect();
         unsigned stable{};
@@ -2244,8 +2266,8 @@ int wmain(int argc, wchar_t** argv) {
         const auto original_scene = read(project / "Content/Scenes/Main.scene");
         const auto original_scene_hash =
             descriptions ? sha256_file(project / "Content/Scenes/Main.scene") : std::string{};
-        Json request{{"op", "scene.create"},
-                     {"args", {{"kind", "mesh"}}},
+        Json request{{"op", "op.call"},
+                     {"args", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}}},
                      {"state_token", d.token},
                      {"request_id", unique_id()}};
         const auto first = d.client->call(request);
@@ -2289,7 +2311,7 @@ int wmain(int argc, wchar_t** argv) {
                                                                            {"enabled", true},
                                                                            {"properties", {{"strength", 3}}}}}}}}}}
                                                                     .dump());
-            d.ok("scene.open", {{"path", "Content/Scenes/Placeholder.scene"}});
+            d.op("scene.open", {{"path", "Content/Scenes/Placeholder.scene"}});
             const auto placed = d.ok("editor.inspect", {{"detail", "objects"}}).at("objects");
             const auto gone =
                 std::ranges::find_if(placed, [](const Json& entry) { return entry.at("kind") == "component"; });
@@ -2323,50 +2345,51 @@ int wmain(int argc, wchar_t** argv) {
         auto entity = current.at("entities")[0].at("handle").get<std::string>();
         auto component = current.at("entities")[0].at("components")[0].at("handle").get<std::string>();
         const auto stale = d.token;
-        d.ok("scene.rename", {{"object", entity}, {"name", "Control cube"}});
+        d.op("scene.rename", {{"name", "Control cube"}}, selection(entity));
         error(d.call("editor.inspect", {{"detail", "objects"}, {"cursor", directory_cursor}}), "stale_cursor");
         error(d.client->call(
-                  {{"op", "scene.rename"}, {"args", {{"object", entity}, {"name", "Wrong"}}}, {"state_token", stale}}),
+                  {{"op", "op.call"},
+                   {"args", {{"id", "scene.rename"}, {"args", {{"name", "Wrong"}}}, {"context", selection(entity)}}},
+                   {"state_token", stale}}),
               "stale_state");
-        d.ok("scene.transform",
-             {{"object", entity}, {"position", {1, 2, 3}}, {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}});
-        d.ok("scene.set_property", {{"object", entity}, {"property", "position.x"}, {"value", 4}});
+        d.op("scene.transform_set", {{"position", {{"x", 1}, {"y", 2}, {"z", 3}}}}, selection(entity));
+        d.op("scene.transform_set", {{"position", {{"x", 4}, {"y", 2}, {"z", 3}}}}, selection(entity));
         current = d.inspect();
         require(current.at("entities")[0].at("transform").at("position")[0] == 4,
-                "Property command did not write the document");
+                "Transform operator did not write the document");
         d.op("edit.undo");
         current = d.inspect();
         require(current.at("entities")[0].at("transform").at("position")[0] == 1, "Undo did not restore the transform");
         d.op("edit.redo");
         verify_operators(d, entity);
-        const auto added = d.ok("scene.add_component", {{"type", "world.Component"}}).at("object");
+        const auto added = d.op("scene.add_component", {{"type", "world.Component"}}).at("inspected_object");
         current = d.inspect();
         require(current.at("entities")[0].at("components").size() == 2, "Component addition failed");
-        d.ok("scene.remove_component", {{"object", added}});
+        d.op("scene.delete", {{"target", "object"}}, {{"selection", {{"entities", {entity}}, {"object", added}}}});
         current = d.inspect();
         require(current.at("entities")[0].at("components").size() == 1 &&
                     current.at("entities")[0].at("components")[0].at("handle") == component,
                 "Component removal failed or replaced the existing mesh identity");
         const auto camera = current.at("camera");
-        d.ok("camera.look_at", {{"eye", {8, 5, -10}}, {"target", {0, 0, 0}}});
-        d.ok("camera.set", {{"state", camera}});
+        d.op("view.look_at", {{"eye", {{"x", 8}, {"y", 5}, {"z", -10}}}});
+        d.op("view.camera_set", {{"state", camera}});
         auto invalid_camera = camera;
         invalid_camera["distance"] = 0.0000000001;
-        error(d.call("camera.set", {{"state", invalid_camera}}), "invalid_request");
-        // The sky is a World setting: scene.create no longer makes one, and the first sky edit creates the Environment.
-        const auto retired_sky = d.call("scene.create", {{"kind", "sky"}});
+        error(d.try_op("view.camera_set", {{"state", invalid_camera}}), "invalid_request");
+        // The sky is a World setting; scene.add rejects it as an undeclared kind.
+        const auto retired_sky = d.try_op("scene.add", {{"kind", "sky"}});
         require(retired_sky.value("status", "") == "error" && retired_sky.at("error").at("code") == "invalid_request" &&
-                    retired_sky.at("error").at("message").get<std::string>().find("sky_enabled") != std::string::npos,
-                "scene.create accepted the retired sky kind or did not name the sky settings: " + retired_sky.dump());
+                    retired_sky.at("error").at("message").get<std::string>().find("kind: Unknown scene enum member") !=
+                        std::string::npos,
+                "scene.add did not reject the retired sky kind during strict decoding: " + retired_sky.dump());
         for (const auto* name : {"sky_enabled", "sky_intensity", "sky_color_x", "sky_color_y", "sky_color_z"})
             require(caps.at("display_options").at(name).at("scope") == "scene",
                     "A sky option is absent from the shared Control schema or not a scene option");
-        d.ok("view.set", {{"patch",
-                           {{"sky_enabled", true},
-                            {"sky_intensity", 2},
-                            {"sky_color_x", .25},
-                            {"sky_color_y", .5},
-                            {"sky_color_z", .75}}}});
+        d.op("view.set", {{"sky_enabled", true},
+                          {"sky_intensity", 2},
+                          {"sky_color_x", .25},
+                          {"sky_color_y", .5},
+                          {"sky_color_z", .75}});
         current = d.inspect();
         require(current.at("view").at("sky_enabled") == true && current.at("view").at("sky_intensity") == 2 &&
                     current.at("view").at("sky_color_x") == .25 && current.at("view").at("sky_color_y") == .5 &&
@@ -2378,14 +2401,14 @@ int wmain(int argc, wchar_t** argv) {
         require(current.at("view").at("sky_enabled") == false && current.at("entities").size() == 1,
                 "Undoing the first sky edit did not remove the Environment");
         for (const auto* removed : {"ssil", "shadow_bias"})
-            error(d.call("view.set", {{"patch", {{removed, true}}}}), "invalid_request");
-        d.ok("view.set", {{"patch", {{"gtao", false}}}});
+            error(d.try_op("view.set", {{removed, true}}), "invalid_request");
+        d.op("view.set", {{"gtao", false}});
         current = d.inspect();
         require(current.at("view").at("gtao") == false && current.at("entities").size() == 2,
                 "A World setting did not create the Environment");
-        error(d.call("view.set", {{"patch", {{"shadows", "wrong"}}}}), "invalid_request");
-        error(d.call("scene.rename", {{"object", "stale/999"}, {"name", "No"}}), "stale_object");
-        error(d.call("project.open", {{"path", utf8(project.wstring())}}), "unsaved_changes");
+        error(d.try_op("view.set", {{"shadows", "wrong"}}), "invalid_request");
+        error(d.try_op("scene.rename", {{"name", "No"}}, selection("stale/999")), "stale_object");
+        error(d.try_op("project.open", {{"path", utf8(project.wstring())}}), "unsaved_changes");
         // Saved but unpublished code must not silently enter the runnable repro.
         write(project / "Source/NeverPublished.source", "invalid saved source");
         write(project / "Source/Published.ui.source", "invalid saved UI");
@@ -2419,7 +2442,7 @@ int wmain(int argc, wchar_t** argv) {
         require(current.at("dirty") == true && current.at("undo") == dirty_undo &&
                     current.at("scene_path") == dirty_path,
                 "Repro export changed authoring state");
-        d.ok("camera.look_at", {{"eye", {9, 7, -8}}, {"target", {4, 2, 3}}});
+        d.op("view.look_at", {{"eye", {{"x", 9}, {"y", 7}, {"z", -8}}}, {"target", {{"x", 4}, {"y", 2}, {"z", 3}}}});
         const auto base_view = current.at("view");
         const auto compare_id = unique_id();
         const auto prepare_id = unique_id();
@@ -2482,20 +2505,22 @@ int wmain(int argc, wchar_t** argv) {
         pending = d.client->call(cancelled_request);
         require(pending.at("status") == "pending", pending.dump());
         const auto unchanged = d.token;
-        error(d.call("scene.transform",
-                     {{"object", entity}, {"position", {4, 2, 3}}, {"rotation", {0, 0, 0, 0}}, {"scale", {1, 1, 1}}}),
-              "operation_failed");
-        error(d.call("scene.set_property", {{"object", entity}, {"property", "rotation.w"}, {"value", 0}}),
-              "operation_failed");
-        error(d.call("view.set", {{"patch", {{"ssil", true}}}}), "invalid_request");
-        d.ok("camera.set", {{"state", d.inspect().at("camera")}});
-        d.ok("view.set", {{"patch", Json::object()}});
+        error(d.try_op("scene.transform_set", {{"position", {{"x", 4}, {"y", 2}, {"z", 3}}}, {"rotation", {{"w", 0}}}},
+                       selection(entity)),
+              "invalid_request");
+        const auto transform_patch = d.try_op("scene.set_properties", {{"rotation", {{"w", 0}}}}, selection(entity));
+        error(transform_patch, "invalid_request");
+        require(transform_patch.at("error").at("message").get<std::string>().contains("scene.transform_set"),
+                "Scalar Transform rejection did not direct the caller to the dedicated operator");
+        error(d.try_op("view.set", {{"ssil", true}}), "invalid_request");
+        d.op("view.camera_set", {{"state", d.inspect().at("camera")}});
+        d.op("view.set");
         require(d.token == unchanged && d.call("job.status", {{"job_id", cancelled_id}}).at("status") == "pending",
                 "Rejected or no-op requests cancelled unchanged rendering");
         error(d.call("job.cancel", {{"job_id", cancelled_id}}), "cancelled");
         error(d.call("job.cancel", {{"job_id", cancelled_id}}), "cancelled");
         for (unsigned i = 0; i < 260; ++i)
-            d.ok("view.set", {{"patch", Json::object()}});
+            d.op("view.set");
         error(d.client->call(cancelled_request), "request_id_expired");
         error(d.call("job.status", {{"job_id", cancelled_id}}), "cancelled");
         require(!d.inspect().contains("active_job"), "Expired request started another job with the same identity");
@@ -2517,7 +2542,7 @@ int wmain(int argc, wchar_t** argv) {
         auto changed_id = unique_id();
         pending = d.call("render.capture", {{"sample_frames", {4096}}}, changed_id);
         require(pending.at("status") == "pending", pending.dump());
-        d.ok("scene.rename", {{"object", entity}, {"name", "Changed during capture"}});
+        d.op("scene.rename", {{"name", "Changed during capture"}}, selection(entity));
         error(d.wait(changed_id), "state_changed");
         auto timed_id = unique_id();
         pending = d.call("render.capture", {{"sample_frames", {4096}}, {"timeout_ms", 1}}, timed_id);
@@ -2531,7 +2556,7 @@ int wmain(int argc, wchar_t** argv) {
         d.client = std::make_unique<Client>(descriptor);
         error(d.wait(disconnected_id), "cancelled");
         d.inspect();
-        d.ok("scene.save");
+        d.op("scene.save");
         const auto saved = read(project / "Content/Scenes/Main.scene");
         require(saved.at("entities").size() == 2, "Explicit scene.save failed");
         const auto before_failed_open = d.inspect();
@@ -2561,9 +2586,9 @@ int wmain(int argc, wchar_t** argv) {
         require(current.at("entities").size() == 2 && current.at("entities")[0].at("name") == "Control cube" &&
                     !current.at("dirty").get<bool>(),
                 "Repro reopen failed");
-        error(d.call("scene.rename", {{"object", entity}, {"name", "Old handle"}}), "stale_object");
+        error(d.try_op("scene.rename", {{"name", "Old handle"}}, selection(entity)), "stale_object");
         repro_lighting_agreement(d, repro, root);
-        d.ok("scene.delete");
+        d.op("scene.delete");
         const auto remaining = d.inspect().at("entities");
         require(remaining.size() == 1 && remaining[0].at("components")[0].at("type") == "world.EnvironmentComponent",
                 "Delete command did not remove the selected entity");

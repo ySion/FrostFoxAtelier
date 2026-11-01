@@ -87,6 +87,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "declarative_ui.inl"
 #include "tooltip_dsl.inl"
 #include "property_tooltips.inl"
+#include "operator_parameters.inl"
 #include "object_inspection.inl"
 #include "ui_actions.inl"
 #include "table_dsl.inl"
@@ -102,7 +103,6 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "material_resources.inl"
 #include "color_edits.inl"
 #include "recovery.inl"
-#include "operator_parameters.inl"
 #include "procedural_graph.inl"
 }
 int main(int argc, char** argv) {
@@ -173,6 +173,8 @@ int main(int argc, char** argv) {
         require(
             argc == 1,
             "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --procedural-graph | --examples | --physics-examples | --textured-obj | --gltf | --viewport-edit | --scene-lit [source-project] | --profile-json output-directory | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json | --profile-ui-reload output.csv]");
+        stage = "operator parameters";
+        verify_operator_parameters();
         stage = "project document";
         verify_project_document();
         stage = "declarative parameters";
@@ -201,8 +203,6 @@ int main(int argc, char** argv) {
         verify_source_editor();
         stage = "output projection";
         verify_output_projection();
-        stage = "operator parameters";
-        verify_operator_parameters();
         stage = "document history";
         {
             editor::Session single;
@@ -287,7 +287,7 @@ int main(int argc, char** argv) {
         require(document.name(entity) == original_name, "Name Undo did not restore the label.");
         changed(document.redo());
         require(document.name(entity) == L"主角 Hero", "Name Redo did not restore the label.");
-        changed(document.add_component(document.presentation_types().static_mesh_component));
+        changed(document.add_component(entity, document.presentation_types().static_mesh_component));
         const auto transform = entity;
         const auto cube = component(document, entity, document.presentation_types().static_mesh_component);
         take(presentation::set_geometry(runtime, cube, assets::mesh_assets().front().mesh));
@@ -344,7 +344,7 @@ int main(int argc, char** argv) {
         require(take(world::read_transform(runtime, transform)) == original_transform,
                 "TRS undo did not restore the complete value after quaternion normalization.");
         take(document.select(entity));
-        changed(document.erase_selected());
+        changed(document.erase_entities(document.selected_entities()));
         require(take(document.world().members()).size() == 1 && take(document.presentation().render_items()).empty() &&
                     !document.begin_edit(transform, path, 15) && !document.rename(entity, L"Detached"),
                 "A detached Entity remained editable or presentable in the World.");
@@ -357,15 +357,15 @@ int main(int argc, char** argv) {
                 "Entity delete/GC/undo did not restore identities, composition, order, names and values.");
         take(document.begin_edit(transform, path, 16));
         take(document.preview_edit(16, 88));
-        changed(document.erase_selected());
+        changed(document.erase_entities(document.selected_entities()));
         changed(document.undo());
         require(!document.editing() && value(document, transform) == 34,
                 "Structural removal failed to cancel the active field before changing membership.");
         auto retained = take(runtime.hold(entity));
-        changed(document.erase_selected());
+        changed(document.erase_entities(document.selected_entities()));
         for (unsigned step = 0; step < 66; ++step) {
             changed(document.add_entity());
-            changed(document.erase_selected());
+            changed(document.erase_entities(document.selected_entities()));
         }
         collect(document);
         require(take(world::inspect_entity(runtime, entity)).state == world::EntityState::detached &&

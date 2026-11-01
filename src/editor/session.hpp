@@ -29,6 +29,10 @@ struct Property {
     std::string label, category, description;
     FieldRange range{};
 };
+struct PropertyPatch {
+    world::FieldPath path;
+    Scalar value;
+};
 struct Selection {
     ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;
@@ -147,17 +151,24 @@ public:
     Result<world::Commit> create_static_mesh(const assets::MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
     Result<world::Commit> create_camera(math::Vector3 position = {});
-    Result<world::Commit> erase_selected(); // All selected Entities form one history entry.
-    Result<world::Commit> erase_entities(); // Viewport actions target Entities even while inspecting a Component.
-    Result<world::Commit> duplicate_selected(); // Fresh Entity/Component identities; immutable resources stay shared.
+    // Deletes explicit subtrees as one history entry; unrelated document selection is preserved.
+    Result<world::Commit> erase_entities(std::span<const ObjectId>);
+    // Selects fresh Entity/Component identities; immutable resources stay shared.
+    Result<world::Commit> duplicate_entities(std::span<const ObjectId>);
     Result<world::Commit> reparent(ObjectId child, ObjectId parent,
+                                   world::ReparentRule = world::ReparentRule::keep_world,
+                                   std::size_t index = world::append);
+    // Publishes in input order and records the committed prefix as one history entry,
+    // stopping at the first rejection or notification error. This is not atomic publication.
+    // A non-append index is the first destination slot; subsequent children follow it.
+    Result<world::Commit> reparent(std::span<const ObjectId> children, ObjectId parent,
                                    world::ReparentRule = world::ReparentRule::keep_world,
                                    std::size_t index = world::append);
     Result<void> set_transform(ObjectId, world::Trs);
     Result<void> remove_transform(ObjectId);
     Result<world::Commit> set_space_reference(ObjectId, std::optional<ObjectId>,
                                               world::ReparentRule = world::ReparentRule::keep_world);
-    Result<world::Commit> add_component(TypeId);
+    Result<world::Commit> add_component(ObjectId entity, TypeId);
     Result<world::Commit> remove_component(ObjectId);
     Result<std::vector<ComponentType>> component_types() const;
     Result<std::vector<Property>> properties(ObjectId) const;
@@ -184,6 +195,9 @@ public:
     // without history; commit records one entry against the values seen at begin.
     Result<void> begin_group_edit(ObjectId, std::span<const world::FieldPath>, std::uint64_t control_session);
     Result<void> preview_group_edit(std::uint64_t control_session, std::span<const Scalar>);
+    // A complete scalar patch, validated together and recorded as one history item.
+    // Transform paths reject before cancelling any existing edit.
+    Result<void> set_properties(ObjectId, std::span<const PropertyPatch>);
     // Explicit import publication, never a parameter-history entry. Existing
     // resource roots retain identity and future captures resolve current pixels.
     Result<void> reimport_texture(Project&, std::string_view key, const std::filesystem::path& source);
@@ -342,10 +356,13 @@ private:
             ObjectRoot root;
             world::Trs before, after;
         };
-        ObjectRoot root;
-        ObjectId before_parent, after_parent;
-        std::size_t before_index{}, after_index{};
-        std::vector<Entry> transforms;
+        struct Move {
+            ObjectRoot root;
+            ObjectId before_parent, after_parent;
+            std::size_t before_index{}, after_index{};
+            std::vector<Entry> transforms;
+        };
+        std::vector<Move> moves;
     };
     struct TransformPresenceChange {
         ObjectRoot root;
@@ -530,7 +547,7 @@ private:
                                           const presentation::SkyMapBinding* = nullptr);
     void set_selection(Selection); // Single-object selection; resets the Entity set.
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
-    void forget_entity(ObjectId) noexcept;
+    void prune_selection() noexcept; // After a committed subtree detach, retain only World members.
     // Record the values a change left in the World (forward: after it is applied or redone).
     void forward_change(const Change&, bool forward);
     // Record the current values of the active edit's targets as replaceable ops.

@@ -15,9 +15,6 @@
 #include <vector>
 
 namespace atelier::editor {
-enum class SelectAll : std::uint8_t { select, deselect, toggle, invert };
-enum class TransformChannel : std::uint8_t { location, rotation, scale };
-
 // XYZ Euler angles in degrees, applied X then Y then Z (Houdini "Rx Ry Rz").
 math::Vector3 euler_degrees(math::Quaternion) noexcept;
 math::Quaternion from_euler_degrees(math::Vector3) noexcept;
@@ -85,15 +82,17 @@ public:
         return gesture_ && gesture_->modal ? std::wstring_view(hint_) : std::wstring_view{};
     }
     TransformTool displayed_tool(ToolSettings) const noexcept;
-    Result<void> snap_selection(Session&, ToolSettings, bool to_cursor);
-    Result<void> cursor_to_selection(const Session&);
+    Result<void> snap_selection(Session&, std::span<const ObjectId>, ToolSettings,
+                                std::optional<math::Vector3> destination = {});
+    Result<void> cursor_to_selection(const Session&, std::span<const ObjectId>);
     Result<void> place_duplicates(Session&, const ViewportView&, ToolSettings, math::Vector2 pointer);
     void cursor_to_grid(ToolSettings) noexcept;
-    Result<void> select_all(Session&, SelectAll);
-    Result<void> clear(Session& session, TransformChannel channel) {
-        return clear_channel(session, channel == TransformChannel::location   ? Operation::move
-                                      : channel == TransformChannel::rotation ? Operation::rotate
-                                                                              : Operation::scale);
+    Result<void> select_all(Session&, std::span<const ObjectId>, SelectAll);
+    Result<void> clear(Session& session, std::span<const ObjectId> entities, TransformChannel channel) {
+        return clear_channel(session, entities,
+                             channel == TransformChannel::location   ? Operation::move
+                             : channel == TransformChannel::rotation ? Operation::rotate
+                                                                     : Operation::scale);
     }
     void arm_box_select(math::Vector2 pointer, bool extend);
     ui::Cursor pointer_cursor() const noexcept;
@@ -176,7 +175,8 @@ private:
 
     static Result<void> preview_world(Session&, std::uint64_t, std::span<const ObjectId>, std::span<const world::Trs>,
                                       bool local_scale = false);
-    static std::optional<Targets> targets(const Session&, PivotMode, math::Vector3 cursor);
+    static std::optional<Targets> targets(const Session&, std::span<const ObjectId>, ObjectId active, PivotMode,
+                                          math::Vector3 cursor);
     struct Hit {
         ObjectId entity;
         math::Vector3 position, normal{0, 1, 0};
@@ -188,7 +188,7 @@ private:
                        bool amend_creation = false);
     Result<void> update(Session&, const ViewportView&, math::Vector2, bool snap, bool fine = false);
     Result<void> finish(Session&);
-    Result<void> clear_channel(Session&, Operation);
+    Result<void> clear_channel(Session&, std::span<const ObjectId>, Operation);
     Result<void> select_click(Session&, const ViewportView&, math::Vector2, ToolSettings, bool shift, bool control);
     Result<void> select_box(Session&, const ViewportView&, ToolSettings, const Marquee&);
     static Result<void> combine(Session&, std::span<const ObjectId> hits, ObjectId active, SelectMode);

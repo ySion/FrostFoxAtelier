@@ -148,9 +148,9 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(!tuple_reset_available(app, reset) &&
                 app.presented()->find(property_control(app, entity, 0))->style->foreground != modified,
             "Restoring defaults did not clear the modified state and reset availability.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(position(0) == 1 && position(1) == 2 && position(2) == 3, "Undo failed to restore the whole vector.");
-    click(app, control::redo);
+    click(app, operator_item(app, "edit.redo"));
     require(position(0) == 0 && position(1) == 0 && position(2) == 0, "Redo failed to reset the whole vector.");
 
     click(app, property_control(app, entity, 1));
@@ -166,11 +166,11 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(position(0) == 0 && position(1) == 0 && position(2) == 0 &&
                 app.document().undo_count() == filtered_history + 1,
             "Filtered reset did not restore the hidden component in one transaction.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(position(1) == 5 && app.query() == L"x" && tuple_reset_available(app, reset),
             "Undo did not restore the hidden component and whole-group modified state.");
     capture(app, output / "controls-filtered-reset.png");
-    click(app, control::redo);
+    click(app, operator_item(app, "edit.redo"));
     click(app, control::parameter_search);
     type(app, L"");
     key(app, VK_RETURN);
@@ -245,7 +245,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     key(app, VK_RETURN);
     require(app.control_workbench().values().vector4[3] == 2, "Narrow Vector4 last field was not editable.");
     capture(app, output / "controls-workbench-vector4.png");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(app.control_workbench().values().vector4[3] == 1, "Vector4 editing did not share sample history.");
     wheel(app, sample::list, 12);
     resize_panel(width);
@@ -258,12 +258,12 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     parameter_menu(app, sample::position_y);
     click(app, control::menu_paste);
     require(app.control_workbench().values().position[1] == 12.5, "Paste Value did not commit the clipboard value.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(app.control_workbench().values().position[1] == 0, "Menu paste did not produce one undoable edit.");
     parameter_menu(app, sample::position_x);
     click(app, control::menu_reset);
     require(app.control_workbench().values().position[0] == 0, "Scalar default command did not restore its value.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     parameter_menu(app, sample::name);
     click(app, control::menu_copy);
     parameter_menu(app, sample::position_x);
@@ -321,18 +321,18 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     require(std::abs(app.control_workbench().values().position[0] - 12.7) < 1e-6 &&
                 app.control_workbench().undo_count() == history_before + 1,
             "Middle drag did not commit one stepped edit.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     drag(false, true, false);
     require(std::abs(app.control_workbench().values().position[0] - 12.52) < 1e-6,
             "Shift ladder did not use fine steps.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     drag(false, false, false, true);
     require(std::abs(app.control_workbench().values().position[0] - 15.125) < 1e-6,
             "Alt ladder did not multiply by the selected increment.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     drag(true, false, false);
     require(app.control_workbench().values().position[0] == 0, "Ctrl+middle did not restore the default.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     {
         require_input_focus(app);
         KeyStateScope modifiers;
@@ -379,7 +379,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
                 "Cannot park the acceptance pointer after the ladder.");
         tick(app, 2);
     }
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     wheel(app, sample::list, -12);
     click(app, sample::mode);
     require(app.menu_window(), "Combo did not open its menu.");
@@ -390,7 +390,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     key(app, VK_DOWN);
     key(app, VK_ESCAPE);
     require(app.control_workbench().values().mode == 1, "Combo cancellation changed the selection.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(app.control_workbench().values().mode == 0, "Combo selection bypassed sample history.");
     wheel(app, sample::list, 12);
     click(app, sample::fold);
@@ -405,7 +405,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     click(app, sample::reset);
     require(app.control_workbench().values() == atelier::editor::ControlWorkbench::Values{},
             "Workbench reset did not restore sample defaults.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(app.control_workbench().values().position[0] == 12.5,
             "Sample reset did not have one reversible history entry.");
     verify_parameter_slider(app, output);
@@ -432,7 +432,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
                 std::abs(nested_fold.x - nested.x) < .1f && std::abs(nested_fold.width - nested.width) < .1f,
             "Nested page insets accumulated in tabs or its full-width fold header.");
     capture(app, output / "controls-color-channels.png");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(app.control_workbench().values().color == color_before, "Color editing did not share sample history.");
     click(app, sample::color_fold);
     require(!app.presented()->find(sample::red), "Nested fold did not collapse the color controls.");

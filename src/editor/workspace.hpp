@@ -1,8 +1,9 @@
 #pragma once
 
 #include "editor/session.hpp"
-#include "editor/commands.hpp"
+#include "editor/menu_bindings.hpp"
 #include "editor/operators.hpp"
+#include "editor/keymap.hpp"
 #include "editor/control_workbench.hpp"
 #include "editor/world_panel.hpp"
 #include "editor/property_row.hpp"
@@ -23,14 +24,6 @@ std::array<double, 3> hsv_to_rgb(std::array<double, 3>) noexcept;
 std::wstring color_hex(std::array<double, 3>);
 std::optional<std::array<double, 3>> parse_color_hex(std::wstring_view);
 namespace control {
-constexpr ui::ControlKey command_key(Command command) {
-    return static_cast<ui::ControlKey>(command);
-}
-inline constexpr auto add_entity = command_key(Command::create_entity),
-                      remove_selected = command_key(Command::erase_selected), undo = command_key(Command::undo),
-                      redo = command_key(Command::redo), focus = command_key(Command::focus),
-                      reset = command_key(Command::reset_camera),
-                      add_static_mesh = command_key(Command::create_static_mesh);
 inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
 inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes = 846;
@@ -56,8 +49,7 @@ inline constexpr ui::ControlKey inline_rename = 1023;
 // Colour editor popup and its fields (fixed keys; one editor at a time).
 inline constexpr ui::ControlKey color_editor = 940, color_rgb = 941, color_hsv = 944, color_hex = 953,
                                 color_revert = 954, color_done = 955, color_group = 956; // rgb 941..943, hsv 944..946
-inline constexpr ui::ControlKey scene_tab = 600, entities_tab = 601, parameters_tab = 602,
-                                reset_layout = command_key(Command::reset_layout);
+inline constexpr ui::ControlKey scene_tab = 600, entities_tab = 601, parameters_tab = 602;
 inline constexpr ui::ControlKey assets_tab = 604, assets_content = 650;
 inline constexpr ui::ControlKey output_tab = 607, output_content = 690, output_table = 691;
 inline constexpr ui::ControlKey structure_tab = 608, structure_content = 694, structure_tree = 695,
@@ -82,27 +74,17 @@ constexpr int navigation_direction(ui::ControlKey key) {
                                                                                        : 0;
 }
 inline constexpr ui::ControlKey parameter_search = 54, parameter_search_toggle = 86;
-inline constexpr ui::ControlKey add_component = 87, component_choice_first = 1ULL << 40,
-                                property_choice_first = 1ULL << 39;
+inline constexpr ui::ControlKey add_component = 87, component_choice_first = 1ULL << 40;
 inline constexpr ui::ControlKey parameter_list = 84, group_components = 1ULL << 42,
                                 group_categories = group_components + 1;
 inline constexpr ui::ControlKey parameter_menu = 500, menu_group_reset = 501, menu_reset = 502, menu_copy = 503,
                                 menu_paste = 504;
-inline constexpr auto file_menu = menu_key(CommandGroup::file), edit_menu = menu_key(CommandGroup::edit),
-                      create_menu = menu_key(CommandGroup::create), view_menu = menu_key(CommandGroup::view),
-                      window_menu = menu_key(CommandGroup::window), help_menu = menu_key(CommandGroup::help);
-inline constexpr auto exit = command_key(Command::exit), show_scene = command_key(Command::show_scene),
-                      show_parameters = command_key(Command::show_parameters),
-                      show_controls = command_key(Command::show_controls),
-                      show_entities = command_key(Command::show_entities),
-                      maximize_pane = command_key(Command::maximize_pane);
+inline constexpr auto file_menu = menu_key(MenuGroup::file), edit_menu = menu_key(MenuGroup::edit),
+                      create_menu = menu_key(MenuGroup::create), view_menu = menu_key(MenuGroup::view),
+                      window_menu = menu_key(MenuGroup::window), help_menu = menu_key(MenuGroup::help);
 inline constexpr ui::ControlKey menu_bar_handle = 715, menu_bar_body = 716;
 constexpr bool is_menu(ui::ControlKey key) {
-    return command_group(key) != nullptr;
-}
-constexpr ui::ControlKey command_menu(ui::ControlKey key) {
-    const auto* definition = command_definition(key);
-    return definition ? menu_key(definition->group) : 0;
+    return menu_group(key) != nullptr;
 }
 }
 struct Workspace {
@@ -125,7 +107,8 @@ struct Workspace {
             material_override,
             material_field,
             color_pick,
-            saved_data
+            saved_data,
+            operator_call
         };
         ui::ControlKey key{};
         ObjectId object;
@@ -136,6 +119,7 @@ struct Workspace {
         std::size_t index{};
         double color_maximum{}; // color_pick reuses the owning numeric property's range.
         std::string material_path{}; // Stable MS declaration path; index is a vector lane.
+        std::unique_ptr<const OperatorCall> call{}; // Allocated only for operator bindings, not each property row.
     };
     Workspace();
     Workspace(const Workspace&) = delete;
@@ -187,8 +171,9 @@ struct Workspace {
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
     bool sample_history() const noexcept { return dock.focused_tab() == control::workbench; }
     bool can_navigate(int direction) const noexcept;
-    Result<void> navigate(Session&, int direction);
-    Result<void> select_tree(Session&, ui::ControlKey, ui::SelectionModifiers = {});
+    Result<void> navigate(Session&, OperatorHost&, int direction);
+    Result<void> select_object(Session&, OperatorHost&, ObjectId);
+    Result<void> select_tree(Session&, OperatorHost&, ui::ControlKey, ui::SelectionModifiers = {});
     // Tree row expansion is view state: not undoable, never changes the document
     // or the selection. Scene Tree addresses its World row as ObjectId{}. If any
     // identity is not a row of the tree, nothing changes.
@@ -196,11 +181,11 @@ struct Workspace {
     Result<void> set_tree_expanded(const Session&, EntityTree, std::span<const ObjectId>, bool expanded);
     // Expands the Entity's Scene Tree ancestors; false when the tree filter hides its row.
     Result<bool> reveal_in_tree(const Session&, ObjectId entity);
-    // Commands served by an operator answer with its poll.
-    bool command_enabled(Command, Session&, Project* = nullptr, const ui::ControlBox* focused = nullptr) const;
+    // Finds a currently projected call; closed menus cannot retain an executable binding.
+    ui::ControlKey operator_control(const OperatorCall&) const;
     // The accepted focused control (or a menu's return focus) identifies an inline material document.
     Context operator_context(Session&, Project*, bool interactive, const ui::ControlBox* focused = nullptr) const;
-    Result<bool> apply_view(Session&, const ui::Action&, std::array<float, 3> focus = {});
+    Result<bool> apply_view(Session&, OperatorHost&, const ui::Action&);
     // Copies the World's environment into the view's author settings; true when they changed.
     bool sync_world(const Session&);
     Result<void> set_view_settings(Session&, const renderer::ViewSettings&, std::array<float, 3> focus = {});
@@ -263,13 +248,6 @@ struct Workspace {
     ui::ControlKey reset_control(ObjectId) const noexcept;
     ui::ControlKey name_control(ObjectId) const noexcept;
     std::optional<TypeId> component_choice(ui::ControlKey) const noexcept;
-    struct PropertyChoice {
-        ObjectId object;
-        std::vector<FieldId> path;
-        EnumValue value;
-        ui::ControlKey field;
-    };
-    std::optional<PropertyChoice> property_choice(ui::ControlKey) const;
     struct MaterialChoice {
         enum class Kind { assign, clear, edit, texture, create_scene, discard };
         Kind kind{};
@@ -291,8 +269,7 @@ private:
     std::vector<Binding> bindings_;
     std::size_t binding_cursor_{};
     ui::ControlKey next_binding_{1024};
-    std::array<ui::ControlKey, command_definitions.size()>
-        shelf_items_{}; // Visual item identities, separate from command IDs.
+    std::array<ui::ControlKey, std::size(menu_bindings)> shelf_items_{};
     std::array<ui::ControlKey, 5> resource_properties_{};
     std::vector<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
     std::size_t navigation_cursor_{};
@@ -318,16 +295,14 @@ private:
     std::vector<std::uint32_t> window_tree(EntityTreeView&, ObjectId primary, std::wstring_view filter,
                                            ui::TreeViewport, std::span<const ObjectId> pinned);
     std::vector<ComponentType> component_choices_;
-    std::vector<PropertyChoice> property_choices_;
     std::vector<MaterialChoice> material_choices_;
     Selection menu_selection_;
     ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
+    ui::ControlKey bind_operator(OperatorCall);
     ui::ControlKey bind_material(ObjectId, std::string_view, Binding::Kind, ObjectId component = {},
                                  std::string_view slot = {}, std::size_t index = 0);
     std::vector<ui::MenuItem> material_menu(const Binding&, const Session&, const Project*);
 };
-// The operator call serving a command, or none; menus and keys call operators directly in later O1 steps.
-std::optional<OperatorCall> operator_for(Command);
 RegionKind region_of(ui::ControlKey tab) noexcept;
 ui::ControlKey region_tab(RegionKind) noexcept; // 0 when the region has no Dock page.
 }

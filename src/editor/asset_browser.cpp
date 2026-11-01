@@ -1,5 +1,4 @@
 #include "editor/asset_browser.hpp"
-#include "editor/commands.hpp"
 #include "ui_language/live_document.hpp"
 #include "assets/file.hpp"
 #include "assets/builtin_materials.hpp"
@@ -384,27 +383,6 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         items.back().icon = ui::ControlIcon::plus;
         items.push_back({id::rename, L"Rename", can_rename(), false, {}, L"F2"});
         items.back().icon = ui::ControlIcon::rename;
-        items.push_back({static_cast<ui::ControlKey>(Command::reimport_texture),
-                         L"Reimport Texture From...",
-                         has_project_ && !engine_ && selected_ && selected_->kind == assets::AssetKind::texture,
-                         false,
-                         {}});
-        items.push_back({static_cast<ui::ControlKey>(Command::reimport_mesh),
-                         L"Reimport Mesh From...",
-                         has_project_ && !engine_ && selected_ && selected_->kind == assets::AssetKind::mesh,
-                         false,
-                         {}});
-        for (const auto command : {Command::import_mesh, Command::import_texture, Command::create_material_source,
-                                   Command::create_material, Command::refresh_assets}) {
-            const auto* definition = command_definition(static_cast<ui::ControlKey>(command));
-            items.push_back({static_cast<ui::ControlKey>(command),
-                             std::wstring(definition->title),
-                             has_project_,
-                             false,
-                             {},
-                             std::wstring(definition->shortcut),
-                             command == Command::import_mesh});
-        }
     }
     return items;
 }

@@ -60,7 +60,7 @@ void scene_lit_antialiasing(Application& app, unsigned mode) {
     const auto history = app.document().undo_count();
     const auto document = model(app.document().serialize());
     const auto previous = Access::scene_lit_view(app).lit.antialiasing;
-    require(bool(Access::command(app, atelier::editor::Command::show_world_settings)), "World settings did not open.");
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "World settings did not open.");
     tick(app, 1);
     click(app, atelier::editor::world_control::effects_tab);
     const auto field = atelier::editor::world_control::field(atelier::editor::ViewOption::antialiasing);
@@ -79,13 +79,12 @@ void scene_lit_antialiasing(Application& app, unsigned mode) {
                 app.document().undo_count() == history + (changed ? 1 : 0) &&
                 (model(app.document().serialize()) != document) == changed,
             "World AA selection did not update scene data/history exactly once.");
-    require(bool(Access::command(app, atelier::editor::Command::show_parameters)), "Parameters did not reopen.");
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "parameters"}})), "Parameters did not reopen.");
     tick(app, 1);
 }
 void verify_scene_lit_window(Application& app, const std::filesystem::path& output,
                              const std::filesystem::path& requested) {
     using Access = atelier::application::EditorAcceptanceAccess;
-    using atelier::editor::Command;
     namespace render = atelier::renderer;
     namespace world = atelier::world;
     namespace presentation = atelier::presentation;
@@ -152,13 +151,12 @@ void verify_scene_lit_window(Application& app, const std::filesystem::path& outp
     model(Access::select_entity(
         app, model(world::inspect_component(app.document().world().runtime(), app.document().environment())).owner));
     tick(app, 2);
-    click(app, atelier::editor::menu_key(atelier::editor::CommandGroup::edit));
-    click(app, static_cast<ControlKey>(Command::erase_selected));
+    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::edit));
+    click(app, operator_item(app, "scene.delete", {{"target", "object"}}));
     tick(app, 2);
     require(sky() == std::array<float, 3>{} && app.document().environment() == atelier::ObjectId{},
             "Deleting the Environment left environment radiance.");
-    constexpr std::array commands{Command::create_point_light, Command::create_rectangle_light,
-                                  Command::create_directional_light};
+    constexpr std::array commands{"point", "rectangle", "directional"};
     constexpr std::array kinds{presentation::LightKind::point, presentation::LightKind::rectangle,
                                presentation::LightKind::directional};
     constexpr std::array captions{L"Intensity (cd)", L"Intensity (cd/m²)", L"Illuminance (lux)"};
@@ -167,10 +165,9 @@ void verify_scene_lit_window(Application& app, const std::filesystem::path& outp
     for (std::size_t index = 0; index < commands.size(); ++index) {
         const auto history = app.document().undo_count();
         const auto count = entities(app).size();
-        std::printf("Scene Lit window step: create light %zu (%llu)\n", index,
-                    static_cast<unsigned long long>(commands[index]));
+        std::printf("Scene Lit window step: create light %zu (%s)\n", index, commands[index]);
         click(app, control::create_menu);
-        const auto command = static_cast<ControlKey>(commands[index]);
+        const auto command = Access::operator_item(app, "scene.add", {{"kind", commands[index]}});
         require(app.menu_frame() && app.menu_frame()->find(command),
                 "Native Create menu omitted a real light command.");
         click(app, command);
@@ -191,7 +188,7 @@ void verify_scene_lit_window(Application& app, const std::filesystem::path& outp
         require(entities(app).size() == count + 1 && app.document().undo_count() == history + 1 &&
                     model(presentation::read_light(runtime, light)).kind == kinds[index],
                 "Native light creation did not create one complete, undoable World Entity.");
-        click(app, static_cast<ControlKey>(Command::show_parameters));
+        click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
         const auto fields = model(app.document().properties(light));
         const auto has_field = [&](std::string_view name) {
             const auto field = std::ranges::find(fields, name, &atelier::editor::Property::name);

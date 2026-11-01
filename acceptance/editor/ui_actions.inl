@@ -17,8 +17,7 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     auto component = take(language::Component::compile(runtime, "actions.ui.source", source));
     ui::ControlKey next = 2000;
     const std::array<language::KeyBinding, 4> keys{{{"first", 501}, {"second", 502}, {"local", 503}, {"value", 504}}};
-    const auto create = static_cast<ui::ControlKey>(editor::Command::create_entity);
-    const auto undo = static_cast<ui::ControlKey>(editor::Command::undo);
+    const ui::ControlKey create = 10, undo = 12;
     std::array<language::InputValue, 3> inputs{language::ActionBinding{create, true},
                                                language::ActionBinding{create, true}, true};
     auto instance = take(language::Instance::create(component, 0, next, keys, inputs));

@@ -446,7 +446,7 @@ void profile_project_json(const std::filesystem::path& output) {
                 assets::mesh_assets()[static_cast<std::size_t>(entity) % assets::mesh_assets().size()]));
             take(document.rename(document.selection().entity, L"测量 Entity " + std::to_wstring(entity)));
             for (int component = 1; component < components; ++component)
-                changed(document.add_component(document.types().component));
+                changed(document.add_component(document.selection().entity, document.types().component));
         }
         const auto text = take(document.serialize());
         const auto path = output / (std::to_string(entities) + "x" + std::to_string(components) + ".scene");

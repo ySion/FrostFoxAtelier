@@ -16,7 +16,7 @@ void verify_render_performance(Application& app, const std::filesystem::path& ou
                             .button = ui::PointerButton::primary});
         tick(app, 1);
     };
-    require(bool(Access::command(app, editor::Command::show_world_settings)), "Performance World page did not open.");
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Performance World page did not open.");
     Access::performance_panel(app);
     tick(app);
     click(key::performance_tab);
@@ -48,7 +48,7 @@ void verify_render_performance(Application& app, const std::filesystem::path& ou
     require(table().data->columns[0].width > width + 10,
             "Performance columns did not resize through shared Table input.");
     const auto saved_width = table().data->columns[0].width;
-    require(bool(Access::command(app, editor::Command::create_point_light)), "Performance fixture local light failed.");
+    require(bool(Access::invoke(app, "scene.add", {{"kind", "point"}})), "Performance fixture local light failed.");
     Access::performance_panel(app);
     tick(app);
     click(key::performance_tab);

@@ -193,9 +193,11 @@ std::vector<detail::ScalarField> business_fields(Runtime& runtime, const world::
                   [&](const auto& field) { return std::ranges::find(reserved, field.path.front()) != reserved.end(); });
     return result;
 }
-Json encode_string(Runtime& runtime, ObjectId object, const detail::ScalarField& field) {
+Json encode_string(Runtime& runtime, const PropertyTarget& target, const detail::ScalarField& field) {
     String value;
-    take(runtime.read(object, field.path, ValueOutput{field.type, &value}));
+    const ValueOutput output{field.type, &value};
+    take(target.object != ObjectId{} ? runtime.read(target.object, field.path, output)
+                                     : runtime.read(target.type, target.storage, field.path, output));
     return std::string{value.c_str(), value.size()};
 }
 // A whole Array leaf as a JSON array of its element leaves.
@@ -278,9 +280,9 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
             std::optional<Scalar> clamped;
             try {
                 if (field->form == ValueForm::inline_value && field->kind == TypeKind::string) {
-                    if (!item.is_string())
+                    if (!field->material_entries_json && !item.is_string())
                         throw Mismatch("Expected a string property.");
-                    const auto& text = item.get_ref<const std::string&>();
+                    const auto text = field->material_entries_json ? item.dump() : item.get<std::string>();
                     if (!StringView{text}.is_valid_utf8())
                         throw Mismatch("Expected UTF-8 text.");
                     if (auto written = store(field->path, String{StringView{text}}); !written)
@@ -461,15 +463,31 @@ ValueOutput ArrayLeaf::output() const noexcept {
 
 Result<Json> encode_properties(Runtime& runtime, ObjectId object, std::span<const detail::ScalarField> fields,
                                const EncodeReference& reference) {
+    const auto type = runtime.type_of(object);
+    if (!type)
+        return std::unexpected(type.error());
+    return encode_properties(runtime, PropertyTarget{*type, object}, fields, reference);
+}
+Result<Json> encode_properties(Runtime& runtime, const PropertyTarget& target,
+                               std::span<const detail::ScalarField> fields, const EncodeReference& reference) {
     try {
+        const auto object = target.object;
+        if ((object == ObjectId{}) == target.storage.empty())
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, "A properties target is either an object or a record value."});
         Json result = Json::object();
         for (const auto& field : fields) {
+            if (object == ObjectId{} && (field.kind == TypeKind::array || field.form == ValueForm::strong_sequence))
+                return std::unexpected(
+                    Error{ErrorCode::unsupported_operation, "Indexed properties require an object target."});
             Json value;
             if (field.form == ValueForm::inline_value)
-                value = field.kind == TypeKind::string ? encode_string(runtime, object, field)
+                value = field.kind == TypeKind::string ? encode_string(runtime, target, field)
                         : field.kind == TypeKind::array
                             ? encode_array(runtime, object, field)
-                            : encode_scalar(runtime, take(runtime.read(object, field.path)));
+                            : encode_scalar(runtime, take(object != ObjectId{}
+                                                              ? runtime.read(object, field.path)
+                                                              : runtime.read(target.type, target.storage, field.path)));
             else if (field.form == ValueForm::strong_sequence) {
                 value = Json::array();
                 const auto locator = take(runtime.reference_field(object, field.path));
@@ -477,7 +495,12 @@ Result<Json> encode_properties(Runtime& runtime, ObjectId object, std::span<cons
                 for (std::size_t i = 0; i < count; ++i)
                     value.push_back(reference(take(runtime.sequence_read(locator, i)).id()));
             } else
-                value = reference(take(runtime.read_reference(object, field.path)).id());
+                value = reference(take(object != ObjectId{}
+                                           ? runtime.read_reference(object, field.path)
+                                           : runtime.read_reference(target.type, target.storage, field.path))
+                                      .id());
+            if (field.material_entries_json)
+                value = Json::parse(value.get_ref<const std::string&>());
             auto* at = &result;
             for (const auto& name : field.names)
                 at = &(*at)[name];
@@ -2766,19 +2789,24 @@ void Session::forward_change(const Change& change, bool forward) {
                     space["origin"] = C::live_origin(*this, entity);
                     push(set(entity, "space", std::move(space)));
                 } else if constexpr (std::is_same_v<T, ReparentChange>) {
-                    const auto root = item.root.id(), parent = take(world::parent_entity(runtime_, root));
-                    const auto spatial = take(world::has_transform(runtime_, root));
-                    push({{"op", "move"},
-                          {"id", C::live_id(*this, root)},
-                          {"parent", parent == ObjectId{} ? Json(nullptr) : Json(C::live_id(*this, parent))},
-                          {"index", C::live_position(*this, root, parent)},
-                          {"space",
-                           spatial ? C::space_leaves(take(world::read_transform(runtime_, root)), 7) : Json(nullptr)}});
-                    for (const auto& entry : item.transforms)
-                        if (entry.root.id() != root)
-                            push(set(entry.root.id(), "space",
-                                     C::space_leaves(take(world::read_transform(runtime_, entry.root.id())),
-                                                     C::leaf_mask(entry.before, entry.after))));
+                    for (std::size_t i = 0; i < item.moves.size(); ++i) {
+                        const auto& move = item.moves[forward ? i : item.moves.size() - 1 - i];
+                        const auto root = move.root.id(), parent = forward ? move.after_parent : move.before_parent;
+                        const auto transform = std::ranges::find_if(
+                            move.transforms, [&](const auto& entry) { return entry.root.id() == root; });
+                        push({{"op", "move"},
+                              {"id", C::live_id(*this, root)},
+                              {"parent", parent == ObjectId{} ? Json(nullptr) : Json(C::live_id(*this, parent))},
+                              {"index", forward ? move.after_index : move.before_index},
+                              {"space", transform != move.transforms.end()
+                                            ? C::space_leaves(forward ? transform->after : transform->before, 7)
+                                            : Json(nullptr)}});
+                        for (const auto& entry : move.transforms)
+                            if (entry.root.id() != root)
+                                push(set(entry.root.id(), "space",
+                                         C::space_leaves(forward ? entry.after : entry.before,
+                                                         C::leaf_mask(entry.before, entry.after))));
+                    }
                 } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
                     // Play resolves a binding only to a material it already has, so definitions go first.
                     const auto component = item.root.id();
@@ -3076,13 +3104,13 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text, Projec
         return failed(error);
     }
 }
-Result<world::Commit> Session::duplicate_selected() {
+Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> entities) {
     try {
         if (editing())
             throw std::runtime_error("Finish the active edit before duplicating.");
-        if (selected_entities_.empty())
+        if (entities.empty())
             return world::Commit{};
-        auto graph = GraphCodec::capture(*this, selected_entities_, false);
+        auto graph = GraphCodec::capture(*this, entities, false);
         GraphCodec::Load load;
         auto prepared = GraphCodec::construct(*this, graph, nullptr, false, load);
         for (auto root : prepared.roots) {
@@ -3190,9 +3218,11 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
                 for (const auto& entry : item.entries)
                     drop(entry.root.id(), space);
             } else if constexpr (std::is_same_v<T, ReparentChange>) {
-                drop(item.root.id(), space);
-                for (const auto& entry : item.transforms)
-                    drop(entry.root.id(), space);
+                for (const auto& move : item.moves) {
+                    drop(move.root.id(), space);
+                    for (const auto& entry : move.transforms)
+                        drop(entry.root.id(), space);
+                }
             } else if constexpr (std::is_same_v<T, TransformPresenceChange> || std::is_same_v<T, SpaceReferenceChange>)
                 drop(item.root.id(), space);
             else if constexpr (std::is_same_v<T, MaterialBindingChange>)

@@ -37,7 +37,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     const auto entity = document.selection().entity;
     require(document.selection() == editor::Selection{entity, entity} && !take(world::has_transform(runtime, entity)),
             "A Source Entity acquired an assumed transform or a different inspected identity.");
-    editor::Workspace workspace;
+    operator_parameters::Host host(document);
+    auto& workspace = host.panels;
     workspace.project_open = true;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
@@ -50,7 +51,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         for (const auto& effect : reply.effects)
             if (const auto* action = std::get_if<ui::Action>(&effect)) {
                 if (action->kind == ui::ActionKind::select)
-                    take(workspace.select_tree(document, action->key));
+                    take(workspace.select_tree(document, host, action->key));
                 else if (action->kind == ui::ActionKind::context_menu)
                     workspace.menu = std::get<ui::ContextMenuRequest>(action->value);
                 else if (action->kind == ui::ActionKind::edit_cancel)
@@ -86,7 +87,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
             "Parameters retained structural component creation.");
     const auto scene_key = workspace.object_control(entity);
     require(scene_key, "Scene Tree lost its Entity identity.");
-    changed(document.add_component(stats_type));
+    changed(document.add_component(entity, stats_type));
     const auto stats = document.selection().object;
     require(stats != entity && document.selection().entity == entity,
             "Adding a component did not select the new object in its Entity context.");
@@ -124,7 +125,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     const auto history = document.undo_count();
     take(document.begin_edit(stats, energy, field_key));
     take(document.preview_edit(field_key, 8.f));
-    take(workspace.select_tree(document, component_row));
+    take(workspace.select_tree(document, host, component_row));
     require(document.owns_edit(field_key) && std::get<float>(take(document.read_property(stats, energy))) == 8 &&
                 document.undo_count() == history,
             "Selecting the same object cancelled or committed its active draft.");
@@ -148,12 +149,12 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     changed(document.redo());
     publish();
     const auto retired_row = structure_key(stats);
-    changed(document.erase_selected());
+    changed(document.remove_component(stats));
     publish();
     require(document.selection() == editor::Selection{entity, entity} && !surface.presented()->find(retired_row) &&
                 !document.select(stats),
             "Deleting a selected component retained a stale inspection target or removed its Entity.");
-    take(workspace.select_tree(document, retired_row));
+    take(workspace.select_tree(document, host, retired_row));
     require(document.selection() == editor::Selection{entity, entity},
             "A retired structure key selected a stale component.");
     changed(document.undo());
@@ -166,7 +167,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     require(document.selection() == editor::Selection{entity, entity},
             "Repeated component removal did not restore owner selection.");
     changed(document.undo());
-    changed(document.add_component(settings_type));
+    changed(document.add_component(entity, settings_type));
     const auto settings = document.selection().object;
     publish();
     const auto mode_key = workspace.field_control(settings, mode);
@@ -179,12 +180,28 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     require(workspace.menu_items.size() == 2 && workspace.menu_items[0].behavior == ui::MenuBehavior::radio &&
                 workspace.menu_items[0].selected && !workspace.menu_items[1].selected,
             "Enum menu lost its declared choices or selected value.");
-    const auto selected = workspace.property_choice(workspace.menu_items[1].key);
-    require(selected && selected->object == settings && selected->value == EnumValue{enum_type, 2},
+    const auto choice_key = workspace.menu_items[1].key;
+    const auto* selected = workspace.binding(choice_key);
+    require(selected && selected->kind == editor::Workspace::Binding::Kind::operator_call && selected->call &&
+                selected->call->id == "scene.set_properties" &&
+                selected->call->args == assets::json_format::Json{{"mode", "Active"}} &&
+                selected->call->context.selection == editor::SelectionContext{entity, settings, {entity}},
             "Enum menu lost the exact typed property target.");
-    take(document.set_property(selected->object, selected->path, Scalar{selected->value}, selected->field));
+    const auto call = *selected->call;
+    publish();
+    require(workspace.menu_items[1].key == choice_key, "An unchanged enum call lost its live control identity.");
+    const auto before_choice = document.undo_count();
+    take(editor::call(workspace.operators, host, workspace.operator_context(document, &project, true), call));
+    require(take(document.read_property(settings, mode)) == Scalar{EnumValue{enum_type, 2}} &&
+                document.undo_count() == before_choice + 1,
+            "The enum menu's operator did not commit the selected value as one history item.");
+    changed(document.undo());
+    require(take(document.read_property(settings, mode)) == Scalar{EnumValue{enum_type, 0}},
+            "Enum operator Undo did not restore its original value.");
+    changed(document.redo());
     workspace.menu.reset();
     publish();
+    require(!workspace.binding(choice_key), "A closed enum menu kept an executable old binding.");
     const auto saved = take(document.serialize());
     const auto enum_history = document.undo_count();
     require(!document.set_property(settings, mode, Scalar{EnumValue{enum_type, 999}}, mode_key) &&
@@ -235,7 +252,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
                     has_text(items, L"properties.energy") && has_text(items, L"Saved Data · Settings") &&
                     has_text(items, L"properties.legacy") && has_text(items, L"3"),
                 "Parameters did not show placeholders and their saved data.");
-        require(!inspector.command_enabled(editor::Command::discard_saved_data, *kept),
+        require(!inspector.operators.find("scene.discard_saved_data")
+                     ->poll(inspector.operator_context(*kept, &project, true)),
                 "Discard Saved Data targeted an Entity without saved data.");
         require(inspector.dock.select(editor::control::entities_tab), "Scene Tree is not a dockable tab.");
         items = inspector.describe(*kept, {1600, 1000}, nullptr, &project);
@@ -247,12 +265,15 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
                                     }),
                 "Scene Tree did not mark an Entity with saved data.");
         take(kept->select(extra));
-        require(inspector.command_enabled(editor::Command::discard_saved_data, *kept),
+        require(inspector.operators.find("scene.discard_saved_data")
+                    ->poll(inspector.operator_context(*kept, &project, true))
+                    .has_value(),
                 "Discard Saved Data was unavailable for a component with saved data.");
         const auto before = kept->issues().size();
         take(kept->discard_retained(extra));
         require(!kept->has_retained(extra) && kept->issues().size() == before - 1 &&
-                    !inspector.command_enabled(editor::Command::discard_saved_data, *kept),
+                    !inspector.operators.find("scene.discard_saved_data")
+                         ->poll(inspector.operator_context(*kept, &project, true)),
                 "Discarding saved data left it reported or available.");
         changed(kept->undo());
         require(kept->has_retained(extra) && kept->issues().size() == before,

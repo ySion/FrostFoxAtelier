@@ -247,8 +247,8 @@ void verify_source_editor() {
     frame();
     require(!surface.presented()->find(editor::source_control::buffer)->enabled,
             "Closed source left a live editing target.");
-    require(!workspace.command_enabled(editor::Command::undo, scene) &&
-                !workspace.command_enabled(editor::Command::save_document, scene),
+    require(!workspace.operators.find("edit.undo")->poll(workspace.operator_context(scene, nullptr, true)) &&
+                !workspace.operators.find("file.save")->poll(workspace.operator_context(scene, nullptr, true)),
             "An empty Code panel routed save/undo to the scene.");
     take(editor::write_file(path, "ui Broken( {"));
     editor::Session cold_scene;

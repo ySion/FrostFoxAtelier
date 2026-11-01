@@ -31,7 +31,7 @@ void verify_viewport_display(Application& app, const std::filesystem::path& outp
             "Resource Open gestures implicitly created a scene object.");
     click(app, atelier::editor::browser_control::add);
     // Inspect actual faces at a useful scale, beyond the selected edge coverage.
-    click(app, control::focus);
+    click(app, operator_item(app, "view.frame_selected"));
     require_input_focus(app);
     wheel(app, control::viewport, 5);
     const auto entity = app.document().selection().entity;

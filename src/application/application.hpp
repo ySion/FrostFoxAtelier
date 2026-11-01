@@ -28,17 +28,18 @@ public:
     // A require_scene open also checks the loaded scene with dmit before retiring the current document.
     Result<void> open_project(const std::filesystem::path&, bool create = false,
                               ProjectOpenPolicy = ProjectOpenPolicy::allow_repair,
-                              const std::function<Result<void>(const editor::Session&)>& admit = {});
-    Result<void> open_scene(const std::filesystem::path&);
+                              const std::function<Result<void>(const editor::Session&)>& admit = {},
+                              bool interactive = true);
+    Result<void> open_scene(const std::filesystem::path&, bool interactive = true);
     // View preferences only; authored World settings remain unchanged.
     Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading);
     Result<renderer::ViewSettings> fitted_probe_view(bool follow_focus) const;
-    Result<void> open_source(const std::filesystem::path&);
-    Result<void> save_scene(const std::filesystem::path& relative = {});
+    Result<void> open_source(const std::filesystem::path&) override;
+    Result<void> save_scene(const std::filesystem::path& relative = {}) override;
     Result<void> build_project(bool rebuild = false);
     Result<void> run_project();
     Result<void> preview_project_ui();
-    Result<void> create_source(const std::filesystem::path& relative, bool project_ui = false);
+    Result<void> create_source(const std::filesystem::path& relative, bool project_ui = false) override;
     void stop_project() noexcept {
         restart_play_ = false;
         play_.stop();
@@ -187,6 +188,7 @@ private:
     }
     void native(NativeEvent);
     void input(const ui::Event&, WPARAM native_key);
+    bool key_input(const ui::Event&, std::uint32_t, editor::RegionKind, editor::KeyPhase);
     void request_menu(const ui::ContextMenuRequest&);
     void close_menu(bool restore_focus = true);
     void update_menu();
@@ -194,22 +196,47 @@ private:
     bool pie_input(const ui::Event&, WPARAM);
     bool invoke_menu(const ui::Action&, std::span<const ui::MenuItem>);
     bool effects(const ui::Reply&);
-    Result<void> execute(editor::Command, std::string_view asset = {});
     const ui::ControlBox* command_focus() const noexcept;
     editor::Context operator_context(bool interactive);
-    Result<editor::OperatorReport> call_operator(const editor::OperatorCall&, bool interactive);
+    Result<editor::OperatorReport> call_operator(const editor::OperatorCall&, bool interactive,
+                                                 const editor::ResolveReference& = {});
+    Result<void> apply_document_request(const editor::DocumentRequest&);
     // UI entry: an unavailable operator is a silent no-op unless the caller reports its reason.
-    Result<void> run_operator(std::string_view id, bool report_unavailable = false);
+    // Completed text edits pass interactive=false: an empty committed name must fail, not reopen a prompt.
+    Result<void> run_operator(const editor::OperatorCall&, bool report_unavailable = false, bool interactive = true);
+    Result<std::optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path& initial,
+                                                             std::wstring_view filename) override;
+    void asset_created(std::string_view key, bool inspect_material) override;
     Result<void> end_interaction() override;
     const editor::Camera& camera() const noexcept override { return camera_; }
     Result<void> set_camera(const editor::Camera& camera) override { return set_camera(camera, true); }
+    editor::ViewportTool& viewport_tool() noexcept override { return viewport_tool_; }
+    Result<void> place_duplicates() override;
+    Result<void> begin_entity_rename(ObjectId, editor::RegionKind) override;
     void reset_layout() override { workspace_.reset_layout(); }
     Result<void> close_tab(editor::RegionKind, bool interactive) override;
     void maximize_tab(editor::RegionKind) override;
+    void show_tab(editor::RegionKind) override;
+    void cycle_tab(editor::RegionKind, int direction) override;
     Result<void> source_history(bool redo) override;
     Result<void> workbench_history(bool redo) override;
     void scene_changed() override;
     void set_tool_settings(const editor::ToolSettings& settings) override { workspace_.viewport_settings = settings; }
+    Result<void> set_view_settings(const renderer::ViewSettings&) override;
+    void quit() override { PostMessageW(window(), WM_CLOSE, 0, 0); }
+    void about() override;
+    void select_box() override;
+    void show_menu(editor::MenuKind) override;
+    void toggle_view(editor::ViewToggleOption) override;
+    Result<void> fit_lighting(bool follow_focus) override;
+    Result<void> rename_asset(std::string_view key, std::string_view name, bool interactive) override;
+    Result<void> save_documents(const editor::Context&, bool all) override;
+    Result<void> close_source(bool interactive) override;
+    Result<void> reload_source(bool interactive) override;
+    Result<void> start_play(bool preview_ui, bool interactive) override;
+    void stop_play(bool restart) override;
+    Result<std::string> import_asset(editor::ImportKind, const std::filesystem::path&) override;
+    Result<void> reimport_asset(std::string_view key, const std::filesystem::path&) override;
     Result<void> action(const ui::Action&);
     void sync_text_input();
     Result<void> completion(Result<void>);
@@ -225,12 +252,9 @@ private:
     Result<void> set_camera(const editor::Camera&, bool cut);
     void sync_world_view();
     std::array<float, 3> lighting_focus() const;
-    bool confirm_discard(bool sources = true);
-    bool confirm_source(editor::SourceEditor::File&);
-    Result<void> save_source(editor::SourceEditor::File&);
-    Result<void> source_command(editor::Command, std::string_view);
-    Result<void> project_command(editor::Command, std::string_view);
-    Result<void> execution_command(editor::Command);
+    Result<bool> confirm_discard(bool sources = true, bool interactive = true);
+    Result<bool> confirm_source(editor::SourceEditor::File&, bool interactive = true);
+    Result<void> save_source(editor::SourceEditor::File&, bool interactive = true);
     void poll_project();
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
     void publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr);

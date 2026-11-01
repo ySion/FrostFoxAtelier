@@ -356,7 +356,7 @@ void verify_stop_reentry() {
     current = &document;
     changed(document.add_entity());
     take(document.set_transform(document.selection().entity, {}));
-    changed(document.add_component(document.physics_types().scene_query_component));
+    changed(document.add_component(document.selection().entity, document.physics_types().scene_query_component));
     query = document.selection().object;
     const auto ready = [&] {
         return take(document.world().runtime().with_native<const physics::SceneQueryComponent>(
@@ -455,7 +455,7 @@ void verify_codec_graph(editor::Project& project) {
         changed(document.set_space_reference(follower, origin, world::ReparentRule::keep_local));
         const auto before = take(world::world_matrix(runtime, follower));
         take(document.select(follower));
-        changed(document.duplicate_selected());
+        changed(document.duplicate_entities(document.selected_entities()));
         const auto copied = document.selection().entity;
         require(copied != follower &&
                     take(world::space_reference(runtime, copied)) == std::optional<ObjectId>{origin} &&
@@ -530,7 +530,7 @@ void verify_codec_graph(editor::Project& project) {
                 "Shared inline instance identity or its shared GUID parent was lost on reload.");
         const std::array selected{entities[0], entities[1]};
         take(document.select_entities(selected, entities[1]));
-        changed(document.duplicate_selected());
+        changed(document.duplicate_entities(document.selected_entities()));
         const std::vector<ObjectId> copies(document.selected_entities().begin(), document.selected_entities().end());
         const auto copy_a = bindings_of(document, copies[0]), copy_b = bindings_of(document, copies[1]);
         require(copy_a.id() == copy_b.id() && copy_a.id() != instance.id() &&
@@ -791,7 +791,7 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
         auto copy = take(editor::Session::deserialize(text, project, prepare(evidence)));
         const auto source = take(copy->local_object(std::stoull(entity_id)));
         take(copy->select(source));
-        changed(copy->duplicate_selected());
+        changed(copy->duplicate_entities(copy->selected_entities()));
         const auto duplicate = copy->selected_entities().back();
         const auto duplicate_id = std::to_string(*copy->document_identity(duplicate));
         const auto saved = Json::parse(take(copy->serialize()));
@@ -810,7 +810,7 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
         const auto target = take(deleted->local_object(std::stoull(entity_id)));
         const std::array targets{target};
         take(deleted->select_entities(targets, target));
-        changed(deleted->erase_entities());
+        changed(deleted->erase_entities(deleted->selected_entities()));
         const auto saved = take(deleted->serialize());
         require((*find_entity(Json::parse(saved), gone_id))["properties"]["peer"].is_null() &&
                     count(deleted->issues(), reference_dropped) == 1,
@@ -860,7 +860,7 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
     const auto string_type = take(runtime.native_type<String>());
     changed(document.add_entity());
     const auto entity = document.selection().entity;
-    changed(document.add_component(label_type));
+    changed(document.add_component(entity, label_type));
     const auto label = member(document, label_type);
     const auto caption = take(runtime.find_field(label_type, "caption"));
     const world::FieldPath title{take(runtime.find_field(label_type, "title"))},
@@ -986,7 +986,7 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
 
     acceptance_phase = "String properties in duplicates";
     take(document.select(entity));
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     const auto duplicate = document.selection().entity;
     ObjectId copied{};
     for (const auto& part : take(world::components(runtime, duplicate)))
@@ -1045,7 +1045,7 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     auto& runtime = document.world().runtime();
     const auto f = fields(runtime);
     changed(document.add_entity());
-    changed(document.add_component(f.tags));
+    changed(document.add_component(document.selection().entity, f.tags));
     const auto tags = member(document, f.tags);
     const std::vector<std::string> names{"north", "\xE5\x8C\x97"};
     const std::vector<float> weights{.25f, 1.f, .5f};
@@ -1192,15 +1192,15 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
         return entity;
     };
     const auto mover = added({});
-    changed(a.add_component(move_type));
+    changed(a.add_component(mover, move_type));
     const auto move = member(a, move_type);
     const auto label_type = take(ra.find_type("game.Label"));
-    changed(a.add_component(label_type));
+    changed(a.add_component(mover, label_type));
     const auto label = member(a, label_type);
     const auto doomed = added({0, 0, 4});
     const auto falling = added({0, 5, 0});
     const auto body_type = take(ra.find_type("world.CollisionComponent"));
-    changed(a.add_component(body_type));
+    changed(a.add_component(falling, body_type));
     const auto body = member(a, body_type);
     physics::BodySettings settings;
     settings.shape = physics::ShapeKind::sphere;
@@ -1324,7 +1324,7 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
 
     // Added objects Begin once with their editor identity; removal Ends them and frees the identity.
     const auto runner = added({0, 0, 8});
-    changed(a.add_component(move_type));
+    changed(a.add_component(runner, move_type));
     const Json add = {{"op", "add"},
                       {"parent", nullptr},
                       {"index", nullptr},
@@ -1349,7 +1349,7 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
             "An add of an identity Play already has created a second object.");
 
     take(a.select(mover));
-    changed(a.add_component(spatial_type));
+    changed(a.add_component(mover, spatial_type));
     const auto spatial = member(a, spatial_type);
     edit(a, spatial, field(a, spatial_type, "offset"), Scalar{9.f}, 31);
     applied({{{"op", "attach"},
@@ -1449,7 +1449,7 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     // A reference whose target the game destroyed is null; the rest of the object arrives.
     const auto constraint_type = take(ra.find_type("physics.DistanceConstraintComponent"));
     const auto tethered = added({0, 0, 12});
-    changed(a.add_component(constraint_type));
+    changed(a.add_component(tethered, constraint_type));
     const auto constraint = member(a, constraint_type);
     auto tether = Json::parse(take(a.serialize_live_subtree(tethered)));
     auto& tether_properties = tether["entities"][0]["components"][0]["properties"];
@@ -1475,7 +1475,8 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
         if (result.error().message.find("does not assign document identities") == std::string::npos)
             throw std::runtime_error(result.error().message);
     };
-    identity_rejected(b->duplicate_selected(), "A Play copy duplicated with new document identities.");
+    identity_rejected(b->duplicate_entities(b->selected_entities()),
+                      "A Play copy duplicated with new document identities.");
     identity_rejected(b->instantiate_subtree(take(a.serialize_subtree(mover)), play_project),
                       "A Play copy imported with new document identities.");
     std::unordered_set<std::string> ids;
@@ -1532,7 +1533,7 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
         return entity;
     };
     const auto first = added({1, 2, 3});
-    changed(a.add_component(move_type));
+    changed(a.add_component(first, move_type));
     const auto move = member(a, move_type);
     const auto second = added({0, 0, 4});
     changed(a.create_static_mesh(take(project.assets().mesh("builtin/cube")), {0, 1, 0}));
@@ -1603,7 +1604,7 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
             "A sky map did not reach Play through its own Project.");
     const auto environment_entity = take(world::inspect_component(ra, a.environment())).owner;
     take(a.select(environment_entity));
-    changed(a.erase_selected());
+    changed(a.erase_entities(a.selected_entities()));
     sync("Environment removal");
     changed(a.undo());
     sync("Environment restoration");
@@ -1634,7 +1635,7 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
     require(set_play_sky(late_key).size() == 1 && b->unavailable(assets::AssetKind::sky, late_key),
             "Play resolved a corrupt sky map.");
     take(a.select(environment_entity));
-    changed(a.erase_selected());
+    changed(a.erase_entities(a.selected_entities()));
     sync("Environment removal before a restored sky map");
     take(editor::write_file(project.root() / "Content/Sky/Late.hdr", radiance(1, char(131))));
     take(project.refresh());
@@ -1676,21 +1677,21 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
     });
     each("Duplicate", [&] {
         take(a.select(first));
-        changed(a.duplicate_selected());
+        changed(a.duplicate_entities(a.selected_entities()));
     });
     each("Deletion", [&] {
         take(a.select(second));
-        changed(a.erase_selected());
+        changed(a.erase_entities(a.selected_entities()));
     });
     each("Component", [&] {
         take(a.select(plain));
-        changed(a.add_component(spatial_type));
+        changed(a.add_component(plain, spatial_type));
     });
     const auto body_type = take(ra.find_type("world.CollisionComponent"));
     ObjectId body;
     each("Component with a Transform", [&] {
         take(a.select(plain));
-        changed(a.add_component(body_type));
+        changed(a.add_component(plain, body_type));
         body = member(a, body_type);
     });
     physics::BodySettings settings;
@@ -2142,7 +2143,7 @@ void verify_camera_document(editor::Project& project) {
     changed(a.reparent(second, parent, world::ReparentRule::keep_local));
     sync();
     take(a.select(parent));
-    changed(a.erase_entities());
+    changed(a.erase_entities(a.selected_entities()));
     sync();
     require(take(a.main_camera()) == ObjectId{} && take(b->main_camera()) == ObjectId{},
             "Subtree deletion did not synchronously clear both selections.");
@@ -2202,7 +2203,7 @@ void verify_camera_document(editor::Project& project) {
                             take(rr.find_field(retained->presentation_types().environment_component, "main_camera")),
                             held.reference()));
     take(retained->select(target));
-    changed(retained->erase_entities());
+    changed(retained->erase_entities(retained->selected_entities()));
     require(!retained->has_retained(env) && take(retained->main_camera()) == ObjectId{} && retained->serialize(),
             "Delete left retained data overriding the cleared selection.");
     changed(retained->undo());
@@ -2231,8 +2232,8 @@ void run() {
     changed(document.add_entity(entity_type));
     const auto entity = document.selection().entity;
     take(document.set_transform(entity, {}));
-    changed(document.add_component(spatial_type));
-    changed(document.add_component(move_type));
+    changed(document.add_component(entity, spatial_type));
+    changed(document.add_component(entity, move_type));
     const auto move = member(document, move_type);
     require(take(world::has_transform(runtime, entity)) && take(world::parent_entity(runtime, entity)) == ObjectId{},
             "Non-spatial business component altered the root.");
@@ -2378,7 +2379,7 @@ void run() {
     take(physical->select(physical_entity));
     auto& physical_runtime = physical->world().runtime();
     const auto body_type = take(physical_runtime.find_type("world.CollisionComponent"));
-    changed(physical->add_component(body_type));
+    changed(physical->add_component(physical_entity, body_type));
     const auto body = member(*physical, body_type);
     physics::BodySettings settings;
     settings.shape = physics::ShapeKind::sphere;
@@ -2401,7 +2402,8 @@ void run() {
     for (const auto* controller : {"physics.CharacterComponent", "physics.RagdollComponent"}) {
         auto controlled = take(editor::Session::deserialize(saved, project, prepare(evidence)));
         take(controlled->select(take(controlled->world().members()).front().id()));
-        changed(controlled->add_component(take(controlled->world().runtime().find_type(controller))));
+        changed(controlled->add_component(controlled->selection().entity,
+                                          take(controlled->world().runtime().find_type(controller))));
         changed(controlled->start());
         const auto moved = controlled->update(.01f);
         require(!moved && moved.error().message.find("translate_owner") != std::string::npos &&
@@ -2409,7 +2411,7 @@ void run() {
                 "translate_owner overrode a Character or Ragdoll component.");
         changed(controlled->close());
     }
-    changed(document.erase_selected());
+    changed(document.erase_entities(document.selected_entities()));
     require(!document.properties(move), "Detached history object remained editable.");
     changed(document.undo());
     require(document.selection().entity == entity && std::get<float>(take(document.read_property(move, speed))) == 4,

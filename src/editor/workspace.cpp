@@ -36,6 +36,14 @@ Workspace::Workspace()
     if (!registered)
         throw std::runtime_error(registered.error().message);
     register_builtin_operators(operators);
+    const auto require_operator = [&](const OperatorCall& call) {
+        if (!operators.find(call.id))
+            throw std::logic_error("Unknown built-in operator: " + call.id);
+    };
+    for (const auto& item : menu_bindings)
+        require_operator(item.call);
+    for (const auto& entry : keymap())
+        require_operator(entry.call);
     reset_layout();
 }
 namespace {
@@ -57,106 +65,6 @@ RegionKind region_of(ui::ControlKey tab) noexcept {
 ui::ControlKey region_tab(RegionKind region) noexcept {
     const auto at = std::ranges::find(region_tabs, region, &std::pair<RegionKind, ui::ControlKey>::first);
     return at == region_tabs.end() ? ui::ControlKey{} : at->second;
-}
-std::optional<OperatorCall> operator_for(Command command) {
-    using assets::json_format::Json;
-    const auto call = [](std::string id, Json args = Json::object()) {
-        return std::optional<OperatorCall>{OperatorCall{std::move(id), std::move(args), {}}};
-    };
-    const auto index = [command](Command first) {
-        return static_cast<std::size_t>(command) - static_cast<std::size_t>(first);
-    };
-    constexpr std::array tools{"select", "transform", "move", "rotate", "scale"};
-    constexpr std::array select_modes{"set", "extend", "subtract", "invert", "intersect"};
-    constexpr std::array views{"perspective", "top", "front", "right", "bottom", "back", "left"};
-    switch (command) {
-    case Command::frame_all:
-        return call("view.frame_all");
-    case Command::focus:
-        return call("view.frame_selected");
-    case Command::reset_camera:
-        return call("view.reset");
-    case Command::view_from_camera:
-        return call("view.from_camera");
-    case Command::set_main_camera:
-        return call("scene.main_camera_set");
-    case Command::clear_main_camera:
-        return call("scene.main_camera_clear");
-    case Command::reset_layout:
-        return call("layout.reset");
-    case Command::close_tab:
-        return call("layout.close_tab");
-    case Command::maximize_pane:
-        return call("layout.maximize");
-    case Command::undo:
-        return call("edit.undo");
-    case Command::redo:
-        return call("edit.redo");
-    case Command::add_transform:
-        return call("scene.transform_add");
-    case Command::remove_transform:
-        return call("scene.transform_remove");
-    case Command::discard_saved_data:
-        return call("scene.discard_saved_data");
-    case Command::create_entity:
-        return call("scene.add", {{"kind", "entity"}});
-    case Command::create_static_mesh:
-        return call("scene.add", {{"kind", "mesh"}});
-    case Command::create_camera:
-        return call("scene.add", {{"kind", "camera"}});
-    case Command::create_point_light:
-        return call("scene.add", {{"kind", "point"}});
-    case Command::create_rectangle_light:
-        return call("scene.add", {{"kind", "rectangle"}});
-    case Command::create_directional_light:
-        return call("scene.add", {{"kind", "directional"}});
-    case Command::tool_select:
-    case Command::tool_transform:
-    case Command::tool_move:
-    case Command::tool_rotate:
-    case Command::tool_scale:
-        return call("tool.settings", {{"tool", tools[index(Command::tool_select)]}});
-    case Command::pivot_median:
-        return call("tool.settings", {{"pivot", "median"}});
-    case Command::pivot_cursor:
-        return call("tool.settings", {{"pivot", "cursor"}});
-    case Command::snap_grid_01:
-        return call("tool.settings", {{"grid_spacing", .1}});
-    case Command::snap_grid_02:
-        return call("tool.settings", {{"grid_spacing", .2}});
-    case Command::snap_grid_05:
-        return call("tool.settings", {{"grid_spacing", .5}});
-    case Command::snap_grid_1:
-        return call("tool.settings", {{"grid_spacing", 1.}});
-    case Command::snap_rotation_1:
-        return call("tool.settings", {{"rotation_step", 1.}});
-    case Command::snap_rotation_5:
-        return call("tool.settings", {{"rotation_step", 5.}});
-    case Command::snap_rotation_15:
-        return call("tool.settings", {{"rotation_step", 15.}});
-    case Command::snap_rotation_45:
-        return call("tool.settings", {{"rotation_step", 45.}});
-    case Command::orientation_global:
-        return call("tool.settings", {{"orientation", "global"}});
-    case Command::orientation_local:
-        return call("tool.settings", {{"orientation", "local"}});
-    case Command::select_mode_set:
-    case Command::select_mode_extend:
-    case Command::select_mode_subtract:
-    case Command::select_mode_invert:
-    case Command::select_mode_intersect:
-        return call("tool.settings", {{"select_mode", select_modes[index(Command::select_mode_set)]}});
-    case Command::view_perspective:
-    case Command::view_top:
-    case Command::view_front:
-    case Command::view_right:
-    case Command::view_bottom:
-    case Command::view_back:
-    case Command::view_left:
-        return call("view.axis", {{"view", views[static_cast<std::size_t>(*camera_view_command(command))]}});
-    default:
-        return std::nullopt;
-    }
 }
 Context Workspace::operator_context(Session& session, Project* project, bool interactive,
                                     const ui::ControlBox* focused) const {
@@ -197,7 +105,18 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
         {workbench.undo_count() != 0, workbench.redo_count() != 0},
         scene_available,
         interactive,
-        viewport_settings};
+        viewport_settings,
+        {},
+        view,
+        source ? source->path : std::filesystem::path{},
+        ui_source(),
+        project_running,
+        project_stopping,
+        play_pending.has_value(),
+        project_build && project_build->state == BuildState::ready,
+        show_fps,
+        !viewport_options_collapsed,
+        camera_view};
 }
 bool Workspace::poll_output() {
     return output.poll();
@@ -254,7 +173,6 @@ void Workspace::reset_document() {
     menu.reset();
     assets.reset(project_open);
     component_choices_.clear();
-    property_choices_.clear();
     material_choices_.clear();
     menu_selection_ = {};
 }
@@ -262,11 +180,6 @@ std::optional<TypeId> Workspace::component_choice(ui::ControlKey key) const noex
     if (key < control::component_choice_first || key - control::component_choice_first >= component_choices_.size())
         return {};
     return component_choices_[static_cast<std::size_t>(key - control::component_choice_first)].type;
-}
-std::optional<Workspace::PropertyChoice> Workspace::property_choice(ui::ControlKey key) const {
-    if (key < control::property_choice_first || key - control::property_choice_first >= property_choices_.size())
-        return {};
-    return property_choices_[static_cast<std::size_t>(key - control::property_choice_first)];
 }
 Result<bool> Workspace::apply_ui(const ui::Action& action) {
     if (output.apply(action))
@@ -335,21 +248,42 @@ ui::ControlKey Workspace::name_control(ObjectId object) const noexcept {
 bool Workspace::can_navigate(int direction) const noexcept {
     return direction < 0 ? navigation_cursor_ > 0 : navigation_cursor_ + 1 < navigation_.size();
 }
-Result<void> Workspace::navigate(Session& session, int direction) {
+Result<void> Workspace::navigate(Session& session, OperatorHost& host, int direction) {
     if (!can_navigate(direction))
         return {};
     const auto next = direction < 0 ? navigation_cursor_ - 1 : navigation_cursor_ + 1;
-    auto changed = session.select(navigation_[next]);
+    auto changed = select_object(session, host, navigation_[next]);
     if (changed) {
         navigation_cursor_ = next;
         inspecting_asset = false;
     }
     return changed;
 }
-Result<void> Workspace::select_tree(Session& session, ui::ControlKey key, ui::SelectionModifiers modifiers) {
+Result<void> Workspace::select_object(Session& session, OperatorHost& host, ObjectId object) {
+    SelectionContext selection;
+    if (object != ObjectId{}) {
+        auto entity = object;
+        if (!session.world().contains(object)) {
+            const auto component = world::inspect_component(session.world().runtime(), object);
+            if (!component)
+                return std::unexpected(component.error());
+            entity = component->owner;
+        }
+        selection = {entity, object, {entity}};
+    }
+    auto result =
+        call(operators, host, operator_context(session, nullptr, true),
+             {"scene.select", assets::json_format::Json::object(), {.selection = std::move(selection), .region = {}}});
+    if (!result)
+        return std::unexpected(result.error());
+    inspecting_asset = false;
+    return {};
+}
+Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::ControlKey key,
+                                    ui::SelectionModifiers modifiers) {
     inspecting_asset = false;
     if (key == control::tree_world)
-        return session.select({});
+        return select_object(session, host, {});
     const auto* target = binding(key);
     if (target && target->kind == Binding::Kind::object && (modifiers.shift || modifiers.control)) {
         std::vector<ObjectId> selected;
@@ -373,10 +307,17 @@ Result<void> Workspace::select_tree(Session& session, ui::ControlKey key, ui::Se
             std::erase(selected, target->object);
         else
             selected.push_back(target->object);
-        return session.select_entities(selected, target->object);
+        const auto active = std::ranges::find(selected, target->object) != selected.end() ? target->object
+                            : selected.empty()                                            ? ObjectId{}
+                                                                                          : selected.back();
+        auto result = call(operators, host, operator_context(session, nullptr, true),
+                           {"scene.select",
+                            assets::json_format::Json::object(),
+                            {.selection = SelectionContext{active, active, std::move(selected)}, .region = {}}});
+        return result ? Result<void>{} : std::unexpected(result.error());
     }
     return target && (target->kind == Binding::Kind::object || target->kind == Binding::Kind::structure)
-               ? session.select(target->object)
+               ? select_object(session, host, target->object)
                : Result<void>{};
 }
 void Workspace::build_structure_tree(const Session& session, ObjectId entity) {
@@ -468,100 +409,11 @@ std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree, ObjectId
                 rows.push_back(static_cast<std::uint32_t>(row - tree.rows.begin()));
     return ui::tree_window(tree.rows, viewport, rows);
 }
-bool Workspace::command_enabled(Command command, Session& session, Project* project,
-                                const ui::ControlBox* focused) const {
-    if (const auto call = operator_for(command)) {
-        const auto* info = operators.find(call->id);
-        return info && info->poll(operator_context(session, project, true, focused)).has_value();
-    }
-    switch (command) {
-    case Command::erase_entities:
-        return scene_available && !session.selected_entities().empty();
-    case Command::select_all:
-    case Command::select_invert:
-    case Command::select_box:
-        return scene_available;
-    case Command::select_none:
-        return scene_available && !session.selected_entities().empty();
-    case Command::rename_selected:
-        return scene_available && session.selection().entity != ObjectId{};
-    case Command::unparent_selected: {
-        if (!scene_available)
-            return false;
-        for (const auto entity : session.selected_entities()) {
-            const auto parent = world::parent_entity(session.world().runtime(), entity);
-            if (parent && *parent != ObjectId{})
-                return true;
-        }
-        return false;
-    }
-    case Command::clear_location:
-    case Command::clear_rotation:
-    case Command::clear_scale:
-        return scene_available && !session.selected_entities().empty();
-    case Command::duplicate_selected: {
-        const auto members = session.world().members();
-        return scene_available && !session.selected_entities().empty() && members &&
-               members->size() + session.selected_entities().size() <= Session::maximum_entities;
-    }
-    case Command::new_source:
-    case Command::new_project_ui:
-    case Command::build_project:
-        return project_open;
-    case Command::rebuild_project:
-        return project_open && !project_running;
-    case Command::run_project:
-        return project_open && scene_available && !project_running && project_build &&
-               project_build->state == BuildState::ready;
-    case Command::stop_project:
-        return project_running && !project_stopping;
-    case Command::restart_project:
-        return project_running && !project_stopping && play_pending;
-    case Command::edit_project_ui:
-        return project_open && project_ui_configured;
-    case Command::show_project_ui:
-        return project_open && project_ui_configured && !project_running;
-    case Command::save_scene:
-    case Command::save_scene_as:
-        return project_open && scene_available;
-    case Command::reimport_texture:
-        return project_open && scene_available && !assets.engine() && assets.selected() &&
-               assets.selected()->kind == assets::AssetKind::texture;
-    case Command::reimport_mesh:
-        return project_open && scene_available && !assets.engine() && assets.selected() &&
-               assets.selected()->kind == assets::AssetKind::mesh;
-    case Command::open_scene:
-    case Command::import_mesh:
-    case Command::import_texture:
-    case Command::create_material:
-    case Command::create_material_source:
-    case Command::refresh_assets:
-        return project_open;
-    case Command::save_document:
-        return source_history() ? source_editor.active() != nullptr : project_open && scene_available;
-    case Command::close_source:
-    case Command::reload_source:
-        return source_editor.active() != nullptr;
-    case Command::selection_grid:
-    case Command::selection_cursor:
-    case Command::cursor_selected:
-    case Command::erase_selected: {
-        if (session.selection().entity == ObjectId{})
-            return false;
-        const auto state = world::inspect_entity(session.world().runtime(), session.selection().entity);
-        if (!state || !state->can_edit)
-            return false;
-        if (command == Command::erase_selected)
-            return true;
-        const auto spatial = world::has_transform(session.world().runtime(), session.selection().entity);
-        return spatial && *spatial;
-    }
-    case Command::previous_tab:
-    case Command::next_tab:
-        return dock.focused_tab() != 0;
-    default:
-        return true;
-    }
+ui::ControlKey Workspace::operator_control(const OperatorCall& call) const {
+    for (const auto& binding : bindings_)
+        if (binding.call && binding.call->id == call.id && binding.call->args == call.args)
+            return binding.key;
+    return 0;
 }
 ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, Binding::Kind kind) {
     if (!path.empty() && kind == Binding::Kind::object)
@@ -581,7 +433,27 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
     std::iter_swap(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end() - 1);
     return bindings_[binding_cursor_++].key;
 }
-Result<bool> Workspace::apply_view(Session& session, const ui::Action& action, std::array<float, 3> focus) {
+ui::ControlKey Workspace::bind_operator(OperatorCall call) {
+    const auto first = bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_);
+    const auto found = std::find_if(first, bindings_.end(), [&](const auto& item) {
+        return item.kind == Binding::Kind::operator_call && *item.call == call;
+    });
+    if (found != bindings_.end()) {
+        std::iter_swap(first, found);
+        return bindings_[binding_cursor_++].key;
+    }
+    if (next_binding_ == std::numeric_limits<ui::ControlKey>::max())
+        throw std::runtime_error("Editor control identities exhausted.");
+    Binding binding{next_binding_++,
+                    call.context.selection ? call.context.selection->object : ObjectId{},
+                    {},
+                    Binding::Kind::operator_call};
+    binding.call = std::make_unique<const OperatorCall>(std::move(call));
+    bindings_.push_back(std::move(binding));
+    std::iter_swap(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end() - 1);
+    return bindings_[binding_cursor_++].key;
+}
+Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const ui::Action& action) {
     if (action.kind == ui::ActionKind::activate &&
         (action.key == control::group_components || action.key == control::group_categories)) {
         if (auto cancelled = session.cancel_edit(); !cancelled)
@@ -591,14 +463,29 @@ Result<bool> Workspace::apply_view(Session& session, const ui::Action& action, s
     }
     sync_world(session);
     auto candidate = view;
+    const auto publish = [&]() -> Result<bool> {
+        if (candidate == view)
+            return true;
+        auto patch = assets::json_format::Json::object();
+        for (const auto& option : view_options()) {
+            const auto value = view_value(candidate, option.option);
+            if (value == view_value(view, option.option))
+                continue;
+            if (option.kind == ViewValueKind::enumeration)
+                patch[option.name] = option.choices[static_cast<std::size_t>(value)];
+            else if (option.kind == ViewValueKind::boolean)
+                patch[option.name] = value != 0;
+            else
+                patch[option.name] = value;
+        }
+        auto result = call(operators, host, operator_context(session, nullptr, true), {"view.set", std::move(patch)});
+        return result ? Result<bool>{true} : std::unexpected(result.error());
+    };
     const auto edited = lighting.apply(action, candidate);
     if (!edited)
         return std::unexpected(edited.error());
-    if (*edited) {
-        if (auto published = set_view_settings(session, candidate, focus); !published)
-            return std::unexpected(published.error());
-        return true;
-    }
+    if (*edited)
+        return publish();
     if (action.kind != ui::ActionKind::activate)
         return false;
     const auto key = action.key;
@@ -664,8 +551,9 @@ Result<bool> Workspace::apply_view(Session& session, const ui::Action& action, s
             set(ViewOption::origin_axes, *checked ? 1 : 0);
     } else
         return false;
-    if (auto updated = set_view_settings(session, candidate, focus); !updated)
-        return std::unexpected(updated.error());
+    const auto updated = publish();
+    if (!updated)
+        return updated;
     status = L"Viewport display updated";
     return true;
 }
@@ -901,7 +789,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         }
     // Closing/hiding a view is not an object lifetime change. Retire bindings and
     // tree view state together; undo later restores identity with fresh keys.
-    std::erase_if(bindings_, [&](const auto& item) { return !live.contains(item.object); });
+    std::erase_if(bindings_, [&](const auto& item) {
+        return !(item.kind == Binding::Kind::operator_call && item.object == ObjectId{}) && !live.contains(item.object);
+    });
     for (auto* tree : {&scene_tree_, &structure_tree_})
         std::erase_if(tree->expansion,
                       [&](const auto& entry) { return entry.first != ObjectId{} && !live.contains(entry.first); });
@@ -951,8 +841,21 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         }
         status_text = L"UI: " + diagnostic;
     }
+    const auto context = operator_context(session, project, true, command_focus);
+    const auto action = [&](OperatorCall call) {
+        auto target = context;
+        if (call.context.region)
+            target.region = *call.context.region;
+        if (call.id.starts_with("asset.")) {
+            const auto& selected = assets.selected();
+            call.context.asset = call.context.asset.value_or(selected ? selected->key : std::string{});
+            target.asset = *call.context.asset;
+        }
+        const auto* info = operators.find(call.id);
+        return ui_language::ActionBinding{bind_operator(std::move(call)), info && info->poll(target).has_value()};
+    };
     auto menus = std::make_shared<std::vector<ui_language::Item>>();
-    for (const auto& group : command_groups)
+    for (const auto& group : menu_groups)
         menus->push_back({group.key, {std::wstring(group.title), menu && menu->source == group.key, group.key}});
     // Houdini status line: the message, then muted scene facts separated by space, not a rule.
     auto facts = std::to_wstring(members.size()) + (members.size() == 1 ? L" Entity" : L" Entities");
@@ -960,20 +863,18 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         facts += play_diverged   ? L"   Play diverged"
                  : *play_pending ? L"   Play: " + std::to_wstring(*play_pending) + L" pending"
                                  : std::wstring(L"   Play in sync");
-    const std::array<ui_language::InputValue, 12> shell_inputs{
-        menu_bar_collapsed,
-        ui_language::ItemList{std::move(menus)},
-        status_text,
-        ui_language::ActionBinding{control::menu_bar_handle},
-        double(ui::stow_rail_width),
-        double(ui::stow_collapsed_height),
-        double(ui::stow_arrow_region_height),
-        double(ui::ControlIcon::up),
-        double(ui::ControlIcon::down),
-        std::move(facts),
-        play_diverged,
-        ui_language::ActionBinding{control::command_key(Command::restart_project),
-                                   command_enabled(Command::restart_project, session, project)}};
+    const std::array<ui_language::InputValue, 12> shell_inputs{menu_bar_collapsed,
+                                                               ui_language::ItemList{std::move(menus)},
+                                                               status_text,
+                                                               ui_language::ActionBinding{control::menu_bar_handle},
+                                                               double(ui::stow_rail_width),
+                                                               double(ui::stow_collapsed_height),
+                                                               double(ui::stow_arrow_region_height),
+                                                               double(ui::ControlIcon::up),
+                                                               double(ui::ControlIcon::down),
+                                                               std::move(facts),
+                                                               play_diverged,
+                                                               action({"play.restart"})};
     const std::array<ui_language::KeyBinding, 8> shell_keys{{{"root", 1},
                                                              {"menubar", 2},
                                                              {"stow", control::menu_bar_handle},
@@ -985,26 +886,25 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     static_cast<void>(ui_document_->append("EditorShell", 0, shell_keys, shell_inputs, result));
     auto create_tools = std::make_shared<std::vector<ui_language::Item>>();
     auto view_tools = std::make_shared<std::vector<ui_language::Item>>();
-    for (std::size_t index = 0; index < command_definitions.size(); ++index) {
-        const auto& definition = command_definitions[index];
-        if (definition.group != CommandGroup::create && definition.group != CommandGroup::view)
+    for (std::size_t index = 0; index < std::size(menu_bindings); ++index) {
+        const auto& definition = menu_bindings[index];
+        if (definition.group != MenuGroup::create && definition.group != MenuGroup::view)
             continue;
-        if (definition.group == CommandGroup::view && definition.shelf_title.empty())
+        if (definition.group == MenuGroup::view && definition.shelf_title.empty())
             continue;
         if (!shelf_items_[index])
             shelf_items_[index] = next_binding_++;
         const auto title = definition.shelf_title.empty() ? definition.title : definition.shelf_title;
-        const auto icon = definition.id == Command::create_point_light         ? ui::ControlIcon::point_light
-                          : definition.id == Command::create_rectangle_light   ? ui::ControlIcon::area_light
-                          : definition.id == Command::create_directional_light ? ui::ControlIcon::sun_light
-                          : definition.id == Command::create_static_mesh       ? ui::ControlIcon::mesh
-                          : definition.id == Command::create_entity            ? ui::ControlIcon::object
-                                                                               : ui::ControlIcon::axes;
-        auto& items = definition.group == CommandGroup::create ? create_tools : view_tools;
-        items->push_back({shelf_items_[index],
-                          {std::wstring(title), static_cast<double>(icon),
-                           ui_language::ActionBinding{static_cast<ui::ControlKey>(definition.id),
-                                                      command_enabled(definition.id, session, project)}}});
+        const auto kind = definition.call.args.value("kind", std::string{});
+        const auto icon = kind == "point"         ? ui::ControlIcon::point_light
+                          : kind == "rectangle"   ? ui::ControlIcon::area_light
+                          : kind == "directional" ? ui::ControlIcon::sun_light
+                          : kind == "mesh"        ? ui::ControlIcon::mesh
+                          : kind == "entity"      ? ui::ControlIcon::object
+                                                  : ui::ControlIcon::axes;
+        auto& items = definition.group == MenuGroup::create ? create_tools : view_tools;
+        items->push_back(
+            {shelf_items_[index], {std::wstring(title), static_cast<double>(icon), action(definition.call)}});
     }
     const std::array<ui_language::InputValue, 12> shelf_inputs{shelf_collapsed,
                                                                shelf_page == control::shelf_create,
@@ -1109,12 +1009,13 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             auto modes = std::make_shared<std::vector<ui_language::Item>>();
             constexpr std::array icons{ui::ControlIcon::pointer, ui::ControlIcon::axes, ui::ControlIcon::translate,
                                        ui::ControlIcon::rotate, ui::ControlIcon::scale};
+            constexpr std::array tools{"select", "transform", "move", "rotate", "scale"};
             for (std::size_t i = 0; i < icons.size(); ++i) {
-                const auto command = static_cast<ui::ControlKey>(Command::tool_select) + i;
-                modes->push_back({command,
-                                  {ui_language::ActionBinding{command, true}, double(icons[i]),
-                                   std::size_t(viewport_settings.tool) == i, control::viewport_modes,
-                                   std::wstring(i == 1 ? L"viewport-mode grouped" : L"viewport-mode")}});
+                const auto binding = action({"tool.settings", {{"tool", tools[i]}}});
+                modes->push_back(
+                    {binding.target,
+                     {binding, double(icons[i]), std::size_t(viewport_settings.tool) == i, control::viewport_modes,
+                      std::wstring(i == 1 ? L"viewport-mode grouped" : L"viewport-mode")}});
             }
             constexpr std::array mode_names{L"Select", L"Transform", L"Move", L"Rotate", L"Scale"};
             // Bindings as actually routed by Application::viewport_input and ViewportTool.
@@ -1147,11 +1048,11 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             constexpr std::array select_icons{ui::ControlIcon::select_new, ui::ControlIcon::select_extend,
                                               ui::ControlIcon::select_subtract, ui::ControlIcon::select_invert,
                                               ui::ControlIcon::select_intersect};
+            constexpr std::array selections{"set", "extend", "subtract", "invert", "intersect"};
             for (std::size_t i = 0; i < select_icons.size(); ++i) {
-                const auto command = static_cast<ui::ControlKey>(Command::select_mode_set) + i;
                 select_modes->push_back(
                     {990 + i,
-                     {ui_language::ActionBinding{command, true}, double(select_icons[i]),
+                     {action({"tool.settings", {{"select_mode", selections[i]}}}), double(select_icons[i]),
                       std::size_t(viewport_settings.select_mode) == i, control::viewport_select_modes,
                       std::wstring(i == 0                         ? L"viewport-segment-item first"
                                    : i + 1 == select_icons.size() ? L"viewport-segment-item last"
@@ -1172,9 +1073,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                  {control::display_lit, ui::ControlIcon::shade_lit, lit, false},
                  {control::display_fps, ui::ControlIcon::fps, show_fps, true}}};
             for (std::size_t index = 0; const auto& [key, icon, selected, grouped] : display) {
-                const auto target = key == control::display_fps ? control::command_key(Command::show_fps) : key;
+                const auto binding = key == control::display_fps ? action({"view.toggle", {{"option", "fps"}}})
+                                                                 : ui_language::ActionBinding{key, true};
                 display_toggles->push_back({control::display_toggle_first + index++,
-                                            {ui_language::ActionBinding{target, true}, double(icon), selected,
+                                            {binding, double(icon), selected,
                                              std::wstring(grouped ? L"display-toggle grouped" : L"display-toggle")}});
             }
             const auto step = viewport_settings.grid_spacing;
@@ -1202,16 +1104,16 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                  ? L"Local"
                                  : L"Global"),
                 std::wstring(viewport_settings.pivot == PivotMode::median ? L"Selection Center" : L"3D Cursor"),
-                ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::snap_toggle)},
+                action({"tool.toggle", {{"setting", "grid_snap"}}}),
                 double(ui::ControlIcon::magnet),
                 viewport_settings.grid_snap,
                 step_name,
                 menu && menu->source == control::viewport_snap,
                 viewport_settings.cursor_surface,
-                ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::cursor_surface)},
+                action({"tool.toggle", {{"setting", "cursor_surface"}}}),
                 std::wstring(camera_view_name(camera_view)),
                 menu && menu->source == control::viewport_camera,
-                ui_language::ActionBinding{static_cast<ui::ControlKey>(Command::viewport_options)},
+                action({"view.toggle", {{"option", "options"}}}),
                 viewport_options_collapsed,
                 double(ui::ControlIcon::up),
                 double(ui::ControlIcon::down),
@@ -1272,7 +1174,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             continue;
         }
         if (view.key == source_control::tab) {
-            source_editor.append(result, view.content, *ui_document_, project, project_build.get(), project_running);
+            source_editor.append(result, view.content, *ui_document_, action, project, project_build.get(),
+                                 project_running);
             continue;
         }
         if (view.key == control::output_tab) {
@@ -1291,12 +1194,12 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                : name.empty()            ? L"Missing Entity"
                                                          : std::wstring(name);
             lighting.append(result, view.content, *ui_document_, this->view, !session.world().running(), label,
-                            command_enabled(Command::clear_main_camera, session, project));
+                            action({"scene.main_camera_clear"}));
             continue;
         }
         if (view.key == control::assets_tab) {
-            assets.append(result, view.content, project, command_enabled(Command::create_static_mesh, session, project),
-                          frame, *ui_document_);
+            assets.append(result, view.content, project, operators.find("scene.add")->poll(context).has_value(), frame,
+                          *ui_document_);
             continue;
         }
         if (view.key == control::entities_tab) {
@@ -1451,8 +1354,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 selected != ObjectId{},
                 selected != ObjectId{} && entity_status.can_edit,
                 control::add_component,
-                ui_language::ActionBinding{control::remove_selected,
-                                           command_enabled(Command::erase_selected, session, project)},
+                action({"scene.delete", {{"target", "object"}}}),
                 double(ui::ControlIcon::close)};
             const std::array<ui_language::KeyBinding, 2> keys{
                 {{"tree", control::structure_tree}, {"add", control::add_component}}};
@@ -2141,7 +2043,6 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     static_cast<void>(ui_document_->append("DockPreview", 0, preview_keys, preview_inputs, result));
     menu_items.clear();
     component_choices_.clear();
-    property_choices_.clear();
     material_choices_.clear();
     menu_selection_ = session.selection();
     if (menu) {
@@ -2157,87 +2058,90 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         if (!available)
             menu.reset();
         else {
-            const auto command_item = [&](Command command) {
-                const auto key = static_cast<ui::ControlKey>(command);
-                const auto* definition = command_definition(key);
-                ui::MenuItem item{key,
+            const auto operator_item = [&](OperatorCall call, const MenuBinding* definition = nullptr) {
+                if (!definition)
+                    definition = std::ranges::find_if(menu_bindings, [&](const auto& row) {
+                        return row.call.id == call.id && row.call.args == call.args;
+                    });
+                if (definition == std::end(menu_bindings))
+                    throw std::logic_error("Missing operator menu presentation: " + call.id);
+                if (definition->asset_kind &&
+                    (!assets.selected() || assets.selected()->kind != *definition->asset_kind))
+                    call.context.asset = std::string{};
+                if (call.id == "scene.rename" && context.region == RegionKind::assets)
+                    call.id = "asset.rename";
+                const auto* info = operators.find(call.id);
+                if (!info)
+                    throw std::logic_error("Unknown menu operator: " + call.id);
+                const auto selected = take(operator_state(*info, context, call.args));
+                const auto key_text = shortcut(call, context.region);
+                const auto binding = action(std::move(call));
+                ui::MenuItem item{binding.target,
                                   std::wstring(definition->title),
-                                  command_enabled(command, session, project, command_focus),
-                                  false,
+                                  binding.enabled,
+                                  selected.value_or(false),
                                   {},
-                                  std::wstring(definition->shortcut),
+                                  std::wstring(key_text),
                                   definition->separator};
-                const auto radio = [&](Command first, bool selected) {
-                    item.behavior = ui::MenuBehavior::radio;
-                    item.radio_group = static_cast<ui::ControlKey>(first);
-                    item.selected = selected;
-                };
-                if (command >= Command::tool_select && command <= Command::tool_scale)
-                    radio(Command::tool_select, key - static_cast<ui::ControlKey>(Command::tool_select) ==
-                                                    std::size_t(viewport_settings.tool));
-                else if (command == Command::pivot_median || command == Command::pivot_cursor)
-                    radio(Command::pivot_median,
-                          (command == Command::pivot_cursor) == (viewport_settings.pivot == PivotMode::cursor));
-                else if (command >= Command::snap_grid_01 && command <= Command::snap_grid_1) {
-                    constexpr std::array steps{.1f, .2f, .5f, 1.f};
-                    radio(Command::snap_grid_01, viewport_settings.grid_spacing ==
-                                                     steps[key - static_cast<ui::ControlKey>(Command::snap_grid_01)]);
-                } else if (const auto preset = camera_view_command(command))
-                    radio(Command::view_perspective, *preset == camera_view);
-                else if (command == Command::show_fps) {
-                    item.behavior = ui::MenuBehavior::checkbox;
-                    item.selected = show_fps;
-                } else if (command == Command::orientation_global || command == Command::orientation_local)
-                    radio(Command::orientation_global, (command == Command::orientation_local) ==
-                                                           (viewport_settings.orientation == Orientation::local));
-                else if (command == Command::snap_affect_move || command == Command::snap_affect_rotate ||
-                         command == Command::snap_affect_scale) {
-                    item.behavior = ui::MenuBehavior::checkbox;
-                    item.selected = command == Command::snap_affect_move     ? viewport_settings.snap_move
-                                    : command == Command::snap_affect_rotate ? viewport_settings.snap_rotate
-                                                                             : viewport_settings.snap_scale;
-                } else if (command == Command::snap_rotation_1 || command == Command::snap_rotation_5 ||
-                           command == Command::snap_rotation_15 || command == Command::snap_rotation_45)
-                    radio(Command::snap_rotation_1,
-                          viewport_settings.rotation_step == (command == Command::snap_rotation_1    ? 1.f
-                                                              : command == Command::snap_rotation_5  ? 5.f
-                                                              : command == Command::snap_rotation_15 ? 15.f
-                                                                                                     : 45.f));
-                else if (command >= Command::select_mode_set && command <= Command::select_mode_intersect)
-                    radio(Command::select_mode_set, key - static_cast<ui::ControlKey>(Command::select_mode_set) ==
-                                                        std::size_t(viewport_settings.select_mode));
-                else if (command == Command::snap_toggle || command == Command::cursor_surface ||
-                         command == Command::viewport_options) {
-                    item.behavior = ui::MenuBehavior::checkbox;
-                    item.selected = command == Command::snap_toggle      ? viewport_settings.grid_snap
-                                    : command == Command::cursor_surface ? viewport_settings.cursor_surface
-                                                                         : !viewport_options_collapsed;
-                }
+                item.radio_group = definition->radio_group;
+                item.behavior = definition->radio_group ? ui::MenuBehavior::radio
+                                : selected              ? ui::MenuBehavior::checkbox
+                                                        : ui::MenuBehavior::command;
                 return item;
             };
-            const auto commands = [&](std::initializer_list<Command> commands) {
+            const auto calls = [&](std::initializer_list<OperatorCall> calls) {
                 std::vector<ui::MenuItem> result;
-                for (const auto command : commands)
-                    result.push_back(command_item(command));
+                for (const auto& call : calls)
+                    result.push_back(operator_item(call));
                 return result;
             };
-            const auto viewport_commands = [&](ui::ControlKey key) {
-                using enum Command;
+            const auto viewport_calls = [&](ui::ControlKey key) {
                 switch (key) {
                 case control::viewport_tools_menu:
-                    return commands({tool_select, tool_transform, tool_move, tool_rotate, tool_scale});
+                    return calls({{"tool.settings", {{"tool", "select"}}},
+                                  {"tool.settings", {{"tool", "transform"}}},
+                                  {"tool.settings", {{"tool", "move"}}},
+                                  {"tool.settings", {{"tool", "rotate"}}},
+                                  {"tool.settings", {{"tool", "scale"}}}});
                 case control::viewport_snap:
-                    return commands({snap_toggle, snap_grid_01, snap_grid_02, snap_grid_05, snap_grid_1,
-                                     snap_affect_move, snap_affect_rotate, snap_affect_scale, snap_rotation_1,
-                                     snap_rotation_5, snap_rotation_15, snap_rotation_45, selection_grid,
-                                     selection_cursor, cursor_selected, cursor_origin, cursor_grid, cursor_surface});
+                    return calls({{"tool.toggle", {{"setting", "grid_snap"}}},
+                                  {"tool.settings", {{"grid_spacing", .1}}},
+                                  {"tool.settings", {{"grid_spacing", .2}}},
+                                  {"tool.settings", {{"grid_spacing", .5}}},
+                                  {"tool.settings", {{"grid_spacing", 1.}}},
+                                  {"tool.toggle", {{"setting", "snap_move"}}},
+                                  {"tool.toggle", {{"setting", "snap_rotate"}}},
+                                  {"tool.toggle", {{"setting", "snap_scale"}}},
+                                  {"tool.settings", {{"rotation_step", 1.}}},
+                                  {"tool.settings", {{"rotation_step", 5.}}},
+                                  {"tool.settings", {{"rotation_step", 15.}}},
+                                  {"tool.settings", {{"rotation_step", 45.}}},
+                                  {"scene.snap_selection", {{"to", "grid"}}},
+                                  {"scene.snap_selection", {{"to", "cursor"}}},
+                                  {"cursor.to_selection"},
+                                  {"cursor.reset"},
+                                  {"cursor.to_grid"},
+                                  {"tool.toggle", {{"setting", "cursor_surface"}}}});
                 case control::viewport_camera:
-                    return commands({view_perspective, view_front, view_back, view_left, view_right, view_top,
-                                     view_bottom, focus, view_from_camera, reset_camera});
+                    return calls({{"view.axis", {{"view", "perspective"}}},
+                                  {"view.axis", {{"view", "front"}}},
+                                  {"view.axis", {{"view", "back"}}},
+                                  {"view.axis", {{"view", "left"}}},
+                                  {"view.axis", {{"view", "right"}}},
+                                  {"view.axis", {{"view", "top"}}},
+                                  {"view.axis", {{"view", "bottom"}}},
+                                  {"view.frame_selected"},
+                                  {"view.from_camera"},
+                                  {"view.reset"}});
                 case control::viewport_pivot:
-                    return commands({pivot_median, pivot_cursor, cursor_selected, cursor_origin, cursor_grid});
+                    return calls({{"tool.settings", {{"pivot", "median"}}},
+                                  {"tool.settings", {{"pivot", "cursor"}}},
+                                  {"cursor.to_selection"},
+                                  {"cursor.reset"},
+                                  {"cursor.to_grid"}});
                 case control::viewport_orientation: {
-                    auto items = commands({orientation_global, orientation_local});
+                    auto items = calls({{"tool.settings", {{"orientation", "global"}}},
+                                        {"tool.settings", {{"orientation", "local"}}}});
                     items.front().separator_before = false;
                     items.front().heading = L"Transform Orientations";
                     return items;
@@ -2257,45 +2161,56 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 return item;
             };
             const auto header_menu = [&](ui::ControlKey key) -> std::vector<ui::MenuItem> {
-                using enum Command;
                 if (key == control::viewport_view_menu) {
-                    auto items = commands({focus, frame_all});
+                    auto items = calls({{"view.frame_selected"}, {"view.frame_all"}});
                     items.push_back(submenu(control::view_viewpoint_menu, L"Viewpoint",
-                                            viewport_commands(control::viewport_camera), true));
-                    auto options = commands({viewport_options, show_fps});
+                                            viewport_calls(control::viewport_camera), true));
+                    auto options =
+                        calls({{"view.toggle", {{"option", "options"}}}, {"view.toggle", {{"option", "fps"}}}});
                     options.front().separator_before = true;
                     for (auto& item : options)
                         items.push_back(std::move(item));
                     return items;
                 }
                 if (key == control::viewport_select_menu) {
-                    auto items = commands({select_all, select_none, select_invert, select_box});
+                    auto items = calls({{"scene.select_all", {{"action", "select"}}},
+                                        {"scene.select_all", {{"action", "deselect"}}},
+                                        {"scene.select_all", {{"action", "invert"}}},
+                                        {"view.select_box"}});
                     items.front().separator_before = false;
-                    auto modes = commands({select_mode_set, select_mode_extend, select_mode_subtract,
-                                           select_mode_invert, select_mode_intersect});
+                    auto modes = calls({{"tool.settings", {{"select_mode", "set"}}},
+                                        {"tool.settings", {{"select_mode", "extend"}}},
+                                        {"tool.settings", {{"select_mode", "subtract"}}},
+                                        {"tool.settings", {{"select_mode", "invert"}}},
+                                        {"tool.settings", {{"select_mode", "intersect"}}}});
                     modes.front().separator_before = false;
                     items.push_back(submenu(control::select_mode_menu, L"Selection Mode", std::move(modes), true));
                     return items;
                 }
                 if (key == control::viewport_header_add) {
                     std::vector<ui::MenuItem> items;
-                    for (const auto& definition : command_definitions)
-                        if (definition.group == CommandGroup::create)
-                            items.push_back(command_item(definition.id));
+                    for (const auto& definition : menu_bindings)
+                        if (definition.group == MenuGroup::create)
+                            items.push_back(operator_item(definition.call));
                     return items;
                 }
                 if (key == control::viewport_object_menu) {
-                    auto items = commands({duplicate_selected, erase_entities});
+                    auto items = calls({{"scene.duplicate"}, {"scene.delete", {{"target", "entities"}}}});
                     items.front().separator_before = false;
-                    auto clear = commands({clear_location, clear_rotation, clear_scale});
+                    auto clear = calls({{"scene.transform_clear", {{"channel", "location"}}},
+                                        {"scene.transform_clear", {{"channel", "rotation"}}},
+                                        {"scene.transform_clear", {{"channel", "scale"}}}});
                     clear.front().separator_before = false;
                     items.push_back(submenu(control::object_clear_menu, L"Clear", std::move(clear), true));
-                    auto snap =
-                        commands({selection_grid, selection_cursor, cursor_selected, cursor_grid, cursor_origin});
+                    auto snap = calls({{"scene.snap_selection", {{"to", "grid"}}},
+                                       {"scene.snap_selection", {{"to", "cursor"}}},
+                                       {"cursor.to_selection"},
+                                       {"cursor.to_grid"},
+                                       {"cursor.reset"}});
                     for (auto& item : snap)
                         item.separator_before = false;
                     items.push_back(submenu(control::object_snap_menu, L"Snap", std::move(snap)));
-                    auto transform = commands({add_transform, remove_transform});
+                    auto transform = calls({{"scene.transform_add"}, {"scene.transform_remove"}});
                     transform.front().separator_before = true;
                     for (auto& item : transform)
                         items.push_back(std::move(item));
@@ -2304,18 +2219,25 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 return {};
             };
             std::vector<ui::MenuItem> items = dock.menu_items(source->key, frame);
-            if (auto lighting_items =
-                    lighting.menu(source->context_target ? source->context_target : source->key, this->view);
-                !lighting_items.empty()) {
+            if ((source->context_target ? source->context_target : source->key) == world_control::setup) {
+                items = calls(
+                    {{"view.lighting_fit", {{"mode", "scene"}}}, {"view.lighting_fit", {{"mode", "scene_focus"}}}});
+                items[0].text = L"Fit Scene";
+                items[1].text = L"Scene + Follow Focus";
+            } else if (auto lighting_items =
+                           lighting.menu(source->context_target ? source->context_target : source->key, this->view);
+                       !lighting_items.empty()) {
                 items = std::move(lighting_items);
             } else if (auto header_items = header_menu(source->key); !header_items.empty()) {
                 items = std::move(header_items);
             } else if (const auto* row = binding(source->key); row && row->kind == Binding::Kind::object &&
                                                                row->path.empty() &&
                                                                source->kind == ui::ControlKind::tree_item) {
-                // Houdini tree / Blender outliner row menu over the shared command model.
-                using enum Command;
-                items = commands({rename_selected, duplicate_selected, erase_entities, unparent_selected, focus});
+                items = calls({{"scene.rename"},
+                               {"scene.duplicate"},
+                               {"scene.delete", {{"target", "entities"}}},
+                               {"scene.parent_set", {{"parent", nullptr}}},
+                               {"view.frame_selected"}});
                 for (auto& item : items)
                     item.separator_before = false;
                 items[3].separator_before = items[4].separator_before = true;
@@ -2323,9 +2245,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 items[1].icon = ui::ControlIcon::duplicate;
                 items[2].icon = ui::ControlIcon::trash;
                 items[3].icon = ui::ControlIcon::unparent;
-            } else if (const auto* group = command_group(source->key)) {
-                if (group->id == CommandGroup::view) {
-                    items.push_back(command_item(Command::focus));
+            } else if (const auto* group = menu_group(source->key)) {
+                if (group->id == MenuGroup::view) {
+                    items.push_back(operator_item({"view.frame_selected"}));
                     for (const auto& [key, title] : std::array<std::pair<ui::ControlKey, std::wstring_view>, 4>{
                              {{control::viewport_tools_menu, L"Interaction Mode"},
                               {control::viewport_pivot, L"Pivot"},
@@ -2334,12 +2256,12 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         items.push_back({.key = key,
                                          .text = std::wstring(title),
                                          .edit_command = {},
-                                         .children = viewport_commands(key)});
-                    items.push_back(command_item(Command::viewport_options));
+                                         .children = viewport_calls(key)});
+                    items.push_back(operator_item({"view.toggle", {{"option", "options"}}}));
                 } else {
-                    for (const auto& definition : command_definitions)
+                    for (const auto& definition : menu_bindings)
                         if (definition.group == group->id) {
-                            auto item = command_item(definition.id);
+                            auto item = operator_item(definition.call, &definition);
                             items.push_back(std::move(item));
                         }
                 }
@@ -2356,60 +2278,66 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     items.push_back(std::move(item));
                 }
             } else if (source->key == control::viewport && menu->group == control::viewport_delete_menu) {
-                auto item = command_item(Command::erase_entities);
+                auto item = operator_item({"scene.delete", {{"target", "entities"}}});
                 item.separator_before = false;
                 item.text = session.selected_entities().size() == 1
                                 ? L"Delete Entity"
                                 : L"Delete " + std::to_wstring(session.selected_entities().size()) + L" Entities";
                 items.push_back(std::move(item));
             } else if (source->key == control::viewport && menu->group == control::viewport_axis_pie) {
-                using enum Command;
-                items = commands(
-                    {view_left, view_right, view_bottom, view_top, view_front, view_back, view_perspective, focus});
+                items = calls({{"view.axis", {{"view", "left"}}},
+                               {"view.axis", {{"view", "right"}}},
+                               {"view.axis", {{"view", "bottom"}}},
+                               {"view.axis", {{"view", "top"}}},
+                               {"view.axis", {{"view", "front"}}},
+                               {"view.axis", {{"view", "back"}}},
+                               {"view.axis", {{"view", "perspective"}}},
+                               {"view.frame_selected"}});
                 items.back().text = L"Focus";
             } else if (source->key == control::viewport && menu->group == control::viewport_add_menu) {
                 // Blender Shift+A: everything the Create group can place at the 3D cursor.
-                for (const auto& definition : command_definitions)
-                    if (definition.group == CommandGroup::create)
-                        items.push_back(command_item(definition.id));
+                for (const auto& definition : menu_bindings)
+                    if (definition.group == MenuGroup::create)
+                        items.push_back(operator_item(definition.call));
             } else if (source->key == control::viewport || source->key == control::viewport_tools_menu) {
-                using enum Command;
-                items = viewport_commands(control::viewport_tools_menu);
+                items = viewport_calls(control::viewport_tools_menu);
                 if (source->key == control::viewport) {
                     items.push_back({.key = control::viewport_snap,
                                      .text = L"Snap",
                                      .edit_command = {},
-                                     .children = viewport_commands(control::viewport_snap)});
-                    for (auto item : commands({focus, create_static_mesh, duplicate_selected, erase_entities}))
+                                     .children = viewport_calls(control::viewport_snap)});
+                    for (auto item : calls({{"view.frame_selected"},
+                                            {"scene.add", {{"kind", "mesh"}}},
+                                            {"scene.duplicate"},
+                                            {"scene.delete", {{"target", "entities"}}}}))
                         items.push_back(std::move(item));
                 }
             } else if (source->key == control::viewport_snap) {
-                // Blender snapping popover: captioned sections over the shared command model.
-                items = viewport_commands(source->key);
+                items = viewport_calls(source->key);
                 for (auto& item : items) {
-                    const auto command = static_cast<Command>(item.key);
+                    const auto& call = *binding(item.key)->call;
+                    const auto setting = call.args.value("setting", std::string{});
                     item.separator_before = false;
-                    if (command == Command::snap_toggle)
+                    if (setting == "grid_snap")
                         item.heading = L"Snapping";
-                    else if (command == Command::snap_grid_01)
+                    else if (call.args.value("grid_spacing", 0.) == .1)
                         item.heading = L"Increment";
-                    else if (command == Command::snap_affect_move)
+                    else if (setting == "snap_move")
                         item.heading = L"Affect";
-                    else if (command == Command::snap_rotation_1)
+                    else if (call.args.value("rotation_step", 0.) == 1.)
                         item.heading = L"Rotation Increment";
-                    else if (command == Command::selection_grid)
+                    else if (call.id == "scene.snap_selection" && call.args["to"] == "grid")
                         item.heading = L"Snap Selection / Cursor";
-                    item.separator_before = !item.heading.empty() && command != Command::snap_toggle;
+                    item.separator_before = !item.heading.empty() && setting != "grid_snap";
                     // The section caption carries the context; rows show just the choice.
-                    if (command >= Command::snap_affect_move && command <= Command::snap_affect_scale)
+                    if (setting.starts_with("snap_"))
                         item.text = item.text.substr(5);
-                    else if (command == Command::snap_rotation_1 || command == Command::snap_rotation_5 ||
-                             command == Command::snap_rotation_15 || command == Command::snap_rotation_45)
+                    else if (call.args.contains("rotation_step"))
                         item.text = item.text.substr(9);
                 }
             } else if (source->key == control::viewport_camera || source->key == control::viewport_pivot ||
                        source->key == control::viewport_orientation) {
-                items = viewport_commands(source->key);
+                items = viewport_calls(source->key);
             } else if (control::is_path(source->key)) {
                 items.push_back({control::world_context, L"World", true, selected == ObjectId{}, {}});
                 for (const auto& member : members)
@@ -2429,14 +2357,27 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 auto value = session.read_property(target->object, target->path);
                 if (value)
                     if (const auto* enumeration = std::get_if<EnumValue>(&*value)) {
+                        OperatorCall call{"scene.set_properties",
+                                          assets::json_format::Json::object(),
+                                          {.selection = SelectionContext{selected, target->object, {selected}},
+                                           .region = RegionKind::parameters}};
+                        auto type = take(runtime.type_of(target->object));
+                        auto* argument = &call.args;
+                        for (const auto field : target->path) {
+                            const auto info = take(runtime.describe(type));
+                            const auto at = std::ranges::find(info->fields, field, &FieldInfo::id);
+                            argument = &(*argument)[at->name];
+                            type = at->value.type;
+                        }
+                        auto context = operator_context(session, project, true, command_focus);
+                        context.selection = *call.context.selection;
+                        context.region = *call.context.region;
+                        const bool available = operators.find(call.id)->poll(context).has_value();
                         for (const auto& member : take(runtime.describe(enumeration->type))->enumeration->values) {
-                            const auto key = control::property_choice_first + property_choices_.size();
-                            property_choices_.push_back(
-                                {target->object, target->path, {enumeration->type, member.second}, target->key});
-                            ui::MenuItem item{key,
+                            *argument = member.first;
+                            ui::MenuItem item{bind_operator(call),
                                               parameter_label(member.first),
-                                              (session.is_material(target->object) ? !session.world().running()
-                                                                                   : entity_status.can_edit),
+                                              available,
                                               member.second == enumeration->bits,
                                               {}};
                             item.behavior = ui::MenuBehavior::radio;
@@ -2448,9 +2389,13 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                        target && (target->kind == Binding::Kind::material_slot ||
                                   target->kind == Binding::Kind::material_texture || !target->material_path.empty())) {
                 items = material_menu(*target, session, project);
-            } else if (auto asset_items = assets.menu_items(source->key); !asset_items.empty())
+            } else if (auto asset_items = assets.menu_items(source->key); !asset_items.empty()) {
                 items = std::move(asset_items);
-            else if (source->key == control::scene_shading) {
+                if (source->key == browser_control::actions || source->key == browser_control::results)
+                    for (const auto& definition : menu_bindings)
+                        if (definition.call.id.starts_with("asset."))
+                            items.push_back(operator_item(definition.call, &definition));
+            } else if (source->key == control::scene_shading) {
                 const auto group = [&](ui::ControlKey first, const auto& titles, std::size_t selected) {
                     for (std::size_t i = 0; i < titles.size(); ++i) {
                         ui::MenuItem item{first + i, titles[i], true, selected == i, {}};
@@ -2504,8 +2449,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             } else if (source->key == source_control::files) {
                 items = source_editor.menu_items();
             } else if (source->key == control::add_component) {
-                items.push_back(command_item(take(world::has_transform(runtime, selected)) ? Command::remove_transform
-                                                                                           : Command::add_transform));
+                items.push_back(operator_item({take(world::has_transform(runtime, selected)) ? "scene.transform_remove"
+                                                                                             : "scene.transform_add"}));
                 component_choices_ = take(session.component_types());
                 for (std::size_t i = 0; i < component_choices_.size(); ++i)
                     items.push_back({control::component_choice_first + i,
@@ -2522,8 +2467,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                  {}});
                 items.push_back({control::guide_grid, L"Reference Grid", true, view.reference_grid, {}});
                 items.push_back({control::guide_axes, L"Origin Axes", true, view.origin_axes, {}});
-                items.push_back(
-                    {static_cast<ui::ControlKey>(Command::show_fps), L"Show FPS", true, show_fps, {}, L"", true});
+                items.push_back(operator_item({"view.toggle", {{"option", "fps"}}}));
                 for (auto& item : items)
                     item.behavior = ui::MenuBehavior::checkbox;
             } else if (!items.empty()) {
@@ -2677,6 +2621,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         reject_ui_controls(std::string(ui_error()));
         return describe(session, size, frame, project, ui, command_focus);
     }
+    // A closed menu or retargeted control must not keep an executable old call.
+    bindings_.erase(std::remove_if(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end(),
+                                   [](const auto& binding) { return binding.kind == Binding::Kind::operator_call; }),
+                    bindings_.end());
     property_help_.end();
     return result;
 }

@@ -1,5 +1,4 @@
 #include "editor/source_editor.hpp"
-#include "editor/commands.hpp"
 #include "editor/project_code.hpp"
 #include "assets/file.hpp"
 #include <algorithm>
@@ -299,7 +298,8 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
     }
 }
 void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
-                          const Project* project, const ProjectBuild* build, bool running) {
+                          const std::function<ui_language::ActionBinding(OperatorCall)>& action, const Project* project,
+                          const ProjectBuild* build, bool running) {
     using namespace ui_language;
     auto* file = active();
     std::wstring diagnostic, status = L"Open a source file from Asset Browser or File > Open Source.";
@@ -388,9 +388,6 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
             }
         }
     }
-    const auto action = [](Command command, bool enabled = true) {
-        return ActionBinding{static_cast<ui::ControlKey>(command), enabled};
-    };
     const std::array<InputValue, 17> inputs{
         CodeBinding{file ? file->document : empty_, file != nullptr},
         bounded(file ? file->path.filename().wstring() + (file->dirty() ? L" *" : L"") : L"No source document"),
@@ -400,14 +397,14 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
         problem_line_ != 0,
         conflict,
         source_control::files,
-        action(Command::open_source),
-        action(Command::save_document, file != nullptr),
-        action(Command::close_source, file != nullptr),
-        action(Command::reload_source, file != nullptr),
-        action(Command::new_source, project != nullptr),
-        action(Command::build_project, project != nullptr),
-        action(Command::run_project, project && build && build->state == BuildState::ready && !running),
-        action(Command::stop_project, running),
+        action({"source.open"}),
+        action({"file.save", assets::json_format::Json::object(), {.selection = {}, .region = RegionKind::code}}),
+        action({"source.close"}),
+        action({"source.reload"}),
+        action({"source.new_component"}),
+        action({"project.build"}),
+        action({"play.start"}),
+        action({"play.stop"}),
         running};
     const std::array<KeyBinding, 3> keys{
         {{"buffer", source_control::buffer}, {"files", source_control::files}, {"problem", source_control::problem}}};

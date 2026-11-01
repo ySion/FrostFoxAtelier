@@ -80,7 +80,7 @@ void verify_material_picking() {
     require(surface->policy().coverage == mat::Coverage::opaque && !surface->policy().double_sided,
             "Picking material did not resolve its new Source policy.");
     take(document.select(back));
-    changed(document.erase_selected());
+    changed(document.erase_entities(document.selected_entities()));
     publish();
     require(pick({0, 0, 0}) == front, "Single-sided picking discarded the authored front side.");
     require(camera.look_at({0, 0, 5}, {0, 0, 0}), "Backface picking camera is invalid.");

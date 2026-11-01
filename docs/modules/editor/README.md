@@ -247,7 +247,7 @@ GPU 段：
 
 顶部菜单栏提供 File / Edit / Create / Project / View / Window / Help。Create 快捷区创建 Entity 或 Static Mesh Entity，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。无参数启动为空文档；[Examples](../../../examples/README.md) 是通过 File → Open Project 或 `--project` 打开的独立工程，没有专用菜单或隐式复制。Parameters 通过真实类型显示检查目标及其连续属性区。Entity Structure 递归展示 Entity 子树与所属组件，负责选择、添加和删除；Scene Tree 递归展示 Entity 组合层级。没有空间时不显示实体 TRS；Edit 和组成菜单的 Add Transform / Remove Transform 操作同一内联空间；没有检查目标时显示空状态。
 
-`commands.hpp` 是编辑器命令描述入口，`Workspace::command_enabled` 判定当前可用性，`Application::execute` 执行。菜单和顶部快捷区读取同一描述，快捷键与资源点击进入同一个执行函数。执行时再次检查可用性；UI 只产生通用 Action，不直接修改 World。输入字段和拖动仍通过 Session 事务入口。
+`OperatorRegistry` 是编辑器动作的权威入口，poll 判定当前可用性，`call` 严格解码参数并执行。菜单和顶部快捷区读取 `menu_bindings.hpp` 的 `OperatorCall`；非 modal 快捷键从 keymap 解析同一调用，菜单快捷键文字也来自 keymap。执行时再次检查可用性；UI 只产生通用 Action，不直接修改 World。输入字段和拖动仍通过 Session 事务入口，详见[操作符](operators.md)。
 
 菜单栏通过 `EditorShell`、工具架通过 `ToolShelf` DSL 描述同一套收起交互，共用 `stow_*` 尺寸和 `bar-stow` 样式。展开把手宽 12 DIP，当前 150% 缩放下为 18px；箭头位于顶部 12 DIP 方形区。收起时同一个按钮铺满整条横栏，高 12 DIP，任何位置均可点击恢复，箭头保持左对齐。展开把手和收起横条的常态、悬停、焦点均为灰色渐变；仅按住时采用灰蓝渐变 `#5D7389 → #748CA5`，松开即恢复灰色，箭头始终为黑色。两栏分别使用自身实际占用高度分配剩余工作区；窗口验收覆盖单独/同时收起、横条中部与末端点击和键盘恢复。
 

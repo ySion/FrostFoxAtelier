@@ -19,7 +19,7 @@ namespace {
 using control::Json;
 using control::Failure;
 // Bumped whenever the frozen camera/view contract changes; repro.open accepts only this schema.
-constexpr unsigned repro_view_schema = 6;
+constexpr unsigned repro_view_schema = 7;
 constexpr std::array<std::string_view, 3> removed_view_options{"direct_reference", "direct_clustered",
                                                                "direct_shadow_cache"};
 constexpr unsigned inspect_page_items = 256;
@@ -33,11 +33,6 @@ T take(Result<T> value) {
 void take(Result<void> value) {
     if (!value)
         throw editor::detail::Failure(std::move(value.error()));
-}
-void committed(Result<world::Commit> value) {
-    auto commit = take(std::move(value));
-    if (commit.notification_error)
-        throw editor::detail::Failure(std::move(*commit.notification_error));
 }
 std::string text(const Json& value, std::size_t maximum = 4096) {
     if (!value.is_string())
@@ -62,45 +57,20 @@ unsigned integer(const Json& value, unsigned low, unsigned high) {
         throw Failure("invalid_request", "Integer outside supported range");
     return static_cast<unsigned>(n);
 }
-math::Vector3 vector3(const Json& value) {
-    if (!value.is_array() || value.size() != 3)
-        throw Failure("invalid_request", "Expected three vector components");
-    const auto f = [](const Json& n) {
-        const auto v = number(n);
-        if (std::abs(v) > 100000000)
-            throw Failure("invalid_request", "Vector exceeds authoring range");
-        return static_cast<float>(v);
-    };
-    return {f(value[0]), f(value[1]), f(value[2])};
-}
 Json vector3(math::Vector3 v) {
     return assets::json_format::numbers(std::array{v.x, v.y, v.z});
 }
-Json camera_json(const editor::CameraState& c) {
-    using assets::json_format::number;
-    return {{"view", static_cast<unsigned>(c.view)},
-            {"target", vector3(c.target)},
-            {"yaw", number(c.yaw)},
-            {"pitch", number(c.pitch)},
-            {"distance", number(c.distance)},
-            {"roll", number(c.roll)},
-            {"vertical_fov", number(c.vertical_fov)},
-            {"near_clip", number(c.near_clip)},
-            {"far_clip", number(c.far_clip)}};
+Json camera_json(Runtime& runtime, editor::CameraState value) {
+    const auto type = take(runtime.native_type<editor::CameraState>());
+    return take(editor::encode_properties(runtime, {type, {}, std::as_writable_bytes(std::span{&value, 1})},
+                                          take(editor::detail::author_fields(runtime, type)), {}));
 }
-editor::CameraState camera_state(const Json& args) {
-    control::fields(args,
-                    {"view", "target", "yaw", "pitch", "distance", "roll", "vertical_fov", "near_clip", "far_clip"});
-    return {
-        static_cast<editor::CameraView>(integer(args.at("view"), 0, static_cast<unsigned>(editor::CameraView::left))),
-        vector3(args.at("target")),
-        static_cast<float>(number(args.at("yaw"))),
-        static_cast<float>(number(args.at("pitch"))),
-        static_cast<float>(number(args.at("distance"))),
-        static_cast<float>(number(args.at("roll"))),
-        static_cast<float>(number(args.at("vertical_fov"))),
-        static_cast<float>(number(args.at("near_clip"))),
-        static_cast<float>(number(args.at("far_clip")))};
+editor::CameraState camera_state(Runtime& runtime, const Json& args) {
+    editor::CameraState value;
+    take(editor::decode_properties(
+        runtime, {take(runtime.native_type<editor::CameraState>()), {}, std::as_writable_bytes(std::span{&value, 1})},
+        args));
+    return value;
 }
 Json view_json(const renderer::ViewSettings& view) {
     Json result = Json::object();
@@ -273,7 +243,6 @@ Json performance_json(const editor::FramePerformance& performance) {
 renderer::ViewSettings patched_view(renderer::ViewSettings view, const Json& patch, std::array<float, 3> focus) {
     if (!patch.is_object())
         throw Failure("invalid_request", "Display patch must be an object");
-    std::set<editor::ViewOption> assigned;
     for (const auto& [name, value] : patch.items()) {
         if (std::ranges::find(removed_view_options, name) != removed_view_options.end())
             throw Failure("invalid_request",
@@ -282,8 +251,6 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view, const Json& pat
         const auto* option = editor::view_option(name);
         if (!option)
             throw Failure("invalid_request", "Unknown display option: " + name);
-        if (!assigned.insert(option->option).second)
-            throw Failure("invalid_request", "Display option specified through multiple names: " + name);
         double scalar{};
         if (option->kind == editor::ViewValueKind::enumeration) {
             const auto choice = text(value);
@@ -318,32 +285,6 @@ Json scalar_json(const Scalar& scalar, const Runtime& runtime) {
         },
         scalar);
 }
-Scalar scalar_value(const Json& json, const Scalar& current, const Runtime& runtime) {
-    return std::visit(
-        [&](const auto& value) -> Scalar {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, EnumValue>) {
-                const auto name = text(json);
-                const auto* type = take(runtime.describe(value.type));
-                if (type->enumeration)
-                    for (const auto& [choice, bits] : type->enumeration->values)
-                        if (name == choice)
-                            return EnumValue{value.type, bits};
-                throw Failure("invalid_request", "Unknown enum choice");
-            } else if constexpr (std::is_same_v<T, bool>) {
-                if (!json.is_boolean())
-                    throw Failure("invalid_request", "Expected boolean property");
-                return json.get<bool>();
-            } else {
-                const auto n = number(json);
-                if (n < std::numeric_limits<T>::lowest() || n > std::numeric_limits<T>::max() ||
-                    (std::is_integral_v<T> && std::floor(n) != n))
-                    throw Failure("invalid_request", "Property outside scalar range");
-                return static_cast<T>(n);
-            }
-        },
-        current);
-}
 struct Operation {
     std::string_view name, description;
     bool changes;
@@ -374,53 +315,6 @@ const std::vector<Operation>& operations() {
           {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", inspect_page_items}}},
           {"cursor", obj}},
          {}},
-        {"project.open",
-         "Open an existing project; refuses unsaved scene or source drafts",
-         true,
-         {{"path", str}},
-         {"path"}},
-        {"scene.open", "Open a project-relative scene; refuses unsaved scene", true, {{"path", str}}, {"path"}},
-        {"scene.save", "Save the current scene through the normal project save command", true, {{"path", str}}, {}},
-        {"scene.create",
-         "Create one entity, mesh, point/rectangle/directional light; the sky is a World setting (view.set)",
-         true,
-         {{"kind", {{"enum", {"entity", "mesh", "point", "rectangle", "directional"}}}}, {"mesh", str}},
-         {"kind"}},
-        {"scene.rename",
-         "Rename one entity through document history; components use their type names",
-         true,
-         {{"object", str}, {"name", str}},
-         {"object", "name"}},
-        {"scene.set_property",
-         "Write one reflected property with its exact scalar/enum type",
-         true,
-         {{"object", str}, {"property", str}, {"value", Json::object()}},
-         {"object", "property", "value"}},
-        {"material.create",
-         "Create a named Material Source (.ms.material) or Material Instance under Content",
-         true,
-         {{"path", str},
-          {"role", {{"enum", {"source", "instance"}}}},
-          {"source", str},
-          {"parent", str},
-          {"entries", arr}},
-         {"path", "role"}},
-        {"texture.import", "Import a texture with a Project GUID", true, {{"path", str}}, {"path"}},
-        {"texture.reimport",
-         "Replace an existing texture's content on the same identity without author history",
-         true,
-         {{"asset", str}, {"path", str}},
-         {"asset", "path"}},
-        {"mesh.import",
-         "Import an OBJ or glTF mesh with a Project GUID; glTF also publishes one default material per slot",
-         true,
-         {{"path", str}},
-         {"path"}},
-        {"mesh.reimport",
-         "Replace a mesh on the same identity and publish exact geometry to Editor and Live",
-         true,
-         {{"asset", str}, {"path", str}},
-         {"asset", "path"}},
         {"material.inspect",
          "Read owning MS declarations, sparse MI entries, effective values and diagnostics",
          false,
@@ -457,54 +351,6 @@ const std::vector<Operation>& operations() {
          {{"object", str}, {"path", str}},
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
-        {"material.undo", "Undo one shared material asset edit", true, {{"asset", str}}, {"asset"}},
-        {"material.redo", "Redo one shared material asset edit", true, {{"asset", str}}, {"asset"}},
-        {"scene.transform",
-         "Set or add complete Entity TRS; one undo entry",
-         true,
-         {{"object", str}, {"position", arr}, {"rotation", arr}, {"scale", arr}},
-         {"object", "position", "rotation", "scale"}},
-        {"scene.remove_transform",
-         "Remove optional Entity space through document history",
-         true,
-         {{"object", str}},
-         {"object"}},
-        {"scene.set_space_reference",
-         "Set Entity spatial origin independently of composition; null inherits, empty string is world space",
-         true,
-         {{"object", str}, {"origin", {{"type", {"string", "null"}}}}, {"keep_world", {{"type", "boolean"}}}},
-         {"object", "origin"}},
-        {"scene.reparent",
-         "Reparent Entity composition with explicit transform preservation",
-         true,
-         {{"object", str},
-          {"parent", {{"type", {"string", "null"}}}},
-          {"keep_world", {{"type", "boolean"}}},
-          {"index", {{"type", "integer"}, {"minimum", 0}}}},
-         {"object"}},
-        {"scene.add_component",
-         "Add one discovered component type to the selected entity",
-         true,
-         {{"type", str}},
-         {"type"}},
-        {"scene.remove_component", "Remove a component through document history", true, {{"object", str}}, {"object"}},
-        {"scene.delete", "Delete selected entities through document history", true, {}, {}},
-        {"camera.set", "Restore an exact camera state from editor.inspect", true, {{"state", obj}}, {"state"}},
-        {"camera.look_at",
-         "Aim a perspective camera at a world-space target (metres, +Y up)",
-         true,
-         {{"eye", arr}, {"target", arr}},
-         {"eye", "target"}},
-        {"view.set",
-         "Atomically apply a typed display patch using the same rules as menus",
-         true,
-         {{"patch", obj}},
-         {"patch"}},
-        {"view.layout",
-         "Apply an explicit DDGI coverage layout; retain propagation and display settings",
-         true,
-         {{"layout", {{"enum", {"fit_scene", "scene_focus"}}}}},
-         {"layout"}},
         {"repro.export",
          "Export an independent project from the current memory scene; does not save the original",
          true,
@@ -584,9 +430,6 @@ Json capabilities() {
         schema["description"] = option.description;
         result["display_options"][option.name] = std::move(schema);
     }
-    result["display_aliases"] = Json::object();
-    for (const auto& alias : editor::view_option_aliases())
-        result["display_aliases"][alias.name] = editor::view_option(alias.name)->name;
     result["probe_volume_stats_semantics"] =
         "CPU accepted-frame layout and update schedule; not GPU completion or valid-support counts";
     result["coordinates"] =
@@ -1230,7 +1073,7 @@ struct EditorControl::Impl {
                     {"text_focus", app.ui_.wants_keyboard()},
                     {"undo", app.document_->undo_count()},
                     {"redo", app.document_->redo_count()},
-                    {"camera", camera_json(app.camera_.state())},
+                    {"camera", camera_json(app.document_->world().runtime(), app.camera_.state())},
                     {"view", view_json(app.workspace_.view)},
                     {"accepted_frames", app.accepted_frames_},
                     {"last_frame", frame_json()}};
@@ -1290,7 +1133,7 @@ struct EditorControl::Impl {
                          {"identity", server.identity()},
                          {"state_token", token()},
                          {"request_id", id},
-                         {"camera", camera_json(app.camera_.state())},
+                         {"camera", camera_json(app.document_->world().runtime(), app.camera_.state())},
                          {"view_schema", repro_view_schema},
                          {"view", view_json(app.workspace_.view)}};
         jobs.push_back(std::move(job));
@@ -1470,11 +1313,15 @@ struct EditorControl::Impl {
             auto parameters = editor::parameter_schema(app.document_->world().runtime(), info);
             if (!parameters)
                 throw Failure("operation_failed", parameters.error().message);
+            auto result = editor::result_schema(app.document_->world().runtime(), info);
+            if (!result)
+                throw Failure("operation_failed", result.error().message);
             operators.push_back({{"id", info.id},
                                  {"title", control::utf8(info.title)},
                                  {"description", info.description},
                                  {"flags", flags},
-                                 {"parameters", std::move(*parameters)}});
+                                 {"parameters", std::move(*parameters)},
+                                 {"result", std::move(*result)}});
         }
         auto regions = Json::array();
         for (const auto name : editor::region_names())
@@ -1494,11 +1341,14 @@ struct EditorControl::Impl {
                          {{"type", "array"}, {"items", handle}, {"maxItems", editor::Session::maximum_entities}}},
                         {"active", handle},
                         {"object", handle}}}}},
-                    {"region", {{"enum", std::move(regions)}}}}}}}};
+                    {"region", {{"enum", std::move(regions)}}},
+                    {"asset", {{"type", "string"}}}}}}}};
     }
     editor::ContextOverride context_override(const Json& value) {
-        control::fields(value, {"selection", "region"});
+        control::fields(value, {"selection", "region", "asset"});
         editor::ContextOverride result;
+        if (value.contains("asset"))
+            result.asset = text(value.at("asset"));
         if (value.contains("selection")) {
             const auto& selection = value.at("selection");
             control::fields(selection, {"entities", "active", "object"});
@@ -1528,7 +1378,8 @@ struct EditorControl::Impl {
     }
     Json call_operator(const Json& args) {
         editor::OperatorCall request{text(args.at("id"), 80), Json::object(), {}};
-        if (!app.workspace_.operators.find(request.id))
+        const auto* info = app.workspace_.operators.find(request.id);
+        if (!info)
             throw Failure("unknown_operator", "No editor operator has this ID");
         if (args.contains("args")) {
             if (!args.at("args").is_object())
@@ -1537,19 +1388,41 @@ struct EditorControl::Impl {
         }
         if (args.contains("context"))
             request.context = context_override(args.at("context"));
-        const auto report = app.call_operator(request, false);
+        // Build preserves in-memory author values and dirty state; rebuild:true explicitly retires history.
+        // Unlike Open/New it saves Source drafts and materials itself, without discarding the scene.
+        if (editor::has_flag(info->flags, editor::OperatorFlag::replaces_document) && request.id != "project.build")
+            replaceable();
+        const editor::ResolveReference resolve = [&](const Json& value, TypeId type,
+                                                     ValueForm form) -> std::optional<ObjectReference> {
+            if (!value.is_string())
+                return {};
+            auto& runtime = app.document_->world().runtime();
+            const auto target = runtime.hold(object(value), type);
+            if (!target)
+                return {};
+            if (form == ValueForm::strong_reference)
+                return target->reference();
+            const auto reference = runtime.observe(target->reference());
+            return reference ? std::optional{*reference} : std::nullopt;
+        };
+        const auto report = app.call_operator(request, false, resolve);
         if (!report)
             throw Failure(report.error().code == ErrorCode::argument_mismatch ? "invalid_request" : "operation_failed",
                           report.error().message);
-        if (report->status == editor::OperatorStatus::unavailable)
+        if (report->status == editor::OperatorStatus::failed)
             throw Failure("poll_failed", report->message);
         auto selection = Json::array();
         for (const auto entity : app.document_->selected_entities())
             selection.push_back(handle(entity));
-        return {{"operator", request.id},
-                {"selection", std::move(selection)},
-                {"active", handle(app.document_->selection().entity)},
-                {"inspected_object", handle(app.document_->selection().object)}};
+        return {{"status", "ok"},
+                {"result",
+                 {{"operator", request.id},
+                  {"status", report->status == editor::OperatorStatus::cancelled ? "cancelled" : "finished"},
+                  {"message", report->message},
+                  {"result", report->result},
+                  {"selection", std::move(selection)},
+                  {"active", handle(app.document_->selection().entity)},
+                  {"inspected_object", handle(app.document_->selection().object)}}}};
     }
     Json dispatch(std::string_view op, const Json& args, const std::string& id,
                   const std::shared_ptr<control::Peer>& peer) {
@@ -1612,8 +1485,7 @@ struct EditorControl::Impl {
         idle();
         if (op == "op.call")
             return call_operator(args);
-        if (op.starts_with("material.") || op == "texture.import" || op == "texture.reimport" || op == "mesh.import" ||
-            op == "mesh.reimport") {
+        if (op.starts_with("material.")) {
             if (op == "material.create_scene")
                 return {
                     {"object",
@@ -1658,40 +1530,6 @@ struct EditorControl::Impl {
             if (!app.project_)
                 throw Failure("not_ready", "No project is open");
             auto& project = *app.project_;
-            if (op == "material.create") {
-                const auto role = text(args.at("role"));
-                const auto path = control::wide(text(args.at("path")));
-                if (role == "source") {
-                    if (args.contains("parent") || args.contains("entries"))
-                        throw Failure("invalid_request",
-                                      "A Material Source cannot contain instance entries or a parent");
-                    return {{"asset", take(project.create_material_source(
-                                          path, text(args.value("source", Json("")), control::maximum_message)))}};
-                }
-                if (role != "instance" || args.contains("source"))
-                    throw Failure("invalid_request", "Expected source or instance author role");
-                assets::MaterialAsset asset;
-                auto& author = std::get<assets::MaterialInstanceAsset>(asset.author);
-                if (args.contains("parent"))
-                    author.parent_key = text(args.at("parent"));
-                if (args.contains("entries"))
-                    author.entries = assets::material_format::decode_entries(args.at("entries"));
-                return {{"asset", take(project.create_material(path, asset))}};
-            }
-            if (op == "texture.import")
-                return {{"asset", take(project.import_texture(control::wide(text(args.at("path")))))}};
-            if (op == "texture.reimport") {
-                const auto key = text(args.at("asset"));
-                take(doc.reimport_texture(project, key, control::wide(text(args.at("path")))));
-                return {{"asset", key}};
-            }
-            if (op == "mesh.reimport") {
-                const auto key = text(args.at("asset"));
-                take(doc.reimport_mesh(project, key, control::wide(text(args.at("path")))));
-                return {{"asset", key}};
-            }
-            if (op == "mesh.import")
-                return {{"asset", take(project.import_mesh(control::wide(text(args.at("path")))))}};
             if (op == "material.save") {
                 take(doc.save_material(project, text(args.at("asset"))));
                 const auto refreshed = project.refresh();
@@ -1700,10 +1538,6 @@ struct EditorControl::Impl {
                     result["catalog_warning"] = refreshed.error().message;
                 return result;
             }
-            if (op == "material.undo" || op == "material.redo") {
-                take(doc.material_undo(text(args.at("asset")), op == "material.redo", &project));
-                return Json::object();
-            }
             if (op == "material.set_texture") {
                 take(doc.set_material_texture(project, object(args.at("object")), text(args.at("path")),
                                               text(args.at("texture"))));
@@ -1711,105 +1545,7 @@ struct EditorControl::Impl {
             }
             throw Failure("invalid_request", "Unknown material operation");
         }
-        if (op == "project.open") {
-            replaceable();
-            take(app.open_project(control::wide(text(args.at("path")))));
-        } else if (op == "scene.open") {
-            replaceable();
-            take(app.open_scene(control::wide(text(args.at("path")))));
-        } else if (op == "scene.save")
-            take(app.save_scene(control::wide(text(args.value("path", Json(""))))));
-        else if (op == "scene.create") {
-            const auto kind = text(args.at("kind"), 40);
-            editor::Command command;
-            if (kind == "entity")
-                command = editor::Command::create_entity;
-            else if (kind == "mesh")
-                command = editor::Command::create_static_mesh;
-            else if (kind == "point")
-                command = editor::Command::create_point_light;
-            else if (kind == "rectangle")
-                command = editor::Command::create_rectangle_light;
-            else if (kind == "directional")
-                command = editor::Command::create_directional_light;
-            else
-                throw Failure("invalid_request",
-                              "Unknown entity creation kind; use entity, mesh, point, rectangle or directional. "
-                              "The sky is a World setting: view.set sky_enabled, sky_color_x/y/z and sky_intensity.");
-            if (!app.workspace_.command_enabled(command, doc))
-                throw Failure("unavailable", "Creation is unavailable in this document");
-            take(app.execute(command, text(args.value("mesh", Json("")))));
-            return {{"object", handle(doc.selection().entity)}};
-        } else if (op == "scene.rename")
-            take(doc.rename(object(args.at("object")), control::wide(text(args.at("name"), 1024))));
-        else if (op == "scene.set_property") {
-            const auto target = object(args.at("object"));
-            const auto name = text(args.at("property"), 256);
-            const auto properties = take(doc.properties(target));
-            const auto found = std::ranges::find(properties, name, &editor::Property::name);
-            if (found == properties.end())
-                throw Failure("invalid_request", "Unknown reflected property");
-            take(doc.set_property(target, found->path, scalar_value(args.at("value"), found->value, runtime),
-                                  ++edit_id));
-        } else if (op == "scene.transform") {
-            const auto target = object(args.at("object"));
-            const auto& rotation = args.at("rotation");
-            if (!rotation.is_array() || rotation.size() != 4)
-                throw Failure("invalid_request", "Rotation requires quaternion xyzw");
-            world::Trs value{vector3(args.at("position")),
-                             {static_cast<float>(number(rotation[0])), static_cast<float>(number(rotation[1])),
-                              static_cast<float>(number(rotation[2])), static_cast<float>(number(rotation[3]))},
-                             vector3(args.at("scale"))};
-            take(doc.set_transform(target, value));
-        } else if (op == "scene.remove_transform")
-            take(doc.remove_transform(object(args.at("object"))));
-        else if (op == "scene.set_space_reference") {
-            std::optional<ObjectId> origin;
-            if (!args.at("origin").is_null())
-                origin = text(args.at("origin"), 80).empty() ? ObjectId{} : object(args.at("origin"));
-            committed(doc.set_space_reference(object(args.at("object")), origin,
-                                              args.value("keep_world", true) ? world::ReparentRule::keep_world
-                                                                             : world::ReparentRule::keep_local));
-        } else if (op == "scene.reparent") {
-            const auto parent =
-                args.contains("parent") && !args.at("parent").is_null() ? object(args.at("parent")) : ObjectId{};
-            const auto rule =
-                args.value("keep_world", true) ? world::ReparentRule::keep_world : world::ReparentRule::keep_local;
-            committed(doc.reparent(object(args.at("object")), parent, rule, args.value("index", world::append)));
-        } else if (op == "scene.add_component") {
-            const auto name = text(args.at("type"), 256);
-            const auto types = take(doc.component_types());
-            const auto found = std::ranges::find(types, name, &editor::ComponentType::name);
-            if (found == types.end())
-                throw Failure("invalid_request", "Component type is not available");
-            committed(doc.add_component(found->type));
-            return {{"object", handle(doc.selection().object)}};
-        } else if (op == "scene.remove_component")
-            committed(doc.remove_component(object(args.at("object"))));
-        else if (op == "scene.delete")
-            committed(doc.erase_selected());
-        else if (op == "camera.set" || op == "camera.look_at") {
-            auto camera = app.camera_;
-            const auto valid = op == "camera.set" ? camera.set_state(camera_state(args.at("state")))
-                                                  : camera.look_at(vector3(args.at("eye")), vector3(args.at("target")));
-            if (!valid)
-                throw Failure("invalid_request", "Invalid camera state or eye/target");
-            take(app.set_camera(camera, true));
-        } else if (op == "view.layout") {
-            idle();
-            const auto layout = text(args.at("layout"));
-            if (layout != "fit_scene" && layout != "scene_focus")
-                throw Failure("invalid_request", "Unsupported DDGI coverage layout");
-            take(app.execute(layout == "fit_scene" ? editor::Command::fit_probe_scene
-                                                   : editor::Command::fit_probe_scene_focus));
-        } else if (op == "view.set") {
-            if (args.at("patch").contains("grid_plane"))
-                throw Failure("invalid_request",
-                              "Persistent grid plane follows camera view; temporary render cases may override it");
-            auto view = patched_view(app.workspace_.view, args.at("patch"), app.lighting_focus());
-            take(app.workspace_.set_view_settings(*app.document_, view, app.lighting_focus()));
-            app.workspace_.viewport_settings.grid_spacing = view.grid_spacing;
-        } else if (op == "repro.export")
+        if (op == "repro.export")
             return start_export(id, peer);
         else if (op == "render.capture" || op == "render.compare" || op == "render.prepare")
             return start_render(id, peer, args, op == "render.compare", op == "render.prepare");
@@ -1820,7 +1556,7 @@ struct EditorControl::Impl {
             if (manifest.value("view_schema", Json()) != repro_view_schema)
                 throw Failure("invalid_request", "Repro view schema is not current; export the repro again");
             auto camera = app.camera_;
-            if (!camera.set_state(camera_state(manifest.at("camera"))))
+            if (!camera.set_state(camera_state(runtime, manifest.at("camera"))))
                 throw Failure("invalid_request", "Invalid repro camera");
             const auto focus = camera.state().target;
             auto view = patched_view({}, manifest.at("view"), {focus.x, focus.y, focus.z});

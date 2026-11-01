@@ -4,6 +4,160 @@ struct EntityDirectionalLight : presentation::LightComponent {
 
 void verify_entity_composition() {
     {
+        editor::Session grouped;
+        auto& runtime = grouped.world().runtime();
+        const auto add = [&](float x) {
+            changed(grouped.add_entity());
+            const auto entity = grouped.selection().entity;
+            take(grouped.set_transform(entity, {{x, 0, 0}, {}, {1, 1, 1}}));
+            return entity;
+        };
+        const auto parent = add(10), first = add(2), second = add(5);
+        changed(grouped.reparent(first, parent, world::ReparentRule::keep_local));
+        changed(grouped.reparent(second, parent, world::ReparentRule::keep_local));
+        const auto before = take(grouped.serialize());
+        auto project = take(editor::Project::create(std::filesystem::current_path() / "out/editor-reparent-evidence" /
+                                                    std::to_string(GetTickCount64())));
+        auto play = take(editor::Session::deserialize(before, project));
+        play->enter_play();
+        grouped.set_live_forwarding(true);
+        const auto sync = [&] {
+            using nlohmann::json;
+            auto ops = json::array();
+            for (const auto& op : take(grouped.take_live_ops()))
+                ops.push_back(json::parse(op.text));
+            require(!ops.empty() && take(play->apply_live(json{{"ops", ops}}.dump(), project)).empty(),
+                    "Group reparent Live failed to apply the recorded moves.");
+            auto actual = json::parse(take(play->serialize())), expected = json::parse(take(grouped.serialize()));
+            actual.erase("next_id");
+            expected.erase("next_id");
+            require(actual == expected, "Group reparent Live diverged in order, transforms or object identities.");
+        };
+        const auto history = grouped.undo_count(), recorded = grouped.recorded();
+        take(grouped.select_entities(std::array{first, second}, second));
+        changed(grouped.reparent(grouped.selected_entities(), {}, world::ReparentRule::keep_world));
+        require(grouped.undo_count() == history + 1 && grouped.recorded() == recorded + 1 &&
+                    take(world::parent_entity(runtime, first)) == ObjectId{} &&
+                    take(world::parent_entity(runtime, second)) == ObjectId{} &&
+                    take(world::read_transform(runtime, first)).position.x == 12 &&
+                    take(world::read_transform(runtime, second)).position.x == 15,
+                "Group reparent did not publish both asymmetric moves as one history entry.");
+        const auto after = take(grouped.serialize());
+        sync();
+        changed(grouped.undo());
+        require(take(grouped.serialize()) == before && grouped.undo_count() == history && grouped.redo_count() == 1,
+                "Group reparent Undo did not restore original sibling order, local transforms and identities.");
+        sync();
+        changed(grouped.redo());
+        require(take(grouped.serialize()) == after && grouped.undo_count() == history + 1 && grouped.redo_count() == 0,
+                "Group reparent Redo did not replay both original moves in order.");
+        sync();
+    }
+    {
+        editor::Session grouped;
+        auto& runtime = grouped.world().runtime();
+        changed(grouped.add_entity());
+        const auto parent = grouped.selection().entity;
+        take(grouped.set_transform(parent, {{}, {}, {2, 1, 1}}));
+        changed(grouped.add_entity());
+        const auto first = grouped.selection().entity;
+        take(grouped.set_transform(first, {{2, 0, 0}, {}, {1, 1, 1}}));
+        changed(grouped.reparent(first, parent, world::ReparentRule::keep_local));
+        changed(grouped.add_entity());
+        const auto second = grouped.selection().entity;
+        take(grouped.set_transform(second, {{5, 0, 0}, editor::from_euler_degrees({0, 0, 45}), {1, 1, 1}}));
+        changed(grouped.reparent(second, parent, world::ReparentRule::keep_local));
+        const auto before = take(grouped.serialize());
+        const auto history = grouped.undo_count(), recorded = grouped.recorded();
+        const auto rejected = [](const Result<world::Commit>& result) {
+            require(!result && result.error().code == ErrorCode::argument_mismatch && !result.error().source &&
+                        result.error().message ==
+                            "Keeping the world transform requires a finite, nonsingular local TRS without shear.",
+                    "Group reparent replaced the original keep-world rejection.");
+        };
+        rejected(grouped.reparent(std::array{second, first}, {}));
+        require(take(grouped.serialize()) == before && grouped.undo_count() == history &&
+                    grouped.recorded() == recorded && grouped.redo_count() == 0,
+                "First-item reparent rejection published a move or added history.");
+        rejected(grouped.reparent(std::array{first, second}, {}));
+        require(take(world::parent_entity(runtime, first)) == ObjectId{} &&
+                    take(world::read_transform(runtime, first)).position.x == 4 &&
+                    take(world::parent_entity(runtime, second)) == parent &&
+                    take(world::read_transform(runtime, second)).position.x == 5 &&
+                    grouped.undo_count() == history + 1 && grouped.recorded() == recorded + 1,
+                "Second-item rejection lost the committed prefix or recorded the rejected move.");
+        const auto partial = take(grouped.serialize());
+        changed(grouped.undo());
+        require(take(grouped.serialize()) == before && grouped.undo_count() == history && grouped.redo_count() == 1,
+                "Partial reparent Undo did not restore just the committed prefix.");
+        changed(grouped.redo());
+        require(take(grouped.serialize()) == partial && grouped.undo_count() == history + 1 &&
+                    grouped.redo_count() == 0,
+                "Partial reparent Redo retried the rejected suffix or lost the committed prefix.");
+        require(!take(grouped.reparent(std::array{parent, first}, {})).changed && grouped.recorded() == recorded + 1 &&
+                    grouped.undo_count() == history + 1 && take(grouped.serialize()) == partial,
+                "No-op group reparent created history or changed the scene.");
+    }
+    {
+        const Error cause{ErrorCode::invocation_failed, "Reparent notification failed\n完整 cause",
+                          SourceLocation{"Source/Reparent.source", 139, 17, 3, 5, "E:/saved/Reparent.source"}};
+        ObjectId first, second;
+        world::World* current{};
+        bool armed{}, cleanup_failed{};
+        editor::Session grouped([&](world::World& world) -> Result<std::shared_ptr<void>> {
+            current = &world;
+            take(world.observe_lifecycle([&](world::World&, world::Lifecycle phase, ObjectId object) -> Result<void> {
+                if (armed && phase == world::Lifecycle::deactivated) {
+                    if (object == first)
+                        return std::unexpected(cause);
+                    if (object == second) {
+                        cleanup_failed = true;
+                        return std::unexpected(Error{ErrorCode::execution_aborted, "Later shutdown failure"});
+                    }
+                }
+                return {};
+            }));
+            return std::shared_ptr<void>{};
+        });
+        auto& runtime = grouped.world().runtime();
+        changed(grouped.add_entity());
+        const auto disabled = grouped.selection().entity;
+        changed(current->set_enabled(disabled, false));
+        changed(grouped.add_entity());
+        first = grouped.selection().entity;
+        take(grouped.set_transform(first, {{2, 0, 0}, {}, {1, 1, 1}}));
+        changed(grouped.add_entity());
+        second = grouped.selection().entity;
+        take(grouped.set_transform(second, {{7, 0, 0}, {}, {1, 1, 1}}));
+        const auto before = take(grouped.serialize());
+        const auto history = grouped.undo_count(), recorded = grouped.recorded();
+        take(grouped.set_failure_policy(world::FailurePolicy::halt));
+        changed(grouped.start());
+        armed = true;
+        const auto result = take(grouped.reparent(std::array{first, second}, disabled));
+        require(result.changed && result.notification_error && cleanup_failed && !grouped.world().running(),
+                "Reparent notification failure was reported as a rejected/unpublished move.");
+        const auto& error = *result.notification_error;
+        require(error.code == cause.code && error.message == cause.message && error.source &&
+                    error.source->path == cause.source->path && error.source->version == cause.source->version &&
+                    error.source->offset == cause.source->offset && error.source->line == cause.source->line &&
+                    error.source->column == cause.source->column && error.source->disk_path == cause.source->disk_path,
+                "Reparent replaced its notification cause with a later error or lost source fields.");
+        require(take(world::parent_entity(runtime, first)) == disabled &&
+                    take(world::parent_entity(runtime, second)) == ObjectId{} && grouped.undo_count() == history + 1 &&
+                    grouped.recorded() == recorded + 1,
+                "Reparent notification failure lost committed history or executed the suffix.");
+        const auto partial = take(grouped.serialize());
+        armed = false;
+        changed(grouped.undo());
+        require(take(grouped.serialize()) == before && grouped.undo_count() == history && grouped.redo_count() == 1,
+                "Notification-failed reparent could not undo its published prefix.");
+        changed(grouped.redo());
+        require(take(grouped.serialize()) == partial && grouped.undo_count() == history + 1 &&
+                    grouped.redo_count() == 0,
+                "Notification-failed reparent Redo changed the unexecuted suffix.");
+    }
+    {
         editor::Session document;
         auto& runtime = document.world().runtime();
         changed(document.add_entity());
@@ -103,7 +257,7 @@ void verify_entity_composition() {
         require(take(world::world_matrix(rt, child))[12] == 13, "Parent-space Redo lost inherited child placement.");
         changed(inherited.undo());
         take(inherited.select(parent));
-        changed(inherited.add_component(inherited.types().collision_component));
+        changed(inherited.add_component(parent, inherited.types().collision_component));
         const auto collision = inherited.selection().object;
         require(take(world::has_transform(rt, parent)) && inherited.undo_count() == cursor + 1,
                 "Adding Collision failed to create its required owner space.");
@@ -120,8 +274,10 @@ void verify_entity_composition() {
         take(inherited.select(parent));
         editor::Workspace workspace;
         require(
-            workspace.command_enabled(editor::Command::focus, inherited) &&
-                !workspace.command_enabled(editor::Command::selection_grid, inherited),
+            workspace.operators.find("view.frame_selected")
+                    ->poll(workspace.operator_context(inherited, nullptr, true)) &&
+                !workspace.operators.find("scene.snap_selection")
+                     ->poll(workspace.operator_context(inherited, nullptr, true)),
             "A nonspatial group with frameable descendants cannot Focus or incorrectly enables a Transform gesture.");
         application::SceneSnapshot snapshot;
         take(snapshot.refresh(inherited));
@@ -142,7 +298,8 @@ void verify_entity_composition() {
         require(!snapshot.meshes[0].selected && !snapshot.meshes[1].selected,
                 "Empty selection retained inherited highlight state.");
         changed(inherited.add_entity());
-        require(!workspace.command_enabled(editor::Command::focus, inherited),
+        require(!workspace.operators.find("view.frame_selected")
+                     ->poll(workspace.operator_context(inherited, nullptr, true)),
                 "An empty nonspatial group enabled Focus without a frameable descendant.");
     }
     {
@@ -169,7 +326,7 @@ void verify_entity_composition() {
         const auto entity = sky.selection().entity;
         sky.mark_saved();
         const auto cursor = sky.undo_count();
-        changed(sky.add_component(sky_type));
+        changed(sky.add_component(entity, sky_type));
         const auto light = sky.selection().object;
         // Space follows the type: a project type derived from a SpatialComponent needs it whatever its values.
         require(take(presentation::read_light(sky.world().runtime(), light)).kind ==
@@ -184,7 +341,7 @@ void verify_entity_composition() {
         require(sky.selection().object == light && take(world::has_transform(sky.world().runtime(), entity)),
                 "Derived spatial component Redo replaced identity or lost its space.");
     }
-    editor::Session document;
+    editor::Session document({}, editor::SessionRole::editor);
     auto& runtime = document.world().runtime();
     changed(document.add_entity());
     const auto group = document.selection().entity;
@@ -225,7 +382,7 @@ void verify_entity_composition() {
     take(document.select_entities(selection, child));
     editor::ViewportTool tool;
     tool.cursor = {20, 0, 0};
-    take(tool.snap_selection(document, {}, true));
+    take(tool.snap_selection(document, document.selected_entities(), {}, tool.cursor));
     require(take(world::read_transform(runtime, group)).position.x == 20 &&
                 take(world::read_transform(runtime, child)).position.x == 2 &&
                 take(world::world_matrix(runtime, leaf))[12] == 25,
@@ -256,7 +413,7 @@ void verify_entity_composition() {
                 child_control->tree_index == group_control->tree_index + 1,
             "Scene Tree flattened recursive Entity composition.");
     const auto original = take(document.serialize());
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     const auto copy = document.selection().entity;
     require(copy != group && take(document.world().members()).size() == 6 &&
                 take(world::children(runtime, copy)).size() == 1,
@@ -273,7 +430,7 @@ void verify_entity_composition() {
     changed(document.redo());
     require(document.selection().entity == copy, "Duplicate Redo replaced copied root identity.");
     take(document.select_entities(selection, child));
-    changed(document.erase_entities());
+    changed(document.erase_entities(document.selected_entities()));
     require(take(document.world().members()).size() == 3,
             "Deleting ancestor and descendant did not detach one complete subtree.");
     collect(document);
@@ -295,7 +452,7 @@ void verify_entity_composition() {
         const auto before = take(world::world_matrix(rt, target));
         editor::ViewportTool handle;
         handle.cursor = {6, 0, 0};
-        take(handle.snap_selection(affine, {}, true));
+        take(handle.snap_selection(affine, affine.selected_entities(), {}, handle.cursor));
         const auto after = take(world::world_matrix(rt, target));
         require(std::abs(after[12] - 6) < .0001f &&
                     std::abs(take(world::read_transform(rt, target)).position.x - 3) < .0001f,
@@ -485,7 +642,7 @@ void verify_entity_composition() {
         const auto original_count = take(forest.world().members()).size();
         const std::array selected{follower, origin};
         take(forest.select_entities(selected, origin));
-        changed(forest.duplicate_selected());
+        changed(forest.duplicate_entities(forest.selected_entities()));
         require(forest.selected_entities().size() == 2, "Different-parent forest copy changed the selected roots.");
         const auto copied_follower = forest.selected_entities()[0], copied_origin = forest.selected_entities()[1];
         const auto copied_descendant = take(world::children(rt, copied_follower)).front().id();
@@ -516,7 +673,7 @@ void verify_entity_composition() {
                 "Cross-root copy Redo lost identities, references, or original sibling order.");
         const std::array overlapping{copied_origin, copied_descendant, copied_follower};
         take(forest.select_entities(overlapping, copied_follower));
-        changed(forest.erase_entities());
+        changed(forest.erase_entities(forest.selected_entities()));
         collect(forest);
         require(graph() == original_graph, "Cross-parent batch deletion left a partial forest.");
         changed(forest.undo());
@@ -530,8 +687,8 @@ void verify_entity_composition() {
         require(graph() == original_graph, "Forest deletion Redo changed unrelated objects.");
         take(forest.select(origin));
         const auto history_count = forest.undo_count();
-        require(!forest.erase_entities() && graph() == original_graph && forest.undo_count() == history_count &&
-                    forest.selection().entity == origin,
+        require(!forest.erase_entities(forest.selected_entities()) && graph() == original_graph &&
+                    forest.undo_count() == history_count && forest.selection().entity == origin,
                 "Rejected external spatial dependency partially deleted the document or changed history.");
     }
     {
@@ -550,11 +707,11 @@ void verify_entity_composition() {
         const auto second = graph.selection().entity;
         changed(graph.reparent(second, original, world::ReparentRule::keep_local));
         take(graph.select(first));
-        changed(graph.add_component(graph.physics_types().distance_constraint_component));
+        changed(graph.add_component(first, graph.physics_types().distance_constraint_component));
         const auto constraint = graph.selection().object;
         take(physics::set_constraint_target(rt, constraint, second));
         take(graph.select(first));
-        changed(graph.add_component(graph.physics_types().scene_query_component));
+        changed(graph.add_component(first, graph.physics_types().scene_query_component));
         const auto query = graph.selection().object;
         const std::array excluded{second, first};
         take(physics::set_query_ignored_entities(rt, query, excluded));

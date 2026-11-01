@@ -3,6 +3,7 @@
 #include "application/presentation.hpp"
 #include "application/diagnostics.hpp"
 #include "editor/error.hpp"
+#include "editor/keymap.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
@@ -243,19 +244,31 @@ editor::Context Application::operator_context(bool interactive) {
     context.cursor = viewport_tool_.cursor;
     return context;
 }
-Result<editor::OperatorReport> Application::call_operator(const editor::OperatorCall& request, bool interactive) {
+Result<editor::OperatorReport> Application::call_operator(const editor::OperatorCall& request, bool interactive,
+                                                          const editor::ResolveReference& resolve) {
     const auto shown = workspace_.status;
-    auto report = editor::call(workspace_.operators, *this, operator_context(interactive), request);
+    auto report = editor::call(workspace_.operators, *this, operator_context(interactive), request, resolve);
+    // call owns Runtime-backed values. Only now may a host operation retire their Session.
+    auto replacement = take_document_request();
+    if (report && report->status == editor::OperatorStatus::finished && replacement) {
+        if (!editor::has_flag(workspace_.operators.find(request.id)->flags, editor::OperatorFlag::replaces_document))
+            return std::unexpected(
+                Error{ErrorCode::invalid_definition, "Only a replacing operator may request a document replacement."});
+        if (auto replaced = apply_document_request(*replacement); !replaced)
+            return std::unexpected(replaced.error());
+        if (operator_cancelled())
+            report->status = editor::OperatorStatus::cancelled;
+    }
     // An operator whose host work reported its own status keeps it.
     if (report && report->status == editor::OperatorStatus::finished && workspace_.status == shown)
         workspace_.status = workspace_.operators.find(request.id)->title;
     return report;
 }
-Result<void> Application::run_operator(std::string_view id, bool report_unavailable) {
-    auto report = call_operator({std::string(id), assets::json_format::Json::object(), {}}, true);
+Result<void> Application::run_operator(const editor::OperatorCall& call, bool report_unavailable, bool interactive) {
+    auto report = call_operator(call, interactive);
     if (!report)
         return std::unexpected(report.error());
-    if (report->status == editor::OperatorStatus::unavailable && report_unavailable)
+    if (report->status == editor::OperatorStatus::failed && report_unavailable)
         return std::unexpected(Error{ErrorCode::unsupported_operation, report->message});
     return {};
 }
@@ -284,7 +297,7 @@ Result<void> Application::close_tab(editor::RegionKind region, bool interactive)
             return std::unexpected(
                 Error{ErrorCode::unsupported_operation,
                       "The Code page's active document has unsaved changes; save or reload it first."});
-        return source_command(editor::Command::close_source, {});
+        return close_source(interactive);
     }
     workspace_.dock.close(tab);
     return {};
@@ -292,6 +305,13 @@ Result<void> Application::close_tab(editor::RegionKind region, bool interactive)
 void Application::maximize_tab(editor::RegionKind region) {
     if (const auto tab = editor::region_tab(region))
         workspace_.dock.maximize(tab);
+}
+void Application::show_tab(editor::RegionKind region) {
+    workspace_.dock.select(editor::region_tab(region));
+}
+void Application::cycle_tab(editor::RegionKind region, int direction) {
+    show_tab(region);
+    workspace_.dock.cycle(direction);
 }
 Result<void> Application::workbench_history(bool redo) {
     if (redo)
@@ -303,6 +323,12 @@ Result<void> Application::workbench_history(bool redo) {
 void Application::scene_changed() {
     workspace_.inspecting_asset = false;
     sync_world_view();
+}
+Result<void> Application::set_view_settings(const renderer::ViewSettings& settings) {
+    if (auto changed = workspace_.set_view_settings(*document_, settings, lighting_focus()); !changed)
+        return changed;
+    workspace_.viewport_settings.grid_spacing = settings.grid_spacing;
+    return {};
 }
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
     auto items = document_->presentation().render_items();
@@ -422,7 +448,7 @@ Result<void> Application::action(const ui::Action& source) {
         if (const auto* row = workspace_.binding(request->source);
             row && row->kind == editor::Workspace::Binding::Kind::object && row->path.empty() &&
             row->object != ObjectId{} && !document_->is_selected(row->object))
-            if (auto selected = workspace_.select_tree(*document_, request->source); !selected)
+            if (auto selected = workspace_.select_tree(*document_, *this, request->source); !selected)
                 return selected;
         request_menu(*request);
         return {};
@@ -454,7 +480,13 @@ Result<void> Application::action(const ui::Action& source) {
         const auto* text = std::get_if<std::wstring>(&event.value);
         if (event.kind == ui::ActionKind::edit_cancel || !text || *text == document_->name(rename->object))
             return {};
-        return done(document_->rename(rename->object, *text), L"Entity renamed / Undo restores its name");
+        return done(
+            run_operator({"scene.rename",
+                          {{"name", assets::utf8(*text)}},
+                          {.selection = editor::SelectionContext{rename->object, rename->object, {rename->object}},
+                           .region = {}}},
+                         true, false),
+            L"Entity renamed / Undo restores its name");
     }
     if (event.kind == ui::ActionKind::dismiss) {
         close_menu();
@@ -463,13 +495,6 @@ Result<void> Application::action(const ui::Action& source) {
     if (workspace_.color_edit)
         if (auto handled = color_edit_action(event); !handled || *handled)
             return handled ? Result<void>{} : Result<void>{std::unexpected(handled.error())};
-    if (event.kind == ui::ActionKind::activate && event.key == command_key(editor::Command::show_fps)) {
-        const auto* checked = std::get_if<bool>(&event.value);
-        if (!checked)
-            return invalid();
-        workspace_.show_fps = *checked;
-        return {};
-    }
     if (event.kind == ui::ActionKind::activate && (event.key == menu_bar_handle || event.key == shelf_handle)) {
         close_menu();
         if (event.key == shelf_handle) {
@@ -500,14 +525,20 @@ Result<void> Application::action(const ui::Action& source) {
         if (const auto type = workspace_.component_choice(event.key)) {
             if (document_->selection() != workspace_.menu_selection())
                 return invalid();
-            return done(document_->add_component(*type), L"Component added");
+            const auto info = document_->world().runtime().describe(*type);
+            if (!info)
+                return std::unexpected(info.error());
+            return done(run_operator({"scene.add_component", {{"type", std::string((*info)->name)}}, {}}, true),
+                        L"Component added");
         }
     if (event.kind == ui::ActionKind::activate)
-        if (const auto choice = workspace_.property_choice(event.key)) {
-            if (document_->selection() != workspace_.menu_selection())
+        if (const auto* binding = workspace_.binding(event.key);
+            binding && binding->kind == editor::Workspace::Binding::Kind::operator_call) {
+            if (binding->call->context.selection && document_->selection() != workspace_.menu_selection())
                 return invalid();
-            return done(document_->set_property(choice->object, choice->path, Scalar{choice->value}, choice->field),
-                        L"Property changed");
+            // A document replacement may retire the binding during this call.
+            const auto call = *binding->call;
+            return run_operator(call, true);
         }
     if (ui_.presented() && workspace_.dock.apply(event, *ui_.presented()))
         return {};
@@ -555,7 +586,7 @@ Result<void> Application::action(const ui::Action& source) {
         }
         return {};
     }
-    const auto view_action = workspace_.apply_view(*document_, event, lighting_focus());
+    const auto view_action = workspace_.apply_view(*document_, *this, event);
     if (!view_action)
         return std::unexpected(view_action.error());
     if (*view_action)
@@ -578,7 +609,7 @@ Result<void> Application::action(const ui::Action& source) {
             cell && workspace_.assets.row_key(selected->key) != cell->row)
             return {};
         if (event.key == editor::browser_control::add && selected->kind == assets::AssetKind::mesh)
-            return execute(editor::Command::create_static_mesh, selected->key);
+            return run_operator({"scene.add", {{"kind", "mesh"}, {"mesh", selected->key}}});
         if (selected->kind == assets::AssetKind::folder)
             workspace_.assets.navigate(selected->path);
         else if (selected->kind == assets::AssetKind::material && project_) {
@@ -610,14 +641,13 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (event.kind == ui::ActionKind::activate) {
         if (const auto direction = navigation_direction(event.key))
-            return done(workspace_.navigate(*document_, direction), L"Selection history");
+            return done(workspace_.navigate(*document_, *this, direction), L"Selection history");
         if (event.key == world_context) {
-            workspace_.inspecting_asset = false;
-            return done(document_->select({}), L"World context");
+            return done(workspace_.select_object(*document_, *this, {}), L"World context");
         }
     }
     if (event.kind == ui::ActionKind::select && event.key == tree_world)
-        return done(workspace_.select_tree(*document_, event.key), L"World context");
+        return done(workspace_.select_tree(*document_, *this, event.key), L"World context");
     if (event.kind == ui::ActionKind::expand) {
         // A filter shows every matching row expanded; row expansion resumes when it clears.
         const auto* expanded = std::get_if<bool>(&event.value);
@@ -640,7 +670,7 @@ Result<void> Application::action(const ui::Action& source) {
     }
     // The rail snap toggle is a second view of the shared snapping command.
     if (event.kind == ui::ActionKind::activate && event.key == viewport_rail_snap)
-        return execute(editor::Command::snap_toggle);
+        return run_operator({"tool.toggle", {{"setting", "grid_snap"}}});
     if (event.kind == ui::ActionKind::activate && (event.key == shelf_create || event.key == shelf_view)) {
         workspace_.shelf_page = event.key;
         return {};
@@ -690,7 +720,7 @@ Result<void> Application::action(const ui::Action& source) {
         // The moved Entity ends selected: the tree reveals a newly selected row under its new parent.
         if (auto moved = completion(document_->reparent(binding->object, drop->parent)); !moved)
             return moved;
-        return done(document_->select_entities(std::array{binding->object}, binding->object),
+        return done(workspace_.select_object(*document_, *this, binding->object),
                     drop->parent == ObjectId{} ? L"Entity unparented" : L"Entity parented");
     }
     if (const auto* binding = workspace_.binding(event.key)) {
@@ -739,16 +769,17 @@ Result<void> Application::action(const ui::Action& source) {
             document_->is_selected(binding->object)) {
             // Double-clicking a selected row renames it in place (Blender Outliner / Houdini Tree View).
             workspace_.dock.select(editor::control::entities_tab);
-            workspace_.row_rename =
-                editor::Workspace::RowRename{binding->object, std::wstring(document_->name(binding->object))};
-            pending_rename_focus_ = true;
-            return {};
+            return run_operator(
+                {"scene.rename",
+                 assets::json_format::Json::object(),
+                 {.selection = editor::SelectionContext{binding->object, binding->object, {binding->object}},
+                  .region = editor::RegionKind::scene_tree}});
         }
         if (event.kind == ui::ActionKind::select &&
             (binding->kind == editor::Workspace::Binding::Kind::object ||
              binding->kind == editor::Workspace::Binding::Kind::structure) &&
             binding->path.empty())
-            return done(workspace_.select_tree(*document_, event.key,
+            return done(workspace_.select_tree(*document_, *this, event.key,
                                                std::get_if<ui::SelectionModifiers>(&event.value)
                                                    ? std::get<ui::SelectionModifiers>(event.value)
                                                    : ui::SelectionModifiers{}),
@@ -757,14 +788,20 @@ Result<void> Application::action(const ui::Action& source) {
             if (event.kind == ui::ActionKind::activate) {
                 workspace_.inspecting_asset = false;
                 workspace_.dock.select(editor::control::parameters_tab);
-                return done(document_->select(binding->object), L"Object selected");
+                return done(workspace_.select_object(*document_, *this, binding->object), L"Object selected");
             }
             return {};
         }
         if (binding->kind == editor::Workspace::Binding::Kind::name) {
             if (event.kind == ui::ActionKind::edit_commit)
-                return done(document_->rename(binding->object, std::get<std::wstring>(event.value)),
-                            L"Entity renamed / Undo restores its name");
+                return done(
+                    run_operator(
+                        {"scene.rename",
+                         {{"name", assets::utf8(std::get<std::wstring>(event.value))}},
+                         {.selection = editor::SelectionContext{binding->object, binding->object, {binding->object}},
+                          .region = {}}},
+                        true, false),
+                    L"Entity renamed / Undo restores its name");
             return {};
         }
         if (binding->kind == editor::Workspace::Binding::Kind::position_default) {
@@ -828,7 +865,26 @@ Result<void> Application::action(const ui::Action& source) {
         }
         if (event.kind == ui::ActionKind::activate)
             if (const auto* checked = std::get_if<bool>(&event.value)) {
-                return done(document_->set_property(binding->object, binding->path, Scalar{*checked}, event.key),
+                auto& runtime = document_->world().runtime();
+                auto type = runtime.type_of(binding->object);
+                auto args = assets::json_format::Json::object();
+                auto* value = &args;
+                for (const auto field : binding->path) {
+                    if (!type)
+                        return std::unexpected(type.error());
+                    const auto info = runtime.describe(*type);
+                    if (!info)
+                        return std::unexpected(info.error());
+                    const auto at = std::ranges::find((*info)->fields, field, &FieldInfo::id);
+                    value = &(*value)[at->name];
+                    type = at->value.type;
+                }
+                *value = *checked;
+                const auto entity = document_->selection().entity;
+                return done(run_operator({"scene.set_properties",
+                                          std::move(args),
+                                          {.selection = editor::SelectionContext{entity, binding->object, {entity}},
+                                           .region = editor::RegionKind::parameters}}),
                             L"Property changed");
             }
         const auto* value = std::get_if<double>(&event.value);
@@ -856,10 +912,6 @@ Result<void> Application::action(const ui::Action& source) {
             return {};
         }
     }
-    if (event.kind != ui::ActionKind::activate)
-        return {}; // Includes retired field/Entity bindings.
-    if (const auto* command = editor::command_definition(event.key))
-        return execute(command->id);
     return {};
 }
 // Colour editor: one Session group transaction from open to Done/dismiss; Esc and
@@ -1070,6 +1122,25 @@ Result<void> Application::finish_color_edit(bool keep) {
     }
     return finished;
 }
+Result<void> Application::begin_entity_rename(ObjectId entity, editor::RegionKind region) {
+    // Reveal the explicit tree row; a filtered-out row uses the Parameters header instead.
+    const auto shown =
+        region == editor::RegionKind::scene_tree ? workspace_.reveal_in_tree(*document_, entity) : Result<bool>{false};
+    if (!shown)
+        return std::unexpected(shown.error());
+    if (*shown) {
+        workspace_.row_rename = editor::Workspace::RowRename{entity, std::wstring(document_->name(entity))};
+        pending_rename_focus_ = true;
+    } else {
+        if (document_->selection().entity != entity)
+            if (auto selected = document_->select(entity); !selected)
+                return selected;
+        workspace_.inspecting_asset = false;
+        workspace_.dock.select(editor::control::parameters_tab);
+        pending_name_focus_ = true;
+    }
+    return {};
+}
 Result<void> Application::begin_asset_rename() {
     if (!project_ || !workspace_.assets.can_rename())
         return {};
@@ -1082,260 +1153,64 @@ Result<void> Application::begin_asset_rename() {
     pending_rename_focus_ = true;
     return {};
 }
-Result<void> Application::execute(editor::Command command, std::string_view asset_key) {
-    using enum editor::Command;
-    if (auto call = editor::operator_for(command)) {
-        if (command == create_static_mesh && !asset_key.empty())
-            call->args["mesh"] = std::string(asset_key);
-        auto report = call_operator(*call, true);
-        if (!report)
-            return std::unexpected(report.error());
-        // A command that fixes arguments reports its own title rather than the operator's.
-        if (report->status == editor::OperatorStatus::finished && !call->args.empty())
-            workspace_.status = editor::command_definition(static_cast<std::uint64_t>(command))->title;
-        return {};
-    }
-    if (!workspace_.command_enabled(command, *document_))
-        return {};
-    if (auto ended = end_interaction(); !ended)
-        return ended;
-    Result<void> result;
-    switch (command) {
-    case frame_all:
-    case focus:
-    case reset_camera:
-    case reset_layout:
-    case close_tab:
-    case maximize_pane:
-    case undo:
-    case redo:
-    case add_transform:
-    case remove_transform:
-    case discard_saved_data:
-    case create_camera:
-    case set_main_camera:
-    case clear_main_camera:
-    case view_from_camera:
-    case create_entity:
-    case create_static_mesh:
-    case create_point_light:
-    case create_rectangle_light:
-    case create_directional_light:
-    case tool_select:
-    case tool_transform:
-    case tool_move:
-    case tool_rotate:
-    case tool_scale:
-    case pivot_median:
-    case pivot_cursor:
-    case snap_grid_01:
-    case snap_grid_02:
-    case snap_grid_05:
-    case snap_grid_1:
-    case snap_rotation_1:
-    case snap_rotation_5:
-    case snap_rotation_15:
-    case snap_rotation_45:
-    case orientation_global:
-    case orientation_local:
-    case select_mode_set:
-    case select_mode_extend:
-    case select_mode_subtract:
-    case select_mode_invert:
-    case select_mode_intersect:
-    case view_perspective:
-    case view_top:
-    case view_front:
-    case view_right:
-    case view_bottom:
-    case view_back:
-    case view_left:
-        break; // Operators, routed above.
-    case cursor_origin:
-        viewport_tool_.cursor = {};
-        viewport_tool_.cursor_rotation = {};
-        break;
-    case snap_toggle:
-        workspace_.viewport_settings.grid_snap = !workspace_.viewport_settings.grid_snap;
-        break;
-    case selection_grid:
-    case selection_cursor:
-        result = viewport_tool_.snap_selection(*document_, workspace_.viewport_settings, command == selection_cursor);
-        break;
-    case cursor_selected:
-        result = viewport_tool_.cursor_to_selection(*document_);
-        break;
-    case cursor_grid:
-        viewport_tool_.cursor_to_grid(workspace_.viewport_settings);
-        break;
-    case cursor_surface:
-        workspace_.viewport_settings.cursor_surface = !workspace_.viewport_settings.cursor_surface;
-        break;
-    case snap_affect_move:
-        workspace_.viewport_settings.snap_move = !workspace_.viewport_settings.snap_move;
-        break;
-    case snap_affect_rotate:
-        workspace_.viewport_settings.snap_rotate = !workspace_.viewport_settings.snap_rotate;
-        break;
-    case snap_affect_scale:
-        workspace_.viewport_settings.snap_scale = !workspace_.viewport_settings.snap_scale;
-        break;
-    case select_all:
-    case select_none:
-    case select_invert:
-        result = viewport_tool_.select_all(*document_, command == select_all    ? editor::SelectAll::select
-                                                       : command == select_none ? editor::SelectAll::deselect
-                                                                                : editor::SelectAll::invert);
-        break;
-    case select_box:
-        viewport_tool_.arm_box_select(pointer_position_, false);
-        window_.capture(true);
-        break;
-    case clear_location:
-    case clear_rotation:
-    case clear_scale:
-        result = viewport_tool_.clear(*document_, command == clear_location   ? editor::TransformChannel::location
-                                                  : command == clear_rotation ? editor::TransformChannel::rotation
-                                                                              : editor::TransformChannel::scale);
-        break;
-    case rename_selected: {
-        if (workspace_.dock.focused_tab() == editor::control::assets_tab)
-            return begin_asset_rename();
-        // Houdini/Blender F2: rename in place on the Scene Tree row, revealing it first;
-        // a filtered-out row edits the name in the Parameters header instead.
-        const auto entity = document_->selection().entity;
-        const auto shown = workspace_.dock.focused_tab() == editor::control::entities_tab && entity != ObjectId{}
-                               ? workspace_.reveal_in_tree(*document_, entity)
-                               : Result<bool>{false};
-        if (!shown)
-            return std::unexpected(shown.error());
-        if (*shown) {
-            workspace_.row_rename = editor::Workspace::RowRename{entity, std::wstring(document_->name(entity))};
+Result<void> Application::rename_asset(std::string_view key, std::string_view name, bool interactive) {
+    const auto* entry = project_ ? project_->entry(key) : nullptr;
+    if (!entry)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Select a project asset to rename."});
+    if (name.empty() && interactive) {
+        const auto row = workspace_.assets.row_key(key);
+        if (row) {
+            workspace_.row_rename = editor::Workspace::RowRename{
+                {}, entry->path.filename().wstring(), entry->path, (row << 2) | editor::browser_control::name_column};
             pending_rename_focus_ = true;
-        } else {
-            workspace_.inspecting_asset = false;
-            workspace_.dock.select(editor::control::parameters_tab);
-            pending_name_focus_ = true;
         }
-        break;
+        return {};
     }
-    case unparent_selected: {
-        const std::vector selected(document_->selected_entities().begin(), document_->selected_entities().end());
-        for (const auto entity : selected) {
-            const auto parent = world::parent_entity(document_->world().runtime(), entity);
-            if (!parent) {
-                result = std::unexpected(parent.error());
-                break;
-            }
-            if (*parent == ObjectId{})
-                continue;
-            if (auto changed = completion(document_->reparent(entity, ObjectId{})); !changed) {
-                result = changed;
-                break;
-            }
-        }
-        break;
-    }
-    case viewport_options:
-        workspace_.viewport_options_collapsed = !workspace_.viewport_options_collapsed;
-        break;
-    case show_fps:
-        return action({ui::ActionKind::activate, editor::control::command_key(command), !workspace_.show_fps});
-    case open_source:
-    case edit_ui_source:
-    case save_document:
-    case close_source:
-    case reload_source:
-    case save_all:
-    case new_source:
-    case new_project_ui:
-    case edit_project_ui:
-        return source_command(command, asset_key);
-    case build_project:
-    case rebuild_project:
-    case run_project:
-    case stop_project:
-    case restart_project:
-    case show_project_ui:
-    case show_output:
-        return execution_command(command);
-    case show_code:
-        workspace_.dock.select(editor::source_control::tab);
-        break;
-    case new_project:
-    case open_project:
-    case save_scene:
-    case save_scene_as:
-    case open_scene:
-    case import_mesh:
-    case import_texture:
-    case reimport_texture:
-    case reimport_mesh:
-    case create_material:
-    case create_material_source:
-    case refresh_assets:
-        workspace_.status = editor::command_definition(static_cast<std::uint64_t>(command))->title;
-        return project_command(command, asset_key);
-    case exit:
-        PostMessageW(window(), WM_CLOSE, 0, 0);
-        break;
-    case erase_selected:
-        workspace_.inspecting_asset = false;
-        result = completion(document_->erase_selected());
-        break;
-    case erase_entities:
-        workspace_.inspecting_asset = false;
-        result = completion(document_->erase_entities());
-        break;
-    case duplicate_selected:
-        workspace_.inspecting_asset = false;
-        result = completion(document_->duplicate_selected());
-        break;
-    case show_scene:
-        workspace_.dock.select(editor::control::scene_tab);
-        break;
-    case show_parameters:
-        workspace_.dock.select(editor::control::parameters_tab);
-        break;
-    case show_controls:
-        workspace_.dock.select(editor::control::workbench);
-        break;
-    case show_entities:
-        workspace_.dock.select(editor::control::entities_tab);
-        break;
-    case show_structure:
-        workspace_.dock.select(editor::control::structure_tab);
-        break;
-    case show_world_settings:
-        workspace_.dock.select(editor::world_control::tab);
-        break;
-    case fit_probe_scene:
-    case fit_probe_scene_focus: {
-        auto fitted = fitted_probe_view(command == fit_probe_scene_focus);
-        if (!fitted)
-            return std::unexpected(fitted.error());
-        return workspace_.set_view_settings(*document_, *fitted, lighting_focus());
-    }
-    case show_assets:
-        workspace_.dock.select(editor::control::assets_tab);
-        break;
-    case previous_tab:
-    case next_tab:
-        workspace_.dock.cycle(command == previous_tab ? -1 : 1);
-        break;
-    case about: {
-        close_menu(false);
-        const auto details = L"FrostFox Atelier\n\nBuild: " + assets::wide(build_info::revision) +
-                             L"\nConfiguration: " + assets::wide(build_info::configuration) + L"\n\nProject:\n" +
-                             (project_ ? project_->root().wstring() : L"No project open") + L"\n\nScene:\n" +
-                             (scene_path_.empty() ? L"Untitled" : scene_path_.generic_wstring());
-        MessageBoxW(window(), details.c_str(), L"About FrostFox Atelier", MB_OK | MB_ICONINFORMATION);
-        break;
-    }
-    }
-    if (result)
-        workspace_.status = editor::command_definition(static_cast<std::uint64_t>(command))->title;
-    return result;
+    auto renamed = project_->rename(entry->path, assets::wide(name));
+    if (!renamed)
+        return std::unexpected(renamed.error());
+    workspace_.assets.reselect(*renamed);
+    workspace_.status = L"Renamed to " + renamed->filename().wstring();
+    return {};
+}
+void Application::select_box() {
+    viewport_tool_.arm_box_select(pointer_position_, false);
+    window_.capture(true);
+}
+void Application::toggle_view(editor::ViewToggleOption option) {
+    auto& value = option == editor::ViewToggleOption::fps ? workspace_.show_fps : workspace_.viewport_options_collapsed;
+    value = !value;
+}
+Result<void> Application::fit_lighting(bool follow_focus) {
+    auto fitted = fitted_probe_view(follow_focus);
+    return fitted ? workspace_.set_view_settings(*document_, *fitted, lighting_focus())
+                  : Result<void>{std::unexpected(fitted.error())};
+}
+void Application::about() {
+    close_menu(false);
+    const auto details = L"FrostFox Atelier\n\nBuild: " + assets::wide(build_info::revision) + L"\nConfiguration: " +
+                         assets::wide(build_info::configuration) + L"\n\nProject:\n" +
+                         (project_ ? project_->root().wstring() : L"No project open") + L"\n\nScene:\n" +
+                         (scene_path_.empty() ? L"Untitled" : scene_path_.generic_wstring());
+    MessageBoxW(window(), details.c_str(), L"About FrostFox Atelier", MB_OK | MB_ICONINFORMATION);
+}
+bool Application::key_input(const ui::Event& event, std::uint32_t key, editor::RegionKind region,
+                            editor::KeyPhase phase) {
+    const auto* entry = editor::key_binding(region, phase, event, key, ui_.wants_keyboard());
+    if (!entry || (workspace_.sample_history() && phase == editor::KeyPhase::after_controls &&
+                   !entry->call.id.starts_with("edit.")))
+        return false;
+    if (event.repeat && !entry->repeat)
+        return true;
+    auto call = entry->call;
+    if (region != editor::RegionKind::none)
+        call.context.region = region;
+    if (call.id.starts_with("asset.") && workspace_.assets.selected())
+        call.context.asset = workspace_.assets.selected()->key;
+    if (call.id.starts_with("layout."))
+        cancel_interaction(ui_.cancel_interaction());
+    status(run_operator(call, true), L"");
+    return true;
 }
 bool Application::effects(const ui::Reply& reply) {
     std::wstring first_error;
@@ -1944,20 +1819,16 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
     }
     // Scene Tree owns Clear Parent; text fields and other panes retain the
     // Project mnemonic. Resolve this context before opening a top-level menu.
-    if (event.kind == ui::EventKind::key_down && native_key == 'P' && event.alt && !event.control &&
-        !ui_.wants_keyboard() && workspace_.dock.focused_tab() == editor::control::entities_tab) {
-        if (event.repeat)
-            return;
-        if (auto result = execute(editor::Command::unparent_selected); !result)
-            status(result, L"");
+    const auto region = editor::region_of(workspace_.dock.focused_tab());
+    if (region == editor::RegionKind::scene_tree &&
+        key_input(event, static_cast<std::uint32_t>(native_key), region, editor::KeyPhase::before_controls))
         return;
-    }
     ui::ControlKey requested_menu{};
     if (event.kind == ui::EventKind::key_down) {
         if (event.key == ui::Key::f10 && !event.shift)
             requested_menu = editor::control::file_menu;
         else if (event.alt && !event.control)
-            for (const auto& group : editor::command_groups)
+            for (const auto& group : editor::menu_groups)
                 if (native_key == static_cast<WPARAM>(group.access_key)) {
                     requested_menu = group.key;
                     break;
@@ -1996,41 +1867,9 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
             return;
         }
     }
-    if (event.kind == ui::EventKind::key_down && !event.alt && !workspace_.menu &&
-        (native_key == VK_F6 || native_key == VK_F8)) {
-        if (event.repeat)
-            return;
-        const auto command = native_key == VK_F6 ? editor::Command::build_project
-                             : event.shift       ? editor::Command::stop_project
-                                                 : editor::Command::run_project;
-        if (auto result = execute(command); !result)
-            status(result, L"");
+    if (!workspace_.menu && key_input(event, static_cast<std::uint32_t>(native_key), editor::RegionKind::none,
+                                      editor::KeyPhase::before_controls))
         return;
-    }
-    if (event.kind == ui::EventKind::key_down && !event.alt && !workspace_.menu &&
-        ((event.control && (native_key == 'S' || native_key == 'O')) || native_key == VK_F5)) {
-        if (event.repeat)
-            return;
-        const auto command = native_key == 'O'     ? editor::Command::open_project
-                             : native_key == VK_F5 ? editor::Command::refresh_assets
-                             : event.shift         ? editor::Command::save_scene_as
-                                                   : editor::Command::save_document;
-        status(execute(command), L"Project command completed");
-        return;
-    }
-    if (event.kind == ui::EventKind::key_down && event.control && !event.alt && !workspace_.menu &&
-        (native_key == VK_TAB || native_key == 'B' || native_key == 'W')) {
-        if (event.repeat && native_key != VK_TAB)
-            return;
-        cancel_interaction(ui_.cancel_interaction());
-        const auto command = native_key == VK_TAB
-                                 ? (event.shift ? editor::Command::previous_tab : editor::Command::next_tab)
-                             : native_key == 'B' ? editor::Command::maximize_pane
-                                                 : editor::Command::close_tab;
-        if (auto result = execute(command); !result)
-            status(result, L"");
-        return;
-    }
     if (viewport_input(event, static_cast<std::uint32_t>(native_key))) {
         ui_.dismiss_tooltip();
         return;
@@ -2040,24 +1879,12 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
         workspace_.dock.focus_control(ui_.focused_control(), *ui_.presented());
     effects(reply);
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
-        std::optional<editor::Command> command;
-        if (event.control && (event.key == ui::Key::z || event.key == ui::Key::y))
-            command = (event.key == ui::Key::y || event.shift) ? editor::Command::redo : editor::Command::undo;
-        else if (!workspace_.sample_history() && !event.repeat) {
-            if (event.key == ui::Key::delete_key)
-                command = editor::Command::erase_selected;
-            else if (native_key == VK_F2 && !event.control && !event.alt)
-                command = editor::Command::rename_selected;
-            else if (native_key == 'D' && (event.control || event.shift) && !event.alt && !ui_.wants_keyboard())
-                command = editor::Command::duplicate_selected;
-            else if (native_key == 'F' && !ui_.wants_keyboard())
-                command = editor::Command::focus;
-            else if (event.key == ui::Key::escape)
-                status(document_->cancel_edit(), L"Edit cancelled");
-        }
-        if (command)
-            if (auto result = execute(*command); !result)
-                status(result, L"");
+        if (key_input(event, static_cast<std::uint32_t>(native_key), region, editor::KeyPhase::after_controls) ||
+            key_input(event, static_cast<std::uint32_t>(native_key), editor::RegionKind::none,
+                      editor::KeyPhase::after_controls))
+            return;
+        if (!workspace_.sample_history() && !event.repeat && event.key == ui::Key::escape)
+            status(document_->cancel_edit(), L"Edit cancelled");
     }
 }
 void Application::enable_control(const std::filesystem::path& directory) {
@@ -2096,7 +1923,10 @@ bool Application::run_step(renderer::Capture* capture) try {
         timing::Scope input{phases::input};
         window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
         if (window_.closing()) {
-            if (confirm_discard()) {
+            const auto confirmed = confirm_discard();
+            if (!confirmed)
+                status(Result<void>{std::unexpected(confirmed.error())}, L"");
+            else if (*confirmed) {
                 close();
                 return false;
             }

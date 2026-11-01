@@ -1,5 +1,6 @@
 #pragma once
 #include "world/world.hpp"
+#include "editor/operator_parameters.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -14,6 +15,7 @@ struct ScalarField {
     TypeKind kind{TypeKind::scalar};
     // The declared range of the leaf, of its math vector for a lane, or of each element of an Array.
     FieldRange range{};
+    bool material_entries_json{};
 };
 inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
     std::vector<ScalarField> result;
@@ -23,6 +25,15 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
         auto info = runtime.describe(current);
         if (!info)
             return std::unexpected(info.error());
+        if ((*info)->kind == TypeKind::record &&
+            current == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{})) {
+            prefix.path.push_back((*info)->fields.front().id);
+            prefix.type = (*info)->fields.front().value.type;
+            prefix.kind = TypeKind::string;
+            prefix.material_entries_json = true;
+            result.push_back(std::move(prefix));
+            return {};
+        }
         if ((*info)->kind == TypeKind::scalar || (*info)->kind == TypeKind::enumeration ||
             (*info)->kind == TypeKind::string) {
             prefix.type = current;

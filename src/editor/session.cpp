@@ -15,10 +15,6 @@ namespace {
 auto invalid(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
-bool contains_member(const world::World& world, ObjectId entity) {
-    const auto members = world.members();
-    return members && std::ranges::any_of(*members, [&](const auto& member) { return member.id() == entity; });
-}
 template <class T>
 T take(Result<T> result) {
     if (!result)
@@ -446,13 +442,17 @@ void Session::set_selection(Selection next) {
     if (next.entity != ObjectId{})
         selected_entities_.push_back(next.entity);
 }
-void Session::forget_entity(ObjectId entity) noexcept {
+void Session::prune_selection() noexcept {
+    const auto members = world_.members();
+    const auto contains = [&](ObjectId entity) {
+        return members && std::ranges::any_of(*members, [&](const auto& member) { return member.id() == entity; });
+    };
     const auto old_size = selected_entities_.size();
-    std::erase_if(selected_entities_, [&](ObjectId id) { return id == entity || !contains_member(world_, id); });
-    if (old_size != selected_entities_.size() || selection_.entity == entity)
+    std::erase_if(selected_entities_, [&](ObjectId id) { return !contains(id); });
+    const bool lost_active = selection_.entity != ObjectId{} && !contains(selection_.entity);
+    if (old_size != selected_entities_.size() || lost_active)
         ++revision_;
-    if (selection_.entity == entity ||
-        (selection_.entity != ObjectId{} && !contains_member(world_, selection_.entity))) {
+    if (lost_active) {
         selection_ = {};
         if (!selected_entities_.empty())
             selection_ = {selected_entities_.back(), selected_entities_.back()};
@@ -582,13 +582,15 @@ Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optiona
     return changed;
 }
 Result<world::Commit> Session::reparent(ObjectId entity, ObjectId parent, world::ReparentRule rule, std::size_t index) {
-    if (auto valid = admit_entity_edit(entity); !valid)
-        return std::unexpected(valid.error());
+    return reparent(std::span{&entity, 1}, parent, rule, index);
+}
+Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, ObjectId parent, world::ReparentRule rule,
+                                        std::size_t index) {
+    // The input may be selected_entities(), which publication updates below.
+    const std::vector<ObjectId> targets(entities.begin(), entities.end());
     if (parent != ObjectId{})
         if (auto valid = admit_entity_edit(parent); !valid)
             return std::unexpected(valid.error());
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return std::unexpected(cancelled.error());
     const auto sibling_index = [&](ObjectId target, ObjectId owner) {
         std::size_t result{};
         if (owner != ObjectId{})
@@ -607,34 +609,55 @@ Result<world::Commit> Session::reparent(ObjectId entity, ObjectId parent, world:
         return result;
     };
     ReparentChange change;
-    change.root = take(runtime_.hold(entity));
-    change.before_parent = take(world::parent_entity(runtime_, entity));
-    change.before_index = sibling_index(entity, change.before_parent);
-    if (rule == world::ReparentRule::keep_world) {
-        std::vector<ObjectId> pending{entity};
-        while (!pending.empty()) {
-            const auto object = pending.back();
-            pending.pop_back();
-            if (take(world::has_transform(runtime_, object))) {
-                const auto before = take(world::read_transform(runtime_, object));
-                change.transforms.push_back({take(runtime_.hold(object)), before, before});
+    change.moves.reserve(targets.size());
+    const auto publish = [&]() -> Result<world::Commit> {
+        for (const auto entity : targets) {
+            if (auto valid = admit_entity_edit(entity); !valid)
+                return std::unexpected(valid.error());
+            if (auto cancelled = cancel_edit(); !cancelled)
+                return std::unexpected(cancelled.error());
+            ReparentChange::Move move;
+            move.root = take(runtime_.hold(entity));
+            move.before_parent = take(world::parent_entity(runtime_, entity));
+            move.before_index = sibling_index(entity, move.before_parent);
+            std::vector<ObjectId> pending{entity};
+            while (!pending.empty()) {
+                const auto object = pending.back();
+                pending.pop_back();
+                if (take(world::has_transform(runtime_, object))) {
+                    const auto before = take(world::read_transform(runtime_, object));
+                    move.transforms.push_back({take(runtime_.hold(object)), before, before});
+                }
+                if (rule == world::ReparentRule::keep_world)
+                    for (const auto& child : take(world::children(runtime_, object)))
+                        pending.push_back(child.id());
             }
-            for (const auto& child : take(world::children(runtime_, object)))
-                pending.push_back(child.id());
+            auto changed = world_.reparent(entity, parent, rule, index);
+            if (!changed)
+                return changed;
+            if (changed->changed) {
+                move.after_parent = take(world::parent_entity(runtime_, entity));
+                move.after_index = sibling_index(entity, move.after_parent);
+                for (auto& transform : move.transforms)
+                    transform.after = take(world::read_transform(runtime_, transform.root.id()));
+                // Live forwarding needs this move's root pose, not the final pose after later moves.
+                std::erase_if(move.transforms, [entity](const auto& transform) {
+                    return transform.root.id() != entity && transform.before == transform.after;
+                });
+                set_selection({entity, entity});
+                change.moves.push_back(std::move(move));
+            }
+            if (changed->notification_error)
+                return world::Commit{!change.moves.empty(), std::move(changed->notification_error)};
+            if (index != world::append)
+                ++index;
         }
-    }
-    auto changed = world_.reparent(entity, parent, rule, index);
-    if (!changed)
-        return changed;
-    if (changed->changed) {
-        change.after_parent = take(world::parent_entity(runtime_, entity));
-        change.after_index = sibling_index(entity, change.after_parent);
-        for (auto& transform : change.transforms)
-            transform.after = take(world::read_transform(runtime_, transform.root.id()));
-        std::erase_if(change.transforms, [](const auto& transform) { return transform.before == transform.after; });
-        set_selection({entity, entity});
+        return world::Commit{!change.moves.empty(), {}};
+    };
+    const auto changed = publish();
+    // World has already published these moves, even when a later move was rejected.
+    if (!change.moves.empty())
         remember(std::move(change));
-    }
     return changed;
 }
 Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset, math::Vector3 position,
@@ -734,25 +757,21 @@ Result<world::Commit> Session::attach_created(ObjectRoot root, std::wstring_view
     }
     return attached;
 }
-Result<world::Commit> Session::erase_selected() {
-    if (selection_.object == ObjectId{})
+Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities) {
+    if (entities.empty())
         return world::Commit{};
-    if (selection_.object != selection_.entity)
-        return remove_component(selection_.object);
-    return erase_entities();
-}
-Result<world::Commit> Session::erase_entities() {
-    if (selected_entities_.empty())
-        return world::Commit{};
+    const std::vector<ObjectId> requested(entities.begin(), entities.end());
     auto cancelled = cancel_edit();
     if (!cancelled)
         return std::unexpected(cancelled.error());
     std::vector<ObjectId> targets;
-    for (const auto entity : selected_entities_) {
+    for (const auto entity : requested) {
+        if (auto ready = admit_entity_edit(entity); !ready)
+            return std::unexpected(ready.error());
         auto parent = take(world::parent_entity(runtime_, entity));
         bool included{};
         while (parent != ObjectId{}) {
-            if (is_selected(parent)) {
+            if (std::ranges::find(requested, parent) != requested.end()) {
                 included = true;
                 break;
             }
@@ -786,15 +805,14 @@ Result<world::Commit> Session::erase_entities() {
     }
     if (result.changed) {
         remember(std::move(change));
-        set_selection({});
+        prune_selection();
     }
     return result;
 }
-Result<world::Commit> Session::add_component(TypeId type) {
+Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
     auto cancelled = cancel_edit();
     if (!cancelled)
         return std::unexpected(cancelled.error());
-    const auto entity = selection_.entity;
     if (auto ready = admit_entity_edit(entity); !ready)
         return std::unexpected(ready.error());
     auto supported = runtime_.is_a(type, types_.component);
@@ -1041,6 +1059,39 @@ Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) 
         return invalid("The property's owning Entity changed.");
     const auto& values = forward ? change.after : change.before;
     return write_group(change.root.id(), change.paths, values);
+}
+Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPatch> patch) {
+    auto entity = admit_property_edit(object);
+    if (!entity)
+        return std::unexpected(entity.error());
+    for (const auto& leaf : patch)
+        if (object == *entity && !leaf.path.empty() &&
+            (leaf.path.front() == types_.position_fields.front().front() ||
+             leaf.path.front() == types_.rotation_fields.front().front() ||
+             leaf.path.front() == types_.scale_fields.front().front()))
+            return invalid("Transform fields require scene.transform_set/clear/remove.");
+    if (patch.empty())
+        return {};
+    if (auto cancelled = cancel_edit(); !cancelled)
+        return cancelled;
+    auto root = runtime_.hold(object);
+    if (!root)
+        return std::unexpected(root.error());
+    FieldGroupChange change{std::move(*root), *entity, {}, 0, {}, {}};
+    for (const auto& leaf : patch) {
+        auto before = read_property(object, leaf.path);
+        if (!before)
+            return std::unexpected(before.error());
+        change.paths.push_back(leaf.path);
+        change.before.push_back(*before);
+        change.after.push_back(leaf.value);
+    }
+    if (change.before == change.after)
+        return {};
+    if (auto written = write_group(object, change.paths, change.after); !written)
+        return written;
+    remember(std::move(change));
+    return {};
 }
 bool Session::owns_edit(std::uint64_t control_session) const noexcept {
     return (group_ && group_->control_session == control_session) ||
@@ -1384,21 +1435,28 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 set_selection({item.root.id(), item.root.id()});
                 return world::Commit{true, changed->notification_error};
             } else if constexpr (std::is_same_v<T, ReparentChange>) {
-                if (auto valid = admit_entity_edit(item.root.id()); !valid)
-                    return std::unexpected(valid.error());
-                auto changed =
-                    world_.reparent(item.root.id(), forward ? item.after_parent : item.before_parent,
-                                    world::ReparentRule::keep_local, forward ? item.after_index : item.before_index);
-                if (!changed)
-                    return changed;
-                for (const auto& transform : item.transforms) {
-                    auto restored =
-                        world_.set_transform(transform.root.id(), forward ? transform.after : transform.before);
-                    if (!restored)
-                        return std::unexpected(restored.error());
+                world::Commit result;
+                for (std::size_t i = 0; i < item.moves.size(); ++i) {
+                    const auto& move = item.moves[forward ? i : item.moves.size() - 1 - i];
+                    if (auto valid = admit_entity_edit(move.root.id()); !valid)
+                        return std::unexpected(valid.error());
+                    auto changed = world_.reparent(move.root.id(), forward ? move.after_parent : move.before_parent,
+                                                   world::ReparentRule::keep_local,
+                                                   forward ? move.after_index : move.before_index);
+                    if (!changed)
+                        return changed;
+                    for (const auto& transform : move.transforms) {
+                        auto restored =
+                            world_.set_transform(transform.root.id(), forward ? transform.after : transform.before);
+                        if (!restored)
+                            return std::unexpected(restored.error());
+                    }
+                    result.changed = true;
+                    if (!result.notification_error)
+                        result.notification_error = std::move(changed->notification_error);
+                    set_selection({move.root.id(), move.root.id()});
                 }
-                set_selection({item.root.id(), item.root.id()});
-                return world::Commit{true, changed->notification_error};
+                return result;
             } else if constexpr (std::is_same_v<T, FieldGroupChange>) {
                 auto written = apply_group(item, forward);
                 if (!written)
@@ -1528,8 +1586,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 for (auto& removal : item.removals)
                     merge(removal.commit);
                 if (result.changed)
-                    for (const auto target : targets)
-                        forget_entity(target);
+                    prune_selection();
                 return result;
             } else {
                 const bool attach = item.added == forward;

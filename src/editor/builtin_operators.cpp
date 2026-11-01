@@ -1,6 +1,12 @@
 #include "editor/operators.hpp"
 #include "assets/assets.hpp"
+#include "assets/builtin_materials.hpp"
+#include "assets/file.hpp"
+#include "assets/material_format.hpp"
+#include "editor/error.hpp"
 #include "editor/project.hpp"
+#include "editor/view_options.hpp"
+#include "editor/viewport_tool.hpp"
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -16,11 +22,24 @@ Result<void> available(const Context&) {
 // Adapts an operator over the reflected parameter record P to the type-erased entry.
 template <class P>
 auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, const P&)) {
-    return [execute](OperatorHost& host, const Context& context, ValueInput input) -> Result<void> {
+    return [execute](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+                     ValueOutput) -> Result<void> {
+        const auto input = parameters.value;
         const auto type = context.document.world().runtime().native_type<P>();
         if (!type || *type != input.type)
             return std::unexpected(Error{ErrorCode::type_mismatch, "Operator parameters have another type."});
         return execute(host, context, *static_cast<const P*>(input.data));
+    };
+}
+template <class P, class R>
+auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, const P&, R&)) {
+    return [execute](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+                     ValueOutput output) -> Result<void> {
+        auto& runtime = context.document.world().runtime();
+        const auto parameter_type = runtime.native_type<P>(), result_type = runtime.native_type<R>();
+        if (!parameter_type || *parameter_type != parameters.value.type || !result_type || *result_type != output.type)
+            return std::unexpected(Error{ErrorCode::type_mismatch, "Operator parameters or result have another type."});
+        return execute(host, context, *static_cast<const P*>(parameters.value.data), *static_cast<R*>(output.data));
     };
 }
 Result<void> committed(Result<world::Commit> result) {
@@ -142,7 +161,7 @@ OperatorInfo history(bool redo) {
                 return (redo ? context.document.redo_count() : context.document.undo_count()) ? Result<void>{}
                                                                                               : empty();
             },
-            [redo](OperatorHost& host, const Context& context, ValueInput) -> Result<void> {
+            [redo](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) -> Result<void> {
                 if (context.region == RegionKind::code)
                     return host.source_history(redo);
                 if (!context.asset.empty())
@@ -181,13 +200,91 @@ OperatorInfo transform_presence(bool add) {
                     return unavailable(add ? "The Entity already has a Transform." : "The Entity has no Transform.");
                 return {};
             },
-            [add](OperatorHost&, const Context& context, ValueInput) {
+            [add](OperatorHost&, const Context& context, const OperatorParameters&, ValueOutput) {
                 return add ? context.document.set_transform(context.selection.active, {})
                            : context.document.remove_transform(context.selection.active);
             }};
 }
 Result<void> docked(const Context& context) {
     return context.region == RegionKind::none ? unavailable("Focus a pane first.") : Result<void>{};
+}
+Result<void> spatial_selection(const Context& context) {
+    if (!context.scene_available)
+        return unavailable("Load a scene before editing Entities.");
+    for (const auto entity : context.selection.entities) {
+        const auto spatial = world::has_transform(context.document.world().runtime(), entity);
+        if (!spatial)
+            return std::unexpected(spatial.error());
+        if (*spatial)
+            return {};
+    }
+    return unavailable("Select an Entity with a Transform.");
+}
+Result<void> select_all(OperatorHost& host, const Context& context, const SceneSelectAll& p) {
+    auto result = host.viewport_tool().select_all(context.document, context.selection.entities, p.action);
+    host.scene_changed();
+    return result;
+}
+Result<void> clear_transform(OperatorHost& host, const Context& context, const SceneTransformClear& p) {
+    return host.viewport_tool().clear(context.document, context.selection.entities, p.channel);
+}
+Result<void> scene_delete(OperatorHost& host, const Context& context, const SceneDelete& p) {
+    const auto& selection = context.selection;
+    if (p.target == DeleteTarget::object && selection.object == ObjectId{})
+        return {};
+    auto result = p.target == DeleteTarget::object && selection.object != selection.active
+                      ? context.document.remove_component(selection.object)
+                      : context.document.erase_entities(selection.entities);
+    host.scene_changed();
+    return committed(std::move(result));
+}
+Result<void> scene_duplicate(OperatorHost& host, const Context& context, const SceneDuplicate& p) {
+    if (p.place && context.region != RegionKind::viewport)
+        return unavailable("Duplicate placement requires a viewport context.");
+    auto result = context.document.duplicate_entities(context.selection.entities);
+    host.scene_changed();
+    if (auto completed = committed(std::move(result)); !completed)
+        return completed;
+    return p.place ? host.place_duplicates() : Result<void>{};
+}
+Result<void> scene_add_component(OperatorHost& host, const Context& context, const SceneAddComponent& p) {
+    const auto type = context.document.world().runtime().find_type({p.type.c_str(), p.type.size()});
+    if (!type)
+        return std::unexpected(type.error());
+    auto result = context.document.add_component(context.selection.active, *type);
+    host.scene_changed();
+    return committed(std::move(result));
+}
+Result<void> scene_transform(OperatorHost& host, const Context& context, const SceneTransform& p) {
+    auto result = context.document.set_transform(context.selection.active, {p.position, p.rotation, p.scale});
+    host.scene_changed();
+    return result;
+}
+Result<void> scene_rename(OperatorHost& host, const Context& context, const SceneRename& p) {
+    if (p.name.empty()) {
+        if (!context.interactive)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "A noninteractive Rename requires name."});
+        return host.begin_entity_rename(context.selection.active, context.region);
+    }
+    auto result = context.document.rename(context.selection.active, assets::wide({p.name.c_str(), p.name.size()}));
+    host.scene_changed();
+    return result;
+}
+Result<void> snap_selection(OperatorHost& host, const Context& context, const SceneSnap& p) {
+    return host.viewport_tool().snap_selection(context.document, context.selection.entities, context.tools,
+                                               p.to == SnapTarget::cursor ? std::optional{context.cursor}
+                                                                          : std::nullopt);
+}
+Result<void> layout_show(OperatorHost& host, const Context&, const LayoutShow& p) {
+    if (p.tab == RegionKind::none)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Choose a workspace page to show."});
+    host.show_tab(p.tab);
+    return {};
+}
+Result<void> layout_cycle(OperatorHost& host, const Context& context, const LayoutCycle& p) {
+    if (p.direction)
+        host.cycle_tab(context.region, p.direction);
+    return {};
 }
 Result<void> add_poll(const Context& context) {
     if (!context.scene_available)
@@ -237,8 +334,59 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
     host.scene_changed();
     return result;
 }
+Result<void> scene_parent(OperatorHost& host, const Context& context, const SceneParent& p) {
+    auto& document = context.document;
+    auto& runtime = document.world().runtime();
+    const auto reference = runtime.read_reference({document.types().entity, ValueForm::weak_reference}, p.parent);
+    if (!reference)
+        return std::unexpected(reference.error());
+    auto parent = runtime.try_acquire(*reference);
+    if (!parent)
+        return std::unexpected(parent.error());
+    if (!reference->is_null() && !*parent)
+        return std::unexpected(Error{ErrorCode::invalid_object, "The parent Entity is no longer alive."});
+    auto result =
+        committed(document.reparent(context.selection.entities, *parent ? (*parent)->id() : ObjectId{},
+                                    p.keep_world ? world::ReparentRule::keep_world : world::ReparentRule::keep_local,
+                                    p.index < 0 ? world::append : static_cast<std::size_t>(p.index)));
+    host.scene_changed();
+    return result;
+}
+Result<void> scene_space_reference(OperatorHost& host, const Context& context, const SceneSpaceReference& p) {
+    auto& document = context.document;
+    auto& runtime = document.world().runtime();
+    const auto reference = runtime.read_reference({document.types().entity, ValueForm::weak_reference}, p.origin);
+    if (!reference)
+        return std::unexpected(reference.error());
+    if (p.world_space && !reference->is_null())
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "World space requires a null origin."});
+    auto held = runtime.try_acquire(*reference);
+    if (!held)
+        return std::unexpected(held.error());
+    if (!reference->is_null() && !*held)
+        return std::unexpected(Error{ErrorCode::invalid_object, "The spatial origin Entity is no longer alive."});
+    std::optional<ObjectId> origin;
+    if (*held)
+        origin = (*held)->id();
+    else if (p.world_space)
+        origin = ObjectId{};
+    auto result = committed(
+        document.set_space_reference(context.selection.active, origin,
+                                     p.keep_world ? world::ReparentRule::keep_world : world::ReparentRule::keep_local));
+    host.scene_changed();
+    return result;
+}
 Result<void> tool_settings(OperatorHost& host, const Context&, const ToolSettings& p) {
     host.set_tool_settings(p);
+    return {};
+}
+constexpr std::array tool_flags{&ToolSettings::grid_snap, &ToolSettings::cursor_surface, &ToolSettings::snap_move,
+                                &ToolSettings::snap_rotate, &ToolSettings::snap_scale};
+Result<void> tool_toggle(OperatorHost& host, const Context& context, const ToolToggle& p) {
+    auto settings = context.tools;
+    auto& flag = settings.*tool_flags[static_cast<std::size_t>(p.setting)];
+    flag = !flag;
+    host.set_tool_settings(settings);
     return {};
 }
 Result<void> view_axis(OperatorHost& host, const Context&, const ViewAxis& p) {
@@ -246,20 +394,248 @@ Result<void> view_axis(OperatorHost& host, const Context&, const ViewAxis& p) {
     camera.set_view(p.view);
     return host.set_camera(camera);
 }
+Result<void> seed_view(const Context& context, ValueOutput out) {
+    auto& runtime = context.document.world().runtime();
+    const auto info = runtime.describe(out.type);
+    if (!info)
+        return std::unexpected(info.error());
+    auto current = context.view;
+    // Author fields can have changed since the workspace's last projection (for example by Undo).
+    const auto environment = context.document.presentation().environment();
+    if (!environment)
+        return std::unexpected(environment.error());
+    static_cast<rendering::SceneLightingSettings&>(current.lit) = *environment;
+    const auto options = view_options();
+    const std::span storage{static_cast<std::byte*>(out.data), (*info)->size};
+    for (std::size_t i = 0; i < options.size(); ++i) {
+        const auto& option = options[i];
+        const auto& field = (*info)->fields[i];
+        const auto number = view_value(current, option.option);
+        Scalar value;
+        switch (option.kind) {
+        case ViewValueKind::boolean:
+            value = number != 0;
+            break;
+        case ViewValueKind::integer:
+            value = static_cast<std::int32_t>(number);
+            break;
+        case ViewValueKind::number:
+            value = number;
+            break;
+        case ViewValueKind::enumeration:
+            value = EnumValue{field.value.type, static_cast<std::uint32_t>(number)};
+            break;
+        }
+        if (auto written = runtime.write(out.type, storage, std::span{&field.id, 1}, value); !written)
+            return written;
+    }
+    return {};
+}
+Result<void> view_settings(OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+                           ValueOutput) {
+    const auto input = parameters.value;
+    auto& runtime = context.document.world().runtime();
+    const auto info = runtime.describe(input.type);
+    if (!info)
+        return std::unexpected(info.error());
+    auto candidate = context.view;
+    const auto options = view_options();
+    const std::span storage{static_cast<const std::byte*>(input.data), (*info)->size};
+    for (std::size_t i = 0; i < options.size(); ++i) {
+        const auto& field = (*info)->fields[i];
+        const auto value = runtime.read(input.type, storage, std::span{&field.id, 1});
+        if (!value)
+            return std::unexpected(value.error());
+        const auto number = std::visit(
+            [](const auto& leaf) -> double {
+                if constexpr (std::same_as<std::decay_t<decltype(leaf)>, EnumValue>)
+                    return leaf.bits;
+                else
+                    return static_cast<double>(leaf);
+            },
+            *value);
+        if (auto changed = set_view_option(candidate, options[i].option, number); !changed)
+            return std::unexpected(changed.error());
+    }
+    if (candidate.grid_plane != context.view.grid_plane)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Persistent grid plane follows camera view."});
+    return host.set_view_settings(candidate);
+}
+Result<void> project_open(const Context& context) {
+    return context.project ? Result<void>{} : unavailable("Open a project folder first.");
+}
+Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, const Context& context,
+                                                            const String& value, PathPurpose purpose,
+                                                            const std::filesystem::path& initial,
+                                                            std::wstring_view filename = {}) {
+    if (!value.empty())
+        return std::optional<std::filesystem::path>{assets::wide(std::string_view{value.c_str(), value.size()})};
+    if (!context.interactive)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Noninteractive invocation requires path."});
+    auto chosen = host.choose_path(purpose, initial, filename);
+    if (chosen && !*chosen)
+        host.cancel_operator();
+    return chosen;
+}
+OperatorInfo open_document(std::string id, std::wstring title, DocumentRequest::Kind kind) {
+    return {
+        std::move(id),
+        std::move(title),
+        "Replace the document after the current operator's values retire",
+        OperatorFlag::replaces_document | OperatorFlag::prompts,
+        kind == DocumentRequest::Kind::open_scene ? project_open : available,
+        [kind](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+               ValueOutput) -> Result<void> {
+            const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
+            const bool scene = kind == DocumentRequest::Kind::open_scene;
+            auto path = operation_path(host, context, p.path, scene ? PathPurpose::scene_open : PathPurpose::folder,
+                                       context.project ? context.project->root() / "Content" : std::filesystem::path{});
+            if (!path)
+                return std::unexpected(path.error());
+            if (!*path)
+                return {};
+            host.replace_document(
+                {kind, scene && (**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path,
+                 context.interactive});
+            return {};
+        },
+        "editor.OpenPath"};
+}
+Result<void> project_build(OperatorHost& host, const Context& context, const ProjectBuildParameters& parameters) {
+    host.replace_document({DocumentRequest::Kind::build, {}, context.interactive, parameters.rebuild});
+    return {};
+}
+OperatorInfo source_open(std::string id, std::wstring title, bool create, bool project_ui = false) {
+    return {std::move(id),
+            std::move(title),
+            "Open source, or create and open project source",
+            OperatorFlag::undo | OperatorFlag::prompts,
+            create ? project_open : available,
+            [create, project_ui](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+                                 ValueOutput) -> Result<void> {
+                const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
+                auto path = operation_path(
+                    host, context, p.path, create ? PathPurpose::source_save : PathPurpose::source,
+                    context.project ? context.project->root() / "Source" : context.editor_ui_source.parent_path(),
+                    project_ui ? L"Main.ui.source" : L"Move.source");
+                if (!path)
+                    return std::unexpected(path.error());
+                if (!*path)
+                    return {};
+                if (!create)
+                    return host.open_source(**path);
+                auto relative = (**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path;
+                if (project_ui && !relative.filename().wstring().ends_with(L".ui.source"))
+                    relative.replace_extension(L".ui.source");
+                return host.create_source(relative, project_ui);
+            },
+            "editor.OpenPath"};
+}
+Result<void> save_scene(OperatorHost& host, const Context& context, const SceneSave& p) {
+    if (p.path.empty() && !p.as_new)
+        return host.save_scene({});
+    auto path = operation_path(host, context, p.path, PathPurpose::scene_save, context.project->root() / "Content");
+    if (!path)
+        return std::unexpected(path.error());
+    if (!*path)
+        return {};
+    return host.save_scene((**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path);
+}
+Result<void> import_asset(OperatorHost& host, const Context& context, const AssetImport& p, AssetResult& result) {
+    auto path =
+        operation_path(host, context, p.path, p.kind == ImportKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
+                       context.project->root() / "Content");
+    if (!path)
+        return std::unexpected(path.error());
+    if (!*path)
+        return {};
+    auto imported = host.import_asset(p.kind, **path);
+    if (!imported)
+        return std::unexpected(imported.error());
+    result.asset = String{StringView{*imported}};
+    return {};
+}
+Result<void> reimport_asset(OperatorHost& host, const Context& context, const OpenPath& p) {
+    const auto& entry = *context.project->entry(context.asset);
+    auto path = operation_path(host, context, p.path,
+                               entry.kind == assets::AssetKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
+                               context.project->root() / entry.path.parent_path());
+    if (!path)
+        return std::unexpected(path.error());
+    return *path ? host.reimport_asset(context.asset, **path) : Result<void>{};
+}
+template <class P>
+Result<void> new_material(OperatorHost& host, const Context& context, const P& p, AssetResult& result) {
+    constexpr bool source = std::same_as<P, NewMaterialSource>;
+    auto& project = *context.project;
+    assets::MaterialAsset author;
+    if constexpr (!source) {
+        try {
+            std::get<assets::MaterialInstanceAsset>(author.author).entries =
+                assets::material_format::decode_entries(assets::json_format::Json::parse(p.entries.json.c_str()));
+        } catch (const std::exception& error) {
+            return std::unexpected(detail::caught_error(error, ErrorCode::argument_mismatch));
+        }
+    }
+    auto chosen =
+        operation_path(host, context, p.path, source ? PathPurpose::material_source_save : PathPurpose::material_save,
+                       project.root() / "Content");
+    if (!chosen)
+        return std::unexpected(chosen.error());
+    if (!*chosen)
+        return {};
+    const auto& path = **chosen;
+    const auto relative = path.is_absolute() ? path.lexically_relative(project.root()) : path;
+    const auto* parent = project.entry(context.asset);
+    if ((parent && parent->kind == assets::AssetKind::material) ||
+        std::ranges::find(assets::material_assets(), context.asset, &assets::MaterialAsset::key) !=
+            assets::material_assets().end())
+        std::get<assets::MaterialInstanceAsset>(author.author).parent_key = context.asset;
+    auto created = [&] {
+        if constexpr (source)
+            return project.create_material_source(relative, {p.source.c_str(), p.source.size()});
+        else
+            return project.create_material(relative, author);
+    }();
+    if (!created)
+        return std::unexpected(created.error());
+    result.asset = String{StringView{*created}};
+    if (context.interactive) {
+        auto loaded = context.document.material_resource(project.assets(), *created);
+        if (!loaded)
+            return std::unexpected(loaded.error());
+        host.asset_created(*created, true);
+    }
+    return {};
+}
 }
 void register_builtin_operators(OperatorRegistry& registry) {
     const auto add = [&](OperatorInfo info) {
         if (auto added = registry.add(std::move(info)); !added)
             throw std::logic_error(added.error().message);
     };
+    add({"ui.menu", L"Viewport Menu", "Open a menu at the viewport pointer", OperatorFlag::none,
+         [](const Context& c) {
+             return c.interactive && c.region == RegionKind::viewport
+                        ? Result<void>{}
+                        : unavailable("Menus require an interactive viewport.");
+         },
+         with_parameters(+[](OperatorHost& host, const Context&, const MenuParameters& p) -> Result<void> {
+             host.show_menu(p.menu);
+             return {};
+         }),
+         "editor.Menu"});
     add({"view.frame_all", L"Frame All", "Frame every rendered Entity and spatial locator", OperatorFlag::none,
-         available,
-         [](OperatorHost& host, const Context& context, ValueInput) { return frame(host, context, false); }});
+         available, [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
+             return frame(host, context, false);
+         }});
     add({"view.frame_selected", L"Focus Selection", "Frame the selected Entities and their subtrees",
          OperatorFlag::none, frame_selected_poll,
-         [](OperatorHost& host, const Context& context, ValueInput) { return frame(host, context, true); }});
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
+             return frame(host, context, true);
+         }});
     add({"view.reset", L"Reset Camera", "Return the viewport camera to its default view", OperatorFlag::none, available,
-         [](OperatorHost& host, const Context&, ValueInput) {
+         [](OperatorHost& host, const Context&, const OperatorParameters&, ValueOutput) {
              auto camera = host.camera();
              camera.reset();
              return host.set_camera(camera);
@@ -272,7 +648,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
              const auto camera = context.document.presentation().camera(context.selection.active);
              return camera ? Result<void>{} : std::unexpected(camera.error());
          },
-         [](OperatorHost& host, const Context& context, ValueInput) -> Result<void> {
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) -> Result<void> {
              auto snapshot = context.document.presentation().camera(context.selection.active);
              if (!snapshot)
                  return std::unexpected(snapshot.error());
@@ -295,7 +671,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
                  return unavailable("Select an Entity with exactly one CameraComponent.");
              return {};
          },
-         [](OperatorHost& host, const Context& context, ValueInput) {
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
              auto result = context.document.set_main_camera(context.selection.active);
              host.scene_changed();
              return result;
@@ -313,24 +689,28 @@ void register_builtin_operators(OperatorRegistry& registry) {
                  return unavailable("The scene has no main camera selection.");
              return {};
          },
-         [](OperatorHost& host, const Context& context, ValueInput) {
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
              auto result = context.document.set_main_camera({});
              host.scene_changed();
              return result;
          }});
     add({"layout.reset", L"Reset Layout", "Restore the default pane layout", OperatorFlag::none, available,
-         [](OperatorHost& host, const Context&, ValueInput) {
+         [](OperatorHost& host, const Context&, const OperatorParameters&, ValueOutput) {
              host.reset_layout();
              return Result<void>{};
          }});
+    add({"layout.show", L"Show Pane", "Show and focus a workspace page", OperatorFlag::none, available,
+         with_parameters(layout_show), "editor.LayoutShow"});
+    add({"layout.cycle_tab", L"Cycle Pane Tab", "Select the adjacent tab in the context region's pane",
+         OperatorFlag::none, docked, with_parameters(layout_cycle), "editor.LayoutCycle"});
     add({"layout.close_tab", L"Close Pane Tab",
          "Close the focused region's pane tab; on the Code page, close its active document first", OperatorFlag::none,
-         docked, [](OperatorHost& host, const Context& context, ValueInput) {
+         docked, [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
              return host.close_tab(context.region, context.interactive);
          }});
     add({"layout.maximize", L"Maximize / Restore Pane",
          "Maximize the focused region's pane, or restore the layout when it is maximized", OperatorFlag::none, docked,
-         [](OperatorHost& host, const Context& context, ValueInput) {
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
              host.maximize_tab(context.region);
              return Result<void>{};
          }});
@@ -348,37 +728,329 @@ void register_builtin_operators(OperatorRegistry& registry) {
                  return unavailable("The inspected object has no saved data.");
              return {};
          },
-         [](OperatorHost&, const Context& context, ValueInput) {
+         [](OperatorHost&, const Context& context, const OperatorParameters&, ValueOutput) {
              return context.document.discard_retained(context.selection.object);
          }});
     add({"scene.select", L"Select",
          "Make the context selection the document selection; a component can be inspected only with one Entity selected",
-         OperatorFlag::none, available, [](OperatorHost& host, const Context& context, ValueInput) -> Result<void> {
+         OperatorFlag::none, available,
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) -> Result<void> {
              const auto& selection = context.selection;
              if (selection.object != selection.active && selection.entities.size() != 1)
                  return std::unexpected(
                      Error{ErrorCode::unsupported_operation, "Inspect a component with only its Entity selected."});
-             if (auto selected = context.document.select_entities(selection.entities, selection.active); !selected)
+             auto selected = selection.object != selection.active
+                                 ? context.document.select(selection.object)
+                                 : context.document.select_entities(selection.entities, selection.active);
+             if (!selected)
                  return selected;
-             if (selection.object != selection.active)
-                 if (auto inspected = context.document.select(selection.object); !inspected)
-                     return inspected;
              host.scene_changed();
              return {};
          }});
     add({"scene.add", L"Add", "Add an Entity, a static mesh, a light or a camera at the 3D cursor and select it",
          OperatorFlag::undo, add_poll, with_parameters(scene_add), "editor.SceneAdd"});
-    add({"tool.settings", L"Tool Settings",
-         "Change the viewport tool, selection mode and snapping; unnamed fields keep their values", OperatorFlag::none,
-         available, with_parameters(tool_settings), "editor.ToolSettings",
+    add({"scene.parent_set", L"Set Parent",
+         "Reparent the explicit selection, recording its committed prefix as one history entry", OperatorFlag::undo,
+         [](const Context& context) -> Result<void> {
+             if (!context.scene_available)
+                 return unavailable("Load a scene before reparenting Entities.");
+             if (context.selection.entities.empty())
+                 return unavailable("Select Entities to reparent.");
+             return {};
+         },
+         with_parameters(scene_parent), "editor.SceneParent"});
+    add({"scene.space_reference_set", L"Set Space Reference",
+         "Choose inherited, explicit World or an Entity's space without changing composition", OperatorFlag::undo,
+         editable_entity, with_parameters(scene_space_reference), "editor.SceneSpaceReference"});
+    add({"tool.settings",
+         L"Tool Settings",
+         "Change the viewport tool, selection mode and snapping; unnamed fields keep their values",
+         OperatorFlag::none,
+         available,
+         with_parameters(tool_settings),
+         "editor.ToolSettings",
          [](const Context& context, ValueOutput out) -> Result<void> {
              const auto type = context.document.world().runtime().native_type<ToolSettings>();
              if (!type || *type != out.type)
                  return std::unexpected(Error{ErrorCode::type_mismatch, "Operator parameters have another type."});
              *static_cast<ToolSettings*>(out.data) = context.tools;
              return {};
+         },
+         {},
+         [](const Context& c, ValueInput p) { return c.tools == *static_cast<const ToolSettings*>(p.data); }});
+    add({"tool.toggle",
+         L"Toggle Tool Setting",
+         "Invert one tool setting (non-idempotent); automation should set absolute values with tool.settings",
+         OperatorFlag::none,
+         available,
+         with_parameters(tool_toggle),
+         "editor.ToolToggle",
+         {},
+         {},
+         [](const Context& c, ValueInput p) {
+             return c.tools.*tool_flags[static_cast<std::size_t>(static_cast<const ToolToggle*>(p.data)->setting)];
          }});
-    add({"view.axis", L"View", "Switch the viewport camera to perspective or an axis view around the same target",
-         OperatorFlag::none, available, with_parameters(view_axis), "editor.ViewAxis"});
+    add({"view.axis",
+         L"View",
+         "Switch the viewport camera to perspective or an axis view around the same target",
+         OperatorFlag::none,
+         available,
+         with_parameters(view_axis),
+         "editor.ViewAxis",
+         {},
+         {},
+         [](const Context& c, ValueInput p) { return c.camera_view == static_cast<const ViewAxis*>(p.data)->view; }});
+    add({"view.camera_set", L"Set Camera", "Restore a complete viewport camera state", OperatorFlag::none, available,
+         with_parameters(+[](OperatorHost& host, const Context&, const ViewCameraSet& p) -> Result<void> {
+             auto camera = host.camera();
+             if (!camera.set_state(p.state))
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid camera state."});
+             return host.set_camera(camera);
+         }),
+         "editor.ViewCameraSet"});
+    add({"view.look_at", L"Look At", "Aim the viewport camera at a world-space target", OperatorFlag::none, available,
+         with_parameters(+[](OperatorHost& host, const Context&, const ViewLookAt& p) -> Result<void> {
+             auto camera = host.camera();
+             if (!camera.look_at(p.eye, p.target))
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid camera eye/target."});
+             return host.set_camera(camera);
+         }),
+         "editor.ViewLookAt"});
+    add({"view.set", L"View Settings",
+         "Patch viewport display and World author settings; unnamed fields keep their values", OperatorFlag::undo,
+         available, view_settings, "editor.ViewSettings", seed_view});
+    add({"scene.select_all", L"Select All", "Select, deselect or invert the context selection", OperatorFlag::none,
+         [](const Context& context) -> Result<void> {
+             return context.scene_available ? Result<void>{} : unavailable("Load a scene before selecting Entities.");
+         },
+         with_parameters(select_all), "editor.SceneSelectAll"});
+    add({"scene.transform_clear", L"Clear Transform", "Clear one local transform channel of the selected roots",
+         OperatorFlag::undo, spatial_selection, with_parameters(clear_transform), "editor.SceneTransformClear"});
+    add({"scene.delete", L"Delete", "Delete context objects while preserving unrelated document selection",
+         OperatorFlag::undo,
+         [](const Context& context) -> Result<void> {
+             return context.scene_available && !context.selection.entities.empty()
+                        ? Result<void>{}
+                        : unavailable("Select Entities to delete.");
+         },
+         with_parameters(scene_delete), "editor.SceneDelete"});
+    add({"scene.duplicate", L"Duplicate Entities", "Copy context subtrees with fresh identities and shared resources",
+         OperatorFlag::undo,
+         [](const Context& context) -> Result<void> {
+             if (!context.scene_available || context.selection.entities.empty())
+                 return unavailable("Select Entities to duplicate.");
+             const auto members = context.document.world().members();
+             if (!members)
+                 return std::unexpected(members.error());
+             return members->size() + context.selection.entities.size() <= Session::maximum_entities
+                        ? Result<void>{}
+                        : unavailable("Editor Entity limit reached.");
+         },
+         with_parameters(scene_duplicate), "editor.SceneDuplicate"});
+    add({"scene.add_component", L"Add Component", "Add a registered component to the context's active Entity",
+         OperatorFlag::undo, editable_entity, with_parameters(scene_add_component), "editor.SceneAddComponent"});
+    add({"scene.transform_set", L"Set Transform", "Set the context Entity's full local transform in one history entry",
+         OperatorFlag::undo, editable_entity, with_parameters(scene_transform), "editor.SceneTransform"});
+    add({"scene.rename", L"Rename", "Rename the context Entity; interactive calls can start inline editing",
+         OperatorFlag::undo | OperatorFlag::prompts, editable_entity, with_parameters(scene_rename),
+         "editor.SceneRename"});
+    add({"scene.set_properties", L"Set Properties", "Apply a scalar patch to the inspected object's actual type",
+         OperatorFlag::undo,
+         [](const Context& context) -> Result<void> {
+             if (auto editable = editable_entity(context); !editable)
+                 return editable;
+             const auto object = context.selection.object;
+             if (object == context.selection.active)
+                 return {};
+             const auto state = world::inspect_component(context.document.world().runtime(), object);
+             if (!state || !state->valid || state->owner != context.selection.active)
+                 return unavailable("Select an editable object of the active Entity.");
+             return {};
+         },
+         [](OperatorHost& host, const Context& context, const OperatorParameters& parameters, ValueOutput) {
+             auto written = context.document.set_properties(context.selection.object, parameters.patch);
+             if (written)
+                 host.scene_changed();
+             return written;
+         },
+         "@context.object"});
+    add({"scene.snap_selection", L"Snap Selection", "Snap selected spatial roots to the grid or the context cursor",
+         OperatorFlag::undo, spatial_selection, with_parameters(snap_selection), "editor.SceneSnap"});
+    add({"cursor.to_selection", L"Cursor to Selection", "Place the cursor at the center of the selected spatial roots",
+         OperatorFlag::none, spatial_selection,
+         [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
+             return host.viewport_tool().cursor_to_selection(context.document, context.selection.entities);
+         }});
+    add({"cursor.to_grid", L"Cursor to Grid", "Snap the context cursor to the current grid", OperatorFlag::none,
+         available, [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
+             auto& tool = host.viewport_tool();
+             tool.cursor = context.cursor;
+             tool.cursor_to_grid(context.tools);
+             return Result<void>{};
+         }});
+    add({"cursor.reset", L"Cursor to Origin", "Reset the 3D cursor's position and orientation", OperatorFlag::none,
+         available, [](OperatorHost& host, const Context&, const OperatorParameters&, ValueOutput) {
+             auto& tool = host.viewport_tool();
+             tool.cursor = {};
+             tool.cursor_rotation = {};
+             return Result<void>{};
+         }});
+    add(open_document("project.new", L"New Project", DocumentRequest::Kind::new_project));
+    add(open_document("project.open", L"Open Project", DocumentRequest::Kind::open_project));
+    add(open_document("scene.open", L"Open Scene", DocumentRequest::Kind::open_scene));
+    add({"project.build", L"Build Project", "Build compatible code or explicitly rebuild the document's types",
+         OperatorFlag::replaces_document, project_open, with_parameters(project_build), "editor.ProjectBuild"});
+    const auto scene = [](const Context& c) -> Result<void> {
+        return c.scene_available ? Result<void>{} : unavailable("Load a scene first.");
+    };
+    const auto saveable = [scene](const Context& c) -> Result<void> { return c.project ? scene(c) : project_open(c); };
+    const auto source = [](const Context& c) -> Result<void> {
+        return !c.source.empty() ? Result<void>{} : unavailable("Open a source document first.");
+    };
+    const auto ui_source = [](const Context& c) -> Result<void> {
+        return c.project && !c.project->ui_source().empty() ? Result<void>{}
+                                                            : unavailable("Create a project UI first.");
+    };
+    const auto host_action = [&](std::string id, std::wstring title, auto poll, void (OperatorHost::*action)()) {
+        add({std::move(id), std::move(title), "Workspace action", OperatorFlag::none, poll,
+             [action](OperatorHost& h, const Context&, const OperatorParameters&, ValueOutput) {
+                 (h.*action)();
+                 return Result<void>{};
+             }});
+    };
+    host_action("app.quit", L"Exit", available, &OperatorHost::quit);
+    host_action("app.about", L"About", available, &OperatorHost::about);
+    host_action("view.select_box", L"Box Select", scene, &OperatorHost::select_box);
+    add({"view.toggle",
+         L"Toggle View Display",
+         "Toggle a viewport display preference",
+         OperatorFlag::none,
+         available,
+         with_parameters(+[](OperatorHost& h, const Context&, const ViewToggle& p) -> Result<void> {
+             h.toggle_view(p.option);
+             return {};
+         }),
+         "editor.ViewToggle",
+         {},
+         {},
+         [](const Context& c, ValueInput p) {
+             return static_cast<const ViewToggle*>(p.data)->option == ViewToggleOption::fps ? c.show_fps
+                                                                                            : c.viewport_options;
+         }});
+    add({"view.lighting_fit", L"Fit Lighting", "Fit the scene probe volume", OperatorFlag::undo, available,
+         with_parameters(+[](OperatorHost& h, const Context&, const LightingFit& p) {
+             return h.fit_lighting(p.mode == LightingFitMode::scene_focus);
+         }),
+         "editor.LightingFit"});
+    add({"asset.rename", L"Rename Asset", "Rename the context's project asset", OperatorFlag::prompts,
+         [](const Context& c) -> Result<void> {
+             const auto* entry = c.project ? c.project->entry(c.asset) : nullptr;
+             return entry && std::distance(entry->path.begin(), entry->path.end()) >= 2
+                        ? Result<void>{}
+                        : unavailable("Select a project file or folder below a top-level root.");
+         },
+         with_parameters(+[](OperatorHost& h, const Context& c, const SceneRename& p) {
+             return h.rename_asset(c.asset, {p.name.c_str(), p.name.size()}, c.interactive);
+         }),
+         "editor.SceneRename"});
+    add({"scene.save", L"Save Scene", "Save the scene after committing its active field",
+         OperatorFlag::undo | OperatorFlag::prompts, saveable, with_parameters(save_scene), "editor.SceneSave"});
+    add({"file.save", L"Save", "Save the active document", OperatorFlag::undo,
+         [source, saveable](const Context& c) { return c.region == RegionKind::code ? source(c) : saveable(c); },
+         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.save_documents(c, false);
+         }});
+    add({"file.save_all", L"Save All", "Save dirty materials, source and the current scene", OperatorFlag::undo,
+         available, [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.save_documents(c, true);
+         }});
+    add(source_open("source.open", L"Open Source", false));
+    add(source_open("source.new_component", L"New Component Source", true));
+    add(source_open("source.new_project_ui", L"New Project UI", true, true));
+    add({"source.open_editor_ui", L"Edit Editor UI", "Open the editor UI source", OperatorFlag::undo, available,
+         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.open_source(c.editor_ui_source);
+         }});
+    add({"source.open_project_ui", L"Edit Project UI", "Open the configured project UI source", OperatorFlag::undo,
+         ui_source, [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) -> Result<void> {
+             auto path = c.project->resolve(c.project->ui_source());
+             return path ? h.open_source(*path) : Result<void>{std::unexpected(path.error())};
+         }});
+    add({"source.close", L"Close Source", "Close the active source after its save decision", OperatorFlag::undo, source,
+         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.close_source(c.interactive);
+         }});
+    add({"source.reload", L"Reload Source", "Reload the active source, confirming dirty interactive drafts",
+         OperatorFlag::undo, source, [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.reload_source(c.interactive);
+         }});
+    add({"play.start", L"Run Project", "Save project sources and start Play", OperatorFlag::undo,
+         [](const Context& c) -> Result<void> {
+             return c.project && c.scene_available && !c.project_running && c.build_ready
+                        ? Result<void>{}
+                        : unavailable("Open a ready project with a scene and no active run.");
+         },
+         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.start_play(false, c.interactive);
+         }});
+    add({"play.preview_ui", L"Preview Project UI", "Save sources and start the project's UI preview",
+         OperatorFlag::undo,
+         [ui_source](const Context& c) {
+             return c.project_running ? unavailable("Stop the current run first.") : ui_source(c);
+         },
+         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
+             return h.start_play(true, c.interactive);
+         }});
+    for (const bool restart : {false, true})
+        add({restart ? "play.restart" : "play.stop", restart ? L"Restart Play" : L"Stop Play", "Stop the active run",
+             OperatorFlag::none,
+             [restart](const Context& c) -> Result<void> {
+                 return c.project_running && !c.project_stopping && (!restart || c.play_linked)
+                            ? Result<void>{}
+                            : unavailable("No stoppable run with the required change link.");
+             },
+             [restart](OperatorHost& h, const Context&, const OperatorParameters&, ValueOutput) {
+                 h.stop_play(restart);
+                 return Result<void>{};
+             }});
+    add({"asset.import",
+         L"Import Asset",
+         "Import a mesh or texture and return its asset key",
+         OperatorFlag::prompts,
+         project_open,
+         with_parameters(import_asset),
+         "editor.AssetImport",
+         {},
+         "editor.AssetResult"});
+    add({"asset.reimport", L"Reimport Asset", "Replace the context resource while retaining its identity",
+         OperatorFlag::undo | OperatorFlag::prompts,
+         [](const Context& c) -> Result<void> {
+             const auto* entry = c.project ? c.project->entry(c.asset) : nullptr;
+             return c.scene_available && entry &&
+                            (entry->kind == assets::AssetKind::mesh || entry->kind == assets::AssetKind::texture)
+                        ? Result<void>{}
+                        : unavailable("Select a project mesh or texture in a loaded scene.");
+         },
+         with_parameters(reimport_asset), "editor.OpenPath"});
+    add({"asset.refresh", L"Refresh Assets", "Refresh the project catalog", OperatorFlag::none, project_open,
+         [](OperatorHost&, const Context& c, const OperatorParameters&, ValueOutput) { return c.project->refresh(); }});
+    add({"asset.new_material",
+         L"New Material Instance",
+         "Create an MI, inheriting from the active material",
+         OperatorFlag::prompts,
+         project_open,
+         with_parameters(new_material<NewMaterial>),
+         "editor.NewMaterial",
+         {},
+         "editor.AssetResult"});
+    add({"asset.new_material_source",
+         L"New Material Source",
+         "Create an MS and its source",
+         OperatorFlag::prompts,
+         project_open,
+         with_parameters(new_material<NewMaterialSource>),
+         "editor.NewMaterialSource",
+         {},
+         "editor.AssetResult"});
 }
 }

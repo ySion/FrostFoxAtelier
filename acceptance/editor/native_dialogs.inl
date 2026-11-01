@@ -5,17 +5,16 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(assets::wide(output_directory));
     std::filesystem::create_directories(output);
     tick(app);
-    require(bool(Access::command(app, editor::Command::create_static_mesh)), "Dialog scene creation failed.");
+    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Dialog scene creation failed.");
     Access::mark_saved(app);
     tick(app);
     const auto owner = app.window();
     const auto thread = GetWindowThreadProcessId(owner, nullptr);
     std::ofstream report(output / "dialogs.txt");
     const ExpectedNativeDialogs expected;
-    for (const auto command :
-         {editor::Command::about, editor::Command::open_source, editor::Command::open_project, editor::Command::exit}) {
-        if (command == editor::Command::exit) {
-            require(bool(Access::command(app, editor::Command::create_entity)),
+    for (const std::string_view command : {"app.about", "source.open", "project.open", "app.quit"}) {
+        if (command == "app.quit") {
+            require(bool(Access::invoke(app, "scene.add", {{"kind", "entity"}})),
                     "Unsaved dialog scene creation failed.");
             tick(app);
         }
@@ -27,14 +26,15 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
                                 .y = static_cast<float>(point.y),
                                 .button = ui::PointerButton::primary});
         };
-        const auto definition = editor::command_definition(static_cast<ui::ControlKey>(command));
+        const auto definition =
+            std::ranges::find_if(editor::menu_bindings, [&](const auto& row) { return row.call.id == command; });
         const auto menu = centre(app, editor::menu_key(definition->group));
         pointer(ui::EventKind::pointer_move, menu);
         pointer(ui::EventKind::pointer_down, menu);
         pointer(ui::EventKind::pointer_up, menu);
         tick(app, 1);
         require(app.menu_frame() != nullptr, "Native dialog menu did not open.");
-        const auto* item = app.menu_frame()->find(static_cast<ui::ControlKey>(command));
+        const auto* item = app.menu_frame()->find(Access::operator_item(app, std::string(command)));
         require(item != nullptr, "Native dialog menu item is absent.");
         POINT point{static_cast<LONG>(item->bounds.x + item->bounds.width * .5f),
                     static_cast<LONG>(item->bounds.y + item->bounds.height * .5f)};
@@ -89,19 +89,19 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
             }
             if (!stop.stop_requested() && (!found || !responsive || !closed)) {
                 std::fprintf(stderr,
-                             "Editor native dialogs: FAIL command=%llu found=%d responsive=%d closed=%d captured=%d\n",
-                             static_cast<unsigned long long>(command), found, responsive, closed, captured);
+                             "Editor native dialogs: FAIL command=%s found=%d responsive=%d closed=%d captured=%d\n",
+                             command.data(), found, responsive, closed, captured);
                 std::fflush(stderr);
                 // A deadlocked UI cannot unwind; keep this E2E failure bounded.
                 TerminateProcess(GetCurrentProcess(), 1);
             }
         });
-        std::printf("Opening native dialog command %llu\n", static_cast<unsigned long long>(command));
+        std::printf("Opening native dialog command %s\n", command.data());
         std::fflush(stdout);
         pointer(ui::EventKind::pointer_move, point);
         pointer(ui::EventKind::pointer_down, point);
         pointer(ui::EventKind::pointer_up, point);
-        if (command == editor::Command::exit)
+        if (command == "app.quit")
             tick(app, 1); // Exit posts WM_CLOSE; cancelling its unsaved prompt keeps the editor alive.
         probe.request_stop();
         probe.join();
@@ -112,7 +112,7 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
         require(app.document().undo_count() == history && entities(app).size() == entity_count,
                 "Cancelling a native dialog modified the scene or its undo history.");
         require(!app.menu_window() && GetCapture() != owner, "Native dialog dismissal retained menu input ownership.");
-        report << static_cast<unsigned long long>(command) << ": responsive, cancelled, editor resumed\n";
+        report << command << ": responsive, cancelled, editor resumed\n";
         report.flush();
     }
     report.close();

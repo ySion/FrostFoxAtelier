@@ -32,13 +32,6 @@ struct CameraMatrices {
     math::Matrix4 projection;
     float far_depth{}; // Derived finite clipping boundary, separate from background depth zero.
 };
-struct CameraState {
-    CameraView view{CameraView::perspective};
-    math::Vector3 target{};
-    float yaw{}, pitch{}, distance{};
-    float roll{}, vertical_fov{45}, near_clip{.05f}, far_clip{30000};
-    bool operator==(const CameraState&) const = default;
-};
 // Left-handed, metres, +Y up; row-major matrices and row vectors.
 class Camera final {
 public:

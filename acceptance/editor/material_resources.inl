@@ -200,7 +200,7 @@ void verify_material_resources() {
                 std::get<float>(material_value(*reopened, ra.id(), "gain")) == .9f,
             "Scene round-trip lost shared MI identity or sparse intent.");
     take(document.select(entity_a));
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     const auto duplicate =
         component(document, document.selection().entity, document.presentation_types().static_mesh_component);
     const auto copied = take(presentation::read_material_bindings(runtime, duplicate)).front().resource;
@@ -677,7 +677,7 @@ void verify_missing_resources() {
     changed(kept->undo());
     require(take(kept->serialize()) == before_discard, "Discard undo lost missing-mesh data.");
     take(kept->select(entities[2].id()));
-    changed(kept->duplicate_selected());
+    changed(kept->duplicate_entities(kept->selected_entities()));
     take(editor::Session::deserialize(take(kept->serialize()), damaged));
     for (const auto& [original, aside] : moved)
         fs::rename(aside, original);

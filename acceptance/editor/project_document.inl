@@ -153,8 +153,9 @@ void verify_project_document() {
     take(document.rename(entity, L"主角 Triangle"));
     const auto mesh = component(document, entity, document.presentation_types().static_mesh_component);
     take(const_cast<world::World&>(document.world()).set_transform(entity, {{1, 2, 3}, {0, 0, 0, 1}, {2, 3, 4}}));
-    changed(document.add_component(document.types().component));
-    changed(document.add_component(document.presentation_types().static_mesh_component)); // Null mesh must survive.
+    changed(document.add_component(entity, document.types().component));
+    changed(
+        document.add_component(entity, document.presentation_types().static_mesh_component)); // Null mesh must survive.
     const auto saved = take(document.serialize());
     take(editor::write_file(take(project.resolve(project.startup_scene())), saved));
     document.mark_saved();
@@ -300,7 +301,7 @@ void verify_project_document() {
     auto full = take(editor::Session::deserialize(bounded.dump(), project));
     const auto full_entity = take(full->world().members()).front().id();
     take(full->select(full_entity));
-    require(!full->add_component(full->types().component) &&
+    require(!full->add_component(full_entity, full->types().component) &&
                 take(world::components(full->world().runtime(), full_entity)).size() ==
                     editor::Session::maximum_components,
             "Editor admitted a component beyond its scene format limit.");

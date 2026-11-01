@@ -32,13 +32,13 @@ void verify_shortcut_input_boundaries(Application& app) {
                                    [](const auto& pane) { return pane.maximized; });
     };
     Access::mark_saved(app);
-    model(Access::command(app, editor::Command::reset_layout));
-    model(Access::command(app, editor::Command::show_scene));
+    model(Access::invoke(app, "layout.reset"));
+    model(Access::invoke(app, "layout.show", {{"tab", "viewport"}}));
     tick(app);
 
     // Exercise the actual HWND -> owned native queue -> Application path, with
     // thread-local modifiers only. No desktop keys or focus changes are injected.
-    for (const auto& group : editor::command_groups) {
+    for (const auto& group : editor::menu_groups) {
         tap(group.access_key, false, true, true);
         require(Access::menu_open(app) && app.menu_frame(),
                 "A declared Alt menu mnemonic did not reach its native popup.");
@@ -59,11 +59,11 @@ void verify_shortcut_input_boundaries(Application& app) {
 
     const auto parent = app.document().selection().entity;
     require(parent != ObjectId{}, "Shortcut parent fixture needs a selected Entity.");
-    model(Access::command(app, editor::Command::create_entity));
+    model(Access::invoke(app, "scene.add", {{"kind", "entity"}}));
     const auto child = app.document().selection().entity;
     auto& document = Access::physics_document(app);
     model(document.reparent(child, parent));
-    model(Access::command(app, editor::Command::show_entities));
+    model(Access::invoke(app, "layout.show", {{"tab", "scene_tree"}}));
     tick(app);
     click_control(control::tree_world);
     model(Access::select_entity(app, child));
@@ -89,7 +89,7 @@ void verify_shortcut_input_boundaries(Application& app) {
             "Ctrl+Alt text chord was dispatched as a menu mnemonic or scene command.");
 
     model(Access::select_entity(app, child));
-    model(Access::command(app, editor::Command::show_parameters));
+    model(Access::invoke(app, "layout.show", {{"tab", "parameters"}}));
     tick(app);
     const auto name_key = Access::name_control(app, child);
     const std::wstring name_before{app.document().name(child)};
@@ -121,7 +121,7 @@ void verify_shortcut_input_boundaries(Application& app) {
     require(renamed, "One-shot shortcut filtering swallowed repeated text deletion or its single name commit.");
     tap(VK_ESCAPE);
 
-    model(Access::command(app, editor::Command::show_scene));
+    model(Access::invoke(app, "layout.show", {{"tab", "viewport"}}));
     tick(app);
     native_key('B', false, false, true);
     require(maximized(), "Ctrl+B did not maximize the focused pane.");
@@ -139,8 +139,8 @@ void verify_shortcut_input_boundaries(Application& app) {
     native_key('W', true, false, true);
     tap('W', true);
     require(pane_count() == tabs - 2, "Fresh Ctrl+W failed after the preceding held sequence.");
-    model(Access::command(app, editor::Command::reset_layout));
-    model(Access::command(app, editor::Command::show_scene));
+    model(Access::invoke(app, "layout.reset"));
+    model(Access::invoke(app, "layout.show", {{"tab", "viewport"}}));
     tick(app);
 
     const auto view = app.presented()->find(control::viewport)->bounds;
@@ -162,7 +162,7 @@ void verify_shortcut_input_boundaries(Application& app) {
                   {.kind = ui::EventKind::pointer_up, .x = hover.x, .y = hover.y, .button = ui::PointerButton::middle});
     require(Access::camera_view(app) == camera && GetCapture() != app.window(),
             "Late camera release changed the completed command state.");
-    model(Access::command(app, editor::Command::reset_layout));
+    model(Access::invoke(app, "layout.reset"));
     tick(app);
     std::puts("Native shortcut boundaries: PASS (menu mnemonics, context precedence, repeat, text, camera retirement)");
 }

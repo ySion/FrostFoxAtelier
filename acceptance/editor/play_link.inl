@@ -539,7 +539,7 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     take(document.set_main_camera(camera_a));
     forward();
     take(document.select_entities(std::array{camera_a}, camera_a));
-    complete(document.erase_selected());
+    complete(document.erase_entities(document.selected_entities()));
     forward();
     require(main_reference().is_null() && !inspect(camera_a),
             "Deleting the main camera did not clear Play before removal.");
@@ -558,7 +558,7 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     take(document.set_main_camera(later_camera));
     forward();
     take(document.select_entities(std::array{environment_owner, later_camera}, later_camera));
-    complete(document.erase_entities());
+    complete(document.erase_entities(document.selected_entities()));
     forward();
     require(!inspect(environment_owner) && !inspect(later_camera),
             "Deleting the Environment and its main camera left one in Play.");
@@ -575,12 +575,11 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
         workspace.project_running = true;
         workspace.play_pending = 0;
         take(document.select_entities(std::array{mover}, mover));
-        for (const auto command :
-             {editor::Command::erase_entities, editor::Command::rename_selected, editor::Command::duplicate_selected,
-              editor::Command::clear_location, editor::Command::select_all, editor::Command::remove_transform,
-              editor::Command::restart_project})
-            require(workspace.command_enabled(command, document, &project),
-                    "A scene command is unavailable while Play runs.");
+        for (const auto id : {"scene.delete", "scene.rename", "scene.duplicate", "scene.transform_clear",
+                              "scene.select_all", "scene.transform_remove", "play.restart"})
+            require(
+                workspace.operators.find(id)->poll(workspace.operator_context(document, &project, true)).has_value(),
+                "A scene command is unavailable while Play runs.");
     }
     process.stop();
     for (const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);

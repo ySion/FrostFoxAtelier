@@ -1,5 +1,4 @@
 #include "editor/world_panel.hpp"
-#include "editor/commands.hpp"
 #include "assets/file.hpp"
 #include <algorithm>
 #include <format>
@@ -128,11 +127,6 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
 std::vector<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer::ViewSettings& view) const {
     using namespace world_control;
     std::vector<ui::MenuItem> items;
-    if (source == setup) {
-        return {
-            {static_cast<ui::ControlKey>(Command::fit_probe_scene), L"Fit Scene", true, false, {}},
-            {static_cast<ui::ControlKey>(Command::fit_probe_scene_focus), L"Scene + Follow Focus", true, false, {}}};
-    }
     if (source == slot) {
         for (unsigned i = 0; i < renderer::probe_volume_limit; ++i) {
             ui::MenuItem item{slot_first + i,
@@ -187,7 +181,7 @@ void WorldPanel::observe(const renderer::FrameStats& stats) {
 }
 void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& document,
                         const renderer::ViewSettings& view, bool editable, std::wstring_view main_camera,
-                        bool can_clear_camera) const {
+                        ui_language::ActionBinding clear_camera) const {
     using namespace ui_language;
     namespace key = world_control;
     static const renderer::ViewSettings defaults;
@@ -323,21 +317,20 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
     for (const auto& item : view.lit.probe_volumes)
         if (item.enabled)
             total += item.counts[0] * item.counts[1] * item.counts[2];
-    const std::array<InputValue, 14> inputs{
-        L"Volume " + std::to_wstring(slot_),
-        ItemList{std::move(volume_groups)},
-        ItemList{std::move(propagation)},
-        ItemList{std::move(actual)},
-        std::to_wstring(total) + L" / 4096 configured probes",
-        ItemList{std::move(lighting_groups)},
-        ItemList{std::move(groups)},
-        ItemList{std::move(diagnostics)},
-        editable,
-        TableBinding{performance_.table(), performance_.selection()},
-        performance_.status(),
-        performance_.resources(),
-        std::wstring(main_camera),
-        ActionBinding{static_cast<ui::ControlKey>(Command::clear_main_camera), can_clear_camera}};
+    const std::array<InputValue, 14> inputs{L"Volume " + std::to_wstring(slot_),
+                                            ItemList{std::move(volume_groups)},
+                                            ItemList{std::move(propagation)},
+                                            ItemList{std::move(actual)},
+                                            std::to_wstring(total) + L" / 4096 configured probes",
+                                            ItemList{std::move(lighting_groups)},
+                                            ItemList{std::move(groups)},
+                                            ItemList{std::move(diagnostics)},
+                                            editable,
+                                            TableBinding{performance_.table(), performance_.selection()},
+                                            performance_.status(),
+                                            performance_.resources(),
+                                            std::wstring(main_camera),
+                                            clear_camera};
     const std::array keys{KeyBinding{"slot", key::slot},
                           KeyBinding{"setup", key::setup},
                           KeyBinding{"scroll", key::root + 80},

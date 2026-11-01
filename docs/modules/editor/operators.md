@@ -35,7 +35,7 @@ struct OperatorInfo {
     std::wstring title;
     std::string description;
     std::string parameters;         // Runtime 记录类型名；空表示空记录；"@context.object" / "@context.region" 表示动态类型
-    std::string result;             // 可选的结果记录类型名，例如新资产的键
+    std::string result;             // 可选的无引用结果记录类型名，例如新资产的键；引用字段直接拒绝
     OperatorFlag flags{};
     std::function<Result<void>(const Context&)> poll;            // 不可用时 error.message 就是原因
     std::function<Result<void>(OperatorHost&, const Context&, const OperatorParameters&, ValueOutput result)> execute;
@@ -81,6 +81,8 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 
 检查依据是 Session 的 `recorded()`（累计记录的历史条目数，历史达到上限时淘汰旧条目也不会减少）加上撤销和重做计数。这是开发和发布构建中都生效的运行时检查：违反时 `call` 返回 failed，附带一条写明操作符 ID、标志和前后计数的诊断（开发构建可以额外断言）。验收在 dev 和 release 下都把它当作失败。迁移中发现的、会产生多个条目的现有动作，都要合成一个条目。目前已知 `unparent_selected` 按每个 Entity 各调一次 `reparent`，多选时会产生多个条目，`scene.parent_set` 需要 Session 提供批量改父级的单条目事务（属于 Session，若要改 `World::reparent` 的签名，先告知 World 负责人）；合不了的报总负责人。
 
+这里的单条目事务是历史分组，不是整组发布的全有或全无。`Session::reparent` 按输入顺序逐对象调用现有 World 路径，在首个业务拒绝或通知失败处停止，只把实际已提交的移动记为一个条目；首项拒绝、空输入和全部 no-op 不新增历史。后项拒绝返回原始 Error，先前提交仍保留并可一次 Undo/Redo；通知失败保留已提交事实、完整 Error 与 World 既有停止语义，不继续执行后项或用清理错误覆盖原始 cause。Undo 按移动的逆序恢复父级、兄弟位置和局部姿态，Redo 按正序回放，Live 转发采用同样顺序和已记录的姿态。显式 index 是第一个目标位置，后续对象依次占用后续位置；默认 append 仍遵循 World 对同父级 no-op 的定义。
+
 ### 替换文档
 
 `scene.open`、`project.new`、`project.open`、`project.rebuild_types` 会替换 Session。Context 持有 `Session&`，而 `publish_document` 会销毁旧 Session，所以这类操作符在 execute 里只调用 `host.replace_document(request)` 登记请求。`call` 在 execute 之后不再碰 Context；Application 在 `call` 返回后、仍在同一次宿主调用里执行替换，并把替换的成败并入返回给调用方的报告。Control 的 `op.call` 因此能拿到“打开失败”的原因。示例沿普通 `project.open` / `scene.open`，没有专用操作符。
@@ -122,20 +124,34 @@ struct Context {
 
 ## 4. 参数类型
 
-参数是原生登记的 Runtime 记录：头文件里用 `ASTRUCT/AFIELD/AENUM` 声明，由 `atelier_reflect` 生成，范围用 `Min/Max/HardMin/HardMax`。默认值就是类型的默认构造。由它派生 `op.list` 的 schema、keymap 和菜单参数的校验，以后也派生“调整上次操作”面板。编辑器为 `src/editor/operator_parameters.hpp` 新增一个反射生成组。
+参数是原生登记的 Runtime 记录：头文件里用 `ASTRUCT/AFIELD/AENUM` 声明，由 `atelier_reflect` 生成，范围用 `Min/Max/HardMin/HardMax`。默认值就是类型的默认构造。由它派生 `op.list` 的 schema、keymap 和菜单参数的校验，以后也派生“调整上次操作”面板。`src/editor/operator_parameters.hpp` 使用编辑器反射生成组。`editor.MaterialEntriesJson` 仅承载 assets 已有权威材质 entries JSON：编辑器 codec 保留原节点，创建时复用 `decode_entries`，schema 固定为 `array / material.entries`，格式见 [Control 合同](control.md)；不开放通用 JSON 参数或记录数组。
 
 已实现的记录（`src/editor/operator_parameters.hpp`，由 `operator_parameters.cpp` 的 `register_editor_types` 登记）：
 
 | 记录 | 操作符 | 字段 |
 | --- | --- | --- |
 | `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、point、rectangle、directional、camera）、mesh（String，空为第一个内置网格） |
+| `editor.SceneParent` | `scene.parent_set` | parent（弱 Entity 引用，默认 null）、keep_world（默认 true）、index（默认 -1，表示 append） |
+| `editor.SceneSpaceReference` | `scene.space_reference_set` | origin（弱 Entity 引用，null 继承）、world_space（默认 false；true 时 origin 必须 null，显式使用 World 空间）、keep_world（默认 true） |
+| `editor.SceneSelectAll` | `scene.select_all` | action（select、deselect、invert、toggle；toggle 保留视口 A 的全选/清空行为） |
+| `editor.SceneDelete` | `scene.delete` | target（object、entities）；组件或子树目标来自 Context，未被删除的文档选择保留 |
+| `editor.SceneDuplicate` | `scene.duplicate` | place（默认 false）；视口上下文可进入现有放置，取消放置保留原位副本 |
+| `editor.SceneAddComponent` | `scene.add_component` | type（完整组件类型名），目标为 Context 的 active Entity；所需 Transform 与组件共用一个历史条目 |
+| `editor.SceneRename` | `scene.rename` | name（String）；非交互调用必须非空，交互调用可开始现有内联编辑，文本提交不再弹提示 |
+| `editor.SceneTransform` | `scene.transform_set` | position、rotation（四元数）、scale；完整局部变换，默认单位变换，必要时创建空间能力 |
+| `editor.SceneTransformClear` | `scene.transform_clear` | channel（location、rotation、scale），只改显式选择的空间根 |
+| `editor.SceneSnap` | `scene.snap_selection` | to（grid、cursor），光标目标和网格步长来自 Context |
+| `editor.LayoutShow` | `layout.show` | tab（`editor.RegionKind`；none 不是可显示的页签） |
+| `editor.LayoutCycle` | `layout.cycle_tab` | direction（-1 前一个、1 后一个、0 不移动），作用于 Context 区域所在窗格 |
 | `editor.ToolSettings` | `tool.settings`（seed） | tool、pivot、grid_snap、cursor_surface、grid_spacing、select_mode、orientation、snap_move、snap_rotate、snap_scale、rotation_step、scale_step |
+| `editor.ToolToggle` | `tool.toggle` | setting（grid_snap、cursor_surface、snap_move、snap_rotate、snap_scale） |
 | `editor.ViewAxis` | `view.axis` | view（`editor.CameraView`） |
+| `editor.ViewSettings`（描述型） | `view.set`（seed） | 由 `ViewOptionInfo` 的完整表生成；未指定项保留当前值，World 作者值从当前文档取种子 |
 
 - 只有编辑器自己的文档 Session（`SessionRole::editor`）在引擎类型之后、工程 Source 构建之前登记这些类型；Play、独立运行和其他 Session 不登记。工程 Source 既看不到也不能声明 `editor.*` 类型（运行时的前缀规则），`project_integration` 在编辑器文档里断言这一点。
 - `tool.settings` 的参数是 `editor.ToolSettings`。各编辑器枚举的底层类型为 `uint32_t`，生成器支持 int32/uint32。工具、轴心、选择模式和坐标轴不进持久格式；`CameraView` 以序号出现在 Control 的编辑器相机 JSON 和 repro 包中。Play 使用场景主相机，不接收编辑器相机参数。
 - `editor.AddKind` 没有 sky：天光是 Environment 组件的属性，由 World Settings（`set_environment`）编辑，不是新建的 Entity。
-- 参数记录暂不能含引用（调用时拒绝），第一个引用参数落地时再处理根集。
+- 含引用参数记录构造后立即进入 Runtime 根集，解码和执行结束后先撤根再析构。弱引用不会保活目标；引用 token 由调用方解析，Control 沿用本文档句柄，null 由公共调用入口解析。
 - 补丁式操作符（`tool.settings`、`view.set`、`region.set`）用 `seed` 从当前状态初始化参数，args 只写出现的叶。因此 `snap_grid_05` 就是 `tool.settings {"grid_spacing":0.5}`。
 - `tool.toggle` 不幂等，只给菜单和快捷键这类交互绑定使用；`op.list` 的说明里写明这一点，Control 和脚本应当用 `tool.settings` 写绝对值。
 - JSON → 参数值：调用运行时负责人的 R5-6a 共用叶解码（建在 P0 的 `read_properties` 之上：写入目标为“对象 | 调用方记录存储”，含 String 叶），不另写解码器。操作符一律用它的严格模式：未知字段、类型不符、越过硬边界都报错（越界按与 `constrain` 结果比较判断），不夹值；场景加载仍走宽容模式。
@@ -150,7 +166,9 @@ struct Context {
 
 参数类型是 `@context.object`，即被检视对象自身的 Runtime 类型（组件、材质实例或材质资产对象）。`op.list` 中它的 schema 由该类型的字段目录生成（`{"dynamic":"context.object"}`，取实际 schema 时用 `editor.inspect` 给出该对象的类型）。
 
-参数不存成整个对象值的拷贝：组件可能含引用、数组或不可复制的原生成员，整值拷贝既贵又可能做不到。args 按对象类型解码成稀疏路径补丁 `PropertyPatch {path, Scalar}` 列表，规则与 P0 的 `set` 相同：未知字段和类型不符报错，越过硬边界报错。执行时逐叶经 `World::write` 写入，整个调用合成一个 `FieldGroupChange` 历史条目。同一个带类型校验器的记录字段（例如 `body`）下的多个叶，作为该记录的一次整值写入（读出该记录，套用补丁，写回一次，校验一次），避免逐叶写入时中间态违反跨字段规则；具体做法依赖第 11 节的记录存储按路径写入，实现时与现有 `BodyChange` 的重放方式核对。
+参数不存成整个对象值的拷贝：组件可能含引用、数组或不可复制的原生成员，整值拷贝既贵又可能做不到。args 按对象类型解码成稀疏路径补丁 `PropertyPatch {path, Scalar}` 列表，规则与 P0 的 `set` 相同：未知字段和类型不符报错，越过硬边界报错。所有叶解码后交给现有 `World::write(object, paths, values)` 组写入，在组内写完后统一校验，避免 `body` 等记录的中间叶状态违反跨字段规则；拒绝时由同一机制恢复。Session 只记一个 `FieldGroupChange`，Undo/Redo 也沿该组写入，不另建整对象拷贝或逐叶历史。
+
+Transform 是例外：Entity（包括 Source 派生 Entity）实际继承的 position/rotation/scale 路径只由 `scene.transform_set`、`scene.transform_clear`、`scene.transform_remove` 等专用 Transform 操作符负责。`scene.set_properties` 对纯 Transform 或含 Transform 的混合补丁整批拒绝，发生在任何作者写入、取消现有编辑或新增历史之前；诊断指向专用 Transform 操作符。判断按实际类型和字段身份，不误拒普通业务字段的同名属性。派生 Entity 的非 Transform Scalar 补丁仍可组写入。本接口不支持依赖 Transform 与业务字段同时改变才能满足 validator 的组合修改，分成两次调用不是等价替代。
 
 ### 区域状态记录：`region.set`
 
@@ -173,7 +191,7 @@ struct KeyChord { std::uint32_t key; bool control{}, shift{}, alt{}; bool repeat
 struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::string_view op; std::string_view args; /* JSON */ };
 ```
 
-- 内置表放在 `src/editor/keymap.cpp`。`args` 写成 JSON 文本，启动时按参数类型解码一次并缓存。内置表中出现未知操作符、非法参数或同一区域和阶段内重复的组合键，是程序缺陷，编辑器拒绝启动。
+- 内置表放在 `src/editor/keymap.cpp`，保存真实 `OperatorCall`。启动时只检查操作符 ID 已注册，未知 ID 明确报错；参数在调用时严格解码，不做无宿主执行或参数试运行。
 - 以后增加用户覆盖文件时，用户文件出错的条目只给诊断，并回退到内置表的对应条目，不拒绝启动。现在不实现。
 - 查找顺序与现有行为一致：
   1. 区域为视口、没有文本控件占用键盘时，先查视口表（目前视口键都在 UI 输入之前处理）。
@@ -256,17 +274,17 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | 着色饼菜单、着色/边线/拓扑、参考线、Cavity | `view.set {...}`，例如 `{"shading":"matcap"}` |
 | 路径导航、场景树点选 | `scene.select`（Context 覆盖） |
 | 添加组件 | `scene.add_component {type}` |
-| 字段的枚举下拉 | `scene.set_properties`（Context object 为目标） |
-| 材质槽菜单：指派、默认、编辑共享材质 | `material.assign {slot, asset}`（asset 为空恢复网格默认）/ `asset.open` |
-| 贴图槽菜单 | `material.set_texture {input, texture}` |
-| 资源操作菜单：Open / Add to Scene / Rename | `asset.open` / `scene.add {kind: mesh, mesh}` / `asset.rename {name}`（prompts） |
-| 资源过滤、视图、路径 | `assets.display {filter, view}`（seed）/ `assets.browse {location, path}` |
-| World 页体积槽位、代码页文件切换、Controls 模式 | `world.select_slot {slot}` / `source.focus {path}` / `workbench.set {mode}` |
+| 字段的枚举下拉与布尔开关 | `scene.set_properties`（Context object 为目标；带预览的字段编辑留给 O2） |
+| 材质槽菜单：指派、默认、编辑共享材质 | 指派/默认保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。`asset.open` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
+| 贴图槽菜单 | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移 |
+| 资源操作菜单：Open / Add to Scene / Rename | `scene.add {kind: mesh, mesh}` / `asset.rename {name}`（prompts）；`asset.open` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
+| 资源过滤、视图、路径 | `assets.display` / `assets.browse` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
+| World 页体积槽位、代码页文件切换、Controls 模式 | `world.select_slot` / `source.focus` / `workbench.set` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
 | Dock 页菜单 | `layout.*` |
 
 ### 旧 Control op → 操作符
 
-下表是 O1 定稿时的迁移映射，不是当前 Control API 清单。材质部分的固定属性/单层覆盖形状已被 MS/MI 的 typed entry、稳定声明 path 和独立父链取代，后续操作符迁移须复用这些当前 Session 入口；现行命令以 [Control 合同](control.md)为准，不恢复表中的旧材质接口。
+下表列出 Control 的操作符映射和保留的原生入口，现行调用形状以 [Control 合同](control.md)为准。材质采用 MS/MI 的 typed entry、稳定声明 path 和独立父链，不转为 Scalar 属性。
 
 | 旧 op | 新调用 |
 | --- | --- |
@@ -276,17 +294,16 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | scene.rename {object, name} | `scene.rename {name}`，context.selection.active |
 | scene.set_property {object, property, value} | `scene.set_properties {<字段路径>: 值}`，context.selection.object |
 | scene.transform / remove_transform | `scene.transform_set {position, rotation, scale}` / `scene.transform_remove` |
-| scene.set_space_reference {object, origin, keep_world} | `scene.space_reference_set {origin, keep_world}`（origin 为弱引用或空） |
+| scene.set_space_reference {object, origin, keep_world} | `scene.space_reference_set {origin, world_space, keep_world}`；null origin 继承，显式 World 用 world_space=true，与指定 Entity 分开表达 |
 | scene.reparent {object, parent, keep_world, index} | `scene.parent_set {parent, keep_world, index}` |
 | scene.add_component / remove_component | `scene.add_component {type}` / `scene.delete {target: object}` |
 | scene.delete / undo / redo | `scene.delete {target: entities}` / `edit.undo` / `edit.redo` |
-| camera.set / camera.look_at | `view.camera_set {state: editor.CameraState}` / `view.look_at {eye, target}` |
+| camera.set / camera.look_at | `view.camera_set {state: editor.CameraState}` / `view.look_at {eye, target}`；相机 view 用枚举名，向量用 `{x,y,z}`，inspect 与参数共用 Runtime 编解码 |
 | view.set {patch} / view.layout {layout} | `view.set {...}` / `view.lighting_fit {mode}` |
-| material.create / texture.import / mesh.import | `asset.new_material {path}` / `asset.import {kind: texture\|mesh, path}`，结果记录带资产键 |
-| material.set_property | `scene.set_properties`，context object 为材质对象 |
-| material.set_texture / assign / override | `material.set_texture {input, texture}` / `material.assign {slot, asset}` / `material.override {slot, property, enabled}` |
-| material.save / undo / redo {asset} | `asset.save` / `edit.undo` / `edit.redo`，context.asset |
-| material.inspect | 并入 `editor.inspect {detail: "asset"}` |
+| material.create / texture.import / mesh.import | `asset.new_material {path, entries}`（父材质为 context.asset）/ `asset.new_material_source {path, source}` / `asset.import {kind: texture\|mesh, path}`，结果记录带资产键 |
+| material.set_entry / set_texture / assign / create_scene / override / discard | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移 |
+| material.undo / redo {asset} | `edit.undo` / `edit.redo`，context.asset，region 为 parameters |
+| material.inspect / save | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移 |
 
 合并后约 65 个操作符，取代现在的 110 余个命令和约 30 个专用 Control op。
 
@@ -296,17 +313,17 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 
 1. **核心**：注册表、Context、`call`、参数存储、历史不变量、文档替换请求；Control 的 `op.list` / `op.call`；启动校验，以及 Control 验收中的 `op.list`、`op.call`、Context 覆盖和 poll 失败用例。先用无参数的操作符打通整条链（`view.frame_all`、`view.reset`、`edit.undo`/`edit.redo`、`layout.reset`、`scene.select`）；R5-6a 落地后接上参数解码，再迁移 3 个带参数的代表：`scene.add`（String）、`tool.settings`（seed）、`view.axis`（枚举）。
 2. **参数类型**（已完成）：`operator_parameters.hpp` 生成组，只经编辑器文档 Session 发布；`ViewportTool::Settings` 改为 `editor.ToolSettings`；`scene.add`、`tool.settings`、`view.axis`。由表格生成 `editor.ViewSettings` 和 `view.set` 推迟到 4b-3 步骤 A 之后；区域状态记录随第 3 步的对应区域一起做。
-3. **按组迁移**：把 `Application::execute` 的每个 case 搬进操作符定义，把 `command_enabled` 的对应 case 改为 poll，参数和 ID 以第 8 节的表为准。顺序：window/layout → view/tool/cursor → scene → project/play/source → asset/material。Session 中依赖选择的方法同时改为显式目标；会产生多个历史条目的动作（已知 `unparent_selected`）合成一个条目。
-4. **菜单与按钮**：菜单构建改为 `OperatorCall`，删除 `command_item` 的硬写状态逻辑。
-5. **Keymap**：建表，删除 `application.cpp`、`viewport.cpp`、`viewport_tool.cpp` 中的非 modal 分支。
-6. **Control 清理**：删除旧 op，`acceptance/editor/control.cpp` 改为 `op.call`；同步 `control.md`。
-7. **删除** `editor::Command`、`command_definitions`、`command_enabled` 和 `execute` 的 switch；更新编辑器 README 与 `control.md`。
+3. **命令迁移**（已完成）：原 Command 动作由操作符定义及 poll 承担，Application 只提供文件选择、文档替换和交互等宿主能力，不按命令二次分派。Session 操作使用显式目标；多对象解除父级记录已提交前缀为一个历史条目，失败边界遵循第 2 节。
+4. **菜单与按钮**（已完成）：菜单、快捷区与命令按钮绑定 `OperatorCall`，状态来自操作符，不再硬写启用、勾选与单选状态。
+5. **Keymap**（已完成）：非 modal 操作由区域、阶段与修饰键匹配 keymap 后进入 `call`，快捷键文字由同一表生成；modal 手势仍由 ViewportTool 处理。
+6. **Control 清理**（本轮完成）：工程、场景、相机、显示、网格/贴图导入重导入及材质创建/撤销/重做已删除旧专用 op 及 schema；验收使用 `op.call`，当前调用形状见 `control.md`。其余材质原生入口按第 8 节保留，随 O2 迁移。
+7. **旧路由删除**（已完成）：`commands.hpp`、Command 枚举、命令定义表、适配查找、启用判断与 Application 的命令执行包装均已删除；Control 的创建物体与光照布局也只走 `op.call`。UI 的选择、枚举/布尔属性和显示设置与 Control 共享操作符执行路径；带预览的字段编辑留给 O2，第 8 节列出的六个单一 UI 路径暂不迁移。
 
-窗口验收中引用 `Command::` 的地方（约 120 处）随第 7 步改写，但点击路径和断言的行为不变：在验收侧新增一个查找函数，按“操作符 ID + 参数”在当前菜单或快捷区中找到对应的项（例如 `operator_item(app, "view.axis", {{"view","top"}})`），各处只把原来的 `static_cast<ControlKey>(Command::…)` 换成它，不各自重写查找逻辑。
+窗口验收通过共享的 `operator_item(app, id, args)` 按操作符 ID 与参数查找当前菜单或快捷区中的真实绑定，保留原点击路径与行为断言，不依赖命令枚举数值。
 
 ## 10. 验收
 
-- 启动校验：每个菜单项、快捷区按钮、面板按钮和 keymap 条目都解析到已注册的操作符，且参数能按其类型严格解码，否则编辑器拒绝启动（只针对内置表）。Control 验收经 `op.list` 和一份菜单与 keymap 的转储，断言这一点。
+- 启动校验：内置菜单、快捷区和 keymap 表逐项通过 `registry.find(id)` 检查操作符存在，未知 ID 拒绝启动；参数错误由实际调用的严格解码报告，不在启动时试解码或执行。
 - `op.list` 中每个操作符的参数 schema 与其 Runtime TypeInfo 逐字段一致：名称、种类、枚举成员、范围。非 seed 式操作符的 schema 还要带默认值并与类型默认构造一致；seed 式操作符不带默认值，只断言 `"seeded": true`。`view.set` 的 schema 与 `ViewOptionInfo` 表逐项一致，类型名和字段顺序固定。
 - Control 用 `op.call` 执行代表性操作符，包括：
   - 带 Context 覆盖的 `scene.delete`：按显式选择删除，调用后文档选择不变（被删的除外）；

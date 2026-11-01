@@ -3,6 +3,31 @@
 #include <cmath>
 
 namespace atelier::application {
+Result<void> Application::place_duplicates() {
+    if (!accepted_view_)
+        return std::unexpected(
+            Error{ErrorCode::unsupported_operation, "Wait for an accepted viewport before placing copies."});
+    cancel_interaction(ui_.cancel_interaction());
+    effects(ui_.focus(0));
+    workspace_.dock.select(editor::control::scene_tab);
+    auto placed =
+        viewport_tool_.place_duplicates(*document_, *accepted_view_, workspace_.viewport_settings, pointer_position_);
+    window_.capture(viewport_tool_.capture());
+    window_.cursor(viewport_tool_.pointer_cursor());
+    if (placed)
+        workspace_.status = L"Duplicate · Move · Right click / Esc keeps copies in place";
+    return placed;
+}
+void Application::show_menu(editor::MenuKind menu) {
+    using namespace editor::control;
+    if (menu == editor::MenuKind::delete_selection && document_->selected_entities().empty())
+        return;
+    constexpr std::array groups{ui::ControlKey{}, viewport_delete_menu, viewport_shading_pie, viewport_add_menu,
+                                viewport_axis_pie};
+    effects(ui_.focus(0));
+    workspace_.dock.select(scene_tab);
+    request_menu({viewport, groups[static_cast<std::size_t>(menu)], pointer_position_.x, pointer_position_.y});
+}
 void Application::finish_camera_fly(bool accept) {
     if (!camera_fly_)
         return;
@@ -122,69 +147,12 @@ bool Application::viewport_input(const ui::Event& event, std::uint32_t native_ke
     }
     if (!pointer && !viewport_tool_.active() && ui_.wants_keyboard())
         return false;
-    if (!viewport_tool_.active() && event.kind == ui::EventKind::key_down && !event.shift && !event.alt &&
-        (native_key == VK_NUMPAD1 || native_key == VK_NUMPAD3 || native_key == VK_NUMPAD7)) {
-        if (event.repeat)
-            return true;
-        using enum editor::Command;
-        const auto command = native_key == VK_NUMPAD1   ? (event.control ? view_back : view_front)
-                             : native_key == VK_NUMPAD3 ? (event.control ? view_left : view_right)
-                                                        : (event.control ? view_bottom : view_top);
-        status(execute(command), L"Camera view updated");
+    if (!viewport_tool_.active() &&
+        key_input(event, native_key, editor::RegionKind::viewport, editor::KeyPhase::before_controls))
         return true;
-    }
     if (!viewport_tool_.active() && event.kind == ui::EventKind::key_down && !event.control && !event.alt) {
         if (event.repeat)
             return true; // A held shortcut must not restart after its modal owner dismisses.
-        if (event.shift && native_key == 'D') {
-            cancel_interaction(ui_.cancel_interaction());
-            effects(ui_.focus(0));
-            workspace_.dock.select(editor::control::scene_tab);
-            const auto duplicated = execute(editor::Command::duplicate_selected);
-            if (!duplicated) {
-                status(duplicated, L"");
-                return true;
-            }
-            if (!document_->selected_entities().empty())
-                status(
-                    viewport_tool_.place_duplicates(*document_, view, workspace_.viewport_settings, pointer_position_),
-                    L"Duplicate · Move · Right click / Esc keeps copies in place");
-            window_.capture(viewport_tool_.capture());
-            window_.cursor(viewport_tool_.pointer_cursor());
-            return true;
-        }
-        if (!event.shift && native_key == 'X') {
-            if (!document_->selected_entities().empty())
-                request_menu({editor::control::viewport, editor::control::viewport_delete_menu, pointer_position_.x,
-                              pointer_position_.y});
-            return true;
-        }
-        if (native_key == 'W') {
-            effects(ui_.focus(0));
-            workspace_.dock.select(editor::control::scene_tab);
-            request_menu({editor::control::viewport, 0, pointer_position_.x, pointer_position_.y});
-            return true;
-        }
-        if (event.key == ui::Key::tab && event.shift) {
-            status(execute(editor::Command::snap_toggle), L"Grid snapping toggled");
-            return true;
-        }
-        // Blender navigation keys while the pointer is over the scene.
-        using enum editor::Command;
-        const auto view = [&](editor::Command command, const wchar_t* text) {
-            status(execute(command), text);
-            return true;
-        };
-        if ((native_key == VK_NUMPAD5 || native_key == VK_NUMPAD0) && !event.shift)
-            return view(view_perspective, L"Perspective view");
-        if (native_key == VK_DECIMAL && !event.shift) {
-            status(run_operator("view.frame_selected", true), L"View Selected");
-            return true;
-        }
-        if (native_key == VK_HOME && !event.shift) {
-            status(run_operator("view.frame_all", true), L"View All");
-            return true;
-        }
         if (native_key == VK_OEM_3 && event.shift) {
             cancel_interaction(ui_.cancel_interaction());
             effects(ui_.focus(0));
@@ -207,23 +175,6 @@ bool Application::viewport_input(const ui::Event& event, std::uint32_t native_ke
                 L"Fly · WASD move · Q/E down/up · Wheel speed · Shift fast · Enter/LMB confirm · Esc/RMB cancel";
             return true;
         }
-        if (native_key == VK_OEM_3 && !event.shift) {
-            effects(ui_.focus(0));
-            workspace_.dock.select(editor::control::scene_tab);
-            request_menu({editor::control::viewport, editor::control::viewport_axis_pie, pointer_position_.x,
-                          pointer_position_.y});
-            return true;
-        }
-        if ((event.shift && native_key == 'A') || (!event.shift && native_key == 'Z')) {
-            effects(ui_.focus(0));
-            workspace_.dock.select(editor::control::scene_tab);
-            // The scene is the anchor; group selects which pointer menu to build.
-            request_menu(
-                {editor::control::viewport,
-                 native_key == 'A' ? editor::control::viewport_add_menu : editor::control::viewport_shading_pie,
-                 pointer_position_.x, pointer_position_.y});
-            return true;
-        }
     }
     if (viewport_tool_.active() && event.kind == ui::EventKind::key_down && event.control &&
         (native_key == 'Z' || native_key == 'Y')) {
@@ -233,13 +184,7 @@ bool Application::viewport_input(const ui::Event& event, std::uint32_t native_ke
         if (!cancelled)
             status(cancelled, L"");
         else
-            status(execute(native_key == 'Y' || event.shift ? editor::Command::redo : editor::Command::undo),
-                   L"History updated");
-        return true;
-    }
-    if (!pointer && !viewport_tool_.active() && event.kind == ui::EventKind::key_down && native_key == 'Q' &&
-        !event.control && !event.alt) {
-        status(execute(editor::Command::tool_select), L"Select · Right click selects · Left click places the cursor");
+            key_input(event, native_key, editor::RegionKind::none, editor::KeyPhase::after_controls);
         return true;
     }
     if (pointer && event.kind == ui::EventKind::wheel && !viewport_tool_.active()) {

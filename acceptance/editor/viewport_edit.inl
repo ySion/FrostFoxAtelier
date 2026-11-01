@@ -1,3 +1,5 @@
+#include "editor/keymap.hpp"
+
 void verify_rotated_viewport_transforms() {
     using namespace editor;
     Session document;
@@ -194,11 +196,10 @@ void verify_viewport_local_constraints() {
 }
 void verify_viewport_gesture_input() {
     using namespace editor;
-    Session document;
+    Session document({}, SessionRole::editor);
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto first = document.selection().entity;
     changed(document.create_static_mesh(assets::mesh_assets().front(), {2, 0, 0}));
-    const auto second = document.selection().entity;
     take(document.select(first));
     application::SceneSnapshot snapshot;
     take(snapshot.refresh(document));
@@ -221,15 +222,20 @@ void verify_viewport_gesture_input() {
     const auto escape = [&] { take(key(27, {.kind = ui::EventKind::key_down, .key = ui::Key::escape})); };
     const auto pose = [&] { return take(world::read_transform(document.world().runtime(), first)); };
     const auto history = document.undo_count();
-    take(key('I', {.kind = ui::EventKind::key_down, .control = true}));
-    require(document.selected_entities().size() == 1 && document.selection().entity == second,
-            "Ctrl+I did not invert selection on its first key press.");
-    take(key('I', {.kind = ui::EventKind::key_down, .control = true, .repeat = true}));
-    require(document.selected_entities().size() == 1 && document.selection().entity == second,
-            "Auto-repeated Ctrl+I inverted the selection again.");
-    take(key('I', {.kind = ui::EventKind::key_down, .control = true}));
-    require(document.selected_entities().size() == 1 && document.selection().entity == first,
-            "A fresh Ctrl+I key press did not invert selection again.");
+    OperatorRegistry registry;
+    register_builtin_operators(registry);
+    operator_parameters::Host host(document);
+    const auto* binding =
+        key_binding(RegionKind::viewport, KeyPhase::before_controls, {.kind = ui::EventKind::key_down}, 'A', false);
+    require(binding, "The viewport selection key has no operator binding.");
+    for (const auto count : {2u, 0u}) {
+        auto context = host.panels.operator_context(document, nullptr, false);
+        const auto result = take(call(registry, host, context, binding->call));
+        require(result.status == OperatorStatus::finished && document.selected_entities().size() == count &&
+                    document.undo_count() == history,
+                "The viewport keymap did not toggle selection through call without author history.");
+    }
+    take(document.select(first));
     take(key('B'));
     for (const auto code : std::array<std::uint32_t, 4>{'G', 'R', 'S', 'A'}) {
         take(key(code));
@@ -320,8 +326,8 @@ void verify_viewport_duplication() {
     editor::Session document;
     changed(document.create_static_mesh(assets::mesh_assets().front(), {1, 2, 3}));
     const auto first = document.selection().entity;
-    changed(document.add_component(document.types().component));
-    changed(document.add_component(document.types().collision_component));
+    changed(document.add_component(first, document.types().component));
+    changed(document.add_component(first, document.types().collision_component));
     auto body = physics::BodySettings{};
     body.sensor = true;
     body.radius = 2.f;
@@ -332,7 +338,7 @@ void verify_viewport_duplication() {
     take(document.select_entities(selected, second));
     const auto history = document.undo_count();
     const auto before = nlohmann::json::parse(take(document.serialize()));
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     const std::vector copies(document.selected_entities().begin(), document.selected_entities().end());
     require(copies.size() == 2 && copies[0] != first && copies[1] != second && document.undo_count() == history + 1,
             "Duplicate did not create independent identities in one history entry.");
@@ -380,7 +386,7 @@ void verify_viewport_duplication() {
     require(document.selected_entities().size() == 2 && document.selected_entities()[0] == copies[0] &&
                 take(world::read_transform(document.world().runtime(), root(copies[0]))).position.x == 3,
             "Redo did not retain duplicate identity and final placement.");
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     const auto stationary = document.selection().entity;
     const auto transform = take(world::read_transform(document.world().runtime(), root(stationary)));
     take(tool.place_duplicates(document, view, {}, {500, 350}));
@@ -391,12 +397,12 @@ void verify_viewport_duplication() {
                 take(world::read_transform(document.world().runtime(), root(stationary))) == transform,
             "Cancelling duplicate movement removed copies or kept the preview displacement.");
     take(document.select(root(stationary)));
-    changed(document.erase_entities());
+    changed(document.erase_entities(document.selected_entities()));
     require(take(document.world().members()).size() == 5, "Viewport deletion removed only the inspected Component.");
     changed(document.undo());
     take(document.select({}));
     const auto count = document.undo_count();
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     require(document.undo_count() == count, "Empty duplicate changed history.");
     editor::Session restricted;
     changed(restricted.create_static_mesh(assets::mesh_assets().front()));
@@ -411,12 +417,13 @@ void verify_viewport_duplication() {
     take(restricted.select_entities(mixed, sky_entity));
     const auto checkpoint = take(restricted.serialize());
     const auto checkpoint_history = restricted.undo_count();
-    require(!restricted.duplicate_selected() && restricted.undo_count() == checkpoint_history &&
-                take(restricted.serialize()) == checkpoint && restricted.selection().entity == sky_entity,
+    require(!restricted.duplicate_entities(restricted.selected_entities()) &&
+                restricted.undo_count() == checkpoint_history && take(restricted.serialize()) == checkpoint &&
+                restricted.selection().entity == sky_entity,
             "Failed group duplication left a partial Entity, changed selection or changed history.");
     take(document.select(first));
     take(document.rename(first, std::wstring(256, L'A')));
-    changed(document.duplicate_selected());
+    changed(document.duplicate_entities(document.selected_entities()));
     require(document.name(document.selection().entity).size() <= 256,
             "Duplicating a maximum-length name exceeded the name limit.");
     const auto limit_folder =
@@ -442,7 +449,8 @@ void verify_viewport_duplication() {
     take(full->select(last));
     const auto limit_history = full->undo_count();
     const auto limit_checkpoint = take(full->serialize());
-    require(!full->duplicate_selected() && full->undo_count() == limit_history && full->selection().entity == last &&
+    require(!full->duplicate_entities(full->selected_entities()) && full->undo_count() == limit_history &&
+                full->selection().entity == last &&
                 take(full->world().members()).size() == editor::Session::maximum_entities &&
                 take(full->serialize()) == limit_checkpoint,
             "Entity limit rejection partially published a duplicate.");
@@ -454,7 +462,7 @@ void verify_viewport_editing() {
     verify_viewport_gesture_input();
     verify_viewport_duplication();
     using namespace editor;
-    Session document;
+    Session document({}, SessionRole::editor);
     const auto create = [&](math::Vector3 at) {
         changed(document.create_static_mesh(assets::mesh_assets().front(), at));
         return document.selection().entity;
@@ -489,13 +497,6 @@ void verify_viewport_editing() {
         ui::Event event;
         event.kind = ui::EventKind::key_down;
         event.key = key;
-        return tool.key(document, view, event, code, settings, point(second));
-    };
-    const auto chord = [&](std::uint32_t code, bool control, bool alt) {
-        ui::Event event;
-        event.kind = ui::EventKind::key_down;
-        event.control = control;
-        event.alt = alt;
         return tool.key(document, view, event, code, settings, point(second));
     };
     const auto text = [&](std::wstring value) {
@@ -549,7 +550,7 @@ void verify_viewport_editing() {
     take(pointer(ui::EventKind::pointer_move, target, false, true));
     require(std::abs(transform(second).position.x - 1.81f) < .001f, "Ctrl did not temporarily invert grid snapping.");
     take(key(27, ui::Key::escape));
-    take(tool.snap_selection(document, settings, false));
+    take(tool.snap_selection(document, document.selected_entities(), settings));
     require(transform(first).position.x == -2 && transform(second).position.x == 2,
             "Selection to Grid did not align each root.");
     changed(document.undo());
@@ -675,7 +676,7 @@ void verify_viewport_editing() {
                  {view.bounds.x + view.bounds.width - 1, view.bounds.y + view.bounds.height - 1}));
     require(document.selected_entities().size() == 2, "Box selection missed real projected geometry.");
     const auto deletion_history = document.undo_count();
-    changed(document.erase_selected());
+    changed(document.erase_entities(document.selected_entities()));
     require(take(document.world().members()).empty() && document.undo_count() == deletion_history + 1,
             "Multi-delete was not one document operation.");
     take(overlay_scene.refresh(document));
@@ -723,54 +724,6 @@ void verify_viewport_editing() {
     changed(document.redo());
     require(document.selected_entities().empty(), "Delete redo retained a stale selection.");
     changed(document.undo());
-    // Blender object-mode chords: A toggles all, Alt+A clears, Ctrl+I inverts.
-    take(document.select(first));
-    take(key('A'));
-    require(document.selected_entities().size() == 2, "A did not select every Entity.");
-    take(key('A'));
-    require(document.selected_entities().empty(), "A with everything selected did not deselect all.");
-    take(chord('A', false, false));
-    take(chord('A', false, true));
-    require(document.selected_entities().empty(), "Alt+A did not deselect.");
-    take(document.select(first));
-    take(chord('I', true, false));
-    require(document.selected_entities().size() == 1 && document.is_selected(second),
-            "Ctrl+I did not invert the Entity selection.");
-    take(key('A'));
-    {
-        // Alt+G/R/S clear one channel of every selected root, one undo entry each.
-        auto moved = transform(first);
-        moved.position = {1, 2, 3};
-        moved.rotation = from_euler_degrees({30, 0, 0});
-        moved.scale = {2, 2, 2};
-        const std::array root_one{first_root};
-        const std::array value_one{moved};
-        take(document.begin_transform(root_one, 930));
-        take(document.preview_transform(930, value_one));
-        take(document.commit_edit(930));
-        const auto history = document.undo_count();
-        take(chord('G', false, true));
-        require(transform(first).position == math::Vector3{} && transform(first).rotation == moved.rotation &&
-                    document.undo_count() == history + 1,
-                "Alt+G did not clear only location as one history entry.");
-        take(chord('R', false, true));
-        take(chord('S', false, true));
-        const auto cleared = transform(first);
-        if (!(cleared.rotation == math::Quaternion{} && cleared.scale == math::Vector3{1, 1, 1} &&
-              document.undo_count() == history + 3))
-            throw std::runtime_error("Alt+R/S did not clear rotation and scale: q=(" +
-                                     std::to_string(cleared.rotation.x) + "," + std::to_string(cleared.rotation.y) +
-                                     "," + std::to_string(cleared.rotation.z) + "," +
-                                     std::to_string(cleared.rotation.w) + ") s=" + std::to_string(cleared.scale.x) +
-                                     " history=" + std::to_string(document.undo_count() - history) +
-                                     " selected=" + std::to_string(document.selected_entities().size()));
-        changed(document.undo());
-        changed(document.undo());
-        changed(document.undo());
-        require(transform(first) == moved, "Clear channel undo did not restore the full TRS.");
-        changed(document.undo());
-        require(transform(first) == before_first, "Fixture transform was not undone.");
-    }
     {
         // Surface placement orients the cursor frame: local Z follows the hit face normal.
         take(overlay_scene.refresh(document));
@@ -854,7 +807,8 @@ void verify_viewport_editing() {
     view.scene = overlay_scene.picking();
     tool.overlay(document, view, settings, shapes);
     require(shapes.size() > 100, "Universal handle did not expose axes, planes and rotation rings.");
-    Workspace workspace;
+    operator_parameters::Host host(document);
+    auto& workspace = host.panels;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session ui(fonts);
     const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
@@ -951,32 +905,28 @@ void verify_viewport_editing() {
             "The authored mode label did not follow the current operation.");
     workspace.menu = ui::ContextMenuRequest{control::viewport_snap, 0, 0, 0};
     publish();
-    const auto step =
-        std::ranges::find(workspace.menu_items, static_cast<ui::ControlKey>(Command::snap_grid_02), &ui::MenuItem::key);
+    const auto operator_item = [&](const OperatorCall& call) {
+        return std::ranges::find_if(workspace.menu_items, [&](const auto& item) {
+            const auto* binding = workspace.binding(item.key);
+            return binding && binding->call && binding->call->id == call.id && binding->call->args == call.args;
+        });
+    };
+    const auto step = operator_item({"tool.settings", {{"grid_spacing", .2}}});
     const auto headings =
         std::ranges::count_if(workspace.menu_items, [](const auto& item) { return !item.heading.empty(); });
-    const auto rotation = std::ranges::find(workspace.menu_items,
-                                            static_cast<ui::ControlKey>(Command::snap_rotation_15), &ui::MenuItem::key);
+    const auto rotation = operator_item({"tool.settings", {{"rotation_step", 15.}}});
     require(headings >= 4 && rotation != workspace.menu_items.end() && rotation->selected &&
                 rotation->behavior == ui::MenuBehavior::radio,
             "The snapping popover lost its sections or rotation increment.");
+    const auto snap = operator_item({"tool.toggle", {{"setting", "grid_snap"}}});
     require(step != workspace.menu_items.end() && step->selected && step->behavior == ui::MenuBehavior::radio &&
-                std::ranges::any_of(workspace.menu_items,
-                                    [](const auto& item) {
-                                        return item.key == static_cast<ui::ControlKey>(Command::snap_toggle) &&
-                                               item.behavior == ui::MenuBehavior::checkbox;
-                                    }),
+                snap != workspace.menu_items.end() && snap->behavior == ui::MenuBehavior::checkbox,
             "The shared snap menu lost its active step or toggle semantics.");
     // Add commands and shading pie share the viewport's menu model.
     workspace.menu = ui::ContextMenuRequest{control::viewport, control::viewport_add_menu, 0, 0};
     publish();
-    require(std::ranges::any_of(workspace.menu_items,
-                                [](const auto& item) {
-                                    return item.key == static_cast<ui::ControlKey>(Command::create_static_mesh);
-                                }) &&
-                std::ranges::none_of(
-                    workspace.menu_items,
-                    [](const auto& item) { return item.key == static_cast<ui::ControlKey>(Command::erase_selected); }),
+    require(operator_item({"scene.add", {{"kind", "mesh"}}}) != workspace.menu_items.end() &&
+                operator_item({"scene.delete", {{"target", "object"}}}) == workspace.menu_items.end(),
             "Shift+A menu did not list exactly the Create commands.");
     workspace.menu = ui::ContextMenuRequest{control::viewport, control::viewport_shading_pie, 500, 350};
     publish();
@@ -994,10 +944,12 @@ void verify_viewport_editing() {
                     box->bounds.y + box->bounds.height <= box->clip.bottom + 1,
                 "Pie slots were clipped by a scroll gutter or popup bounds.");
     }
-    require(take(workspace.apply_view(document, {ui::ActionKind::activate, control::shading_preset_first, true})) &&
-                workspace.view.wireframe == renderer::Wireframe::only,
-            "Wireframe pie action did not reach the view model.");
-    require(take(workspace.apply_view(document, {ui::ActionKind::activate, control::shading_preset_first + 2, true})) &&
+    require(
+        take(workspace.apply_view(document, host, {ui::ActionKind::activate, control::shading_preset_first, true})) &&
+            workspace.view.wireframe == renderer::Wireframe::only,
+        "Wireframe pie action did not reach the view model.");
+    require(take(workspace.apply_view(document, host,
+                                      {ui::ActionKind::activate, control::shading_preset_first + 2, true})) &&
                 workspace.view.wireframe == renderer::Wireframe::off &&
                 workspace.view.shading == renderer::Shading::matcap,
             "Shading preset retained stale wireframe state.");
@@ -1012,11 +964,7 @@ void verify_viewport_editing() {
                                control::viewport_object_menu})
             require(std::ranges::any_of(header, [&](const auto& item) { return item.key == key; }),
                     "A Blender header menu is missing from the viewport header.");
-        const auto has = [&](Command command) {
-            return std::ranges::any_of(workspace.menu_items, [&](const auto& item) {
-                return item.key == static_cast<ui::ControlKey>(command);
-            });
-        };
+        const auto has = [&](OperatorCall call) { return operator_item(call) != workspace.menu_items.end(); };
         const auto branch = [&](ui::ControlKey key) -> const ui::MenuItem* {
             const auto at = std::ranges::find(workspace.menu_items, key, &ui::MenuItem::key);
             return at == workspace.menu_items.end() ? nullptr : &*at;
@@ -1024,19 +972,20 @@ void verify_viewport_editing() {
         workspace.menu = ui::ContextMenuRequest{control::viewport_select_menu, 0, 0, 0};
         publish(wide);
         const auto* modes = branch(control::select_mode_menu);
-        require(has(Command::select_all) && has(Command::select_none) && has(Command::select_invert) &&
-                    has(Command::select_box) && modes && modes->children.size() == 5 &&
-                    modes->children.front().selected && modes->children.front().behavior == ui::MenuBehavior::radio,
+        require(has({"scene.select_all", {{"action", "select"}}}) &&
+                    has({"scene.select_all", {{"action", "deselect"}}}) &&
+                    has({"scene.select_all", {{"action", "invert"}}}) && has({"view.select_box"}) && modes &&
+                    modes->children.size() == 5 && modes->children.front().selected &&
+                    modes->children.front().behavior == ui::MenuBehavior::radio,
                 "Select menu lost its Blender operations or the active selection mode.");
         workspace.menu = ui::ContextMenuRequest{control::viewport_object_menu, 0, 0, 0};
         publish(wide);
         const auto* clear = branch(control::object_clear_menu);
-        require(clear && clear->children.size() == 3 && branch(control::object_snap_menu) &&
-                    has(Command::duplicate_selected),
+        require(clear && clear->children.size() == 3 && branch(control::object_snap_menu) && has({"scene.duplicate"}),
                 "Object menu lost Clear, Snap or Duplicate.");
         workspace.menu = ui::ContextMenuRequest{control::viewport_view_menu, 0, 0, 0};
         publish(wide);
-        require(has(Command::frame_all) && has(Command::focus) && branch(control::view_viewpoint_menu),
+        require(has({"view.frame_all"}) && has({"view.frame_selected"}) && branch(control::view_viewpoint_menu),
                 "View menu lost framing or viewpoints.");
         workspace.menu.reset();
         publish(wide);
@@ -1058,16 +1007,16 @@ void verify_viewport_editing() {
         require(document.selected_entities().size() == 1 && document.is_selected(second),
                 "Intersect mode did not keep only the clicked overlap.");
         settings.select_mode = SelectMode::set;
-        take(tool.select_all(document, SelectAll::invert));
+        take(tool.select_all(document, document.selected_entities(), SelectAll::invert));
         require(document.selected_entities().size() == 1 && document.is_selected(first),
                 "Invert Selection did not complement the selection.");
-        take(tool.select_all(document, SelectAll::deselect));
+        take(tool.select_all(document, document.selected_entities(), SelectAll::deselect));
         require(document.selected_entities().empty(), "Select None kept a selection.");
-        take(tool.select_all(document, SelectAll::select));
+        take(tool.select_all(document, document.selected_entities(), SelectAll::select));
         require(document.selected_entities().size() == 2, "Select All missed an Entity.");
         // Houdini display bar: every toggle edits exactly its ViewSettings value.
         const auto toggle = [&](ui::ControlKey key, bool on) {
-            take(workspace.apply_view(document, {ui::ActionKind::activate, key, on}));
+            take(workspace.apply_view(document, host, {ui::ActionKind::activate, key, on}));
         };
         toggle(control::display_grid, !workspace.view.reference_grid);
         toggle(control::display_axes, true);
@@ -1143,16 +1092,18 @@ void verify_viewport_editing() {
             take(document.select_entities(std::array{second}, second));
             workspace.menu = ui::ContextMenuRequest{workspace.object_control(second), 0, 0, 0};
             publish(wide);
-            const auto has = [&](Command command) {
+            const auto has = [&](OperatorCall call) {
                 return std::ranges::any_of(workspace.menu_items, [&](const auto& item) {
-                    return item.key == static_cast<ui::ControlKey>(command);
+                    return item.key == workspace.operator_control(call);
                 });
             };
-            require(has(Command::rename_selected) && has(Command::duplicate_selected) && has(Command::erase_entities) &&
-                        has(Command::unparent_selected),
+            require(has({"scene.rename"}) && has({"scene.duplicate"}) &&
+                        has({"scene.delete", {{"target", "entities"}}}) &&
+                        has({"scene.parent_set", {{"parent", nullptr}}}),
                     "Scene Tree row menu lost Rename, Duplicate, Delete or Clear Parent.");
             const auto unparent = std::ranges::find(
-                workspace.menu_items, static_cast<ui::ControlKey>(Command::unparent_selected), &ui::MenuItem::key);
+                workspace.menu_items, workspace.operator_control({"scene.parent_set", {{"parent", nullptr}}}),
+                &ui::MenuItem::key);
             require(unparent->enabled, "Clear Parent was disabled for a parented Entity.");
             workspace.menu.reset();
             take(document.undo());
@@ -1206,7 +1157,7 @@ void verify_viewport_editing() {
             publish();
         }
         // Shading header segment reflects and drives the same presets as the Z pie.
-        take(workspace.apply_view(document, {ui::ActionKind::activate, control::shading_preset_first + 1, true}));
+        take(workspace.apply_view(document, host, {ui::ActionKind::activate, control::shading_preset_first + 1, true}));
         publish();
         require(workspace.view.shading == renderer::Shading::smooth &&
                     workspace.view.wireframe == renderer::Wireframe::off,

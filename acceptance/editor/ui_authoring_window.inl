@@ -177,7 +177,7 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
 void verify_ui_authoring_window(Application& app, const std::filesystem::path& output,
                                 const std::filesystem::path& path) {
     using Access = atelier::application::EditorAcceptanceAccess;
-    model(Access::command(app, atelier::editor::Command::create_static_mesh));
+    model(Access::invoke(app, "scene.add", {{"kind", "mesh"}}));
     tick(app, 3);
     if (!app.presented()->find(control::parameter_search))
         click(app, control::parameter_search_toggle);
@@ -210,7 +210,7 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     const auto end = offset == changed.npos ? changed.npos : changed.find('"', offset + 7);
     require(end != changed.npos, "Authoring fixture could not locate the real foldout text.");
     changed.replace(offset, end - offset + 1, "text: \"Live scene root\"");
-    const auto* initial_tool = command_tool(app, control::add_static_mesh);
+    const auto* initial_tool = command_tool(app, Access::operator_item(app, "scene.add", {{"kind", "mesh"}}));
     require(initial_tool, "Authoring fixture has no declarative command tool.");
     const auto tool_key = initial_tool->key;
     const auto tool_incarnation = initial_tool->incarnation;
@@ -244,7 +244,7 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
         require(path_control && bar && path_control->parent == path_bar &&
                     std::abs(bar->bounds.height / app.presented()->drawing->dpi_scale - expected_height) < .1f,
                 "Saved Parameters shell geometry did not update through the retained path aliases.");
-        const auto* tool = command_tool(app, control::add_static_mesh);
+        const auto* tool = command_tool(app, Access::operator_item(app, "scene.add", {{"kind", "mesh"}}));
         require(tool && tool->key == tool_key && tool->incarnation == tool_incarnation &&
                     std::abs(tool->bounds.width / app.presented()->drawing->dpi_scale - 68) < .1f,
                 "Saved tool layout lost its stable action identity or failed to retain the accepted layout.");
@@ -319,10 +319,10 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     timings << "minimized_restore," << GetTickCount64() - restored_start << ',' << Access::ui_revision(app) << '\n';
     capture(app, output / "ui-live-minimized-recovered.png");
     const auto count = entities(app).size(), history = app.document().undo_count();
-    click(app, control::add_static_mesh);
+    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
     require(entities(app).size() == count + 1 && app.document().undo_count() == history + 1,
             "A hot-updated tool did not dispatch exactly one real command.");
-    click(app, control::undo);
+    click(app, operator_item(app, "edit.undo"));
     require(entities(app).size() == count && x(app, entity) == 4.25f,
             "Hot-updated tool command did not retain normal undo behavior.");
     capture(app, output / "ui-live-recovered.png");

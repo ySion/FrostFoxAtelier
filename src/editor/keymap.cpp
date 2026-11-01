@@ -1,0 +1,146 @@
+#include "editor/keymap.hpp"
+#include <Windows.h>
+
+namespace atelier::editor {
+std::span<const KeymapEntry> keymap() {
+    using enum RegionKind;
+    using enum KeyPhase;
+    static const KeymapEntry entries[]{
+        {none, before_controls, 'S', 1, 0, false, true, {"file.save"}, L"Ctrl+S"},
+        {none, before_controls, 'S', 3, 0, false, true, {"scene.save", {{"as_new", true}}}, L"Ctrl+Shift+S"},
+        {none, before_controls, 'O', 1, 2, false, true, {"project.open"}, L"Ctrl+O"},
+        {none, before_controls, VK_F5, 0, 3, false, true, {"asset.refresh"}, L"F5"},
+        {none, before_controls, VK_F6, 0, 3, false, true, {"project.build"}, L"F6"},
+        {none, before_controls, VK_F8, 0, 1, false, true, {"play.start"}, L"F8"},
+        {none, before_controls, VK_F8, 2, 1, false, true, {"play.stop"}, L"Shift+F8"},
+        {none, before_controls, VK_TAB, 1, 0, true, true, {"layout.cycle_tab", {{"direction", 1}}}, L"Ctrl+Tab"},
+        {none, before_controls, VK_TAB, 3, 0, true, true, {"layout.cycle_tab", {{"direction", -1}}}, L"Ctrl+Shift+Tab"},
+        {none, before_controls, 'B', 1, 2, false, true, {"layout.maximize"}, L"Ctrl+B"},
+        {none, before_controls, 'W', 1, 2, false, true, {"layout.close_tab"}, L"Ctrl+W"},
+        {scene_tree, before_controls, 'P', 4, 2, false, false, {"scene.parent_set", {{"parent", nullptr}}}, L"Alt+P"},
+        {none, after_controls, 'Z', 1, 4, true, true, {"edit.undo"}, L"Ctrl+Z"},
+        {none, after_controls, 'Z', 3, 4, true, true, {"edit.redo"}, L"Ctrl+Shift+Z"},
+        {none, after_controls, 'Y', 1, 6, true, true, {"edit.redo"}, L"Ctrl+Y"},
+        {none, after_controls, VK_DELETE, 0, 7, false, true, {"scene.delete", {{"target", "object"}}}, L"Delete"},
+        {assets, after_controls, VK_F2, 0, 2, false, true, {"asset.rename"}, L"F2"},
+        {none, after_controls, VK_F2, 0, 2, false, true, {"scene.rename"}, L"F2"},
+        {none, after_controls, 'D', 1, 2, false, false, {"scene.duplicate"}, L"Ctrl+D"},
+        {none, after_controls, 'D', 2, 0, false, false, {"scene.duplicate"}, L"Shift+D"},
+        {none, after_controls, 'F', 0, 7, false, false, {"view.frame_selected"}, L"F"},
+        {viewport, before_controls, VK_NUMPAD1, 0, 0, false, false, {"view.axis", {{"view", "front"}}}, L"Numpad 1"},
+        {viewport,
+         before_controls,
+         VK_NUMPAD1,
+         1,
+         0,
+         false,
+         false,
+         {"view.axis", {{"view", "back"}}},
+         L"Ctrl+Numpad 1"},
+        {viewport, before_controls, VK_NUMPAD3, 0, 0, false, false, {"view.axis", {{"view", "right"}}}, L"Numpad 3"},
+        {viewport,
+         before_controls,
+         VK_NUMPAD3,
+         1,
+         0,
+         false,
+         false,
+         {"view.axis", {{"view", "left"}}},
+         L"Ctrl+Numpad 3"},
+        {viewport, before_controls, VK_NUMPAD7, 0, 0, false, false, {"view.axis", {{"view", "top"}}}, L"Numpad 7"},
+        {viewport,
+         before_controls,
+         VK_NUMPAD7,
+         1,
+         0,
+         false,
+         false,
+         {"view.axis", {{"view", "bottom"}}},
+         L"Ctrl+Numpad 7"},
+        {viewport,
+         before_controls,
+         VK_NUMPAD5,
+         0,
+         0,
+         false,
+         false,
+         {"view.axis", {{"view", "perspective"}}},
+         L"Numpad 5"},
+        {viewport,
+         before_controls,
+         VK_NUMPAD0,
+         0,
+         0,
+         false,
+         false,
+         {"view.axis", {{"view", "perspective"}}},
+         L"Numpad 0"},
+        {viewport, before_controls, VK_DECIMAL, 0, 0, false, false, {"view.frame_selected"}, L"Numpad ."},
+        {viewport, before_controls, VK_HOME, 0, 0, false, false, {"view.frame_all"}, L"Home"},
+        {viewport,
+         before_controls,
+         VK_TAB,
+         2,
+         0,
+         false,
+         false,
+         {"tool.toggle", {{"setting", "grid_snap"}}},
+         L"Shift+Tab"},
+        {viewport, before_controls, 'Q', 0, 2, false, false, {"tool.settings", {{"tool", "select"}}}, L"Q"},
+        {viewport, before_controls, 'D', 2, 0, false, false, {"scene.duplicate", {{"place", true}}}, L"Shift+D"},
+        {viewport, before_controls, 'W', 0, 2, false, false, {"ui.menu", {{"menu", "tools"}}}, L"W"},
+        {viewport, before_controls, 'X', 0, 0, false, false, {"ui.menu", {{"menu", "delete"}}}, L"X"},
+        {viewport, before_controls, 'Z', 0, 0, false, false, {"ui.menu", {{"menu", "shading"}}}, L"Z"},
+        {viewport, before_controls, 'A', 2, 0, false, false, {"ui.menu", {{"menu", "add"}}}, L"Shift+A"},
+        {viewport, before_controls, VK_OEM_3, 0, 0, false, false, {"ui.menu", {{"menu", "axis"}}}, L"`"},
+        {viewport, before_controls, 'A', 0, 0, false, false, {"scene.select_all", {{"action", "toggle"}}}, L"A"},
+        {viewport, before_controls, 'A', 4, 2, false, false, {"scene.select_all", {{"action", "deselect"}}}, L"Alt+A"},
+        {viewport, before_controls, 'I', 1, 2, false, false, {"scene.select_all", {{"action", "invert"}}}, L"Ctrl+I"},
+        {viewport,
+         before_controls,
+         'G',
+         4,
+         2,
+         false,
+         false,
+         {"scene.transform_clear", {{"channel", "location"}}},
+         L"Alt+G"},
+        {viewport,
+         before_controls,
+         'R',
+         4,
+         2,
+         false,
+         false,
+         {"scene.transform_clear", {{"channel", "rotation"}}},
+         L"Alt+R"},
+        {viewport,
+         before_controls,
+         'S',
+         4,
+         2,
+         false,
+         false,
+         {"scene.transform_clear", {{"channel", "scale"}}},
+         L"Alt+S"}};
+    return entries;
+}
+const KeymapEntry* key_binding(RegionKind region, KeyPhase phase, const ui::Event& event, std::uint32_t key,
+                               bool text) {
+    if (event.kind != ui::EventKind::key_down)
+        return nullptr;
+    const unsigned modifiers = unsigned(event.control) | unsigned(event.shift) << 1 | unsigned(event.alt) << 2;
+    for (const auto& entry : keymap())
+        if (entry.region == region && entry.phase == phase && entry.key == key && (!text || entry.text) &&
+            (modifiers & ~entry.ignored) == entry.modifiers)
+            return &entry;
+    return nullptr;
+}
+std::wstring_view shortcut(const OperatorCall& call, RegionKind region) {
+    for (const auto scope : {region, RegionKind::none})
+        for (const auto& entry : keymap())
+            if (entry.region == scope && entry.call.id == call.id && entry.call.args == call.args)
+                return entry.shortcut;
+    return {};
+}
+}

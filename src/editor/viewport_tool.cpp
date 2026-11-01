@@ -289,22 +289,23 @@ Result<world::Trs> viewport_frame(const Session& session, ObjectId entity, const
     return world::canonical_transform(*value);
 }
 }
-std::optional<ViewportTool::Targets> ViewportTool::targets(const Session& session, PivotMode mode, V3 cursor) {
+std::optional<ViewportTool::Targets> ViewportTool::targets(const Session& session, std::span<const ObjectId> entities,
+                                                           ObjectId active, PivotMode mode, V3 cursor) {
     Targets result;
-    for (const auto entity : session.selected_entities()) {
+    for (const auto entity : entities) {
         const auto spatial = world::has_transform(session.world().runtime(), entity);
         if (!spatial || !*spatial)
             continue;
         auto parent = world::spatial_parent(session.world().runtime(), entity);
         bool inherited{};
         while (parent && *parent != ObjectId{}) {
-            if (session.is_selected(*parent)) {
+            if (std::ranges::find(entities, *parent) != entities.end()) {
                 inherited = true;
                 break;
             }
             parent = world::spatial_parent(session.world().runtime(), *parent);
         }
-        if (inherited && entity != session.selection().entity)
+        if (inherited && entity != active)
             continue;
         const auto matrix = world::world_matrix(session.world().runtime(), entity);
         if (!matrix)
@@ -577,21 +578,22 @@ void ViewportTool::cursor_to_grid(ToolSettings settings) noexcept {
     for (int axis = 0; axis < 3; ++axis)
         cursor[axis] = std::round(cursor[axis] / settings.grid_spacing) * settings.grid_spacing;
 }
-Result<void> ViewportTool::cursor_to_selection(const Session& session) {
-    const auto selected = targets(session, PivotMode::median, cursor);
+Result<void> ViewportTool::cursor_to_selection(const Session& session, std::span<const ObjectId> entities) {
+    const auto selected = targets(session, entities, {}, PivotMode::median, cursor);
     if (!selected)
         return invalid("Select an Entity with a Transform.");
     cursor = selected->pivot;
     return {};
 }
-Result<void> ViewportTool::snap_selection(Session& session, ToolSettings settings, bool to_cursor) {
-    const auto selected = targets(session, PivotMode::median, cursor);
+Result<void> ViewportTool::snap_selection(Session& session, std::span<const ObjectId> entities, ToolSettings settings,
+                                          std::optional<V3> destination) {
+    const auto selected = targets(session, entities, {}, PivotMode::median, cursor);
     if (!selected)
         return invalid("Select an Entity with a Transform.");
     auto values = selected->transforms;
     for (auto& value : values) {
-        if (to_cursor)
-            value.position += cursor - selected->pivot;
+        if (destination)
+            value.position += *destination - selected->pivot;
         else
             for (int axis = 0; axis < 3; ++axis)
                 value.position[axis] = std::round(value.position[axis] / settings.grid_spacing) * settings.grid_spacing;
@@ -681,19 +683,19 @@ Result<void> ViewportTool::select_box(Session& session, const ViewportView& view
                                       : settings.select_mode;
     return combine(session, hits, hits.empty() ? ObjectId{} : hits.back(), mode);
 }
-Result<void> ViewportTool::select_all(Session& session, SelectAll action) {
+Result<void> ViewportTool::select_all(Session& session, std::span<const ObjectId> selected, SelectAll action) {
     const auto items = session.world().members();
     if (!items)
         return std::unexpected(items.error());
     std::vector<ObjectId> all;
     for (const auto& entity : *items)
         all.push_back(entity.id());
-    const bool everything =
-        !all.empty() && std::ranges::all_of(all, [&](ObjectId entity) { return session.is_selected(entity); });
+    const auto contains = [&](ObjectId entity) { return std::ranges::find(selected, entity) != selected.end(); };
+    const bool everything = !all.empty() && std::ranges::all_of(all, contains);
     if (action == SelectAll::deselect || (action == SelectAll::toggle && everything))
         all.clear();
     else if (action == SelectAll::invert)
-        std::erase_if(all, [&](ObjectId entity) { return session.is_selected(entity); });
+        std::erase_if(all, contains);
     hint_ = all.empty() ? L"Deselect All" : action == SelectAll::invert ? L"Invert Selection" : L"Select All";
     return session.select_entities(all, all.empty() ? ObjectId{} : all.back());
 }
@@ -705,7 +707,7 @@ void ViewportTool::arm_box_select(V2 pointer, bool extend) {
 }
 Result<void> ViewportTool::place_duplicates(Session& session, const ViewportView& view, ToolSettings settings,
                                             V2 pointer) {
-    if (!targets(session, settings.pivot, cursor))
+    if (!targets(session, session.selected_entities(), session.selection().entity, settings.pivot, cursor))
         return {}; // Nonspatial Entities still duplicate normally.
     return begin(session, view, settings, Operation::move, Handle::none, true, pointer, true);
 }
@@ -713,7 +715,7 @@ Result<void> ViewportTool::begin(Session& session, const ViewportView&, ToolSett
                                  Handle handle, bool modal, V2 p, bool amend_creation) {
     if (active())
         return invalid("Finish the active viewport gesture before starting another.");
-    auto selected = targets(session, settings.pivot, cursor);
+    auto selected = targets(session, session.selected_entities(), session.selection().entity, settings.pivot, cursor);
     if (!selected)
         return invalid("Select an Entity with a Transform.");
     const auto token = next_session_++;
@@ -881,8 +883,8 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
     hint_ = g.typed.empty() ? readout : readout + L"  [" + g.typed + L"|]";
     return {};
 }
-Result<void> ViewportTool::clear_channel(Session& session, Operation channel) {
-    const auto selected = targets(session, PivotMode::median, cursor);
+Result<void> ViewportTool::clear_channel(Session& session, std::span<const ObjectId> entities, Operation channel) {
+    const auto selected = targets(session, entities, {}, PivotMode::median, cursor);
     if (!selected)
         return invalid("Select an Entity with a Transform.");
     auto values = selected->transforms;
@@ -1049,7 +1051,8 @@ Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, c
     }
     if (event.kind == ui::EventKind::pointer_move ||
         (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::primary)) {
-        const auto selected = targets(session, settings.pivot, cursor);
+        const auto selected =
+            targets(session, session.selected_entities(), session.selection().entity, settings.pivot, cursor);
         hover_ = selected ? hit(view, *selected, settings.tool, p, settings.orientation) : Handle::none;
         if (event.kind == ui::EventKind::pointer_move)
             return false;
@@ -1116,34 +1119,6 @@ Result<bool> ViewportTool::key(Session& session, const ViewportView& view, const
     }
     if (event.kind != ui::EventKind::key_down)
         return false;
-    // Blender object mode: Alt+A deselects, Ctrl+I inverts, Alt+G/R/S clear one TRS
-    // channel of every selected root as a single history entry.
-    if (event.alt && !event.control && vk == 'A') {
-        if (event.repeat)
-            return true;
-        const auto result = select_all(session, SelectAll::deselect);
-        if (!result)
-            return std::unexpected(result.error());
-        return true;
-    }
-    if (event.control && !event.alt && vk == 'I') {
-        if (event.repeat)
-            return true;
-        const auto result = select_all(session, SelectAll::invert);
-        if (!result)
-            return std::unexpected(result.error());
-        return true;
-    }
-    if (event.alt && !event.control && (vk == 'G' || vk == 'R' || vk == 'S')) {
-        if (event.repeat)
-            return true;
-        const auto result = clear(session, vk == 'G'   ? TransformChannel::location
-                                           : vk == 'R' ? TransformChannel::rotation
-                                                       : TransformChannel::scale);
-        if (!result)
-            return std::unexpected(result.error());
-        return true;
-    }
     if (event.control || event.alt)
         return false;
     if (event.repeat)
@@ -1160,13 +1135,6 @@ Result<bool> ViewportTool::key(Session& session, const ViewportView& view, const
     }
     if (vk == 'B') {
         arm_box_select(pointer, event.shift);
-        return true;
-    }
-    if (vk == 'A') {
-        // Blender 2.8+ keymap: A selects all; A again with everything selected clears.
-        const auto result = select_all(session, SelectAll::toggle);
-        if (!result)
-            return std::unexpected(result.error());
         return true;
     }
     return false;
@@ -1186,7 +1154,8 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
             stroke(*p - V2{r, 0}, *p + V2{r, 0}, 1.5f, color);
             stroke(*p - V2{0, r}, *p + V2{0, r}, 1.5f, color);
         }
-    if (const auto selected = targets(session, settings.pivot, cursor))
+    if (const auto selected =
+            targets(session, session.selected_entities(), session.selection().entity, settings.pivot, cursor))
         handles(view, selected->pivot, selected->active_frame.rotation, settings.orientation, settings.tool,
                 [&](Handle handle, Shape shape) {
                     if (handle == hover_ || (gesture_ && handle == gesture_->handle))

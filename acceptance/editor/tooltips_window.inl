@@ -9,8 +9,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(assets::wide(output_directory));
     std::filesystem::create_directories(output);
     tick(app);
-    require(bool(Access::command(app, editor::Command::create_static_mesh)),
-            "Tooltip fixture could not create its mesh.");
+    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Tooltip fixture could not create its mesh.");
     tick(app);
     const auto history = app.document().undo_count();
     const auto point = [&](const ui::ControlBox& box) {
@@ -63,7 +62,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
     pointer(ui::EventKind::pointer_leave);
     tick(app, 1);
     require(!app.presented()->tooltip, "Real pointer leave retained parameter help.");
-    require(bool(Access::command(app, editor::Command::show_world_settings)),
+    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})),
             "Tooltip fixture could not open World settings.");
     tick(app);
     hover_capture(L"Exposure (EV)", "world-exposure-tooltip.png");
@@ -83,8 +82,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
             "Menu dismissal resurrected help or changed scene history.");
 
     // Exercise the colour form through Application input and its real DSL controls.
-    require(bool(Access::command(app, editor::Command::create_point_light)),
-            "Colour fixture could not create a light.");
+    require(bool(Access::invoke(app, "scene.add", {{"kind", "point"}})), "Colour fixture could not create a light.");
     auto& document = Access::physics_document(app);
     const auto light = component(app, document.selection().entity, document.presentation_types().light_component);
     std::array<world::FieldPath, 3> channels;
@@ -165,7 +163,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
     require(!document.editing() && !app.presented()->find(editor::control::color_editor) &&
                 document.undo_count() == colour_history + 1 && document.dirty(),
             "Done did not commit exactly one colour edit.");
-    model(Access::command(app, editor::Command::undo));
+    model(Access::invoke(app, "edit.undo"));
     tick(app);
     require(channel(0) == 2.f && channel(1) == 1.f && channel(2) == 1.f && !document.dirty(),
             "One undo did not restore all colour channels and the saved state.");
@@ -229,7 +227,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
         require(channel(0) == 4.f && !document.editing() && document.undo_count() == colour_history + 1 &&
                     !app.presented()->find(editor::control::color_editor),
                 "Normal colour dismissal did not keep exactly one group edit.");
-        model(Access::command(app, editor::Command::undo));
+        model(Access::invoke(app, "edit.undo"));
         tick(app);
         require(channel(0) == 2.f && !document.dirty() && document.undo_count() == colour_history,
                 "Normal colour dismissal no longer restores through one undo.");
