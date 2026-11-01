@@ -1,8 +1,10 @@
 #include "editor/session.hpp"
+#include "editor/error.hpp"
 #include "editor/project.hpp"
 #include "assets/builtin_materials.hpp"
 #include "assets/material_format.hpp"
 #include "material/resources.hpp"
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <unordered_set>
@@ -15,12 +17,32 @@ auto failure(std::string text) {
 template <class T>
 T take(Result<T> value) {
     if (!value)
-        throw std::runtime_error(value.error().message);
+        throw detail::Failure(std::move(value.error()));
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
 auto stand_in(const MissingResource& item) {
-    return failure("Resource " + item.key + " is unavailable: " + item.reason);
+    return std::unexpected(item.error);
+}
+// Explicit resource loads without a caller-owned issue list publish through the
+// same diagnostic queue as scene loading, not a second logging/cache owner.
+void report_resources(world::World& world, ObjectId object, std::span<const MissingResource> missing) noexcept {
+    try {
+        for (const auto& item : missing) {
+            world::Diagnostic diagnostic;
+            diagnostic.severity = world::Severity::warning;
+            diagnostic.kind = item.kind;
+            diagnostic.phase = world::DiagnosticPhase::load;
+            diagnostic.object = object;
+            diagnostic.value = item.key;
+            diagnostic.message = item.error.message;
+            diagnostic.source = item.error.source;
+            diagnostic.error_code = item.error.code;
+            world.report(std::move(diagnostic));
+        }
+    } catch (...) {
+        std::fputs("Cannot capture material resource warnings; author state is unchanged.\n", stderr);
+    }
 }
 bool same(const material::Override& a, const material::Override& b) {
     if (a.path != b.path || a.enabled != b.enabled || a.value.index() != b.value.index())
@@ -66,16 +88,10 @@ material::LocalValue parameter_value(const source::MaterialParameter& parameter,
 const MissingResource& Session::remember_unavailable(const assets::Reader& reader, assets::AssetKind kind,
                                                      std::string_view key, const Error& error) {
     const bool listed = reader.entry(key) != nullptr;
-    const auto replacement = kind == assets::AssetKind::material  ? "; using the engine default material"
-                             : kind == assets::AssetKind::texture ? "; using the inherited/default texture input"
-                                                                  : "";
     return unavailable_
-        .insert_or_assign({kind, std::string(key)},
-                          MissingResource{std::string(key),
-                                          (listed ? "The file cannot be read: " : "") + error.message + replacement,
-                                          std::nullopt,
-                                          listed ? world::DiagnosticKind::unreadable_resource
-                                                 : world::DiagnosticKind::missing_resource})
+        .insert_or_assign({kind, std::string(key)}, MissingResource{std::string(key), error, std::nullopt,
+                                                                    listed ? world::DiagnosticKind::unreadable_resource
+                                                                           : world::DiagnosticKind::missing_resource})
         .first->second;
 }
 const MissingResource* Session::unavailable(assets::AssetKind kind, std::string_view key) const {
@@ -147,16 +163,22 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
             if (!missing)
                 return stand_in(*item);
             missing->push_back(*item);
+            return at->second.root;
         }
         auto surface = material::capture_program(runtime_, at->second.root.id());
         if (!surface)
             return std::unexpected(surface.error());
         if ((*surface)->uses_default_material()) {
-            const auto reason = at->second.diagnostics.empty() ? "Material resolves to the engine error surface."
-                                                               : at->second.diagnostics.front().message;
-            if (!missing)
-                return failure(reason);
-            missing->push_back({std::string(key), reason, std::nullopt, world::DiagnosticKind::unreadable_resource});
+            if (at->second.error) {
+                if (!missing)
+                    return std::unexpected(*at->second.error);
+                missing->push_back(
+                    {std::string(key), *at->second.error, std::nullopt, world::DiagnosticKind::unreadable_resource});
+            } else if (const auto* author = std::get_if<assets::MaterialInstanceAsset>(&at->second.author.author)) {
+                auto parent = material_resource(reader, author->parent_key, missing);
+                if (!parent)
+                    return std::unexpected(parent.error());
+            }
         }
         return at->second.root;
     }
@@ -187,7 +209,10 @@ Result<ObjectRoot> Session::open_material(Project& project, std::string_view key
     if (!asset)
         return std::unexpected(asset.error());
     std::vector<MissingResource> missing;
-    return material_resource(project.assets(), *asset, &missing);
+    auto result = material_resource(project.assets(), *asset, &missing);
+    if (result)
+        report_resources(world_, result->id(), missing);
+    return result;
 }
 Result<ObjectRoot> Session::material_resource(assets::Reader& reader, const assets::MaterialAsset& asset,
                                               std::vector<MissingResource>* missing) {
@@ -239,7 +264,7 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
             auto source_file = exact_source ? Result<source::SourceFile>(std::move(*exact_source))
                                             : reader.source(assets::wide(author->source_path));
             if (!source_file)
-                document.diagnostics.push_back({author->source_path, source_file.error().message});
+                document.error = std::move(source_file.error());
             else {
                 document.source_file = std::move(*source_file);
                 Runtime compiler;
@@ -249,11 +274,11 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
                                                         take(compiler.native_type<material::TextureInput>()),
                                                         document.source_file->path, document.source_file->source);
                 if (!program)
-                    document.diagnostics.push_back({author->source_path, program.error().message});
+                    document.error = std::move(program.error());
                 else {
                     auto definition = material::make_definition(std::move(*program), author->policy, author->inputs);
                     if (!definition)
-                        document.diagnostics.push_back({author->source_path, definition.error().message});
+                        document.error = std::move(definition.error());
                     else {
                         state.definition = std::move(*definition);
                         for (const auto& input : state.definition->textures())
@@ -265,11 +290,18 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
                     }
                 }
             }
-            for (const auto& diagnostic : document.diagnostics) {
+            if (document.error) {
+                auto& error = *document.error;
+                // Only associate a saved file when the cause identifies this
+                // exact input; a business callback may refer to another source.
+                if (error.source && document.source_file && error.source->disk_path.empty() &&
+                    error.source->path == document.source_file->path &&
+                    error.source->version == document.source_file->version)
+                    error.source->disk_path = document.source_file->disk_path;
+                document.diagnostics.push_back({author->source_path, error.message});
                 if (!missing)
-                    return failure(diagnostic.message);
-                missing->push_back({asset.key, diagnostic.path + ": " + diagnostic.message, std::nullopt,
-                                    world::DiagnosticKind::unreadable_resource});
+                    return std::unexpected(error);
+                missing->push_back({asset.key, error, std::nullopt, world::DiagnosticKind::unreadable_resource});
             }
             // A cold fallback (or an absent declaration) may have left enabled
             // child bindings unresolved. Prepare those roots against the new
@@ -365,7 +397,7 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
         forward_material(root.id());
         return root;
     } catch (const std::exception& error) {
-        return failure(error.what());
+        return std::unexpected(detail::caught_error(error, ErrorCode::invalid_definition));
     }
 }
 Result<std::vector<presentation::MaterialBinding>>
@@ -377,6 +409,8 @@ Session::mesh_defaults(assets::Reader& reader, const assets::MeshAsset& asset, s
         auto root = material_resource(reader, item.key, missing ? missing : &unreported);
         if (!root)
             return std::unexpected(root.error());
+        report_resources(world_, root->id(), unreported);
+        unreported.clear();
         result.push_back({item.slot, std::move(*root), false});
     }
     return result;
@@ -511,7 +545,7 @@ Result<MaterialView> Session::inspect_material(ObjectId object) const {
         }
         return view;
     } catch (const std::exception& error) {
-        return failure(error.what());
+        return std::unexpected(detail::caught_error(error, ErrorCode::invalid_definition));
     }
 }
 std::vector<ObjectId> Session::material_objects() const {
@@ -587,6 +621,7 @@ Result<void> Session::apply_material_entries(ObjectId object, std::span<const Ma
                     auto resolved = texture_resource(project->assets(), binding->asset_key, &missing);
                     if (!resolved)
                         return std::unexpected(resolved.error());
+                    report_resources(world_, object, missing);
                     texture = std::move(*resolved);
                 }
             }

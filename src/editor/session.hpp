@@ -51,10 +51,11 @@ struct RetainedView {
 };
 // A project resource a tolerant load could not provide: absent from the catalog
 // (missing_resource) or listed but unreadable (unreadable_resource), with the read
-// error as reason. A stand-in keeps its key, so saving writes the reference unchanged.
+// error preserved. A stand-in keeps its key, so saving writes the reference unchanged.
 // input names a material texture input.
 struct MissingResource {
-    std::string key, reason;
+    std::string key;
+    Error error;
     std::optional<std::size_t> input;
     world::DiagnosticKind kind{world::DiagnosticKind::missing_resource};
 };
@@ -481,6 +482,7 @@ private:
         ObjectRoot root;
         assets::MaterialAsset author;
         std::optional<source::SourceFile> source_file;
+        std::optional<Error> error;
         std::vector<material::AuthorDiagnostic> diagnostics;
         std::vector<material::Override> saved;
         std::vector<MaterialValueChange> history;

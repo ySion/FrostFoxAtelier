@@ -177,6 +177,10 @@ Output 拥有缓存与过滤，不把缓存混入 Reader：**最多 4096 条 / 8
 
 Output 共用 `entry_problem` 的领域校验，不维护第二套字段规则。健康展示只在记录、计数或来源状态变化时重建；排空的 Reader 立即释放工作存储，仅保留最终状态、健康与目录。宿主 `filtered` 不进入展示缓存；明确拒绝的用户消息可保留为未持久化记录，不确定的内部提交结果不能重投。
 
+编辑器的 Session 准备、材质加载和 Application 操作失败保留原始 Error：正文不添加对象、路径或回退说明前缀，`error_code` 保存业务错误码；存在 source 时，`error.path/version/offset/line/column/disk_path` 六个字段完整保存。对象、阶段、属性路径等上下文仍在独立字段中。导航位置使用日志的有界行列，无法表示的行列记为 0，原值仍可从 `error.*` 读取；没有 source 不推导位置。材质只在错误已标识 Reader 的同一路径和内容版本、且 disk_path 为空时关联该精确输入的保存文件，不覆盖原业务原因的定位。
+
+宽容加载仍保留作者值并使用既有替代资源，严格读取（包括已缓存的替代资源）返回原错误。通知失败不撤销已完成的提交；提交状态与原始错误分别记录，取消和历史语义不变。Application 经同一正式日志/Reader 链把错误交给 Project Output，不依赖临时 stderr；日志本身的容量、过滤和失败边界仍按本模块合同处理。
+
 Runner 的 stdout/stderr 是独立原始字节流，唯一消费入口保留流身份、原目录、offset、已知丢弃/放弃字节及未知尾损失。跨块 UTF-8 最多保留三个待续字节；无换行尾段照常交付。原始字节转为父宿主 `process.raw` 的 `raw.stdout` / `raw.stderr` 记录，非法字节编码为 `\xNN`、原反斜杠加倍，`bytes`/`offset` 仍指原字节，不冒充子进程 JSONL。`raw.transport` 独立记录 EOF、读取错误和损失变化；停止后继续排尾，下一次成功启动前完成交接。
 
 CodeDocument 上限为 1 Mi UTF-16 code units 且拒 NUL，因此 UI 对控制字符/NUL 做可见转义，**原始 Record.entry.message 保留不变**。128 KiB UTF-8 正文即使按每输入字节最多六个可见字符转义也小于该文档上限；不要把不限长 metadata 拼进同一正文文档再截断。使用全文详情而不是永久缩略原文；空消息、换行、中文、NUL 都要能查看/导出。源列跳转在原始 UTF-8 与 UI UTF-16 之间显式换算。

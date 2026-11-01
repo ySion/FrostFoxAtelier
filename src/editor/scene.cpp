@@ -1,4 +1,5 @@
 #include "editor/session.hpp"
+#include "editor/error.hpp"
 #include "editor/project.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
@@ -24,22 +25,18 @@ using assets::json_format::Json;
 using assets::json_format::fields;
 using assets::json_format::overlay;
 using assets::json_format::preview;
-// A failed Runtime or World result; callers that report error codes keep its code.
-struct Failure : std::runtime_error {
-    ErrorCode code;
-    explicit Failure(const Error& error) : std::runtime_error(error.message), code(error.code) {}
-};
+using detail::Failure;
 template <class T>
 T take(Result<T> value) {
     if (!value)
-        throw Failure(value.error());
+        throw Failure(std::move(value.error()));
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
 void committed(Result<world::Commit> value) {
     auto result = take(std::move(value));
     if (result.notification_error)
-        throw std::runtime_error(result.notification_error->message);
+        throw Failure(std::move(*result.notification_error));
 }
 Json vector(math::Vector3 value) {
     return assets::json_format::numbers(std::array{value.x, value.y, value.z});
@@ -52,7 +49,7 @@ std::string type_name(Runtime& runtime, TypeId type) {
     return std::string(take(runtime.describe(type))->name);
 }
 auto failed(const std::exception& error) {
-    return std::unexpected(Error{ErrorCode::invalid_storage, error.what()});
+    return std::unexpected(detail::caught_error(error, ErrorCode::invalid_storage));
 }
 bool derives(Runtime& runtime, TypeId type, TypeId base) {
     return take(runtime.is_a(type, base));
@@ -487,8 +484,6 @@ Result<Json> encode_properties(Runtime& runtime, ObjectId object, std::span<cons
             *at = std::move(value);
         }
         return result;
-    } catch (const Failure& error) {
-        return std::unexpected(Error{error.code, error.what()});
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -516,8 +511,6 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, c
         return {};
     } catch (const Rejected& error) {
         return std::unexpected(Error{ErrorCode::argument_mismatch, error.what()});
-    } catch (const Failure& error) {
-        return std::unexpected(Error{error.code, error.what()});
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -536,8 +529,6 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target,
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
         read_record(runtime, target, fields, record, {}, resolve, {}, &report);
         return {};
-    } catch (const Failure& error) {
-        return std::unexpected(Error{error.code, error.what()});
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -584,10 +575,16 @@ struct Session::GraphCodec {
             return text;
         }
         void report(world::Severity severity, world::DiagnosticKind kind, ObjectId object,
-                    std::vector<std::string> field, const Json* value, const std::string& detail) {
-            auto message = subject(object) + (field.empty() ? std::string{} : " " + dotted(field)) + ": " + detail;
-            if (policy == LoadPolicy::strict && severity != world::Severity::info)
+                    std::vector<std::string> field, const Json* value, const std::string& detail,
+                    const Error* cause = nullptr) {
+            auto message =
+                cause ? cause->message
+                      : subject(object) + (field.empty() ? std::string{} : " " + dotted(field)) + ": " + detail;
+            if (policy == LoadPolicy::strict && severity != world::Severity::info) {
+                if (cause)
+                    throw detail::Failure(*cause);
                 throw std::runtime_error(message);
+            }
             world::Diagnostic item;
             item.serial = issues.size() + 1;
             item.severity = severity;
@@ -602,6 +599,10 @@ struct Session::GraphCodec {
             if (value)
                 item.value = preview(*value);
             item.message = std::move(message);
+            if (cause) {
+                item.error_code = cause->code;
+                item.source = cause->source;
+            }
             issues.push_back(std::move(item));
         }
         void store(ObjectId object, std::span<const std::string> path, const Json& value) {
@@ -1265,8 +1266,8 @@ struct Session::GraphCodec {
                 item = &session.remember_unavailable(project->assets(), assets::AssetKind::sky, source, loaded.error());
         }
         const Json value = source;
-        load.report(world::Severity::warning, item->kind, object, {"sky_map"}, &value,
-                    item->reason + " The sky renders without its map; the key is saved unchanged.");
+        load.report(world::Severity::warning, item->kind, object, {"sky_map"}, &value, item->error.message,
+                    &item->error);
         return {};
     }
     static Prepared construct(Session& session, const Graph& graph, Project* project, bool keep_ids, Load& load) {
@@ -1424,11 +1425,8 @@ struct Session::GraphCodec {
                     at.emplace_back(std::to_string(*item.input));
                 } else
                     at.emplace_back(entry.contains("parent") ? "parent" : "source");
-                load.report(world::Severity::warning, item.kind, object, std::move(at), &value,
-                            item.reason +
-                                (item.input ? " The input uses its engine default texture"
-                                            : " The engine error material stands in") +
-                                "; the reference is saved unchanged.");
+                load.report(world::Severity::warning, item.kind, object, std::move(at), &value, item.error.message,
+                            &item.error);
             }
         };
         std::unordered_map<std::uint64_t, ObjectRoot> material_ids;
@@ -1814,12 +1812,8 @@ struct Session::GraphCodec {
                                     defaults = take(session.mesh_defaults(project->assets(), *loaded, &missing));
                                     for (const auto& absent : missing) {
                                         const Json value = absent.key;
-                                        load.report(
-                                            world::Severity::warning, absent.kind, object, {"mesh"}, &value,
-                                            absent.reason +
-                                                (absent.input
-                                                     ? " A default material of the mesh has no texture for this input."
-                                                     : " A default material of the mesh stands in."));
+                                        load.report(world::Severity::warning, absent.kind, object, {"mesh"}, &value,
+                                                    absent.error.message, &absent.error);
                                     }
                                 } else
                                     item = &session.remember_unavailable(project->assets(), assets::AssetKind::mesh,
@@ -1827,10 +1821,8 @@ struct Session::GraphCodec {
                             }
                             if (item) {
                                 const Json value = source;
-                                load.report(
-                                    world::Severity::warning, item->kind, object, {"mesh"}, &value,
-                                    item->reason +
-                                        " The component draws nothing; the reference and its material bindings are saved unchanged.");
+                                load.report(world::Severity::warning, item->kind, object, {"mesh"}, &value,
+                                            item->error.message, &item->error);
                             }
                         }
                         const bool unresolved = !source.empty() && !mesh;
@@ -2079,8 +2071,7 @@ struct Session::GraphCodec {
                 const auto& cooked = cached->second;
                 if (!cooked) {
                     load.report(world::Severity::warning, world::DiagnosticKind::unreadable_resource, object,
-                                {"properties", "body", "shape"}, nullptr,
-                                cooked.error().message + " Play cannot create this body until its mesh can be cooked.");
+                                {"properties", "body", "shape"}, nullptr, cooked.error().message, &cooked.error());
                     continue;
                 }
                 settings.cooked_shape = *cooked;
@@ -2164,13 +2155,13 @@ struct Session::GraphCodec {
             session.live_objects_.insert_or_assign(session.local_ids_.at(resource.id()), resource.id());
         return result;
     }
-    struct Unsupported : std::runtime_error {
-        using std::runtime_error::runtime_error;
+    struct Unsupported : detail::Failure {
+        using detail::Failure::Failure;
     };
     // A simulation that cannot follow an authored pose leaves the edit unapplied.
     static void relocated(Result<void> value) {
         if (!value && value.error().code == ErrorCode::unsupported_operation)
-            throw Unsupported(value.error().message);
+            throw Unsupported(std::move(value.error()));
         take(std::move(value));
     }
     // A Play index is the final position among the destination's children, or its roots for a null parent.
@@ -2207,7 +2198,8 @@ struct Session::GraphCodec {
         auto& world = session.world_;
         std::string subject = "Play change " + std::to_string(index);
         ObjectId object;
-        const auto note = [&](world::Severity severity, world::DiagnosticKind kind, const std::string& detail) {
+        const auto note = [&](world::Severity severity, world::DiagnosticKind kind, const std::string& detail,
+                              const Error* cause = nullptr) {
             world::Diagnostic item;
             item.serial = out.size() + 1;
             item.severity = severity;
@@ -2221,7 +2213,11 @@ struct Session::GraphCodec {
                 else if (const auto component = world::inspect_component(runtime, object))
                     item.entity = component->owner;
             }
-            item.message = subject + ": " + detail;
+            item.message = cause ? cause->message : subject + ": " + detail;
+            if (cause) {
+                item.error_code = cause->code;
+                item.source = cause->source;
+            }
             out.push_back(std::move(item));
         };
         const auto target = [&](const Json& id) {
@@ -2235,7 +2231,7 @@ struct Session::GraphCodec {
             const auto result = take(std::move(value));
             if (result.notification_error)
                 note(world::Severity::warning, world::DiagnosticKind::observer_failed,
-                     result.notification_error->message);
+                     result.notification_error->message, &*result.notification_error);
         };
         Load load;
         load.live = true;
@@ -2405,8 +2401,7 @@ struct Session::GraphCodec {
                     take(presentation::set_sky_map_binding(runtime, edited, {source, std::move(map)}));
                     // The document keeps the same key unresolved; Play reports it without diverging.
                     if (missing)
-                        note(world::Severity::warning, missing->kind,
-                             missing->reason + " The sky renders without its map.");
+                        note(world::Severity::warning, missing->kind, missing->error.message, &missing->error);
                 }
                 if (const auto at = op.find("space"); at != op.end()) {
                     if (!entity)
@@ -2481,10 +2476,7 @@ struct Session::GraphCodec {
                     auto restored = restore_material(session, &project, *record->second, restore, &missing,
                                                      live.value_or(ObjectId{}));
                     for (const auto& item : missing)
-                        note(world::Severity::warning, item.kind,
-                             "#" + std::to_string(key) + ": " + item.reason +
-                                 (item.input ? " The input uses its engine default texture."
-                                             : " The engine error material stands in."));
+                        note(world::Severity::warning, item.kind, item.error.message, &item.error);
                     if (!live || *live == ObjectId{}) {
                         if (!session.local_ids_.emplace(restored.id(), key).second)
                             throw std::runtime_error("One material asset has multiple document identities.");
@@ -2548,7 +2540,7 @@ struct Session::GraphCodec {
                 std::vector<MissingResource> missing;
                 take(session.publish_material(project.assets(), asset, std::move(exact_source), &missing));
                 for (const auto& item : missing)
-                    note(world::Severity::warning, item.kind, item.reason);
+                    note(world::Severity::warning, item.kind, item.error.message, &item.error);
             } else
                 throw std::runtime_error("Unknown change: " + kind);
             for (const auto key : load.dropped)
@@ -2558,8 +2550,9 @@ struct Session::GraphCodec {
             note(world::Severity::warning, world::DiagnosticKind::reference_dropped,
                  std::string(error.what()) + " The change is skipped.");
         } catch (const Unsupported& error) {
-            note(world::Severity::warning, world::DiagnosticKind::command_rejected,
-                 std::string(error.what()) + " The change is skipped.");
+            note(world::Severity::warning, world::DiagnosticKind::command_rejected, error.error.message, &error.error);
+        } catch (const detail::Failure& error) {
+            note(world::Severity::error, world::DiagnosticKind::command_rejected, error.error.message, &error.error);
         } catch (const std::exception& error) {
             note(world::Severity::error, world::DiagnosticKind::command_rejected, error.what());
         }
@@ -3053,7 +3046,7 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text, Pro
             const auto commit = take(session->world_.attach_batch(plans, prepared.spaces));
             prepared.published = commit.changed;
             if (commit.notification_error)
-                throw std::runtime_error(commit.notification_error->message);
+                throw Failure(*commit.notification_error);
         }
         prepared.published = true;
         session->retained_ = std::move(load.retained);

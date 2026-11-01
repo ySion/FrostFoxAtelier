@@ -1,6 +1,7 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
 #include "assets/file.hpp"
+#include "assets/material_format.hpp"
 #include "dungeons_roundtrip.hpp"
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"

@@ -1,4 +1,5 @@
 #include "editor/session.hpp"
+#include "editor/error.hpp"
 #include "editor/project.hpp"
 #include "editor/fields.hpp"
 #include "editor/operator_parameters.hpp"
@@ -21,7 +22,7 @@ bool contains_member(const world::World& world, ObjectId entity) {
 template <class T>
 T take(Result<T> result) {
     if (!result)
-        throw std::runtime_error(result.error().message);
+        throw detail::Failure(std::move(result.error()));
     return std::move(*result);
 }
 }
@@ -35,11 +36,11 @@ Session::Session(Prepare prepare, SessionRole role)
     history_.reserve(history_limit + 1);
     if (role == SessionRole::editor)
         if (auto registered = register_editor_types(runtime_); !registered)
-            throw std::runtime_error(registered.error().message);
+            throw detail::Failure(std::move(registered.error()));
     if (prepare) {
         auto ready = prepare(world_);
         if (!ready)
-            throw std::runtime_error(ready.error().message);
+            throw detail::Failure(std::move(ready.error()));
         prepared_ = std::move(*ready);
     }
 }

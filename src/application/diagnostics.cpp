@@ -9,6 +9,17 @@ namespace {
 void bridge_failed() noexcept {
     std::fputs("Host diagnostic capture failed; business result is unchanged.\n", stderr);
 }
+void error_source(logging::Entry& entry, const SourceLocation& source) {
+    entry.source = diagnostic_source(source);
+    // Navigation uses bounded line/column values. The diagnostic retains the
+    // original six fields even when a location cannot be navigated by the UI.
+    entry.fields.insert(entry.fields.end(), {{"error.path", source.path},
+                                             {"error.version", source.version},
+                                             {"error.offset", std::uint64_t{source.offset}},
+                                             {"error.line", std::uint64_t{source.line}},
+                                             {"error.column", std::uint64_t{source.column}},
+                                             {"error.disk_path", source.disk_path}});
+}
 std::string path_field(std::span<const std::string> fields) {
     std::string result;
     for (const auto& field : fields) {
@@ -35,6 +46,17 @@ logging::SourceLocation diagnostic_source(const SourceLocation& value) {
     result.offset = value.offset;
     return result;
 }
+logging::Entry error_diagnostic(const Error& error, std::string_view event, const std::filesystem::path& root) {
+    logging::Entry entry{.severity = logging::Severity::error,
+                         .category = "editor",
+                         .event_code = std::string(event),
+                         .message = error.message};
+    entry.fields = {{"error_code", static_cast<std::uint64_t>(error.code)},
+                    {"project_root", assets::utf8(root.generic_wstring())}};
+    if (error.source)
+        error_source(entry, *error.source);
+    return entry;
+}
 logging::Entry world_diagnostic(const editor::Session& session, const world::Diagnostic& item,
                                 const std::filesystem::path& root, std::string_view origin) {
     logging::Entry entry;
@@ -58,6 +80,11 @@ logging::Entry world_diagnostic(const editor::Session& session, const world::Dia
                     {"field_path", path_field(item.field)},
                     {"value", item.value},
                     {"repeats", std::uint64_t{item.repeats}}};
+    if (item.error_code) {
+        entry.fields.push_back({"error_code", static_cast<std::uint64_t>(*item.error_code)});
+        if (item.source)
+            error_source(entry, *item.source);
+    }
     if (const auto local = session.document_identity(item.object))
         entry.fields.push_back({"scene_local_id", *local});
     // Presentation repeat groups survive a resolved/recurrent value, but are

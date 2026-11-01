@@ -1,6 +1,7 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
 #include "application/diagnostics.hpp"
+#include "editor/error.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include <cstdio>
@@ -123,7 +124,7 @@ bool Application::confirm_discard(bool sources) {
                 return false;
             const auto saved = document_->save_material(*project_, key);
             if (!saved) {
-                workspace_.status = assets::wide(saved.error().message);
+                status(saved, L"");
                 return false;
             }
         }
@@ -138,7 +139,7 @@ bool Application::confirm_discard(bool sources) {
         return true;
     const auto saved = save_scene();
     if (!saved) {
-        workspace_.status = assets::wide(saved.error().message);
+        status(saved, L"");
         MessageBoxW(window(), workspace_.status.c_str(), L"Scene was not saved", MB_OK | MB_ICONERROR);
     }
     return saved.has_value();
@@ -154,7 +155,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
         control_->document_replaced();
     const auto cancelled = viewport_tool_.cancel(*document_);
     if (!cancelled)
-        throw std::runtime_error(cancelled.error().message);
+        throw editor::detail::Failure(cancelled.error());
     viewport_tool_.cursor = {};
     accepted_view_.reset();
     cancel_interaction(ui_.cancel_interaction());
@@ -173,7 +174,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
     const auto closed = document_->close();
     diagnostics();
     if (!closed)
-        throw std::runtime_error(closed.error().message);
+        throw editor::detail::Failure(closed.error());
     document_ = std::move(next);
     project_code_ = code;
     scene_.reset();
@@ -252,7 +253,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
     if (workspace_.scene_available)
         report_load(*document_, document_root_);
     else if (candidate.error)
-        notice("document.rejected", assets::wide(candidate.error->message), logging::Severity::error);
+        report_error(*candidate.error, "document.rejected");
     if (candidate.error) {
         workspace_.dock.select(editor::source_control::tab);
         if (candidate.build && candidate.build->sources && !candidate.build->sources->files.empty()) {
@@ -320,6 +321,8 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     scene_path_ = destination;
     document_->mark_saved();
     const auto refreshed = project_->refresh();
+    if (!refreshed)
+        report_error(refreshed.error(), "editor.asset_refresh_failed");
     workspace_.status =
         refreshed ? L"Scene saved" : L"Scene saved; asset refresh failed: " + assets::wide(refreshed.error().message);
     auto pending = document_->issues();
@@ -483,14 +486,14 @@ Result<void> Application::save_source(editor::SourceEditor::File& file) {
                 // The saved editor buffer is authoritative; another disk write
                 // must not change the publication or the subsequent Live payload.
                 auto text = assets::utf8(file.document->text());
-                source::SourceFile exact{author->source_path, source::content_hash(text), std::move(text)};
+                source::SourceFile exact{author->source_path, source::content_hash(text), std::move(text),
+                                         assets::utf8(file.path.generic_wstring())};
                 std::vector<editor::MissingResource> missing;
                 auto published = document_->publish_material(project_->assets(), asset, std::move(exact), &missing);
                 if (!published)
                     return std::unexpected(published.error());
                 for (const auto& issue : missing)
-                    notice("material.resource_missing", L"Material Source: " + assets::wide(issue.reason),
-                           logging::Severity::warning);
+                    report_error(issue.error, "material.resource_missing", logging::Severity::warning);
                 if (!missing.empty())
                     workspace_.status = L"Source saved; material diagnostics need attention";
             }
@@ -510,7 +513,7 @@ bool Application::confirm_source(editor::SourceEditor::File& file) {
         return true;
     const auto saved = save_source(file);
     if (!saved) {
-        workspace_.status = assets::wide(saved.error().message);
+        status(saved, L"");
         MessageBoxW(window(), workspace_.status.c_str(), L"Source was not saved", MB_OK | MB_ICONERROR);
     }
     return saved.has_value();

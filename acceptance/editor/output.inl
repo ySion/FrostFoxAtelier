@@ -201,9 +201,14 @@ void verify_output_projection() {
             "An accepted submission bypassed JSONL or was not accepted.");
     auto flushed = run->flush();
     require(flushed.backend_acknowledged && flushed.sink_flush_succeeded, "Output real logging flush failed.");
+    const Error cause{
+        ErrorCode::assignment_failed, "完整业务原因\n" + std::string(2048, 'x') + "\n末尾",
+        SourceLocation{"original.source", 18446744073709551610ULL, 123, 7, 13, assets::utf8(path.generic_wstring())}};
     for (unsigned i = 0; i < 300; ++i) {
         const auto receipt = hosted.submit_owned(
-            {.category = "acceptance.output", .event_code = "output.budget", .message = std::to_string(i)});
+            i == 0 ? application::error_diagnostic(cause, "editor.operation_failed", folder)
+                   : logging::Entry{
+                         .category = "acceptance.output", .event_code = "output.budget", .message = std::to_string(i)});
         require(receipt.status == logging::SubmitStatus::accepted,
                 "Small record fixture overflowed its producer queue.");
     }
@@ -226,6 +231,17 @@ void verify_output_projection() {
     require(hosted.records().front().record.entry.message == complete.message &&
                 hosted.records().front().record.persistence == logging::Persistence::jsonl,
             "Incremental JSONL changed the complete body or its persistence classification.");
+    const auto& captured = hosted.records()[1].record.entry;
+    require(captured.message == cause.message && captured.source.file == "original.source" &&
+                captured.source.version == 18446744073709551610ULL && captured.source.offset == 123 &&
+                captured.source.line == 7 && captured.source.column == 13 &&
+                captured.source.disk_path == cause.source->disk_path,
+            "Project Output lost the complete Error body or one of its six source fields through JSONL.");
+    const auto code = std::ranges::find(captured.fields, "error_code", &logging::Field::key);
+    require(code != captured.fields.end() &&
+                std::get<std::uint64_t>(code->value) == static_cast<std::uint64_t>(ErrorCode::assignment_failed) &&
+                hosted.select(hosted.records()[1].key) && hosted.body()->text() == assets::wide(cause.message),
+            "Project Output changed the original Error code or selected full body.");
     hosted.source_ended(directory); // Also valid after the completed Reader retires.
     const auto before = hosted.records().size();
     hosted.poll();

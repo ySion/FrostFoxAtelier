@@ -389,6 +389,25 @@ void verify_codec_graph(editor::Project& project) {
     acceptance_phase = "final spatial graph persistence";
     {
         editor::Session document;
+        const auto saved = take(document.serialize());
+        const Error original{ErrorCode::assignment_failed, "准备失败\n" + std::string(1024, 'x') + "\n完整原因",
+                             SourceLocation{"Source/cause.source", 9123, 137, 8, 19,
+                                            assets::utf8((project.root() / "Source/cause.source").generic_wstring())}};
+        for (const auto policy : {editor::LoadPolicy::strict, editor::LoadPolicy::tolerant}) {
+            auto rejected = editor::Session::deserialize(
+                saved, project,
+                [&](world::World&) -> Result<std::shared_ptr<void>> { return std::unexpected(original); }, policy);
+            require(!rejected && rejected.error().code == original.code &&
+                        rejected.error().message == original.message && rejected.error().source,
+                    "Session preparation lost the original error code, complete body or source.");
+            const auto& source = *rejected.error().source;
+            require(source.path == original.source->path && source.version == 9123 && source.offset == 137 &&
+                        source.line == 8 && source.column == 19 && source.disk_path == original.source->disk_path,
+                    "Session preparation changed the original source identity or position.");
+        }
+    }
+    {
+        editor::Session document;
         auto& runtime = document.world().runtime();
         changed(document.add_entity());
         const auto parent = document.selection().entity;

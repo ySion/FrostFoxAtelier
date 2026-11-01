@@ -113,6 +113,8 @@ private:
     void attach_play_output() noexcept;
     void consume_play_output() noexcept;
     void notice(std::string_view, std::wstring_view, logging::Severity = logging::Severity::info) noexcept;
+    void report_error(const Error&, std::string_view event = "editor.operation_failed",
+                      logging::Severity = logging::Severity::error) noexcept;
     void diagnostics() noexcept;
     std::chrono::steady_clock::time_point next_project_poll_{};
     bool source_build_pending_{};
@@ -210,6 +212,8 @@ private:
     void set_tool_settings(const editor::ToolSettings& settings) override { workspace_.viewport_settings = settings; }
     Result<void> action(const ui::Action&);
     void sync_text_input();
+    Result<void> completion(Result<void>);
+    Result<void> completion(Result<world::Commit>);
     void status(Result<void>, const wchar_t* success);
     void status(Result<world::Commit>, const wchar_t* success);
     Result<void> open_color_edit(ObjectId, std::span<const FieldId> prefix, ui::ControlKey swatch);

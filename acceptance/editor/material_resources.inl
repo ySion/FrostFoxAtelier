@@ -648,6 +648,15 @@ void verify_missing_resources() {
                 take(material::material_key(runtime, failed_state.parent.id())) == brick &&
                 take(kept->inspect_material(failed.id())).parent_key == brick,
             "Missing parent did not retain its key and entries with the default surface.");
+    const auto missing_parent = damaged.assets().material(brick);
+    const auto cached_parent = kept->material_resource(damaged.assets(), brick);
+    require(!missing_parent && !cached_parent && cached_parent.error().code == missing_parent.error().code &&
+                cached_parent.error().message == missing_parent.error().message,
+            "Cached strict material access replaced the Reader's original Error.");
+    require(std::ranges::any_of(
+                kept->load_issues(),
+                [&](const world::Diagnostic& issue) { return issue.message == missing_parent.error().message; }),
+            "Tolerant scene loading replaced the Reader's original Error body.");
     require(!kept->begin_material_edit(failed_state.parent.id(), 202) && !kept->save_material(damaged, brick) &&
                 !kept->assign_material(damaged, part(0), "slot/0", brick) &&
                 !kept->set_material_texture(damaged, shared.id(), "albedo", texture),
@@ -694,9 +703,35 @@ void verify_missing_resources() {
                 broken_view.source_file->source == "not source",
             "MS compile failure lost exact source/diagnostic or failed to use the default surface.");
     editor::Session strict_compiler;
-    require(!strict_compiler.material_resource(repaired.assets(), broken_ms) &&
-                !compiler_failure.material_resource(repaired.assets(), broken_ms),
+    const auto compile_error = strict_compiler.material_resource(repaired.assets(), broken_ms);
+    require(!compile_error && !compiler_failure.material_resource(repaired.assets(), broken_ms),
             "Strict material loading accepted fresh or cached compile fallback.");
+    const auto opened_diagnostics = compiler_failure.take_diagnostics();
+    require(std::ranges::any_of(opened_diagnostics,
+                                [&](const auto& item) {
+                                    return item.severity == world::Severity::warning &&
+                                           item.object == broken_root.id() &&
+                                           item.error_code == compile_error.error().code &&
+                                           item.message == compile_error.error().message && !item.source &&
+                                           !compile_error.error().source;
+                                }) &&
+                !compiler_failure.dirty(),
+            "Opening a standalone fallback material did not publish the original warning for Project Output.");
+    const auto broken_author = take(repaired.assets().material(broken_ms));
+    const auto source_path = std::get<assets::MaterialSourceAsset>(broken_author.author).source_path;
+    fs::remove(take(repaired.resolve(source_path)));
+    const auto read_error = repaired.assets().source(source_path);
+    require(!read_error, "Deleted material source remained readable.");
+    editor::Session strict_missing, tolerant_missing;
+    const auto fresh_error = strict_missing.material_resource(repaired.assets(), broken_ms);
+    std::vector<editor::MissingResource> absent_source;
+    take(tolerant_missing.material_resource(repaired.assets(), broken_ms, &absent_source));
+    const auto cached_error = tolerant_missing.material_resource(repaired.assets(), broken_ms);
+    require(!fresh_error && !cached_error && fresh_error.error().code == read_error.error().code &&
+                cached_error.error().code == read_error.error().code &&
+                fresh_error.error().message == read_error.error().message &&
+                cached_error.error().message == read_error.error().message,
+            "Fresh or cached material loading replaced the Reader's original Error with a generic fallback.");
     assets::MaterialAsset cycle;
     const auto left = take(repaired.create_material("Content/Left.material", cycle));
     std::get<assets::MaterialInstanceAsset>(cycle.author).parent_key = left;

@@ -209,4 +209,51 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     require(app.presented()->find(controls::body)->bounds.width < wide_body_width * .65f,
             "Narrow Output fixture did not actually reduce the accepted pane width.");
     capture(app, evidence / "output-narrow.png");
+
+    // A real material load failure, not an entry submitted by the fixture.
+    auto project = model(editor::Project::create(evidence / ("MaterialError-" + run->info().run_id)));
+    // Prepare valid author files independently of the material-creation UI.
+    auto material = model(project.assets().material("builtin/material/default-grid"));
+    auto& material_source = std::get<assets::MaterialSourceAsset>(material.author);
+    const auto source_file = model(project.assets().source(assets::wide(material_source.source_path)));
+    material_source.source_path = assets::utf8(L"Content/Materials/错误.ms.source");
+    const std::filesystem::path material_path = L"Content/Materials/错误.ms.material";
+    model(editor::write_file(model(project.resolve(assets::wide(material_source.source_path))), source_file.source));
+    model(editor::write_file(model(project.resolve(material_path)), assets::material_format::encode(material).dump(2)));
+    model(project.refresh());
+    const auto entry = std::ranges::find(project.entries(), material_path, &assets::ProjectEntry::path);
+    require(entry != project.entries().end(), "The Unicode material fixture was not published by the Reader.");
+    const auto material_key = entry->key;
+    editor::Session authored;
+    model(authored.create_static_mesh(model(project.assets().mesh("builtin/cube"))));
+    const auto parts = model(world::components(authored.world().runtime(), authored.selection().entity));
+    require(parts.size() == 1, "Error fixture did not create the builtin cube's mesh component.");
+    model(authored.assign_material(project, parts.front().id(), "slot/0", material_key));
+    model(editor::write_file(model(project.resolve(project.startup_scene())), model(authored.serialize())));
+    const auto author = model(project.assets().material(material_key));
+    const auto source_path = std::get<assets::MaterialSourceAsset>(author.author).source_path;
+    std::filesystem::remove(model(project.resolve(assets::wide(source_path))));
+    const auto unreadable = project.assets().source(assets::wide(source_path));
+    require(!unreadable, "Deleted material Source remained readable.");
+    Access::mark_saved(app); // The earlier UI fixture's cube is not part of this document-load case.
+    model(app.open_project(project.root()));
+    flush();
+    Access::output_layout(app);
+    tick(app, 2);
+    click(app, controls::clear_filters);
+    click(app, controls::search);
+    type(app, L"错误.ms.source");
+    key(app, VK_RETURN);
+    wait([&] { return find("world.unreadable_resource") != 0; },
+         "Material load error did not reach Project Output through the formal Reader.");
+    const auto error_key = find("world.unreadable_resource");
+    const auto& captured = output.record(error_key)->entry;
+    const auto error_code = std::ranges::find(captured.fields, "error_code", &logging::Field::key);
+    require(captured.message == unreadable.error().message && error_code != captured.fields.end() &&
+                std::get<std::uint64_t>(error_code->value) == static_cast<std::uint64_t>(unreadable.error().code),
+            "Material load error was reduced to a warning label or had its original code/body replaced.");
+    select_row(error_key);
+    require(output.body()->text() == assets::wide(unreadable.error().message) && !app.document().dirty(),
+            "Output changed the material error body or tolerant loading dirtied the author document.");
+    capture(app, evidence / "output-material-error.png");
 }

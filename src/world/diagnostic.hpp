@@ -134,6 +134,8 @@ struct Diagnostic {
     std::string value; // Truncated preview of the offending value; may be empty.
     std::string message;
     std::uint32_t repeats{1}; // Coalesced identical per-frame failures.
+    // When forwarding a failed Result, message/source retain its original payload.
+    std::optional<ErrorCode> error_code{};
 };
 
 }

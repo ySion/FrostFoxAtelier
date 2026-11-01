@@ -142,6 +142,12 @@ Result<void> ProjectCode::build(const Project& project) {
                                     location.version,
                                     location.offset,
                                     location.disk_path};
+                    entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
+                                                             {"error.version", location.version},
+                                                             {"error.offset", std::uint64_t{location.offset}},
+                                                             {"error.line", std::uint64_t{location.line}},
+                                                             {"error.column", std::uint64_t{location.column}},
+                                                             {"error.disk_path", location.disk_path}});
                 }
             }
             static_cast<void>(logging::submit(std::move(entry)));
@@ -150,9 +156,6 @@ Result<void> ProjectCode::build(const Project& project) {
         }
     };
     const auto reject = [&](Error error) -> Result<void> {
-        if (error.source && !error.message.starts_with(error.source->path + ":"))
-            error.message = error.source->path + ":" + std::to_string(error.source->line) + ":" +
-                            std::to_string(error.source->column) + ": " + error.message;
         next->state = error.code == ErrorCode::rebuild_required ? BuildState::rebuild_required : BuildState::failed;
         next->error = std::move(error);
         record("source.build_rejected", &*next->error);

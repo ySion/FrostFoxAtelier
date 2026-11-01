@@ -2,6 +2,7 @@
 #include "application/editor_control.hpp"
 #include "application/presentation.hpp"
 #include "application/diagnostics.hpp"
+#include "editor/error.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
@@ -21,29 +22,30 @@
 #include <unordered_map>
 
 namespace atelier::application {
-namespace {
-Result<void> completion(Result<void> result) {
+Result<void> Application::completion(Result<void> result) {
     return result;
 }
-Result<void> completion(Result<world::Commit> result) {
+Result<void> Application::completion(Result<world::Commit> result) {
     if (!result)
         return std::unexpected(result.error());
     if (result->notification_error) {
-        auto error = std::move(*result->notification_error);
-        error.message = "Operation committed; lifecycle notification failed: " + error.message;
-        return std::unexpected(std::move(error));
+        notice("editor.committed_with_notification_failure",
+               L"Operation committed; lifecycle notification failed. The committed change remains applied.",
+               logging::Severity::warning);
+        return std::unexpected(std::move(*result->notification_error));
     }
     return {};
 }
+namespace {
 template <class T>
 T take(Result<T> result) {
     if (!result)
-        throw std::runtime_error(result.error().message);
+        throw editor::detail::Failure(std::move(result.error()));
     return std::move(*result);
 }
 void take(Result<void> result) {
     if (!result)
-        throw std::runtime_error(result.error().message);
+        throw editor::detail::Failure(std::move(result.error()));
 }
 template <class T>
 T graphics(renderer::Result<T> result) {
@@ -52,7 +54,7 @@ T graphics(renderer::Result<T> result) {
     return std::move(*result);
 }
 std::wstring widen(const std::string& value) {
-    return {value.begin(), value.end()};
+    return assets::wide(value);
 }
 Result<Scalar> scalar_value(const Scalar& prototype, double value) {
     return std::visit(
@@ -130,8 +132,7 @@ Application::~Application() {
     try {
         close();
     } catch (const std::exception& error) {
-        static_cast<void>(ATELIER_LOG(logging::Severity::error, "application", "application.cleanup_failed",
-                                      "Editor shutdown: {}", std::string_view(error.what())));
+        report_error(editor::detail::caught_error(error, ErrorCode::invalid_storage), "application.cleanup_failed");
     }
 }
 void Application::notice(std::string_view code, std::wstring_view message, logging::Severity severity) noexcept {
@@ -189,7 +190,18 @@ void Application::preserve_failure(std::string_view reason) noexcept {
         std::fputs("Scene recovery failed with an unknown error\n", stderr);
     }
 }
+void Application::report_error(const Error& error, std::string_view event, logging::Severity severity) noexcept {
+    try {
+        auto entry = error_diagnostic(error, event, document_root_);
+        entry.severity = severity;
+        static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+    } catch (...) {
+        std::fputs("Cannot capture editor error; business result is unchanged.\n", stderr);
+    }
+}
 void Application::status(Result<void> result, const wchar_t* success) {
+    if (!result)
+        report_error(result.error());
     workspace_.status = result ? success : widen(result.error().message);
 }
 void Application::status(Result<world::Commit> result, const wchar_t* success) {
@@ -1051,8 +1063,7 @@ Result<void> Application::finish_color_edit(bool keep) {
     if (!finished && keep) {
         const auto cancelled = document_->cancel_edit();
         if (!cancelled)
-            return std::unexpected(Error{finished.error().code,
-                                         finished.error().message + "; rollback failed: " + cancelled.error().message});
+            report_error(cancelled.error(), "editor.rollback_failed");
     }
     if (finished) {
         workspace_.status = keep ? L"Colour applied" : L"Colour edit cancelled";
@@ -1352,6 +1363,7 @@ bool Application::effects(const ui::Reply& reply) {
                     continue;
                 const auto result = action(*command);
                 if (!result) {
+                    report_error(result.error(), cleanup ? "editor.rollback_failed" : "editor.operation_failed");
                     if (cleanup)
                         first_error += L"; rollback failed: " + widen(result.error().message);
                     else {
@@ -1400,12 +1412,16 @@ bool Application::effects(const ui::Reply& reply) {
     apply(apply, reply, false);
     if (business_failed) {
         const auto color_cancelled = finish_color_edit(false);
-        if (!color_cancelled)
+        if (!color_cancelled) {
+            report_error(color_cancelled.error(), "editor.rollback_failed");
             first_error += L"; rollback failed: " + widen(color_cancelled.error().message);
+        }
         apply(apply, ui_.cancel_interaction(), true);
         const auto cancelled = document_->cancel_edit();
-        if (!cancelled)
+        if (!cancelled) {
+            report_error(cancelled.error(), "editor.rollback_failed");
             first_error += L"; rollback failed: " + widen(cancelled.error().message);
+        }
         window_.capture(false);
     }
     const auto native_error = window_.text_input(ui_.text_input());
@@ -1431,14 +1447,20 @@ void Application::cancel_interaction(const ui::Reply& reply) {
     const auto color_cancelled = finish_color_edit(false);
     close_menu(false);
     effects(reply);
-    if (!color_cancelled)
+    if (!color_cancelled) {
+        report_error(color_cancelled.error(), "editor.rollback_failed");
         workspace_.status += L"; rollback failed: " + widen(color_cancelled.error().message);
+    }
     const auto cancelled = document_->cancel_edit();
-    if (!cancelled)
+    if (!cancelled) {
+        report_error(cancelled.error(), "editor.rollback_failed");
         workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
+    }
     const auto tool_cancelled = viewport_tool_.cancel(*document_);
-    if (!tool_cancelled)
+    if (!tool_cancelled) {
+        report_error(tool_cancelled.error(), "editor.rollback_failed");
         workspace_.status = L"Viewport rollback failed: " + widen(tool_cancelled.error().message);
+    }
     window_.capture(false);
     window_.cursor(ui::Cursor::arrow);
 }
@@ -2109,7 +2131,7 @@ bool Application::run_step(renderer::Capture* capture) try {
         timing::Scope collecting{phases::gc};
         auto gc = document_->collect_step();
         if (!gc)
-            throw std::runtime_error(gc.error().message);
+            throw editor::detail::Failure(std::move(gc.error()));
     }
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
@@ -2161,7 +2183,7 @@ bool Application::run_step(renderer::Capture* capture) try {
              }))) {
             const auto diagnostic = std::string(workspace_.ui_error());
             if (auto cancelled = finish_color_edit(false); !cancelled)
-                throw std::runtime_error(cancelled.error().message);
+                throw editor::detail::Failure(std::move(cancelled.error()));
             controls = workspace_.describe(*document_, view_size, ui_.presented().get(),
                                            project_ ? &*project_ : nullptr, &ui_, command_focus());
             workspace_.status =
@@ -2392,6 +2414,7 @@ bool Application::run_step(renderer::Capture* capture) try {
     }
     return true;
 } catch (const std::exception& error) {
+    report_error(editor::detail::caught_error(error, ErrorCode::invalid_storage), "editor.frame_failed");
     preserve_failure(error.what());
     throw;
 } catch (...) {
@@ -2420,7 +2443,7 @@ void Application::close() {
     cancel_interaction(ui_.cancel_interaction());
     const auto cancelled = document_->cancel_edit();
     if (!cancelled)
-        throw std::runtime_error(cancelled.error().message);
+        throw editor::detail::Failure(cancelled.error());
     window_.capture(false);
     project_code_ = nullptr;
     diagnostics();

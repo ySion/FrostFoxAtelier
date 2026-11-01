@@ -1,6 +1,7 @@
 #include "application/editor_control.hpp"
 #include "application/application.hpp"
 #include "application/control_artifacts.hpp"
+#include "editor/error.hpp"
 #include "editor/view_options.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
@@ -26,17 +27,17 @@ constexpr std::size_t inspect_page_bytes = control::maximum_message / 4;
 template <class T>
 T take(Result<T> value) {
     if (!value)
-        throw Failure("operation_failed", value.error().message);
+        throw editor::detail::Failure(std::move(value.error()));
     return std::move(*value);
 }
 void take(Result<void> value) {
     if (!value)
-        throw Failure("operation_failed", value.error().message);
+        throw editor::detail::Failure(std::move(value.error()));
 }
 void committed(Result<world::Commit> value) {
     auto commit = take(std::move(value));
     if (commit.notification_error)
-        throw Failure("operation_failed", commit.notification_error->message);
+        throw editor::detail::Failure(std::move(*commit.notification_error));
 }
 std::string text(const Json& value, std::size_t maximum = 4096) {
     if (!value.is_string())
@@ -1939,6 +1940,9 @@ struct EditorControl::Impl {
                 response = std::move(result);
             else
                 response = {{"status", "ok"}, {"result", std::move(result)}};
+        } catch (const editor::detail::Failure& error) {
+            app.report_error(error.error, "editor.control_failed");
+            response = control::failure("operation_failed", error.what());
         } catch (const Failure& error) {
             response = control::failure(error.code, error.what());
             if (error.code == "busy" && busy())

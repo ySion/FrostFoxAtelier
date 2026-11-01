@@ -13,6 +13,7 @@
 #include "procedural/nodes.hpp"
 #include "geometry/mesh.hpp"
 #include "runtime/native.hpp"
+#include "application/diagnostics.hpp"
 #include "application/scene_snapshot.hpp"
 #include "renderer/scene_visibility.hpp"
 #include "application/recovery.hpp"

@@ -1,6 +1,8 @@
 #include "application/application.hpp"
+#include "application/diagnostics.hpp"
 #include "application/lit_preparation.hpp"
 #include "application/project_runner.hpp"
+#include "editor/error.hpp"
 #include "assets/file.hpp"
 #include "control/control.hpp"
 #include "logging/native.hpp"
@@ -239,6 +241,11 @@ int wmain(int argc, wchar_t** argv) {
                                       "FrostFox Atelier | {} | {}", atelier::build_info::revision,
                                       atelier::build_info::configuration));
         result = host_main(static_cast<int>(arguments.size()), arguments.data());
+    } catch (const atelier::editor::detail::Failure& error) {
+        auto entry = atelier::application::error_diagnostic(error.error, "application.failed", {});
+        entry.severity = log::Severity::critical;
+        if (log::submit(std::move(entry)).status != log::SubmitStatus::accepted)
+            std::fprintf(stderr, "Host failure: %s\n", error.what());
     } catch (const std::exception& error) {
         const auto submitted = ATELIER_LOG(log::Severity::critical, "application", "application.failed",
                                            "Host failure: {}", std::string_view(error.what()));
