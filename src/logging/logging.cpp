@@ -15,8 +15,11 @@
 namespace atelier::logging {
 namespace {
 using namespace detail;
+
 using Frontend = quill::FrontendImpl<detail::FrontendOptions>;
+
 std::atomic<Run*> active_run{};
+
 bool started_once{}; // Owner-thread lifecycle, not a lazy singleton.
 
 void emergency() noexcept {
@@ -27,12 +30,14 @@ void emergency() noexcept {
         WriteFile(output, message, static_cast<DWORD>(sizeof(message) - 1), &written, nullptr);
     OutputDebugStringA(message);
 }
+
 std::string_view prefix(std::string_view text, std::size_t maximum) noexcept {
     auto count = (std::min)(text.size(), maximum);
     while (count && count < text.size() && (static_cast<unsigned char>(text[count]) & 0xc0) == 0x80)
         --count;
     return text.substr(0, count);
 }
+
 void copy_detail(std::string& destination, std::string_view input) noexcept {
     if (valid_utf8(input)) {
         destination.assign(prefix(input, 2048));
@@ -52,25 +57,45 @@ void copy_detail(std::string& destination, std::string_view input) noexcept {
 
 struct State {
     RunOptions options;
+
     RunInfo info;
+
     detail::Logger* logger{};
+
     std::atomic<RunState> lifecycle{RunState::running};
+
     std::array<std::atomic<std::uint64_t>, 8> submissions{};
+
     std::atomic<std::uint64_t> failures{};
+
     std::atomic<std::uint64_t> notifications{};
+
     std::atomic<std::uint64_t> sequence{};
+
     std::atomic<bool> last_flush{};
+
     std::atomic<bool> explicit_flush{};
+
     std::mutex first_mutex;
+
     FacilityIssue first_issue;
+
     std::string first_notice;
+
     CapturedDiagnostic first_error;
+
     bool has_issue{};
+
     bool has_notice{};
+
     bool has_error{};
+
     std::mutex producers_mutex;
+
     std::array<quill::detail::ThreadContext*, maximum_producers> producers{};
+
     std::uint64_t next_producer{1};
+
     std::mutex publication_mutex;
 
     State() {
@@ -93,6 +118,7 @@ struct State {
             std::get<std::string>(field.value).reserve(4096);
         }
     }
+
     void fault(FacilityFault kind, std::string_view message, std::optional<std::uint32_t> code = {}) noexcept {
         failures.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard lock{first_mutex};
@@ -104,6 +130,7 @@ struct State {
             emergency();
         }
     }
+
     void notice(std::string_view message) noexcept {
         notifications.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard lock{first_mutex};
@@ -112,6 +139,7 @@ struct State {
             has_notice = true;
         }
     }
+
     void capture(const Entry& source, SubmitResult identity, bool is_template) noexcept {
         if (source.severity < Severity::error)
             return;
@@ -176,6 +204,7 @@ struct State {
         first_error.message_is_template = is_template;
         has_error = true;
     }
+
     Health health() {
         Health result;
         result.state = lifecycle.load();
@@ -198,6 +227,7 @@ struct State {
             result.first_error = first_error;
         return result;
     }
+
     bool publish(bool final, bool acknowledged, bool flushed) noexcept {
         try {
             std::lock_guard lock{publication_mutex};
@@ -212,13 +242,19 @@ struct State {
         return false;
     }
 };
+
 std::atomic<State*> active_state{};
+
 struct Producer {
     State* state{};
+
     std::uint64_t id{};
+
     std::uint64_t sequence{};
 };
+
 thread_local Producer producer;
+
 thread_local std::exception_ptr producer_context_error;
 
 bool admit(State& state) {
@@ -288,10 +324,12 @@ public:
             paths_[i] = state_->info.directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
         open();
     }
+
     void close() noexcept {
         if (file_ && !CloseHandle(file_.release()))
             state_->fault(FacilityFault::file_flush_failed, "Close log file", GetLastError());
     }
+
     void flush_sink() override {
         bool succeeded = false;
         try {
@@ -313,6 +351,7 @@ public:
         }
         state_->last_flush.store(succeeded);
     }
+
     void flush_sink(quill::SinkFlushReason reason) override {
         flush_sink();
         if (reason == quill::SinkFlushReason::Explicit)
@@ -364,6 +403,7 @@ protected:
             state_->fault(FacilityFault::encoding_failed, "Backend record serialization failed");
         }
     }
+
     void run_periodic_tasks() override {
         const auto now = std::chrono::steady_clock::now();
         if (now - last_publication_ >= std::chrono::seconds{1}) {
@@ -384,6 +424,7 @@ private:
         }
         size_ = 0;
     }
+
     bool rotate() noexcept {
         close();
         const auto& oldest = paths_.back();
@@ -410,11 +451,17 @@ private:
             return false;
         }
     }
+
     std::shared_ptr<State> state_;
+
     std::array<std::filesystem::path, retained_rotated_files + 1> paths_;
+
     Handle file_;
+
     std::size_t size_{};
+
     bool write_failed_{};
+
     std::chrono::steady_clock::time_point last_publication_{std::chrono::steady_clock::now()};
 };
 
@@ -431,6 +478,7 @@ std::string make_run_id() {
     }
     return result;
 }
+
 std::filesystem::path default_root() {
     const auto count = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (!count)
@@ -445,10 +493,12 @@ std::filesystem::path default_root() {
         throw std::invalid_argument{"LOCALAPPDATA must be absolute"};
     return result;
 }
+
 void retain_runs(State& state, const std::filesystem::path& root) noexcept {
     try {
         struct Candidate {
             std::filesystem::path path;
+
             std::uint64_t time;
         };
         std::vector<Candidate> completed;
@@ -490,16 +540,26 @@ void retain_runs(State& state, const std::filesystem::path& root) noexcept {
 
 struct Run::Impl {
     std::shared_ptr<State> state{std::make_shared<State>()};
+
     std::shared_ptr<JsonSink> sink;
+
     Handle lock;
+
     bool backend_started{};
+
     bool emergency_cleanup{};
+
     bool summary_published{};
+
     bool acknowledged{};
+
     bool flushed{};
+
     DWORD owner{GetCurrentThreadId()};
 };
+
 Run::Run() : impl_(std::make_unique<Impl>()) {}
+
 Run::~Run() {
     if (!impl_->backend_started || impl_->state->lifecycle.load() == RunState::finished)
         return;
@@ -514,15 +574,19 @@ Run::~Run() {
     active_run.store(nullptr, std::memory_order_release);
     active_state.store(nullptr, std::memory_order_release);
 }
+
 const RunInfo& Run::info() const noexcept {
     return impl_->state->info;
 }
+
 Health Run::health() const {
     return impl_->state->health();
 }
+
 Run* current_run() noexcept {
     return active_run.load(std::memory_order_acquire);
 }
+
 bool enabled(Severity severity, std::string_view category) noexcept {
     const auto* state = active_state.load(std::memory_order_acquire);
     if (!state || severity >= Severity::off || state->lifecycle.load() != RunState::running)
@@ -535,6 +599,7 @@ bool enabled(Severity severity, std::string_view category) noexcept {
         }
     return severity >= minimum && minimum != Severity::off;
 }
+
 SourceLocation native_source(std::source_location location) {
     SourceLocation result;
     result.file = location.file_name();
@@ -672,6 +737,7 @@ FlushReport Run::flush() {
     const bool published = state.publish(false, acknowledged, flushed);
     return {state.health(), acknowledged, flushed, published};
 }
+
 FlushReport Run::finish() {
     auto& state = *impl_->state;
     if (state.lifecycle.load() == RunState::finished)
@@ -712,6 +778,7 @@ FlushReport Run::finish() {
     active_state.store(nullptr, std::memory_order_release);
     return {state.health(), impl_->acknowledged, impl_->flushed, impl_->summary_published};
 }
+
 SubmitResult submit(Entry entry) noexcept {
     if (!current_run())
         return {SubmitStatus::no_active_run};
@@ -730,12 +797,14 @@ const quill::MacroMetadata* metadata() noexcept {
                                                 quill::MacroMetadata::Event::LogWithRuntimeMetadataDeepCopy};
     return &value;
 }
+
 quill::LogLevel quill_level(Severity severity) noexcept {
     constexpr std::array values{quill::LogLevel::TraceL3, quill::LogLevel::Debug, quill::LogLevel::Info,
                                 quill::LogLevel::Warning, quill::LogLevel::Error, quill::LogLevel::Critical,
                                 quill::LogLevel::None};
     return values[static_cast<std::size_t>(severity)];
 }
+
 SubmitResult complete(SubmitResult result, SubmitStatus status) noexcept {
     result.status = status;
     if (auto* state = active_state.load(std::memory_order_acquire);
@@ -743,12 +812,14 @@ SubmitResult complete(SubmitResult result, SubmitStatus status) noexcept {
         state->submissions[static_cast<std::size_t>(status)].fetch_add(1, std::memory_order_relaxed);
     return result;
 }
+
 SubmitResult internal_failure(SubmitResult result, bool allocation) noexcept {
     if (auto* state = active_state.load(std::memory_order_acquire))
         state->fault(allocation ? FacilityFault::allocation_failed : FacilityFault::encoding_failed,
                      "Frontend record encoding failed");
     return complete(result, SubmitStatus::internal_failure);
 }
+
 void prepare(Ticket& ticket, const Entry& entry, bool is_template) {
     auto* state = active_state.load(std::memory_order_acquire);
     if (!state || state->lifecycle.load() != RunState::running)

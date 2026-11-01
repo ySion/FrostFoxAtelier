@@ -17,12 +17,14 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
@@ -30,11 +32,17 @@ void take(Result<void> result) {
 
 struct MathAbiHost {
     double precision{16777217.0};
+
     math::Vector3d position{1.0, 2.0, 3.0};
+
     math::Vector3d value() const { return position; }
+
     float single() const { return 1.25f; }
+
     std::int32_t signed_value() const { return -17; }
+
     std::uint32_t unsigned_value() const { return 19; }
+
     float fail() const { throw std::runtime_error("Math ABI native first failure."); }
 };
 
@@ -101,11 +109,16 @@ void verify_required_services(Runtime& runtime, const Binding& binding) {
 }
 
 enum class Fault { pointer, high_bits, native_failure };
+
 struct Observation {
     Fault fault;
+
     std::uint32_t calls{};
+
     std::uint32_t finishes{};
+
     math::Vector3d replacement{91.0, 92.0, 93.0};
+
     InvocationObserver observer() {
         return {this, nullptr, nullptr,
                 [](void* context, Invocation&) -> Result<void> {

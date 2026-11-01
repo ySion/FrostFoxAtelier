@@ -3,39 +3,67 @@
 // then submit the same public ProgramSurface/MaterialBatch API as native hosts.
 namespace standard_fixture {
 using atelier::material::Image;
+
 using atelier::material::ImageRef;
+
 using atelier::material::Address;
+
 using atelier::material::Coverage;
+
 enum class Input { base_color, roughness, metallic, normal, emissive, opacity };
+
 struct Texture {
     ImageRef image;
+
     std::array<float, 2> scale{1, 1};
+
     std::array<float, 2> offset{};
+
     float rotation{};
+
     Address address{Address::repeat};
+
     std::uint32_t channel{};
+
     bool operator==(const Texture&) const = default;
 };
+
 struct Parameters {
     std::array<float, 4> base_color{1, 1, 1, 1};
+
     float roughness{.65f};
+
     float metallic{};
+
     float normal_scale{1};
+
     float normal_y_sign{1};
+
     std::array<float, 3> emissive{};
+
     Coverage coverage{Coverage::opaque};
+
     float alpha_cutoff{.5f};
+
     bool double_sided{true};
+
     bool emission_two_sided{true};
+
     bool operator==(const Parameters&) const = default;
 };
+
 struct Description {
     Parameters parameters;
+
     std::array<Texture, 6> textures;
+
     bool operator==(const Description&) const = default;
+
     Texture& texture(Input input) { return textures[static_cast<std::size_t>(input)]; }
+
     const Texture& texture(Input input) const { return textures[static_cast<std::size_t>(input)]; }
 };
+
 template <class T, class E>
 T need(std::expected<T, E> result) {
     if (!result)
@@ -43,6 +71,7 @@ T need(std::expected<T, E> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 atelier::material::ProgramSurfaceRef capture(const Description& value) {
     namespace m = atelier::material;
     namespace math = atelier::math;
@@ -92,12 +121,17 @@ atelier::material::ProgramSurfaceRef capture(const Description& value) {
     check(result->diagnostics().empty(), "fixture StandardPBR MI resolves every typed author entry");
     return result;
 }
+
 class Surface {
 public:
     explicit Surface(Description value = {}) : value_(std::move(value)) {}
+
     explicit Surface(atelier::material::ProgramSurfaceRef value) : authored_(false), program_(std::move(value)) {}
+
     const Description& description() const { return value_; }
+
     bool describes(const Description& value) const { return authored_ && value_ == value; }
+
     atelier::material::ProgramSurfaceRef program() const {
         if (!program_)
             program_ = capture(value_);
@@ -106,9 +140,12 @@ public:
 
 private:
     Description value_;
+
     bool authored_{true};
+
     mutable atelier::material::ProgramSurfaceRef program_;
 };
+
 using SurfaceRef = std::shared_ptr<const Surface>;
 }
 
@@ -117,33 +154,53 @@ namespace render {
 // API. prepare() below is the only conversion into native draw snapshots.
 struct Material {
     float roughness{.65f};
+
     float metallic{};
+
     std::array<float, 3> emissive{};
 };
+
 struct MeshInstance {
     std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
     ui::Color color{.2f, .45f, .75f, 1};
+
     bool selected{};
+
     atelier::geometry::MeshRef geometry;
+
     Material material{};
+
     std::uint64_t stable_key{};
+
     std::shared_ptr<const std::vector<standard_fixture::SurfaceRef>> surfaces{};
+
     // Negative slot-contract cases deliberately override the generated table.
     std::shared_ptr<const std::vector<std::uint32_t>> material_slots{};
+
     bool omit_material_slots{};
 };
+
 struct Frame : atelier::renderer::Frame {
     std::span<const MeshInstance> meshes;
+
     struct Candidate {
         MaterialBatch batch;
+
         std::vector<standard_fixture::SurfaceRef> authors;
+
         std::vector<atelier::renderer::MeshInstance> meshes;
     };
+
     mutable std::unique_ptr<Candidate> candidate;
+
     Frame(const ui::Frame& drawing, Camera view_camera, ui::Rect viewport, std::span<const MeshInstance> instances)
         : atelier::renderer::Frame{drawing, view_camera, viewport, {}}, meshes(instances) {}
+
     Frame(const Frame& other) : atelier::renderer::Frame(other), meshes(other.meshes) {}
+
     void release_materials() const { candidate.reset(); }
+
     atelier::renderer::Frame prepare(Renderer& renderer) const {
         auto native = static_cast<const atelier::renderer::Frame&>(*this);
         if (meshes.empty()) {

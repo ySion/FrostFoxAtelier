@@ -1,13 +1,16 @@
 // Procedural graph files: canonical version 1 text, reopening in another Runtime, and tolerant loading.
 struct GraphMeshes final : procedural::Resources {
     geometry::MeshRef cube = geometry::cube_mesh();
+
     Result<geometry::MeshRef> mesh(StringView key) const override {
         if (key.std_view() != "fixture/cube")
             return std::unexpected(Error{ErrorCode::invalid_member, "No mesh " + std::string{key.std_view()} + "."});
         return cube;
     }
+
     std::uint64_t revision() const noexcept override { return 1; }
 };
+
 bool same_output(const procedural::Geometry* a, const procedural::Geometry* b) {
     require(a && b, "A graph produced no output.");
     const auto& x = a->instance_transforms();
@@ -16,11 +19,14 @@ bool same_output(const procedural::Geometry* a, const procedural::Geometry* b) {
            std::memcmp(x.data(), y.data(), x.size() * sizeof(math::Matrix4)) == 0 &&
            std::ranges::equal(a->references(), b->references());
 }
+
 class ThrowingNode : public procedural::Node {
 public:
     ThrowingNode() { throw std::runtime_error("This node cannot be constructed."); }
+
     void evaluate(procedural::Geometry&) const {}
 };
+
 void verify_procedural_graph() {
     using namespace procedural;
     using Json = nlohmann::json;

@@ -11,6 +11,7 @@ void require(bool ok, const char* message) {
     if (!ok)
         throw std::runtime_error(message);
 }
+
 std::string rest(std::istringstream& row) {
     std::string value;
     std::getline(row >> std::ws, value);
@@ -20,6 +21,7 @@ std::string rest(std::istringstream& row) {
     value.resize(end + 1);
     return value;
 }
+
 std::filesystem::path relative_path(std::string value) {
     std::ranges::replace(value, '\\', '/');
     if (value.size() > 1 && value.front() == '"' && value.back() == '"')
@@ -31,6 +33,7 @@ std::filesystem::path relative_path(std::string value) {
                 "OBJ dependency must stay inside the source directory.");
     return path.lexically_normal();
 }
+
 std::size_t index(std::string_view text, std::size_t count) {
     std::int64_t value{};
     auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
@@ -39,11 +42,13 @@ std::size_t index(std::string_view text, std::size_t count) {
     require(value >= 0 && std::uint64_t(value) < count, "OBJ index is out of range.");
     return static_cast<std::size_t>(value);
 }
+
 float scalar(std::istringstream& row) {
     float v{};
     require(bool(row >> v) && std::isfinite(v), "Invalid OBJ/MTL number.");
     return v;
 }
+
 std::vector<std::array<unsigned, 3>> triangulate(const std::vector<geometry::Vertex>& face) {
     if (face.size() == 3)
         return {{0, 1, 2}};
@@ -100,6 +105,7 @@ std::vector<std::array<unsigned, 3>> triangulate(const std::vector<geometry::Ver
     return triangles;
 }
 }
+
 MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_images) {
     MeshImport result;
     const auto root = std::filesystem::canonical(source.parent_path());
@@ -140,6 +146,7 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
     };
     struct AuthorMaterial {
         std::array<float, 4> color{1, 1, 1, 1};
+
         bool color_alpha{};
     };
     std::vector<geometry::MaterialSlot> materials(1);

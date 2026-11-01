@@ -13,6 +13,7 @@
 
 namespace {
 using namespace atelier;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
@@ -21,27 +22,37 @@ void require(bool condition, const char* message) {
 struct ComparisonResult {
     operator bool() const { throw std::runtime_error("Comparison conversion failed."); }
 };
+
 struct ProxyKey {
     int id{};
+
     friend ComparisonResult operator==(const ProxyKey&, const ProxyKey&) noexcept { return {}; }
 };
+
 struct StoredKey {
     int id{};
 };
+
 struct Query {
     int id{};
+
     operator StoredKey() const { throw std::runtime_error("Query conversion failed."); }
 };
+
 // Deliberately not transparent: the backend actually needs StoredKey, even
 // though these policies can also inspect Query without throwing.
 struct ConvertedHash {
     std::size_t operator()(StoredKey key) const noexcept { return static_cast<std::size_t>(key.id); }
+
     std::size_t operator()(Query key) const noexcept { return static_cast<std::size_t>(key.id); }
 };
+
 struct ConvertedEqual {
     bool operator()(StoredKey a, StoredKey b) const noexcept { return a.id == b.id; }
+
     bool operator()(Query a, StoredKey b) const noexcept { return a.id == b.id; }
 };
+
 template <class C>
 concept AcceptsConvertedQuery = requires(const C& values, const Query& query) { values.find(query); };
 
@@ -49,32 +60,47 @@ concept AcceptsConvertedQuery = requires(const C& values, const Query& query) { 
 // assignable but do not themselves promise to be callable before reinitializing.
 struct SeededHash {
     static inline bool used_moved_policy{};
+
     unsigned seed{17};
+
     SeededHash() noexcept = default;
+
     SeededHash(const SeededHash&) noexcept = default;
+
     SeededHash& operator=(const SeededHash&) noexcept = default;
+
     SeededHash(SeededHash&& other) noexcept : seed(std::exchange(other.seed, 0)) {}
+
     SeededHash& operator=(SeededHash&& other) noexcept {
         seed = std::exchange(other.seed, 0);
         return *this;
     }
+
     std::size_t operator()(int key) const noexcept {
         if (!seed)
             used_moved_policy = true;
         return static_cast<std::size_t>(key) ^ seed;
     }
 };
+
 struct SeededEqual {
     static inline bool used_moved_policy{};
+
     bool active{true};
+
     SeededEqual() noexcept = default;
+
     SeededEqual(const SeededEqual&) noexcept = default;
+
     SeededEqual& operator=(const SeededEqual&) noexcept = default;
+
     SeededEqual(SeededEqual&& other) noexcept : active(std::exchange(other.active, false)) {}
+
     SeededEqual& operator=(SeededEqual&& other) noexcept {
         active = std::exchange(other.active, false);
         return *this;
     }
+
     bool operator()(int a, int b) const noexcept {
         if (!active)
             used_moved_policy = true;
@@ -98,25 +124,36 @@ void require_detached(bool watched, bool empty) noexcept {
         std::exit(EXIT_FAILURE);
     }
 }
+
 struct ArrayOwner {
     Array<std::shared_ptr<ArrayOwner>> children;
+
     bool watch{};
+
     ~ArrayOwner() { require_detached(watch, children.empty()); }
 };
+
 struct MapOwner {
     Map<int, std::shared_ptr<MapOwner>> children;
+
     bool watch{};
+
     ~MapOwner() { require_detached(watch, children.empty()); }
 };
+
 struct SetOwner;
+
 struct OwnerEqual {
     bool operator()(const std::shared_ptr<SetOwner>& a, const std::shared_ptr<SetOwner>& b) const noexcept {
         return a.get() == b.get();
     }
 };
+
 struct SetOwner {
     Set<std::shared_ptr<SetOwner>, Hash<std::shared_ptr<SetOwner>>, OwnerEqual> children;
+
     bool watch{};
+
     ~SetOwner() { require_detached(watch, children.empty()); }
 };
 

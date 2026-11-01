@@ -13,12 +13,14 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
@@ -26,27 +28,38 @@ void take(Result<void> result) {
 
 struct PrecisionOwner {
     double value{};
+
     float guard{3.0f};
+
     Array<double> samples;
+
     math::Vector3d position;
+
     math::Matrix4d matrix;
+
     double echo(double input) const noexcept { return input; }
+
     double accumulate(double& target, const double& amount) {
         target += amount;
         return target;
     }
+
     double sum(double a, double b, double c, double d, double e, double f, double g, double h,
                double i) const noexcept {
         return a + b + c + d + e + f + g + h + i;
     }
+
     double sample(Array<double>& values, const double& input) {
         values.add(input);
         return values[values.size() - 1];
     }
+
     math::Vector3d displace(math::Vector3d position, const math::Vector3d& delta, double scale) const noexcept {
         return position + delta * scale;
     }
+
     math::Matrix4d compose(math::Matrix4d first, const math::Matrix4d& second) const noexcept { return first * second; }
+
     math::Vector3d packed(math::Vector3 a, math::Vector3d b, math::Matrix4d matrix, math::Vector3 c, math::Vector3d d,
                           double weight) const noexcept {
         return {a.x + b.x + matrix.elements[15], c.y + d.y, weight};

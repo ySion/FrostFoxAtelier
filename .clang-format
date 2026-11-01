@@ -18,6 +18,10 @@ AllowShortFunctionsOnASingleLine:
   Inline: true
   Other: false
 BreakTemplateDeclarations: Yes
+# Blank lines between declarations outside function bodies come from atelier_style.
+EmptyLineBeforeAccessModifier: Always
+KeepEmptyLines:
+  AtStartOfBlock: false
 
 SortIncludes:
   Enabled: false

@@ -21,6 +21,7 @@ void verify_stow_alignment(Application& app) {
             require(box->bounds.x == handle->bounds.x + handle->bounds.width,
                     "Expanded bar content does not start at the common rail edge.");
 }
+
 void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
     verify_stow_alignment(app);
     for (const auto rail : {control::menu_bar_handle, control::shelf_handle}) {

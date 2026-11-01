@@ -10,21 +10,26 @@
 
 namespace rhi_acceptance {
 using Microsoft::WRL::ComPtr;
+
 inline void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 inline void check(GfxResult result) {
     require(result == kGfxResult_NoError, "gfx operation failed");
 }
+
 inline void check_hr(HRESULT result) {
     require(SUCCEEDED(result), "native D3D12 operation failed");
 }
+
 inline ComPtr<ID3D12InfoQueue> debug_queue(GfxContext context) {
     ComPtr<ID3D12InfoQueue> queue;
     check_hr(gfxGetDevice(context)->QueryInterface(IID_PPV_ARGS(&queue)));
     return queue;
 }
+
 inline void check_debug(ID3D12InfoQueue* queue) {
     std::size_t errors = 0;
     for (UINT64 i = 0; i < queue->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
@@ -40,12 +45,14 @@ inline void check_debug(ID3D12InfoQueue* queue) {
     }
     require(errors == 0, "D3D12 debug layer reported warnings/errors");
 }
+
 inline void enable_validation(bool gpu) {
     ComPtr<ID3D12Debug1> debug;
     check_hr(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)));
     debug->EnableDebugLayer();
     debug->SetEnableGPUBasedValidation(gpu ? TRUE : FALSE);
 }
+
 inline GfxContext open_native() {
     ComPtr<IDXGIFactory6> factory;
     check_hr(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&factory)));
@@ -66,6 +73,7 @@ inline GfxContext open_native() {
     }
     throw std::runtime_error("hardware gfx context unavailable");
 }
+
 inline void print_adapter(GfxContext context) {
     ComPtr<IDXGIFactory4> factory;
     ComPtr<IDXGIAdapter1> adapter;

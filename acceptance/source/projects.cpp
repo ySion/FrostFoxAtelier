@@ -14,22 +14,28 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 void require(bool value, const char* text) {
     if (!value)
         throw std::runtime_error(text);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 namespace w = atelier::world;
+
 source::SourceSnapshot sources(float factor = 1) {
     return {"project",
             5,
@@ -48,11 +54,13 @@ class game.Move : world.Component {
 }
 )"}}};
 }
+
 void publish(Program& program, source::SourceSnapshot snapshot, source::CompileOptions options = {}) {
     auto candidate = take(Program::prepare(take(program.request(std::move(snapshot), options))));
     take(program.try_publish(candidate));
     require(!candidate, "Published project candidate retained an independently publishable result.");
 }
+
 void verify_declaration_only_project() {
     Runtime runtime;
     take(w::register_types(runtime));
@@ -101,14 +109,20 @@ void verify_declaration_only_project() {
 
 struct CollectionProbe {
     Runtime* runtime{};
+
     bool collecting() const { return runtime->collection_phase() != CollectionPhase::idle; }
 };
+
 struct RangedBody {
     float speed{1.0f};
+
     float loose{};
+
     math::Vector3 tint{0.5f, 0.5f, 0.5f};
+
     void bump(float& value) { value += 1.0f; }
 };
+
 void verify_project_field_ranges() {
     Runtime runtime;
     const auto base = take(
@@ -158,6 +172,7 @@ class game.Ranged : project.RangedBody {
     require(!poisoned && poisoned.error().source && take(runtime.read(id, speed)) == Scalar{10.0f},
             "A Source NaN write reached a hard-bounded field or lost its failure site.");
 }
+
 void verify_project_borrow_effects() {
     Runtime runtime;
     take(runtime.register_types(
@@ -198,9 +213,11 @@ class game.Probe : project.Probe {
     while (take(runtime.collect_step({4096})).phase != CollectionPhase::idle) {
     }
 }
+
 struct CodeBase {
     float scale{1.0f};
 };
+
 // An entry keeps its code while its unit compiles from identical input; codes never repeat in the process.
 void verify_project_entry_codes() {
     const auto snapshot = [](std::string_view helper, std::string_view b, std::string_view extra) {
@@ -316,18 +333,27 @@ void verify_project_entry_codes() {
             for (const auto& [_, earlier] : *values)
                 require(value != earlier, "Two Programs published the same entry code.");
 }
+
 enum class Quality : std::uint32_t { low = 1, high = 7 };
+
 struct SelfReader {
     float gain{};
+
     Quality quality{Quality::low};
+
     math::Vector3 offset{};
+
     std::uint32_t twice(std::uint32_t value) const noexcept { return value * 2; }
+
     float peek(const float& value) const noexcept { return value; }
 };
+
 struct SelfReadRetired {
     static inline int destroyed{};
+
     ~SelfReadRetired() { ++destroyed; }
 };
+
 // A value region reads inherited native and declared Source fields of self only: the reads do not
 // stamp self, advance GC or move the borrowed storage, and every other self access stays rejected.
 void verify_project_self_reads() {
@@ -435,6 +461,7 @@ void verify_project_self_reads() {
     require(runtime.changed_since(id, cursor), "The write-stamp control missed a host write.");
     run(-2.0f, Quality::low, {1.0f, 0.5f, 0.0f}, 0.25f, 0.0f);
 }
+
 // Source class fields hold scalars, float/double vectors and enums, with whole-value defaults and AFIELD
 // attributes. Defaults and bounds are finite constants; changing them or the presentation text needs a rebuild.
 void verify_project_class_fields() {
@@ -588,12 +615,15 @@ void verify_project_class_fields() {
                                      " -> " + (failed ? std::string("accepted") : failed.error().message));
     }
 }
+
 struct EditorPanel {
     float x;
 };
+
 struct ProjectHost {
     float x;
 };
+
 // The editor registers its own types under editor. in the same Runtime before project Source
 // compiles. Project Source neither sees nor declares them; other registered types bind as usual.
 void verify_editor_reserved_types() {
@@ -653,14 +683,17 @@ class game.Panel : project.Host { float speed = 1.0f; }
                 std::get<bool>(*take(take(program.entry("pick")).invoke({}, {}))) && program.classes().size() == 1,
             "Registered project types did not bind beside hidden editor. types.");
 }
+
 struct EngineBase {
     float x;
 };
+
 std::filesystem::path executable_directory() {
     std::wstring path(32768, L'\0');
     path.resize(GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size())));
     return std::filesystem::path(path).parent_path();
 }
+
 // Engine Source files load from disk with engine/ paths and declare only their module's names;
 // project files use them but cannot declare in that namespace.
 void verify_project_engine_sources() {
@@ -668,6 +701,7 @@ void verify_project_engine_sources() {
         std::filesystem::temp_directory_path() / ("atelier-engine-sources-" + std::to_string(GetCurrentProcessId()));
     struct Cleanup {
         std::filesystem::path path;
+
         ~Cleanup() {
             std::error_code ignored;
             std::filesystem::remove_all(path, ignored);
@@ -840,6 +874,7 @@ uint run() {
     require(std::get<std::uint32_t>(*take(take(ordinary_accessors.entry("run")).invoke({}, {}))) == 20,
             "Ineligible Get/Set functions conflicted with types, or a nonconflicting property stopped working.");
 }
+
 // A unit compiles its own text with the declarations it spells, so its code follows only them;
 // engine functions are internal, and each declaration is still checked in its home unit.
 void verify_project_compile_units() {
@@ -956,6 +991,7 @@ void verify_project_compile_units() {
                 bad_property.error().message.find("Property getter and setter types differ") != std::string::npos,
             "The dependency closure omitted an unused property setter's contract.");
 }
+
 // A unit compiled from unchanged input keeps its machine code; the new Version maps faults and
 // breakpoints through the current files and works once the module that compiled it is gone.
 void verify_project_code_reuse() {

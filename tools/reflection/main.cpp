@@ -41,32 +41,45 @@ std::string key(std::string path) {
     llvm::sys::path::remove_dots(normalized, true);
     return llvm::StringRef(normalized).lower();
 }
+
 std::string quote(llvm::StringRef text) {
     std::string result;
     llvm::raw_string_ostream stream(result);
     stream << llvm::json::Value(text);
     return result;
 }
+
 std::string required(const llvm::json::Object& object, llvm::StringRef name) {
     const auto value = object.getString(name);
     if (!value || value->empty())
         throw std::runtime_error("Missing configuration string: " + name.str());
     return value->str();
 }
+
 struct Header {
     std::string path;
+
     std::string include;
+
     std::string output;
+
     bool included{};
 };
+
 struct Config {
     std::string source;
+
     std::string database;
+
     std::string cpp;
+
     std::string depfile;
+
     std::string resource_dir;
+
     std::vector<Header> headers;
 };
+
 Config read_config(const char* path) {
     auto file = llvm::MemoryBuffer::getFile(path);
     if (!file)
@@ -97,62 +110,109 @@ Config read_config(const char* path) {
 }
 
 enum class MarkerKind { object, record, enumeration, field, method, body };
+
 struct Marker {
     MarkerKind kind;
+
     SourceLocation location;
+
     std::size_t header;
+
     unsigned next_offset;
+
     std::vector<Token> arguments;
+
     bool used{};
 };
+
 using Options = std::map<std::string, std::string>;
+
 struct Field {
     std::string cpp_name;
+
     std::string name;
+
     std::string form;
+
     std::string target;
+
     bool hidden{};
+
     unsigned line{};
+
     bool direct_layout{};
+
     std::string label{};
+
     std::string category{};
+
     std::string description{};
+
     // Designated FieldRange initializers, empty when the field declares no range.
     std::string range{};
 };
+
 struct Method {
     std::string cpp_name;
+
     std::string name;
+
     std::string pointer;
+
     unsigned line{};
+
     bool preserves_borrows{};
+
     std::string description{};
+
     std::vector<std::string> parameters{};
 };
+
 struct Type {
     const CXXRecordDecl* declaration{};
+
     std::size_t header{};
+
     unsigned line{};
+
     bool object{};
+
     bool class_tag{};
+
     std::string qualified;
+
     std::string scope;
+
     std::string name;
+
     std::string runtime_name;
+
     std::string base;
+
     std::vector<Field> fields;
+
     std::vector<Method> methods;
+
     const EnumDecl* enumeration{};
+
     std::string underlying{};
+
     std::vector<std::string> enumerators{};
+
     std::string description{};
 };
+
 struct State {
     Config& config;
+
     CompilerInstance* compiler{};
+
     std::vector<Marker> markers;
+
     std::vector<Type> types;
+
     std::set<std::string> dependencies;
+
     bool failed{};
 
     explicit State(Config& configuration) : config(configuration) {}
@@ -162,6 +222,7 @@ struct State {
         auto& diagnostics = compiler->getDiagnostics();
         diagnostics.Report(location, diagnostics.getCustomDiagID(DiagnosticsEngine::Error, "%0")) << message;
     }
+
     std::optional<std::size_t> header_of(SourceLocation location) const {
         auto& sources = compiler->getSourceManager();
         if (location.isInvalid())
@@ -172,6 +233,7 @@ struct State {
                 return i;
         return {};
     }
+
     Marker* prefix(const Decl& declaration, MarkerKind kind) {
         const auto location = declaration.getBeginLoc();
         const auto header = header_of(location);
@@ -191,6 +253,7 @@ struct State {
             }
         return nullptr;
     }
+
     std::optional<Options> options(const Marker& marker, std::initializer_list<llvm::StringRef> allowed) {
         Options result;
         const auto& tokens = marker.arguments;
@@ -286,11 +349,13 @@ unsigned after_trivia(llvm::StringRef buffer, unsigned offset) {
     }
     return static_cast<unsigned>(i);
 }
+
 class Markers final : public PPCallbacks {
     State& state_;
 
 public:
     explicit Markers(State& state) : state_(state) {}
+
     void MacroExpands(const Token& name, const MacroDefinition&, SourceRange range, const MacroArgs* args) override {
         const auto header = state_.header_of(range.getBegin());
         if (!header)
@@ -325,6 +390,7 @@ public:
         }
         state_.markers.push_back(std::move(marker));
     }
+
     void FileChanged(SourceLocation location, FileChangeReason reason, SrcMgr::CharacteristicKind, FileID) override {
         if (reason != EnterFile || location.isInvalid())
             return;
@@ -338,6 +404,7 @@ public:
                 return;
         state_.dependencies.insert(path);
     }
+
     void InclusionDirective(SourceLocation location, const Token&, llvm::StringRef, bool, CharSourceRange,
                             OptionalFileEntryRef file, llvm::StringRef, llvm::StringRef, const Module*, bool,
                             SrcMgr::CharacteristicKind) override {
@@ -352,12 +419,15 @@ class Collector final : public RecursiveASTVisitor<Collector> {
 
 public:
     explicit Collector(State& state) : state_(state) {}
+
     bool TraverseDecl(Decl* declaration) {
         if (declaration && !isa<TranslationUnitDecl>(declaration) && !state_.header_of(declaration->getLocation()))
             return true;
         return RecursiveASTVisitor::TraverseDecl(declaration);
     }
+
     bool TraverseStmt(Stmt*) { return true; }
+
     bool VisitEnumDecl(EnumDecl* declaration) {
         auto* marker = state_.prefix(*declaration, MarkerKind::enumeration);
         if (!marker)
@@ -423,6 +493,7 @@ public:
         state_.types.push_back(std::move(type));
         return true;
     }
+
     bool VisitCXXRecordDecl(CXXRecordDecl* declaration) {
         if (declaration->isImplicit())
             return true;
@@ -498,6 +569,7 @@ const Type* reflected(State& state, const CXXRecordDecl* record) {
             return &type;
     return nullptr;
 }
+
 // A type reflected by another generation group carries AGENERATED_BODY, which
 // befriends its Definition. Registration checks that it is a native object type
 // registered before this group.
@@ -523,6 +595,7 @@ bool generated_elsewhere(const CXXRecordDecl* record) {
     }
     return false;
 }
+
 std::optional<std::string> scalar(QualType type, State& state, ASTContext& context, bool allow_void = false) {
     if (type.hasLocalQualifiers())
         return {};
@@ -644,6 +717,7 @@ bool contains_reference_storage(QualType type, ASTContext& context, std::set<con
             return true;
     return false;
 }
+
 bool contains_reference_storage(QualType type, ASTContext& context) {
     std::set<const CXXRecordDecl*> visited;
     return contains_reference_storage(type, context, visited);
@@ -913,6 +987,7 @@ class Consumer final : public ASTConsumer {
 
 public:
     explicit Consumer(State& state) : state_(state) {}
+
     void HandleTranslationUnit(ASTContext& context) override {
         if (state_.compiler->getDiagnostics().hasErrorOccurred())
             return;
@@ -954,22 +1029,26 @@ public:
             state_.error({}, "No reflected type definitions found in the configured headers.");
     }
 };
+
 class Action final : public ASTFrontendAction {
     State& state_;
 
 public:
     explicit Action(State& state) : state_(state) {}
+
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance& compiler, llvm::StringRef) override {
         state_.compiler = &compiler;
         compiler.getPreprocessor().addPPCallbacks(std::make_unique<Markers>(state_));
         return std::make_unique<Consumer>(state_);
     }
 };
+
 class Factory final : public tooling::FrontendActionFactory {
     State& state_;
 
 public:
     explicit Factory(State& state) : state_(state) {}
+
     std::unique_ptr<FrontendAction> create() override { return std::make_unique<Action>(state_); }
 };
 
@@ -993,6 +1072,7 @@ void write_changed(const std::string& path, const std::string& text) {
     if (const auto renamed = llvm::sys::fs::rename(temporary, path))
         throw std::runtime_error(renamed.message());
 }
+
 std::string dependency_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     std::string result;
@@ -1005,6 +1085,7 @@ std::string dependency_path(std::string path) {
     }
     return result;
 }
+
 void emit(const State& state) {
     std::vector<std::string> headers(
         state.config.headers.size(),

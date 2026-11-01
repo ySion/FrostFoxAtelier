@@ -20,6 +20,7 @@ namespace {
 [[noreturn]] void invalid(const char* message) {
     throw FormatError{ReaderFault::invalid_record, message};
 }
+
 void members(const Json& value, std::initializer_list<std::string_view> names) {
     if (!value.is_object() || value.size() != names.size())
         invalid("Unexpected object members");
@@ -27,6 +28,7 @@ void members(const Json& value, std::initializer_list<std::string_view> names) {
         if (!value.contains(std::string{key}))
             invalid("Missing object member");
 }
+
 std::string text(const Json& value) {
     if (!value.is_string())
         invalid("Expected UTF-8 string");
@@ -35,6 +37,7 @@ std::string text(const Json& value) {
         invalid("Invalid UTF-8");
     return result;
 }
+
 template <class T>
 T integer(const Json& value) {
     const auto encoded = text(value);
@@ -44,6 +47,7 @@ T integer(const Json& value) {
         invalid("Noncanonical or out-of-range integer");
     return result;
 }
+
 std::uint32_t number(const Json& value) {
     if (!value.is_number_unsigned() && !value.is_number_integer())
         invalid("Expected unsigned JSON integer");
@@ -54,11 +58,13 @@ std::uint32_t number(const Json& value) {
         invalid("Integer exceeds uint32");
     return static_cast<std::uint32_t>(result);
 }
+
 bool boolean(const Json& value) {
     if (!value.is_boolean())
         invalid("Expected boolean");
     return value.get<bool>();
 }
+
 Severity severity(const Json& value) {
     const auto spelling = text(value);
     for (unsigned i = 0; i < static_cast<unsigned>(Severity::off); ++i)
@@ -66,6 +72,7 @@ Severity severity(const Json& value) {
             return static_cast<Severity>(i);
     invalid("Invalid record severity");
 }
+
 bool identifier(std::string_view value, std::size_t limit) noexcept {
     if (value.empty() || value.size() > limit)
         return false;
@@ -74,19 +81,25 @@ bool identifier(std::string_view value, std::size_t limit) noexcept {
                c == '-';
     });
 }
+
 bool bounded_text(std::string_view value, std::size_t limit, bool nul = false) noexcept {
     return value.size() <= limit && valid_utf8(value) && (nul || value.find('\0') == std::string_view::npos);
 }
+
 Json optional_integer(const std::optional<std::uint64_t>& value) {
     return value ? Json(std::to_string(*value)) : Json{};
 }
+
 std::optional<std::uint64_t> read_optional_integer(const Json& value) {
     return value.is_null() ? std::nullopt : std::optional{integer<std::uint64_t>(value)};
 }
+
 constexpr std::array fault_names{"encoding_failed",   "output_too_large",  "invalid_utf8",       "file_open_failed",
                                  "file_write_failed", "file_flush_failed", "rotation_failed",    "retention_failed",
                                  "summary_failed",    "allocation_failed", "lifecycle_violation"};
+
 constexpr std::array state_names{"running", "finishing", "finished"};
+
 template <class T, std::size_t N>
 T enumeration(const Json& value, const std::array<const char*, N>& names) {
     const auto spelling = text(value);
@@ -95,6 +108,7 @@ T enumeration(const Json& value, const std::array<const char*, N>& names) {
             return static_cast<T>(i);
     invalid("Unknown enum spelling");
 }
+
 Json capture_json(const CapturedDiagnostic& value) {
     return {{"entry", entry_json(value.entry)},
             {"producer_id", std::to_string(value.producer_id)},
@@ -102,6 +116,7 @@ Json capture_json(const CapturedDiagnostic& value) {
             {"message_is_template", value.message_is_template},
             {"truncated", value.truncated}};
 }
+
 CapturedDiagnostic read_capture(const Json& json) {
     members(json, {"entry", "producer_id", "producer_sequence", "message_is_template", "truncated"});
     CapturedDiagnostic value;
@@ -149,21 +164,25 @@ bool valid_utf8(std::string_view value) noexcept {
     }
     return true;
 }
+
 std::string path_text(const std::filesystem::path& path) {
     auto value = path.generic_u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
 }
+
 std::filesystem::path text_path(std::string_view value) {
     if (!valid_utf8(value) || value.find('\0') != std::string_view::npos)
         invalid("Invalid UTF-8 path");
     return std::filesystem::path{std::u8string{reinterpret_cast<const char8_t*>(value.data()), value.size()}};
 }
+
 std::uint64_t unix_ns() noexcept {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());
 }
 }
+
 namespace atelier::logging {
 std::string_view entry_problem(const Entry& value) {
     using namespace detail;
@@ -198,6 +217,7 @@ std::string_view entry_problem(const Entry& value) {
     return {};
 }
 }
+
 namespace atelier::logging::detail {
 Json parse_json(std::string_view value) {
     if (value.starts_with("\xef\xbb\xbf"))
@@ -216,6 +236,7 @@ Json parse_json(std::string_view value) {
     };
     return Json::parse(value.begin(), value.end(), callback);
 }
+
 Json entry_json(const Entry& value, bool omit_message) {
     const auto& source = value.source;
     Json fields = Json::object();
@@ -257,6 +278,7 @@ Json entry_json(const Entry& value, bool omit_message) {
             {"fields", std::move(fields)},
             {"repeat", std::move(repeat)}};
 }
+
 namespace {
 Entry read_entry_fields(const Json& json) {
     Entry value;
@@ -309,10 +331,12 @@ Entry read_entry_fields(const Json& json) {
     return value;
 }
 }
+
 Entry read_entry(const Json& json) {
     members(json, {"severity", "category", "event_code", "message", "source", "fields", "repeat"});
     return read_entry_fields(json);
 }
+
 Json record_envelope(const Record& value, const Entry& entry) {
     Json json = entry_json(entry, true);
     json.update({{"schema", schema_version},
@@ -325,6 +349,7 @@ Json record_envelope(const Record& value, const Entry& entry) {
                  {"timestamp_unix_ns", std::to_string(value.timestamp_unix_ns)}});
     return json;
 }
+
 Record read_record(const Json& json) {
     members(json, {"schema", "run_id", "process_id", "thread_id", "producer_id", "producer_sequence", "record_sequence",
                    "timestamp_unix_ns", "severity", "category", "event_code", "message", "source", "fields", "repeat"});
@@ -345,6 +370,7 @@ Record read_record(const Json& json) {
     value.persistence = Persistence::jsonl;
     return value;
 }
+
 Json run_json(const RunInfo& value) {
     return {{"schema", schema_version},
             {"run",
@@ -355,6 +381,7 @@ Json run_json(const RunInfo& value) {
               {"directory", path_text(value.directory)},
               {"parent_run_id", value.parent_run_id ? Json(*value.parent_run_id) : Json{}}}}};
 }
+
 RunInfo read_run(const Json& json) {
     members(json, {"schema", "run"});
     if (number(json.at("schema")) != schema_version)
@@ -375,6 +402,7 @@ RunInfo read_run(const Json& json) {
         invalid("Invalid run manifest");
     return value;
 }
+
 Json health_json(const RunInfo& info, const PublishedHealth& value) {
     const auto& health = value.report.health;
     Json state{{"state", state_names[static_cast<std::size_t>(health.state)]}};
@@ -410,6 +438,7 @@ Json health_json(const RunInfo& info, const PublishedHealth& value) {
               {"sink_flush_succeeded", value.report.sink_flush_succeeded},
               {"summary_published", value.report.summary_published}}}};
 }
+
 PublishedHealth read_health(const Json& json, const RunInfo& info) {
     members(json, {"schema", "run_id", "process_id", "updated_unix_ns", "final", "report"});
     if (number(json.at("schema")) != schema_version || text(json.at("run_id")) != info.run_id ||

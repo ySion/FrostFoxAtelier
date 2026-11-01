@@ -5,6 +5,7 @@ namespace atelier::language::detail {
 struct Rejected {
     Diagnostic diagnostic;
 };
+
 [[noreturn]] inline void reject(SourcePosition position, std::string message) {
     throw Rejected{{position, std::move(message)}};
 }
@@ -12,9 +13,11 @@ struct Rejected {
 inline bool letter(char value) noexcept {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || value == '_';
 }
+
 inline bool digit(char value) noexcept {
     return value >= '0' && value <= '9';
 }
+
 inline bool reserved(std::string_view value) noexcept {
     return value == "bool" || value == "true" || value == "false" || value == "for" || value == "break" ||
            value == "continue" || value == "void" || value == "float" || value == "double" || value == "uint" ||
@@ -23,6 +26,7 @@ inline bool reserved(std::string_view value) noexcept {
            value == "observe" || value == "try_acquire" || value == "async" || value == "yield" || value == "struct" ||
            value == "enum" || value == "class";
 }
+
 // Naming projection only; the parser also checks the accessor's signature.
 inline std::string property_name(std::string_view name) {
     const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
@@ -34,6 +38,7 @@ inline std::string property_name(std::string_view name) {
         return {};
     return std::string(name.substr(0, start)) + std::string(suffix);
 }
+
 // The project collector and typed parser use the same accessor eligibility rule.
 inline std::string property_name(std::string_view name, std::size_t parameters, bool void_result,
                                  bool writable_parameter) {
@@ -46,16 +51,21 @@ inline std::string property_name(std::string_view name, std::size_t parameters, 
         return {};
     return alias;
 }
+
 struct Token {
     enum class Kind { end, identifier, number, punctuation, string };
+
     Kind kind;
+
     std::string_view text;
+
     SourcePosition position;
 };
 
 class Lexer {
 public:
     explicit Lexer(std::string_view source) : source_(source) {}
+
     Token next() {
         for (;;) {
             while (peek() == ' ' || peek() == '\t' || peek() == '\r' || peek() == '\n' || peek() == '\v' ||
@@ -163,9 +173,11 @@ public:
 
 private:
     bool at_end() const noexcept { return position_.offset == source_.size(); }
+
     char peek(std::size_t ahead = 0) const noexcept {
         return ahead < source_.size() - position_.offset ? source_[position_.offset + ahead] : '\0';
     }
+
     void advance() noexcept {
         const auto value = source_[position_.offset++];
         if (value == '\n') {
@@ -174,10 +186,13 @@ private:
         } else
             ++position_.column;
     }
+
     Token token(Token::Kind kind, SourcePosition start) const {
         return {kind, source_.substr(start.offset, position_.offset - start.offset), start};
     }
+
     std::string_view source_;
+
     SourcePosition position_;
 };
 
@@ -215,17 +230,20 @@ inline std::string string_value(const Token& token) {
 class Tokens {
 public:
     explicit Tokens(std::string_view source) : lexer_(source), token_(lexer_.next()) {}
+
     Token consume() {
         auto previous = token_;
         token_ = lexer_.next();
         return previous;
     }
+
     bool accept(std::string_view text) {
         if (token_.text != text)
             return false;
         consume();
         return true;
     }
+
     Token expect(std::string_view text) {
         if (text == ">" && token_.text == ">>") {
             auto first = token_;
@@ -239,11 +257,13 @@ public:
             reject(token_.position, "Expected '" + std::string(text) + "'.");
         return consume();
     }
+
     Token identifier() {
         if (token_.kind != Token::Kind::identifier || reserved(token_.text))
             reject(token_.position, "Expected a non-reserved identifier.");
         return consume();
     }
+
     std::string qualified_identifier() {
         std::string name(identifier().text);
         while (accept(".")) {
@@ -252,7 +272,9 @@ public:
         }
         return name;
     }
+
     Lexer lexer_;
+
     Token token_;
 };
 }

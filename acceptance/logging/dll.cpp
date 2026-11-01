@@ -7,8 +7,10 @@ namespace {
 log::SubmitResult stable_submit(log::Entry value) noexcept {
     return log::submit(std::move(value));
 }
+
 struct Module {
     HMODULE value{};
+
     ~Module() {
         if (value)
             FreeLibrary(value);

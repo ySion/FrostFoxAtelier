@@ -25,6 +25,7 @@ enum class SequenceMutation : std::uint32_t {
 };
 
 enum class ParameterPassing : std::uint32_t { value, read_only, reference };
+
 template <class T>
 inline constexpr ParameterPassing parameter_passing =
     !std::is_lvalue_reference_v<T>                ? ParameterPassing::value

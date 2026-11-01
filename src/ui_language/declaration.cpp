@@ -8,24 +8,37 @@
 namespace atelier::ui_language {
 namespace {
 using namespace language;
+
 using namespace language::detail;
+
 struct Fragment {
     std::size_t begin{};
+
     std::size_t end{};
+
     SourcePosition position;
 };
+
 struct Evaluation {
     Fragment source;
+
     std::uint32_t node{};
+
     std::uint32_t operation{};
+
     std::optional<Property> property;
+
     InputKind kind{InputKind::boolean};
+
     std::uint32_t argument{};
 };
+
 struct Initializer {
     std::uint32_t slot{};
+
     Fragment source;
 };
+
 constexpr std::pair<std::string_view, NodeKind> builtin_nodes[]{{"Column", NodeKind::column},
                                                                 {"Row", NodeKind::row},
                                                                 {"Text", NodeKind::text},
@@ -50,21 +63,26 @@ constexpr std::pair<std::string_view, NodeKind> builtin_nodes[]{{"Column", NodeK
                                                                 {"MenuItem", NodeKind::menu_item},
                                                                 {"Overlay", NodeKind::overlay},
                                                                 {"CodeEditor", NodeKind::code_editor}};
+
 std::optional<NodeKind> builtin_node(std::string_view name) {
     const auto at = std::ranges::find_if(builtin_nodes, [&](const auto& item) { return item.first == name; });
     return at == std::end(builtin_nodes) ? std::nullopt : std::optional{at->second};
 }
+
 bool height_strategy(std::string_view name) {
     return name == "height" || name == "expand_height" || name == "single_line" || name == "content_height";
 }
+
 bool width_strategy(std::string_view name) {
     return name == "width" || name == "expand_width" || name == "content_width" || name == "shrink_width" ||
            name == "flex_width" || name == "grow_width";
 }
+
 bool button_node(NodeKind kind) {
     return kind == NodeKind::button || kind == NodeKind::choice_button || kind == NodeKind::toggle_button ||
            kind == NodeKind::checkbox || kind == NodeKind::foldout;
 }
+
 bool container_node(NodeKind kind) {
     return kind == NodeKind::column || kind == NodeKind::row || kind == NodeKind::tree || kind == NodeKind::list ||
            kind == NodeKind::parameter_row || kind == NodeKind::popup || kind == NodeKind::overlay;
@@ -72,10 +90,14 @@ bool container_node(NodeKind kind) {
 
 struct Header {
     std::string name;
+
     std::vector<Input> inputs;
+
     SourcePosition begin;
+
     SourcePosition body;
 };
+
 Input parse_input(Tokens& tokens) {
     Input value;
     if (tokens.accept("bool"))
@@ -117,6 +139,7 @@ Input parse_input(Tokens& tokens) {
         reject(name.position, "Reserved UI input name.");
     return value;
 }
+
 std::vector<Header> headers(std::string_view source) {
     Tokens tokens(source);
     std::size_t braces{};
@@ -177,6 +200,7 @@ std::vector<Header> headers(std::string_view source) {
                 reject(header.begin, "Unknown item component type: " + input.item_type);
     return result;
 }
+
 class Parser : private Tokens {
 public:
     Parser(std::string_view name, std::string_view source, const Header& header, const std::vector<Header>& all)
@@ -187,6 +211,7 @@ public:
         while (token_.position.offset < header.body.offset)
             consume();
     }
+
     Declaration run() {
         const Fragment helpers{0, headers_.front().begin.offset, {}};
         while (accept("state")) {
@@ -300,9 +325,13 @@ public:
 
 private:
     std::string_view source_;
+
     Declaration result_;
+
     const std::vector<Header>& headers_;
+
     std::vector<Evaluation> evaluations_;
+
     std::vector<Initializer> initializers_;
 
     template <class T>
@@ -311,6 +340,7 @@ private:
             std::ranges::any_of(items, [&](const auto& item) { return item.name == name.text; }))
             reject(name.position, "Duplicate, reserved or excessive UI declaration.");
     }
+
     InputKind state_kind() {
         if (accept("bool"))
             return InputKind::boolean;
@@ -319,11 +349,13 @@ private:
         const auto token = identifier();
         reject(token.position, "Component state requires bool or double.");
     }
+
     static std::string suffix(InputKind kind) {
         constexpr std::string_view names[]{"bool",  "number", "edit",  "text", "text_edit", "key",
                                            "items", "action", "table", "code", "tooltip",   "tree_row"};
         return std::string(names[static_cast<std::size_t>(kind)]);
     }
+
     Fragment fragment(std::string_view terminator) {
         const auto begin = token_.position;
         std::size_t parentheses{};
@@ -355,6 +387,7 @@ private:
         }
         reject(begin, "Unterminated UI expression or handler.");
     }
+
     std::optional<InputKind> reference_kind(Fragment source) const {
         Tokens tokens(source_.substr(source.begin, source.end - source.begin));
         if (!tokens.accept("input") || !tokens.accept("."))
@@ -366,6 +399,7 @@ private:
             std::ranges::find_if(result_.inputs, [&](const auto& input) { return input.name == name.text; });
         return at == result_.inputs.end() ? std::nullopt : std::optional{at->kind};
     }
+
     void node(std::uint32_t parent, std::size_t depth) {
         if (depth >= 64)
             reject(token_.position, "UI nesting exceeds 64 levels.");
@@ -615,12 +649,14 @@ private:
                 if (std::ranges::find(properties, input.name) == properties.end())
                     reject(name.position, "Missing component input: " + input.name);
     }
+
     void append(std::string_view value, SourcePosition origin) {
         const auto begin = result_.generated_source.size();
         result_.generated_source += value;
         if (!value.empty())
             result_.mappings.push_back({begin, result_.generated_source.size(), origin});
     }
+
     void rewrite(Fragment fragment, bool event, bool checked = false) {
         const auto position = [&](SourcePosition local) {
             local.offset += fragment.begin;
@@ -732,6 +768,7 @@ std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::
         return std::unexpected(error.diagnostic);
     }
 }
+
 std::expected<Declaration, language::Diagnostic> lower(std::string_view name, std::string_view source) {
     auto all = lower_module(name, source);
     if (!all)

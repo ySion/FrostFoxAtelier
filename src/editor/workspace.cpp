@@ -14,14 +14,18 @@ namespace atelier::editor {
 namespace {
 struct CavityOption {
     std::wstring_view title;
+
     ViewOption option;
 };
+
 constexpr std::array cavity_options{CavityOption{L"Ridge", ViewOption::cavity_ridge},
                                     CavityOption{L"Valley", ViewOption::cavity_valley},
                                     CavityOption{L"Radius", ViewOption::cavity_radius}};
+
 constexpr std::array<std::array<double, 5>, 3> cavity_values{
     {{0, .5, 1, 1.5, 2}, {0, .5, 1, 1.5, 2}, {.5, 1, 2, 3, 4}}};
 }
+
 Workspace::Workspace()
     : dock(1ULL << 48, {{control::scene_tab, control::scene_content, L"Scene View", {240, 160}},
                         {control::parameters_tab, 50, L"Parameters", {220, 260}},
@@ -46,6 +50,7 @@ Workspace::Workspace()
         require_operator(entry.call);
     reset_layout();
 }
+
 namespace {
 constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 9> region_tabs{
     {{RegionKind::viewport, control::scene_tab},
@@ -58,14 +63,17 @@ constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 9> region_tabs{
      {RegionKind::world, world_control::tab},
      {RegionKind::controls, control::workbench}}};
 }
+
 RegionKind region_of(ui::ControlKey tab) noexcept {
     const auto at = std::ranges::find(region_tabs, tab, &std::pair<RegionKind, ui::ControlKey>::second);
     return at == region_tabs.end() ? RegionKind::none : at->first;
 }
+
 ui::ControlKey region_tab(RegionKind region) noexcept {
     const auto at = std::ranges::find(region_tabs, region, &std::pair<RegionKind, ui::ControlKey>::first);
     return at == region_tabs.end() ? ui::ControlKey{} : at->second;
 }
+
 Context Workspace::operator_context(Session& session, Project* project, bool interactive,
                                     const ui::ControlBox* focused) const {
     const auto* source = source_editor.active();
@@ -118,9 +126,11 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
         !viewport_options_collapsed,
         camera_view};
 }
+
 bool Workspace::poll_output() {
     return output.poll();
 }
+
 Result<void> Workspace::locate_output() {
     const auto location = output.selected_source();
     if (!location)
@@ -130,6 +140,7 @@ Result<void> Workspace::locate_output() {
     dock.select(source_control::tab);
     return {};
 }
+
 void Workspace::reset_layout() {
     lighting.cancel();
     dock.reset();
@@ -147,6 +158,7 @@ void Workspace::reset_layout() {
     menu.reset();
     menu_bar_collapsed = shelf_collapsed = false;
 }
+
 void Workspace::reset_document() {
     camera_flying = false;
     color_edit.reset();
@@ -176,16 +188,19 @@ void Workspace::reset_document() {
     material_choices_.clear();
     menu_selection_ = {};
 }
+
 std::optional<TypeId> Workspace::component_choice(ui::ControlKey key) const noexcept {
     if (key < control::component_choice_first || key - control::component_choice_first >= component_choices_.size())
         return {};
     return component_choices_[static_cast<std::size_t>(key - control::component_choice_first)].type;
 }
+
 Result<bool> Workspace::apply_ui(const ui::Action& action) {
     if (output.apply(action))
         return true;
     return ui_document_ ? ui_document_->event(action) : Result<bool>{false};
 }
+
 void Workspace::commit_ui_controls() {
     if (!ui_document_)
         return;
@@ -202,14 +217,17 @@ void Workspace::commit_ui_controls() {
     if (!collected)
         throw std::runtime_error(collected.error().message);
 }
+
 bool Workspace::reject_ui_controls(std::string message) {
     return ui_document_ && ui_document_->reject_controls(std::move(message));
 }
+
 void Workspace::set_ui_source(std::filesystem::path path) {
     if (ui_document_)
         throw std::logic_error("Choose the authoring file before opening the UI document.");
     ui_source_ = std::move(path);
 }
+
 std::filesystem::path Workspace::ui_source() const {
     if (!ui_source_.empty())
         return ui_source_;
@@ -217,14 +235,17 @@ std::filesystem::path Workspace::ui_source() const {
     std::error_code error;
     return std::filesystem::is_regular_file(authoring, error) ? authoring : asset_directory() / "editor.ui.source";
 }
+
 const Workspace::Binding* Workspace::binding(ui::ControlKey key) const noexcept {
     const auto found =
         std::find_if(bindings_.begin(), bindings_.end(), [key](const auto& item) { return item.key == key; });
     return found == bindings_.end() ? nullptr : &*found;
 }
+
 ui::ControlKey Workspace::object_control(ObjectId object) const noexcept {
     return field_control(object, {});
 }
+
 ui::ControlKey Workspace::field_control(ObjectId object, std::span<const FieldId> path) const noexcept {
     const auto found = std::find_if(bindings_.begin(), bindings_.end(), [&](const auto& item) {
         return (item.kind == (path.empty() ? Binding::Kind::object : Binding::Kind::field) ||
@@ -233,21 +254,25 @@ ui::ControlKey Workspace::field_control(ObjectId object, std::span<const FieldId
     });
     return found == bindings_.end() ? 0 : found->key;
 }
+
 ui::ControlKey Workspace::reset_control(ObjectId object) const noexcept {
     const auto found = std::find_if(bindings_.begin(), bindings_.end(), [&](const auto& item) {
         return item.kind == Binding::Kind::position_default && item.object == object;
     });
     return found == bindings_.end() ? 0 : found->key;
 }
+
 ui::ControlKey Workspace::name_control(ObjectId object) const noexcept {
     const auto found = std::find_if(bindings_.begin(), bindings_.end(), [&](const auto& item) {
         return item.kind == Binding::Kind::name && item.object == object;
     });
     return found == bindings_.end() ? 0 : found->key;
 }
+
 bool Workspace::can_navigate(int direction) const noexcept {
     return direction < 0 ? navigation_cursor_ > 0 : navigation_cursor_ + 1 < navigation_.size();
 }
+
 Result<void> Workspace::navigate(Session& session, OperatorHost& host, int direction) {
     if (!can_navigate(direction))
         return {};
@@ -259,6 +284,7 @@ Result<void> Workspace::navigate(Session& session, OperatorHost& host, int direc
     }
     return changed;
 }
+
 Result<void> Workspace::select_object(Session& session, OperatorHost& host, ObjectId object) {
     SelectionContext selection;
     if (object != ObjectId{}) {
@@ -279,6 +305,7 @@ Result<void> Workspace::select_object(Session& session, OperatorHost& host, Obje
     inspecting_asset = false;
     return {};
 }
+
 Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::ControlKey key,
                                     ui::SelectionModifiers modifiers) {
     inspecting_asset = false;
@@ -321,6 +348,7 @@ Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::Co
                ? select_object(session, host, target->object)
                : Result<void>{};
 }
+
 void Workspace::build_structure_tree(const Session& session, ObjectId entity) {
     // The Entity, then each Entity's Components before its children, in preorder.
     auto& tree = structure_tree_;
@@ -331,6 +359,7 @@ void Workspace::build_structure_tree(const Session& session, ObjectId entity) {
     auto& runtime = session.world().runtime();
     struct Pending {
         ObjectId entity;
+
         std::uint32_t parent;
     };
     std::vector<Pending> pending{{entity, ui::no_tree_node}};
@@ -354,6 +383,7 @@ void Workspace::build_structure_tree(const Session& session, ObjectId entity) {
             pending.push_back({child->id(), node});
     }
 }
+
 Result<void> Workspace::set_tree_expanded(const Session& session, EntityTree tree, std::span<const ObjectId> objects,
                                           bool expanded) {
     auto& view = tree == EntityTree::scene_tree ? scene_tree_ : structure_tree_;
@@ -369,6 +399,7 @@ Result<void> Workspace::set_tree_expanded(const Session& session, EntityTree tre
         view.expansion[object] = expanded;
     return {};
 }
+
 Result<bool> Workspace::reveal_in_tree(const Session& session, ObjectId entity) {
     if (!session.world().contains(entity))
         return std::unexpected(Error{ErrorCode::invalid_member, "The Entity is not a member of this World."});
@@ -387,6 +418,7 @@ Result<bool> Workspace::reveal_in_tree(const Session& session, ObjectId entity) 
                return scene_tree_.objects[row.node] == entity;
            });
 }
+
 std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree, ObjectId primary, std::wstring_view filter,
                                                   ui::TreeViewport viewport, std::span<const ObjectId> pinned) {
     // A new primary row, or the primary row under a new parent, expands its ancestors once.
@@ -410,12 +442,14 @@ std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree, ObjectId
                 rows.push_back(static_cast<std::uint32_t>(row - tree.rows.begin()));
     return ui::tree_window(tree.rows, viewport, rows);
 }
+
 ui::ControlKey Workspace::operator_control(const OperatorCall& call) const {
     for (const auto& binding : bindings_)
         if (binding.call && binding.call->id == call.id && binding.call->args == call.args)
             return binding.key;
     return 0;
 }
+
 ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, Binding::Kind kind) {
     if (!path.empty() && kind == Binding::Kind::object)
         kind = Binding::Kind::field;
@@ -434,6 +468,7 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
     std::iter_swap(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end() - 1);
     return bindings_[binding_cursor_++].key;
 }
+
 ui::ControlKey Workspace::bind_operator(OperatorCall call) {
     const auto first = bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_);
     const auto found = std::find_if(first, bindings_.end(), [&](const auto& item) {
@@ -454,6 +489,7 @@ ui::ControlKey Workspace::bind_operator(OperatorCall call) {
     std::iter_swap(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end() - 1);
     return bindings_[binding_cursor_++].key;
 }
+
 Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const ui::Action& action) {
     if (action.kind == ui::ActionKind::activate &&
         (action.key == control::group_components || action.key == control::group_categories)) {
@@ -558,6 +594,7 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
     status = L"Viewport display updated";
     return true;
 }
+
 std::optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session, const ui::UiFrame& frame,
                                                         ObjectId dragged, ui::DragPoint at) const {
     const auto* tree = frame.find(control::entity_tree);
@@ -589,6 +626,7 @@ std::optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session, 
     // Empty space below the rows is World, as in Houdini's tree view.
     return TreeDrop{{}, control::tree_world};
 }
+
 bool Workspace::sync_world(const Session& session) {
     auto& author = static_cast<rendering::SceneLightingSettings&>(view.lit);
     const auto current = session.presentation().environment();
@@ -599,6 +637,7 @@ bool Workspace::sync_world(const Session& session) {
     ++view_revision_;
     return true;
 }
+
 Result<void> Workspace::set_view_settings(Session& session, const renderer::ViewSettings& candidate,
                                           std::array<float, 3> focus) {
     if (auto valid = validate_view_options(candidate, focus); !valid)
@@ -612,6 +651,7 @@ Result<void> Workspace::set_view_settings(Session& session, const renderer::View
     }
     return {};
 }
+
 namespace {
 double scalar_number(const Scalar& value) {
     return std::visit(
@@ -623,6 +663,7 @@ double scalar_number(const Scalar& value) {
         },
         value);
 }
+
 // Typed and dragged values stay within the hard bounds, as Runtime writes clamp to them.
 // A stored value outside them (a trusted native write) widens the range so it still displays.
 std::pair<double, double> legal_range(const Scalar& value, const FieldRange& range) {
@@ -642,6 +683,7 @@ std::pair<double, double> legal_range(const Scalar& value, const FieldRange& ran
     const auto current = scalar_number(value);
     return {std::min(limits.first, current), std::max(limits.second, current)};
 }
+
 // Slider endpoints are the UI range; a side with only a hard bound uses it.
 std::optional<std::pair<double, double>> slider_range(const FieldRange& range) {
     const auto& low = range.ui_min ? range.ui_min : range.hard_min;
@@ -650,6 +692,7 @@ std::optional<std::pair<double, double>> slider_range(const FieldRange& range) {
         return std::nullopt;
     return std::pair{scalar_number(*low), scalar_number(*high)};
 }
+
 std::string range_note(const FieldRange& range) {
     const auto text = [](const Scalar& value) {
         char buffer[32];
@@ -674,11 +717,13 @@ std::string range_note(const FieldRange& range) {
         add("硬上限 " + text(*range.hard_max));
     return note;
 }
+
 std::string described(std::string description, const FieldRange& range) {
     if (auto note = range_note(range); !note.empty())
         description += (description.empty() ? "" : "\n") + note;
     return description;
 }
+
 // Houdini-style parameter label from a reflected field path: "material.base_color"
 // becomes "Base Color". The path still identifies the field; only the caption changes.
 ui::ControlIcon light_icon(presentation::LightKind kind) {
@@ -692,6 +737,7 @@ ui::ControlIcon light_icon(presentation::LightKind kind) {
     }
     return ui::ControlIcon::point_light;
 }
+
 // One glyph per Entity, as Houdini's network/tree icons: the type is carried by
 // the icon so rows can show only the name.
 ui::ControlIcon entity_icon(const Session& session, ObjectId entity) {
@@ -708,6 +754,7 @@ ui::ControlIcon entity_icon(const Session& session, ObjectId entity) {
         }
     return ui::ControlIcon::object;
 }
+
 std::wstring parameter_label(std::string_view path) {
     if (const auto dot = path.rfind('.'); dot != path.npos)
         path = path.substr(dot + 1);
@@ -725,6 +772,7 @@ std::wstring parameter_label(std::string_view path) {
     return label;
 }
 }
+
 std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,
                                              Project* project, const ui::Session* ui,
                                              const ui::ControlBox* command_focus) {
@@ -2636,6 +2684,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     property_help_.end();
     return result;
 }
+
 std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {
     const auto high = std::max({c[0], c[1], c[2]});
     const auto low = std::min({c[0], c[1], c[2]});
@@ -2653,6 +2702,7 @@ std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {
     }
     return {h, high > 0 ? span / high : 0, high};
 }
+
 std::array<double, 3> hsv_to_rgb(std::array<double, 3> hsv) noexcept {
     const auto h = std::fmod(std::max(hsv[0], 0.0), 360.0) / 60;
     const auto s = std::clamp(hsv[1], 0.0, 1.0);
@@ -2666,10 +2716,12 @@ std::array<double, 3> hsv_to_rgb(std::array<double, 3> hsv) noexcept {
     const auto& rgb = table[std::clamp(sector, 0, 5)];
     return {rgb[0] + m, rgb[1] + m, rgb[2] + m};
 }
+
 std::wstring color_hex(std::array<double, 3> c) {
     const auto byte = [](double v) { return int(std::lround(std::clamp(v, 0.0, 1.0) * 255)); };
     return std::format(L"{:02X}{:02X}{:02X}", byte(c[0]), byte(c[1]), byte(c[2]));
 }
+
 std::optional<std::array<double, 3>> parse_color_hex(std::wstring_view text) {
     if (!text.empty() && text.front() == L'#')
         text.remove_prefix(1);

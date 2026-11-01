@@ -7,17 +7,25 @@
 namespace atelier::ui_language {
 
 enum class InputKind { boolean, number, edit, text, text_edit, key, items, action, table, code, tooltip, tree_row };
+
 struct Input {
     std::string name;
+
     InputKind kind;
+
     std::string item_type;
+
     bool operator==(const Input&) const = default;
 };
+
 struct State {
     std::string name;
+
     InputKind kind;
+
     bool operator==(const State&) const = default;
 };
+
 enum class NodeKind {
     column,
     row,
@@ -45,6 +53,7 @@ enum class NodeKind {
     overlay,
     code_editor
 };
+
 enum class Property {
     text,
     classes,
@@ -115,26 +124,40 @@ enum class Property {
     draggable,
     argument
 };
+
 struct Node {
     std::string name;
+
     NodeKind kind;
+
     std::uint32_t parent{}; // Parent slot + 1; zero is the host parent.
+
     std::string component_type;
+
     bool operator==(const Node&) const = default;
 };
+
 struct Binding {
     std::uint32_t node{};
+
     std::uint32_t operation{};
+
     Property property{};
+
     language::SourcePosition position;
 };
+
 struct Event {
     std::uint32_t node{};
+
     std::uint32_t operation{};
 };
+
 struct SourceMapping {
     std::size_t begin{};
+
     std::size_t end{};
+
     language::SourcePosition origin;
 };
 
@@ -142,19 +165,29 @@ struct SourceMapping {
 // compiled by the ordinary Source compiler, in one module per component type.
 struct Declaration {
     std::string name;
+
     std::string source_name;
+
     std::string generated_source;
+
     std::vector<Input> inputs;
+
     std::vector<State> states;
+
     std::vector<Node> nodes;
+
     std::vector<Binding> bindings;
+
     std::vector<Event> events;
+
     std::vector<SourceMapping> mappings;
+
     std::string diagnostic(std::string_view compiler_message) const;
 };
 
 [[nodiscard]] std::expected<Declaration, language::Diagnostic> lower(std::string_view source_name,
                                                                      std::string_view source);
+
 [[nodiscard]] std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::string_view source_name,
                                                                                          std::string_view source);
 

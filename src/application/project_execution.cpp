@@ -10,6 +10,7 @@ namespace {
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
 }
+
 bool same_sources(const source::SourceSnapshot& a, const source::SourceSnapshot& b) {
     if (a.files.size() != b.files.size())
         return false;
@@ -19,6 +20,7 @@ bool same_sources(const source::SourceSnapshot& a, const source::SourceSnapshot&
     return true;
 }
 }
+
 void Application::attach_play_output() noexcept try {
     play_log_ended_ = false;
     play_output_status_ = {};
@@ -34,6 +36,7 @@ void Application::attach_play_output() noexcept try {
 } catch (...) {
     std::fputs("Cannot attach the Runner output; the process launch result is unchanged.\n", stderr);
 }
+
 void Application::consume_play_output() noexcept try {
     if (play_.log_directory().empty())
         return;
@@ -84,6 +87,7 @@ void Application::consume_play_output() noexcept try {
 } catch (...) {
     std::fputs("Cannot capture the Runner output; its exit result is unchanged.\n", stderr);
 }
+
 void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> report) {
     if (!report || workspace_.project_build == report)
         return;
@@ -94,6 +98,7 @@ void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> repo
         workspace_.status = L"Project build ready";
     // ProjectCode records the authoritative request/publication, not this UI projection.
 }
+
 Result<void> Application::apply_document_request(const editor::DocumentRequest& request) {
     using Kind = editor::DocumentRequest::Kind;
     close_menu(false);
@@ -125,6 +130,7 @@ Result<void> Application::apply_document_request(const editor::DocumentRequest& 
     }
     return build_project(request.rebuild);
 }
+
 Result<void> Application::build_project(bool rebuild) {
     if (!project_)
         return failure("Open a project folder first.");
@@ -176,6 +182,7 @@ Result<void> Application::build_project(bool rebuild) {
     report_load(*document_, document_root_);
     return {};
 }
+
 Result<void> Application::create_source(const std::filesystem::path& relative, bool is_ui) {
     if (!project_)
         return failure("Open a project folder first.");
@@ -217,6 +224,7 @@ Result<void> Application::create_source(const std::filesystem::path& relative, b
                               : L"Component source created. Build, then rebuild types to add the new component.";
     return {};
 }
+
 Result<void> Application::run_project() {
     if (!project_ || !workspace_.scene_available)
         return failure("Build and load a project scene before running.");
@@ -267,6 +275,7 @@ Result<void> Application::run_project() {
     notice("play.launched", L"Running " + project_->name());
     return {};
 }
+
 Result<void> Application::preview_project_ui() {
     if (!project_ || project_->ui_source().empty())
         return failure("Create a project UI source before previewing.");
@@ -282,11 +291,13 @@ Result<void> Application::preview_project_ui() {
     notice("play.preview_launched", L"Previewing " + project_->ui_source().generic_wstring());
     return {};
 }
+
 void Application::stop_play(bool restart) {
     close_menu(false);
     stop_project();
     restart_play_ = restart;
 }
+
 Result<void> Application::start_play(bool preview_ui, bool interactive) {
     close_menu(false);
     if (project_)
@@ -302,6 +313,7 @@ Result<void> Application::start_play(bool preview_ui, bool interactive) {
         return preview_project_ui();
     return this->run_project();
 }
+
 void Application::poll_project() {
     const bool was_running = play_.running();
     play_.poll();
@@ -369,6 +381,7 @@ void Application::poll_project() {
             static_cast<void>(build_project());
     }
 }
+
 void Application::forward_live() noexcept {
     if (!live_.active())
         return;

@@ -17,11 +17,15 @@ bool reference_type(ValueType type) noexcept {
     return type == ValueType::strong_reference || type == ValueType::weak_reference ||
            type == ValueType::null_reference;
 }
+
 struct BinaryOperator {
     int precedence;
+
     Operation operation;
+
     bool comparison;
 };
+
 BinaryOperator binary_operator(std::string_view text) noexcept {
     if (text == "||")
         return {1, Operation::logical_or, false};
@@ -75,6 +79,7 @@ public:
         module_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
         struct Body {
             Lexer lexer;
+
             Token token;
         };
         std::vector<Body> bodies;
@@ -188,14 +193,18 @@ private:
                    ? environment_.values[type.type_index].math
                    : math::Type{};
     }
+
     bool plain_record(ValueType type) const noexcept {
         return type.kind == ValueType::record && type.type_index < environment_.values.size() &&
                (environment_.values[type.type_index].plain_value || bool(math_type(type)));
     }
+
     static bool floating(ValueType type) noexcept { return type == ValueType::f32 || type == ValueType::f64; }
+
     static ValueType math_scalar(math::Type type) noexcept {
         return type.precision == math::Precision::f64 ? ValueType::f64 : ValueType::f32;
     }
+
     ValueType math_named_type(std::string_view name) const noexcept {
         for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
             const auto& value = environment_.values[i];
@@ -204,9 +213,11 @@ private:
         }
         return ValueType::void_value;
     }
+
     bool math_reserved_name(std::string_view name) const noexcept {
         return name == "math" || name.starts_with("math.") || math_named_type(name) != ValueType::void_value;
     }
+
     ValueType named_type(std::string_view name, SourcePosition position) const {
         if (name == "bool")
             return ValueType::boolean;
@@ -232,6 +243,7 @@ private:
             return math;
         reject(position, "Unknown registered value type '" + std::string(name) + "'.");
     }
+
     ValueType declared_type(const TypeName& name, SourcePosition position) const {
         auto type = named_type(name.name, position);
         for (std::uint32_t depth = 0; depth < name.array_depth; ++depth) {
@@ -244,6 +256,7 @@ private:
         }
         return type;
     }
+
     void validate_declaration(const TypeDeclaration& declaration) const {
         const auto type = named_type(declaration.name, declaration.position);
         if (declaration.enumeration) {
@@ -269,6 +282,7 @@ private:
                     reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
         }
     }
+
     void signature() {
         function_.is_coroutine = accept("async");
         function_.result = accept("void") ? ValueType::void_value : result_type();
@@ -319,6 +333,7 @@ private:
             expect(")");
         }
     }
+
     void analyze_calls() {
         // Summarize direct effects before propagating callee effects bottom-up.
         for (auto& function : module_.functions) {
@@ -362,6 +377,7 @@ private:
         std::vector<State> states(module_.functions.size());
         struct Cursor {
             std::uint32_t function;
+
             std::size_t next{};
         };
         std::vector<Cursor> stack;
@@ -414,6 +430,7 @@ private:
                     pending.push_back(call.value);
         }
     }
+
     std::vector<NodeId> call_arguments(std::span<const ParameterType> parameters) {
         std::vector<NodeId> arguments;
         if (!accept(")")) {
@@ -428,6 +445,7 @@ private:
             reject(token_.position, "Call argument count mismatch.");
         return arguments;
     }
+
     Expression call_expression(bool native, std::uint32_t index, SourcePosition position, NodeId receiver,
                                std::vector<NodeId> arguments) {
         const auto parameters = native ? environment_.methods[index].parameters
@@ -469,25 +487,36 @@ private:
         }
         return call;
     }
+
     struct Property {
         std::string name;
+
         ValueType type;
+
         bool native;
+
         std::uint32_t getter{UINT32_MAX};
+
         std::uint32_t setter{UINT32_MAX};
     };
+
     struct PropertyUse {
         NodeId node;
+
         std::size_t property;
     };
+
     std::vector<Property> properties_;
+
     std::vector<PropertyUse> property_uses_;
+
     const Property* find_property(std::string_view name, bool native) const {
         for (const auto& property : properties_)
             if (property.native == native && property.name == name)
                 return &property;
         return nullptr;
     }
+
     void collect_properties() {
         const auto collect = [&](std::string_view name, std::span<const ParameterType> parameters, ValueType result,
                                  bool native, std::uint32_t index, SourcePosition position) {
@@ -558,6 +587,7 @@ private:
             }
         }
     }
+
     NodeId property_access(const Property& property, SourcePosition position, NodeId receiver = no_node) {
         // Keep only a call-shaped placeholder until assignment vs. read is known.
         // No speculative getter call may enter effect analysis or the call graph.
@@ -566,6 +596,7 @@ private:
         property_uses_.push_back({node, static_cast<std::size_t>(&property - properties_.data())});
         return node;
     }
+
     void finish_properties() {
         for (const auto& use : property_uses_) {
             const auto& property = properties_[use.property];
@@ -577,6 +608,7 @@ private:
         }
         property_uses_.clear();
     }
+
     std::string expression_name(bool native) {
         std::string name(identifier().text);
         while (token_.text == "." && !find_property(name, native)) {
@@ -586,14 +618,18 @@ private:
         }
         return name;
     }
+
     struct Depth {
         std::size_t& value;
+
         Depth(std::size_t& depth, SourcePosition position) : value(depth) {
             if (++value > 128)
                 reject(position, "Source nesting exceeds the compiler limit of 128.");
         }
+
         ~Depth() { --value; }
     };
+
     void validate_name(std::string_view name, bool optional) const {
         if (name.empty() && !optional)
             reject({}, "Host member name cannot be empty.");
@@ -614,26 +650,31 @@ private:
                 reject({}, "Host binding name cannot end with '.'.");
         }
     }
+
     bool scalar(ValueType type) const {
         return type == ValueType::boolean || floating(type) || type == ValueType::u32 || type == ValueType::i32 ||
                (type.kind == ValueType::enumeration && type.type_index < environment_.enumerations.size());
     }
+
     bool supported_value(ValueType type) const {
         return scalar(type) || (aggregate(type) && type.type_index < environment_.values.size() &&
                                 environment_.values[type.type_index].kind == type.kind);
     }
+
     std::size_t value_size(ValueType type) const {
         return aggregate(type)              ? environment_.values[type.type_index].size
                : type == ValueType::boolean ? 1
                : type == ValueType::f64     ? 8
                                             : 4;
     }
+
     std::size_t value_alignment(ValueType type) const {
         return aggregate(type)              ? environment_.values[type.type_index].alignment
                : type == ValueType::boolean ? 1
                : type == ValueType::f64     ? 8
                                             : 4;
     }
+
     void validate_environment() const {
         validate_name(environment_.object_type_name, true);
         for (std::size_t i = 0; i < environment_.enumerations.size(); ++i) {
@@ -733,6 +774,7 @@ private:
                     reject({}, "Ambiguous host method binding.");
         }
     }
+
     void object_type() {
         const auto position = token_.position;
         const auto name = qualified_identifier();
@@ -741,6 +783,7 @@ private:
         if (name != environment_.object_type_name)
             reject(position, "Unknown object type '" + name + "'.");
     }
+
     bool reference_declaration() const {
         if (token_.kind != Token::Kind::identifier || reserved(token_.text))
             return false;
@@ -756,6 +799,7 @@ private:
         }
         return next.kind == Token::Kind::identifier && !reserved(next.text);
     }
+
     NodeId add(Expression expression) {
         std::size_t height = 1;
         for (const auto child : {expression.left, expression.right, expression.receiver})
@@ -770,15 +814,18 @@ private:
         expression_heights_.push_back(height);
         return function_.expressions.size() - 1;
     }
+
     NodeId literal(ValueType type, SourcePosition position, std::uint64_t bits) {
         Expression expression{Expression::Kind::literal, type, position};
         expression.bits = bits;
         return add(std::move(expression));
     }
+
     NodeId add(Statement statement) {
         function_.statements.push_back(std::move(statement));
         return function_.statements.size() - 1;
     }
+
     void unused_name(const Token& name) const {
         if (math_reserved_name(name.text))
             reject(name.position, "Locals cannot replace math constructors or the math namespace.");
@@ -793,6 +840,7 @@ private:
                 reject(name.position,
                        "A local or parameter with this name is already visible; shadowing is not supported.");
     }
+
     std::uint32_t local(const Token& name, ValueType type) {
         unused_name(name);
         if (function_.locals.size() >= std::numeric_limits<std::uint32_t>::max())
@@ -802,6 +850,7 @@ private:
         visible_.push_back(index);
         return index;
     }
+
     ValueType result_type() {
         const auto position = token_.position;
         const auto type = parameter_type();
@@ -814,11 +863,13 @@ private:
         }
         reject(position, "Function results require a scalar, enum or plain record value type.");
     }
+
     ValueType parameter_type() {
         Depth guard(depth_, token_.position);
         const auto position = token_.position;
         return declared_type(parse_type_name(*this), position);
     }
+
     bool returns(NodeId id) const {
         const auto& statement = function_.statements[id];
         switch (statement.kind) {
@@ -835,12 +886,14 @@ private:
             return false; // A loop may execute zero times.
         }
     }
+
     bool writable(NodeId id) const {
         const auto& expression = function_.expressions[id];
         if (aggregate(expression.type) && !math_type(expression.type))
             return owned_storage(id) && environment_.values[expression.type.type_index].can_own;
         return writable_storage(id);
     }
+
     bool writable_storage(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::field)
@@ -858,6 +911,7 @@ private:
             return writable_storage(node.left);
         return false;
     }
+
     bool owned_storage(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::local)
@@ -868,6 +922,7 @@ private:
             return owned_storage(node.left);
         return false;
     }
+
     bool integer_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.type != ValueType::u32 || node.typed_constant)
@@ -877,6 +932,7 @@ private:
         return (node.kind == Expression::Kind::unary && integer_constant(node.left)) ||
                (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right));
     }
+
     void signed_constant(NodeId id) {
         auto& node = function_.expressions[id];
         node.type = ValueType::i32;
@@ -885,6 +941,7 @@ private:
         if (node.right != no_node)
             signed_constant(node.right);
     }
+
     NodeId converted(NodeId expression, ValueType required) {
         if (required == ValueType::i32 && integer_constant(expression))
             signed_constant(expression);
@@ -901,6 +958,7 @@ private:
         reject(function_.expressions[expression].position,
                "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
     }
+
     static long double numeric_value(ValueType type, std::uint64_t bits) {
         if (type == ValueType::f64)
             return std::bit_cast<double>(bits);
@@ -910,6 +968,7 @@ private:
             return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(bits));
         return static_cast<std::uint32_t>(bits);
     }
+
     static std::uint64_t convert_constant(ValueType from, ValueType to, std::uint64_t bits, SourcePosition position) {
         if (from == to)
             return bits;
@@ -926,6 +985,7 @@ private:
         return to == ValueType::i32 ? static_cast<std::uint32_t>(static_cast<std::int32_t>(value))
                                     : static_cast<std::uint32_t>(value);
     }
+
     template <class T>
     static std::uint64_t fold_arithmetic(Operation operation, T left, T right, SourcePosition position) {
         if (operation == Operation::equal)
@@ -991,6 +1051,7 @@ private:
             }
         }
     }
+
     void validate_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind != Expression::Kind::literal && node.kind != Expression::Kind::unary &&
@@ -1001,6 +1062,7 @@ private:
         if (node.right != no_node)
             validate_constant(node.right);
     }
+
     std::uint64_t fold_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::literal)
@@ -1059,6 +1121,7 @@ private:
         return fold_arithmetic(node.operation, static_cast<std::uint32_t>(left), static_cast<std::uint32_t>(right),
                                node.position);
     }
+
     void resolve_constant(std::size_t index) {
         auto& value = constants_[index];
         if (value.state == Constant::State::complete)
@@ -1087,6 +1150,7 @@ private:
         expression_heights_ = std::move(saved_heights);
         visible_ = std::move(saved_visible);
     }
+
     NodeId block() {
         Depth guard(depth_, token_.position);
         Statement result{Statement::Kind::block, expect("{").position, no_node, no_node, no_node, no_node, {}};
@@ -1101,10 +1165,12 @@ private:
         visible_.resize(visible_before);
         return add(std::move(result));
     }
+
     bool starts_declaration() const {
         return token_.text == "const" || token_.text == "bool" || token_.text == "float" || token_.text == "double" ||
                token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration();
     }
+
     NodeId simple_statement(std::string_view terminator, bool allow_declaration = true) {
         const auto position = token_.position;
         if (starts_declaration()) {
@@ -1177,6 +1243,7 @@ private:
         expect(terminator);
         return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
     }
+
     NodeId statement() {
         Depth guard(depth_, token_.position);
         const auto position = token_.position;
@@ -1262,6 +1329,7 @@ private:
         }
         return simple_statement(";");
     }
+
     NodeId expression(int minimum = 0) {
         Depth guard(depth_, token_.position);
         auto left = unary();
@@ -1325,6 +1393,7 @@ private:
                                   operation.operation});
         }
     }
+
     NodeId unary() {
         Depth guard(depth_, token_.position);
         if (token_.text == "!" || token_.text == "~") {
@@ -1359,6 +1428,7 @@ private:
         }
         return postfix();
     }
+
     NodeId postfix() {
         auto receiver = primary();
         while (token_.text == "." || token_.text == "[") {
@@ -1476,6 +1546,7 @@ private:
         }
         return receiver;
     }
+
     NodeId numeric_literal(const Token& token) {
         auto text = token.text;
         const auto suffix = text.back();
@@ -1503,6 +1574,7 @@ private:
             reject(token.position, "Uint literal is outside 0..4294967295.");
         return literal(ValueType::u32, token.position, value);
     }
+
     NodeId math_call(std::string_view name, SourcePosition position, ValueType constructed) {
         std::vector<NodeId> arguments;
         if (!accept(")")) {
@@ -1678,6 +1750,7 @@ private:
         result.arguments = std::move(arguments);
         return add(std::move(result));
     }
+
     NodeId primary() {
         const auto token = token_;
         if (accept("(")) {
@@ -1818,6 +1891,7 @@ private:
             return source_call(token.text, token.position);
         return module_constant(token.text, token.position);
     }
+
     NodeId module_constant(std::string_view name, SourcePosition position) {
         if (const auto* property = find_property(name, false))
             return property_access(*property, position);
@@ -1831,6 +1905,7 @@ private:
         }
         reject(position, "Unknown identifier '" + std::string(name) + "'.");
     }
+
     // Called after the opening parenthesis.
     NodeId source_call(std::string_view name, SourcePosition position) {
         for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
@@ -1843,21 +1918,35 @@ private:
     }
 
     Environment environment_;
+
     struct Constant {
         std::string name;
+
         ValueType type;
+
         SourcePosition position;
+
         Lexer lexer;
+
         Token token;
+
         enum class State { fresh, active, complete } state{};
+
         std::uint64_t bits{};
     };
+
     std::vector<Constant> constants_;
+
     Function function_;
+
     Program module_;
+
     std::vector<std::uint32_t> visible_;
+
     std::vector<std::size_t> expression_heights_;
+
     std::size_t depth_{};
+
     std::size_t loop_depth_{};
 };
 }

@@ -145,6 +145,7 @@ void simulate_world() {
     committed(world.stop());
     require(scene->body_count() == 0, "stopped World releases physics bodies");
 }
+
 void simulate_filter_and_trigger() {
     namespace w = atelier::world;
     namespace pr = atelier::presentation;

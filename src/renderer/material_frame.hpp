@@ -7,20 +7,30 @@ namespace atelier::renderer::detail {
 // GPU table until encoding ends. Slot indices are scoped to this frame only.
 struct MaterialFrame {
     std::array<GfxSamplerState, 3> samplers{};
+
     // Batch is borrowed only while encoding. Owned captures remain comparable
     // after the caller retires it; there is no live Runtime/parent capture here.
     const MaterialBatchState* batch{};
+
     std::vector<material::ProgramSurfaceRef> captured_programs;
+
     std::vector<material::ProgramSurfaceRef> program_slots;
+
     std::vector<std::uint32_t> program_offsets;
+
     std::vector<std::uint32_t> program_indices;
+
     GfxBuffer program_index_buffer{};
+
     GfxBuffer program_offset_buffer{}; // DeviceTable-owned.
+
     std::uint64_t revision{}; // Advances whenever captured slot content changes.
+
     material::Coverage coverage(std::size_t instance, std::size_t slot) const {
         return program_slots[program_offsets[instance] + slot]->policy().coverage;
     }
 };
+
 inline void bind_materials(GfxContext gfx, GfxProgram program, const MaterialFrame& frame) {
     const auto check = [](GfxResult value) {
         if (value != kGfxResult_NoError)

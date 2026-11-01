@@ -30,48 +30,63 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 using math::Vector3;
+
 using math::Vector3d;
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view text, std::string_view entry = "run") {
     auto candidate = take(Program::prepare(take(program.request("math.source", text, entry))));
     take(program.try_publish(candidate));
 }
+
 template <class T, class Callable, std::size_t N>
 T evaluate(Runtime& runtime, const Callable& entry, const std::array<Argument, N>& arguments) {
     T result{};
     take(entry.invoke({}, arguments, ValueOutput{take(runtime.native_type<T>()), &result}));
     return result;
 }
+
 template <class T>
 bool approximately_equal(T a, T b, T epsilon) {
     return std::abs(a - b) <= epsilon;
 }
+
 struct NativeMath {
     Vector3 position{1.0f, 2.0f, 3.0f};
+
     Vector3 value(Vector3 input) const { return {input.x + 1.0f, input.y + 2.0f, input.z + 3.0f}; }
+
     Vector3 constant(const Vector3& input) const { return input; }
+
     void mutate(Vector3& input) const {
         input.x += 4.0f;
         input.y += 5.0f;
         input.z += 6.0f;
     }
+
     Vector3 fail(Vector3) const { throw std::runtime_error("Native math failure."); }
 };
+
 class GuardedPages {
 public:
     GuardedPages() {
@@ -89,12 +104,16 @@ public:
             throw std::runtime_error("Math guard page protection failed.");
         }
     }
+
     ~GuardedPages() {
         if (data_)
             VirtualFree(data_, 0, MEM_RELEASE);
     }
+
     GuardedPages(const GuardedPages&) = delete;
+
     GuardedPages& operator=(const GuardedPages&) = delete;
+
     template <class T>
     T* construct(T value) {
         return std::construct_at(reinterpret_cast<T*>(data_ + page_size_ - sizeof(T)), value);
@@ -102,55 +121,69 @@ public:
 
 private:
     std::byte* data_{};
+
     std::size_t page_size_{};
 };
 
 template <class T>
 using Bits = std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>;
+
 template <class T>
 bool same(T a, T b) {
     return (std::isnan(a) && std::isnan(b)) || std::bit_cast<Bits<T>>(a) == std::bit_cast<Bits<T>>(b);
 }
+
 // The documented element-wise definitions, written independently of the JIT lowering.
 template <class T>
 T glsl_min(T x, T y) {
     return y < x ? y : x;
 }
+
 template <class T>
 T glsl_max(T x, T y) {
     return x < y ? y : x;
 }
+
 template <class T>
 T clamp_reference(T x, T low, T high) {
     return glsl_max(low, glsl_min(x, high));
 }
+
 template <class T>
 T fract_reference(T x) {
     return glsl_min(x - std::floor(x), std::nextafter(T(1), T(0)));
 }
+
 template <class T>
 T sign_reference(T x) {
     return x > T(0) ? T(1) : x < T(0) ? T(-1) : x;
 }
+
 template <class T>
 T step_reference(T edge, T x) {
     return x < edge ? T(0) : T(1);
 }
+
 template <class T>
 T lerp_reference(T a, T b, T t) {
     return a * (T(1) - t) + b * t;
 }
+
 template <class T>
 T smoothstep_reference(T e0, T e1, T x) {
     const T t = clamp_reference((x - e0) / (e1 - e0), T(0), T(1));
     return t * t * (T(3) - T(2) * t);
 }
+
 template <class T>
 struct ElementwiseCase {
     const char* call;
+
     std::size_t arity;
+
     T (*expected)(T, T, T);
 };
+
 template <class T>
 std::array<ElementwiseCase<T>, 13> elementwise_cases() {
     return {{
@@ -169,11 +202,13 @@ std::array<ElementwiseCase<T>, 13> elementwise_cases() {
         {"math.smoothstep(x, y, z)", 3, [](T x, T y, T z) { return smoothstep_reference(x, y, z); }},
     }};
 }
+
 // One compiled scalar program per call, comparing every argument combination bit for bit.
 template <class T>
 class ScalarCalls {
 public:
     ScalarCalls(Runtime& runtime, const char* type) : runtime_(runtime), type_(type) {}
+
     T operator()(const char* call, T x, T y = T(0), T z = T(0)) {
         auto& program = programs_[call];
         if (!program) {
@@ -183,6 +218,7 @@ public:
         }
         return std::get<T>(*take(program->entry().invoke({}, std::array{Scalar{x}, Scalar{y}, Scalar{z}})));
     }
+
     void table(std::span<const T> values) {
         for (const auto& item : elementwise_cases<T>()) {
             const auto check = [&](T x, T y, T z) {
@@ -214,7 +250,9 @@ public:
 
 private:
     Runtime& runtime_;
+
     std::string type_;
+
     std::map<std::string, std::unique_ptr<Program>> programs_;
 };
 
@@ -439,6 +477,7 @@ double ulp_error(float result, double reference) {
     const int exponent = std::max(std::ilogb(rounded == 0 ? std::numeric_limits<float>::denorm_min() : rounded), -126);
     return std::fabs(double(result) - reference) / std::ldexp(1.0, exponent - 23);
 }
+
 // The documented pow: y = 0 or x = 1 gives 1, NaN and x < 0 give NaN, and -0 counts as +0.
 double pow_reference(double x, double y) {
     if (y == 0 || x == 1)
@@ -447,9 +486,12 @@ double pow_reference(double x, double y) {
         return NAN;
     return std::pow(std::fabs(x), y);
 }
+
 struct Transcendental {
     std::string name;
+
     bool binary;
+
     double (*reference)(double, double);
 };
 
@@ -582,8 +624,11 @@ void verify_transcendental() {
     // Exact results the contract names, including signed zeros and IEEE infinities.
     struct Exact {
         const char* call;
+
         float x;
+
         float y;
+
         float expected;
     };
     constexpr float pi = 0x1.921fb6p+1f;
@@ -823,8 +868,11 @@ void verify_transcendental_double() {
     // Exact results the contract names, including signed zeros and IEEE infinities.
     struct Exact {
         const char* call;
+
         double x;
+
         double y;
+
         double expected;
     };
     constexpr double pi = 0x1.921fb54442d18p+1;
@@ -901,7 +949,9 @@ void verify_transcendental_double() {
     // Each vector lane and each scalar argument gives the scalar result bit for bit, and the loop calls no function.
     struct Lanes {
         const char* vector;
+
         const char* scalar;
+
         bool swap;
     };
     const math::Vector4d v{0.5, -2.25, 600.0, 1e-3};
@@ -963,6 +1013,7 @@ void verify_source_math() {
     )");
     struct CompactTail {
         Vector3 value;
+
         std::uint32_t canary;
     } compact{{2.0f, 3.0f, 4.0f}, 0xfeedbeef};
     const std::array arguments{Argument::borrow(compact.value)};

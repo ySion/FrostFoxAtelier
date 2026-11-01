@@ -29,34 +29,46 @@ template <class T>
 concept NativeParameter = (ScalarType<std::remove_cvref_t<T>> || MathValueType<std::remove_cvref_t<T>> ||
                            PlainNativeValue<std::remove_cvref_t<T>> || std::is_lvalue_reference_v<T>) &&
                           !std::is_rvalue_reference_v<T> && !std::is_volatile_v<std::remove_reference_t<T>>;
+
 static_assert(sizeof(int) == 4);
 
 template <class>
 struct Member;
+
 template <class V, class C>
 struct Member<V C::*> {
     using Value = V;
+
     using Owner = C;
 };
 
 template <class>
 struct Method;
+
 template <class R, class C, class... A>
 struct Method<R (C::*)(A...)> {
     using Owner = C;
+
     using Arguments = std::tuple<A...>;
+
     using Return = R;
+
     static constexpr bool receiver_read_only = false;
+
     static_assert(std::same_as<R, void> || ScalarType<R> || MathValueType<R> || PlainNativeValue<R>,
                   "Method results must be void or supported scalar/plain record values returned by value.");
+
     static_assert((NativeParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
 };
+
 template <class R, class C, class... A>
 struct Method<R (C::*)(A...) const> : Method<R (C::*)(A...)> {
     static constexpr bool receiver_read_only = true;
 };
+
 template <class R, class C, class... A>
 struct Method<R (C::*)(A...) noexcept> : Method<R (C::*)(A...)> {};
+
 template <class R, class C, class... A>
 struct Method<R (C::*)(A...) const noexcept> : Method<R (C::*)(A...) const> {};
 
@@ -252,6 +264,7 @@ public:
 
 private:
     Runtime& runtime_;
+
     TypeDefinition definition_;
 };
 

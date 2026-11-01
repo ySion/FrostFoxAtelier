@@ -13,8 +13,10 @@ std::string text(StringView value) {
 std::size_t column_size(const ColumnData& data) noexcept {
     return std::visit([](const auto& column) { return column.size(); }, data);
 }
+
 // Values at `indices`, or the type's default where an index is `absent`.
 constexpr std::uint32_t absent = ~0u;
+
 ColumnData gather(const ColumnData& data, std::span<const std::uint32_t> indices) {
     return std::visit(
         [&](const auto& column) -> ColumnData {
@@ -31,9 +33,11 @@ ColumnData gather(const ColumnData& data, std::span<const std::uint32_t> indices
         },
         data);
 }
+
 ColumnData empty_like(const ColumnData& data) {
     return std::visit([](const auto& column) -> ColumnData { return std::remove_cvref_t<decltype(column)>{}; }, data);
 }
+
 // Appends `source`, or `count` default values when it is null.
 void append(ColumnData& target, const ColumnData* source, std::uint32_t count) {
     std::visit(
@@ -116,6 +120,7 @@ const Attribute* Geometry::find(StringView name) const noexcept {
             return &attribute;
     return nullptr;
 }
+
 Attribute* Geometry::mutable_find(StringView name) noexcept {
     return const_cast<Attribute*>(std::as_const(*this).find(name));
 }

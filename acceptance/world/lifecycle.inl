@@ -1,7 +1,9 @@
 struct LifecycleEntity : w::Entity {
     float value{};
+
     void advance(float amount) noexcept { value += amount; }
 };
+
 struct DerivedLifecycleEntity : LifecycleEntity {};
 
 void entity_lifecycle_and_detached_graph() {

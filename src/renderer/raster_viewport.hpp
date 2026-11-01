@@ -7,7 +7,9 @@
 namespace atelier::renderer::detail {
 struct RasterViewport {
     ui::Rect hardware;
+
     ui::Clip scissor;
+
     std::array<float, 4> clip_transform{1, 1, 0, 0}; // XY scale, XY clip-w offset.
 };
 

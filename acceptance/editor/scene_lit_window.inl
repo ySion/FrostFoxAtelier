@@ -1,6 +1,7 @@
 std::filesystem::path scene_lit_window_example(const std::filesystem::path& requested) {
     return std::filesystem::canonical(requested.empty() ? std::filesystem::path{ATELIER_EXAMPLE_PROJECT} : requested);
 }
+
 std::string scene_lit_selection_diagnostic(Application& app) {
     auto& runtime = app.document().world().runtime();
     const auto type_name = [&](atelier::ObjectId object) {
@@ -23,6 +24,7 @@ std::string scene_lit_selection_diagnostic(Application& app) {
         result += type_name(component.id()) + ",";
     return result;
 }
+
 void scene_lit_display(Application& app, ControlKey option) {
     using Access = atelier::application::EditorAcceptanceAccess;
     const auto history = app.document().undo_count();
@@ -41,6 +43,7 @@ void scene_lit_display(Application& app, ControlKey option) {
     require(Access::scene_lit_view(app).shading == expected,
             "Native display choice did not reach the accepted rendering policy.");
 }
+
 std::size_t scene_lit_pixel_difference(const atelier::renderer::Capture& a, const atelier::renderer::Capture& b) {
     require(a.extent == b.extent, "Scene Lit product captures have different physical extents.");
     std::size_t changed = 0;
@@ -55,6 +58,7 @@ std::size_t scene_lit_pixel_difference(const atelier::renderer::Capture& a, cons
     }
     return changed;
 }
+
 void scene_lit_antialiasing(Application& app, unsigned mode) {
     using Access = atelier::application::EditorAcceptanceAccess;
     const auto history = app.document().undo_count();
@@ -82,6 +86,7 @@ void scene_lit_antialiasing(Application& app, unsigned mode) {
     require(bool(Access::invoke(app, "layout.show", {{"tab", "parameters"}})), "Parameters did not reopen.");
     tick(app, 1);
 }
+
 void verify_scene_lit_window(Application& app, const std::filesystem::path& output,
                              const std::filesystem::path& requested) {
     using Access = atelier::application::EditorAcceptanceAccess;

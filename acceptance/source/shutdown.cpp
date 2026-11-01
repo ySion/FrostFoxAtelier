@@ -9,22 +9,26 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
 
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void code_state(std::uintptr_t address, bool live) {
     require(address != 0, "Shutdown code address is missing.");
     DWORD64 image{};
@@ -37,11 +41,16 @@ void code_state(std::uintptr_t address, bool live) {
 }
 
 struct HostOwner;
+
 thread_local HostOwner* active_owner{};
+
 struct Signal {
     static inline unsigned live{};
+
     Signal() { ++live; }
+
     ~Signal() noexcept { --live; }
+
     void signal(std::uint32_t mode);
 };
 
@@ -49,18 +58,31 @@ struct Signal {
 // than hidden in a scheduler. Runtime is the first member and the last released.
 struct HostOwner {
     std::optional<Runtime> runtime{std::in_place};
+
     TypeId type;
+
     ObjectRoot receiver;
+
     std::optional<Program> program;
+
     Program::Entry entry;
+
     Program::Lease lease;
+
     Program::Request request;
+
     Program::Candidate pending;
+
     std::array<Coroutine, 5> tasks;
+
     bool stopping{};
+
     bool busy_in_callback{};
+
     std::uintptr_t old_address{};
+
     std::uintptr_t current_address{};
+
     std::uintptr_t candidate_address{};
 
     HostOwner() {
@@ -70,16 +92,19 @@ struct HostOwner {
         program.emplace(*runtime, type);
         receiver = take(runtime->create(type));
     }
+
     void publish(std::string_view text) {
         auto candidate = take(Program::prepare(take(program->request("shutdown.source", text))));
         take(program->try_publish(candidate));
     }
+
     Result<Coroutine> start(std::uint32_t mode) {
         if (stopping)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Host is stopping."});
         const std::array arguments{Scalar{mode}};
         return entry.start(receiver.id(), arguments);
     }
+
     void request_stop() noexcept {
         if (stopping)
             return;
@@ -89,6 +114,7 @@ struct HostOwner {
         for (auto& task : tasks)
             task.cancel();
     }
+
     Result<void> finish_shutdown() {
         if (!runtime)
             return {};
@@ -116,7 +142,9 @@ struct HostOwner {
 
 struct ActiveOwner {
     HostOwner* previous;
+
     explicit ActiveOwner(HostOwner& owner) : previous(std::exchange(active_owner, &owner)) {}
+
     ~ActiveOwner() { active_owner = previous; }
 };
 

@@ -6,8 +6,11 @@ namespace atelier::jit_acceptance {
 
 struct ProbeCallbacks {
     std::uint64_t (*host_bias)(std::uint64_t) noexcept;
+
     decltype(&atelier_jit_native_calculate) native_calculate;
+
     decltype(&atelier_jit_native_capture) native_capture;
+
     void (*log)(const char*) noexcept;
 };
 

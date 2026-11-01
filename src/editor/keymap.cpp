@@ -125,6 +125,7 @@ std::span<const KeymapEntry> keymap() {
          L"Alt+S"}};
     return entries;
 }
+
 const KeymapEntry* key_binding(RegionKind region, KeyPhase phase, const ui::Event& event, std::uint32_t key,
                                bool text) {
     if (event.kind != ui::EventKind::key_down)
@@ -136,6 +137,7 @@ const KeymapEntry* key_binding(RegionKind region, KeyPhase phase, const ui::Even
             return &entry;
     return nullptr;
 }
+
 std::wstring_view shortcut(const OperatorCall& call, RegionKind region) {
     for (const auto scope : {region, RegionKind::none})
         for (const auto& entry : keymap())

@@ -14,16 +14,19 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 template <class T>
 void reject(const Result<T>& result, ErrorCode expected, const char* message) {
     require(!result && result.error().code == expected, message);
@@ -31,28 +34,41 @@ void reject(const Result<T>& result, ErrorCode expected, const char* message) {
 
 struct RangedRecord {
     float gain{1.0f};
+
     float free{};
 };
+
 struct RangedOwner {
     float speed{2.0f};
+
     std::int32_t count{};
+
     std::uint32_t samples{1};
+
     double ui_only{};
+
     math::Vector3 albedo{0.5f, 0.5f, 0.5f};
+
     RangedRecord nested;
+
     void accumulate(float& target, const float& amount) { target += amount; }
+
     float observe(const float& value) const { return value; }
 };
+
 // Matches the described ranges.Pair layout: two floats, then a Vector3.
 struct PairValue {
     float a;
+
     float b;
+
     math::Vector3 tint;
 };
 
 FieldRange hard(float low, float high) {
     return {.hard_min = Scalar{low}, .hard_max = Scalar{high}};
 }
+
 FieldDefinition described_field(std::string name, TypeReference type, FieldRange range = {},
                                 std::vector<Scalar> leaves = {}) {
     FieldDefinition field;
@@ -62,6 +78,7 @@ FieldDefinition described_field(std::string name, TypeReference type, FieldRange
     field.default_leaves = std::move(leaves);
     return field;
 }
+
 TypeDefinition described(std::string name, TypeKind kind, std::vector<FieldDefinition> fields) {
     TypeDefinition definition;
     definition.name = std::move(name);

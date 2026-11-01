@@ -5,34 +5,54 @@
 
 namespace {
 using namespace atelier;
+
 using atelier::acceptance::inheritance::take;
+
 using atelier::acceptance::inheritance::reject;
+
 using atelier::acceptance::inheritance::require;
+
 using atelier::acceptance::inheritance::collect;
+
 using atelier::acceptance::inheritance::Prefix;
+
 struct Element {
     ReferenceSlot weak_link;
+
     ReferenceSlot strong_link;
+
     float value{};
 };
+
 struct ElementDerived : Element {
     float extra{};
 };
+
 struct Holder {
     ReferenceSequence items;
+
     ReferenceSequence hidden;
+
     ReferenceSlot tail;
+
     float value{};
 };
+
 struct HolderDerived : Prefix, Holder {
     float extra{};
 };
+
 struct Types {
     TypeId element;
+
     TypeId derived;
+
     TypeId holder;
+
     TypeId holder_derived;
+
     TypeId mixed;
+
     TypeId described;
 };
 
@@ -70,11 +90,13 @@ Types publish(Runtime& runtime) {
     const auto ids = take(runtime.register_types(std::move(definitions)));
     return {ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]};
 }
+
 void splice(Runtime& runtime, const ReferenceField& field, std::size_t first, std::size_t erased,
             std::span<const ObjectReference> inserted = {}) {
     const std::array<ReferenceChange, 1> changes{SequenceSplice{field, first, erased, inserted}};
     take(runtime.apply_reference_changes(changes));
 }
+
 void graph_and_batch(TypeId Types::* holder_kind) {
     Runtime runtime;
     Runtime other;
@@ -135,8 +157,11 @@ void graph_and_batch(TypeId Types::* holder_kind) {
     std::size_t enumerated{};
     struct Visit {
         Runtime& runtime;
+
         const ReferenceField& items;
+
         std::size_t& count;
+
         ObjectId holder;
     } visit{runtime, items, enumerated, holder.id()};
     take(runtime.visit_sequence(

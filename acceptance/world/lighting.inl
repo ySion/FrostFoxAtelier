@@ -1,7 +1,9 @@
 struct DerivedLight : p::LightComponent {
     float extra{3.f};
 };
+
 struct DerivedEnvironment : p::EnvironmentComponent {};
+
 void lit_materials_and_lights() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
@@ -374,6 +376,7 @@ void lit_materials_and_lights() {
     std::puts(
         "[pass] Lit data: MS/MI ProgramSurface captures, default grid, shared/explicit slots and diagnosed fallback, reflected LightSettings, HDR validation, Source inheritance, TRS extraction, identity/history and lifecycle");
 }
+
 void environment_and_group_writes() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
@@ -558,6 +561,7 @@ void environment_and_group_writes() {
     std::puts(
         "[pass] Environment: defaults without one, uniqueness with disabled ones also for content before the Scene, invalid values fall back, atomic group writes with exact restore, the sky map set only as a key-and-map pair");
 }
+
 void material_dependency_updates() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
@@ -861,6 +865,7 @@ void presentation_cache() {
 }
 
 struct DerivedCamera : p::CameraComponent {};
+
 void scene_cameras() {
     Runtime runtime;
     const auto types = register_all_types(runtime);

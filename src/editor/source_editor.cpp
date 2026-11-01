@@ -10,6 +10,7 @@ namespace {
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
 }
+
 std::wstring normalized(std::string_view bytes) {
     if (bytes.starts_with("\xef\xbb\xbf"))
         bytes.remove_prefix(3);
@@ -29,12 +30,14 @@ std::wstring normalized(std::string_view bytes) {
         throw std::runtime_error("Open a UTF-8 text file; binary/control characters are not editable.");
     return result;
 }
+
 std::wstring bounded(std::wstring value) {
     if (value.size() > 4096)
         value.resize(4096);
     return value;
 }
 }
+
 bool SourceEditor::File::dirty() const {
     if (checked_revision != document->revision()) {
         modified = document->text() != saved_text;
@@ -42,6 +45,7 @@ bool SourceEditor::File::dirty() const {
     }
     return modified;
 }
+
 Result<void> SourceEditor::load(File& file, std::string bytes) {
     try {
         auto text = normalized(bytes);
@@ -64,10 +68,12 @@ Result<void> SourceEditor::load(File& file, std::string bytes) {
         return failure(error.what());
     }
 }
+
 SourceEditor::File* SourceEditor::active() const noexcept {
     const auto at = std::ranges::find_if(files_, [&](const auto& file) { return file->key == selected_; });
     return at == files_.end() ? nullptr : at->get();
 }
+
 Result<void> SourceEditor::open(const std::filesystem::path& path) {
     std::error_code error;
     const auto canonical = std::filesystem::canonical(path, error);
@@ -96,6 +102,7 @@ Result<void> SourceEditor::open(const std::filesystem::path& path) {
     files_.push_back(std::move(file));
     return {};
 }
+
 Result<void> SourceEditor::save(File& file, bool overwrite) {
     auto disk = assets::read_file(file.path, 1024 * 1024);
     if (!overwrite && (!disk || *disk != file.disk)) {
@@ -131,23 +138,27 @@ Result<void> SourceEditor::save(File& file, bool overwrite) {
         return failure(error.what());
     }
 }
+
 Result<void> SourceEditor::reload(File& file) {
     auto bytes = assets::read_file(file.path, 1024 * 1024);
     if (!bytes)
         return std::unexpected(bytes.error());
     return load(file, std::move(*bytes));
 }
+
 void SourceEditor::close(ui::ControlKey key) {
     std::erase_if(files_, [&](const auto& file) { return file->key == key; });
     if (selected_ == key)
         selected_ = files_.empty() ? 0 : files_.back()->key;
     problem_line_ = 0;
 }
+
 void SourceEditor::clear() {
     files_.clear();
     selected_ = 0;
     problem_line_ = 0;
 }
+
 bool SourceEditor::select(ui::ControlKey key) {
     for (const auto& file : files_)
         if (file->key == key) {
@@ -157,6 +168,7 @@ bool SourceEditor::select(ui::ControlKey key) {
         }
     return false;
 }
+
 void SourceEditor::poll(bool composing) {
     const auto now = Clock::now();
     if (now < next_poll_)
@@ -188,6 +200,7 @@ void SourceEditor::poll(bool composing) {
             file->storage_error = loaded.error().message;
     }
 }
+
 std::vector<ui::MenuItem> SourceEditor::menu_items() const {
     std::vector<ui::MenuItem> result;
     for (const auto& file : files_)
@@ -203,6 +216,7 @@ std::vector<ui::MenuItem> SourceEditor::menu_items() const {
                           source_control::files});
     return result;
 }
+
 bool SourceEditor::locate_problem() {
     if (!problem_line_)
         return false;
@@ -247,6 +261,7 @@ bool SourceEditor::locate_problem() {
     file->document->locate(problem_line_, assets::wide(std::string_view(bytes).substr(0, count)).size() + 1);
     return true;
 }
+
 Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
     try {
         if (location.file.empty() || location.file.find('\0') != std::string::npos)
@@ -298,6 +313,7 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
         return failure(error.what());
     }
 }
+
 void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
                           const std::function<ui_language::ActionBinding(OperatorCall)>& action, const Project* project,
                           const ProjectBuild* build, bool running) {

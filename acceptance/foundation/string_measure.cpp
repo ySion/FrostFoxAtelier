@@ -13,7 +13,9 @@
 
 namespace {
 using namespace atelier;
+
 using Clock = std::chrono::steady_clock;
+
 volatile std::uint64_t observed{};
 
 void require(bool condition, const char* message) {
@@ -26,18 +28,25 @@ void require(bool condition, const char* message) {
 class CheckedStdString {
 public:
     CheckedStdString() = default;
+
     explicit CheckedStdString(StringView text) { assign(text); }
+
     void reserve(std::size_t capacity) { text_.reserve(capacity); }
+
     void clear() noexcept { text_.clear(); }
+
     void assign(StringView text) {
         validate(text);
         text_.assign(text.data(), text.size());
     }
+
     void append(StringView text) {
         validate(text);
         text_.append(text.data(), text.size());
     }
+
     void append(const CheckedStdString& text) { text_.append(text.text_); }
+
     StringView view() const { return {text_.data(), text_.size()}; }
 
 private:
@@ -45,14 +54,18 @@ private:
         if (!text.is_valid_utf8())
             throw std::invalid_argument("Invalid UTF-8 in measurement.");
     }
+
     std::string text_;
 };
 
 struct Resources {
     std::int64_t allocations;
+
     std::int64_t bytes;
+
     std::int64_t live;
 };
+
 Resources resources() {
     // Flush mimalloc v3 page statistics outside the timed interval.
     mi_collect(true);

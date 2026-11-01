@@ -11,38 +11,51 @@
 
 namespace {
 using namespace atelier;
+
 using source::DebugAction;
+
 using source::DebugSnapshot;
+
 using source::DebugStatus;
+
 using source::DebugStopReason;
+
 using source::DebugValue;
+
 using source::DebugValueState;
+
 using source::Debugger;
+
 using source::Program;
 
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 template <class T>
 void require_busy(const Result<T>& result, const char* message) {
     require(!result && result.error().code == ErrorCode::busy, message);
 }
+
 void publish(Program& program, std::string_view path, std::string_view text,
              source::CompileOptions options = {.debugging = true}, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request(path, text, entry, options))));
     take(program.try_publish(candidate));
 }
+
 source::DebugBreakpoint breakpoint(const Program::Lease& lease, std::string_view path, std::size_t line) {
     const auto sites = take(lease.debug_sites());
     for (const auto& site : sites)
@@ -50,12 +63,14 @@ source::DebugBreakpoint breakpoint(const Program::Lease& lease, std::string_view
             return {site.source.path, site.source.version, site.source.line, site.source.column};
     throw std::runtime_error("Requested source line has no executable debug site.");
 }
+
 const DebugValue* local(const source::DebugFrame& frame, std::string_view name) {
     for (const auto& value : frame.locals)
         if (value.name == name)
             return &value;
     return nullptr;
 }
+
 std::uint32_t number(const DebugValue& value) {
     if (value.state != DebugValueState::available || !value.scalar ||
         !std::holds_alternative<std::uint32_t>(*value.scalar))
@@ -63,11 +78,15 @@ std::uint32_t number(const DebugValue& value) {
                                  std::to_string(static_cast<int>(value.state)) + " and no uint value: " + value.text);
     return std::get<std::uint32_t>(*value.scalar);
 }
+
 struct Host {
     std::uint32_t value{};
+
     void set_value(std::uint32_t next) noexcept { value = next; }
+
     void fail() { throw std::runtime_error("Debugger native first failure."); }
 };
+
 TypeId register_host(Runtime& runtime) {
     return take(runtime.register_type(NativeRegistration<Host>{runtime, "debugger.Host", TypeKind::object}
                                           .field<&Host::value>("value")

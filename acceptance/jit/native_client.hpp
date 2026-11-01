@@ -6,24 +6,32 @@ namespace atelier::jit_acceptance {
 
 struct alignas(32) ProbeRecord {
     double total{};
+
     std::uint64_t checksum{};
+
     float amount{};
+
     std::uint32_t count{};
 };
 
 struct ProbeDiagnostic {
     std::uint32_t cleanups{};
+
     char message[128]{};
 };
 
 struct StackSnapshot {
     void* frames[64]{};
+
     std::uint64_t storage_address{};
+
     std::uint32_t count{};
 };
 
 inline constexpr std::uint32_t native_success = 0;
+
 inline constexpr std::uint32_t native_failure = 1;
+
 inline constexpr std::uint32_t invalid_storage = 2;
 
 }
@@ -42,6 +50,7 @@ atelier_jit_native_calculate(std::uint32_t fail, std::int32_t value, float fract
                              const atelier::jit_acceptance::ProbeRecord* input,
                              atelier::jit_acceptance::ProbeRecord* output,
                              atelier::jit_acceptance::ProbeDiagnostic* diagnostic) noexcept;
+
 ATELIER_JIT_NATIVE_CLIENT std::uint32_t
 atelier_jit_native_capture(atelier::jit_acceptance::StackSnapshot* snapshot) noexcept;
 }

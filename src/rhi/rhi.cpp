@@ -77,13 +77,20 @@ bool meets_hardware_floor(ID3D12Device& device) {
 namespace detail {
 struct PreparationJob {
     PipelineKind kind{};
+
     std::string name;
+
     std::string model;
+
     std::vector<std::pair<GfxShaderStage, ShaderSource>> stages;
+
     GfxKernelBuild* build{};
+
     std::atomic<bool> cancel{};
+
     // Guarded by Preparer::mutex_ once submitted; a worker owns build while running.
     enum class Phase { queued, running, done, cancelled } phase{Phase::queued};
+
     std::optional<Error> error;
 };
 
@@ -94,12 +101,18 @@ class Preparer {
 public:
     struct Config {
         ID3D12Device* device{};
+
         bool gpu_validation{};
+
         std::filesystem::path cache;
     };
+
     explicit Preparer(Config config) : config_(std::move(config)) {}
+
     ~Preparer() { stop(); }
+
     Preparer(const Preparer&) = delete;
+
     Preparer& operator=(const Preparer&) = delete;
 
     Result<void> submit(std::shared_ptr<PreparationJob> job) {
@@ -119,7 +132,9 @@ public:
         wake_.notify_one();
         return {};
     }
+
     void run_inline(PreparationJob& job) { run(job, owner_); }
+
     // True once the job left the workers; it is then done or cancelled.
     bool finished(PreparationJob& job) {
         std::lock_guard lock(mutex_);
@@ -128,6 +143,7 @@ public:
         std::erase_if(live_, [&](const auto& item) { return item.get() == &job; });
         return true;
     }
+
     void cancel(PreparationJob& job) noexcept {
         std::lock_guard lock(mutex_);
         std::erase_if(live_, [&](const auto& item) { return item.get() == &job; });
@@ -136,6 +152,7 @@ public:
         else
             discard(job);
     }
+
     // Cancels queued jobs, lets running steps finish, then releases every
     // build not yet taken. Idempotent.
     void stop() noexcept {
@@ -162,8 +179,11 @@ public:
 private:
     struct Worker {
         std::optional<ShaderCompiler> compiler;
+
         ComPtr<ID3D12CommandAllocator> allocator;
+
         ComPtr<ID3D12GraphicsCommandList> list;
+
         void release() noexcept {
             if (list)
                 list->Close();
@@ -179,6 +199,7 @@ private:
         gfxKernelBuildDestroy(std::exchange(job.build, nullptr));
         job.phase = PreparationJob::Phase::cancelled;
     }
+
     void work() noexcept {
         Worker worker;
         for (;;) {
@@ -202,6 +223,7 @@ private:
         }
         worker.release();
     }
+
     // Failures become the job's error value; nothing escapes to the thread.
     void run(PreparationJob& job, Worker& worker) noexcept {
         try {
@@ -243,6 +265,7 @@ private:
                 Error{ErrorCode::creation_failed, kGfxResult_OutOfMemory, "pipeline preparation failed to allocate"};
         }
     }
+
     // GPU-based validation creates its patched pipeline at the first
     // SetPipelineState of any command list. Recording one that never executes
     // moves that cost here; validation of real use is unchanged.
@@ -269,24 +292,37 @@ private:
     }
 
     const Config config_;
+
     std::mutex mutex_;
+
     std::condition_variable wake_;
+
     std::deque<std::shared_ptr<PreparationJob>> queue_;
+
     std::vector<std::shared_ptr<PreparationJob>> live_; // Submitted and not yet taken or cancelled.
+
     std::vector<std::thread> threads_;
+
     bool stopped_{};
+
     Worker owner_;
 };
 
 struct ContextState {
     GfxContext context;
+
     ContextInfo info;
+
     const std::thread::id owner = std::this_thread::get_id();
+
     std::uint32_t pipelines = 0;
+
     GfxResult failure = kGfxResult_NoError;
+
     std::shared_ptr<Preparer> preparer;
 
     [[nodiscard]] bool on_owner() const noexcept { return owner == std::this_thread::get_id(); }
+
     ~ContextState() {
         if (!context)
             return;
@@ -304,12 +340,15 @@ Pipeline::Pipeline(std::shared_ptr<detail::ContextState> state, GfxProgram progr
     : state_(std::move(state)), program_(program), kernel_(kernel) {
     ++state_->pipelines;
 }
+
 Pipeline::~Pipeline() {
     reset();
 }
+
 Pipeline::Pipeline(Pipeline&& other) noexcept
     : state_(std::move(other.state_)), program_(std::exchange(other.program_, {})),
       kernel_(std::exchange(other.kernel_, {})) {}
+
 Pipeline& Pipeline::operator=(Pipeline&& other) noexcept {
     if (this != &other) {
         reset();
@@ -319,6 +358,7 @@ Pipeline& Pipeline::operator=(Pipeline&& other) noexcept {
     }
     return *this;
 }
+
 void Pipeline::reset() noexcept {
     if (!state_)
         return;
@@ -332,19 +372,25 @@ void Pipeline::reset() noexcept {
     --state_->pipelines;
     state_.reset();
 }
+
 GfxProgram Pipeline::program() const noexcept {
     return state_ && state_->on_owner() && state_->failure == kGfxResult_NoError ? program_ : GfxProgram{};
 }
+
 GfxKernel Pipeline::kernel() const noexcept {
     return state_ && state_->on_owner() && state_->failure == kGfxResult_NoError ? kernel_ : GfxKernel{};
 }
+
 Pipeline::operator bool() const noexcept {
     return static_cast<bool>(kernel());
 }
 
 Context::Context(std::shared_ptr<detail::ContextState> state) noexcept : state_(std::move(state)) {}
+
 Context::~Context() = default;
+
 Context::Context(Context&& other) noexcept = default;
+
 Context& Context::operator=(Context&& other) noexcept = default;
 
 Result<Context> Context::open(const ContextOptions& options) {
@@ -449,10 +495,12 @@ Result<Context> Context::open(const ContextOptions& options) {
 GfxContext Context::borrow() const noexcept {
     return state_ && state_->on_owner() && state_->failure == kGfxResult_NoError ? state_->context : GfxContext{};
 }
+
 const ContextInfo& Context::info() const noexcept {
     static const ContextInfo empty;
     return state_ ? state_->info : empty;
 }
+
 Result<void> Context::admit(const char* operation) const {
     if (!state_ || !state_->context)
         return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
@@ -463,6 +511,7 @@ Result<void> Context::admit(const char* operation) const {
         return std::unexpected(execution_error(state_->failure));
     return {};
 }
+
 // Checks and copies the description on the owner. File stages are read here,
 // so workers never touch the file system except through #include.
 Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc& desc) const {
@@ -497,9 +546,13 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
     }
     struct Stage {
         GfxShaderStage stage;
+
         const char* source;
+
         const wchar_t* profile;
+
         const wchar_t* extension;
+
         bool primary;
     };
     const auto& s = desc.source;
@@ -557,6 +610,7 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
             Error{ErrorCode::creation_failed, kGfxResult_InternalError, "kernel build creation failed"});
     return job;
 }
+
 // Owner-only registration of a finished job; the build is consumed either way.
 Result<Pipeline> Context::adopt(detail::PreparationJob& job) {
     if (job.phase == detail::PreparationJob::Phase::cancelled)
@@ -580,6 +634,7 @@ Result<Pipeline> Context::adopt(detail::PreparationJob& job) {
     }
     return Pipeline(state_, program, kernel);
 }
+
 Result<Pipeline> Context::prepare(const PipelineDesc& desc) {
     if (const auto admitted = admit("prepare"); !admitted)
         return std::unexpected(admitted.error());
@@ -589,6 +644,7 @@ Result<Pipeline> Context::prepare(const PipelineDesc& desc) {
     state_->preparer->run_inline(**job);
     return adopt(**job);
 }
+
 Result<PipelineJob> Context::submit(const PipelineDesc& desc) {
     if (const auto admitted = admit("submit"); !admitted)
         return std::unexpected(admitted.error());
@@ -604,6 +660,7 @@ Result<PipelineJob> Context::submit(const PipelineDesc& desc) {
     handle.job_ = std::move(*job);
     return handle;
 }
+
 std::optional<Result<Pipeline>> Context::take(PipelineJob& job) {
     if (const auto admitted = admit("take"); !admitted)
         return Result<Pipeline>(std::unexpected(admitted.error()));
@@ -620,6 +677,7 @@ std::optional<Result<Pipeline>> Context::take(PipelineJob& job) {
 PipelineJob::~PipelineJob() {
     cancel();
 }
+
 PipelineJob& PipelineJob::operator=(PipelineJob&& other) noexcept {
     if (this != &other) {
         cancel();
@@ -628,6 +686,7 @@ PipelineJob& PipelineJob::operator=(PipelineJob&& other) noexcept {
     }
     return *this;
 }
+
 void PipelineJob::cancel() noexcept {
     if (job_)
         preparer_->cancel(*job_);
@@ -645,6 +704,7 @@ Result<TargetInfo> Context::target() const {
                                       client.right > 0 && client.bottom > 0);
     return TargetInfo{gfxGetBackBufferWidth(context), gfxGetBackBufferHeight(context), window != nullptr, drawable};
 }
+
 Result<TargetInfo> Context::sync_window_target() {
     const auto current = target(); // Shared owner, closed and failure admission.
     if (!current)
@@ -655,6 +715,7 @@ Result<TargetInfo> Context::sync_window_target() {
     state_->failure = result;
     return std::unexpected(execution_error(result));
 }
+
 Result<void> Context::frame(bool vsync, FrameInfo* details) {
     if (const auto admitted = admit("frame"); !admitted)
         return std::unexpected(admitted.error());
@@ -671,6 +732,7 @@ Result<void> Context::frame(bool vsync, FrameInfo* details) {
     state_->failure = result;
     return std::unexpected(execution_error(result));
 }
+
 Result<void> Context::finish() {
     if (const auto admitted = admit("finish"); !admitted)
         return std::unexpected(admitted.error());
@@ -680,6 +742,7 @@ Result<void> Context::finish() {
     state_->failure = result;
     return std::unexpected(execution_error(result));
 }
+
 Result<void> Context::close() {
     if (!state_ || !state_->context)
         return {};

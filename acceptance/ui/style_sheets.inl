@@ -5,6 +5,7 @@ std::shared_ptr<const ui::StyleSheet> sheet(std::string_view source) {
                                  std::to_string(result.error().column) + " " + result.error().message);
     return std::move(*result);
 }
+
 void style_sheets() {
     Consumer c;
     const auto rules = sheet(R"ss(

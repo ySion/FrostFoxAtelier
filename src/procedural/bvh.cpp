@@ -8,40 +8,52 @@
 namespace atelier::procedural {
 namespace {
 using math::Vector3;
+
 using math::Vector3d;
 
 constexpr float infinity = std::numeric_limits<float>::infinity();
+
 constexpr std::uint32_t leaf_size = 4;
+
 constexpr std::uint32_t bins = 16;
+
 // Ranges deeper than this split at the median, so a tree over fewer than 2^32 triangles is
 // at most 72 levels deep and traversal fits a fixed stack.
 constexpr std::uint32_t sah_depth = 40;
+
 constexpr std::size_t stack_size = 128;
 
 Vector3d widen(Vector3 v) {
     return {v.x, v.y, v.z};
 }
+
 Vector3 narrow(Vector3d v) {
     return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
 }
+
 Vector3 lower(Vector3 a, Vector3 b) {
     return {std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)};
 }
+
 Vector3 upper(Vector3 a, Vector3 b) {
     return {std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z)};
 }
 
 struct Box {
     Vector3 minimum{infinity, infinity, infinity};
+
     Vector3 maximum{-infinity, -infinity, -infinity};
+
     void add(Vector3 point) {
         minimum = lower(minimum, point);
         maximum = upper(maximum, point);
     }
+
     void add(const Box& box) {
         minimum = lower(minimum, box.minimum);
         maximum = upper(maximum, box.maximum);
     }
+
     [[nodiscard]] double area() const {
         const auto d = widen(maximum) - widen(minimum);
         return d.x < 0 ? 0 : d.x * d.y + d.y * d.z + d.z * d.x;
@@ -116,8 +128,11 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     }
     struct Task {
         std::uint32_t node;
+
         std::uint32_t begin;
+
         std::uint32_t end;
+
         std::uint32_t depth;
     };
     std::vector<Task> tasks{{0, 0, count, 0}};

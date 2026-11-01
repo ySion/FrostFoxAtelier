@@ -13,27 +13,41 @@ namespace atelier::ui_language {
 class LiveDocument {
 public:
     using Clock = std::chrono::steady_clock;
+
     LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, std::optional<std::string> recovery_source = {});
+
     void poll(Clock::time_point now = Clock::now());
+
     // Parent and key aliases are immutable region configuration. On an input
     // error, output contains the accepted snapshot and that input is suppressed
     // until it changes; the accepted scopes can still handle their own events.
     Result<void> append(std::string_view component, ui::ControlKey parent, std::span<const KeyBinding>,
                         std::span<const InputValue>, std::vector<ui::Control>&);
+
     Result<bool> event(const ui::Action&);
+
     // Reject source replacement or ordinary prepared input updates. Old scope
     // membership, values and state survive; returns false if nothing was staged.
     bool reject_controls(std::string message);
+
     bool candidate_failed() const noexcept { return candidate_failed_; }
+
     void commit_controls();
+
     std::optional<Statistics> statistics(std::string_view component) const;
+
     std::string_view diagnostic() const noexcept { return diagnostic_; }
+
     const std::optional<std::string>& committed_source() const noexcept { return active_source_; }
+
     std::optional<std::string_view> attempted_source() const noexcept {
         return attempted_source_ ? std::optional<std::string_view>{*attempted_source_} : std::nullopt;
     }
+
     const std::filesystem::path& path() const noexcept { return path_; }
+
     std::uint64_t revision() const noexcept { return revision_; }
+
     // Auxiliary native surfaces share only the last committed authoring module.
     // Their Instances and accepted frames retain their own publication lifetimes.
     std::shared_ptr<Component> component(std::string_view name) const {
@@ -43,38 +57,68 @@ public:
 private:
     struct Region {
         ui::ControlKey parent{};
+
         std::vector<KeyBinding> keys;
+
         std::unique_ptr<Instance> instance;
+
         std::optional<std::vector<InputValue>> rejected_inputs;
+
         bool accepted{};
     };
+
     struct Stamp {
         std::filesystem::file_time_type time{};
+
         std::uintmax_t size{};
+
         int error{};
+
         bool operator==(const Stamp&) const = default;
     };
+
     Runtime& runtime_;
+
     std::filesystem::path path_;
+
     ui::ControlKey& next_key_;
+
     std::map<std::string, Region, std::less<>> regions_;
+
     std::shared_ptr<Module> active_;
+
     std::shared_ptr<Module> candidate_;
+
     std::optional<Stamp> stamp_;
+
     Clock::time_point next_poll_{};
+
     Clock::time_point changed_at_{};
+
     std::optional<std::string> attempted_source_;
+
     std::optional<std::string> active_source_;
+
     std::optional<std::string> candidate_source_;
+
     std::optional<std::string> recovery_source_;
+
     void recover_initial();
+
     std::string diagnostic_;
+
     std::string failed_region_;
+
     bool changed_{};
+
     bool attempted_{};
+
     bool candidate_failed_{};
+
     bool pending_submission_{};
+
     bool submission_failed_{};
+
     std::uint64_t revision_{};
 };
 }

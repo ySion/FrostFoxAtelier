@@ -13,13 +13,16 @@
 namespace atelier::ui_language {
 namespace {
 constexpr std::size_t composition_limit = 10000;
+
 bool button_node(NodeKind kind) {
     return kind == NodeKind::button || kind == NodeKind::choice_button || kind == NodeKind::toggle_button ||
            kind == NodeKind::checkbox || kind == NodeKind::foldout;
 }
+
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
+
 std::wstring wide(const String& value) {
     const auto text = value.view();
     if (text.empty())
@@ -35,36 +38,47 @@ std::wstring wide(const String& value) {
                         count);
     return result;
 }
+
 struct EditReference {
     std::uint32_t slot;
 };
+
 struct TextReference {
     std::uint32_t slot;
 };
+
 struct TextEditReference {
     std::uint32_t slot;
 };
+
 struct KeyReference {
     std::uint32_t slot;
 };
+
 struct ItemsReference {
     std::uint32_t slot;
 };
+
 struct ActionReference {
     std::uint32_t slot;
 };
+
 struct TableReference {
     std::uint32_t slot;
 };
+
 struct CodeReference {
     std::uint32_t slot;
 };
+
 struct TooltipReference {
     std::uint32_t slot;
 };
+
 struct TreeRowReference {
     std::uint32_t slot;
 };
+
 InputValue initial(InputKind kind) {
     switch (kind) {
     case InputKind::boolean:
@@ -95,86 +109,146 @@ InputValue initial(InputKind kind) {
     throw std::logic_error("Unknown UI input kind.");
 }
 }
+
 namespace detail {
 struct Context;
+
 struct NodeState {
     ui::Control control;
+
     ui::ControlKey label{};
+
     ui::ControlKey body{};
+
     EditBinding edit;
+
     TextEditBinding text_edit;
+
     ActionBinding action;
+
     TableBinding table;
+
     CodeBinding code;
+
     std::optional<float> minimum_width;
+
     std::vector<InputValue> arguments;
+
     std::vector<KeyBinding> aliases;
+
     ItemList items;
+
     bool mounted{true};
+
     std::unique_ptr<Instance> child;
+
     std::map<ui::ControlKey, std::unique_ptr<Instance>> repeated;
+
     NodeState* previous{}; // Borrowed accepted owner; transferred only at commit.
+
     std::size_t begin{};
+
     std::size_t count{};
+
     bool dirty{true};
 };
+
 struct ScopeLifetime {
     std::uint64_t created{};
+
     std::uint64_t retired{};
 };
+
 struct DefinitionState;
+
 struct InstanceData {
     Runtime* runtime{};
+
     ObjectRoot context;
+
     ui::ControlKey* next_key{};
+
     std::unique_ptr<DefinitionState> value;
+
     DefinitionState* executing{};
+
     std::unique_ptr<PreparedUpdate> pending;
+
     std::shared_ptr<ScopeLifetime> lifetime;
+
     Statistics statistics;
+
     bool open{true};
+
     Result<std::unique_ptr<PreparedUpdate>> prepare(std::shared_ptr<Component>, ui::ControlKey,
                                                     std::span<const KeyBinding>, std::span<const InputValue>,
                                                     std::size_t);
 };
+
 // Definition-dependent data can be replaced while its Instance/Context stays
 // alive. A source candidate borrows child owners until the shared commit point.
 struct DefinitionState {
     InstanceData& scope;
+
     std::shared_ptr<Component> component;
+
     source::Program::Lease code;
+
     ui::ControlKey parent{};
+
     std::vector<KeyBinding> aliases;
+
     std::vector<NodeState> nodes;
+
     std::vector<InputValue> inputs;
+
     std::vector<std::pair<std::size_t, InputValue>> input_undo;
+
     std::vector<std::variant<bool, double>> states;
+
     std::optional<std::vector<std::variant<bool, double>>> state_undo;
+
     std::vector<std::vector<bool>> dependencies;
+
     std::vector<bool> dirty;
+
     std::vector<bool> reads;
+
     std::vector<ui::Control> published;
+
     std::size_t subtree_nodes{};
+
     bool evaluating{};
+
     bool initializing{};
+
     bool handling_event{};
+
     bool event_checked{};
+
     bool publication_pending{true};
+
     explicit DefinitionState(InstanceData& owner) : scope(owner) {}
+
     const Declaration& declaration() const { return component->declaration(); }
+
     void read(std::size_t index) {
         if (evaluating)
             reads.at(index) = true;
     }
+
     void invalidate(std::size_t index) {
         for (std::size_t i = 0; i < dependencies.size(); ++i)
             if (dependencies[i][index])
                 dirty[i] = true;
     }
+
     Result<void> invoke(std::uint32_t operation, const Declaration* source = nullptr) {
         struct Execution {
             InstanceData& scope;
+
             DefinitionState* previous;
+
             ~Execution() { scope.executing = previous; }
         } guard{scope, scope.executing};
         scope.executing = this;
@@ -184,6 +258,7 @@ struct DefinitionState {
             return failure((source ? *source : declaration()).diagnostic(result.error().message));
         return {};
     }
+
     Result<void> publish(std::span<const InputValue>);
 };
 
@@ -192,101 +267,119 @@ struct DefinitionState {
 // objects, reenters JIT, or executes World/editor commands.
 struct Context {
     InstanceData* owner{};
+
     DefinitionState& data() const {
         if (!owner || !owner->open || !owner->executing)
             throw std::runtime_error("UI component has no active invocation.");
         return *owner->executing;
     }
+
     bool read_bool(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         return std::get<bool>(d.inputs.at(index));
     }
+
     double read_number(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         return std::get<double>(d.inputs.at(index));
     }
+
     EditReference read_edit(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<EditBinding>(d.inputs.at(index)));
         return {index};
     }
+
     TextReference read_text(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<std::wstring>(d.inputs.at(index)));
         return {index};
     }
+
     TextEditReference read_text_edit(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<TextEditBinding>(d.inputs.at(index)));
         return {index};
     }
+
     KeyReference read_key(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<ui::ControlKey>(d.inputs.at(index)));
         return {index};
     }
+
     ItemsReference read_items(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<ItemList>(d.inputs.at(index)));
         return {index};
     }
+
     ActionReference read_action(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<ActionBinding>(d.inputs.at(index)));
         return {index};
     }
+
     TableReference read_table(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<TableBinding>(d.inputs.at(index)));
         return {index};
     }
+
     CodeReference read_code(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<CodeBinding>(d.inputs.at(index)));
         return {index};
     }
+
     TooltipReference read_tooltip(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<TooltipBinding>(d.inputs.at(index)));
         return {index};
     }
+
     TreeRowReference read_tree_row(std::uint32_t index) const {
         auto& d = data();
         d.read(index);
         static_cast<void>(std::get<TreeRowBinding>(d.inputs.at(index)));
         return {index};
     }
+
     KeyReference node_key(std::uint32_t slot) const {
         auto& d = data();
         static_cast<void>(d.nodes.at(slot));
         return {static_cast<std::uint32_t>(d.inputs.size() + slot)};
     }
+
     ui::ControlKey key(KeyReference reference) const {
         auto& d = data();
         return reference.slot < d.inputs.size() ? std::get<ui::ControlKey>(d.inputs[reference.slot])
                                                 : d.nodes.at(reference.slot - d.inputs.size()).control.key;
     }
+
     bool state_bool(std::uint32_t index) const {
         auto& d = data();
         d.read(d.inputs.size() + index);
         return std::get<bool>(d.states.at(index));
     }
+
     double state_number(std::uint32_t index) const {
         auto& d = data();
         d.read(d.inputs.size() + index);
         return std::get<double>(d.states.at(index));
     }
+
     void write_bool(std::uint32_t index, bool value) {
         auto& d = data();
         if (!d.initializing && !d.handling_event)
@@ -297,6 +390,7 @@ struct Context {
             d.invalidate(d.inputs.size() + index);
         }
     }
+
     void write_number(std::uint32_t index, double value) {
         auto& d = data();
         if ((!d.initializing && !d.handling_event) || !std::isfinite(value))
@@ -307,12 +401,14 @@ struct Context {
             d.invalidate(d.inputs.size() + index);
         }
     }
+
     bool event_bool() const {
         auto& d = data();
         if (!d.handling_event)
             throw std::runtime_error("No active UI event.");
         return d.event_checked;
     }
+
     void create_node(std::uint32_t slot, std::uint32_t parent, std::uint32_t kind) {
         auto& d = data();
         if (!d.initializing)
@@ -361,6 +457,7 @@ struct Context {
         if (type == NodeKind::tree_item)
             node.layout.height = ui_layout::Axis::fixed(20);
     }
+
     NodeState& target(std::uint32_t slot) {
         auto& d = data();
         if (!d.evaluating)
@@ -369,6 +466,7 @@ struct Context {
         node.dirty = true;
         return node;
     }
+
     static void text(ui::Control& node, std::uint32_t property, std::wstring value) {
         if (static_cast<Property>(property) == Property::text ||
             static_cast<Property>(property) == Property::empty_text)
@@ -424,19 +522,24 @@ struct Context {
             node.classes = std::move(classes);
         }
     }
+
     void set_text(std::uint32_t slot, std::uint32_t property, const String& value) {
         text(target(slot).control, property, wide(value));
     }
+
     void set_text_reference(std::uint32_t slot, std::uint32_t property, TextReference reference) {
         text(target(slot).control, property, std::get<std::wstring>(data().inputs.at(reference.slot)));
     }
+
     void set_text_from_edit(std::uint32_t slot, std::uint32_t property, TextEditReference reference) {
         text(target(slot).control, property, std::get<TextEditBinding>(data().inputs.at(reference.slot)).text);
     }
+
     void set_text_edit(std::uint32_t slot, std::uint32_t, TextEditReference reference) {
         auto& d = data();
         target(slot).text_edit = std::get<TextEditBinding>(d.inputs.at(reference.slot));
     }
+
     void set_tree_row(std::uint32_t slot, std::uint32_t, TreeRowReference reference) {
         const auto& row = std::get<TreeRowBinding>(data().inputs.at(reference.slot));
         auto& node = target(slot).control;
@@ -447,25 +550,31 @@ struct Context {
         node.tree_primary = row.primary;
         node.tree_lines = row.lines;
     }
+
     void set_radio_group(std::uint32_t slot, std::uint32_t, KeyReference reference) {
         target(slot).control.radio_group = key(reference);
     }
+
     void set_context(std::uint32_t slot, std::uint32_t, KeyReference reference) {
         target(slot).control.context_target = key(reference);
     }
+
     void set_context_from_edit(std::uint32_t slot, std::uint32_t, TextEditReference reference) {
         target(slot).control.context_target = std::get<TextEditBinding>(data().inputs.at(reference.slot)).key;
     }
+
     void set_selection_group(std::uint32_t slot, std::uint32_t, KeyReference reference) {
         const auto group = key(reference);
         if (!group)
             throw std::runtime_error("ChoiceButton requires a nonzero selection group.");
         target(slot).control.selection_group = group;
     }
+
     void set_items(std::uint32_t slot, std::uint32_t, ItemsReference reference) {
         auto& d = data();
         target(slot).items = std::get<ItemList>(d.inputs.at(reference.slot));
     }
+
     void set_number(std::uint32_t slot, std::uint32_t property, double value) {
         const auto p = static_cast<Property>(property);
         if (p == Property::tree_rows) {
@@ -591,6 +700,7 @@ struct Context {
             throw std::runtime_error("Invalid numeric UI property.");
         }
     }
+
     void set_bool(std::uint32_t slot, std::uint32_t property, bool value) {
         auto& state = target(slot);
         auto& node = state.control;
@@ -655,66 +765,86 @@ struct Context {
             throw std::runtime_error("Invalid boolean UI property.");
         }
     }
+
     void set_edit(std::uint32_t slot, std::uint32_t, EditReference reference) {
         auto& d = data();
         auto& node = target(slot);
         node.edit = std::get<EditBinding>(d.inputs.at(reference.slot));
     }
+
     void set_action(std::uint32_t slot, std::uint32_t, ActionReference reference) {
         auto& d = data();
         target(slot).action = std::get<ActionBinding>(d.inputs.at(reference.slot));
     }
+
     void set_model(std::uint32_t slot, std::uint32_t, TableReference reference) {
         auto& d = data();
         target(slot).table = std::get<TableBinding>(d.inputs.at(reference.slot));
     }
+
     void set_document(std::uint32_t slot, std::uint32_t, CodeReference reference) {
         target(slot).code = std::get<CodeBinding>(data().inputs.at(reference.slot));
     }
+
     void set_tooltip(std::uint32_t slot, std::uint32_t, TooltipReference reference) {
         auto& current = target(slot).control.tooltip;
         const auto& next = std::get<TooltipBinding>(data().inputs.at(reference.slot));
         if (current != next && (!current || !next || *current != *next))
             current = next;
     }
+
     void set_argument_code(std::uint32_t slot, std::uint32_t index, CodeReference value) {
         argument(slot, index, std::get<CodeBinding>(data().inputs.at(value.slot)));
     }
+
     void set_argument_tooltip(std::uint32_t slot, std::uint32_t index, TooltipReference value) {
         argument(slot, index, std::get<TooltipBinding>(data().inputs.at(value.slot)));
     }
+
     void set_argument_tree_row(std::uint32_t slot, std::uint32_t index, TreeRowReference value) {
         argument(slot, index, std::get<TreeRowBinding>(data().inputs.at(value.slot)));
     }
+
     void argument(std::uint32_t slot, std::uint32_t index, InputValue value) {
         target(slot).arguments.at(index) = std::move(value);
     }
+
     void set_argument_bool(std::uint32_t slot, std::uint32_t index, bool value) { argument(slot, index, value); }
+
     void set_argument_number(std::uint32_t slot, std::uint32_t index, double value) { argument(slot, index, value); }
+
     void set_argument_text(std::uint32_t slot, std::uint32_t index, const String& value) {
         argument(slot, index, wide(value));
     }
+
     void set_argument_key(std::uint32_t slot, std::uint32_t index, KeyReference value) {
         argument(slot, index, key(value));
     }
+
     void set_argument_edit(std::uint32_t slot, std::uint32_t index, EditReference value) {
         argument(slot, index, std::get<EditBinding>(data().inputs.at(value.slot)));
     }
+
     void set_argument_text_reference(std::uint32_t slot, std::uint32_t index, TextReference value) {
         argument(slot, index, std::get<std::wstring>(data().inputs.at(value.slot)));
     }
+
     void set_argument_text_edit(std::uint32_t slot, std::uint32_t index, TextEditReference value) {
         argument(slot, index, std::get<TextEditBinding>(data().inputs.at(value.slot)));
     }
+
     void set_argument_items(std::uint32_t slot, std::uint32_t index, ItemsReference value) {
         argument(slot, index, std::get<ItemList>(data().inputs.at(value.slot)));
     }
+
     void set_argument_action(std::uint32_t slot, std::uint32_t index, ActionReference value) {
         argument(slot, index, std::get<ActionBinding>(data().inputs.at(value.slot)));
     }
+
     void set_argument_table(std::uint32_t slot, std::uint32_t index, TableReference value) {
         argument(slot, index, std::get<TableBinding>(data().inputs.at(value.slot)));
     }
+
     void set_argument_text_from_edit(std::uint32_t slot, std::uint32_t index, TextEditReference value) {
         argument(slot, index, std::get<TextEditBinding>(data().inputs.at(value.slot)).text);
     }
@@ -723,13 +853,20 @@ struct Context {
 
 struct Component::Impl {
     Runtime& runtime;
+
     Declaration declaration;
+
     std::shared_ptr<source::Program> program;
+
     std::vector<std::shared_ptr<Component>> children;
+
     Impl(Runtime& value, Declaration source) : runtime(value), declaration(std::move(source)) {}
 };
+
 Component::Component(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
 Component::~Component() = default;
+
 const Declaration& Component::declaration() const noexcept {
     return impl_->declaration;
 }
@@ -838,6 +975,7 @@ Result<TypeId> register_types(Runtime& runtime) {
         return std::unexpected(registered.error());
     return registered->back();
 }
+
 bool ItemList::operator==(const ItemList& other) const {
     if (values == other.values)
         return true;
@@ -845,11 +983,13 @@ bool ItemList::operator==(const ItemList& other) const {
     const std::span<const Item> b = other.values ? std::span<const Item>(*other.values) : std::span<const Item>{};
     return std::ranges::equal(a, b);
 }
+
 std::shared_ptr<Component> Module::find(std::string_view name) const {
     const auto found =
         std::ranges::find_if(components_, [&](const auto& item) { return item->declaration().name == name; });
     return found == components_.end() ? nullptr : *found;
 }
+
 Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_view name, std::string_view source,
                                                 const Module* previous) {
     auto declarations = lower_module(name, source);
@@ -924,6 +1064,7 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
             return std::unexpected(result.error());
     return module;
 }
+
 Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::string_view name, std::string_view source,
                                                       std::string_view entry) {
     auto module = Module::compile(runtime, name, source);
@@ -945,35 +1086,59 @@ Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::str
 struct detail::PreparedUpdate {
     struct Change {
         std::size_t node{};
+
         std::size_t next_count{};
+
         std::vector<ui::Control> controls;
+
         std::unique_ptr<Instance> child;
+
         std::map<ui::ControlKey, std::unique_ptr<Instance>> additions;
+
         std::vector<ui::ControlKey> removals;
+
         std::vector<std::unique_ptr<PreparedUpdate>> children;
+
         bool unmount{};
+
         bool controls_changed{};
     };
+
     InstanceData& scope;
+
     std::unique_ptr<DefinitionState> replacement;
+
     DefinitionState& data;
+
     std::shared_ptr<Component> definition;
+
     std::vector<Change> changes;
+
     std::vector<ui::Control> reordered;
+
     std::uint64_t creations{};
+
     std::uint64_t removals{};
+
     std::size_t subtree_nodes{};
+
     bool resized{};
+
     bool control_changes{};
+
     bool materialized{};
+
     bool committed{};
+
     PreparedUpdate(InstanceData& owner, std::unique_ptr<DefinitionState> next, std::shared_ptr<Component> type)
         : scope(owner), replacement(std::move(next)), data(replacement ? *replacement : *owner.value),
           definition(std::move(type)) {}
+
     ~PreparedUpdate() {
         if (materialized && !committed)
             swap_view();
     }
+
     void append(std::vector<ui::Control>& output) const {
         if (materialized) {
             output.insert(output.end(), data.published.begin(), data.published.end());
@@ -989,6 +1154,7 @@ struct detail::PreparedUpdate {
             output.insert(output.end(), values.begin(), values.end());
         }
     }
+
     void swap_view() noexcept {
         if (resized)
             data.published.swap(reordered);
@@ -999,12 +1165,14 @@ struct detail::PreparedUpdate {
                     std::swap_ranges(change.controls.begin(), change.controls.end(), at);
                 }
     }
+
     void materialize() noexcept {
         if (!materialized) {
             swap_view();
             materialized = true;
         }
     }
+
     void commit() noexcept {
         // Borrowed owners move only now; removed nodes stay in the old definition
         // until every child plan and descriptor change has been committed.
@@ -1050,6 +1218,7 @@ struct detail::PreparedUpdate {
             scope.value = std::move(replacement);
     }
 };
+
 Result<void> detail::DefinitionState::publish(std::span<const InputValue> values) {
     const auto& definitions = declaration().inputs;
     if (values.size() != definitions.size())
@@ -1083,6 +1252,7 @@ Result<void> detail::DefinitionState::publish(std::span<const InputValue> values
     }
     return {};
 }
+
 Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(std::shared_ptr<Component> definition,
                                                                               ui::ControlKey parent,
                                                                               std::span<const KeyBinding> aliases,
@@ -1459,15 +1629,18 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
 }
 
 Instance::Instance(std::unique_ptr<detail::InstanceData> data) : data_(std::move(data)) {}
+
 Instance::~Instance() {
     close();
 }
+
 Result<std::unique_ptr<Instance>> Instance::create(std::shared_ptr<Component> component, ui::ControlKey parent,
                                                    ui::ControlKey& next_key, std::span<const KeyBinding> keys,
                                                    std::span<const InputValue> inputs) {
     return create_bounded(std::move(component), parent, next_key, keys, inputs, composition_limit,
                           std::make_shared<detail::ScopeLifetime>());
 }
+
 Result<std::unique_ptr<Instance>> Instance::create_bounded(std::shared_ptr<Component> component, ui::ControlKey parent,
                                                            ui::ControlKey& next_key, std::span<const KeyBinding> keys,
                                                            std::span<const InputValue> inputs, std::size_t budget,
@@ -1500,6 +1673,7 @@ Result<std::unique_ptr<Instance>> Instance::create_bounded(std::shared_ptr<Compo
     result->commit_controls();
     return result;
 }
+
 Result<void> Instance::update(std::span<const InputValue> values, std::shared_ptr<Component> definition) {
     auto& scope = *data_;
     if (!scope.open)
@@ -1529,11 +1703,13 @@ Result<void> Instance::update(std::span<const InputValue> values, std::shared_pt
         scope.pending->materialize();
     return {};
 }
+
 Result<void> Instance::update() {
     if (!data_->open)
         return failure("UI component is unmounted.");
     return data_->pending ? Result<void>{} : update(data_->value->inputs);
 }
+
 Result<bool> Instance::event(const ui::Action& action) {
     auto& scope = *data_;
     if (!scope.open || action.target || action.kind != ui::ActionKind::activate)
@@ -1590,11 +1766,13 @@ Result<bool> Instance::event(const ui::Action& action) {
         data.state_undo = before;
     return true;
 }
+
 std::span<const ui::Control> Instance::controls() const noexcept {
     if (data_->pending)
         return data_->pending->data.published;
     return data_->value ? std::span<const ui::Control>(data_->value->published) : std::span<const ui::Control>{};
 }
+
 Statistics Instance::statistics() const noexcept {
     auto result = data_->statistics;
     result.instance = data_->context.id();
@@ -1614,15 +1792,18 @@ Statistics Instance::statistics() const noexcept {
         }
     return result;
 }
+
 void Instance::commit_controls() noexcept {
     if (data_->pending) {
         data_->pending->commit();
         data_->pending.reset();
     }
 }
+
 void Instance::reject_controls() noexcept {
     reject_controls(false);
 }
+
 void Instance::reject_controls(bool retain_events) noexcept {
     auto& scope = *data_;
     scope.pending.reset();
@@ -1650,15 +1831,19 @@ void Instance::reject_controls(bool retain_events) noexcept {
             child->reject_controls(retain_events);
     }
 }
+
 std::span<const InputValue> Instance::inputs() const noexcept {
     return data_->pending ? data_->pending->data.inputs : data_->value->inputs;
 }
+
 bool Instance::has_pending() const noexcept {
     return data_->pending != nullptr;
 }
+
 bool Instance::changes_controls() const noexcept {
     return data_->pending && data_->pending->control_changes;
 }
+
 void Instance::close() noexcept {
     if (!data_ || !data_->open)
         return;

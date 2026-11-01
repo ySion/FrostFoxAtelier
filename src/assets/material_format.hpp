@@ -5,6 +5,7 @@
 
 namespace atelier::assets::material_format {
 using json_format::Json;
+
 inline constexpr std::uint32_t version = 2;
 
 namespace detail {
@@ -13,16 +14,19 @@ inline void text(std::string_view value, bool allow_empty = true) {
         !StringView(value).is_valid_utf8())
         throw std::runtime_error("Material keys and paths require valid UTF-8, no NUL, and at most 4096 bytes.");
 }
+
 inline std::string text(const Json& value, bool allow_empty = true) {
     auto result = value.get<std::string>();
     text(std::string_view(result), allow_empty);
     return result;
 }
+
 inline Json number(float value) {
     if (!std::isfinite(value))
         throw std::runtime_error("Material values must be finite.");
     return json_format::number(value);
 }
+
 inline float number(const Json& value) {
     if (!value.is_number())
         throw std::runtime_error("Material value requires a number.");
@@ -31,6 +35,7 @@ inline float number(const Json& value) {
         throw std::runtime_error("Material values must be finite.");
     return result;
 }
+
 template <std::size_t N>
 Json vector(const math::BasicVector<float, N>& value) {
     Json result = Json::array();
@@ -38,6 +43,7 @@ Json vector(const math::BasicVector<float, N>& value) {
         result.push_back(number(value[i]));
     return result;
 }
+
 template <std::size_t N>
 math::BasicVector<float, N> vector(const Json& value) {
     const auto values = json_format::vector<N>(value);
@@ -46,6 +52,7 @@ math::BasicVector<float, N> vector(const Json& value) {
         result[i] = values[i];
     return result;
 }
+
 inline Json binding(const material::TextureBinding& value) {
     text(std::string_view(value.asset_key));
     const char* address{};
@@ -64,6 +71,7 @@ inline Json binding(const material::TextureBinding& value) {
     }
     return {{"asset_key", value.asset_key}, {"address", address}};
 }
+
 inline material::TextureBinding binding(const Json& value) {
     json_format::fields(value, {"asset_key", "address"});
     material::TextureBinding result;
@@ -79,6 +87,7 @@ inline material::TextureBinding binding(const Json& value) {
         throw std::runtime_error("Unknown material texture address mode.");
     return result;
 }
+
 inline Json policy(const material::Policy& value) {
     if (value.coverage != material::Coverage::opaque && value.coverage != material::Coverage::mask)
         throw std::runtime_error("Unknown material coverage.");
@@ -86,6 +95,7 @@ inline Json policy(const material::Policy& value) {
             {"double_sided", value.double_sided},
             {"emission_two_sided", value.emission_two_sided}};
 }
+
 inline material::Policy policy(const Json& value) {
     json_format::fields(value, {"coverage", "double_sided", "emission_two_sided"});
     const auto coverage = value.at("coverage").get<std::string>();
@@ -94,6 +104,7 @@ inline material::Policy policy(const Json& value) {
     return {coverage == "mask" ? material::Coverage::mask : material::Coverage::opaque,
             value.at("double_sided").get<bool>(), value.at("emission_two_sided").get<bool>()};
 }
+
 inline Json inputs(std::span<const material::TextureDefault> values) {
     Json result = Json::array();
     std::unordered_set<std::string_view> paths;
@@ -110,6 +121,7 @@ inline Json inputs(std::span<const material::TextureDefault> values) {
     }
     return result;
 }
+
 inline std::vector<material::TextureDefault> inputs(const Json& values) {
     if (!values.is_array())
         throw std::runtime_error("Material inputs require an array.");
@@ -172,6 +184,7 @@ inline Json encode_entries(std::span<const material::Override> entries) {
     }
     return result;
 }
+
 inline std::vector<material::Override> decode_entries(const Json& entries) {
     if (!entries.is_array())
         throw std::runtime_error("Material overrides require an array.");
@@ -203,6 +216,7 @@ inline std::vector<material::Override> decode_entries(const Json& entries) {
     }
     return result;
 }
+
 inline Json encode(const MaterialAsset& asset) {
     detail::text(std::string_view(asset.key));
     if (const auto* author = std::get_if<MaterialSourceAsset>(&asset.author)) {
@@ -220,6 +234,7 @@ inline Json encode(const MaterialAsset& asset) {
             {"parent_key", author.parent_key},
             {"entries", encode_entries(author.entries)}};
 }
+
 inline MaterialAsset decode(const Json& value) {
     if (json_format::identity(value.at("version")) != version)
         throw std::runtime_error("Unsupported material version; expected v2.");

@@ -8,46 +8,60 @@
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::acceptance::borrow;
+
 using source::Program;
+
 struct WrappedParticle {
     Particle value;
 };
+
 struct ReferencingField {
     ReferenceSlot target;
 };
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view source, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request("value-fields.source", source, entry))));
     take(program.try_publish(candidate));
 }
+
 std::uint32_t number(const std::optional<Scalar>& value) {
     return std::get<std::uint32_t>(*value);
 }
+
 const FieldInfo& field(const TypeInfo& type, std::string_view name) {
     for (const auto& value : type.fields)
         if (value.name == name)
             return value;
     throw std::runtime_error("Missing composed source field.");
 }
+
 // Host-owned, correctly aligned storage; Runtime owns the value's lifecycle contract.
 struct StoredValue {
     Runtime& runtime;
+
     const TypeInfo& type;
+
     std::byte* data;
+
     StoredValue(Runtime& owner, TypeId id, const void* source = nullptr)
         : runtime(owner), type(*take(owner.describe(id))),
           data(static_cast<std::byte*>(::operator new(type.size, std::align_val_t{type.alignment}))) {
@@ -59,19 +73,25 @@ struct StoredValue {
             throw std::runtime_error(result.error().message);
         }
     }
+
     StoredValue(const StoredValue&) = delete;
+
     ~StoredValue() {
         if (!runtime.destroy_value(type.id, bytes()))
             std::terminate();
         ::operator delete(data, std::align_val_t{type.alignment});
     }
+
     std::span<std::byte> bytes() const { return {data, type.size}; }
+
     template <class T>
     T& at(std::size_t offset) const {
         return *reinterpret_cast<T*>(data + offset);
     }
 };
+
 constexpr std::string_view schema = R"(
+
     struct composed.Bundle { composed.Payload payload; uint processed; };
     struct composed.Payload {
         String title;

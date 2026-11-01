@@ -269,7 +269,9 @@ void verify_declarative_parameters() {
             "ToolShelf's Source node statistics did not account for the complete shelf subtree.");
     struct ShelfIdentity {
         ui::ControlKey target;
+
         ui::ControlKey key;
+
         editor::MenuGroup group;
     };
     std::vector<ShelfIdentity> tools;

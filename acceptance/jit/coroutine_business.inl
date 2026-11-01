@@ -3,6 +3,7 @@ void publish_coroutine(BusinessProgram& program, const char* name, std::string_v
     auto candidate = take(BusinessProgram::prepare(take(program.request(name, source))));
     take(program.try_publish(candidate));
 }
+
 void verify_coroutine_scalars() {
     Runtime runtime;
     BusinessProgram program(runtime, {});
@@ -235,7 +236,9 @@ void verify_coroutine_control() {
     enum class Mode { cancel, fail, discard };
     struct Control {
         std::optional<Coroutine>* owner;
+
         Mode mode;
+
         bool visited{};
     };
     const auto hook = [](void* context, Invocation& invocation) {

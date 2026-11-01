@@ -13,16 +13,19 @@ std::wstring environment(const wchar_t* name) {
     return value;
 }
 }
+
 std::filesystem::path shader_cache_directory() {
     if (auto host = environment(L"ATELIER_SHADER_CACHE"); !host.empty())
         return host;
     const auto local = environment(L"LOCALAPPDATA");
     return local.empty() ? std::filesystem::path{} : std::filesystem::path(local) / L"FrostFoxAtelier" / L"ShaderCache";
 }
+
 void isolate_shader_cache() {
     if (environment(L"ATELIER_SHADER_CACHE").empty())
         SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE", (editor::asset_directory() / L"shader-cache").c_str());
 }
+
 renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer, renderer::Frame frame,
                                                          renderer::Capture* capture) {
     auto result = renderer.render(frame, capture);

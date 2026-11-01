@@ -2,6 +2,7 @@
 // space, not from the renderer: row 0 is +Y, u = 0.5 faces +Z, u = 0.75 faces +X,
 // and a positive sky_rotation turns +X toward -Z like a Transform yaw.
 using SkyDirection = std::array<double, 3>;
+
 template <class Radiance>
 atelier::rendering::SkyMapRef sky_map(std::uint32_t width, Radiance&& radiance) {
     const std::uint32_t height = width / 2;
@@ -17,15 +18,18 @@ atelier::rendering::SkyMapRef sky_map(std::uint32_t width, Radiance&& radiance) 
         }
     return std::make_shared<const atelier::rendering::SkyMap>(width, height, rgb);
 }
+
 SkyDirection sky_yawed(const SkyDirection& d, double degrees) {
     const double a = degrees * std::numbers::pi / 180;
     return {d[0] * std::cos(a) + d[2] * std::sin(a), d[1], -d[0] * std::sin(a) + d[2] * std::cos(a)};
 }
+
 SkyDirection sky_direction(double longitude_degrees, double latitude_degrees) {
     const double lon = longitude_degrees * std::numbers::pi / 180;
     const double lat = latitude_degrees * std::numbers::pi / 180;
     return {std::sin(lon) * std::cos(lat), std::sin(lat), std::cos(lon) * std::cos(lat)};
 }
+
 render::Camera sky_look(Vec3 eye, Vec3 forward, Vec3 up, float aspect, float scale) {
     const auto z = normalize(forward);
     const auto x = normalize(cross(up, z));
@@ -36,6 +40,7 @@ render::Camera sky_look(Vec3 eye, Vec3 forward, Vec3 up, float aspect, float sca
     result.projection = {scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0};
     return result;
 }
+
 std::array<double, 2> sky_pixel(const render::Frame& frame, const SkyDirection& direction) {
     std::array<double, 4> value{direction[0], direction[1], direction[2], 0};
     for (const auto& matrix : {frame.camera.view, frame.camera.projection}) {
@@ -49,14 +54,17 @@ std::array<double, 2> sky_pixel(const render::Frame& frame, const SkyDirection& 
     return {viewport.x + (value[0] / value[3] * .5 + .5) * viewport.width,
             viewport.y + (.5 - value[1] / value[3] * .5) * viewport.height};
 }
+
 bool sky_inside(const render::Frame& frame, unsigned x, unsigned y) {
     const auto& v = frame.scene_viewport;
     return x + .5 >= v.x && x + .5 < v.x + v.width && y + .5 >= v.y && y + .5 < v.y + v.height;
 }
+
 void sky_flat_options(render::SceneLitSettings& options) {
     options.ddgi = options.gtao = options.sssr = options.bloom = options.shadows = false;
     options.antialiasing = render::Antialiasing::none;
 }
+
 void sky_anchor(Fixture& f) {
     // Scene Lit runs only for a non-empty scene; this cube stays out of every view below.
     f.room.meshes.assign(1, {});
@@ -297,8 +305,11 @@ void sky_background_temporal(Fixture& f) {
     };
     struct Marker {
         double dx;
+
         double dy;
+
         double energy;
+
         double trail;
     };
     const auto measure = [&](const render::Capture& image) {
@@ -507,8 +518,11 @@ void sky_probe_misses(Fixture& f) {
     options.probe_rays = 128;
     struct Board {
         Vec3 centre;
+
         Vec3 normal;
+
         Vec3 tangent;
+
         Vec3 bitangent;
     };
     const float s = std::sqrt(3.f) / 2;

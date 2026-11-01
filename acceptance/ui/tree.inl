@@ -2,21 +2,31 @@
 // describes only the rows tree_window selects, as editor trees do.
 struct TreeHost {
     Consumer c;
+
     std::vector<ui::ControlKey> keys;
+
     std::vector<std::wstring> names;
+
     std::vector<ui::TreeNode> nodes;
+
     std::vector<ui::TreeRow> rows;
+
     std::wstring filter;
+
     ui::ControlKey primary{};
+
     ui::ControlKey disabled{};
+
     void add(ui::ControlKey key, ui::ControlKey parent, std::wstring name, bool expanded = true) {
         nodes.push_back({parent ? node(parent) : ui::no_tree_node, expanded, {}});
         keys.push_back(key);
         names.push_back(std::move(name));
     }
+
     std::uint32_t node(ui::ControlKey key) const {
         return static_cast<std::uint32_t>(std::ranges::find(keys, key) - keys.begin());
     }
+
     std::vector<ui::Control> controls() {
         for (std::size_t i = 0; i < nodes.size(); ++i)
             nodes[i].text = names[i];
@@ -48,6 +58,7 @@ struct TreeHost {
         }
         return result;
     }
+
     ui::Reply describe() {
         c.controls = controls();
         auto reply = accepted(c.ui.set_controls(c.controls));
@@ -55,6 +66,7 @@ struct TreeHost {
         require(c.ui.accept(c.frame), "tree candidate not accepted");
         return reply;
     }
+
     // Selection becomes the host's primary row; expansion requests update the host's nodes.
     std::vector<ui::Action> apply(const ui::Reply& reply) {
         auto actions = actions_of(reply);
@@ -67,15 +79,18 @@ struct TreeHost {
         describe();
         return actions;
     }
+
     const ui::TreeRowGeometry& geometry(ui::ControlKey key) const {
         const auto at = std::ranges::find(c.frame->tree_rows, key, &ui::TreeRowGeometry::key);
         require(at != c.frame->tree_rows.end(), "tree row geometry missing");
         return *at;
     }
+
     bool shown(ui::ControlKey key) const {
         const auto* box = c.frame->find(key);
         return box && box->bounds.y >= box->clip.top - 1 && box->bounds.y + box->bounds.height <= box->clip.bottom + 1;
     }
+
     ui::Reply toggle(ui::ControlKey key) {
         const auto box = geometry(key).disclosure;
         require(box.width > 0, "branch has no disclosure hit area");
@@ -91,6 +106,7 @@ struct TreeHost {
         return up;
     }
 };
+
 void shared_tree_view() {
     for (float dpi : {1.f, 1.5f, 1.75f, 2.f}) {
         TreeHost h;

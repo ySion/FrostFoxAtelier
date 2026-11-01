@@ -9,16 +9,23 @@
 namespace atelier::logging {
 namespace {
 using namespace detail;
+
 bool missing(DWORD code) noexcept {
     return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
 }
+
 struct SnapshotChanged {};
+
 struct Fingerprint {
     FileIdentity identity;
+
     std::uint64_t size{};
+
     std::uint64_t modified{};
+
     bool operator==(const Fingerprint&) const = default;
 };
+
 Fingerprint fingerprint(HANDLE handle) {
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(handle, &info))
@@ -27,58 +34,96 @@ Fingerprint fingerprint(HANDLE handle) {
             (std::uint64_t{info.nFileSizeHigh} << 32) | info.nFileSizeLow,
             (std::uint64_t{info.ftLastWriteTime.dwHighDateTime} << 32) | info.ftLastWriteTime.dwLowDateTime};
 }
+
 struct Budget {
     ReadBudget limit;
+
     std::size_t bytes{};
+
     std::size_t lines{};
+
     std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
+
     bool worked{};
+
     // Permit one bounded input unit before yielding, otherwise a slow directory
     // scan could consume every poll's slice forever without advancing the cursor.
     bool expired() const {
         return limit.time <= std::chrono::milliseconds::zero() ||
                (worked && std::chrono::steady_clock::now() - start >= limit.time);
     }
+
     bool available() const { return bytes < limit.bytes && lines < limit.records && !expired(); }
 };
+
 struct Metadata {
     Handle handle;
+
     std::optional<Fingerprint> loaded;
+
     Fingerprint reading;
+
     std::string buffer;
 };
+
 struct Segment {
     Handle handle;
+
     FileIdentity identity;
+
     std::filesystem::path path;
+
     unsigned index{};
 };
 }
 
 struct Reader::Impl {
     std::filesystem::path directory;
+
     ReaderStatus status;
+
     std::optional<RunInfo> run;
+
     std::optional<PublishedHealth> health;
+
     Metadata manifest;
+
     Metadata summary;
+
     std::optional<Segment> current;
+
     std::deque<FileIdentity> completed;
+
     std::vector<FileIdentity> pending;
+
     std::string chunk;
+
     std::string tail;
+
     std::size_t chunk_cursor{};
+
     std::uint64_t offset{};
+
     std::uint64_t consumed{};
+
     std::uint64_t line_start{};
+
     std::uint64_t high_water{};
+
     bool oversized{};
+
     bool missing_final_reported{};
+
     bool lost_current_reported{};
+
     bool final_gap_reported{};
+
     bool missing_segment_reported{};
+
     using Key = std::pair<std::uint64_t, std::uint64_t>;
+
     std::deque<Key> recent;
+
     std::set<Key> keys;
 
     void issue(ReaderFault fault, std::string message, const std::filesystem::path& file, std::uint64_t at = 0) {
@@ -111,6 +156,7 @@ struct Reader::Impl {
             break;
         }
     }
+
     // True means the current metadata version was fully examined (or absent).
     // Every byte read, including metadata, consumes the same per-poll budget.
     bool metadata(Metadata& item, const std::filesystem::path& path, bool is_manifest, Budget& budget) {
@@ -194,6 +240,7 @@ struct Reader::Impl {
             return false;
         }
     }
+
     std::vector<Segment> scan() {
         std::vector<Segment> result;
         for (unsigned i = static_cast<unsigned>(retained_rotated_files) + 1; i-- != 0;) {
@@ -243,9 +290,11 @@ struct Reader::Impl {
         }
         return result;
     }
+
     bool was_completed(FileIdentity identity) const {
         return std::find(completed.begin(), completed.end(), identity) != completed.end();
     }
+
     void finish_segment() {
         if (!tail.empty() || oversized)
             issue(ReaderFault::incomplete_line, "Segment ended with an incomplete line", current->path, line_start);
@@ -260,6 +309,7 @@ struct Reader::Impl {
         offset = consumed = line_start = 0;
         lost_current_reported = false;
     }
+
     void line(std::vector<Record>& records) {
         try {
             auto value = read_record(parse_json(tail));
@@ -298,6 +348,7 @@ struct Reader::Impl {
             issue(ReaderFault::invalid_json, error.what(), current->path, line_start);
         }
     }
+
     void consume(Budget& budget, std::vector<Record>& records) {
         while (chunk_cursor < chunk.size() && budget.lines < budget.limit.records && !budget.expired()) {
             const auto newline = chunk.find('\n', chunk_cursor);
@@ -331,6 +382,7 @@ struct Reader::Impl {
             chunk_cursor = 0;
         }
     }
+
     void end_input() {
         status.caught_up = true;
         if (!status.source_ended)
@@ -349,6 +401,7 @@ struct Reader::Impl {
         }
         status.finished = true;
     }
+
     ReadBatch poll(ReadBudget limit) {
         Budget budget{limit};
         status.caught_up = false;
@@ -462,7 +515,9 @@ struct Reader::Impl {
 };
 
 Reader::Reader() : impl_(std::make_unique<Impl>()) {}
+
 Reader::~Reader() = default;
+
 Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory) {
     if (directory.empty() || !directory.is_absolute())
         return std::unexpected(Error{ErrorCode::invalid_options, "Reader directory must be absolute", {}});
@@ -483,6 +538,7 @@ Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory) {
     reader->impl_->status.waiting_for_run = true;
     return reader;
 }
+
 ReadBatch Reader::poll(ReadBudget budget) {
     try {
         return impl_->poll(budget);
@@ -495,6 +551,7 @@ ReadBatch Reader::poll(ReadBudget budget) {
         throw;
     }
 }
+
 void Reader::source_ended() noexcept {
     impl_->status.source_ended = true;
 }

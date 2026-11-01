@@ -40,6 +40,7 @@ void verify_parameter_search(Application& app, const std::filesystem::path& outp
     require(app.presented()->find(field) && app.document().undo_count() == history,
             "Search visibility or filtering changed scene history.");
 }
+
 void parameter_menu(Application& app, ControlKey source) {
     require_input_focus(app);
     KeyStateScope modifiers;
@@ -51,17 +52,20 @@ void parameter_menu(Application& app, ControlKey source) {
         throw std::runtime_error("Parameter menu did not enter the accepted frame (source " + std::to_string(source) +
                                  ", status: " + atelier::assets::utf8(app.status_text()) + ").");
 }
+
 bool tuple_reset_available(Application& app, ControlKey group) {
     parameter_menu(app, group);
     const bool enabled = app.menu_frame()->find(control::menu_group_reset)->enabled;
     key(app, VK_ESCAPE);
     return enabled;
 }
+
 void reset_tuple(Application& app, ControlKey group) {
     parameter_menu(app, group);
     click(app, control::menu_group_reset);
     require(!app.menu_window(), "Tuple reset left its popup open.");
 }
+
 void verify_parameter_slider(Application& app, const std::filesystem::path& output) {
     namespace sample = atelier::editor::workbench_control;
     click(app, sample::scalar);

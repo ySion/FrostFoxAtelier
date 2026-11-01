@@ -23,9 +23,11 @@
 namespace atelier::editor {
 namespace {
 using assets::json_format::Json;
+
 auto failure(std::string text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
+
 std::string identity() {
     GUID id{};
     if (FAILED(CoCreateGuid(&id)))
@@ -34,6 +36,7 @@ std::string identity() {
     StringFromGUID2(id, text, 40);
     return assets::utf8(text);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
@@ -41,9 +44,11 @@ T take(Result<T> value) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
+
 Json read_json(const std::filesystem::path& path) {
     return assets::json_format::parse(take(assets::read_file(path)));
 }
+
 // A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
 std::wstring material_file(std::string_view slot, std::vector<std::wstring>& taken) {
     auto name = assets::wide(slot);
@@ -80,6 +85,7 @@ std::wstring material_file(std::string_view slot, std::vector<std::wstring>& tak
 }
 
 }
+
 Result<void> write_file(const std::filesystem::path& path, std::string_view text, WriteMode mode) {
     std::filesystem::path temporary;
     try {
@@ -112,9 +118,11 @@ Result<void> write_file(const std::filesystem::path& path, std::string_view text
         return failure(error.what());
     }
 }
+
 Result<std::filesystem::path> Project::resolve(const std::filesystem::path& relative) const {
     return assets::resolve_project_path(root_, relative);
 }
+
 Result<Project> Project::create(const std::filesystem::path& folder) {
     try {
         if (folder.empty())
@@ -138,6 +146,7 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
         return failure(error.what());
     }
 }
+
 Result<Project> Project::open(const std::filesystem::path& folder) {
     try {
         Project project;
@@ -171,6 +180,7 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
         return failure(error.what());
     }
 }
+
 Result<std::vector<std::filesystem::path>> Project::source_paths() const {
     try {
         std::vector<std::filesystem::path> paths;
@@ -193,6 +203,7 @@ Result<std::vector<std::filesystem::path>> Project::source_paths() const {
         return failure(error.what());
     }
 }
+
 Result<void> Project::create_source(const std::filesystem::path& relative, std::string_view text) {
     if (relative.empty() || *relative.begin() != L"Source" || relative.extension() != L".source")
         return failure("Create source files inside the project's Source directory.");
@@ -208,6 +219,7 @@ Result<void> Project::create_source(const std::filesystem::path& relative, std::
     }
     return write_file(*path, text, WriteMode::create);
 }
+
 Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
     if (!relative.empty() &&
         (*relative.begin() != L"Source" || !relative.filename().wstring().ends_with(L".ui.source")))
@@ -238,6 +250,7 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
         return failure(error.what());
     }
 }
+
 Result<std::filesystem::path> Project::rename(const std::filesystem::path& relative, std::wstring_view name) {
     if (relative.empty() || std::distance(relative.begin(), relative.end()) < 2)
         return failure("Top-level project folders cannot be renamed.");
@@ -286,6 +299,7 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
         return std::unexpected(refreshed.error());
     return target_relative;
 }
+
 Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_identities) const {
     try {
         std::vector<assets::ProjectEntry> entries;
@@ -366,6 +380,7 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
         return failure(error.what());
     }
 }
+
 Result<void> Project::refresh() {
     try {
         auto roots = std::vector<std::filesystem::path>{"Content", "Source", "Config"};
@@ -376,24 +391,31 @@ Result<void> Project::refresh() {
         return failure(error.what());
     }
 }
+
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
     auto published = import_mesh_files(source, {});
     if (!published)
         return std::unexpected(published.error());
     return std::move(published->mesh.key);
 }
+
 Result<MeshImportPublication> Project::reimport_mesh(std::string_view key, const std::filesystem::path& source) {
     if (!key.starts_with("project/"))
         return failure("Reimport requires an existing project mesh identity.");
     return import_mesh_files(source, key);
 }
+
 Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::path& source,
                                                          std::string_view existing_key) {
     struct Write {
         std::filesystem::path path;
+
         std::string bytes;
+
         std::optional<std::string> before;
+
         std::filesystem::file_time_type modified{};
+
         bool written{};
     };
     std::vector<Write> writes;
@@ -639,6 +661,7 @@ std::filesystem::path collision_path(std::string_view key, math::Vector3 scale) 
     return name.str();
 }
 }
+
 Result<std::filesystem::path> Project::cook_collision(std::string_view key, math::Vector3 scale) {
     if (!key.starts_with("project/"))
         return failure("Collision Cook requires a project mesh identity.");
@@ -655,6 +678,7 @@ Result<std::filesystem::path> Project::cook_collision(std::string_view key, math
         return std::unexpected(written.error());
     return *path;
 }
+
 Result<std::shared_ptr<const std::string>> Project::collision(std::string_view key, math::Vector3 scale) {
     if (!key.starts_with("project/"))
         return failure("Collision asset requires a project mesh identity.");

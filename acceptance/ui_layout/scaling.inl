@@ -148,25 +148,42 @@ void virtual_range_and_anchor() {
 struct VirtualInspector {
     struct Row {
         LayoutNodeId node;
+
         LayoutNodeId label;
+
         LayoutNodeId value;
     };
+
     struct Output {
         std::shared_ptr<const TextFrame> frame;
+
         VisibleRange range;
     };
+
     TextProvider provider;
+
     LayoutDocument document{TextProvider::measure, &provider, {2048, 4}};
+
     VirtualList list{200000, 6};
+
     LayoutNodeId table;
+
     std::map<std::size_t, Row> active;
+
     std::map<std::size_t, std::pair<std::wstring, std::uint64_t>> edits;
+
     std::vector<std::size_t> keys;
+
     Output output;
+
     ComputeCosts compute_costs;
+
     std::uint64_t height_provider_revision{};
+
     float width{};
+
     std::size_t maximum_realized{};
+
     VirtualInspector() {
         ComPtr<IDWriteFontCollection> fonts;
         hr(provider.factory->GetSystemFontCollection(fonts.GetAddressOf()));
@@ -183,6 +200,7 @@ struct VirtualInspector {
         for (std::size_t key = 0; key < list.size(); ++key)
             keys.push_back(key);
     }
+
     void edit(std::size_t position, const wchar_t* text) {
         const auto key = keys.at(position);
         auto& value = edits[key];
@@ -194,6 +212,7 @@ struct VirtualInspector {
         }
         accepted(list.set_height(position, 48)); // Unseen data remains an estimate until realized.
     }
+
     void insert(std::size_t position, std::span<const std::size_t> inserted) {
         require(position <= keys.size(), "invalid business insertion");
         auto candidate = keys;
@@ -201,11 +220,13 @@ struct VirtualInspector {
         accepted(list.insert(position, inserted.size(), 48));
         keys.swap(candidate);
     }
+
     void erase(std::size_t position, std::size_t count) {
         accepted(list.erase(position, count));
         keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(position),
                    keys.begin() + static_cast<std::ptrdiff_t>(position + count));
     }
+
     LayoutView realize(double scroll, float new_width = 420, float height = 480) {
         accepted(list.set_viewport(scroll, height, 80));
         if (width != new_width || height_provider_revision != provider.epoch) {

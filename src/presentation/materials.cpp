@@ -3,7 +3,9 @@
 
 namespace atelier::presentation {
 using detail::Access;
+
 using detail::error;
+
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, ObjectId id) {
     return runtime.with_native<const StaticMeshComponent>(
         id, [&](const StaticMeshComponent& value) -> Result<std::vector<MaterialBinding>> {
@@ -25,6 +27,7 @@ Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, Ob
             return result;
         });
 }
+
 Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<const MaterialBinding> bindings) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return ready;
@@ -80,6 +83,7 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<cons
         return {};
     });
 }
+
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material_surfaces(Runtime& runtime,
                                                                                           ObjectId id) {
     auto snapshot = runtime.with_native<const StaticMeshComponent>(
@@ -90,6 +94,7 @@ Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material
         return std::unexpected(stored.error());
     return snapshot;
 }
+
 Result<void> detail::store_surfaces(Runtime& runtime, ObjectId id,
                                     std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> snapshot) {
     auto cached = runtime.with_native<const StaticMeshComponent>(
@@ -104,6 +109,7 @@ Result<void> detail::store_surfaces(Runtime& runtime, ObjectId id,
         return {};
     });
 }
+
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
 detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshComponent& value,
                           std::unordered_set<ObjectId>* dependencies) {

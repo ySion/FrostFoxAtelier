@@ -14,39 +14,52 @@
 namespace atelier::assets {
 namespace {
 using Json = nlohmann::json;
+
 // Sized for the 2K Intel Sponza (largest file: 3.75M triangles, 134 MiB of buffers, 72 images,
 // 1.1 GiB decoded) with about 2x headroom; documented in docs/modules/editor/projects.md.
 constexpr std::size_t maximum_document = 16ull << 20;
+
 constexpr std::size_t maximum_buffers = 512ull << 20;
+
 constexpr std::size_t maximum_image_file = 64ull << 20;
+
 constexpr std::size_t maximum_images = 256;
+
 constexpr std::size_t maximum_decoded = 2ull << 30;
+
 constexpr std::size_t maximum_triangles = 8'000'000;
+
 constexpr std::size_t maximum_nodes = 65536;
+
 constexpr std::size_t no_slot = ~std::size_t{};
 
 const Json empty_array = Json::array();
+
 const Json empty_object = Json::object();
 
 void require(bool ok, std::string_view message) {
     if (!ok)
         throw std::runtime_error("glTF: " + std::string(message));
 }
+
 const Json& field(const Json& object, std::string_view key, const Json& fallback) {
     const auto found = object.find(key);
     return found == object.end() ? fallback : *found;
 }
+
 const Json& member(const Json& object, std::string_view key) {
     const auto found = object.find(key);
     require(found != object.end(), "missing " + std::string(key) + ".");
     return *found;
 }
+
 const Json& element(const Json& gltf, std::string_view array, const Json& index) {
     const auto& items = member(gltf, array);
     require(items.is_array() && index.is_number_unsigned() && index.get<std::size_t>() < items.size(),
             "invalid " + std::string(array) + " index.");
     return items[index.get<std::size_t>()];
 }
+
 double number(const Json& object, std::string_view key, double fallback) {
     const auto found = object.find(key);
     if (found == object.end())
@@ -54,6 +67,7 @@ double number(const Json& object, std::string_view key, double fallback) {
     require(found->is_number() && std::isfinite(found->get<double>()), std::string(key) + " must be a finite number.");
     return found->get<double>();
 }
+
 template <std::size_t N>
 std::array<float, N> numbers(const Json& object, std::string_view key, std::array<float, N> fallback) {
     const auto found = object.find(key);
@@ -68,6 +82,7 @@ std::array<float, N> numbers(const Json& object, std::string_view key, std::arra
     }
     return result;
 }
+
 // RFC 3986 percent-decoding; the result is a relative path inside the source directory.
 std::filesystem::path dependency(const Json& uri) {
     require(uri.is_string(), "uri must be a string.");
@@ -93,7 +108,9 @@ std::filesystem::path dependency(const Json& uri) {
                 "dependency must stay inside the source directory.");
     return path.lexically_normal();
 }
+
 using Matrix = std::array<double, 16>; // Column-major, as glTF stores it.
+
 Matrix multiply(const Matrix& a, const Matrix& b) {
     Matrix r{};
     for (std::size_t c = 0; c < 4; ++c)
@@ -102,6 +119,7 @@ Matrix multiply(const Matrix& a, const Matrix& b) {
                 r[c * 4 + row] += a[k * 4 + row] * b[c * 4 + k];
     return r;
 }
+
 Matrix local_matrix(const Json& node) {
     if (node.contains("matrix")) {
         const auto m = numbers<16>(node, "matrix", {});
@@ -129,15 +147,21 @@ Matrix local_matrix(const Json& node) {
     r[15] = 1;
     return r;
 }
+
 struct Accessor {
     const std::byte* data{};
+
     std::size_t count{};
+
     std::size_t stride{};
+
     std::uint32_t component{};
 };
+
 std::size_t component_size(std::uint32_t type) {
     return type == 5121 ? 1 : type == 5123 ? 2 : 4;
 }
+
 Accessor accessor(const Json& gltf, std::span<const std::string_view> buffers, const Json& index, std::string_view type,
                   std::initializer_list<std::uint32_t> components) {
     const auto& a = element(gltf, "accessors", index);
@@ -169,6 +193,7 @@ Accessor accessor(const Json& gltf, std::span<const std::string_view> buffers, c
     return {reinterpret_cast<const std::byte*>(bytes.data()) + view_offset + offset, static_cast<std::size_t>(count),
             static_cast<std::size_t>(stride), component};
 }
+
 std::uint32_t index_at(const Accessor& a, std::size_t i) {
     const auto* p = a.data + i * a.stride;
     if (a.component == 5121)
@@ -182,6 +207,7 @@ std::uint32_t index_at(const Accessor& a, std::size_t i) {
     std::memcpy(&v, p, 4);
     return v;
 }
+
 template <std::size_t N>
 std::array<double, N> floats_at(const Accessor& a, std::size_t i) {
     std::array<float, N> v;
@@ -193,11 +219,13 @@ std::array<double, N> floats_at(const Accessor& a, std::size_t i) {
     }
     return result;
 }
+
 std::string alpha_mode(const Json& material) {
     auto mode = material.value("alphaMode", std::string("OPAQUE"));
     require(mode == "OPAQUE" || mode == "MASK" || mode == "BLEND", "invalid alphaMode.");
     return mode;
 }
+
 std::string material_name(const Json& material, std::size_t index) {
     auto name = material.value("name", std::string{});
     return name.empty() ? "material " + std::to_string(index) : name;
@@ -283,6 +311,7 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
         std::size_t corners{};
         struct Skipped {
             std::size_t primitives{};
+
             std::size_t triangles{};
         };
         std::map<std::size_t, Skipped> skipped;
@@ -582,6 +611,7 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
 bool is_mesh_path(const std::filesystem::path& path) {
     return path.extension() == L".obj" || path.extension() == L".gltf";
 }
+
 MeshImport load_mesh(const std::filesystem::path& source, ImageCache* images) {
     if (source.extension() == L".gltf")
         return load_gltf(source, images);

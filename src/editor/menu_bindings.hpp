@@ -4,12 +4,17 @@
 
 namespace atelier::editor {
 enum class MenuGroup { file, edit, create, project, view, window, help };
+
 struct MenuGroupDefinition {
     MenuGroup id;
+
     std::uint64_t key;
+
     std::wstring_view title;
+
     wchar_t access_key;
 };
+
 inline constexpr std::array menu_groups{MenuGroupDefinition{MenuGroup::file, 700, L"File", L'F'},
                                         MenuGroupDefinition{MenuGroup::edit, 701, L"Edit", L'E'},
                                         MenuGroupDefinition{MenuGroup::create, 702, L"Create", L'C'},
@@ -17,33 +22,44 @@ inline constexpr std::array menu_groups{MenuGroupDefinition{MenuGroup::file, 700
                                         MenuGroupDefinition{MenuGroup::view, 703, L"View", L'V'},
                                         MenuGroupDefinition{MenuGroup::window, 704, L"Window", L'W'},
                                         MenuGroupDefinition{MenuGroup::help, 706, L"Help", L'H'}};
+
 constexpr const MenuGroupDefinition* menu_group(std::uint64_t key) {
     for (const auto& group : menu_groups)
         if (group.key == key)
             return &group;
     return nullptr;
 }
+
 constexpr std::uint64_t menu_key(MenuGroup id) {
     for (const auto& group : menu_groups)
         if (group.id == id)
             return group.key;
     return 0;
 }
+
 constexpr std::uint64_t cycle_menu(std::uint64_t key, bool previous) {
     for (std::size_t i = 0; i < menu_groups.size(); ++i)
         if (menu_groups[i].key == key)
             return menu_groups[(i + (previous ? menu_groups.size() - 1 : 1)) % menu_groups.size()].key;
     return 0;
 }
+
 struct MenuBinding {
     OperatorCall call;
+
     MenuGroup group;
+
     std::wstring_view title;
+
     bool separator{};
+
     std::wstring_view shelf_title{};
+
     std::uint64_t radio_group{};
+
     std::optional<assets::AssetKind> asset_kind{};
 };
+
 // Presentation only: these are the same calls used by keyboard and Control, not another action identity.
 inline const MenuBinding menu_bindings[]{
     {{"project.new"}, MenuGroup::file, L"New Project Folder..."},

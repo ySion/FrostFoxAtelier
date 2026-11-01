@@ -9,33 +9,49 @@
 namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void complete(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 struct Vertex {
     float x;
+
     float y;
+
     float z;
 };
+
 struct Hit {
     std::uint32_t hit;
+
     std::uint32_t instance;
+
     std::uint32_t primitive;
+
     std::uint32_t visible;
+
     float u;
+
     float v;
+
     float distance;
+
     float padding;
 };
+
 static_assert(sizeof(Hit) == 32);
+
 constexpr std::uint32_t ray_count = 5;
+
 void verify(const Hit* hits, float first_distance) {
     require(hits != nullptr, "inline RayQuery readback unavailable");
     for (std::uint32_t i = 0; i < ray_count; ++i) {

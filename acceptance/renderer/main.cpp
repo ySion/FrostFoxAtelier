@@ -20,12 +20,15 @@ namespace {
 namespace render {
 using namespace atelier::renderer;
 }
+
 namespace ui = atelier::ui;
+
 void check(bool condition, const char* text) {
     if (!condition) {
         throw std::runtime_error(text);
     }
 }
+
 template <class T>
 T take(render::Result<T> result) {
     if (!result) {
@@ -35,6 +38,7 @@ T take(render::Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 void pump() {
     MSG m;
     while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
@@ -42,6 +46,7 @@ void pump() {
         DispatchMessageW(&m);
     }
 }
+
 render::Result<void> wait_preparation(render::Renderer& renderer, const render::ViewSettings& view) {
     // GPU-based validation keeps the first preparation busy for minutes.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
@@ -56,6 +61,7 @@ render::Result<void> wait_preparation(render::Renderer& renderer, const render::
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 }
+
 // Native batch consumers prepare their own immutable candidates.
 render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, const atelier::renderer::Frame& frame,
                                                     render::Capture* capture = nullptr) {
@@ -70,11 +76,14 @@ render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, 
                                                     render::Capture* capture = nullptr) {
     return prepared_render(renderer, frame.prepare(renderer), capture);
 }
+
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(window, message, wparam, lparam);
 }
+
 struct WindowClass {
     WNDCLASSW description{};
+
     WindowClass() {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         description.lpfnWndProc = procedure;
@@ -82,10 +91,13 @@ struct WindowClass {
         description.lpszClassName = L"AtelierRendererAcceptance";
         check(RegisterClassW(&description) != 0, "register fixture window");
     }
+
     ~WindowClass() { UnregisterClassW(description.lpszClassName, description.hInstance); }
 };
+
 struct Window {
     HWND hwnd{};
+
     Window(int width = 641, int height = 385) {
         // A process may host several independent Renderer consumers at once.
         // The shared class outlives every fixture HWND, including failed cases.
@@ -102,6 +114,7 @@ struct Window {
             ShowWindow(hwnd, SW_SHOW);
         pump();
     }
+
     void resize(int width, int height) {
         RECT r{0, 0, width, height};
         check(AdjustWindowRectExForDpi(&r, static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE)), FALSE, 0,
@@ -112,17 +125,22 @@ struct Window {
               "resize fixture");
         pump();
     }
+
     ~Window() { DestroyWindow(hwnd); }
 };
+
 const std::uint8_t* pixel(const render::Capture& c, unsigned x, unsigned y) {
     return c.rgba.data() + (std::size_t(y) * c.extent.width + x) * 4;
 }
+
 float depth(const render::Capture& c, unsigned x, unsigned y) {
     return c.depth[std::size_t(y) * c.extent.width + x];
 }
+
 std::array<float, 16> translation(float x, float y, float z) {
     return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1};
 }
+
 void snapshot(const render::Capture& c, const char* path = "renderer-acceptance.ppm") {
     std::ofstream out(path, std::ios::binary);
     out << "P6\n" << c.extent.width << ' ' << c.extent.height << "\n255\n";
@@ -130,6 +148,7 @@ void snapshot(const render::Capture& c, const char* path = "renderer-acceptance.
         out.write(reinterpret_cast<const char*>(c.rgba.data() + i), 3);
     check(out.good(), "write capture evidence");
 }
+
 void lit_preparation_case(render::Renderer& renderer, HWND hwnd) {
     const auto extent = take(renderer.target()).extent;
     ui::Frame drawing{.id = 900, .extent = extent, .draws = {}};
@@ -202,6 +221,7 @@ void lit_preparation_case(render::Renderer& renderer, HWND hwnd) {
         "new-group=%u/%u not_ready PASS\n",
         first_ms, progress.done, progress.total, ready_s, grown.done, grown.total);
 }
+
 void ui_only_cases(render::Renderer& renderer, Window& window) {
     const auto initial_extent = take(renderer.target()).extent;
     ui::Frame ui_frame{.id = 3000, .extent = initial_extent, .draws = {}};
@@ -246,6 +266,7 @@ void ui_only_cases(render::Renderer& renderer, Window& window) {
     }
     std::puts("Renderer UI-only: PASS (cold render/capture, zero viewport, resize, skipped capture)");
 }
+
 void transform_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     ui::Frame ui_frame{.id = 1000, .extent = extent, .draws = {}};
     std::array<render::MeshInstance, 2> cubes{};
@@ -342,6 +363,7 @@ void transform_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     std::puts("Renderer world transforms: PASS (rotation, nonuniform scale, shear normals, reflection, "
               "extreme scale, invalid-frame recovery)");
 }
+
 void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     auto geometry = std::make_shared<const atelier::geometry::Mesh>(std::vector<atelier::geometry::Vertex>{
         {{-.05f, -.5f, 0}, {1, 0, -1}}, {{.05f, -.5f, 0}, {1, 0, -1}}, {{0, .5f, 0}, {1, 0, -1}}});
@@ -404,6 +426,7 @@ void mesh_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     std::puts(
         "Renderer meshes: PASS (shared geometry batches, arbitrary normals, immutable version replacement, missing-resource rejection, retirement)");
 }
+
 // The Renderer rechecks only positions whose content changed since an accepted
 // check. Each case edits one position of a steady snapshot in place.
 void instance_check_cases(render::Renderer& renderer, ui::PixelExtent extent) {
@@ -495,6 +518,7 @@ void instance_check_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     std::puts(
         "Renderer instance checks: PASS (steady-position edits rejected and recovered, persistent key uses across Lit and Studio, changed transforms and colors prepared again)");
 }
+
 void visibility_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     ui::Frame drawing{.id = 2500, .extent = extent, .draws = {}};
     render::Camera camera;

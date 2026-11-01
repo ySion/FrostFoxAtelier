@@ -29,6 +29,7 @@ ui Late(in double rows) { Tree tree { rows: input.rows; TreeItem item {} } }
     std::filesystem::create_directories(folder);
     struct Cleanup {
         std::filesystem::path path;
+
         ~Cleanup() {
             std::error_code error;
             std::filesystem::remove_all(path, error);

@@ -16,10 +16,12 @@ T take(ui::Result<T> result) {
                                  std::to_string(result.error().native_code) + ").");
     return std::move(*result);
 }
+
 void take(ui::Result<void> result) {
     if (!result)
         throw std::runtime_error("Popup UI rejected its style.");
 }
+
 template <class T>
 T graphics(renderer::Result<T> result) {
     if (!result)
@@ -27,6 +29,7 @@ T graphics(renderer::Result<T> result) {
     return std::move(*result);
 }
 }
+
 PopupHost::PopupHost(HWND owner, std::span<const std::wstring> fonts, bool validation)
     : window_(owner), ui_(fonts), measurement_(fonts) {
     renderer::Options options;
@@ -34,6 +37,7 @@ PopupHost::PopupHost(HWND owner, std::span<const std::wstring> fonts, bool valid
     options.vsync = false; // The main surface owns frame pacing.
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
 }
+
 void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem> items,
                        const ui::Style& style, std::shared_ptr<const ui::StyleSheet> sheet,
                        std::shared_ptr<ui_language::Component> component, bool center_first_item) {
@@ -223,12 +227,14 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
     visible_ = true;
     dirty_ |= measure || resize_surface;
 }
+
 void PopupHost::suspend() {
     if (controls_.empty())
         return;
     controls_.front().layout.collapsed = true;
     take(ui_.set_controls(controls_));
 }
+
 void PopupHost::retarget(ui::PixelExtent extent) {
     // Retire modal input while retaining text/layout caches and stable identities.
     suspend();
@@ -238,6 +244,7 @@ void PopupHost::retarget(ui::PixelExtent extent) {
     extent_ = extent;
     surface_dpi_ = window_.dpi_scale();
 }
+
 void PopupHost::render(renderer::Capture* capture) {
     if (!visible_)
         return;
@@ -276,6 +283,7 @@ void PopupHost::render(renderer::Capture* capture) {
         }
     }
 }
+
 ui::Reply PopupHost::input(ui::Event event) {
     if (!visible_)
         return {};
@@ -292,6 +300,7 @@ ui::Reply PopupHost::input(ui::Event event) {
         window_.cursor(*reply.cursor);
     return reply;
 }
+
 void PopupHost::hide() {
     if (!visible_)
         return;
@@ -305,6 +314,7 @@ void PopupHost::hide() {
     static_cast<void>(ui_.input(loss));
     suspend();
 }
+
 void PopupHost::reset_document() {
     hide();
     take(ui_.set_controls({}));
@@ -316,6 +326,7 @@ void PopupHost::reset_document() {
     component_.reset();
     diagnostic_.clear();
 }
+
 void PopupHost::close() {
     if (closed_)
         return;

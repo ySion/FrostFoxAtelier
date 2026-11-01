@@ -11,19 +11,23 @@
 namespace atelier::editor {
 namespace {
 using assets::json_format::Json;
+
 struct Failed {
     Error error;
 };
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw Failed{value.error()};
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw Failed{value.error()};
 }
+
 [[noreturn]] void malformed(std::string message) {
     throw Failed{{ErrorCode::argument_mismatch, std::move(message)}};
 }
@@ -33,6 +37,7 @@ bool identifier(std::string_view text) {
     return !text.empty() && letter(text.front()) &&
            std::ranges::all_of(text.substr(1), [&](char c) { return letter(c) || (c >= '0' && c <= '9'); });
 }
+
 // "node.output", or nothing when malformed.
 std::optional<std::pair<std::string_view, std::string_view>> endpoint(const Json& value) {
     if (!value.is_string())
@@ -43,6 +48,7 @@ std::optional<std::pair<std::string_view, std::string_view>> endpoint(const Json
         return std::nullopt;
     return std::pair{text.substr(0, dot), text.substr(dot + 1)};
 }
+
 std::string dotted(std::span<const std::string> path) {
     std::string text;
     for (const auto& name : path)

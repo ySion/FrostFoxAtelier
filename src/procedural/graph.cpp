@@ -12,20 +12,24 @@ struct Access {
     static auto& inputs(N& node) {
         return node.inputs_;
     }
+
     template <class N>
     static auto& connections(N& node) {
         return node.connections_;
     }
+
     template <class G>
     static auto& nodes(G& graph) {
         return graph.nodes_;
     }
+
     template <class G>
     static auto& display(G& graph) {
         return graph.display_;
     }
 };
 }
+
 namespace {
 using detail::Access;
 

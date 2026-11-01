@@ -7,6 +7,7 @@ ProjectUI::ProjectUI() {
     if (!registered)
         throw std::runtime_error(registered.error().message);
 }
+
 void ProjectUI::sync(const Project* project) {
     const auto root = project ? project->root() : std::filesystem::path{};
     const auto entry = project ? project->ui_source() : std::filesystem::path{};
@@ -27,6 +28,7 @@ void ProjectUI::sync(const Project* project) {
         }
     }
 }
+
 Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& session, ui::Surface surface, double elapsed,
                                                               std::size_t entities,
                                                               const std::function<void(const ui::Reply&)>& effects) {
@@ -89,9 +91,11 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
         return std::unexpected(collected.error());
     return *frame;
 }
+
 Result<bool> ProjectUI::event(const ui::Action& action) {
     return document_ ? document_->event(action) : Result<bool>{false};
 }
+
 Result<void> ProjectUI::collect() {
     if (runtime_.collection_phase() == CollectionPhase::idle) {
         auto started = runtime_.begin_collection();
@@ -103,6 +107,7 @@ Result<void> ProjectUI::collect() {
         return std::unexpected(collected.error());
     return {};
 }
+
 std::string_view ProjectUI::diagnostic() const noexcept {
     return error_.empty() ? (document_ ? document_->diagnostic() : std::string_view{}) : error_;
 }

@@ -20,263 +20,461 @@ class TextSnapshot;
 }
 
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
+
 enum class DragAxis { horizontal, vertical };
+
 enum class ButtonBehavior { command, toggle };
+
 enum class MenuBehavior { command, checkbox, radio };
+
 enum class EditCommandKind { copy, paste, reset };
+
 struct EditCommand {
     EditCommandKind kind{};
+
     ControlKey target{};
+
     bool operator==(const EditCommand&) const = default;
 };
 
 struct Tooltip {
     std::wstring title;
+
     std::wstring identity;
+
     std::wstring description;
+
     bool operator==(const Tooltip&) const = default;
 };
+
 inline constexpr std::uint32_t maximum_tree_rows = 1u << 18;
 
 struct Control {
     ControlKey key{};
+
     ControlKey parent{}; // Unique live keys; parent precedes child in the input.
+
     ControlKind kind{ControlKind::container};
+
     ui_layout::NodeInput layout{ui_layout::NodeInput::column()};
+
     std::wstring text;
+
     bool single_line{}; // Labels: one line with end ellipsis when their allocated width is exhausted.
+
     Role role{Role::normal};
+
     ControlIcon icon{ControlIcon::none}; // Standalone or leading glyph; text reserves the same measured icon space.
+
     bool enabled{true};
+
     bool selected{};
+
     bool click_action{}; // splitter grip only: activate on click; bool payload means Alt modifier.
+
     double value{};
+
     double minimum{-10000};
+
     double maximum{10000};
+
     bool single_precision{}; // Float storage uses its shortest round-tripping decimal, without widened double noise.
+
     double drag_step{0.01};
+
     double fine_step{0.001}; // Number/splitter: per DIP. Slider: keyboard increment.
+
     DragAxis drag_axis{DragAxis::horizontal};
+
     std::vector<std::string> classes;
+
     StyleProperties style;
+
     std::shared_ptr<const StyleSheet> style_scope; // Applies to this control and its descendants.
+
     bool invalid{};
+
     bool modified{}; // Modified compares the authoritative value with its declared default.
+
     std::optional<double> default_value;
+
     ControlKey context_target{};
+
     ControlKey context_group{}; // Context request target and optional group reset command.
+
     ControlKey selection_group{}; // Button group: arrow navigation; Tab visits the selected member.
+
     ControlKey action_target{}; // Button/table activation route; zero uses this control's key. Never a UI identity.
+
     // The host flattens its hierarchy and owns expansion and filtering. A tree
     // describes tree_row_count rows; its children are any subset of them, in
     // increasing tree_index, and Session lays out only those rows. Hosts keep the
     // focused row, its neighbours and ancestors, and the first and last rows described.
     std::uint32_t tree_row_count{}; // tree only.
+
     std::uint32_t tree_index{};
+
     std::uint32_t tree_depth{}; // tree_item only: flattened position and depth (< 128).
+
     bool tree_branch{};
+
     bool tree_expanded{}; // tree_item only; expanded requires branch.
+
     // tree_item only: bit k (1..depth) draws the guide of the depth-k ancestor,
     // or of this row at k == depth, because it has a later sibling.
     std::bitset<128> tree_lines;
+
     // tree_item only: the host's primary row. Becoming primary, including a new
     // primary row, scrolls it into view once; hosts keep it described.
     bool tree_primary{};
+
     bool
         tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
+
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
+
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
+
     std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
+
     ButtonBehavior button_behavior{ButtonBehavior::command}; // button only: request the inverse selected value.
+
     MenuBehavior menu_behavior{MenuBehavior::command}; // menu_item only; selected is the authoritative checked value.
+
     ControlKey radio_group{}; // Nonzero for radio menu items; at most one selected item per group.
+
     std::shared_ptr<const TableData> table; // table only; no layout children or synthetic row controls.
+
     TableSelection table_selection; // Lightweight host selection, independent of immutable row storage.
+
     TableLayout table_layout;
+
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
+
     std::shared_ptr<const Tooltip> tooltip; // Owned documentation, shared across a parameter row and its fields.
+
     bool read_only{}; // CodeEditor only: selectable/copyable, without text mutations or an IME binding.
+
     bool operator==(const Control&) const = default;
 };
+
 struct Surface {
     PixelExtent extent;
+
     float dpi_scale{1};
+
     std::uint64_t revision{1}; // Advance on client-coordinate/DPI mapping changes.
+
     bool operator==(const Surface&) const = default;
 };
+
 struct ControlBox {
     ControlKey key{};
+
     ControlKey parent{};
+
     ControlKind kind{};
+
     Rect bounds; // Physical pixels, including scrolling.
+
     Clip clip; // Effective ancestor clip, in the same space.
+
     bool enabled{};
+
     std::uint64_t incarnation{}; // UI lifetime guard; not a business object ID.
+
     std::shared_ptr<const ResolvedStyle> style;
+
     bool selected{}; // Accepted toggle value; activation requests its inverse.
+
     ControlKey action_target{}; // Accepted route; retargeting invalidates input against this frame.
+
     ButtonBehavior button_behavior{ButtonBehavior::command}; // Accepted activation semantics.
+
     MenuBehavior menu_behavior{MenuBehavior::command};
+
     ControlKey radio_group{};
+
     std::shared_ptr<const TableData> table; // Exact immutable content accepted with this geometry.
+
     TableSelection table_selection;
+
     ControlKey context_target{};
+
     ControlKey context_group{}; // Accepted menu route, including group actions.
+
     TableLayout table_layout;
+
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
+
     std::shared_ptr<const Tooltip> tooltip; // Exact documentation accepted with this geometry.
+
     bool read_only{}; // Accepted edit policy; changing it retires pending writes.
 };
+
 struct EditToken {
     ControlKey key{};
+
     std::uint64_t incarnation{};
+
     std::uint64_t generation{};
+
     std::uint64_t revision{};
+
     bool operator==(const EditToken&) const = default;
 };
+
 struct TextCaret {
     EditToken token;
+
     Rect bounds; // Client physical pixels from the same accepted drawing.
+
     Clip clip;
 };
+
 struct TextInputAnchor {
     EditToken token;
+
     std::uint64_t composition_id{};
+
     std::uint64_t composition_revision{};
+
     Rect bounds; // Composition/replacement start; client physical pixels, height is line height.
+
     Clip clip; // Effective visible editable region, in the same space.
 };
+
 struct TextInputState {
     EditToken token;
+
     bool composing{};
+
     std::optional<TextCaret> accepted_caret;
+
     std::optional<TextInputAnchor> accepted_anchor{}; // Only IME offset zero is supported.
 };
+
 // Focus and passive text bindings are not pending interactions. Field drafts
 // require commit/cancel; CodeDocument edits already belong to their document.
 struct InteractionState {
     bool pointer{};
+
     bool keyboard{};
+
     bool text_draft{};
+
     bool composition{};
+
     bool clipboard{};
+
     bool popup{};
+
     bool active() const noexcept { return pointer || keyboard || text_draft || composition || clipboard || popup; }
 };
+
 struct TextGeometry {
     ControlKey key{};
+
     std::uint64_t incarnation{};
+
     std::shared_ptr<const detail::TextSnapshot> paragraph;
+
     float x{};
+
     float y{};
+
     float dpi_scale{1};
+
     float scroll{}; // Final displayed origin, including horizontal scroll.
+
     EditToken token;
+
     std::uint64_t composition_id{};
 };
+
 struct ScrollbarGeometry {
     ControlKey key{};
+
     Rect bounds;
+
     Rect track;
+
     Rect thumb;
+
     Rect decrement;
+
     Rect increment;
+
     Clip clip;
+
     double maximum{};
+
     double value{};
+
     double page{};
+
     bool horizontal{};
 };
+
 struct ValueLadderGeometry {
     ControlKey key{};
+
     Rect bounds; // Frozen client pixels for this captured gesture.
+
     float row_height{};
+
     int selected_row{3};
+
     double increment{.1};
 };
+
 struct TreeRowGeometry {
     ControlKey key{};
+
     std::uint32_t index{};
+
     std::uint32_t depth{}; // Accepted host row position.
+
     Rect disclosure; // Accepted physical hit area; empty on leaves.
+
     bool expanded{};
 };
+
 // Live tree scroll and the last laid-out viewport height, in DIP. Hosts choose
 // which rows to describe from it; before a first layout the height is the surface's.
 struct TreeViewport {
     double scroll{};
+
     float height{};
+
     float row_height{};
 };
+
 struct TableColumnGeometry {
     TableKey column{};
+
     Rect bounds;
+
     Rect resize;
+
     Clip clip;
 };
+
 struct TableCellGeometry {
     TableKey row{};
+
     TableKey column{};
+
     TableKey cell{};
+
     Rect bounds;
+
     Clip clip;
 };
+
 struct TableGeometry {
     ControlKey key{};
+
     std::shared_ptr<const TableData> data;
+
     TableSelection selection;
+
     Rect header;
+
     Rect body;
+
     Clip clip;
+
     std::vector<TableColumnGeometry> columns{};
+
     std::vector<TableCellGeometry> cells{}; // Only visible cells; stable data identities, never ControlKeys.
+
     std::size_t columns_per_row{1}; // Actual accepted grid width for keyboard navigation.
+
     float row_stride{}; // Physical pixels between visual rows.
 };
+
 struct CodeLineGeometry {
     std::size_t row{};
+
     std::uint32_t start{};
+
     std::shared_ptr<const detail::TextSnapshot> paragraph;
+
     float x{};
+
     float y{};
 };
+
 struct CodeGeometry {
     ControlKey key{};
+
     std::uint64_t revision{};
+
     std::uint64_t selection_revision{};
+
     Rect body;
+
     float line_height{};
+
     float scale{1};
+
     std::vector<CodeLineGeometry> lines; // Accepted visible lines only.
 };
+
 struct TooltipGeometry {
     ControlKey owner{};
+
     std::uint64_t incarnation{};
+
     Rect anchor;
+
     Rect bounds; // Client physical pixels; overlay never participates in hit testing.
+
     std::shared_ptr<const Tooltip> content;
+
     std::uint64_t generation{}; // The hover episode which produced this drawing; cancellation retires it.
 };
+
 struct UiFrame {
     std::shared_ptr<const Frame> drawing;
+
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
+
     std::uint64_t session_identity{};
+
     std::uint64_t controls_revision{}; // Complete descriptor batch used by this candidate.
+
     std::uint64_t style_revision{};
+
     std::uint64_t measure_provider_revision{};
+
     std::optional<TextCaret> caret;
+
     std::optional<TextInputAnchor> input_anchor{};
+
     std::vector<TextGeometry> text_geometry;
+
     std::vector<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
+
     std::vector<TreeRowGeometry> tree_rows;
+
     std::vector<CodeGeometry> code_editors;
+
     std::vector<TableGeometry> tables;
+
     std::optional<ValueLadderGeometry> value_ladder;
+
     std::optional<TooltipGeometry> tooltip;
+
     ControlKey popup{};
+
     const ControlBox* find(ControlKey) const noexcept;
+
     const TextGeometry* find_text(ControlKey) const noexcept;
+
     const TableGeometry* find_table(ControlKey) const noexcept;
+
     const CodeGeometry* find_code(ControlKey) const noexcept;
 };
 
@@ -299,74 +497,122 @@ enum class ActionKind {
     table_column_resize,
     expand
 };
+
 struct ContextMenuRequest {
     ControlKey source{};
+
     ControlKey group{};
+
     float x{};
+
     float y{};
+
     std::optional<TableSelection> table{};
 }; // Accepted client pixels.
+
 struct DragPoint {
     float x{};
+
     float y{};
 }; // Accepted-frame client pixels.
+
 struct SelectionModifiers {
     bool shift{};
+
     bool control{};
+
     bool double_click{};
 }; // double_click: second click of a native double click.
+
 using ActionValue = std::variant<std::monostate, double, std::wstring, bool, ContextMenuRequest, DragPoint,
                                  TableSelection, TableSort, TableColumnResize, SelectionModifiers>;
+
 struct Action {
     ActionKind kind{};
+
     ControlKey key{};
+
     ActionValue value; // Cancel returns the original value; toggles activate with the requested bool.
+
     ControlKey target{}; // Optional host route. key always identifies the control that emitted the action.
+
     bool keep_menu_open{}; // Checkbox indicator click; host refreshes the authoritative value in place.
 };
+
 enum class ClipboardKind { read, copy, cut };
+
 struct ClipboardRequest {
     ClipboardKind kind{};
+
     std::uint64_t operation_id{};
+
     EditToken token;
+
     std::wstring text; // Owned selected text for copy/cut.
+
     std::size_t limit{4096}; // Bounded by the active editor; native adapters cap at 1 MiB UTF-16 units.
 };
+
 struct ClipboardResult {
     ClipboardKind kind{};
+
     std::uint64_t operation_id{};
+
     EditToken token;
+
     bool success{};
+
     std::uint32_t native_error{};
+
     std::wstring text; // Owned CF_UNICODETEXT payload for read.
 };
+
 enum class ImeKind { complete, cancel };
+
 struct ImeRequest {
     ImeKind kind{};
+
     std::uint64_t composition_id{};
+
     EditToken token;
 };
+
 struct ImeResult {
     ImeKind kind{};
+
     std::uint64_t composition_id{};
+
     EditToken token;
+
     bool success{};
+
     std::uint32_t native_error{};
 };
+
 enum class CompositionKind { start, update, end, cancel };
+
 struct Preedit {
     std::wstring text;
+
     std::uint32_t cursor{}; // UTF-16 offset, clamped to an editing boundary by UI.
+
     std::vector<std::uint8_t> attributes; // IMM attributes per UTF-16 unit; empty if absent.
 };
+
 struct CompositionEvent {
     CompositionKind kind{};
+
     std::uint64_t composition_id{};
+
     EditToken token; // Fixed start binding; advanced only after a confirmed segment.
+
     std::optional<std::wstring> result;
+
     std::optional<Preedit> preedit; // Missing differs from an empty preedit.
 };
+
 using PlatformRequest = std::variant<ClipboardRequest, ImeRequest>;
+
 using Effect = std::variant<Action, PlatformRequest>;
 
 enum class ErrorCode {
@@ -380,18 +626,24 @@ enum class ErrorCode {
     invalid_text,
     platform_failed
 };
+
 struct Error {
     ErrorCode code{};
+
     ControlKey key{};
+
     std::uint32_t native_code{};
 };
+
 template <class T>
 using Result = std::expected<T, Error>;
 
 // Validate a producer's descriptor before publishing it. This does not inspect
 // tree row order, table contents or solve layout; Session remains the complete batch boundary.
 Result<void> validate_control_properties(const Control&);
+
 enum class Capture { unchanged, acquire, release };
+
 enum class Cursor {
     arrow,
     text,
@@ -406,14 +658,21 @@ enum class Cursor {
     rotate,
     scale
 };
+
 struct Reply {
     bool consumed{};
+
     bool redraw{};
+
     Capture capture{Capture::unchanged};
+
     std::optional<Cursor> cursor; // No change for non-pointer events.
+
     std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
+
     std::optional<Error> error; // Input/platform failure; the edit and its history remain intact.
 };
+
 enum class EventKind {
     pointer_move,
     pointer_leave,
@@ -429,7 +688,9 @@ enum class EventKind {
     ime_result,
     composition
 };
+
 enum class PointerButton { primary, secondary, middle };
+
 enum class Key {
     none,
     backspace,
@@ -455,45 +716,75 @@ enum class Key {
     page_up,
     page_down
 };
+
 using InputData = std::variant<std::monostate, std::wstring, ClipboardResult, ImeResult, CompositionEvent>;
+
 struct Event {
     EventKind kind{};
+
     float x{};
+
     float y{}; // Client physical pixels; never reinterpret using a future frame.
+
     float wheel{}; // Positive scrolls toward the beginning, measured in wheel notches.
+
     PointerButton button{PointerButton::primary};
+
     Key key{Key::none};
+
     InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
+
     bool shift{};
+
     bool control{};
+
     bool alt{};
+
     unsigned clicks{1}; // Native click count; two activates the accepted table row.
+
     bool repeat{}; // Native key auto-repeat; one-shot commands can ignore repeats.
 };
+
 struct Statistics {
     // Cumulative since Session construction. prepares/rasterizations count
     // attempts; text_layouts counts successful native layout creations;
     // raster_bytes sums completed R8 pixel payloads, excluding native overhead.
     std::uint64_t prepares{};
+
     std::uint64_t measure_calls{};
+
     std::uint64_t text_layouts{};
+
     std::uint64_t rasterizations{};
+
     std::uint64_t raster_bytes{};
+
     std::uint64_t coverage_cache_hits{};
+
     std::uint64_t culled_text_controls{};
+
     std::uint64_t provider_revision{};
+
     // Unique CPU coverages produced by this Session and still retained by any
     // owner (text cache, current/old frames or renderer). No per-frame scan.
     std::uint64_t live_coverages{};
+
     std::uint64_t live_coverage_bytes{};
+
     // Successful descriptor changes; identical values do not count as updates.
     std::uint64_t control_batches{};
+
     std::uint64_t controls_updated{};
+
     std::uint64_t controls_created{};
+
     std::uint64_t controls_removed{};
+
     // Attempts to synchronize a dirty control, and successful layout-node creates.
     std::uint64_t layout_syncs{};
+
     std::uint64_t layout_nodes_created{};
+
     ui_layout::Stats layout;
 };
 
@@ -504,20 +795,30 @@ public:
     // Optional application fonts join the system collection for this Session.
     // Files must remain available for its lifetime; no global font installation.
     explicit Session(std::span<const std::wstring> font_files = {});
+
     ~Session();
+
     Session(const Session&) = delete;
+
     Session& operator=(const Session&) = delete;
+
     Result<void> set_style(const Style&); // Validate/copy the complete value before applying.
+
     Result<void> set_style_sheet(std::shared_ptr<const StyleSheet>);
+
     const Style& style() const noexcept;
+
     Statistics statistics() const noexcept;
+
     // Resize/DPI transitions cancel presses/edits and gate activation until a
     // matching candidate has been accepted. Zero extent is a valid suspended state.
     Result<Reply> set_surface(Surface);
+
     // Descriptors are copied. Apply returned cancellation effects when controls
     // disappear/disable. Active text drafts survive fresh model projections;
     // passive buffers instead follow the latest authoritative value.
     Result<Reply> set_controls(std::span<const Control>);
+
     // Sparse complete values for existing keys. Order is irrelevant; duplicate or
     // missing keys and changes to kind/parent/structural references or tree
     // rows (tree_row_count, tree_index, tree_depth, tree_branch, tree_expanded) are rejected.
@@ -525,37 +826,55 @@ public:
     // Layout dependencies are resolved by prepare; its failure retains the old
     // frame, not the previous descriptors or cancelled interaction.
     Result<Reply> update_controls(std::span<const Control>);
+
     Result<std::shared_ptr<const UiFrame>> prepare();
+
     bool accept(std::shared_ptr<const UiFrame>);
+
     const std::shared_ptr<const UiFrame>& presented() const noexcept;
+
     // Topmost enabled target in the accepted frame; zero while input is suspended.
     ControlKey pointer_target(float x, float y) const;
+
     TreeViewport tree_viewport(ControlKey tree) const noexcept;
+
     Reply input(const Event&);
+
     // Clear only passive help, including when an outer host consumes the input.
     void dismiss_tooltip() noexcept;
+
     Reply cancel_interaction();
+
     // Finish a valid text draft before a document save. Invalid input stays
     // editable; callers must apply the returned effects before serialization.
     Result<Reply> commit_edit();
+
     // Zero clears focus; other targets must be visible, current accepted controls.
     // A transition finishes the previous draft. Same focus preserves its draft,
     // selection and composition; text fields bind input immediately, numbers passively.
     Reply focus(ControlKey);
+
     Reply execute(EditCommand,
                   std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.
+
     ControlKey focused_control() const noexcept;
+
     bool wants_keyboard() const noexcept;
+
     InteractionState interaction_state() const noexcept;
+
     bool has_popup() const noexcept; // Modal barrier includes an opening/closing frame transition.
+
     // Host checks before executing a clipboard request. Unlike text_input(),
     // this also authorizes copy from a read-only document without enabling IME.
     bool clipboard_current(const ClipboardRequest&) const noexcept;
+
     // Writable live binding plus matching accepted caret only; no pending-frame geometry.
     std::optional<TextInputState> text_input() const noexcept;
 
 private:
     struct Impl;
+
     std::unique_ptr<Impl> impl_;
 };
 

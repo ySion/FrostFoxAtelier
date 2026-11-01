@@ -45,6 +45,7 @@ enum class Icon {
     trash,
     unparent
 };
+
 // Rasterizes the bundled Tabler mask into tightly packed R8 alpha. Requires
 // 1..256 pixels and exactly pixels*pixels output bytes; throws on invalid input.
 // Call on a cache miss, never per frame. No window or text backend is required.

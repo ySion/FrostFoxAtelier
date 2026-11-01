@@ -9,6 +9,7 @@
 namespace atelier::application {
 struct RecoveryRecord {
     std::filesystem::path scene;
+
     std::string warning; // The scene survived even if the sidecar could not be written.
 };
 
@@ -18,12 +19,15 @@ struct RecoveryRecord {
 class SceneRecovery final {
 public:
     using Outcome = Result<std::optional<RecoveryRecord>>;
+
     bool attempted() const noexcept { return attempted_; }
+
     const Outcome& preserve(editor::Session&, const std::filesystem::path& project, const std::filesystem::path& scene,
                             std::string_view reason, const std::filesystem::path& directory = {});
 
 private:
     bool attempted_{};
+
     Outcome outcome_{std::optional<RecoveryRecord>{}};
 };
 }

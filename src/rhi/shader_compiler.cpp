@@ -18,33 +18,46 @@
 namespace atelier::rhi::detail {
 namespace {
 using Microsoft::WRL::ComPtr;
+
 using Digest = std::array<std::uint8_t, 32>;
 
 // Changing the entry layout or key composition bumps this; older entries then
 // never match and age out through trimming.
 constexpr std::uint32_t cache_format = 1;
+
 constexpr std::array<char, 4> cache_magic{'A', 'S', 'H', 'C'};
+
 constexpr std::uintmax_t cache_limit = 512ull << 20;
+
 constexpr std::uintmax_t cache_trim_target = 256ull << 20;
 
 struct CacheHeader {
     std::array<char, 4> magic;
+
     std::uint32_t format;
+
     std::uint64_t bytecode_size;
+
     std::uint64_t reflection_size;
+
     Digest checksum; // Bytecode followed by reflection.
 };
+
 static_assert(sizeof(CacheHeader) == 56);
 
 class Sha256 {
 public:
     Sha256() { ok_ = BCRYPT_SUCCESS(BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &hash_, nullptr, 0, nullptr, 0, 0)); }
+
     ~Sha256() {
         if (hash_)
             BCryptDestroyHash(hash_);
     }
+
     Sha256(const Sha256&) = delete;
+
     Sha256& operator=(const Sha256&) = delete;
+
     void add(const void* data, std::size_t size) {
         auto* bytes = static_cast<const UCHAR*>(data);
         while (ok_ && size) {
@@ -54,12 +67,14 @@ public:
             size -= chunk;
         }
     }
+
     template <class Char>
     void add_text(std::basic_string_view<Char> text) {
         const std::uint64_t size = text.size();
         add(&size, sizeof size);
         add(text.data(), text.size() * sizeof(Char));
     }
+
     std::optional<Digest> finish() {
         Digest digest{};
         if (!ok_ || !BCRYPT_SUCCESS(BCryptFinishHash(hash_, digest.data(), static_cast<ULONG>(digest.size()), 0)))
@@ -69,6 +84,7 @@ public:
 
 private:
     BCRYPT_HASH_HANDLE hash_{};
+
     bool ok_{};
 };
 
@@ -98,10 +114,12 @@ std::string_view bytes(IDxcBlob& blob) {
 class IncludeProbe final : public IDxcIncludeHandler {
 public:
     explicit IncludeProbe(IDxcIncludeHandler& inner) : inner_(inner) {}
+
     HRESULT STDMETHODCALLTYPE LoadSource(LPCWSTR file, IDxcBlob** source) override {
         used = true;
         return inner_.LoadSource(file, source);
     }
+
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** object) override {
         if (id == __uuidof(IDxcIncludeHandler) || id == __uuidof(IUnknown)) {
             *object = this;
@@ -110,8 +128,11 @@ public:
         *object = nullptr;
         return E_NOINTERFACE;
     }
+
     ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+
     ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
     bool used{};
 
 private:
@@ -124,7 +145,9 @@ void trim(const std::filesystem::path& directory) {
     std::error_code error;
     struct Entry {
         std::filesystem::file_time_type time;
+
         std::filesystem::path path;
+
         std::uintmax_t size;
     };
     std::vector<Entry> entries;

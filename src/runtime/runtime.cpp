@@ -21,6 +21,7 @@ namespace atelier {
 namespace {
 
 constexpr auto no_slot = std::numeric_limits<std::uint32_t>::max();
+
 std::atomic<std::uint64_t> next_context{1};
 
 auto failure(ErrorCode code, std::string message) {
@@ -53,7 +54,9 @@ bool normalize_description(std::string& text) {
 
 struct CallbackScope {
     std::size_t& depth;
+
     explicit CallbackScope(std::size_t& count) : depth(count) { ++depth; }
+
     ~CallbackScope() { --depth; }
 };
 
@@ -186,29 +189,46 @@ namespace detail {
 
 struct ValueRootStorage {
     TypeId type;
+
     std::span<const std::byte> storage;
 };
 
 struct RootState {
     using Value = std::variant<ObjectReference, ValueRootStorage>;
+
     struct Entry {
         Value value;
+
         std::uint32_t next_free{no_slot};
+
         bool active{true};
+
         std::uint32_t trace_next{no_slot};
+
         std::uint32_t trace_previous{no_slot};
+
         bool trace_queued{};
+
         std::uint32_t value_index{no_slot};
     };
+
     std::vector<Entry> entries;
+
     // Dense live value roots only: object roots and retired entries cannot own this storage.
     std::vector<std::uint32_t> value_entries;
+
     std::uint32_t free_head{no_slot};
+
     std::size_t count{};
+
     std::size_t traversals{};
+
     bool alive{true};
+
     void* observer{};
+
     void (*added)(void*, std::uint32_t) noexcept {};
+
     void (*removing)(void*, std::uint32_t) noexcept {};
 
     bool has_capacity() const noexcept { return free_head != no_slot || entries.size() < no_slot; }
@@ -360,145 +380,239 @@ bool ValueRoot::registered() const noexcept {
 
 struct Runtime::Impl {
     struct Type;
+
     struct FieldStorage {
         std::size_t offset{};
+
         void* (*address)(void*) noexcept {};
+
         ValueDescription value;
+
         const Type* type{};
+
         std::vector<Scalar> default_leaves{};
+
         // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
         std::unique_ptr<const FieldRange> hard{};
     };
+
     // A hard-bounded scalar inside a record or object, reached through storage indices
     // (base segments included); `field` is the reported path, without base segments.
     // With `array` set, `path` reaches an Array: `range` then bounds each scalar or vector
     // element, otherwise every element applies its own type's leaves.
     struct ConstrainedLeaf {
         std::vector<std::uint32_t> path;
+
         const FieldRange* range;
+
         std::vector<FieldId> field;
+
         const Type* array{};
     };
+
     // A type validator for the value at `path`: an inline record, a base segment or the type
     // itself. With `array` set, every element runs its own type's validators instead.
     struct ValidatorStep {
         std::vector<std::uint32_t> path;
+
         std::vector<FieldId> field;
+
         Result<void> (*validate)(const void*);
+
         const Type* array{};
     };
+
     struct Type {
         TypeInfo info;
+
         NativeLayout native;
+
         const Type* base{};
+
         // Own declarations, including hidden names, for inherited conflict checks.
         std::vector<std::string> member_names;
+
         // An internal leading base segment reuses layout/lifetime/trace walkers.
         // Native constructors still own their complete C++ object themselves.
         std::vector<FieldStorage> fields;
+
         std::vector<Invoker> methods;
+
         std::vector<std::uint32_t> trace_fields;
+
         std::size_t trace_depth{1};
+
         std::vector<std::uint32_t> destroy_fields;
+
         std::size_t walk_depth{1};
+
         bool needs_destroy{};
+
         // Only built-in scalars and padding-free homogeneous described layouts qualify.
         const Type* scalar_leaf{};
+
         // Every hard-bounded leaf (and Array of them), so whole-value writes and validate() can enforce them.
         std::vector<ConstrainedLeaf> constrained_leaves;
+
         Result<void> (*validate)(const void*){};
+
         // Post-order: base segment, inline records and Arrays innermost first, the type's own validator last.
         std::vector<ValidatorStep> validators;
+
         // Non-trivial values only: byte ranges (null swap) and native swaps that exchange two
         // values without throwing. Empty when the type cannot, so writes fall back to assignment.
         struct SwapPart {
             std::size_t offset;
+
             std::size_t size;
+
             void (*swap)(void*, void*) noexcept;
         };
+
         std::vector<SwapPart> swap_parts;
     };
+
     // Ordered to stay at 64 bytes.
     struct Slot {
         TypeId type;
+
         void* storage{};
+
         std::uint64_t generation{1};
+
         // write_epoch of the latest write; see stamp().
         std::uint64_t written{};
+
         std::uint64_t mark_epoch{};
+
         std::uint32_t next_free{no_slot};
+
         std::uint32_t gray_next{no_slot};
+
         std::uint32_t gray_previous{no_slot};
+
         bool gray_queued{};
     };
+
     static_assert(sizeof(Slot) == 64);
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
+
     std::vector<std::unique_ptr<Type>> types;
+
     // Published C++ representation -> types index; registration keeps representations unique.
     Map<const void*, std::uint32_t> representations;
+
     // Published name -> types index. Keys view the immutable name inside each heap Type.
     Map<StringView, std::uint32_t> names;
+
     std::vector<Slot> slots;
+
     // Write stamps. write_pages[i] is the newest stamp among slots [64i, 64i + 64), so
     // changed_objects() skips unchanged pages. Sized with slots before creation commits.
     static constexpr unsigned write_page_shift = 6;
+
     std::uint64_t write_epoch{1};
+
     std::vector<std::uint64_t> write_pages;
+
     void stamp(std::uint32_t index) noexcept {
         slots[index].written = write_epoch;
         write_pages[index >> write_page_shift] = write_epoch;
     }
+
     // Handles keep only this registry alive, never the Runtime or its objects.
     std::shared_ptr<detail::RootState> roots{std::make_shared<detail::RootState>()};
+
     std::uint32_t free_head{no_slot};
+
     std::size_t live{};
+
     std::size_t callbacks{};
+
     std::size_t native_borrows{};
+
     bool changing_references{};
+
     std::size_t active_executions{};
+
     TypeId f32;
+
     TypeId f64;
+
     TypeId u32;
+
     TypeId i32;
+
     TypeId boolean;
+
     TypeId object;
+
     CollectionPhase phase{CollectionPhase::idle};
+
     std::uint64_t epoch{};
+
     std::size_t marked{};
+
     std::size_t pending{};
+
     std::size_t root_cursor{};
+
     std::size_t root_limit{};
+
     std::size_t sweep_cursor{};
+
     std::size_t sweep_limit{};
+
     std::uint32_t gray_head{no_slot};
+
     std::uint32_t gray_tail{no_slot};
+
     std::uint32_t root_head{no_slot};
+
     std::uint32_t root_tail{no_slot};
+
     struct TraceFrame {
         const Type* type;
+
         const void* storage;
+
         std::size_t next_field{};
+
         const ReferenceSequence* sequence{};
+
         std::size_t next_element{};
     };
+
     std::vector<TraceFrame> trace_stack;
+
     std::size_t maximum_trace_depth{};
+
     enum class TraceOwner { none, object, value_root };
+
     TraceOwner trace_owner{TraceOwner::none};
+
     std::uint32_t trace_owner_index{no_slot};
+
     struct WalkFrame {
         const Type* type{};
+
         std::byte* storage{};
+
         const std::byte* source{};
+
         std::size_t next_field{};
     };
+
     // Synchronous walks use disjoint suffixes; callbacks may grow this vector.
     // No reference into it survives a callback. GC's suspended cursor stays separate.
     std::vector<WalkFrame> walk_stack;
+
     struct WalkScope {
         std::vector<WalkFrame>& stack;
+
         const std::size_t base{stack.size()};
+
         ~WalkScope() { stack.resize(base); }
     };
 
@@ -1610,6 +1724,7 @@ Result<CollectionProgress> Runtime::collect_step(CollectionBudget budget) {
 CollectionPhase Runtime::collection_phase() const noexcept {
     return impl_->phase;
 }
+
 std::size_t Runtime::pending_reclamation() const noexcept {
     return impl_->pending;
 }
@@ -1641,21 +1756,31 @@ Result<FunctionSignature> Runtime::resolve_signature(const SignatureDefinition& 
 
 struct detail::TypePublication::State {
     std::uint64_t context{};
+
     std::size_t first_index{};
+
     std::vector<std::unique_ptr<Runtime::Impl::Type>> staged;
+
     std::vector<const TypeInfo*> catalog;
+
     bool reserved{};
+
     bool committed{};
 };
+
 detail::TypePublication::TypePublication() : state_(std::make_unique<State>()) {}
+
 detail::TypePublication::~TypePublication() = default;
+
 Result<std::shared_ptr<detail::TypePublication>>
 detail::TypePublication::prepare(Runtime& runtime, std::vector<TypeDefinition> definitions) {
     return runtime.prepare_types(std::move(definitions));
 }
+
 std::span<const TypeInfo* const> detail::TypePublication::catalog() const noexcept {
     return state_->catalog;
 }
+
 Result<FunctionSignature> detail::TypePublication::resolve_signature(Runtime& runtime,
                                                                      const SignatureDefinition& definition) const {
     if (state_->context != runtime.impl_->context || state_->committed ||
@@ -1663,6 +1788,7 @@ Result<FunctionSignature> detail::TypePublication::resolve_signature(Runtime& ru
         return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
     return runtime.impl_->resolve_signature(definition, std::nullopt, state_->staged);
 }
+
 Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
     auto& impl = *runtime.impl_;
     if (state_->context != impl.context || state_->committed || state_->first_index != impl.types.size())
@@ -1688,6 +1814,7 @@ Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
     state_->reserved = true;
     return {};
 }
+
 void detail::TypePublication::commit(Runtime& runtime) noexcept {
     auto& impl = *runtime.impl_;
     if (!state_->reserved || state_->committed || state_->context != impl.context ||
@@ -1705,6 +1832,7 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
     state_->staged.clear();
     state_->committed = true;
 }
+
 Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> definitions) {
     auto publication = prepare_types(std::move(definitions));
     if (!publication)
@@ -2071,6 +2199,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
     enum class LayoutState { unseen, active, complete };
     struct LayoutFrame {
         std::size_t type;
+
         std::size_t next_field;
     };
     std::vector<LayoutState> states(staged.size(), LayoutState::unseen);
@@ -2338,9 +2467,11 @@ std::vector<TypeId> Runtime::types(std::size_t first) const {
         result.push_back(impl_->types[index]->info.id);
     return result;
 }
+
 std::size_t Runtime::type_count() const noexcept {
     return impl_->types.size();
 }
+
 TypeId Runtime::object_type() const noexcept {
     return impl_->object;
 }
@@ -2403,8 +2534,10 @@ Runtime::NativeBorrow::NativeBorrow(Runtime& owner, void* address) noexcept : ru
     ++runtime->impl_->callbacks;
     ++runtime->impl_->native_borrows;
 }
+
 Runtime::NativeBorrow::NativeBorrow(NativeBorrow&& other) noexcept
     : runtime(std::exchange(other.runtime, nullptr)), storage(other.storage) {}
+
 Runtime::NativeBorrow::~NativeBorrow() {
     if (runtime) {
         --runtime->impl_->native_borrows;
@@ -2469,8 +2602,11 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
     const auto& slot = impl_->slots[*index];
     struct Cursor {
         const Impl::Type* type;
+
         void* storage;
+
         std::size_t next{};
+
         std::size_t depth{};
     };
     std::vector<Cursor> cursors{{impl_->lookup(slot.type), slot.storage}};
@@ -2506,9 +2642,11 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
 Result<ReferenceField> Runtime::reference_field(ObjectId object, const ReferenceSlot& slot) const {
     return native_reference_field(object, &slot, false);
 }
+
 Result<ReferenceField> Runtime::reference_field(ObjectId object, const ReferenceSequence& sequence) const {
     return native_reference_field(object, &sequence, true);
 }
+
 Result<Runtime::Address> Runtime::resolve_reference_field(const ReferenceField& field) const {
     if (field.native_only_ && !impl_->native_borrows)
         return failure(ErrorCode::busy, "Native field access outlived its protected borrow.");
@@ -2530,6 +2668,7 @@ Result<std::size_t> Runtime::sequence_size(const ReferenceField& field) const {
         return failure(ErrorCode::type_mismatch, "Field is not a reference sequence.");
     return static_cast<const ReferenceSequence*>(address->data)->objects_.size();
 }
+
 Result<ObjectReference> Runtime::sequence_read(const ReferenceField& field, std::size_t index) const {
     const auto address = resolve_reference_field(field);
     if (!address)
@@ -2541,6 +2680,7 @@ Result<ObjectReference> Runtime::sequence_read(const ReferenceField& field, std:
         return failure(ErrorCode::argument_mismatch, "Sequence index is out of range.");
     return ObjectReference{{address->value.type, ValueForm::strong_reference}, objects[index]};
 }
+
 Result<void> Runtime::visit_sequence(const ReferenceField& field, ReferenceVisitor visitor) const {
     const auto address = resolve_reference_field(field);
     if (!address)
@@ -2564,16 +2704,24 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
     CallbackScope scope{impl_->callbacks};
     struct MutationScope {
         bool& active;
+
         explicit MutationScope(bool& flag) : active(flag) { active = true; }
+
         ~MutationScope() { active = false; }
     } mutation{impl_->changing_references};
     struct Prepared {
         ObjectId owner;
+
         Address address;
+
         ObjectId reference;
+
         std::size_t first{};
+
         std::size_t erased{};
+
         std::size_t final_size{};
+
         std::vector<ObjectId> inserted;
     };
     std::vector<Prepared> prepared;
@@ -3541,6 +3689,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
                                         PreparedArguments& prepared) const {
     return prepare_arguments(signature, arguments, prepared, false);
 }
+
 Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
                                         PreparedArguments& prepared, bool fields) const {
     prepared.size_ = 0;
@@ -3662,6 +3811,7 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
         values[i] = Argument{arguments[i]};
     return call_arguments(object, method, values, output);
 }
+
 Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, ValueOutput output) {
     std::array<Argument, 8> local;
     std::vector<Argument> expanded(arguments.size() > local.size() ? arguments.size() : 0);
@@ -3671,6 +3821,7 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
         values[i] = Argument{arguments[i]};
     return call_arguments(object, method, values, nullptr, output);
 }
+
 Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span<const Argument> arguments,
                                      Scalar* output, ValueOutput value_output) {
     if (impl_->roots->traversals != 0)

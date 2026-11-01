@@ -5,7 +5,9 @@
 
 namespace atelier::presentation {
 using detail::error;
+
 using world::DiagnosticKind;
+
 using world::DiagnosticPhase;
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
@@ -26,9 +28,11 @@ Result<void> detail::light_rules(const LightSettings& settings) {
         return error(ErrorCode::argument_mismatch, message);
     return {};
 }
+
 Result<void> validate_light(Runtime& runtime, const LightSettings& settings) {
     return detail::check_value(runtime, settings);
 }
+
 rendering::SceneLightingSettings environment_settings(const EnvironmentComponent& value) noexcept {
     rendering::SceneLightingSettings result;
     result.shadows = value.shadows;
@@ -64,12 +68,14 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
     result.sky_rotation = value.sky_rotation;
     return result;
 }
+
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
 Result<void> detail::environment_rules(const EnvironmentComponent& value) {
     if (const auto* message = rendering::scene_lighting_error(environment_settings(value)))
         return error(ErrorCode::argument_mismatch, message);
     return {};
 }
+
 world::World::Admission detail::unique_environment(world::CapabilityId environments) {
     return [environments](const world::World& world,
                           std::span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
@@ -93,6 +99,7 @@ world::World::Admission detail::unique_environment(world::CapabilityId environme
         return {};
     };
 }
+
 Result<rendering::SceneLightingSettings> Scene::environment() const {
     auto environments = world_->members(environments_);
     if (!environments)
@@ -117,6 +124,7 @@ Result<rendering::SceneLightingSettings> Scene::environment() const {
     }
     return rendering::SceneLightingSettings{};
 }
+
 Result<LightSettings> read_light(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const LightComponent>(
         object, [](const LightComponent& light) -> Result<LightSettings> { return light.settings; });
@@ -142,9 +150,11 @@ Result<void> set_value(world::World& world, ObjectId object, std::string_view na
     return world.write(object, std::span{&*field, 1}, ValueInput{*type, &value});
 }
 }
+
 Result<void> set_light(world::World& world, ObjectId object, LightSettings value) {
     return set_value<LightComponent>(world, object, "settings", value);
 }
+
 Result<void> set_sky_map_binding(Runtime& runtime, ObjectId object, SkyMapBinding binding) {
     if (binding.source.size() > 4096 || binding.source.find('\0') != std::string::npos)
         return error(ErrorCode::invalid_definition, "Invalid sky map key.");
@@ -167,6 +177,7 @@ Result<void> set_sky_map_binding(Runtime& runtime, ObjectId object, SkyMapBindin
         return {};
     });
 }
+
 Result<SkyMapBinding> read_sky_map(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const EnvironmentComponent>(
         object, [](const EnvironmentComponent& component) -> Result<SkyMapBinding> {
@@ -174,9 +185,11 @@ Result<SkyMapBinding> read_sky_map(Runtime& runtime, ObjectId object) {
                                  detail::Access::sky_map_resolved(component)};
         });
 }
+
 Result<std::vector<LightRenderItem>> Scene::light_items() const {
     return extract_lights(nullptr);
 }
+
 Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented, bool* failed,
                                                            bool* moved) const {
     bool unused{};

@@ -15,32 +15,39 @@
 
 namespace {
 using namespace atelier;
+
 namespace w = atelier::world;
+
 namespace p = atelier::presentation;
 
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void committed(Result<w::Commit> result) {
     const auto commit = take(std::move(result));
     if (commit.notification_error)
         throw std::runtime_error(commit.notification_error->message);
 }
+
 template <class T>
 void reject(const Result<T>& result, const char* message) {
     require(!result, message);
 }
+
 void collect(Runtime& runtime) {
     if (runtime.collection_phase() == CollectionPhase::idle)
         take(runtime.begin_collection());
@@ -48,22 +55,29 @@ void collect(Runtime& runtime) {
         take(runtime.collect_step({16}));
     } while (runtime.collection_phase() != CollectionPhase::idle);
 }
+
 bool near(float actual, float expected) {
     return std::abs(actual - expected) < 0.0001f;
 }
+
 struct Counter : w::Component {
     float value{};
+
     std::uint32_t steps{};
+
     void advance(float amount) noexcept {
         value += amount;
         ++steps;
     }
 };
+
 struct DerivedCounter : Counter {
     float extra{7.f};
 };
+
 struct Holder {
     ReferenceSlot entity;
+
     ReferenceSlot component;
 };
 
@@ -73,14 +87,17 @@ TypeId holder_type(Runtime& runtime, const w::Types& types) {
                     .field<&Holder::component>("component", {types.component, ValueForm::strong_reference})
                     .publish());
 }
+
 // World and presentation types, as hosts register them.
 struct AllTypes : w::Types, p::Types {};
+
 AllTypes register_all_types(Runtime& runtime) {
     AllTypes types;
     static_cast<w::Types&>(types) = take(w::register_types(runtime));
     static_cast<p::Types&>(types) = take(p::register_types(runtime));
     return types;
 }
+
 // Mesh and light registrations of the Scene, or those naming `object` as component or owner.
 std::size_t presented(const w::World& world, const p::Scene& scene, ObjectId object = {}) {
     std::size_t count{};
@@ -89,10 +106,13 @@ std::size_t presented(const w::World& world, const p::Scene& scene, ObjectId obj
             count += object == ObjectId{} || member.component == object || member.entity == object;
     return count;
 }
+
 struct TestTypes : AllTypes {
     TypeId counter;
+
     FieldId counter_value;
 };
+
 TestTypes register_test_types(Runtime& runtime) {
     TestTypes types;
     static_cast<AllTypes&>(types) = register_all_types(runtime);
@@ -105,10 +125,12 @@ TestTypes register_test_types(Runtime& runtime) {
     types.counter_value = take(runtime.find_field(types.counter, "value"));
     return types;
 }
+
 void publish(source::Program& program, std::string_view text) {
     auto candidate = take(source::Program::prepare(take(program.request("world-acceptance.source", text))));
     take(program.try_publish(candidate));
 }
+
 material::DefinitionRef mesh_material_definition() {
     static const auto definition = [] {
         Runtime compiler;
@@ -130,6 +152,7 @@ material::DefinitionRef mesh_material_definition() {
     }();
     return definition;
 }
+
 std::vector<ObjectRoot> add_shape(Runtime& runtime, const AllTypes& types, w::World& world, ObjectId entity) {
     std::vector<ObjectRoot> roots;
     roots.push_back(take(w::create_component(runtime, types.component)));
@@ -531,6 +554,7 @@ void failures_and_reentry() {
     std::puts(
         "[pass] World failure boundaries: committed notification failure, deferred reentry, closed admission and no resurrection");
 }
+
 void ordered_lifecycle() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
@@ -645,6 +669,7 @@ void ordered_lifecycle() {
     std::puts(
         "[pass] Ordered lifecycle: inherited native binding, composition order, disabled participation, dynamic insertion/removal, failure cleanup");
 }
+
 void isolated_failures() {
     Runtime runtime;
     const auto types = register_test_types(runtime);

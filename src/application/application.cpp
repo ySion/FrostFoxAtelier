@@ -26,6 +26,7 @@ namespace atelier::application {
 Result<void> Application::completion(Result<void> result) {
     return result;
 }
+
 Result<void> Application::completion(Result<world::Commit> result) {
     if (!result)
         return std::unexpected(result.error());
@@ -37,6 +38,7 @@ Result<void> Application::completion(Result<world::Commit> result) {
     }
     return {};
 }
+
 namespace {
 template <class T>
 T take(Result<T> result) {
@@ -44,19 +46,23 @@ T take(Result<T> result) {
         throw editor::detail::Failure(std::move(result.error()));
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw editor::detail::Failure(std::move(result.error()));
 }
+
 template <class T>
 T graphics(renderer::Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().cause.message);
     return std::move(*result);
 }
+
 std::wstring widen(const std::string& value) {
     return assets::wide(value);
 }
+
 Result<Scalar> scalar_value(const Scalar& prototype, double value) {
     return std::visit(
         [&](const auto& original) -> Result<Scalar> {
@@ -85,6 +91,7 @@ Result<Scalar> scalar_value(const Scalar& prototype, double value) {
         },
         prototype);
 }
+
 bool live_table_context(const ui::UiFrame& frame, const ui::ContextMenuRequest& request, bool require_selection) {
     if (!request.table)
         return true;
@@ -97,6 +104,7 @@ bool live_table_context(const ui::UiFrame& frame, const ui::ContextMenuRequest& 
            std::ranges::find(table->data->columns, request.table->column, &ui::TableColumn::key) !=
                table->data->columns.end();
 }
+
 ui::PixelExtent client_extent(HWND window) {
     if (IsIconic(window))
         return {};
@@ -105,6 +113,7 @@ ui::PixelExtent client_extent(HWND window) {
     return {static_cast<std::uint32_t>(bounds.right), static_cast<std::uint32_t>(bounds.bottom)};
 }
 }
+
 Application::Application(bool validation, bool activate, std::optional<ui::PixelExtent> initial_client, bool vsync)
     : window_(nullptr, initial_client), ui_(editor_fonts()), gpu_validation_(validation), vsync_(vsync) {
     require_frame_timing();
@@ -127,6 +136,7 @@ Application::Application(bool validation, bool activate, std::optional<ui::Pixel
     submenus_.push_back(std::make_unique<PopupHost>(window(), editor_fonts(), gpu_validation_));
     window_.show(activate);
 }
+
 Application::~Application() {
     if (std::uncaught_exceptions())
         preserve_failure("Unhandled editor failure outside the frame loop");
@@ -136,6 +146,7 @@ Application::~Application() {
         report_error(editor::detail::caught_error(error, ErrorCode::invalid_storage), "application.cleanup_failed");
     }
 }
+
 void Application::notice(std::string_view code, std::wstring_view message, logging::Severity severity) noexcept {
     try {
         logging::Entry entry{.severity = severity,
@@ -149,6 +160,7 @@ void Application::notice(std::string_view code, std::wstring_view message, loggi
         std::fputs("Editor notice capture failed.\n", stderr);
     }
 }
+
 void Application::diagnostics() noexcept {
     try {
         for (const auto& item : document_->take_diagnostics())
@@ -169,6 +181,7 @@ void Application::diagnostics() noexcept {
         std::fputs("Editor diagnostic capture failed.\n", stderr);
     }
 }
+
 void Application::preserve_failure(std::string_view reason) noexcept {
     if (recovery_.attempted() || !document_ || closed_)
         return;
@@ -191,6 +204,7 @@ void Application::preserve_failure(std::string_view reason) noexcept {
         std::fputs("Scene recovery failed with an unknown error\n", stderr);
     }
 }
+
 void Application::report_error(const Error& error, std::string_view event, logging::Severity severity) noexcept {
     try {
         auto entry = error_diagnostic(error, event, document_root_);
@@ -200,11 +214,13 @@ void Application::report_error(const Error& error, std::string_view event, loggi
         std::fputs("Cannot capture editor error; business result is unchanged.\n", stderr);
     }
 }
+
 void Application::status(Result<void> result, const wchar_t* success) {
     if (!result)
         report_error(result.error());
     workspace_.status = result ? success : widen(result.error().message);
 }
+
 void Application::status(Result<world::Commit> result, const wchar_t* success) {
     status(completion(std::move(result)), success);
 }
@@ -220,10 +236,12 @@ void Application::sync_world_view() {
         camera_cut_ = true;
     }
 }
+
 std::array<float, 3> Application::lighting_focus() const {
     const auto target = camera_.state().target;
     return {target.x, target.y, target.z};
 }
+
 Result<void> Application::set_camera(const editor::Camera& camera, bool cut) {
     const auto target = camera.state().target;
     if (const auto* error = renderer::probe_focus_error(workspace_.view.lit, {target.x, target.y, target.z}))
@@ -234,16 +252,19 @@ Result<void> Application::set_camera(const editor::Camera& camera, bool cut) {
     }
     return {};
 }
+
 const ui::ControlBox* Application::command_focus() const noexcept {
     const auto& frame = ui_.presented();
     return frame ? frame->find(workspace_.menu ? menu_return_focus_ : ui_.focused_control()) : nullptr;
 }
+
 editor::Context Application::operator_context(bool interactive) {
     auto context =
         workspace_.operator_context(*document_, project_ ? &*project_ : nullptr, interactive, command_focus());
     context.cursor = viewport_tool_.cursor;
     return context;
 }
+
 Result<editor::OperatorReport> Application::call_operator(const editor::OperatorCall& request, bool interactive,
                                                           const editor::ResolveReference& resolve) {
     const auto shown = workspace_.status;
@@ -264,6 +285,7 @@ Result<editor::OperatorReport> Application::call_operator(const editor::Operator
         workspace_.status = workspace_.operators.find(request.id)->title;
     return report;
 }
+
 Result<void> Application::run_operator(const editor::OperatorCall& call, bool report_unavailable, bool interactive) {
     auto report = call_operator(call, interactive);
     if (!report)
@@ -272,6 +294,7 @@ Result<void> Application::run_operator(const editor::OperatorCall& call, bool re
         return std::unexpected(Error{ErrorCode::unsupported_operation, report->message});
     return {};
 }
+
 // Command transitions retire the old owner before releasing native capture;
 // cleanup must run before the command can establish a new gesture.
 Result<void> Application::end_interaction() {
@@ -283,11 +306,13 @@ Result<void> Application::end_interaction() {
         window_.capture(false);
     return {};
 }
+
 Result<void> Application::source_history(bool redo) {
     workspace_.source_editor.active()->document->edit().history(redo);
     pending_source_focus_ = true;
     return {};
 }
+
 Result<void> Application::close_tab(editor::RegionKind region, bool interactive) {
     const auto tab = editor::region_tab(region);
     if (!tab)
@@ -302,17 +327,21 @@ Result<void> Application::close_tab(editor::RegionKind region, bool interactive)
     workspace_.dock.close(tab);
     return {};
 }
+
 void Application::maximize_tab(editor::RegionKind region) {
     if (const auto tab = editor::region_tab(region))
         workspace_.dock.maximize(tab);
 }
+
 void Application::show_tab(editor::RegionKind region) {
     workspace_.dock.select(editor::region_tab(region));
 }
+
 void Application::cycle_tab(editor::RegionKind region, int direction) {
     show_tab(region);
     workspace_.dock.cycle(direction);
 }
+
 Result<void> Application::workbench_history(bool redo) {
     if (redo)
         workspace_.workbench.redo();
@@ -320,16 +349,19 @@ Result<void> Application::workbench_history(bool redo) {
         workspace_.workbench.undo();
     return {};
 }
+
 void Application::scene_changed() {
     workspace_.inspecting_asset = false;
     sync_world_view();
 }
+
 Result<void> Application::set_view_settings(const renderer::ViewSettings& settings) {
     if (auto changed = workspace_.set_view_settings(*document_, settings, lighting_focus()); !changed)
         return changed;
     workspace_.viewport_settings.grid_spacing = settings.grid_spacing;
     return {};
 }
+
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
     auto items = document_->presentation().render_items();
     if (!items)
@@ -339,6 +371,7 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
     struct Bounds {
         math::Vector3 low{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                           std::numeric_limits<float>::max()};
+
         math::Vector3 high = -low;
     };
     Bounds world_bounds;
@@ -387,6 +420,7 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
         return std::unexpected(valid.error());
     return candidate;
 }
+
 Result<void> Application::configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading shading) {
     workspace_.sync_world(*document_);
     auto candidate = workspace_.view;
@@ -403,6 +437,7 @@ Result<void> Application::configure_view(math::Vector3 eye, math::Vector3 target
     invalidate_surface();
     return {};
 }
+
 Result<void> Application::action(const ui::Action& source) {
     // UI instance keys and host command/target keys occupy different roles.
     // Resolve once at the existing dispatch boundary; business checks stay below.
@@ -914,6 +949,7 @@ Result<void> Application::action(const ui::Action& source) {
     }
     return {};
 }
+
 // Colour editor: one Session group transaction from open to Done/dismiss; Esc and
 // outside clicks keep the edit (Houdini applies live), Revert restores the original.
 Result<void> Application::open_color_edit(ObjectId object, std::span<const FieldId> prefix, ui::ControlKey swatch) {
@@ -990,6 +1026,7 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
     workspace_.status = L"Colour editor · Done or click outside to keep · Revert restores";
     return {};
 }
+
 TypeId Application::take_type(ObjectId object, std::span<const FieldId> path) const {
     auto& runtime = document_->world().runtime();
     auto type = runtime.type_of(object).value_or(TypeId{});
@@ -1004,6 +1041,7 @@ TypeId Application::take_type(ObjectId object, std::span<const FieldId> path) co
     }
     return type;
 }
+
 Result<void> Application::apply_color(std::array<double, 3> rgb) {
     auto& edit = *workspace_.color_edit;
     if (edit.material_entry) {
@@ -1055,6 +1093,7 @@ Result<void> Application::apply_color(std::array<double, 3> rgb) {
     edit.hex = editor::color_hex(edit.value);
     return {};
 }
+
 Result<bool> Application::color_edit_action(const ui::Action& event) {
     using namespace editor::control;
     auto& edit = *workspace_.color_edit;
@@ -1103,6 +1142,7 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
         return std::unexpected(applied.error());
     return true;
 }
+
 Result<void> Application::finish_color_edit(bool keep) {
     if (!workspace_.color_edit)
         return {};
@@ -1122,6 +1162,7 @@ Result<void> Application::finish_color_edit(bool keep) {
     }
     return finished;
 }
+
 Result<void> Application::begin_entity_rename(ObjectId entity, editor::RegionKind region) {
     // Reveal the explicit tree row; a filtered-out row uses the Parameters header instead.
     const auto shown =
@@ -1141,6 +1182,7 @@ Result<void> Application::begin_entity_rename(ObjectId entity, editor::RegionKin
     }
     return {};
 }
+
 Result<void> Application::begin_asset_rename() {
     if (!project_ || !workspace_.assets.can_rename())
         return {};
@@ -1153,6 +1195,7 @@ Result<void> Application::begin_asset_rename() {
     pending_rename_focus_ = true;
     return {};
 }
+
 Result<void> Application::rename_asset(std::string_view key, std::string_view name, bool interactive) {
     const auto* entry = project_ ? project_->entry(key) : nullptr;
     if (!entry)
@@ -1173,19 +1216,23 @@ Result<void> Application::rename_asset(std::string_view key, std::string_view na
     workspace_.status = L"Renamed to " + renamed->filename().wstring();
     return {};
 }
+
 void Application::select_box() {
     viewport_tool_.arm_box_select(pointer_position_, false);
     window_.capture(true);
 }
+
 void Application::toggle_view(editor::ViewToggleOption option) {
     auto& value = option == editor::ViewToggleOption::fps ? workspace_.show_fps : workspace_.viewport_options_collapsed;
     value = !value;
 }
+
 Result<void> Application::fit_lighting(bool follow_focus) {
     auto fitted = fitted_probe_view(follow_focus);
     return fitted ? workspace_.set_view_settings(*document_, *fitted, lighting_focus())
                   : Result<void>{std::unexpected(fitted.error())};
 }
+
 void Application::about() {
     close_menu(false);
     const auto details = L"FrostFox Atelier\n\nBuild: " + assets::wide(build_info::revision) + L"\nConfiguration: " +
@@ -1194,6 +1241,7 @@ void Application::about() {
                          (scene_path_.empty() ? L"Untitled" : scene_path_.generic_wstring());
     MessageBoxW(window(), details.c_str(), L"About FrostFox Atelier", MB_OK | MB_ICONINFORMATION);
 }
+
 bool Application::key_input(const ui::Event& event, std::uint32_t key, editor::RegionKind region,
                             editor::KeyPhase phase) {
     const auto* entry = editor::key_binding(region, phase, event, key, ui_.wants_keyboard());
@@ -1212,6 +1260,7 @@ bool Application::key_input(const ui::Event& event, std::uint32_t key, editor::R
     status(run_operator(call, true), L"");
     return true;
 }
+
 bool Application::effects(const ui::Reply& reply) {
     std::wstring first_error;
     bool business_failed = false;
@@ -1307,11 +1356,13 @@ bool Application::effects(const ui::Reply& reply) {
         workspace_.status = std::move(first_error);
     return success;
 }
+
 void Application::sync_text_input() {
     const auto error = window_.text_input(ui_.text_input());
     if (error)
         workspace_.status = L"Text input unavailable (Windows " + std::to_wstring(error) + L").";
 }
+
 void Application::cancel_interaction(const ui::Reply& reply) {
     // Session distinguishes native focus/capture loss from a forced UI cancellation.
     // Application-owned gestures must end for either kind before capture is released.
@@ -1339,15 +1390,18 @@ void Application::cancel_interaction(const ui::Reply& reply) {
     window_.capture(false);
     window_.cursor(ui::Cursor::arrow);
 }
+
 void Application::invalidate_surface() {
     ++surface_revision_;
     cancel_interaction(ui_.cancel_interaction());
 }
+
 bool Application::pointer_ready() const noexcept {
     const auto& frame = ui_.presented();
     return frame && frame->drawing->extent == client_extent(window_.handle()) &&
            frame->drawing->surface_revision == surface_revision_ && frame->drawing->dpi_scale == window_.dpi_scale();
 }
+
 bool Application::over_viewport(float x, float y) const noexcept {
     if (!pointer_ready())
         return false;
@@ -1355,6 +1409,7 @@ bool Application::over_viewport(float x, float y) const noexcept {
     return viewport && x >= viewport->bounds.x && y >= viewport->bounds.y &&
            x < viewport->bounds.x + viewport->bounds.width && y < viewport->bounds.y + viewport->bounds.height;
 }
+
 void Application::request_menu(const ui::ContextMenuRequest& request) {
     const auto frame = ui_.presented();
     const auto* source = frame ? frame->find(request.source) : nullptr;
@@ -1388,6 +1443,7 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "menu", "menu.requested",
                                        logging::native::Context{fields}, "Menu request adopted"));
 }
+
 void Application::close_menu(bool restore_focus) {
     pending_menu_ = 0;
     pie_release_pending_ = pie_release_select_ = pie_pressed_ = false;
@@ -1412,6 +1468,7 @@ void Application::close_menu(bool restore_focus) {
     menu_context_target_ = menu_context_group_ = 0;
     menu_table_layout_ = {};
 }
+
 void Application::update_menu() {
     if (!workspace_.menu || workspace_.menu_items.empty()) {
         close_menu();
@@ -1495,6 +1552,7 @@ void Application::update_menu() {
     for (std::size_t depth = menu_path_.size(); depth < submenus_.size(); ++depth)
         submenus_[depth]->hide();
 }
+
 bool Application::menu_input(const ui::Event& input, WPARAM native_key) {
     if (!workspace_.menu)
         return false;
@@ -1605,6 +1663,7 @@ bool Application::menu_input(const ui::Event& input, WPARAM native_key) {
         change(editor::cycle_menu(source, false));
     return true;
 }
+
 bool Application::invoke_menu(const ui::Action& command, std::span<const ui::MenuItem> items) {
     const auto at = std::ranges::find(items, command.key, &ui::MenuItem::key);
     if (at == items.end() || !at->enabled || !at->children.empty())
@@ -1637,6 +1696,7 @@ bool Application::invoke_menu(const ui::Action& command, std::span<const ui::Men
     }
     return true;
 }
+
 bool Application::pie_input(const ui::Event& input, WPARAM native_key) {
     if ((input.kind == ui::EventKind::key_down && (input.key == ui::Key::escape || input.key == ui::Key::tab)) ||
         (input.kind == ui::EventKind::pointer_down && input.button == ui::PointerButton::secondary)) {
@@ -1734,6 +1794,7 @@ bool Application::pie_input(const ui::Event& input, WPARAM native_key) {
         }
     return true;
 }
+
 void Application::native(NativeEvent message) {
     if (control_)
         control_->input(message.message, message.wparam);
@@ -1780,6 +1841,7 @@ void Application::native(NativeEvent message) {
         return;
     input(*mapped, native_key);
 }
+
 void Application::input(const ui::Event& event, WPARAM native_key) {
     if (event.kind != ui::EventKind::pointer_move)
         ui_.dismiss_tooltip();
@@ -1889,10 +1951,12 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
             status(document_->cancel_edit(), L"Edit cancelled");
     }
 }
+
 void Application::enable_control(const std::filesystem::path& directory) {
     if (!control_)
         control_ = std::make_unique<EditorControl>(*this, directory);
 }
+
 bool Application::step(renderer::Capture* capture) {
     // The frame closes after run_step, so the retirement of its frame-local containers is included.
     timing::Recorder::Frame frame{recorder_};
@@ -1911,6 +1975,7 @@ bool Application::step(renderer::Capture* capture) {
     }
     return running;
 }
+
 bool Application::run_step(renderer::Capture* capture) try {
     using Clock = std::chrono::steady_clock;
     frame_statistics_ = {};
@@ -1919,6 +1984,7 @@ bool Application::run_step(renderer::Capture* capture) try {
     // Everything this step changed reaches Play as one batch, whichever way the step ends.
     struct ForwardLive {
         Application& app;
+
         ~ForwardLive() { app.forward_live(); }
     } forward_live{*this};
     {
@@ -2253,6 +2319,7 @@ bool Application::run_step(renderer::Capture* capture) try {
     preserve_failure("Unknown editor frame failure");
     throw;
 }
+
 void Application::close() {
     if (closed_)
         return;

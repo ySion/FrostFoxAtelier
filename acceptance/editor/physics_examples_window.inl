@@ -4,6 +4,7 @@ int verify_physics_examples_window(Application& app, const char* output_director
     require(SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE, "Cannot initialize physics captures.");
     struct Apartment {
         bool owns;
+
         ~Apartment() {
             if (owns)
                 CoUninitialize();
@@ -26,7 +27,9 @@ int verify_physics_examples_window(Application& app, const char* output_director
             "Physic did not open Smooth rendering with its authored lighting settings preserved.");
     struct Example {
         const char* name;
+
         std::size_t entities;
+
         std::size_t roots;
     };
     constexpr std::array examples{

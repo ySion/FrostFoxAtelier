@@ -7,35 +7,44 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view text, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request("types.source", text, entry))));
     take(program.try_publish(candidate));
 }
+
 std::uint32_t number(const std::optional<Scalar>& value) {
     return std::get<std::uint32_t>(*value);
 }
+
 constexpr std::string_view schema = R"(
+
     struct combat.DamageInfo { combat.Point point; combat.Kind kind; uint amount; };
     enum combat.Kind : uint { Physical, Fire = 7, Ice, Maximum = 4294967295 }
     struct combat.Point { float x; int count; };
     enum combat.Signed { Minimum = -2147483648, Zero = 0, Maximum = 2147483647 }
 )";
 constexpr std::string_view body = R"(
+
     uint process(combat.DamageInfo& damage) {
         combat.DamageInfo snapshot = damage;
         combat.Point origin;
@@ -59,10 +68,12 @@ const FieldInfo& field(const TypeInfo& type, std::string_view name) {
             return value;
     throw std::runtime_error("Missing reflected source field.");
 }
+
 template <class T>
 void write(std::span<std::byte> storage, std::size_t offset, T value) {
     std::memcpy(storage.data() + offset, &value, sizeof(value));
 }
+
 template <class T>
 T read(std::span<const std::byte> storage, std::size_t offset) {
     T value;

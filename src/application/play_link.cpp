@@ -12,6 +12,7 @@
 namespace atelier::application {
 namespace {
 using Json = assets::json_format::Json;
+
 bool transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write) {
     auto* cursor = static_cast<char*>(storage);
     while (bytes) {
@@ -26,22 +27,35 @@ bool transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write) {
     }
     return true;
 }
+
 std::string dump(const Json& value) {
     return value.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 }
+
 struct LiveLink::Impl {
     HANDLE read;
+
     HANDLE write;
+
     std::mutex mutex;
+
     std::condition_variable wake;
+
     std::deque<std::string> outbox;
+
     std::vector<std::string> inbox;
+
     std::atomic_bool closed{};
+
     std::atomic_bool stopping{};
+
     std::thread reader;
+
     std::thread writer;
+
     Impl(HANDLE in, HANDLE out) : read(in), write(out) {}
+
     ~Impl() {
         stopping = true;
         wake.notify_all();
@@ -56,10 +70,12 @@ struct LiveLink::Impl {
         CloseHandle(read);
         CloseHandle(write);
     }
+
     void finish() {
         closed = true;
         wake.notify_all();
     }
+
     void receive_loop() {
         try {
             while (!stopping) {
@@ -76,6 +92,7 @@ struct LiveLink::Impl {
         }
         finish();
     }
+
     void send_loop() {
         try {
             for (;;) {
@@ -98,11 +115,14 @@ struct LiveLink::Impl {
         finish();
     }
 };
+
 LiveLink::LiveLink(HANDLE read, HANDLE write) : impl_(std::make_unique<Impl>(read, write)) {
     impl_->reader = std::thread([impl = impl_.get()] { impl->receive_loop(); });
     impl_->writer = std::thread([impl = impl_.get()] { impl->send_loop(); });
 }
+
 LiveLink::~LiveLink() = default;
+
 void LiveLink::send(std::string text) {
     if (text.empty() || text.size() > maximum_message)
         throw std::length_error("A Play link message is empty or exceeds 4 MiB.");
@@ -114,10 +134,12 @@ void LiveLink::send(std::string text) {
     }
     impl_->wake.notify_all();
 }
+
 std::vector<std::string> LiveLink::receive() {
     std::lock_guard lock(impl_->mutex);
     return std::exchange(impl_->inbox, {});
 }
+
 bool LiveLink::closed() const noexcept {
     return impl_->closed;
 }
@@ -127,11 +149,13 @@ PlayLink::Pending::~Pending() {
     for (const auto& file : files)
         std::filesystem::remove(file, ignored);
 }
+
 void PlayLink::open(std::unique_ptr<LiveLink> link, std::filesystem::path spill) {
     static_cast<void>(close());
     link_ = std::move(link);
     spill_ = std::move(spill);
 }
+
 void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
     if (!link_ || !divergence_.empty() || ops.empty())
         return;
@@ -216,6 +240,7 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
         fail(std::string("Cannot forward Play changes: ") + error.what());
     }
 }
+
 void PlayLink::send(std::string_view ops, Pending&& resources) {
     const auto seq = next_seq_++;
     auto message = R"({"type":"batch","seq":)" + std::to_string(seq) + R"(,"ops":[)";
@@ -248,10 +273,12 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
     if (pending_.size() > maximum_pending || pending_bytes_ > maximum_pending_bytes)
         fail("Play stopped acknowledging changes (" + std::to_string(pending_.size()) + " batches pending).");
 }
+
 void PlayLink::fail(std::string reason) {
     if (divergence_.empty())
         divergence_ = std::move(reason);
 }
+
 void PlayLink::poll(bool running, bool stopping) {
     if (!link_)
         return;
@@ -295,6 +322,7 @@ void PlayLink::poll(bool running, bool stopping) {
     else if (now - *closed_since_ >= std::chrono::seconds(2))
         fail("The Play change link closed while Play kept running.");
 }
+
 std::error_code PlayLink::close() noexcept {
     link_.reset();
     pending_.clear();
@@ -309,6 +337,7 @@ std::error_code PlayLink::close() noexcept {
     spill_.clear();
     return error;
 }
+
 std::uint64_t PlayLink::inspect(std::uint64_t identity) {
     if (!link_)
         return 0;
@@ -316,6 +345,7 @@ std::uint64_t PlayLink::inspect(std::uint64_t identity) {
     link_->send(dump(Json{{"type", "inspect"}, {"id", request}, {"object", identity}}));
     return request;
 }
+
 std::optional<std::string> PlayLink::inspected(std::uint64_t request) {
     const auto at = inspected_.find(request);
     if (at == inspected_.end())

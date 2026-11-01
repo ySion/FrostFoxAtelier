@@ -91,9 +91,13 @@ void cost_cases(Fixture& f) {
     counts << "case,cached_frame,reference_frame,cached_queries,reference_queries\n";
     struct PairedSample {
         const char* name{};
+
         std::array<std::uint64_t, 2> frames{};
+
         std::array<std::uint64_t, 2> rays{};
+
         std::array<bool, 2> received{};
+
         bool written{};
     };
     std::vector<PairedSample> samples;

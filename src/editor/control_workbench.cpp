@@ -11,6 +11,7 @@ void ControlWorkbench::remember() {
         history_.erase(history_.begin());
     cursor_ = history_.size() - 1;
 }
+
 void ControlWorkbench::undo() {
     if (active_) {
         values_ = std::move(active_->second);
@@ -19,6 +20,7 @@ void ControlWorkbench::undo() {
     if (cursor_)
         values_ = history_[--cursor_];
 }
+
 void ControlWorkbench::redo() {
     if (active_) {
         values_ = std::move(active_->second);
@@ -27,6 +29,7 @@ void ControlWorkbench::redo() {
     if (cursor_ + 1 < history_.size())
         values_ = history_[++cursor_];
 }
+
 bool ControlWorkbench::apply(const ui::Action& action) {
     using namespace workbench_control;
     if (action.kind == ui::ActionKind::activate || action.kind == ui::ActionKind::reset) {
@@ -111,6 +114,7 @@ bool ControlWorkbench::apply(const ui::Action& action) {
     }
     return true;
 }
+
 void ControlWorkbench::append(std::vector<ui::Control>& controls, ui::ControlKey parent,
                               ui_language::LiveDocument& document) const {
     using namespace workbench_control;

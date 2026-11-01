@@ -10,48 +10,63 @@
 
 namespace {
 using namespace atelier;
+
 using source::DiagnosticCall;
+
 using source::DiagnosticStatus;
+
 using source::Diagnostics;
+
 using source::Program;
 
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void publish(Program& program, std::string_view name, std::string_view text,
              source::CompileOptions options = {.diagnostics = true}, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request(name, text, entry, options))));
     take(program.try_publish(candidate));
 }
+
 void publish(Program& program, source::SourceSnapshot snapshot) {
     auto candidate = take(Program::prepare(take(program.request(std::move(snapshot), {.diagnostics = true}))));
     take(program.try_publish(candidate));
 }
+
 void require_clean(const source::DiagnosticReport& report) {
     require(report.resources_cleared && report.remaining_owned_values == 0 && report.before.roots == report.after.roots,
             "Diagnostic completion did not include explicit value/root cleanup.");
 }
+
 struct Host {
     std::uint32_t value{};
+
     Coroutine* task{};
+
     void fail() { throw std::runtime_error("Diagnostic native failure."); }
+
     void cancel() { task->cancel(); }
+
     void cancel_fail() {
         task->cancel();
         fail();
     }
 };
+
 TypeId register_host(Runtime& runtime) {
     return take(runtime.register_type(NativeRegistration<Host>{runtime, "diagnostic.Host", TypeKind::object}
                                           .field<&Host::value>("value")
@@ -333,9 +348,11 @@ bool same_site(const SourceLocation& a, const SourceLocation& b) {
     return a.path == b.path && a.version == b.version && a.offset == b.offset && a.line == b.line &&
            a.column == b.column;
 }
+
 bool located(const Error& error, std::string_view path, std::size_t line) {
     return error.source && error.source->path == path && error.source->line == line && error.source->column > 1;
 }
+
 // Play compiles without diagnostics or a debugger; failures still carry their
 // innermost source site, identical to what a diagnostic capture reports.
 void verify_failure_locations() {

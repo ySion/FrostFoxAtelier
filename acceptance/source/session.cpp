@@ -14,34 +14,44 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 using Clock = std::chrono::steady_clock;
+
 constexpr std::size_t warmup_cycles = 4;
+
 constexpr std::size_t measured_cycles = 32;
+
 constexpr std::int64_t live_byte_tolerance = 64 * 1024;
 
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 double elapsed_ns(Clock::time_point start) {
     return std::chrono::duration<double, std::nano>(Clock::now() - start).count();
 }
 
 struct Snapshot {
     std::int64_t live_bytes{};
+
     std::int64_t private_bytes{};
 };
+
 Snapshot snapshot() {
     // Checkpoint-only: flush mimalloc's page counters outside timed work.
     // This changes retained pages, so PrivateUsage is not an untouched peak.
@@ -56,6 +66,7 @@ Snapshot snapshot() {
             "Session process memory query failed.");
     return {stats.malloc_normal.current + stats.malloc_huge.current, static_cast<std::int64_t>(memory.PrivateUsage)};
 }
+
 void verify_statistics() {
     const auto before = snapshot();
     auto* block = ::operator new(4096);
@@ -65,6 +76,7 @@ void verify_statistics() {
     require(allocated.live_bytes >= before.live_bytes + 4096 && released.live_bytes < allocated.live_bytes,
             "Session allocator statistics did not observe an actual allocation and release.");
 }
+
 void code_state(std::uintptr_t address, bool live) {
     require(address != 0, "Session code address is missing.");
     DWORD64 image{};
@@ -75,6 +87,7 @@ void code_state(std::uintptr_t address, bool live) {
     require(live ? unwind && memory.State == MEM_COMMIT : !unwind && memory.State == MEM_FREE,
             "Session code or unwind metadata has an incorrect lifetime.");
 }
+
 void collect_to_rest(Runtime& runtime) {
     while (runtime.collection_phase() != CollectionPhase::idle)
         take(runtime.collect_step({4096}));
@@ -86,10 +99,14 @@ void collect_to_rest(Runtime& runtime) {
 
 struct Counter {
     static inline std::size_t live{};
+
     std::uint32_t value{};
+
     Counter() { ++live; }
+
     ~Counter() noexcept { --live; }
 };
+
 TypeId register_counter(Runtime& runtime, bool native) {
     if (native)
         return take(NativeRegistration<Counter>{runtime, "session.Counter", TypeKind::object}
@@ -100,6 +117,7 @@ TypeId register_counter(Runtime& runtime, bool native) {
     definition.fields = {{"value", {take(runtime.native_type<std::uint32_t>())}}};
     return take(runtime.register_type(std::move(definition)));
 }
+
 void publish(Program& program, std::uint32_t generation) {
     const auto source_text = std::string("async uint work(uint seed, uint steps) {"
                                          " session.Counter held = new session.Counter(); held.value = seed;"
@@ -113,22 +131,36 @@ void publish(Program& program, std::uint32_t generation) {
 
 struct Pending {
     Coroutine task;
+
     std::uint32_t seed{};
+
     std::uint32_t steps{};
+
     std::uint32_t generation{};
+
     std::uint32_t resumes{};
 };
+
 struct Totals {
     std::uint32_t created{};
+
     std::uint32_t completed{};
+
     std::uint32_t cancelled_ready{};
+
     std::uint32_t cancelled_suspended{};
+
     std::uint32_t old_completions{};
+
     std::size_t ticks{};
+
     std::size_t gc_steps{};
+
     std::size_t retired_versions{};
+
     double max_tick_ns{};
 };
+
 void advance(Runtime& runtime, std::vector<Pending>& tasks, std::uint32_t current, Totals& totals) {
     for (std::size_t index = 0; index < tasks.size();) {
         auto& pending = tasks[index];

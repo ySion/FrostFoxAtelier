@@ -26,45 +26,58 @@
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::procedural;
+
 using math::Matrix4;
+
 using math::Quaternion;
+
 using math::Vector2;
+
 using math::Vector3;
 
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 template <class T>
 void reject(const Result<T>& result, const char* message) {
     require(!result, message);
 }
+
 bool near(float a, float b, float tolerance = 1e-5f) {
     return std::abs(a - b) <= tolerance * std::max(1.f, std::abs(b));
 }
+
 bool near(Vector3 a, Vector3 b, float tolerance = 1e-5f) {
     return near(a.x, b.x, tolerance) && near(a.y, b.y, tolerance) && near(a.z, b.z, tolerance);
 }
+
 template <class T>
 const Array<T>& column(const Geometry& geometry, const char* name, Layer layer) {
     const auto* values = take(geometry.read<T>(name, layer));
     require(values != nullptr, "An expected attribute is missing.");
     return *values;
 }
+
 Vector3 normalized(Vector3 v) {
     return *math::try_normalize(v);
 }
+
 Quaternion axis_angle(Vector3 axis, float degrees) {
     const float half = degrees * std::numbers::pi_v<float> / 360.f;
     const auto a = normalized(axis) * std::sin(half);
@@ -81,10 +94,12 @@ Geometry triangles(std::initializer_list<Vector3> corners) {
         offsets.add(t * 3);
     return take(Geometry::polygons(std::move(points), std::move(vertices), offsets));
 }
+
 // Twice the signed area of (a, b, p) in the XY plane.
 double side(Vector3 a, Vector3 b, Vector3 p) {
     return double(b.x - a.x) * (p.y - a.y) - double(b.y - a.y) * (p.x - a.x);
 }
+
 bool inside(Vector3 p, Vector3 a, Vector3 b, Vector3 c) {
     const double e = 1e-5;
     return p.z == 0 && side(a, b, p) >= -e && side(b, c, p) >= -e && side(c, a, p) >= -e;
@@ -386,6 +401,7 @@ Matrix4 expected_instance(Vector3 position, Quaternion orient, Vector3 scale) {
     m[14] = position.z;
     return m;
 }
+
 bool near(const Matrix4& a, const Matrix4& b) {
     for (std::size_t i = 0; i < 16; ++i)
         if (!near(a[i], b[i]))
@@ -509,6 +525,7 @@ void copy_to_points_and_publication() {
 
 // References in double precision over every triangle, by other formulas than the BVH uses.
 using Corners = std::array<math::Vector3d, 3>;
+
 std::vector<Corners> corners(const Geometry& surface) {
     std::vector<Corners> result;
     const auto& p = surface.positions();
@@ -518,6 +535,7 @@ std::vector<Corners> corners(const Geometry& surface) {
         result.push_back({d(p[v[3 * t]]), d(p[v[3 * t + 1]]), d(p[v[3 * t + 2]])});
     return result;
 }
+
 // Distance along a unit ray to the plane, then inside-ness by the signs of three edge volumes.
 std::optional<double> brute_ray(const std::vector<Corners>& triangles, math::Vector3d o, math::Vector3d d,
                                 double limit) {
@@ -539,12 +557,14 @@ std::optional<double> brute_ray(const std::vector<Corners>& triangles, math::Vec
     }
     return best;
 }
+
 double segment_distance(math::Vector3d p, math::Vector3d a, math::Vector3d b) {
     const auto ab = b - a;
     const double t = std::clamp(math::dot(p - a, ab) / math::dot(ab, ab), 0.0, 1.0);
     const auto q = a + ab * t - p;
     return std::sqrt(math::dot(q, q));
 }
+
 // The plane projection when it falls inside the triangle, else the nearest edge point.
 double brute_closest(const std::vector<Corners>& triangles, math::Vector3d p) {
     double best = std::numeric_limits<double>::infinity();
@@ -727,13 +747,16 @@ void ray_node() {
 
 struct Meshes final : Resources {
     std::map<std::string, geometry::MeshRef, std::less<>> meshes;
+
     std::uint64_t version{1};
+
     Result<geometry::MeshRef> mesh(StringView key) const override {
         const auto found = meshes.find(key.std_view());
         if (found == meshes.end())
             return std::unexpected(Error{ErrorCode::invalid_member, "No mesh " + std::string{key.std_view()} + "."});
         return found->second;
     }
+
     std::uint64_t revision() const noexcept override { return version; }
 };
 
@@ -741,6 +764,7 @@ template <class T>
 TypeId type(Runtime& runtime) {
     return take(runtime.native_type<T>());
 }
+
 FieldId field(Runtime& runtime, TypeId owner, const char* name) {
     return take(runtime.find_field(owner, name));
 }
@@ -753,12 +777,14 @@ public:
 
 struct PaddedParameters {
     bool enabled{true};
+
     std::uint32_t count{3};
 };
 
 class RecordNode : public Node {
 public:
     PaddedParameters parameters;
+
     void evaluate(Geometry& output) const {
         output = parameters.enabled ? take(line({0, 0, 0}, {1, 0, 0}, parameters.count)) : Geometry{};
     }
@@ -766,15 +792,19 @@ public:
 
 struct Counts {
     std::uint64_t evaluations;
+
     std::uint64_t hits;
+
     bool operator==(const Counts&) const = default;
 };
+
 void expect(const Evaluator& evaluator, std::initializer_list<std::pair<ObjectId, Counts>> nodes, const char* message) {
     for (const auto& [node, counts] : nodes) {
         const auto* status = evaluator.status(node);
         require(status && Counts{status->evaluations, status->cache_hits} == counts, message);
     }
 }
+
 bool failed(const Evaluator& evaluator, ObjectId node) {
     return evaluator.status(node)->error.has_value();
 }
@@ -1103,16 +1133,20 @@ std::string replaced(std::string text, std::string_view from, std::string_view t
 // snapshot path and versioned by content, like project files.
 struct Project {
     std::map<std::string, std::string> files;
+
     std::uint64_t version{};
+
     Project() {
         for (auto& file : take(source::engine_sources(source::default_engine_root())))
             files[file.path] = std::move(file.source);
     }
+
     const std::string& text(const std::string& path) const {
         const auto found = files.find(path);
         require(found != files.end(), "An engine Source file is missing.");
         return found->second;
     }
+
     void publish(source::Program& program) {
         source::SourceSnapshot snapshot{"procedural", ++version, {}};
         for (const auto& [path, text] : files)
@@ -1300,8 +1334,11 @@ void source_nodes() {
     // The same graph by direct calls and the documented hash; `factor` scales Jitter's offsets.
     struct Settings {
         std::uint32_t seed{};
+
         float amount{0.25f};
+
         float height{1.f};
+
         float factor{1.f};
     };
     const auto expected = [&](Settings settings) {

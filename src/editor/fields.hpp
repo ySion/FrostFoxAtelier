@@ -7,18 +7,28 @@
 namespace atelier::editor::detail {
 struct ScalarField {
     std::vector<std::string> names;
+
     world::FieldPath path;
+
     TypeId type;
+
     std::string label;
+
     std::string category;
+
     std::string description;
+
     ValueForm form{ValueForm::inline_value};
+
     // Inline leaves are scalars, enumerations, strings or whole Arrays of those; only the first two are Scalar values.
     TypeKind kind{TypeKind::scalar};
+
     // The declared range of the leaf, of its math vector for a lane, or of each element of an Array.
     FieldRange range{};
+
     bool material_entries_json{};
 };
+
 inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
     std::vector<ScalarField> result;
     const auto visit = [&](auto&& self, TypeId current, ScalarField prefix) -> Result<void> {
@@ -96,6 +106,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
         return std::unexpected(visited.error());
     return result;
 }
+
 inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId type) {
     auto result = author_fields(runtime, type);
     if (result)
@@ -105,6 +116,7 @@ inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId t
         });
     return result;
 }
+
 inline bool finite_scalar(const Scalar& value) {
     return std::visit(
         [](const auto& v) {
@@ -115,6 +127,7 @@ inline bool finite_scalar(const Scalar& value) {
         },
         value);
 }
+
 inline bool transform_path(const world::Types& types, std::span<const FieldId> path) {
     const auto contains = [&](const auto& paths) {
         return std::ranges::any_of(paths, [&](const auto& p) { return std::ranges::equal(p, path); });

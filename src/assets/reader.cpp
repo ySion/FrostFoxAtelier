@@ -11,6 +11,7 @@ namespace {
 auto failure(std::string text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
@@ -18,12 +19,14 @@ T take(Result<T> value) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
+
 const ProjectEntry& listed(const Reader& reader, std::string_view key, AssetKind kind) {
     const auto* at = reader.entry(key);
     if (!at || at->kind != kind)
         throw std::runtime_error("Missing resource or incorrect resource type: " + std::string(key));
     return *at;
 }
+
 bool is_source_path(const std::filesystem::path& path) {
     auto extension = path.extension().wstring();
     for (auto& c : extension)
@@ -31,6 +34,7 @@ bool is_source_path(const std::filesystem::path& path) {
     return extension == L".source";
 }
 }
+
 bool is_texture_path(const std::filesystem::path& path) {
     auto extension = path.extension().wstring();
     for (auto& c : extension)
@@ -38,21 +42,25 @@ bool is_texture_path(const std::filesystem::path& path) {
     return extension == L".png" || extension == L".jpg" || extension == L".jpeg" || extension == L".bmp" ||
            extension == L".tif" || extension == L".tiff";
 }
+
 bool is_sky_path(const std::filesystem::path& path) {
     auto extension = path.extension().wstring();
     for (auto& c : extension)
         c = static_cast<wchar_t>(std::towlower(c));
     return extension == L".hdr";
 }
+
 bool is_material_source_path(const std::filesystem::path& path) {
     auto filename = path.filename().wstring();
     for (auto& c : filename)
         c = static_cast<wchar_t>(std::towlower(c));
     return filename.ends_with(L".ms.material");
 }
+
 Result<std::filesystem::path> Reader::resolve(const std::filesystem::path& relative) const {
     return resolve_project_path(root_, relative);
 }
+
 Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
     try {
         // A received current snapshot must not turn into a read of newer disk
@@ -122,6 +130,7 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
         return failure(error.what());
     }
 }
+
 Result<MeshAsset> Reader::publish_mesh(std::vector<ProjectEntry> entries, std::string_view key,
                                        const MeshImport& loaded, std::span<const TextureAsset> textures) {
     try {
@@ -176,6 +185,7 @@ Result<MeshAsset> Reader::publish_mesh(std::vector<ProjectEntry> entries, std::s
         return failure(error.what());
     }
 }
+
 Result<void> Reader::publish_mesh_content(const MeshAsset& asset) {
     try {
         static_cast<void>(listed(*this, asset.key, AssetKind::mesh));
@@ -201,17 +211,21 @@ Result<void> Reader::publish_mesh_content(const MeshAsset& asset) {
         return failure(error.what());
     }
 }
+
 const ProjectEntry* Reader::entry(std::string_view key) const {
     const auto at = entry_index_.find(key);
     return at == entry_index_.end() ? nullptr : &entries_[at->second];
 }
+
 MeshImport Reader::prepare_mesh(const std::filesystem::path& source) {
     return load_mesh(source, &images_);
 }
+
 std::vector<material::ImageRef> Reader::prepare_images(std::span<const std::string_view> sources,
                                                        std::uint64_t pixel_budget) {
     return decode_images(sources, &images_, pixel_budget);
 }
+
 void Reader::retain_import(std::string key, const std::filesystem::path& relative, MeshImport& loaded) {
     CachedMesh cached{loaded.mesh, {}, std::move(loaded.notes)};
     for (const auto& file : loaded.files)
@@ -219,6 +233,7 @@ void Reader::retain_import(std::string key, const std::filesystem::path& relativ
             cached.dependencies.push_back(relative.parent_path() / file.relative);
     meshes_.emplace(std::move(key), std::move(cached));
 }
+
 Result<MeshAsset> Reader::mesh(std::string_view key) {
     for (const auto& builtin : mesh_assets())
         if (builtin.key == key)
@@ -262,10 +277,12 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
         return failure(error.what());
     }
 }
+
 std::span<const std::string> Reader::mesh_notes(std::string_view key) const {
     const auto found = meshes_.find(std::string(key));
     return found == meshes_.end() ? std::span<const std::string>{} : std::span<const std::string>(found->second.notes);
 }
+
 Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::string_view key) {
     try {
         for (const auto& builtin : mesh_assets())
@@ -283,6 +300,7 @@ Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::st
         return failure(error.what());
     }
 }
+
 Result<SkyAsset> Reader::sky_map(std::string_view key) {
     const auto* at = entry(key);
     if (!at || at->kind != AssetKind::sky)
@@ -307,6 +325,7 @@ Result<SkyAsset> Reader::sky_map(std::string_view key) {
     sky_maps_.emplace(at->key, asset.map);
     return asset;
 }
+
 Result<TextureAsset> Reader::texture(std::string_view key) {
     try {
         const auto& item = listed(*this, key, AssetKind::texture);
@@ -322,6 +341,7 @@ Result<TextureAsset> Reader::texture(std::string_view key) {
         return failure(error.what());
     }
 }
+
 Result<void> Reader::publish_texture(ProjectEntry item, material::ImageRef image) {
     const auto at = entry_index_.find(item.key);
     if (at == entry_index_.end() || !image || item.kind != AssetKind::texture ||
@@ -337,6 +357,7 @@ Result<void> Reader::publish_texture(ProjectEntry item, material::ImageRef image
     ++revision_;
     return {};
 }
+
 Result<MaterialAsset> Reader::material(std::string_view key) {
     try {
         for (const auto& builtin : material_assets())
@@ -360,6 +381,7 @@ Result<MaterialAsset> Reader::material(std::string_view key) {
         return failure(error.what());
     }
 }
+
 Result<source::SourceFile> Reader::source(const std::filesystem::path& project_relative) const {
     try {
         const auto named = utf8(project_relative.generic_wstring());

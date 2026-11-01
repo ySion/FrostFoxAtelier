@@ -16,12 +16,14 @@ void require(bool condition, const std::string& message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
@@ -30,14 +32,22 @@ void take(Result<void> result) {
 struct StampLeaf {
     float value{};
 };
+
 struct StampNative {
     float x{};
+
     StampLeaf leaf;
+
     Array<float> values;
+
     ReferenceSlot target;
+
     void bump() { x += 1.f; }
+
     float peek() const { return x; }
+
     void add_to(float& total) const { total += x; }
+
     float plus(const float& other) const { return other + x; }
 };
 }

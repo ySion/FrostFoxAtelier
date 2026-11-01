@@ -11,75 +11,105 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 enum class Mode : std::uint32_t { cold = 2, hot = 7 };
+
 struct alignas(32) Inner {
     bool enabled;
+
     Mode mode;
+
     math::Vector3 position;
 };
+
 struct alignas(64) Packet {
     Inner inner;
+
     math::Matrix4d first;
+
     math::Matrix4d second;
+
     std::uint32_t count;
 };
+
 struct alignas(64) ScratchValue {
     std::uint32_t count;
+
     bool enabled;
 };
+
 struct UnsafeValue {
     std::uint32_t count{5};
 };
+
 struct CopyValue {
     inline static std::uint32_t constructions{};
+
     inline static bool reject_construction{};
+
     std::uint32_t count;
+
     CopyValue() : count(0) {
         ++constructions;
         if (reject_construction)
             throw std::runtime_error("CopyValue default construction rejected.");
     }
 };
+
 static_assert(std::is_standard_layout_v<CopyValue> && std::is_trivially_copy_constructible_v<CopyValue> &&
               std::is_trivially_copy_assignable_v<CopyValue> && std::is_trivially_destructible_v<CopyValue>);
+
 struct UnsafeHost {
     UnsafeValue payload;
+
     UnsafeValue result() const { return payload; }
+
     std::uint32_t accept(UnsafeValue value) const { return value.count; }
 };
+
 struct Host {
     Packet stored;
+
     Packet bump(Packet value) const {
         value.count += 1;
         value.inner.enabled = !value.inner.enabled;
         return value;
     }
+
     Packet constant(const Packet& value) const { return value; }
+
     Packet alias(Packet snapshot, Packet& value) const {
         value.count += 10;
         return snapshot;
     }
+
     Packet fail(Packet) const { throw std::runtime_error("Native plain record failure."); }
 };
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view text, std::string_view entry = "run") {
     auto candidate = take(Program::prepare(take(program.request("plain-records.source", text, entry))));
     take(program.try_publish(candidate));
 }
+
 Packet seed() {
     Packet value{};
     value.inner = {true, Mode::hot, {1.0f, 2.0f, 3.0f}};
@@ -88,6 +118,7 @@ Packet seed() {
     value.count = 4;
     return value;
 }
+
 template <class Callable>
 Packet invoke(Runtime& runtime, const Callable& callable, ObjectId receiver, const Packet& input) {
     Packet output{};

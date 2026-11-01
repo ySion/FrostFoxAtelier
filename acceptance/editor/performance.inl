@@ -418,9 +418,13 @@ int profile_editor_render_performance(Application& app, const char* output_direc
                 "Accepted view does not contain the loaded World author settings.");
         struct RestoreView {
             Application& app;
+
             renderer::ViewSettings view;
+
             const editor::Session* document;
+
             bool active{true};
+
             ~RestoreView() {
                 // A failure must never restore old author values over a changed document.
                 if (active && &app.document() == document && !app.document().world().closed() &&
@@ -667,16 +671,27 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         view.lit.direct_cluster_inspect = false;
         struct Sample {
             std::uint64_t sequence{};
+
             std::uint64_t frame{};
+
             std::uint64_t observed_frame{};
+
             std::uint64_t resources{};
+
             std::uint32_t mask{};
+
             std::array<std::uint32_t, 3> clusters{};
+
             std::array<float, editor::FramePerformance::total_pass> ms{};
+
             std::array<std::uint32_t, 14> shadows{};
+
             std::uint64_t probe_rays{};
+
             std::uint64_t shadow_rays{};
+
             std::array<std::uint64_t, 2> ddgi_visibility_rays{};
+
             std::uint32_t reflection_work_items{};
         };
         const auto distribution = [](std::vector<double> values) {
@@ -690,9 +705,13 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         };
         struct CpuSample {
             std::uint64_t frame_id{};
+
             std::array<std::uint64_t, 4> draws{};
+
             std::uint64_t scene_instances{};
+
             std::uint64_t scene_culled_instances{};
+
             timing::FrameRecord record;
         };
         // Called right after next_frame, so the last step is the accepted one.

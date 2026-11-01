@@ -9,12 +9,14 @@
 namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void complete(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);

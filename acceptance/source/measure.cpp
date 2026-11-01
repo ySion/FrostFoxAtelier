@@ -25,41 +25,51 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 using Clock = std::chrono::steady_clock;
 
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 std::uint32_t uint_result(Result<std::optional<Scalar>> result) {
     auto value = take(std::move(result));
     require(value && std::holds_alternative<std::uint32_t>(*value), "Expected a uint result.");
     return std::get<std::uint32_t>(*value);
 }
+
 void publish(Program& program, std::string_view name, std::string_view text) {
     auto candidate = take(Program::prepare(take(program.request(name, text))));
     take(program.try_publish(candidate));
 }
+
 double nanoseconds(Clock::time_point start) {
     return std::chrono::duration<double, std::nano>(Clock::now() - start).count();
 }
 
 struct Options {
     std::size_t batches{7};
+
     std::size_t calls{20000};
+
     std::size_t max_tasks{1024};
 };
+
 Options options(int argc, char** argv) {
     Options result;
     for (int index = 1; index < argc; index += 2) {
@@ -90,6 +100,7 @@ public:
         : name_(name), model_(model), scale_(scale), operations_(operations) {
         values_.reserve(batches);
     }
+
     template <class F>
     void measure(F&& operation) {
         const auto started = Clock::now();
@@ -97,6 +108,7 @@ public:
         const auto elapsed = nanoseconds(started);
         values_.push_back(elapsed);
     }
+
     void output() const {
         require(!values_.empty(), "Cannot report an unmeasured case.");
         for (std::size_t index = 0; index < values_.size(); ++index)
@@ -116,20 +128,30 @@ public:
 
 private:
     const char* name_;
+
     const char* model_;
+
     std::size_t scale_;
+
     std::size_t operations_;
+
     std::vector<double> values_;
 };
 
 struct Resources {
     std::int64_t allocations{};
+
     std::int64_t allocated_bytes{};
+
     std::int64_t live_bytes{};
+
     std::int64_t committed_bytes{};
+
     std::int64_t private_bytes{};
+
     std::int64_t working_set_bytes{};
 };
+
 Resources resources() {
     // v3 accumulates block counters in pages. Flush outside timed regions so
     // current/total counters include the most recent allocations and frees.
@@ -151,6 +173,7 @@ Resources resources() {
             static_cast<std::int64_t>(memory.PrivateUsage),
             static_cast<std::int64_t>(memory.WorkingSetSize)};
 }
+
 void resource_output(const char* model, std::size_t scale, const char* phase, const Resources& base,
                      const Resources& current, std::size_t roots, std::size_t objects) {
     std::printf("{\"record\":\"resources\",\"model\":\"%s\",\"scale\":%zu,\"phase\":\"%s\","
@@ -165,6 +188,7 @@ void resource_output(const char* model, std::size_t scale, const char* phase, co
                 static_cast<long long>(current.private_bytes - base.private_bytes),
                 static_cast<long long>(current.working_set_bytes - base.working_set_bytes), roots, objects);
 }
+
 void verify_allocator() {
     const auto before = resources();
     void* allocation = ::operator new(4096);
@@ -185,6 +209,7 @@ std::size_t collect(Runtime& runtime) {
         work += take(runtime.collect_step({4096})).work_done;
     return work;
 }
+
 void verify_retired(std::uintptr_t address) {
     DWORD64 image_base{};
     require(RtlLookupFunctionEntry(static_cast<DWORD64>(address), &image_base, nullptr) == nullptr,
@@ -275,6 +300,7 @@ void measure_scalar_calls(const Options& settings) {
 struct Counter {
     std::uint32_t value{};
 };
+
 TypeId counter_type(Runtime& runtime, bool native) {
     if (native)
         return take(NativeRegistration<Counter>{runtime, "measure.NativeCounter", TypeKind::object}
@@ -285,6 +311,7 @@ TypeId counter_type(Runtime& runtime, bool native) {
     definition.fields = {{"value", {take(runtime.native_type<std::uint32_t>())}}};
     return take(runtime.register_type(std::move(definition)));
 }
+
 void measure_object_calls(const Options& settings, bool native) {
     Runtime runtime;
     const auto type = counter_type(runtime, native);
@@ -328,6 +355,7 @@ void check_tasks(const std::vector<Coroutine>& tasks, CoroutineState expected) {
     for (const auto& task : tasks)
         require(task.state() == expected, "Unexpected coroutine state.");
 }
+
 void measure_task_scale(const Options& settings, Runtime& runtime, Program& program, const char* model,
                         std::size_t count, bool objects) {
     const auto entry = take(program.bind<std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
@@ -414,6 +442,7 @@ void measure_task_scale(const Options& settings, Runtime& runtime, Program& prog
     resource_output(model, count, "owners_released_and_gc", baseline, released, runtime.root_count(),
                     runtime.live_objects());
 }
+
 void measure_tasks(const Options& settings, const char* model, bool objects, bool native) {
     Runtime runtime;
     const auto type = objects ? counter_type(runtime, native) : TypeId{};
@@ -640,11 +669,17 @@ void measure_math_sweep(std::uint64_t requested) {
         std::vector<double> inputs(chunk);
         struct Tally {
             std::uint64_t worst{};
+
             std::uint64_t inexact{};
+
             std::uint64_t beyond{};
+
             double x{};
+
             double y{};
+
             double result{};
+
             double expected{};
         };
         std::vector<Tally> tallies(segments);

@@ -14,7 +14,9 @@ namespace {
 // Pixels one decode_images call may return; charged before each allocation.
 struct PixelBudget {
     std::atomic<std::uint64_t> left;
+
     std::uint64_t limit;
+
     void charge(std::uint64_t bytes) {
         for (auto value = left.load();;) {
             if (value < bytes)
@@ -24,6 +26,7 @@ struct PixelBudget {
         }
     }
 };
+
 material::ImageRef decode(std::string_view bytes, PixelBudget* budget) {
     using Microsoft::WRL::ComPtr;
     const auto require = [](bool valid, const char* message) {
@@ -35,6 +38,7 @@ material::ImageRef decode(std::string_view bytes, PixelBudget* budget) {
     require(SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE, "Cannot initialize texture decoder.");
     struct Apartment {
         bool owns;
+
         ~Apartment() {
             if (owns)
                 CoUninitialize();
@@ -70,9 +74,11 @@ material::ImageRef decode(std::string_view bytes, PixelBudget* budget) {
     return std::make_shared<const material::Image>(width, height, std::move(pixels));
 }
 }
+
 material::ImageRef decode_image(std::string_view bytes) {
     return decode(bytes, nullptr);
 }
+
 std::vector<material::ImageRef> decode_images(std::span<const std::string_view> sources, ImageCache* cache,
                                               std::uint64_t pixel_budget) {
     std::vector<material::ImageRef> result(sources.size());

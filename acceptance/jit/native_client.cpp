@@ -12,13 +12,18 @@ using namespace atelier::jit_acceptance;
 
 struct CleanupProbe {
     ProbeDiagnostic& diagnostic;
+
     ~CleanupProbe() noexcept { ++diagnostic.cleanups; }
 };
 
 static_assert(sizeof(ProbeRecord) == 32 && alignof(ProbeRecord) == 32);
+
 static_assert(offsetof(ProbeRecord, total) == 0);
+
 static_assert(offsetof(ProbeRecord, checksum) == 8);
+
 static_assert(offsetof(ProbeRecord, amount) == 16);
+
 static_assert(offsetof(ProbeRecord, count) == 20);
 
 }

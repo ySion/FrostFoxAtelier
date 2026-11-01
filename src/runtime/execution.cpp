@@ -168,11 +168,17 @@ bool ExecutionFrame::empty() const noexcept {
 
 struct Coroutine::Control {
     Runtime& runtime;
+
     std::unique_ptr<CoroutineFrame> frame;
+
     CoroutineState state{CoroutineState::ready};
+
     bool cancel_requested{};
+
     std::optional<Scalar> result;
+
     std::optional<Error> error;
+
     Control(Runtime& owner, std::unique_ptr<CoroutineFrame> body) : runtime(owner), frame(std::move(body)) {}
 };
 
@@ -185,7 +191,9 @@ Result<Coroutine> Coroutine::create(Runtime& runtime, std::unique_ptr<CoroutineF
 Coroutine::~Coroutine() {
     cancel();
 }
+
 Coroutine::Coroutine(Coroutine&& other) noexcept : control_(std::move(other.control_)) {}
+
 Coroutine& Coroutine::operator=(Coroutine&& other) noexcept {
     if (this != &other) {
         cancel();

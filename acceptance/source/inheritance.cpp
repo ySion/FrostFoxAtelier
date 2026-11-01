@@ -4,17 +4,21 @@
 #include <cstdio>
 
 using namespace atelier;
+
 using namespace atelier::acceptance::inheritance;
 
 namespace {
 struct SequenceHost {
     ReferenceSequence items;
+
     float value{};
 };
+
 void publish(source::Program& program, std::string_view name, std::string_view body) {
     auto candidate = take(source::Program::prepare(take(program.request(name, body))));
     take(program.try_publish(candidate));
 }
+
 float scalar(std::optional<Scalar> result) {
     require(result && std::holds_alternative<float>(*result), "Inherited source result was not a float.");
     return std::get<float>(*result);

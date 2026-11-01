@@ -11,12 +11,15 @@ namespace {
 bool bounded(float n, float minimum, float maximum) {
     return std::isfinite(n) && n >= minimum && n <= maximum;
 }
+
 bool color_valid(Color c) {
     return bounded(c.r, 0, 1) && bounded(c.g, 0, 1) && bounded(c.b, 0, 1) && bounded(c.a, 0, 1);
 }
+
 bool name_valid(const std::wstring& value) {
     return !value.empty() && value.size() <= 128 && value.find(L'\0') == value.npos;
 }
+
 bool invalid_state_properties(const StyleProperties& p, StyleState states) {
     if (states == StyleState::none)
         return false;
@@ -28,48 +31,68 @@ bool invalid_state_properties(const StyleProperties& p, StyleState states) {
            p.scrollbar_inset || p.scrollbar_min_thumb || p.scrollbar_button_size || p.scrollbar_gutter ||
            ((p.font_weight || p.font_style) && transient);
 }
+
 unsigned specificity(const StyleSelector& s) {
     unsigned states = 0;
     for (auto bits = static_cast<unsigned>(s.states); bits; bits >>= 1)
         states += bits & 1;
     return static_cast<unsigned>(s.classes.size()) * 100 + states * 100 + (s.kind ? 1 : 0) + (s.role ? 1 : 0);
 }
+
 std::string_view trim(std::string_view value) {
     constexpr auto space = " \t\r\n";
     const auto first = value.find_first_not_of(space);
     return first == value.npos ? std::string_view{} : value.substr(first, value.find_last_not_of(space) - first + 1);
 }
+
 struct ParseFailure {
     std::size_t position;
+
     std::string message;
 };
+
 class Parser {
     struct Value {
         std::string_view text;
+
         std::size_t position;
     };
+
     struct Declaration {
         std::string name;
+
         Value value;
     };
+
     struct Block {
         std::vector<StyleSelector> selectors;
+
         std::vector<Declaration> declarations;
     };
+
     std::string source_;
+
     std::span<const NamedImage> images_;
+
     std::size_t at_{};
+
     std::map<std::string, Value, std::less<>> tokens_;
+
     std::map<std::string, std::shared_ptr<const ColorImage>, std::less<>> gradients_;
+
     std::vector<Block> blocks_;
+
     [[noreturn]] void fail(std::string message, std::size_t position) const {
         throw ParseFailure{position, std::move(message)};
     }
+
     [[noreturn]] void fail(std::string message) const { fail(std::move(message), at_); }
+
     void space() {
         while (at_ < source_.size() && std::string_view(" \t\r\n").find(source_[at_]) != std::string_view::npos)
             ++at_;
     }
+
     bool take(char c) {
         space();
         if (at_ < source_.size() && source_[at_] == c) {
@@ -78,10 +101,12 @@ class Parser {
         }
         return false;
     }
+
     void expect(char c) {
         if (!take(c))
             fail(std::string("Expected '") + c + "'");
     }
+
     std::string identifier() {
         space();
         const auto start = at_;
@@ -96,6 +121,7 @@ class Parser {
             fail("Expected an identifier", start);
         return value;
     }
+
     Value value() {
         space();
         const auto start = at_;
@@ -129,6 +155,7 @@ class Parser {
         expect(';');
         return {text, start};
     }
+
     StyleSelector selector() {
         StyleSelector result;
         bool any = false;
@@ -185,6 +212,7 @@ class Parser {
             fail("A selector cannot be both enabled and disabled");
         return result;
     }
+
     Value resolve(Value input, unsigned depth = 0) const {
         if (!input.text.starts_with("token("))
             return input;
@@ -196,6 +224,7 @@ class Parser {
             fail("Unknown token: " + std::string(key), input.position);
         return resolve(found->second, depth + 1);
     }
+
     float number(Value input, bool length = true) const {
         input = resolve(input);
         auto text = input.text;
@@ -207,6 +236,7 @@ class Parser {
             fail("Expected a finite number", input.position);
         return result;
     }
+
     std::vector<float> lengths(Value input) const {
         input = resolve(input);
         auto remaining = input.text;
@@ -222,6 +252,7 @@ class Parser {
             fail("Expected one, two or four lengths", input.position);
         return values;
     }
+
     Color color(Value input) const {
         input = resolve(input);
         if (input.text == "transparent" || input.text == "none")
@@ -241,6 +272,7 @@ class Parser {
         };
         return {linear(channels[0]), linear(channels[1]), linear(channels[2]), channels[3] / 255.f};
     }
+
     std::wstring string(Value input) const {
         input = resolve(input);
         auto text = input.text;
@@ -260,6 +292,7 @@ class Parser {
             fail("Invalid UTF-8 string", input.position);
         return result;
     }
+
     std::shared_ptr<const ColorImage> gradient(Value value) {
         const auto input = resolve(value);
         const std::string key(input.text);
@@ -298,6 +331,7 @@ class Parser {
         gradients_.emplace(key, image);
         return image;
     }
+
     void property(StyleProperties& p, const Declaration& d) {
         const auto& name = d.name;
         const auto v = d.value;
@@ -510,6 +544,7 @@ public:
             }
         }
     }
+
     std::vector<StyleRule> run() {
         while (true) {
             space();
@@ -572,6 +607,7 @@ bool StyleSheet::valid_class(std::string_view name) noexcept {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
     });
 }
+
 bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
     if (p.font_style && static_cast<unsigned>(*p.font_style) > static_cast<unsigned>(FontStyle::italic))
         return false;
@@ -634,6 +670,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
            (!p.scrollbar_min_thumb || bounded(*p.scrollbar_min_thumb, 1, 128)) &&
            (!p.scrollbar_button_size || bounded(*p.scrollbar_button_size, 0, 64));
 }
+
 StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
     if (rules.size() > 4096)
         return std::unexpected(StyleDiagnostic{0, 0, "Too many style rules"});
@@ -653,6 +690,7 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
                      [](const auto& a, const auto& b) { return specificity(a.selector) < specificity(b.selector); });
     return std::shared_ptr<const StyleSheet>(new StyleSheet(std::move(rules)));
 }
+
 StyleSheet::Result StyleSheet::parse(std::string_view source, std::span<const NamedImage> images) {
     if (source.size() > 1024 * 1024 || source.find('\0') != source.npos)
         return std::unexpected(StyleDiagnostic{1, 1, "Invalid or oversized style source"});

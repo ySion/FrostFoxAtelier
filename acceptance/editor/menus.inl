@@ -23,6 +23,7 @@ void verify_about(Application& app, std::wstring_view expected_project) {
     const auto accepted_menu_frame = app.menu_frame()->drawing->id;
     struct DialogLookup {
         HWND owner{};
+
         HWND found{};
     } lookup{app.window()};
     const auto thread_id = GetWindowThreadProcessId(app.window(), nullptr);

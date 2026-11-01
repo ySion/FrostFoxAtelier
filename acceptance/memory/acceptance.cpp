@@ -33,7 +33,9 @@ struct alignas(256) AlignedValue {
 
 struct ExpectedAllocationFailure {
     bool show_errors{mi_option_is_enabled(mi_option_show_errors)};
+
     ExpectedAllocationFailure() { mi_option_disable(mi_option_show_errors); }
+
     ~ExpectedAllocationFailure() { mi_option_set_enabled(mi_option_show_errors, show_errors); }
 };
 

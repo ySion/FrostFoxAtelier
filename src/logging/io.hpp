@@ -16,19 +16,29 @@ namespace atelier::logging::detail {
 class Handle final {
 public:
     Handle() noexcept = default;
+
     explicit Handle(HANDLE value) noexcept : value_(value) {}
+
     ~Handle() { reset(); }
+
     Handle(const Handle&) = delete;
+
     Handle& operator=(const Handle&) = delete;
+
     Handle(Handle&& other) noexcept : value_(other.release()) {}
+
     Handle& operator=(Handle&& other) noexcept {
         if (this != &other)
             reset(other.release());
         return *this;
     }
+
     HANDLE get() const noexcept { return value_; }
+
     explicit operator bool() const noexcept { return value_ != INVALID_HANDLE_VALUE && value_ != nullptr; }
+
     HANDLE release() noexcept { return std::exchange(value_, INVALID_HANDLE_VALUE); }
+
     void reset(HANDLE value = INVALID_HANDLE_VALUE) noexcept {
         if (*this)
             CloseHandle(value_);
@@ -38,13 +48,16 @@ public:
 private:
     HANDLE value_{INVALID_HANDLE_VALUE};
 };
+
 [[noreturn]] inline void io_error(const char* operation, DWORD code = GetLastError()) {
     throw std::system_error{static_cast<int>(code), std::system_category(), operation};
 }
+
 inline Handle open_read(const std::filesystem::path& path) {
     return Handle{CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
 }
+
 inline void write_all(HANDLE handle, std::string_view bytes) {
     while (!bytes.empty()) {
         const auto count = static_cast<DWORD>((std::min)(bytes.size(), std::size_t{1024 * 1024}));
@@ -56,6 +69,7 @@ inline void write_all(HANDLE handle, std::string_view bytes) {
         bytes.remove_prefix(written);
     }
 }
+
 inline void atomic_write(const std::filesystem::path& path, std::string_view bytes) {
     auto temporary = path;
     temporary += L".tmp";
@@ -79,6 +93,7 @@ inline void atomic_write(const std::filesystem::path& path, std::string_view byt
     if (!CloseHandle(file.release()))
         io_error("Close summary temporary file");
 }
+
 inline std::string read_small(const std::filesystem::path& path, std::size_t maximum = 64 * 1024) {
     auto file = open_read(path);
     if (!file)
@@ -96,12 +111,17 @@ inline std::string read_small(const std::filesystem::path& path, std::size_t max
         throw std::runtime_error{"Metadata changed during read"};
     return result;
 }
+
 struct FileIdentity {
     DWORD volume{};
+
     DWORD high{};
+
     DWORD low{};
+
     bool operator==(const FileIdentity&) const = default;
 };
+
 inline FileIdentity file_identity(HANDLE handle) {
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(handle, &info))

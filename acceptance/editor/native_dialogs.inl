@@ -46,6 +46,7 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
         std::jthread probe([&](std::stop_token stop) {
             struct Lookup {
                 HWND owner{};
+
                 HWND dialog{};
             } lookup{owner};
             const auto deadline = GetTickCount64() + 10000;

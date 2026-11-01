@@ -13,20 +13,35 @@ namespace atelier::editor {
 // while publishing the same presentation and interaction bindings.
 struct PropertyRow {
     enum class Kind { number, boolean, enumeration };
+
     ui::ControlKey key{};
+
     std::wstring title;
+
     ui_language::EditBinding edit;
+
     Kind kind{Kind::number};
+
     bool checked{};
+
     bool enabled{true};
+
     ui_language::ActionBinding change;
+
     std::wstring choice;
+
     ui::ControlKey target{};
+
     std::optional<std::array<double, 3>> swatch;
+
     bool override_available{};
+
     bool overridden{};
+
     ui_language::ActionBinding inherit;
+
     ui_language::TooltipBinding help;
+
     ui_language::ActionBinding pick;
 
     ui_language::Item item() && {
@@ -52,10 +67,13 @@ public:
             entry.used = false;
         }
     }
+
     void end() {
         std::erase_if(entries_, [](const auto& entry) { return !entry.second.used; });
     }
+
     void clear() { entries_.clear(); }
+
     ui_language::TooltipBinding get(ui::ControlKey key, std::wstring_view title, std::wstring_view identity,
                                     std::string_view description) {
         auto& entry = entries_[key];
@@ -72,9 +90,12 @@ public:
 private:
     struct Entry {
         ui_language::TooltipBinding help;
+
         std::string description;
+
         bool used{};
     };
+
     std::unordered_map<ui::ControlKey, Entry> entries_;
 };
 

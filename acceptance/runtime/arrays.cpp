@@ -15,20 +15,24 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 template <class T>
 void reject(const Result<T>& result, ErrorCode expected, const char* message) {
     require(!result && result.error().code == expected, message);
 }
+
 // Element failures name the value the way validation does.
 template <class T>
 void reject(const Result<T>& result, ErrorCode expected, std::string_view text, const char* message) {
@@ -36,50 +40,71 @@ void reject(const Result<T>& result, ErrorCode expected, std::string_view text, 
         return;
     throw std::runtime_error(std::string(message) + (result ? "" : " Got: " + result.error().message));
 }
+
 Result<void> invalid(const char* message) {
     return std::unexpected(Error{ErrorCode::argument_mismatch, message});
 }
+
 FieldRange hard(float low, float high) {
     return {.hard_min = Scalar{low}, .hard_max = Scalar{high}};
 }
 
 struct Probe {
     float gain{0.5f};
+
     float free{};
 };
+
 Result<void> valid_probe(const Probe& probe) {
     return probe.free < 0.0f ? invalid("free must not be negative") : Result<void>{};
 }
+
 // Copies may throw while moves are only copies, so Array edits take the copy-and-swap path.
 struct Fragile {
     float value{};
+
     bool fail{};
+
     Fragile() = default;
+
     Fragile(const Fragile& other) : value(other.value), fail(other.fail) {
         if (other.fail)
             throw std::runtime_error("copy refused");
     }
+
     Fragile& operator=(const Fragile&) = default;
 };
+
 // Moves cannot throw but swaps can, and Array::insert/move rotate elements with swap.
 struct Swapper {
     std::int32_t value{};
+
     static inline bool fail{};
+
     friend void swap(Swapper& first, Swapper& second) {
         std::swap(first.value, second.value);
         if (fail)
             throw std::runtime_error("swap refused");
     }
 };
+
 static_assert(std::is_nothrow_move_constructible_v<Swapper> && !std::is_nothrow_swappable_v<Swapper>);
+
 struct Owner {
     Array<Probe> probes;
+
     Array<float> weights;
+
     Array<math::Vector3> points;
+
     Array<Fragile> fragile;
+
     Array<Array<Probe>> layers;
+
     Array<Swapper> swappers;
+
     void touch(Array<Probe>& values) { values.clear(); }
+
     float total(const Array<Probe>& values) const {
         float sum = 0.0f;
         for (const auto& probe : values)
@@ -87,6 +112,7 @@ struct Owner {
         return sum;
     }
 };
+
 Result<void> valid_owner(const Owner& owner) {
     return owner.probes.size() > 4 ? invalid("at most 4 probes") : Result<void>{};
 }

@@ -90,7 +90,9 @@ public:
 
 private:
     std::array<std::array<double, 4>, 6> planes_{};
+
     std::array<double, 4> magnitude_{};
+
     bool finite_{true};
 };
 }

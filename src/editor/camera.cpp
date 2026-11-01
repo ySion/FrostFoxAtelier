@@ -33,6 +33,7 @@ bool Camera::set_state(const CameraState& value) noexcept {
     *this = candidate;
     return true;
 }
+
 void Camera::reset() noexcept {
     view_ = CameraView::perspective;
     target_ = {};
@@ -44,6 +45,7 @@ void Camera::reset() noexcept {
     near_clip_ = .05f;
     far_clip_ = 30000;
 }
+
 void Camera::set_view(CameraView view) noexcept {
     view_ = view;
     roll_ = 0;
@@ -58,6 +60,7 @@ void Camera::set_view(CameraView view) noexcept {
         pitch_ = view == CameraView::top ? DirectX::XM_PIDIV2 : view == CameraView::bottom ? -DirectX::XM_PIDIV2 : 0;
     }
 }
+
 math::Vector3 Camera::up_hint() const noexcept {
     if (view_ != CameraView::perspective)
         return view_ == CameraView::top      ? math::Vector3{0, 0, 1}
@@ -67,15 +70,18 @@ math::Vector3 Camera::up_hint() const noexcept {
     const math::Vector3 up{-std::sin(pitch_) * std::sin(yaw_), std::cos(pitch_), -std::sin(pitch_) * std::cos(yaw_)};
     return up * std::cos(roll_) + right * std::sin(roll_);
 }
+
 math::Vector3 Camera::construction_normal() const noexcept {
     return view_ == CameraView::front || view_ == CameraView::back   ? math::Vector3{0, 0, 1}
            : view_ == CameraView::right || view_ == CameraView::left ? math::Vector3{1, 0, 0}
                                                                      : math::Vector3{0, 1, 0};
 }
+
 void Camera::focus(math::Vector3 target) noexcept {
     target_ = target;
     distance_ = 5.f;
 }
+
 bool Camera::look_at(math::Vector3 eye, math::Vector3 target) noexcept {
     const double dx = double(eye.x) - target.x;
     const double dy = double(eye.y) - target.y;
@@ -87,6 +93,7 @@ bool Camera::look_at(math::Vector3 eye, math::Vector3 target) noexcept {
     return set_state({CameraView::perspective, target, static_cast<float>(std::atan2(dx, dz)),
                       static_cast<float>(std::asin(dy / distance)), static_cast<float>(distance)});
 }
+
 bool Camera::view_from(const presentation::CameraSnapshot& snapshot) noexcept {
     const auto rotation = math::try_normalize(snapshot.rotation);
     if (!rotation)
@@ -101,17 +108,20 @@ bool Camera::view_from(const presentation::CameraSnapshot& snapshot) noexcept {
     return set_state({CameraView::perspective, snapshot.position + forward * distance_, yaw, pitch, distance_, roll,
                       snapshot.vertical_fov, snapshot.near_clip, snapshot.far_clip});
 }
+
 void Camera::frame(math::Vector3 center, float radius) noexcept {
     target_ = center;
     // Fit the sphere to the vertical field with a small margin; orthographic views share the distance.
     distance_ = std::clamp(std::max(radius, .05f) * 1.15f / std::sin(DirectX::XMConvertToRadians(vertical_fov_) * .5f),
                            .5f, 2000.f);
 }
+
 void Camera::orbit(float dx, float dy) noexcept {
     view_ = CameraView::perspective;
     yaw_ += dx * .006f;
     pitch_ = std::clamp(pitch_ + dy * .006f, -1.45f, 1.45f);
 }
+
 void Camera::look(float dx, float dy) noexcept {
     const auto position = eye();
     view_ = CameraView::perspective;
@@ -119,6 +129,7 @@ void Camera::look(float dx, float dy) noexcept {
     pitch_ = std::clamp(pitch_ + dy * .003f, -1.55f, 1.55f);
     target_ += position - eye();
 }
+
 void Camera::fly(math::Vector3 local) noexcept {
     const auto forward = math::try_normalize(target_ - eye());
     if (!forward)
@@ -128,13 +139,16 @@ void Camera::fly(math::Vector3 local) noexcept {
         return;
     target_ += *right * local.x + math::Vector3{0, local.y, 0} + *forward * local.z;
 }
+
 void Camera::zoom(float steps) noexcept {
     distance_ = std::clamp(distance_ * std::exp(-steps * .12f), .5f, 2000.f);
 }
+
 math::Vector3 Camera::eye() const noexcept {
     return {target_.x + distance_ * std::cos(pitch_) * std::sin(yaw_), target_.y + distance_ * std::sin(pitch_),
             target_.z + distance_ * std::cos(pitch_) * std::cos(yaw_)};
 }
+
 void Camera::pan(float dx, float dy, float height) noexcept {
     if (!(height > 0))
         return;
@@ -150,6 +164,7 @@ void Camera::pan(float dx, float dy, float height) noexcept {
     target_ -= *right * (dx * metres);
     target_ += up * (dy * metres);
 }
+
 CameraMatrices Camera::matrices(float aspect) const noexcept {
     using namespace DirectX;
     const auto position = eye();

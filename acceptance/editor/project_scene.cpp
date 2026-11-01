@@ -17,89 +17,130 @@
 
 namespace {
 using namespace atelier;
+
 using Json = nlohmann::json;
+
 const char* acceptance_phase = "document initialization";
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void changed(Result<world::Commit> value) {
     auto commit = take(std::move(value));
     if (commit.notification_error)
         throw std::runtime_error(commit.notification_error->message);
 }
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 void material_float(editor::Session& session, ObjectId object, std::string_view path, float value,
                     std::uint64_t control) {
     take(session.begin_material_edit(object, control));
     take(session.preview_material_entry(control, {std::string(path), value, true}));
     take(session.commit_material_edit(control));
 }
+
 float roughness(editor::Session& session, ObjectId object) {
     return take(take(material::capture_program(session.world().runtime(), object))->evaluate({})).roughness;
 }
+
 struct Entity : world::Entity {
     std::int32_t health{100};
 };
+
 struct Move : world::Component {
     float speed{2};
+
     double mass{3.5};
+
     std::uint32_t count{7};
+
     bool allowed{true};
 };
+
 struct Spatial : world::Component {
     float offset{4};
 };
+
 struct QueryProbe : physics::SceneQueryComponent {
     bool observed{};
+
     std::uint32_t count{};
+
     float distance{};
+
     math::Vector3 point{};
 };
+
 struct Caption {
     String text;
+
     float size{1};
+
     std::uint32_t lines{1};
 };
+
 struct Label : world::Component {
     String title;
+
     Caption caption;
 };
+
 struct Tags : world::Component {
     Array<String> names;
+
     Array<float> weights;
+
     Array<std::uint32_t> counts;
 };
+
 struct DerivedEnvironment : presentation::EnvironmentComponent {};
+
 struct Evidence {
     unsigned prepared{};
+
     unsigned destroyed{};
+
     unsigned begins{};
+
     unsigned ends{};
+
     bool fail_tick{};
+
     bool fail_begin{};
+
     bool fail_end{};
+
     bool live_runtime_on_release{true};
 };
+
 struct Code {
     Runtime& runtime;
+
     source::Program program;
+
     std::shared_ptr<Evidence> evidence;
+
     Code(Runtime& r, TypeId type, std::shared_ptr<Evidence> e) : runtime(r), program(r, type), evidence(std::move(e)) {}
+
     ~Code() {
         evidence->live_runtime_on_release &= !runtime.types().empty();
         ++evidence->destroyed;
     }
 };
+
 editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
     return [evidence](world::World& world) -> Result<std::shared_ptr<void>> {
         auto& runtime = world.runtime();
@@ -164,6 +205,7 @@ editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
         return std::static_pointer_cast<void>(code);
     };
 }
+
 // The scene types plus a component of inline Arrays whose weights and counts are bounded per element.
 editor::Session::Prepare prepare_tags(std::shared_ptr<Evidence> evidence) {
     return [base = prepare(std::move(evidence))](world::World& world) -> Result<std::shared_ptr<void>> {
@@ -185,15 +227,18 @@ editor::Session::Prepare prepare_tags(std::shared_ptr<Evidence> evidence) {
         return code;
     };
 }
+
 ObjectId member(editor::Session& session, TypeId type) {
     for (const auto& component : take(world::components(session.world().runtime(), session.selection().entity)))
         if (take(session.world().runtime().type_of(component.id())) == type)
             return component.id();
     throw std::runtime_error("Missing component");
 }
+
 world::FieldPath field(editor::Session& session, TypeId type, std::string_view name) {
     return {take(session.world().runtime().find_field(type, name))};
 }
+
 // A flat Radiance RGBE sky map, 2 * height by height texels of radiance 2^(exponent - 129).
 std::string radiance(std::uint32_t height, char exponent) {
     auto bytes = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y " + std::to_string(height) + " +X " +
@@ -202,6 +247,7 @@ std::string radiance(std::uint32_t height, char exponent) {
         bytes += std::string{char(128), char(128), char(128), exponent};
     return bytes;
 }
+
 // Writes a sky map into the project's Content and returns its catalog key.
 std::string sky_asset(editor::Project& project, const std::filesystem::path& relative, const std::string& bytes) {
     std::filesystem::create_directories((project.root() / relative).parent_path());
@@ -213,6 +259,7 @@ std::string sky_asset(editor::Project& project, const std::filesystem::path& rel
             "A .hdr file was not catalogued as a sky asset.");
     return at->key;
 }
+
 void verify_primitive_source(editor::Project& project) {
     acceptance_phase = "Primitive Source reflection and persistence";
     editor::Session document;
@@ -244,6 +291,7 @@ void verify_primitive_source(editor::Project& project) {
     changed(reopened->close());
     std::puts("Primitive Source/Scene: PASS (generated reflection, JIT fields, generic properties, Jolt lifecycle)");
 }
+
 void verify_query_source(editor::Project& project) {
     acceptance_phase = "Source query loading";
     auto evidence = std::make_shared<Evidence>();
@@ -323,11 +371,13 @@ void verify_query_source(editor::Project& project) {
     std::puts(
         "Query Source acceptance: PASS (native inherited methods, fixed-step request, scalar/vector result, transient reset)");
 }
+
 void edit(editor::Session& session, ObjectId object, const world::FieldPath& path, Scalar value, std::uint64_t key) {
     take(session.begin_edit(object, path, key));
     take(session.preview_edit(key, value));
     take(session.commit_edit(key));
 }
+
 void verify_stop_reentry() {
     acceptance_phase = "Session stop reentry";
     editor::Session* current{};
@@ -392,6 +442,7 @@ void verify_stop_reentry() {
     std::puts(
         "Session stop reentry: PASS (failed Tick, live physics during End, rejected nested stop, restart, idempotent cleanup)");
 }
+
 void verify_codec_graph(editor::Project& project) {
     acceptance_phase = "final spatial graph persistence";
     {
@@ -645,6 +696,7 @@ void verify_codec_graph(editor::Project& project) {
                 "Imported forest history did not restore the entire graph.");
     }
 }
+
 // Every value in expected exists in actual at the same path; actual may add defaults.
 bool subset(const Json& actual, const Json& expected) {
     if (expected.is_object()) {
@@ -665,15 +717,18 @@ bool subset(const Json& actual, const Json& expected) {
     }
     return actual == expected;
 }
+
 std::size_t count(std::span<const world::Diagnostic> issues, world::DiagnosticKind kind) {
     return static_cast<std::size_t>(std::ranges::count(issues, kind, &world::Diagnostic::kind));
 }
+
 const Json* find_entity(const Json& scene, const std::string& id) {
     for (const auto& entity : scene["entities"])
         if (entity["id"] == id)
             return &entity;
     return nullptr;
 }
+
 void verify_retained_data(editor::Project& project, const Json& baseline, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "retained scene data";
     using enum world::DiagnosticKind;
@@ -865,6 +920,7 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
     damaged["version"] = 9;
     rejects(damaged, "An older scene version was accepted.");
 }
+
 // String leaves use the scene codec's shared leaf decoder, which also decodes operator parameters strictly.
 void verify_string_properties(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "String properties";
@@ -1012,6 +1068,7 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
                 get(document, copied, "text") == "line\nbreak",
             "A duplicate did not copy its String fields.");
 }
+
 // Inline Arrays save as JSON arrays and decode into a value of their own, stored as one whole leaf.
 void verify_array_properties(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "Array properties";
@@ -1019,9 +1076,13 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     // Each session owns a Runtime with its own identities, so types and fields resolve by name per session.
     struct Fields {
         TypeId tags;
+
         TypeId strings;
+
         TypeId floats;
+
         world::FieldPath names;
+
         world::FieldPath weights;
     };
     const auto fields = [](const Runtime& runtime) {
@@ -1197,6 +1258,7 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     std::puts(
         "Array properties: PASS (save/reopen, strict and tolerant elements, clamp, write hook, Play shorten and rejected sets)");
 }
+
 // Editor document A authors; its Play copy B follows A's changes while it runs.
 void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "Play change batches";
@@ -1544,6 +1606,7 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
             "An authored move Play cannot follow was applied or reported as divergence.");
     changed(ragdolls->close());
 }
+
 // Editor document A forwards its own changes; applying each batch to its Play copy B keeps B equal to A.
 void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "Play change forwarding";
@@ -1790,6 +1853,7 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
     std::puts(
         "Play change forwarding: PASS (every change kind, undo and redo, previews, cancel, material assets, failure)");
 }
+
 // A document's World lighting is its Environment. Explicit authoring creates it
 // through ordinary history; opening a scene never fits or rewrites these settings.
 void verify_environment_document(editor::Project& project) {
@@ -1906,13 +1970,18 @@ void verify_environment_document(editor::Project& project) {
     std::puts(
         "Environment document: PASS (load initialization only without an Environment, derived Environment type, sky map keys and history)");
 }
+
 void verify_camera_loading(editor::Project& project) {
     acceptance_phase = "Camera combined load validation";
     struct DerivedCamera : presentation::CameraComponent {
         ReferenceSlot target;
+
         ReferenceSlot held_target;
+
         ReferenceSequence targets;
+
         Array<float> weights{.25f, .75f};
+
         DerivedCamera() {
             near_clip = .25f;
             far_clip = 60;
@@ -2028,6 +2097,7 @@ void verify_camera_loading(editor::Project& project) {
         }
     require(passed, "Camera loading did not enforce its combined projection rule and retained-data contract.");
 }
+
 void verify_camera_import(editor::Project& project) {
     acceptance_phase = "Camera forest import forwarding";
     editor::Session source;
@@ -2086,6 +2156,7 @@ void verify_camera_import(editor::Project& project) {
         }
     require(passed, "A multi-root camera import or its history diverged between author and Play.");
 }
+
 void verify_camera_document(editor::Project& project) {
     acceptance_phase = "Camera authoring, reference history and sparse Play changes";
     editor::Session a;
@@ -2248,6 +2319,7 @@ void verify_camera_document(editor::Project& project) {
     std::puts(
         "Camera document: PASS (Scene v10 references, first-Set creation, history, sparse Play forwarding, game deletion, retained data, delete-save-undo)");
 }
+
 void run() {
     verify_stop_reentry();
     acceptance_phase = "Source document fields and history";
@@ -2462,6 +2534,7 @@ void run() {
         "Project Scene acceptance: PASS (real derived types, typed history, defaults, retained data, load cleanup, Play change batches, String properties and strict decoding, Source actions, repeated play/stop, Jolt ownership)");
 }
 }
+
 int main() {
     try {
         run();

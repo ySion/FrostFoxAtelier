@@ -5,6 +5,7 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
     require(previous != nullptr, "Cannot inspect client pixels with per-monitor DPI awareness");
     struct DpiScope {
         DPI_AWARENESS_CONTEXT previous;
+
         ~DpiScope() { SetThreadDpiAwarenessContext(previous); }
     } dpi_scope{previous};
     const auto project = root / "Project";
@@ -37,6 +38,7 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
     }
     struct Extent {
         unsigned width;
+
         unsigned height;
     };
     const std::array cases{Extent{}, Extent{1601, 1003}, Extent{3840, 2054}};

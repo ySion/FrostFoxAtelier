@@ -4,17 +4,23 @@ namespace atelier::material {
 namespace detail {
 struct Access {
     static String& source(TextureResource& value) { return value.source_; }
+
     static ImageRef& image(TextureResource& value) { return value.image_; }
+
     static const String& source(const TextureResource& value) { return value.source_; }
+
     static const ImageRef& image(const TextureResource& value) { return value.image_; }
 };
 }
+
 namespace {
 using detail::Access;
+
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 }
+
 Result<void> register_texture_types(Runtime& runtime) {
     if (runtime.native_type<TextureResource>())
         return {};
@@ -23,6 +29,7 @@ Result<void> register_texture_types(Runtime& runtime) {
         return std::unexpected(result.error());
     return {};
 }
+
 Result<ObjectRoot> create_texture(Runtime& runtime, std::string_view source, ImageRef image) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return std::unexpected(ready.error());
@@ -45,11 +52,13 @@ Result<ObjectRoot> create_texture(Runtime& runtime, std::string_view source, Ima
         return std::unexpected(written.error());
     return std::move(*root);
 }
+
 Result<TextureState> read_texture(Runtime& runtime, ObjectId id) {
     return runtime.with_native<const TextureResource>(id, [](const auto& value) -> Result<TextureState> {
         return TextureState{std::string(Access::source(value).view().std_view()), Access::image(value)};
     });
 }
+
 Result<void> update_texture(Runtime& runtime, ObjectId id, ImageRef image) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return ready;

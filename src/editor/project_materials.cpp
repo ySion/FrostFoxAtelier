@@ -12,15 +12,18 @@ T take(Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 auto failure(const std::exception& error) {
     return std::unexpected(Error{ErrorCode::invalid_storage, error.what()});
 }
+
 const assets::ProjectEntry& listed(const Project& project, std::string_view key, assets::AssetKind kind) {
     const auto* at = project.entry(key);
     if (!at || at->kind != kind)
         throw std::runtime_error("Missing resource or incorrect resource type: " + std::string(key));
     return *at;
 }
+
 auto failed_import(const std::exception& original, const std::vector<std::filesystem::path>& paths) {
     std::string message = original.what();
     for (auto at = paths.rbegin(); at != paths.rend(); ++at) {
@@ -32,6 +35,7 @@ auto failed_import(const std::exception& original, const std::vector<std::filesy
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
 }
 }
+
 Result<std::string> Project::import_texture(const std::filesystem::path& source) {
     std::vector<std::filesystem::path> created;
     try {
@@ -60,6 +64,7 @@ Result<std::string> Project::import_texture(const std::filesystem::path& source)
         return failed_import(error, created);
     }
 }
+
 Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, const std::filesystem::path& source) {
     try {
         auto item = listed(*this, key, assets::AssetKind::texture);
@@ -80,6 +85,7 @@ Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, con
         return failure(error);
     }
 }
+
 Result<std::string> Project::create_material(const std::filesystem::path& relative,
                                              const assets::MaterialAsset& asset) {
     std::vector<std::filesystem::path> created;
@@ -119,6 +125,7 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
         return failed_import(error, created);
     }
 }
+
 Result<std::string> Project::create_material_source(const std::filesystem::path& relative, std::string_view text) {
     std::vector<std::filesystem::path> created;
     try {
@@ -146,6 +153,7 @@ material.Output shade(material.Context context,Params p) {
         return failed_import(error, created);
     }
 }
+
 Result<void> Project::save_material(const assets::MaterialAsset& asset) {
     try {
         const auto& item = listed(*this, asset.key, assets::AssetKind::material);

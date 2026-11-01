@@ -7,21 +7,34 @@
 #include <utility>
 
 void verify_source_shutdown();
+
 void verify_source_session();
+
 void verify_source_inheritance();
+
 void verify_native_value_borrows();
+
 void verify_source_owned_values();
+
 void verify_source_modules();
+
 void verify_source_types();
+
 void verify_source_value_fields();
+
 void verify_source_foundations();
+
 void verify_source_plain_records();
+
 void verify_source_diagnostics();
+
 void verify_source_debugger();
+
 void verify_source_materials();
 
 namespace {
 using namespace atelier;
+
 using source::Program;
 
 void require(bool condition, const char* message) {
@@ -109,7 +122,9 @@ void verify_public_program() {
 }
 
 void verify_source_math();
+
 void verify_source_projects();
+
 void measure_source_math();
 
 int main(int argc, char** argv) {

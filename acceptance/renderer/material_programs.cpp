@@ -20,8 +20,11 @@
 namespace material_program_e2e {
 namespace {
 using namespace atelier;
+
 using rhi_acceptance::check;
+
 using rhi_acceptance::require;
+
 using Program = std::shared_ptr<const source::MaterialProgram>;
 
 template <class T, class E>
@@ -31,6 +34,7 @@ T need(std::expected<T, E> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 void write(const std::filesystem::path& path, std::string_view text) {
     std::ofstream file(path, std::ios::binary);
     file.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -38,6 +42,7 @@ void write(const std::filesystem::path& path, std::string_view text) {
 }
 
 constexpr std::string_view declarations = R"source(
+
 struct Params {
     float cutoff;
     vector3 tint;
@@ -99,10 +104,13 @@ std::string adapter(Runtime& runtime, TypeId type, std::string_view ns, bool inp
     }
     return code + (input ? "return value;\n}\n" : "}\n");
 }
+
 struct Compiled {
     std::array<Program, 2> programs;
+
     std::string adapters;
 };
+
 std::array<std::uint32_t, 2> texture_slots(const source::MaterialProgram& program) {
     constexpr std::array keys{"color", "data"};
     require(program.textures().size() == keys.size(), "fixture texture declarations changed");
@@ -115,6 +123,7 @@ std::array<std::uint32_t, 2> texture_slots(const source::MaterialProgram& progra
     require(slots[0] != slots[1], "distinct named inputs must have distinct local slots");
     return slots;
 }
+
 Compiled compile(const std::filesystem::path& evidence) {
     Runtime runtime;
     need(material::register_program_types(runtime));
@@ -154,13 +163,17 @@ void parameter(const source::MaterialProgram& program, std::vector<std::byte>& b
 
 struct Texture {
     material::ImageRef image;
+
     bool srgb;
+
     material::Address address;
 };
+
 double decode(std::uint8_t byte, bool srgb) {
     const double value = double(byte) / 255;
     return !srgb ? value : value <= .04045 ? value / 12.92 : std::pow((value + .055) / 1.055, 2.4);
 }
+
 Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
     const auto& texture = *static_cast<const Texture*>(data);
     const auto& image = *texture.image;
@@ -197,17 +210,26 @@ Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
             weight[1]));
     return result;
 }
+
 using Environment = std::array<Texture, 2>;
+
 struct Record {
     std::uint32_t program{};
+
     std::uint32_t environment{};
+
     material::Context context;
+
     std::vector<std::byte> parameters;
+
     // Independently selected texel weights, not computed by the CPU sampler.
     std::array<float, 4> texels;
+
     math::Vector3 tint{.2f, .4f, .8f};
+
     float cutoff{.5f};
 };
+
 material::Output expected(const Record& record, const Environment& environment) {
     std::array<math::Vector4, 2> samples{};
     for (std::size_t input = 0; input < 2; ++input)
@@ -231,6 +253,7 @@ material::Output expected(const Record& record, const Environment& environment) 
     result.normal_world = record.context.normal_world;
     return result;
 }
+
 void compare(const material::Output& got, const material::Output& wanted, float sample_tolerance) {
     const auto scalar = [](const char* field, float a, float b, float tolerance) {
         if (!std::isfinite(a) || std::abs(a - b) > tolerance) {
@@ -272,12 +295,19 @@ float4 atelier_material_sample(uint environment,uint local_slot,float2 uv) {
 
 struct Device {
     rhi::Context owner;
+
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
+
     rhi::Pipeline pipeline;
+
     std::vector<GfxBuffer> buffers;
+
     std::vector<GfxTexture> images;
+
     std::array<GfxSamplerState, 3> samplers{};
+
     std::uint32_t submissions{};
+
     Device(HWND window, const std::filesystem::path& shader_cache)
         : owner(need(rhi::Context::open(
               {.window = window, .validation = rhi::Validation::gpu, .shader_cache = shader_cache}))),
@@ -285,6 +315,7 @@ struct Device {
         require(owner.info().gpu_validation, "B0 GPU acceptance requires actual GPU validation");
         rhi_acceptance::print_adapter(owner.borrow());
     }
+
     ~Device() {
         pipeline = {};
         for (auto buffer : buffers)
@@ -295,6 +326,7 @@ struct Device {
             if (sampler)
                 (void)gfxDestroySamplerState(owner.borrow(), sampler);
     }
+
     void close() {
         pipeline = {};
         while (!buffers.empty()) {
@@ -314,12 +346,14 @@ struct Device {
         need(owner.close());
         rhi_acceptance::check_debug(debug.Get());
     }
+
     GfxBuffer buffer(std::uint64_t size, const void* data = nullptr, GfxCpuAccess access = kGfxCpuAccess_None) {
         auto result = gfxCreateBuffer(owner.borrow(), size, data, access);
         require(bool(result), "B0 GPU buffer creation failed");
         buffers.push_back(result);
         return result;
     }
+
     rhi::Result<rhi::Pipeline> prepare(const std::string& text) {
         rhi::PipelineDesc desc;
         desc.name = "B0 material programs";
@@ -341,6 +375,7 @@ struct Device {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+
     GfxBuffer bindings(std::span<const Program> programs) {
         // Image/address environments stay unchanged; only each version's key
         // mapping supplies slots. Program index changes select the matching table.
@@ -362,6 +397,7 @@ struct Device {
         buffers.push_back(result);
         return result;
     }
+
     std::vector<material::Output> dispatch(std::span<const Record> input, GfxBuffer bindings,
                                            std::uint32_t program_count, std::vector<float>* coverage = nullptr) {
         const auto gfx = owner.borrow();
@@ -458,16 +494,27 @@ material.Output shade(material.Context c, Params p, Textures textures) {
 
     struct Case {
         const char* name;
+
         float x;
+
         float low;
+
         float high;
+
         float a;
+
         float b;
+
         float t;
+
         float scalar_fraction;
+
         std::array<float, 3> start;
+
         std::array<float, 3> finish;
+
         std::array<float, 2> fraction;
+
         material::Output wanted;
     };
     // Independent exact expectations from docs/math.md, not HLSL intrinsics or
@@ -574,6 +621,7 @@ material.Output shade(material.Context c, Params p, Textures textures) {
         const auto& environment = environments[record.environment];
         struct Counted {
             const Texture* texture;
+
             unsigned* calls;
         };
         std::array<unsigned, 2> calls{};

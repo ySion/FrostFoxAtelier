@@ -7,36 +7,48 @@
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::acceptance::borrow;
+
 using source::Program;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void publish(Program& program, std::string_view text) {
     auto candidate = take(Program::prepare(take(program.request("native-values.source", text))));
     take(program.try_publish(candidate));
 }
+
 struct Host {
     static inline int callbacks{};
+
     void invalidate() { ++callbacks; }
 };
+
 struct NativeOnlyHost {
     std::uint32_t answer() const noexcept { return 42; }
+
     std::uint32_t text_size(const String& text) const noexcept { return static_cast<std::uint32_t>(text.size()); }
 };
+
 struct RetiredAsset {
     static inline int destroyed{};
+
     ~RetiredAsset() { ++destroyed; }
 };
 }

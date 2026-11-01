@@ -9,6 +9,7 @@ Error source_error(const SourceSnapshot& snapshot, std::uint32_t file, language:
     }
     return error;
 }
+
 Error mapped_error(const SourceSnapshot& snapshot, const language::MappedSource& source,
                    language::SourcePosition position, std::string message) {
     for (const auto& piece : source.pieces)
@@ -26,6 +27,7 @@ Error mapped_error(const SourceSnapshot& snapshot, const language::MappedSource&
         }
     return source_error(snapshot, 0, {}, std::move(message));
 }
+
 // Folds one constant scalar expression with the typed Source parser; floating results must be finite.
 Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::MappedSource& expression,
                            std::string_view type) {
@@ -62,6 +64,7 @@ Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::Mappe
         return at("Field defaults and bounds must be finite.");
     return type == "float" ? Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))} : Scalar{number};
 }
+
 Scalar zero_leaf(std::string_view type) {
     if (type == "bool")
         return false;
@@ -73,6 +76,7 @@ Scalar zero_leaf(std::string_view type) {
         return std::int32_t{};
     return std::uint32_t{};
 }
+
 // Published classes keep their layout, defaults and methods; new methods may follow.
 bool keeps_class(const language::ClassDeclaration& published, const language::ClassDeclaration& updated) {
     if (published.base != updated.base || published.fields.size() != updated.fields.size())
@@ -87,11 +91,13 @@ bool keeps_class(const language::ClassDeclaration& published, const language::Cl
     }
     return true;
 }
+
 template <class T>
 const T* find_named(const std::vector<T>& values, std::string_view name) {
     const auto found = std::ranges::find(values, name, &T::name);
     return found == values.end() ? nullptr : &*found;
 }
+
 // A class field's Runtime definition. Defaults and bounds fold against the field's leaf type: each
 // component of a vector; an enum default names one item and becomes its underlying integer.
 Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner,
@@ -204,6 +210,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     result.description = field.description;
     return result;
 }
+
 // A published field keeps its exact default leaves, bounds and presentation text; source spacing is not part of them.
 bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
     const auto same = [](const std::optional<Scalar>& x, const std::optional<Scalar>& y) {
@@ -219,15 +226,19 @@ bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
 std::shared_ptr<const SourceSnapshot> Program::SourceRequest::snapshot() const {
     return module_ ? module_->snapshot : nullptr;
 }
+
 std::span<const ClassInfo> Program::classes() const noexcept {
     return state_->module ? std::span<const ClassInfo>{state_->module->classes} : std::span<const ClassInfo>{};
 }
+
 std::span<const EntryInfo> Program::entries() const noexcept {
     return state_->module ? std::span<const EntryInfo>{state_->module->entries} : std::span<const EntryInfo>{};
 }
+
 std::uint64_t Program::revision() const noexcept {
     return state_->revision;
 }
+
 Result<Program::Entry> Program::entry(std::string_view name) const {
     if (!state_->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
@@ -237,6 +248,7 @@ Result<Program::Entry> Program::entry(std::string_view name) const {
             Error{ErrorCode::invalid_member, "Unknown published source entry: " + std::string(name)});
     return Entry{state_, index};
 }
+
 Result<Program::Lease> Program::pin(std::string_view name) const {
     if (!state_->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
@@ -247,6 +259,7 @@ Result<Program::Lease> Program::pin(std::string_view name) const {
             Error{ErrorCode::invalid_member, "Unknown published source entry: " + std::string(name)});
     return Lease{std::move(version)};
 }
+
 Result<FunctionSignature> Program::describe(std::string_view name) const {
     if (!state_->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});

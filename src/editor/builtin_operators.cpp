@@ -16,9 +16,11 @@ namespace {
 std::unexpected<Error> unavailable(std::string reason) {
     return std::unexpected(Error{ErrorCode::unsupported_operation, std::move(reason)});
 }
+
 Result<void> available(const Context&) {
     return {};
 }
+
 // Adapts an operator over the reflected parameter record P to the type-erased entry.
 template <class P>
 auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, const P&)) {
@@ -31,6 +33,7 @@ auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, cons
         return execute(host, context, *static_cast<const P*>(input.data));
     };
 }
+
 template <class P, class R>
 auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, const P&, R&)) {
     return [execute](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
@@ -43,6 +46,7 @@ auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, cons
         return execute(host, context, *static_cast<const P*>(parameters.value.data), *static_cast<R*>(output.data));
     };
 }
+
 Result<void> committed(Result<world::Commit> result) {
     if (!result)
         return std::unexpected(result.error());
@@ -50,6 +54,7 @@ Result<void> committed(Result<world::Commit> result) {
         return std::unexpected(*result->notification_error);
     return {};
 }
+
 // Blender View Selected / View All: bounds of the rendered geometry; locators count as points.
 Result<void> frame(OperatorHost& host, const Context& context, bool selected_only) {
     auto& runtime = context.document.world().runtime();
@@ -112,6 +117,7 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
     camera.frame((low + high) * .5f, math::length(high - low) * .5f);
     return host.set_camera(camera);
 }
+
 // Something in a selected subtree must have a Transform to frame.
 Result<void> frame_selected_poll(const Context& context) {
     if (!context.scene_available)
@@ -142,6 +148,7 @@ Result<void> frame_selected_poll(const Context& context) {
     }
     return unavailable("Select an Entity with a Transform to frame.");
 }
+
 // The focused region owns the history: Code drafts, an inspected material asset, the Controls samples, else the scene.
 OperatorInfo history(bool redo) {
     const auto empty = [redo] { return unavailable(redo ? "Nothing to redo." : "Nothing to undo."); };
@@ -175,6 +182,7 @@ OperatorInfo history(bool redo) {
                 return moved;
             }};
 }
+
 // Scene edits address the context's active Entity.
 Result<void> editable_entity(const Context& context) {
     if (!context.scene_available)
@@ -186,6 +194,7 @@ Result<void> editable_entity(const Context& context) {
         return unavailable("The selected Entity cannot be edited.");
     return {};
 }
+
 OperatorInfo transform_presence(bool add) {
     return {add ? "scene.transform_add" : "scene.transform_remove",
             add ? L"Add Transform" : L"Remove Transform",
@@ -206,9 +215,11 @@ OperatorInfo transform_presence(bool add) {
                            : context.document.remove_transform(context.selection.active);
             }};
 }
+
 Result<void> docked(const Context& context) {
     return context.region == RegionKind::none ? unavailable("Focus a pane first.") : Result<void>{};
 }
+
 Result<void> spatial_selection(const Context& context) {
     if (!context.scene_available)
         return unavailable("Load a scene before editing Entities.");
@@ -221,14 +232,17 @@ Result<void> spatial_selection(const Context& context) {
     }
     return unavailable("Select an Entity with a Transform.");
 }
+
 Result<void> select_all(OperatorHost& host, const Context& context, const SceneSelectAll& p) {
     auto result = host.viewport_tool().select_all(context.document, context.selection.entities, p.action);
     host.scene_changed();
     return result;
 }
+
 Result<void> clear_transform(OperatorHost& host, const Context& context, const SceneTransformClear& p) {
     return host.viewport_tool().clear(context.document, context.selection.entities, p.channel);
 }
+
 Result<void> scene_delete(OperatorHost& host, const Context& context, const SceneDelete& p) {
     const auto& selection = context.selection;
     if (p.target == DeleteTarget::object && selection.object == ObjectId{})
@@ -239,6 +253,7 @@ Result<void> scene_delete(OperatorHost& host, const Context& context, const Scen
     host.scene_changed();
     return committed(std::move(result));
 }
+
 Result<void> scene_duplicate(OperatorHost& host, const Context& context, const SceneDuplicate& p) {
     if (p.place && context.region != RegionKind::viewport)
         return unavailable("Duplicate placement requires a viewport context.");
@@ -248,6 +263,7 @@ Result<void> scene_duplicate(OperatorHost& host, const Context& context, const S
         return completed;
     return p.place ? host.place_duplicates() : Result<void>{};
 }
+
 Result<void> scene_add_component(OperatorHost& host, const Context& context, const SceneAddComponent& p) {
     const auto type = context.document.world().runtime().find_type({p.type.c_str(), p.type.size()});
     if (!type)
@@ -256,11 +272,13 @@ Result<void> scene_add_component(OperatorHost& host, const Context& context, con
     host.scene_changed();
     return committed(std::move(result));
 }
+
 Result<void> scene_transform(OperatorHost& host, const Context& context, const SceneTransform& p) {
     auto result = context.document.set_transform(context.selection.active, {p.position, p.rotation, p.scale});
     host.scene_changed();
     return result;
 }
+
 Result<void> scene_rename(OperatorHost& host, const Context& context, const SceneRename& p) {
     if (p.name.empty()) {
         if (!context.interactive)
@@ -271,22 +289,26 @@ Result<void> scene_rename(OperatorHost& host, const Context& context, const Scen
     host.scene_changed();
     return result;
 }
+
 Result<void> snap_selection(OperatorHost& host, const Context& context, const SceneSnap& p) {
     return host.viewport_tool().snap_selection(context.document, context.selection.entities, context.tools,
                                                p.to == SnapTarget::cursor ? std::optional{context.cursor}
                                                                           : std::nullopt);
 }
+
 Result<void> layout_show(OperatorHost& host, const Context&, const LayoutShow& p) {
     if (p.tab == RegionKind::none)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Choose a workspace page to show."});
     host.show_tab(p.tab);
     return {};
 }
+
 Result<void> layout_cycle(OperatorHost& host, const Context& context, const LayoutCycle& p) {
     if (p.direction)
         host.cycle_tab(context.region, p.direction);
     return {};
 }
+
 Result<void> add_poll(const Context& context) {
     if (!context.scene_available)
         return unavailable("Load a scene before adding to it.");
@@ -297,6 +319,7 @@ Result<void> add_poll(const Context& context) {
         return unavailable("The scene has reached its Entity limit.");
     return {};
 }
+
 Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAdd& p) {
     auto& document = context.document;
     Result<world::Commit> added;
@@ -335,6 +358,7 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
     host.scene_changed();
     return result;
 }
+
 Result<void> scene_parent(OperatorHost& host, const Context& context, const SceneParent& p) {
     auto& document = context.document;
     auto& runtime = document.world().runtime();
@@ -353,6 +377,7 @@ Result<void> scene_parent(OperatorHost& host, const Context& context, const Scen
     host.scene_changed();
     return result;
 }
+
 Result<void> scene_space_reference(OperatorHost& host, const Context& context, const SceneSpaceReference& p) {
     auto& document = context.document;
     auto& runtime = document.world().runtime();
@@ -377,12 +402,15 @@ Result<void> scene_space_reference(OperatorHost& host, const Context& context, c
     host.scene_changed();
     return result;
 }
+
 Result<void> tool_settings(OperatorHost& host, const Context&, const ToolSettings& p) {
     host.set_tool_settings(p);
     return {};
 }
+
 constexpr std::array tool_flags{&ToolSettings::grid_snap, &ToolSettings::cursor_surface, &ToolSettings::snap_move,
                                 &ToolSettings::snap_rotate, &ToolSettings::snap_scale};
+
 Result<void> tool_toggle(OperatorHost& host, const Context& context, const ToolToggle& p) {
     auto settings = context.tools;
     auto& flag = settings.*tool_flags[static_cast<std::size_t>(p.setting)];
@@ -390,11 +418,13 @@ Result<void> tool_toggle(OperatorHost& host, const Context& context, const ToolT
     host.set_tool_settings(settings);
     return {};
 }
+
 Result<void> view_axis(OperatorHost& host, const Context&, const ViewAxis& p) {
     auto camera = host.camera();
     camera.set_view(p.view);
     return host.set_camera(camera);
 }
+
 Result<void> seed_view(const Context& context, ValueOutput out) {
     auto& runtime = context.document.world().runtime();
     const auto info = runtime.describe(out.type);
@@ -432,6 +462,7 @@ Result<void> seed_view(const Context& context, ValueOutput out) {
     }
     return {};
 }
+
 Result<void> view_settings(OperatorHost& host, const Context& context, const OperatorParameters& parameters,
                            ValueOutput) {
     const auto input = parameters.value;
@@ -462,9 +493,11 @@ Result<void> view_settings(OperatorHost& host, const Context& context, const Ope
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Persistent grid plane follows camera view."});
     return host.set_view_settings(candidate);
 }
+
 Result<void> project_open(const Context& context) {
     return context.project ? Result<void>{} : unavailable("Open a project folder first.");
 }
+
 Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, const Context& context,
                                                             const String& value, PathPurpose purpose,
                                                             const std::filesystem::path& initial,
@@ -478,6 +511,7 @@ Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, 
         host.cancel_operator();
     return chosen;
 }
+
 OperatorInfo open_document(std::string id, std::wstring title, DocumentRequest::Kind kind) {
     return {
         std::move(id),
@@ -502,10 +536,12 @@ OperatorInfo open_document(std::string id, std::wstring title, DocumentRequest::
         },
         "editor.OpenPath"};
 }
+
 Result<void> project_build(OperatorHost& host, const Context& context, const ProjectBuildParameters& parameters) {
     host.replace_document({DocumentRequest::Kind::build, {}, context.interactive, parameters.rebuild});
     return {};
 }
+
 OperatorInfo source_open(std::string id, std::wstring title, bool create, bool project_ui = false) {
     return {std::move(id),
             std::move(title),
@@ -532,6 +568,7 @@ OperatorInfo source_open(std::string id, std::wstring title, bool create, bool p
             },
             "editor.OpenPath"};
 }
+
 Result<void> save_scene(OperatorHost& host, const Context& context, const SceneSave& p) {
     if (p.path.empty() && !p.as_new)
         return host.save_scene({});
@@ -542,6 +579,7 @@ Result<void> save_scene(OperatorHost& host, const Context& context, const SceneS
         return {};
     return host.save_scene((**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path);
 }
+
 Result<void> import_asset(OperatorHost& host, const Context& context, const AssetImport& p, AssetResult& result) {
     auto path =
         operation_path(host, context, p.path, p.kind == ImportKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
@@ -556,6 +594,7 @@ Result<void> import_asset(OperatorHost& host, const Context& context, const Asse
     result.asset = String{StringView{*imported}};
     return {};
 }
+
 Result<void> reimport_asset(OperatorHost& host, const Context& context, const OpenPath& p) {
     const auto& entry = *context.project->entry(context.asset);
     auto path = operation_path(host, context, p.path,
@@ -565,6 +604,7 @@ Result<void> reimport_asset(OperatorHost& host, const Context& context, const Op
         return std::unexpected(path.error());
     return *path ? host.reimport_asset(context.asset, **path) : Result<void>{};
 }
+
 template <class P>
 Result<void> new_material(OperatorHost& host, const Context& context, const P& p, AssetResult& result) {
     constexpr bool source = std::same_as<P, NewMaterialSource>;
@@ -610,6 +650,7 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
     return {};
 }
 }
+
 void register_builtin_operators(OperatorRegistry& registry) {
     const auto add = [&](OperatorInfo info) {
         if (auto added = registry.add(std::move(info)); !added)

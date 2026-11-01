@@ -2,7 +2,9 @@
 // used only for image evidence; the benchmark samples completed GPU timestamps.
 namespace scene_lit_e2e {
 using Vec3 = std::array<float, 3>;
+
 constexpr unsigned warmup_frames = 96;
+
 // Temporal filters (DI history, DDGI transport) keep estimator noise correlated
 // over tens of frames, so converged appearances compare means of this window.
 constexpr unsigned convergence_frames = 64;
@@ -69,16 +71,20 @@ void png(const render::Capture& image, const std::filesystem::path& path) {
 Vec3 subtract(Vec3 a, Vec3 b) {
     return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
 }
+
 float dot(Vec3 a, Vec3 b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
+
 Vec3 cross(Vec3 a, Vec3 b) {
     return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
+
 Vec3 normalize(Vec3 value) {
     const float length = std::sqrt(dot(value, value));
     return {value[0] / length, value[1] / length, value[2] / length};
 }
+
 render::Camera camera(ui::PixelExtent extent, bool orthographic = false) {
     const Vec3 eye{0, 3, -7};
     const Vec3 focus{0, .7f, 3};
@@ -95,12 +101,14 @@ render::Camera camera(ui::PixelExtent extent, bool orthographic = false) {
         result.projection = {1.8f / aspect, 0, 0, 0, 0, 1.8f, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0};
     return result;
 }
+
 std::array<float, 16> box(float x, float y, float z, float sx, float sy, float sz) {
     return {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, x, y, z, 1};
 }
 
 struct Room {
     std::vector<render::MeshInstance> meshes;
+
     Room() {
         const auto add = [&](std::array<float, 16> transform, ui::Color color) {
             render::MeshInstance mesh;
@@ -126,13 +134,19 @@ struct Room {
         meshes[7].material.emissive = {4, .3f, .05f};
     }
 };
+
 struct Region {
     unsigned left{};
+
     unsigned top{};
+
     unsigned right{};
+
     unsigned bottom{};
+
     float expected_depth{};
 };
+
 Region project_region(const render::Camera& camera, ui::Rect viewport, ui::PixelExtent extent, Vec3 point,
                       unsigned radius = 5) {
     std::array<float, 4> value{point[0], point[1], point[2], 1};
@@ -151,6 +165,7 @@ Region project_region(const render::Camera& camera, ui::Rect viewport, ui::Pixel
     return {unsigned(x) - radius, unsigned(y) - radius, unsigned(x) + radius + 1, unsigned(y) + radius + 1,
             value[2] / value[3]};
 }
+
 std::array<double, 3> mean_rgb(const render::Capture& image, Region region) {
     // Having geometry at the projected pixel does not prove that this receiver
     // is visible: an intervening metallic object has no diffuse GI response.
@@ -173,10 +188,14 @@ std::array<double, 3> mean_rgb(const render::Capture& image, Region region) {
 
 struct Difference {
     double mean{};
+
     unsigned p95{};
+
     std::size_t changed{};
+
     std::size_t darker{};
 };
+
 Difference difference(const render::Capture& a, const render::Capture& b, bool scene_only = true) {
     check(a.extent == b.extent && a.depth.size() == b.depth.size(), "SceneLit comparison extents match");
     std::vector<unsigned> deltas;
@@ -203,6 +222,7 @@ Difference difference(const render::Capture& a, const render::Capture& b, bool s
     result.p95 = deltas[(deltas.size() - 1) * 95 / 100];
     return result;
 }
+
 double percentile(std::vector<double> values, unsigned percent) {
     check(!values.empty(), "SceneLit completed GPU sample set is nonempty");
     std::ranges::sort(values);
@@ -216,10 +236,13 @@ double percentile(std::vector<double> values, unsigned percent) {
 // rational filmic curve, sRGB. A receiver pixel must lie within one 8-bit code
 // (display dither) of the band that two HDR half-precision roundings allow.
 using Rgb3 = std::array<double, 3>;
+
 struct PlaneResponse {
     Rgb3 diffuse{};
+
     Rgb3 specular{};
 };
+
 PlaneResponse plane_response(const Rgb3& v, const Rgb3& l, const Rgb3& base, double roughness, double metallic) {
     PlaneResponse result;
     const double nl = -l[2];
@@ -243,11 +266,13 @@ PlaneResponse plane_response(const Rgb3& v, const Rgb3& l, const Rgb3& base, dou
     }
     return result;
 }
+
 double display_code(double radiance) {
     const double x = std::max(radiance, 0.);
     const double mapped = std::clamp(x * (2.51 * x + .03) / (x * (2.43 * x + .59) + .14), 0., 1.);
     return 255 * (mapped <= .0031308 ? mapped * 12.92 : 1.055 * std::pow(mapped, 1 / 2.4) - .055);
 }
+
 // Inverse of display_code, with the linear SDR value scaled by `rounding` first
 // (its FP16 storage before encoding); infinite at full white.
 double display_radiance(double code, double rounding) {
@@ -262,13 +287,18 @@ double display_radiance(double code, double rounding) {
     const double c = -.14 * mapped;
     return (-b + std::sqrt(b * b - 4 * a * c)) / (2 * a);
 }
+
 // margin: the smallest distance of an observed code inside its band.
 struct Analytic {
     std::size_t pixels{};
+
     std::size_t failures{};
+
     double max_error{};
+
     double margin{std::numeric_limits<double>::infinity()};
 };
+
 // Visits each receiver pixel with its plane point p and unit view vector v.
 template <class Visit>
 void plane_pixels(const render::Frame& frame, const render::Capture& image, float plane_z, Visit&& visit) {
@@ -299,6 +329,7 @@ void plane_pixels(const render::Frame& frame, const render::Capture& image, floa
             visit(x, y, p, v);
         }
 }
+
 // Radiance from one unshadowed point light (zero radius): color*I*window/max(d^2,0.0025)
 // with window (1-(d/range)^4)^2.
 Analytic analytic_point_plane(const render::Frame& frame, const render::Capture& image, const render::Light& light,
@@ -333,6 +364,7 @@ Analytic analytic_point_plane(const render::Frame& frame, const render::Capture&
     });
     return result;
 }
+
 // Radiance from one unshadowed rectangle: its radiance color*I times the window
 // (1-((d-e)/range)^4)^2 at the centre distance d, e = (width+height)/2, integrated
 // over its area with cos_light*cos_receiver/r^2 (|cos_light| when two-sided) by
@@ -341,10 +373,14 @@ Analytic analytic_point_plane(const render::Frame& frame, const render::Capture&
 // near receivers stay resolved.
 struct RectangleExpected {
     unsigned x;
+
     unsigned y;
+
     Rgb3 diffuse;
+
     Rgb3 specular;
 };
+
 std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, const render::Capture& image,
                                                   const render::Light& light, float plane_z, const Rgb3& base,
                                                   double roughness, double metallic, unsigned samples) {
@@ -420,6 +456,7 @@ std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, co
     });
     return expected;
 }
+
 // The band widens by `specular_slack` of the expected specular part, which LTC
 // approximates pointwise, and by `peak_slack` of the brightest expected channel.
 Analytic analytic_rectangle_plane(const render::Frame& frame, const render::Capture& image, const render::Light& light,
@@ -453,6 +490,7 @@ Analytic analytic_rectangle_plane(const render::Frame& frame, const render::Capt
         }
     return result;
 }
+
 // The diffuse part alone, for a white light on a dielectric with zero blue base:
 // blue is then pure specular, equal to red's, so red minus blue is red's
 // diffuse. Each channel's radiance follows from its code within one code, FP16
@@ -500,15 +538,22 @@ Analytic analytic_rectangle_diffuse(const render::Frame& frame, const render::Ca
 // frame rendered without shadows. Pixels in the margin band are not judged.
 struct Box {
     Vec3 center;
+
     Vec3 half;
 };
+
 struct ShadowTruth {
     std::size_t occluded{};
+
     std::size_t lit{};
+
     std::size_t failures{};
+
     unsigned max_lit_delta{};
+
     unsigned max_occluded{};
 };
+
 ShadowTruth shadow_truth(const render::Frame& frame, const render::Capture& shadowed, const render::Capture& unshadowed,
                          const render::Light& light, const std::vector<Box>& blockers, double margin) {
     const auto& view = frame.camera.view;
@@ -629,18 +674,30 @@ std::vector<render::Light> room_lights() {
         lights[index].stable_key = 100 + index;
     return lights;
 }
+
 struct Fixture {
     Window window;
+
     render::Renderer renderer;
+
     Room room;
+
     std::vector<render::Light> lights = room_lights();
+
     ui::Frame drawing;
+
     render::Frame frame;
+
     std::filesystem::path output;
+
     std::ofstream metrics;
+
     ui::PixelExtent initial_extent;
+
     render::ViewSettings initial_view;
+
     decltype(render::Frame::environment) initial_environment{};
+
     Fixture(bool benchmark, std::filesystem::path evidence_path,
             atelier::rhi::Validation validation = atelier::rhi::Validation::gpu)
         : window(benchmark ? 2560 : 960, benchmark ? 1440 : 540),
@@ -681,6 +738,7 @@ struct Fixture {
         initial_view = frame.view;
         initial_environment = frame.environment;
     }
+
     render::FrameResult step(render::Capture* capture = nullptr) {
         render::FrameResult result;
         for (unsigned retry = 0; retry < 120; ++retry) {
@@ -710,6 +768,7 @@ struct Fixture {
         frame.camera_cut = false;
         return result;
     }
+
     render::Capture capture(const char* name, unsigned settle = 1) {
         for (unsigned index = 1; index < settle; ++index)
             step();
@@ -718,6 +777,7 @@ struct Fixture {
         png(result, output / (std::string(name) + ".png"));
         return result;
     }
+
     // The last `frames` of `settle` accepted images, averaged per channel:
     // per-frame estimator noise averages out, the converged signal remains.
     render::Capture average(const char* name, unsigned settle, unsigned frames) {
@@ -736,6 +796,7 @@ struct Fixture {
         png(result, output / (std::string(name) + ".png"));
         return result;
     }
+
     Difference compare(const char* name, const render::Capture& a, const render::Capture& b) {
         const auto delta = difference(a, b);
         metrics << name << ',' << delta.mean << ',' << delta.p95 << ',' << delta.changed << ',' << delta.darker << '\n';
@@ -744,10 +805,12 @@ struct Fixture {
                     delta.changed, delta.darker);
         return delta;
     }
+
     void edited() {
         frame.meshes = room.meshes;
         frame.lights = lights;
     }
+
     // At most 24 shadow faces redraw per frame, whole lights at a time: once a
     // cube of k<=6 faces does not fit, at least 25-k faces were drawn, lights with
     // undrawn faces first. A light adds direct light once all its faces exist,
@@ -771,6 +834,7 @@ struct Fixture {
         }
         check(false, "pending shadow lights clear");
     }
+
     // Returns a case-modified windowed fixture to its constructed target, room,
     // lights and view as a new scene domain.
     void restore() {
@@ -789,9 +853,11 @@ struct Fixture {
         ++frame.scene_identity;
         edited();
     }
+
     Region region(Vec3 point) const {
         return project_region(frame.camera, frame.scene_viewport, drawing.extent, point);
     }
+
     void close() {
         frame.release_materials();
         check(bool(renderer.close()), "SceneLit drains GPU resources before HWND destruction");
@@ -977,6 +1043,7 @@ void environment_cases(Fixture& f) {
     ++f.frame.scene_identity;
     std::puts("Renderer SceneLit environment: PASS (explicit sky, absent/removed darkness, black empty viewport)");
 }
+
 void image_cases(Fixture& f) {
     const auto original_meshes = f.room.meshes;
     const auto original_lights = f.lights;

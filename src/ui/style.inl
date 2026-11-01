@@ -1,14 +1,22 @@
 // Private validation and state resolution shared by measurement and painting.
 struct VisualState {
     bool enabled{true};
+
     bool hover{};
+
     bool pressed{};
+
     bool focus{};
+
     bool selected{};
+
     bool invalid{};
+
     bool modified{};
+
     bool operator==(const VisualState&) const = default;
 };
+
 bool valid_style(const Style& style) {
     const auto bounded = [](float value, float minimum, float maximum) {
         return std::isfinite(value) && value >= minimum && value <= maximum;
@@ -37,10 +45,12 @@ bool valid_style(const Style& style) {
             return false;
     return true;
 }
+
 bool same_font_policy(const Style& a, const Style& b) {
     return a.font == b.font && a.title_scale == b.title_scale && a.caption_scale == b.caption_scale &&
            a.title_weight == b.title_weight;
 }
+
 ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, VisualState state = {}) {
     const auto& p = style.palette;
     ResolvedStyle value;
@@ -120,6 +130,7 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     }
     return value;
 }
+
 ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle& style) {
     const auto& padding = control.layout.padding;
     const float marker =
@@ -139,6 +150,7 @@ ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle&
                      : 0.f),
             padding.bottom + style.padding.bottom};
 }
+
 void apply_properties(ResolvedStyle& value, const StyleProperties& p) {
     if (p.tree_row_height)
         value.tree_row_height = *p.tree_row_height;
@@ -225,6 +237,7 @@ void apply_properties(ResolvedStyle& value, const StyleProperties& p) {
     if (p.scrollbar_image)
         value.scrollbar_image = *p.scrollbar_image;
 }
+
 void inherit_properties(StyleProperties& inherited, const StyleProperties& p) {
     if (p.font_family)
         inherited.font_family = p.font_family;
@@ -239,6 +252,7 @@ void inherit_properties(StyleProperties& inherited, const StyleProperties& p) {
     if (p.foreground)
         inherited.foreground = p.foreground;
 }
+
 bool matches(const StyleSelector& selector, const Control& control, VisualState state) {
     if ((selector.kind && *selector.kind != control.kind) || (selector.role && *selector.role != control.role))
         return false;

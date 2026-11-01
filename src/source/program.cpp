@@ -16,10 +16,12 @@
 
 namespace atelier::source {
 using namespace detail;
+
 namespace {
 Error reject_invocation(Diagnostics* diagnostics, Debugger* debugger, Error error) {
     return DebugAccess::reject(debugger, DiagnosticAccess::reject(diagnostics, std::move(error)));
 }
+
 std::uint64_t next_program_id() {
     static std::atomic<std::uint64_t> next{1};
     auto value = next.load(std::memory_order_relaxed);
@@ -30,13 +32,17 @@ std::uint64_t next_program_id() {
             return value;
     }
 }
+
 // Entry codes are unique across every Program in the process, so caches may outlive a Program.
 std::atomic<std::uint64_t> next_entry_code{1};
+
 // Project units map combined-text offsets back to snapshot files on demand.
 struct SourceMap {
     std::shared_ptr<const SourceSnapshot> snapshot;
+
     std::vector<language::SourcePiece> pieces;
 };
+
 // Line indexes are optional: eager diagnostic tables pass them, while a single
 // failure scans its file instead of retaining an index.
 SourceLocation resolve_location(const SourceMap* map, std::string_view path, std::uint64_t version,
@@ -70,6 +76,7 @@ SourceLocation resolve_location(const SourceMap* map, std::string_view path, std
     return {std::string(path), version, offset, static_cast<std::size_t>(position.line),
             static_cast<std::size_t>(position.column)};
 }
+
 // Only diagnostic and debug captures need every site resolved up front.
 std::shared_ptr<const std::vector<DiagnosticLocation>>
 diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, std::string_view path, std::uint64_t version,
@@ -85,12 +92,14 @@ diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, std::st
     }
     return locations;
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 // Floating leaves compare by representation, so signed zeros differ.
 bool same_scalar(const Scalar& a, const Scalar& b) {
     return std::visit(
@@ -108,10 +117,12 @@ bool same_scalar(const Scalar& a, const Scalar& b) {
         },
         a);
 }
+
 bool same_leaves(const std::vector<Scalar>& a, const std::vector<Scalar>& b) {
     return std::ranges::equal(a, b, same_scalar);
 }
 }
+
 namespace detail {
 Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations,
                                                      const Binding& binding) {
@@ -183,9 +194,12 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
     return definitions;
 }
 }
+
 struct Program::Metadata {
     const TypeInfo* identity;
+
     TypeInfo value;
+
     bool matches(const TypeInfo& actual) const {
         if (&actual != identity || actual.id != value.id || actual.name != value.name ||
             actual.enumeration != value.enumeration || actual.kind != value.kind || actual.math != value.math ||
@@ -215,16 +229,24 @@ struct Program::Metadata {
         return true;
     }
 };
+
 struct Program::Declaration {
     std::string name;
+
     FunctionSignature signature;
 };
+
 struct Program::Contract {
     Binding binding;
+
     std::string type_name;
+
     BusinessServices actual_services;
+
     std::vector<Metadata> metadata;
+
     std::vector<language::TypeDeclaration> declarations;
+
     Contract(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog = {},
              std::vector<language::TypeDeclaration> source_types = {})
         : binding(bind_type(runtime, type, catalog)), type_name(binding.name), actual_services(services),
@@ -245,12 +267,14 @@ struct Program::Contract {
             metadata.push_back({info, *info});
         }
     }
+
     std::optional<ValueDescription> value_description(BusinessType kind) const noexcept {
         const auto type = value_type_id(binding, kind);
         if (type != TypeId{})
             return ValueDescription{type};
         return std::nullopt;
     }
+
     Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info,
                                                 atelier::detail::TypePublication* publication = nullptr) const {
         const auto reference = [&](TypeId type) -> TypeReference {
@@ -283,6 +307,7 @@ struct Program::Contract {
         return publication ? publication->resolve_signature(*binding.runtime, definition)
                            : binding.runtime->resolve_signature(definition);
     }
+
     Result<void> compatible(BusinessCode* code, std::string_view source_name,
                             const Declaration* declaration = nullptr) const {
         if (!code)
@@ -326,6 +351,7 @@ struct Program::Contract {
                 Error{ErrorCode::invalid_definition, "Candidate has an invalid invocation-slot layout."});
         return {};
     }
+
     Result<void> unchanged() const {
         std::vector<const TypeInfo*> catalog;
         catalog.reserve(metadata.size());
@@ -348,23 +374,34 @@ struct Program::Contract {
         return {};
     }
 };
+
 struct Program::Version {
     std::shared_ptr<const Contract> contract;
+
     std::shared_ptr<const Declaration> declaration;
+
     std::uint64_t sequence;
+
     // Shared: a project unit compiled from identical input reuses its code in the next Version.
     std::shared_ptr<BusinessCode> code;
+
     BusinessCodeInfo info;
+
     BusinessFrameLayout layout;
+
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
+
     std::shared_ptr<const DebugMetadata> debug;
+
     std::shared_ptr<const SourceMap> map;
+
     Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared, std::uint64_t request,
             std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session,
             std::shared_ptr<BusinessCode> owner, std::shared_ptr<const SourceMap> source_map = {}) noexcept
         : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())),
           diagnostic(std::move(capture)), debug(std::move(session)), map(std::move(source_map)) {}
+
     // Generated failure exits report a site index; resolving it allocates, so it
     // happens only after a failure.
     void locate(Error& error, std::uint32_t site) const noexcept {
@@ -376,6 +413,7 @@ struct Program::Version {
         } catch (...) {
         }
     }
+
     template <class T>
     Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments,
                                                 Diagnostics* diagnostics, Debugger* debugger) const {
@@ -408,6 +446,7 @@ struct Program::Version {
             return decoded;
         }()));
     }
+
     template <class T>
     Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output,
                                Diagnostics* diagnostics, Debugger* debugger) const {
@@ -452,6 +491,7 @@ struct Program::Version {
             return {};
         }()));
     }
+
     Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
                                  InvocationObserver observer, void* result_data = nullptr,
                                  BusinessTrace* trace = nullptr,
@@ -482,15 +522,25 @@ struct Program::Version {
 
 struct Program::State {
     std::shared_ptr<const Contract> contract;
+
     std::shared_ptr<const Declaration> declaration;
+
     std::shared_ptr<const Version> current;
+
     std::shared_ptr<const ModuleVersion> module;
+
     const std::uint64_t id{next_program_id()};
+
     std::uint64_t latest_request{};
+
     std::uint64_t published_request{};
+
     std::uint64_t revision{};
+
     bool open{true};
+
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
+
     std::optional<std::size_t> find(std::string_view name) const {
         if (!module)
             return {};
@@ -499,27 +549,38 @@ struct Program::State {
                 return i;
         return {};
     }
+
     std::shared_ptr<const Version> select(std::optional<std::size_t> index) const {
         if (!index)
             return module ? nullptr : current;
         return module && *index < module->versions.size() ? module->versions[*index] : nullptr;
     }
 };
+
 struct Program::Frame final : CoroutineFrame {
     std::shared_ptr<const Version> version;
+
     std::shared_ptr<DiagnosticState> diagnostic;
+
     Invocation invocation;
+
     std::unique_ptr<BusinessCoroutine, decltype(&atelier_destroy_business_coroutine)> code_frame{
         nullptr, &atelier_destroy_business_coroutine};
+
     bool observed_terminal{};
+
     bool captures_owned{};
+
     DiagnosticStatus terminal{DiagnosticStatus::cancelled};
+
     DebugStatus debug_terminal{DebugStatus::cancelled};
+
     Frame(std::shared_ptr<const Version> owner, InvocationObserver observer, std::shared_ptr<DiagnosticState> capture,
           std::shared_ptr<DebugSessionState> debugger)
         : version(std::move(owner)), diagnostic(std::move(capture)),
           invocation(*version->contract->binding.runtime, version->contract->binding, version->layout, observer,
                      diagnostic ? &diagnostic->trace : nullptr, std::move(debugger)) {}
+
     ~Frame() override {
         // Generated destruction can call host cleanup, so retain Invocation and
         // Version until the DLL frame has finished using them.
@@ -546,6 +607,7 @@ struct Program::Frame final : CoroutineFrame {
                 DebugAccess::finish(*invocation.debugger, debug_terminal);
         }
     }
+
     void on_terminal(CoroutineState state, const Error* error) noexcept override {
         terminal = state == CoroutineState::failed      ? DiagnosticStatus::failed
                    : state == CoroutineState::completed ? DiagnosticStatus::completed
@@ -556,6 +618,7 @@ struct Program::Frame final : CoroutineFrame {
         if (diagnostic && error)
             DiagnosticAccess::fail(*diagnostic, *error);
     }
+
     void complete(bool success) noexcept {
         if (observed_terminal)
             return;
@@ -564,11 +627,13 @@ struct Program::Frame final : CoroutineFrame {
         if (observer.complete)
             observer.complete(observer.context, invocation, success);
     }
+
     Result<CoroutineStep> failure(Error error) {
         if (diagnostic)
             DiagnosticAccess::fail(*diagnostic, error);
         return std::unexpected(std::move(error));
     }
+
     Result<CoroutineStep> resume() override {
         if (diagnostic)
             DiagnosticAccess::running(*diagnostic, true);
@@ -618,16 +683,26 @@ struct Program::Frame final : CoroutineFrame {
         return CoroutineStep{CoroutineState::completed, decoded};
     }
 };
+
 struct Program::Prepared {
     std::weak_ptr<State> owner;
+
     std::shared_ptr<const Contract> contract;
+
     std::shared_ptr<const Contract> compilation_contract;
+
     std::shared_ptr<atelier::detail::TypePublication> type_publication;
+
     std::uint64_t sequence;
+
     CodeOwner code;
+
     std::string source_name;
+
     std::shared_ptr<ModuleVersion> module;
+
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
+
     std::shared_ptr<const DebugMetadata> debug;
 };
 
@@ -680,31 +755,44 @@ Program::SourceRequest::SourceRequest(std::weak_ptr<State> owner, std::shared_pt
     : owner_(std::move(owner)), contract_(std::move(contract)), compilation_contract_(contract_),
       declaration_(std::move(declaration)), sequence(number), source_name(std::move(name)), source(std::move(text)),
       entry_name(std::move(entry)), options(compilation) {}
+
 Program::Candidate::Candidate() = default;
+
 Program::Candidate::Candidate(std::unique_ptr<Prepared> prepared) : prepared_(std::move(prepared)) {}
+
 Program::Candidate::~Candidate() = default;
+
 Program::Candidate::Candidate(Candidate&&) noexcept = default;
+
 Program::Candidate& Program::Candidate::operator=(Candidate&&) noexcept = default;
+
 Program::Candidate::operator bool() const noexcept {
     return prepared_ && (prepared_->code || prepared_->module);
 }
+
 std::span<const ClassInfo> Program::Candidate::classes() const noexcept {
     return prepared_ && prepared_->module ? std::span<const ClassInfo>{prepared_->module->classes}
                                           : std::span<const ClassInfo>{};
 }
+
 std::span<const EntryInfo> Program::Candidate::entries() const noexcept {
     return prepared_ && prepared_->module ? std::span<const EntryInfo>{prepared_->module->entries}
                                           : std::span<const EntryInfo>{};
 }
+
 std::uintptr_t Program::Candidate::address() const noexcept {
     return *this ? atelier_business_info(prepared_->code.get()).entry_address : 0;
 }
+
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
+
 Program::Entry::Entry(std::weak_ptr<State> owner, std::optional<std::size_t> index)
     : owner_(std::move(owner)), index_(index) {}
+
 std::uintptr_t Program::Lease::address() const noexcept {
     return version_ ? version_->info.entry_address : 0;
 }
+
 Result<CompilationArtifacts> Program::Lease::artifacts() const {
     const auto version = version_;
     if (!version)
@@ -749,6 +837,7 @@ Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectI
     // Callback destruction of the lease is safe: only the local pin follows.
     return version->invoke(receiver, arguments, observer);
 }
+
 Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectId receiver,
                                             std::span<const BusinessValue> arguments, InvocationObserver observer) {
     const auto owner = entry.owner_.lock();
@@ -760,10 +849,12 @@ Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectI
     // Select once and never access the entry or program after callbacks start.
     return version->invoke(receiver, arguments, observer);
 }
+
 Result<Coroutine> ProgramAccess::start(const Program::Lease& lease, ObjectId receiver,
                                        std::span<const BusinessValue> arguments, InvocationObserver observer) {
     return start_version(lease.version_, receiver, arguments, observer);
 }
+
 Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId receiver,
                                        std::span<const BusinessValue> arguments, InvocationObserver observer) {
     const auto owner = entry.owner_.lock();
@@ -771,9 +862,11 @@ Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId rec
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     return start_version(owner->select(entry.index_), receiver, arguments, observer);
 }
+
 BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept {
     return lease.version_ ? lease.version_->layout : BusinessFrameLayout{};
 }
+
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
                                                      Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
@@ -783,6 +876,7 @@ Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::spa
             diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
+
 Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                                                Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
@@ -792,6 +886,7 @@ Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver
             diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
+
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
                                                      Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
@@ -800,6 +895,7 @@ Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::spa
             reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
+
 Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                                                Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
@@ -808,6 +904,7 @@ Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver
             reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
+
 Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments, ValueOutput output,
                                     Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
@@ -817,6 +914,7 @@ Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> a
             diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
+
 Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                               ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto owner = owner_.lock();
@@ -826,6 +924,7 @@ Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const
             diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
+
 Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments, ValueOutput output,
                                     Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
@@ -834,6 +933,7 @@ Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> a
             reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
+
 Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                               ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
     const auto version = version_;
@@ -842,6 +942,7 @@ Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const
             reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Code lease is empty."}));
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
+
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
                                         Debugger* debugger) const {
     const auto owner = owner_.lock();
@@ -873,6 +974,7 @@ Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scala
     debug_scope.transfer(DebugStatus::ready);
     return result;
 }
+
 Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
                                         Debugger* debugger) const {
     const auto version = version_;
@@ -903,25 +1005,31 @@ Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scala
     debug_scope.transfer(DebugStatus::ready);
     return result;
 }
+
 Program::Program(Runtime& runtime, TypeId type)
     : state_(std::make_shared<State>(std::make_shared<const Contract>(runtime, type))) {}
+
 Program::~Program() {
     close();
 }
+
 void Program::close() noexcept {
     state_->open = false;
     state_->current.reset();
     state_->module.reset();
 }
+
 Program::Entry Program::entry() const {
     return Entry{state_};
 }
+
 Result<FunctionSignature> Program::describe() const {
     if (!state_->open || !state_->declaration)
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Business source declaration has not been published."});
     return state_->declaration->signature;
 }
+
 Result<Program::Entry> Program::bind_signature(SignatureDefinition expected) const {
     const auto owner = state_;
     if (!owner->open || !owner->declaration)
@@ -937,11 +1045,13 @@ Result<Program::Entry> Program::bind_signature(SignatureDefinition expected) con
             Error{ErrorCode::argument_mismatch, "Host binding does not match the published source signature."});
     return Entry{owner};
 }
+
 Result<Program::Lease> Program::pin() const {
     if (!state_->open || !state_->current)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no version to pin."});
     return Lease{state_->current};
 }
+
 Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name,
                                           CompileOptions options) {
     if (!state_->open)
@@ -1005,9 +1115,11 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         runtime, state_->contract->binding.type, (*publication)->catalog(), std::move(*declarations));
     return result;
 }
+
 Result<Program::Candidate> Program::prepare(const Request& request) {
     return ProgramAccess::prepare(request, &atelier_compile_business);
 }
+
 Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& request, Compiler compile) {
     if (!request)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request is empty."});
@@ -1047,6 +1159,7 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
         request->owner_, request->contract_, request->compilation_contract_, request->type_publication_,
         request->sequence, std::move(code), request->source_name, nullptr, std::move(metadata), std::move(debug))};
 }
+
 Result<void> Program::try_publish(Candidate& candidate) {
     const auto owner = state_;
     if (!owner->open || !candidate)
@@ -1100,12 +1213,15 @@ Result<void> Program::try_publish(Candidate& candidate) {
 Result<void> ProgramAccess::compatible(const Program& program, BusinessCode* code, std::string_view source_name) {
     return program.state_->contract->compatible(code, source_name);
 }
+
 Result<void> ProgramAccess::unchanged(const Program& program) {
     return program.state_->contract->unchanged();
 }
+
 void ProgramAccess::set_request_sequence(Program& program, std::uint64_t sequence) noexcept {
     program.state_->latest_request = sequence;
 }
+
 std::uint64_t ProgramAccess::published_sequence(const Program& program) noexcept {
     return program.state_->published_request;
 }

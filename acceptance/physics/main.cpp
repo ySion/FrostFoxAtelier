@@ -30,10 +30,12 @@ T take(atelier::Result<T> result) {
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(atelier::Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void committed(atelier::Result<atelier::world::Commit> result) {
     const auto value = take(std::move(result));
     if (value.notification_error)
@@ -47,6 +49,7 @@ atelier::ObjectId mesh_component(atelier::Runtime& runtime, atelier::ObjectId en
             return component.id();
     throw std::runtime_error("Expected a mesh component on the Entity.");
 }
+
 // World::update is the only frame entry; it steps the registered PhysicsScene.
 atelier::physics::StepResult step(atelier::world::World& world, const atelier::physics::PhysicsScene& scene,
                                   float elapsed) {
@@ -62,8 +65,10 @@ atelier::physics::StepResult step(atelier::world::World& world, const atelier::p
 
 struct Scenario {
     std::string_view name;
+
     void (*run)();
 };
+
 const Scenario scenarios[]{
     {"world_mesh", simulate_world},
     {"rigid_shapes", rigid_shapes},

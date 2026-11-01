@@ -52,7 +52,9 @@ void flex_allocation_and_distribution() {
     root.flow->align_items = Alignment::fit(1);
     struct Placement {
         Distribution distribution;
+
         float first;
+
         float second;
     };
     const std::array placements{Placement{Distribution::start, 0, 30},
@@ -110,7 +112,9 @@ void flex_wrapping_and_alignment() {
             "Flex basis packing or inter-line gap");
     struct Lines {
         Distribution distribution;
+
         float first;
+
         float second;
     };
     const std::array lines{Lines{Distribution::start, 0, 30},
@@ -556,16 +560,27 @@ void grid_limits_and_nested_content() {
 
 struct FlexGridEditorScene {
     TextProvider provider;
+
     LayoutDocument document{TextProvider::measure, &provider, {256, 10, 128, 8192}};
+
     ComputeCosts compute_costs;
+
     LayoutNodeId shell;
+
     LayoutNodeId toolbar;
+
     LayoutNodeId inspector;
+
     LayoutNodeId help;
+
     LayoutNodeId status;
+
     std::vector<LayoutNodeId> values;
+
     std::shared_ptr<const TextFrame> published;
+
     Size viewport{1100, 700};
+
     FlexGridEditorScene() {
         ComPtr<IDWriteFontCollection> fonts;
         hr(provider.factory->GetSystemFontCollection(fonts.GetAddressOf()));
@@ -635,6 +650,7 @@ struct FlexGridEditorScene {
         footer.cell = {.row = 2, .column = 0, .column_span = 3};
         status = accepted(document.create(shell, footer));
     }
+
     void commit() {
         compute_costs.run(document, provider, viewport);
         if (!published || published->geometry.publication != document.view().publication) {
@@ -642,6 +658,7 @@ struct FlexGridEditorScene {
             published = std::move(candidate);
         }
     }
+
     void edit(unsigned row, const wchar_t* value) {
         auto input = accepted(document.input(values.at(row)));
         auto& content = provider.content.at(input.content_key);
@@ -650,6 +667,7 @@ struct FlexGridEditorScene {
         input.content_revision = content.revision;
         accepted(document.update(values.at(row), input));
     }
+
     void check() const {
         require(published != nullptr, "editor has no complete frame");
         published->check();

@@ -13,13 +13,17 @@ namespace atelier::rhi::detail {
 
 struct ShaderSource {
     std::wstring name; // DXC main-file name: diagnostics and relative includes.
+
     std::string text;
+
     std::wstring profile;
+
     std::wstring entry;
 };
 
 struct CompiledShader {
     Microsoft::WRL::ComPtr<IDxcBlob> bytecode;
+
     Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 };
 
@@ -30,13 +34,18 @@ struct CompiledShader {
 class ShaderCompiler {
 public:
     [[nodiscard]] static Result<ShaderCompiler> open(std::filesystem::path cache);
+
     [[nodiscard]] Result<CompiledShader> compile(const ShaderSource& source);
 
 private:
     Microsoft::WRL::ComPtr<IDxcUtils> utils_;
+
     Microsoft::WRL::ComPtr<IDxcCompiler3> compiler_;
+
     Microsoft::WRL::ComPtr<IDxcIncludeHandler> includes_;
+
     std::string identity_; // Compiler version and commit; part of every cache key.
+
     std::filesystem::path cache_;
 };
 

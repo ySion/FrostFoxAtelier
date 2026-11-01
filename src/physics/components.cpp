@@ -11,8 +11,10 @@ namespace {
 // Keeps the original error, so World-level codes stay distinguishable from object failures.
 struct Failure : std::runtime_error {
     Error error;
+
     explicit Failure(Error value) : std::runtime_error(value.message), error(std::move(value)) {}
 };
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
@@ -20,10 +22,12 @@ T take(Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 void require(bool ok, const char* message) {
     if (!ok)
         throw std::runtime_error(message);
 }
+
 Error failure_of(const std::exception& e) {
     if (const auto* carried = dynamic_cast<const Failure*>(&e))
         return carried->error;
@@ -31,15 +35,18 @@ Error failure_of(const std::exception& e) {
         return Error{ErrorCode::capacity_exceeded, e.what()};
     return Error{ErrorCode::invalid_member, e.what()};
 }
+
 auto failed(const std::exception& e) {
     return std::unexpected(failure_of(e));
 }
+
 template <class T, class F>
 auto read(Runtime& runtime, ObjectId id, F callback) {
     using V = std::invoke_result_t<F, const T&>;
     return take(runtime.with_native<const T>(id, [&](const T& value) -> Result<V> { return callback(value); }));
 }
 }
+
 Result<Types> register_types(Runtime& runtime) try {
     Types types;
     take(NativeRegistration<CharacterSettings>{
@@ -213,6 +220,7 @@ Result<Types> register_types(Runtime& runtime) try {
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<void> set_constraint_target(Runtime& runtime, ObjectId component, ObjectId entity) try {
     const auto status = take(world::inspect_component(runtime, component));
     require(!status.active, "Stop the constraint component before rebinding its target.");
@@ -232,10 +240,12 @@ Result<void> set_constraint_target(Runtime& runtime, ObjectId component, ObjectI
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<ObjectId> constraint_target(Runtime& runtime, ObjectId component) {
     return runtime.with_native<const DistanceConstraintComponent>(
         component, [](const auto& value) -> Result<ObjectId> { return value.target.id(); });
 }
+
 namespace {
 template <class T, ReferenceSequence T::* Member>
 Result<std::vector<ObjectId>> bindings(Runtime& runtime, ObjectId component, std::size_t additional_capacity = 0) {
@@ -257,6 +267,7 @@ Result<std::vector<ObjectId>> bindings(Runtime& runtime, ObjectId component, std
         return result;
     });
 }
+
 template <class T, ReferenceSequence T::* Member>
 Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const ObjectId> entities,
                           bool requires_inactive = true) try {
@@ -288,16 +299,20 @@ Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const 
     return failed(e);
 }
 }
+
 Result<void> set_ragdoll_parts(Runtime& runtime, ObjectId component, std::span<const ObjectId> entities) {
     return set_bindings<RagdollComponent, &RagdollComponent::parts>(runtime, component, entities);
 }
+
 Result<std::vector<ObjectId>> ragdoll_parts(Runtime& runtime, ObjectId component) {
     return bindings<RagdollComponent, &RagdollComponent::parts>(runtime, component);
 }
+
 Result<void> set_query_ignored_entities(Runtime& runtime, ObjectId component, std::span<const ObjectId> entities) {
     return set_bindings<SceneQueryComponent, &SceneQueryComponent::ignored_entities>(runtime, component, entities,
                                                                                      false);
 }
+
 Result<std::vector<ObjectId>> query_ignored_entities(Runtime& runtime, ObjectId component) {
     return bindings<SceneQueryComponent, &SceneQueryComponent::ignored_entities>(runtime, component);
 }
@@ -308,6 +323,7 @@ namespace atelier::physics::detail {
 ComponentSimulation::~ComponentSimulation() {
     clear();
 }
+
 void ComponentSimulation::release(const Entry& entry) noexcept {
     switch (entry.kind) {
     case Kind::character:
@@ -330,6 +346,7 @@ void ComponentSimulation::release(const Entry& entry) noexcept {
         for (const auto target : entry.targets)
             scene_.forget_pose(target);
 }
+
 void ComponentSimulation::clear() noexcept {
     for (const auto& [id, entry] : entries_) {
         (void)id;
@@ -338,6 +355,7 @@ void ComponentSimulation::clear() noexcept {
     entries_.clear();
     order_.invalidate();
 }
+
 ObjectId ComponentSimulation::bound_pose_writer(ObjectId object) const {
     // This query also runs through PhysicsScene's noexcept pose-writer lookup.
     // Select the earliest live claim without allocating a traversal snapshot.
@@ -356,6 +374,7 @@ ObjectId ComponentSimulation::bound_pose_writer(ObjectId object) const {
     }
     return writer;
 }
+
 Result<void> ComponentSimulation::removed(ObjectId object, bool detached) try {
     clear_query(object, true);
     for (const auto id : order_.get(entries_)) {
@@ -399,6 +418,7 @@ Result<void> ComponentSimulation::removed(ObjectId object, bool detached) try {
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<void> ComponentSimulation::reconcile() try {
     contained_ = false;
     auto& runtime = world_.runtime();
@@ -641,6 +661,7 @@ Result<void> ComponentSimulation::reconcile() try {
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<void> ComponentSimulation::before_step(float fixed) try {
     auto& runtime = world_.runtime();
     // An isolated controller skips this step and is sampled again next step.
@@ -697,6 +718,7 @@ Result<void> ComponentSimulation::before_step(float fixed) try {
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose>& poses) try {
     for (const auto id : order_.get(entries_)) {
         const auto& e = entries_.at(id);
@@ -719,6 +741,7 @@ Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<void> ComponentSimulation::after_step() try {
     for (const auto id : order_.get(entries_)) {
         auto& e = entries_.at(id);
@@ -743,6 +766,7 @@ Result<void> ComponentSimulation::after_step() try {
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 void ComponentSimulation::clear_query(ObjectId id, bool clear_request) noexcept {
     (void)world_.runtime().with_native<SceneQueryComponent>(id, [&](auto& q) -> Result<void> {
         if (clear_request)
@@ -755,6 +779,7 @@ void ComponentSimulation::clear_query(ObjectId id, bool clear_request) noexcept 
         return {};
     });
 }
+
 Result<void> ComponentSimulation::sample_query(ObjectId id, QueryIgnore ignore) try {
     auto found = entries_.find(id);
     require(found != entries_.end() && found->second.kind == Kind::query,
@@ -792,11 +817,13 @@ Result<void> ComponentSimulation::sample_query(ObjectId id, QueryIgnore ignore) 
 } catch (const std::exception& e) {
     return failed(e);
 }
+
 Result<QueryResult> ComponentSimulation::execute_query(ObjectId id, QueryIgnore ignore) {
     if (auto sampled = sample_query(id, ignore); !sampled)
         return std::unexpected(sampled.error());
     return read_query_result(id);
 }
+
 Result<QueryResult> ComponentSimulation::read_query_result(ObjectId id) const {
     const auto found = entries_.find(id);
     if (found == entries_.end() || !found->second.query)

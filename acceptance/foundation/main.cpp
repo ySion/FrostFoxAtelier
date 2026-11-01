@@ -9,22 +9,28 @@
 #include <string>
 
 void verify_associative_containers();
+
 void verify_container_lifecycle();
+
 void verify_frame_timing();
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::acceptance::foundation;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
@@ -33,9 +39,13 @@ void take(Result<void> result) {
 // Real owned native resources exercise Array's copy failure and over-aligned storage.
 struct alignas(64) Resource {
     static inline int live{};
+
     static inline int copies_until_failure = -1;
+
     std::unique_ptr<int> value;
+
     explicit Resource(int number = 0) : value(std::make_unique<int>(number)) { ++live; }
+
     Resource(const Resource& other) {
         if (copies_until_failure == 0)
             throw std::runtime_error("Resource copy rejected.");
@@ -44,15 +54,19 @@ struct alignas(64) Resource {
         value = std::make_unique<int>(*other.value);
         ++live;
     }
+
     Resource(Resource&& other) noexcept(false) : value(std::move(other.value)) { ++live; }
+
     Resource& operator=(const Resource& other) {
         *value = *other.value;
         return *this;
     }
+
     Resource& operator=(Resource&& other) noexcept {
         value = std::move(other.value);
         return *this;
     }
+
     ~Resource() { --live; }
 };
 
@@ -60,16 +74,23 @@ struct alignas(64) Resource {
 // C++ overload resolution, despite having a trivially copyable representation.
 struct SelectedOperations {
     static inline int moves{};
+
     static inline int assignments{};
+
     int value;
+
     explicit SelectedOperations(int number) : value(number) {}
+
     SelectedOperations(const SelectedOperations&) = default;
+
     SelectedOperations& operator=(const SelectedOperations&) = default;
+
     template <class U>
         requires std::same_as<std::remove_cvref_t<U>, SelectedOperations>
     SelectedOperations(U&& other) noexcept : value(other.value) {
         ++moves;
     }
+
     template <class U>
         requires std::same_as<std::remove_cvref_t<U>, SelectedOperations>
     SelectedOperations& operator=(U&& other) noexcept {
@@ -78,9 +99,11 @@ struct SelectedOperations {
         return *this;
     }
 };
+
 struct ImmutableValue {
     const int value;
 };
+
 struct alignas(64) Packet {
     std::array<std::uint32_t, 16> words;
 };

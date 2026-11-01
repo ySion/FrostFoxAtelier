@@ -7,9 +7,12 @@ namespace atelier::editor::detail {
 class Failure : public std::exception {
 public:
     explicit Failure(Error value) : error(std::move(value)) {}
+
     const char* what() const noexcept override { return error.message.c_str(); }
+
     Error error;
 };
+
 inline Error caught_error(const std::exception& error, ErrorCode fallback) {
     if (const auto* failure = dynamic_cast<const Failure*>(&error))
         return failure->error;

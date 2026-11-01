@@ -11,15 +11,20 @@
 
 namespace atelier::source {
 using namespace detail;
+
 namespace {
 struct Samples {
     std::span<const MaterialTexture> textures;
+
     // The backend stops at the first failed callback. Owning errors and caught
     // exceptions stay on the host side; only the status crosses the C ABI.
     std::optional<Error> error{};
+
     std::exception_ptr failure{};
+
     const char* unknown_failure{};
 };
+
 std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
     try {
@@ -44,6 +49,7 @@ std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* 
     }
     return 1;
 }
+
 std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
     try {
@@ -70,6 +76,7 @@ std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const flo
     }
     return 1;
 }
+
 bool finite_value(BusinessType type, const BusinessEnvironment& environment, const std::byte* bytes) {
     if (type == ValueKind::f32) {
         float value;
@@ -84,6 +91,7 @@ bool finite_value(BusinessType type, const BusinessEnvironment& environment, con
             return false;
     return true;
 }
+
 void parameter_fields(BusinessType type, const BusinessEnvironment& environment, std::string path, std::size_t offset,
                       std::vector<MaterialParameter>& fields) {
     if (type == ValueKind::f32) {
@@ -102,46 +110,67 @@ void parameter_fields(BusinessType type, const BusinessEnvironment& environment,
     }
 }
 }
+
 struct MaterialProgram::State {
     std::unique_ptr<MaterialCode, decltype(&atelier_destroy_material)> code{nullptr, atelier_destroy_material};
+
     MaterialLayout context;
+
     MaterialLayout output;
+
     MaterialLayout parameters;
+
     MaterialLayout resources;
+
     std::vector<MaterialParameter> fields;
+
     std::vector<MaterialTextureInput> textures;
+
     std::vector<std::byte> defaults;
+
     std::vector<std::byte> resource_values;
+
     bool supports_coverage{};
 };
+
 MaterialProgram::MaterialProgram(std::shared_ptr<const State> state) : state_(std::move(state)) {}
+
 MaterialLayout MaterialProgram::context_layout() const noexcept {
     return state_->context;
 }
+
 MaterialLayout MaterialProgram::output_layout() const noexcept {
     return state_->output;
 }
+
 MaterialLayout MaterialProgram::parameter_layout() const noexcept {
     return state_->parameters;
 }
+
 std::span<const MaterialParameter> MaterialProgram::parameters() const noexcept {
     return state_->fields;
 }
+
 std::span<const std::byte> MaterialProgram::default_parameters() const noexcept {
     return state_->defaults;
 }
+
 std::span<const MaterialTextureInput> MaterialProgram::textures() const noexcept {
     return state_->textures;
 }
+
 Result<std::string> MaterialProgram::hlsl(std::string_view name_space) const {
     return generate_hlsl(name_space, false);
 }
+
 Result<std::string> MaterialProgram::hlsl_footprint(std::string_view name_space) const {
     return generate_hlsl(name_space, true);
 }
+
 Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) const {
     return generate_hlsl(name_space, false, true);
 }
+
 Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, bool footprint, bool coverage) const {
     const auto letter = [](char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     if (name_space.empty() || !letter(name_space.front()) ||
@@ -269,7 +298,9 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
         std::vector<bool> captured(binding.values.size());
         struct Defaults {
             std::function<Result<const std::byte*>(std::uint32_t)> capture;
+
             std::optional<Error> error;
+
             std::exception_ptr failure;
         } defaults;
         defaults.capture = [&](std::uint32_t index) -> Result<const std::byte*> {

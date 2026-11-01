@@ -25,8 +25,11 @@
 namespace atelier::application {
 struct EditorAcceptanceAccess {
     static void input(Application& app, ui::Event event, WPARAM key = 0) { app.input(event, key); }
+
     static bool menu_open(const Application& app) { return app.workspace_.menu.has_value(); }
+
     static const std::vector<ui::MenuItem>& menu_items(const Application& app) { return app.workspace_.menu_items; }
+
     static std::string menu_input_diagnostic(const Application& app) {
         const auto pointer = app.pointer_position_;
         return "pointer=(" + std::to_string(pointer.x) + "," + std::to_string(pointer.y) +
@@ -36,6 +39,7 @@ struct EditorAcceptanceAccess {
                ", wants_keyboard=" + std::to_string(app.ui_.wants_keyboard()) +
                ", popup=" + (app.popup_ ? std::string(app.popup_->diagnostic()) : "missing");
     }
+
     static void menu_failure(Application& app, const char* stage) {
         const auto about = operator_item(app, "app.about");
         const auto exit = operator_item(app, "app.quit");
@@ -54,14 +58,21 @@ struct EditorAcceptanceAccess {
             static_cast<void*>(app.window()), menu_input_diagnostic(app).c_str());
         std::fflush(stderr);
     }
+
     static unsigned menu_presents(Application& app) {
         return app.menu_host() ? app.menu_host()->open_present_count() : 0;
     }
+
     static auto focused(const Application& app) { return app.ui_.focused_control(); }
+
     static void finish_menu_hold(Application& app) { app.menu_requested_ -= std::chrono::seconds(1); }
+
     static bool tool_active(const Application& app) { return app.viewport_tool_.active(); }
+
     static bool camera_flying(const Application& app) { return app.camera_fly_.has_value(); }
+
     static editor::Session& physics_document(Application& app) { return *app.document_; }
+
     static void ui_source(Application& app, const std::filesystem::path& path) {
         auto source = assets::read_file(app.workspace_.ui_source());
         if (!source)
@@ -71,16 +82,21 @@ struct EditorAcceptanceAccess {
             throw std::runtime_error(saved.error().message);
         app.workspace_.set_ui_source(path);
     }
+
     static auto ui_revision(const Application& app) { return app.workspace_.ui_revision(); }
+
     static auto ui_error(const Application& app) { return app.workspace_.ui_error(); }
+
     static void mark_saved(Application& app) {
         app.effects(app.ui_.cancel_interaction());
         app.document_->mark_saved();
     }
+
     static Result<void> invoke(Application& app, std::string id,
                                assets::json_format::Json args = assets::json_format::Json::object()) {
         return app.run_operator({std::move(id), std::move(args)}, true);
     }
+
     static ui::ControlKey operator_item(const Application& app, std::string id,
                                         assets::json_format::Json args = assets::json_format::Json::object()) {
         const auto matches = [&](ui::ControlKey key) {
@@ -103,24 +119,31 @@ struct EditorAcceptanceAccess {
         }
         return app.workspace_.operator_control({std::move(id), std::move(args)});
     }
+
     static auto asset_key(const Application& app, std::string_view resource) {
         return app.workspace_.assets.row_key(resource);
     }
+
     static bool inspecting_resource(const Application& app, std::string_view resource) {
         const auto& selected = app.workspace_.assets.selected();
         return app.workspace_.inspecting_asset && selected && selected->key == resource;
     }
+
     static auto directory_key(const Application& app, const std::filesystem::path& path) {
         return app.workspace_.assets.directory_control(path);
     }
+
     static ui::ControlKey menu_item(const Application& app, std::wstring_view text) {
         for (const auto& item : app.workspace_.menu_items)
             if (item.text == text)
                 return item.key;
         return 0;
     }
+
     static const auto& project_build(const Application& app) { return app.workspace_.project_build; }
+
     static bool project_running(const Application& app) { return app.play_.running(); }
+
     static bool output_contains(const Application& app, std::wstring_view text) {
         const auto utf8 = assets::utf8(text);
         for (const auto& item : app.workspace_.output.records())
@@ -128,9 +151,13 @@ struct EditorAcceptanceAccess {
                 return true;
         return false;
     }
+
     static const editor::Output& output(const Application& app) { return app.workspace_.output; }
+
     static editor::Output& output(Application& app) { return app.workspace_.output; }
+
     static bool text_input(const Application& app) { return app.ui_.text_input().has_value(); }
+
     static void output_layout(Application& app, bool narrow = false) {
         auto& dock = app.workspace_.dock;
         dock.select(editor::control::output_tab);
@@ -144,9 +171,11 @@ struct EditorAcceptanceAccess {
     }
 
     static auto name_control(const Application& app, ObjectId entity) { return app.workspace_.name_control(entity); }
+
     static ui::TreeViewport tree_viewport(const Application& app, ui::ControlKey tree) {
         return app.ui_.tree_viewport(tree);
     }
+
     static ui::ControlKey material_control(const Application& app, ObjectId object, std::string_view path,
                                            std::size_t lane = 0) {
         if (app.presented())
@@ -158,6 +187,7 @@ struct EditorAcceptanceAccess {
             }
         return 0;
     }
+
     static ui::ControlKey structure_control(const Application& app, ObjectId object) {
         if (app.presented())
             for (const auto& row : app.presented()->tree_rows) {
@@ -168,6 +198,7 @@ struct EditorAcceptanceAccess {
             }
         return 0;
     }
+
     static bool property_group(const Application& app, ObjectId object) {
         if (app.presented())
             for (const auto& control : app.presented()->controls) {
@@ -178,6 +209,7 @@ struct EditorAcceptanceAccess {
             }
         return false;
     }
+
     // A frame of the previous material group is not the requested scene, even
     // when its view pipelines are ready and the renderer accepts it.
     static bool view_preparing(Application& app) {
@@ -193,7 +225,9 @@ struct EditorAcceptanceAccess {
         }
         return false;
     }
+
     static bool fallback_presented(const Application& app) { return app.fallback_presented_; }
+
     static void frame_failure(Application& app) {
         const auto frame = app.ui_.prepare();
         std::fprintf(stderr, "Status: %ls\n", app.status_text().c_str());
@@ -203,33 +237,50 @@ struct EditorAcceptanceAccess {
                              (*frame)->drawing->extent.height, view->bounds.x, view->bounds.y, view->bounds.width,
                              view->bounds.height);
     }
+
     static auto camera_view(const Application& app) { return app.camera_.matrices(1).view; }
+
     static auto camera_mode(const Application& app) { return app.camera_.view(); }
+
     static auto camera_eye(const Application& app) { return app.camera_.eye(); }
+
     static auto camera_state(const Application& app) { return app.camera_.state(); }
+
     static bool move_camera(Application& app, const editor::CameraState& state) {
         auto camera = app.camera_;
         return camera.set_state(state) && app.set_camera(camera, false).has_value();
     }
+
     static const auto& accepted_view(const Application& app) { return app.accepted_view_; }
+
     static bool gpu_validation(const Application& app) { return app.gpu_validation_; }
+
     static bool vsync(const Application& app) { return app.vsync_; }
+
     static auto sampled_frame(const Application& app) { return app.sampled_frame_; }
+
     static auto render_retry_delay(const Application& app) { return app.render_retry_delay_; }
+
     static auto render_retry_deadline(const Application& app) { return app.render_retry_at_; }
+
     static void render_retry_deadline(Application& app, std::chrono::steady_clock::time_point value) {
         app.render_retry_at_ = value;
     }
+
     static void unchecked_cavity_radius(Application& app, float value) { app.workspace_.view.cavity.radius = value; }
+
     static std::filesystem::path project_root(const Application& app) {
         return app.project_ ? app.project_->root() : std::filesystem::path{};
     }
+
     static std::filesystem::path scene_path(const Application& app) { return app.scene_path_; }
+
     static ui::DockSpace::Presentation dock_presentation(const Application& app) {
         const auto size = app.surface_.extent;
         return app.workspace_.dock.presentation(
             0, {float(size.width) / app.surface_.dpi_scale, float(size.height) / app.surface_.dpi_scale});
     }
+
     static void set_scene_maximized(Application& app, bool maximized) {
         auto& dock = app.workspace_.dock;
         if (!dock.select(editor::control::scene_tab))
@@ -242,41 +293,61 @@ struct EditorAcceptanceAccess {
             }
         throw std::runtime_error("Scene View has no presented Dock pane.");
     }
+
     static Result<void> select_entity(Application& app, ObjectId entity) { return app.document_->select(entity); }
+
     static auto cursor_position(const Application& app) { return app.viewport_tool_.cursor; }
+
     static auto viewport_settings(const Application& app) { return app.workspace_.viewport_settings; }
+
     static auto scene_lit_view(const Application& app) { return app.workspace_.view; }
+
     static const auto& performance(const Application& app) { return app.workspace_.lighting.performance(); }
+
     static Result<void> performance_view(Application& app, const renderer::ViewSettings& view) {
         return app.workspace_.set_view_settings(*app.document_, view, app.lighting_focus());
     }
+
     static void performance_panel(Application& app) {
         app.workspace_.dock.move(editor::world_control::tab, editor::control::parameters_tab, ui::DockSide::tabs);
         app.workspace_.dock.select(editor::world_control::tab);
     }
+
     static const auto& fps_text(const Application& app) { return app.workspace_.viewport_fps; }
+
     static Result<void> fps_setting(Application& app, bool enabled) {
         return app.workspace_.show_fps == enabled ? Result<void>{} : invoke(app, "view.toggle", {{"option", "fps"}});
     }
+
     static Result<void> scene_lit_settings(Application& app, const renderer::SceneLitSettings& settings) {
         auto view = app.workspace_.view;
         view.lit = settings;
         return app.workspace_.set_view_settings(*app.document_, view, app.lighting_focus());
     }
+
     static const auto& scene_snapshot(const Application& app) { return app.scene_; }
+
     static const auto& render_notice(const Application& app) { return app.workspace_.render_notice; }
+
     static void set_tool(Application& app, editor::TransformTool tool) { app.workspace_.viewport_settings.tool = tool; }
+
     static void set_cursor(Application& app, math::Vector3 at) { app.viewport_tool_.cursor = at; }
+
     static Result<void> ui_action(Application& app, ui::ControlKey key, ui::ActionValue value = {}) {
         return app.action({ui::ActionKind::activate, key, std::move(value)});
     }
+
     static void select_tab(Application& app, ui::ControlKey tab) { app.workspace_.dock.select(tab); }
+
     static Result<void> open_menu(Application& app, ui::ControlKey source) {
         app.request_menu({source, 0, 0, 0});
         return {};
     }
+
     static void close_menu(Application& app) { app.close_menu(false); }
+
     static void cancel_rename(Application& app) { app.workspace_.row_rename.reset(); }
+
     static ui::ControlKey color_pick(const Application& app) {
         if (!app.presented())
             return 0;
@@ -288,7 +359,9 @@ struct EditorAcceptanceAccess {
             }
         return 0;
     }
+
     static ui::ControlKey viewport_readout_key(const Application&) { return editor::control::viewport_readout; }
+
     // Drive the real tool entry points without OS input (snapshot only).
     static void tool_key(Application& app, std::uint32_t vk, math::Vector2 pointer) {
         ui::Event event;
@@ -297,6 +370,7 @@ struct EditorAcceptanceAccess {
                                     pointer))
             throw std::runtime_error("Snapshot tool key failed.");
     }
+
     static void tool_move(Application& app, math::Vector2 pointer) {
         ui::Event event;
         event.kind = ui::EventKind::pointer_move;
@@ -305,10 +379,12 @@ struct EditorAcceptanceAccess {
         if (!app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, app.workspace_.viewport_settings))
             throw std::runtime_error("Snapshot tool move failed.");
     }
+
     static void tool_cancel(Application& app) {
         if (!app.viewport_tool_.cancel(*app.document_))
             throw std::runtime_error("Snapshot cancel failed.");
     }
+
     static void place_cursor(Application& app, math::Vector2 pointer) {
         ui::Event event;
         event.kind = ui::EventKind::pointer_down;
@@ -322,6 +398,7 @@ struct EditorAcceptanceAccess {
         event.kind = ui::EventKind::pointer_up;
         static_cast<void>(app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, settings));
     }
+
     static POINT viewport_point(const Application& app, math::Vector3 point) {
         if (!app.accepted_view_)
             throw std::runtime_error("Viewport has no accepted camera.");
@@ -330,6 +407,7 @@ struct EditorAcceptanceAccess {
             throw std::runtime_error("Viewport point is outside the camera.");
         return {static_cast<LONG>(std::round(projected->x)), static_cast<LONG>(std::round(projected->y))};
     }
+
     static void require_camera(const Application& app, bool passed, UINT reason, const char* message) {
         if (!passed)
             throw std::runtime_error(std::string(message) + "; reason=" + std::to_string(reason) +
@@ -337,6 +415,7 @@ struct EditorAcceptanceAccess {
                                      std::to_string(app.pointer_position_.x) + "," +
                                      std::to_string(app.pointer_position_.y) + ")");
     }
+
     static void move_pointer(Application& app, POINT target, UINT reason = 0) {
         const auto verify = [&](bool passed, const char* message) {
             if (!passed)
@@ -371,6 +450,7 @@ struct EditorAcceptanceAccess {
         ScreenToClient(app.window(), &actual);
         verify(actual.x == target.x && actual.y == target.y, "Pointer moved outside the requested target");
     }
+
     static void menu_items(Application& app, std::span<const ui::MenuItem> items) {
         if (!app.popup_ || !app.workspace_.menu)
             throw std::runtime_error("Menu fixture needs an open native host.");
@@ -381,22 +461,26 @@ struct EditorAcceptanceAccess {
         app.popup_->update(app.workspace_.menu->source, anchor, false, items, app.ui_.style(), app.style_sheet_,
                            app.workspace_.ui_component("PopupMenu"));
     }
+
     static void invalidate_menu_measurement(Application& app) {
         if (!app.popup_)
             throw std::runtime_error("Menu fixture needs a retained native host.");
         // Model a changed monitor/DPI measurement domain without changing the desktop.
         app.popup_->measured_dpi_ = 0;
     }
+
     static void menu_end(Application& app) {
         static_cast<void>(app.popup_->input({.kind = ui::EventKind::key_down, .key = ui::Key::end}));
         static_cast<void>(app.popup_->input({.kind = ui::EventKind::key_up, .key = ui::Key::end}));
     }
+
     static Result<void> begin_edit(Application& app, ui::ControlKey control) {
         const auto* binding = app.workspace_.binding(control);
         if (!binding || binding->path.empty())
             return std::unexpected(Error{ErrorCode::invalid_definition, "Missing field binding."});
         return app.document_->begin_edit(binding->object, binding->path, control);
     }
+
     static Result<void> edit_field(Application& app, ObjectId component, std::span<const FieldId> path, float value) {
         constexpr auto session = std::numeric_limits<ui::ControlKey>::max();
         auto began = app.document_->begin_edit(component, path, session);
@@ -412,19 +496,26 @@ struct EditorAcceptanceAccess {
 
 namespace {
 using atelier::application::Application;
+
 using Access = atelier::application::EditorAcceptanceAccess;
+
 using atelier::ui::ControlKey;
+
 namespace control = atelier::editor::control;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 void hr(HRESULT result) {
     if (FAILED(result))
         throw std::runtime_error("PNG encoding failed.");
 }
+
 struct KeyStateScope {
     BYTE original[256]{};
+
     explicit KeyStateScope(bool control = false, bool shift = false, bool alt = false) {
         require(GetKeyboardState(original) != FALSE, "Cannot preserve acceptance thread key state.");
         BYTE state[256]{};
@@ -437,18 +528,24 @@ struct KeyStateScope {
         state[VK_MENU] = state[VK_LMENU] = alt ? 0x80 : 0;
         require(SetKeyboardState(state) != FALSE, "Cannot set acceptance thread modifiers.");
     }
+
     ~KeyStateScope() { SetKeyboardState(original); }
 };
+
 // Synthetic input reaches the editor through Access::input. The OS still routes real mouse
 // messages to this thread, and to a capturing window wherever the cursor is, so a gesture
 // driven synthetically would follow the user's mouse. They are dropped here and counted.
 struct ExternalMouseFilter {
     static inline unsigned discarded{};
+
     HHOOK hook{};
+
     ExternalMouseFilter() : hook(SetWindowsHookExW(WH_GETMESSAGE, filter, nullptr, GetCurrentThreadId())) {
         require(hook != nullptr, "Cannot install the external mouse filter.");
     }
+
     ~ExternalMouseFilter() { UnhookWindowsHookEx(hook); }
+
     static LRESULT CALLBACK filter(int code, WPARAM removal, LPARAM parameter) {
         auto& message = *reinterpret_cast<MSG*>(parameter);
         if (code == HC_ACTION && ((message.message >= WM_MOUSEFIRST && message.message <= WM_MOUSELAST) ||
@@ -460,12 +557,16 @@ struct ExternalMouseFilter {
         return CallNextHookEx(nullptr, code, removal, parameter);
     }
 };
+
 // Unattended runs cannot wait for a person: any top-level dialog outside an expected scope ends the run.
 int expected_native_dialogs{};
+
 struct ExpectedNativeDialogs {
     ExpectedNativeDialogs() { ++expected_native_dialogs; }
+
     ~ExpectedNativeDialogs() { --expected_native_dialogs; }
 };
+
 LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) {
     if (code == HCBT_CREATEWND && !expected_native_dialogs) {
         const auto& created = *reinterpret_cast<const CBT_CREATEWNDW*>(parameter)->lpcs;
@@ -487,10 +588,12 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
     }
     return CallNextHookEx(nullptr, code, window, parameter);
 }
+
 void require_input_focus(Application& app) {
     require(GetFocus() == app.window() && GetForegroundWindow() == app.window(),
             "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
 }
+
 // Count only accepted frames of the current scene and view, not preparation
 // fallbacks. GPU validation may take minutes to warm the pipelines up.
 void tick(Application& app, unsigned count = 2) {
@@ -513,6 +616,7 @@ void tick(Application& app, unsigned count = 2) {
         Access::frame_failure(app);
     require(accepted >= count, "Editor did not accept a frame within 180 iterations.");
 }
+
 const atelier::ui::ControlBox* command_tool(Application& app, ControlKey target) {
     if (!target || !app.presented())
         return nullptr;
@@ -521,6 +625,7 @@ const atelier::ui::ControlBox* command_tool(Application& app, ControlKey target)
             return &control;
     return nullptr;
 }
+
 const atelier::ui::TableGeometry* row_table(Application& app, ControlKey row) {
     if (!app.presented())
         return nullptr;
@@ -530,6 +635,7 @@ const atelier::ui::TableGeometry* row_table(Application& app, ControlKey row) {
             return &table;
     return nullptr;
 }
+
 POINT centre(Application& app, ControlKey key) {
     require(app.presented() != nullptr, "Missing presented UI frame.");
     // An accepted active popup owns input before host controls. The ToolShelf
@@ -573,6 +679,7 @@ POINT centre(Application& app, ControlKey key) {
         MapWindowPoints(app.menu_window(), app.window(), &result, 1);
     return result;
 }
+
 POINT table_header_centre(Application& app, ControlKey owner, atelier::ui::TableKey column) {
     const auto* table = app.presented() ? app.presented()->find_table(owner) : nullptr;
     require(table, "Missing accepted Table for header input.");
@@ -585,6 +692,7 @@ POINT table_header_centre(Application& app, ControlKey owner, atelier::ui::Table
     require(right > left && bottom > top, "Table header has no visible hit area.");
     return {static_cast<LONG>((left + right) * .5f), static_cast<LONG>((top + bottom) * .5f)};
 }
+
 void mouse(Application& app, UINT message, POINT point) {
     require_input_focus(app);
     KeyStateScope modifiers;
@@ -613,6 +721,7 @@ void mouse(Application& app, UINT message, POINT point) {
         tick(app, 1);
     }
 }
+
 void click_at(Application& app, POINT point) {
     require_input_focus(app);
     KeyStateScope modifiers;
@@ -622,6 +731,7 @@ void click_at(Application& app, POINT point) {
     SendMessageW(app.window(), WM_LBUTTONUP, 0, MAKELPARAM(point.x, point.y));
     tick(app, 2);
 }
+
 void click(Application& app, ControlKey key) {
     if (!app.presented()->find(key) && !command_tool(app, key) && !row_table(app, key) &&
         (!app.menu_frame() || !app.menu_frame()->find(key))) {
@@ -687,6 +797,7 @@ void click(Application& app, ControlKey key) {
     mouse(app, WM_MOUSEMOVE, point);
     click_at(app, point);
 }
+
 ControlKey operator_item(Application& app, std::string id,
                          atelier::assets::json_format::Json args = atelier::assets::json_format::Json::object()) {
     using Access = atelier::application::EditorAcceptanceAccess;
@@ -706,6 +817,7 @@ ControlKey operator_item(Application& app, std::string id,
             }
     return key;
 }
+
 void double_click(Application& app, ControlKey key) {
     require((GetClassLongPtrW(app.window(), GCL_STYLE) & CS_DBLCLKS) != 0,
             "Editor window does not request native double-click messages.");
@@ -717,6 +829,7 @@ void double_click(Application& app, ControlKey key) {
     SendMessageW(app.window(), WM_LBUTTONUP, 0, MAKELPARAM(point.x, point.y));
     tick(app, 2);
 }
+
 void key(Application& app, WPARAM code, bool ctrl = false, bool shift = false) {
     require_input_focus(app);
     KeyStateScope modifiers(ctrl, shift);
@@ -725,6 +838,7 @@ void key(Application& app, WPARAM code, bool ctrl = false, bool shift = false) {
     SendMessageW(app.window(), WM_KEYUP, code, 0);
     tick(app, 1);
 }
+
 void type(Application& app, const wchar_t* value) {
     KeyStateScope modifiers;
     key(app, 'A', true);
@@ -737,6 +851,7 @@ void type(Application& app, const wchar_t* value) {
         SendMessageW(app.window(), WM_CHAR, static_cast<WPARAM>(*value++), 0);
     tick(app, 1);
 }
+
 template <class T>
 T model(atelier::Result<T> result) {
     if (!result)
@@ -744,13 +859,16 @@ T model(atelier::Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 std::span<const atelier::world::Member> entities(const Application& app) {
     return model(app.document().world().members());
 }
+
 bool contains(const Application& app, atelier::ObjectId entity) {
     const auto members = entities(app);
     return std::any_of(members.begin(), members.end(), [entity](const auto& member) { return member.id() == entity; });
 }
+
 atelier::ObjectId component(const Application& app, atelier::ObjectId entity, atelier::TypeId type) {
     auto& runtime = app.document().world().runtime();
     for (const auto& root : model(atelier::world::components(runtime, entity)))
@@ -758,6 +876,7 @@ atelier::ObjectId component(const Application& app, atelier::ObjectId entity, at
             return root.id();
     throw std::runtime_error("Required component is absent.");
 }
+
 ControlKey property_control(const Application& app, atelier::ObjectId entity, std::size_t axis) {
     if (entity == atelier::ObjectId{})
         return 0;
@@ -767,11 +886,13 @@ ControlKey property_control(const Application& app, atelier::ObjectId entity, st
     require(key != 0, "Missing live component-field control binding.");
     return key;
 }
+
 float x(const Application& app, atelier::ObjectId entity) {
     require(model(atelier::world::has_transform(app.document().world().runtime(), entity)),
             "Missing Entity Transform in current World.");
     return std::get<float>(model(app.document().world().read(entity, app.document().parameters()[0].path)));
 }
+
 atelier::ObjectId component_object(const atelier::editor::Session& document, atelier::ObjectId entity,
                                    atelier::TypeId type) {
     for (const auto& component : model(atelier::world::components(document.world().runtime(), entity)))
@@ -779,9 +900,11 @@ atelier::ObjectId component_object(const atelier::editor::Session& document, ate
             return component.id();
     throw std::runtime_error("Expected capability component is absent.");
 }
+
 bool intersects(const atelier::ui::Rect& a, const atelier::ui::Rect& b) {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
+
 std::shared_ptr<const atelier::ui::Coverage> text_coverage(const atelier::ui::UiFrame& frame, ControlKey key) {
     const auto* box = frame.find(key);
     require(box != nullptr, "Text control disappeared from the frame.");
@@ -793,6 +916,7 @@ std::shared_ptr<const atelier::ui::Coverage> text_coverage(const atelier::ui::Ui
     }
     return {};
 }
+
 std::vector<atelier::ui::Color> solid_colors(const atelier::ui::UiFrame& frame, ControlKey key) {
     const auto* box = frame.find(key);
     require(box != nullptr, "Paint control disappeared from the frame.");
@@ -805,6 +929,7 @@ std::vector<atelier::ui::Color> solid_colors(const atelier::ui::UiFrame& frame, 
         }
     return colors;
 }
+
 void wheel(Application& app, ControlKey key, short notches) {
     auto point = centre(app, key);
     ClientToScreen(app.window(), &point);
@@ -812,6 +937,7 @@ void wheel(Application& app, ControlKey key, short notches) {
                  MAKELPARAM(point.x, point.y));
     tick(app, 1);
 }
+
 void png(const atelier::renderer::Capture& image, const std::filesystem::path& path) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IWICImagingFactory> factory;
@@ -836,6 +962,7 @@ void png(const atelier::renderer::Capture& image, const std::filesystem::path& p
     hr(frame->Commit());
     hr(encoder->Commit());
 }
+
 void capture(Application& app, const std::filesystem::path& path) {
     atelier::renderer::Capture image;
     const bool stepped = app.step(&image);
@@ -857,6 +984,7 @@ void capture(Application& app, const std::filesystem::path& path) {
         png(popup, path.parent_path() / (path.stem().wstring() + L"-popup.png"));
     }
 }
+
 void require_gray_pixel(const atelier::renderer::Capture& pixels, int x, int y, int gray) {
     require(x >= 0 && y >= 0 && x < static_cast<int>(pixels.extent.width) && y < static_cast<int>(pixels.extent.height),
             "Chrome probe left the surface.");
@@ -868,6 +996,7 @@ void require_gray_pixel(const atelier::renderer::Capture& pixels, int x, int y, 
                 std::to_string(pixels.rgba[offset]) + "/" + std::to_string(pixels.rgba[offset + 1]) + "/" +
                 std::to_string(pixels.rgba[offset + 2]) + ", expected sRGB gray " + std::to_string(gray) + ".");
 }
+
 void verify_chrome_pixels(Application& app, const std::filesystem::path& output) {
     atelier::renderer::Capture pixels;
     require(app.step(&pixels) && pixels.frame_id, "Chrome pixel capture failed.");
@@ -938,6 +1067,7 @@ void verify_chrome_pixels(Application& app, const std::filesystem::path& output)
     }
     png(pixels, output / "chrome-pixels.png");
 }
+
 void verify_control_states(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     const auto paint = [&] {
         const auto bounds = app.presented()->find(control::file_menu)->bounds;
@@ -990,6 +1120,7 @@ void verify_control_states(Application& app, const std::filesystem::path& output
     const auto* selected = app.presented()->find(app.object_control(object));
     require(selected && selected->enabled, "Selected object row lost its enabled control geometry.");
 }
+
 void verify_style_changes(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     const auto initial_style = app.style();
     auto field = property_control(app, object, 0);
@@ -1067,16 +1198,25 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     require(app.set_style(initial_style).has_value(), "Could not restore the editor style.");
     tick(app, 1);
 }
+
 // Reads the product's frame timing record of the last step, which must have been accepted without capture.
 struct TimingSeries {
     std::vector<double> layout;
+
     std::vector<double> render;
+
     atelier::renderer::FrameStats total;
+
     std::uint64_t peak_live_coverages{};
+
     std::uint64_t peak_live_bytes{};
+
     atelier::ui::Statistics start;
+
     atelier::ui::Statistics finish;
+
     explicit TimingSeries(const Application& app) : start(app.ui_statistics()) {}
+
     void record(const Application& app) {
         const auto& record = app.frame_record();
         require(atelier::application::EditorAcceptanceAccess::sampled_frame(app) == app.presented()->drawing->id &&
@@ -1101,6 +1241,7 @@ struct TimingSeries {
         peak_live_coverages = std::max(peak_live_coverages, finish.live_coverages);
         peak_live_bytes = std::max(peak_live_bytes, finish.live_coverage_bytes);
     }
+
     void write(std::ostream& report, const char* name) const {
         const auto distribution = [&](const char* stage, std::vector<double> values) {
             require(!values.empty(), "No timing samples were collected.");
@@ -1113,6 +1254,7 @@ struct TimingSeries {
         distribution("layout_cpu_us", layout);
         distribution("render_cpu_us", render);
     }
+
     void resources(std::ostream& report, const char* name) const {
         report << name << ',' << layout.size() << ',' << finish.prepares - start.prepares << ','
                << finish.rasterizations - start.rasterizations << ',' << finish.raster_bytes - start.raster_bytes << ','
@@ -1123,6 +1265,7 @@ struct TimingSeries {
                << total.cached_coverage_cpu_bytes << '\n';
     }
 };
+
 void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     auto field = property_control(app, object, 0);
     const auto original_position = x(app, object);
@@ -1178,6 +1321,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
         require(holder != nullptr, "Cannot create a clipboard contention holder.");
         struct Holder {
             HWND window;
+
             ~Holder() {
                 CloseClipboard();
                 DestroyWindow(window);
@@ -1264,6 +1408,7 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
     mouse(app, WM_LBUTTONUP, drag);
     click(app, operator_item(app, "view.reset"));
 }
+
 void verify_transform_projection(Application& app, const std::filesystem::path& output, atelier::ObjectId entity) {
     const auto transform = entity;
     const auto before = model(atelier::world::read_transform(app.document().world().runtime(), transform));
@@ -1293,6 +1438,7 @@ void verify_transform_projection(Application& app, const std::filesystem::path& 
                 app.step(&restored) && restored.depth == original.depth,
             "TRS history did not restore the original value and GPU projection.");
 }
+
 void verify_list_workload(Application& app, const std::filesystem::path& output) {
     // Resize/DPI cases can leave the restored fixture partly off screen. Native
     // scrollbar and field gestures need their whole accepted area to be reachable.
@@ -1853,6 +1999,7 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
     std::puts("Viewport shortcut acceptance: PASS");
     return 0;
 }
+
 int verify_editor_edit_mode(Application& app, const char* output_directory) {
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     hr(com);
@@ -2525,10 +2672,15 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(original_result == S_OK, "Cannot preserve original input profile (S_FALSE means no active profile).");
     struct ProfileScope {
         ITfInputProcessorProfiles* languages;
+
         ITfInputProcessorProfileMgr* manager;
+
         TF_INPUTPROCESSORPROFILE original;
+
         std::ofstream& evidence;
+
         bool restored{};
+
         bool restore() {
             if (restored)
                 return true;
@@ -2554,6 +2706,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
             evidence.flush();
             return restored;
         }
+
         ~ProfileScope() {
             if (!restore())
                 std::fputs("IME acceptance: restoring the original thread profile failed.\n", stderr);
@@ -2649,8 +2802,11 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
         struct CaptureScope {
             HDC screen;
+
             HDC memory;
+
             HBITMAP bitmap;
+
             ~CaptureScope() {
                 DeleteObject(bitmap);
                 DeleteDC(memory);
@@ -2720,7 +2876,9 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
             return DWORD{0};
         struct ContextScope {
             HWND window;
+
             HIMC context;
+
             ~ContextScope() { ImmReleaseContext(window, context); }
         } context_scope{app.window(), context};
         const auto bytes = ImmGetCandidateListW(context, 0, nullptr, 0);

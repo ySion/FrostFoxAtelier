@@ -14,24 +14,39 @@
 #include <chrono>
 
 int verify_sponza_window(atelier::application::Application&, const char* output_directory);
+
 int verify_physics_examples_window(atelier::application::Application&, const char* output_directory);
+
 int verify_dungeons_window(atelier::application::Application&, const char* output_directory);
 
 int verify_editor_window(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_output(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_source(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_edit_mode(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_shortcuts(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_surfaces(atelier::application::Application&, const char* output_directory);
+
 int profile_editor_render_performance(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_tooltips(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_dialogs(atelier::application::Application&, const char* output_directory);
+
 int capture_editor_snapshot(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_ime(atelier::application::Application&, const char* output_directory);
+
 int verify_editor_project(atelier::application::Application&, const char* output_directory,
                           const wchar_t* source_project);
+
 int verify_editor_scene_lit(atelier::application::Application&, const char* output_directory,
                             const wchar_t* source_project);
+
 void guard_acceptance_native_dialogs();
 
 namespace {
@@ -208,6 +223,7 @@ int host_main(int argc, wchar_t** argv) {
     return 0;
 }
 }
+
 int wmain(int argc, wchar_t** argv) {
     namespace log = atelier::logging;
     // Deliberately outside the business try: Application, World, workers and

@@ -12,8 +12,11 @@
 
 namespace {
 using namespace atelier;
+
 using Clock = std::chrono::steady_clock;
+
 volatile std::uint64_t observed{};
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
@@ -25,15 +28,20 @@ template <class T>
 class StdVector : public std::vector<T> {
 public:
     StdVector() = default;
+
     explicit StdVector(Span<const T> values) : std::vector<T>(values.begin(), values.end()) {}
+
     void append(Span<const T> values) { this->insert(this->end(), values.begin(), values.end()); }
+
     template <class... A>
     T& emplace(A&&... arguments) {
         return this->emplace_back(std::forward<A>(arguments)...);
     }
+
     void remove_at(std::size_t first, std::size_t count) {
         this->erase(this->begin() + first, this->begin() + first + count);
     }
+
     template <class Predicate>
     std::size_t remove_if(Predicate predicate) {
         return std::erase_if(*this, predicate);
@@ -43,11 +51,15 @@ public:
 struct alignas(64) Packet {
     std::array<std::uint32_t, 16> words;
 };
+
 struct Resources {
     std::int64_t allocations;
+
     std::int64_t bytes;
+
     std::int64_t live;
 };
+
 Resources resources() {
     mi_collect(true); // Flush page statistics outside timing.
     mi_stats_t stats;

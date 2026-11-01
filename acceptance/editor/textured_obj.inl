@@ -7,6 +7,7 @@ const T& imported_material_value(const assets::MaterialInstanceAsset& author, st
             "An imported MI value is missing, disabled or has the wrong type.");
     return std::get<T>(at->value);
 }
+
 const material::SurfaceInput& material_input(const material::ProgramSurface& surface, std::string_view path) {
     const auto inputs = surface.program().textures();
     const auto at = std::ranges::find(inputs, path, &source::MaterialTextureInput::key);
@@ -14,6 +15,7 @@ const material::SurfaceInput& material_input(const material::ProgramSurface& sur
             "Resolved material input does not match its Source declaration.");
     return surface.inputs()[static_cast<std::size_t>(at - inputs.begin())];
 }
+
 template <class T>
 T resolved_material_value(const material::ProgramSurface& surface, std::string_view path) {
     const auto parameters = surface.program().parameters();
@@ -25,6 +27,7 @@ T resolved_material_value(const material::ProgramSurface& surface, std::string_v
     std::memcpy(&result, surface.parameters().data() + at->offset, sizeof(T));
     return result;
 }
+
 void verify_material_picking() {
     namespace mat = atelier::material;
     const std::vector<atelier::geometry::Vertex> vertices{
@@ -89,6 +92,7 @@ void verify_material_picking() {
     require(!pick({0, 0, 0}), "Point picking selected an invisible single-sided backface.");
     std::puts("Material picking acceptance: PASS (transparent holes, UV sampling, source replacement, sidedness)");
 }
+
 void verify_textured_obj() {
     verify_material_picking();
     namespace fs = std::filesystem;
@@ -252,6 +256,7 @@ void verify_textured_obj() {
     std::puts(
         "Textured OBJ acceptance: PASS (bundle import, concave polygon, UV, tangent fallback, shared texture, refresh, lifetime, failure/retry boundaries)");
 }
+
 void verify_sponza_project() {
     const std::filesystem::path folder = ATELIER_EXAMPLE_PROJECT;
     auto project = take(editor::Project::open(folder));
@@ -263,7 +268,9 @@ void verify_sponza_project() {
     // Every slot shows the material generated from its glTF material; counts follow the shipped 2K assets.
     struct Expected {
         std::size_t triangles;
+
         std::size_t slots;
+
         std::size_t textured;
     };
     constexpr std::array expected{Expected{3738878, 27, 24}, Expected{1997366, 4, 4}};

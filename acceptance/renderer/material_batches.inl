@@ -2,9 +2,13 @@
 // or ViewportTool clicks. No StandardPBR fixture adapter participates here.
 namespace material_batch_e2e {
 namespace render = atelier::renderer;
+
 namespace material = atelier::material;
+
 namespace geometry = atelier::geometry;
+
 namespace source = atelier::source;
+
 template <class T, class E>
 T need(std::expected<T, E> result) {
     if (!result)
@@ -12,6 +16,7 @@ T need(std::expected<T, E> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 void wait(render::Renderer& renderer, render::MaterialBatch& batch) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
     for (;;) {
@@ -25,9 +30,11 @@ void wait(render::Renderer& renderer, render::MaterialBatch& batch) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 }
+
 std::shared_ptr<const std::vector<std::uint32_t>> slots(std::initializer_list<std::uint32_t> values) {
     return std::make_shared<const std::vector<std::uint32_t>>(values);
 }
+
 material::ProgramSurfaceRef texture_override(material::ProgramSurfaceRef parent, const char* path,
                                              material::ImageRef image,
                                              material::Address address = material::Address::repeat) {
@@ -36,6 +43,7 @@ material::ProgramSurfaceRef texture_override(material::ProgramSurfaceRef parent,
         std::array{material::Override{path, material::TextureBinding{image ? "native/image" : "", address}, true}},
         std::array{image}));
 }
+
 std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& output) {
     atelier::Runtime compiler;
     need(material::register_program_types(compiler));
@@ -149,6 +157,7 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
         sibling,
         fallback};
 }
+
 void run(HWND window, const std::filesystem::path& output) {
     auto table = surfaces(output);
     auto renderer = take(render::Renderer::open(

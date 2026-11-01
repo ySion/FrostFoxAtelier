@@ -618,7 +618,9 @@ void shadow_cases(Fixture& f) {
     f.frame.camera.projection = {4 / aspect, 0, 0, 0, 0, 4, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0};
     struct Grazing {
         float height;
+
         float intensity;
+
         const char* label;
     };
     for (const auto& [height, intensity, label] : std::array<Grazing, 2>{{{.013f, 150, "13mm"}, {.004f, 500, "4mm"}}}) {

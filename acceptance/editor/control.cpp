@@ -12,32 +12,40 @@
 
 namespace {
 using namespace atelier::control;
+
 using namespace std::chrono_literals;
+
 void require(bool ok, std::string_view message) {
     if (!ok)
         throw std::runtime_error(std::string(message));
 }
+
 Json read(const std::filesystem::path& path) {
     std::ifstream stream(atelier::platform::windows_file_path(path), std::ios::binary);
     require(bool(stream), "Cannot read E2E artifact: " + utf8(path.wstring()));
     return Json::parse(stream);
 }
+
 void write(const std::filesystem::path& path, std::string_view text) {
     std::filesystem::create_directories(atelier::platform::windows_file_path(path.parent_path()));
     std::ofstream stream(atelier::platform::windows_file_path(path), std::ios::binary | std::ios::trunc);
     stream.write(text.data(), static_cast<std::streamsize>(text.size()));
     require(bool(stream), "Cannot write E2E fixture");
 }
+
 // A 1x1 RGBA PNG.
 constexpr std::array<unsigned char, 70> tiny_png{
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
     0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
     0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0xcf, 0x50, 0x0f, 0x00, 0x03, 0x86, 0x01, 0x80,
     0x5a, 0x34, 0x7d, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+
 constexpr std::string_view published_code =
     "class project.ControlProbe : world.Component { float speed = 1.0f; void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); } }\n";
+
 constexpr std::string_view published_ui =
     "ui ProjectUI(in Text title, in double elapsed, in double entities) { Column hud { Text title { text: input.title; } } }\n";
+
 void project_fixture(const std::filesystem::path& project) {
     write(project / "Content/Scenes/Main.scene", Json{{"version", 10},
                                                       {"next_id", "1"},
@@ -54,13 +62,18 @@ void project_fixture(const std::filesystem::path& project) {
                                                 {"ui_source", "Source/Published.ui.source"}}
                                                .dump());
 }
+
 std::wstring quote(const std::filesystem::path& path) {
     return L"\"" + path.wstring() + L"\"";
 }
+
 struct Process {
     HANDLE process{};
+
     DWORD pid{};
+
     HANDLE log{};
+
     Process(const std::filesystem::path& executable, std::wstring arguments, const std::filesystem::path& output) {
         SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
         log = CreateFileW(output.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security, CREATE_ALWAYS,
@@ -82,6 +95,7 @@ struct Process {
         pid = created.dwProcessId;
         CloseHandle(created.hThread);
     }
+
     ~Process() {
         if (process) {
             if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
@@ -93,9 +107,11 @@ struct Process {
         if (log && log != INVALID_HANDLE_VALUE)
             CloseHandle(log);
     }
+
     HWND window() const {
         struct Query {
             DWORD pid;
+
             HWND window{};
         } query{pid};
         EnumWindows(
@@ -112,6 +128,7 @@ struct Process {
             reinterpret_cast<LPARAM>(&query));
         return query.window;
     }
+
     void close() {
         if (auto handle = window())
             PostMessageW(handle, WM_CLOSE, 0, 0);
@@ -121,12 +138,17 @@ struct Process {
         require(code == 0, "Editor exited with a failure");
     }
 };
+
 struct Driver {
     std::unique_ptr<Client> client;
+
     std::string token;
+
     Json descriptor;
+
     explicit Driver(Json instance)
         : client(std::make_unique<Client>(instance, 600s)), descriptor(std::move(instance)) {}
+
     Json call(std::string op, Json args = Json::object(), std::string id = {}) {
         Json request{{"op", std::move(op)}, {"args", std::move(args)}, {"state_token", token}};
         if (!id.empty())
@@ -136,12 +158,15 @@ struct Driver {
             token = result.at("state_token").get<std::string>();
         return result;
     }
+
     Json ok(std::string op, Json args = Json::object()) {
         auto result = call(std::move(op), std::move(args));
         require(result.value("status", "") == "ok", result.dump());
         return result.at("result");
     }
+
     Json inspect() { return ok("editor.inspect"); }
+
     // A new editor records its surface only after serving that step's requests, so the token of a
     // first inspection can be stale by the next call. Five unchanged inspections, one per step, settle it.
     Json settle() {
@@ -156,12 +181,15 @@ struct Driver {
         require(stable == 5, "The editor state token did not settle after start");
         return state;
     }
+
     Json op(std::string id, Json args = Json::object(), Json context = Json::object()) {
         return ok("op.call", {{"id", std::move(id)}, {"args", std::move(args)}, {"context", std::move(context)}});
     }
+
     Json try_op(std::string id, Json args, Json context = Json::object()) {
         return call("op.call", {{"id", std::move(id)}, {"args", std::move(args)}, {"context", std::move(context)}});
     }
+
     Json wait(std::string id, std::chrono::seconds timeout = 125s) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
@@ -173,6 +201,7 @@ struct Driver {
         throw std::runtime_error("Control job did not complete");
     }
 };
+
 Json discover_editor(const Process& editor, const std::filesystem::path& directory) {
     const auto deadline = std::chrono::steady_clock::now() + 60s;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -185,13 +214,16 @@ Json discover_editor(const Process& editor, const std::filesystem::path& directo
     }
     throw std::runtime_error("Editor did not publish its endpoint");
 }
+
 void error(const Json& result, std::string_view expected) {
     require(result.value("status", "") == "error" && result.at("error").at("code").get<std::string>() == expected,
             result.dump());
 }
+
 Json selection(const std::string& entity) {
     return {{"selection", {{"entities", Json::array({entity})}}}};
 }
+
 const Json& material_entry(const Json& material, std::string_view path) {
     const auto& entries = material.at("entries");
     const auto at = std::ranges::find_if(
@@ -199,11 +231,13 @@ const Json& material_entry(const Json& material, std::string_view path) {
     require(at != entries.end(), "Material lacks the sparse author entry " + std::string(path));
     return *at;
 }
+
 bool material_issue(const Json& material, std::string_view text) {
     return std::ranges::any_of(material.at("diagnostics"), [&](const Json& issue) {
         return issue.at("message").get<std::string>().find(text) != std::string::npos;
     });
 }
+
 void no_project_scene_material(Driver& d) {
     const auto initial = d.inspect();
     require(initial.at("project") == "" && initial.at("entities").empty(),
@@ -244,6 +278,7 @@ void no_project_scene_material(Driver& d) {
             "No-project material commands did not undo back to the initial document");
     std::cout << "No-project scene MI commands: PASS\n" << std::flush;
 }
+
 void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
     const auto exported = [&] {
         const auto id = unique_id();
@@ -483,6 +518,7 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                  "ordinary-name", "unused-cache-and-superseded-disk-not-roots", "referenced-draft"}}}
               .dump(2));
 }
+
 // One operator registry serves menus, keys and Control; the context override lasts one call.
 void verify_operators(Driver& d, const std::string& entity) {
     const auto listed = d.ok("op.list");
@@ -582,6 +618,7 @@ void verify_operators(Driver& d, const std::string& entity) {
     d.op("scene.select", Json::object(), selection(entity));
     require(d.inspect().at("selection") == Json::array({entity}), "scene.select did not restore the selection");
 }
+
 void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path& project, const Json& capabilities) {
     namespace fs = std::filesystem;
     const auto maximum = capabilities.at("limits").at("inspect_page_items").get<unsigned>();
@@ -751,6 +788,7 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
     std::cout << "Assets pagination E2E: PASS (" << expanded.at("assets").size() << " entries, " << pages << " pages; "
               << byte_pages << " byte-limited pages; full equality/oversize, cursor domains/invalidation, read-only)\n";
 }
+
 void verify_option_descriptions(const Json& capabilities) {
     const auto& options = capabilities.at("display_options");
     for (const auto& [name, option] : options.items()) {
@@ -773,6 +811,7 @@ void verify_option_descriptions(const Json& capabilities) {
                         description,
                     "Volume slots or vector lanes diverged from their shared description");
 }
+
 void verify_property_descriptions(const Json& object) {
     require(object.at("type_description").is_string(), "Object type description is missing");
     std::string position;
@@ -790,6 +829,7 @@ void verify_property_descriptions(const Json& object) {
     }
     require(lanes == 3, "Position descriptor did not expose its three scalar lanes");
 }
+
 Json verify_object_directory(Driver& d, const Json& full, const Json& capabilities) {
     const auto limit = capabilities.at("limits").at("inspect_page_items").get<unsigned>();
     const auto bytes = capabilities.at("limits").at("inspect_page_bytes").get<std::size_t>();
@@ -860,6 +900,7 @@ Json verify_object_directory(Driver& d, const Json& full, const Json& capabiliti
             "Read-only object discovery changed the document or its state token");
     return first_cursor;
 }
+
 // A repro opens only in the current view schema and scene format, and its frozen view
 // must agree with the scene's Environment. Every rejection keeps the current document.
 void repro_lighting_agreement(Driver& d, const std::filesystem::path& repro, const std::filesystem::path& root) {
@@ -944,6 +985,7 @@ void repro_lighting_agreement(Driver& d, const std::filesystem::path& repro, con
             "Current lighting repro did not reopen with its view, camera and selection");
     d.ok("repro.open", {{"directory", utf8(repro.wstring())}});
 }
+
 // Only the scene records the sky map and its rotation; the frozen view holds view options.
 // A repro of a scene with both opens, its copied map equals the loaded one, and the
 // reopened repro still binds the same map content.
@@ -992,6 +1034,7 @@ void repro_sky(Driver& d, const std::filesystem::path& project) {
     require(d.inspect().at("view") == manifest.at("view"), "A sky repro did not open with its frozen view");
     exported();
 }
+
 // The export copies what the scene references, with the in-memory draft of a referenced material
 // rather than what its saved file names: a draft that cleared a texture which has since gone
 // missing still exports, the copy holds the draft and reopens strictly, and the source asset stays
@@ -1054,6 +1097,7 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
     require(d.ok("material.inspect", {{"asset", asset}}).at("diagnostics").empty(),
             "A draft repro did not reopen without the missing texture");
 }
+
 // Exercise the real author/Runtime/export/strict-load path. Pixel expectations
 // come from this RGBA fixture, not from another call to the exporter's decoder.
 void repro_material_inputs(Driver& d, const std::filesystem::path& root) {
@@ -1349,6 +1393,7 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
                  "content-digests-beyond-file-hashes", "rejected-candidate-preserves-state"}}}
               .dump(2));
 }
+
 void repro_lighting(const std::filesystem::path& executable, const std::filesystem::path& root) {
     const auto project = root / "Project";
     const auto directory = root / "Control";
@@ -1386,6 +1431,7 @@ void repro_lighting(const std::filesystem::path& executable, const std::filesyst
               .dump(2));
     std::cout << "Editor Repro Lighting E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
+
 void reject_nested_destination(const std::filesystem::path& executable, const std::filesystem::path& root) {
     const auto project = root / "NestedProject";
     project_fixture(project);
@@ -1405,6 +1451,7 @@ void reject_nested_destination(const std::filesystem::path& executable, const st
     d.client.reset();
     editor.close();
 }
+
 // An ordinary examples project contains unrelated content too. The repro carries
 // only what the Sponza scene references: its two glTF
 // meshes with their buffers and images, each slot's default material, and the sun-removed sky
@@ -1520,6 +1567,7 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
     std::fprintf(stderr, "Examples repro failure evidence retained at %s\n", utf8(root.wstring()).c_str());
     throw;
 }
+
 // A glTF import publishes one material per slot as the mesh's default, which the scene does not
 // name. The repro carries the default material, its texture and their identity files, reopens
 // strictly and exports the same files again.
@@ -1767,6 +1815,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
                  "missing-default-export-strict-reopen", "missing-mesh-bound-material"}}}
               .dump(2));
 }
+
 void repro_paths(const std::filesystem::path& executable, const std::filesystem::path& root, bool deep_control) {
     const auto project = root / "Project";
     const auto directory = deep_control ? root / "Control" / std::wstring(100, L'x') : root / "Control";
@@ -1855,6 +1904,7 @@ void repro_paths(const std::filesystem::path& executable, const std::filesystem:
                                     .dump(2));
     std::cout << "Editor Control path E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
+
 void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::path& root) {
     const auto project = root / "Project";
     const auto directory = root / "Control";
@@ -2038,6 +2088,7 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
               .dump(2));
     std::cout << "Editor DDGI Control E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
+
 void camera_projection(const std::filesystem::path& executable, const std::filesystem::path& root) {
     const auto project = root / "Project";
     const auto directory = root / "Control";
@@ -2173,6 +2224,7 @@ void camera_projection(const std::filesystem::path& executable, const std::files
 }
 #include "client_size.inl"
 }
+
 int wmain(int argc, wchar_t** argv) {
     try {
         require(

@@ -7,6 +7,7 @@ namespace {
 DiagnosticResources resources(const Runtime& runtime) noexcept {
     return {runtime.live_objects(), runtime.root_count(), runtime.pending_reclamation(), runtime.collection_phase()};
 }
+
 void pause_clock(detail::DiagnosticState& state) noexcept {
     if (!state.clock_running)
         return;
@@ -15,6 +16,7 @@ void pause_clock(detail::DiagnosticState& state) noexcept {
     state.active_time += std::min(elapsed, std::chrono::nanoseconds::max() - state.active_time);
     state.clock_running = false;
 }
+
 const DiagnosticLocation* location(const detail::DiagnosticState& state) noexcept {
     if (!state.metadata || !state.metadata->locations)
         return nullptr;
@@ -27,12 +29,15 @@ const DiagnosticLocation* location(const detail::DiagnosticState& state) noexcep
     return index < state.metadata->locations->size() ? &(*state.metadata->locations)[index] : nullptr;
 }
 }
+
 Diagnostics::Diagnostics(DiagnosticOptions options) : state_(std::make_shared<detail::DiagnosticState>()) {
     state_->options = options;
 }
+
 bool Diagnostics::active() const noexcept {
     return state_ && state_->active;
 }
+
 DiagnosticReport Diagnostics::snapshot() const {
     DiagnosticReport report;
     if (!state_)
@@ -68,6 +73,7 @@ DiagnosticReport Diagnostics::snapshot() const {
     }
     return report;
 }
+
 namespace detail {
 Result<std::shared_ptr<DiagnosticState>>
 DiagnosticAccess::begin(Diagnostics* capture, const std::shared_ptr<const DiagnosticMetadata>& metadata,
@@ -95,6 +101,7 @@ DiagnosticAccess::begin(Diagnostics* capture, const std::shared_ptr<const Diagno
     running(*state);
     return state;
 }
+
 Error DiagnosticAccess::reject(Diagnostics* capture, Error error) {
     if (!capture || capture->active())
         return error;
@@ -109,6 +116,7 @@ Error DiagnosticAccess::reject(Diagnostics* capture, Error error) {
     fail(state, error);
     return error;
 }
+
 void DiagnosticAccess::running(DiagnosticState& state, bool resume) noexcept {
     state.status = DiagnosticStatus::running;
     if (resume) {
@@ -120,11 +128,13 @@ void DiagnosticAccess::running(DiagnosticState& state, bool resume) noexcept {
         state.clock_running = true;
     }
 }
+
 void DiagnosticAccess::pause(DiagnosticState& state, const Runtime& runtime, DiagnosticStatus status) noexcept {
     pause_clock(state);
     state.after = resources(runtime);
     state.status = status;
 }
+
 void DiagnosticAccess::fail(DiagnosticState& state, const Error& error) noexcept {
     if (state.failed)
         return;
@@ -132,6 +142,7 @@ void DiagnosticAccess::fail(DiagnosticState& state, const Error& error) noexcept
     state.error_code = error.code;
     std::snprintf(state.error, sizeof(state.error), "%s", error.message.c_str());
 }
+
 void DiagnosticAccess::finish(DiagnosticState& state, const Runtime& runtime, DiagnosticStatus status) noexcept {
     if (!state.active)
         return;

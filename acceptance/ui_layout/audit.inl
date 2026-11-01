@@ -69,7 +69,9 @@ void flex_baseline_boundaries() {
 
 struct GridSizingScene {
     LayoutDocument document{nullptr, nullptr, {2050, 2}};
+
     LayoutNodeId parent;
+
     explicit GridSizingScene(bool fixed) {
         GridSpec spec{.columns = std::vector<Axis>(4096, fixed ? Axis::fixed(1) : Axis::content(1)),
                       .rows = {Axis::fixed(1)}};
@@ -222,8 +224,11 @@ void grid_sparse_spans() {
 
 struct GridCollisionScene {
     LayoutDocument document{nullptr, nullptr, {4, 2}};
+
     LayoutNodeId parent;
+
     LayoutNodeId moving;
+
     explicit GridCollisionScene(bool transpose = false) {
         GridSpec spec;
         if (transpose)

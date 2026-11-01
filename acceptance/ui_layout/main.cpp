@@ -17,6 +17,7 @@
 #include <utility>
 
 using namespace atelier::ui_layout;
+
 using Microsoft::WRL::ComPtr;
 
 namespace {
@@ -24,32 +25,39 @@ void require(bool condition, std::string_view message) {
     if (!condition)
         throw std::runtime_error(std::string(message));
 }
+
 void check_error(const Error& error) {
     throw std::runtime_error(std::string(describe(error.code)) + ": " + std::string(describe(error.field)) +
                              "; provider=" + std::to_string(error.provider_code));
 }
+
 void accepted(Result<void> result) {
     if (!result)
         check_error(result.error());
 }
+
 template <class T>
 T accepted(Result<T> result) {
     if (!result)
         check_error(result.error());
     return std::move(*result);
 }
+
 template <class T>
 void rejected(const Result<T>& result, ErrorCode code) {
     require(!result && result.error().code == code, "wrong rejection or unexpected success");
 }
+
 bool close(float a, float b) {
     return std::abs(a - b) <= 0.0002f + 0.000002f * std::max(std::abs(a), std::abs(b));
 }
+
 const LayoutBox& box(LayoutView view, LayoutNodeId id) {
     const auto* found = view.find(id);
     require(found != nullptr, "published node missing");
     return *found;
 }
+
 void same_geometry(LayoutView a, LayoutView b) {
     require(a.boxes.size() == b.boxes.size(), "fresh result has different size");
     for (std::size_t i = 0; i < a.boxes.size(); ++i) {
@@ -65,12 +73,14 @@ void same_geometry(LayoutView a, LayoutView b) {
         require(parent_position(a, x.parent) == parent_position(b, y.parent), "warm/fresh topology differs");
     }
 }
+
 NodeInput fixed_box(float width, float height) {
     NodeInput input;
     input.width = Axis::fixed(width);
     input.height = Axis::fixed(height);
     return input;
 }
+
 NodeInput text(std::uint64_t key, std::uint64_t revision = 1) {
     NodeInput input;
     input.kind = Kind::measured;
@@ -78,56 +88,91 @@ NodeInput text(std::uint64_t key, std::uint64_t revision = 1) {
     input.content_revision = revision;
     return input;
 }
+
 NodeInput column() {
     NodeInput input;
     input.kind = Kind::column;
     return input;
 }
+
 void hr(HRESULT result) {
     if (FAILED(result))
         throw std::runtime_error("DirectWrite HRESULT " + std::to_string(static_cast<unsigned long>(result)));
 }
+
 struct TextProvider {
     struct Content {
         std::wstring text;
+
         float font_size{16};
+
         std::uint64_t revision{1};
     };
+
     struct Paragraph {
         ComPtr<IDWriteTextLayout> layout;
+
         std::uint64_t content_revision{};
+
         std::uint64_t provider_revision{};
     };
+
     struct Resolved {
         std::shared_ptr<const Paragraph> paragraph;
+
         Size size;
     };
+
     ComPtr<IDWriteFactory> factory;
+
     std::map<std::uint64_t, Content> content;
+
     std::map<std::uint64_t, std::shared_ptr<Paragraph>> paragraphs;
+
     std::vector<DWRITE_LINE_METRICS> line_metrics;
+
     std::uint64_t calls{};
+
     std::uint64_t creates{};
+
     std::uint64_t fail_at{};
+
     std::uint64_t epoch{1};
+
     std::uint64_t measure_nanoseconds{};
+
     struct Costs {
         std::uint64_t format{};
+
         std::uint64_t create{};
+
         std::uint64_t wrapping{};
+
         std::uint64_t width{};
+
         std::uint64_t metrics{};
     } costs;
+
     std::wstring font_family{L"Segoe UI"};
+
     bool wrap_enabled{true};
+
     float scale{1};
+
     bool invalid{};
+
     bool exception{};
+
     bool allocation_exception{};
+
     bool try_reentry{};
+
     bool reentry_rejected{};
+
     LayoutDocument* active{};
+
     LayoutNodeId active_leaf{};
+
     TextProvider() {
         hr(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory),
                                reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
@@ -138,6 +183,7 @@ struct TextProvider {
         hr(fonts->FindFamilyName(L"Segoe UI", &index, &found));
         require(found != FALSE, "Segoe UI unavailable");
     }
+
     ComPtr<IDWriteTextLayout> create(const Content& value) {
         ComPtr<IDWriteTextFormat> format;
         timed(costs.format, [&] {
@@ -154,6 +200,7 @@ struct TextProvider {
         ++creates;
         return result;
     }
+
     template <class Action>
     static void timed(std::uint64_t& total, Action action) {
         const auto start = std::chrono::steady_clock::now();
@@ -161,6 +208,7 @@ struct TextProvider {
         total += static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
     }
+
     Size metrics(IDWriteTextLayout* layout, std::optional<float> width) {
         const auto wrapping = width && wrap_enabled ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP;
         if (layout->GetWordWrapping() != wrapping)
@@ -171,10 +219,12 @@ struct TextProvider {
         timed(costs.metrics, [&] { return layout->GetMetrics(&value); });
         return {value.widthIncludingTrailingWhitespace, value.height};
     }
+
     Size fresh(std::uint64_t key, std::optional<float> width) {
         const auto layout = create(content.at(key));
         return metrics(layout.Get(), width);
     }
+
     float baseline(IDWriteTextLayout* layout) {
         UINT32 count{};
         const auto status = layout->GetLineMetrics(nullptr, 0, &count);
@@ -184,6 +234,7 @@ struct TextProvider {
         hr(layout->GetLineMetrics(line_metrics.data(), count, &count));
         return count ? line_metrics[0].baseline : 0;
     }
+
     std::expected<Resolved, MeasureError> resolve(const MeasureQuery& query) {
         const auto found = content.find(query.content_key);
         if (found == content.end() || found->second.revision != query.content_revision ||
@@ -203,12 +254,15 @@ struct TextProvider {
         const auto size = metrics(paragraph->layout.Get(), query.width);
         return Resolved{paragraph, size};
     }
+
     static MeasureResult measure(void* context, const MeasureQuery& query) {
         auto& self = *static_cast<TextProvider*>(context);
         ++self.calls;
         struct Timer {
             std::uint64_t& total;
+
             std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
+
             ~Timer() {
                 total += static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
@@ -249,11 +303,16 @@ struct TextProvider {
 struct TextFrame {
     struct Run {
         LayoutNodeId node;
+
         MeasureQuery query;
+
         TextProvider::Resolved text;
     };
+
     LayoutSnapshot geometry;
+
     std::vector<Run> runs;
+
     static std::shared_ptr<const TextFrame> capture(LayoutDocument& document, TextProvider& provider) {
         auto frame = std::make_shared<TextFrame>();
         frame->geometry = document.snapshot();
@@ -273,6 +332,7 @@ struct TextFrame {
         }
         return frame;
     }
+
     void check() const {
         for (const auto& run : runs) {
             const auto& paragraph = *run.text.paragraph;
@@ -291,7 +351,9 @@ struct TextFrame {
 
 struct ComputeCosts {
     std::uint64_t total{};
+
     std::uint64_t measure{};
+
     LayoutView run(LayoutDocument& document, TextProvider& provider, Size viewport) {
         const auto before = provider.measure_nanoseconds;
         const auto start = std::chrono::steady_clock::now();
@@ -337,6 +399,7 @@ void identity_and_reuse() {
     }
     rejected(b.input(expired), ErrorCode::invalid_node);
 }
+
 void atomic_ordered_edits() {
     LayoutDocument d(nullptr, nullptr, {12, 8});
     accepted(d.set_root({Kind::row}));
@@ -372,6 +435,7 @@ void atomic_ordered_edits() {
     rejected(d.input(a), ErrorCode::invalid_node);
     rejected(d.input(nested), ErrorCode::invalid_node);
 }
+
 void capacity_and_depth() {
     bool threw = false;
     try {
@@ -402,6 +466,7 @@ void capacity_and_depth() {
     accepted(depth.move(branch, target));
     rejected(depth.create(descendant, fixed_box(1, 1)), ErrorCode::capacity_exceeded);
 }
+
 void bounded_allocation() {
     std::array<unsigned, 3> order{0, 1, 2};
     const std::array<float, 3> expected{120, 150, 30};
@@ -447,6 +512,7 @@ void bounded_allocation() {
     result = accepted(d.compute({90, 10}, 1));
     require(box(result, a).width == 30 && box(result, b).width == 60, "weighted pool");
 }
+
 void weight_dynamic_range() {
     std::array<unsigned, 3> order{0, 1, 2};
     const std::array<float, 3> weights{1e30f, 1, 1e-30f};
@@ -465,6 +531,7 @@ void weight_dynamic_range() {
             require(close(box(result, ids[i]).width, expected[i]), "small active weight lost after caps");
     } while (std::next_permutation(order.begin(), order.end()));
 }
+
 void slots_padding_and_columns() {
     LayoutDocument d(nullptr, nullptr, {3, 1});
     accepted(d.set_root({Kind::row, {2, 3, 2, 3}, 4}));
@@ -490,6 +557,7 @@ void slots_padding_and_columns() {
     require(box(result, a).height == 80 && box(result, b).height == 20 && box(result, b).y == 80,
             "column weighted slots");
 }
+
 void known_width_natural_height() {
     TextProvider p;
     p.content[1] = {L"这是没有空格的中文内容，用于验证已知宽度下的自然高度，而不是视口高度。", 20, 1};
@@ -522,6 +590,7 @@ void known_width_natural_height() {
     same_geometry(result, accepted(fresh.compute({220, 80}, p.epoch)));
     std::printf("{\"kind\":\"text\",\"width100_natural_height\":%.6f,\"viewport_height\":40}\n", natural);
 }
+
 void independent_content_width() {
     TextProvider p;
     p.content[1] = {L"Label with independent intrinsic width", 16, 1};
@@ -545,6 +614,7 @@ void independent_content_width() {
     accepted(fresh.create(root, text(1)));
     same_geometry(d.view(), accepted(fresh.compute({400, 120}, p.epoch)));
 }
+
 void demand_driven_measurement() {
     TextProvider p;
     p.content[1] = {L"Natural demand is needed only when the geometry uses it.", 16, 1};
@@ -565,6 +635,7 @@ void demand_driven_measurement() {
     accepted(d.compute({140, 50}, p.epoch));
     require(p.calls == calls, "fixed text box performed unused size query");
 }
+
 void provider_metrics_reuse() {
     TextProvider p;
     const std::array<std::wstring, 5> values{L"A\nB", L"word   ", L"", L"averylongunbreakablewordwithoutspaces",
@@ -587,6 +658,7 @@ void provider_metrics_reuse() {
         require(TextProvider::measure(&p, {100, 1, 1, width}).has_value(), "reused text query failed");
     require(p.creates - before == 1, "three width queries did not reuse one metrics object");
 }
+
 void transactional_failure_and_reentry() {
     TextProvider p;
     for (std::uint64_t i = 1; i <= 3; ++i)
@@ -641,6 +713,7 @@ void transactional_failure_and_reentry() {
     p.allocation_exception = false;
     accepted(d.compute({180, 300}, p.epoch));
 }
+
 void geometry_failure_cache_rollback() {
     TextProvider p;
     p.content[1] = {L"Initial content", 16, 1};
@@ -664,6 +737,7 @@ void geometry_failure_cache_rollback() {
     accepted(d.compute({100, 100}, p.epoch));
     require(p.calls == calls + 2, "geometry failure committed measurement cache");
 }
+
 void local_cache_and_slot_reuse() {
     TextProvider p;
     p.content[1] = {L"First pane", 16, 1};
@@ -696,6 +770,7 @@ void local_cache_and_slot_reuse() {
     require(reused != a && p.calls == before + 1, "recycled slot retained old node cache");
     rejected(d.input(a), ErrorCode::invalid_node);
 }
+
 void anchors_and_logical_precision() {
     LayoutDocument d(nullptr, nullptr, {6, 3});
     accepted(d.set_root({Kind::overlay}));
@@ -734,6 +809,7 @@ void anchors_and_logical_precision() {
     require(box(result, normal).width == 800 && box(result, anchored).x == 710,
             "out-of-flow child consumed row allocation");
 }
+
 void invalid_inputs_and_dependencies() {
     LayoutDocument d(nullptr, nullptr, {8, 4});
     const auto id = accepted(d.create(d.root(), fixed_box(0, 0)));
@@ -775,6 +851,7 @@ void invalid_inputs_and_dependencies() {
     require(failure.error().provider_code == 91 && missing.view().publication == 0 && missing.view().boxes.empty(),
             "missing content returned fallback geometry");
 }
+
 void owned_geometry_lifetime() {
     LayoutSnapshot owned;
     {
@@ -797,6 +874,7 @@ void owned_geometry_lifetime() {
                 owned.boxes[1].height == 5.5f,
             "snapshot did not survive document destruction");
 }
+
 void explicit_deep_tree() {
     constexpr std::uint32_t depth = 4096;
     TextProvider p;

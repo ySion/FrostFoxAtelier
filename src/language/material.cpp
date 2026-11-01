@@ -15,6 +15,7 @@ namespace {
 [[noreturn]] void reject(SourcePosition position, std::string message) {
     throw Diagnostic{position, std::move(message)};
 }
+
 std::string number(std::uint32_t bits) {
     return "asfloat(" + std::to_string(bits) + "u)";
 }
@@ -25,27 +26,38 @@ std::string number(std::uint32_t bits) {
 // branches (including short-circuit operands and early returns) stay skipped.
 class Coverage {
     using Value = std::vector<NodeId>;
+
     struct Node {
         Expression expression;
+
         NodeId condition{no_node};
     };
+
     struct Flow {
         std::vector<Value> locals;
+
         // Snapshot returned values before later assignments. Locals may keep
         // evolving on the fallthrough path; the final lazy selection excludes
         // that continuation on every path which has already returned.
         NodeId returned{no_node};
+
         Value result;
     };
+
     const MaterialModule& material_;
+
     const Program& program_;
+
     std::vector<Node> nodes_;
+
     std::map<std::pair<ValueType::Kind, std::uint64_t>, NodeId> literals_;
+
     std::vector<std::vector<std::uint64_t>> required_;
 
     bool record(ValueType type) const {
         return type.kind == ValueType::record && type.type_index != material_.texture_input;
     }
+
     std::size_t width(ValueType type) const {
         if (!record(type))
             return type == ValueType::void_value ? 0 : 1;
@@ -54,6 +66,7 @@ class Coverage {
             count += width(field.type);
         return count;
     }
+
     std::size_t field_begin(ValueType owner, std::size_t offset) const {
         std::size_t begin{};
         for (const auto& field : program_.value_layouts[owner.type_index].fields) {
@@ -63,10 +76,12 @@ class Coverage {
         }
         throw std::logic_error("Missing typed coverage field.");
     }
+
     NodeId add(Expression expression) {
         nodes_.push_back({std::move(expression)});
         return nodes_.size() - 1;
     }
+
     NodeId literal(ValueType type, std::uint64_t bits) {
         const auto key = std::pair{type.kind, bits};
         if (const auto found = literals_.find(key); found != literals_.end())
@@ -77,7 +92,9 @@ class Coverage {
         literals_.emplace(key, id);
         return id;
     }
+
     NodeId boolean(bool value) { return literal(ValueType::boolean, value); }
+
     NodeId select(NodeId condition, NodeId yes, NodeId no) {
         if (yes == no)
             return yes;
@@ -90,12 +107,14 @@ class Coverage {
         nodes_.push_back({Expression{Expression::Kind::literal, nodes_[yes].expression.type, {}, yes, no}, condition});
         return nodes_.size() - 1;
     }
+
     Value select(NodeId condition, const Value& yes, const Value& no) {
         Value value;
         for (std::size_t i = 0; i < yes.size(); ++i)
             value.push_back(select(condition, yes[i], no[i]));
         return value;
     }
+
     Value initial(ValueType type, const std::byte* bytes = nullptr) {
         if (!record(type)) {
             std::uint32_t bits{};
@@ -117,6 +136,7 @@ class Coverage {
         }
         return value;
     }
+
     Value unpack(NodeId id) {
         const auto type = nodes_[id].expression.type;
         if (!record(type))
@@ -130,6 +150,7 @@ class Coverage {
         }
         return value;
     }
+
     NodeId pack(ValueType type, const Value& value) {
         if (!record(type))
             return value[0];
@@ -137,11 +158,13 @@ class Coverage {
         construct.arguments = value;
         return add(std::move(construct));
     }
+
     NodeId binary(Operation operation, NodeId left, NodeId right, ValueType type = ValueType::f32) {
         Expression expression{Expression::Kind::binary, type, {}, left, right};
         expression.operation = operation;
         return add(std::move(expression));
     }
+
     Value expression(const Function& function, NodeId id, const Flow& flow) {
         const auto& node = function.expressions[id];
         const auto operand = [&](NodeId child) { return expression(function, child, flow); };
@@ -248,6 +271,7 @@ class Coverage {
             throw std::logic_error("Unvalidated coverage expression.");
         }
     }
+
     std::pair<std::uint32_t, std::size_t> target(const Function& function, NodeId id) const {
         const auto& node = function.expressions[id];
         if (node.kind == Expression::Kind::local)
@@ -256,6 +280,7 @@ class Coverage {
         result.second += field_begin(function.expressions[node.left].type, node.offset);
         return result;
     }
+
     void statement(const Function& function, NodeId id, Flow& flow) {
         const auto& node = function.statements[id];
         using Kind = Statement::Kind;
@@ -316,12 +341,14 @@ class Coverage {
             throw std::logic_error("Unvalidated coverage statement.");
         }
     }
+
     Value invoke(const Function& function, std::vector<Value> arguments) {
         Flow flow{std::move(arguments), no_node, {}};
         flow.locals.resize(function.locals.size());
         statement(function, function.body, flow);
         return flow.result;
     }
+
     const std::vector<std::uint64_t>& required(NodeId id) {
         auto& result = required_[id];
         if (!result.empty())
@@ -354,6 +381,7 @@ class Coverage {
         }
         return result;
     }
+
     NodeId emit(NodeId id, Function& function, std::vector<Statement>& statements,
                 std::vector<NodeId>& available) const {
         if (available[id] != no_node)
@@ -431,6 +459,7 @@ class Coverage {
 
 public:
     explicit Coverage(const MaterialModule& material) : material_(material), program_(material.program) {}
+
     Function generate(std::size_t offset) {
         const auto& shade = program_.functions[program_.exports[0]];
         std::vector<Value> arguments;
@@ -468,10 +497,15 @@ public:
 
 class Hlsl {
     const MaterialModule& material_;
+
     const Program& program_;
+
     std::vector<bool> emitted_;
+
     std::string text_;
+
     std::size_t temporary_{};
+
     std::string type(ValueType value) const {
         switch (value.kind) {
         case ValueType::f32:
@@ -500,6 +534,7 @@ class Hlsl {
             throw std::logic_error("Unvalidated material type.");
         }
     }
+
     std::string initial(ValueType value, const std::byte* bytes) const {
         if (value == ValueType{ValueType::record, material_.texture_input})
             return "0u";
@@ -522,6 +557,7 @@ class Hlsl {
         }
         return result + ")";
     }
+
     void initialize_fields(ValueType value, const std::string& path, const std::byte* bytes) {
         if (value.kind != ValueType::record || value.type_index == material_.texture_input ||
             program_.value_layouts[value.type_index].math) {
@@ -531,6 +567,7 @@ class Hlsl {
         for (const auto& field : program_.value_layouts[value.type_index].fields)
             initialize_fields(field.type, path + ".ms_" + field.name, bytes ? bytes + field.offset : nullptr);
     }
+
     void declare_type(ValueType value) {
         if (value.kind != ValueType::record || emitted_[value.type_index])
             return;
@@ -548,6 +585,7 @@ class Hlsl {
         initialize_fields(value, "v", layout.initial_value.data());
         text_ += "return v;\n}\n";
     }
+
     static std::string operation(Operation operation) {
         switch (operation) {
         case Operation::add:
@@ -582,6 +620,7 @@ class Hlsl {
             throw std::logic_error("Unvalidated material operation.");
         }
     }
+
     static std::string intrinsic(MathOperation operation) {
         switch (operation) {
         case MathOperation::dot:
@@ -620,6 +659,7 @@ class Hlsl {
             return {};
         }
     }
+
     std::string expression(const Function& function, NodeId id) const {
         const auto& node = function.expressions[id];
         const auto operand = [&](NodeId value) { return expression(function, value); };
@@ -681,6 +721,7 @@ class Hlsl {
             throw std::logic_error("Unvalidated material expression.");
         }
     }
+
     void statement(const Function& function, NodeId id) {
         const auto& node = function.statements[id];
         using Kind = Statement::Kind;
@@ -722,11 +763,14 @@ class Hlsl {
             throw std::logic_error("Unvalidated material statement.");
         }
     }
+
     bool continuous(ValueType value) const {
         return value.kind == ValueType::f32 ||
                (value.kind == ValueType::record && value.type_index != material_.texture_input);
     }
+
     std::string differential_type(ValueType value) const { return (continuous(value) ? "ms_D" : "") + type(value); }
+
     std::string field_name(const Function& function, const Expression& node) const {
         const auto& layout = program_.value_layouts[function.expressions[node.left].type.type_index];
         const auto field =
@@ -735,6 +779,7 @@ class Hlsl {
             throw std::logic_error("Missing typed material field.");
         return (layout.math ? "" : "ms_") + field->name;
     }
+
     void differential_helpers() {
         // Three ordinary values preserve component locality even in nested
         // records: projecting UV never inspects a sibling normal's changes.
@@ -766,6 +811,7 @@ class Hlsl {
         };
         struct Element {
             const char* name;
+
             std::size_t arity;
         };
         constexpr Element elements[]{{"add", 2}, {"sub", 2},  {"mul", 2},   {"div", 2},  {"neg", 1},   {"sin", 1},
@@ -830,6 +876,7 @@ class Hlsl {
         text_ += "r.v=cross(a.v,b.v); return r; }\n";
         text_ += detail::material_footprint_sample_hlsl;
     }
+
     std::string differential_expression(const Function& function, NodeId id) {
         const auto& node = function.expressions[id];
         const auto emit = [&](const std::string& value) {
@@ -963,6 +1010,7 @@ class Hlsl {
             throw std::logic_error("Unvalidated material footprint expression.");
         }
     }
+
     std::string differential_target(const Function& function, NodeId id, std::string_view part) const {
         const auto& node = function.expressions[id];
         if (node.kind == Expression::Kind::local)
@@ -971,6 +1019,7 @@ class Hlsl {
             return differential_target(function, node.left, part) + "." + field_name(function, node);
         throw std::logic_error("Unvalidated material footprint assignment target.");
     }
+
     void differential_statement(const Function& function, NodeId id) {
         const auto& node = function.statements[id];
         using Kind = Statement::Kind;
@@ -1024,6 +1073,7 @@ class Hlsl {
             throw std::logic_error("Unvalidated material footprint statement.");
         }
     }
+
     std::string signature(std::size_t index, bool footprint = false) const {
         const auto& function = program_.functions[index];
         const auto name = [&](ValueType value) { return footprint ? differential_type(value) : type(value); };
@@ -1034,6 +1084,7 @@ class Hlsl {
         }
         return result + ")";
     }
+
     void load_parameters(ValueType value, const std::string& path, std::size_t offset) {
         if (value == ValueType::f32) {
             text_ += path + " = asfloat(data.Load(base + " + std::to_string(offset) + "u));\n";
@@ -1052,7 +1103,9 @@ class Hlsl {
 public:
     explicit Hlsl(const MaterialModule& material)
         : material_(material), program_(material.program), emitted_(program_.value_layouts.size()) {}
+
     static bool supports(MathOperation operation) { return !intrinsic(operation).empty(); }
+
     std::string generate(bool footprint = false, bool coverage = false) {
         text_ = footprint ? "// Typed Source: center values and two local changes; no implicit derivatives.\n"
                           : "// Generated from typed Source. Sampling is linear-float4, explicit LOD-0.\n";
@@ -1318,6 +1371,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
         return std::unexpected(std::move(diagnostic));
     }
 }
+
 std::string material_hlsl(const MaterialModule& material) {
     // All variants travel through the existing owned HLSL text. No extra JIT
     // callback, Runtime type or DLL ABI is needed for a GPU-only lowering.

@@ -18,11 +18,17 @@ T read_value(const void* data) noexcept {
 // projections are read. No formatting, getters or value copy operations run.
 class SnapshotBuilder {
     Invocation& invocation_;
+
     const DebugMetadata& metadata_;
+
     const DebugOptions& options_;
+
     DebugSnapshot result_;
+
     std::size_t values_{};
+
     std::size_t elements_{};
+
     std::size_t text_bytes_{};
 
     std::string text(std::string_view source, bool* truncated = nullptr) {
@@ -38,21 +44,25 @@ class SnapshotBuilder {
         text_bytes_ += count;
         return std::string{source.substr(0, count)};
     }
+
     SourceLocation source_location(const SourceLocation& source) {
         return {text(source.path), source.version, source.offset, source.line, source.column};
     }
+
     DiagnosticLocation location(std::uint32_t index) {
         if (!metadata_.locations || index >= metadata_.locations->size())
             return {};
         const auto& original = (*metadata_.locations)[index];
         return {text(original.function), source_location(original.source)};
     }
+
     const BoundValue* aggregate_binding(BusinessType type) const noexcept {
         if (!aggregate(type) || type.type_index >= invocation_.binding.values.size())
             return nullptr;
         const auto& value = invocation_.binding.values[type.type_index];
         return value.kind == type.kind ? &value : nullptr;
     }
+
     std::size_t storage_size(BusinessType type) const noexcept {
         switch (type.kind) {
         case ValueKind::boolean:
@@ -70,11 +80,13 @@ class SnapshotBuilder {
         }
         return 0;
     }
+
     std::size_t storage_alignment(BusinessType type) const noexcept {
         if (const auto* value = aggregate_binding(type))
             return value->alignment;
         return storage_size(type);
     }
+
     void identify(DebugValue& value, BusinessType type) {
         value.type = value_type_id(invocation_.binding, type);
         if (value.type == TypeId{})
@@ -82,6 +94,7 @@ class SnapshotBuilder {
         if (const auto info = invocation_.runtime.describe(value.type); info)
             value.type_name = text((*info)->name, &value.truncated);
     }
+
     bool append_child(DebugValue& parent, std::string_view name, BusinessType type, const void* data,
                       std::size_t depth) {
         if (elements_ == options_.max_elements || values_ == options_.max_values)
@@ -94,16 +107,19 @@ class SnapshotBuilder {
         preview(child, type, data, depth);
         return true;
     }
+
     void incomplete(DebugValue& value) noexcept {
         if (value.children.size() < value.total_children) {
             value.truncated = true;
             result_.truncated = true;
         }
     }
+
     void unavailable(DebugValue& value, std::string_view reason) {
         value.state = DebugValueState::unavailable;
         value.text = text(reason, &value.truncated);
     }
+
     void preview(DebugValue& value, BusinessType type, const void* data, std::size_t depth) {
         if (!data || value.type == TypeId{}) {
             unavailable(value, "Storage is unavailable.");
@@ -209,6 +225,7 @@ class SnapshotBuilder {
         }
         incomplete(value);
     }
+
     void reference(DebugValue& value, DebugStorage storage, std::uint32_t slot) {
         value.weak = storage == DebugStorage::weak_reference;
         ObjectReference reference;
@@ -238,6 +255,7 @@ class SnapshotBuilder {
             value.type_name = text((*info)->name, &value.truncated);
         value.object_live = value.object != ObjectId{} && invocation_.runtime.type_of(value.object).has_value();
     }
+
     void local(DebugFrame& frame, const DebugVariableMetadata& variable, const BusinessDebugLocal& storage) {
         ++values_;
         auto& value = frame.locals.emplace_back();
@@ -276,6 +294,7 @@ public:
         result_.stop_id = stop;
         result_.reason = reason;
     }
+
     DebugSnapshot build() {
         for (auto* frame = invocation_.debug_top; frame; frame = frame->previous) {
             if (result_.frames.size() == options_.max_frames) {
@@ -314,6 +333,7 @@ bool contains_activation(const BusinessDebugFrame* frame, std::uint64_t activati
             return true;
     return false;
 }
+
 bool stepping(const DebugSessionState& state, const BusinessDebugFrame& frame, DebugPoint point) noexcept {
     const bool bindable = point == DebugPoint::entry || point == DebugPoint::statement;
     switch (state.action) {
@@ -349,6 +369,7 @@ std::uint32_t debug_enter(void* context, BusinessDebugFrame* frame) noexcept {
     invocation.debug_top = frame;
     return 0;
 }
+
 std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_t location, DebugPoint point,
                           EntryFailure failure) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
@@ -449,6 +470,7 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
     // Inspecting the first failure can never resume its failed instruction.
     return point == DebugPoint::error ? 1 : 0;
 }
+
 void debug_leave(void* context, BusinessDebugFrame* frame) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     if (frame && invocation.debug_top == frame) {

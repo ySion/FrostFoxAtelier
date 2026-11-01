@@ -18,19 +18,29 @@ public:
         for (std::size_t i = 3; i < pixels_.size(); i += 4)
             has_alpha_ |= pixels_[i] != 255;
     }
+
     Image& operator=(const Image&) = delete;
+
     Image& operator=(Image&&) = delete;
+
     std::uint32_t width() const noexcept { return width_; }
+
     std::uint32_t height() const noexcept { return height_; }
+
     std::span<const std::uint8_t> pixels() const noexcept { return pixels_; }
+
     bool has_alpha() const noexcept { return has_alpha_; }
 
 private:
     std::uint32_t width_;
+
     std::uint32_t height_;
+
     std::vector<std::uint8_t> pixels_;
+
     bool has_alpha_{};
 };
+
 using ImageRef = std::shared_ptr<const Image>;
 
 } // namespace atelier::material

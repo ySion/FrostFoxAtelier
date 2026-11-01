@@ -9,10 +9,15 @@
 
 extern "C" {
 double cr_sin(double);
+
 double cr_cos(double);
+
 double cr_exp(double);
+
 double cr_log(double);
+
 double cr_atan2(double, double);
+
 double cr_pow(double, double);
 }
 
@@ -22,9 +27,12 @@ namespace atelier::math_reference {
 // gives 1, NaN and x < 0 give NaN, and -0 counts as +0.
 struct Function {
     std::string_view name;
+
     bool binary;
+
     double (*value)(double, double);
 };
+
 inline constexpr Function functions[] = {
     {"sin", false, [](double x, double) { return cr_sin(x); }},
     {"cos", false, [](double x, double) { return cr_cos(x); }},
@@ -40,6 +48,7 @@ inline constexpr Function functions[] = {
          return cr_pow(std::fabs(x), y);
      }},
 };
+
 // sin and cos are accurate up to this magnitude; beyond it they only promise a finite result of magnitude at most 1.
 inline constexpr double periodic_limit = 0x1p40;
 

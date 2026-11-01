@@ -21,14 +21,21 @@ void append(std::string& key, const T& value) {
 // A PointNode type's Source evaluate, bound for one program revision.
 struct Code {
     enum class Use : std::uint8_t { context, read, write };
+
     struct Parameter {
         Use use;
+
         String name; // The point column, unless the context.
+
         std::size_t column{}; // ColumnData alternative.
     };
+
     source::Program::Entry entry;
+
     std::uint64_t identity{}; // Changes whenever the compiled code may behave differently.
+
     bool context{};
+
     std::vector<Parameter> parameters;
 };
 
@@ -51,6 +58,7 @@ Result<void> prepare_column(Geometry& geometry, const Code::Parameter& parameter
         return failure("The input has no point attribute " + std::string{parameter.name.view().std_view()} + ".");
     return {};
 }
+
 template <std::size_t I>
 Argument borrow_column(Geometry& geometry, const Code::Parameter& parameter) {
     using T = typename ColumnArray<I>::Value;
@@ -59,25 +67,36 @@ Argument borrow_column(Geometry& geometry, const Code::Parameter& parameter) {
         return Argument::borrow(**geometry.write<T>(parameter.name, Layer::point));
     return Argument::borrow(**geometry.read<T>(parameter.name, Layer::point));
 }
+
 struct ColumnAccess {
     Result<void> (*prepare)(Geometry&, const Code::Parameter&);
+
     Argument (*borrow)(Geometry&, const Code::Parameter&);
 };
+
 template <std::size_t... I>
 constexpr std::array<ColumnAccess, sizeof...(I)> column_accessors(std::index_sequence<I...>) {
     return {ColumnAccess{&prepare_column<I>, &borrow_column<I>}...};
 }
+
 constexpr auto accessors = column_accessors(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
 
 // One evaluation of one node. Keys are exact byte strings, so equal keys mean equal contents.
 struct Entry {
     std::string key;
+
     std::uint64_t serial{}; // Unique per evaluation; downstream keys use it.
+
     std::vector<Geometry> outputs;
+
     std::vector<Reference> dependencies; // Resources read, with what they resolved to.
+
     std::uint64_t revision{}; // Resources revision the dependencies were confirmed at.
+
     std::size_t bytes{};
+
     bool cached{};
+
     std::list<Entry*>::iterator recent; // Valid while cached.
 };
 
@@ -86,38 +105,67 @@ struct Entry {
 struct Evaluator::Impl {
     struct State {
         TypeId type;
+
         const Ports* ports{};
+
         std::string local; // Type and public field contents.
+
         std::vector<Input> inputs;
+
         std::optional<Error> fault; // Reading or keying the node failed.
+
         std::shared_ptr<Entry> entry; // The node's current result.
+
         std::string failed; // Key of the last failed evaluation, at failed_revision.
+
         std::uint64_t failed_revision{};
+
         Error failure;
+
         NodeStatus status;
     };
 
     Runtime& runtime;
+
     ObjectRoot graph;
+
     const Resources& resources;
+
     const source::Program* program;
+
     std::size_t budget;
+
     const Geometry empty;
+
     std::optional<std::uint64_t> cursor;
+
     std::uint64_t revision{};
+
     std::uint64_t code_revision{}; // Of the program, when `sources` was bound.
+
     std::uint32_t seed{};
+
     ObjectId display;
+
     std::vector<ObjectId> members;
+
     std::unordered_map<ObjectId, State> nodes;
+
     std::unordered_map<TypeId, Result<Ports>> types;
+
     std::unordered_map<TypeId, Result<Code>> sources; // PointNode types.
+
     std::array<TypeId, std::variant_size_v<ColumnData>>
         columns{}; // Array type per column alternative; null for String.
+
     std::unordered_map<std::string, std::shared_ptr<Entry>> cache;
+
     std::list<Entry*> recent; // Most recently used first.
+
     std::size_t cached_bytes{};
+
     std::uint64_t serials{};
+
     std::shared_ptr<Entry> published;
 
     Impl(Runtime& owner, ObjectRoot root, const Resources& host, const source::Program* code, std::size_t bytes)
@@ -259,12 +307,14 @@ struct Evaluator::Impl {
         if (entry.cached)
             recent.splice(recent.begin(), recent, entry.recent);
     }
+
     void uncache(Entry& entry) {
         entry.cached = false;
         cached_bytes -= entry.bytes;
         recent.erase(entry.recent);
         cache.erase(cache.find(entry.key)); // May release the entry; touch nothing after this.
     }
+
     void store(const std::shared_ptr<Entry>& entry) {
         if (auto old = cache.find(entry->key); old != cache.end())
             uncache(*old->second);
@@ -500,6 +550,7 @@ struct Evaluator::Impl {
             return result;
         struct Frame {
             ObjectId id;
+
             std::size_t next;
         };
         std::unordered_map<ObjectId, bool> finished; // false while on the path.
@@ -591,6 +642,7 @@ struct Evaluator::Impl {
 Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program,
                      std::size_t cache_bytes)
     : impl_(std::make_unique<Impl>(runtime, std::move(graph), resources, program, cache_bytes)) {}
+
 Evaluator::~Evaluator() = default;
 
 Result<void> Evaluator::evaluate(bool record_timings) {

@@ -8,11 +8,17 @@
 namespace atelier::editor {
 namespace {
 using V2 = math::Vector2;
+
 using V3 = math::Vector3;
+
 using Handle = ViewportTool::Handle;
+
 using Shape = renderer::OverlayShape;
+
 constexpr float pi = std::numbers::pi_v<float>;
+
 constexpr std::array<V3, 3> axes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+
 // Houdini handle palette, sampled from the Move/Rotate/Scale handles: #ff1414 / #14ff14 / #1414ff, #ffd900 when picked.
 // ui::Color is linear; reference colours are sampled as sRGB bytes.
 ui::Color srgb(int r, int g, int b, float a = 1) {
@@ -22,23 +28,30 @@ ui::Color srgb(int r, int g, int b, float a = 1) {
     };
     return {f(r), f(g), f(b), a};
 }
+
 const std::array<ui::Color, 3> colors{srgb(0xff, 0x14, 0x14), srgb(0x14, 0xff, 0x14), srgb(0x14, 0x14, 0xff)};
+
 const ui::Color picked = srgb(0xff, 0xd9, 0x00);
+
 auto invalid(const char* text) {
     return std::unexpected(Error{ErrorCode::invalid_definition, text});
 }
+
 float length(V2 v) {
     return std::hypot(v.x, v.y);
 }
+
 float distance(V2 p, V2 a, V2 b) {
     const auto d = b - a;
     const auto square = math::dot(d, d);
     return length(p - (a + d * (square > 0 ? std::clamp(math::dot(p - a, d) / square, 0.f, 1.f) : 0.f)));
 }
+
 math::Quaternion rotation(V3 axis, float angle) {
     const auto s = std::sin(angle * .5f);
     return {axis.x * s, axis.y * s, axis.z * s, std::cos(angle * .5f)};
 }
+
 math::Quaternion frame_rotation(V3 x, V3 y, V3 z) {
     const float trace = x.x + y.y + z.z;
     math::Quaternion q;
@@ -57,6 +70,7 @@ math::Quaternion frame_rotation(V3 x, V3 y, V3 z) {
     }
     return math::try_normalize(q).value_or(math::Quaternion{});
 }
+
 std::optional<V3> on_plane(const ViewportView& view, V2 point, V3 origin, V3 normal) {
     const auto ray = view.ray(point.x, point.y);
     const auto denominator = math::dot(ray.direction, normal);
@@ -67,6 +81,7 @@ std::optional<V3> on_plane(const ViewportView& view, V2 point, V3 origin, V3 nor
         return {};
     return ray.origin + ray.direction * t;
 }
+
 // Drawing and hit testing visit exactly the same physical geometry. Proportions
 // follow Houdini 22's object handles at 1x: 1 px axis lines reaching ~84 px,
 // solid 15 px tip markers, outlined plane diamonds at 0.3 of the axis, and a
@@ -74,6 +89,7 @@ std::optional<V3> on_plane(const ViewportView& view, V2 point, V3 origin, V3 nor
 math::Quaternion transform_basis(math::Quaternion frame, Orientation orientation) noexcept {
     return orientation == Orientation::local ? frame : math::Quaternion{};
 }
+
 template <class Emit>
 void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, Orientation requested,
              TransformTool tool, Emit emit) {
@@ -180,11 +196,15 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
     else if (tool != TransformTool::rotate)
         box(Handle::move_view, *center, 7, srgb(0xee, 0xee, 0xe6));
 }
+
 struct TriangleHit {
     float distance;
+
     float u;
+
     float v;
 };
+
 std::optional<TriangleHit> triangle(const ViewportView::Ray& ray, V3 a, V3 b, V3 c) {
     const auto edge1 = b - a;
     const auto edge2 = c - a;
@@ -217,6 +237,7 @@ math::Vector3 euler_degrees(math::Quaternion value) noexcept {
             float(y * degrees),
             float(std::atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)) * degrees)};
 }
+
 math::Quaternion from_euler_degrees(math::Vector3 value) noexcept {
     const auto axis_rotation = [](V3 axis, double degrees) {
         const auto half_angle = degrees * std::numbers::pi / 360;
@@ -226,6 +247,7 @@ math::Quaternion from_euler_degrees(math::Vector3 value) noexcept {
     const auto q = axis_rotation(axes[2], value.z) * axis_rotation(axes[1], value.y) * axis_rotation(axes[0], value.x);
     return {float(q.x), float(q.y), float(q.z), float(q.w)};
 }
+
 ViewportView ViewportView::make(const Camera& camera, ui::Rect bounds, float dpi) {
     ViewportView result;
     result.bounds = bounds;
@@ -246,9 +268,11 @@ ViewportView ViewportView::make(const Camera& camera, ui::Rect bounds, float dpi
     result.up = math::cross(result.forward, result.right);
     return result;
 }
+
 bool ViewportView::contains(float x, float y) const noexcept {
     return x >= bounds.x && y >= bounds.y && x < bounds.x + bounds.width && y < bounds.y + bounds.height;
 }
+
 std::optional<V2> ViewportView::project(V3 p) const noexcept {
     const auto clip = math::Vector4{p.x, p.y, p.z, 1} * view * projection;
     if (!math::is_finite(clip) || clip.w <= 0 || clip.z < far_depth * clip.w || clip.z > clip.w)
@@ -256,6 +280,7 @@ std::optional<V2> ViewportView::project(V3 p) const noexcept {
     return V2{bounds.x + (clip.x / clip.w + 1) * bounds.width * .5f,
               bounds.y + (1 - clip.y / clip.w) * bounds.height * .5f};
 }
+
 ViewportView::Ray ViewportView::ray(float x, float y) const noexcept {
     const double nx = 2 * (x - bounds.x) / std::max(bounds.width, 1.f) - 1;
     const double ny = 1 - 2 * (y - bounds.y) / std::max(bounds.height, 1.f);
@@ -266,10 +291,12 @@ ViewportView::Ray ViewportView::ray(float x, float y) const noexcept {
                       V3{float(far.x / far.w) - near.x, float(far.y / far.w) - near.y, float(far.z / far.w) - near.z})
                       .value_or(forward)};
 }
+
 float ViewportView::pixel_size(V3 at) const noexcept {
     return (orthographic ? 1.f : std::max(math::dot(at - eye, forward), .05f)) * 2 /
            (std::max(bounds.height, 1.f) * projection[5]);
 }
+
 namespace {
 Result<world::Trs> viewport_frame(const Session& session, ObjectId entity, const math::Matrix4& matrix,
                                   std::optional<world::Trs> authored = {}) {
@@ -300,6 +327,7 @@ Result<world::Trs> viewport_frame(const Session& session, ObjectId entity, const
     return world::canonical_transform(*value);
 }
 }
+
 std::optional<ViewportTool::Targets> ViewportTool::targets(const Session& session, std::span<const ObjectId> entities,
                                                            ObjectId active, PivotMode mode, V3 cursor) {
     Targets result;
@@ -338,6 +366,7 @@ std::optional<ViewportTool::Targets> ViewportTool::targets(const Session& sessio
     result.pivot = mode == PivotMode::cursor ? cursor : result.pivot / float(result.entities.size());
     return result;
 }
+
 Result<void> ViewportTool::preview_world(Session& session, std::uint64_t token, std::span<const ObjectId> entities,
                                          std::span<const world::Trs> values, bool local_scale) {
     std::vector<world::Trs> local;
@@ -411,6 +440,7 @@ Result<void> ViewportTool::preview_world(Session& session, std::uint64_t token, 
     }
     return session.preview_transform(token, local);
 }
+
 ViewportTool::Handle ViewportTool::hit(const ViewportView& view, const Targets& selected, TransformTool tool, V2 p,
                                        Orientation orientation) const {
     Handle best = Handle::none;
@@ -431,12 +461,14 @@ ViewportTool::Handle ViewportTool::hit(const ViewportView& view, const Targets& 
             });
     return best;
 }
+
 std::optional<ObjectId> ViewportTool::pick(const Session& session, const ViewportView& view, float x, float y) const {
     if (!view.scene || view.scene->scene_identity != session.presentation().identity())
         return {};
     const auto found = trace(view, x, y, true);
     return found ? std::optional(found->entity) : std::nullopt;
 }
+
 std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, float x, float y, bool locators) {
     if (!view.scene)
         return {};
@@ -547,6 +579,7 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, f
     }
     return found;
 }
+
 Result<void> ViewportTool::place_cursor(const ViewportView& view, V2 p, ToolSettings settings, bool control) {
     std::optional<V3> position;
     V3 normal = view.construction_normal;
@@ -579,6 +612,7 @@ Result<void> ViewportTool::place_cursor(const ViewportView& view, V2 p, ToolSett
     hint_ = L"3D Cursor placed · Right click selects · W opens the viewport menu";
     return {};
 }
+
 TransformTool ViewportTool::displayed_tool(ToolSettings settings) const noexcept {
     if (gesture_)
         return gesture_->operation == Operation::move     ? TransformTool::move
@@ -586,10 +620,12 @@ TransformTool ViewportTool::displayed_tool(ToolSettings settings) const noexcept
                                                           : TransformTool::scale;
     return marquee_ ? TransformTool::select : settings.tool;
 }
+
 void ViewportTool::cursor_to_grid(ToolSettings settings) noexcept {
     for (int axis = 0; axis < 3; ++axis)
         cursor[axis] = std::round(cursor[axis] / settings.grid_spacing) * settings.grid_spacing;
 }
+
 Result<void> ViewportTool::cursor_to_selection(const Session& session, std::span<const ObjectId> entities) {
     const auto selected = targets(session, entities, {}, PivotMode::median, cursor);
     if (!selected)
@@ -597,6 +633,7 @@ Result<void> ViewportTool::cursor_to_selection(const Session& session, std::span
     cursor = selected->pivot;
     return {};
 }
+
 Result<void> ViewportTool::snap_selection(Session& session, std::span<const ObjectId> entities, ToolSettings settings,
                                           std::optional<V3> destination) {
     const auto selected = targets(session, entities, {}, PivotMode::median, cursor);
@@ -620,6 +657,7 @@ Result<void> ViewportTool::snap_selection(Session& session, std::span<const Obje
     const auto cancelled = session.cancel_edit();
     return cancelled ? result : cancelled;
 }
+
 std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const ViewportView& view, ui::Rect box) const {
     std::vector<ObjectId> found;
     if (!view.scene || view.scene->scene_identity != session.presentation().identity())
@@ -656,6 +694,7 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const Viewp
     }
     return found;
 }
+
 // Shift/Ctrl keep their Blender meaning on top of the header mode: Shift toggles
 // (extend/remove), Ctrl subtracts; with neither, the header mode decides.
 Result<void> ViewportTool::combine(Session& session, std::span<const ObjectId> hits, ObjectId active, SelectMode mode) {
@@ -676,6 +715,7 @@ Result<void> ViewportTool::combine(Session& session, std::span<const ObjectId> h
         active = selected.empty() ? ObjectId{} : selected.back();
     return session.select_entities(selected, active);
 }
+
 Result<void> ViewportTool::select_click(Session& session, const ViewportView& view, V2 p, ToolSettings settings,
                                         bool shift, bool control) {
     const auto object = pick(session, view, p.x, p.y);
@@ -688,6 +728,7 @@ Result<void> ViewportTool::select_click(Session& session, const ViewportView& vi
         hits.push_back(*object);
     return combine(session, hits, object.value_or(ObjectId{}), mode);
 }
+
 Result<void> ViewportTool::select_box(Session& session, const ViewportView& view, ToolSettings settings,
                                       const Marquee& marquee) {
     const auto a = marquee.start;
@@ -699,6 +740,7 @@ Result<void> ViewportTool::select_box(Session& session, const ViewportView& view
                                       : settings.select_mode;
     return combine(session, hits, hits.empty() ? ObjectId{} : hits.back(), mode);
 }
+
 Result<void> ViewportTool::select_all(Session& session, std::span<const ObjectId> selected, SelectAll action) {
     const auto items = session.world().members();
     if (!items)
@@ -715,18 +757,21 @@ Result<void> ViewportTool::select_all(Session& session, std::span<const ObjectId
     hint_ = all.empty() ? L"Deselect All" : action == SelectAll::invert ? L"Invert Selection" : L"Select All";
     return session.select_entities(all, all.empty() ? ObjectId{} : all.back());
 }
+
 void ViewportTool::arm_box_select(V2 pointer, bool extend) {
     if (active())
         return;
     marquee_ = Marquee{pointer, pointer, false, extend, false, true};
     hint_ = L"Box select · Drag to select · Esc cancel";
 }
+
 Result<void> ViewportTool::place_duplicates(Session& session, const ViewportView& view, ToolSettings settings,
                                             V2 pointer) {
     if (!targets(session, session.selected_entities(), session.selection().entity, settings.pivot, cursor))
         return {}; // Nonspatial Entities still duplicate normally.
     return begin(session, view, settings, Operation::move, Handle::none, true, pointer, true);
 }
+
 Result<void> ViewportTool::begin(Session& session, const ViewportView&, ToolSettings settings, Operation operation,
                                  Handle handle, bool modal, V2 p, bool amend_creation) {
     if (active())
@@ -762,9 +807,11 @@ Result<void> ViewportTool::begin(Session& session, const ViewportView&, ToolSett
     hint_ = L"X/Y/Z constrain · Ctrl snap · Enter confirm · Esc cancel";
     return {};
 }
+
 math::Quaternion ViewportTool::Gesture::basis() const noexcept {
     return transform_basis(active_frame.rotation, orientation());
 }
+
 Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2 p, bool snap, bool fine) {
     auto& g = *gesture_;
     g.valid = false;
@@ -904,6 +951,7 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
     hint_ = g.typed.empty() ? readout : readout + L"  [" + g.typed + L"|]";
     return {};
 }
+
 Result<void> ViewportTool::clear_channel(Session& session, std::span<const ObjectId> entities, Operation channel) {
     const auto selected = targets(session, entities, {}, PivotMode::median, cursor);
     if (!selected)
@@ -938,6 +986,7 @@ Result<void> ViewportTool::clear_channel(Session& session, std::span<const Objec
                                            : L"Clear Scale";
     return {};
 }
+
 Result<void> ViewportTool::finish(Session& session) {
     if (!gesture_)
         return {};
@@ -951,6 +1000,7 @@ Result<void> ViewportTool::finish(Session& session) {
     hint_.clear();
     return {};
 }
+
 Result<void> ViewportTool::cancel(Session& session) {
     if (gesture_ && session.owns_edit(gesture_->session)) {
         auto result = session.cancel_edit();
@@ -963,6 +1013,7 @@ Result<void> ViewportTool::cancel(Session& session) {
     hint_.clear();
     return {};
 }
+
 void ViewportTool::forget(const Session& session) noexcept {
     if (gesture_ && !session.owns_edit(gesture_->session)) {
         gesture_.reset();
@@ -970,6 +1021,7 @@ void ViewportTool::forget(const Session& session) noexcept {
         hint_.clear();
     }
 }
+
 ui::Cursor ViewportTool::pointer_cursor() const noexcept {
     if (marquee_)
         return ui::Cursor::crosshair;
@@ -983,6 +1035,7 @@ ui::Cursor ViewportTool::pointer_cursor() const noexcept {
            : hover_ >= Handle::rotate_x ? ui::Cursor::rotate
                                         : ui::Cursor::translate;
 }
+
 Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, const ui::Event& event,
                                    ToolSettings settings) {
     const V2 p{event.x, event.y};
@@ -1093,6 +1146,7 @@ Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, c
     }
     return false;
 }
+
 Result<bool> ViewportTool::key(Session& session, const ViewportView& view, const ui::Event& event, std::uint32_t vk,
                                ToolSettings settings, V2 pointer) {
     if (active() && event.kind == ui::EventKind::key_down && event.key == ui::Key::escape) {
@@ -1160,6 +1214,7 @@ Result<bool> ViewportTool::key(Session& session, const ViewportView& view, const
     }
     return false;
 }
+
 void ViewportTool::overlay(const Session& session, const ViewportView& view, ToolSettings settings,
                            std::vector<Shape>& out) const {
     const auto stroke = [&](V2 a, V2 b, float width, ui::Color color) {
@@ -1260,7 +1315,9 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
         const V2 origin{view.bounds.x + 40 * scale, view.bounds.y + view.bounds.height - 62 * scale};
         struct Arm {
             int axis;
+
             V2 tip;
+
             float depth;
         };
         std::array<Arm, 3> arms{};

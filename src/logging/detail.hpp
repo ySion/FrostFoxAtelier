@@ -10,20 +10,31 @@
 namespace atelier::logging::detail {
 struct FrontendOptions : quill::FrontendOptions {
     static constexpr auto queue_type = quill::QueueType::BoundedDropping;
+
     static constexpr std::size_t initial_queue_capacity = producer_queue_bytes;
 };
+
 using Logger = quill::LoggerImpl<FrontendOptions>;
+
 struct Ticket {
     SubmitResult result;
+
     Logger* logger{};
+
     std::string envelope;
 };
+
 // Only the resident host defines metadata and admission/health ownership.
 const quill::MacroMetadata* metadata() noexcept;
+
 void prepare(Ticket& ticket, const Entry& entry, bool message_is_template);
+
 SubmitResult complete(SubmitResult result, SubmitStatus status) noexcept;
+
 SubmitResult internal_failure(SubmitResult result, bool allocation) noexcept;
+
 bool valid_utf8(std::string_view text) noexcept;
+
 quill::LogLevel quill_level(Severity severity) noexcept;
 
 template <class T>
@@ -38,6 +49,7 @@ auto argument(const T& value) {
     } else
         return value;
 }
+
 template <class T>
 bool valid_argument(const T& value) noexcept {
     if constexpr (std::is_same_v<T, std::string_view>)

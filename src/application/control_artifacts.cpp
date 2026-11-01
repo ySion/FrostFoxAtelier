@@ -19,35 +19,43 @@
 namespace atelier::application::control_artifacts {
 namespace {
 using control::Json;
+
 using control::Failure;
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw Failure("storage_error", value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw Failure("storage_error", value.error().message);
 }
+
 void checkpoint(const std::atomic_bool& cancelled) {
     if (cancelled.load())
         throw Failure("cancelled", "Artifact export cancelled");
 }
+
 void write(const std::filesystem::path& path, std::string_view bytes) {
     const auto native = platform::windows_file_path(path);
     std::filesystem::create_directories(native.parent_path());
     take(editor::write_file(native, bytes, editor::WriteMode::create));
 }
+
 std::string path_text(const std::filesystem::path& path) {
     return control::utf8(path.generic_wstring());
 }
+
 bool generated_cache(const std::filesystem::path& relative) {
     auto part = relative.begin();
     if (part == relative.end() || *part++ != L"Project")
         return false;
     return part != relative.end() && *part == L"Cache";
 }
+
 Json engine_source_hashes(std::span<const language::SourceFile> files) {
     auto hashes = Json::object();
     for (const auto& file : files)
@@ -55,6 +63,7 @@ Json engine_source_hashes(std::span<const language::SourceFile> files) {
             hashes[file.path] = control::sha256(std::as_bytes(std::span(file.source)));
     return hashes;
 }
+
 std::string mesh_hash(const assets::MeshAsset& asset) try {
     auto digest = assets::mesh_content_sha256(asset);
     if (!digest)
@@ -65,6 +74,7 @@ std::string mesh_hash(const assets::MeshAsset& asset) try {
 } catch (const std::exception& error) {
     throw Failure("storage_error", error.what());
 }
+
 assets::EngineDependency installed_asset(std::string_view key, assets::AssetKind kind) try {
     auto result = assets::Reader{}.engine_dependency(key, kind);
     if (!result)
@@ -75,6 +85,7 @@ assets::EngineDependency installed_asset(std::string_view key, assets::AssetKind
 } catch (const std::exception& error) {
     throw Failure("storage_error", error.what());
 }
+
 Json engine_assets_json(std::span<const assets::EngineDependency> assets) {
     auto records = Json::array();
     for (const auto& asset : assets)
@@ -85,6 +96,7 @@ Json engine_assets_json(std::span<const assets::EngineDependency> assets) {
                            {"content_sha256", asset.content_sha256}});
     return {{"version", 1}, {"records", std::move(records)}};
 }
+
 std::vector<assets::EngineDependency> installed_assets(const Json& manifest) {
     if (!manifest.contains("engine_assets"))
         throw Failure("invalid_request", "Repro lacks engine assets; export it again");
@@ -132,6 +144,7 @@ std::vector<assets::EngineDependency> installed_assets(const Json& manifest) {
     std::ranges::sort(result, {}, &assets::EngineDependency::key);
     return result;
 }
+
 const Json& material_records(const Json& manifest) {
     const auto at = manifest.find("material_resources");
     if (at == manifest.end() || !at->is_object())
@@ -150,10 +163,12 @@ const Json& material_records(const Json& manifest) {
     }
     return *at;
 }
+
 std::string string_field(const Json& object, const char* name) {
     const auto at = object.find(name);
     return at != object.end() && at->is_string() ? at->get<std::string>() : std::string{};
 }
+
 // Only schema resource slots are references. Do not inspect arbitrary strings,
 // cached drafts, copied files or unknown extension properties.
 template <class Reference>
@@ -175,6 +190,7 @@ void scene_references(const Json& scene, const Reference& reference) {
                         reference(assets::AssetKind::sky, string_field(component, "sky_map"));
                     }
 }
+
 // Only inspect published Scene resource slots and their mesh defaults/material
 // inputs, never all copied files. The strict loader still owns project failures;
 // this preflight identifies invalid engine keys before it can reject the load.
@@ -266,6 +282,7 @@ void preflight_resources(editor::Project& project, const Json& scene) {
             }
     }
 }
+
 Json image_content(const material::ImageRef& image) {
     if (!image)
         return nullptr;
@@ -273,10 +290,12 @@ Json image_content(const material::ImageRef& image) {
             {"height", image->height()},
             {"rgba_sha256", control::sha256(std::as_bytes(image->pixels()))}};
 }
+
 std::string json_hash(const Json& value) {
     const auto bytes = value.dump();
     return control::sha256(std::as_bytes(std::span(bytes)));
 }
+
 std::string source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
     // The installed MS producer's versioned author/text encoding, not a runtime
     // program hash. Project/scene records additionally digest the input pixels.
@@ -287,6 +306,7 @@ std::string source_material_hash(const assets::MaterialAsset& asset, const langu
                       {"source_path", file.path},
                       {"source", file.source}});
 }
+
 std::string sky_hash(const rendering::SkyMap& map) {
     const auto bytes = Json{{"width", map.width()},
                             {"height", map.height()},
@@ -297,13 +317,16 @@ std::string sky_hash(const rendering::SkyMap& map) {
                            .dump();
     return control::sha256(std::as_bytes(std::span(bytes)));
 }
+
 struct Com {
     Com() {
         if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
             throw Failure("storage_error", "Cannot initialize image encoder");
     }
+
     ~Com() { CoUninitialize(); }
 };
+
 void png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba,
          const std::filesystem::path& path) {
     using Microsoft::WRL::ComPtr;
@@ -336,6 +359,7 @@ void png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t
     hr(frame->Commit());
     hr(encoder->Commit());
 }
+
 void finish(const std::filesystem::path& directory, Json& manifest, const std::atomic_bool& cancel) {
     checkpoint(cancel);
     auto files = Json::array();
@@ -355,6 +379,7 @@ void finish(const std::filesystem::path& directory, Json& manifest, const std::a
     write(directory / "manifest.json", encoded);
 }
 }
+
 Repro snapshot_resources(const editor::Session& document) try {
     Repro data;
     data.scene = take(document.serialize());
@@ -542,6 +567,7 @@ Repro snapshot_resources(const editor::Session& document) try {
 } catch (const std::exception& error) {
     throw Failure("storage_error", error.what());
 }
+
 void validate_candidate_assets(const editor::Session& candidate, const Json& manifest) {
     const auto expected = installed_assets(manifest);
     const auto actual = snapshot_resources(candidate);
@@ -555,6 +581,7 @@ void validate_candidate_assets(const editor::Session& candidate, const Json& man
         throw Failure("dependency_mismatch",
                       "Repro material author, Source, parent or input pixels differ from the frozen content");
 }
+
 Json export_repro(const std::filesystem::path& output, Repro data, const std::atomic_bool& cancel) {
     checkpoint(cancel);
     std::optional<Com> com;
@@ -825,6 +852,7 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
             {"manifest", path_text(output / "manifest.json")},
             {"project", path_text(output / "Project")}};
 }
+
 Json validate_repro(const std::filesystem::path& input) {
     const auto directory = platform::windows_file_path(input);
     const auto text = take(assets::read_file(directory / "manifest.json"));
@@ -887,6 +915,7 @@ Json validate_repro(const std::filesystem::path& input) {
     preflight_resources(project, assets::json_format::parse(take(assets::read_file(scene))));
     return manifest;
 }
+
 Json write_samples(const std::filesystem::path& output, std::vector<Sample> samples, Json manifest,
                    const std::atomic_bool& cancel) {
     const auto directory = platform::windows_file_path(output);

@@ -9,73 +9,101 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view text, std::string_view entry = "run") {
     auto candidate = take(Program::prepare(take(program.request("foundations.source", text, entry))));
     take(program.try_publish(candidate));
 }
+
 template <class T>
 T result(Result<std::optional<Scalar>> value) {
     return std::get<T>(*take(std::move(value)));
 }
+
 struct Work {
     static inline std::uint32_t live{};
+
     static inline std::uint32_t destroyed{};
+
     String label;
+
     Work() { ++live; }
+
     Work(const Work& other) : label(other.label) { ++live; }
+
     Work& operator=(const Work&) = default;
+
     ~Work() noexcept {
         --live;
         ++destroyed;
     }
 };
+
 static_assert(std::is_standard_layout_v<Work>);
+
 struct Host {
     bool enabled{};
+
     bool before{true};
+
     bool after{true};
+
     std::uint32_t guard{0xa55aa55a};
+
     std::uint32_t calls{};
+
     bool alias(bool copy, const bool& read, bool& write) {
         write = copy;
         return read;
     }
+
     bool touch(bool value) {
         ++calls;
         return value;
     }
+
     bool text(const String& value) {
         ++calls;
         return value.size() != 0;
     }
+
     bool fail() {
         ++calls;
         throw std::runtime_error("foundation first failure");
     }
+
     std::uint32_t live_count() const noexcept { return Work::live; }
+
     std::uint32_t get_next() noexcept { return ++calls; }
+
     std::uint32_t get_guard() const noexcept { return guard; }
+
     void set_guard(std::uint32_t value) {
         if (value > 100)
             throw std::runtime_error("guard rejected");
         guard = value;
     }
 };
+
 TypeId register_foundations(Runtime& runtime) {
     auto work = NativeRegistration<Work>{runtime, "foundation.Work", TypeKind::record}
                     .field<&Work::label>("label", {TypeReference::native<String>()}, offsetof(Work, label))
@@ -101,12 +129,14 @@ TypeId register_foundations(Runtime& runtime) {
          array_definition<bool>(runtime, "foundation.Bools")}));
     return types[0];
 }
+
 const FieldInfo& field(const TypeInfo& type, std::string_view name) {
     for (const auto& value : type.fields)
         if (value.name == name)
             return value;
     throw std::runtime_error("Missing foundation source field.");
 }
+
 void collect(Runtime& runtime) {
     while (runtime.collection_phase() != CollectionPhase::idle)
         take(runtime.collect_step({4096}));
@@ -341,8 +371,11 @@ void verify_boolean_storage() {
     const auto alias_entry = take(aliases.bind<bool, bool, const bool&, bool&>());
     struct Guarded {
         bool value{};
+
         bool before{true};
+
         bool after{true};
+
         std::uint32_t guard{0xdeadbeef};
     } guarded;
     const std::array alias_arguments{Argument{Scalar{true}}, Argument::borrow(std::as_const(guarded.value)),

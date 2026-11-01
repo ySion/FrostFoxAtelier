@@ -4,10 +4,14 @@
 namespace atelier::source {
 struct CompileOptions {
     bool diagnostics{};
+
     bool artifacts{};
+
     bool debugging{};
+
     bool operator==(const CompileOptions&) const = default;
 };
+
 enum class DiagnosticCall : std::uint32_t {
     begin,
     finish,
@@ -30,8 +34,10 @@ enum class DiagnosticCall : std::uint32_t {
     debug_hook,
     count
 };
+
 struct DiagnosticCounters {
     std::uint64_t values[static_cast<std::uint32_t>(DiagnosticCall::count)]{};
+
     std::uint64_t operator[](DiagnosticCall kind) const noexcept { return values[static_cast<std::uint32_t>(kind)]; }
 };
 }

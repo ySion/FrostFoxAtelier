@@ -8,6 +8,7 @@ namespace atelier::ui {
 namespace {
 struct Run {
     std::uint16_t count;
+
     std::uint8_t alpha;
 };
 #include "ui/icon_data.inl"
@@ -97,6 +98,7 @@ std::span<const Run> data(Icon icon) {
     throw std::invalid_argument("Unknown UI icon");
 }
 }
+
 void raster_icon(Icon icon, std::uint32_t pixels, std::span<std::uint8_t> alpha) {
     if (!pixels || pixels > 256 || alpha.size() != std::size_t(pixels) * pixels)
         throw std::invalid_argument("Invalid UI icon raster extent");

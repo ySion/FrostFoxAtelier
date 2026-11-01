@@ -10,23 +10,28 @@
 namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void complete(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 constexpr char plane_vs[] = R"(
+
 float plane_base; float plane_slope;
 float4 main(uint id : SV_VertexID) : SV_Position {
     float2 p = id == 0 ? float2(-1,-1) : id == 1 ? float2(-1,3) : float2(3,-1);
     return float4(p, plane_base + plane_slope * (p.x * .5 + .5), 1);
 })";
 constexpr char plane_ms[] = R"(
+
 float plane_base; float plane_slope;
 struct Vertex { float4 position : SV_Position; };
 [outputtopology("triangle")][numthreads(1,1,1)]
@@ -48,15 +53,18 @@ PipelineDesc depth_desc(PipelineKind kind) {
     check(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
     return desc;
 }
+
 void set_plane(GfxContext gfx, const Pipeline& pipeline, float base, float slope) {
     check(gfxProgramSetParameter(gfx, pipeline.program(), "plane_base", base));
     check(gfxProgramSetParameter(gfx, pipeline.program(), "plane_slope", slope));
     check(gfxCommandBindKernel(gfx, pipeline.kernel()));
 }
+
 bool contains(const D3D12_RECT& rect, std::uint32_t x, std::uint32_t y) {
     return x >= static_cast<std::uint32_t>(rect.left) && x < static_cast<std::uint32_t>(rect.right) &&
            y >= static_cast<std::uint32_t>(rect.top) && y < static_cast<std::uint32_t>(rect.bottom);
 }
+
 void atlas_rectangles(Context& owner) {
     const auto gfx = owner.borrow();
     auto depth_draw = take(owner.prepare(depth_desc(PipelineKind::vertex)));
@@ -184,11 +192,14 @@ SamplerComparisonState shadow_sampler; RWStructuredBuffer<uint> values; uint4 vi
         "shadow atlas: words=%u mip-slice=6 half-open=PASS invalid-batch=PASS empty=PASS comparison=PASS retirement=PASS\n",
         words);
 }
+
 void raster_bias(Context& owner, PipelineKind kind) {
     const auto gfx = owner.borrow();
     struct Bias {
         std::int32_t constant;
+
         float slope;
+
         float clamp;
     };
     constexpr std::array<Bias, 7> biases{
@@ -259,6 +270,7 @@ void raster_bias(Context& owner, PipelineKind kind) {
         kind == PipelineKind::vertex ? "vertex" : "mesh", biases.size(), 64 * 32);
 }
 }
+
 void shadow_cases() {
     ContextOptions options;
     options.validation = Validation::gpu;

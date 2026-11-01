@@ -33,21 +33,29 @@ WeldedMesh weld(const geometry::Mesh& mesh) {
     // Merges only bitwise-identical corners: every vertex keeps its exact authored data.
     struct Hash {
         using is_transparent = void;
+
         using is_avalanching = void;
+
         const std::vector<geometry::Vertex>* unique;
+
         std::uint64_t operator()(const geometry::Vertex& v) const noexcept {
             return ankerl::unordered_dense::hash<std::string_view>{}(
                 std::string_view(reinterpret_cast<const char*>(&v), sizeof v));
         }
+
         std::uint64_t operator()(std::uint32_t i) const noexcept { return (*this)((*unique)[i]); }
     };
     struct Equal {
         using is_transparent = void;
+
         const std::vector<geometry::Vertex>* unique;
+
         bool operator()(std::uint32_t a, std::uint32_t b) const noexcept { return a == b; }
+
         bool operator()(const geometry::Vertex& v, std::uint32_t i) const noexcept {
             return std::memcmp(&v, &(*unique)[i], sizeof v) == 0;
         }
+
         bool operator()(std::uint32_t i, const geometry::Vertex& v) const noexcept { return (*this)(v, i); }
     };
     const auto source = mesh.vertices();
@@ -96,17 +104,21 @@ Error error(rhi::ErrorCode code, const char* text, bool terminal = false,
             GfxResult native = kGfxResult_InvalidParameter) {
     return {{code, native, text}, terminal};
 }
+
 void require(GfxResult result, const char* operation) {
     if (result != kGfxResult_NoError)
         throw error(rhi::ErrorCode::execution_failed, operation, true, result);
 }
+
 void allocation(bool valid) {
     if (!valid)
         throw error(rhi::ErrorCode::creation_failed, "GPU allocation failed", true, kGfxResult_OutOfMemory);
 }
+
 bool finite(float value) {
     return std::isfinite(value);
 }
+
 float half_float(std::uint16_t h) {
     const std::uint32_t sign = std::uint32_t(h & 0x8000u) << 16;
     const std::uint32_t exponent = (h >> 10) & 31u;
@@ -117,14 +129,17 @@ float half_float(std::uint16_t h) {
         return std::bit_cast<float>(sign | ((exponent + 112) << 23) | (mantissa << 13));
     return (sign ? -1.0f : 1.0f) * std::ldexp(float(mantissa), -24);
 }
+
 bool valid(const ui::Color& c) {
     return finite(c.r) && finite(c.g) && finite(c.b) && finite(c.a) && c.r >= 0 && c.g >= 0 && c.b >= 0 && c.a >= 0 &&
            c.r <= 1 && c.g <= 1 && c.b <= 1 && c.a <= 1;
 }
+
 bool valid(const ui::Rect& r) {
     return finite(r.x) && finite(r.y) && finite(r.width) && finite(r.height) && r.width >= 0 && r.height >= 0 &&
            finite(r.x + r.width) && finite(r.y + r.height);
 }
+
 template <class Pixels>
 bool valid_pixels(const Pixels& image, unsigned channels) {
     return image.identity != 0 && image.width > 0 && image.height > 0 &&
@@ -133,16 +148,23 @@ bool valid_pixels(const Pixels& image, unsigned channels) {
            std::uint64_t(image.row_pitch) >= std::uint64_t(image.width) * channels &&
            std::uint64_t(image.row_pitch) * image.height <= image.pixels.size();
 }
+
 struct Instance {
     std::array<float, 16> world;
+
     std::array<float, 9> normal_matrix;
+
     float selected;
+
     float tangent_sign{1};
 };
+
 static_assert(sizeof(Instance) == 108 && sizeof(geometry::Vertex) == 48);
+
 bool same_bits(float a, float b) noexcept {
     return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
 }
+
 template <std::size_t N>
 bool same_bits(const std::array<float, N>& a, const std::array<float, N>& b) noexcept {
     for (std::size_t i = 0; i < N; ++i)
@@ -150,6 +172,7 @@ bool same_bits(const std::array<float, N>& a, const std::array<float, N>& b) noe
             return false;
     return true;
 }
+
 // Everything an instance check reads belongs to the instance itself.
 bool valid_instance(const MeshInstance& mesh) {
     bool good =
@@ -158,6 +181,7 @@ bool valid_instance(const MeshInstance& mesh) {
         good &= finite(v);
     return good && mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
 }
+
 // The last content at each Frame::meshes position that passed valid_instance, and
 // the stable keys it holds in every shading mode. An unchanged position skips its
 // check and reuses its prepared Instance. Geometry, surfaces and their images are
@@ -166,12 +190,18 @@ class MeshChecks {
 public:
     struct Entry {
         std::array<float, 16> world{};
+
         std::uint64_t stable_key{};
+
         geometry::MeshRef geometry;
+
         std::shared_ptr<const std::vector<std::uint32_t>> program_slots;
+
         std::uint32_t material_slots{};
+
         std::optional<Instance> prepared; // Set by the first frame that prepares this content.
     };
+
     // Adds the frame's material slot count; false means an invalid instance. Changes nothing.
     bool check(std::span<const MeshInstance> meshes, std::uint64_t& material_slots) {
         changed_.clear();
@@ -188,6 +218,7 @@ public:
         }
         return true;
     }
+
     // Adopts the meshes of a frame whose renderer-level checks all passed.
     void commit(std::span<const MeshInstance> meshes) {
         for (std::size_t i = meshes.size(); i < entries_.size(); ++i)
@@ -213,24 +244,30 @@ public:
         }
         changed_.clear();
     }
+
     [[nodiscard]] Entry& operator[](std::size_t i) noexcept { return entries_[i]; }
+
     // Nonzero stable keys held by more than one position of the committed frame.
     [[nodiscard]] bool duplicate_keys() const noexcept { return duplicates_ != 0; }
+
     // The committed geometry or slot mapping differs from the built material tables.
     bool materials_changed{true};
 
 private:
     // Every MeshInstance field but selected; a new field must join same() and valid_instance.
     static_assert(sizeof(MeshInstance) == 112);
+
     // Checked entries have geometry; a default entry left by a failed commit never matches.
     static bool same(const Entry& entry, const MeshInstance& mesh) noexcept {
         return entry.geometry && entry.geometry == mesh.geometry && entry.stable_key == mesh.stable_key &&
                entry.program_slots == mesh.material_slots && same_bits(entry.world, mesh.world);
     }
+
     void acquire(std::uint64_t key) {
         if (key && ++uses_[key] == 2)
             ++duplicates_;
     }
+
     void release(std::uint64_t key) {
         if (!key)
             return;
@@ -240,11 +277,16 @@ private:
         else if (at->second == 0)
             uses_.erase(at);
     }
+
     std::vector<Entry> entries_;
+
     std::vector<std::uint32_t> changed_;
+
     std::unordered_map<std::uint64_t, std::uint32_t> uses_;
+
     std::uint32_t duplicates_{};
 };
+
 void validate(const Frame& frame, MeshChecks& meshes) {
     const auto& ui = frame.ui_frame;
     bool good = ui.id != 0 && finite(ui.dpi_scale) && ui.dpi_scale > 0 && valid(frame.scene_viewport) &&
@@ -302,10 +344,13 @@ void validate(const Frame& frame, MeshChecks& meshes) {
     }
     meshes.commit(frame.meshes);
 }
+
 struct GridCamera {
     std::array<float, 16> view_projection;
+
     std::array<float, 16> inverse;
 };
+
 std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     if ((!frame.view.reference_grid && !frame.view.origin_axes) || frame.scene_viewport.width == 0 ||
         frame.scene_viewport.height == 0)
@@ -330,6 +375,7 @@ std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     }
     return result;
 }
+
 std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& frame) {
     const auto& c = frame.view.cavity;
     if (!c.enabled || (c.ridge == 0 && c.valley == 0) || frame.view.shading == Shading::scene_lit ||
@@ -350,7 +396,9 @@ std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& fram
     }
     return result;
 }
+
 using detail::PipelineStyle;
+
 Instance prepare_instance(const MeshInstance& mesh) {
     const auto& m = mesh.world;
     const auto normal = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
@@ -361,47 +409,72 @@ Instance prepare_instance(const MeshInstance& mesh) {
                         : "Mesh normal transform cannot be represented by GPU floats");
     return {mesh.world, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
 }
+
 struct TextureKey {
     std::uint64_t identity;
+
     std::uint64_t revision;
+
     bool color{};
+
     bool operator==(const TextureKey&) const = default;
 };
+
 struct TextureHash {
     std::size_t operator()(const TextureKey& k) const noexcept {
         return std::hash<std::uint64_t>{}(k.identity) ^ (std::hash<std::uint64_t>{}(k.revision) << 1) ^
                (std::hash<bool>{}(k.color) << 2);
     }
 };
+
 struct CachedImage {
     std::shared_ptr<const void> owner;
+
     GfxTexture texture;
+
     bool used{};
+
     std::uint32_t slot{}; // Index in this frame's ui_textures while used.
+
     std::uint64_t texel_bytes{};
+
     std::uint64_t cpu_bytes{};
 };
+
 enum class UiShading : std::uint32_t { solid, coverage, image, capsule };
+
 struct UiInstance {
     ui::Rect bounds;
+
     ui::Rect uv;
+
     ui::Color tint;
+
     ui::Color border_color;
+
     ui::CornerRadii radius;
+
     ui::Color image_background;
+
     float border_width{};
+
     std::uint32_t shading{}; // UiShading; textured kinds add their ui_textures slot << 2.
+
     std::array<std::uint32_t, 2> clip{}; // Half-open pixels: left | top << 16, right | bottom << 16.
 };
+
 static_assert(sizeof(UiInstance) == 112);
+
 std::array<std::uint32_t, 2> pack_clip(const ui::Clip& c) {
     return {std::uint32_t(c.left) | std::uint32_t(c.top) << 16, std::uint32_t(c.right) | std::uint32_t(c.bottom) << 16};
 }
+
 // Conservative: a quad that misses the clip cannot cover any pixel center inside it.
 bool overlaps(const ui::Rect& bounds, const ui::Clip& c) {
     return bounds.x < float(c.right) && bounds.x + bounds.width > float(c.left) && bounds.y < float(c.bottom) &&
            bounds.y + bounds.height > float(c.top);
 }
+
 ui::CornerRadii fit_radius(ui::CornerRadii r, ui::Rect bounds) {
     double factor = 1;
     const auto fit = [&](double sum, double extent) {
@@ -415,11 +488,14 @@ ui::CornerRadii fit_radius(ui::CornerRadii r, ui::Rect bounds) {
     return {float(r.top_left * factor), float(r.top_right * factor), float(r.bottom_right * factor),
             float(r.bottom_left * factor)};
 }
+
 // gfx destruction queues retirement in the same execution domain; it is safe
 // after the last encoded use, without waiting for each individual resource.
 struct BufferOwner {
     GfxContext context;
+
     GfxBuffer buffer;
+
     ~BufferOwner() {
         if (buffer) {
             if (gfxDestroyBuffer(context, buffer) != kGfxResult_NoError)
@@ -431,73 +507,130 @@ struct BufferOwner {
 
 struct Renderer::State {
     const std::thread::id owner = std::this_thread::get_id();
+
     rhi::Context context;
+
     GfxContext gfx;
+
     Options options;
+
     rhi::Pipeline ui_pipeline;
+
     rhi::Pipeline background;
+
     rhi::Pipeline grid;
+
     rhi::Pipeline grid_depth;
+
     rhi::Pipeline cavity_composite;
+
     GfxTexture cavity_normals;
+
     GfxTexture cavity_color;
+
     ui::PixelExtent cavity_extent{};
+
     std::optional<std::array<float, 16>> cavity_projection;
+
     std::optional<GridCamera> grid_camera;
+
     std::array<float, 4> raster_transform{1, 1, 0, 0};
+
     GfxTexture matcap;
+
     GfxSamplerState sampler;
+
     std::map<std::pair<const material::Image*, bool>, std::shared_ptr<detail::MaterialImageResource>> material_images;
+
     material::ImageRef white_image;
+
     // group is this frame's MeshGroup only while that group points back at the entry.
     struct CachedGeometry {
         geometry::MeshRef source;
+
         detail::SceneGeometry gpu;
+
         bool used{};
+
         std::uint32_t group{};
     };
+
     std::uint64_t geometry_uploads{};
+
     // One per geometry in first-appearance order over the complete snapshot, so
     // visibility and selection never reorder draws. Ranges index draw_instances.
     struct MeshGroup {
         CachedGeometry* geometry;
+
         std::uint32_t visible_first{};
+
         std::uint32_t visible_count{};
+
         std::uint32_t selected_first{};
+
         std::uint32_t selected_count{};
     };
+
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
+
     std::vector<MeshGroup> mesh_groups;
+
     // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
     std::vector<std::uint32_t> instance_groups;
+
     std::vector<std::uint32_t> draw_instances;
+
     detail::FrameSlots<std::uint32_t> draw_order_slots; // draw_instances, read in place.
+
     detail::FrameSlots<Instance> instance_slots;
+
     std::unique_ptr<detail::SceneLit> scene_lit;
+
     std::vector<detail::SceneLitDraw> lit_draws;
+
     detail::MaterialFrame materials;
+
     detail::DeviceTable<std::uint32_t> program_indices;
+
     detail::DeviceTable<std::uint32_t> program_offsets;
+
     std::size_t live_material_batches{};
+
     std::vector<std::weak_ptr<detail::MaterialProgramSet>> material_program_sets;
+
     // Keep only the last used code set across snapshot retirement/empty views.
     // It owns no surface tables or images; this is not an unbounded PSO cache.
     std::shared_ptr<detail::MaterialProgramSet> active_material_programs;
+
     MeshChecks mesh_checks;
+
     GfxTexture depth;
+
     ui::PixelExtent depth_extent;
+
     std::unordered_map<TextureKey, CachedImage, TextureHash> images;
+
     FrameStats stats;
+
     std::vector<Instance> instances;
+
     std::vector<std::uint8_t> raster_visibility;
+
     std::vector<UiInstance> ui_instances;
+
     std::size_t overlay_instances{}; // Leading viewport annotations in ui_instances.
+
     // Textured UI instances; their slots are resolved while encoding, when uploads can be recorded.
     std::vector<std::pair<std::uint32_t, const ui::DrawQuad*>> ui_textured;
+
     std::vector<GfxTexture> ui_textures; // This frame's distinct UI images in first-use order.
+
     detail::FrameSlots<UiInstance> ui_slots; // Overlay then UI instances, read in place.
+
     std::vector<std::uint8_t> upload_pixels;
+
     std::optional<Error> failure;
+
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
 
     ~State() {
@@ -507,6 +640,7 @@ struct Renderer::State {
             std::abort();
         }
     }
+
     Result<void> check() const {
         if (owner != std::this_thread::get_id())
             return std::unexpected(error(rhi::ErrorCode::wrong_thread, "Renderer requires owner thread"));
@@ -516,6 +650,7 @@ struct Renderer::State {
             return std::unexpected(*failure);
         return {};
     }
+
     Result<void> close() {
         if (!gfx)
             return {};
@@ -635,6 +770,7 @@ struct Renderer::State {
         debug.Reset();
         return {};
     }
+
     void prepare_pipeline(rhi::Pipeline& output, const char* name, const char* vs, const char* ps,
                           PipelineStyle style) {
         const auto desc = detail::studio_pipeline(name, vs, ps, style);
@@ -643,6 +779,7 @@ struct Renderer::State {
             throw Error{prepared.error(), false};
         output = std::move(*prepared);
     }
+
     void prepare_matcap() {
         if (matcap)
             return;
@@ -680,6 +817,7 @@ struct Renderer::State {
         allocation(bool(upload.buffer));
         require(gfxCommandCopyBufferToTexture(gfx, matcap, upload.buffer), "Upload clay MatCap");
     }
+
     void check_debug() {
         if (!debug)
             return;
@@ -695,6 +833,7 @@ struct Renderer::State {
         }
         debug->ClearStoredMessages();
     }
+
     GfxTexture material_texture(material::ImageRef source, bool srgb) {
         if (!source) {
             if (!white_image)
@@ -720,6 +859,7 @@ struct Renderer::State {
         ++stats.material_upload_count;
         return image.texture;
     }
+
     void material_samplers() {
         constexpr D3D12_TEXTURE_ADDRESS_MODE addresses[]{
             D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR};
@@ -730,6 +870,7 @@ struct Renderer::State {
                 allocation(bool(materials.samplers[i]));
             }
     }
+
     void prepare_materials(const Frame& frame) {
         const auto* batch = frame.materials->state_.get();
         const bool changed =
@@ -756,6 +897,7 @@ struct Renderer::State {
             gfx, context.info().frames_in_flight, materials.program_offsets, changed, "Program material offsets");
         mesh_checks.materials_changed = false;
     }
+
     // Returns the image's slot in this frame's ui_textures; a new revision uploads once.
     template <class Pixels>
     std::uint32_t texture(const std::shared_ptr<const Pixels>& owner) {
@@ -794,6 +936,7 @@ struct Renderer::State {
         }
         return image.slot;
     }
+
     void prepare_ui(const Frame& source) {
         const auto& frame = source.ui_frame;
         ui_instances.clear();
@@ -850,6 +993,7 @@ struct Renderer::State {
                                     std::to_underlying(shading), pack_clip(clip)});
         }
     }
+
     void draw_grid(const Frame& frame, bool with_depth) {
         if (!grid_camera)
             return;
@@ -878,6 +1022,7 @@ struct Renderer::State {
         require(gfxCommandDraw(gfx, 3), "Draw reference grid");
         ++stats.viewport_draw_calls;
     }
+
     void draw_cavity(const Frame& frame) {
         if (!cavity_composite)
             prepare_pipeline(cavity_composite, "studio screen cavity", shaders::viewport_vs, shaders::cavity_ps,
@@ -901,6 +1046,7 @@ struct Renderer::State {
         require(gfxCommandDraw(gfx, 3), "Draw studio cavity");
         ++stats.viewport_draw_calls;
     }
+
     void draw(const Frame& frame, const ui::PixelExtent extent, Capture* capture) {
         const auto& viewport = frame.scene_viewport;
         const bool has_viewport = viewport.width > 0 && viewport.height > 0;
@@ -1268,8 +1414,11 @@ struct Renderer::State {
 };
 
 Renderer::Renderer() = default;
+
 Renderer::~Renderer() = default;
+
 Renderer::Renderer(Renderer&&) noexcept = default;
+
 Renderer& Renderer::operator=(Renderer&&) noexcept = default;
 
 Result<Renderer> Renderer::open(HWND window, const Options& options) {
@@ -1308,6 +1457,7 @@ Result<Renderer> Renderer::open(HWND window, const Options& options) {
             error(rhi::ErrorCode::creation_failed, "Renderer allocation failed", false, kGfxResult_OutOfMemory));
     }
 }
+
 Result<Target> Renderer::target() const {
     if (!state_)
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
@@ -1318,6 +1468,7 @@ Result<Target> Renderer::target() const {
         return std::unexpected(Error{target.error(), true});
     return Target{{target->width, target->height}, target->drawable};
 }
+
 Result<Target> Renderer::sync_window_target() {
     if (!state_)
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
@@ -1328,6 +1479,7 @@ Result<Target> Renderer::sync_window_target() {
         return std::unexpected(Error{target.error(), true});
     return Target{{target->width, target->height}, target->drawable};
 }
+
 Result<Preparation> Renderer::preparation(const ViewSettings& view) {
     if (!state_)
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
@@ -1345,6 +1497,7 @@ Result<Preparation> Renderer::preparation(const ViewSettings& view) {
             error(rhi::ErrorCode::creation_failed, "Renderer allocation failed", false, kGfxResult_OutOfMemory));
     }
 }
+
 Result<MaterialBatch> Renderer::prepare_materials(std::span<const material::ProgramSurfaceRef> surfaces) {
     if (!state_)
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
@@ -1362,6 +1515,7 @@ Result<MaterialBatch> Renderer::prepare_materials(std::span<const material::Prog
             error(rhi::ErrorCode::creation_failed, "Material batch allocation failed", false, kGfxResult_OutOfMemory));
     }
 }
+
 Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
     if (!state_)
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
@@ -1409,6 +1563,7 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
         return std::unexpected(std::move(e));
     }
 }
+
 Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
     timing::Scope rendering{phases::render};
     const auto destination = target();
@@ -1595,6 +1750,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         return std::unexpected(std::move(e));
     }
 }
+
 Result<void> Renderer::close() {
     if (!state_)
         return {};

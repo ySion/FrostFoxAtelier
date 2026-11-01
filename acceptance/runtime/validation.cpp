@@ -13,45 +13,61 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 Result<void> invalid(const char* message) {
     return std::unexpected(Error{ErrorCode::argument_mismatch, message});
 }
 
 struct Interval {
     float low{};
+
     float high{1.0f};
 };
+
 Result<void> valid_span(const Interval& span) {
     return span.low > span.high ? invalid("low exceeds high") : Result<void>{};
 }
+
 struct Settings {
     Interval span;
+
     float gain{0.5f};
+
     math::Vector3 tint{0.5f, 0.5f, 0.5f};
+
     bool strict{};
 };
+
 Result<void> valid_settings(const Settings& settings) {
     return settings.strict && settings.span.low < 0.0f ? invalid("strict spans start at zero") : Result<void>{};
 }
+
 struct Base {
     std::uint32_t count{};
+
     Settings settings;
+
     Result<void> check() const { return count % 2 == 0 ? Result<void>{} : invalid("count must be even"); }
 };
+
 struct Derived : Base {
     float weight{1.0f};
+
     bool explode{};
 };
+
 Result<void> valid_derived(const Derived& derived) {
     if (derived.explode)
         throw std::runtime_error("boom");

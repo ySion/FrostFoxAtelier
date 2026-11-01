@@ -5,6 +5,7 @@
 #include <unordered_set>
 
 using namespace atelier;
+
 using namespace atelier::acceptance::inheritance;
 
 namespace {

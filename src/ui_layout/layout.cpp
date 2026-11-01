@@ -12,7 +12,9 @@
 namespace atelier::ui_layout {
 namespace {
 constexpr auto no_slot = std::numeric_limits<std::uint32_t>::max();
+
 constexpr auto no_pending = std::numeric_limits<std::size_t>::max();
+
 std::atomic<std::uint64_t> next_document{1};
 
 std::uint64_t document_identity() {
@@ -24,26 +26,33 @@ std::uint64_t document_identity() {
             return value;
     }
 }
+
 bool nonnegative(double value) {
     return std::isfinite(value) && value >= 0;
 }
+
 bool container(Kind kind) {
     return kind == Kind::row || kind == Kind::column || kind == Kind::overlay || kind == Kind::table ||
            kind == Kind::wrap || kind == Kind::grid;
 }
+
 bool vertical_flow(Kind kind) {
     return kind == Kind::column || kind == Kind::table;
 }
+
 float horizontal(const Insets& padding) {
     return padding.left + padding.right;
 }
+
 float vertical(const Insets& padding) {
     return padding.top + padding.bottom;
 }
+
 bool valid_padding(const Insets& padding) {
     return nonnegative(padding.left) && nonnegative(padding.right) && nonnegative(padding.top) &&
            nonnegative(padding.bottom) && nonnegative(horizontal(padding)) && nonnegative(vertical(padding));
 }
+
 bool valid_axis(const Axis& axis, float padding) {
     if (static_cast<unsigned>(axis.rule) > static_cast<unsigned>(SizeRule::flex) || !nonnegative(axis.value) ||
         !nonnegative(axis.minimum))
@@ -64,16 +73,19 @@ bool valid_axis(const Axis& axis, float padding) {
     return axis.rule != SizeRule::fixed ||
            (axis.value >= std::max(axis.minimum, padding) && (!axis.maximum || axis.value <= *axis.maximum));
 }
+
 bool valid_alignment(const Alignment& value) {
     return nonnegative(value.offset) && value.offset <= 1 &&
            (!value.first_baseline || (!value.fill && value.offset == 0)) && (!value.inherited || value == Alignment{});
 }
+
 bool valid_flow(const FlexSpec& value) {
     return static_cast<unsigned>(value.wrap) <= static_cast<unsigned>(Wrap::wrap_reverse) &&
            static_cast<unsigned>(value.justify) < static_cast<unsigned>(Distribution::stretch) &&
            static_cast<unsigned>(value.align_lines) <= static_cast<unsigned>(Distribution::stretch) &&
            valid_alignment(value.align_items) && !value.align_items.inherited;
 }
+
 std::optional<Error> validate(const NodeInput& input) {
     const auto invalid = [](InputField field) { return Error{ErrorCode::invalid_input, {}, 0, field}; };
     if (static_cast<unsigned>(input.kind) > static_cast<unsigned>(Kind::grid))
@@ -138,23 +150,33 @@ std::optional<Error> validate(const NodeInput& input) {
         return Error{ErrorCode::unsupported_dependency, {}, 0, InputField::kind};
     return {};
 }
+
 bool in_flow(const NodeInput& child, const NodeInput& parent) {
     return !child.collapsed && !child.out_of_flow && parent.kind != Kind::overlay;
 }
+
 struct BufferMemory {
     std::uint64_t allocations{};
+
     std::uint64_t allocated{};
+
     std::uint64_t live{};
+
     std::uint64_t peak{};
 };
+
 // Counts the actual backing allocations of internal buffers, using the process allocator.
 template <class T>
 struct BufferAllocator {
     using value_type = T;
+
     BufferMemory* memory;
+
     explicit BufferAllocator(BufferMemory* value) noexcept : memory(value) {}
+
     template <class U>
     BufferAllocator(const BufferAllocator<U>& value) noexcept : memory(value.memory) {}
+
     T* allocate(std::size_t count) {
         auto* result = std::allocator<T>{}.allocate(count);
         const auto bytes = count * sizeof(T);
@@ -164,20 +186,26 @@ struct BufferAllocator {
         memory->peak = std::max(memory->peak, memory->live);
         return result;
     }
+
     void deallocate(T* value, std::size_t count) noexcept {
         memory->live -= count * sizeof(T);
         std::allocator<T>{}.deallocate(value, count);
     }
+
     template <class U>
     bool operator==(const BufferAllocator<U>& other) const noexcept {
         return memory == other.memory;
     }
 };
+
 template <class T>
 using Buffer = std::vector<T, BufferAllocator<T>>;
+
 struct Share {
     double minimum{};
+
     double weight{};
+
     std::optional<double> maximum;
 };
 
@@ -259,51 +287,89 @@ void allocate_slots(std::span<const Share> shares, double pool, Buffer<double>& 
 struct LayoutDocument::Impl {
     struct Cached {
         MeasureQuery query{};
+
         MeasuredSize size{};
+
         bool valid{};
     };
+
     struct Slot {
         explicit Slot(BufferMemory* memory) : children(BufferAllocator<std::uint32_t>{memory}) {}
+
         NodeInput input{};
+
         Buffer<std::uint32_t> children;
+
         Cached intrinsic{};
+
         Cached constrained{};
+
         std::uint32_t generation{1};
+
         std::uint32_t parent{no_slot};
+
         std::uint32_t next_free{no_slot};
+
         std::uint32_t depth{};
+
         std::uint32_t work_index{};
+
         bool live{};
+
         std::uint64_t measured_generation{};
     };
+
     struct Work {
         float intrinsic_width{};
+
         float natural_height{};
+
         float slot_width{};
+
         float slot_height{};
+
         std::size_t pending_intrinsic{no_pending};
+
         std::size_t pending_width{no_pending};
+
         bool intrinsic_valid{};
+
         bool needs_height{};
+
         bool uses_measurement{};
+
         bool needs_baseline{};
+
         bool children_arranged{};
+
         std::optional<float> first_baseline;
+
         std::size_t tracks{no_pending};
+
         std::size_t line{no_pending};
+
         std::size_t lines_begin{};
+
         std::size_t lines_end{};
     };
+
     struct Pending {
         std::uint32_t slot;
+
         MeasureQuery query;
+
         MeasuredSize size;
     };
+
     struct Line {
         double width{};
+
         double height{};
+
         double y{};
+
         double cursor{};
+
         std::size_t count{};
     };
 
@@ -322,27 +388,33 @@ struct LayoutDocument::Impl {
         slots[0].live = true;
         slots[0].input.kind = Kind::column;
     }
+
     LayoutNodeId id(std::uint32_t index) const { return {identity, index, slots[index].generation}; }
+
     bool valid(LayoutNodeId node) const {
         return node.document_ == identity && node.slot_ < slots.size() && slots[node.slot_].live &&
                slots[node.slot_].generation == node.generation_;
     }
+
     Result<void> editable() const {
         if (active)
             return std::unexpected(Error{ErrorCode::busy});
         return {};
     }
+
     Result<void> revision_available() const {
         if (input_revision == std::numeric_limits<std::uint64_t>::max())
             return std::unexpected(Error{ErrorCode::revision_exhausted});
         return {};
     }
+
     void reserve_child(std::uint32_t parent) {
         auto& children = slots[parent].children;
         if (children.size() == children.capacity())
             children.reserve(
                 std::min<std::size_t>(limits.max_nodes, std::max<std::size_t>(4, children.capacity() * 2)));
     }
+
     void collect_subtree(std::uint32_t start) {
         stack.clear();
         stack.push_back(start);
@@ -350,6 +422,7 @@ struct LayoutDocument::Impl {
             for (const auto child : slots[stack[i]].children)
                 stack.push_back(child);
     }
+
     bool retire(std::uint32_t index, bool release_children = true) noexcept {
         auto& slot = slots[index];
         slot.live = false;
@@ -368,8 +441,11 @@ struct LayoutDocument::Impl {
         ++slot.generation;
         return true;
     }
+
     Work& work_for(std::uint32_t slot) { return work[slots[slot].work_index]; }
+
     LayoutBox& box_for(std::uint32_t slot) { return working[slots[slot].work_index]; }
+
     Alignment alignment(std::uint32_t index, bool horizontal_axis) const {
         const auto& slot = slots[index];
         const auto& value = horizontal_axis ? slot.input.horizontal_alignment : slot.input.vertical_alignment;
@@ -382,11 +458,13 @@ struct LayoutDocument::Impl {
         }
         return Alignment::stretch();
     }
+
     Result<float> coordinate(double value, std::uint32_t slot) const {
         if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
             return std::unexpected(Error{ErrorCode::numeric_overflow, id(slot)});
         return static_cast<float>(value);
     }
+
     Result<float> constrained(double value, const Axis& axis, float padding, std::uint32_t slot) const {
         if (!std::isfinite(value))
             return std::unexpected(Error{ErrorCode::numeric_overflow, id(slot)});
@@ -394,6 +472,7 @@ struct LayoutDocument::Impl {
             value = std::min<double>(value, *axis.maximum);
         return coordinate(std::max<double>(std::max(axis.minimum, padding), value), slot);
     }
+
     Result<MeasuredSize> measured(std::uint32_t index, std::optional<float> width) {
         work_for(index).uses_measurement = true;
         auto& slot = slots[index];
@@ -434,6 +513,7 @@ struct LayoutDocument::Impl {
         staging_index = pending.size() - 1;
         return *result;
     }
+
     std::uint32_t table_for_row(std::uint32_t index) const {
         const auto& row = slots[index];
         return row.parent != no_slot && slots[row.parent].input.kind == Kind::table &&
@@ -441,6 +521,7 @@ struct LayoutDocument::Impl {
                    ? row.parent
                    : no_slot;
     }
+
     Result<void> validate_rows(std::uint32_t index) const {
         const auto& table = slots[index];
         for (const auto row_index : table.children) {
@@ -460,6 +541,7 @@ struct LayoutDocument::Impl {
         }
         return {};
     }
+
     Result<float> cell_width(std::uint32_t index, float slot_width) {
         const auto& input = slots[index].input;
         double width = slot_width;
@@ -473,6 +555,7 @@ struct LayoutDocument::Impl {
         }
         return constrained(width, input.width, horizontal(input.padding), index);
     }
+
     Result<void> resolve_tracks(std::uint32_t index, float available) {
         if (auto status = validate_rows(index); !status)
             return status;
@@ -526,6 +609,7 @@ struct LayoutDocument::Impl {
         }
         return {};
     }
+
     Result<float> intrinsic_width(std::uint32_t start) {
         stack.clear();
         stack.push_back(start);
@@ -654,6 +738,7 @@ struct LayoutDocument::Impl {
         }
         return work_for(start).intrinsic_width;
     }
+
     void prepare_work() {
         has_grid_work = has_flex_work = has_placement_work = false;
         order.clear();
@@ -692,6 +777,7 @@ struct LayoutDocument::Impl {
         prepare_grid_work();
         prepare_flex_work();
     }
+
     Result<void> resolve_widths(Size viewport) {
         box_for(0).width = viewport.width;
         for (const auto index : order) {
@@ -860,6 +946,7 @@ struct LayoutDocument::Impl {
         }
         return {};
     }
+
     Result<void> resolve_heights() {
         for (auto entry = order.rbegin(); entry != order.rend(); ++entry) {
             ++statistics.node_visits;
@@ -939,6 +1026,7 @@ struct LayoutDocument::Impl {
         }
         return {};
     }
+
     Result<float> height_in_slot(std::uint32_t index, double available) const {
         const auto& input = slots[index].input;
         const auto& state = work[slots[index].work_index];
@@ -950,6 +1038,7 @@ struct LayoutDocument::Impl {
             value = std::min(value, static_cast<double>(state.natural_height));
         return constrained(value, input.height, vertical(input.padding), index);
     }
+
     Result<void> resolve_baseline(std::uint32_t index) {
         auto& state = work_for(index);
         const auto& input = slots[index].input;
@@ -1051,6 +1140,7 @@ struct LayoutDocument::Impl {
         state.first_baseline = *result;
         return {};
     }
+
     Result<void> arrange_children(std::uint32_t index, float width, float height) {
         const auto& parent = slots[index].input;
         const bool specialized = parent.kind == Kind::grid || is_flex(index);
@@ -1169,6 +1259,7 @@ struct LayoutDocument::Impl {
         }
         return {};
     }
+
     Result<void> arrange(Size viewport) {
         box_for(0).height = viewport.height;
         for (const auto index : order) {
@@ -1183,45 +1274,81 @@ struct LayoutDocument::Impl {
         }
         return {};
     }
+
     LayoutView view() const noexcept {
         return {publication, published_input, published_provider, published_viewport, published, published_index};
     }
 
     const std::uint64_t identity;
+
     Measure measure;
+
     void* context;
+
     Limits limits;
+
     bool active{};
+
     bool geometry_dirty{true};
+
     bool has_grid_work{};
+
     bool has_flex_work{};
+
     bool has_placement_work{};
+
     std::uint64_t geometry_generation{};
+
     std::uint32_t free_head{no_slot};
+
     std::size_t live_count{1};
+
     std::uint64_t input_revision{1};
+
     std::uint64_t publication{};
+
     std::uint64_t published_input{};
+
     std::uint64_t published_provider{};
+
     std::uint64_t current_provider{};
+
     Size published_viewport{};
+
     Stats statistics{};
+
     BufferMemory memory;
+
     Buffer<Slot> slots;
+
     Buffer<std::uint32_t> stack;
+
     Buffer<std::uint32_t> order;
+
     Buffer<std::uint32_t> share_indices;
+
     Buffer<Work> work;
+
     Buffer<Pending> pending;
+
     Buffer<LayoutBox> working;
+
     Buffer<LayoutBox> published;
+
     Buffer<std::uint32_t> working_index;
+
     Buffer<std::uint32_t> published_index;
+
     Buffer<Share> shares;
+
     Buffer<double> share_output;
+
     Buffer<double> weight_sums;
+
     Buffer<std::pair<double, std::size_t>> events;
+
     Buffer<float> tracks;
+
     Buffer<Line> lines;
 
 #include "grid.inl"
@@ -1234,13 +1361,17 @@ LayoutDocument::LayoutDocument(Measure measure, void* context, Limits limits) {
         throw std::invalid_argument("Layout max_nodes must include the root and fit slot identities");
     impl_ = std::make_unique<Impl>(measure, context, limits);
 }
+
 LayoutDocument::~LayoutDocument() = default;
+
 LayoutNodeId LayoutDocument::root() const noexcept {
     return impl_->id(0);
 }
+
 std::size_t LayoutDocument::node_count() const noexcept {
     return impl_->live_count;
 }
+
 std::uint64_t LayoutDocument::input_revision() const noexcept {
     return impl_->input_revision;
 }
@@ -1268,6 +1399,7 @@ Result<void> LayoutDocument::set_root(const RootInput& input) {
     ++d.input_revision;
     return {};
 }
+
 Result<LayoutNodeId> LayoutDocument::create(LayoutNodeId parent, const NodeInput& input, std::size_t position) {
     auto& d = *impl_;
     if (auto status = d.editable(); !status)
@@ -1310,6 +1442,7 @@ Result<LayoutNodeId> LayoutDocument::create(LayoutNodeId parent, const NodeInput
     ++d.input_revision;
     return d.id(index);
 }
+
 Result<NodeInput> LayoutDocument::input(LayoutNodeId node) const {
     const auto& d = *impl_;
     if (!d.valid(node))
@@ -1318,6 +1451,7 @@ Result<NodeInput> LayoutDocument::input(LayoutNodeId node) const {
         return std::unexpected(Error{ErrorCode::root_operation, node});
     return d.slots[node.slot_].input;
 }
+
 Result<void> LayoutDocument::update(LayoutNodeId node, const NodeInput& input) {
     auto& d = *impl_;
     if (auto status = d.editable(); !status)
@@ -1348,6 +1482,7 @@ Result<void> LayoutDocument::update(LayoutNodeId node, const NodeInput& input) {
     ++d.input_revision;
     return {};
 }
+
 Result<void> LayoutDocument::move(LayoutNodeId node, LayoutNodeId parent, std::size_t position) {
     auto& d = *impl_;
     if (auto status = d.editable(); !status)
@@ -1395,6 +1530,7 @@ Result<void> LayoutDocument::move(LayoutNodeId node, LayoutNodeId parent, std::s
     ++d.input_revision;
     return {};
 }
+
 Result<void> LayoutDocument::remove(LayoutNodeId node) {
     auto& d = *impl_;
     if (auto status = d.editable(); !status)
@@ -1419,6 +1555,7 @@ Result<void> LayoutDocument::remove(LayoutNodeId node) {
     ++d.input_revision;
     return {};
 }
+
 Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeNodeInput> input) {
     auto& d = *impl_;
     if (auto status = d.editable(); !status)
@@ -1427,16 +1564,24 @@ Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeN
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
     struct Plan {
         std::uint32_t slot{};
+
         std::uint32_t parent{};
+
         std::uint32_t depth{};
+
         std::size_t begin{};
+
         std::size_t count{};
+
         std::size_t cursor{};
+
         bool fresh{};
+
         bool children_changed{};
     };
     struct PreparedInput {
         std::uint32_t slot;
+
         NodeInput input;
     };
     Buffer<Plan> plan(input.size() + 1, Plan{}, BufferAllocator<Plan>{&d.memory});
@@ -1588,6 +1733,7 @@ Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeN
     ++d.statistics.topology_commits;
     return result;
 }
+
 Result<LayoutView> LayoutDocument::compute(Size viewport, std::uint64_t provider_revision) {
     auto& d = *impl_;
     if (d.active)
@@ -1610,7 +1756,9 @@ Result<LayoutView> LayoutDocument::compute(Size viewport, std::uint64_t provider
     }
     struct Activity {
         bool& active;
+
         explicit Activity(bool& value) : active(value) { active = true; }
+
         ~Activity() { active = false; }
     } activity(d.active);
     ++d.statistics.computes;
@@ -1646,9 +1794,11 @@ Result<LayoutView> LayoutDocument::compute(Size viewport, std::uint64_t provider
     d.published_viewport = viewport;
     return d.view();
 }
+
 LayoutView LayoutDocument::view() const noexcept {
     return impl_->view();
 }
+
 LayoutSnapshot LayoutDocument::snapshot() const {
     const auto current = view();
     LayoutSnapshot result;
@@ -1660,6 +1810,7 @@ LayoutSnapshot LayoutDocument::snapshot() const {
     result.index_.assign(current.index_.begin(), current.index_.end());
     return result;
 }
+
 Stats LayoutDocument::stats() const noexcept {
     auto result = impl_->statistics;
     result.buffer_allocations = impl_->memory.allocations;
@@ -1675,6 +1826,7 @@ const LayoutBox* LayoutView::find(LayoutNodeId node) const noexcept {
     const auto index = index_[node.slot_];
     return index < boxes.size() && boxes[index].node == node ? &boxes[index] : nullptr;
 }
+
 LayoutView LayoutSnapshot::view() const noexcept {
     return {publication, input_revision, provider_revision, viewport, boxes, index_};
 }
@@ -1685,24 +1837,28 @@ NodeInput NodeInput::row(float gap) {
     value.gap = gap;
     return value;
 }
+
 NodeInput NodeInput::column(float gap) {
     NodeInput value;
     value.kind = Kind::column;
     value.gap = gap;
     return value;
 }
+
 NodeInput NodeInput::overlay() {
     NodeInput value;
     value.kind = Kind::overlay;
     value.height = Axis::expand();
     return value;
 }
+
 NodeInput NodeInput::box(float width, float height) {
     NodeInput value;
     value.width = Axis::fixed(width);
     value.height = Axis::fixed(height);
     return value;
 }
+
 NodeInput NodeInput::measured(std::uint64_t key, std::uint64_t revision) {
     NodeInput value;
     value.kind = Kind::measured;
@@ -1710,6 +1866,7 @@ NodeInput NodeInput::measured(std::uint64_t key, std::uint64_t revision) {
     value.content_revision = revision;
     return value;
 }
+
 NodeInput NodeInput::table(std::vector<Axis> columns, float column_gap, float row_gap) {
     auto value = column(row_gap);
     value.kind = Kind::table;
@@ -1717,18 +1874,21 @@ NodeInput NodeInput::table(std::vector<Axis> columns, float column_gap, float ro
     value.cross_gap = column_gap;
     return value;
 }
+
 NodeInput NodeInput::wrap(float item_gap, float line_gap) {
     auto value = row(item_gap);
     value.kind = Kind::wrap;
     value.cross_gap = line_gap;
     return value;
 }
+
 NodeInput NodeInput::grid(float minimum_item_width, float item_gap, float line_gap) {
     auto value = wrap(item_gap, line_gap);
     value.item_width = minimum_item_width;
     value.stretch_items = true;
     return value;
 }
+
 NodeInput NodeInput::grid(GridSpec spec) {
     NodeInput value;
     value.kind = Kind::grid;
@@ -1763,6 +1923,7 @@ std::string_view describe(ErrorCode code) noexcept {
     }
     return "Unknown layout error";
 }
+
 std::string_view describe(InputField field) noexcept {
     switch (field) {
     case InputField::none:
@@ -1804,15 +1965,18 @@ bool list_height(double value) {
     return std::isfinite(value) && value > 0 && value <= std::numeric_limits<float>::max();
 }
 }
+
 VirtualList::VirtualList(std::size_t max_items, double gap) : max_items_(max_items), gap_(gap) {
     if (max_items == 0 || max_items >= no_slot || !nonnegative(gap) || gap > std::numeric_limits<float>::max())
         throw std::invalid_argument("Invalid virtual list capacity or gap");
 }
+
 Result<void> VirtualList::revision_available() const {
     if (revision_ == std::numeric_limits<std::uint64_t>::max())
         return std::unexpected(Error{ErrorCode::revision_exhausted});
     return {};
 }
+
 void VirtualList::rebuild(std::vector<double>& sums, const std::vector<double>& heights) const noexcept {
     std::fill(sums.begin(), sums.end(), 0);
     for (std::size_t i = 1; i < sums.size(); ++i) {
@@ -1822,15 +1986,18 @@ void VirtualList::rebuild(std::vector<double>& sums, const std::vector<double>& 
             sums[parent] += sums[i];
     }
 }
+
 double VirtualList::prefix(std::size_t count) const noexcept {
     double sum = 0;
     for (; count; count -= count & (~count + 1))
         sum += sums_[count];
     return sum;
 }
+
 double VirtualList::extent() const noexcept {
     return heights_.empty() ? 0 : std::max(0.0, prefix(heights_.size()) - gap_);
 }
+
 std::size_t VirtualList::locate(double offset) const noexcept {
     std::size_t index = 0;
     double sum = 0;
@@ -1843,6 +2010,7 @@ std::size_t VirtualList::locate(double offset) const noexcept {
     }
     return index;
 }
+
 void VirtualList::restore_anchor(std::size_t row, double within) noexcept {
     if (heights_.empty()) {
         scroll_ = 0;
@@ -1853,6 +2021,7 @@ void VirtualList::restore_anchor(std::size_t row, double within) noexcept {
     scroll_ = std::clamp(prefix(row) + std::clamp(within, 0.0, std::nextafter(stride, 0.0)), 0.0,
                          std::max(0.0, extent() - viewport_));
 }
+
 Result<void> VirtualList::reset(std::size_t count, double estimated_height) {
     if (count > max_items_)
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
@@ -1869,6 +2038,7 @@ Result<void> VirtualList::reset(std::size_t count, double estimated_height) {
     ++revision_;
     return {};
 }
+
 Result<void> VirtualList::set_viewport(double scroll, double height, double overscan) {
     if (!nonnegative(scroll) || !nonnegative(height) || !nonnegative(overscan) ||
         height > std::numeric_limits<float>::max() || overscan > std::numeric_limits<float>::max())
@@ -1884,6 +2054,7 @@ Result<void> VirtualList::set_viewport(double scroll, double height, double over
     ++revision_;
     return {};
 }
+
 Result<void> VirtualList::set_height(std::size_t row, double height) {
     if (row >= heights_.size() || !list_height(height))
         return std::unexpected(Error{ErrorCode::invalid_input});
@@ -1901,6 +2072,7 @@ Result<void> VirtualList::set_height(std::size_t row, double height) {
     ++revision_;
     return {};
 }
+
 Result<void> VirtualList::invalidate_heights(double estimated_height) {
     if (!list_height(estimated_height))
         return std::unexpected(Error{ErrorCode::invalid_input});
@@ -1914,6 +2086,7 @@ Result<void> VirtualList::invalidate_heights(double estimated_height) {
     ++revision_;
     return {};
 }
+
 Result<void> VirtualList::insert(std::size_t position, std::size_t count, double estimated_height) {
     if (position > heights_.size() || !list_height(estimated_height))
         return std::unexpected(Error{ErrorCode::invalid_input});
@@ -1940,6 +2113,7 @@ Result<void> VirtualList::insert(std::size_t position, std::size_t count, double
     ++revision_;
     return {};
 }
+
 Result<void> VirtualList::erase(std::size_t position, std::size_t count) {
     if (position > heights_.size() || count > heights_.size() - position)
         return std::unexpected(Error{ErrorCode::invalid_input});
@@ -1964,6 +2138,7 @@ Result<void> VirtualList::erase(std::size_t position, std::size_t count) {
     ++revision_;
     return {};
 }
+
 VisibleRange VirtualList::range() const noexcept {
     const auto total = extent();
     if (heights_.empty() || viewport_ == 0)
@@ -1975,6 +2150,7 @@ VisibleRange VirtualList::range() const noexcept {
         ++end;
     return {begin, end, prefix(begin) - scroll_, scroll_, total, revision_};
 }
+
 Result<double> VirtualList::offset(std::size_t row) const {
     if (row > heights_.size())
         return std::unexpected(Error{ErrorCode::invalid_input});

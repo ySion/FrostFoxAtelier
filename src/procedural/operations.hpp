@@ -13,14 +13,18 @@ namespace atelier::procedural {
 // rows x columns points with N = +Y, spanning `size` on X and Z around the origin;
 // one point on an axis sits at 0. Row r varies Z, column c varies X; point r*columns + c.
 Result<Geometry> grid(math::Vector2 size, std::uint32_t rows, std::uint32_t columns);
+
 // `count` points from `start` to `end` inclusive.
 Result<Geometry> line(math::Vector3 start, math::Vector3 end, std::uint32_t count);
 
 struct ScatterSettings {
     float density{1}; // Points per unit area before elimination.
+
     std::uint32_t seed{};
+
     float min_distance{}; // 0 keeps every point.
 };
+
 // Points on triangle primitives. Triangle t draws its count and positions from
 // hash(seed, t) alone: round(area * density) rounds up with probability equal to the
 // fraction, and positions are uniform. Each triangle's points therefore do not depend
@@ -54,8 +58,10 @@ Result<Geometry> copy_to_points(const Geometry& points, std::span<const Referenc
 
 struct Bounds {
     math::Vector3 minimum;
+
     math::Vector3 maximum;
 };
+
 // Of the points; empty geometry has none.
 [[nodiscard]] std::optional<Bounds> bounds(const Geometry& geometry) noexcept;
 

@@ -37,10 +37,12 @@ void reject(const Result<T>& result, ErrorCode expected, const char* message) {
 }
 
 using atelier::acceptance::NativeState;
+
 using atelier::acceptance::NativeMachine;
 
 struct FallibleRecord {
     static inline bool fail{true};
+
     FallibleRecord() {
         if (fail)
             throw std::runtime_error("Deliberate construction failure.");
@@ -49,15 +51,25 @@ struct FallibleRecord {
 
 struct alignas(32) ValueResource {
     static inline int live{};
+
     static inline int next_id{};
+
     static inline int last_destroyed{};
+
     static inline int previous_destroyed{};
+
     static inline int remaining_constructions{-1};
+
     static inline bool fail_assignment{};
+
     static inline Runtime* callback_runtime{};
+
     static inline TypeId callback_object_type;
+
     static inline bool callbacks_blocked{true};
+
     std::unique_ptr<std::uint32_t> payload;
+
     int id;
 
     static void check_callback_guard() {
@@ -75,6 +87,7 @@ struct alignas(32) ValueResource {
         callbacks_blocked &= busy(callback_runtime->begin_collection());
         callbacks_blocked &= busy(callback_runtime->collect_step({1}));
     }
+
     static int begin_lifetime() {
         check_callback_guard();
         if (remaining_constructions == 0)
@@ -84,9 +97,12 @@ struct alignas(32) ValueResource {
         ++live;
         return ++next_id;
     }
+
     ValueResource() : payload(std::make_unique<std::uint32_t>(7)), id(begin_lifetime()) {}
+
     ValueResource(const ValueResource& source)
         : payload(std::make_unique<std::uint32_t>(*source.payload)), id(begin_lifetime()) {}
+
     ValueResource& operator=(const ValueResource& source) {
         check_callback_guard();
         *payload = *source.payload;
@@ -94,6 +110,7 @@ struct alignas(32) ValueResource {
             throw std::runtime_error("Deliberate value assignment failure.");
         return *this;
     }
+
     ~ValueResource() noexcept {
         check_callback_guard();
         --live;
@@ -108,7 +125,9 @@ struct NoncopyableValue {
 
 struct CopyOnlyValue {
     CopyOnlyValue() = default;
+
     CopyOnlyValue(const CopyOnlyValue&) = default;
+
     CopyOnlyValue& operator=(const CopyOnlyValue&) = delete;
 };
 
@@ -335,7 +354,9 @@ Result<void> raise_native_error(CallContext&) {
 
 struct Types {
     TypeId native_machine;
+
     TypeId described_machine;
+
     TypeId failing_machine;
 };
 
@@ -503,29 +524,36 @@ void verify_runtime() {
 
 struct SignatureNative {
     static inline std::size_t calls{};
+
     std::uint32_t value{};
+
     float total{};
 
     std::uint32_t increment(std::uint32_t amount) {
         ++calls;
         return value += amount;
     }
+
     std::uint32_t read() const noexcept {
         ++calls;
         return value;
     }
+
     float add(float amount) noexcept {
         ++calls;
         return total += amount;
     }
+
     float sample(float amount) const {
         ++calls;
         return total + amount;
     }
+
     void note(std::uint32_t amount) {
         ++calls;
         value += amount;
     }
+
     std::uint32_t fail(std::uint32_t amount) {
         ++calls;
         value += amount;
@@ -826,7 +854,9 @@ void verify_method_results() {
     require(output == Scalar{2.5f}, "Described float result did not share native result semantics.");
     struct FailureCase {
         const char* name;
+
         ErrorCode code;
+
         const char* diagnostic;
     };
     const std::array failures{
@@ -943,7 +973,9 @@ void verify_forward_publication() {
 
 struct NativeReferenceNode {
     static inline int constructions{};
+
     ReferenceSlot next;
+
     NativeReferenceNode() { ++constructions; }
 };
 
@@ -1077,7 +1109,9 @@ void verify_object_diagnostic_identity() {
 
 struct RootLifetimeProbe {
     static inline int live{};
+
     RootLifetimeProbe() { ++live; }
+
     ~RootLifetimeProbe() noexcept { --live; }
 };
 
@@ -1184,11 +1218,13 @@ void verify_root_handles() {
 
 struct NativeGraphLinks {
     ReferenceSlot visible;
+
     ReferenceSlot hidden;
 };
 
 struct NativeGraphNode {
     NativeGraphLinks links;
+
     static inline int mirrors{};
 };
 
@@ -1355,14 +1391,23 @@ void verify_reference_graph() {
 
     struct Probe {
         Runtime& runtime;
+
         ObjectId owner;
+
         ObjectId native;
+
         FieldId field;
+
         MethodId method;
+
         TypeId value_type;
+
         std::span<std::byte> storage;
+
         ObjectReference strong;
+
         ObjectReference weak;
+
         std::size_t calls{};
     } probe{runtime, a_id, b_id, next, mirror, ids[3], source, strong_b, weak_b};
     const auto mirrors_before = NativeGraphNode::mirrors;
@@ -1424,28 +1469,42 @@ void verify_reference_graph() {
 
 struct CollectionLinks {
     ReferenceSlot first;
+
     ReferenceSlot second;
+
     ReferenceSlot observer;
+
     static inline const void* last_traced{};
 };
 
 struct CollectionNode {
     CollectionLinks links;
+
     const CollectionNode* original{this};
+
     static inline CollectionNode* last_constructed{};
+
     static inline int live{};
+
     static inline int destroyed{};
+
     static inline bool stable{true};
+
     static inline Runtime* checking_runtime{};
+
     static inline std::array<ObjectId, 2> condemned;
+
     static inline bool death_visible{true};
+
     static inline bool callbacks_blocked{true};
 
     CollectionNode() {
         ++live;
         last_constructed = this;
     }
+
     void check_address() { stable &= this == original; }
+
     ~CollectionNode() noexcept {
         --live;
         ++destroyed;
@@ -1684,6 +1743,7 @@ void verify_collection_mutations() {
 
 struct CollectionValue {
     CollectionLinks links;
+
     ValueResource resource;
 };
 
@@ -1942,12 +2002,19 @@ void verify_publication_failures() {
 
 struct LocatorGuardValue {
     std::uint32_t number{41};
+
     ReferenceSlot target;
+
     static inline Runtime* runtime{};
+
     static inline TypeId extra_type;
+
     static inline ObjectId other;
+
     static inline bool blocked{true};
+
     static inline std::size_t calls{};
+
     static void check() noexcept {
         const auto busy = [](const auto& result) { return !result && result.error().code == ErrorCode::busy; };
         ++calls;
@@ -1961,15 +2028,22 @@ struct LocatorGuardValue {
 struct CancelLeaf {
     ReferenceSlot target;
 };
+
 struct CancelOuter {
     CancelLeaf inner;
 };
+
 struct CancelControl {
     static inline ValueRoot* root{};
+
     static inline bool cancel_outer{};
+
     static inline bool cancel_leaf{};
+
     static inline bool canceled{};
+
     static inline std::size_t late_accesses{};
+
     static void cancel() noexcept {
         root->reset();
         canceled = true;
@@ -2102,10 +2176,15 @@ void verify_active_value_roots() {
 
 struct ReentrantValue {
     static inline void* context{};
+
     static inline void (*exercise)(void*){};
+
     static inline bool inside{};
+
     static inline bool failed{};
+
     static inline std::size_t calls{};
+
     static void run() noexcept {
         if (!exercise || inside)
             return;
@@ -2118,12 +2197,16 @@ struct ReentrantValue {
         }
         inside = false;
     }
+
     ReentrantValue() { run(); }
+
     ReentrantValue(const ReentrantValue&) { run(); }
+
     ReentrantValue& operator=(const ReentrantValue&) {
         run();
         return *this;
     }
+
     ~ReentrantValue() noexcept { run(); }
 };
 
@@ -2172,8 +2255,11 @@ void verify_deep_value_walks() {
         require(take(runtime.describe(deep))->size <= source.size(), "Deep value fixture storage is too small.");
         struct NestedValues {
             Runtime* runtime;
+
             TypeId type;
+
             std::span<std::byte> source;
+
             std::span<std::byte> copy;
         };
         NestedValues nested{&runtime, deep, nested_source, nested_copy};
@@ -2225,9 +2311,13 @@ void verify_deep_value_walks() {
         take(runtime.assign_value(deep, destination, source));
         struct NestedTrace {
             Runtime* runtime;
+
             TypeId type;
+
             std::span<const std::byte> storage;
+
             std::size_t visits{};
+
             std::size_t nested_visits{};
         };
         NestedTrace tracing{&runtime, deep, destination};
@@ -2348,6 +2438,7 @@ void verify_scalar_block() {
 
 struct ScalarCallbacks {
     std::uint32_t value{};
+
     static inline std::array<int, 4> calls{};
 };
 
@@ -2403,9 +2494,13 @@ void verify_scalar_plans() {
 
 struct AddressSensitiveRecord {
     std::uint32_t number{17};
+
     ReferenceSlot target;
+
     static inline AddressSensitiveRecord* alternate{};
+
     static inline std::size_t address_calls{};
+
     AddressSensitiveRecord* operator&() noexcept {
         ++address_calls;
         return alternate ? alternate : this;
@@ -2414,7 +2509,9 @@ struct AddressSensitiveRecord {
 
 struct AddressSensitiveOwner {
     AddressSensitiveRecord inner;
+
     static inline AddressSensitiveOwner* latest{};
+
     AddressSensitiveOwner() { latest = this; }
 };
 
@@ -2448,6 +2545,7 @@ void verify_native_member_address() {
     take(runtime.write_reference({types[0], ValueForm::strong_reference}, actual->inner.target, target.reference()));
     struct Edges {
         ObjectId expected;
+
         std::size_t count{};
     } edges{target_id};
     take(runtime.visit_references(
@@ -2476,12 +2574,19 @@ void verify_native_member_address() {
 }
 
 void verify_runtime_math_precision();
+
 void verify_runtime_inheritance();
+
 void verify_reference_sequences();
+
 void verify_field_ranges();
+
 void verify_type_validation();
+
 void verify_array_elements();
+
 void verify_value_paths();
+
 void verify_write_stamps();
 
 int main() {

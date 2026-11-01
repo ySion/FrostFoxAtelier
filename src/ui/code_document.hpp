@@ -11,10 +11,15 @@ public:
     explicit CodeDocument(std::wstring text) : buffer_(validated(std::move(text)), 1024 * 1024, false, false) {
         buffer_.select({}, false);
     }
+
     const std::wstring& text() const noexcept { return buffer_.current().text; }
+
     std::uint64_t revision() const noexcept { return buffer_.revision(); }
+
     detail::TextEdit& edit() noexcept { return buffer_; }
+
     const detail::TextEdit& edit() const noexcept { return buffer_; }
+
     void locate(std::size_t line, std::size_t column) {
         const auto row = std::min(line ? line - 1 : 0, buffer_.line_count() - 1);
         const auto offset = buffer_.line_start(row) +
@@ -29,6 +34,7 @@ private:
             throw std::invalid_argument("CodeDocument requires bounded Unicode text with LF line endings.");
         return text;
     }
+
     detail::TextEdit buffer_;
 };
 }

@@ -6,12 +6,16 @@
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::material;
+
 using Program = std::shared_ptr<const source::MaterialProgram>;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
@@ -19,15 +23,18 @@ T take(Result<T> value) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
+
 void near(float actual, float expected) {
     require(std::isfinite(actual) && std::abs(actual - expected) < 2e-6f,
             "Material output differs from independent expected value.");
 }
+
 void collect(Runtime& runtime) {
     take(runtime.begin_collection());
     while (runtime.collection_phase() != CollectionPhase::idle)
         (void)take(runtime.collect_step({32}));
 }
+
 Program compile(std::string_view gain = "0.5", bool renamed = false, bool reversed = false, bool vector_gain = false) {
     Runtime compiler;
     take(register_program_types(compiler));
@@ -50,6 +57,7 @@ Program compile(std::string_view gain = "0.5", bool renamed = false, bool revers
                                          take(compiler.native_type<Output>()),
                                          take(compiler.native_type<TextureInput>()), "resources.source", text));
 } // Each compile Runtime dies before its program is consumed.
+
 DefinitionRef definition(Program program) {
     // Author order intentionally differs from the first program's declarations.
     std::array<TextureDefault, 2> defaults{
@@ -59,20 +67,24 @@ DefinitionRef definition(Program program) {
     defaults[1].empty_value = {9, 9, 9, 9}; // Factory must not retain writable author aliases.
     return result;
 }
+
 ImageRef pixel(std::array<std::uint8_t, 4> rgba) {
     return std::make_shared<const Image>(1, 1, std::vector<std::uint8_t>(rgba.begin(), rgba.end()));
 }
+
 SourceState source_state(DefinitionRef def, const ObjectRoot& color, const ObjectRoot& data) {
     SourceState result{def, {}};
     for (const auto& input : def->textures())
         result.default_textures.push_back(input.path == "color" ? color : data);
     return result;
 }
+
 InstanceState instance_state(ObjectRoot parent, std::vector<Override> entries = {}) {
     InstanceState state{std::move(parent), std::move(entries), {}};
     state.textures.resize(state.entries.size());
     return state;
 }
+
 float color_red(const ProgramSurfaceRef& surface) {
     return take(surface->evaluate({})).base_color.x;
 }

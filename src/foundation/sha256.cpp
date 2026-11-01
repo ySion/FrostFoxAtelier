@@ -17,12 +17,14 @@ Sha256::Sha256() {
         throw std::runtime_error("Cannot create SHA-256 hash");
     }
 }
+
 Sha256::~Sha256() {
     if (hash_)
         BCryptDestroyHash(hash_);
     if (algorithm_)
         BCryptCloseAlgorithmProvider(algorithm_, 0);
 }
+
 void Sha256::add(std::span<const std::byte> bytes) {
     while (!bytes.empty()) {
         const auto count = static_cast<ULONG>(std::min<std::size_t>(bytes.size(), 1024 * 1024));
@@ -31,6 +33,7 @@ void Sha256::add(std::span<const std::byte> bytes) {
         bytes = bytes.subspan(count);
     }
 }
+
 std::string Sha256::finish() {
     std::array<unsigned char, 32> digest{};
     if (BCryptFinishHash(hash_, digest.data(), static_cast<ULONG>(digest.size()), 0) < 0)
@@ -44,11 +47,13 @@ std::string Sha256::finish() {
     }
     return result;
 }
+
 std::string sha256(std::span<const std::byte> bytes) {
     Sha256 hash;
     hash.add(bytes);
     return hash.finish();
 }
+
 std::string sha256_file(const std::filesystem::path& path) {
     std::ifstream file(platform::windows_file_path(path), std::ios::binary);
     if (!file)

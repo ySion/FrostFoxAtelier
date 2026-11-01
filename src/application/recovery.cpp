@@ -15,9 +15,13 @@ const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
     attempted_ = true;
     struct Report {
         const Outcome& outcome;
+
         const std::filesystem::path& project;
+
         const std::filesystem::path& scene;
+
         std::string_view reason;
+
         ~Report() {
             try {
                 logging::Entry entry{.severity = !outcome ? logging::Severity::error : logging::Severity::info,

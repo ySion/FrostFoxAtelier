@@ -37,7 +37,9 @@ T take(llvm::Expected<T> value) {
 
 struct CodeSymbol {
     std::uint64_t section_index;
+
     std::uint64_t offset;
+
     llvm::StringRef name;
 };
 

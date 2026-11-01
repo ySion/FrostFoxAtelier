@@ -22,12 +22,17 @@ concept Real = std::same_as<T, float> || std::same_as<T, double>;
 // the storage contract never permits a fourth-lane load from a Vector3 object.
 template <Real T, std::size_t N>
 struct BasicVector;
+
 template <Real T>
 struct BasicVector<T, 2> {
     using Scalar = T;
+
     static constexpr std::size_t dimensions = 2;
+
     T x{};
+
     T y{};
+
     constexpr T& operator[](std::size_t i) noexcept {
         if (i == 0)
             return x;
@@ -35,6 +40,7 @@ struct BasicVector<T, 2> {
             return y;
         std::unreachable();
     }
+
     constexpr const T& operator[](std::size_t i) const noexcept {
         if (i == 0)
             return x;
@@ -42,15 +48,22 @@ struct BasicVector<T, 2> {
             return y;
         std::unreachable();
     }
+
     constexpr bool operator==(const BasicVector&) const = default;
 };
+
 template <Real T>
 struct BasicVector<T, 3> {
     using Scalar = T;
+
     static constexpr std::size_t dimensions = 3;
+
     T x{};
+
     T y{};
+
     T z{};
+
     constexpr T& operator[](std::size_t i) noexcept {
         if (i == 0)
             return x;
@@ -60,6 +73,7 @@ struct BasicVector<T, 3> {
             return z;
         std::unreachable();
     }
+
     constexpr const T& operator[](std::size_t i) const noexcept {
         if (i == 0)
             return x;
@@ -69,16 +83,24 @@ struct BasicVector<T, 3> {
             return z;
         std::unreachable();
     }
+
     constexpr bool operator==(const BasicVector&) const = default;
 };
+
 template <Real T>
 struct BasicVector<T, 4> {
     using Scalar = T;
+
     static constexpr std::size_t dimensions = 4;
+
     T x{};
+
     T y{};
+
     T z{};
+
     T w{};
+
     constexpr T& operator[](std::size_t i) noexcept {
         if (i == 0)
             return x;
@@ -90,6 +112,7 @@ struct BasicVector<T, 4> {
             return w;
         std::unreachable();
     }
+
     constexpr const T& operator[](std::size_t i) const noexcept {
         if (i == 0)
             return x;
@@ -101,6 +124,7 @@ struct BasicVector<T, 4> {
             return w;
         std::unreachable();
     }
+
     constexpr bool operator==(const BasicVector&) const = default;
 };
 
@@ -110,32 +134,38 @@ template <Real T, std::size_t N>
         a[i] += b[i];
     return a;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> operator-(BasicVector<T, N> a, BasicVector<T, N> b) noexcept {
     for (std::size_t i = 0; i < N; ++i)
         a[i] -= b[i];
     return a;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> operator+(BasicVector<T, N> value) noexcept {
     return value;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> operator-(BasicVector<T, N> value) noexcept {
     for (std::size_t i = 0; i < N; ++i)
         value[i] = -value[i];
     return value;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> operator*(BasicVector<T, N> value, std::type_identity_t<T> scale) noexcept {
     for (std::size_t i = 0; i < N; ++i)
         value[i] *= scale;
     return value;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> operator*(std::type_identity_t<T> scale, BasicVector<T, N> value) noexcept {
     return value * scale;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> operator/(BasicVector<T, N> value, std::type_identity_t<T> scale) noexcept {
     // Divide each component: multiplying by 1/scale overflows for small scale.
@@ -143,22 +173,27 @@ template <Real T, std::size_t N>
         value[i] /= scale;
     return value;
 }
+
 template <Real T, std::size_t N>
 constexpr BasicVector<T, N>& operator+=(BasicVector<T, N>& a, BasicVector<T, N> b) noexcept {
     return a = a + b;
 }
+
 template <Real T, std::size_t N>
 constexpr BasicVector<T, N>& operator-=(BasicVector<T, N>& a, BasicVector<T, N> b) noexcept {
     return a = a - b;
 }
+
 template <Real T, std::size_t N>
 constexpr BasicVector<T, N>& operator*=(BasicVector<T, N>& value, std::type_identity_t<T> scale) noexcept {
     return value = value * scale;
 }
+
 template <Real T, std::size_t N>
 constexpr BasicVector<T, N>& operator/=(BasicVector<T, N>& value, std::type_identity_t<T> scale) noexcept {
     return value = value / scale;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr T dot(BasicVector<T, N> a, BasicVector<T, N> b) noexcept {
     T result = a[0] * b[0];
@@ -166,10 +201,12 @@ template <Real T, std::size_t N>
         result += a[i] * b[i];
     return result;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 3> cross(BasicVector<T, 3> a, BasicVector<T, 3> b) noexcept {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] bool is_finite(BasicVector<T, N> value) noexcept {
     for (std::size_t i = 0; i < N; ++i)
@@ -177,6 +214,7 @@ template <Real T, std::size_t N>
             return false;
     return true;
 }
+
 template <Real T, std::size_t N>
 [[nodiscard]] T length(BasicVector<T, N> value) noexcept {
     if constexpr (N == 2)
@@ -186,6 +224,7 @@ template <Real T, std::size_t N>
     if constexpr (N == 4)
         return std::hypot(std::hypot(value.x, value.y), std::hypot(value.z, value.w));
 }
+
 // Zero and nonfinite values have no normalized result. Rescaling also handles
 // finite values whose length cannot be represented in the component type.
 template <Real T, std::size_t N>
@@ -200,6 +239,7 @@ template <Real T, std::size_t N>
     value /= scale;
     return value / std::sqrt(dot(value, value));
 }
+
 // Same formula as source math.lerp: exact at t = 0 and t = 1 for finite values, not monotonic.
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> lerp(BasicVector<T, N> a, BasicVector<T, N> b,
@@ -212,24 +252,33 @@ template <Real T, std::size_t N>
 template <Real T>
 struct BasicQuaternion {
     using Scalar = T;
+
     T x{};
+
     T y{};
+
     T z{};
+
     T w{1};
+
     constexpr bool operator==(const BasicQuaternion&) const = default;
 };
+
 template <Real T>
 [[nodiscard]] constexpr BasicQuaternion<T> operator+(BasicQuaternion<T> value) noexcept {
     return value;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicQuaternion<T> operator-(BasicQuaternion<T> value) noexcept {
     return {-value.x, -value.y, -value.z, -value.w};
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicQuaternion<T> conjugate(BasicQuaternion<T> q) noexcept {
     return {-q.x, -q.y, -q.z, q.w};
 }
+
 // Hamilton product: a*b applies b then a. For our row-vector matrices this is
 // rotation_matrix(a*b) == rotation_matrix(b) * rotation_matrix(a).
 template <Real T>
@@ -237,10 +286,12 @@ template <Real T>
     return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
             a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
 }
+
 template <Real T>
 [[nodiscard]] bool is_finite(BasicQuaternion<T> q) noexcept {
     return is_finite(BasicVector<T, 4>{q.x, q.y, q.z, q.w});
 }
+
 template <Real T>
 [[nodiscard]] std::optional<BasicQuaternion<T>> try_normalize(BasicQuaternion<T> q) noexcept {
     const auto unit = try_normalize(BasicVector<T, 4>{q.x, q.y, q.z, q.w});
@@ -248,6 +299,7 @@ template <Real T>
         return std::nullopt;
     return BasicQuaternion<T>{unit->x, unit->y, unit->z, unit->w};
 }
+
 // Requires a unit quaternion. Normalize at input boundaries, not per vertex.
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 3> rotate(BasicQuaternion<T> unit, BasicVector<T, 3> value) noexcept {
@@ -261,61 +313,83 @@ template <Real T>
 template <Real T>
 struct BasicMatrix4 {
     using Scalar = T;
+
     std::array<T, 16> elements{};
+
     constexpr T& operator[](std::size_t i) noexcept { return elements[i]; }
+
     constexpr const T& operator[](std::size_t i) const noexcept { return elements[i]; }
+
     constexpr T& operator()(std::size_t row, std::size_t column) noexcept { return elements[row * 4 + column]; }
+
     constexpr const T& operator()(std::size_t row, std::size_t column) const noexcept {
         return elements[row * 4 + column];
     }
+
     constexpr T* data() noexcept { return elements.data(); }
+
     constexpr const T* data() const noexcept { return elements.data(); }
+
     constexpr auto begin() noexcept { return elements.begin(); }
+
     constexpr auto begin() const noexcept { return elements.begin(); }
+
     constexpr auto end() noexcept { return elements.end(); }
+
     constexpr auto end() const noexcept { return elements.end(); }
+
     static constexpr std::size_t size() noexcept { return 16; }
+
     static constexpr BasicMatrix4 identity() noexcept { return {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}; }
+
     constexpr bool operator==(const BasicMatrix4&) const = default;
 };
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator+(BasicMatrix4<T> a, const BasicMatrix4<T>& b) noexcept {
     for (std::size_t i = 0; i < a.size(); ++i)
         a[i] += b[i];
     return a;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator-(BasicMatrix4<T> a, const BasicMatrix4<T>& b) noexcept {
     for (std::size_t i = 0; i < a.size(); ++i)
         a[i] -= b[i];
     return a;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator+(BasicMatrix4<T> value) noexcept {
     return value;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator-(BasicMatrix4<T> value) noexcept {
     for (T& component : value)
         component = -component;
     return value;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator*(BasicMatrix4<T> value, std::type_identity_t<T> scale) noexcept {
     for (T& component : value)
         component *= scale;
     return value;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator*(std::type_identity_t<T> scale, BasicMatrix4<T> value) noexcept {
     return value * scale;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator/(BasicMatrix4<T> value, std::type_identity_t<T> scale) noexcept {
     for (T& component : value)
         component /= scale;
     return value;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator*(const BasicMatrix4<T>& a, const BasicMatrix4<T>& b) noexcept {
     BasicMatrix4<T> result;
@@ -325,6 +399,7 @@ template <Real T>
                                   a(row, 3) * b(3, column);
     return result;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> transpose(const BasicMatrix4<T>& value) noexcept {
     BasicMatrix4<T> result;
@@ -333,6 +408,7 @@ template <Real T>
             result(row, column) = value(column, row);
     return result;
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 4> operator*(BasicVector<T, 4> v, const BasicMatrix4<T>& m) noexcept {
     return {((v.x * m[0] + v.y * m[4]) + v.z * m[8]) + v.w * m[12],
@@ -340,6 +416,7 @@ template <Real T>
             ((v.x * m[2] + v.y * m[6]) + v.z * m[10]) + v.w * m[14],
             ((v.x * m[3] + v.y * m[7]) + v.z * m[11]) + v.w * m[15]};
 }
+
 // Affine operations: projection requires an explicit homogeneous divide.
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 3> transform_point(BasicVector<T, 3> point,
@@ -347,6 +424,7 @@ template <Real T>
     const auto value = BasicVector<T, 4>{point.x, point.y, point.z, 1} * affine;
     return {value.x, value.y, value.z};
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 3> transform_direction(BasicVector<T, 3> direction,
                                                               const BasicMatrix4<T>& affine) noexcept {
@@ -354,6 +432,7 @@ template <Real T>
             (direction.x * affine[1] + direction.y * affine[5]) + direction.z * affine[9],
             (direction.x * affine[2] + direction.y * affine[6]) + direction.z * affine[10]};
 }
+
 // Requires a unit quaternion, like rotate().
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> rotation_matrix(BasicQuaternion<T> unit) noexcept {
@@ -362,6 +441,7 @@ template <Real T>
              1 - 2 * x * x - 2 * z * z, 2 * y * z + 2 * x * w, 0, 2 * x * z + 2 * y * w, 2 * y * z - 2 * x * w,
              1 - 2 * x * x - 2 * y * y, 0, 0, 0, 0, 1}};
 }
+
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> trs_matrix(BasicVector<T, 3> position, BasicQuaternion<T> unit_rotation,
                                                    BasicVector<T, 3> scale) noexcept {
@@ -374,6 +454,7 @@ template <Real T>
     result[14] = position.z;
     return result;
 }
+
 template <Real T>
 [[nodiscard]] bool is_finite(const BasicMatrix4<T>& value) noexcept {
     for (T component : value)
@@ -381,6 +462,7 @@ template <Real T>
             return false;
     return true;
 }
+
 // Row equilibration prevents elimination overflow for large finite coefficients
 // without discarding independently small rows. Partial pivoting uses no absolute
 // determinant epsilon. Null means singular/nonfinite, numerical overflow during
@@ -455,9 +537,12 @@ template <Real T>
 // instance transforms share this test so neither accepts what the other rejects.
 struct NormalTransform {
     std::array<float, 9> matrix;
+
     float mirror; // -1 when the linear part reflects, else 1.
 };
+
 enum class NormalTransformFailure { singular, unrepresentable };
+
 [[nodiscard]] inline std::expected<NormalTransform, NormalTransformFailure>
 normal_transform(const std::array<float, 9>& linear) noexcept {
     const double a = linear[0];
@@ -495,37 +580,55 @@ normal_transform(const std::array<float, 9>& linear) noexcept {
 }
 
 using Vector2 = BasicVector<float, 2>;
+
 using Vector3 = BasicVector<float, 3>;
+
 using Vector4 = BasicVector<float, 4>;
+
 using Vector2d = BasicVector<double, 2>;
+
 using Vector3d = BasicVector<double, 3>;
+
 using Vector4d = BasicVector<double, 4>;
+
 using Quaternion = BasicQuaternion<float>;
+
 using Quaterniond = BasicQuaternion<double>;
+
 using Matrix4 = BasicMatrix4<float>;
+
 using Matrix4d = BasicMatrix4<double>;
 
 template <class T>
 inline constexpr Type type_of{};
+
 template <Real T, std::size_t N>
     requires(N >= 2 && N <= 4)
 inline constexpr Type type_of<BasicVector<T, N>>{N == 2   ? Shape::vector2
                                                  : N == 3 ? Shape::vector3
                                                           : Shape::vector4,
                                                  std::same_as<T, double> ? Precision::f64 : Precision::f32};
+
 template <Real T>
 inline constexpr Type type_of<BasicQuaternion<T>>{Shape::quaternion,
                                                   std::same_as<T, double> ? Precision::f64 : Precision::f32};
+
 template <Real T>
 inline constexpr Type type_of<BasicMatrix4<T>>{Shape::matrix4,
                                                std::same_as<T, double> ? Precision::f64 : Precision::f32};
 
 static_assert(sizeof(Vector2) == 8 && sizeof(Vector3) == 12 && sizeof(Vector4) == 16);
+
 static_assert(sizeof(Vector2d) == 16 && sizeof(Vector3d) == 24 && sizeof(Vector4d) == 32);
+
 static_assert(alignof(Vector3) == alignof(float) && alignof(Vector3d) == alignof(double));
+
 static_assert(sizeof(Quaternion) == 16 && sizeof(Quaterniond) == 32);
+
 static_assert(sizeof(Matrix4) == 64 && sizeof(Matrix4d) == 128);
+
 static_assert(std::is_standard_layout_v<Vector3> && std::is_trivially_copyable_v<Vector3>);
+
 static_assert(std::is_standard_layout_v<Matrix4d> && std::is_trivially_copyable_v<Matrix4d>);
 
 }

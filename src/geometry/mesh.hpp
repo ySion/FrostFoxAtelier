@@ -15,20 +15,27 @@ namespace atelier::geometry {
 
 struct Vertex {
     float position[3];
+
     float normal[3];
+
     float uv[2]{};
+
     float tangent[4]{}; // Tangent and handedness: MikkTSpace on publication, or authored (Tangents::authored).
 };
 
 void generate_tangents(std::span<Vertex>);
+
 // Keeps each authored handedness; orthogonalizes XYZ against the unit normal and normalizes it.
 // A zero tangent, or one parallel to its normal at any length, takes the same fallback as degenerate UVs.
 void adopt_tangents(std::span<Vertex>);
+
 enum class Tangents : std::uint8_t { generate, authored };
 
 struct MeshPart {
     std::uint32_t first_vertex{};
+
     std::uint32_t vertex_count{};
+
     std::uint32_t material{};
 };
 
@@ -38,6 +45,7 @@ struct MaterialSlot {
 
 struct Bounds {
     std::array<float, 3> minimum{};
+
     std::array<float, 3> maximum{};
 };
 
@@ -52,6 +60,7 @@ public:
                   std::vector<MaterialSlot> materials = {}, std::vector<MeshPart> parts = {},
                   Tangents tangents = Tangents::generate)
         : Mesh(std::move(vertices), std::move(edge_masks), std::move(materials), std::move(parts), tangents, false) {}
+
     // Restores an already published snapshot: validates the triangle partition and
     // finite, orthonormal tangent frames, but never renormalizes any float bits.
     // Unlike author construction, slots and parts must already be explicit.
@@ -137,11 +146,17 @@ private:
 
 public:
     Mesh& operator=(const Mesh&) = delete;
+
     Mesh& operator=(Mesh&&) = delete;
+
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
+
     [[nodiscard]] const Bounds& bounds() const noexcept { return bounds_; }
+
     [[nodiscard]] std::span<const MaterialSlot> materials() const noexcept { return materials_; }
+
     [[nodiscard]] std::span<const MeshPart> parts() const noexcept { return parts_; }
+
     [[nodiscard]] std::uint32_t material_slot(std::size_t triangle) const noexcept {
         const auto vertex = triangle * 3;
         const auto at =
@@ -149,15 +164,20 @@ public:
                              [](std::size_t first, const MeshPart& part) { return first < part.first_vertex; });
         return std::prev(at)->material;
     }
+
     [[nodiscard]] std::uint8_t edge_mask(std::size_t triangle) const noexcept {
         return edge_masks_.empty() ? std::uint8_t{7} : edge_masks_[triangle];
     }
 
 private:
     std::vector<Vertex> vertices_;
+
     std::vector<std::uint8_t> edge_masks_;
+
     std::vector<MaterialSlot> materials_;
+
     std::vector<MeshPart> parts_;
+
     Bounds bounds_;
 };
 
@@ -166,6 +186,7 @@ using MeshRef = std::shared_ptr<const Mesh>;
 // A captured source key and its exact immutable CPU content, without material or Runtime ownership.
 struct MeshSource {
     std::string source;
+
     MeshRef resolved;
 };
 

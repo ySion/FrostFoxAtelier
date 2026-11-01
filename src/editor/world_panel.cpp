@@ -19,6 +19,7 @@ std::wstring title(std::string_view name) {
     }
     return result;
 }
+
 std::wstring choice_title(const ViewOptionInfo& option, double value) {
     if (option.option == ViewOption::antialiasing) {
         constexpr std::array names{L"Off", L"TAA", L"SMAA", L"SMAA T2x"};
@@ -28,18 +29,22 @@ std::wstring choice_title(const ViewOptionInfo& option, double value) {
         return value < 0 ? L"All volumes" : L"Volume " + std::to_wstring(unsigned(value));
     return title(option.choices[static_cast<std::size_t>(value)]);
 }
+
 bool same(const renderer::ProbeVolumeStats& a, const renderer::ProbeVolumeStats& b) {
     return a.enabled == b.enabled && a.rolling == b.rolling && a.minimum == b.minimum && a.maximum == b.maximum &&
            a.spacing == b.spacing && a.counts == b.counts && a.resident == b.resident && a.updated == b.updated &&
            a.reset_probes == b.reset_probes;
 }
+
 std::wstring vector_text(const std::array<float, 3>& v) {
     return std::format(L"{:.4g} / {:.4g} / {:.4g}", v[0], v[1], v[2]);
 }
 }
+
 double WorldPanel::displayed(const renderer::ViewSettings& view, ViewOption option) const {
     return edit_ && edit_->key == world_control::field(option) ? edit_->value : view_value(view, option);
 }
+
 Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings& candidate) {
     using namespace world_control;
     if (action.key == performance_table)
@@ -124,6 +129,7 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
     }
     return true;
 }
+
 std::vector<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer::ViewSettings& view) const {
     using namespace world_control;
     std::vector<ui::MenuItem> items;
@@ -162,6 +168,7 @@ std::vector<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer
     }
     return items;
 }
+
 void WorldPanel::observe(const renderer::FrameStats& stats) {
     for (std::size_t i = 0; i < observed_.size(); ++i) {
         const auto& value = stats.scene_lit_probe_volumes[i];
@@ -179,6 +186,7 @@ void WorldPanel::observe(const renderer::FrameStats& stats) {
         text[5] = value.enabled ? std::format(L"{} scheduled · {} reset", value.updated, value.reset_probes) : L"—";
     }
 }
+
 void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& document,
                         const renderer::ViewSettings& view, bool editable, std::wstring_view main_camera,
                         ui_language::ActionBinding clear_camera) const {

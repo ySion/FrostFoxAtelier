@@ -12,6 +12,7 @@ void fallback_tangent(Vertex& vertex) {
         vertex.tangent[i] = static_cast<float>(t[i] / length);
 }
 }
+
 void adopt_tangents(std::span<Vertex> vertices) {
     for (auto& vertex : vertices) {
         auto& t = vertex.tangent;
@@ -33,6 +34,7 @@ void adopt_tangents(std::span<Vertex> vertices) {
             t[i] = static_cast<float>(orthogonal[i] / length);
     }
 }
+
 void generate_tangents(std::span<Vertex> vertices) {
     // Fallback also covers isolated degenerate UVs. Never change authored normals.
     for (auto& vertex : vertices) {

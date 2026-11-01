@@ -30,6 +30,7 @@ concept Argument =
 
 struct Context {
     std::span<const Field> fields{};
+
     std::optional<Repeat> repeat{};
 };
 

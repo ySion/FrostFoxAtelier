@@ -8,14 +8,17 @@
 
 namespace {
 using namespace atelier::math;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <Real T>
 bool near(T a, T b) {
     return std::abs(a - b) <= std::numeric_limits<T>::epsilon() * T{64} * std::max(T{1}, std::abs(b));
 }
+
 template <Real T, std::size_t N>
 bool near(BasicVector<T, N> a, BasicVector<T, N> b) {
     for (std::size_t i = 0; i < N; ++i)

@@ -1,5 +1,6 @@
 // Each sample is one frame of a profile Recorder, so samples and nested phases use the product clock.
 constinit timing::Marker profile_calibration{"profile.calibration", "Scope cost calibration", &timing::frame};
+
 constexpr std::array<timing::Marker*, 1> profile_markers{&profile_calibration};
 
 // Steps a Play copy of the scene at 60 Hz, one fixed step per frame, until no rigid
@@ -95,6 +96,7 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
     changed(play->stop());
     take(editor::write_file(output, report.dump(2) + "\n"));
 }
+
 // Loads the real project through Session and measures existing CPU consumers.
 // No window, graphics device or author edits; only the Play stages use a second World.
 void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene, const std::filesystem::path& output,

@@ -8,27 +8,34 @@
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::acceptance::reflection;
+
 using source::Program;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 void publish(Program& program, std::string_view text) {
     auto request = take(program.request("shared-calls.source", text));
     auto candidate = take(Program::prepare(request));
     take(program.try_publish(candidate));
 }
+
 void rejected(Program& program, std::string_view text, std::string_view expected) {
     auto request = take(program.request("rejected-borrow.source", text));
     auto candidate = Program::prepare(request);

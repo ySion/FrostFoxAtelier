@@ -11,29 +11,41 @@
 namespace atelier::renderer::detail {
 namespace {
 using V = math::Vector3d;
+
 using M = math::Matrix4d;
+
 constexpr std::uint32_t cell_size = 128;
+
 constexpr std::uint32_t grid_size = shadow_atlas_extent / cell_size;
+
 // lit_shadow_sampling offsets each receiver along its normal by one interior
 // texel: at most this fraction of its point distance or cascade radius, at
 // the smallest face. The 3x3 filter footprint stays inside the guard texels.
 constexpr double normal_offset_ratio = 2.0 / (cell_size - 2 * shadow_tile_border);
+
 constexpr std::uint32_t no_slot = ~0u;
+
 // Cascade fitting to the measured receiver depth; scene-lit.md gives the reasons.
 constexpr double fit_near_margin = .8;
+
 constexpr double fit_far_margin = 1.25;
+
 constexpr std::int32_t fit_shrink_quarters = 2; // Quarter octaves.
+
 constexpr std::uint32_t fit_shrink_frames = 32;
+
 void check(bool condition, const char* message) {
     if (!condition)
         throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false};
 }
+
 M matrix(const std::array<float, 16>& input) {
     M result;
     for (std::size_t i = 0; i < 16; ++i)
         result.elements[i] = input[i];
     return result;
 }
+
 std::array<float, 16> packed(const M& input) {
     std::array<float, 16> result;
     for (std::size_t i = 0; i < 16; ++i) {
@@ -42,24 +54,30 @@ std::array<float, 16> packed(const M& input) {
     }
     return result;
 }
+
 double dot(V a, V b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
+
 double length(V a) {
     return std::sqrt(dot(a, a));
 }
+
 V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
+
 V unit(V a) {
     const auto l = length(a);
     check(l > 0 && std::isfinite(l), "Invalid shadow basis");
     return a / l;
 }
+
 V corner(const ShadowBounds& b, std::uint32_t i) {
     return {i & 1 ? b.maximum[0] : b.minimum[0], i & 2 ? b.maximum[1] : b.minimum[1],
             i & 4 ? b.maximum[2] : b.minimum[2]};
 }
+
 double distance_squared(const ShadowBounds& b, V p) {
     double result = 0;
     for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -68,12 +86,14 @@ double distance_squared(const ShadowBounds& b, V p) {
     }
     return result;
 }
+
 double far_distance(const ShadowBounds& b, V p) {
     double result = 0;
     for (std::uint32_t i = 0; i < 8; ++i)
         result = std::max(result, length(corner(b, i) - p));
     return result;
 }
+
 // Homogeneous plane rejection is conservative for boxes crossing the eye or
 // near plane, unlike projecting only the corners and dividing by w.
 bool intersects(const ShadowBounds& b, const M& vp, double padding = 0, double far_depth = 0) {
@@ -98,6 +118,7 @@ bool intersects(const ShadowBounds& b, const M& vp, double padding = 0, double f
     }
     return std::ranges::none_of(outside, [](bool value) { return value; });
 }
+
 ShadowBounds expanded(const ShadowBounds& b, double amount) {
     ShadowBounds result;
     for (std::size_t i = 0; i < 3; ++i) {
@@ -109,10 +130,12 @@ ShadowBounds expanded(const ShadowBounds& b, double amount) {
     }
     return result;
 }
+
 double ceil_power_two(double value) {
     check(value > 0 && std::isfinite(value), "Invalid shadow projection extent");
     return std::exp2(std::ceil(std::log2(value)));
 }
+
 M view(V origin, V forward, V up) {
     const auto z = unit(forward);
     const auto x = unit(cross(up, z));
@@ -120,6 +143,7 @@ M view(V origin, V forward, V up) {
     return {
         {x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -dot(origin, x), -dot(origin, y), -dot(origin, z), 1}};
 }
+
 M point_projection(V origin, std::uint32_t face, double near_z, double far_z) {
     constexpr std::array<V, 6> directions{{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
     constexpr std::array<V, 6> ups{{{0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0}}};
@@ -127,6 +151,7 @@ M point_projection(V origin, std::uint32_t face, double near_z, double far_z) {
         {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -near_z / (far_z - near_z), 1, 0, 0, near_z * far_z / (far_z - near_z), 0}};
     return view(origin, directions[face], ups[face]) * projection;
 }
+
 M expanded_projection(M vp, std::uint32_t size) {
     const double scale = double(size - 2 * shadow_tile_border) / size;
     for (std::size_t row = 0; row < 4; ++row) {
@@ -135,25 +160,42 @@ M expanded_projection(M vp, std::uint32_t size) {
     }
     return vp;
 }
+
 struct Request {
     std::uint32_t kind{};
+
     std::uint32_t size{128};
+
     std::uint32_t count{};
+
     double projected_diameter{};
+
     double importance{}; // Point power times the camera solid angle of its support.
+
     std::array<bool, 6> needed{};
+
     std::array<M, 6> projection{};
+
     std::array<std::array<double, 2>, 6> depth{};
+
     std::array<float, 4> splits{};
+
     std::array<float, 4> starts{};
+
     V origin{}; // Point and rectangle cube centre.
+
     // Orthographic matrices are snapped at the allocated resolution.
     V axis_x{};
+
     V axis_y{};
+
     V axis_z{};
+
     std::array<V, 4> centers{};
+
     std::array<double, 4> radii{};
 };
+
 M request_projection(const Request& request, std::uint32_t face, std::uint32_t size) {
     if (request.kind == 1)
         return request.projection[face];
@@ -171,11 +213,13 @@ M request_projection(const Request& request, std::uint32_t face, std::uint32_t s
              -z.y / (far_z - near_z), 0, x.z / radius, y.z / radius, -z.z / (far_z - near_z), 0, -cx / radius,
              -cy / radius, far_z / (far_z - near_z), 1}};
 }
+
 V unproject(const M& inverse, double x, double y, double z) {
     const auto p = math::Vector4d{x, y, z, 1} * inverse;
     check(std::isfinite(p.w) && p.w != 0, "Shadow planning needs a finite camera near plane");
     return {p.x / p.w, p.y / p.w, p.z / p.w};
 }
+
 // Rectangles cast from their centre; their support matches lit_cluster_radius.
 // `drawn` is the origin the light's faces were drawn from when it differs from
 // the current one: while their redraw waits for budget the shader selects
@@ -241,6 +285,7 @@ Request point_request(const Frame& frame, const GpuLightSource& source, std::spa
     request.importance = std::max(0., radiance) * flux * solid_angle;
     return request;
 }
+
 // fit is the measured receiver range [near, far] in camera view Z. Without
 // it, splits are fixed fractions of the conservative receiver bound.
 Request directional_request(const Frame& frame, const GpuLightSource& source, std::span<const ShadowCaster> receivers,
@@ -372,68 +417,116 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
 struct ShadowCache::State {
     struct Face {
         std::uint32_t slot{no_slot};
+
         std::uint32_t size{};
+
         std::uint32_t generation{};
+
         std::array<float, 16> projection{};
+
         std::array<float, 4> depth{}; // GpuShadowFace::depth of the drawn projection.
+
         std::uint64_t used{};
+
         std::uint64_t pinned{};
+
         bool stationary_valid{};
+
         bool dynamic_valid{};
+
         bool dynamic_nonempty{};
+
         bool drawn{};
     };
+
     struct Light {
         std::array<Face, 6> faces;
+
         std::uint32_t preferred_size{};
+
         bool high_tier{};
+
         std::uint32_t waiting{}; // Consecutive frames this light's redraw was deferred.
+
         std::array<float, 3> origin{}; // Cube centre all drawn faces share.
+
         float fade{1}; // Direct-light factor; withheld lights restart at 0.
     };
+
     // Cascades and lights without a stable key (no cached state to defer to)
     // always redraw, outside the budget.
     struct Redraw {
         std::uint32_t source;
+
         std::uint32_t face;
+
         std::uint32_t plan_face;
+
         std::uint32_t size;
+
         std::uint32_t rank;
+
         bool exempt;
     };
+
     struct ReservationUndo {
         Face* face;
+
         Face previous;
     };
+
     std::vector<Light> lights;
+
     std::vector<ReservationUndo> reservation_undo;
+
     std::vector<Light> previous_lights;
+
     std::vector<Request> requests;
+
     std::vector<std::uint32_t> sizes;
+
     std::vector<std::uint32_t> order;
+
     std::vector<Redraw> redraws;
+
     std::vector<std::uint8_t> queued; // Per light: 1 has redraws, 2 also has an undrawn face.
+
     std::vector<ShadowCaster> receivers;
+
     std::array<bool, grid_size * grid_size> occupied{};
+
     ShadowFramePlan plan;
+
     std::uint64_t scene{};
+
     std::uint64_t sequence{};
+
     std::uint64_t plan_serial{1};
+
     std::uint32_t next_generation{};
+
     bool initialized{};
+
     bool pending{};
+
     bool plan_ready{};
+
     // Fitted cascade range in quarter octaves of camera view Z. Each end grows
     // at once and shrinks on its own, to the envelope of fit_shrink_frames
     // consecutive readings that all stayed at least fit_shrink_quarters inside it.
     struct FitEnd {
         std::int32_t value{};
+
         std::int32_t envelope{};
+
         std::uint32_t frames{};
     };
+
     struct Fit {
         FitEnd lower;
+
         FitEnd upper;
+
         bool valid{};
     } fit;
 
@@ -468,6 +561,7 @@ struct ShadowCache::State {
         track(fit.lower, lower, -1);
         track(fit.upper, upper, 1);
     }
+
     std::optional<std::array<double, 2>> fitted() const {
         if (!fit.valid)
             return {};
@@ -490,11 +584,13 @@ struct ShadowCache::State {
             for (std::uint32_t column = 0; column < n; ++column)
                 occupied[(y + row) * grid_size + x + column] = value;
     }
+
     void release(Face& face) {
         mark(face, false);
         face.slot = no_slot;
         face.stationary_valid = face.dynamic_valid = face.drawn = false;
     }
+
     bool allocate(Face& face, std::uint32_t size) {
         const auto n = size / cell_size;
         for (std::uint32_t y = 0; y + n <= grid_size; y += n)
@@ -517,6 +613,7 @@ struct ShadowCache::State {
             }
         return false;
     }
+
     bool evict() {
         Face* oldest = nullptr;
         for (auto& light : lights)
@@ -529,6 +626,7 @@ struct ShadowCache::State {
         release(*oldest);
         return true;
     }
+
     bool reserve(std::uint32_t source, const Request& request, std::uint32_t size) {
         reservation_undo.clear();
         bool resident = true;
@@ -577,6 +675,7 @@ struct ShadowCache::State {
         reservation_undo.clear();
         return true;
     }
+
     void begin_plan(std::size_t sources) {
         plan.faces.clear();
         plan.updates.clear();
@@ -590,6 +689,7 @@ struct ShadowCache::State {
                     face.pinned = 0;
         }
     }
+
     // Publishes the face's drawn projection; the near-plane bit set by prepare is kept.
     void publish(GpuShadowFace& gpu, const Face& face, std::uint32_t source, std::uint32_t index) {
         const float inverse = 1.f / shadow_atlas_extent;
@@ -601,6 +701,7 @@ struct ShadowCache::State {
                      float((face.slot / grid_size) * cell_size + shadow_tile_border) * inverse};
         gpu.meta = {1u | (face.dynamic_nonempty ? 2u : 0u) | (gpu.meta[0] & 4u), face.generation, source, index};
     }
+
     void append(std::uint32_t source, const Request& request, std::uint32_t size, std::uint32_t rank, bool exempt) {
         auto& gpu_light = plan.lights[source];
         gpu_light.meta = {request.kind, static_cast<std::uint32_t>(plan.faces.size()), request.count, 0};
@@ -627,6 +728,7 @@ struct ShadowCache::State {
             redraws.push_back({source, i, static_cast<std::uint32_t>(plan.faces.size() - 1), size, rank, exempt});
         }
     }
+
     void redraw(const Redraw& item, const Request& request, std::span<const ShadowCaster> casters) {
         auto& face = lights[item.source].faces[item.face];
         const auto vp = request_projection(request, item.face, item.size);
@@ -668,6 +770,7 @@ struct ShadowCache::State {
         face.drawn = true;
         lights[item.source].origin = {float(request.origin.x), float(request.origin.y), float(request.origin.z)};
     }
+
     // A light's stale faces redraw together, so every drawn face of a cube
     // shares one origin; the shader selects and projects faces from it. A
     // light whose redraw does not fit the remaining budget waits whole.
@@ -753,7 +856,9 @@ struct ShadowCache::State {
 };
 
 ShadowCache::ShadowCache() : state_(std::make_unique<State>()) {}
+
 ShadowCache::~ShadowCache() = default;
+
 void ShadowCache::invalidate() noexcept {
     auto& s = *state_;
     s.lights.clear();
@@ -767,10 +872,12 @@ void ShadowCache::invalidate() noexcept {
     s.plan_ready = false;
     s.fit = {};
 }
+
 void ShadowCache::commit() noexcept {
     if (state_->plan_ready)
         state_->pending = false;
 }
+
 const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame& sources,
                                             std::span<const ShadowCaster> casters,
                                             std::span<const ShadowChange> changes,

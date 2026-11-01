@@ -7,31 +7,41 @@
 
 namespace {
 using namespace atelier;
+
 using source::Program;
+
 using acceptance::borrow::Particle;
+
 using acceptance::borrow::Position;
+
 using acceptance::borrow::Algorithms;
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view text, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request("module.source", text, entry))));
     take(program.try_publish(candidate));
 }
+
 std::uint32_t number(const std::optional<Scalar>& value) {
     return std::get<std::uint32_t>(*value);
 }
+
 void collect(Runtime& runtime) {
     while (runtime.collection_phase() != CollectionPhase::idle)
         take(runtime.collect_step({1}));
@@ -39,11 +49,16 @@ void collect(Runtime& runtime) {
     while (take(runtime.collect_step({1})).phase != CollectionPhase::idle) {
     }
 }
+
 struct Object {
     static inline int live{};
+
     std::uint32_t value{};
+
     Object() { ++live; }
+
     ~Object() { --live; }
+
     void fail() { throw std::runtime_error("Module native failure."); }
 };
 }

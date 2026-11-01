@@ -20,6 +20,7 @@ enum class ProbeVolumeField {
     blend_cells,
     count
 };
+
 enum class ViewOption {
     shading,
     wireframe,
@@ -75,32 +76,50 @@ enum class ViewOption {
     sky_color_y,
     sky_color_z
 };
+
 constexpr ViewOption probe_volume_option(unsigned slot, ProbeVolumeField field) noexcept {
     return static_cast<ViewOption>(static_cast<unsigned>(ViewOption::volume_first) +
                                    slot * static_cast<unsigned>(ProbeVolumeField::count) +
                                    static_cast<unsigned>(field));
 }
+
 enum class ViewValueKind { boolean, number, integer, enumeration };
+
 struct ViewOptionInfo {
     ViewOption option;
+
     std::string_view name;
+
     ViewValueKind kind;
+
     double minimum{};
+
     double maximum{};
+
     std::span<const std::string_view> choices{};
+
     // Presentation and Control documentation share this table. These strings
     // describe the option; they are not part of its persisted name or value.
     std::string_view label;
+
     std::string_view category;
+
     std::string_view description;
 };
+
 std::span<const ViewOptionInfo> view_options() noexcept;
+
 const ViewOptionInfo* view_option(ViewOption) noexcept;
+
 const ViewOptionInfo* view_option(std::string_view) noexcept;
+
 bool world_option(ViewOption) noexcept;
+
 double view_value(const renderer::ViewSettings&, ViewOption) noexcept;
+
 // UI and control callers use the same typed operation. Callers applying batches
 // publish a complete candidate.
 Result<bool> set_view_option(renderer::ViewSettings&, ViewOption, double);
+
 Result<void> validate_view_options(const renderer::ViewSettings&, std::array<float, 3> focus = {});
 }

@@ -13,11 +13,13 @@
 #include <vector>
 
 using namespace atelier;
+
 namespace {
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T accepted(ui::Result<T> result) {
     if (!result)
@@ -25,15 +27,18 @@ T accepted(ui::Result<T> result) {
                                  std::to_string(result.error().native_code));
     return std::move(*result);
 }
+
 void accepted(ui::Result<void> result) {
     require(result.has_value(), "UI operation failed");
 }
+
 const ui::DrawQuad& first_text(const ui::UiFrame& frame) {
     for (const auto& draw : frame.drawing->draws)
         if (draw.coverage)
             return draw;
     throw std::runtime_error("frame has no text");
 }
+
 std::vector<ui::Action> actions_of(const ui::Reply& reply) {
     std::vector<ui::Action> result;
     for (const auto& effect : reply.effects)
@@ -41,14 +46,17 @@ std::vector<ui::Action> actions_of(const ui::Reply& reply) {
             result.push_back(*action);
     return result;
 }
+
 double number_value(const ui::Action& action) {
     return std::get<double>(action.value);
 }
+
 ui::Reply key(ui::Session& session, ui::Key command, bool control = false, bool shift = false) {
     auto reply = session.input({.kind = ui::EventKind::key_down, .key = command, .shift = shift, .control = control});
     session.input({.kind = ui::EventKind::key_up, .key = command, .shift = shift, .control = control});
     return reply;
 }
+
 ui::Control leaf(std::uint64_t key, ui::ControlKind kind, float y, std::wstring text = {}) {
     ui::Control value;
     value.key = key;
@@ -61,6 +69,7 @@ ui::Control leaf(std::uint64_t key, ui::ControlKind kind, float y, std::wstring 
         value.layout.padding = {6, 4, 6, 4};
     return value;
 }
+
 // The primitive consumer supplies descriptors directly. Editor menu composition
 // is exercised through PopupMenu's real Source/JIT path in editor acceptance.
 std::vector<ui::Control> menu_controls(std::span<const ui::MenuItem> items, float width) {
@@ -90,17 +99,23 @@ std::vector<ui::Control> menu_controls(std::span<const ui::MenuItem> items, floa
     }
     return result;
 }
+
 struct Consumer {
     ui::Session ui;
+
     std::vector<ui::Control> controls;
+
     std::shared_ptr<const ui::UiFrame> frame;
+
     Consumer() { accepted(ui.set_surface({{640, 480}, 1, 1})); }
+
     void prepare(bool publish = true) {
         accepted(ui.set_controls(controls));
         frame = accepted(ui.prepare());
         if (publish)
             require(ui.accept(frame), "candidate not accepted");
     }
+
     ui::Reply click(std::uint64_t key) {
         const auto* box = frame->find(key);
         require(box, "control missing");
@@ -111,6 +126,7 @@ struct Consumer {
         return ui.input({.kind = ui::EventKind::pointer_up, .x = x, .y = y});
     }
 };
+
 void single_line_labels() {
     for (const auto dpi : {1.f, 1.25f, 1.5f, 2.f}) {
         Consumer consumer;
@@ -144,6 +160,7 @@ void single_line_labels() {
                 "Restoring intrinsic width retained the old ellipsis.");
     }
 }
+
 void text_and_frame_versions() {
     Consumer consumer;
     consumer.controls = {leaf(1, ui::ControlKind::label, 10, L"Scene 场景"),
@@ -178,6 +195,7 @@ void text_and_frame_versions() {
     require(!consumer.ui.set_controls(consumer.controls) && consumer.ui.presented() == presented,
             "invalid model discarded old frame");
 }
+
 void accepted_geometry_and_surface() {
     Consumer consumer;
     consumer.controls = {leaf(1, ui::ControlKind::button, 10, L"Button")};
@@ -199,6 +217,7 @@ void accepted_geometry_and_surface() {
     accepted(consumer.ui.set_surface({{0, 0}, 1.5f, 3}));
     require(!consumer.ui.prepare(), "zero surface produced candidate");
 }
+
 void numeric_text_and_drag() {
     Consumer consumer;
     consumer.controls = {leaf(1, ui::ControlKind::number, 10)};
@@ -253,6 +272,7 @@ void numeric_text_and_drag() {
                 number_value(actions_of(removed)[0]) == 5.5,
             "removed edit target did not cancel with its original value");
 }
+
 void list_and_splitter() {
     Consumer consumer;
     ui::Control list;
@@ -289,6 +309,7 @@ void list_and_splitter() {
     consumer.prepare();
     require(consumer.frame->find(20)->bounds.y == 0, "shortened list retained out-of-range scroll");
 }
+
 void identity_and_lifetime() {
     std::shared_ptr<const ui::UiFrame> held;
     std::weak_ptr<const ui::Coverage> released;
@@ -314,6 +335,7 @@ void identity_and_lifetime() {
     held.reset();
     require(released.expired(), "accounting retained pixels after the last frame was released");
 }
+
 void style_and_invalidation() {
     Consumer consumer;
     consumer.controls = {leaf(1, ui::ControlKind::number, 10),
@@ -382,6 +404,7 @@ void style_and_invalidation() {
     consumer.prepare();
     require(consumer.frame->find(2)->bounds == accepted_frame->find(2)->bounds, "style failure could not recover");
 }
+
 void visible_range_and_accounting() {
     Consumer consumer;
     ui::Control list;
@@ -511,11 +534,13 @@ void styled_baseline_placement() {
                 "removing baseline context failed to restore centered control text");
     }
 }
+
 void prepare_current(Consumer& consumer, bool publish = true) {
     consumer.frame = accepted(consumer.ui.prepare());
     if (publish)
         require(consumer.ui.accept(consumer.frame), "updated candidate rejected");
 }
+
 void button_activation_semantics() {
     Consumer c;
     c.controls = {leaf(1, ui::ControlKind::button, 10, L"Toggle")};
@@ -577,6 +602,7 @@ void button_activation_semantics() {
     invalid.action_target = 0;
     require(!c.ui.set_controls(std::span(&invalid, 1)), "Toggle behavior was accepted for a non-button control");
 }
+
 void persistent_control_updates() {
     Consumer c;
     ui::Control parent;
@@ -653,6 +679,7 @@ void persistent_control_updates() {
         static_cast<unsigned long long>(color.rasterizations - initial.rasterizations),
         static_cast<unsigned long long>(text.layout_syncs - inherited.layout_syncs));
 }
+
 void control_batch_validation() {
     Consumer c;
     c.controls = {leaf(1, ui::ControlKind::number, 10), leaf(2, ui::ControlKind::button, 70, L"Original")};
@@ -704,6 +731,7 @@ void control_batch_validation() {
     prepare_current(c);
     require(c.frame->find_text(1)->paragraph->matches(L"7"), "passive draft did not follow authoritative patch");
 }
+
 void control_update_cleanup() {
     Consumer c;
     ui::Control parent;
@@ -779,6 +807,7 @@ void control_update_cleanup() {
     require(dismissed.size() == 1 && dismissed[0].kind == ui::ActionKind::dismiss && dismissed[0].key == 2,
             "owner disable did not dismiss its popup");
 }
+
 void control_candidate_revision() {
     Consumer c;
     c.controls = {leaf(1, ui::ControlKind::button, 10, L"Button")};
@@ -837,6 +866,7 @@ void control_candidate_revision() {
 }
 #include "topology.inl"
 }
+
 int main() {
     UVersionInfo icu{};
     UVersionInfo unicode{};

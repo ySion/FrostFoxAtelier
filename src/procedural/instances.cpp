@@ -11,9 +11,12 @@ namespace {
 
 struct GroupKey {
     std::uint32_t reference;
+
     std::array<std::int32_t, 3> chunk;
+
     bool operator==(const GroupKey&) const = default;
 };
+
 struct GroupHash {
     std::size_t operator()(const GroupKey& key) const noexcept {
         return hash(key.reference,
@@ -21,6 +24,7 @@ struct GroupHash {
                          hash(static_cast<std::uint32_t>(key.chunk[1]), static_cast<std::uint32_t>(key.chunk[2]))));
     }
 };
+
 bool before(const Reference& a, const std::array<std::int32_t, 3>& ca, const Reference& b,
             const std::array<std::int32_t, 3>& cb) {
     if (const auto order = a.key <=> b.key; order != 0)

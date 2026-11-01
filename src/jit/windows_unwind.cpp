@@ -114,9 +114,11 @@ public:
     // Ownership, failure cleanup and tracker transfers follow the allocation,
     // not a second plugin-side registry.
     llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override { return llvm::Error::success(); }
+
     llvm::Error notifyRemovingResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey) override {
         return llvm::Error::success();
     }
+
     void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey, llvm::orc::ResourceKey) override {}
 };
 

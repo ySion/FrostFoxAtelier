@@ -200,6 +200,7 @@ int verify_sponza_window(atelier::application::Application& app, const char* out
     require(SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE, "Cannot initialize capture encoding.");
     struct Apartment {
         bool owns;
+
         ~Apartment() {
             if (owns)
                 CoUninitialize();

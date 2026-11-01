@@ -6,6 +6,7 @@
 
 namespace atelier::world {
 using detail::Access;
+
 using detail::error;
 
 Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
@@ -35,6 +36,7 @@ Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
         return result;
     });
 }
+
 Result<ObjectId> parent_entity(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<ObjectId> {
         const auto parent = Access::parent(entity).id();
@@ -49,10 +51,12 @@ Result<ObjectId> parent_entity(Runtime& runtime, ObjectId object) {
         return parent;
     });
 }
+
 Result<bool> has_transform(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const Entity>(
         object, [](const Entity& entity) -> Result<bool> { return Access::spatial(entity); });
 }
+
 Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
     auto component = runtime.native_type<Component>();
     auto spatial = runtime.native_type<SpatialComponent>();
@@ -64,6 +68,7 @@ Result<bool> component_requires_space(Runtime& runtime, ObjectId object) {
         return std::unexpected(valid.error());
     return detail::is(runtime, object, *spatial);
 }
+
 Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     auto entity = detail::entity_data(runtime, object);
     if (!entity)
@@ -91,6 +96,7 @@ Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     }
     return true;
 }
+
 Result<std::optional<ObjectId>> space_reference(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::optional<ObjectId>> {
         if (!Access::explicit_origin(entity))
@@ -104,6 +110,7 @@ Result<std::optional<ObjectId>> space_reference(Runtime& runtime, ObjectId objec
         return std::optional<ObjectId>{target};
     });
 }
+
 namespace detail {
 Result<SpaceNode*> SpaceGraph::node(ObjectId object) {
     if (auto found = nodes.find(object); found != nodes.end())
@@ -125,6 +132,7 @@ Result<SpaceNode*> SpaceGraph::node(ObjectId object) {
         return std::unexpected(value.error());
     return &nodes.emplace(object, *value).first->second;
 }
+
 Result<ObjectId> SpaceGraph::parent(ObjectId object) {
     auto current = node(object);
     if (!current)
@@ -160,6 +168,7 @@ Result<ObjectId> SpaceGraph::parent(ObjectId object) {
     }
     return ObjectId{};
 }
+
 Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
     if (object == ObjectId{})
         return math::Matrix4::identity();
@@ -198,6 +207,7 @@ Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
     }
     return result;
 }
+
 namespace {
 bool same_bits(const Trs& left, const Trs& right) noexcept {
     const std::array<float, 10> a{left.position.x, left.position.y, left.position.z, left.rotation.x, left.rotation.y,
@@ -211,12 +221,14 @@ bool same_bits(const Trs& left, const Trs& right) noexcept {
     return true;
 }
 }
+
 void SpaceCache::clear() noexcept {
     entries.clear();
     failures.clear();
     relations.nodes.clear();
     relations.matrices.clear();
 }
+
 Result<SpaceCache::Entry*> SpaceCache::resolve(ObjectId object) {
     if (auto* found = entries.find(object))
         return found;
@@ -231,6 +243,7 @@ Result<SpaceCache::Entry*> SpaceCache::resolve(ObjectId object) {
     entry.parent = *parent;
     return entries.try_emplace(object, entry).value;
 }
+
 ObjectId SpaceCache::degenerate_root(ObjectId object) const noexcept {
     auto root = object;
     for (const auto* entry = entries.find(object); entry; entry = entries.find(entry->parent)) {
@@ -243,12 +256,14 @@ ObjectId SpaceCache::degenerate_root(ObjectId object) const noexcept {
     }
     return root;
 }
+
 Result<ObjectId> SpaceCache::parent(ObjectId object) {
     auto entry = resolve(object);
     if (!entry)
         return std::unexpected(entry.error());
     return (*entry)->parent;
 }
+
 Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     // Collect the chain up to world space or an ancestor already composed in this pass.
     path.clear();
@@ -329,6 +344,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     failed = {};
     return entries.find(object)->world;
 }
+
 Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
     std::vector<ObjectRoot> result;
     std::vector<ObjectId> pending{object};
@@ -359,6 +375,7 @@ Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
     }
     return result;
 }
+
 Result<void> requires_space(Runtime& runtime, ObjectId entity, std::span<const ObjectRoot> group) {
     auto spatial = has_transform(runtime, entity);
     if (!spatial)
@@ -375,6 +392,7 @@ Result<void> requires_space(Runtime& runtime, ObjectId entity, std::span<const O
     }
     return {};
 }
+
 Result<void> validate_tree(Runtime& runtime, ObjectId entity, std::span<const ObjectRoot> group) {
     std::unordered_set<ObjectId> seen;
     for (const auto& item : group) {
@@ -400,6 +418,7 @@ Result<void> validate_tree(Runtime& runtime, ObjectId entity, std::span<const Ob
     }
     return {};
 }
+
 Result<void> clear_component(Runtime& runtime, ObjectId entity, ObjectId object, std::size_t index) {
     return runtime.with_native<Entity>(entity, [&](Entity&) -> Result<void> {
         auto type = runtime.native_type<Entity>();
@@ -422,6 +441,7 @@ Result<void> clear_component(Runtime& runtime, ObjectId entity, ObjectId object,
     });
 }
 }
+
 namespace {
 // The member cache serves only an open World outside its own transitions.
 detail::SpaceCache* member_space(Runtime& runtime, ObjectId object) {
@@ -434,12 +454,14 @@ detail::SpaceCache* member_space(Runtime& runtime, ObjectId object) {
     return &state.space;
 }
 }
+
 Result<ObjectId> spatial_parent(Runtime& runtime, ObjectId object) {
     if (auto* space = member_space(runtime, object))
         return space->parent(object);
     detail::SpaceGraph graph{runtime};
     return graph.parent(object);
 }
+
 Result<math::Matrix4> world_matrix(Runtime& runtime, ObjectId object) {
     if (object == ObjectId{})
         return error(ErrorCode::invalid_object, "World matrix requires an Entity identity.");
@@ -531,6 +553,7 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
         return runtime.apply_reference_changes(changes);
     });
 }
+
 Result<void> publish_transforms(Runtime& runtime, const std::vector<std::pair<ObjectId, Trs>>& values) {
     for (const auto& [id, value] : values) {
         // An unchanged pose keeps the Entity's write stamp, so change consumers skip it.
@@ -553,6 +576,7 @@ Result<void> publish_transforms(Runtime& runtime, const std::vector<std::pair<Ob
     }
     return {};
 }
+
 // Only frontiers whose resolved origin changes need local compensation. Deeper
 // descendants keep their local values, including below nonspatial parents.
 Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph& before, detail::SpaceGraph& candidate,
@@ -593,6 +617,7 @@ Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph&
     return changes;
 }
 }
+
 namespace detail {
 Result<void> unlink_parent(Runtime& runtime, ObjectId object) {
     return assign_parent(runtime, object, {}, append);
@@ -642,6 +667,7 @@ Result<void> World::set_transform(ObjectId object, Trs value) {
         static_cast<void>(assign(before, spatial));
     return relocated;
 }
+
 Result<void> World::remove_transform(ObjectId object) {
     if (auto ready = impl_->admit_edit(object); !ready)
         return ready;
@@ -723,6 +749,7 @@ Result<void> World::remove_transform(ObjectId object) {
         return {};
     });
 }
+
 Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectId> origin, ReparentRule rule) {
     if (auto ready = impl_->admit(); !ready)
         return std::unexpected(ready.error());
@@ -800,10 +827,12 @@ Result<void> World::apply_simulation_transform(ObjectId entity, math::Vector3 po
     const SimulationPose pose{entity, position, rotation};
     return apply_simulation_transforms({&pose, 1});
 }
+
 Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses,
                                                 std::vector<std::pair<ObjectId, Trs>>* written) {
     return impl_->apply_poses(poses, DiagnosticPhase::physics, written);
 }
+
 Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase,
                                       std::vector<std::pair<ObjectId, Trs>>* written) {
     if (auto ready = admit(); !ready)
@@ -1080,6 +1109,7 @@ Result<Commit> World::attach(ObjectId object, std::size_t index, ObjectId parent
     const EntityAttachment attachment{object, parent, index};
     return attach_batch(std::span<const EntityAttachment>{&attachment, 1});
 }
+
 Result<Commit> World::attach_batch(std::span<const ObjectId> roots, std::size_t index, ObjectId parent) {
     std::vector<EntityAttachment> attachments;
     attachments.reserve(roots.size());
@@ -1087,14 +1117,20 @@ Result<Commit> World::attach_batch(std::span<const ObjectId> roots, std::size_t 
         attachments.push_back({object, parent, index});
     return attach_batch(std::span<const EntityAttachment>{attachments});
 }
+
 namespace {
 struct AttachmentGraph {
     detail::SpaceGraph space;
+
     std::vector<ObjectRoot> incoming;
+
     std::vector<ObjectRoot> capabilities;
+
     std::vector<std::pair<std::size_t, std::size_t>> ranges;
+
     explicit AttachmentGraph(Runtime& runtime) : space(runtime) {}
 };
+
 Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const EntityAttachment> attachments,
                                                  std::span<const SpaceReference> spaces) {
     auto& state = Access::state(world);
@@ -1195,6 +1231,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
     return result;
 }
 }
+
 Result<std::vector<std::pair<ObjectId, math::Matrix4>>>
 World::attachment_world_matrices(std::span<const EntityAttachment> attachments,
                                  std::span<const SpaceReference> spaces) const {
@@ -1211,6 +1248,7 @@ World::attachment_world_matrices(std::span<const EntityAttachment> attachments,
     }
     return matrices;
 }
+
 Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments,
                                    std::span<const SpaceReference> spaces) {
     auto& state = *impl_;
@@ -1225,8 +1263,11 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     auto& tree_ranges = candidate->ranges;
     struct ParentPlan {
         ObjectId parent;
+
         std::vector<ObjectRoot> existing;
+
         std::vector<std::pair<std::size_t, std::size_t>> insertions;
+
         std::vector<ObjectReference> references;
     };
     std::vector<ParentPlan> parents;
@@ -1271,7 +1312,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     // end, or at a root boundary. Equal gaps order deeper parents first, then input.
     struct Insertion {
         std::size_t at;
+
         std::size_t depth;
+
         std::size_t attachment;
     };
     std::vector<Insertion> insertions;
@@ -1353,7 +1396,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         relation_changes.reserve(parents.size() + attachments.size() + spaces.size());
         struct OriginFlags {
             Entity* entity;
+
             bool explicit_origin;
+
             bool world_origin;
         };
         std::vector<OriginFlags> origin_flags;
@@ -1471,12 +1516,14 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
                     failure = state.notify(Lifecycle::activated, state.members[at].id());
     return state.finish(true, std::move(failure));
 }
+
 Result<EntityRemoval> World::detach(ObjectId object) {
     auto removed = detach_batch(std::span<const ObjectId>{&object, 1});
     if (!removed)
         return std::unexpected(removed.error());
     return std::move(removed->front());
 }
+
 Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId> roots) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -1485,12 +1532,16 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         return std::vector<EntityRemoval>{};
     struct ParentPlan {
         ObjectId parent;
+
         std::vector<ObjectRoot> existing;
+
         std::vector<ObjectReference> references;
     };
     struct Range {
         std::size_t at;
+
         std::size_t count;
+
         ObjectId parent;
     };
     std::vector<ParentPlan> parents;
@@ -1669,9 +1720,11 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         removal.commit = commit;
     return removals;
 }
+
 Result<Commit> World::restore(const EntityRemoval& removal) {
     return restore(std::span<const EntityRemoval>{&removal, 1});
 }
+
 Result<Commit> World::restore(std::span<const EntityRemoval> removals) {
     if (auto ready = impl_->admit(); !ready)
         return std::unexpected(ready.error());

@@ -5,6 +5,7 @@
 
 namespace atelier::presentation {
 using detail::Access;
+
 using detail::error;
 
 Result<Types> register_types(Runtime& runtime) {
@@ -55,8 +56,11 @@ Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMe
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;
+
         ObjectRoot entity;
+
         ObjectRoot component;
+
         ~Construction() {
             // The graph is unpublished. Either destruction entry also handles
             // ordinary strong-reference cycles; no partial factory result escapes.
@@ -100,6 +104,7 @@ Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMe
 Result<void> set_geometry(Runtime& runtime, ObjectId object, geometry::MeshRef geometry) {
     return set_mesh_binding(runtime, object, {{}, std::move(geometry)});
 }
+
 Result<geometry::MeshSource> read_mesh_source(Runtime& runtime, ObjectId object) {
     auto status = world::inspect_component(runtime, object);
     if (!status)
@@ -110,6 +115,7 @@ Result<geometry::MeshSource> read_mesh_source(Runtime& runtime, ObjectId object)
                                         Access::geometry(component)};
         });
 }
+
 Result<StaticMeshState> read_static_mesh(Runtime& runtime, ObjectId object) {
     auto mesh = read_mesh_source(runtime, object);
     if (!mesh)
@@ -134,6 +140,7 @@ Result<StaticMeshState> read_static_mesh(Runtime& runtime, ObjectId object) {
             return state;
         });
 }
+
 Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding binding) {
     if (binding.source.size() > 4096 || binding.source.find('\0') != std::string::npos)
         return error(ErrorCode::invalid_definition, "Invalid mesh source key.");

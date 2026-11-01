@@ -8,24 +8,30 @@
 
 namespace {
 using namespace atelier;
+
 namespace fs = std::filesystem;
+
 using Json = nlohmann::json;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void write(const fs::path& path, std::string_view bytes) {
     std::ofstream stream(path, std::ios::binary);
     stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     stream.close();
     require(bool(stream), "Could not write import acceptance fixture.");
 }
+
 template <class F>
 void rejects(F&& action, std::string_view reason) {
     try {
@@ -37,12 +43,14 @@ void rejects(F&& action, std::string_view reason) {
     }
     throw std::runtime_error("Import accepted invalid input: " + std::string(reason));
 }
+
 template <class T>
 const T& value(const assets::MaterialInstanceAsset& instance, std::string_view path) {
     const auto at = std::ranges::find(instance.entries, path, &material::Override::path);
     require(at != instance.entries.end() && at->enabled, "An imported author value is absent or disabled.");
     return std::get<T>(at->value);
 }
+
 void aligned(const assets::MeshImport& imported) {
     require(imported.mesh && imported.materials.size() == imported.mesh->materials().size() &&
                 imported.textures.size() == imported.materials.size(),
@@ -75,6 +83,7 @@ void aligned(const assets::MeshImport& imported) {
         }
     }
 }
+
 std::string bmp(unsigned char red, unsigned char green, unsigned char blue) {
     std::string bytes(70, '\0');
     bytes[0] = 'B';
@@ -94,6 +103,7 @@ std::string bmp(unsigned char red, unsigned char green, unsigned char blue) {
     }
     return bytes;
 }
+
 void obj(const fs::path& root) {
     write(root / "color.bmp", bmp(255, 128, 64));
     write(root / "opacity.bmp", bmp(128, 128, 128));
@@ -138,6 +148,7 @@ void obj(const fs::path& root) {
     write(root / "scene.mtl", "newmtl White\nKd 2 1 1\nnewmtl Leaf\nKd 1 1 1\n");
     rejects([&] { assets::load_obj(root / "scene.obj"); }, "Invalid MTL base color");
 }
+
 void gltf(const fs::path& root) {
     write(root / "color.bmp", bmp(255, 128, 64));
     write(root / "packed.bmp", bmp(0, 90, 200));
@@ -242,6 +253,7 @@ void gltf(const fs::path& root) {
     variant["images"][0]["uri"] = "broken.bmp";
     reject(variant, "Cannot decode texture");
 }
+
 void digest() {
     require(assets::mesh_digest_version == 2, "Mesh-only digest schema must be version 2.");
     const auto cube = geometry::cube_mesh();
@@ -275,6 +287,7 @@ void digest() {
     rejects([&] { geometry::Mesh invalid(vertices, {}, {{"only"}}, {{0, 36, 1}}); }, "valid materials");
 }
 }
+
 int main() {
     const auto root = fs::absolute("mesh-import-evidence/" +
                                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

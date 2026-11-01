@@ -15,6 +15,7 @@ namespace atelier {
 namespace detail {
 template <class T>
 struct HashAvalanche {};
+
 template <class T>
     requires ankerl::unordered_dense::hash_is_avalanching_v<std::hash<T>>
 struct HashAvalanche<T> {
@@ -58,25 +59,34 @@ struct Equal {
 template <>
 struct Hash<StringView> {
     using is_transparent = void;
+
     using is_avalanching = void;
+
     [[nodiscard]] std::size_t operator()(StringView value) const noexcept;
+
     [[nodiscard]] std::size_t operator()(const char* value) const noexcept;
 };
+
 template <>
 struct Hash<String> : Hash<StringView> {};
 
 template <>
 struct Equal<StringView> {
     using is_transparent = void;
+
     [[nodiscard]] bool operator()(StringView left, StringView right) const noexcept { return left == right; }
+
     [[nodiscard]] bool operator()(const char* left, StringView right) const noexcept {
         return std::string_view{left ? left : ""} == right.std_view();
     }
+
     [[nodiscard]] bool operator()(StringView left, const char* right) const noexcept { return (*this)(right, left); }
+
     [[nodiscard]] bool operator()(const char* left, const char* right) const noexcept {
         return std::string_view{left ? left : ""} == std::string_view{right ? right : ""};
     }
 };
+
 template <>
 struct Equal<String> : Equal<StringView> {};
 

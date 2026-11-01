@@ -17,23 +17,31 @@
 namespace atelier::application {
 namespace {
 using control::Json;
+
 using control::Failure;
+
 // Bumped whenever the frozen camera/view contract changes; repro.open accepts only this schema.
 constexpr unsigned repro_view_schema = 7;
+
 constexpr std::array<std::string_view, 3> removed_view_options{"direct_reference", "direct_clustered",
                                                                "direct_shadow_cache"};
+
 constexpr unsigned inspect_page_items = 256;
+
 constexpr std::size_t inspect_page_bytes = control::maximum_message / 4;
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw editor::detail::Failure(std::move(value.error()));
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw editor::detail::Failure(std::move(value.error()));
 }
+
 std::string text(const Json& value, std::size_t maximum = 4096) {
     if (!value.is_string())
         throw Failure("invalid_request", "Expected a string");
@@ -43,6 +51,7 @@ std::string text(const Json& value, std::size_t maximum = 4096) {
     static_cast<void>(control::wide(result));
     return result;
 }
+
 double number(const Json& value) {
     if (!value.is_number())
         throw Failure("invalid_request", "Expected a number");
@@ -51,20 +60,24 @@ double number(const Json& value) {
         throw Failure("invalid_request", "Expected a finite number");
     return n;
 }
+
 unsigned integer(const Json& value, unsigned low, unsigned high) {
     const auto n = number(value);
     if (n < low || n > high || std::floor(n) != n)
         throw Failure("invalid_request", "Integer outside supported range");
     return static_cast<unsigned>(n);
 }
+
 Json vector3(math::Vector3 v) {
     return assets::json_format::numbers(std::array{v.x, v.y, v.z});
 }
+
 Json camera_json(Runtime& runtime, editor::CameraState value) {
     const auto type = take(runtime.native_type<editor::CameraState>());
     return take(editor::encode_properties(runtime, {type, {}, std::as_writable_bytes(std::span{&value, 1})},
                                           take(editor::detail::author_fields(runtime, type)), {}));
 }
+
 editor::CameraState camera_state(Runtime& runtime, const Json& args) {
     editor::CameraState value;
     take(editor::decode_properties(
@@ -72,6 +85,7 @@ editor::CameraState camera_state(Runtime& runtime, const Json& args) {
         args));
     return value;
 }
+
 Json view_json(const renderer::ViewSettings& view) {
     Json result = Json::object();
     for (const auto& option : editor::view_options()) {
@@ -87,6 +101,7 @@ Json view_json(const renderer::ViewSettings& view) {
     }
     return result;
 }
+
 Json probe_volumes_json(const std::array<renderer::ProbeVolumeStats, renderer::probe_volume_limit>& volumes) {
     auto result = Json::array();
     for (std::size_t i = 0; i < volumes.size(); ++i) {
@@ -104,6 +119,7 @@ Json probe_volumes_json(const std::array<renderer::ProbeVolumeStats, renderer::p
     }
     return result;
 }
+
 Json probe_inspection_json(const std::shared_ptr<const renderer::ProbeInspection>& value) {
     if (!value)
         return nullptr;
@@ -154,6 +170,7 @@ Json probe_inspection_json(const std::shared_ptr<const renderer::ProbeInspection
                                              {"source_radius_range_area_min_distance_squared", ray.source_parameters}});
     return result;
 }
+
 Json performance_json(const editor::FramePerformance& performance) {
     const auto& sample = performance.snapshot();
     constexpr std::array states{"unavailable", "waiting", "ready"};
@@ -240,6 +257,7 @@ Json performance_json(const editor::FramePerformance& performance) {
         {"phases", std::move(phases)}};
     return result;
 }
+
 renderer::ViewSettings patched_view(renderer::ViewSettings view, const Json& patch, std::array<float, 3> focus) {
     if (!patch.is_object())
         throw Failure("invalid_request", "Display patch must be an object");
@@ -269,6 +287,7 @@ renderer::ViewSettings patched_view(renderer::ViewSettings view, const Json& pat
     take(editor::validate_view_options(view, focus));
     return view;
 }
+
 Json scalar_json(const Scalar& scalar, const Runtime& runtime) {
     return std::visit(
         [&](const auto& value) -> Json {
@@ -285,13 +304,19 @@ Json scalar_json(const Scalar& scalar, const Runtime& runtime) {
         },
         scalar);
 }
+
 struct Operation {
     std::string_view name;
+
     std::string_view description;
+
     bool changes;
+
     Json properties;
+
     std::vector<std::string> required;
 };
+
 const std::vector<Operation>& operations() {
     static const Json str{{"type", "string"}};
     static const Json obj{{"type", "object"}};
@@ -391,6 +416,7 @@ const std::vector<Operation>& operations() {
          {"job_id"}}};
     return values;
 }
+
 Json capabilities() {
     auto result = Json{{"operations", Json::array()},
                        {"display_options", Json::object()},
@@ -445,81 +471,147 @@ Json capabilities() {
 
 struct EditorControl::Impl {
     Application& app;
+
     control::Server server;
+
     std::uint64_t version{1};
+
     std::uint64_t document_generation{1};
+
     std::uint64_t input_revision{};
+
     std::uint64_t next_handle{1};
+
     std::uint64_t edit_id{1ull << 62};
+
     struct Observation {
         std::uint64_t document{};
+
         std::uint64_t session{};
+
         std::uint64_t input{};
+
         std::uint64_t project{};
+
         std::uint64_t code{};
+
         std::uint64_t view_revision{};
+
         ui::PixelExtent extent;
+
         float dpi{};
+
         editor::CameraState camera;
+
         renderer::ViewSettings view;
+
         bool editing{};
+
         bool running{};
+
         bool operator==(const Observation&) const = default;
     } observed;
+
     std::unordered_map<ObjectId, std::string> handles;
+
     std::unordered_map<std::string, ObjectId> objects;
+
     std::uint64_t pruned_revision{};
+
     struct Cached {
         std::string id;
+
         std::string request;
+
         Json response;
+
         std::size_t bytes{};
     };
+
     std::deque<Cached> cache;
+
     std::size_t cache_bytes{};
+
     struct Case {
         std::string name;
+
         renderer::ViewSettings view;
     };
+
     struct Job {
         std::string id;
+
         std::string token;
+
         std::shared_ptr<control::Peer> peer;
+
         Observation context;
+
         std::shared_ptr<std::atomic_bool> cancel = std::make_shared<std::atomic_bool>(false);
+
         std::chrono::steady_clock::time_point deadline;
+
         std::chrono::steady_clock::time_point started;
+
         std::vector<Case> cases;
+
         std::vector<unsigned> points;
+
         std::size_t case_index{};
+
         std::size_t point_index{};
+
         unsigned accepted{};
+
         unsigned skipped{};
+
         ui::Rect bounds;
+
         std::filesystem::path directory;
+
         std::vector<control_artifacts::Sample> samples;
+
         Json manifest;
+
         Json response;
+
         std::future<Json> writer;
+
         bool rendering{};
+
         bool preparing{};
+
         bool complete{};
+
         bool recorded{};
+
         std::uint64_t history_resets{};
     };
+
     std::deque<std::unique_ptr<Job>> jobs;
+
     struct AcceptedFrame {
         std::uint64_t id{};
+
         std::uint64_t count{};
+
         ui::Rect bounds;
+
         ui::PixelExtent extent;
+
         renderer::Camera camera;
+
         renderer::ViewSettings view;
+
         std::array<float, 3> environment;
+
         std::array<float, 3> lighting_focus;
+
         renderer::FrameStats stats;
     };
+
     std::optional<AcceptedFrame> last_frame;
+
     Json frame_json() const {
         if (!last_frame)
             return Json::object();
@@ -590,6 +682,7 @@ struct EditorControl::Impl {
                   {"shadow_rays", s.scene_lit_shadow_rays},
                   {"probe_rays", s.scene_lit_probe_rays}}}};
     }
+
     Impl(Application& owner, const std::filesystem::path& directory)
         : app(owner),
           server(directory, {{"revision", build_info::revision}, {"configuration", build_info::configuration}}) {
@@ -597,6 +690,7 @@ struct EditorControl::Impl {
             server.directory() / "artifacts" / server.identity().at("instance_id").get<std::string>()));
         observe();
     }
+
     ~Impl() {
         server.stop();
         for (auto& job : jobs) {
@@ -605,6 +699,7 @@ struct EditorControl::Impl {
                 job->writer.wait();
         }
     }
+
     void observe() {
         Observation current{
             document_generation,
@@ -624,9 +719,11 @@ struct EditorControl::Impl {
             ++version;
         }
     }
+
     std::string token() const {
         return server.identity().at("instance_id").get<std::string>() + ":" + std::to_string(version);
     }
+
     auto busy_states() const {
         const auto ui = app.ui_.interaction_state();
         using State = std::pair<std::string_view, bool>;
@@ -644,9 +741,11 @@ struct EditorControl::Impl {
                           State{"clipboard", ui.clipboard},
                           State{"ui_popup", ui.popup}};
     }
+
     bool busy() const {
         return std::ranges::any_of(busy_states(), [](const auto& state) { return state.second; });
     }
+
     Json busy_reasons() const {
         auto reasons = Json::array();
         for (const auto& [name, active] : busy_states())
@@ -654,10 +753,12 @@ struct EditorControl::Impl {
                 reasons.push_back(name);
         return reasons;
     }
+
     void idle() const {
         if (busy())
             throw Failure("busy", "Finish the current text, menu or viewport interaction first");
     }
+
     void replaceable() const {
         idle();
         if (app.document_->dirty())
@@ -670,12 +771,14 @@ struct EditorControl::Impl {
         if (app.play_.running())
             throw Failure("busy", "Stop the project before replacing its document");
     }
+
     Job* active() {
         for (auto& job : jobs)
             if (!job->complete)
                 return job.get();
         return nullptr;
     }
+
     void cancel(Job& job, std::string_view code, std::string_view message) {
         if (job.complete || job.cancel->exchange(true))
             return;
@@ -687,12 +790,14 @@ struct EditorControl::Impl {
         if (!job.writer.valid())
             job.complete = true;
     }
+
     void trim_cache() {
         while (!cache.empty() && (cache.size() > 256 || cache_bytes > 8 * 1024 * 1024)) {
             cache_bytes -= cache.front().bytes;
             cache.pop_front();
         }
     }
+
     void record_completions() {
         for (auto& job : jobs)
             if (job->complete && !job->recorded) {
@@ -710,6 +815,7 @@ struct EditorControl::Impl {
             }
         trim_cache();
     }
+
     void checkpoint() {
         observe();
         if (auto* job = active()) {
@@ -763,6 +869,7 @@ struct EditorControl::Impl {
         }
         record_completions();
     }
+
     std::string handle(ObjectId object) {
         if (object == ObjectId{})
             return {};
@@ -776,6 +883,7 @@ struct EditorControl::Impl {
         }
         return found->second;
     }
+
     void prune_handles() {
         pruned_revision = app.document_->revision();
         std::unordered_set<ObjectId> live;
@@ -798,6 +906,7 @@ struct EditorControl::Impl {
             return true;
         });
     }
+
     bool member(ObjectId object) const {
         const auto materials = app.document_->material_objects();
         if (std::ranges::find(materials, object) != materials.end())
@@ -823,6 +932,7 @@ struct EditorControl::Impl {
         }
         return false;
     }
+
     ObjectId object(const Json& value) {
         const auto name = text(value, 80);
         const auto found = objects.find(name);
@@ -830,6 +940,7 @@ struct EditorControl::Impl {
             throw Failure("stale_object", "Object handle is no longer a document member");
         return found->second;
     }
+
     Json object_header(ObjectId id, std::string_view type) {
         Json header{{"handle", handle(id)}, {"name", control::utf8(app.document_->name(id))}, {"type", type}};
         // A placeholder stands in for a saved type the current build does not register.
@@ -840,6 +951,7 @@ struct EditorControl::Impl {
             }
         return header;
     }
+
     Json object_json(ObjectId id) {
         auto& runtime = app.document_->world().runtime();
         const auto* type = take(runtime.describe(take(runtime.type_of(id))));
@@ -950,6 +1062,7 @@ struct EditorControl::Impl {
         }
         return result;
     }
+
     // Full and paged inspection share the existing builtin-then-project entry contract.
     Json asset_json(std::size_t index) const {
         const auto builtins = assets::mesh_assets();
@@ -962,6 +1075,7 @@ struct EditorControl::Impl {
                 {"path", control::utf8(entry.path.generic_wstring())},
                 {"kind", static_cast<unsigned>(entry.kind)}};
     }
+
     Json inspect_assets(const Json& args) {
         control::fields(args, {"detail", "limit", "cursor"});
         const auto limit = args.contains("limit") ? integer(args.at("limit"), 1, inspect_page_items) : 64u;
@@ -1012,6 +1126,7 @@ struct EditorControl::Impl {
                                      {"index", index}};
         return result;
     }
+
     Json inspect_objects(const Json& args) {
         control::fields(args, {"detail", "entity_name", "type", "limit", "cursor"});
         const auto limit = args.contains("limit") ? integer(args.at("limit"), 1, inspect_page_items) : 64u;
@@ -1089,6 +1204,7 @@ struct EditorControl::Impl {
         }
         return result;
     }
+
     Json inspect(bool summary = false) {
         Json result{{"identity", server.identity()},
                     {"project", app.project_ ? control::utf8(app.project_->root().generic_wstring()) : ""},
@@ -1138,6 +1254,7 @@ struct EditorControl::Impl {
             result["assets"].push_back(asset_json(i));
         return result;
     }
+
     Job& new_job(const std::string& id, const std::shared_ptr<control::Peer>& peer) {
         if (active())
             throw Failure("busy", "Another control job is still active");
@@ -1165,6 +1282,7 @@ struct EditorControl::Impl {
         jobs.push_back(std::move(job));
         return *jobs.back();
     }
+
     Json start_export(const std::string& id, const std::shared_ptr<control::Peer>& peer) {
         auto data = control_artifacts::snapshot_resources(*app.document_);
         if (app.project_) {
@@ -1267,6 +1385,7 @@ struct EditorControl::Impl {
         }
         return {{"status", "pending"}, {"job_id", id}};
     }
+
     Json start_render(const std::string& id, const std::shared_ptr<control::Peer>& peer, const Json& args, bool compare,
                       bool prepare = false) {
         if (!app.surface_.extent.width || !app.surface_.extent.height || !app.accepted_view_ ||
@@ -1327,6 +1446,7 @@ struct EditorControl::Impl {
             "natural renderer transitions, no full history reset or GPU-history restoration; accepted ordinals exclude skipped frames";
         return {{"status", "pending"}, {"job_id", id}, {"result", {{"phase", prepare ? "preparing" : "rendering"}}}};
     }
+
     Json operator_list() const {
         auto operators = Json::array();
         for (const auto& info : app.workspace_.operators.all()) {
@@ -1371,6 +1491,7 @@ struct EditorControl::Impl {
                     {"region", {{"enum", std::move(regions)}}},
                     {"asset", {{"type", "string"}}}}}}}};
     }
+
     editor::ContextOverride context_override(const Json& value) {
         control::fields(value, {"selection", "region", "asset"});
         editor::ContextOverride result;
@@ -1403,6 +1524,7 @@ struct EditorControl::Impl {
         }
         return result;
     }
+
     Json call_operator(const Json& args) {
         editor::OperatorCall request{text(args.at("id"), 80), Json::object(), {}};
         const auto* info = app.workspace_.operators.find(request.id);
@@ -1451,6 +1573,7 @@ struct EditorControl::Impl {
                   {"active", handle(app.document_->selection().entity)},
                   {"inspected_object", handle(app.document_->selection().object)}}}};
     }
+
     Json dispatch(std::string_view op, const Json& args, const std::string& id,
                   const std::shared_ptr<control::Peer>& peer) {
         auto& doc = *app.document_;
@@ -1657,6 +1780,7 @@ struct EditorControl::Impl {
             throw Failure("unknown_operation", "Operation has no implementation");
         return Json::object();
     }
+
     Json request(const Json& request, const std::shared_ptr<control::Peer>& peer) {
         app.sync_world_view();
         Json response;
@@ -1728,39 +1852,48 @@ struct EditorControl::Impl {
         return response;
     }
 };
+
 EditorControl::EditorControl(Application& app, const std::filesystem::path& directory)
     : impl_(std::make_unique<Impl>(app, directory)) {}
+
 EditorControl::~EditorControl() = default;
+
 void EditorControl::poll() {
     impl_->checkpoint();
     impl_->server.poll([&](const auto& request, const auto& peer) { return impl_->request(request, peer); });
     impl_->checkpoint();
 }
+
 void EditorControl::document_replaced() {
     ++impl_->document_generation;
     impl_->handles.clear();
     impl_->objects.clear();
     impl_->last_frame.reset();
 }
+
 void EditorControl::input(UINT message, WPARAM wparam) {
     if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN || message == WM_CHAR || message == WM_MOUSEWHEEL ||
         message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN ||
         (message == WM_MOUSEMOVE && (wparam & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON))))
         ++impl_->input_revision;
 }
+
 renderer::ViewSettings EditorControl::view() const {
     const auto* job = impl_->active();
     return job && job->rendering ? job->cases[job->case_index].view : impl_->app.workspace_.view;
 }
+
 bool EditorControl::wants_capture() {
     impl_->checkpoint();
     const auto* job = impl_->active();
     return job && job->rendering && !job->preparing && job->accepted + 1 == job->points[job->point_index];
 }
+
 void EditorControl::render_failed(std::string_view message) {
     if (auto* job = impl_->active(); job && job->rendering)
         impl_->cancel(*job, "render_failure", message);
 }
+
 void EditorControl::rendered(const renderer::Frame& frame, const renderer::FrameResult& result,
                              renderer::Capture* capture) {
     auto& state = *impl_;

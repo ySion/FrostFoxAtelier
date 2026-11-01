@@ -12,16 +12,22 @@ namespace atelier::detail {
 // another layout invalidates previous contents and borrowed addresses.
 class ValueStorage {
     alignas(double) std::byte inline_[128];
+
     struct Delete {
         std::size_t alignment{alignof(double)};
+
         void operator()(std::byte* storage) const noexcept { ::operator delete(storage, std::align_val_t{alignment}); }
     };
+
     std::unique_ptr<std::byte, Delete> expanded_{nullptr, Delete{}};
+
     std::size_t capacity_{};
 
 public:
     ValueStorage() noexcept = default;
+
     ValueStorage(const ValueStorage&) = delete;
+
     ValueStorage& operator=(const ValueStorage&) = delete;
 
     [[nodiscard]] std::byte* prepare(std::size_t size, std::size_t alignment) {

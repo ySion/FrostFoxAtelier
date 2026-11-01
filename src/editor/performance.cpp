@@ -7,7 +7,9 @@
 namespace atelier::editor {
 namespace {
 using Pass = FramePerformance::Pass;
+
 using Timing = FramePerformance::Timing;
+
 // Indices 0..14 match the completed sample's mask; total is computed per sample.
 constexpr std::array<Pass, FramePerformance::pass_count> definitions{
     {{"gbuffer", "GBuffer", -1, 0, true},
@@ -26,16 +28,22 @@ constexpr std::array<Pass, FramePerformance::pass_count> definitions{
      {"shadow_cache", "Shadow atlas updates", 2, 1, false},
      {"direct_shading", "Shading / HDR composition", 2, 1, false},
      {"total", "GPU measured total", -1, 0, false}}};
+
 constexpr std::array<std::size_t, FramePerformance::pass_count> row_order{
     FramePerformance::total_pass, 0, 1, 2, 12, 13, 14, 3, 8, 10, 11, 9, 4, 5, 6, 7};
+
 constexpr std::array<float, 6> minima{120, 60, 60, 60, 60, 55};
+
 constexpr std::array<std::wstring_view, 4> aa_names{L"Off", L"TAA", L"SMAA", L"SMAA T2x"};
+
 std::wstring wide(std::string_view value) {
     return {value.begin(), value.end()};
 }
+
 double milliseconds(std::chrono::nanoseconds value) {
     return std::chrono::duration<double, std::milli>(value).count();
 }
+
 // Mean, nearest-rank p95 and max; reorders `values`.
 void distribution(std::span<double> values, Timing& timing) {
     timing.mean = std::accumulate(values.begin(), values.end(), 0.) / double(values.size());
@@ -49,9 +57,11 @@ void distribution(std::span<double> values, Timing& timing) {
 std::span<const FramePerformance::Pass> FramePerformance::passes() {
     return definitions;
 }
+
 FramePerformance::FramePerformance() : cpu_(window_size) {
     reset();
 }
+
 void FramePerformance::reset() {
     domain_.reset();
     first_frame_ = sequence_ = frame_id_ = 0;
@@ -62,6 +72,7 @@ void FramePerformance::reset() {
     dirty_ = true;
     publish(Clock::now());
 }
+
 void FramePerformance::clear_cpu() {
     cpu_next_ = cpu_count_ = 0;
     cpu_seen_ = cpu_sequence_ = cpu_frame_ = 0;
@@ -69,6 +80,7 @@ void FramePerformance::clear_cpu() {
     interval_next_ = interval_count_ = 0;
     previous_sample_.reset();
 }
+
 void FramePerformance::observe(const renderer::Frame& frame, const renderer::FrameResult& result,
                                Clock::time_point now) {
     if (result.status != renderer::FrameStatus::accepted)
@@ -119,6 +131,7 @@ void FramePerformance::observe(const renderer::Frame& frame, const renderer::Fra
     if (dirty_ && (force || now >= next_publish_))
         publish(now);
 }
+
 void FramePerformance::observe(const timing::FrameRecord& record, std::optional<std::uint64_t> sampled_frame,
                                Clock::time_point now) {
     if (record.structure_errors) {
@@ -162,6 +175,7 @@ void FramePerformance::observe(const timing::FrameRecord& record, std::optional<
     if (first || first_interval || now >= next_publish_)
         publish(now);
 }
+
 void FramePerformance::publish(Clock::time_point now) {
     published_ = {};
     published_.resource_bytes = resource_bytes_;
@@ -270,6 +284,7 @@ void FramePerformance::publish(Clock::time_point now) {
     next_publish_ = now + std::chrono::milliseconds(250);
     rebuild_table();
 }
+
 void FramePerformance::rebuild_table() {
     auto data = std::make_shared<ui::TableData>();
     constexpr std::array titles{L"Phase", L"Current ms", L"Mean ms", L"P95 ms", L"Max ms", L"Share %"};
@@ -320,6 +335,7 @@ void FramePerformance::rebuild_table() {
     }
     table_ = std::move(data);
 }
+
 bool FramePerformance::apply(const ui::Action& action) {
     if (action.kind == ui::ActionKind::select) {
         if (const auto* value = std::get_if<ui::TableSelection>(&action.value);

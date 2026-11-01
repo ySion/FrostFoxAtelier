@@ -7,6 +7,7 @@
 
 namespace atelier::world {
 using detail::Access;
+
 using detail::error;
 
 Result<Types> register_types(Runtime& runtime) {
@@ -106,6 +107,7 @@ Response BodySettings::response(std::uint32_t channel) const noexcept {
     const auto bit = std::uint32_t{1} << channel;
     return ignore_categories & bit ? Response::ignore : overlap_categories & bit ? Response::overlap : Response::block;
 }
+
 Result<void> BodySettings::set_response(std::uint32_t channel, Response value) {
     if (channel >= 16 || (value != Response::ignore && value != Response::overlap && value != Response::block))
         return error(ErrorCode::argument_mismatch, "Invalid collision channel or response.");
@@ -114,6 +116,7 @@ Result<void> BodySettings::set_response(std::uint32_t channel, Response value) {
     overlap_categories = (overlap_categories & ~bit) | (value == Response::overlap ? bit : 0);
     return {};
 }
+
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
 Result<void> detail::body_rules(const BodySettings& value) {
     if (value.shape != ShapeKind::box && value.shape != ShapeKind::sphere && value.shape != ShapeKind::triangle_mesh &&
@@ -131,6 +134,7 @@ Result<void> detail::body_rules(const BodySettings& value) {
         return error(ErrorCode::argument_mismatch, "Triangle mesh collision requires a stationary body.");
     return {};
 }
+
 Result<void> validate_body_settings(Runtime& runtime, const BodySettings& value) {
     return detail::check_value(runtime, value);
 }
@@ -141,17 +145,20 @@ Result<EntityData> entity_data(Runtime& runtime, ObjectId object) {
         return EntityData{Access::member_world(entity), Access::enabled(entity), Access::transitioning(entity)};
     });
 }
+
 Result<ComponentData> component_data(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const Component>(object, [](const Component& component) -> Result<ComponentData> {
         return ComponentData{Access::owner(component).id(), Access::enabled(component)};
     });
 }
+
 Result<bool> is(Runtime& runtime, ObjectId object, TypeId expected) {
     auto actual = runtime.type_of(object);
     if (!actual)
         return std::unexpected(actual.error());
     return runtime.is_a(*actual, expected);
 }
+
 Result<void> validate_object(Runtime& runtime, ObjectId object, TypeId expected) {
     auto matches = is(runtime, object, expected);
     if (!matches)
@@ -178,6 +185,7 @@ Result<ObjectRoot> create_entity(Runtime& runtime, TypeId actual) {
         return error(ErrorCode::type_mismatch, "create_entity requires an Entity type.");
     return runtime.create(actual);
 }
+
 Result<ObjectRoot> create_component(Runtime& runtime, TypeId actual) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return std::unexpected(ready.error());
@@ -225,6 +233,7 @@ Result<EntityStatus> inspect_entity(Runtime& runtime, ObjectId object) {
     }
     return status;
 }
+
 Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
     if (object == ObjectId{})
         return ComponentStatus{};
@@ -291,6 +300,7 @@ Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
         return result;
     });
 }
+
 Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const Entity>(object, [](const Entity& entity) -> Result<Trs> {
         if (!Access::spatial(entity))
@@ -298,6 +308,7 @@ Result<Trs> read_transform(Runtime& runtime, ObjectId object) {
         return Trs{entity.position, entity.rotation, entity.scale};
     });
 }
+
 Result<World*> admit_component_edit(Runtime& runtime, ObjectId object) {
     auto component = detail::component_data(runtime, object);
     if (!component)
@@ -314,6 +325,7 @@ Result<World*> admit_component_edit(Runtime& runtime, ObjectId object) {
             return std::unexpected(ready.error());
     return owner->world;
 }
+
 Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return std::unexpected(ready.error());

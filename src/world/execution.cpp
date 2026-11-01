@@ -6,6 +6,7 @@
 
 namespace atelier::world {
 using detail::Access;
+
 using detail::error;
 
 Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
@@ -152,6 +153,7 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
     }
     return {};
 }
+
 // Callbacks cannot change membership or registrations (dispatch guard), so
 // state references stay valid across each invocation. An isolated Begin
 // failure leaves only that object unbegun; its components and children continue.
@@ -184,6 +186,7 @@ std::optional<Error> World::Impl::begin(std::size_t first, std::size_t last, Obj
     }
     return {};
 }
+
 std::optional<Error> World::Impl::end(std::size_t first, std::size_t last, ObjectId component) {
     std::optional<Error> failure;
     // Clear before invoking: End is attempted exactly once, including failures.
@@ -211,6 +214,7 @@ std::optional<Error> World::Impl::end(std::size_t first, std::size_t last, Objec
     }
     return failure;
 }
+
 std::optional<Error> World::Impl::shutdown() {
     const bool was_running = running;
     halt(); // Cancel tasks before End and suppress all further Tick calls.
@@ -227,6 +231,7 @@ std::optional<Error> World::Impl::shutdown() {
         }
     return failure;
 }
+
 Result<Commit> World::start() {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -241,6 +246,7 @@ Result<Commit> World::start() {
             failure = state.notify(Lifecycle::activated, state.members[i].id());
     return state.finish(true, std::move(failure));
 }
+
 Result<Commit> World::clear_faults() {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -260,6 +266,7 @@ Result<Commit> World::clear_faults() {
     state.schedule_dirty = true;
     return state.finish(true, state.begin());
 }
+
 Result<Commit> World::stop() {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -269,6 +276,7 @@ Result<Commit> World::stop() {
     auto failure = state.shutdown();
     return state.finish(true, std::move(failure));
 }
+
 Result<Commit> World::close() {
     auto& state = *impl_;
     if (state.closed)
@@ -333,6 +341,7 @@ Result<const World::Behavior*> World::Impl::behavior(TypeId type) const {
         type = *(*info)->base;
     }
 }
+
 Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     if (auto ready = impl_->admit(); !ready)
         return ready;
@@ -380,6 +389,7 @@ Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     state.changed(false);
     return {};
 }
+
 Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -417,6 +427,7 @@ Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite
     state.schedule_dirty = true;
     return {};
 }
+
 Result<void> World::remove_tick_prerequisite(ObjectId object, ObjectId prerequisite) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -434,12 +445,14 @@ Result<void> World::remove_tick_prerequisite(ObjectId object, ObjectId prerequis
     state.schedule_dirty = true;
     return {};
 }
+
 Result<void> World::observe_lifecycle(LifecycleObserver observer) {
     if (auto ready = impl_->admit(); !ready)
         return ready;
     impl_->observer = std::move(observer);
     return {};
 }
+
 Result<std::uint64_t> World::subscribe_lifecycle(LifecycleObserver observer) {
     if (auto ready = impl_->admit(); !ready)
         return std::unexpected(ready.error());
@@ -452,6 +465,7 @@ Result<std::uint64_t> World::subscribe_lifecycle(LifecycleObserver observer) {
     impl_->subscriptions.push_back({id, std::make_shared<LifecycleObserver>(std::move(observer))});
     return id;
 }
+
 void World::unsubscribe_lifecycle(std::uint64_t id) noexcept {
     if (impl_->dispatch_depth) {
         for (auto& entry : impl_->subscriptions) {
@@ -463,6 +477,7 @@ void World::unsubscribe_lifecycle(std::uint64_t id) noexcept {
     }
     std::erase_if(impl_->subscriptions, [id](const Impl::Subscription& entry) { return entry.id == id; });
 }
+
 Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     auto& state = *impl_;
     if (auto ready = state.admit(); !ready)
@@ -522,8 +537,11 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
 std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
     struct PhaseMarkers {
         const timing::Marker& phase;
+
         const timing::Marker& tick;
+
         const timing::Marker& commands;
+
         const timing::Marker& flush;
     };
     static constexpr std::array<PhaseMarkers, 3> markers{
@@ -791,6 +809,7 @@ Result<Commit> World::Impl::apply_request(const Pending& item) {
     }
     return error(ErrorCode::argument_mismatch, "Unknown World request.");
 }
+
 std::optional<Error> World::Impl::flush_requests() {
     if (pending.empty())
         return {};
@@ -817,6 +836,7 @@ std::optional<Error> World::Impl::flush_requests() {
     }
     return {};
 }
+
 Result<std::vector<RequestCompletion>> World::flush() {
     auto& state = *impl_;
     if (state.dispatch_depth || state.transitioning || state.flushing)

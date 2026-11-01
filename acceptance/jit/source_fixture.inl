@@ -1,19 +1,30 @@
 // Acceptance-owned observations around the actual source host bridge.
 // Program, version, invocation and generated-code ownership stay in the library.
 using PollHook = void (*)(void*, Invocation&);
+
 struct ExecutionStats {
     std::size_t polls{};
+
     bool entered{};
+
     bool explicit_cleanup{};
 };
+
 struct FixtureInvocation {
     bool make_snapshot{};
+
     PollHook hook{};
+
     void* hook_state{};
+
     ExecutionStats stats;
+
     ObjectRoot snapshot;
+
     ObjectRoot output;
+
     bool failed_output{};
+
     std::array<std::span<const FieldId>, 3> snapshot_fields;
 
     FixtureInvocation(bool snapshot_requested = false, PollHook callback = nullptr, void* context = nullptr)
@@ -35,6 +46,7 @@ struct FixtureInvocation {
         }
         return {};
     }
+
     InvocationObserver observer() {
         return {this,
                 [](void* context, Invocation& invocation) -> Result<void> {
@@ -82,14 +94,17 @@ struct FixtureInvocation {
                 }};
     }
 };
+
 FixtureInvocation& fixture(Invocation& invocation) {
     return *static_cast<FixtureInvocation*>(invocation.observer.context);
 }
 
 struct ExecutionResult {
     BusinessValue value;
+
     ObjectRoot snapshot;
 };
+
 Result<ExecutionResult> finish_fixture(Result<BusinessValue> result, FixtureInvocation& state,
                                        ExecutionStats* statistics) {
     if (statistics)
@@ -104,6 +119,7 @@ Result<ExecutionResult> finish_fixture(Result<BusinessValue> result, FixtureInvo
             Error{ErrorCode::invocation_failed, "Generated execution violated the host snapshot policy."});
     return ExecutionResult{*result, std::move(state.output)};
 }
+
 Result<ExecutionResult> execute_fixture(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
                                         std::span<const BusinessValue> arguments, bool start_collection = false,
                                         ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
@@ -119,6 +135,7 @@ Result<ExecutionResult> execute_fixture(Runtime& runtime, const Binding& binding
     auto result = source_detail::execute_typed(runtime, binding, code, receiver, arguments, state.observer());
     return finish_fixture(std::move(result), state, statistics);
 }
+
 Result<ObjectRoot> execute_machine(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
                                    float amount, std::uint32_t steps, bool start_collection = false,
                                    ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
@@ -130,6 +147,7 @@ Result<ObjectRoot> execute_machine(Runtime& runtime, const Binding& binding, Bus
         return std::unexpected(std::move(result.error()));
     return std::move(result->snapshot);
 }
+
 template <class Entry>
 Result<ExecutionResult> invoke_fixture(const Entry& entry, ObjectId receiver, std::span<const BusinessValue> arguments,
                                        ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
@@ -140,6 +158,7 @@ Result<ExecutionResult> invoke_fixture(const Entry& entry, ObjectId receiver, st
     auto result = ProgramAccess::invoke(entry, receiver, arguments, state.observer());
     return finish_fixture(std::move(result), state, statistics);
 }
+
 template <class Entry>
 Result<ObjectRoot> invoke_machine(const Entry& entry, ObjectId receiver, float amount, std::uint32_t steps,
                                   ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
@@ -150,6 +169,7 @@ Result<ObjectRoot> invoke_machine(const Entry& entry, ObjectId receiver, float a
         return std::unexpected(std::move(result.error()));
     return std::move(result->snapshot);
 }
+
 template <class Entry>
 Result<Coroutine> start_fixture(const Entry& entry, ObjectId receiver, std::span<const BusinessValue> arguments) {
     return ProgramAccess::start(entry, receiver, arguments);

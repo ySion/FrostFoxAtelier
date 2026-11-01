@@ -31,25 +31,32 @@
 namespace atelier::jit_acceptance {
 namespace {
 using atelier::acceptance::NativeMachine;
+
 using atelier::acceptance::NativeState;
+
 namespace source_detail = atelier::source::detail;
+
 using namespace source_detail;
+
 using BusinessProgram = atelier::source::Program;
 
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 template <class T>
 void reject(const Result<T>& result, ErrorCode code, const char* message) {
     require(!result && result.error().code == code, message);
@@ -61,6 +68,7 @@ std::span<const FieldId> fixture_field(const Binding& binding, std::string_view 
             return field.path;
     throw std::runtime_error("Fixture field was not exposed by the Runtime.");
 }
+
 MethodId fixture_method(const Binding& binding, std::string_view name) {
     for (const auto& method : binding.methods)
         if (method.name == name)
@@ -71,6 +79,7 @@ MethodId fixture_method(const Binding& binding, std::string_view name) {
 std::array<BusinessValue, 2> machine_arguments(float amount, std::uint32_t steps) {
     return {scalar(amount), scalar(steps)};
 }
+
 std::array<TypeId, 2> register_machines(Runtime& runtime);
 
 const std::string& business_source() {
@@ -87,6 +96,7 @@ const std::string& business_source() {
     }();
     return source;
 }
+
 CodeOwner compile_bound(const Binding& binding, std::string_view source, const char* name,
                         const BusinessServices& callbacks = services) {
     require(source.size() <= std::numeric_limits<std::uint32_t>::max(),
@@ -101,6 +111,7 @@ CodeOwner compile_bound(const Binding& binding, std::string_view source, const c
         throw std::runtime_error(diagnostic);
     return CodeOwner{output, &atelier_destroy_business};
 }
+
 // Older machine scenarios share this fixture catalog, not a compiler builtin.
 CodeOwner compile_business(std::string_view source = business_source(), const char* name = "advance_machine.source") {
     Runtime runtime;
@@ -115,6 +126,7 @@ std::string reference_source(std::string_view source, std::string_view type_name
         text.replace(offset, 2, type_name);
     return text;
 }
+
 CodeOwner compile_reference(const Binding& binding, std::string_view source, const char* name) {
     return compile_bound(binding, reference_source(source, binding.name), name);
 }
@@ -123,12 +135,17 @@ CodeOwner compile_reference(const Binding& binding, std::string_view source, con
 
 struct NativeAction {
     void* context;
+
     void (*run)(void*, CallContext&);
 };
+
 thread_local NativeAction* native_action{};
+
 struct ActionScope {
     NativeAction* previous;
+
     explicit ActionScope(NativeAction& action) : previous(std::exchange(native_action, &action)) {}
+
     ~ActionScope() { native_action = previous; }
 };
 
@@ -138,6 +155,7 @@ Result<void> advance_native(CallContext& call) {
         native_action->run(native_action->context, call);
     return {};
 }
+
 Result<void> advance_described(CallContext& call) {
     // Preserve the existing fixture's dynamic callback. Its name lookup is not
     // attributed to the new, cold-bound JIT bridge or claimed to be optimized.
@@ -190,6 +208,7 @@ void set_machine(Runtime& runtime, const Binding& binding, ObjectId object, floa
     take(runtime.write(object, fixture_field(binding, "state.heat"), heat));
     take(runtime.write(object, fixture_field(binding, "state.cycles"), cycles));
 }
+
 void check_machine(Runtime& runtime, const Binding& binding, ObjectId object, float progress, float heat,
                    std::uint32_t cycles) {
     require(std::get<float>(take(runtime.read(object, fixture_field(binding, "progress")))) == progress &&
@@ -197,6 +216,7 @@ void check_machine(Runtime& runtime, const Binding& binding, ObjectId object, fl
                 std::get<std::uint32_t>(take(runtime.read(object, fixture_field(binding, "state.cycles")))) == cycles,
             "Generated business state or snapshot is incorrect.");
 }
+
 void collect(Runtime& runtime) {
     if (runtime.collection_phase() != CollectionPhase::idle)
         while (runtime.collection_phase() != CollectionPhase::idle)
@@ -208,11 +228,16 @@ void collect(Runtime& runtime) {
 
 struct RootObservation {
     ObjectId snapshot;
+
     ObjectId garbage;
+
     CollectionPhase phase{CollectionPhase::roots};
+
     bool observed{};
+
     bool garbage_alive{true};
 };
+
 void observe_roots(void* data, Invocation& invocation) {
     auto& observation = *static_cast<RootObservation*>(data);
     const auto snapshot = fixture(invocation).snapshot.id();
@@ -348,7 +373,9 @@ void verify_failures_and_admission(BusinessCode* code) {
 
     struct Reentry {
         const Binding* binding;
+
         BusinessCode* code;
+
         unsigned checked{};
     } reentry{&binding, code};
     NativeAction reentry_action{
@@ -374,9 +401,13 @@ void verify_failures_and_admission(BusinessCode* code) {
     take(runtime.check_execution_entry());
     struct Traversal {
         Runtime* runtime;
+
         const Binding* binding;
+
         BusinessCode* code;
+
         ObjectId receiver;
+
         bool checked{};
     } traversal{&runtime, &binding, code, receiver.id()};
     take(runtime.visit_roots({&traversal, [](void* context, const ObjectReference&) -> Result<void> {
@@ -412,7 +443,9 @@ void verify_identity_boundaries(BusinessCode* code) {
     require(runtime.root_count() == root_count, "Rejected identities changed root ownership.");
     struct Replacement {
         ObjectId old;
+
         ObjectRoot root{};
+
         bool replaced{};
     } replacement{receiver.id()};
     ExecutionStats stats;
@@ -552,8 +585,11 @@ void verify_active_code_lifetime(bool fail_after_retirement) {
     auto receiver = take(runtime.create(binding.type));
     struct Retirement {
         CodeOwner* owner;
+
         std::uintptr_t address{};
+
         unsigned calls{};
+
         bool fail{};
     } retirement{&owner, 0, 0, fail_after_retirement};
     NativeAction action{
@@ -810,8 +846,11 @@ void verify_reference_collection(Runtime& runtime, const Binding& binding) {
     garbage.reset();
     struct Observation {
         ObjectId object;
+
         ObjectId garbage;
+
         unsigned calls{};
+
         unsigned cycles{};
     } state{{}, garbage_id};
     NativeAction capture{&state, [](void* context, CallContext& call) {
@@ -874,7 +913,9 @@ void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
     auto receiver = take(runtime.create(binding.type));
     struct Iterations {
         std::array<ObjectId, 4> objects{};
+
         std::size_t calls{};
+
         std::size_t cycles{};
     } state;
     NativeAction capture{&state, [](void* context, CallContext& call) {
@@ -936,8 +977,11 @@ void verify_reference_exit(Runtime& runtime, const Binding& binding, bool fail_n
     auto receiver = take(runtime.create(binding.type));
     struct Exit {
         ObjectId held;
+
         ObjectId receiver;
+
         unsigned calls{};
+
         bool fail{};
     } state{{}, receiver.id(), 0, fail_native};
     NativeAction callback{&state, [](void* context, CallContext& call) {
@@ -986,7 +1030,9 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
     enum class Failure { none, native, publication, cleanup };
     struct State {
         Failure failure;
+
         std::uint32_t calls{};
+
         bool publish_seen{};
     };
     std::string source = "void reference_returns(float amount, uint steps) { $T outer = self; ";
@@ -1116,9 +1162,13 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding, bo
     auto receiver = take(runtime.create(binding.type));
     struct Replacement {
         ObjectId old;
+
         ObjectId receiver;
+
         ObjectRoot root;
+
         unsigned calls{};
+
         bool destroyed{};
     } state;
     state.receiver = receiver.id();
@@ -1210,9 +1260,13 @@ void verify_reference_temporaries(Runtime& runtime, const Binding& binding) {
     auto receiver = take(runtime.create(binding.type));
     struct Temporaries {
         ObjectId receiver;
+
         ObjectId temporary;
+
         ObjectId held;
+
         unsigned calls{};
+
         unsigned cycles{};
     } state{receiver.id(), {}, {}};
     NativeAction observe{
@@ -1297,6 +1351,7 @@ void verify_reference_failed_initializer(Runtime& runtime, const Binding& bindin
     auto receiver = take(runtime.create(binding.type));
     struct Failed {
         ObjectId live;
+
         unsigned calls{};
     } state;
     NativeAction capture{&state, [](void* context, CallContext& call) {
@@ -1452,7 +1507,9 @@ void verify_reference_sources(BusinessCode* scalar_code) {
 // root or a code version. Tick uses the same stable entry-selection path.
 struct ReloadEvent {
     BusinessProgram::Entry entry;
+
     ObjectId receiver;
+
     Result<ObjectRoot> fire(float amount, std::uint32_t steps) const {
         return invoke_machine(entry, receiver, amount, steps);
     }
@@ -1828,13 +1885,21 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
     BusinessProgram::Candidate first_candidate;
     struct Active {
         BusinessProgram* first;
+
         BusinessProgram* second;
+
         const Binding* binding;
+
         BusinessProgram::Candidate* first_candidate;
+
         BusinessProgram::Candidate* second_candidate;
+
         ObjectId other;
+
         unsigned calls{};
+
         unsigned polls{};
+
         unsigned nested{};
     } state{&first, &second, &binding, &first_candidate, &second_candidate, other.id()};
     NativeAction attempt{&state, [](void* context, CallContext& call) {
@@ -1896,7 +1961,9 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
     auto pending = prepare_reload(second, binding, 3);
     struct Guarded {
         BusinessProgram* program;
+
         BusinessProgram::Candidate* candidate;
+
         unsigned calls{};
     } guarded{&second, &pending};
     const auto cannot_publish = [](void* context, Invocation&) {
@@ -1918,12 +1985,18 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
 
 struct ReloadGcAttempt {
     BusinessProgram* program;
+
     BusinessProgram::Candidate* candidate;
+
     unsigned calls{};
+
     bool busy{};
+
     bool threw{};
 };
+
 thread_local ReloadGcAttempt* reload_gc_attempt{};
+
 struct ReloadGcProbe {
     ~ReloadGcProbe() noexcept {
         if (!reload_gc_attempt)
@@ -1938,9 +2011,12 @@ struct ReloadGcProbe {
         }
     }
 };
+
 struct ReloadGcScope {
     ReloadGcAttempt* previous;
+
     explicit ReloadGcScope(ReloadGcAttempt& attempt) : previous(std::exchange(reload_gc_attempt, &attempt)) {}
+
     ~ReloadGcScope() { reload_gc_attempt = previous; }
 };
 
@@ -1953,7 +2029,9 @@ void verify_reload_standalone_guards(Runtime& runtime, const Binding& binding, T
     const auto old_address = take(program.pin()).address();
     struct Attempt {
         BusinessProgram* program;
+
         BusinessProgram::Candidate* candidate;
+
         unsigned calls{};
     } attempt{&program, &pending};
     NativeAction native{&attempt, [](void* context, CallContext&) {
@@ -2112,11 +2190,17 @@ void verify_reload_owner_destruction(Runtime& runtime, const Binding& binding, b
     const ReloadEvent saved_event{program->entry(), receiver.id()};
     struct Closing {
         std::unique_ptr<BusinessProgram>* program;
+
         std::unique_ptr<BusinessProgram::Entry>* active_entry;
+
         const ReloadEvent* event;
+
         const BusinessProgram::Request* request;
+
         std::uintptr_t address;
+
         bool fail;
+
         unsigned calls{};
     } state{&program, &active_entry, &saved_event, &request, old_address, fail_native};
     NativeAction close{&state, [](void* context, CallContext&) {
@@ -2287,6 +2371,7 @@ void verify_source_rejections(BusinessCode* existing) {
     const auto environment = storage.view(nullptr);
     struct InvalidSource {
         const char* text;
+
         const char* diagnostic;
     };
     const InvalidSource cases[]{
@@ -2352,6 +2437,7 @@ void verify_source_rejections(BusinessCode* existing) {
 }
 
 void verify_math_abi();
+
 void verify_bool_abi();
 
 void verify_business_execution() {

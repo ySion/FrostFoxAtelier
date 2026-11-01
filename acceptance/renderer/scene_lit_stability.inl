@@ -3,14 +3,23 @@
 void stability_cases(Fixture& f) {
     struct Restore {
         Fixture& fixture;
+
         std::vector<render::MeshInstance> meshes = fixture.room.meshes;
+
         std::vector<render::Light> lights = fixture.lights;
+
         render::ViewSettings view = fixture.frame.view;
+
         render::Camera camera = fixture.frame.camera;
+
         Vec3 environment = fixture.frame.environment;
+
         Vec3 focus = fixture.frame.lighting_focus;
+
         std::uint64_t identity = fixture.frame.scene_identity;
+
         float render_delta = fixture.frame.render_delta_seconds;
+
         ~Restore() {
             fixture.room.meshes = std::move(meshes);
             fixture.lights = std::move(lights);
@@ -108,7 +117,9 @@ void stability_cases(Fixture& f) {
     };
     struct Changes {
         float presentation{};
+
         float transport{};
+
         float maximum_presentation{};
     };
     const auto collect = [&](const char* name, render::ProbeHistory history,
@@ -437,9 +448,13 @@ void stability_cases(Fixture& f) {
                 const auto response_identity = f.frame.scene_identity;
                 struct SourceFrame {
                     std::uint64_t id;
+
                     unsigned phase;
+
                     unsigned ordinal;
+
                     unsigned phase_frame;
+
                     float delta;
                 };
                 std::vector<SourceFrame> source_frames;
@@ -448,8 +463,11 @@ void stability_cases(Fixture& f) {
                 std::array<unsigned, 3> last_phase_frame{};
                 struct ResponseStart {
                     bool valid{};
+
                     std::array<float, 4> position{};
+
                     std::uint32_t epoch{};
+
                     std::uint32_t visit{};
                 };
                 std::array<std::array<ResponseStart, probe_count>, 3> response_start{};

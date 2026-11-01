@@ -10,15 +10,24 @@
 // physics and renderer phases open their own roots at the same level.
 namespace atelier::application::phases {
 inline constinit timing::Marker input{"app.input", "Input and window events", &timing::frame};
+
 inline constinit timing::Marker project{"app.project", "Project, Play and code", &timing::frame};
+
 // Control in the editor; the Play link in a project run.
 inline constinit timing::Marker control{"app.control", "Control / Play link", &timing::frame};
+
 inline constinit timing::Marker gc{"app.gc", "GC step", &timing::frame};
+
 inline constinit timing::Marker ui{"app.ui", "UI description", &timing::frame};
+
 inline constinit timing::Marker layout{"app.layout", "UI layout", &timing::frame};
+
 inline constinit timing::Marker popup{"app.popup", "Popup menus", &timing::frame};
+
 inline constinit timing::Marker scene{"app.scene", "Scene snapshot", &timing::frame};
+
 inline constinit timing::Marker extract{"app.scene.extract", "Presentation extraction", &scene};
+
 inline constexpr std::array<timing::Marker*, 9> markers{&input,  &project, &control, &gc,     &ui,
                                                         &layout, &popup,   &scene,   &extract};
 }

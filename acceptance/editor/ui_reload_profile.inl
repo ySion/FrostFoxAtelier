@@ -4,6 +4,7 @@ std::string reload_source(unsigned version) {
            "\"; height: input.offset + " + std::to_string(version) +
            ".0d; } }\nui Host(in double offset) { Column root { Leaf child { offset: input.offset; } } }";
 }
+
 void verify_ui_code_reuse() {
     namespace language = ui_language;
     Runtime runtime;
@@ -85,8 +86,10 @@ void verify_ui_code_reuse() {
 
 struct UiReloadResources {
     std::size_t private_bytes{};
+
     std::size_t executable_bytes{};
 };
+
 UiReloadResources ui_reload_resources() {
     UiReloadResources result;
     using MemoryInfo = BOOL(WINAPI*)(HANDLE, PPROCESS_MEMORY_COUNTERS, DWORD);
@@ -112,9 +115,12 @@ UiReloadResources ui_reload_resources() {
     }
     return result;
 }
+
 // Each replacement round is one frame of a profile Recorder; compile and publish are its phases.
 constinit timing::Marker reload_compile{"profile.compile", "UI compile", &timing::frame};
+
 constinit timing::Marker reload_publish{"profile.publish", "UI publish", &timing::frame};
+
 constexpr std::array<timing::Marker*, 2> reload_markers{&reload_compile, &reload_publish};
 
 void profile_ui_reload(const std::filesystem::path& path) {

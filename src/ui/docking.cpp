@@ -6,19 +6,29 @@
 namespace atelier::ui {
 namespace {
 constexpr float divider_width = 8;
+
 constexpr ControlKey close_offset = 1'000'000;
+
 constexpr ControlKey wrapper_offset = 2'000'000;
+
 constexpr ControlKey open_offset = 3'000'000;
+
 constexpr ControlKey preview_offset = 4'000'000;
+
 constexpr ControlKey command_offset = 5'000'000;
+
 bool inside(Rect r, float x, float y) {
     return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
 }
+
 struct SplitRange {
     float span{};
+
     float low{};
+
     float high{};
 };
+
 SplitRange split_range(float size, float first, float second) {
     const auto span = std::max(0.f, size - divider_width);
     const auto low = span >= first + second ? first : span * first / (first + second);
@@ -26,6 +36,7 @@ SplitRange split_range(float size, float first, float second) {
 }
 
 }
+
 DockSpace::DockSpace(ControlKey base, std::vector<DockTab> tabs) : base_(base), next_(base), tabs_(std::move(tabs)) {
     if (!base || base > std::numeric_limits<ControlKey>::max() - command_offset - 256 || tabs_.empty() ||
         tabs_.size() > 64)
@@ -44,7 +55,9 @@ DockSpace::DockSpace(ControlKey base, std::vector<DockTab> tabs) : base_(base), 
     }
     reset();
 }
+
 DockSpace::~DockSpace() = default;
+
 std::unique_ptr<DockSpace::Node> DockSpace::make_node() {
     if (next_ >= base_ + close_offset - 16)
         throw std::length_error("Dock identities exhausted.");
@@ -53,10 +66,12 @@ std::unique_ptr<DockSpace::Node> DockSpace::make_node() {
     next_ += 16;
     return result;
 }
+
 const DockTab* DockSpace::tab(ControlKey key) const noexcept {
     const auto at = std::find_if(tabs_.begin(), tabs_.end(), [&](const auto& view) { return view.key == key; });
     return at == tabs_.end() ? nullptr : &*at;
 }
+
 DockSpace::Node* DockSpace::find(ControlKey key) const noexcept {
     const auto visit = [&](auto&& self, Node* node) -> Node* {
         if (node->key == key)
@@ -69,6 +84,7 @@ DockSpace::Node* DockSpace::find(ControlKey key) const noexcept {
     };
     return visit(visit, root_.get());
 }
+
 DockSpace::Node* DockSpace::owner(ControlKey key) const noexcept {
     const auto visit = [&](auto&& self, Node* node) -> Node* {
         if (!node->split())
@@ -79,6 +95,7 @@ DockSpace::Node* DockSpace::owner(ControlKey key) const noexcept {
     };
     return visit(visit, root_.get());
 }
+
 void DockSpace::reset() {
     root_ = make_node();
     for (const auto& view : tabs_)
@@ -90,10 +107,12 @@ void DockSpace::reset() {
     drag_.reset();
     resize_.reset();
 }
+
 ControlKey DockSpace::pane(ControlKey key) const noexcept {
     const auto* node = owner(key);
     return node ? node->key : 0;
 }
+
 bool DockSpace::visible(ControlKey key) const noexcept {
     const auto* node = owner(key);
     if (!node || node->active != key || (maximized_ && maximized_ != node->key))
@@ -104,6 +123,7 @@ bool DockSpace::visible(ControlKey key) const noexcept {
             return false;
     return true;
 }
+
 DockSpace::Node* DockSpace::parent(ControlKey key) const noexcept {
     const auto visit = [&](auto&& self, Node* node) -> Node* {
         if (!node->split())
@@ -116,6 +136,7 @@ DockSpace::Node* DockSpace::parent(ControlKey key) const noexcept {
     };
     return visit(visit, root_.get());
 }
+
 void DockSpace::reveal(ControlKey key) {
     auto* node = owner(key);
     if (!node)
@@ -126,6 +147,7 @@ void DockSpace::reveal(ControlKey key) {
             above->collapsed = 0;
     }
 }
+
 void DockSpace::collapse(Node& node, unsigned side) {
     node.collapsed = node.collapsed == side ? 0 : side;
     maximized_ = 0;
@@ -140,6 +162,7 @@ void DockSpace::collapse(Node& node, unsigned side) {
             }
     }
 }
+
 void DockSpace::remove(Node& node, ControlKey key) {
     const auto at = std::find(node.tabs.begin(), node.tabs.end(), key);
     if (at == node.tabs.end())
@@ -149,6 +172,7 @@ void DockSpace::remove(Node& node, ControlKey key) {
     if (node.active == key)
         node.active = node.tabs.empty() ? 0 : node.tabs[std::min(index, node.tabs.size() - 1)];
 }
+
 void DockSpace::normalize(std::unique_ptr<Node>& node) {
     if (!node->split())
         return;
@@ -162,6 +186,7 @@ void DockSpace::normalize(std::unique_ptr<Node>& node) {
         node = std::move(remaining);
     }
 }
+
 bool DockSpace::select(ControlKey key) {
     if (!tab(key))
         return false;
@@ -183,6 +208,7 @@ bool DockSpace::select(ControlKey key) {
         maximized_ = node->key;
     return true;
 }
+
 bool DockSpace::close(ControlKey key) {
     auto* node = owner(key);
     if (!node)
@@ -207,6 +233,7 @@ bool DockSpace::close(ControlKey key) {
     resize_.reset();
     return true;
 }
+
 void DockSpace::maximize(ControlKey key) {
     resize_.reset();
     reveal(key);
@@ -215,6 +242,7 @@ void DockSpace::maximize(ControlKey key) {
         focused_ = node->active;
     }
 }
+
 void DockSpace::cycle(int direction) {
     auto* node = owner(focused_);
     if (!node || node->tabs.empty())
@@ -223,6 +251,7 @@ void DockSpace::cycle(int direction) {
     const auto count = static_cast<std::ptrdiff_t>(node->tabs.size());
     select(node->tabs[static_cast<std::size_t>((at + count + (direction < 0 ? -1 : 1)) % count)]);
 }
+
 void DockSpace::focus_control(ControlKey key, const UiFrame& frame) {
     while (key) {
         for (const auto& view : tabs_)
@@ -236,10 +265,12 @@ void DockSpace::focus_control(ControlKey key, const UiFrame& frame) {
         key = box->parent;
     }
 }
+
 bool DockSpace::move(ControlKey key, ControlKey target, DockSide side, float fraction) {
     const auto* node = owner(target);
     return node && place(key, node->key, side, 0, fraction);
 }
+
 bool DockSpace::place(ControlKey key, ControlKey target, DockSide side, ControlKey before, float fraction) {
     if (!tab(key) || !std::isfinite(fraction) || fraction <= 0 || fraction >= 1)
         return false;
@@ -276,6 +307,7 @@ bool DockSpace::place(ControlKey key, ControlKey target, DockSide side, ControlK
     focused_ = key;
     return true;
 }
+
 ui_layout::Size DockSpace::minimum(const Node& node) const {
     if (node.split()) {
         auto a = node.collapsed == 1 ? ui_layout::Size{} : minimum(*node.first);
@@ -292,6 +324,7 @@ ui_layout::Size DockSpace::minimum(const Node& node) const {
     }
     return size;
 }
+
 ControlKey DockSpace::divider(ControlKey key, DragAxis axis) const noexcept {
     const auto leaf = pane(key);
     const auto visit = [&](auto&& self, const Node* node) -> std::pair<bool, ControlKey> {
@@ -306,6 +339,7 @@ ControlKey DockSpace::divider(ControlKey key, DragAxis axis) const noexcept {
     };
     return visit(visit, root_.get()).second;
 }
+
 std::optional<DockSpace::Drop> DockSpace::destination(ControlKey source, const DragPoint& point,
                                                       const UiFrame& frame) const {
     const auto* from = owner(source);
@@ -368,6 +402,7 @@ std::optional<DockSpace::Drop> DockSpace::destination(ControlKey source, const D
     };
     return visit(visit, *root_);
 }
+
 bool DockSpace::apply(const Action& action, const UiFrame& frame) {
     if (tab(action.key)) {
         if (action.kind == ActionKind::activate)
@@ -522,6 +557,7 @@ bool DockSpace::apply(const Action& action, const UiFrame& frame) {
     }
     return false;
 }
+
 std::vector<MenuItem> DockSpace::menu_items(ControlKey source, const UiFrame* frame) {
     Node* node = owner(source);
     if (!node && source >= base_ && source < base_ + close_offset)
@@ -566,6 +602,7 @@ std::vector<MenuItem> DockSpace::menu_items(ControlKey source, const UiFrame* fr
     result.push_back({node->key + 8, L"Split Pane Top/Bottom", vertical, false, {}});
     return result;
 }
+
 void DockSpace::present_node(Presentation& result, const Node& node, ControlKey parent, Rect bounds) const {
     Pane pane;
     pane.key = node.key;
@@ -616,6 +653,7 @@ void DockSpace::present_node(Presentation& result, const Node& node, ControlKey 
     if (node.collapsed != 2)
         present_node(result, *node.second, node.key, second);
 }
+
 DockSpace::Presentation DockSpace::presentation(ControlKey parent, ui_layout::Size size) const {
     Presentation result;
     result.preview_key = base_ + preview_offset;

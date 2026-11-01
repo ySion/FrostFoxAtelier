@@ -14,6 +14,7 @@ namespace {
 auto fail(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
+
 bool same(const source::SourceSnapshot& a, const source::SourceSnapshot& b) {
     if (a.files.size() != b.files.size())
         return false;
@@ -22,17 +23,20 @@ bool same(const source::SourceSnapshot& a, const source::SourceSnapshot& b) {
             return false;
     return true;
 }
+
 Result<void> completed(Result<std::optional<Scalar>> result) {
     if (!result)
         return std::unexpected(result.error());
     return {};
 }
+
 bool lifecycle(std::string_view entry, std::string_view type) {
     if (entry.size() <= type.size() + 1 || !entry.starts_with(type) || entry[type.size()] != '.')
         return false;
     const auto name = entry.substr(type.size() + 1);
     return name == "begin" || name == "tick" || name == "post_physics_tick" || name == "late_tick" || name == "end";
 }
+
 Result<void> validate_ui(const source::SourceFile& file) {
     // Compilation only. Project expressions and event handlers are evaluated
     // exclusively by the isolated runner, including UI previews.
@@ -65,7 +69,9 @@ Result<void> validate_ui(const source::SourceFile& file) {
     return {};
 }
 }
+
 ProjectCode::ProjectCode(world::World& world) : world_(world), report_(std::make_shared<ProjectBuild>()) {}
+
 Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     auto paths = project.source_paths();
     if (!paths)
@@ -100,6 +106,7 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
             return fail("Project and engine Source exceed the 16 MiB compilation limit.");
     return result;
 }
+
 Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project& project) {
     if (project.ui_source().empty())
         return std::optional<source::SourceFile>{};
@@ -111,6 +118,7 @@ Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project
         return std::unexpected(file.error());
     return std::optional<source::SourceFile>{std::move(*file)};
 }
+
 Result<void> ProjectCode::build(const Project& project) {
     auto next = std::make_shared<ProjectBuild>();
     next->published_version = report_->published_version;
@@ -243,6 +251,7 @@ Result<void> ProjectCode::build(const Project& project) {
     report_ = std::move(next);
     return {};
 }
+
 // Compatible publications may add classes or lifecycle methods; those need a
 // new binding. build runs between frames, where World accepts it while running:
 // begun objects take the new methods from the next phase without a second Begin.
@@ -259,6 +268,7 @@ bool ProjectCode::adds_behavior(const source::Program::Candidate& candidate) con
     }
     return false;
 }
+
 Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) const {
     auto& runtime = world_.runtime();
     for (const auto& type : candidate.classes()) {
@@ -269,6 +279,7 @@ Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) 
     }
     return {};
 }
+
 Result<void> ProjectCode::bind() {
     auto& runtime = world_.runtime();
     for (const auto& type : program_->classes()) {
@@ -314,6 +325,7 @@ Result<void> ProjectCode::bind() {
     }
     return {};
 }
+
 Result<void> ProjectCode::poll(const Project& project, bool force) {
     const auto now = std::chrono::steady_clock::now();
     if (!force && now < next_poll_)
@@ -350,6 +362,7 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
     stamps_ = std::move(stamps);
     return build(project);
 }
+
 ProjectDocument load_project_scene(Project& project, std::string_view source, LoadPolicy policy,
                                    bool allow_failed_build, SessionRole role) {
     ProjectDocument result;
@@ -380,6 +393,7 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
     }
     return result;
 }
+
 std::vector<std::wstring> describe_issues(const Session& session, std::span<const world::Diagnostic> issues,
                                           std::wstring_view source) {
     std::vector<std::wstring> lines;
@@ -393,6 +407,7 @@ std::vector<std::wstring> describe_issues(const Session& session, std::span<cons
                         (item.value.empty() ? std::wstring{} : L" Saved: " + assets::wide(item.value)));
     return lines;
 }
+
 std::wstring describe_diagnostic(const Session& session, const world::Diagnostic& item) {
     auto line = L"Diagnostic [" + assets::wide(world::name(item.severity)) + L"] " +
                 assets::wide(world::name(item.kind)) + L" in " + assets::wide(world::name(item.phase));
@@ -414,10 +429,12 @@ std::wstring describe_diagnostic(const Session& session, const world::Diagnostic
         line += L" (×" + std::to_wstring(item.repeats) + L")";
     return line;
 }
+
 std::string ProjectCode::component_source(std::string_view name) {
     return "class project." + std::string(name) +
            " : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n";
 }
+
 std::string ProjectCode::ui_source() {
     return "ui ProjectUI(in Text title, in double elapsed, in double entities) {\n    Column hud {\n        padding_left: 8; padding_top: 8; gap: 4;\n        Text title { text: input.title; }\n        Text hint { text: \"Edit this UI in your project.\"; }\n    }\n}\n";
 }

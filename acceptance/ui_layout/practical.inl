@@ -59,11 +59,17 @@ void descriptors_and_collapsed_subtrees() {
 
 struct InspectorScene {
     TextProvider provider;
+
     LayoutDocument document{TextProvider::measure, &provider, {4096, 8}};
+
     LayoutNodeId table;
+
     std::vector<LayoutNodeId> rows;
+
     std::vector<LayoutNodeId> labels;
+
     std::vector<LayoutNodeId> values;
+
     explicit InspectorScene(std::size_t count) {
         auto input = NodeInput::table({Axis::content(40, 140), Axis::expand(1, 40)}, 12, 6);
         input.padding = {4, 4, 4, 4};
@@ -74,6 +80,7 @@ struct InspectorScene {
         for (std::size_t i = 0; i < count; ++i)
             append(i);
     }
+
     void append(std::size_t key) {
         const auto label_key = key * 2 + 1;
         const auto value_key = label_key + 1;
@@ -84,7 +91,9 @@ struct InspectorScene {
         labels.push_back(accepted(document.create(row, NodeInput::measured(label_key))));
         values.push_back(accepted(document.create(row, NodeInput::measured(value_key))));
     }
+
     LayoutView compute(float width = 420) { return accepted(document.compute({width, 600}, provider.epoch)); }
+
     void check(float width) {
         const auto view = compute(width);
         float label_width = 40;
@@ -352,9 +361,13 @@ void timed_scene(const char* name, Scene& scene, Action action, unsigned iterati
 
 struct InventoryScene {
     TextProvider provider;
+
     LayoutDocument document{TextProvider::measure, &provider, {2048, 4}};
+
     LayoutNodeId grid;
+
     std::vector<LayoutNodeId> items;
+
     InventoryScene() {
         grid = accepted(document.create(document.root(), NodeInput::grid(80, 8, 6)));
         for (std::uint64_t i = 1; i <= 256; ++i) {
@@ -362,6 +375,7 @@ struct InventoryScene {
             items.push_back(accepted(document.create(grid, NodeInput::measured(i))));
         }
     }
+
     void compute(float width = 640) { accepted(document.compute({width, 480}, provider.epoch)); }
 };
 

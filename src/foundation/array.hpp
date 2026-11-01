@@ -17,27 +17,35 @@ namespace atelier {
 template <class T>
 class Array {
     static_assert(std::is_object_v<T> && !std::is_const_v<T> && !std::is_volatile_v<T>);
+
     static_assert(std::is_nothrow_destructible_v<T>);
+
     static_assert(std::is_nothrow_move_constructible_v<T> || std::is_copy_constructible_v<T>,
                   "Array elements require a non-throwing move constructor or a copy constructor.");
 
 public:
     using Value = T;
+
     static constexpr std::size_t npos = Span<T>::npos;
+
     static constexpr std::size_t max_size = static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(T);
 
     Array() noexcept = default;
+
     explicit Array(Span<const T> values)
         requires std::is_copy_constructible_v<T>
     {
         append(values);
     }
+
     Array(std::initializer_list<T> values)
         requires std::is_copy_constructible_v<T>
         : Array(Span<const T>{values.begin(), values.size()}) {}
+
     Array(const Array& other)
         requires std::is_copy_constructible_v<T>
         : Array(other.view()) {}
+
     Array& operator=(const Array& other)
         requires std::is_copy_constructible_v<T>
     {
@@ -57,7 +65,9 @@ public:
         swap(copy);
         return *this;
     }
+
     Array(Array&& other) noexcept { swap(other); }
+
     Array& operator=(Array&& other) noexcept {
         // An element can own the source container. Transfer its storage before
         // releasing our old elements, which may destroy that source object.
@@ -67,24 +77,41 @@ public:
         }
         return *this;
     }
+
     ~Array() { release(); }
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
+
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+
     [[nodiscard]] T* data() noexcept { return data_; }
+
     [[nodiscard]] const T* data() const noexcept { return data_; }
+
     [[nodiscard]] T* begin() noexcept { return data_; }
+
     [[nodiscard]] const T* begin() const noexcept { return data_; }
+
     [[nodiscard]] T* end() noexcept { return size_ ? data_ + size_ : data_; }
+
     [[nodiscard]] const T* end() const noexcept { return size_ ? data_ + size_ : data_; }
+
     [[nodiscard]] Span<T> view() & noexcept { return {data_, size_}; }
+
     [[nodiscard]] Span<const T> view() const& noexcept { return {data_, size_}; }
+
     Span<T> view() && = delete;
+
     Span<const T> view() const&& = delete;
+
     [[nodiscard]] T& operator[](std::size_t index) { return Span<T>{data_, size_}[index]; }
+
     [[nodiscard]] const T& operator[](std::size_t index) const { return Span<const T>{data_, size_}[index]; }
+
     [[nodiscard]] T* try_at(std::size_t index) noexcept { return index < size_ ? data_ + index : nullptr; }
+
     [[nodiscard]] const T* try_at(std::size_t index) const noexcept { return index < size_ ? data_ + index : nullptr; }
 
     // Does not construct elements. clear retains allocation; release frees it.
@@ -92,20 +119,24 @@ public:
         if (capacity > capacity_)
             reallocate(capacity);
     }
+
     void squeeze() {
         if (size_ != capacity_)
             reallocate(size_);
     }
+
     void clear() noexcept {
         destroy(data_, size_);
         size_ = 0;
     }
+
     void release() noexcept {
         clear();
         deallocate(data_, capacity_);
         data_ = nullptr;
         capacity_ = 0;
     }
+
     void swap(Array& other) noexcept {
         std::swap(data_, other.data_);
         std::swap(size_, other.size_);
@@ -127,16 +158,19 @@ public:
         });
         return data_[size_ - 1];
     }
+
     T& add(const T& value)
         requires std::is_copy_constructible_v<T>
     {
         return emplace(value);
     }
+
     T& add(T&& value)
         requires std::is_move_constructible_v<T>
     {
         return emplace(std::move(value));
     }
+
     void append(Span<const T> values)
         requires std::is_copy_constructible_v<T>
     {
@@ -145,6 +179,7 @@ public:
             copy_construct(destination, values.data(), count, constructed);
         });
     }
+
     // Construction precedes relocation, so arguments may alias elements. The array is
     // unchanged if construction or growth fails; the final rotation moves elements.
     template <class... A>
@@ -156,6 +191,7 @@ public:
         std::rotate(data_ + index, data_ + size_ - 1, data_ + size_);
         return data_[index];
     }
+
     // Moves one element to `to`, shifting the elements between them.
     void move(std::size_t from, std::size_t to)
         requires std::is_move_assignable_v<T>
@@ -167,6 +203,7 @@ public:
         else if (to < from)
             std::rotate(data_ + to, data_ + from, data_ + from + 1);
     }
+
     void resize(std::size_t size)
         requires std::default_initializable<T>
     {
@@ -179,6 +216,7 @@ public:
                     std::construct_at(destination + constructed);
             });
     }
+
     // Copies `value` into each new element; it may be an element of this array.
     void resize(std::size_t size, const T& value)
         requires std::is_copy_constructible_v<T>
@@ -192,6 +230,7 @@ public:
                     std::construct_at(destination + constructed, value);
             });
     }
+
     void remove_at(std::size_t first, std::size_t count = 1)
         requires std::is_move_assignable_v<T>
     {
@@ -209,6 +248,7 @@ public:
         destroy(data_ + size_ - count, count);
         size_ -= count;
     }
+
     // Constant-time erase when order is irrelevant. Never shrinks capacity.
     void remove_at_swap(std::size_t index)
         requires std::is_move_assignable_v<T>
@@ -218,6 +258,7 @@ public:
             data_[index] = std::move(data_[size_ - 1]);
         std::destroy_at(data_ + --size_);
     }
+
     template <class Predicate>
         requires std::predicate<Predicate&, const T&> && std::is_move_assignable_v<T>
     std::size_t remove_if(Predicate predicate) {
@@ -235,6 +276,7 @@ public:
         size_ = write;
         return removed;
     }
+
     [[nodiscard]] std::size_t find(const T& value) const
         requires std::equality_comparable<T>
     {
@@ -243,6 +285,7 @@ public:
                 return i;
         return npos;
     }
+
     [[nodiscard]] bool contains(const T& value) const
         requires std::equality_comparable<T>
     {
@@ -251,7 +294,9 @@ public:
 
 private:
     static constexpr bool byte_copy = std::is_trivially_copyable_v<T> && std::is_trivially_copy_constructible_v<T>;
+
     using RelocationSource = decltype(std::move_if_noexcept(std::declval<T&>()));
+
     static constexpr bool byte_relocate =
         std::is_trivially_copyable_v<T> && std::is_trivially_constructible_v<T, RelocationSource>;
 
@@ -260,6 +305,7 @@ private:
             while (size)
                 std::destroy_at(data + --size);
     }
+
     static void copy_construct(T* destination, const T* source, std::size_t count, std::size_t& constructed) {
         if constexpr (byte_copy) {
             if (count)
@@ -270,6 +316,7 @@ private:
                 std::construct_at(destination + constructed, source[constructed]);
         }
     }
+
     static void relocate(T* destination, T* source, std::size_t count, std::size_t& constructed) {
         if constexpr (byte_relocate) {
             if (count)
@@ -280,19 +327,23 @@ private:
                 std::construct_at(destination + constructed, std::move_if_noexcept(source[constructed]));
         }
     }
+
     static T* allocate(std::size_t count) {
         if (count > max_size)
             throw std::length_error("Array exceeds addressable storage.");
         return count ? std::allocator<T>{}.allocate(count) : nullptr;
     }
+
     static void deallocate(T* data, std::size_t count) noexcept {
         if (data)
             std::allocator<T>{}.deallocate(data, count);
     }
+
     void check_range(std::size_t first, std::size_t count) const {
         if (first > size_ || count > size_ - first)
             throw std::out_of_range("Array erase range.");
     }
+
     void reallocate(std::size_t capacity) {
         T* replacement = allocate(capacity);
         std::size_t constructed = 0;
@@ -308,6 +359,7 @@ private:
         data_ = replacement;
         capacity_ = capacity;
     }
+
     template <class Construct>
     void extend(std::size_t count, Construct construct) {
         if (count > max_size - size_)
@@ -345,7 +397,9 @@ private:
     }
 
     T* data_{};
+
     std::size_t size_{};
+
     std::size_t capacity_{};
 };
 

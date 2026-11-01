@@ -13,31 +13,43 @@ namespace {
 Error invalid(std::string message) {
     return Error{ErrorCode::invalid_definition, std::move(message)};
 }
+
 // The caller sent an operator call this registry cannot accept.
 Error rejected(std::string message) {
     return Error{ErrorCode::argument_mismatch, std::move(message)};
 }
+
 // A live parameter or result record in owned, aligned storage.
 class Parameters {
 public:
     Parameters(Runtime& runtime, TypeId type, const TypeInfo& info)
         : runtime(runtime), type(type), alignment{info.alignment},
           bytes{static_cast<std::byte*>(::operator new(info.size, alignment)), info.size} {}
+
     Parameters(const Parameters&) = delete;
+
     Parameters& operator=(const Parameters&) = delete;
+
     ~Parameters() {
         root.reset();
         if (initialized)
             (void)runtime.destroy_value(type, bytes);
         ::operator delete(bytes.data(), alignment);
     }
+
     Runtime& runtime;
+
     const TypeId type;
+
     const std::align_val_t alignment;
+
     const std::span<std::byte> bytes;
+
     bool initialized{};
+
     ValueRoot root;
 };
+
 // Default-constructed record, resolved by name in this document's Runtime.
 Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, std::string_view name) {
     const auto type = runtime.find_type(name);
@@ -60,6 +72,7 @@ Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, std::string_vie
     }
     return value;
 }
+
 bool valid_id(std::string_view id) {
     const auto dot = id.find('.');
     if (dot == std::string_view::npos || id.find('.', dot + 1) != std::string_view::npos)
@@ -73,6 +86,7 @@ bool valid_id(std::string_view id) {
     };
     return part(id.substr(0, dot)) && part(id.substr(dot + 1));
 }
+
 Result<void> admit(const Context& context, const ContextOverride& changes) {
     if (changes.asset && !changes.asset->empty() && context.document.loaded_material(*changes.asset) == ObjectId{} &&
         !(context.project && context.project->entry(*changes.asset)) &&
@@ -110,6 +124,7 @@ Result<void> admit(const Context& context, const ContextOverride& changes) {
     }
     return {};
 }
+
 std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, std::size_t undo, std::size_t redo,
                               std::uint64_t recorded_after, std::size_t undo_after, std::size_t redo_after) {
     const auto entries = recorded_after - recorded;
@@ -134,11 +149,13 @@ std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, 
            std::to_string(redo_after) + ".";
 }
 }
+
 std::span<const std::string_view> region_names() noexcept {
     static constexpr std::array<std::string_view, 10> names{
         "none", "viewport", "scene_tree", "structure", "parameters", "assets", "code", "output", "world", "controls"};
     return names;
 }
+
 Result<void> OperatorRegistry::add(OperatorInfo info) {
     if (!valid_id(info.id))
         return std::unexpected(invalid("Operator ID must be lowercase <domain>.<action>: " + info.id));
@@ -156,10 +173,12 @@ Result<void> OperatorRegistry::add(OperatorInfo info) {
     operators_.push_back(std::move(info));
     return {};
 }
+
 const OperatorInfo* OperatorRegistry::find(std::string_view id) const noexcept {
     const auto found = std::ranges::find(operators_, id, &OperatorInfo::id);
     return found == operators_.end() ? nullptr : &*found;
 }
+
 Result<std::optional<bool>> operator_state(const OperatorInfo& info, const Context& context,
                                            const assets::json_format::Json& args) {
     if (!info.state)
@@ -177,6 +196,7 @@ Result<std::optional<bool>> operator_state(const OperatorInfo& info, const Conte
         return std::unexpected(decoded.error());
     return info.state(context, {(*value)->type, (*value)->bytes.data()});
 }
+
 Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host, const Context& base,
                             const OperatorCall& request, const ResolveReference& resolve) {
     host.begin_operator();
@@ -290,8 +310,10 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     }
     return report;
 }
+
 namespace {
 using assets::json_format::Json;
+
 Json scalar_json(Runtime& runtime, const Scalar& value) {
     return std::visit(
         [&](const auto& leaf) -> Json {
@@ -306,6 +328,7 @@ Json scalar_json(Runtime& runtime, const Scalar& value) {
         },
         value);
 }
+
 // The fields of the record at `path` inside a live parameter value; with `defaults`, their current values.
 Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<FieldId>& path, bool defaults) {
     auto& runtime = value.runtime;
@@ -390,6 +413,7 @@ Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<F
     return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", std::move(properties)}};
 }
 }
+
 Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const OperatorInfo& op) {
     if (op.parameters.empty())
         return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
@@ -407,6 +431,7 @@ Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const Opera
         (*schema)["seeded"] = true;
     return schema;
 }
+
 Result<assets::json_format::Json> result_schema(Runtime& runtime, const OperatorInfo& op) {
     if (op.result.empty())
         return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};

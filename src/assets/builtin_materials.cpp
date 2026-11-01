@@ -3,8 +3,11 @@
 namespace atelier::assets {
 namespace {
 constexpr std::string_view standard_path = "builtin/material/standard-pbr.source";
+
 constexpr std::string_view grid_path = "builtin/material/default-grid.source";
+
 constexpr std::string_view standard = R"source(
+
 struct UvTransform { vector2 scale; vector2 offset; float rotation; };
 struct Params {
     vector4 base_color;
@@ -107,6 +110,7 @@ MaterialAsset standard_material(std::string key, std::wstring name, material::Po
     return {std::move(key), std::move(name), std::move(source)};
 }
 }
+
 std::span<const MaterialAsset> material_assets() {
     static const std::array assets{
         standard_material("builtin/material/standard-opaque-double", L"Standard PBR · Opaque / Two Sided",
@@ -121,6 +125,7 @@ std::span<const MaterialAsset> material_assets() {
                       MaterialSourceAsset{std::string(grid_path), material::default_world_policy, {}}}};
     return assets;
 }
+
 std::optional<source::SourceFile> builtin_material_source(std::string_view path) {
     if (path == standard_path)
         return source::SourceFile{std::string(path), source::content_hash(standard), std::string(standard)};

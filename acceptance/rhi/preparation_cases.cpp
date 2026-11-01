@@ -16,17 +16,21 @@
 namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
+
 using Clock = std::chrono::steady_clock;
+
 template <class T>
 T take_value(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void complete(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 Result<Pipeline> wait(Context& context, PipelineJob& job) {
     const auto deadline = Clock::now() + std::chrono::seconds(60);
     for (;;) {
@@ -36,12 +40,14 @@ Result<Pipeline> wait(Context& context, PipelineJob& job) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
+
 PipelineDesc compute(const char* source) {
     PipelineDesc desc;
     desc.source.cs = source;
     desc.name = "preparation case";
     return desc;
 }
+
 // The kernel adds one to the seed: proves an adopted pipeline binds and runs.
 std::uint32_t dispatch(Context& context, const Pipeline& pipeline, std::uint32_t seed) {
     const auto gfx = context.borrow();
@@ -60,6 +66,7 @@ std::uint32_t dispatch(Context& context, const Pipeline& pipeline, std::uint32_t
     check(gfxDestroyBuffer(gfx, readback));
     return result;
 }
+
 std::vector<std::filesystem::path> entries(const std::filesystem::path& directory) {
     std::vector<std::filesystem::path> files;
     for (const auto& entry : std::filesystem::directory_iterator(directory))
@@ -67,15 +74,18 @@ std::vector<std::filesystem::path> entries(const std::filesystem::path& director
             files.push_back(entry.path());
     return files;
 }
+
 std::string bytes(const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary);
     return {std::istreambuf_iterator<char>(in), {}};
 }
+
 void write(const std::filesystem::path& file, const std::string& content) {
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     out << content;
     require(out.good(), "fixture write failed");
 }
+
 std::size_t live_objects(ID3D12InfoQueue* queue) {
     std::size_t count = 0;
     std::size_t errors = 0;

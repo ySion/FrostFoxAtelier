@@ -41,66 +41,117 @@ namespace {
 // Keep generated failure reasons and sites separate from opaque host service
 // status codes. This entry is private to the DLL.
 using Entry = std::uint32_t (*)(void*, const BusinessValue*, void*, BusinessFailure*) noexcept;
+
 using CoroutineEntry = void* (*)(void*, const BusinessValue*, void*, BusinessFailure*, std::uint32_t*,
                                  std::uint32_t*) noexcept;
+
 using DiagnosticEntry = std::uint32_t (*)(void*, const BusinessValue*, void*, BusinessFailure*,
                                           BusinessTrace*) noexcept;
+
 using DiagnosticCoroutineEntry = void* (*)(void*, const BusinessValue*, void*, BusinessFailure*, std::uint32_t*,
                                            std::uint32_t*, BusinessTrace*) noexcept;
+
 using CoroutineAction = void (*)(void*) noexcept;
+
 using llvm::orc::LLJIT;
+
 using llvm::orc::ExecutorAddr;
 
 struct DiagnosticCatalog {
     std::vector<std::string> functions;
+
     std::vector<BusinessLocation> locations;
+
     std::vector<std::vector<std::string>> variable_names;
+
     std::vector<std::vector<BusinessDebugVariable>> variables;
+
     std::vector<BusinessDebugFunction> debug_functions;
+
     std::vector<std::uint32_t> debug_sites;
 };
+
 struct Artifacts {
     std::string target_triple;
+
     std::string cpu_features;
+
     std::string original_ir;
+
     std::string optimized_ir;
+
     std::string assembly;
+
     std::vector<std::byte> object_code;
 };
+
 struct CompiledBusiness {
     std::shared_ptr<std::string> diagnostic{std::make_shared<std::string>()};
+
     std::string object_type_name;
+
     std::string function_name;
+
     std::string source_name;
+
     BusinessServices services{};
+
     CompileOptions options;
+
     std::vector<BusinessParameter> parameters;
+
     std::vector<std::string> field_names;
+
     std::vector<BusinessFieldBinding> fields;
+
     std::vector<std::string> method_names;
+
     std::vector<std::vector<BusinessParameter>> method_parameters;
+
     std::vector<BusinessMethodBinding> methods;
+
     std::vector<std::string> enum_names;
+
     std::vector<std::vector<std::string>> enum_item_names;
+
     std::vector<std::vector<BusinessEnumItem>> enum_items;
+
     std::vector<BusinessEnumBinding> enumerations;
+
     std::vector<std::string> value_names;
+
     std::vector<std::vector<std::string>> value_field_names;
+
     std::vector<std::vector<BusinessValueField>> value_fields;
+
     std::vector<BusinessValueBinding> values;
+
     BusinessSignature signature{};
+
     BusinessEnvironment environment{};
+
     bool requires_receiver{};
+
     BusinessFrameLayout layout{};
+
     std::shared_ptr<LLJIT> jit;
+
     Entry entry{};
+
     CoroutineEntry coroutine_entry{};
+
     DiagnosticEntry diagnostic_entry{};
+
     DiagnosticCoroutineEntry diagnostic_coroutine_entry{};
+
     std::shared_ptr<DiagnosticCatalog> diagnostics;
+
     std::shared_ptr<Artifacts> artifacts;
+
     std::string entry_symbol;
+
     CoroutineAction resume{};
+
     CoroutineAction destroy{};
 };
 
@@ -111,6 +162,7 @@ void* allocate_coroutine(std::uint64_t size, std::uint32_t alignment) noexcept {
     return ::operator new(static_cast<std::size_t>(size), std::align_val_t{alignment < minimum ? minimum : alignment},
                           std::nothrow);
 }
+
 void free_coroutine(void* storage, std::uint32_t alignment) noexcept {
     constexpr std::uint32_t minimum = 2 * sizeof(void*);
     ::operator delete(storage, std::align_val_t{alignment < minimum ? minimum : alignment});
@@ -476,6 +528,7 @@ private:
         ir_.CreateStore(ir_.getInt32(function_index_), ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 3));
         ir_.CreateStore(ir_.getInt32(location()), ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 4));
     }
+
     void debug_local(std::size_t index, DebugAvailability availability) {
         if (!debugging_)
             return;
@@ -487,6 +540,7 @@ private:
         ir_.CreateStore(ir_.getInt32(static_cast<std::uint32_t>(availability)),
                         ir_.CreateStructGEP(debug_local_type_, value, 2));
     }
+
     void open_debug_frame() {
         if (!debugging_)
             return;
@@ -495,10 +549,12 @@ private:
                                                            : DebugAvailability::out_of_scope);
         checked_call(debug_enter_, {invocation_, debug_frame_});
     }
+
     void debug_location() {
         if (debugging_)
             ir_.CreateStore(ir_.getInt32(location()), ir_.CreateStructGEP(debug_frame_type_, debug_frame_, 4));
     }
+
     void debug_stop(DebugPoint kind) {
         if (!debugging_)
             return;
@@ -508,6 +564,7 @@ private:
         checked_call(debug_point_, {invocation_, debug_frame_, ir_.getInt32(site),
                                     ir_.getInt32(static_cast<std::uint32_t>(kind)), ir_.getInt32(0)});
     }
+
     void debug_failure() {
         if (!debugging_)
             return;
@@ -518,21 +575,27 @@ private:
                                       ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(failure_output_)),
                                       ir_.getInt32(static_cast<std::uint32_t>(DebugPoint::error)), failure_reason_});
     }
+
     void close_debug_frame() {
         if (!debugging_)
             return;
         trace_event(DiagnosticCall::debug_hook);
         ir_.CreateCall(debug_leave_, {invocation_, debug_frame_});
     }
+
     // Positions follow the typed expression/statement recursion. Nested operand
     // lowering cannot leave its location on a parent's callback or failure edge.
     struct PositionScope {
         language::SourcePosition& current;
+
         language::SourcePosition saved;
+
         PositionScope(language::SourcePosition& target, language::SourcePosition next)
             : current(target), saved(std::exchange(target, next)) {}
+
         ~PositionScope() { current = saved; }
     };
+
     std::uint32_t location() {
         if (!catalog_)
             return no_diagnostic_location;
@@ -546,9 +609,11 @@ private:
         location_ids_.emplace(position_.offset, id);
         return id;
     }
+
     llvm::Value* trace_address(std::size_t offset) {
         return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), trace_, ir_.getInt64(offset));
     }
+
     template <class F>
     void record(F&& write) {
         if (!diagnostics_)
@@ -561,12 +626,14 @@ private:
         ir_.CreateBr(next);
         ir_.SetInsertPoint(next);
     }
+
     void trace_position(std::size_t member = offsetof(BusinessTrace, current_location)) {
         if (!diagnostics_)
             return;
         const auto id = location();
         record([&] { ir_.CreateStore(ir_.getInt32(id), trace_address(member)); });
     }
+
     void trace_event(DiagnosticCall kind) {
         if (!diagnostics_)
             return;
@@ -581,6 +648,7 @@ private:
             ir_.CreateStore(ir_.getInt32(id), trace_address(offsetof(BusinessTrace, current_location)));
         });
     }
+
     // Each failure site gets its own block that records where it failed, so the
     // location never travels with the success path. A null reason forwards the
     // callee's reason and innermost site.
@@ -604,9 +672,11 @@ private:
         ir_.SetInsertPoint(origin);
         return site;
     }
+
     llvm::Value* failure_location_address(llvm::Value* failure) {
         return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, location));
     }
+
     void trace_failure() {
         record([&] {
             auto* address = trace_address(offsetof(BusinessTrace, failure_location));
@@ -617,6 +687,7 @@ private:
                 address);
         });
     }
+
     DiagnosticCall service_kind(llvm::FunctionCallee function) {
         const auto name = llvm::cast<llvm::Function>(function.getCallee())->getName();
         if (name.starts_with("business_read_"))
@@ -647,13 +718,17 @@ private:
             return DiagnosticCall::sequence_mutation;
         throw std::logic_error("Unclassified source service call.");
     }
+
     static bool floating_type(language::ValueType type) noexcept {
         return type == language::ValueType::f32 || type == language::ValueType::f64;
     }
+
     math::Type math_type(language::ValueType type) const {
         return type.kind == language::ValueType::record ? source_.value_layouts.at(type.type_index).math : math::Type{};
     }
+
     bool managed_value(language::ValueType type) const { return language::aggregate(type) && !math_type(type); }
+
     llvm::Type* storage_type(language::ValueType type) {
         if (type == language::ValueType::boolean)
             return ir_.getInt8Ty();
@@ -661,6 +736,7 @@ private:
             return llvm::ArrayType::get(MathLowering::scalar_type(*context_, math), math.components());
         return value_type(type);
     }
+
     llvm::Value* load_value(llvm::Value* address, language::ValueType type) {
         if (const auto math = math_type(type))
             return MathLowering{ir_, *module_}.load(address, math);
@@ -668,6 +744,7 @@ private:
             return ir_.CreateTrunc(ir_.CreateAlignedLoad(ir_.getInt8Ty(), address, llvm::Align(1)), ir_.getInt1Ty());
         return ir_.CreateAlignedLoad(value_type(type), address, llvm::Align(storage_alignment(type)));
     }
+
     void store_value(llvm::Value* value, llvm::Value* address, language::ValueType type) {
         if (type == language::ValueType::boolean)
             value = ir_.CreateZExt(value, ir_.getInt8Ty());
@@ -676,6 +753,7 @@ private:
         else
             ir_.CreateAlignedStore(value, address, llvm::Align(storage_alignment(type)));
     }
+
     llvm::Value* encode_bits(llvm::Value* value, language::ValueType type) {
         if (type == language::ValueType::f64)
             return ir_.CreateBitCast(value, ir_.getInt64Ty());
@@ -683,6 +761,7 @@ private:
             value = ir_.CreateBitCast(value, ir_.getInt32Ty());
         return ir_.CreateZExt(value, ir_.getInt64Ty());
     }
+
     llvm::Value* decode_bits(llvm::Value* bits, language::ValueType type) {
         if (type == language::ValueType::f64)
             return ir_.CreateBitCast(bits, ir_.getDoubleTy());
@@ -691,17 +770,21 @@ private:
         auto* value = ir_.CreateTrunc(bits, ir_.getInt32Ty());
         return type == language::ValueType::f32 ? ir_.CreateBitCast(value, ir_.getFloatTy()) : value;
     }
+
     llvm::Value* default_math(language::ValueType type) {
         return MathLowering{ir_, *module_}.construct(math_type(type), {});
     }
+
     llvm::Value* math_binary(const language::Expression& node, llvm::Value* left, llvm::Value* right) {
         return MathLowering{ir_, *module_}.binary(node.operation, left, right,
                                                   math_type(function_.expressions[node.left].type),
                                                   math_type(function_.expressions[node.right].type));
     }
+
     llvm::Function* intrinsic(llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> types = {}) {
         return llvm::Intrinsic::getOrInsertDeclaration(module_, id, types);
     }
+
     void suspend(bool final) {
         auto* resume = block(final ? "coroutine.final.unreachable" : "coroutine.continue");
         auto* state = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_suspend),
@@ -713,6 +796,7 @@ private:
         if (final)
             ir_.CreateUnreachable();
     }
+
     void complete(llvm::Value* status) {
         if (!function_.is_coroutine) {
             ir_.CreateRet(status);
@@ -722,6 +806,7 @@ private:
         ir_.CreateStore(ir_.getInt32(1), entry_->getArg(5));
         ir_.CreateBr(coroutine_final_);
     }
+
     void setup_coroutine() {
         coroutine_return_ = block("coroutine.return");
         coroutine_final_ = block("coroutine.final");
@@ -746,6 +831,7 @@ private:
         prepare_debug_storage();
         suspend(false); // Creation owns a frame; the first resume enters the body.
     }
+
     void finish_coroutine() {
         ir_.SetInsertPoint(coroutine_final_);
         suspend(true);
@@ -776,10 +862,12 @@ private:
             ir_.CreateRetVoid();
         }
     }
+
     static bool is_reference(language::ValueType type) noexcept {
         return type == language::ValueType::strong_reference || type == language::ValueType::weak_reference ||
                type == language::ValueType::null_reference;
     }
+
     std::uint32_t allocate_reference(language::ValueType type) {
         if (type == language::ValueType::strong_reference) {
             if (strong_slots_ >= observation_slot_bit)
@@ -794,6 +882,7 @@ private:
         }
         throw std::logic_error("A null reference cannot own invocation storage.");
     }
+
     llvm::Type* value_type(language::ValueType value) {
         if (const auto type = math_type(value))
             return llvm::FixedVectorType::get(type.precision == math::Precision::f64 ? ir_.getDoubleTy()
@@ -823,8 +912,11 @@ private:
         }
         throw std::logic_error("Reference values do not use LLVM value storage.");
     }
+
     llvm::BasicBlock* block(const char* name) { return llvm::BasicBlock::Create(*context_, name, entry_); }
+
     bool terminated() const { return ir_.GetInsertBlock()->getTerminatorOrNull() != nullptr; }
+
     void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments) {
         if (diagnostics_)
             trace_event(service_kind(function));
@@ -834,23 +926,29 @@ private:
         ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failed, failure_weights_);
         ir_.SetInsertPoint(next);
     }
+
     void clear_slot(std::uint32_t slot) {
         if (source_.material)
             return;
         trace_event(DiagnosticCall::root_clear);
         ir_.CreateCall(clear_, {invocation_, ir_.getInt32(slot)});
     }
+
     struct OwnedValue {
         language::ValueType type;
+
         llvm::Value* storage;
+
         llvm::AllocaInst* live;
     };
+
     llvm::AllocaInst* allocate_value_storage(language::ValueType type, const llvm::Twine& name) {
         const auto& layout = source_.value_layouts.at(type.type_index);
         auto* storage = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), layout.size), nullptr, name);
         storage->setAlignment(llvm::Align(layout.alignment));
         return storage;
     }
+
     std::size_t allocate_owned(language::ValueType type, const llvm::Twine& name) {
         auto* storage = allocate_value_storage(type, name);
         auto* live = ir_.CreateAlloca(ir_.getInt1Ty(), nullptr, "value.live");
@@ -858,6 +956,7 @@ private:
         owned_.push_back({type, storage, live});
         return owned_.size() - 1;
     }
+
     void construct_owned(std::size_t slot, llvm::Value* source = nullptr) {
         const auto& value = owned_.at(slot);
         if (source_.material) {
@@ -872,11 +971,13 @@ private:
                                         source ? source : llvm::ConstantPointerNull::get(ir_.getPtrTy())});
         ir_.CreateStore(ir_.getTrue(), value.live);
     }
+
     llvm::Value* temporary_value(std::size_t slot, llvm::Value* source = nullptr) {
         construct_owned(slot, source);
         value_temporaries_.push_back(slot);
         return owned_[slot].storage;
     }
+
     void destroy_owned(std::size_t slot) {
         if (source_.material)
             return;
@@ -891,9 +992,11 @@ private:
         ir_.CreateBr(next);
         ir_.SetInsertPoint(next);
     }
+
     bool string_literal(language::NodeId id) const {
         return id != language::no_node && function_.expressions[id].kind == language::Expression::Kind::string_literal;
     }
+
     // Use the same decision for entry storage and lowering. A typed String
     // declaration/assignment or append can consume bytes without a temporary.
     language::NodeId direct_text_input(const language::Statement& node) const {
@@ -902,12 +1005,14 @@ private:
                    ? node.expression
                    : language::no_node;
     }
+
     language::NodeId direct_text_input(const language::Expression& node) const {
         return node.kind == language::Expression::Kind::sequence_mutation &&
                        node.mutation == SequenceMutation::append && string_literal(node.right)
                    ? node.right
                    : language::no_node;
     }
+
     void write_text(language::ValueType type, llvm::Value* storage, std::uint32_t text, SequenceMutation operation) {
         const auto& bytes = function_.strings.at(text);
         auto* data = ir_.CreateGlobalString(llvm::StringRef(bytes.data(), bytes.size()));
@@ -915,6 +1020,7 @@ private:
                      {invocation_, ir_.getInt32(type.type_index), ir_.getInt32(static_cast<std::uint32_t>(operation)),
                       storage, data, ir_.getInt64(bytes.size())});
     }
+
     llvm::Value* input_address(language::NodeId id) {
         const auto type = function_.expressions[id].type;
         auto* value = expression(id);
@@ -926,6 +1032,7 @@ private:
         store_value(value, storage, type);
         return storage;
     }
+
     void clear_user_values() {
         for (auto slot = owned_.size(); slot != 0;)
             destroy_owned(--slot);
@@ -937,11 +1044,13 @@ private:
             for (std::size_t i = 0; i < function_.locals.size(); ++i)
                 debug_local(i, DebugAvailability::out_of_scope);
     }
+
     void clear_execution_resources() {
         clear_user_values();
         if (public_entry_)
             clear_slot(receiver_slot);
     }
+
     void clear_temporaries() {
         for (auto slot = temporaries_.rbegin(); slot != temporaries_.rend(); ++slot)
             clear_slot(*slot);
@@ -950,10 +1059,12 @@ private:
             destroy_owned(*slot);
         value_temporaries_.clear();
     }
+
     void copy_reference(std::uint32_t destination, llvm::Value* source) {
         checked_call(reference_, {invocation_, ir_.getInt32(static_cast<std::uint32_t>(ReferenceOperation::copy)),
                                   ir_.getInt32(destination), source});
     }
+
     llvm::Value* read_field(llvm::Value* slot, language::ValueType type, std::uint32_t field) {
         if (math_type(type)) {
             checked_call(read_value_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
@@ -979,6 +1090,7 @@ private:
         checked_call(read_uint_, {invocation_, slot, ir_.getInt32(field), uint_result_});
         return ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
     }
+
     void write_field(llvm::Value* slot, language::ValueType type, std::uint32_t field, llvm::Value* value) {
         if (math_type(type)) {
             store_value(value, math_field_result_, type);
@@ -999,6 +1111,7 @@ private:
             checked_call(write_uint_, {invocation_, slot, ir_.getInt32(field), value});
         }
     }
+
     void safe_point() {
         if (protected_values_)
             return;
@@ -1014,16 +1127,20 @@ private:
         ir_.CreateBr(next);
         ir_.SetInsertPoint(next);
     }
+
     void check_value(llvm::Value* valid, EntryFailure reason) {
         auto* failed = failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(reason)));
         auto* next = block("borrow.valid");
         ir_.CreateCondBr(valid, next, failed, failure_weights_);
         ir_.SetInsertPoint(next);
     }
+
     struct Sequence {
         llvm::Value* data{};
+
         llvm::Value* size{};
     };
+
     Sequence sequence_view(llvm::Value* value, language::ValueType type) {
         const auto& layout = source_.value_layouts.at(type.type_index);
         // Entry allocas are reused by accesses in loops; projection is a trusted
@@ -1051,18 +1168,21 @@ private:
         check_value(valid, EntryFailure::sequence_layout);
         return result;
     }
+
     std::size_t storage_size(language::ValueType type) const {
         return language::aggregate(type)              ? source_.value_layouts.at(type.type_index).size
                : type == language::ValueType::boolean ? 1
                : type == language::ValueType::f64     ? 8
                                                       : 4;
     }
+
     std::size_t storage_alignment(language::ValueType type) const {
         return language::aggregate(type)              ? source_.value_layouts.at(type.type_index).alignment
                : type == language::ValueType::boolean ? 1
                : type == language::ValueType::f64     ? 8
                                                       : 4;
     }
+
     Sequence sequence(language::NodeId id) {
         const auto& node = function_.expressions[id];
         if (node.kind == language::Expression::Kind::local && node.value < parameter_views_.size() &&
@@ -1070,6 +1190,7 @@ private:
             return parameter_views_[node.value];
         return sequence_view(value_address(id), node.type);
     }
+
     llvm::Value* value_address(language::NodeId id) {
         const auto& node = function_.expressions[id];
         PositionScope position(position_, node.position);
@@ -1097,6 +1218,7 @@ private:
             return input_address(id);
         throw std::logic_error("Expression has no borrowed native storage.");
     }
+
     llvm::Value* expression(language::NodeId index) {
         const auto& node = function_.expressions[index];
         PositionScope position(position_, node.position);
@@ -1281,7 +1403,9 @@ private:
             // left-to-right and retain its SSA value before packing this call.
             struct Operand {
                 llvm::Value* value;
+
                 ArgumentStorage storage;
+
                 std::uint32_t field;
             };
             llvm::SmallVector<Operand, 8> values;
@@ -1496,6 +1620,7 @@ private:
         }
         throw std::logic_error("Invalid typed binary operation.");
     }
+
     void clear_scope(const language::Statement& scope) {
         for (auto local = scope.locals.rbegin(); local != scope.locals.rend(); ++local) {
             if (is_reference(function_.locals[*local].type))
@@ -1505,6 +1630,7 @@ private:
             debug_local(*local, DebugAvailability::out_of_scope);
         }
     }
+
     void statement(language::NodeId index) {
         const auto& node = function_.statements[index];
         PositionScope position(position_, node.position);
@@ -1672,104 +1798,199 @@ private:
     }
 
     const language::Function& function_;
+
     const language::Program& source_;
+
     const std::vector<llvm::Function*>& functions_;
+
     llvm::LLVMContext* context_;
+
     llvm::Module* module_;
+
     llvm::IRBuilder<> ir_;
+
     llvm::Function* entry_{};
+
     llvm::Value* invocation_{};
+
     llvm::Value* result_output_{};
+
     llvm::Value* failure_output_{};
+
     llvm::BasicBlock* failure_{};
+
     llvm::BasicBlock* finish_{};
+
     llvm::PHINode* failure_status_{};
+
     llvm::PHINode* failure_reason_{};
+
     // Failure edges are cold; without weights, block placement would make
     // each single-predecessor failure stub the fall-through.
     llvm::MDNode* failure_weights_{};
+
     llvm::BasicBlock* coroutine_return_{};
+
     llvm::BasicBlock* coroutine_final_{};
+
     llvm::BasicBlock* coroutine_cancel_{};
+
     llvm::BasicBlock* coroutine_free_{};
+
     llvm::Value* coroutine_id_{};
+
     llvm::Value* coroutine_handle_{};
+
     llvm::Value* coroutine_alignment_{};
+
     llvm::StructType* abi_value_type_{};
+
     llvm::AllocaInst* call_arguments_{};
+
     llvm::AllocaInst* call_result_{};
+
     llvm::AllocaInst* float_result_{};
+
     llvm::AllocaInst* double_result_{};
+
     llvm::AllocaInst* source_result_{};
+
     llvm::AllocaInst* call_math_result_{};
+
     llvm::AllocaInst* math_field_result_{};
+
     llvm::AllocaInst* uint_result_{};
+
     llvm::AllocaInst* source_failure_{};
+
     std::vector<llvm::Value*> locals_;
+
     std::vector<llvm::AllocaInst*> source_value_results_;
+
     std::vector<OwnedValue> owned_;
+
     std::vector<std::size_t> owned_local_slots_;
+
     std::vector<std::size_t> expression_value_slots_;
+
     std::vector<std::size_t> value_temporaries_;
+
     std::vector<std::vector<std::size_t>> argument_value_slots_;
+
     std::vector<Sequence> parameter_views_;
+
     std::vector<std::uint32_t> local_slots_;
+
     std::vector<std::uint32_t> temporary_slots_;
+
     std::vector<std::uint32_t> temporaries_;
+
     struct LoopTarget {
         llvm::BasicBlock* end;
+
         llvm::BasicBlock* step;
+
         std::size_t scope_depth;
     };
+
     std::vector<LoopTarget> loops_;
+
     std::vector<language::NodeId> scopes_;
+
     std::uint32_t strong_slots_{business_root_slots};
+
     std::uint32_t weak_slots_{};
+
     const std::uint32_t first_strong_slot_;
+
     const std::uint32_t first_weak_slot_;
+
     const bool public_entry_;
+
     const bool protected_values_;
+
     DiagnosticCatalog* diagnostics_{};
+
     DiagnosticCatalog* catalog_{};
+
     bool debugging_{};
+
     std::uint32_t function_index_{};
+
     language::SourcePosition position_;
+
     std::map<std::size_t, std::uint32_t> location_ids_;
+
     llvm::Value* trace_{};
+
     llvm::Value* borrow_active_{};
+
     std::uint32_t max_call_arguments_{};
+
     bool has_call_result_{};
+
     bool has_source_calls_{};
+
     llvm::FunctionCallee begin_;
+
     llvm::FunctionCallee create_;
+
     llvm::FunctionCallee read_float_;
+
     llvm::FunctionCallee write_float_;
+
     llvm::FunctionCallee read_double_;
+
     llvm::FunctionCallee write_double_;
+
     llvm::FunctionCallee read_value_;
+
     llvm::FunctionCallee write_value_;
+
     llvm::FunctionCallee read_uint_;
+
     llvm::FunctionCallee write_uint_;
+
     llvm::FunctionCallee read_bool_;
+
     llvm::FunctionCallee write_bool_;
+
     llvm::FunctionCallee call_;
+
     llvm::FunctionCallee poll_;
+
     llvm::FunctionCallee finish_call_;
+
     llvm::FunctionCallee clear_;
+
     llvm::FunctionCallee reference_;
+
     llvm::FunctionCallee same_reference_;
+
     llvm::FunctionCallee construct_value_;
+
     llvm::FunctionCallee assign_value_;
+
     llvm::FunctionCallee destroy_value_;
+
     llvm::FunctionCallee mutate_sequence_;
+
     llvm::FunctionCallee sample_texture_;
+
     llvm::FunctionCallee sample_orientation_;
+
     llvm::FunctionCallee debug_enter_;
+
     llvm::FunctionCallee debug_point_;
+
     llvm::FunctionCallee debug_leave_;
+
     llvm::StructType* debug_frame_type_{};
+
     llvm::StructType* debug_local_type_{};
+
     llvm::AllocaInst* debug_frame_{};
+
     llvm::AllocaInst* debug_locals_{};
 };
 
@@ -2133,29 +2354,46 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
 struct BusinessCode {
     std::shared_ptr<CompiledBusiness> state;
 };
+
 struct MaterialCode {
     BusinessCode shade;
+
     BusinessCode defaults;
+
     std::string hlsl;
+
     std::vector<language::MaterialTextureInput> textures;
+
     std::vector<MaterialTextureInfo> texture_views;
+
     std::uint32_t parameters{};
+
     std::uint32_t resources{UINT32_MAX};
 };
+
 struct BusinessCoroutineState {
     std::shared_ptr<CompiledBusiness> code;
+
     std::vector<BusinessValue> arguments;
+
     void* handle{};
+
     std::uint64_t bits{};
+
     std::uint32_t status{};
+
     std::uint32_t completed{};
+
     BusinessFailure failure{};
+
     bool running{};
+
     ~BusinessCoroutineState() {
         if (handle)
             code->destroy(handle);
     }
 };
+
 struct BusinessCoroutine {
     std::shared_ptr<BusinessCoroutineState> state;
 };
@@ -2464,6 +2702,7 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
     }
     return 1;
 }
+
 atelier::source::detail::MaterialCodeView
 atelier_material_code_view(atelier::source::detail::MaterialCode* code) noexcept {
     return {&code->shade,
@@ -2474,6 +2713,7 @@ atelier_material_code_view(atelier::source::detail::MaterialCode* code) noexcept
             code->parameters,
             code->resources};
 }
+
 void atelier_destroy_material(atelier::source::detail::MaterialCode* code) noexcept {
     delete code;
 }

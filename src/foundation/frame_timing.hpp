@@ -14,7 +14,9 @@
 namespace atelier::timing {
 
 using Clock = std::chrono::steady_clock;
+
 inline constexpr std::size_t capacity = 64;
+
 inline constexpr std::uint8_t unregistered = 0xff;
 
 class Recorder;
@@ -26,23 +28,38 @@ class Marker {
 public:
     constexpr Marker(std::string_view key, std::string_view title, const Marker* parent) noexcept
         : key_(key), title_(title), parent_(parent) {}
+
     Marker(const Marker&) = delete;
+
     Marker& operator=(const Marker&) = delete;
+
     [[nodiscard]] constexpr std::string_view key() const noexcept { return key_; }
+
     [[nodiscard]] constexpr std::string_view title() const noexcept { return title_; }
+
     [[nodiscard]] constexpr const Marker* parent() const noexcept { return parent_; }
+
     [[nodiscard]] std::uint8_t index() const noexcept { return index_; }
+
     [[nodiscard]] bool registered() const noexcept { return index_ != unregistered; }
 
 private:
     friend class Recorder;
+
     friend class Scope;
+
     friend void install(std::initializer_list<std::span<Marker* const>>);
+
     friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
+
     std::string_view key_;
+
     std::string_view title_;
+
     const Marker* parent_;
+
     std::uint8_t index_{unregistered};
+
     std::uint8_t parent_index_{unregistered};
 };
 
@@ -55,23 +72,32 @@ inline constinit Marker frame{"frame", "Frame", nullptr};
 // or repeated marker, a duplicate key, a parent not registered earlier, or more
 // than `capacity` markers; a rejected call registers nothing.
 void install(std::initializer_list<std::span<Marker* const>> modules);
+
 // Installed markers in index order (frame first); empty before install().
 [[nodiscard]] std::span<const Marker* const> catalog() noexcept;
+
 [[nodiscard]] std::size_t depth(const Marker&) noexcept;
 
 // Inclusive wall time per catalog index, summed over every entry in one frame.
 struct FrameRecord {
     std::uint64_t sequence{}; // Ordinal of this frame within its Recorder.
+
     Clock::time_point begin{};
+
     std::array<std::chrono::nanoseconds, capacity> duration{};
+
     std::array<std::uint32_t, capacity> entries{};
+
     // Scopes or records that were not registered or not opened under their
     // declared parent, and nested host frames. None of them was recorded.
     std::uint32_t structure_errors{};
+
     const Marker* first_error{};
+
     [[nodiscard]] std::chrono::nanoseconds time(const Marker& marker) const noexcept {
         return marker.registered() ? duration[marker.index()] : std::chrono::nanoseconds{};
     }
+
     [[nodiscard]] std::uint32_t count(const Marker& marker) const noexcept {
         return marker.registered() ? entries[marker.index()] : 0;
     }
@@ -86,8 +112,11 @@ extern constinit thread_local Recorder* bound;
 class Recorder {
 public:
     Recorder() = default;
+
     Recorder(const Recorder&) = delete;
+
     Recorder& operator=(const Recorder&) = delete;
+
     // The last finished frame; a frame in progress is incomplete.
     [[nodiscard]] const FrameRecord& last() const noexcept { return record_; }
 
@@ -96,9 +125,13 @@ public:
     class Frame {
     public:
         explicit Frame(Recorder&) noexcept;
+
         ~Frame() { finish(); }
+
         Frame(const Frame&) = delete;
+
         Frame& operator=(const Frame&) = delete;
+
         // Closes the frame and unbinds the Recorder. Every Scope must already be closed.
         const FrameRecord& finish() noexcept;
 
@@ -108,16 +141,23 @@ public:
 
 private:
     friend class Scope;
+
     friend class Suspend;
+
     friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
+
     void fail(const Marker& marker) noexcept {
         ++record_.structure_errors;
         if (!record_.first_error)
             record_.first_error = &marker;
     }
+
     FrameRecord record_;
+
     std::uint64_t frames_{};
+
     std::uint8_t current_{unregistered};
+
     bool open_{};
 };
 
@@ -138,6 +178,7 @@ public:
         recorder_->current_ = index_;
         start_ = Clock::now();
     }
+
     ~Scope() {
         if (!recorder_)
             return;
@@ -145,13 +186,18 @@ public:
         ++recorder_->record_.entries[index_];
         recorder_->current_ = previous_;
     }
+
     Scope(const Scope&) = delete;
+
     Scope& operator=(const Scope&) = delete;
 
 private:
     Recorder* recorder_;
+
     Clock::time_point start_{};
+
     std::uint8_t index_{};
+
     std::uint8_t previous_{};
 };
 
@@ -163,9 +209,12 @@ void record(const Marker&, std::chrono::nanoseconds) noexcept;
 class Suspend {
 public:
     Suspend() noexcept : saved_(detail::bound) { detail::bound = nullptr; }
+
     // A frame finished while suspended stays unbound.
     ~Suspend() { detail::bound = saved_ && saved_->open_ ? saved_ : nullptr; }
+
     Suspend(const Suspend&) = delete;
+
     Suspend& operator=(const Suspend&) = delete;
 
 private:

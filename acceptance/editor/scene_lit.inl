@@ -2,9 +2,11 @@ material::Output scene_lit_material(const material::ProgramSurfaceRef& surface) 
     require(surface != nullptr, "Scene Lit mesh has no captured program surface.");
     return take(surface->evaluate({}));
 }
+
 std::filesystem::path scene_lit_example(const std::filesystem::path& requested) {
     return std::filesystem::canonical(requested.empty() ? std::filesystem::path{ATELIER_EXAMPLE_PROJECT} : requested);
 }
+
 void verify_scene_lit_example(const std::filesystem::path& requested) {
     using namespace editor;
     const auto source = scene_lit_example(requested);
@@ -99,6 +101,7 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
         << "\nTemporary saved Scene: Content/Scenes/Acceptance.scene\n10 meshes, 4 shadow lights, sky in the Environment; HDR/metal/roughness and edited material survive reopening.\n";
     std::puts("Scene Lit example Project/Scene acceptance: PASS (source read only, temporary save/reopen)");
 }
+
 void verify_environment_sky_application() {
     using namespace editor;
     world::World* sky_world{};
@@ -204,6 +207,7 @@ void verify_environment_sky_application() {
     std::puts(
         "Environment sky application acceptance: PASS (first edit creates it, unique, enable/remove/undo, scene save/reopen)");
 }
+
 // A refresh rebuilds only what changed in the Scene cache: nothing on a static
 // frame, the moved mesh alone, the lights, or every instance after a reset.
 void verify_scene_snapshot_updates() {
@@ -254,6 +258,7 @@ void verify_scene_snapshot_updates() {
     std::puts(
         "Scene snapshot update acceptance: PASS (static frames build nothing; a moved mesh, a light edit and a reset rebuild only their instances)");
 }
+
 void verify_scene_lit_application(const std::filesystem::path& source_example = {}) {
     verify_scene_lit_example(source_example);
     verify_environment_sky_application();

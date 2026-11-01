@@ -803,6 +803,7 @@ void attachment_space_and_authoring() {
     std::puts(
         "[pass] Final space plans: atomic origin publication, preview/Cook matrices, root boundaries, inherited Transform removal and Detached running authoring");
 }
+
 void mirrored_and_degenerate_space() {
     Runtime runtime;
     const auto types = register_all_types(runtime);

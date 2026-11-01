@@ -1,6 +1,7 @@
 // Real Project/Source compiler/Runtime/Session/DSL/SceneSnapshot consumers.
 // Arbitrary declarations deliberately differ from the installed StandardPBR MS.
 constexpr std::string_view editor_material_source = R"(
+
 struct Params { float gain; vector2 offset; vector3 tint; vector4 coat; };
 struct Textures { material.TextureInput albedo; };
 Params defaults() { Params p; p.gain=0.4; p.offset=vector2(0.0,0.0);
@@ -17,11 +18,13 @@ material::LocalValue material_value(const editor::Session& session, ObjectId obj
     require(at != view.declarations.end(), "Material declaration disappeared.");
     return at->value;
 }
+
 void edit_material_entry(editor::Session& session, ObjectId object, material::Override entry, std::uint64_t control) {
     take(session.begin_material_edit(object, control));
     take(session.preview_material_entry(control, std::move(entry)));
     take(session.commit_material_edit(control));
 }
+
 std::string create_editor_material_source(editor::Project& project) {
     const auto key =
         take(project.create_material_source("Content/Materials/Arbitrary.ms.material", editor_material_source));
@@ -31,6 +34,7 @@ std::string create_editor_material_source(editor::Project& project) {
     take(project.save_material(asset));
     return key;
 }
+
 void verify_material_resources() {
     namespace fs = std::filesystem;
     const auto evidence = fs::absolute("out/material-resources-" + std::to_string(GetCurrentProcessId()) + "-" +
@@ -558,6 +562,7 @@ void verify_material_resources() {
         << "Material resources acceptance: PASS\nMS/MI ownership, arbitrary paths, sparse history, shared scene MI, typed fallback, DSL, save/reopen, same-root Reimport, sky assets.\n";
     std::puts("Material resources acceptance: PASS");
 }
+
 void verify_missing_resources() {
     namespace fs = std::filesystem;
     const auto evidence = fs::absolute("out/missing-resources-" + std::to_string(GetCurrentProcessId()) + "-" +

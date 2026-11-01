@@ -15,61 +15,80 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 template <class T>
 void reject(const Result<T>& result, ErrorCode expected, const char* message) {
     require(!result && result.error().code == expected, message);
 }
+
 FieldRange hard(float low, float high) {
     return {.hard_min = Scalar{low}, .hard_max = Scalar{high}};
 }
+
 std::string_view text(const String& value) {
     return {value.c_str(), value.size()};
 }
 
 struct Leaf {
     float gain{0.5f};
+
     std::int32_t count{};
 };
+
 struct Settings {
     Leaf leaf;
+
     String label;
+
     Array<float> weights;
+
     Array<Leaf> leaves;
 };
+
 // Copies may throw and moves are copies, so only the Array that holds them swaps without throwing.
 struct Fragile {
     float value{};
+
     bool fail{};
+
     Fragile() = default;
+
     Fragile(const Fragile& other) : value(other.value), fail(other.fail) {
         if (other.fail)
             throw std::runtime_error("copy refused");
     }
+
     Fragile& operator=(const Fragile&) = default;
 };
+
 // A throwing swap leaves only copy assignment for whole-value writes.
 struct Sticky {
     String text;
 };
+
 [[maybe_unused]] void swap(Sticky& first, Sticky& second) {
     first.text.swap(second.text);
 }
+
 static_assert(!std::is_nothrow_swappable_v<Sticky>);
 
 TypeDefinition trusted(TypeDefinition definition) {
     definition.native.value_operations_preserve_borrows = true;
     return definition;
 }
+
 FieldDefinition described_field(std::string name, TypeReference type, FieldRange range = {},
                                 ValueForm form = ValueForm::inline_value) {
     FieldDefinition field;
@@ -78,6 +97,7 @@ FieldDefinition described_field(std::string name, TypeReference type, FieldRange
     field.range = std::move(range);
     return field;
 }
+
 TypeDefinition described(std::string name, TypeKind kind, std::vector<FieldDefinition> fields) {
     TypeDefinition definition;
     definition.name = std::move(name);
@@ -85,13 +105,18 @@ TypeDefinition described(std::string name, TypeKind kind, std::vector<FieldDefin
     definition.fields = std::move(fields);
     return definition;
 }
+
 // Caller-owned storage for one live value, destroyed through the Runtime.
 template <std::size_t Size>
 struct Value {
     Runtime& runtime;
+
     TypeId type;
+
     alignas(16) std::array<std::byte, Size> bytes{};
+
     Value(Runtime& owner, TypeId id) : runtime(owner), type(id) { take(runtime.initialize_value(type, bytes)); }
+
     ~Value() { (void)runtime.destroy_value(type, bytes); }
 };
 }
@@ -227,6 +252,7 @@ void verify_value_paths() {
     // A whole described record with a String composes field swaps: clamped copy, input untouched.
     struct PairValue {
         String text;
+
         float weight;
     };
     PairValue heavy{String{StringView{"heavy"}}, 7.0f};
@@ -271,6 +297,7 @@ void verify_value_paths() {
     // Field-by-field assignment would change `first` before `second` throws; the prepared copy does not.
     struct TwinValue {
         Array<Fragile> first;
+
         Array<Fragile> second;
     };
     TwinValue twin_value;

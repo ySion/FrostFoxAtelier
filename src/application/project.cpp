@@ -13,9 +13,12 @@ namespace {
 auto failed(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
 }
+
 constexpr const wchar_t* placeholder_notice =
     L"Project types are unavailable until the Source build succeeds. Project objects load as placeholders and keep their saved values; fix the build, then Rebuild Types.";
+
 using Pick = editor::PathPurpose;
+
 Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const std::filesystem::path& initial = {},
                                                   const wchar_t* filename = L"Move.source") {
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -23,6 +26,7 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
         return failed("Cannot initialize the native file dialog.");
     struct Apartment {
         bool owns;
+
         ~Apartment() {
             if (owns)
                 CoUninitialize();
@@ -90,12 +94,14 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
     return std::optional{result};
 }
 }
+
 Result<std::optional<std::filesystem::path>> Application::choose_path(editor::PathPurpose purpose,
                                                                       const std::filesystem::path& initial,
                                                                       std::wstring_view filename) {
     close_menu(false);
     return pick(window(), purpose, initial, filename.empty() ? L"Move.source" : std::wstring(filename).c_str());
 }
+
 void Application::asset_created(std::string_view key, bool inspect_material) {
     if (const auto* entry = project_->entry(key))
         workspace_.assets.navigate(entry->path.parent_path());
@@ -105,6 +111,7 @@ void Application::asset_created(std::string_view key, bool inspect_material) {
     }
     workspace_.status = inspect_material ? L"Material created" : L"Resource imported";
 }
+
 Result<bool> Application::confirm_discard(bool sources, bool interactive) {
     if (!interactive) {
         if (document_->dirty() || !document_->dirty_materials().empty() ||
@@ -157,6 +164,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
     }
     return true;
 }
+
 void Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code) {
     const auto previous_document = document_->presentation().identity();
     restart_play_ = false;
@@ -205,6 +213,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "application", "document.adopted",
                                        logging::native::Context{fields}, "Editor document adopted"));
 }
+
 Result<void> Application::open_project(const std::filesystem::path& folder, bool create, ProjectOpenPolicy policy,
                                        const std::function<Result<void>(const editor::Session&)>& admit,
                                        bool interactive) {
@@ -219,6 +228,7 @@ Result<void> Application::open_project(const std::filesystem::path& folder, bool
     }
     return load_project(folder, create, {}, policy, admit);
 }
+
 Result<void> Application::load_project(const std::filesystem::path& folder, bool create,
                                        const std::filesystem::path& scene, ProjectOpenPolicy policy,
                                        const std::function<Result<void>(const editor::Session&)>& admit) {
@@ -283,6 +293,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
     }
     return {};
 }
+
 Result<void> Application::open_scene(const std::filesystem::path& relative, bool interactive) {
     if (!project_)
         return failed("Open a project folder first.");
@@ -317,6 +328,7 @@ Result<void> Application::open_scene(const std::filesystem::path& relative, bool
     report_load(*document_, document_root_);
     return {};
 }
+
 Result<void> Application::save_scene(const std::filesystem::path& relative) {
     if (!project_)
         return failed("Create or open a project folder before saving a scene.");
@@ -357,6 +369,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
         workspace_.status += L" (" + std::to_wstring(kept) + L" unresolved saved item(s) kept)";
     return {};
 }
+
 Result<void> Application::reimport_asset(std::string_view key, const std::filesystem::path& path) {
     close_menu(false);
     const auto* entry = project_ ? project_->entry(key) : nullptr;
@@ -374,6 +387,7 @@ Result<void> Application::reimport_asset(std::string_view key, const std::filesy
     workspace_.status = L"Resource reimported; current content published";
     return {};
 }
+
 Result<std::string> Application::import_asset(editor::ImportKind kind, const std::filesystem::path& path) {
     close_menu(false);
     if (kind == editor::ImportKind::texture) {
@@ -394,6 +408,7 @@ Result<std::string> Application::import_asset(editor::ImportKind kind, const std
     workspace_.assets.navigate(L"Content/Meshes");
     return imported;
 }
+
 Result<void> Application::open_source(const std::filesystem::path& path) {
     close_menu(false);
     const auto edit = ui_.commit_edit();
@@ -406,6 +421,7 @@ Result<void> Application::open_source(const std::filesystem::path& path) {
     pending_source_focus_ = true;
     return {};
 }
+
 Result<void> Application::save_source(editor::SourceEditor::File& file, bool interactive) {
     const auto edit = ui_.commit_edit();
     if (!edit || !effects(*edit))
@@ -450,6 +466,7 @@ Result<void> Application::save_source(editor::SourceEditor::File& file, bool int
     }
     return saved;
 }
+
 Result<bool> Application::confirm_source(editor::SourceEditor::File& file, bool interactive) {
     if (!file.dirty())
         return true;
@@ -470,6 +487,7 @@ Result<bool> Application::confirm_source(editor::SourceEditor::File& file, bool 
     }
     return true;
 }
+
 Result<void> Application::save_documents(const editor::Context& context, bool all) {
     const auto& material = context.asset;
     close_menu(false);
@@ -512,6 +530,7 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
     }
     return {};
 }
+
 Result<void> Application::close_source(bool interactive) {
     close_menu(false);
     auto* file = workspace_.source_editor.active();
@@ -528,6 +547,7 @@ Result<void> Application::close_source(bool interactive) {
         cancel_operator();
     return {};
 }
+
 Result<void> Application::reload_source(bool interactive) {
     close_menu(false);
     auto* file = workspace_.source_editor.active();

@@ -12,6 +12,7 @@ std::vector<std::wstring> editor_fonts() {
         paths.push_back((directory / file).wstring());
     return paths;
 }
+
 std::shared_ptr<const ui::StyleSheet> editor_styles() {
     const auto path = editor::asset_directory() / "editor.ss";
     std::ifstream file(path, std::ios::binary | std::ios::ate);

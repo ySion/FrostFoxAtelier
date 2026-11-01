@@ -15,19 +15,26 @@
 
 namespace atelier::ui::detail {
 using Microsoft::WRL::ComPtr;
+
 namespace {
 void check(HRESULT status) {
     if (FAILED(status))
         throw TextFailure{static_cast<std::uint32_t>(status)};
 }
+
 std::atomic<std::uint64_t> next_identity{1};
+
 constexpr std::int64_t max_bitmap_bytes = 16 * 1024 * 1024;
+
 struct CoverageAccounting {
     std::atomic<std::uint64_t> count{};
+
     std::atomic<std::uint64_t> bytes{};
 };
+
 struct TrackedCoverage final : Coverage {
     std::shared_ptr<CoverageAccounting> accounting;
+
     TrackedCoverage(std::shared_ptr<CoverageAccounting> owner, std::uint32_t w, std::uint32_t h)
         : accounting(std::move(owner)) {
         identity = new_identity();
@@ -38,11 +45,13 @@ struct TrackedCoverage final : Coverage {
         accounting->count.fetch_add(1, std::memory_order_relaxed);
         accounting->bytes.fetch_add(pixels.size(), std::memory_order_relaxed);
     }
+
     ~TrackedCoverage() {
         accounting->count.fetch_sub(1, std::memory_order_relaxed);
         accounting->bytes.fetch_sub(pixels.size(), std::memory_order_relaxed);
     }
 };
+
 struct FontLess {
     bool operator()(const Font& a, const Font& b) const {
         return std::tie(a.family, a.locale, a.size, a.weight, a.style) <
@@ -53,16 +62,25 @@ struct FontLess {
 struct Rasterizer final : IDWriteTextRenderer {
     struct Run {
         RECT bounds{};
+
         std::vector<std::uint8_t> pixels;
     };
+
     IDWriteFactory2* factory;
+
     float scale;
+
     std::optional<Clip> viewport;
+
     ULONG refs{1};
+
     std::vector<Run> runs;
+
     std::exception_ptr failure;
+
     Rasterizer(IDWriteFactory2* value, float dpi, std::optional<Clip> clip)
         : factory(value), scale(dpi), viewport(clip) {}
+
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) noexcept override {
         if (!out)
             return E_POINTER;
@@ -75,20 +93,26 @@ struct Rasterizer final : IDWriteTextRenderer {
         }
         return E_NOINTERFACE;
     }
+
     ULONG STDMETHODCALLTYPE AddRef() noexcept override { return ++refs; }
+
     ULONG STDMETHODCALLTYPE Release() noexcept override { return --refs; } // Stack-owned for synchronous Draw.
+
     HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) noexcept override {
         *disabled = TRUE;
         return S_OK;
     }
+
     HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* transform) noexcept override {
         *transform = {1, 0, 0, 1, 0, 0};
         return S_OK;
     }
+
     HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* value) noexcept override {
         *value = scale;
         return S_OK;
     }
+
     HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE mode,
                                            const DWRITE_GLYPH_RUN* glyphs, const DWRITE_GLYPH_RUN_DESCRIPTION*,
                                            IUnknown*) noexcept override {
@@ -122,13 +146,16 @@ struct Rasterizer final : IDWriteTextRenderer {
             return E_FAIL;
         }
     }
+
     HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) noexcept override {
         return E_NOTIMPL;
     }
+
     HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*,
                                                 IUnknown*) noexcept override {
         return E_NOTIMPL;
     }
+
     HRESULT STDMETHODCALLTYPE DrawInlineObject(void* context, FLOAT x, FLOAT y, IDWriteInlineObject* object,
                                                BOOL sideways, BOOL right_to_left, IUnknown* effect) noexcept override {
         return object->Draw(context, this, x, y, sideways, right_to_left, effect);
@@ -148,32 +175,56 @@ std::uint64_t new_identity() {
 struct TextStore::Impl {
     struct Paragraph {
         ComPtr<IDWriteTextLayout> layout;
+
         std::shared_ptr<const TextSnapshot> snapshot;
+
         std::optional<float> width;
+
         ui_layout::MeasuredSize metrics;
+
         RasterText raster;
+
         float raster_scale{};
+
         std::optional<Clip> raster_viewport;
+
         bool valid{};
     };
+
     struct Entry {
         std::wstring text;
+
         Font font;
+
         bool wrap{};
+
         bool ellipsis{};
+
         TextAlign alignment{TextAlign::left};
+
         std::uint64_t revision{1};
+
         std::array<Paragraph, 2> paragraphs;
     };
+
     ComPtr<IDWriteFactory2> factory;
+
     ComPtr<IDWriteFontCollection1> font_collection;
+
     std::map<TextKey, Entry> entries;
+
     std::map<Font, ComPtr<IDWriteTextFormat>, FontLess> formats;
+
     std::map<std::pair<TextStore::Symbol, std::uint32_t>, std::shared_ptr<const Coverage>> symbols;
+
     std::vector<DWRITE_LINE_METRICS> lines;
+
     std::uint64_t provider_revision{new_identity()};
+
     TextStatistics statistics;
+
     std::shared_ptr<CoverageAccounting> accounting{std::make_shared<CoverageAccounting>()};
+
     explicit Impl(std::span<const std::wstring> font_files) {
         check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2),
                                   reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
@@ -195,6 +246,7 @@ struct TextStore::Impl {
             check(loader->CreateFontCollectionFromFontSet(fonts.Get(), &font_collection));
         }
     }
+
     Paragraph& resolve(TextKey key, std::optional<float> width) {
         auto found = entries.find(key);
         if (found == entries.end())
@@ -255,14 +307,22 @@ struct TextStore::Impl {
 struct TextSnapshot::Impl {
     struct Stop {
         TextPosition position;
+
         float x;
     };
+
     ComPtr<IDWriteTextLayout> layout;
+
     std::wstring text;
+
     Font font;
+
     TextAlign alignment{TextAlign::left};
+
     float width{};
+
     mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
+
     Rect caret_box(TextPosition position) const {
         FLOAT x{};
         FLOAT y{};
@@ -271,6 +331,7 @@ struct TextSnapshot::Impl {
         check(layout->HitTestTextPosition(position.offset - (trailing ? 1 : 0), trailing, &x, &y, &metrics));
         return {x, y, 1, metrics.height};
     }
+
     void resolve_stops() const {
         if (!stops.empty())
             return;
@@ -287,13 +348,17 @@ struct TextSnapshot::Impl {
         std::stable_sort(stops.begin(), stops.end(), [](auto a, auto b) { return a.x < b.x; });
     }
 };
+
 TextSnapshot::TextSnapshot(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
+
 bool TextSnapshot::matches(std::wstring_view text) const noexcept {
     return impl_->text == text;
 }
 
 TextStore::TextStore(std::span<const std::wstring> files) : impl_(std::make_unique<Impl>(files)) {}
+
 TextStore::~TextStore() = default;
+
 std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment,
                              bool ellipsis) {
     auto& entry = impl_->entries[key];
@@ -309,9 +374,11 @@ std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& fo
     }
     return entry.revision;
 }
+
 void TextStore::erase(TextKey key) {
     impl_->entries.erase(key);
 }
+
 std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t pixels) {
     if (!pixels || pixels > 256)
         throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
@@ -512,9 +579,11 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
     impl_->symbols.emplace(key, coverage);
     return coverage;
 }
+
 std::uint64_t TextStore::provider_revision() const noexcept {
     return impl_->provider_revision;
 }
+
 void TextStore::set_provider_revision(std::uint64_t revision) noexcept {
     impl_->provider_revision = revision;
     impl_->formats.clear();
@@ -523,12 +592,14 @@ void TextStore::set_provider_revision(std::uint64_t revision) noexcept {
         entry.paragraphs = {};
     }
 }
+
 TextStatistics TextStore::statistics() const noexcept {
     auto result = impl_->statistics;
     result.live_coverages = impl_->accounting->count.load(std::memory_order_relaxed);
     result.live_coverage_bytes = impl_->accounting->bytes.load(std::memory_order_relaxed);
     return result;
 }
+
 ui_layout::MeasureResult TextStore::measure(void* context, const ui_layout::MeasureQuery& query) {
     auto& impl = *static_cast<TextStore*>(context)->impl_;
     ++impl.statistics.measure_calls;
@@ -542,9 +613,11 @@ ui_layout::MeasureResult TextStore::measure(void* context, const ui_layout::Meas
         return std::unexpected(ui_layout::MeasureError{failure.code});
     }
 }
+
 ui_layout::MeasuredSize TextStore::metrics(TextKey key, float width) {
     return impl_->resolve(key, width).metrics;
 }
+
 RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<Clip> viewport) {
     auto& paragraph = impl_->resolve(key, width);
     if (paragraph.raster_scale == dpi && paragraph.raster_viewport == viewport) {
@@ -596,6 +669,7 @@ RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<
     paragraph.raster_viewport = viewport;
     return output;
 }
+
 std::shared_ptr<const TextSnapshot> TextStore::snapshot(TextKey key, float width) {
     auto& paragraph = impl_->resolve(key, width);
     if (!paragraph.snapshot) {
@@ -609,15 +683,18 @@ std::shared_ptr<const TextSnapshot> TextStore::snapshot(TextKey key, float width
     }
     return paragraph.snapshot;
 }
+
 std::shared_ptr<const TextSnapshot> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed,
                                                                std::wstring_view value) {
     const auto& policy = *displayed.impl_;
     set(key, value, policy.font, false, policy.alignment);
     return snapshot(key, policy.width);
 }
+
 Rect TextSnapshot::caret(TextPosition position) const {
     return impl_->caret_box(position);
 }
+
 Rect TextSnapshot::character(std::uint32_t position) const {
     FLOAT x{};
     FLOAT y{};
@@ -627,6 +704,7 @@ Rect TextSnapshot::character(std::uint32_t position) const {
     // position requests need the actual enclosing character's upper-left.
     return {metrics.left, metrics.top, metrics.width, metrics.height};
 }
+
 TextPosition TextSnapshot::hit(float x, float y) const {
     impl_->resolve_stops();
     BOOL trailing{};
@@ -644,6 +722,7 @@ TextPosition TextSnapshot::hit(float x, float y) const {
     }
     return selected.position;
 }
+
 TextPosition TextSnapshot::move(TextPosition position, int direction, bool edge) const {
     impl_->resolve_stops();
     const auto& stops = impl_->stops;
@@ -660,6 +739,7 @@ TextPosition TextSnapshot::move(TextPosition position, int direction, bool edge)
                 return stop.position;
     return position;
 }
+
 std::vector<Rect> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
     if (first == last)
         return {};

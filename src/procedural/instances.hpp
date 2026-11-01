@@ -16,11 +16,15 @@ using Affine = std::array<float, 12>;
 // generator's local space, in instance order.
 struct Collection {
     Reference reference;
+
     std::array<std::int32_t, 3> chunk;
+
     std::shared_ptr<const std::vector<Affine>> transforms; // Never empty.
 };
+
 struct Publication {
     std::vector<Collection> collections; // Ordered by reference key, then chunk.
+
     std::uint64_t dropped{}; // Degenerate instances left out.
 };
 

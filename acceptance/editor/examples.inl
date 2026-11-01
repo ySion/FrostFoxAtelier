@@ -9,6 +9,7 @@ void verify_example_identities(const std::filesystem::path& source) {
                 require(fs::is_regular_file(file.path().wstring() + L".asset.json"),
                         "An example resource has no authored identity.");
 }
+
 void verify_examples() {
     namespace fs = std::filesystem;
     const fs::path source = ATELIER_EXAMPLE_PROJECT;

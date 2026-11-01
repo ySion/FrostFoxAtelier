@@ -13,23 +13,28 @@
 
 namespace {
 using namespace atelier;
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 bool near(float a, float b) {
     return std::abs(a - b) < 0.00001f;
 }
+
 const Error callback_error{
     ErrorCode::execution_aborted,
     [] {
@@ -39,6 +44,7 @@ const Error callback_error{
         return message;
     }(),
     SourceLocation{"materials/输入.ms", 0x1020304050607080ull, 12345, 67, 89, "E:/project/materials/输入.ms"}};
+
 void require_error(const Error& actual, const Error& expected) {
     require(actual.code == expected.code && actual.message == expected.message &&
                 actual.source.has_value() == expected.source.has_value(),
@@ -51,17 +57,23 @@ void require_error(const Error& actual, const Error& expected) {
                 "Material callback changed one of the six source location fields.");
     }
 }
+
 struct UnusedDefault {
     float value;
+
     UnusedDefault() { throw std::runtime_error(callback_error.message); }
 };
+
 struct GenericOutput {
     float value{7};
 };
+
 struct VectorCoverage {
     math::Vector2 coverage{2, 3};
 };
+
 const std::string declarations = R"(
+
     struct Mask { float cutoff; vector2 scale; };
     struct Params { float gain; vector3 tint; Mask mask; };
     Params defaults() {
@@ -72,10 +84,12 @@ const std::string declarations = R"(
     }
 )";
 const std::string resources = R"(
+
     struct ColorInputs { material.TextureInput color; };
     struct Textures { material.TextureInput alpha; ColorInputs surface; material.TextureInput unused; };
 )";
 const std::string first_body = R"(
+
     material.Output shade(material.Context c, Params p, Textures textures) {
         material.Output o;
         material.TextureInput input = textures.surface.color;
@@ -89,7 +103,9 @@ const std::string first_body = R"(
     }
 )";
 const std::string first = declarations + resources + first_body;
+
 const std::string second = declarations + resources + R"(
+
     float margin(vector2 uv, Params p, material.TextureInput input) {
         material.TextureInput copied = input;
         vector4 a = sample(copied,vector2(uv.x * p.mask.scale.x, uv.y * p.mask.scale.y));
@@ -107,6 +123,7 @@ const std::string second = declarations + resources + R"(
     }
 )";
 const std::string coverage_source = R"(
+
     struct Params { float mode; float cutoff; };
     struct Textures { material.TextureInput keep; material.TextureInput discarded; };
     struct Layer { material.Output output; vector2 uv; };
@@ -146,6 +163,7 @@ const std::string coverage_source = R"(
 // compiler. The point evaluator still uses the existing synchronous sampler;
 // the GPU artifact below must be dispatched/read back to validate changes.
 const std::string footprint_source = R"(
+
     struct Params { float mode; float gain; };
     struct Textures { material.TextureInput warp; material.TextureInput color; };
     struct Coordinates { vector2 uv; };
@@ -197,6 +215,7 @@ const std::string footprint_source = R"(
     }
 )";
 const std::string orientation_source = R"(
+
     struct Params { float enabled; float denominator; };
     struct Textures { material.TextureInput normal; material.TextureInput unused; };
     Params defaults() { Params p; p.enabled=1.0; p.denominator=1.0; return p; }
@@ -218,25 +237,30 @@ const std::string orientation_source = R"(
 )";
 struct Texture {
     math::Vector4 value;
+
     bool uv_alpha{};
 };
+
 Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
     auto value = static_cast<const Texture*>(data)->value;
     if (static_cast<const Texture*>(data)->uv_alpha)
         value.w = uv.x;
     return value;
 }
+
 std::uint32_t slot(const source::MaterialProgram& program, std::string_view key) {
     const auto found = std::ranges::find(program.textures(), key, &source::MaterialTextureInput::key);
     require(found != program.textures().end(), "Material lost a declared texture key.");
     return found->slot;
 }
+
 std::array<source::MaterialTexture, 3> bindings(const source::MaterialProgram& program, const Texture& color,
                                                 const Texture& alpha) {
     return {{{slot(program, "surface.color"), &color, sample},
              {slot(program, "alpha"), &alpha, sample},
              {slot(program, "unused"), &color, sample}}};
 }
+
 material::Output evaluate(const source::MaterialProgram& program, material::Context context,
                           std::span<const source::MaterialTexture> textures,
                           std::span<const std::byte> parameters = {}) {
@@ -246,6 +270,7 @@ material::Output evaluate(const source::MaterialProgram& program, material::Cont
                           std::as_writable_bytes(std::span(&output, 1)), textures));
     return output;
 }
+
 std::string coverage_body(const source::MaterialProgram& program) {
     // The owning text carries mutually exclusive lowerings through the existing
     // DLL ABI. Inspect the selected branch, not inactive point/footprint text.
@@ -263,6 +288,7 @@ std::string coverage_body(const source::MaterialProgram& program) {
             "Coverage HLSL retained a full shading/footprint entry instead of a scalar dependency slice.");
     return body;
 }
+
 std::size_t occurrences(std::string_view text, std::string_view token) {
     std::size_t count{};
     std::size_t position{};
@@ -612,6 +638,7 @@ void verify_source_materials() {
 
     struct PointProbe {
         mutable std::uint32_t calls{};
+
         bool warp{};
     } warp_probe{0, true}, color_probe;
     const auto point_probe = +[](const void* data, math::Vector2 uv) -> Result<math::Vector4> {
@@ -644,8 +671,11 @@ void verify_source_materials() {
     // integration is separately owned by the material resource acceptance.
     struct OrientationProbe {
         unsigned address{}; // repeat, clamp, mirror
+
         mutable std::uint32_t queries{};
+
         mutable std::uint32_t samples{};
+
         mutable math::Vector2 sampled_uv{};
     } orientation_probe;
     const auto query_orientation = +[](const void* data, math::Vector2 uv) -> Result<math::Vector2> {

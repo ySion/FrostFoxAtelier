@@ -7,25 +7,35 @@ namespace atelier::source {
 
 struct MaterialLayout {
     std::size_t size{};
+
     std::size_t alignment{};
 };
+
 struct MaterialParameter {
     // Persistent B0 key is the declared field path, never a Runtime FieldId or
     // GPU offset. Changing the path is an explicit parameter-interface change.
     std::string key;
+
     std::uint32_t components{1}; // float / vector2 / vector3 / vector4
+
     std::size_t offset{}; // Captured CPU/default byte layout.
 };
+
 struct MaterialTextureInput {
     std::string key; // Declared field path, sharing the numeric parameter key space.
+
     std::uint32_t slot; // Local to this program version; never persisted as identity.
 };
+
 struct MaterialTexture {
     std::uint32_t slot; // Program-local binding obtained from textures().
+
     const void* data;
+
     // Synchronous, read-only LOD-0 sample. RGB is decoded to linear when the
     // binding is a color texture; alpha/data are linear. No derivatives.
     Result<math::Vector4> (*sample)(const void*, math::Vector2);
+
     // Same actual binding/addressing, including empty images. Repeat/Clamp
     // return (1,1); Mirror folds u -= floor(u*.5)*2 and returns u>1 ? -1 : +1
     // per axis (fold points choose +1). Required only when executed; a missing
@@ -39,20 +49,30 @@ struct MaterialTexture {
 // it returns. Holding this owner keeps its old code alive across recompilation.
 class MaterialProgram final {
     struct State;
+
     std::shared_ptr<const State> state_;
+
     explicit MaterialProgram(std::shared_ptr<const State>);
+
     friend Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId, TypeId, TypeId,
                                                                            std::string_view, std::string_view);
+
     Result<std::string> generate_hlsl(std::string_view name_space, bool footprint, bool coverage = false) const;
 
 public:
     MaterialLayout context_layout() const noexcept;
+
     MaterialLayout output_layout() const noexcept;
+
     MaterialLayout parameter_layout() const noexcept;
+
     std::span<const MaterialParameter> parameters() const noexcept;
+
     std::span<const std::byte> default_parameters() const noexcept;
+
     // All declared inputs require bindings, including currently unsampled ones.
     std::span<const MaterialTextureInput> textures() const noexcept;
+
     // Emits an ASCII-identifier namespace, with ms_Context, ms_Output,
     // ms_Parameters, ms_shade(uint environment,ms_Context,ms_Parameters), and
     // ms_load_parameters(ByteAddressBuffer,uint byte_base). Field names have
@@ -63,6 +83,7 @@ public:
     // float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv).
     // Each call's environment selects its resource binding base, not global state.
     Result<std::string> hlsl(std::string_view name_space) const;
+
     // Same Context/Parameters and loader, with float ms_coverage(uint environment,
     // ms_Context,ms_Parameters). Emits only the data/control dependencies of the
     // top-level float Output.coverage, including defaults, overwrites and helper
@@ -71,6 +92,7 @@ public:
     // An Output without that field still compiles/evaluates normally; only this
     // request fails with invalid_type. Does not change textures() or CPU policy.
     Result<std::string> hlsl_coverage(std::string_view name_space) const;
+
     // Same plain Context/Params/Output and parameter loader, but the entry is
     // ms_shade_footprint(uint,ms_Context center,ms_Context d0,ms_Context d1,ms_Parameters).
     // d0/d1 are zero-initialized changes, NOT neighboring/default Contexts;
@@ -85,6 +107,7 @@ public:
     // sample_orientation uses the same global bridge as point, evaluated at the
     // center; its two changes are zero (piecewise-constant interval selection).
     Result<std::string> hlsl_footprint(std::string_view name_space) const;
+
     // All required slots must be bound, even if a branch skips sampling. Finite
     // inputs/sample results/outputs only; missing bindings and failures leave
     // output unchanged. Byte spans have the captured sizes, may be unaligned.

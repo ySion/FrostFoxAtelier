@@ -13,6 +13,7 @@ namespace atelier::physics::detail {
 class InsertionOrder final {
 public:
     void invalidate() noexcept { stale_ = true; }
+
     // Erasure may invalidate while a caller walks this snapshot; get() must not be
     // called again during that walk. No snapshot survives another get() after edits.
     template <class T>
@@ -33,6 +34,7 @@ public:
 
 private:
     std::vector<ObjectId> keys_;
+
     bool stale_{true};
 };
 }

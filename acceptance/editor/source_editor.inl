@@ -88,6 +88,7 @@ void verify_source_editor() {
     std::filesystem::create_directories(folder);
     struct Cleanup {
         std::filesystem::path path;
+
         ~Cleanup() {
             std::error_code error;
             std::filesystem::remove_all(path, error);

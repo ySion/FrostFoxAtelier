@@ -6,93 +6,136 @@
 namespace operator_parameters {
 struct Host final : editor::OperatorHost {
     explicit Host(editor::Session& document) : document(document) {}
+
     editor::Session& document;
+
     editor::Camera view;
+
     editor::ToolSettings tools;
+
     editor::Workspace panels;
+
     editor::ViewportTool viewport;
+
     int tool_changes{};
+
     int scene_changes{};
+
     Result<std::optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path&,
                                                              std::wstring_view) override {
         return std::unexpected(Error{ErrorCode::unsupported_operation, "A native file picker requires a window."});
     }
+
     void asset_created(std::string_view key, bool inspect_material) override {
         panels.material_inspection = key;
         panels.inspecting_asset = inspect_material;
     }
+
     Result<void> end_interaction() override { return {}; }
+
     const editor::Camera& camera() const noexcept override { return view; }
+
     Result<void> set_camera(const editor::Camera& camera) override {
         view = camera;
         return {};
     }
+
     editor::ViewportTool& viewport_tool() noexcept override { return viewport; }
+
     Result<void> place_duplicates() override {
         return viewport.place_duplicates(document, editor::ViewportView::make(view, {0, 0, 800, 600}, 1), tools,
                                          {400, 300});
     }
+
     Result<void> begin_entity_rename(ObjectId, editor::RegionKind) override {
         return std::unexpected(Error{ErrorCode::unsupported_operation, "Inline name editing requires a window."});
     }
+
     void reset_layout() override { panels.reset_layout(); }
+
     Result<void> close_tab(editor::RegionKind region, bool) override {
         panels.dock.close(editor::region_tab(region));
         return {};
     }
+
     void maximize_tab(editor::RegionKind region) override { panels.dock.maximize(editor::region_tab(region)); }
+
     void show_tab(editor::RegionKind region) override { panels.dock.select(editor::region_tab(region)); }
+
     void cycle_tab(editor::RegionKind region, int direction) override {
         panels.dock.select(editor::region_tab(region));
         panels.dock.cycle(direction);
     }
+
     Result<void> set_view_settings(const renderer::ViewSettings& settings) override {
         return panels.set_view_settings(document, settings);
     }
+
     Result<void> source_history(bool) override { return {}; }
+
     Result<void> workbench_history(bool) override { return {}; }
+
     void scene_changed() override { ++scene_changes; }
+
     void set_tool_settings(const editor::ToolSettings& settings) override {
         tools = settings;
         ++tool_changes;
     }
+
     void quit() override { throw std::runtime_error("Quit requires the window host."); }
+
     void about() override { throw std::runtime_error("About requires the window host."); }
+
     void select_box() override { throw std::runtime_error("Box selection requires the window host."); }
+
     void show_menu(editor::MenuKind) override { throw std::runtime_error("Menus require the window host."); }
+
     void toggle_view(editor::ViewToggleOption option) override {
         auto& value = option == editor::ViewToggleOption::fps ? panels.show_fps : panels.viewport_options_collapsed;
         value = !value;
     }
+
     Result<void> fit_lighting(bool) override { throw std::runtime_error("Lighting fit requires the window host."); }
+
     Result<void> rename_asset(std::string_view, std::string_view, bool) override {
         throw std::runtime_error("Asset rename requires the application host.");
     }
+
     Result<void> save_scene(const std::filesystem::path&) override {
         throw std::runtime_error("Save requires the application host.");
     }
+
     Result<void> save_documents(const editor::Context&, bool) override {
         throw std::runtime_error("Save requires the application host.");
     }
+
     Result<void> open_source(const std::filesystem::path& path) override { return panels.source_editor.open(path); }
+
     Result<void> create_source(const std::filesystem::path&, bool) override {
         throw std::runtime_error("Create source requires the application host.");
     }
+
     Result<void> close_source(bool) override {
         throw std::runtime_error("Close source requires the application host.");
     }
+
     Result<void> reload_source(bool) override {
         throw std::runtime_error("Reload source requires the application host.");
     }
+
     Result<void> start_play(bool, bool) override { throw std::runtime_error("Play requires the application host."); }
+
     void stop_play(bool) override { throw std::runtime_error("Play requires the application host."); }
+
     Result<std::string> import_asset(editor::ImportKind, const std::filesystem::path&) override {
         throw std::runtime_error("Import requires the application host.");
     }
+
     Result<void> reimport_asset(std::string_view, const std::filesystem::path&) override {
         throw std::runtime_error("Reimport requires the application host.");
     }
 };
+
 bool same(const editor::ToolSettings& a, const editor::ToolSettings& b) {
     return a.tool == b.tool && a.pivot == b.pivot && a.grid_snap == b.grid_snap &&
            a.cursor_surface == b.cursor_surface && a.grid_spacing == b.grid_spacing && a.select_mode == b.select_mode &&
@@ -100,6 +143,7 @@ bool same(const editor::ToolSettings& a, const editor::ToolSettings& b) {
            a.snap_scale == b.snap_scale && a.rotation_step == b.rotation_step && a.scale_step == b.scale_step;
 }
 }
+
 void verify_operator_parameters() {
     using assets::json_format::Json;
     using namespace operator_parameters;

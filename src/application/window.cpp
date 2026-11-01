@@ -10,11 +10,14 @@
 namespace atelier::application {
 namespace {
 constexpr wchar_t window_class[] = L"FrostFoxAtelier.Editor";
+
 constexpr std::size_t text_limit = 4096;
+
 DWORD native_error() {
     const auto value = GetLastError();
     return value ? value : ERROR_GEN_FAILURE;
 }
+
 // The same alpha glyph serves editor chrome and native tools. Premultiplied
 // BGRA plus a dark dilation keeps light strokes readable on any scene surface.
 HCURSOR tool_cursor(ui::Icon icon, UINT dpi) {
@@ -72,27 +75,37 @@ HCURSOR tool_cursor(ui::Icon icon, UINT dpi) {
     DeleteObject(color);
     return handle;
 }
+
 struct InputContext {
     HWND window;
+
     HIMC context;
+
     explicit InputContext(HWND value) : window(value), context(ImmGetContext(value)) {}
+
     ~InputContext() {
         if (context)
             ImmReleaseContext(window, context);
     }
 };
+
 struct ClipboardScope {
     ~ClipboardScope() { CloseClipboard(); }
 };
+
 struct MemoryLock {
     HGLOBAL memory;
+
     void* data;
+
     explicit MemoryLock(HGLOBAL value) : memory(value), data(GlobalLock(value)) {}
+
     ~MemoryLock() {
         if (data)
             GlobalUnlock(memory);
     }
 };
+
 std::expected<std::wstring, DWORD> composition_text(HIMC context, DWORD index) {
     const auto bytes = ImmGetCompositionStringW(context, index, nullptr, 0);
     if (bytes < 0 || bytes % sizeof(wchar_t))
@@ -105,6 +118,7 @@ std::expected<std::wstring, DWORD> composition_text(HIMC context, DWORD index) {
     return value;
 }
 }
+
 Window::Window(HWND popup_owner, std::optional<ui::PixelExtent> initial_client) : popup_(popup_owner != nullptr) {
     if (initial_client && (popup_ || !initial_client->width || !initial_client->height ||
                            initial_client->width > 32768 || initial_client->height > 32768))
@@ -158,6 +172,7 @@ Window::Window(HWND popup_owner, std::optional<ui::PixelExtent> initial_client) 
             throw;
         }
 }
+
 Window::~Window() {
     relative_pointer(false);
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
@@ -173,6 +188,7 @@ Window::~Window() {
         DestroyCursor(adjustment_cursor_);
     }
 }
+
 void Window::cursor(ui::Cursor intent) {
     const wchar_t* standard = IDC_ARROW;
     if (intent == ui::Cursor::text)
@@ -252,6 +268,7 @@ void Window::cursor(ui::Cursor intent) {
     }
     SetCursor(relative_pointer_ ? nullptr : cursor_);
 }
+
 void Window::show(bool activate) {
     if (popup_ || !activate) {
         ShowWindow(handle_, SW_SHOWNOACTIVATE);
@@ -263,9 +280,11 @@ void Window::show(bool activate) {
     ShowWindow(handle_, SW_SHOW);
     UpdateWindow(handle_);
 }
+
 float Window::dpi_scale() const noexcept {
     return static_cast<float>(GetDpiForWindow(handle_)) / 96.f;
 }
+
 void Window::capture(bool enabled) {
     if (enabled && GetCapture() != handle_)
         SetCapture(handle_);
@@ -275,6 +294,7 @@ void Window::capture(bool enabled) {
         releasing_capture_ = false;
     }
 }
+
 bool Window::relative_pointer(bool enabled) {
     // Capture/ClipCursor are desktop-wide effects, never granted to a background host.
     if (enabled && (GetForegroundWindow() != handle_ || GetFocus() != handle_))
@@ -313,6 +333,7 @@ bool Window::relative_pointer(bool enabled) {
     }
     return true;
 }
+
 void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
     const auto drain = [&] {
         for (std::size_t index = 0; index < events_.size(); ++index) {
@@ -375,6 +396,7 @@ void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
         drain();
     }
 }
+
 NativeEvent Window::event(UINT message, WPARAM wparam, LPARAM lparam) const {
     NativeEvent value;
     value.message = message;
@@ -385,6 +407,7 @@ NativeEvent Window::event(UINT message, WPARAM wparam, LPARAM lparam) const {
     value.alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     return value;
 }
+
 LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* self = reinterpret_cast<Window*>(GetWindowLongPtrW(handle, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -401,6 +424,7 @@ LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPA
         return 0;
     }
 }
+
 LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT) {
         SetCursor(relative_pointer_ ? nullptr : cursor_ ? cursor_ : LoadCursorW(nullptr, IDC_ARROW));
@@ -580,6 +604,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         return DefWindowProcW(handle_, message, wparam, lparam);
     }
 }
+
 void Window::composition(UINT message, LPARAM flags) {
     input_anchor_.reset(); // Native changes invalidate the previously displayed composition before UI delivery.
     auto record = event(message, 0, flags);
@@ -645,6 +670,7 @@ void Window::composition(UINT message, LPARAM flags) {
     if (record.composition)
         events_.push_back(std::move(record));
 }
+
 ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
     ui::ClipboardResult result{request.kind, request.operation_id, request.token, false, 0, {}};
     if (!OpenClipboard(handle_)) {
@@ -702,6 +728,7 @@ ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
     }
     return result;
 }
+
 std::uint32_t Window::cancel_ime() {
     input_anchor_.reset();
     InputContext input(handle_);
@@ -718,6 +745,7 @@ std::uint32_t Window::cancel_ime() {
     candidate_rect_.reset();
     return 0;
 }
+
 ui::ImeResult Window::ime(const ui::ImeRequest& request) {
     ui::ImeResult result{request.kind, request.composition_id, request.token, false, 0};
     if (!composition_id_ || composition_id_ != request.composition_id || composition_token_ != request.token) {
@@ -743,6 +771,7 @@ ui::ImeResult Window::ime(const ui::ImeRequest& request) {
     result.success = true;
     return result;
 }
+
 std::uint32_t Window::text_input(const std::optional<ui::TextInputState>& input) {
     const auto token = input ? std::optional{input->token} : std::nullopt;
     const bool binding_changed =

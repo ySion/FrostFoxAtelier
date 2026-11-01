@@ -9,16 +9,19 @@
 namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void complete(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 Context open_context() {
     ContextOptions options;
     options.validation = Validation::gpu;
@@ -460,11 +463,14 @@ void texture_ranges() {
     check_debug(debug.Get());
     std::puts("texture-ranges: upload-offset=256 readback-offset=512 image-bytes=8192 prefix/trailer=PASS");
 }
+
 void window_target_sync() {
     // This fixture owns its window and never activates or touches another one.
     struct Window {
         HINSTANCE instance = GetModuleHandleW(nullptr);
+
         HWND handle{};
+
         Window() {
             WNDCLASSW type{};
             type.hInstance = instance;
@@ -476,10 +482,12 @@ void window_target_sync() {
                                      nullptr, instance, nullptr);
             require(handle != nullptr, "acceptance window creation failed");
         }
+
         ~Window() {
             DestroyWindow(handle);
             UnregisterClassW(L"AtelierRhiTargetSyncAcceptance", instance);
         }
+
         void size(int width, int height) const {
             require(SetWindowPos(handle, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) !=
                         FALSE,
@@ -509,8 +517,11 @@ float4 main(uint id : SV_VertexID) : SV_Position {
     require(static_cast<bool>(automatic), "auto-sized texture creation failed");
     struct Capture {
         GfxBuffer buffer;
+
         std::uint32_t width;
+
         std::uint32_t height;
+
         std::uint32_t pitch;
     };
     std::vector<Capture> captures;
@@ -579,6 +590,7 @@ float4 main(uint id : SV_VertexID) : SV_Position {
     check_hr(gfxGetDevice(gfx)->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
     struct ReleaseGate {
         ID3D12Fence* fence;
+
         ~ReleaseGate() { fence->Signal(1); }
     } release{gate.Get()};
     check_hr(gfxGetCommandQueue(gfx)->Wait(gate.Get(), 1));

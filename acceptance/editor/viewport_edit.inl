@@ -54,6 +54,7 @@ void verify_rotated_viewport_transforms() {
     }
     std::puts("Rotated viewport G/R/S: PASS (real imported pose, preview, cancel, commit and undo)");
 }
+
 void verify_mirrored_viewport_transforms() {
     using namespace editor;
     Session document;
@@ -138,6 +139,7 @@ void verify_mirrored_viewport_transforms() {
     std::puts(
         "Mirrored viewport G/R/S: PASS (single-axis mirror kept, scale crosses zero, zero preview, signed scale field, zero-axis G/R/S)");
 }
+
 void verify_viewport_local_constraints() {
     using namespace editor;
     Session document;
@@ -195,6 +197,7 @@ void verify_viewport_local_constraints() {
                 "Cancelling a Local constraint did not restore the authored pose.");
     }
 }
+
 void verify_viewport_gesture_input() {
     using namespace editor;
     Session document({}, SessionRole::editor);
@@ -323,6 +326,7 @@ void verify_viewport_gesture_input() {
     require(!tool.active() && document.selected_entities().size() == 2 && document.undo_count() == history,
             "Auto-repeated B rearmed an active box selection or lost its original drag.");
 }
+
 void verify_viewport_duplication() {
     editor::Session document;
     changed(document.create_static_mesh(assets::mesh_assets().front(), {1, 2, 3}));
@@ -456,6 +460,7 @@ void verify_viewport_duplication() {
                 take(full->serialize()) == limit_checkpoint,
             "Entity limit rejection partially published a duplicate.");
 }
+
 void verify_viewport_editing() {
     verify_rotated_viewport_transforms();
     verify_mirrored_viewport_transforms();

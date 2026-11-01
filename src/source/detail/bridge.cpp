@@ -15,6 +15,7 @@ void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
@@ -123,9 +124,13 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     };
     struct FieldCursor {
         const TypeInfo* type;
+
         std::size_t next{};
+
         std::size_t depth{};
+
         std::size_t prefix_length{};
+
         bool constrained{};
     };
     std::vector<FieldCursor> cursors{{info}};
@@ -215,6 +220,7 @@ BusinessType value_kind(const Binding& binding, TypeId type) {
             return {binding.values[i].kind, i};
     return ValueKind::void_value;
 }
+
 TypeId value_type_id(const Binding& binding, BusinessType type) {
     if (type == ValueKind::f32)
         return binding.f32;
@@ -232,6 +238,7 @@ TypeId value_type_id(const Binding& binding, BusinessType type) {
         return binding.values[type.type_index].type;
     return {};
 }
+
 BusinessValue scalar(const Scalar& value, const Binding& binding) {
     return std::visit(
         [&](const auto& item) -> BusinessValue {
@@ -276,6 +283,7 @@ EnvironmentView::EnvironmentView(const Binding& binding) {
                            method.receiver_read_only, method.preserves_borrows});
     }
 }
+
 BusinessEnvironment EnvironmentView::view(const char* object_type_name) const {
     return {fields.data(),
             static_cast<std::uint32_t>(fields.size()),
@@ -287,6 +295,7 @@ BusinessEnvironment EnvironmentView::view(const char* object_type_name) const {
             values.data(),
             static_cast<std::uint32_t>(values.size())};
 }
+
 std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) {
     if (value.storage != ArgumentStorage::value)
         return std::nullopt;
@@ -309,6 +318,7 @@ std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) 
         return EnumValue{binding->enumerations[value.kind.type_index].type, static_cast<std::uint32_t>(value.bits)};
     return std::nullopt;
 }
+
 AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
                            std::span<const Scalar> arguments) {
     std::array<Argument, 8> local;
@@ -318,10 +328,12 @@ AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& sign
         input[i] = Argument{arguments[i]};
     initialize(binding, signature, input);
 }
+
 AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
                            std::span<const Argument> arguments) {
     initialize(binding, signature, arguments);
 }
+
 void AbiArguments::initialize(const Binding& binding, const FunctionSignature& signature,
                               std::span<const Argument> arguments) {
     status = binding.runtime->prepare_arguments(signature, arguments, prepared);
@@ -368,6 +380,7 @@ Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout
       method_arguments(expanded_arguments.empty() ? std::span<Argument>{inline_arguments}
                                                   : std::span<Argument>{expanded_arguments}),
       observer(observation), trace(capture), debugger(std::move(session)) {}
+
 bool Invocation::resources_cleared() const noexcept {
     if (!frame.empty() || live_values != 0 || debug_top)
         return false;
@@ -376,12 +389,14 @@ bool Invocation::resources_cleared() const noexcept {
             return false;
     return true;
 }
+
 void Invocation::record_resources(bool cleared) const noexcept {
     if (!trace)
         return;
     trace->remaining_owned_values = live_values;
     trace->resources_cleared = cleared;
 }
+
 void Invocation::fail(ErrorCode code, const char* message) noexcept {
     if (failed)
         return;
@@ -402,12 +417,14 @@ std::span<const FieldId> field_path(const Binding& binding, std::uint32_t field,
             "Host field index or scalar kind is invalid.");
     return binding.fields[field].path;
 }
+
 Result<ObjectId> object_value(Invocation& invocation, std::uint32_t slot) {
     auto reference = reference_value(invocation, slot);
     if (!reference)
         return std::unexpected(std::move(reference.error()));
     return reference->id(); // Runtime access still validates liveness, including explicit destruction.
 }
+
 std::uint32_t read_float(void* context, std::uint32_t slot, std::uint32_t field, float* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -421,6 +438,7 @@ std::uint32_t read_float(void* context, std::uint32_t slot, std::uint32_t field,
         return {};
     });
 }
+
 std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field, float value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -430,6 +448,7 @@ std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f32), value);
     });
 }
+
 std::uint32_t read_double(void* context, std::uint32_t slot, std::uint32_t field, double* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -443,6 +462,7 @@ std::uint32_t read_double(void* context, std::uint32_t slot, std::uint32_t field
         return {};
     });
 }
+
 std::uint32_t write_double(void* context, std::uint32_t slot, std::uint32_t field, double value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -452,6 +472,7 @@ std::uint32_t write_double(void* context, std::uint32_t slot, std::uint32_t fiel
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f64), value);
     });
 }
+
 std::uint32_t read_bool(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -467,6 +488,7 @@ std::uint32_t read_bool(void* context, std::uint32_t slot, std::uint32_t field, 
         return {};
     });
 }
+
 std::uint32_t write_bool(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -478,6 +500,7 @@ std::uint32_t write_bool(void* context, std::uint32_t slot, std::uint32_t field,
         return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::boolean), value != 0);
     });
 }
+
 const BoundField& typed_field(const Binding& binding, std::uint32_t field) {
     require(field < binding.fields.size(), "Host typed value field index is invalid.");
     const auto& target = binding.fields[field];
@@ -486,6 +509,7 @@ const BoundField& typed_field(const Binding& binding, std::uint32_t field) {
             "Host field is not a builtin math value.");
     return target;
 }
+
 std::uint32_t read_value(void* context, std::uint32_t slot, std::uint32_t field, void* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -497,6 +521,7 @@ std::uint32_t read_value(void* context, std::uint32_t slot, std::uint32_t field,
                                        ValueOutput{value_type_id(invocation.binding, target.kind), output});
     });
 }
+
 std::uint32_t write_value(void* context, std::uint32_t slot, std::uint32_t field, const void* input) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -508,6 +533,7 @@ std::uint32_t write_value(void* context, std::uint32_t slot, std::uint32_t field
                                         ValueInput{value_type_id(invocation.binding, target.kind), input});
     });
 }
+
 std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -526,6 +552,7 @@ std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, 
         return {};
     });
 }
+
 std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -542,6 +569,7 @@ std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field,
         return invocation.runtime.write(*object, invocation.binding.fields[field].path, *decoded);
     });
 }
+
 std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t method, const BusinessValue* arguments,
                           std::uint32_t count, BusinessValue* output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
@@ -625,6 +653,7 @@ std::uint32_t begin(void* context) noexcept {
         return {};
     });
 }
+
 std::uint32_t poll(void* context) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -633,6 +662,7 @@ std::uint32_t poll(void* context) noexcept {
         return {};
     });
 }
+
 std::uint32_t finish(void* context) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -641,6 +671,7 @@ std::uint32_t finish(void* context) noexcept {
         return {};
     });
 }
+
 Result<ObjectReference> reference_value(Invocation& invocation, std::uint32_t slot) {
     if (slot == null_reference_slot)
         return invocation.runtime.null_reference(invocation.binding.type, ValueForm::strong_reference);
@@ -747,6 +778,7 @@ const BoundValue& owned_value(Invocation& invocation, std::uint32_t type) {
             "Native value lacks a borrow-preserving lifecycle contract.");
     return invocation.binding.values[type];
 }
+
 std::uint32_t construct_value(void* context, std::uint32_t type, void* target, const void* source) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -766,6 +798,7 @@ std::uint32_t construct_value(void* context, std::uint32_t type, void* target, c
         return result;
     });
 }
+
 std::uint32_t assign_value(void* context, std::uint32_t type, void* target, const void* source) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
@@ -774,6 +807,7 @@ std::uint32_t assign_value(void* context, std::uint32_t type, void* target, cons
                                                {static_cast<const std::byte*>(source), value.size});
     });
 }
+
 void destroy_value(void* context, std::uint32_t type, void* target) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     (void)bridge(invocation, [&]() -> Result<void> {
@@ -788,6 +822,7 @@ void destroy_value(void* context, std::uint32_t type, void* target) noexcept {
         return result;
     });
 }
+
 std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutation operation, void* target,
                               const void* source, std::uint64_t count) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
@@ -807,6 +842,7 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
                                                   count);
     });
 }
+
 const BusinessServices services{
     begin,         create_slot,     read_float,  write_float,      read_uint,      write_uint,      call_method,
     poll,          finish,          clear_slot,  change_reference, same_reference, construct_value, assign_value,
@@ -863,6 +899,7 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
     }
     return true;
 }
+
 Result<void> check_source_arguments(const Binding& binding, const BusinessSignature& signature,
                                     std::span<const BusinessValue> arguments) {
     if (arguments.size() != signature.parameter_count)

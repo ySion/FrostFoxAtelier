@@ -7,7 +7,9 @@
 
 namespace atelier::assets::mesh_format {
 inline constexpr std::uint32_t version = 1;
+
 inline constexpr std::size_t maximum_bytes = 256 * 1024 * 1024;
+
 inline constexpr std::size_t maximum_text_bytes = 4096;
 
 namespace detail {
@@ -15,6 +17,7 @@ inline void text(std::string_view value) {
     if (value.size() > maximum_text_bytes || value.find('\0') != value.npos || !StringView(value).is_valid_utf8())
         throw std::runtime_error("Mesh snapshot text requires valid UTF-8, no NUL, and at most 4096 bytes.");
 }
+
 inline void key(std::string_view value) {
     text(value);
     if (value.empty() || value.find_first_of("\\:\"<>|?*") != value.npos ||
@@ -31,6 +34,7 @@ inline void key(std::string_view value) {
     }
     throw std::runtime_error("Mesh snapshot asset key cannot end with a slash.");
 }
+
 inline void bindings(const MeshAsset& asset) {
     std::map<std::string_view, unsigned, std::less<>> matches;
     for (const auto& binding : asset.materials) {
@@ -52,11 +56,13 @@ inline void bindings(const MeshAsset& asset) {
             throw std::runtime_error("Mesh snapshot default names a missing material slot.");
     }
 }
+
 inline void add_size(std::size_t& size, std::size_t count, std::size_t stride, std::size_t maximum) {
     if (count > (maximum - size) / stride)
         throw std::length_error("Mesh snapshot exceeds its byte limit (at most 256 MiB).");
     size += count * stride;
 }
+
 template <class T>
 inline void array_size(std::size_t& size, std::size_t count, std::size_t stride, std::size_t maximum) {
     if (count > maximum_bytes / sizeof(T))
@@ -64,41 +70,51 @@ inline void array_size(std::size_t& size, std::size_t count, std::size_t stride,
     add_size(size, 1, 4, maximum);
     add_size(size, count, stride, maximum);
 }
+
 inline void text_size(std::size_t& size, std::string_view value, std::size_t maximum) {
     text(value);
     add_size(size, 1, 4, maximum);
     add_size(size, value.size(), 1, maximum);
 }
+
 class Writer {
 public:
     explicit Writer(std::size_t size) { bytes_.reserve(size); }
+
     void u8(std::uint8_t value) { bytes_.push_back(static_cast<char>(value)); }
+
     void u32(std::uint32_t value) {
         for (unsigned i = 0; i < 4; ++i) {
             u8(static_cast<std::uint8_t>(value));
             value >>= 8;
         }
     }
+
     void count(std::size_t value) { u32(static_cast<std::uint32_t>(value)); }
+
     void floats(std::span<const float> values) {
         for (float value : values)
             u32(std::bit_cast<std::uint32_t>(value));
     }
+
     void text(std::string_view value) {
         count(value.size());
         bytes_.append(value);
     }
+
     std::string finish() { return std::move(bytes_); }
 
 private:
     std::string bytes_;
 };
+
 class Reader {
 public:
     explicit Reader(std::string_view bytes) : bytes_(bytes) {
         if (bytes.size() > maximum_bytes)
             throw std::length_error("Mesh snapshot exceeds the 256 MiB byte limit.");
     }
+
     std::uint8_t u8() {
         if (bytes_.empty())
             throw std::runtime_error("Truncated mesh snapshot.");
@@ -106,12 +122,14 @@ public:
         bytes_.remove_prefix(1);
         return value;
     }
+
     std::uint32_t u32() {
         std::uint32_t result{};
         for (unsigned i = 0; i < 4; ++i)
             result |= std::uint32_t(u8()) << (i * 8);
         return result;
     }
+
     template <class T>
     std::size_t count(std::size_t stride) {
         const auto size = u32();
@@ -121,6 +139,7 @@ public:
             throw std::runtime_error("Mesh snapshot array length exceeds the remaining bytes or storage limit.");
         return size;
     }
+
     void floats(std::span<float> values) {
         for (float& value : values) {
             value = std::bit_cast<float>(u32());
@@ -128,6 +147,7 @@ public:
                 throw std::runtime_error("Mesh snapshot requires finite published values.");
         }
     }
+
     std::string text() {
         const auto size = u32();
         if (size > maximum_text_bytes || size > bytes_.size())
@@ -137,6 +157,7 @@ public:
         bytes_.remove_prefix(size);
         return std::string(value);
     }
+
     void finish() const {
         if (!bytes_.empty())
             throw std::runtime_error("Mesh snapshot contains trailing bytes.");
@@ -145,6 +166,7 @@ public:
 private:
     std::string_view bytes_;
 };
+
 inline constexpr std::uint32_t magic = 0x534d5441; // ATMS, little endian.
 }
 
@@ -217,6 +239,7 @@ inline std::string encode(const MeshAsset& asset, std::size_t maximum = maximum_
     }
     return out.finish();
 }
+
 inline MeshAsset decode(std::string_view bytes) {
     detail::Reader in(bytes);
     if (in.u32() != detail::magic || in.u32() != version)

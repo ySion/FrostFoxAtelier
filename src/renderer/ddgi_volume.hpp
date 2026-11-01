@@ -9,40 +9,64 @@ namespace atelier::renderer::detail {
 // logical window scrolls. Previous descriptors address an immutable snapshot.
 struct GpuProbeVolume {
     std::array<float, 4> origin{};
+
     std::array<float, 4> spacing{};
+
     std::array<float, 4> tracking{};
+
     std::array<std::uint32_t, 4> grid{}; // XYZ counts, first physical pool slot.
+
     std::array<std::int32_t, 4> scroll{};
+
     std::array<std::int32_t, 4> movement{}; // movement.w invalidates this slot range.
 };
+
 static_assert(sizeof(GpuProbeVolume) == 96);
 
 struct ProbeField {
     std::array<GpuProbeVolume, probe_volume_limit> current{};
+
     std::array<GpuProbeVolume, probe_volume_limit> previous{};
+
     std::array<std::array<std::int64_t, 3>, probe_volume_limit> cells{};
+
     std::array<std::array<std::int64_t, 3>, probe_volume_limit> previous_cells{};
+
     std::array<ProbeVolumeSettings, probe_volume_limit> committed{};
+
     std::array<std::array<std::uint32_t, 4>, probe_resident_limit / 4> work{};
+
     std::array<std::uint8_t, probe_resident_limit> warmup{};
+
     std::uint32_t total{};
+
     std::uint32_t width{1};
+
     std::uint32_t height{1};
+
     std::uint32_t scheduled{};
+
     std::uint32_t round_robin_progress{};
+
     std::uint32_t cursor{};
+
     std::uint32_t warm_cursor{};
+
     std::uint32_t stride{1};
+
     bool valid{};
 
     static std::uint32_t count(const GpuProbeVolume& v) { return v.grid[0] * v.grid[1] * v.grid[2]; }
+
     static std::int32_t wrap(std::int64_t value, std::uint32_t size) {
         const auto n = static_cast<std::int64_t>(size);
         return static_cast<std::int32_t>((value % n + n) % n);
     }
+
     static std::array<std::uint32_t, 3> coordinates(std::uint32_t local, const GpuProbeVolume& v) {
         return {local % v.grid[0], local / v.grid[0] % v.grid[1], local / (v.grid[0] * v.grid[1])};
     }
+
     static bool fresh(std::uint32_t local, const GpuProbeVolume& v) {
         if (v.movement[3])
             return true;
@@ -55,12 +79,14 @@ struct ProbeField {
         }
         return false;
     }
+
     void invalidate() {
         valid = false;
         cursor = 0;
         warm_cursor = 0;
         warmup.fill(0);
     }
+
     // Called before encoding. Configuration validation is performed at the
     // public frame boundary; no GPU ownership or scene mutation lives here.
     void describe(const SceneLitSettings& settings, const std::array<float, 3>& focus) {
@@ -106,6 +132,7 @@ struct ProbeField {
                 ++stride;
         }
     }
+
     void plan(const SceneLitSettings& settings, FrameStats& stats) {
         scheduled = 0;
         round_robin_progress = 0;
@@ -166,6 +193,7 @@ struct ProbeField {
                 add(probe);
         }
     }
+
     void commit(const SceneLitSettings& settings) {
         previous = current;
         previous_cells = cells;

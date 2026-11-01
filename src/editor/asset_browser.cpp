@@ -26,11 +26,13 @@ std::wstring_view kind_name(assets::AssetKind kind) {
         return L"File";
     }
 }
+
 std::wstring folded(std::wstring text) {
     for (auto& c : text)
         c = static_cast<wchar_t>(std::towlower(c));
     return text;
 }
+
 bool matches_filter(const AssetBrowser::Item& item, std::wstring_view query, unsigned filter) {
     return (query.empty() || folded(item.name).find(query) != std::wstring::npos) &&
            (!filter || item.kind == assets::AssetKind::folder ||
@@ -40,6 +42,7 @@ bool matches_filter(const AssetBrowser::Item& item, std::wstring_view query, uns
                           : filter == 4 ? assets::AssetKind::material
                                         : assets::AssetKind::texture));
 }
+
 int compare_names(std::wstring_view a, std::wstring_view b) {
     for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
         const auto left = std::towlower(a[i]);
@@ -49,22 +52,27 @@ int compare_names(std::wstring_view a, std::wstring_view b) {
     }
     return a.size() == b.size() ? 0 : a.size() < b.size() ? -1 : 1;
 }
+
 // Directory lists preserve the Project scan's path order, independently of the result table's sorting.
 bool listed(const std::vector<AssetBrowser::Item>& directories, const std::filesystem::path& path) {
     return std::ranges::binary_search(directories, path, {}, &AssetBrowser::Item::path);
 }
+
 constexpr std::array column_minima{96.f, 64.f, 64.f};
+
 std::optional<std::size_t> column_index(ui::TableKey key) {
     if (key >= browser_control::name_column && key <= browser_control::size_column)
         return static_cast<std::size_t>(key - browser_control::name_column);
     return std::nullopt;
 }
+
 ui::ControlIcon item_icon(assets::AssetKind kind) {
     return kind == assets::AssetKind::folder ? ui::ControlIcon::folder
            : kind == assets::AssetKind::mesh ? ui::ControlIcon::mesh
                                              : ui::ControlIcon::object;
 }
 }
+
 void AssetBrowser::reset(bool has_project) {
     if (directory_resize_) {
         directory_width_ = *directory_resize_;
@@ -92,12 +100,14 @@ void AssetBrowser::reset(bool has_project) {
     expansion_.clear();
     invalidate_items(); // Keys remain monotonic.
 }
+
 ui::ControlKey AssetBrowser::key_for(const std::string& value) {
     const auto [key, inserted] = keys_.try_emplace(StringView{value}, next_key_);
     if (inserted)
         ++next_key_;
     return *key;
 }
+
 ui::ControlKey AssetBrowser::directory_control(const std::filesystem::path& path) const {
     if (path.empty())
         return browser_control::project;
@@ -105,6 +115,7 @@ ui::ControlKey AssetBrowser::directory_control(const std::filesystem::path& path
     const auto* key = keys_.find(StringView{name});
     return key ? *key : 0;
 }
+
 void AssetBrowser::visit(Location location, bool remember) {
     if (location.engine)
         location.directory.clear();
@@ -139,9 +150,11 @@ void AssetBrowser::visit(Location location, bool remember) {
         navigation_[navigation_cursor_] = location;
     invalidate_items();
 }
+
 void AssetBrowser::navigate(std::filesystem::path path) {
     visit({false, std::move(path)});
 }
+
 void AssetBrowser::update_directories(const Project* project) {
     const auto root = project ? project->root() : std::filesystem::path{};
     const auto revision = project ? project->revision() : 0;
@@ -186,15 +199,20 @@ void AssetBrowser::update_directories(const Project* project) {
     navigation_cursor_ = cursor;
     invalidate_items();
 }
+
 const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::directory_items() {
     if (!directory_items_dirty_ && directory_items_)
         return directory_items_;
     // Project, its directories in path (preorder) order, then Engine. Few rows: all are described.
     struct Node {
         ui::ControlKey key;
+
         std::wstring_view name;
+
         bool enabled;
+
         bool selected;
+
         ui::ControlIcon icon;
     };
     std::vector<Node> labels;
@@ -238,6 +256,7 @@ const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::direc
     directory_items_dirty_ = false;
     return directory_items_;
 }
+
 Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> paths, bool expanded) {
     for (const auto& path : paths)
         if (path.empty() ? !has_project_ : !listed(directories_, path))
@@ -248,6 +267,7 @@ Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> p
     directory_items_dirty_ = true;
     return {};
 }
+
 void AssetBrowser::sort_items() {
     std::sort(items_.begin(), items_.end(), [&](const auto& a, const auto& b) {
         if ((a.kind == assets::AssetKind::folder) != (b.kind == assets::AssetKind::folder))
@@ -269,6 +289,7 @@ void AssetBrowser::sort_items() {
         row_indices_.emplace(key_for("item:" + items_[i].key), i);
     table_dirty_ = true;
 }
+
 void AssetBrowser::update_items(const Project* project) {
     if (!items_dirty_ && catalog_revision_ == (project ? project->revision() : 0))
         return;
@@ -301,6 +322,7 @@ void AssetBrowser::update_items(const Project* project) {
         selected_path_.reset();
     }
 }
+
 bool AssetBrowser::select_item(ui::TableKey key) {
     const auto found = row_indices_.find(key);
     if (found == row_indices_.end())
@@ -312,6 +334,7 @@ bool AssetBrowser::select_item(ui::TableKey key) {
         selected_ = item;
     return true;
 }
+
 const std::shared_ptr<const ui::TableData>& AssetBrowser::table_data() {
     if (!table_dirty_ && table_data_)
         return table_data_;
@@ -336,6 +359,7 @@ const std::shared_ptr<const ui::TableData>& AssetBrowser::table_data() {
     table_dirty_ = false;
     return table_data_;
 }
+
 std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const {
     namespace id = browser_control;
     std::vector<ui::MenuItem> items;
@@ -389,6 +413,7 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
     }
     return items;
 }
+
 bool AssetBrowser::apply(const ui::Action& action) {
     using namespace browser_control;
     if (action.key == divider) {
@@ -521,6 +546,7 @@ bool AssetBrowser::apply(const ui::Action& action) {
     }
     return false;
 }
+
 void AssetBrowser::append(std::vector<ui::Control>& controls, ui::ControlKey parent, const Project* project,
                           bool can_create, const ui::UiFrame* frame, ui_language::LiveDocument& document) {
     namespace id = browser_control;

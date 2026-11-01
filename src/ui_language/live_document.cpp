@@ -7,14 +7,17 @@ namespace {
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
+
 std::string utf8(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {value.begin(), value.end()};
 }
 }
+
 LiveDocument::LiveDocument(Runtime& runtime, std::filesystem::path path, ui::ControlKey& keys,
                            std::optional<std::string> recovery)
     : runtime_(runtime), path_(std::move(path)), next_key_(keys), recovery_source_(std::move(recovery)) {}
+
 void LiveDocument::recover_initial() {
     if (active_ || candidate_ || !recovery_source_)
         return;
@@ -31,6 +34,7 @@ void LiveDocument::recover_initial() {
     recovery_source_.reset();
     candidate_failed_ = false;
 }
+
 void LiveDocument::poll(Clock::time_point now) {
     if (candidate_ || pending_submission_ || now < next_poll_)
         return;
@@ -109,6 +113,7 @@ void LiveDocument::poll(Clock::time_point now) {
     }
     diagnostic_.clear();
 }
+
 Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, std::span<const KeyBinding> keys,
                                   std::span<const InputValue> inputs, std::vector<ui::Control>& output) {
     const auto& module = candidate_ ? candidate_ : active_;
@@ -181,6 +186,7 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
     }
     return {};
 }
+
 Result<bool> LiveDocument::event(const ui::Action& action) {
     for (auto& [name, region] : regions_)
         if (region.accepted) {
@@ -190,6 +196,7 @@ Result<bool> LiveDocument::event(const ui::Action& action) {
         }
     return false;
 }
+
 bool LiveDocument::reject_controls(std::string message) {
     if (!candidate_ && !pending_submission_)
         return false;
@@ -225,6 +232,7 @@ bool LiveDocument::reject_controls(std::string message) {
     recover_initial();
     return true;
 }
+
 void LiveDocument::commit_controls() {
     if (candidate_failed_)
         return;
@@ -242,6 +250,7 @@ void LiveDocument::commit_controls() {
     }
     pending_submission_ = false;
 }
+
 std::optional<Statistics> LiveDocument::statistics(std::string_view name) const {
     const auto at = regions_.find(name);
     return at == regions_.end() || !at->second.instance ? std::nullopt

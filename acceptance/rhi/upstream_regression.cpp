@@ -7,18 +7,22 @@
 #include <utility>
 
 using namespace rhi_acceptance;
+
 namespace {
 struct NativeOwner {
     GfxContext value;
+
     ~NativeOwner() {
         if (value && gfxDestroyContext(value) != kGfxResult_NoError)
             std::abort();
     }
+
     void close() {
         check(gfxDestroyContext(value));
         value = {};
     }
 };
+
 void null_list() {
     enable_validation(false);
     NativeOwner original{open_native()};
@@ -38,6 +42,7 @@ void null_list() {
     check_debug(debug.Get());
     std::puts("null-list: CPU pipeline created; context cleanup PASS; debug-warnings=0 debug-errors=0");
 }
+
 void mesh_pixel() {
     enable_validation(true);
     NativeOwner owner{open_native()};
@@ -91,6 +96,7 @@ void mesh_pixel() {
     check_debug(debug.Get());
     std::puts("mesh-pixel-state: 2048 pixels PASS; gpu-validation=1 debug-warnings=0 debug-errors=0");
 }
+
 void timeout_once() {
     enable_validation(false);
     NativeOwner owner{open_native()};
@@ -101,6 +107,7 @@ void timeout_once() {
     check_hr(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
     struct GateRelease {
         ID3D12Fence* fence;
+
         ~GateRelease() { fence->Signal(1); }
     } release{gate.Get()};
     D3D12_HEAP_PROPERTIES heap{};
@@ -162,6 +169,7 @@ void timeout_once() {
         increments);
 }
 } // namespace
+
 int main(int argc, char** argv) {
     try {
         require(argc == 2, "expected --null-list, --mesh-pixel-state or --timeout");

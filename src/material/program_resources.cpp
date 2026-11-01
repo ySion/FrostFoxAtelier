@@ -7,20 +7,25 @@
 namespace atelier::material {
 namespace {
 static_assert(std::is_nothrow_move_assignable_v<ReferenceField>);
+
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
+
 bool valid_key(std::string_view value) {
     return value.size() <= 4096 && value.find('\0') == value.npos;
 }
+
 bool finite(math::Vector4 value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && std::isfinite(value.w);
 }
+
 bool same(const SurfaceInput& a, const SurfaceInput& b) {
     return a.image == b.image && a.address == b.address && a.color == b.color && a.empty_value.x == b.empty_value.x &&
            a.empty_value.y == b.empty_value.y && a.empty_value.z == b.empty_value.z &&
            a.empty_value.w == b.empty_value.w;
 }
+
 ProgramSurfaceRef reuse(ProgramSurfaceRef old, ProgramSurfaceRef next) {
     if (old && old->definition() == next->definition() &&
         old->uses_default_material() == next->uses_default_material() &&
@@ -30,6 +35,7 @@ ProgramSurfaceRef reuse(ProgramSurfaceRef old, ProgramSurfaceRef next) {
         return old;
     return next;
 }
+
 // The CPU contract is bilinear LOD0, RGB-only sRGB decode before interpolation.
 // Empty values are already linear. UV/channel transformations belong to Source.
 Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) {
@@ -72,6 +78,7 @@ Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) {
             weight[1]));
     return result;
 }
+
 Result<math::Vector2> input_orientation(const void* data, math::Vector2 uv) {
     const auto& input = *static_cast<const SurfaceInput*>(data);
     math::Vector2 result{1, 1};
@@ -82,6 +89,7 @@ Result<math::Vector2> input_orientation(const void* data, math::Vector2 uv) {
         }
     return result;
 }
+
 Result<void> validate_binding(const TextureBinding& binding, const ImageRef& image) {
     if (!valid_key(binding.asset_key) || binding.address > Address::mirror)
         return failure("Invalid texture key or address mode.");
@@ -89,6 +97,7 @@ Result<void> validate_binding(const TextureBinding& binding, const ImageRef& ima
         return failure("An explicitly cleared texture cannot carry image content.");
     return {};
 }
+
 Result<bool> source_role(Runtime& runtime, ObjectId id) {
     auto type = runtime.type_of(id);
     if (!type)
@@ -105,6 +114,7 @@ Result<bool> source_role(Runtime& runtime, ObjectId id) {
         return false;
     return failure("Expected an actual material.Source or material.Instance, not the common resource role.");
 }
+
 template <class T>
 Result<void> exact_type(Runtime& runtime, ObjectId id) {
     auto type = runtime.type_of(id);
@@ -127,6 +137,7 @@ struct ProgramAccess {
         return ProgramSurfaceRef(new ProgramSurface(std::move(definition), std::move(parameters), std::move(inputs),
                                                     std::move(diagnostics), default_material));
     }
+
     static Result<ProgramSurfaceRef> missing_parent() {
         static const auto prepared = []() -> Result<ProgramSurfaceRef> {
             auto fallback = default_program_surface();
@@ -138,6 +149,7 @@ struct ProgramAccess {
         }();
         return prepared;
     }
+
     static Result<void> register_objects(Runtime& runtime) {
         auto resource = NativeRegistration<Material>{runtime, "material.Resource", TypeKind::object}
                             .hidden_field<&Material::textures_>(
@@ -155,6 +167,7 @@ struct ProgramAccess {
             return std::unexpected(registered.error());
         return {};
     }
+
     static Result<ImageRef> image(Runtime& runtime, ObjectId id, std::string_view key) {
         return runtime.with_native<const TextureResource>(id, [&](const auto& value) -> Result<ImageRef> {
             if (value.source_.view().std_view() != key)
@@ -162,11 +175,15 @@ struct ProgramAccess {
             return value.image_;
         });
     }
+
     struct Textures {
         std::vector<ImageRef> images;
+
         std::vector<ObjectReference> references;
+
         std::vector<ObjectId> ids;
     };
+
     template <class Binding, class PreviousBinding>
     static Result<Textures> textures(Runtime& runtime, std::span<const ObjectRoot> roots, Binding binding,
                                      const Material& previous, PreviousBinding previous_binding) {
@@ -211,6 +228,7 @@ struct ProgramAccess {
         }
         return result;
     }
+
     static Result<bool> available(Runtime& runtime, const ObjectReference& reference, ObjectId expected) {
         if (reference.id() != expected)
             return failure("Material resource identity changed outside publication.");
@@ -225,6 +243,7 @@ struct ProgramAccess {
             return false;
         return std::unexpected(type.error());
     }
+
     // Called under a const borrow. Without dependency collection, steady captures
     // allocate only when a texture publishes new content or is lost.
     static Result<std::optional<std::vector<ImageRef>>> current_images(Runtime& runtime, const Material& value,
@@ -268,6 +287,7 @@ struct ProgramAccess {
         }
         return images;
     }
+
     static Result<std::vector<ObjectRoot>> roots(Runtime& runtime, const Material& value) {
         auto size = runtime.sequence_size(value.texture_field_);
         if (!size)
@@ -286,6 +306,7 @@ struct ProgramAccess {
         }
         return result;
     }
+
     static Result<ObjectReference> parent(Runtime& runtime, ObjectId id) {
         return runtime.with_native<const MaterialInstance>(id, [&](const auto& value) -> Result<ObjectReference> {
             if (!value.published_)
@@ -301,6 +322,7 @@ struct ProgramAccess {
             return *reference;
         });
     }
+
     static Result<void> check_parent(Runtime& runtime, ObjectId target, ObjectId current) {
         for (;;) {
             if (current == target)
@@ -318,6 +340,7 @@ struct ProgramAccess {
             current = next->id();
         }
     }
+
     template <class T, class State>
     static Result<ObjectRoot> create(Runtime& runtime, std::string_view key, const State& state) {
         if (auto ready = runtime.check_code_publication(); !ready)
@@ -347,6 +370,7 @@ struct ProgramAccess {
             return std::unexpected(written.error());
         return std::move(*root);
     }
+
     static Result<std::string> key(Runtime& runtime, ObjectId id) {
         return runtime.with_native<const Material>(id, [](const auto& value) -> Result<std::string> {
             if (!value.published_)
@@ -354,6 +378,7 @@ struct ProgramAccess {
             return value.asset_key_;
         });
     }
+
     static Result<SourceState> read_source(Runtime& runtime, ObjectId id) {
         return runtime.with_native<const MaterialSource>(id, [&](const auto& value) -> Result<SourceState> {
             if (!value.published_)
@@ -364,6 +389,7 @@ struct ProgramAccess {
             return SourceState{value.definition_, std::move(*textures)};
         });
     }
+
     static Result<InstanceState> read_instance(Runtime& runtime, ObjectId id) {
         return runtime.with_native<const MaterialInstance>(id, [&](const auto& value) -> Result<InstanceState> {
             if (!value.published_)
@@ -380,6 +406,7 @@ struct ProgramAccess {
             return InstanceState{std::move(*held), value.entries_, std::move(*textures)};
         });
     }
+
     static Result<std::vector<AuthorDiagnostic>> diagnostics(Runtime& runtime, ObjectId id) {
         return runtime.with_native<const Material>(id, [](const auto& value) -> Result<std::vector<AuthorDiagnostic>> {
             if (!value.published_)
@@ -388,6 +415,7 @@ struct ProgramAccess {
             return std::vector<AuthorDiagnostic>(issues.begin(), issues.end());
         });
     }
+
     static Result<void> update_source(Runtime& runtime, ObjectId id, const SourceState& state) {
         if (state.default_textures.size() != (state.definition ? state.definition->textures().size() : 0))
             return failure("Source defaults require one exact root slot per declared texture.");
@@ -424,6 +452,7 @@ struct ProgramAccess {
             return {};
         });
     }
+
     static Result<void> update_instance(Runtime& runtime, ObjectId id, const InstanceState& state) {
         if (state.textures.size() != state.entries.size())
             return failure("An instance needs one root slot per author entry.");
@@ -501,6 +530,7 @@ struct ProgramAccess {
             return {};
         });
     }
+
     static Result<ProgramSurfaceRef> capture(Runtime& runtime, ObjectId id,
                                              std::unordered_set<ObjectId>* dependencies = nullptr) {
         auto source = source_role(runtime, id);
@@ -620,6 +650,7 @@ ProgramSurface::ProgramSurface(DefinitionRef definition, std::vector<std::byte> 
     for (std::size_t i = 0; i < inputs_.size(); ++i)
         samplers_.push_back({program().textures()[i].slot, &inputs_[i], sample_input, input_orientation});
 }
+
 Result<Output> ProgramSurface::evaluate(const Context& context) const {
     Output output;
     auto result = program().evaluate(std::as_bytes(std::span{&context, 1}), parameters_,
@@ -628,6 +659,7 @@ Result<Output> ProgramSurface::evaluate(const Context& context) const {
         return std::unexpected(result.error());
     return output;
 }
+
 std::string_view default_world_source() noexcept {
     return R"(
 struct Params { float cell_size; vector3 light; vector3 dark; };
@@ -653,6 +685,7 @@ material.Output shade(material.Context context,Params p) {
 }
 )";
 }
+
 Result<ProgramSurfaceRef> default_world_surface() {
     try {
         static const auto prepared = []() -> Result<ProgramSurfaceRef> {
@@ -682,6 +715,7 @@ Result<ProgramSurfaceRef> default_world_surface() {
         return failure(error.what());
     }
 }
+
 Result<ProgramSurfaceRef> default_program_surface() {
     try {
         static const auto prepared = []() -> Result<ProgramSurfaceRef> {
@@ -722,6 +756,7 @@ material.Output shade(material.Context c, Params p) {
         return failure(error.what());
     }
 }
+
 Result<ProgramSurfaceRef> resolve_source(DefinitionRef definition, std::span<const ImageRef> images) {
     try {
         if (images.size() != (definition ? definition->textures().size() : 0))
@@ -748,6 +783,7 @@ Result<ProgramSurfaceRef> resolve_source(DefinitionRef definition, std::span<con
         return failure(error.what());
     }
 }
+
 Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, std::span<const Override> entries,
                                            std::span<const ImageRef> images) {
     try {
@@ -843,6 +879,7 @@ Result<void> register_resource_types(Runtime& runtime) {
         return registered;
     return detail::ProgramAccess::register_objects(runtime);
 }
+
 Result<ObjectRoot> create_source(Runtime& runtime, std::string_view key, const SourceState& state) {
     try {
         return detail::ProgramAccess::create<MaterialSource>(runtime, key, state);
@@ -850,6 +887,7 @@ Result<ObjectRoot> create_source(Runtime& runtime, std::string_view key, const S
         return failure(error.what());
     }
 }
+
 Result<ObjectRoot> create_instance(Runtime& runtime, std::string_view key, const InstanceState& state) {
     try {
         return detail::ProgramAccess::create<MaterialInstance>(runtime, key, state);
@@ -857,26 +895,31 @@ Result<ObjectRoot> create_instance(Runtime& runtime, std::string_view key, const
         return failure(error.what());
     }
 }
+
 Result<std::string> material_key(Runtime& runtime, ObjectId id) {
     if (auto role = source_role(runtime, id); !role)
         return std::unexpected(role.error());
     return detail::ProgramAccess::key(runtime, id);
 }
+
 Result<SourceState> read_source(Runtime& runtime, ObjectId id) {
     if (auto valid = exact_type<MaterialSource>(runtime, id); !valid)
         return std::unexpected(valid.error());
     return detail::ProgramAccess::read_source(runtime, id);
 }
+
 Result<InstanceState> read_instance(Runtime& runtime, ObjectId id) {
     if (auto valid = exact_type<MaterialInstance>(runtime, id); !valid)
         return std::unexpected(valid.error());
     return detail::ProgramAccess::read_instance(runtime, id);
 }
+
 Result<std::vector<AuthorDiagnostic>> read_diagnostics(Runtime& runtime, ObjectId id) {
     if (auto role = source_role(runtime, id); !role)
         return std::unexpected(role.error());
     return detail::ProgramAccess::diagnostics(runtime, id);
 }
+
 Result<void> update_source(Runtime& runtime, ObjectId id, const SourceState& state) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return ready;
@@ -888,6 +931,7 @@ Result<void> update_source(Runtime& runtime, ObjectId id, const SourceState& sta
         return failure(error.what());
     }
 }
+
 Result<void> update_instance(Runtime& runtime, ObjectId id, const InstanceState& state) {
     if (auto ready = runtime.check_code_publication(); !ready)
         return ready;
@@ -899,9 +943,11 @@ Result<void> update_instance(Runtime& runtime, ObjectId id, const InstanceState&
         return failure(error.what());
     }
 }
+
 Result<ProgramSurfaceRef> capture_program(Runtime& runtime, ObjectId id) {
     return detail::ProgramAccess::capture(runtime, id);
 }
+
 Result<ProgramCapture> capture_program_with_dependencies(Runtime& runtime, ObjectId id) {
     ProgramCapture result;
     auto surface = detail::ProgramAccess::capture(runtime, id, &result.dependencies);

@@ -14,6 +14,7 @@ auto failure(std::string message, DWORD error = GetLastError()) {
     return std::unexpected(
         Error{ErrorCode::invalid_storage, std::move(message) + " (Windows " + std::to_string(error) + ")."});
 }
+
 std::wstring argument(std::wstring_view text) {
     std::wstring result = L"\"";
     std::size_t slashes{};
@@ -30,17 +31,21 @@ std::wstring argument(std::wstring_view text) {
     result += L'\"';
     return result;
 }
+
 struct Handle {
     HANDLE value{};
+
     ~Handle() {
         if (value && value != INVALID_HANDLE_VALUE)
             CloseHandle(value);
     }
 };
 }
+
 PlayProcess::~PlayProcess() {
     close();
 }
+
 Result<void> PlayProcess::start(const std::filesystem::path& project, const std::filesystem::path& scene, bool headless,
                                 std::uint64_t frames, const std::filesystem::path& report, bool preview_ui, bool halt,
                                 std::unique_ptr<LiveLink>* live) {
@@ -120,6 +125,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
         return failure("Cannot initialize run handle inheritance");
     struct Attributes {
         PPROC_THREAD_ATTRIBUTE_LIST value;
+
         ~Attributes() { DeleteProcThreadAttributeList(value); }
     } owner{list};
     std::vector<HANDLE> handles{write_out.value, write_err.value, stop.value, input.value};
@@ -174,6 +180,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
             std::make_unique<LiveLink>(std::exchange(from_play.value, nullptr), std::exchange(to_play.value, nullptr));
     return {};
 }
+
 void PlayProcess::stop() noexcept {
     if (!process_ || exited_ || stopping_)
         return;
@@ -188,6 +195,7 @@ void PlayProcess::stop() noexcept {
     stop_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     SetEvent(stop_);
 }
+
 void PlayProcess::drain() noexcept {
     std::array<char, 4096> buffer{};
     // A byte limit alone can still perform 65,536 one-byte reads. Bound syscall
@@ -239,6 +247,7 @@ void PlayProcess::drain() noexcept {
             break;
     }
 }
+
 void PlayProcess::observe_exit() noexcept {
     if (!process_ || exited_ || WaitForSingleObject(process_, 0) != WAIT_OBJECT_0)
         return;
@@ -259,6 +268,7 @@ void PlayProcess::observe_exit() noexcept {
         job_ = nullptr;
     }
 }
+
 void PlayProcess::force() noexcept {
     if (!forced_)
         try {
@@ -275,6 +285,7 @@ void PlayProcess::force() noexcept {
     if (job_)
         TerminateJobObject(job_, 1);
 }
+
 void PlayProcess::poll() noexcept {
     if (!process_)
         return;
@@ -286,9 +297,11 @@ void PlayProcess::poll() noexcept {
     if (exited_ && !output_status().pending)
         release();
 }
+
 PlayProcess::OutputStatus PlayProcess::output_status() const noexcept {
     return {output_[0].status, output_[1].status, exited_, output_[0].handle || output_[1].handle};
 }
+
 PlayProcess::RawOutput PlayProcess::take_raw_output() {
     // Copy before clearing either buffer. A failed allocation leaves all bytes
     // available, and keeping capacity makes subsequent byte draining allocation-free.
@@ -299,6 +312,7 @@ PlayProcess::RawOutput PlayProcess::take_raw_output() {
         output.bytes.clear();
     return result;
 }
+
 void PlayProcess::abandon(OutputPipe& output) noexcept {
     if (!output.handle)
         return;
@@ -316,6 +330,7 @@ void PlayProcess::abandon(OutputPipe& output) noexcept {
     CloseHandle(output.handle);
     output.handle = nullptr;
 }
+
 void PlayProcess::release() noexcept {
     for (auto* handle : {&process_, &job_, &stop_})
         if (*handle) {
@@ -324,6 +339,7 @@ void PlayProcess::release() noexcept {
         }
     stopping_ = false;
 }
+
 void PlayProcess::close() noexcept {
     if (process_ && !exited_)
         SetEvent(stop_);

@@ -8,6 +8,7 @@ Debugger::Debugger(DebugHandler handler, DebugOptions options) : state_(std::mak
     state_->handler = std::move(handler);
     state_->options = options;
 }
+
 Result<void> Debugger::set_breakpoints(std::vector<DebugBreakpoint> breakpoints) {
     if (active())
         return std::unexpected(Error{ErrorCode::busy, "Cannot change breakpoints during an active invocation."});
@@ -21,12 +22,15 @@ Result<void> Debugger::set_breakpoints(std::vector<DebugBreakpoint> breakpoints)
     state_->breakpoints = std::move(breakpoints);
     return {};
 }
+
 DebugStatus Debugger::status() const noexcept {
     return state_ ? state_->status : DebugStatus::unused;
 }
+
 bool Debugger::active() const noexcept {
     return state_ && state_->active;
 }
+
 std::optional<DebugSnapshot> Debugger::last_stop() const {
     return state_ ? state_->last_stop : std::nullopt;
 }
@@ -61,6 +65,7 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     tables->sites.erase(std::unique(tables->sites.begin(), tables->sites.end()), tables->sites.end());
     return tables;
 }
+
 std::shared_ptr<const DebugMetadata> make_debug_metadata(const DiagnosticMetadata& diagnostic,
                                                          const BusinessCodeInfo& info,
                                                          std::shared_ptr<const DebugTables> tables) {
@@ -83,6 +88,7 @@ void reset_capture(DebugSessionState& state) noexcept {
     // becomes valid just because a second invocation reaches its first stop.
 }
 }
+
 Result<std::shared_ptr<DebugSessionState>>
 DebugAccess::begin(Debugger* debugger, const std::shared_ptr<const DebugMetadata>& metadata, bool supported) {
     if (!debugger)
@@ -126,6 +132,7 @@ DebugAccess::begin(Debugger* debugger, const std::shared_ptr<const DebugMetadata
     state->status = DebugStatus::running;
     return state;
 }
+
 Error DebugAccess::reject(Debugger* debugger, Error error) {
     if (!debugger || debugger->active())
         return error;
@@ -134,10 +141,12 @@ Error DebugAccess::reject(Debugger* debugger, Error error) {
     reset_capture(*debugger->state_);
     return error;
 }
+
 void DebugAccess::status(DebugSessionState& state, DebugStatus status) noexcept {
     if (state.active)
         state.status = status;
 }
+
 void DebugAccess::finish(DebugSessionState& state, DebugStatus status) noexcept {
     if (!state.active)
         return;

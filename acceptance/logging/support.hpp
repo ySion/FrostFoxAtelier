@@ -10,6 +10,7 @@
 
 namespace logging_acceptance {
 namespace log = atelier::logging;
+
 namespace fs = std::filesystem;
 
 inline void require(bool condition, const char* message) {
@@ -133,13 +134,22 @@ inline void same_entry(const log::Entry& actual, const log::Entry& expected) {
 }
 
 void roundtrip(const fs::path&);
+
 void boundaries(const fs::path&);
+
 void file_failures(const fs::path&);
+
 void threads(const fs::path&);
+
 void producer_churn(const fs::path&);
+
 void reader_cases(const fs::path&);
+
 void rotation(const fs::path&);
+
 void dll(const fs::path&, const fs::path&);
+
 int unexpected_warning(const fs::path&);
+
 int pressure(const fs::path&);
 }

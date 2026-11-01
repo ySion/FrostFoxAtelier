@@ -11,6 +11,7 @@ std::string utf8(const std::filesystem::path& path) {
     const auto text = path.generic_u8string();
     return {text.begin(), text.end()};
 }
+
 std::unexpected<Error> fail(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }

@@ -1,60 +1,76 @@
 // Included by business.cpp inside its anonymous namespace.
 struct TypedUiController {
     float opacity{};
+
     float cursor{};
+
     std::uint32_t selected{};
+
     std::uint32_t revisions{};
+
     void reset_focus() {
         opacity = 1.0f;
         cursor = 2.0f;
         selected = 0;
         revisions = 1;
     }
+
     void apply_selection(float alpha, std::uint32_t choice, float offset, std::uint32_t repeats) {
         opacity += alpha;
         cursor += offset * static_cast<float>(repeats);
         selected = choice;
         revisions += repeats;
     }
+
     void accumulate(std::uint32_t a, std::uint32_t b, std::uint32_t c, std::uint32_t d, std::uint32_t e,
                     std::uint32_t f, std::uint32_t g, std::uint32_t h, std::uint32_t i) {
         selected += a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i;
     }
+
     void explode() {
         ++revisions;
         throw std::runtime_error("Typed UI native failure.");
     }
+
     std::uint32_t bump(std::uint32_t amount) {
         revisions += amount;
         return revisions;
     }
+
     float scale(float amount) const { return opacity * amount; }
+
     std::uint32_t first() {
         selected = selected * 10 + 1;
         return 11;
     }
+
     std::uint32_t next(std::uint32_t amount) {
         selected = selected * 10 + 2;
         return amount + 20;
     }
+
     std::uint32_t combine(std::uint32_t left, std::uint32_t right) {
         selected = selected * 10 + 3;
         return left * 100 + right;
     }
+
     std::uint32_t fail_result() {
         ++revisions;
         throw std::runtime_error("Typed UI native result failure.");
     }
 };
+
 FieldId typed_ui_field(CallContext& call, const char* name) {
     return take(call.runtime.find_field(take(call.runtime.type_of(call.self)), name));
 }
+
 Result<void> typed_ui_reset(CallContext& call) {
     take(call.runtime.write(call.self, typed_ui_field(call, "opacity"), 1.0f));
     take(call.runtime.write(call.self, typed_ui_field(call, "cursor"), 2.0f));
     take(call.runtime.write(call.self, typed_ui_field(call, "selected"), std::uint32_t{0}));
     return call.runtime.write(call.self, typed_ui_field(call, "revisions"), std::uint32_t{1});
 }
+
 Result<void> typed_ui_apply(CallContext& call) {
     const auto opacity = typed_ui_field(call, "opacity");
     const auto cursor = typed_ui_field(call, "cursor");
@@ -71,6 +87,7 @@ Result<void> typed_ui_apply(CallContext& call) {
                               std::get<std::uint32_t>(take(call.runtime.read(call.self, revisions))) +
                                   call.arguments[3].get<std::uint32_t>());
 }
+
 Result<void> typed_ui_accumulate(CallContext& call) {
     const auto selected = typed_ui_field(call, "selected");
     auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, selected)));
@@ -78,12 +95,14 @@ Result<void> typed_ui_accumulate(CallContext& call) {
         value += static_cast<std::uint32_t>(index + 1) * call.arguments[index].get<std::uint32_t>();
     return call.runtime.write(call.self, selected, value);
 }
+
 Result<void> typed_ui_explode(CallContext& call) {
     const auto revisions = typed_ui_field(call, "revisions");
     take(call.runtime.write(call.self, revisions,
                             std::get<std::uint32_t>(take(call.runtime.read(call.self, revisions))) + 1));
     throw std::runtime_error("Typed UI native failure.");
 }
+
 Result<void> typed_ui_bump(CallContext& call) {
     const auto field = typed_ui_field(call, "revisions");
     const auto value =
@@ -92,11 +111,13 @@ Result<void> typed_ui_bump(CallContext& call) {
     call.result = Scalar{value};
     return {};
 }
+
 Result<void> typed_ui_scale(CallContext& call) {
     call.result = Scalar{std::get<float>(take(call.runtime.read(call.self, typed_ui_field(call, "opacity")))) *
                          call.arguments[0].get<float>()};
     return {};
 }
+
 Result<void> typed_ui_first(CallContext& call) {
     const auto field = typed_ui_field(call, "selected");
     const auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, field)));
@@ -104,6 +125,7 @@ Result<void> typed_ui_first(CallContext& call) {
     call.result = Scalar{std::uint32_t{11}};
     return {};
 }
+
 Result<void> typed_ui_next(CallContext& call) {
     const auto field = typed_ui_field(call, "selected");
     const auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, field)));
@@ -111,6 +133,7 @@ Result<void> typed_ui_next(CallContext& call) {
     call.result = Scalar{call.arguments[0].get<std::uint32_t>() + 20u};
     return {};
 }
+
 Result<void> typed_ui_combine(CallContext& call) {
     const auto field = typed_ui_field(call, "selected");
     const auto value = std::get<std::uint32_t>(take(call.runtime.read(call.self, field)));
@@ -118,12 +141,14 @@ Result<void> typed_ui_combine(CallContext& call) {
     call.result = Scalar{call.arguments[0].get<std::uint32_t>() * 100u + call.arguments[1].get<std::uint32_t>()};
     return {};
 }
+
 Result<void> typed_ui_fail_result(CallContext& call) {
     const auto field = typed_ui_field(call, "revisions");
     take(call.runtime.write(call.self, field, std::get<std::uint32_t>(take(call.runtime.read(call.self, field))) + 1u));
     call.result = Scalar{std::uint32_t{0xdeadbeef}};
     throw std::runtime_error("Typed UI native result failure.");
 }
+
 std::array<TypeId, 2> register_typed_ui(Runtime& runtime) {
     const auto f32 = take(runtime.native_type<float>());
     const auto u32 = take(runtime.native_type<std::uint32_t>());
@@ -161,19 +186,29 @@ std::array<TypeId, 2> register_typed_ui(Runtime& runtime) {
         {"fail_result", {{}, ValueDefinition{u32}}, typed_ui_fail_result}};
     return {native, take(runtime.register_type(std::move(described)))};
 }
+
 void typed_value(BusinessValue actual, BusinessValue expected, const char* message) {
     require(actual.kind == expected.kind && actual.bits == expected.bits, message);
 }
+
 struct TypedTrace {
     std::uint32_t begins{};
+
     std::uint32_t finishes{};
+
     std::uint32_t clears{};
+
     std::uint32_t clears_after_finish{};
+
     bool fail_begin{};
+
     bool fail_poll{};
+
     bool fail_finish{};
+
     bool receiver_at_finish{};
 };
+
 BusinessServices typed_trace_services() {
     auto callbacks = services;
     callbacks.begin = [](void* context) noexcept -> std::uint32_t {
@@ -214,6 +249,7 @@ BusinessServices typed_trace_services() {
     };
     return callbacks;
 }
+
 void typed_trace_poll(void* context, Invocation& invocation) {
     const auto& trace = *static_cast<TypedTrace*>(context);
     if (fixture(invocation).stats.polls == 2) {
@@ -222,11 +258,15 @@ void typed_trace_poll(void* context, Invocation& invocation) {
             throw std::runtime_error("Typed poll failure.");
     }
 }
+
 struct TypedRawResult {
     std::uint32_t status;
+
     std::string error;
+
     std::size_t polls;
 };
+
 TypedRawResult typed_raw(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
                          const BusinessValue* arguments, std::uint32_t count, BusinessValue* result,
                          TypedTrace& trace) {
@@ -246,6 +286,7 @@ TypedRawResult typed_raw(Runtime& runtime, const Binding& binding, BusinessCode*
     require(!fixture(invocation).output.registered(), "Typed invocation unexpectedly generated a snapshot.");
     return {status, invocation.failed ? invocation.error : diagnostic, fixture(invocation).stats.polls};
 }
+
 void verify_typed_scalars() {
     Runtime runtime;
     const auto binding = bind_type(runtime, {});
@@ -376,6 +417,7 @@ void typed_reject_source(const Binding& binding, BusinessCode* existing, std::st
     require(sscanf_s(diagnostic, "typed-invalid.source:%u:%u:", &line, &column) == 2 && line != 0 && column != 0,
             "Typed source rejection lost its source/line/column diagnostic.");
 }
+
 void verify_typed_source_errors() {
     Runtime runtime;
     const auto binding = bind_type(runtime, {});
@@ -393,6 +435,7 @@ void verify_typed_source_errors() {
     std::puts(
         "[pass] Typed diagnostics: missing/wrong returns, unsupported/duplicate parameters and no implicit conversion preserve positioned errors and prior code");
 }
+
 void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
     CodeOwner code{nullptr, &atelier_destroy_business};
     {
@@ -439,6 +482,7 @@ void verify_typed_owned_metadata(Runtime& runtime, const Binding& binding) {
     typed_value(take(execute_fixture(runtime, binding, code.get(), receiver.id(), arguments)).value, scalar(0.5f),
                 "Owned typed metadata no longer supports its original Runtime binding.");
 }
+
 void verify_typed_catalog_errors(const Binding& binding) {
     auto existing = compile_bound(binding, "void kept() {}", "typed-catalog-kept.source");
     constexpr std::string_view source = "void candidate() {}";
@@ -494,6 +538,7 @@ void verify_typed_catalog_errors(const Binding& binding) {
           "void invalid() { self.opacity = 1; }", "float invalid() { return self.reset_focus(); }"})
         typed_reject_source(binding, existing.get(), invalid);
 }
+
 void verify_typed_ui(Runtime& runtime, const Binding& binding) {
     constexpr std::string_view source = R"(
         float paint(float alpha, uint choice, float offset, uint repeats) {
@@ -604,6 +649,7 @@ void verify_typed_reference_results(Runtime& runtime, const Binding& binding) {
                 "Typed reference scenario leaked its receiver.");
     }
 }
+
 void verify_typed_return_cleanup(Runtime& runtime, const Binding& binding) {
     const auto callbacks = typed_trace_services();
     auto direct = compile_bound(
@@ -650,6 +696,7 @@ void verify_typed_return_cleanup(Runtime& runtime, const Binding& binding) {
     std::printf("JIT return cleanup (%.*s): success=%u, failed finish=%u; retry and fallthrough=PASS\n",
                 static_cast<int>(binding.name.size()), binding.name.data(), success_clears, failure_clears);
 }
+
 void verify_typed_active_owner() {
     Runtime runtime;
     const auto binding = bind_type(runtime, {});
@@ -659,8 +706,11 @@ void verify_typed_active_owner() {
         const auto address = atelier_business_info(code.get()).entry_address;
         struct State {
             CodeOwner* owner;
+
             std::uintptr_t address;
+
             bool fail;
+
             unsigned callbacks{};
         } state{&code, address, fail};
         const std::array arguments{BusinessValue{ValueKind::f32, 0x7fc54321u}};
@@ -688,6 +738,7 @@ void verify_typed_active_owner() {
         require_code_state(address, false);
     }
 }
+
 void verify_typed_reload(Runtime& runtime, const Binding& binding) {
     const bool receiver_required = binding.type != TypeId{};
     BusinessProgram program(runtime, binding.type);
@@ -735,6 +786,7 @@ void verify_typed_reload(Runtime& runtime, const Binding& binding) {
                 "Signature rejection invalidated the old typed lease.");
     require(runtime.root_count() == (receiver_required ? 1u : 0u), "Typed reload calls retained invocation roots.");
 }
+
 void verify_native_result_consumers(Runtime& runtime, const Binding& binding) {
     const auto* info = take(runtime.describe(binding.type));
     const auto bump_id = fixture_method(binding, "bump");
@@ -831,6 +883,7 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
     enum class Fault { wrong_kind, missing_result, service_failure, none };
     struct Calls {
         std::uint32_t count{};
+
         Fault fault{};
     };
     auto callbacks = services;
@@ -989,6 +1042,7 @@ void verify_shared_function_versions(Runtime& runtime, const Binding& binding) {
 void verify_versioned_call_scratch(Runtime& runtime, const Binding& binding) {
     struct Scratch {
         std::size_t expanded{};
+
         std::size_t begins{};
     };
     auto callbacks = services;

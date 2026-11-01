@@ -6,8 +6,11 @@
 namespace atelier::timing {
 namespace {
 constinit std::array<const Marker*, capacity> installed{};
+
 constinit std::size_t installed_size{};
+
 constinit bool frozen{};
+
 const FrameRecord empty_record{};
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 namespace rhi_acceptance {
 inline constexpr char compute_source[] = R"(
+
 uint seed; uint3 padding; uint4 large[32];
 RWStructuredBuffer<uint> values;
 RWStructuredBuffer<uint> mesh_args;
@@ -13,6 +14,7 @@ RWStructuredBuffer<uint> draw_args;
 }
 )";
 inline constexpr char mesh_source[] = R"(
+
 struct Vertex { float4 position : SV_Position; };
 [outputtopology("triangle")]
 [numthreads(1,1,1)]
@@ -25,20 +27,24 @@ void main(out vertices Vertex verts[3], out indices uint3 triangles[1]) {
 }
 )";
 inline constexpr char vertex_source[] = R"(
+
 float4 main(uint id : SV_VertexID) : SV_Position {
     float2 p = id == 0 ? float2(-1,-1) : id == 1 ? float2(-1,3) : float2(3,-1);
     return float4(p,0.25,1);
 }
 )";
 inline constexpr char mesh_pixel_source[] = R"(
+
 StructuredBuffer<uint> values;
 float4 main() : SV_Target { return float4(float(values[0]) / 255.0, 0, 0, 1); }
 )";
 inline constexpr char vertex_pixel_source[] = R"(
+
 StructuredBuffer<uint> values;
 float4 main() : SV_Target { return float4(0, float(values[0]) / 255.0, 0, 1); }
 )";
 inline constexpr char increment_source[] = R"(
+
 RWStructuredBuffer<uint> counter;
 [numthreads(1,1,1)] void main() { counter[0] += 1; }
 )";

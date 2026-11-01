@@ -9,9 +9,13 @@ namespace atelier::procedural {
 namespace {
 
 using math::Matrix4;
+
 using math::Quaternion;
+
 using math::Vector2;
+
 using math::Vector3;
+
 using math::Vector3d;
 
 constexpr std::uint64_t element_limit = 0xffff'fffeu;
@@ -24,6 +28,7 @@ T value(Result<T> result) {
 Vector3d widen(Vector3 v) {
     return {v.x, v.y, v.z};
 }
+
 Vector3 narrow(Vector3d v) {
     return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
 }
@@ -46,6 +51,7 @@ std::array<double, 9> normal_rows(const Matrix4& m) {
             value = -value;
     return cofactors;
 }
+
 Vector3 transform_normal(Vector3 n, const std::array<double, 9>& rows) {
     const Vector3d result{n.x * rows[0] + n.y * rows[3] + n.z * rows[6], n.x * rows[1] + n.y * rows[4] + n.z * rows[7],
                           n.x * rows[2] + n.y * rows[5] + n.z * rows[8]};
@@ -68,6 +74,7 @@ Quaternion dihedral(Vector3 z) {
 Geometry import_mesh(const geometry::Mesh& mesh) {
     struct Key {
         std::array<std::uint32_t, 3> bits;
+
         bool operator==(const Key&) const = default;
     };
     struct KeyHash {

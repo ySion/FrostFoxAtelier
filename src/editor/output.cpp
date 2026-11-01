@@ -18,6 +18,7 @@ std::uint64_t now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
         .count();
 }
+
 std::wstring visible_text(std::string_view text, bool one_line = false) {
     const auto input = assets::wide(text);
     std::wstring result;
@@ -35,6 +36,7 @@ std::wstring visible_text(std::string_view text, bool one_line = false) {
     }
     return result;
 }
+
 std::wstring short_text(std::wstring text, std::size_t limit = 256) {
     if (text.size() > limit) {
         text.resize(limit);
@@ -44,15 +46,18 @@ std::wstring short_text(std::wstring text, std::size_t limit = 256) {
     }
     return text;
 }
+
 bool contains_folded(std::wstring_view text, std::wstring_view needle) {
     return std::search(text.begin(), text.end(), needle.begin(), needle.end(),
                        [](wchar_t a, wchar_t b) { return std::towlower(a) == std::towlower(b); }) != text.end() ||
            needle.empty();
 }
+
 bool displayable(const logging::Record& record) {
     return record.schema == logging::schema_version && record.entry.message.size() <= logging::maximum_message_bytes &&
            logging::entry_problem(record.entry).empty();
 }
+
 std::wstring submission_name(logging::SubmitStatus status) {
     using enum logging::SubmitStatus;
     switch (status) {
@@ -76,17 +81,25 @@ std::wstring submission_name(logging::SubmitStatus status) {
     return L"unknown";
 }
 }
+
 struct Output::Stream {
     std::filesystem::path directory;
+
     std::unique_ptr<logging::Reader> reader;
+
     logging::ReaderStatus status;
+
     std::optional<logging::PublishedHealth> health;
+
     struct RawTail {
         std::string bytes;
+
         std::uint64_t offset{};
     };
+
     std::array<RawTail, 2> raw;
 };
+
 Output::Output() {
     static std::atomic<std::uint64_t> sessions{};
     memory_run_ = "memory-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(now_ns()) + "-" +
@@ -98,7 +111,9 @@ Output::Output() {
         static_cast<void>(add_run(host_->directory)); // add_run retains any attachment error for display.
     }
 }
+
 Output::~Output() = default;
+
 logging::Result<void> Output::add_run(std::filesystem::path directory) {
     directory = directory.lexically_normal();
     if (std::ranges::any_of(streams_, [&](const auto& stream) { return stream->directory == directory; }))
@@ -116,6 +131,7 @@ logging::Result<void> Output::add_run(std::filesystem::path directory) {
     attachment_error_.clear();
     return {};
 }
+
 void Output::source_ended(const std::filesystem::path& directory) {
     const auto normalized = directory.lexically_normal();
     for (auto& stream : streams_)
@@ -127,6 +143,7 @@ void Output::source_ended(const std::filesystem::path& directory) {
     health_dirty_ = pending_change_ = true;
     attachment_error_ = L"End notification for an unattached run: " + directory.wstring();
 }
+
 void Output::retain(logging::Record record, std::filesystem::path directory,
                     std::optional<logging::SubmitStatus> rejection) {
     const auto bytes = record.entry.message.size();
@@ -143,6 +160,7 @@ void Output::retain(logging::Record record, std::filesystem::path directory,
     records_.push_back({next_key_++, std::move(record), std::move(directory), rejection});
     dirty_ = health_dirty_ = pending_change_ = true;
 }
+
 bool Output::accept_owned(logging::Record record) {
     health_dirty_ = pending_change_ = true;
     if (host_ || record.persistence != logging::Persistence::not_persisted || !displayable(record)) {
@@ -189,6 +207,7 @@ bool Output::accept_owned(logging::Record record) {
     retain(std::move(record));
     return true;
 }
+
 logging::SubmitResult Output::submit_owned(logging::Entry entry) {
     if (!host_) {
         logging::Record record;
@@ -226,6 +245,7 @@ logging::SubmitResult Output::submit_owned(logging::Entry entry) {
     retain(std::move(record), host_->directory, receipt.status);
     return receipt;
 }
+
 void Output::capture_raw(const std::filesystem::path& directory, bool standard_error, std::string_view bytes,
                          std::uint64_t offset, bool ended) {
     const auto normalized = directory.lexically_normal();
@@ -280,6 +300,7 @@ void Output::capture_raw(const std::filesystem::path& directory, bool standard_e
     tail.bytes.erase(0, consumed);
     tail.offset += consumed;
 }
+
 bool Output::poll() {
     if (!streams_.empty()) {
         // One shared budget, not a per-run multiplier. Completed sources retain
@@ -305,6 +326,7 @@ bool Output::poll() {
     }
     return std::exchange(pending_change_, false);
 }
+
 void Output::filter(logging::Severity minimum, std::wstring category, std::wstring text) {
     if (minimum_ == minimum && category_ == category && query_ == text)
         return;
@@ -313,12 +335,14 @@ void Output::filter(logging::Severity minimum, std::wstring category, std::wstri
     query_ = std::move(text);
     dirty_ = true;
 }
+
 const Output::Item* Output::item(ui::TableKey key) const {
     // Cache keys are contiguous: only the oldest end is ever evicted.
     return !records_.empty() && key >= records_.front().key && key - records_.front().key < records_.size()
                ? &records_[static_cast<std::size_t>(key - records_.front().key)]
                : nullptr;
 }
+
 void Output::rebuild() const {
     if (!dirty_)
         return;
@@ -387,10 +411,12 @@ void Output::rebuild() const {
     table_ = std::move(table);
     dirty_ = false;
 }
+
 const std::vector<Output::Row>& Output::rows() const {
     rebuild();
     return rows_;
 }
+
 const logging::Record* Output::record(ui::TableKey key) const {
     rebuild();
     const auto at = std::ranges::find(rows_, key, &Row::key);
@@ -399,6 +425,7 @@ const logging::Record* Output::record(ui::TableKey key) const {
     const auto* value = item(at->record_key);
     return value ? &value->record : nullptr;
 }
+
 bool Output::select(ui::TableKey key) {
     rebuild();
     if (!record(key))
@@ -406,13 +433,16 @@ bool Output::select(ui::TableKey key) {
     selected_ = key;
     return true;
 }
+
 const logging::Record* Output::selected_record() const {
     return record(selected_);
 }
+
 std::optional<logging::SourceLocation> Output::selected_source() const {
     const auto* selected = selected_record();
     return selected && !selected->entry.source.file.empty() ? std::optional{selected->entry.source} : std::nullopt;
 }
+
 std::filesystem::path Output::selected_directory() const {
     rebuild();
     const auto at = std::ranges::find(rows_, selected_, &Row::key);
@@ -421,6 +451,7 @@ std::filesystem::path Output::selected_directory() const {
             return value->directory;
     return host_ ? host_->directory : std::filesystem::path{};
 }
+
 const logging::ReaderStatus* Output::source_status(const std::filesystem::path& directory) const {
     const auto normalized = directory.lexically_normal();
     for (const auto& stream : streams_)
@@ -428,10 +459,12 @@ const logging::ReaderStatus* Output::source_status(const std::filesystem::path& 
             return &stream->status;
     return nullptr;
 }
+
 std::shared_ptr<const ui::TableData> Output::table() const {
     rebuild();
     return table_;
 }
+
 std::shared_ptr<ui::CodeDocument> Output::body() const {
     rebuild();
     const auto at = std::ranges::find(rows_, selected_, &Row::key);
@@ -442,6 +475,7 @@ std::shared_ptr<ui::CodeDocument> Output::body() const {
     }
     return body_;
 }
+
 void Output::update_health() const {
     if (!health_dirty_)
         return;
@@ -511,10 +545,12 @@ void Output::update_health() const {
     health_ = short_text(std::move(health_), 4090);
     health_dirty_ = false;
 }
+
 const std::wstring& Output::health_text() const {
     update_health();
     return health_;
 }
+
 bool Output::apply(const ui::Action& action) {
     if (action.key == output_control::table) {
         if (const auto* selected = std::get_if<ui::TableSelection>(&action.value))
@@ -552,6 +588,7 @@ bool Output::apply(const ui::Action& action) {
     }
     return false;
 }
+
 void Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
                     float height) {
     using namespace ui_language;

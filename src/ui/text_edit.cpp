@@ -19,6 +19,7 @@ bool valid_text(std::wstring_view text, bool single_line) noexcept {
     }
     return true;
 }
+
 std::vector<std::uint32_t> character_boundaries(std::wstring_view text) {
     // ICU retains the source until close. An explicit conversion avoids aliasing
     // wchar_t storage as UChar when these are distinct C++ types.
@@ -33,6 +34,7 @@ std::vector<std::uint32_t> character_boundaries(std::wstring_view text) {
         result.push_back(static_cast<std::uint32_t>(at));
     return result;
 }
+
 TextEdit::TextEdit(std::wstring text, std::size_t limit, bool select_all, bool single_line)
     : current_{std::move(text), {}, {}}, limit_(limit), single_line_(single_line) {
     current_.caret = {static_cast<std::uint32_t>(current_.text.size()), true};
@@ -46,12 +48,15 @@ TextEdit::TextEdit(std::wstring text, std::size_t limit, bool select_all, bool s
         if (current_.text[i] == L'\n')
             lines_.push_back(static_cast<std::uint32_t>(i + 1));
 }
+
 std::size_t TextEdit::line_at(std::uint32_t offset) const noexcept {
     return static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), offset) - lines_.begin() - 1);
 }
+
 std::uint32_t TextEdit::line_start(std::size_t row) const noexcept {
     return row < lines_.size() ? lines_[row] : static_cast<std::uint32_t>(current_.text.size());
 }
+
 std::wstring_view TextEdit::line(std::size_t row) const noexcept {
     if (row >= lines_.size())
         return {};
@@ -59,6 +64,7 @@ std::wstring_view TextEdit::line(std::size_t row) const noexcept {
     const auto end = row + 1 < lines_.size() ? lines_[row + 1] - 1 : static_cast<std::uint32_t>(current_.text.size());
     return std::wstring_view(current_.text).substr(start, end - start);
 }
+
 TextPosition TextEdit::snap(std::uint32_t offset, bool trailing) const noexcept {
     auto at = std::lower_bound(boundaries_.begin(), boundaries_.end(), offset);
     if (at == boundaries_.end())
@@ -67,6 +73,7 @@ TextPosition TextEdit::snap(std::uint32_t offset, bool trailing) const noexcept 
         --at;
     return {*at, trailing && *at != 0};
 }
+
 bool TextEdit::select(TextPosition position, bool extend) {
     break_group();
     position = snap(position.offset, position.trailing);
@@ -78,6 +85,7 @@ bool TextEdit::select(TextPosition position, bool extend) {
         ++selection_revision_;
     return changed;
 }
+
 bool TextEdit::select_all() {
     break_group();
     const TextPosition end{static_cast<std::uint32_t>(current_.text.size()), true};
@@ -88,6 +96,7 @@ bool TextEdit::select_all() {
         ++selection_revision_;
     return changed;
 }
+
 void TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view inserted) {
     // Re-segment only the touched logical lines. Newlines isolate grapheme
     // clusters; unchanged suffix offsets need a shift, not another ICU scan.
@@ -120,10 +129,12 @@ void TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view
     ++revision_;
     ++selection_revision_;
 }
+
 TextEdit::Change TextEdit::replace(std::wstring_view inserted, Group group) {
     return replace_range(std::min(current_.caret.offset, current_.anchor.offset),
                          std::max(current_.caret.offset, current_.anchor.offset), inserted, group);
 }
+
 TextEdit::Change TextEdit::replace_range(std::uint32_t first, std::uint32_t last, std::wstring_view inserted,
                                          Group group) {
     if (!valid_text(inserted, single_line_) || current_.text.size() - (last - first) + inserted.size() > limit_)
@@ -179,6 +190,7 @@ TextEdit::Change TextEdit::replace_range(std::uint32_t first, std::uint32_t last
     merge_ = group != Group::isolated;
     return Change::text;
 }
+
 TextEdit::Change TextEdit::erase(bool backwards) {
     auto first = std::min(current_.caret.offset, current_.anchor.offset);
     auto last = std::max(current_.caret.offset, current_.anchor.offset);
@@ -196,6 +208,7 @@ TextEdit::Change TextEdit::erase(bool backwards) {
     }
     return replace_range(first, last, {}, backwards ? Group::backspace : Group::delete_forward);
 }
+
 TextEdit::Change TextEdit::history(bool redo) {
     break_group();
     if ((!redo && !applied_) || (redo && applied_ == history_.size()))

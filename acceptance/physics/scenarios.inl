@@ -1,24 +1,37 @@
 namespace w = atelier::world;
+
 namespace pr = atelier::presentation;
+
 namespace p = atelier::physics;
+
 using atelier::math::Vector3;
+
 constexpr float fixed_delta = 1.f / 60.f;
 
 // Member order keeps the scene's borrowed World and Runtime alive during teardown.
 struct PhysicsFixture {
     atelier::Runtime runtime;
+
     w::Types world_types = take(w::register_types(runtime));
+
     pr::Types presentation_types = take(pr::register_types(runtime));
+
     p::Types physics_types = take(p::register_types(runtime));
+
     w::World world{runtime, world_types};
+
     pr::Scene shown = take(pr::Scene::create(world, presentation_types));
+
     std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
 
     struct Entity {
         atelier::ObjectRoot entity;
+
         atelier::ObjectRoot body;
+
         atelier::ObjectId id() const { return entity.id(); }
     };
+
     Entity make(Vector3 position, p::BodySettings settings = {}, bool body_enabled = true) {
         Entity result{take(w::create_entity(runtime)),
                       take(w::create_component(runtime, world_types.collision_component))};
@@ -29,17 +42,22 @@ struct PhysicsFixture {
         committed(world.attach(result.id()));
         return result;
     }
+
     Entity ground() {
         p::BodySettings settings;
         settings.half_extents = {100, .5f, 100};
         return make({0, -.5f, 0}, settings);
     }
+
     void start() { committed(world.start()); }
+
     void advance(unsigned steps) {
         for (unsigned i = 0; i < steps; ++i)
             step(world, *scene, fixed_delta);
     }
+
     p::BodyHandle handle(const Entity& entity) { return take(scene->body_handle(entity.id())); }
+
     p::BodyState state(const Entity& entity) { return take(scene->read_body_state(handle(entity))); }
 };
 
@@ -49,9 +67,11 @@ p::BodySettings dynamic_body(p::ShapeKind shape = p::ShapeKind::box) {
     settings.shape = shape;
     return settings;
 }
+
 bool near(float actual, float expected, float tolerance = .001f) {
     return std::isfinite(actual) && std::abs(actual - expected) < tolerance;
 }
+
 float speed(Vector3 value) {
     return std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
 }

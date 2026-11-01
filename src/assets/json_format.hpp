@@ -11,7 +11,9 @@
 // On-disk rules shared by Project, Scene and graph files; the DOM stays out of their interfaces.
 namespace atelier::assets::json_format {
 using Json = nlohmann::json;
+
 inline constexpr std::size_t maximum_bytes = 16 * 1024 * 1024;
+
 inline Json parse(std::string_view text) {
     if (text.size() > maximum_bytes)
         throw std::runtime_error("JSON exceeds the 16 MiB file limit.");
@@ -29,6 +31,7 @@ inline Json parse(std::string_view text) {
         return true;
     });
 }
+
 inline void fields(const Json& value, std::initializer_list<std::string_view> allowed) {
     if (!value.is_object())
         throw std::runtime_error("Expected a JSON record.");
@@ -38,6 +41,7 @@ inline void fields(const Json& value, std::initializer_list<std::string_view> al
             throw std::runtime_error("Unsupported field: " + name);
     }
 }
+
 inline std::size_t identity(const Json& value) {
     if (value.is_number_unsigned())
         return value.get<std::size_t>();
@@ -45,6 +49,7 @@ inline std::size_t identity(const Json& value) {
         return value.get<std::size_t>();
     throw std::runtime_error("Expected a nonnegative integer identity or version.");
 }
+
 // A float field is written as a decimal that reads back as the same float, normally the
 // shortest (0.2f as 0.2), not as the exact double the float widens to (0.20000000298023224).
 inline Json number(float value) {
@@ -58,6 +63,7 @@ inline Json number(float value) {
                ? shortest
                : double(value);
 }
+
 template <std::size_t Count>
 Json numbers(const std::array<float, Count>& values) {
     Json result = Json::array();
@@ -65,6 +71,7 @@ Json numbers(const std::array<float, Count>& values) {
         result.push_back(number(value));
     return result;
 }
+
 template <std::size_t Count>
 std::array<float, Count> vector(const Json& value) {
     if (!value.is_array() || value.size() != Count)
@@ -79,6 +86,7 @@ std::array<float, Count> vector(const Json& value) {
     }
     return result;
 }
+
 // Kept saved JSON is sparse: on save a kept leaf replaces the emitted value at its path, and kept
 // records merge into emitted records.
 inline void overlay(Json& target, const Json& kept) {
@@ -93,6 +101,7 @@ inline void overlay(Json& target, const Json& kept) {
             target[key] = value;
     }
 }
+
 // A saved value shortened for diagnostics, cut at a UTF-8 boundary.
 inline std::string preview(const Json& value) {
     auto text = value.dump(-1, ' ', false, Json::error_handler_t::replace);

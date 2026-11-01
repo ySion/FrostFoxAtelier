@@ -32,9 +32,13 @@
 namespace {
 
 using namespace atelier::jit_acceptance;
+
 using llvm::orc::ExecutorAddr;
+
 using llvm::orc::LLJIT;
+
 using llvm::orc::ResourceTrackerSP;
+
 using llvm::orc::ThreadSafeModule;
 
 void require(bool condition, const char* message) {
@@ -63,9 +67,13 @@ enum class FailureStage { none, finalization, emission };
 
 struct FailureProbe {
     std::string module;
+
     FailureStage stage{FailureStage::none};
+
     ExecutorAddr code;
+
     bool registered_before_failure{};
+
     llvm::orc::MaterializationResponsibility* responsibility{};
 };
 
@@ -88,6 +96,7 @@ llvm::orc::shared::CWrapperFunctionBuffer reject_finalization(const char* data, 
 class MaterializationFailurePlugin final : public llvm::orc::LinkGraphLinkingLayer::Plugin {
 public:
     explicit MaterializationFailurePlugin(FailureProbe& probe) : probe_(probe) {}
+
     void modifyPassConfig(llvm::orc::MaterializationResponsibility& responsibility, llvm::jitlink::LinkGraph& graph,
                           llvm::jitlink::PassConfiguration& config) override {
         if (probe_.module.empty() || !graph.getName().starts_with(probe_.module))
@@ -113,6 +122,7 @@ public:
             });
         }
     }
+
     llvm::Error notifyEmitted(llvm::orc::MaterializationResponsibility& responsibility) override {
         if (probe_.stage == FailureStage::emission && probe_.responsibility == &responsibility) {
             DWORD64 image_base{};
@@ -122,14 +132,17 @@ public:
         }
         return llvm::Error::success();
     }
+
     llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility& responsibility) override {
         if (probe_.responsibility == &responsibility)
             probe_.responsibility = nullptr;
         return llvm::Error::success();
     }
+
     llvm::Error notifyRemovingResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey) override {
         return llvm::Error::success();
     }
+
     void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey, llvm::orc::ResourceKey) override {}
 
 private:
@@ -138,7 +151,9 @@ private:
 
 struct CodeRange {
     std::uint64_t begin;
+
     std::uint64_t end;
+
     bool contains(const void* address) const noexcept {
         const auto pc = reinterpret_cast<std::uintptr_t>(address);
         return pc >= begin && pc < end;
@@ -193,11 +208,17 @@ void configure_function(llvm::Function& function) {
 
 struct Unit {
     std::string stem;
+
     ResourceTrackerSP tracker;
+
     ExecutorAddr entry;
+
     ExecutorAddr outer;
+
     ExecutorAddr inner;
+
     ExecutorAddr label;
+
     ExecutorAddr counter;
 };
 

@@ -10,6 +10,7 @@ auto failure(std::string text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
 }
+
 std::string utf8(std::wstring_view value) {
     if (value.empty())
         return {};
@@ -22,6 +23,7 @@ std::string utf8(std::wstring_view value) {
                         count, nullptr, nullptr);
     return result;
 }
+
 std::wstring wide(std::string_view value) {
     if (value.empty())
         return {};
@@ -34,6 +36,7 @@ std::wstring wide(std::string_view value) {
                         count);
     return result;
 }
+
 Result<std::string> read_file(const std::filesystem::path& path, std::size_t maximum) {
     std::ifstream file(platform::windows_file_path(path), std::ios::binary | std::ios::ate);
     if (!file)
@@ -47,6 +50,7 @@ Result<std::string> read_file(const std::filesystem::path& path, std::size_t max
         return failure("Could not read the complete file.");
     return bytes;
 }
+
 Result<std::filesystem::path> resolve_project_path(const std::filesystem::path& root,
                                                    const std::filesystem::path& relative) {
     try {

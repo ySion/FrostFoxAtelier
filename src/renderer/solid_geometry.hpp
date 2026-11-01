@@ -25,7 +25,9 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
     };
     struct Edge {
         std::uint32_t triangle{};
+
         std::uint32_t count{};
+
         std::int64_t direction{};
     };
     const auto vertices = mesh.vertices();

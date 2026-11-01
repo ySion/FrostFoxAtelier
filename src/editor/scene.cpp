@@ -22,10 +22,15 @@
 namespace atelier::editor {
 namespace {
 using assets::json_format::Json;
+
 using assets::json_format::fields;
+
 using assets::json_format::overlay;
+
 using assets::json_format::preview;
+
 using detail::Failure;
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
@@ -33,31 +38,39 @@ T take(Result<T> value) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
+
 void committed(Result<world::Commit> value) {
     auto result = take(std::move(value));
     if (result.notification_error)
         throw Failure(std::move(*result.notification_error));
 }
+
 Json vector(math::Vector3 value) {
     return assets::json_format::numbers(std::array{value.x, value.y, value.z});
 }
+
 math::Vector3 vector(const Json& value) {
     const auto v = assets::json_format::vector<3>(value);
     return {v[0], v[1], v[2]};
 }
+
 std::string type_name(Runtime& runtime, TypeId type) {
     return std::string(take(runtime.describe(type))->name);
 }
+
 auto failed(const std::exception& error) {
     return std::unexpected(detail::caught_error(error, ErrorCode::invalid_storage));
 }
+
 bool derives(Runtime& runtime, TypeId type, TypeId base) {
     return take(runtime.is_a(type, base));
 }
+
 bool physical_type(Runtime& runtime, TypeId type) {
     const auto body = runtime.native_type<world::PrimitiveComponent>();
     return body && derives(runtime, type, *body);
 }
+
 Json encode_scalar(Runtime& runtime, const Scalar& value) {
     if (!detail::finite_scalar(value))
         throw std::runtime_error("Scene property values must be finite.");
@@ -76,15 +89,18 @@ Json encode_scalar(Runtime& runtime, const Scalar& value) {
         },
         value);
 }
+
 // A saved value that does not fit the current schema. Unlike other exceptions it
 // does not reject the scene: the value is kept and the field keeps its default.
 struct Mismatch : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+
 // A strict properties decode rejecting one leaf of its caller's record.
 struct Rejected : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+
 Scalar decode_scalar(Runtime& runtime, const Scalar& prototype, const Json& value, bool* converted = nullptr) {
     return std::visit(
         [&](const auto& original) -> Scalar {
@@ -137,6 +153,7 @@ Scalar decode_scalar(Runtime& runtime, const Scalar& prototype, const Json& valu
         },
         prototype);
 }
+
 // Removes the retained subtree at path, or a retained leaf on its prefix.
 bool erase_path(Json& record, std::span<const std::string> path) {
     std::vector<Json*> trail{&record};
@@ -155,9 +172,11 @@ bool erase_path(Json& record, std::span<const std::string> path) {
     }
     return false;
 }
+
 bool reference_value(const Json& value) {
     return value.is_object() && (value.contains("$ref") || value.contains("$external"));
 }
+
 template <class F>
 void each_reference(Json& value, F&& visit) {
     if (reference_value(value)) {
@@ -168,6 +187,7 @@ void each_reference(Json& value, F&& visit) {
         for (auto& item : value)
             each_reference(item, visit);
 }
+
 std::string dotted(std::span<const std::string> path) {
     std::string text;
     for (const auto& name : path) {
@@ -177,6 +197,7 @@ std::string dotted(std::span<const std::string> path) {
     }
     return text;
 }
+
 std::string dump_retained(const Json& value) {
     return value.empty() ? std::string{} : value.dump();
 }
@@ -193,6 +214,7 @@ std::vector<detail::ScalarField> business_fields(Runtime& runtime, const world::
                   [&](const auto& field) { return std::ranges::find(reserved, field.path.front()) != reserved.end(); });
     return result;
 }
+
 Json encode_string(Runtime& runtime, const PropertyTarget& target, const detail::ScalarField& field) {
     String value;
     const ValueOutput output{field.type, &value};
@@ -200,6 +222,7 @@ Json encode_string(Runtime& runtime, const PropertyTarget& target, const detail:
                                      : runtime.read(target.type, target.storage, field.path, output));
     return std::string{value.c_str(), value.size()};
 }
+
 // A whole Array leaf as a JSON array of its element leaves.
 Json encode_array(Runtime& runtime, ObjectId object, const detail::ScalarField& field) {
     const auto element = *take(runtime.describe(field.type))->element;
@@ -219,6 +242,7 @@ Json encode_array(Runtime& runtime, ObjectId object, const detail::ScalarField& 
     }
     return result;
 }
+
 // Decodes a properties record leaf by leaf: the one path for scene loads, Play changes and operator
 // parameters. Tolerant decodes write a clamped leaf and then keep the saved value; strict decodes
 // (no report) throw at the first leaf they cannot apply as saved and never clamp.
@@ -390,6 +414,7 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
     };
     read(read, record, {});
 }
+
 std::uint64_t local_key(const Json& value, bool allow_null = false) {
     if (!value.is_string())
         throw std::runtime_error("Document object identity requires a decimal string.");
@@ -401,9 +426,11 @@ std::uint64_t local_key(const Json& value, bool allow_null = false) {
         throw std::runtime_error("Invalid document object identity: " + text);
     return result;
 }
+
 Json ref_key(std::uint64_t id) {
     return Json{{"$ref", std::to_string(id)}};
 }
+
 Json trs_json(world::Trs value) {
     value = take(world::canonical_transform(value));
     return {{"position", vector(value.position)},
@@ -412,6 +439,7 @@ Json trs_json(world::Trs value) {
             {"scale", vector(value.scale)},
             {"origin", nullptr}};
 }
+
 world::Trs json_trs(const Json& value) {
     const auto q = assets::json_format::vector<4>(value.at("rotation"));
     return take(world::canonical_transform(
@@ -421,18 +449,27 @@ world::Trs json_trs(const Json& value) {
 
 struct ArrayLeaf::Value {
     Runtime& runtime;
+
     TypeId type;
+
     atelier::detail::ValueStorage bytes;
+
     std::span<std::byte> storage;
+
     bool live{};
+
     Value(Runtime& owner, TypeId array) : runtime(owner), type(array) {}
+
     Value(const Value&) = delete;
+
     Value& operator=(const Value&) = delete;
+
     ~Value() {
         if (live)
             static_cast<void>(runtime.destroy_value(type, storage));
     }
 };
+
 Result<ArrayLeaf> ArrayLeaf::create(Runtime& runtime, TypeId type) {
     const auto info = runtime.describe(type);
     if (!info)
@@ -448,15 +485,19 @@ Result<ArrayLeaf> ArrayLeaf::create(Runtime& runtime, TypeId type) {
     value.live = true;
     return result;
 }
+
 TypeId ArrayLeaf::type() const noexcept {
     return value_->type;
 }
+
 std::span<std::byte> ArrayLeaf::storage() const noexcept {
     return value_->storage;
 }
+
 ValueInput ArrayLeaf::input() const noexcept {
     return {value_->type, value_->storage.data()};
 }
+
 ValueOutput ArrayLeaf::output() const noexcept {
     return {value_->type, value_->storage.data()};
 }
@@ -468,6 +509,7 @@ Result<Json> encode_properties(Runtime& runtime, ObjectId object, std::span<cons
         return std::unexpected(type.error());
     return encode_properties(runtime, PropertyTarget{*type, object}, fields, reference);
 }
+
 Result<Json> encode_properties(Runtime& runtime, const PropertyTarget& target,
                                std::span<const detail::ScalarField> fields, const EncodeReference& reference) {
     try {
@@ -538,6 +580,7 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, c
         return failed(error);
     }
 }
+
 Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target,
                                std::span<const detail::ScalarField> fields, const Json& record,
                                const PropertyReport& report, const ResolveReference& resolve) {
@@ -560,35 +603,57 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target,
 struct Session::GraphCodec {
     struct MeshCopy {
         presentation::StaticMeshState state;
+
         std::vector<presentation::MaterialBinding> bindings;
     };
+
     struct Graph {
         Json data;
+
         std::unordered_map<std::string, MeshCopy> meshes;
+
         // An in-memory copy keeps the sky map it resolved, not only the key.
         std::unordered_map<std::string, presentation::SkyMapBinding> skies;
+
         std::unordered_map<std::string, physics::BodySettings> bodies;
+
         std::unordered_map<std::string, ObjectRoot> materials;
+
         std::unordered_map<std::string, ObjectRoot> external;
+
         std::unordered_map<std::string, ObjectId> parents;
     };
+
     // One load's diagnostics and the saved data it could not apply.
     struct Load {
         LoadPolicy policy{LoadPolicy::tolerant};
+
         bool document{}; // Loading a whole document, not importing into one.
+
         // Applying an editor graph to a Play copy: references outside the graph
         // name live objects, and targets the game destroyed are dropped.
         bool live{};
+
         std::vector<std::uint64_t> dropped;
+
         std::vector<world::Diagnostic> issues;
+
         std::unordered_map<ObjectId, Json> pending; // {"type","record","slots"} with file identities.
+
         std::unordered_map<ObjectId, ObjectId> owners;
+
         std::unordered_map<ObjectId, std::string> types;
+
         std::unordered_map<ObjectId, std::uint64_t> keys;
+
         Json top = Json::object();
+
         std::vector<ObjectRoot> unreferenced;
+
         std::unordered_map<ObjectId, std::vector<ObjectRoot>> materials; // Named by a kept binding table.
+
         std::unordered_map<ObjectId, Retained> retained;
+
         std::string subject(ObjectId object) const {
             if (object == ObjectId{})
                 return "Scene";
@@ -597,6 +662,7 @@ struct Session::GraphCodec {
                 text += " #" + std::to_string(at->second);
             return text;
         }
+
         void report(world::Severity severity, world::DiagnosticKind kind, ObjectId object,
                     std::vector<std::string> field, const Json* value, const std::string& detail,
                     const Error* cause = nullptr) {
@@ -628,6 +694,7 @@ struct Session::GraphCodec {
             }
             issues.push_back(std::move(item));
         }
+
         void store(ObjectId object, std::span<const std::string> path, const Json& value) {
             Json* node = object == ObjectId{} ? &top : &pending[object]["record"];
             for (std::size_t i = 0; i + 1 < path.size(); ++i) {
@@ -639,16 +706,19 @@ struct Session::GraphCodec {
                 *node = Json::object();
             (*node)[path.back()] = value;
         }
+
         void keep(ObjectId object, std::vector<std::string> path, const Json& value, world::DiagnosticKind kind,
                   const std::string& detail) {
             report(world::Severity::warning, kind, object, path, &value, detail);
             store(object, path, value);
         }
+
         void keep_slot(ObjectId object, const std::string& slot, const std::string& key, const Json& value,
                        world::DiagnosticKind kind, const std::string& detail) {
             report(world::Severity::warning, kind, object, {"materials", slot, key}, &value, detail);
             pending[object]["slots"][slot][key] = value;
         }
+
         void extra(ObjectId object, const Json& value, std::initializer_list<std::string_view> allowed,
                    std::vector<std::string> prefix = {}) {
             for (const auto& [name, item] : value.items())
@@ -660,24 +730,41 @@ struct Session::GraphCodec {
                 }
         }
     };
+
     struct Prepared {
         Session* session{};
+
         std::vector<ObjectRoot> objects;
+
         std::vector<ObjectId> roots;
+
         std::vector<world::SpaceReference> spaces;
+
         std::vector<ObjectId> triangle_meshes;
+
         std::vector<ObjectRoot> resources;
+
         // Live graphs only: new components of an existing Entity, attached on publication.
         std::vector<std::pair<ObjectId, std::vector<world::Attachment>>> anchored;
+
         Project* project{};
+
         std::unordered_map<ObjectId, std::wstring> labels;
+
         std::unordered_set<std::string> material_keys;
+
         std::unordered_set<std::string> texture_keys;
+
         std::unordered_map<ObjectId, std::uint64_t> identities_before;
+
         std::unordered_map<ObjectId, std::string> material_parents_before;
+
         UnavailableResources unavailable_before;
+
         std::uint64_t next_before{};
+
         bool published{};
+
         explicit Prepared(Session& owner)
             : session(&owner), identities_before(owner.local_ids_),
               material_parents_before(owner.scene_material_parents_), unavailable_before(owner.unavailable_),
@@ -691,8 +778,11 @@ struct Session::GraphCodec {
                 texture_keys.insert(key);
             }
         }
+
         Prepared(const Prepared&) = delete;
+
         Prepared& operator=(const Prepared&) = delete;
+
         Prepared(Prepared&& other) noexcept
             : session(std::exchange(other.session, nullptr)), objects(std::move(other.objects)),
               roots(std::move(other.roots)), spaces(std::move(other.spaces)),
@@ -703,6 +793,7 @@ struct Session::GraphCodec {
               material_parents_before(std::move(other.material_parents_before)),
               unavailable_before(std::move(other.unavailable_before)), next_before(other.next_before),
               published(other.published) {}
+
         ~Prepared() {
             if (!session || published)
                 return;
@@ -730,6 +821,7 @@ struct Session::GraphCodec {
             session->local_ids_.swap(identities_before);
         }
     };
+
     static std::uint64_t identity(const Session& session, ObjectId object) {
         if (auto at = session.local_ids_.find(object); at != session.local_ids_.end())
             return at->second;
@@ -742,13 +834,18 @@ struct Session::GraphCodec {
         session.local_ids_.emplace(object, id);
         return id;
     }
+
     static Graph capture(const Session& session, std::span<const ObjectId> requested, bool persistent,
                          bool document = false, bool live = false) {
         struct IdentityRollback {
             const Session& session;
+
             std::unordered_map<ObjectId, std::uint64_t> before;
+
             std::uint64_t next;
+
             bool complete{};
+
             ~IdentityRollback() {
                 if (!complete) {
                     session.local_ids_.swap(before);
@@ -1013,6 +1110,7 @@ struct Session::GraphCodec {
         }
         return value;
     }
+
     // Parents precede their scene children in Live definitions. Named parents
     // remain asset relationships and are loaded through the ordinary directory.
     static void material_definitions(const Session& session, ObjectId object, Json& values,
@@ -1025,6 +1123,7 @@ struct Session::GraphCodec {
                                  values, seen);
         values.push_back(std::move(value));
     }
+
     // The graph of an attach change: the Entity record lists only these components.
     static Json live_components(const Session& session, ObjectId entity, std::span<const ObjectId> components) {
         for (const auto component : components)
@@ -1073,6 +1172,7 @@ struct Session::GraphCodec {
             {Json{{"id", key}, {"existing", true}, {"children", Json::array()}, {"components", std::move(parts)}}});
         return std::move(data);
     }
+
     // Play forwarding. A keyed op replaces the pending op with the same key.
     static void live_push(Session& session, std::string key, const Json& op, material::ImageRef texture = {},
                           std::shared_ptr<const assets::MeshAsset> mesh = {}) {
@@ -1083,9 +1183,11 @@ struct Session::GraphCodec {
             std::erase_if(session.live_ops_, [&](const LiveOp& item) { return item.key == key; });
         session.live_ops_.push_back({std::move(key), {std::move(text), std::move(texture), std::move(mesh)}});
     }
+
     static std::string live_id(const Session& session, ObjectId object) {
         return std::to_string(identity(session, object));
     }
+
     // The final position among the parent's children, or among the roots.
     static std::size_t live_position(Session& session, ObjectId object, ObjectId parent) {
         std::size_t result{};
@@ -1104,12 +1206,14 @@ struct Session::GraphCodec {
                 }
         throw std::runtime_error("The Entity is missing from its parent's list.");
     }
+
     static Json live_origin(Session& session, ObjectId entity) {
         const auto origin = take(world::space_reference(session.runtime_, entity));
         if (!origin)
             return nullptr;
         return *origin == ObjectId{} ? Json("0") : Json(live_id(session, *origin));
     }
+
     static Json live_space(Session& session, ObjectId entity) {
         if (!take(world::has_transform(session.runtime_, entity)))
             return nullptr;
@@ -1117,11 +1221,13 @@ struct Session::GraphCodec {
         space["origin"] = live_origin(session, entity);
         return space;
     }
+
     // TRS leaves as bits: 1 position, 2 rotation, 4 scale.
     static unsigned leaf_mask(const world::Trs& a, const world::Trs& b) {
         return (a.position != b.position ? 1u : 0u) | (a.rotation != b.rotation ? 2u : 0u) |
                (a.scale != b.scale ? 4u : 0u);
     }
+
     static Json space_leaves(const world::Trs& value, unsigned mask) {
         auto result = trs_json(value);
         result.erase("origin");
@@ -1133,6 +1239,7 @@ struct Session::GraphCodec {
             result.erase("scale");
         return result;
     }
+
     // A set of these fields' current values; `key` names the object and fields.
     static Json live_properties(Session& session, ObjectId object, std::span<const world::FieldPath> paths,
                                 std::string* key = nullptr) {
@@ -1163,6 +1270,7 @@ struct Session::GraphCodec {
             op["properties"] = std::move(properties);
         return op;
     }
+
     static Json live_body(Session& session, ObjectId component) {
         auto& runtime = session.runtime_;
         Json body = Json::object();
@@ -1196,6 +1304,7 @@ struct Session::GraphCodec {
                     business_fields(runtime, session.types_, session.presentation_types_, type), record, {"properties"},
                     resolve, write, &report);
     }
+
     // Scene instances share the asset entry codec, but their parent may have a
     // document-local identity. The directory resolver handles ordering/cycles.
     static ObjectRoot restore_material(Session& session, Project* project, const Json& entry,
@@ -1247,17 +1356,20 @@ struct Session::GraphCodec {
         session.scene_material_parents_.insert_or_assign(root.id(), std::move(parent_key));
         return root;
     }
+
     // A Play copy's object for a document identity. Unknown identities mean Play
     // diverged; identities whose object the game destroyed are skipped.
     struct Gone : std::runtime_error {
         using std::runtime_error::runtime_error;
     };
+
     static std::optional<ObjectId> live_object(const Session& session, std::uint64_t key) {
         const auto at = session.live_objects_.find(key);
         if (at == session.live_objects_.end())
             return std::nullopt;
         return session.runtime_.type_of(at->second) ? std::optional(at->second) : std::optional(ObjectId{});
     }
+
     static ObjectId live_target(const Session& session, const Json& id) {
         const auto key = local_key(id);
         const auto object = live_object(session, key);
@@ -1267,6 +1379,7 @@ struct Session::GraphCodec {
             throw Gone("#" + std::to_string(key) + " was destroyed by the game.");
         return *object;
     }
+
     // A reference leaving a live graph; nullopt when the game destroyed its target.
     static std::optional<ObjectId> live_reference(const Session& session, std::uint64_t key, Load& load) {
         const auto object = live_object(session, key);
@@ -1300,6 +1413,7 @@ struct Session::GraphCodec {
                     &item->error);
         return {};
     }
+
     static Prepared construct(Session& session, const Graph& graph, Project* project, bool keep_ids, Load& load) {
         const auto& data = graph.data;
         if (!data.is_object())
@@ -2068,6 +2182,7 @@ struct Session::GraphCodec {
         }
         return attachments;
     }
+
     static void prepare_cook(Session& session, Prepared& prepared, std::span<const world::EntityAttachment> attachments,
                              Load& load) {
         if (prepared.triangle_meshes.empty())
@@ -2112,6 +2227,7 @@ struct Session::GraphCodec {
             take(physics::configure(session.runtime_, object, std::move(settings)));
         }
     }
+
     static world::Commit publish(Session& session, Prepared& prepared, const Graph& graph, ObjectId parent,
                                  bool duplicate, Load& load) {
         EntityChange history;
@@ -2164,6 +2280,7 @@ struct Session::GraphCodec {
         }
         return result;
     }
+
     // Play publication keeps document identities and records no history.
     static world::Commit publish_live(Session& session, Prepared& prepared, ObjectId parent, std::size_t index,
                                       Load& load) {
@@ -2186,15 +2303,18 @@ struct Session::GraphCodec {
             session.live_objects_.insert_or_assign(session.local_ids_.at(resource.id()), resource.id());
         return result;
     }
+
     struct Unsupported : detail::Failure {
         using detail::Failure::Failure;
     };
+
     // A simulation that cannot follow an authored pose leaves the edit unapplied.
     static void relocated(Result<void> value) {
         if (!value && value.error().code == ErrorCode::unsupported_operation)
             throw Unsupported(std::move(value.error()));
         take(std::move(value));
     }
+
     // A Play index is the final position among the destination's children, or its roots for a null parent.
     // Game spawns and destructions legitimately change those lists, so a stale index clamps to the end.
     // World attaches a new root before a member position, so an added root's ordinal is translated.
@@ -2222,6 +2342,7 @@ struct Session::GraphCodec {
         }
         return moved ? ordinal : world::append;
     }
+
     // One op of a Play change batch; see Session::apply_live.
     static void apply_change(Session& session, Project& project, const Json& op, std::size_t index,
                              std::vector<world::Diagnostic>& out) {
@@ -2608,6 +2729,7 @@ Result<std::string> Session::serialize() const {
         return failed(error);
     }
 }
+
 Result<std::string> Session::serialize_subtree(ObjectId root) const {
     try {
         if (editing())
@@ -2621,6 +2743,7 @@ Result<std::string> Session::serialize_subtree(ObjectId root) const {
         return failed(error);
     }
 }
+
 Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
     try {
         auto graph = GraphCodec::capture(*this, {&root, 1}, true, false, true);
@@ -2632,6 +2755,7 @@ Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
         return failed(error);
     }
 }
+
 Result<std::string> Session::serialize_live_components(ObjectId entity, std::span<const ObjectId> components) const {
     try {
         auto text = GraphCodec::live_components(*this, entity, components).dump();
@@ -2642,12 +2766,14 @@ Result<std::string> Session::serialize_live_components(ObjectId entity, std::spa
         return failed(error);
     }
 }
+
 void Session::set_live_forwarding(bool enabled) {
     forwarding_ = enabled;
     live_ops_.clear();
     live_failure_.reset();
     live_leaves_.clear();
 }
+
 Result<std::vector<LiveChange>> Session::take_live_ops() {
     if (live_failure_)
         return std::unexpected(*live_failure_);
@@ -2658,6 +2784,7 @@ Result<std::vector<LiveChange>> Session::take_live_ops() {
     live_ops_.clear();
     return result;
 }
+
 void Session::forward_change(const Change& change, bool forward) {
     if (!forwarding_ || live_failure_)
         return;
@@ -2695,7 +2822,9 @@ void Session::forward_change(const Change& change, bool forward) {
                     }
                     struct Add {
                         std::uint64_t parent;
+
                         std::size_t index;
+
                         Json op;
                     };
                     std::vector<Add> adds;
@@ -2851,6 +2980,7 @@ void Session::forward_change(const Change& change, bool forward) {
         live_ops_.clear();
     }
 }
+
 void Session::forward_material(ObjectId object) {
     if (!forwarding_ || live_failure_)
         return;
@@ -2876,6 +3006,7 @@ void Session::forward_material(ObjectId object) {
         live_ops_.clear();
     }
 }
+
 void Session::forward_texture(std::string_view key, material::ImageRef image) {
     if (!forwarding_ || live_failure_)
         return;
@@ -2889,6 +3020,7 @@ void Session::forward_texture(std::string_view key, material::ImageRef image) {
         live_ops_.clear();
     }
 }
+
 void Session::forward_mesh(const assets::MeshAsset& asset) {
     if (!forwarding_ || live_failure_)
         return;
@@ -2900,6 +3032,7 @@ void Session::forward_mesh(const assets::MeshAsset& asset) {
         live_ops_.clear();
     }
 }
+
 Result<void> Session::reimport_mesh(Project& project, std::string_view key, const std::filesystem::path& source) {
     try {
         if (world_.closed() || world_.running() || editing())
@@ -2919,6 +3052,7 @@ Result<void> Session::reimport_mesh(Project& project, std::string_view key, cons
         return failed(error);
     }
 }
+
 Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAsset& asset) {
     try {
         if (world_.closed() || asset.key.empty() || !asset.mesh)
@@ -2927,7 +3061,9 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
         const auto defaults = take(mesh_defaults(reader, asset, &missing));
         struct Replacement {
             ObjectId object;
+
             std::vector<presentation::MaterialBinding> active;
+
             Retained kept;
         };
         std::vector<Replacement> replacements;
@@ -3005,6 +3141,7 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
         return failed(error);
     }
 }
+
 void Session::forward_edit() {
     if (!forwarding_ || live_failure_)
         return;
@@ -3044,12 +3181,14 @@ void Session::forward_edit() {
         live_ops_.clear();
     }
 }
+
 void Session::enter_play() {
     play_ = true;
     for (const auto& [object, key] : local_ids_)
         if (runtime_.type_of(object))
             live_objects_.insert_or_assign(key, object);
 }
+
 Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text, Project& project) {
     try {
         if (!play_)
@@ -3069,6 +3208,7 @@ Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text
         return failed(error);
     }
 }
+
 Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text, Project& project, Prepare prepare,
                                                       LoadPolicy policy, SessionRole role) {
     try {
@@ -3100,6 +3240,7 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text, Pro
         return failed(error);
     }
 }
+
 Result<world::Commit> Session::instantiate_subtree(std::string_view text, Project& project, ObjectId parent) {
     try {
         if (editing() || world_.running())
@@ -3117,6 +3258,7 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text, Projec
         return failed(error);
     }
 }
+
 Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> entities) {
     try {
         if (editing())
@@ -3147,6 +3289,7 @@ Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> enti
         return failed(error);
     }
 }
+
 std::vector<Session::RetainedSwap> Session::release(const Change& change) {
     std::vector<RetainedSwap> swaps;
     if (retained_.empty() && retained_document_.record.empty())
@@ -3248,6 +3391,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         change);
     return swaps;
 }
+
 void Session::restore(std::span<const RetainedSwap> swaps, bool forward) {
     const auto apply = [&](const RetainedSwap& swap) {
         const auto& value = forward ? swap.after : swap.before;
@@ -3265,6 +3409,7 @@ void Session::restore(std::span<const RetainedSwap> swaps, bool forward) {
         for (auto at = swaps.rbegin(); at != swaps.rend(); ++at)
             apply(*at);
 }
+
 Result<void> Session::discard_retained(ObjectId object) {
     const auto reject = [](const char* message) {
         return std::unexpected(Error{ErrorCode::invalid_definition, message});
@@ -3294,20 +3439,24 @@ Result<void> Session::discard_retained(ObjectId object) {
     history_.back().retained.push_back(std::move(swap));
     return {};
 }
+
 bool Session::has_retained(ObjectId object) const noexcept {
     if (object == ObjectId{})
         return !retained_document_.record.empty() || !retained_document_.materials.empty();
     return retained_.contains(object);
 }
+
 std::size_t Session::placeholder_count() const noexcept {
     return static_cast<std::size_t>(std::ranges::count_if(retained_, [&](const auto& item) {
         return !item.second.type.empty() && runtime_.type_of(item.first).has_value();
     }));
 }
+
 std::optional<std::uint64_t> Session::document_identity(ObjectId object) const {
     const auto at = local_ids_.find(object);
     return at == local_ids_.end() ? std::nullopt : std::optional(at->second);
 }
+
 Result<RetainedView> Session::retained(ObjectId object) const {
     try {
         RetainedView view;
@@ -3398,6 +3547,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         return failed(error);
     }
 }
+
 std::vector<world::Diagnostic> Session::issues() const {
     std::vector<world::Diagnostic> result;
     std::unordered_set<ObjectId> members;
@@ -3477,6 +3627,7 @@ std::vector<world::Diagnostic> Session::issues() const {
     }
     return result;
 }
+
 Result<ObjectId> Session::local_object(std::uint64_t identity) const {
     try {
         if (!identity)

@@ -14,14 +14,17 @@ void MappedSource::append(const MappedSource& source) {
         pieces.push_back(piece);
     }
 }
+
 void MappedSource::append(const SourceFile& source, std::uint32_t file, std::size_t begin, std::size_t end) {
     const auto base = text.size();
     text.append(source.source, begin, end - begin);
     pieces.push_back({base, text.size(), begin, file});
     text += '\n';
 }
+
 namespace {
 using namespace detail;
+
 void body(Tokens& tokens) {
     tokens.expect("{");
     std::size_t depth = 1;
@@ -36,6 +39,7 @@ void body(Tokens& tokens) {
             tokens.consume();
     }
 }
+
 // Consumes one expression up to a top-level ',' or `close`, which stay unconsumed.
 void expression_until(Tokens& tokens, std::string_view close, SourcePosition owner, const char* message) {
     std::size_t depth = 0;
@@ -53,6 +57,7 @@ void expression_until(Tokens& tokens, std::string_view close, SourcePosition own
         tokens.consume();
     }
 }
+
 // [Min = e, Max = e, LockMin, LockMax, HardMin = e, HardMax = e, Label = "...", Category = "...", DESC = "..."]
 void field_attributes(Tokens& tokens, const SourceFile& unit, std::uint32_t file, ClassField& field) {
     constexpr std::array<std::string_view, 4> bounds{"Min", "Max", "HardMin", "HardMax"};
@@ -103,6 +108,7 @@ void field_attributes(Tokens& tokens, const SourceFile& unit, std::uint32_t file
         field.bounds[side + 2] = field.bounds[side];
     }
 }
+
 // Records `name(arguments)` or `name::item` when that spelling is the whole initializer.
 void initializer_shape(Tokens& tokens, const SourceFile& unit, std::uint32_t file, ClassField& field) {
     auto name = tokens.qualified_identifier();
@@ -133,6 +139,7 @@ void initializer_shape(Tokens& tokens, const SourceFile& unit, std::uint32_t fil
         field.initializer_arguments = std::move(arguments);
     }
 }
+
 std::string function_signature(Tokens& tokens, const TypeName& type, std::vector<std::string>& parameters,
                                TopLevel* declaration = nullptr) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
@@ -156,6 +163,7 @@ std::string function_signature(Tokens& tokens, const TypeName& type, std::vector
             property_name(declaration->name, parameters.size(), type.name == "void", writable_parameter);
     return signature;
 }
+
 // The <module> of a well-formed engine/<module>/<file> path; empty for every other path.
 std::string_view engine_module(std::string_view path) {
     constexpr std::string_view prefix = "engine/";
@@ -169,10 +177,13 @@ std::string_view engine_module(std::string_view path) {
         return {};
     return name;
 }
+
 bool in_namespace(std::string_view name, std::string_view space) {
     return name.size() > space.size() && name.starts_with(space) && name[space.size()] == '.';
 }
+
 using Names = std::unordered_multimap<std::string, std::uint32_t>;
+
 // Every top-level name the text spells as an identifier or dotted chain, at each length of the chain.
 // Property names include both accessors. Conservative extra dependencies also keep
 // same-name declarations in one unit so the parser can diagnose collisions.
@@ -207,6 +218,7 @@ void spelled(std::string_view text, const Names& names, std::vector<std::uint32_
     uses.erase(repeated.begin(), repeated.end());
 }
 }
+
 MappedSource SourceModule::closure(std::span<const std::uint32_t> roots) const {
     std::vector<bool> included(declarations.size());
     std::vector<std::uint32_t> pending(roots.begin(), roots.end());
@@ -224,6 +236,7 @@ MappedSource SourceModule::closure(std::span<const std::uint32_t> roots) const {
             text.append(declarations[i].source);
     return text;
 }
+
 std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapshot& snapshot) {
     SourceModule result;
     if (snapshot.files.size() > 1024)

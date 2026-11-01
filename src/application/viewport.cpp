@@ -18,6 +18,7 @@ Result<void> Application::place_duplicates() {
         workspace_.status = L"Duplicate · Move · Right click / Esc keeps copies in place";
     return placed;
 }
+
 void Application::show_menu(editor::MenuKind menu) {
     using namespace editor::control;
     if (menu == editor::MenuKind::delete_selection && document_->selected_entities().empty())
@@ -28,6 +29,7 @@ void Application::show_menu(editor::MenuKind menu) {
     workspace_.dock.select(scene_tab);
     request_menu({viewport, groups[static_cast<std::size_t>(menu)], pointer_position_.x, pointer_position_.y});
 }
+
 void Application::finish_camera_fly(bool accept) {
     if (!camera_fly_)
         return;
@@ -42,6 +44,7 @@ void Application::finish_camera_fly(bool accept) {
     window_.cursor(ui::Cursor::arrow);
     workspace_.status = accept ? L"Fly navigation confirmed" : L"Fly navigation cancelled";
 }
+
 void Application::look_camera_fly(float dx, float dy) {
     if (!camera_fly_)
         return;
@@ -50,6 +53,7 @@ void Application::look_camera_fly(float dx, float dy) {
     if (auto result = set_camera(camera, false); !result)
         status(result, L"");
 }
+
 void Application::update_camera_fly() {
     if (!camera_fly_)
         return;

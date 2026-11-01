@@ -8,6 +8,7 @@ T request_of(const ui::Reply& reply) {
                 return *value;
     throw std::runtime_error("expected platform request missing");
 }
+
 struct TextConsumer : Consumer {
     explicit TextConsumer(std::wstring initial, ui::ControlKind kind = ui::ControlKind::text_edit) {
         controls = {leaf(1, kind, 10, std::move(initial))};
@@ -15,6 +16,7 @@ struct TextConsumer : Consumer {
         prepare();
         click(1);
     }
+
     ui::Reply apply(ui::Reply reply) {
         for (const auto& action : actions_of(reply))
             if (action.key == 1 &&
@@ -27,27 +29,34 @@ struct TextConsumer : Consumer {
             }
         return reply;
     }
+
     ui::Reply command(ui::Key value, bool control = false, bool shift = false) {
         return apply(key(ui, value, control, shift));
     }
+
     ui::Reply type(std::wstring text) {
         return apply(ui.input({.kind = ui::EventKind::text, .data = std::move(text)}));
     }
+
     ui::Reply receive(ui::ClipboardRequest request, bool success, std::wstring text = {}) {
         return apply(ui.input({.kind = ui::EventKind::clipboard_result,
                                .data = ui::ClipboardResult{request.kind, request.operation_id, request.token, success,
                                                            success ? 0u : 5u, std::move(text)}}));
     }
+
     ui::Reply compose(ui::CompositionEvent event) {
         return apply(ui.input({.kind = ui::EventKind::composition, .data = std::move(event)}));
     }
+
     ui::EditToken token() const {
         const auto value = ui.text_input();
         require(value.has_value(), "text binding missing");
         return value->token;
     }
+
     const std::wstring& value() const { return controls[0].text; }
 };
+
 void read_only_code_document() {
     Consumer consumer;
     const auto document = std::make_shared<ui::CodeDocument>(L"完整正文\nSecond line");
@@ -232,6 +241,7 @@ void read_only_code_document() {
     require(editable.ui.text_input() && editable.controls[0].code->text() == L"Default\n    ",
             "The default CodeEditor no longer accepted text, newlines and indentation.");
 }
+
 void shared_edit_history_and_focus() {
     TextConsumer c(L"位置");
     c.command(ui::Key::a, true);
@@ -427,6 +437,7 @@ void shared_edit_history_and_focus() {
     repeated.ui.input({.kind = ui::EventKind::key_up, .key = ui::Key::space});
     require(repeated.value() == L"   ", "keyboard ownership cleanup swallowed ordinary text repeats");
 }
+
 void unicode_visual_editing() {
     const std::wstring original = L"A\U0001f600e\u0301\U0001f469\u200d\U0001f4bb\u2764\ufe0fZ";
     TextConsumer c(original);
@@ -504,6 +515,7 @@ void unicode_visual_editing() {
             "accepted caret unavailable");
     require(held->caret->token != scroll.frame->caret->token, "old frame caret mutated");
 }
+
 void clipboard_roundtrips() {
     TextConsumer c(L"abcdef");
     c.command(ui::Key::a, true);
@@ -557,6 +569,7 @@ void clipboard_roundtrips() {
             "numeric cancel did not return to passive focus");
     require(!numeric.ui.interaction_state().active(), "Cancelled number remained busy");
 }
+
 void composition_protocol_and_cleanup() {
     TextConsumer c(L"X");
     c.command(ui::Key::a, true);
@@ -609,6 +622,7 @@ void composition_protocol_and_cleanup() {
                 !c.ui.text_input(),
             "surface cleanup lost IME cancellation, rollback or focus invalidation");
 }
+
 void accepted_input_anchor() {
     TextConsumer c(L"ABCDE");
     c.command(ui::Key::home);

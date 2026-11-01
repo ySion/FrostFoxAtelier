@@ -7,36 +7,50 @@
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::acceptance::borrow;
+
 using source::Program;
+
 struct MoveEffect {
     static inline int moves{};
+
     int value;
+
     MoveEffect() = default;
+
     MoveEffect(const MoveEffect&) = default;
+
     MoveEffect& operator=(const MoveEffect&) = default;
+
     MoveEffect(MoveEffect&& other) noexcept : value(other.value) { ++moves; }
 };
+
 struct ReferencingValue {
     ReferenceSlot target;
 };
+
 struct ForwardMethodHost {
     void inspect(const ReferencingValue&) {}
 };
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 void publish(Program& program, std::string_view source) {
     auto candidate = take(Program::prepare(take(program.request("owned-values.source", source))));
     take(program.try_publish(candidate));

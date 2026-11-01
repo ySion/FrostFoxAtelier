@@ -14,6 +14,7 @@ namespace atelier::rendering {
 // proposal floor and <=32 initial candidates, 2^32 leaves headroom for
 // the evaluator and initial sum. It does not bound every reservoir W.
 inline constexpr double analytic_light_radiance_limit = 0x1p32;
+
 inline const char* analytic_light_range_error(const std::array<float, 3>& color, float intensity,
                                               double area = 1) noexcept {
     if (!std::isfinite(area) || area <= 0 || area > std::numeric_limits<float>::max())
@@ -28,35 +29,57 @@ inline const char* analytic_light_range_error(const std::array<float, 3>& color,
 }
 
 enum class Antialiasing : std::uint32_t { none, taa, smaa, smaa_t2x };
+
 enum class ProbePlacement : std::uint32_t { fixed, follow_focus };
+
 inline constexpr std::size_t probe_volume_limit = 4;
+
 inline constexpr std::uint32_t probe_resident_limit = 4096;
+
 struct ProbeVolumeSettings {
     bool operator==(const ProbeVolumeSettings&) const = default;
+
     bool enabled{};
+
     ProbePlacement placement{ProbePlacement::fixed};
+
     // World bounds for fixed placement; offsets from Frame::lighting_focus
     // for follow_focus. Following snaps to whole cells without changing spacing.
     std::array<float, 3> minimum{-6.f, -1.f, -6.f};
+
     std::array<float, 3> maximum{6.f, 5.f, 6.f};
+
     std::array<std::uint32_t, 3> counts{8, 4, 8};
+
     float blend_cells{}; // Border transition measured in cells; 0..2.
 };
 
 struct SceneLightingSettings {
     bool operator==(const SceneLightingSettings&) const = default;
+
     bool shadows{true};
+
     bool ddgi{true};
+
     bool gtao{true};
+
     bool sssr{true};
+
     bool bloom{true};
+
     Antialiasing antialiasing{Antialiasing::smaa};
+
     float exposure_ev{}; // Display exposure; HDR histories remain scene linear.
+
     std::uint32_t direct_candidates{
         8}; // 1..32 local-light candidates per DDGI probe-ray hit; screen direct light evaluates every listed light.
+
     float ao_radius{0.35f};
+
     float reflection_distance{30.f};
+
     float reflection_roughness{0.6f};
+
     // Stable slot identity and priority, finest/local support first. All slots
     // share one resident/update budget; valid darkness retains its blend weight.
     std::array<ProbeVolumeSettings, probe_volume_limit> probe_volumes = [] {
@@ -64,17 +87,26 @@ struct SceneLightingSettings {
         volumes[0].enabled = true;
         return volumes;
     }();
+
     std::uint32_t probe_update_budget{64}; // Probes per frame, including initialization.
+
     std::uint32_t probe_rays{128}; // At most 256 rays per probe update.
+
     float probe_bounce{.85f}; // Feedback transport, 0..0.99; changing it invalidates the field.
+
     float indirect_gain{1.f}; // Final diffuse composition only, 0..8; never feeds the field.
+
     // Incident sky radiance sky_color * sky_intensity * map (cd/m^2) per channel; map = 1
     // without sky_map. The map turns about +Y by sky_rotation degrees in the sense of a
     // Transform rotation about +Y (+X toward -Z).
     bool sky_enabled{};
+
     std::array<float, 3> sky_color{1.f, 1.f, 1.f};
+
     float sky_intensity{.03f};
+
     SkyMapRef sky_map{};
+
     float sky_rotation{};
 };
 

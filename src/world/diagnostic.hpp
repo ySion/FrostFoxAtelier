@@ -57,6 +57,7 @@ enum class DiagnosticPhase : std::uint8_t {
     }
     return "unknown";
 }
+
 [[nodiscard]] constexpr std::string_view name(DiagnosticKind value) noexcept {
     switch (value) {
     case DiagnosticKind::behavior_failed:
@@ -92,6 +93,7 @@ enum class DiagnosticPhase : std::uint8_t {
     }
     return "unknown";
 }
+
 [[nodiscard]] constexpr std::string_view name(DiagnosticPhase value) noexcept {
     switch (value) {
     case DiagnosticPhase::load:
@@ -121,20 +123,32 @@ enum class DiagnosticPhase : std::uint8_t {
 struct Diagnostic {
     // Monotonic within its producer: a World's log or one scene load.
     std::uint64_t serial{};
+
     Severity severity{Severity::error};
+
     DiagnosticKind kind{};
+
     DiagnosticPhase phase{};
+
     // The failing Entity or Component and its owner Entity (equal for an
     // Entity). Both are null for document-level entries. An identity remains
     // meaningful as a value after its object is destroyed.
     ObjectId object;
+
     ObjectId entity;
+
     std::string type; // Qualified type name, e.g. world.StaticMeshComponent.
+
     std::vector<std::string> field; // Field path names; empty when not field-specific.
+
     std::optional<SourceLocation> source; // Script failures, when the Source program recorded one.
+
     std::string value; // Truncated preview of the offending value; may be empty.
+
     std::string message;
+
     std::uint32_t repeats{1}; // Coalesced identical per-frame failures.
+
     // When forwarding a failed Result, message/source retain its original payload.
     std::optional<ErrorCode> error_code{};
 };

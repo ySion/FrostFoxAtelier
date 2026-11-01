@@ -4,7 +4,9 @@
 
 namespace atelier::presentation {
 using detail::Access;
+
 using world::DiagnosticKind;
+
 using world::DiagnosticPhase;
 
 world::Diagnostic detail::diagnostic(DiagnosticKind kind, DiagnosticPhase phase, ObjectId object, ObjectId entity,
@@ -61,6 +63,7 @@ bool same_bytes(const auto& a, const auto& b) noexcept {
     static_assert(std::is_trivially_copyable_v<std::remove_cvref_t<decltype(a)>>);
     return std::memcmp(&a, &b, sizeof(a)) == 0;
 }
+
 bool same_light(const LightRenderItem& a, const LightRenderItem& b) noexcept {
     return a.entity == b.entity && a.component == b.component && a.position == b.position &&
            a.direction == b.direction && a.right == b.right && a.up == b.up && a.settings == b.settings;
@@ -88,6 +91,7 @@ detail::Presented::Presented(std::span<const world::PresentedPose> poses) {
         offset = value;
     }
 }
+
 Result<const detail::Presented::Offset*> detail::Presented::find(world::World::SpatialPass& pass,
                                                                  ObjectId entity) const {
     // The chain was composed by this pass's matrix() of `entity`, so it ends at world space.
@@ -101,6 +105,7 @@ Result<const detail::Presented::Offset*> detail::Presented::find(world::World::S
     }
     return nullptr;
 }
+
 const detail::Presented::Offset* detail::Presented::find(std::span<const ObjectId> chain) const {
     for (const auto node : chain)
         if (const auto found = offsets_.find(node); found != offsets_.end())

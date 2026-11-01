@@ -7,11 +7,14 @@
 
 namespace {
 using namespace atelier;
+
 namespace fs = std::filesystem;
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
@@ -19,16 +22,20 @@ T take(Result<T> value) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*value);
 }
+
 void write(const fs::path& path, std::string_view bytes) {
     take(editor::write_file(path, bytes));
 }
+
 std::string read(const fs::path& path) {
     return take(assets::read_file(path));
 }
+
 fs::path sidecar(fs::path path) {
     path += L".asset.json";
     return path;
 }
+
 std::string bmp(unsigned char red, unsigned char green, unsigned char blue) {
     std::string bytes(70, '\0');
     bytes[0] = 'B';
@@ -48,6 +55,7 @@ std::string bmp(unsigned char red, unsigned char green, unsigned char blue) {
     }
     return bytes;
 }
+
 void fixture(const fs::path& source, std::string_view filename, int width,
              std::initializer_list<std::string_view> slots, unsigned char red, unsigned char blue,
              bool extra_texture = false) {
@@ -67,17 +75,20 @@ void fixture(const fs::path& source, std::string_view filename, int width,
     if (extra_texture)
         write(source / "unrelated.bmp", bmp(10, 20, 30));
 }
+
 std::string binding(const assets::MeshAsset& mesh, std::string_view slot) {
     const auto at = std::ranges::find(mesh.materials, slot, &assets::SlotMaterial::slot);
     require(at != mesh.materials.end(), "Named mesh default is missing.");
     return at->key;
 }
+
 material::Override& parameter(assets::MaterialAsset& asset, std::string_view path) {
     auto& entries = std::get<assets::MaterialInstanceAsset>(asset.author).entries;
     const auto at = std::ranges::find(entries, path, &material::Override::path);
     require(at != entries.end(), "Expected typed MI author parameter is missing.");
     return *at;
 }
+
 auto snapshot(const fs::path& root) {
     std::map<fs::path, std::pair<std::string, fs::file_time_type>> files;
     for (const auto& file : fs::recursive_directory_iterator(root))
@@ -85,6 +96,7 @@ auto snapshot(const fs::path& root) {
             files.emplace(file.path().lexically_relative(root), std::pair{read(file.path()), file.last_write_time()});
     return files;
 }
+
 void run(const fs::path& root) {
     const auto source = root / "source";
     fixture(source, "model.obj", 1, {"Paint", "Trim"}, 210, 30);
@@ -319,6 +331,7 @@ void run(const fs::path& root) {
             take(live.assets().mesh_dependency_files(key)).empty(),
         "Catalogue discovery replaced received geometry/defaults or inferred raw dependencies from newer disk content.");
 }
+
 void gltf(const fs::path& root) {
     const auto source = root / "gltf";
     auto document = assets::json_format::parse(R"({
@@ -369,6 +382,7 @@ void gltf(const fs::path& root) {
     require(bounds.minimum[0] == -3 && bounds.maximum[0] == 0, "Updated glTF buffer was not persisted.");
 }
 }
+
 int main() {
     const auto root = fs::absolute("mesh-reimport-evidence/" +
                                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

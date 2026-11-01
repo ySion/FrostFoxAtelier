@@ -20,31 +20,37 @@ public:
                 flush();
         }
     }
+
     void u8(std::uint8_t value) {
         if (used_ == buffer_.size())
             flush();
         buffer_[used_++] = static_cast<std::byte>(value);
     }
+
     void u32(std::uint32_t value) {
         for (unsigned i = 0; i < 4; ++i) {
             u8(static_cast<std::uint8_t>(value));
             value >>= 8;
         }
     }
+
     void size(std::uint64_t value) {
         for (unsigned i = 0; i < 8; ++i) {
             u8(static_cast<std::uint8_t>(value));
             value >>= 8;
         }
     }
+
     void floats(std::span<const float> values) {
         for (auto value : values)
             u32(std::bit_cast<std::uint32_t>(value));
     }
+
     void text(std::string_view value) {
         size(value.size());
         bytes(std::as_bytes(std::span(value)));
     }
+
     std::string finish() {
         flush();
         return hash_.finish();
@@ -56,11 +62,15 @@ private:
             hash_.add({buffer_.data(), used_});
         used_ = 0;
     }
+
     foundation::Sha256 hash_;
+
     std::array<std::byte, 65536> buffer_;
+
     std::size_t used_{};
 };
 }
+
 Result<std::string> mesh_content_sha256(const MeshAsset& asset) try {
     if (!asset.mesh)
         throw std::invalid_argument("Cannot digest an unresolved mesh.");

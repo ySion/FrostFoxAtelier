@@ -17,18 +17,24 @@ namespace atelier::control {
 namespace {
 struct Handle {
     HANDLE value{};
+
     explicit Handle(HANDLE handle = nullptr) : value(handle) {}
+
     ~Handle() {
         if (value && value != INVALID_HANDLE_VALUE)
             CloseHandle(value);
     }
+
     Handle(const Handle&) = delete;
+
     Handle& operator=(const Handle&) = delete;
 };
+
 void check(bool ok, std::string_view operation) {
     if (!ok)
         throw Failure("transport_error", std::string(operation) + " (Windows " + std::to_string(GetLastError()) + ")");
 }
+
 std::string hex(std::span<const unsigned char> bytes) {
     constexpr char digits[] = "0123456789abcdef";
     std::string result;
@@ -39,6 +45,7 @@ std::string hex(std::span<const unsigned char> bytes) {
     }
     return result;
 }
+
 std::uint64_t started(HANDLE process) {
     FILETIME creation{};
     FILETIME exit{};
@@ -47,6 +54,7 @@ std::uint64_t started(HANDLE process) {
     check(GetProcessTimes(process, &creation, &exit, &kernel, &user) != FALSE, "Read process identity");
     return (std::uint64_t(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
 }
+
 bool live(const Json& instance) {
     try {
         const auto pid = instance.at("pid").get<DWORD>();
@@ -57,9 +65,12 @@ bool live(const Json& instance) {
         return false;
     }
 }
+
 struct Security {
     PSECURITY_DESCRIPTOR descriptor{};
+
     SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
+
     Security() {
         HANDLE raw{};
         check(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw) != FALSE, "Read user token");
@@ -79,11 +90,13 @@ struct Security {
               "Create local control access policy");
         attributes.lpSecurityDescriptor = descriptor;
     }
+
     ~Security() {
         if (descriptor)
             LocalFree(descriptor);
     }
 };
+
 void wait_io(HANDLE pipe, OVERLAPPED& operation, HANDLE stop, DWORD timeout) {
     HANDLE events[]{stop, operation.hEvent};
     const auto waited = WaitForMultipleObjects(stop ? 2u : 1u, stop ? events : events + 1, FALSE, timeout);
@@ -94,6 +107,7 @@ void wait_io(HANDLE pipe, OVERLAPPED& operation, HANDLE stop, DWORD timeout) {
         throw Failure(waited == WAIT_TIMEOUT ? "timeout" : "disconnected", "Control I/O cancelled or timed out");
     }
 }
+
 void transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write, HANDLE stop, DWORD timeout) {
     auto* cursor = static_cast<std::byte*>(storage);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
@@ -122,6 +136,7 @@ void transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write, HANDLE 
         bytes -= transferred;
     }
 }
+
 Json receive(HANDLE pipe, HANDLE stop, DWORD timeout) {
     std::uint32_t bytes{};
     transfer(pipe, &bytes, sizeof(bytes), false, stop, timeout);
@@ -131,6 +146,7 @@ Json receive(HANDLE pipe, HANDLE stop, DWORD timeout) {
     transfer(pipe, text.data(), bytes, false, stop, timeout);
     return parse(text);
 }
+
 void send(HANDLE pipe, const Json& value, HANDLE stop, DWORD timeout) {
     auto text = value.dump();
     if (text.size() > maximum_message)
@@ -153,6 +169,7 @@ std::string utf8(std::wstring_view text) {
                         nullptr, nullptr);
     return result;
 }
+
 std::wstring wide(std::string_view text) {
     if (text.empty())
         return {};
@@ -165,6 +182,7 @@ std::wstring wide(std::string_view text) {
                         count);
     return result;
 }
+
 std::filesystem::path default_directory() {
     std::wstring value(32768, L'\0');
     const auto count = GetEnvironmentVariableW(L"LOCALAPPDATA", value.data(), static_cast<DWORD>(value.size()));
@@ -173,22 +191,26 @@ std::filesystem::path default_directory() {
     value.resize(count);
     return std::filesystem::path(value) / L"FrostFoxAtelier/Control";
 }
+
 std::string unique_id() {
     GUID value{};
     if (FAILED(CoCreateGuid(&value)))
         throw Failure("storage_error", "Cannot allocate control identity");
     return hex({reinterpret_cast<const unsigned char*>(&value), sizeof(value)});
 }
+
 std::string sha256(std::span<const std::byte> bytes) try {
     return foundation::sha256(bytes);
 } catch (const std::exception& error) {
     throw Failure("storage_error", error.what());
 }
+
 std::string sha256_file(const std::filesystem::path& path) try {
     return foundation::sha256_file(path);
 } catch (const std::exception& error) {
     throw Failure("storage_error", error.what());
 }
+
 void fields(const Json& value, std::initializer_list<std::string_view> allowed) {
     if (!value.is_object())
         throw Failure("invalid_request", "Expected an object");
@@ -196,9 +218,11 @@ void fields(const Json& value, std::initializer_list<std::string_view> allowed) 
         if (std::ranges::find(allowed, item.key()) == allowed.end())
             throw Failure("invalid_request", "Unknown field: " + item.key());
 }
+
 Json failure(std::string_view code, std::string_view message) {
     return {{"status", "error"}, {"error", {{"code", code}, {"message", message}}}};
 }
+
 Json parse(std::string_view text) {
     if (text.size() > maximum_message)
         throw Failure("invalid_request", "Message exceeds 4 MiB");
@@ -224,21 +248,36 @@ Json parse(std::string_view text) {
 struct Server::Impl {
     struct Pending {
         Json request;
+
         Json response;
+
         std::shared_ptr<Peer> peer;
+
         Handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+
         std::chrono::steady_clock::time_point deadline;
     };
+
     std::filesystem::path root;
+
     std::filesystem::path descriptor_path;
+
     Json identity;
+
     std::wstring pipe_name;
+
     Handle stop{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+
     std::mutex mutex;
+
     std::deque<std::shared_ptr<Pending>> queue;
+
     std::thread worker;
+
     std::string startup_error;
+
     Handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+
     explicit Impl(std::filesystem::path directory, Json build)
         : root(std::filesystem::absolute(directory).lexically_normal()) {
         check(stop.value && ready.value, "Create control lifecycle events");
@@ -272,6 +311,7 @@ struct Server::Impl {
             throw;
         }
     }
+
     ~Impl() {
         SetEvent(stop.value);
         if (worker.joinable())
@@ -279,6 +319,7 @@ struct Server::Impl {
         std::error_code ignored;
         std::filesystem::remove(descriptor_path, ignored);
     }
+
     void serve() noexcept {
         bool announced{};
         try {
@@ -359,9 +400,12 @@ struct Server::Impl {
         SetEvent(ready.value);
     }
 };
+
 Server::Server(const std::filesystem::path& directory, Json build)
     : impl_(std::make_unique<Impl>(directory, std::move(build))) {}
+
 Server::~Server() = default;
+
 void Server::stop() noexcept {
     SetEvent(impl_->stop.value);
     if (impl_->worker.joinable())
@@ -369,12 +413,15 @@ void Server::stop() noexcept {
     std::error_code ignored;
     std::filesystem::remove(impl_->descriptor_path, ignored);
 }
+
 const Json& Server::identity() const noexcept {
     return impl_->identity;
 }
+
 const std::filesystem::path& Server::directory() const noexcept {
     return impl_->root;
 }
+
 void Server::poll(const Handler& handler) {
     std::shared_ptr<Impl::Pending> request;
     {
@@ -411,8 +458,11 @@ void Server::poll(const Handler& handler) {
 
 struct Client::Impl {
     Json instance;
+
     Handle pipe;
+
     DWORD timeout{};
+
     Impl(Json descriptor, std::chrono::milliseconds wait)
         : instance(std::move(descriptor)),
           timeout(static_cast<DWORD>(std::clamp<std::int64_t>(wait.count(), 1, maximum_timeout_ms))) {
@@ -442,9 +492,12 @@ struct Client::Impl {
         throw Failure("busy", "Editor control endpoint is busy or unavailable");
     }
 };
+
 Client::Client(const Json& instance, std::chrono::milliseconds timeout)
     : impl_(std::make_unique<Impl>(instance, timeout)) {}
+
 Client::~Client() = default;
+
 Json Client::call(Json request) {
     if (!request.is_object())
         throw Failure("invalid_request", "Expected a request object");
@@ -460,6 +513,7 @@ Json Client::call(Json request) {
         throw Failure("protocol_mismatch", "Response belongs to a different request or editor instance");
     return response;
 }
+
 Json discover(const std::filesystem::path& directory) {
     auto result = Json::array();
     std::error_code error;

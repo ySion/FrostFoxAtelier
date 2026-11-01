@@ -15,6 +15,7 @@ namespace {
 auto invalid(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
@@ -22,6 +23,7 @@ T take(Result<T> result) {
     return std::move(*result);
 }
 }
+
 Session::Session(Prepare prepare, SessionRole role)
     : types_(take(world::register_types(runtime_))), presentation_types_(take(presentation::register_types(runtime_))),
       physics_types_(take(physics::register_types(runtime_))), world_(runtime_, types_),
@@ -40,9 +42,11 @@ Session::Session(Prepare prepare, SessionRole role)
         prepared_ = std::move(*ready);
     }
 }
+
 Session::~Session() {
     (void)world_.close();
 }
+
 void Session::remember(Change change) {
     forward_change(change, true);
     ++revision_;
@@ -63,10 +67,12 @@ void Session::remember(Change change) {
     }
     cursor_ = history_.size();
 }
+
 std::wstring_view Session::name(ObjectId entity) const noexcept {
     const auto at = names_.find(entity);
     return at == names_.end() ? std::wstring_view{} : at->second;
 }
+
 Result<void> Session::admit_entity_edit(ObjectId entity) const {
     auto state = world::inspect_entity(world_.runtime(), entity);
     if (!state)
@@ -80,6 +86,7 @@ Result<void> Session::admit_entity_edit(ObjectId entity) const {
         return invalid("The Entity is not a member of this document.");
     return {};
 }
+
 Result<world::ComponentStatus> Session::admit_component_edit(ObjectId component) const {
     auto state = world::inspect_component(world_.runtime(), component);
     if (!state)
@@ -90,6 +97,7 @@ Result<world::ComponentStatus> Session::admit_component_edit(ObjectId component)
         return std::unexpected(ready.error());
     return state;
 }
+
 Result<void> Session::validate_name(std::wstring_view name) {
     if (name.empty() || name.size() > 256 ||
         std::all_of(name.begin(), name.end(), [](wchar_t c) { return c == L' '; }) ||
@@ -97,6 +105,7 @@ Result<void> Session::validate_name(std::wstring_view name) {
         return invalid("Use a name with 1–256 visible characters.");
     return {};
 }
+
 namespace {
 // The EnvironmentComponent field names of a World Settings option (a view option
 // for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
@@ -120,10 +129,12 @@ std::vector<std::string> environment_field(std::string_view option) {
     return {std::string(option)};
 }
 }
+
 ObjectId Session::environment() const {
     const auto found = world_.query(presentation_types_.environment_component);
     return found && !found->empty() ? found->front() : ObjectId{};
 }
+
 Result<ObjectId> Session::main_camera() const {
     const auto existing = environment();
     if (existing == ObjectId{})
@@ -136,6 +147,7 @@ Result<ObjectId> Session::main_camera() const {
         return std::unexpected(value.error());
     return value->id();
 }
+
 Result<void> Session::set_main_camera(ObjectId target) {
     if (editing())
         return invalid("Finish the current edit before changing the main camera.");
@@ -205,6 +217,7 @@ Result<void> Session::set_main_camera(ObjectId target) {
         return std::unexpected(*attached->notification_error);
     return {};
 }
+
 Result<void> Session::apply_reference(const ReferenceFieldChange& change, bool forward) {
     auto owner = admit_property_edit(change.root.id());
     if (!owner)
@@ -213,6 +226,7 @@ Result<void> Session::apply_reference(const ReferenceFieldChange& change, bool f
         return invalid("The reference field's owning Entity changed.");
     return runtime_.write_reference(change.root.id(), change.path, forward ? change.after : change.before);
 }
+
 Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_removal(std::span<const ObjectId> targets) {
     auto selected = main_camera();
     if (!selected)
@@ -246,6 +260,7 @@ Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_remova
     }
     return std::nullopt;
 }
+
 Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
     auto current = presentation_.environment();
     if (!current)
@@ -289,6 +304,7 @@ Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::Scen
     }
     return edit;
 }
+
 Result<ObjectId> Session::admit_environment_edit(ObjectId existing) const {
     // The World Settings show a disabled Environment's defaults, which an edit would silently diff against.
     auto status = world::inspect_component(world_.runtime(), existing);
@@ -301,6 +317,7 @@ Result<ObjectId> Session::admit_environment_edit(ObjectId existing) const {
         return invalid("The Environment is disabled; enable it in Parameters before changing World settings.");
     return admit_property_edit(existing);
 }
+
 Result<void> Session::set_environment(const rendering::SceneLightingSettings& settings) {
     auto edit = environment_edit(settings);
     if (!edit)
@@ -348,6 +365,7 @@ Result<void> Session::set_environment(const rendering::SceneLightingSettings& se
         return std::unexpected(*attached->notification_error);
     return {};
 }
+
 Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
     if (editing())
         return invalid("Finish the current property edit before changing World settings.");
@@ -389,6 +407,7 @@ Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
         return std::unexpected(*attached->notification_error);
     return {};
 }
+
 Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath> paths, std::span<const Scalar> values,
                                                const presentation::SkyMapBinding* sky) {
     auto members = world_.members();
@@ -414,6 +433,7 @@ Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath>
         return std::unexpected(composed.error());
     return std::move(*entity);
 }
+
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     if (auto valid = validate_name(name); !valid)
         return valid;
@@ -435,6 +455,7 @@ Result<void> Session::rename(ObjectId entity, std::wstring name) {
     remember(std::move(change));
     return {};
 }
+
 void Session::set_selection(Selection next) {
     if (selection_ != next || selected_entities_.size() != (next.entity == ObjectId{} ? 0u : 1u))
         ++revision_;
@@ -443,6 +464,7 @@ void Session::set_selection(Selection next) {
     if (next.entity != ObjectId{})
         selected_entities_.push_back(next.entity);
 }
+
 void Session::prune_selection() noexcept {
     const auto members = world_.members();
     const auto contains = [&](ObjectId entity) {
@@ -459,6 +481,7 @@ void Session::prune_selection() noexcept {
             selection_ = {selected_entities_.back(), selected_entities_.back()};
     }
 }
+
 Result<void> Session::select(ObjectId object) {
     Selection next;
     if (object != ObjectId{}) {
@@ -475,6 +498,7 @@ Result<void> Session::select(ObjectId object) {
     set_selection(next);
     return {};
 }
+
 Result<void> Session::select_entities(std::span<const ObjectId> entities, ObjectId active) {
     std::vector<ObjectId> next;
     next.reserve(entities.size());
@@ -501,6 +525,7 @@ Result<void> Session::select_entities(std::span<const ObjectId> entities, Object
     ++revision_;
     return {};
 }
+
 Result<world::Commit> Session::add_entity(TypeId actual) {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -515,6 +540,7 @@ Result<world::Commit> Session::add_entity(TypeId actual) {
         return std::unexpected(root.error());
     return attach_created(std::move(*root), L"Entity");
 }
+
 Result<void> Session::set_transform(ObjectId entity, world::Trs value) {
     if (auto valid = admit_entity_edit(entity); !valid)
         return valid;
@@ -537,6 +563,7 @@ Result<void> Session::set_transform(ObjectId entity, world::Trs value) {
                                      take(world::space_reference(runtime_, entity))});
     return {};
 }
+
 Result<void> Session::remove_transform(ObjectId entity) {
     if (auto valid = admit_entity_edit(entity); !valid)
         return valid;
@@ -555,6 +582,7 @@ Result<void> Session::remove_transform(ObjectId entity) {
         std::move(*root), before, {}, before_origin, take(world::space_reference(runtime_, entity))});
     return {};
 }
+
 Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optional<ObjectId> origin,
                                                    world::ReparentRule rule) {
     if (auto valid = admit_entity_edit(entity); !valid)
@@ -582,9 +610,11 @@ Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optiona
     }
     return changed;
 }
+
 Result<world::Commit> Session::reparent(ObjectId entity, ObjectId parent, world::ReparentRule rule, std::size_t index) {
     return reparent(std::span{&entity, 1}, parent, rule, index);
 }
+
 Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, ObjectId parent, world::ReparentRule rule,
                                         std::size_t index) {
     // The input may be selected_entities(), which publication updates below.
@@ -661,6 +691,7 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
         remember(std::move(change));
     return changed;
 }
+
 Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset, math::Vector3 position,
                                                   Project* project) {
     auto cancelled = cancel_edit();
@@ -684,6 +715,7 @@ Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset
         return std::unexpected(root.error());
     return attach_created(std::move(*root), asset.name);
 }
+
 Result<world::Commit> Session::create_light(presentation::LightKind kind, math::Vector3 position) {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -719,6 +751,7 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind, math::
                                                                     : L"Directional Light";
     return attach_created(std::move(*entity), label);
 }
+
 Result<world::Commit> Session::create_camera(math::Vector3 position) {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -741,6 +774,7 @@ Result<world::Commit> Session::create_camera(math::Vector3 position) {
         return composed;
     return attach_created(std::move(*entity), L"Camera");
 }
+
 Result<world::Commit> Session::attach_created(ObjectRoot root, std::wstring_view label) {
     EntityChange change;
     change.added = true;
@@ -758,6 +792,7 @@ Result<world::Commit> Session::attach_created(ObjectRoot root, std::wstring_view
     }
     return attached;
 }
+
 Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities) {
     if (entities.empty())
         return world::Commit{};
@@ -810,6 +845,7 @@ Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities
     }
     return result;
 }
+
 Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -858,6 +894,7 @@ Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
     }
     return attached;
 }
+
 Result<world::Commit> Session::remove_component(ObjectId component) {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -875,6 +912,7 @@ Result<world::Commit> Session::remove_component(ObjectId component) {
     }
     return result;
 }
+
 Result<ObjectId> Session::admit_property_edit(ObjectId object) const {
     if (world_.running() || world_.closed())
         return invalid("Properties require an open, stopped document.");
@@ -894,6 +932,7 @@ Result<ObjectId> Session::admit_property_edit(ObjectId object) const {
         return std::unexpected(component.error());
     return component->owner;
 }
+
 Result<std::vector<ComponentType>> Session::component_types() const {
     std::vector<ComponentType> result;
     for (const auto type : runtime_.types()) {
@@ -910,6 +949,7 @@ Result<std::vector<ComponentType>> Session::component_types() const {
     }
     return result;
 }
+
 Result<std::vector<Property>> Session::properties(ObjectId object) const {
     if (auto ready = admit_property_edit(object); !ready)
         return std::unexpected(ready.error());
@@ -939,11 +979,13 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
     }
     return result;
 }
+
 Result<Scalar> Session::read_property(ObjectId object, std::span<const FieldId> path) const {
     if (auto ready = admit_property_edit(object); !ready)
         return std::unexpected(ready.error());
     return world_.read(object, path);
 }
+
 Result<void> Session::configure_body(ObjectId component, physics::BodySettings settings) {
     if (auto cancelled = cancel_edit(); !cancelled)
         return cancelled;
@@ -968,6 +1010,7 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
     remember(BodyChange{std::move(*held), state->owner, std::move(*before), std::move(settings)});
     return {};
 }
+
 Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path, std::uint64_t control_session) {
     if (editing())
         return invalid("A field edit is already active.");
@@ -992,6 +1035,7 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
     active_.emplace(FieldChange{std::move(*root), *entity, {path.begin(), path.end()}, control_session, value, value});
     return {};
 }
+
 Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::FieldPath> paths,
                                        std::uint64_t control_session) {
     if (editing())
@@ -1021,6 +1065,7 @@ Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::F
     group_.emplace(std::move(change));
     return {};
 }
+
 Result<void> Session::preview_group_edit(std::uint64_t control_session, std::span<const Scalar> values) {
     if (!group_ || group_->control_session != control_session)
         return invalid("No matching group edit.");
@@ -1037,6 +1082,7 @@ Result<void> Session::preview_group_edit(std::uint64_t control_session, std::spa
     forward_edit();
     return {};
 }
+
 Result<void> Session::write_group(ObjectId object, std::span<const world::FieldPath> paths,
                                   std::span<const Scalar> values) {
     if (paths.empty() || values.size() != paths.size())
@@ -1052,6 +1098,7 @@ Result<void> Session::write_group(ObjectId object, std::span<const world::FieldP
     }
     return world_.write(object, paths, values);
 }
+
 Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) {
     auto entity = admit_property_edit(change.root.id());
     if (!entity)
@@ -1061,6 +1108,7 @@ Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) 
     const auto& values = forward ? change.after : change.before;
     return write_group(change.root.id(), change.paths, values);
 }
+
 Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPatch> patch) {
     auto entity = admit_property_edit(object);
     if (!entity)
@@ -1094,11 +1142,13 @@ Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPa
     remember(std::move(change));
     return {};
 }
+
 bool Session::owns_edit(std::uint64_t control_session) const noexcept {
     return (group_ && group_->control_session == control_session) ||
            (active_ && active_->control_session == control_session) ||
            (transform_ && transform_->control_session == control_session) || material_editing(control_session);
 }
+
 Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session,
                                       bool amend_creation) {
     if (editing())
@@ -1137,6 +1187,7 @@ Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::u
     transform_ = std::move(change);
     return {};
 }
+
 Result<world::Trs> Session::original_transform(std::uint64_t control_session, ObjectId component) const {
     if (!transform_ || transform_->control_session != control_session)
         return invalid("No matching transform edit.");
@@ -1145,6 +1196,7 @@ Result<world::Trs> Session::original_transform(std::uint64_t control_session, Ob
             return entry.before;
     return invalid("The Entity does not belong to this transform edit.");
 }
+
 Result<void> Session::preview_transform(std::uint64_t control_session, std::span<const world::Trs> values) {
     if (!transform_ || transform_->control_session != control_session)
         return invalid("No matching transform edit.");
@@ -1158,6 +1210,7 @@ Result<void> Session::preview_transform(std::uint64_t control_session, std::span
         forward_edit();
     return written;
 }
+
 Result<void> Session::write_transforms(const TransformChange& change, std::span<const world::Trs> values) {
     if (values.size() != change.entries.size())
         return invalid("Transform preview does not match its targets.");
@@ -1193,6 +1246,7 @@ Result<void> Session::write_transforms(const TransformChange& change, std::span<
     }
     return {};
 }
+
 Result<void> Session::set_property(ObjectId object, std::span<const FieldId> path, Scalar value,
                                    std::uint64_t control_session) {
     auto begun = begin_edit(object, path, control_session);
@@ -1206,9 +1260,11 @@ Result<void> Session::set_property(ObjectId object, std::span<const FieldId> pat
     auto restored = cancel_edit();
     return restored ? changed : restored;
 }
+
 Result<void> Session::preview_edit(std::uint64_t control_session, float value) {
     return preview_edit(control_session, Scalar{value});
 }
+
 Result<void> Session::preview_edit(std::uint64_t control_session, Scalar value) {
     if (!active_ || active_->control_session != control_session)
         return invalid("No matching field edit.");
@@ -1249,6 +1305,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session, Scalar value) 
         forward_edit();
     return result;
 }
+
 Result<void> Session::commit_edit(std::uint64_t control_session) {
     if (material_editing(control_session))
         return commit_material_edit(control_session);
@@ -1303,6 +1360,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
     live_leaves_.clear();
     return {};
 }
+
 Result<void> Session::apply_field(const FieldChange& change, bool forward) {
     auto entity = admit_property_edit(change.root.id());
     if (!entity)
@@ -1314,6 +1372,7 @@ Result<void> Session::apply_field(const FieldChange& change, bool forward) {
         return world_.set_transform(change.root.id(), *transform);
     return world_.write(change.root.id(), change.path, std::get<Scalar>(value));
 }
+
 Result<void> Session::cancel_edit() {
     if (auto cancelled = cancel_material_edit(); !cancelled)
         return cancelled;
@@ -1371,6 +1430,7 @@ Result<void> Session::cancel_edit() {
     live_leaves_.clear();
     return {};
 }
+
 Result<void> Session::reset_position(ObjectId component) {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -1395,6 +1455,7 @@ Result<void> Session::reset_position(ObjectId component) {
     remember(std::move(change));
     return {};
 }
+
 Result<world::Commit> Session::replay(Change& change, bool forward, Project* project) {
     return std::visit(
         [&](auto& item) -> Result<world::Commit> {
@@ -1625,6 +1686,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
         },
         change);
 }
+
 Result<world::Commit> Session::undo(Project* project) {
     if (cursor_)
         ++revision_;
@@ -1641,6 +1703,7 @@ Result<world::Commit> Session::undo(Project* project) {
     }
     return result;
 }
+
 Result<world::Commit> Session::redo(Project* project) {
     if (cursor_ < history_.size())
         ++revision_;
@@ -1657,6 +1720,7 @@ Result<world::Commit> Session::redo(Project* project) {
     }
     return result;
 }
+
 Result<world::Commit> Session::close() {
     auto cancelled = cancel_edit();
     if (!cancelled)
@@ -1678,6 +1742,7 @@ Result<world::Commit> Session::close() {
     prepared_.reset();
     return closed;
 }
+
 Result<world::Commit> Session::start() {
     if (editing())
         return invalid("Finish the active edit before starting the World.");
@@ -1692,12 +1757,14 @@ Result<world::Commit> Session::start() {
         physics_.reset();
     return started;
 }
+
 Result<void> Session::update(float amount) {
     auto result = world_.update(amount);
     if (!result)
         (void)stop();
     return result;
 }
+
 Result<world::Commit> Session::stop() {
     auto result = world_.stop();
     if (!result)
@@ -1706,6 +1773,7 @@ Result<world::Commit> Session::stop() {
         physics_.reset();
     return result;
 }
+
 Result<void> Session::collect_step() {
     if (runtime_.collection_phase() == CollectionPhase::idle) {
         auto started = runtime_.begin_collection();

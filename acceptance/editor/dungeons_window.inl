@@ -4,6 +4,7 @@ int verify_dungeons_window(Application& app, const char* output_directory) try {
     require(SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE, "Cannot initialize dungeon captures.");
     struct Apartment {
         bool owns;
+
         ~Apartment() {
             if (owns)
                 CoUninitialize();

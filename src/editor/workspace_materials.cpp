@@ -4,6 +4,7 @@ namespace atelier::editor {
 namespace {
 constexpr ui::ControlKey choices = 1ULL << 38;
 }
+
 ui::ControlKey Workspace::bind_material(ObjectId object, std::string_view path, Binding::Kind kind, ObjectId component,
                                         std::string_view slot, std::size_t index) {
     const auto at = std::ranges::find_if(bindings_, [&](const auto& value) {
@@ -16,11 +17,13 @@ ui::ControlKey Workspace::bind_material(ObjectId object, std::string_view path, 
     bindings_.push_back({key, object, {}, kind, component, std::string(slot), index, 0, std::string(path)});
     return key;
 }
+
 std::optional<Workspace::MaterialChoice> Workspace::material_choice(ui::ControlKey key) const {
     if (key < choices || key - choices >= material_choices_.size())
         return {};
     return material_choices_[static_cast<std::size_t>(key - choices)];
 }
+
 std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target, const Session& session,
                                                    const Project* project) {
     std::vector<ui::MenuItem> result;

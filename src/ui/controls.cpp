@@ -10,6 +10,7 @@ ui_layout::NodeInput single_line_layout(float width) {
     layout.height = ui_layout::Axis::content(single_line_height);
     return layout;
 }
+
 void append_parameter_row(std::vector<Control>& controls, const ParameterRow& row, float body_minimum) {
     using namespace ui_layout;
     const auto append = [&](ControlKey key, ControlKey parent, ControlKind kind, NodeInput layout,
@@ -43,6 +44,7 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
     body.width = Axis::flex(Basis::fixed(std::max(144.f, body_minimum)), 1, 1, body_minimum);
     append(row.body_key, row.key, ControlKind::container, body);
 }
+
 void append_number_row(std::vector<Control>& controls, ParameterRow row, std::span<const NumberField> fields) {
     if (fields.empty() || fields.size() > 4)
         throw std::invalid_argument("A number row requires 1–4 fields.");
@@ -108,12 +110,14 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
         }
     }
 }
+
 namespace {
 // Bits [0, depth).
 std::bitset<128> levels_below(std::uint32_t depth) {
     return ~std::bitset<128>{} >> (128 - depth);
 }
 }
+
 void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std::vector<TreeRow>& rows) {
     rows.clear();
     if (nodes.size() >= no_tree_node)
@@ -189,6 +193,7 @@ void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std
         row.lines = guides;
     }
 }
+
 std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows, TreeViewport viewport,
                                        std::span<const std::uint32_t> pinned) {
     std::vector<std::uint32_t> result;

@@ -14,6 +14,7 @@ namespace atelier::renderer::detail {
         {rhi::ErrorCode::execution_failed, kGfxResult_InvalidOperation, std::string(name) + " frame slot " + what},
         true};
 }
+
 // Persistent CPU-written buffers, one per frame in flight, read by the GPU in
 // place. gfx begins recording frame N only after frame N - frames_in_flight
 // completed, so the slot picked by the recording sequence is no longer read.
@@ -54,6 +55,7 @@ public:
         }
         return slot.buffer;
     }
+
     GfxResult retire(GfxContext gfx) {
         GfxResult result = kGfxResult_NoError;
         for (auto& slot : slots_)
@@ -64,6 +66,7 @@ public:
         sequence_ = 0;
         return result;
     }
+
     std::uint64_t bytes() const {
         std::uint64_t result = 0;
         for (const auto& slot : slots_)
@@ -74,12 +77,17 @@ public:
 private:
     struct Slot {
         GfxBuffer buffer{};
+
         std::uint64_t revision{};
     };
+
     std::vector<Slot> slots_;
+
     std::uint64_t revision_{1};
+
     std::uint64_t sequence_{};
 };
+
 // A persistent default-heap table for data that passes read many times per
 // frame; upload-heap reads cost Dungeon's direct passes about 2%. Changed
 // values are staged in a frame slot and copied in where write records, so
@@ -111,10 +119,12 @@ public:
         }
         return buffer_;
     }
+
     GfxBuffer write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
                     const char* name) {
         return write(gfx, frames_in_flight, values, 0, changed ? values.size() : 0, name);
     }
+
     GfxResult retire(GfxContext gfx) {
         GfxResult result = staging_.retire(gfx);
         if (buffer_)
@@ -122,10 +132,12 @@ public:
                 result = r;
         return result;
     }
+
     std::uint64_t bytes() const { return buffer_.getSize() + staging_.bytes(); }
 
 private:
     GfxBuffer buffer_{};
+
     FrameSlots<T> staging_;
 };
 }

@@ -34,45 +34,54 @@
 
 namespace {
 using namespace atelier;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void changed(Result<world::Commit> result) {
     const auto commit = take(std::move(result));
     if (commit.notification_error)
         throw std::runtime_error(commit.notification_error->message);
 }
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 material::ProgramSurfaceRef snapshot_surface(const application::SceneSnapshot& snapshot, std::size_t mesh = 0,
                                              std::size_t slot = 0) {
     return snapshot.picking()->materials.at(snapshot.meshes.at(mesh).material_slots->at(slot));
 }
+
 void collect(editor::Session& document) {
     for (unsigned step = 0; step < 96; ++step)
         take(document.collect_step());
 }
+
 void collect(Runtime& runtime) {
     if (runtime.collection_phase() == CollectionPhase::idle)
         take(runtime.begin_collection());
     while (runtime.collection_phase() != CollectionPhase::idle)
         take(runtime.collect_step({1024}));
 }
+
 ObjectId component(editor::Session& document, ObjectId entity, TypeId type) {
     for (const auto& root : take(world::components(document.world().runtime(), entity)))
         if (take(document.world().runtime().type_of(root.id())) == type)
             return root.id();
     throw std::runtime_error("Expected component is absent.");
 }
+
 float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
     return std::get<float>(take(document.world().read(target, document.parameters()[axis].path)));
 }
@@ -105,6 +114,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "recovery.inl"
 #include "procedural_graph.inl"
 }
+
 int main(int argc, char** argv) {
     std::string_view stage = argc > 1 ? argv[1] : "document history";
     try {

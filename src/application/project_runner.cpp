@@ -28,12 +28,14 @@ T take(Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 void complete(Result<world::Commit> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     if (result->notification_error)
         throw std::runtime_error(result->notification_error->message);
 }
+
 template <class T>
 T graphics(renderer::Result<T> result) {
     if (!result)
@@ -41,6 +43,7 @@ T graphics(renderer::Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 template <class T>
 T presentation(ui::Result<T> result) {
     if (!result)
@@ -48,6 +51,7 @@ T presentation(ui::Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 std::uint64_t number(std::wstring_view text) {
     std::uint64_t value{};
     if (text.empty())
@@ -59,6 +63,7 @@ std::uint64_t number(std::wstring_view text) {
     }
     return value;
 }
+
 void report_performance(const editor::FramePerformance& performance, std::uint64_t frames) noexcept try {
     const auto& cpu = performance.snapshot().cpu;
     logging::Entry entry{.category = "runner", .event_code = "runner.performance", .message = "Run frame performance."};
@@ -84,6 +89,7 @@ void report_performance(const editor::FramePerformance& performance, std::uint64
 } catch (...) {
     std::fputs("Runner performance diagnostic capture failed.\n", stderr);
 }
+
 void startup_checkpoint() noexcept {
     // One startup boundary, not a per-frame barrier. The record must be visible
     // even if the very next Source invocation never returns.
@@ -95,6 +101,7 @@ void startup_checkpoint() noexcept {
     }
 }
 }
+
 int run_project_command(std::span<wchar_t*> arguments) {
     try {
         if (arguments.empty())
@@ -153,9 +160,11 @@ int run_project_command(std::span<wchar_t*> arguments) {
         return 2;
     }
 }
+
 int run_project(const RunOptions& options) {
     struct StopEvent {
         HANDLE value;
+
         ~StopEvent() {
             if (value)
                 CloseHandle(value);
@@ -196,8 +205,11 @@ int run_project(const RunOptions& options) {
         const auto report_diagnostics = [&] { drain_world(document, project.root(), dropped); };
         struct StopWorld {
             editor::Session& session;
+
             const std::filesystem::path& root;
+
             std::uint64_t& dropped;
+
             ~StopWorld() {
                 try {
                     auto stopped = session.stop();
@@ -236,6 +248,7 @@ int run_project(const RunOptions& options) {
         }
         struct CloseRenderer {
             std::optional<renderer::Renderer>& renderer;
+
             ~CloseRenderer() {
                 if (renderer)
                     static_cast<void>(renderer->close());

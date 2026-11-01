@@ -10,6 +10,7 @@ void verify_tooltip_dsl() {
     require(std::filesystem::create_directory(folder), "Tooltip DSL evidence folder was not unique.");
     struct Cleanup {
         std::filesystem::path path;
+
         ~Cleanup() {
             std::error_code error;
             std::filesystem::remove_all(path, error);

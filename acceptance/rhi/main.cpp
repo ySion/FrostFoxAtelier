@@ -11,14 +11,21 @@
 #include <utility>
 
 using namespace atelier::rhi;
+
 using namespace rhi_acceptance;
+
 namespace rhi_acceptance {
 void resource_cases();
+
 void ray_query_cases();
+
 void scene_lit_cases();
+
 void shadow_cases();
+
 void preparation_cases();
 }
+
 namespace {
 template <class T>
 T take(Result<T> result) {
@@ -26,15 +33,18 @@ T take(Result<T> result) {
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void check(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void fixture(const std::filesystem::path& path, const char* source) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     file << source;
     require(file.good(), "shader fixture write failed");
 }
+
 PipelineDesc graphics_desc(PipelineKind kind) {
     PipelineDesc desc;
     desc.kind = kind;
@@ -51,6 +61,7 @@ PipelineDesc graphics_desc(PipelineKind kind) {
     rhi_acceptance::check(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
     return desc;
 }
+
 void preparation_matrix(Context& context, Pipeline& live_vertex) {
     const auto old_program = live_vertex.program();
     const auto old_kernel = live_vertex.kernel();
@@ -144,12 +155,17 @@ void preparation_matrix(Context& context, Pipeline& live_vertex) {
     }
     std::printf("preparation: rejected=%u optional-file-stages=PASS old-pipeline-preserved=PASS\n", rejected);
 }
+
 struct Readbacks {
     GfxBuffer mesh_color;
+
     GfxBuffer vertex_color;
+
     GfxBuffer depth;
+
     GfxBuffer parameters;
 };
+
 void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex) {
     constexpr std::uint32_t width = 64;
     constexpr std::uint32_t height = 32;

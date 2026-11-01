@@ -15,6 +15,7 @@ geometry::MeshRef plane() {
                                                                                 {{1, 0, -1}, {0, 1, 0}, {1, 1}}},
                                                   std::vector<std::uint8_t>{5, 3});
 }
+
 geometry::MeshRef sphere() {
     constexpr unsigned rings = 12;
     constexpr unsigned segments = 24;
@@ -48,17 +49,23 @@ geometry::MeshRef sphere() {
         }
     return std::make_shared<const geometry::Mesh>(std::move(vertices), std::move(edges));
 }
+
 struct Producer {
     const char* key;
+
     const wchar_t* name;
+
     std::uint32_t semantic_version;
+
     geometry::MeshRef (*make)();
 };
+
 // This table owns identities, order and producer compatibility declarations.
 constexpr std::array producers{Producer{"builtin/cube", L"Cube", 1, geometry::cube_mesh},
                                Producer{"builtin/sphere", L"Sphere", 1, sphere},
                                Producer{"builtin/plane", L"Plane", 1, plane}};
 }
+
 std::span<const MeshAsset> mesh_assets() {
     static const auto assets = [] {
         std::array<MeshAsset, producers.size()> result;
@@ -70,6 +77,7 @@ std::span<const MeshAsset> mesh_assets() {
     }();
     return assets;
 }
+
 Result<EngineDependency> Reader::engine_dependency(std::string_view key, AssetKind expected) const {
     for (const auto& asset : material_assets())
         if (asset.key == key) {

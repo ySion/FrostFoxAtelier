@@ -1,9 +1,12 @@
 // Included by project_execution.cpp: the editor-to-Play change link.
 using LinkJson = assets::json_format::Json;
+
 // Plays the other end of a link: queues what arrives so tests read one message at a time.
 struct LinkPeer {
     std::unique_ptr<application::LiveLink> link;
+
     std::deque<std::string> arrived;
+
     LinkJson next(application::PlayProcess* process = nullptr) {
         const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (arrived.empty()) {
@@ -19,14 +22,17 @@ struct LinkPeer {
         arrived.pop_front();
         return LinkJson::parse(text);
     }
+
     bool idle() {
         Sleep(50);
         for (auto& text : link->receive())
             arrived.push_back(std::move(text));
         return arrived.empty();
     }
+
     void send(const LinkJson& message) { link->send(message.dump()); }
 };
+
 std::pair<std::unique_ptr<application::LiveLink>, LinkPeer> link_pair() {
     HANDLE editor_read{};
     HANDLE peer_write{};
@@ -38,6 +44,7 @@ std::pair<std::unique_ptr<application::LiveLink>, LinkPeer> link_pair() {
     return {std::make_unique<application::LiveLink>(editor_read, editor_write),
             LinkPeer{std::make_unique<application::LiveLink>(peer_read, peer_write), {}}};
 }
+
 LinkJson ack(std::uint64_t seq, std::string_view severity = {}) {
     LinkJson message = {{"type", "ack"}, {"seq", seq}, {"diagnostics", LinkJson::array()}};
     if (!severity.empty())
@@ -45,6 +52,7 @@ LinkJson ack(std::uint64_t seq, std::string_view severity = {}) {
             {{"severity", severity}, {"kind", "command_rejected"}, {"message", "Play change 0 #7: rejected."}});
     return message;
 }
+
 void settle(application::PlayLink& link, std::size_t pending = 0) {
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (link.unacknowledged() != pending && link.divergence().empty()) {
@@ -53,6 +61,7 @@ void settle(application::PlayLink& link, std::size_t pending = 0) {
         Sleep(2);
     }
 }
+
 // The editor end in-process against a scripted peer: numbering, spilling, splitting and divergence.
 void verify_link_protocol(const std::filesystem::path& root) {
     const auto spill = root / "Cache/Play/link-protocol";
@@ -155,6 +164,7 @@ void verify_link_protocol(const std::filesystem::path& root) {
         },
         "closed while Play kept running");
 }
+
 // Real Session publications through the actual pipe/spill/receiver/ACK path.
 void verify_texture_link(const std::filesystem::path& root) {
     namespace fs = std::filesystem;
@@ -356,12 +366,14 @@ void verify_texture_link(const std::filesystem::path& root) {
     std::puts(
         "Manual resource reimport/Live: PASS (exact RGBA/mesh bits, >16 MiB, current identity, parameter Undo, ACK/close retirement)");
 }
+
 const LinkJson& graph_entity(const LinkJson& graph, std::uint64_t identity) {
     for (const auto& item : graph.at("entities"))
         if (item.at("id") == std::to_string(identity))
             return item;
     throw std::runtime_error("The inspected graph lacks its Entity.");
 }
+
 // The editor document drives a real headless Play through the link.
 void verify_play_link(const std::filesystem::path& root, editor::Project& project, const std::string& scene,
                       const std::filesystem::path& snapshot) {

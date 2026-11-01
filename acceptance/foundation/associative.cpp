@@ -10,6 +10,7 @@
 
 namespace {
 using namespace atelier;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
@@ -19,14 +20,18 @@ void require(bool condition, const char* message) {
 // refresh, independent snapshots, failed construction and dense deletion.
 struct alignas(64) Resource {
     static inline int live{};
+
     static inline int copies_until_failure = -1;
+
     std::unique_ptr<int> payload;
+
     explicit Resource(int id) {
         if (id < 0)
             throw std::runtime_error("Resource creation rejected.");
         payload = std::make_unique<int>(id);
         ++live;
     }
+
     Resource(const Resource& other) {
         if (copies_until_failure == 0)
             throw std::runtime_error("Resource snapshot rejected.");
@@ -35,13 +40,18 @@ struct alignas(64) Resource {
         payload = std::make_unique<int>(*other.payload);
         ++live;
     }
+
     Resource(Resource&& other) noexcept : payload(std::move(other.payload)) { ++live; }
+
     Resource& operator=(Resource&&) noexcept = default;
+
     ~Resource() { --live; }
 };
+
 struct CollisionHash {
     std::size_t operator()(int) const noexcept { return 0; }
 };
+
 struct OwnedPointerEqual {
     bool operator()(const std::unique_ptr<int>& left, const std::unique_ptr<int>& right) const noexcept {
         return left.get() == right.get();

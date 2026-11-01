@@ -18,20 +18,25 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 struct BoolAbiHost {
     bool active{true};
+
     bool value() const { return active; }
 };
+
 CodeOwner compile(const Binding& binding, std::string_view text, const BusinessServices& callbacks = services) {
     const EnvironmentView storage(binding);
     const std::string name(binding.name);
@@ -46,15 +51,21 @@ CodeOwner compile(const Binding& binding, std::string_view text, const BusinessS
         throw std::runtime_error(diagnostic);
     return owner;
 }
+
 bool same_operand(const BusinessValue& a, const BusinessValue& b) {
     return a.kind == b.kind && a.bits == b.bits && a.storage == b.storage && a.data == b.data && a.slot == b.slot &&
            a.field == b.field;
 }
+
 struct Observation {
     std::uint64_t bits{};
+
     std::uint32_t begins{};
+
     std::uint32_t calls{};
+
     std::uint32_t finishes{};
+
     InvocationObserver observer() {
         return {this,
                 [](void* context, Invocation&) -> Result<void> {
@@ -69,6 +80,7 @@ struct Observation {
                 nullptr};
     }
 };
+
 constexpr std::array invalid_bits{std::uint64_t{2}, (std::uint64_t{1} << 32) | 1};
 
 void verify_arguments(Runtime& runtime, const Binding& binding) {
@@ -89,6 +101,7 @@ void verify_arguments(Runtime& runtime, const Binding& binding) {
                 "Invalid bool argument entered generated code or modified its result.");
     }
 }
+
 void verify_results(Runtime& runtime, const Binding& binding, ObjectId receiver) {
     auto callbacks = services;
     callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method, const BusinessValue* arguments,
@@ -121,6 +134,7 @@ void verify_results(Runtime& runtime, const Binding& binding, ObjectId receiver)
                 "Invalid bool native result lost its backend diagnostic or generated cleanup.");
     }
 }
+
 void verify_required_services(Runtime& runtime, const Binding& binding) {
     auto callbacks = services;
     callbacks.read_bool = nullptr;
@@ -151,6 +165,7 @@ void verify_required_services(Runtime& runtime, const Binding& binding) {
                 "Bool source field access with a missing service compiled or replaced retained code.");
     }
 }
+
 class GuardedBool {
 public:
     explicit GuardedBool(bool initial) {
@@ -168,14 +183,19 @@ public:
         }
         value = std::construct_at(reinterpret_cast<bool*>(allocation_ + info.dwPageSize - 1), initial);
     }
+
     ~GuardedBool() { VirtualFree(allocation_, 0, MEM_RELEASE); }
+
     GuardedBool(const GuardedBool&) = delete;
+
     GuardedBool& operator=(const GuardedBool&) = delete;
+
     bool* value{};
 
 private:
     std::byte* allocation_{};
 };
+
 void verify_storage(Runtime& runtime, const Binding& binding) {
     auto code = compile(binding, R"(
         bool flip(bool& value) { value = !value; return value; }

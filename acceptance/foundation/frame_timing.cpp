@@ -6,16 +6,22 @@
 
 namespace {
 using namespace atelier;
+
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
 
 inline constinit timing::Marker outer{"test.outer", "Outer", &timing::frame};
+
 inline constinit timing::Marker inner{"test.inner", "Inner", &outer};
+
 inline constinit timing::Marker injected{"test.injected", "Injected", &outer};
+
 inline constinit timing::Marker sibling{"test.sibling", "Sibling", &timing::frame};
+
 inline constinit timing::Marker stray{"test.stray", "Stray", &timing::frame};
+
 inline constinit timing::Marker same_key{"test.outer", "Duplicate key", &timing::frame};
 
 template <class Exception, class Operation>

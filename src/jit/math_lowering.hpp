@@ -17,13 +17,16 @@ namespace atelier::source::detail {
 class MathLowering {
 public:
     MathLowering(llvm::IRBuilder<>& ir, llvm::Module& module) : ir_(ir), module_(module) {}
+
     static llvm::Type* scalar_type(llvm::LLVMContext& context, math::Type type) {
         return type.precision == math::Precision::f64 ? llvm::Type::getDoubleTy(context)
                                                       : llvm::Type::getFloatTy(context);
     }
+
     static llvm::FixedVectorType* value_type(llvm::LLVMContext& context, math::Type type) {
         return llvm::FixedVectorType::get(scalar_type(context, type), static_cast<unsigned>(type.components()));
     }
+
     llvm::Value* load(llvm::Value* address, math::Type type) {
         llvm::Value* result = llvm::PoisonValue::get(value_type(ir_.getContext(), type));
         for (unsigned i = 0; i < type.components(); ++i) {
@@ -34,12 +37,14 @@ public:
         }
         return result;
     }
+
     void store(llvm::Value* value, llvm::Value* address, math::Type type) {
         for (unsigned i = 0; i < type.components(); ++i) {
             auto* target = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), address, ir_.getInt64(i * type.scalar_size()));
             ir_.CreateAlignedStore(lane(value, i), target, llvm::Align(type.scalar_size()));
         }
     }
+
     llvm::Value* construct(math::Type type, std::span<llvm::Value* const> values) {
         llvm::Value* result = llvm::Constant::getNullValue(value_type(ir_.getContext(), type));
         if (values.empty()) {
@@ -56,6 +61,7 @@ public:
                 result = ir_.CreateInsertElement(result, values[i], i);
         return result;
     }
+
     llvm::Value* binary(language::Operation operation, llvm::Value* left, llvm::Value* right, math::Type left_type,
                         math::Type right_type) {
         using Op = language::Operation;
@@ -92,6 +98,7 @@ public:
             throw std::logic_error("Invalid mathematical binary operation.");
         }
     }
+
     llvm::Value* operation(language::MathOperation operation, std::span<llvm::Value* const> args,
                            math::Type result_type) {
         using Op = language::MathOperation;
@@ -147,12 +154,15 @@ public:
 
 private:
     llvm::Value* lane(llvm::Value* value, unsigned index) { return ir_.CreateExtractElement(value, index); }
+
     llvm::Value* intrinsic(llvm::Intrinsic::ID id, llvm::Value* input) {
         return ir_.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(&module_, id, {input->getType()}), {input});
     }
+
     llvm::Value* fma(llvm::Value* a, llvm::Value* b, llvm::Value* c) {
         return ir_.CreateIntrinsic(llvm::Intrinsic::fma, {a->getType()}, {a, b, c});
     }
+
     // Horner evaluation, highest coefficient last.
     llvm::Value* polynomial(llvm::Value* x, std::span<const double> coefficients) {
         llvm::Value* result = llvm::ConstantFP::get(x->getType(), coefficients.back());
@@ -160,6 +170,7 @@ private:
             result = fma(x, result, llvm::ConstantFP::get(x->getType(), coefficients[i]));
         return result;
     }
+
     // Estrin evaluation: the same polynomial with a dependency chain of log2(n) FMAs, for latency-bound double paths.
     llvm::Value* estrin(llvm::Value* x, std::span<const double> coefficients) {
         llvm::SmallVector<llvm::Value*, 8> terms;
@@ -174,9 +185,12 @@ private:
                 return terms[0];
         }
     }
+
     // GLSL operand order: each select is one x64 minps/maxps, and only a NaN first argument propagates.
     llvm::Value* minimum(llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(y, x), y, x); }
+
     llvm::Value* maximum(llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(x, y), y, x); }
+
     // Scalar arguments apply to every lane of the vector argument's type.
     llvm::Value* elementwise(language::MathOperation operation, std::span<llvm::Value* const> input) {
         using Op = language::MathOperation;
@@ -249,15 +263,18 @@ private:
             throw std::logic_error("Invalid element-wise math operation.");
         }
     }
+
     // Float transcendental functions: minimax polynomials over Cody-Waite reduced arguments, FMA throughout.
     // Rounding to an integer adds 1.5·2^23 (2^52 for double): the sum's low mantissa bits hold that integer.
     llvm::Value* integers(llvm::Type* type, std::int64_t value, unsigned bits = 32) {
         return llvm::ConstantInt::getSigned(type->getWithNewType(ir_.getIntNTy(bits)), value);
     }
+
     llvm::Value* as_integers(llvm::Value* value) {
         return ir_.CreateBitCast(
             value, value->getType()->getWithNewType(ir_.getIntNTy(value->getType()->getScalarSizeInBits())));
     }
+
     llvm::Value* sine(llvm::Value* x, bool cosine) {
         auto* type = x->getType();
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
@@ -283,6 +300,7 @@ private:
         auto* sign = ir_.CreateShl(ir_.CreateAnd(quadrant, integers(type, 2)), integers(type, 30));
         return ir_.CreateBitCast(ir_.CreateXor(as_integers(ir_.CreateSelect(odd, c, s)), sign), type);
     }
+
     llvm::Value* exponential(llvm::Value* x) {
         auto* type = x->getType();
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
@@ -302,6 +320,7 @@ private:
         };
         return ir_.CreateFMul(ir_.CreateFMul(p, power_of_two(half)), power_of_two(ir_.CreateSub(k, half)));
     }
+
     llvm::Value* logarithm(llvm::Value* x) {
         auto* type = x->getType();
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
@@ -325,6 +344,7 @@ private:
             ir_.CreateAnd(ir_.CreateFCmpOGT(x, constant(0)), ir_.CreateFCmpOLT(x, constant(INFINITY))), result,
             special);
     }
+
     llvm::Value* arctangent(llvm::Value* y, llvm::Value* x) {
         auto* type = x->getType();
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
@@ -360,6 +380,7 @@ private:
         auto* result = ir_.CreateIntrinsic(llvm::Intrinsic::copysign, {type}, {angle, y});
         return ir_.CreateSelect(ir_.CreateFCmpUNO(x, y), ir_.CreateFAdd(x, y), result);
     }
+
     // exp2(y * log2|x|) in double, rounded to float once.
     llvm::Value* power(llvm::Value* x, llvm::Value* y) {
         auto* type = x->getType();
@@ -404,26 +425,32 @@ private:
         return ir_.CreateSelect(ir_.CreateOr(ir_.CreateFCmpOEQ(y, constant(0)), ir_.CreateFCmpOEQ(x, constant(1))),
                                 constant(1), result);
     }
+
     // Double transcendental functions keep the reduced argument and leading terms as double-doubles
     // (pairs whose exact sum is the value), built from the error-free transformations below.
     struct Pair {
         llvm::Value* hi;
+
         llvm::Value* lo;
     };
+
     Pair two_product(llvm::Value* a, llvm::Value* b) {
         auto* hi = ir_.CreateFMul(a, b);
         return {hi, fma(a, b, ir_.CreateFNeg(hi))};
     }
+
     Pair two_sum(llvm::Value* a, llvm::Value* b) {
         auto* s = ir_.CreateFAdd(a, b);
         auto* b_part = ir_.CreateFSub(s, a);
         return {s, ir_.CreateFAdd(ir_.CreateFSub(a, ir_.CreateFSub(s, b_part)), ir_.CreateFSub(b, b_part))};
     }
+
     // Exact when |a| >= |b| or a = 0.
     Pair fast_two_sum(llvm::Value* a, llvm::Value* b) {
         auto* s = ir_.CreateFAdd(a, b);
         return {s, ir_.CreateFSub(b, ir_.CreateFSub(s, a))};
     }
+
     llvm::Value* sine_double(llvm::Value* x, bool cosine) {
         auto* type = x->getType();
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
@@ -465,6 +492,7 @@ private:
         auto* sign = ir_.CreateShl(ir_.CreateAnd(quadrant, integers(type, 2, 64)), integers(type, 62, 64));
         return ir_.CreateBitCast(ir_.CreateXor(as_integers(ir_.CreateSelect(odd, c, s)), sign), type);
     }
+
     // e^(x + low) for x in [-746, 710]: 2^k e^r with r = x - k ln2 kept as a double-double.
     llvm::Value* exponential_double(llvm::Value* x, llvm::Value* low) {
         auto* type = x->getType();
@@ -503,6 +531,7 @@ private:
         };
         return ir_.CreateFMul(ir_.CreateFMul(p, power_of_two(half)), power_of_two(ir_.CreateSub(k, half)));
     }
+
     // x > 0 as 2^e m with m in [sqrt(1/2), sqrt(2)); subnormals are scaled into the normal range first.
     std::pair<llvm::Value*, llvm::Value*> decompose_double(llvm::Value* x) {
         auto* type = x->getType();
@@ -518,6 +547,7 @@ private:
             type);
         return {ir_.CreateSIToFP(exponent, type), m};
     }
+
     // log(m) = f - (f^2/2 - s (f^2/2 + R)) with f = m - 1, s = f / (2 + f) and R = 2s^2/3 + 2s^4/5 + ...
     llvm::Value* logarithm_double(llvm::Value* x) {
         auto* type = x->getType();
@@ -541,6 +571,7 @@ private:
             ir_.CreateAnd(ir_.CreateFCmpOGT(x, constant(0)), ir_.CreateFCmpOLT(x, constant(INFINITY))), result,
             special);
     }
+
     // atan(u / v) for 0 <= u <= v from the nearest of atan(c), c in {0, 1/4, 1/2, 1}: the reduced ratio
     // (u - c v) / (v + c u) stays below 0.163, u - c v is exact and the division keeps its remainder.
     llvm::Value* arctangent_double(llvm::Value* y, llvm::Value* x) {
@@ -599,6 +630,7 @@ private:
         result = ir_.CreateIntrinsic(llvm::Intrinsic::copysign, {type}, {result, y});
         return ir_.CreateSelect(ir_.CreateFCmpUNO(x, y), ir_.CreateFAdd(x, y), result);
     }
+
     // exp(y log|x|) with log|x| to about 2^-68 relative, so |y log x| up to 745 still rounds within an ULP.
     llvm::Value* power_double(llvm::Value* x, llvm::Value* y) {
         auto* type = x->getType();
@@ -648,6 +680,7 @@ private:
         return ir_.CreateSelect(ir_.CreateOr(ir_.CreateFCmpOEQ(y, constant(0)), ir_.CreateFCmpOEQ(x, constant(1))),
                                 constant(1), result);
     }
+
     llvm::Value* dot(llvm::Value* a, llvm::Value* b) {
         auto* products = ir_.CreateFMul(a, b);
         auto* result = lane(products, 0);
@@ -656,6 +689,7 @@ private:
             result = ir_.CreateFAdd(result, lane(products, i));
         return result;
     }
+
     llvm::Value* cross(llvm::Value* a, llvm::Value* b) {
         auto* ayzx = ir_.CreateShuffleVector(a, {1, 2, 0});
         auto* azxy = ir_.CreateShuffleVector(a, {2, 0, 1});
@@ -663,6 +697,7 @@ private:
         auto* bzxy = ir_.CreateShuffleVector(b, {2, 0, 1});
         return ir_.CreateFSub(ir_.CreateFMul(ayzx, bzxy), ir_.CreateFMul(azxy, byzx));
     }
+
     llvm::Value* norm(llvm::Value* input, bool normalize) {
         auto* type = llvm::cast<llvm::FixedVectorType>(input->getType());
         auto* scalar = type->getElementType();
@@ -693,6 +728,7 @@ private:
         return ir_.CreateSelect(ir_.CreateAnd(has_nan, ir_.CreateFCmpONE(maximum, infinity)),
                                 llvm::ConstantFP::getNaN(scalar), result);
     }
+
     llvm::Value* quaternion_product(llvm::Value* a, llvm::Value* b) {
         llvm::Value* result = llvm::PoisonValue::get(a->getType());
         const auto multiply = [&](unsigned i, unsigned j) { return ir_.CreateFMul(lane(a, i), lane(b, j)); };
@@ -710,6 +746,7 @@ private:
             w = ir_.CreateFSub(w, ir_.CreateFMul(lane(a, i), lane(b, i)));
         return ir_.CreateInsertElement(result, w, 3);
     }
+
     llvm::Value* matrix_product(llvm::Value* a, llvm::Value* b) {
         llvm::Value* result = llvm::PoisonValue::get(a->getType());
         for (unsigned row = 0; row < 4; ++row)
@@ -721,7 +758,9 @@ private:
             }
         return result;
     }
+
     llvm::IRBuilder<>& ir_;
+
     llvm::Module& module_;
 };
 

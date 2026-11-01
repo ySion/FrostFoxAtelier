@@ -9,6 +9,7 @@ namespace {
 void bridge_failed() noexcept {
     std::fputs("Host diagnostic capture failed; business result is unchanged.\n", stderr);
 }
+
 void error_source(logging::Entry& entry, const SourceLocation& source) {
     entry.source = diagnostic_source(source);
     // Navigation uses bounded line/column values. The diagnostic retains the
@@ -20,6 +21,7 @@ void error_source(logging::Entry& entry, const SourceLocation& source) {
                                              {"error.column", std::uint64_t{source.column}},
                                              {"error.disk_path", source.disk_path}});
 }
+
 std::string path_field(std::span<const std::string> fields) {
     std::string result;
     for (const auto& field : fields) {
@@ -36,6 +38,7 @@ std::string path_field(std::span<const std::string> fields) {
     return result;
 }
 }
+
 logging::SourceLocation diagnostic_source(const SourceLocation& value) {
     logging::SourceLocation result;
     result.file = value.path;
@@ -46,6 +49,7 @@ logging::SourceLocation diagnostic_source(const SourceLocation& value) {
     result.offset = value.offset;
     return result;
 }
+
 logging::Entry error_diagnostic(const Error& error, std::string_view event, const std::filesystem::path& root) {
     logging::Entry entry{.severity = logging::Severity::error,
                          .category = "editor",
@@ -57,6 +61,7 @@ logging::Entry error_diagnostic(const Error& error, std::string_view event, cons
         error_source(entry, *error.source);
     return entry;
 }
+
 logging::Entry world_diagnostic(const editor::Session& session, const world::Diagnostic& item,
                                 const std::filesystem::path& root, std::string_view origin) {
     logging::Entry entry;
@@ -99,6 +104,7 @@ logging::Entry world_diagnostic(const editor::Session& session, const world::Dia
         entry.repeat = logging::Repeat{identity, item.repeats};
     return entry;
 }
+
 void report_world(const editor::Session& session, std::span<const world::Diagnostic> items,
                   const std::filesystem::path& root, std::string_view origin) noexcept {
     try {
@@ -108,6 +114,7 @@ void report_world(const editor::Session& session, std::span<const world::Diagnos
         bridge_failed();
     }
 }
+
 void drain_world(editor::Session& session, const std::filesystem::path& root, std::uint64_t& dropped) noexcept {
     try {
         report_world(session, session.take_diagnostics(), root);
@@ -127,6 +134,7 @@ void drain_world(editor::Session& session, const std::filesystem::path& root, st
         bridge_failed();
     }
 }
+
 void report_load(const editor::Session& session, const std::filesystem::path& root) noexcept {
     try {
         logging::Entry entry{.category = "world", .event_code = "world.scene_loaded", .message = "Scene loaded."};
@@ -140,6 +148,7 @@ void report_load(const editor::Session& session, const std::filesystem::path& ro
         bridge_failed();
     }
 }
+
 void report_source_capture(const source::DiagnosticReport& report, const std::filesystem::path& root) noexcept {
     try {
         constexpr std::array status{"unused",    "ready",  "running",   "suspended",

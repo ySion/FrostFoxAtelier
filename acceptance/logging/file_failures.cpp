@@ -5,8 +5,11 @@ namespace logging_acceptance {
 namespace {
 struct FileLock {
     HANDLE handle{INVALID_HANDLE_VALUE};
+
     OVERLAPPED offset{};
+
     bool locked{};
+
     ~FileLock() {
         if (locked)
             UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &offset);

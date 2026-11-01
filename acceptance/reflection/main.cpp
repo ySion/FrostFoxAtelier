@@ -11,21 +11,26 @@ void verify_shared_calls(atelier::Runtime&);
 
 namespace {
 using namespace atelier;
+
 using namespace atelier::acceptance::reflection;
+
 template <class T>
 T take(Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
+
 void take(Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 const FieldInfo& field_info(Runtime& runtime, TypeId type, std::string_view name) {
     const auto id = take(runtime.find_field(type, name));
     for (const auto& field : take(runtime.describe(type))->fields)
@@ -33,6 +38,7 @@ const FieldInfo& field_info(Runtime& runtime, TypeId type, std::string_view name
             return field;
     throw std::runtime_error("Published field is missing from its type description.");
 }
+
 const MethodInfo& method_info(Runtime& runtime, TypeId type, std::string_view name) {
     const auto id = take(runtime.find_method(type, name));
     for (const auto& method : take(runtime.describe(type))->methods)
@@ -40,6 +46,7 @@ const MethodInfo& method_info(Runtime& runtime, TypeId type, std::string_view na
             return method;
     throw std::runtime_error("Published method is missing from its type description.");
 }
+
 void verify_ranges(Runtime& runtime) {
     const auto type = take(runtime.native_type<RangeProbe>());
     const auto& emissive = field_info(runtime, type, "emissive").range;
@@ -75,7 +82,9 @@ void verify_ranges(Runtime& runtime) {
     require(take(runtime.read(probe.id(), first)) == Scalar{0.0},
             "An Array element write escaped its generated hard bound.");
 }
+
 struct External {};
+
 void verify_external_reference() {
     Runtime runtime;
     const auto missing = runtime.register_types({atelier::reflection::Definition<ParentArgs>::build(runtime)});
@@ -90,6 +99,7 @@ void verify_external_reference() {
     require(parent.value.type == types[0] && parent.value.form == ValueForm::weak_reference,
             "A reference target outside the generated group did not resolve by name.");
 }
+
 void verify_field_presentation(Runtime& runtime) {
     const auto sample_type = take(runtime.native_type<Sample>());
     const auto& value = field_info(runtime, sample_type, "value");
@@ -170,6 +180,7 @@ void verify_field_presentation(Runtime& runtime) {
     std::puts(
         "[pass] Generated and described field presentation, empty defaults, identity, layout, inheritance and ownership");
 }
+
 void verify_descriptions(Runtime& runtime) {
     const auto sample = take(runtime.native_type<Sample>());
     const auto counter = take(runtime.native_type<Counter>());
@@ -207,6 +218,7 @@ void verify_descriptions(Runtime& runtime) {
 
     struct Manual {
         float value{};
+
         float read() const noexcept { return value; }
     };
     TypeInfo retained{};
@@ -263,6 +275,7 @@ void verify_descriptions(Runtime& runtime) {
     std::puts(
         "[pass] Generated/manual UTF-8 descriptions, normalized lines, inherited identity, ownership and atomic rejection");
 }
+
 void invoke(Runtime& runtime, ObjectId object, TypeId type, const char* name, std::span<const Scalar> args,
             Scalar expected) {
     Scalar output;
@@ -271,6 +284,7 @@ void invoke(Runtime& runtime, ObjectId object, TypeId type, const char* name, st
         throw std::runtime_error(called.error().message);
     require(output == expected, "Generated member invoker changed its signature or receiver.");
 }
+
 void verify_math_calls(Runtime& runtime) {
     const auto type = take(runtime.native_type<CallProbe>());
     const auto f64 = take(runtime.native_type<double>());
@@ -333,6 +347,7 @@ void verify_math_calls(Runtime& runtime) {
             "Generated Array<double> field/reference method did not preserve precision.");
     std::puts("[pass] Generated double/math fields, value/reference parameters, typed results and Array<double>");
 }
+
 void verify_bool_calls(Runtime& runtime) {
     const auto type = take(runtime.native_type<CallProbe>());
     const auto boolean = take(runtime.native_type<bool>());
@@ -350,8 +365,11 @@ void verify_bool_calls(Runtime& runtime) {
             "Generated bool field access overwrote an adjacent native field.");
     struct Guarded {
         bool value{};
+
         bool before{true};
+
         bool after{true};
+
         std::uint32_t guard{0x12345678};
     } guarded;
     const auto alias = take(runtime.find_method(type, "bool_alias"));
@@ -389,6 +407,7 @@ void verify_bool_calls(Runtime& runtime) {
     std::puts("[pass] Generated bool fields, scalar/results, native reference aliases and Array<bool>");
 }
 }
+
 int main() {
     try {
         Runtime runtime;

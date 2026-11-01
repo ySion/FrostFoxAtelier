@@ -29,6 +29,7 @@ struct PlayProcessAcceptanceAccess {
         run.output_[0].handle = out;
         run.output_[1].handle = err;
     }
+
     static HANDLE unreadable_stdout(PlayProcess& run, HANDLE non_pipe) {
         return std::exchange(run.output_[0].handle, non_pipe);
     }
@@ -36,6 +37,7 @@ struct PlayProcessAcceptanceAccess {
 }
 
 using namespace atelier;
+
 namespace {
 template <class T>
 T take(Result<T> result) {
@@ -44,6 +46,7 @@ T take(Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 template <class T>
 T display(ui::Result<T> result) {
     if (!result)
@@ -52,27 +55,36 @@ T display(ui::Result<T> result) {
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
+
 void require(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
 }
+
 void complete(Result<world::Commit> result) {
     auto value = take(std::move(result));
     if (value.notification_error)
         throw std::runtime_error(value.notification_error->message);
 }
+
 struct RunLog {
     application::PlayProcess& process;
+
     std::unique_ptr<logging::Reader> reader;
+
     std::vector<logging::Record> records;
+
     logging::ReaderStatus status;
+
     std::optional<logging::PublishedHealth> health;
+
     explicit RunLog(application::PlayProcess& value) : process(value) {
         auto opened = logging::Reader::open(process.log_directory());
         if (!opened)
             throw std::runtime_error(opened.error().message);
         reader = std::move(*opened);
     }
+
     void poll() {
         if (process.output_status().process_exited)
             reader->source_ended();
@@ -82,36 +94,47 @@ struct RunLog {
         for (auto& record : batch.records)
             records.push_back(std::move(record));
     }
+
     static const logging::FieldValue* field(const logging::Record& record, std::string_view key) {
         for (const auto& field : record.entry.fields)
             if (field.key == key)
                 return &field.value;
         return nullptr;
     }
+
     static bool integer(const logging::Record& record, std::string_view key, std::uint64_t value) {
         const auto* item = field(record, key);
         return item && std::get_if<std::uint64_t>(item) && std::get<std::uint64_t>(*item) == value;
     }
+
     static bool text(const logging::Record& record, std::string_view key, std::string_view value) {
         const auto* item = field(record, key);
         return item && std::get_if<std::string>(item) && std::get<std::string>(*item) == value;
     }
+
     std::size_t count(std::string_view code) const {
         return static_cast<std::size_t>(
             std::ranges::count_if(records, [&](const auto& item) { return item.entry.event_code == code; }));
     }
+
     template <class Predicate>
     bool has(std::string_view code, Predicate predicate) const {
         return std::ranges::any_of(records,
                                    [&](const auto& item) { return item.entry.event_code == code && predicate(item); });
     }
+
     struct ExpectedDiagnostic {
         std::string_view category;
+
         std::string_view code;
+
         logging::Severity severity;
+
         std::size_t count;
+
         std::vector<logging::Field> fields{};
     };
+
     void finish(bool normal = true, std::initializer_list<ExpectedDiagnostic> expected = {}) {
         require(!process.running(), "Cannot finish evidence before the Runner ends.");
         reader->source_ended();
@@ -170,6 +193,7 @@ struct RunLog {
             require(counts[index++] == rule.count,
                     "Runner diagnostic count differs from the case's exact expectation.");
     }
+
     template <class Predicate>
     void await(std::string_view code, Predicate predicate) {
         const auto deadline = GetTickCount64() + 45000;
@@ -184,20 +208,25 @@ struct RunLog {
         } while (GetTickCount64() < deadline);
         throw std::runtime_error("Runner did not publish event " + std::string(code));
     }
+
     void await(std::string_view code) {
         await(code, [](const auto&) { return true; });
     }
 };
+
 float position(editor::Session& document, ObjectId entity) {
     require(take(world::has_transform(document.world().runtime(), entity)), "Entity lost its Transform.");
     return take(world::read_transform(document.world().runtime(), entity)).position.x;
 }
+
 void check_position(float value, float expected) {
     require(std::abs(value - expected) < .0001f, "Source behavior produced the wrong transform.");
 }
+
 ObjectId entity(editor::Session& document) {
     return take(document.world().members()).front().id();
 }
+
 ObjectId behavior(editor::Session& document) {
     auto& runtime = document.world().runtime();
     const auto type = take(runtime.find_type("project.Move"));
@@ -206,6 +235,7 @@ ObjectId behavior(editor::Session& document) {
             return component.id();
     throw std::runtime_error("Source component disappeared.");
 }
+
 Scalar field(editor::Session& document, std::string_view name) {
     const auto object = behavior(document);
     auto& runtime = document.world().runtime();
@@ -213,6 +243,7 @@ Scalar field(editor::Session& document, std::string_view name) {
     const std::array path{take(runtime.find_field(type, name))};
     return take(document.read_property(object, path));
 }
+
 void wait(application::PlayProcess& process, std::chrono::seconds timeout) {
     const auto until = std::chrono::steady_clock::now() + timeout;
     while (process.running() && std::chrono::steady_clock::now() < until) {
@@ -224,22 +255,33 @@ void wait(application::PlayProcess& process, std::chrono::seconds timeout) {
         throw std::runtime_error("Project runner did not finish.");
     }
 }
+
 struct RawHandle {
     HANDLE value{};
+
     RawHandle() = default;
+
     explicit RawHandle(HANDLE handle) : value(handle) {}
+
     ~RawHandle() {
         if (value && value != INVALID_HANDLE_VALUE)
             CloseHandle(value);
     }
+
     RawHandle(const RawHandle&) = delete;
+
     RawHandle& operator=(const RawHandle&) = delete;
 };
+
 struct RawChild {
     RawHandle child;
+
     RawHandle ready;
+
     RawHandle advance;
+
     application::PlayProcess process;
+
     explicit RawChild(std::wstring_view mode, std::wstring_view runner_arguments = {}) {
         SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
         RawHandle stop{CreateEventW(&security, TRUE, FALSE, nullptr)};
@@ -286,6 +328,7 @@ struct RawChild {
                 "Cannot initialize raw-output fixture inheritance.");
         struct Attributes {
             PPROC_THREAD_ATTRIBUTE_LIST value;
+
             ~Attributes() { DeleteProcThreadAttributeList(value); }
         } owner{attributes};
         std::array handles{write_out.value, write_err.value, input.value, stop.value, ready.value, advance.value};
@@ -319,15 +362,18 @@ struct RawChild {
         process_handle.value = job.value = stop.value = out.value = err.value = nullptr;
         require(ResumeThread(thread.value) != static_cast<DWORD>(-1), "Cannot resume raw-output fixture child.");
     }
+
     void await_ready() {
         require(WaitForSingleObject(ready.value, 5000) == WAIT_OBJECT_0,
                 "Raw-output child did not reach its write boundary.");
     }
+
     void await_exit() {
         require(WaitForSingleObject(child.value, 5000) == WAIT_OBJECT_0,
                 "Raw-output child did not exit before draining.");
     }
 };
+
 void write_raw(DWORD stream, std::string_view bytes) {
     while (!bytes.empty()) {
         DWORD written{};
@@ -337,6 +383,7 @@ void write_raw(DWORD stream, std::string_view bytes) {
         bytes.remove_prefix(written);
     }
 }
+
 int raw_output_child(std::span<char*> arguments) {
     require(arguments.size() == 4, "Invalid raw-output child arguments.");
     const std::string_view mode = arguments[0];
@@ -370,6 +417,7 @@ int raw_output_child(std::span<char*> arguments) {
     }
     return 0;
 }
+
 void verify_raw_output() {
     using Process = application::PlayProcess;
     const auto complete_output = [](Process& process, std::string& out, std::string& err) {
@@ -746,8 +794,11 @@ void run(const std::filesystem::path& root) {
         // The runner enters Play and services its channel at the host boundary: before start, then before every update.
         struct Probe final : application::PlayChannel {
             std::string batch;
+
             std::uint64_t calls{};
+
             bool stopped_first{};
+
             void service(editor::Session& session, editor::Project& project,
                          const application::Report& report) override {
                 if (calls++)
@@ -991,6 +1042,7 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
         assets::utf8(moved.wstring()).c_str());
 }
 }
+
 int main(int argc, char** argv) {
     try {
         if (argc >= 2 && std::string_view(argv[1]) == "--raw-output-child")

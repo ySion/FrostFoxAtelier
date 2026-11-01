@@ -8,20 +8,24 @@ inline void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+
 template <class T>
 T take(Result<T> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
     return std::move(*value);
 }
+
 inline void take(Result<void> value) {
     if (!value)
         throw std::runtime_error(value.error().message);
 }
+
 template <class T>
 void reject(Result<T> value, ErrorCode code) {
     require(!value && value.error().code == code, "Inheritance rejection used an unexpected result/code.");
 }
+
 inline void collect(Runtime& runtime) {
     if (runtime.collection_phase() == CollectionPhase::idle)
         take(runtime.begin_collection());
@@ -31,74 +35,109 @@ inline void collect(Runtime& runtime) {
     while (runtime.collection_phase() != CollectionPhase::idle)
         take(runtime.collect_step({1}));
 }
+
 struct Base {
     inline static int live{};
+
     inline static int destroyed{};
+
     inline static Base* latest{};
+
     float value{7};
+
     ReferenceSlot hidden;
+
     Base() {
         ++live;
         latest = this;
     }
+
     ~Base() noexcept {
         --live;
         ++destroyed;
     }
+
     float bump(float amount) {
         value += amount;
         return value;
     }
 };
+
 // Unregistered C++ storage forces an adjusted address for the one Runtime base.
 struct Prefix {
     virtual ~Prefix() = default;
+
     std::uint64_t sentinel{0x12345678};
 };
+
 struct Derived : Prefix, Base {
     inline static int live{};
+
     inline static int destroyed{};
+
     inline static Derived* latest{};
+
     float extra{11};
+
     ReferenceSlot edge;
+
     Derived() {
         ++live;
         latest = this;
     }
+
     ~Derived() noexcept override {
         --live;
         ++destroyed;
     }
+
     float derived_value() const { return extra; }
 };
+
 struct Resource {
     inline static int live{};
+
     inline static int destroyed{};
+
     Resource() { ++live; }
+
     ~Resource() noexcept {
         --live;
         ++destroyed;
     }
 };
+
 struct Failing {
     inline static bool fail{};
+
     Failing() {
         if (fail)
             throw std::runtime_error("Expected derived-field construction failure.");
     }
+
     ~Failing() noexcept = default;
 };
+
 struct Types {
     TypeId derived;
+
     TypeId base;
+
     TypeId described_native;
+
     TypeId described_base;
+
     TypeId described_derived;
+
     TypeId leaf;
+
     TypeId holder;
+
     TypeId failing;
+
     TypeId grand;
 };
+
 inline Types register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;
     definitions.push_back(

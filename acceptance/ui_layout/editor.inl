@@ -42,22 +42,38 @@ void retained_text_frames() {
 struct EditorScene {
     struct Frame {
         std::shared_ptr<const TextFrame> shell;
+
         VirtualInspector::Output inspector;
+
         std::uint64_t serial{};
     } published;
+
     TextProvider provider;
+
     LayoutDocument document{TextProvider::measure, &provider, {256, 6}};
+
     ComputeCosts compute_costs;
+
     VirtualInspector inspector;
+
     LayoutNodeId inspector_host;
+
     LayoutNodeId hierarchy_group;
+
     LayoutNodeId canvas;
+
     LayoutNodeId status;
+
     float requested_width{420};
+
     std::optional<float> ghost_width;
+
     std::uint64_t commits{};
+
     std::size_t selected_key{50002};
+
     std::vector<std::size_t> folded_rows;
+
     std::size_t folded_position{};
 
     EditorScene() {
@@ -98,21 +114,26 @@ struct EditorScene {
         status_input.height = Axis::fixed(24);
         status = accepted(document.create(document.root(), status_input));
     }
+
     void begin_drag() {
         require(!ghost_width, "drag already active");
         ghost_width = requested_width;
     }
+
     void update_drag(float width) {
         require(ghost_width.has_value(), "drag not active");
         ghost_width = std::clamp(width, 220.f, 520.f);
     }
+
     void cancel_drag() { ghost_width.reset(); }
+
     void release_drag() {
         require(ghost_width.has_value(), "drag not active");
         requested_width = *ghost_width;
         ghost_width.reset();
         commit();
     }
+
     void set_status(const wchar_t* value) {
         auto& content = provider.content.at(2);
         content.text = value;
@@ -121,6 +142,7 @@ struct EditorScene {
         input.content_revision = content.revision;
         accepted(document.update(status, input));
     }
+
     void collapse_properties(std::size_t position, std::size_t count) {
         require(folded_rows.empty() && position <= inspector.keys.size() && count <= inspector.keys.size() - position,
                 "invalid property group collapse");
@@ -129,10 +151,12 @@ struct EditorScene {
         folded_position = position;
         inspector.erase(position, count);
     }
+
     void expand_properties() {
         inspector.insert(folded_position, folded_rows);
         folded_rows.clear();
     }
+
     void commit() {
         ++commits;
         auto host = accepted(document.input(inspector_host));
@@ -147,6 +171,7 @@ struct EditorScene {
         // One consumer publication after all participating layout domains succeed.
         published = {std::move(complete_shell), inspector.output, published.serial + 1};
     }
+
     void check() const {
         published.shell->check();
         published.inspector.frame->check();

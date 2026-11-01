@@ -13,6 +13,7 @@ void require(GfxResult result, const char* message, bool terminal = false) {
     if (result)
         throw Error{{rhi::ErrorCode::execution_failed, result, message}, terminal};
 }
+
 void invalid(bool valid, const char* message) {
     if (!valid)
         throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false};
@@ -54,6 +55,7 @@ rhi::PipelineDesc studio_pipeline(const char* name, const char* vs, const char* 
                 "Set pass blending");
     return desc;
 }
+
 rhi::PipelineDesc gbuffer_pipeline(const char* vs, const char* ps) {
     rhi::PipelineDesc desc;
     desc.kind = rhi::PipelineKind::vertex;
@@ -71,6 +73,7 @@ rhi::PipelineDesc gbuffer_pipeline(const char* vs, const char* ps) {
     require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set GBuffer culling");
     return desc;
 }
+
 rhi::PipelineDesc shadow_pipeline(const char* vs, const char* ps) {
     rhi::PipelineDesc desc;
     desc.kind = rhi::PipelineKind::vertex;
@@ -87,12 +90,14 @@ MaterialBatchState::MaterialBatchState(rhi::Context& c, std::size_t& count)
     : context(c), retirement_context(c.borrow()), live_batches(count) {
     ++live_batches;
 }
+
 MaterialImageResource::~MaterialImageResource() {
     if (texture && gfxDestroyTexture(retirement_context, texture)) {
         std::fputs("Material image retirement failed\n", stderr);
         std::abort();
     }
 }
+
 MaterialBatchState::~MaterialBatchState() {
     if (owner != std::this_thread::get_id())
         std::abort();
@@ -104,6 +109,7 @@ MaterialBatchState::~MaterialBatchState() {
             }
     --live_batches;
 }
+
 void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
                                 std::vector<std::weak_ptr<MaterialProgramSet>>& sets) {
     invalid(!input.empty() && input.size() <= std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramSurfaceRecord),
@@ -111,6 +117,7 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
     surfaces.assign(input.begin(), input.end());
     struct ProgramUse {
         material::DefinitionRef definition;
+
         bool masked{};
     };
     std::map<const source::MaterialProgram*, ProgramUse> unique;
@@ -184,6 +191,7 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
         sets.push_back(code);
     }
 }
+
 void MaterialProgramSet::submit(rhi::Context& context) {
     std::string prefix = R"hlsl(#define MATERIAL_PROGRAMS 1
 struct MaterialInput { uint slot; uint texture_index; uint address; uint count; float4 empty_value; };
@@ -372,6 +380,7 @@ ByteAddressBuffer material_parameters;
             "Disable diagnostic surface depth writes");
     submit(MaterialPass::probe_coverage, desc);
 }
+
 Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
     if (failure)
         return std::unexpected(*failure);
@@ -392,6 +401,7 @@ Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
     }
     return Preparation{total - static_cast<std::uint32_t>(pending.size()), total, pending.empty()};
 }
+
 void MaterialBatchState::upload() {
     surface_buffer = gfxCreateBuffer<ProgramSurfaceRecord>(context.borrow(), static_cast<std::uint32_t>(records.size()),
                                                            records.data());
@@ -407,9 +417,13 @@ void MaterialBatchState::upload() {
 
 namespace atelier::renderer {
 MaterialBatch::MaterialBatch() = default;
+
 MaterialBatch::~MaterialBatch() = default;
+
 MaterialBatch::MaterialBatch(MaterialBatch&&) noexcept = default;
+
 MaterialBatch& MaterialBatch::operator=(MaterialBatch&&) noexcept = default;
+
 std::span<const material::ProgramSurfaceRef> MaterialBatch::surfaces() const noexcept {
     return state_ ? std::span<const material::ProgramSurfaceRef>(state_->surfaces)
                   : std::span<const material::ProgramSurfaceRef>{};

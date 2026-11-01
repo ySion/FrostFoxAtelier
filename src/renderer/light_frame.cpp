@@ -11,20 +11,24 @@ void check(bool condition, const char* message) {
     if (!condition)
         throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false};
 }
+
 float gpu_float(double value) {
     check(std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max(),
           "Light source exceeds GPU float representation");
     return static_cast<float>(value);
 }
+
 void source_capacity(std::size_t count) {
     // GFX structured buffers use uint32 element counts and uint64 byte sizes.
     // Reserve ~0 as the invalid index; allocation limits remain RHI-owned.
     check(count < no_light_source && count <= std::numeric_limits<std::size_t>::max() / sizeof(GpuLightSource),
           "Light source buffer exceeds addressable storage");
 }
+
 double luminance(const std::array<float, 4>& value) {
     return .2126 * value[0] + .7152 * value[1] + .0722 * value[2];
 }
+
 GpuLightSource analytic_source(const Light& light) {
     GpuLightSource result;
     result.origin_range = {light.position[0], light.position[1], light.position[2], light.range};
@@ -41,14 +45,17 @@ GpuLightSource analytic_source(const Light& light) {
                    0, 0};
     return result;
 }
+
 double analytic_power(const GpuLightSource& source) {
     const double flux = source.meta[0] == 1 ? std::numbers::pi * source.edge1_area[3] * ((source.meta[1] & 1u) ? 2 : 1)
                                             : 4 * std::numbers::pi;
     return std::max(0., luminance(source.radiance) * flux);
 }
+
 std::size_t mix_hash(std::size_t hash, std::size_t value) noexcept {
     return hash ^ (value + std::size_t{0x9e3779b9u} + (hash << 6) + (hash >> 2));
 }
+
 bool light_grid_origin(const std::array<float, 3>& focus, std::array<float, 4>& origin) {
     origin = {0, 0, 0, light_grid_spacing};
     for (std::size_t axis = 0; axis < 3; ++axis) {
