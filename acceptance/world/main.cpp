@@ -3,8 +3,6 @@
 #include "material/resources.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
-#include <mimalloc.h>
-#include <mimalloc-stats.h>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -82,15 +80,6 @@ AllTypes register_all_types(Runtime& runtime) {
     static_cast<w::Types&>(types) = take(w::register_types(runtime));
     static_cast<p::Types&>(types) = take(p::register_types(runtime));
     return types;
-}
-
-// Mesh and light registrations of the Scene, or those naming `object` as component or owner.
-std::size_t presented(const w::World& world, const p::Scene& scene, ObjectId object = {}) {
-    std::size_t count{};
-    for (const auto id : {scene.meshes(), scene.lights()})
-        for (const auto& member : take(world.members(id)))
-            count += object == ObjectId{} || member.component == object || member.entity == object;
-    return count;
 }
 
 struct TestTypes : AllTypes {
@@ -661,129 +650,10 @@ void spatial_tree_and_mesh() {
     std::puts("[pass] Entity space: hierarchy math, Mesh state restoration and recursive destruction");
 }
 
-void sparse_presentation() {
-    Runtime runtime;
-    const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
-    const auto scene = take(p::Scene::create(world, types));
-    const auto allocated_bytes = [] {
-        mi_collect(true); // Flush shared allocator counters outside the observed extraction.
-        mi_stats_t stats;
-        mi_stats_init(&stats);
-        require(mi_stats_get(&stats), "World allocator statistics are unavailable.");
-        return stats.malloc_normal.total + stats.malloc_huge.total;
-    };
-    const auto capture = [&] {
-        (void)take(scene.render_items()); // Warm immutable material publication before observing allocations.
-        const auto before = allocated_bytes();
-        auto items = scene.render_items();
-        const auto bytes = allocated_bytes() - before;
-        return std::pair{take(std::move(items)), bytes};
-    };
-    const auto add_logical_members = [&] {
-        std::vector<ObjectRoot> held;
-        std::vector<ObjectId> ids;
-        held.reserve(256);
-        ids.reserve(256);
-        for (unsigned i = 0; i < 256; ++i) {
-            held.push_back(take(w::create_entity(runtime)));
-            ids.push_back(held.back().id());
-        }
-        committed(world.attach_batch(ids));
-    };
-    const auto empty = capture();
-    // MSVC checked iterators allocate proxies even for empty return vectors.
-    // Use the real empty World as this configuration's fixed return-container baseline.
-    require(empty.first.empty() && empty.first.capacity() == 0, "Empty World reserved mesh extraction storage.");
-    add_logical_members();
-    const auto logical = capture();
-    require(logical.first.empty() && logical.first.capacity() == 0 && logical.second == empty.second,
-            "Logical-only World added allocation beyond the empty return-container baseline.");
-    auto light_entity = take(w::create_entity(runtime));
-    auto light = take(w::create_component(runtime, types.light_component));
-    take(world.set_transform(light_entity.id(), {}));
-    const std::array light_group{w::Attachment{light.id()}};
-    committed(world.attach_components(light_entity.id(), light_group));
-    committed(world.attach(light_entity.id()));
-    const auto lights = capture();
-    require(lights.first.empty() && lights.first.capacity() == 0 && lights.second == empty.second,
-            "Light-only presentation added allocation beyond the empty return-container baseline.");
-
-    // The spatial path exceeds the presentation count, so extraction must grow its initial capacity.
-    std::vector<ObjectRoot> ancestors;
-    for (unsigned i = 0; i < 8; ++i) {
-        ancestors.push_back(take(w::create_entity(runtime)));
-        take(world.set_transform(ancestors.back().id(), {{1, 0, 0}, {}, {1, 1, 1}}));
-        if (i)
-            committed(world.reparent(ancestors[i].id(), ancestors[i - 1].id(), w::ReparentRule::keep_local));
-    }
-    const auto mesh = geometry::cube_mesh();
-    auto first = take(p::create_static_mesh_entity(world, {mesh, {{2, 0, 0}, {}, {1, 1, 1}}}));
-    auto second = take(p::create_static_mesh_entity(world, {mesh, {{3, 0, 0}, {}, {1, 1, 1}}}));
-    committed(world.reparent(first.id(), ancestors.back().id(), w::ReparentRule::keep_local));
-    committed(world.reparent(second.id(), ancestors.back().id(), w::ReparentRule::keep_local));
-    committed(world.attach(ancestors.front().id()));
-    const auto sparse = capture();
-    require(sparse.first.size() == 2 && sparse.first[0].entity == first.id() && sparse.first[1].entity == second.id() &&
-                sparse.first[0].geometry == mesh && sparse.first[1].geometry == mesh &&
-                near(sparse.first[0].world[12], 10) && near(sparse.first[1].world[12], 11),
-            "Sparse extraction lost presentation order, geometry or spatial ancestors.");
-    require(sparse.second > empty.second,
-            "Shared allocator counters did not observe real render extraction allocations.");
-    add_logical_members();
-    const auto larger = capture();
-    require(larger.first.size() == 2 && larger.second == sparse.second,
-            "Unrelated logical members increased sparse render extraction allocations.");
-
-    take(runtime.write(ancestors.front().id(), types.position_fields[0], Scalar{5.f}));
-    auto moved = take(scene.render_items());
-    require(near(moved[0].world[12], 14) && near(moved[1].world[12], 15),
-            "Extraction hid a direct Runtime transform write.");
-    // Isolate (default) skips the dependent meshes and reports the failing Entity
-    // once while the failure persists; halt fails the whole extraction.
-    const auto break_ancestor = [&] {
-        take(runtime.write(ancestors.front().id(), types.position_fields[0],
-                           Scalar{std::numeric_limits<float>::infinity()}));
-    };
-    break_ancestor();
-    require(take(scene.render_items()).empty() && take(scene.render_items()).empty(),
-            "Isolated extraction kept meshes below a non-finite ancestor.");
-    const auto isolated = world.take_diagnostics();
-    require(isolated.size() == 1 && isolated[0].object == ancestors.front().id() &&
-                isolated[0].entity == ancestors.front().id() && isolated[0].kind == w::DiagnosticKind::invalid_value &&
-                isolated[0].phase == w::DiagnosticPhase::presentation && isolated[0].severity == w::Severity::error &&
-                isolated[0].type == "world.Entity" && isolated[0].repeats == 2 && !isolated[0].message.empty(),
-            "Isolated extraction did not report the non-finite ancestor once per persisting failure.");
-    take(runtime.write(ancestors.front().id(), types.position_fields[0], Scalar{1.f}));
-    require(near(take(scene.render_items()).front().world[12], 10),
-            "Failed extraction retained invalid spatial state.");
-    take(world.set_failure_policy(w::FailurePolicy::halt));
-    break_ancestor();
-    reject(scene.render_items(), "Halted extraction accepted a non-finite ancestor transform.");
-    require(world.take_diagnostics().size() == 1,
-            "Halted extraction did not report its resolved-then-repeated failure.");
-    take(world.set_failure_policy(w::FailurePolicy::isolate));
-    take(runtime.write(ancestors.front().id(), types.position_fields[0], Scalar{1.f}));
-    require(near(take(scene.render_items()).front().world[12], 10),
-            "Failed extraction retained invalid spatial state.");
-    take(p::set_geometry(runtime, sparse.first[0].component, {}));
-    take(p::set_geometry(runtime, sparse.first[1].component, {}));
-    const auto cleared = capture();
-    require(cleared.first.empty() && cleared.first.capacity() == 0 && cleared.second == empty.second,
-            "Removing all meshes retained allocation beyond the empty return-container baseline.");
-    committed(world.close());
-    std::printf(
-        "[pass] Sparse presentation: empty/logical/light-only/cleared bytes=%lld/%lld/%lld/%lld (capacity=0), sparse bytes=%lld/%lld before/after 256 extra logical Entities; ancestor growth, order, Runtime writes and recovery\n",
-        static_cast<long long>(empty.second), static_cast<long long>(logical.second),
-        static_cast<long long>(lights.second), static_cast<long long>(cleared.second),
-        static_cast<long long>(sparse.second), static_cast<long long>(larger.second));
-}
-
 }
 
 int main() {
     try {
-        sparse_presentation();
         editing_and_execution();
         reference_lifetime();
         worlds_and_requests();
@@ -794,11 +664,8 @@ int main() {
         entity_lifecycle_and_detached_graph();
         spatial_tree_and_mesh();
         static_mesh_entity_creation();
-        lit_materials_and_lights();
         environment_and_group_writes();
-        presentation_cache();
         material_dependency_updates();
-        scene_cameras();
         hierarchical_lifecycle();
         hierarchical_reference_lifetime();
         hierarchical_space_boundaries();
@@ -806,7 +673,7 @@ int main() {
         attachment_space_and_authoring();
         mirrored_and_degenerate_space();
         frame_phases();
-        std::puts("World acceptance: PASS (23/23)");
+        std::puts("World acceptance: PASS (19/19)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

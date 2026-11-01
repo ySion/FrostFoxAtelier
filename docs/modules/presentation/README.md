@@ -99,6 +99,11 @@ position 使用完整父链的 TRS 矩阵平移，因此父 scale 会缩放子�
 
 ## 验收与接线边界
 
-`world_acceptance` 同时链接 presentation，包含真实消费者：反射枚举/值/对象和派生灯、Source/JIT 修改 LightSettings、Material HDR、标量与整组拒绝原子性、混合 mesh/light 提取、父级非均匀缩放、停用/启用、反序 End、删除恢复、Detached 及快照 GC 寿命。数值边界覆盖解析光乘积及矩形面积乘积的边界和相邻越界值、65504 自发光提取、原生绕过 setter 后的提取拒绝；开发和发布构建均使用同一消费者。
+`world_acceptance` 同时链接 presentation，在开发和发布构建中保留四个呈现侧代表：
+
+- Environment 组写入后准入失败，所有叶恢复到作者原字节，包括 NaN payload、负零和天空强度；不比较错误正文。
+- 单 Scene 的材质等值换父后修改新父 `roughness=.7`，渲染项必须得到输入值 `.7`，防止依赖关系静默失效。
+- StaticMeshEntity 工厂在已分配 Entity/Component 后绑定失败，空 Runtime 的对象与根数恢复为零。
+- Scene 快照持有 Mesh，销毁 Entity/Component 不使内容失效；释放快照并更新 Scene 后，最后一个 Mesh 所有者释放。
 
 World E2E 验证数据与生命周期合同。场景文件、编辑器控件和 SceneSnapshot 接入由应用端到端验收覆盖，GPU 灯、天光、材质、历史与阴影消费由 Renderer 及正式编辑器窗口验收覆盖，见 [Renderer 验收记录](../renderer/acceptance.md)。单独的 World E2E 不替代这些集成证据。
