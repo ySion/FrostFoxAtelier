@@ -119,7 +119,7 @@ debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 
 
 CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单，总入口 `acceptance` 依赖两者，只供手动排查，不是交付或集成要求。直接运行 CMake 目标不取得跨工作树锁，也没有脚本的逐目标超时保护和验证级别设置；必要测试应使用脚本。
 
-- `acceptance_headless`：基础库、数学、反射及 CLI、Runtime、Source/JIT、World、程序化、物理、布局、生产 UI、文档、恢复、材质、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
+- `acceptance_headless`：基础库、数学、反射、Runtime、Source/JIT、World、程序化、物理、布局、生产 UI、文档、恢复、材质、工程场景与工程集成。都不创建窗口或 GPU 设备、不需要输入焦点；工程集成的子进程使用 `--headless`。在 GPU/窗口锁外执行，目标之间由 Ninja 并行调度，例如 `cmake --build --preset dev --target acceptance_headless --parallel 4`。
 - `acceptance_window`：RHI、Renderer、Control 与全部自动化编辑器窗口目标。先 CPU 后 GPU/窗口的混合目标整体归此层；Ninja console pool 保持串行，脚本也逐目标调用构建命令。Renderer 每个入口是一个目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，如 `renderer_acceptance_scene_lit_temporal`），各自一个进程和窗口，限时 1800 秒；`renderer_acceptance` 汇总全部入口，只供手动运行。
 
 无窗口目标通过 `atelier_headless_acceptance` 注册，自有临时文件使用 `out/<配置>/acceptance-headless/<目标>/temp/`，日志为同目录 `output.log`。原有工程证据和 Cache 保留各自专用目录；只读字体等仍从构建目录读取。

@@ -162,7 +162,7 @@ Clang/LLVM 包在独立变量作用域中加载，SDK 的静态 CRT 默认值不
 
 ## 验收与边界
 
-既有 `reflection_acceptance` 同时覆盖真实生成器到 Runtime 的中英文、多行、转义、类型/字段/方法、隐藏字段、BorrowSafe、继承与手写注册；复制元数据在 Runtime 结束后仍保有说明。CLI 检查非法描述的定位诊断、失败保留旧生成物及重复生成不改时间戳；Runtime 入口检查无效文本拒绝后的再次合法发布。
+`reflection_acceptance` 保留真实生成器、Runtime 和 JIT 路径的 ABI 与生命周期代表，不包含诊断/拒绝矩阵或独立 CLI 验收。
 
 ```powershell
 . ./tools/enter-dev.ps1
@@ -172,6 +172,6 @@ cmake --preset release
 cmake --build --preset release --target reflection_acceptance world_acceptance
 ```
 
-[生成消费者](../acceptance/reflection/main.cpp)实际编译并调用生成方法，检查私有记录、重载别名、const/noexcept、配置宏和构析，以及 double、数学值的字段/参数/结果和 Array<double>。字段展示验收覆盖原生/描述定义、空值、UTF-8 与转义、隐藏与继承、字段身份和布局，以及定义与 Runtime 销毁后的描述副本寿命。[调用链消费者](../acceptance/reflection/calls.cpp)覆盖 i32、枚举、三种传递方式、原生/描述型存储、JIT 双向调用、别名、错误、协程与签名更新。[命令行消费者](../acceptance/reflection/cli.ps1)检查展示参数生成、旧输出隔离、可重现写入、include 依赖及带位置的非法输入诊断。World 验收继续覆盖实际对象图、字段/方法、GC、JIT、协程和业务生命周期。
+[生成消费者](../acceptance/reflection/main.cpp)检查 64 字节对齐且大于 128 字节的记录按值快照/返回、失败后的借用写入与输出不发布及恢复、自动生成构造/析构钩子，以及定义和 Runtime 销毁后的元数据说明寿命。期望来自输入记录、注入故障前的输出和显式 live 计数。[调用链消费者](../acceptance/reflection/calls.cpp)各保留一次 Host→JIT→原生整数别名调用和嵌套调用前按值操作数快照，期望分别为夹具语句直接推导的 20 与 8；不再展开类型、协程或签名更新矩阵。
 
 内联记录与枚举字段的类型须在本生成组中解析；反射基类和引用目标可以来自其他生成组，分别按上文的 `AGENERATED_BODY` 识别和限定名解析，其余跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。初始 C#/ClangSharp、Attribute 路线对照见[选型记录](research/attribute-reflection-feasibility.md)。
