@@ -1,10 +1,10 @@
 # Runtime 阶段性能与资源测量
 
-日期：2026-09-28。范围：正式源码消费链的首次资源基线。测量入口为 [measure.cpp](../../acceptance/source/measure.cpp)，只使用 `source/program.hpp`、Runtime 公共对象接口和分配器/操作系统统计接口。
+日期：2026-09-28。范围：正式源码消费链的首次资源基线。历史测量入口为 `acceptance/source/measure.cpp`，只使用 `source/program.hpp`、Runtime 公共对象接口和分配器/操作系统统计接口；该入口现已移除。
 
 状态：**已完成 Release 正式构建实测**。测量时的构建关闭了 JIT 验收选项；该选项现已删除，验收入口始终编译进后端，但只在编译与链接路径上，不在测量的执行路径上。程序退出码为 0，336 个时间样本、48 组汇总及 37 条资源记录均完成校验，末尾有 `complete` 记录，stderr 为空。
 
-这些数字对应 2026-09-28 的源码；代码变化后应重跑并替换本页数字，不沿用旧值。
+这些数字只对应 2026-09-28 的源码，作为历史证据保留，不沿用为当前性能结论。
 
 ## 实测结论
 
@@ -82,7 +82,9 @@ Entry 与 Lease 在这次固定顺序运行中的相对快慢随场景变化。�
 
 工作单元包含阶段转换，不能把数字直接称为活根数量。结果清楚显示：释放根后，后续扫描仍受历史槽位高水位影响。在本次 1024 额外槽位规模下，完整周期约 3 μs；暂未出现必须立即改造根表的证据。若后续真实工作负载产生更高或反复突增的根容量，可以沿用同一活对象控制场景测量。
 
-## 复现入口
+## 历史复现入口（已退役）
+
+以下为当时的命令与输出说明，当前代码不再提供该目标：
 
 ```powershell
 . .\tools\enter-dev.ps1
@@ -91,7 +93,7 @@ cmake --build --preset release --target atelier_source_measure
 & .\out\release\atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
 ```
 
-`atelier_source_measure` 为 `EXCLUDE_FROM_ALL` 目标，不加入普通构建或端到端验收。程序拒绝 Debug 运行。参数上限用于限制专项运行规模；默认任务规模为 1、64、1024。
+当时 `atelier_source_measure` 为 `EXCLUDE_FROM_ALL` 目标，不加入普通构建或端到端验收。程序拒绝 Debug 运行。参数上限用于限制专项运行规模；默认任务规模为 1、64、1024。
 
 运行应与编译、其他验收和另一份测量串行进行。程序不固定 CPU 核，不修改调度优先级；配置记录包含 CPU 型号、逻辑处理器数、物理内存、计时器频率、编译器和 mimalloc 版本。锁定构建工具以 [toolchain-lock.json](../../cmake/toolchain-lock.json) 为准。
 

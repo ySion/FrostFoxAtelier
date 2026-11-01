@@ -200,7 +200,7 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 
 [帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)检查目录组装、层级与记录序列，入口仍为 `foundation_acceptance`。
 
-[源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
+[源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 保留共享布局、原地写入与别名、失败借用及拥有者析构；[模块消费者](../acceptance/source/modules.cpp)和[组合字段消费者](../acceptance/source/value_fields.cpp)保留 String/Array/记录的深层失败、部分构造与赋值清理。重复 owned-values 入口已移除；Source 目标仍包含在 `jit_acceptance` 中。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。
 

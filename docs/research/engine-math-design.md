@@ -36,6 +36,8 @@
 
 2026-10-03，Windows x64，AMD Ryzen 9 3950X；固定 Clang/LLVM 23.1.1 Release。`atelier_source_minimal --math-measure` 对 65,536 个紧凑位置/速度向量执行 32 次 `position += velocity * dt`。每条路径预热，5 组交错样本取中位数；编译、分配和数据重置在计时外，全部结果逐元素核对一致。
 
+该测量入口现已移除，下表保留当时的证据，不代表当前构建的性能结果。
+
 | 32 次更新的中位耗时 | float | double |
 | --- | ---: | ---: |
 | 向量源码，初始 O2 | 2.0083 ms | 3.0162 ms |

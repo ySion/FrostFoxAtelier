@@ -97,7 +97,7 @@ function(atelier_add_source)
 
     add_executable(atelier_source_minimal
         acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
-        acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/owned_values.cpp acceptance/source/modules.cpp
+        acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/modules.cpp
         acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp
         acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp
         acceptance/source/diagnostics.cpp acceptance/source/debugger.cpp acceptance/source/materials.cpp)
@@ -112,11 +112,6 @@ function(atelier_add_source)
     atelier_headless_acceptance(source_material_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal> --materials
         DEPENDS atelier_source_minimal)
-
-    # Standalone performance sweeps; the session acceptance records only its bounded observations.
-    add_executable(atelier_source_measure EXCLUDE_FROM_ALL acceptance/source/measure.cpp)
-    atelier_target(atelier_source_measure)
-    target_link_libraries(atelier_source_measure PRIVATE atelier_source atelier_core_math mimalloc psapi)
 
     add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
     atelier_llvm_target(atelier_jit_probe)

@@ -79,7 +79,7 @@ Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映
 
 当前不提供任意机器指令暂停、C++ 单步、变量写入、表达式求值或反向执行。运行中的暂停/终止请求尚无独立控制句柄，`abort` 只在已有停点处理器返回时生效；不能据此承诺终止未命中停点的无限循环或抢占长时间原生调用。工业依据见[研究记录](research/source-debugger-research.md)。
 
-[`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径覆盖单步、精确版本断点、变量初始化/作用域、只读保护、快照寿命、首错、中止，以及 async 跨 yield 和旧版本清理。它纳入 `source_acceptance`，也可单独运行：
+[`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径保留 step-into/step-out 的固定值代表、Runtime 销毁后仍可读的拥有型快照、原生失败/处理器异常/abort 清理，以及 async 跨 yield、热发布和 close 后的旧帧完成。拒绝、精确错误文本、快照预算及从 debug_sites 反抄期望的断点矩阵已移除。它纳入 `source_acceptance`，也可单独运行：
 
 ```powershell
 . ./tools/enter-dev.ps1
@@ -89,4 +89,4 @@ cmake --build --preset dev --target atelier_source_minimal
 
 发布配置使用相同入口，将 `dev` 替换为 `release`。
 
-验收还覆盖跨 `yield` 的参数和局部值读取，确认调试表位于协程帧内；未传入 Debugger 的调用不复制调试元数据的共享指针。
+跨 `yield` 的参数与局部值按固定输入检查；另保留处理器内释放公开 Debugger 句柄后继续完成并读取快照的生命周期代表。

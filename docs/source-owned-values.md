@@ -57,12 +57,9 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 
 ## 端到端验收
 
-[正式消费者](../acceptance/source/owned_values.cpp)通过生成反射、公共 Program 和真实原生存储覆盖：
+[模块清理消费者](../acceptance/source/modules.cpp)与[组合字段消费者](../acceptance/source/value_fields.cpp)通过公共 Program 和真实原生存储保留不同故障路径的最小代表：
 
-- 临时 String、Array<String>、嵌套 Array 与 64 字节对齐非平凡记录；深复制后独立修改。
-- 原生批处理、记录/数组元素/字段的直接可写引用与 const 别名、String 字节作为标量引用实参。
-- 128 次循环、嵌套块、提前返回、原生异常、越界、负容量、非法 UTF-8，以及部分复制失败后的清理。
-- 字面量临时值和转义、兼容方法体替换、旧租约执行。
-- 未声明安全值操作、未知原生调用、借用结构修改、跨挂起、String 字节写入的拒绝；同批前向 GC 记录参数不能绕过共享签名验证。
+- 深层助手的原生失败、助手参数部分复制失败，以及助手对象根的失败后回收。
+- String/Array/记录组合中的助手失败、部分构造失败与整值赋值失败；调用方原内容仍可读，拥有值全部析构。
 
-入口是 `source_acceptance`，也包含在 `jit_acceptance` 中。开发与发布配置执行同一套检查，不依赖 assert。
+独立的 owned-values 重复入口、规模与拒绝矩阵已移除。入口是 `source_acceptance`，开发与发布配置执行同一套检查，不依赖 assert。

@@ -94,7 +94,7 @@ double energy(const Array<vector3d>& values) {
 
 精度契约：与精确值相差不超过结果类型的 4 ULP。sin、cos 的准确区间 float 是 |x| ≤ 2^20，double 是 |x| ≤ 2^40；超出后结果仍有限且绝对值不超过 1，但不再近似正弦、余弦。
 
-下表保留实现阶段的 release 测量，不代表每次集成都重跑大规模扫描。float：sin、cos、exp、log 穷举全部 2^32 个 float，atan2、pow 各约 10.4 亿组随机参数，另加 111 万组边界网格，误差相对精确值。double 的[原分支测量](https://ampcode.com/threads/T-01a149c9-15b7-75a9-9a24-80c450cd4aed)使用 `atelier_source_measure --math-sweep`，每函数 1,002,438,656 组参数，覆盖归约边界附近、溢出与次正规区间和随机位模式；sin/cos 的随机输入限于准确区间。double 列记录与 [CORE-MATH](https://core-math.gitlabpages.inria.fr/) 正确舍入结果的相邻浮点数步长距离，是抽样结果，不是全域误差证明或跨 CPU 实测。
+下表保留实现阶段的 release 测量，原 `atelier_source_measure --math-sweep` 入口已移除，不代表当前验收重跑过大规模扫描。float：sin、cos、exp、log 穷举全部 2^32 个 float，atan2、pow 各约 10.4 亿组随机参数，另加 111 万组边界网格，误差相对精确值。double 的[原分支测量](https://ampcode.com/threads/T-01a149c9-15b7-75a9-9a24-80c450cd4aed)每函数 1,002,438,656 组参数，覆盖归约边界附近、溢出与次正规区间和随机位模式；sin/cos 的随机输入限于准确区间。double 列记录与 [CORE-MATH](https://core-math.gitlabpages.inria.fr/) 正确舍入结果的相邻浮点数步长距离，是抽样结果，不是全域误差证明或跨 CPU 实测。
 
 | 函数 | float | double |
 | --- | --- | --- |
@@ -129,7 +129,9 @@ double 版把归约后的参数和主要项保留为双字，即精确和等于�
 - atan2：从最近的 atan(c)（c ∈ {0, 1/4, 1/2, 1}）出发，约化比值 (u − c·v)/(v + c·u) 不超过 0.163，u − c·v 是精确的，除法保留余数；最后以双字加上 π/2 或 π。
 - pow：log|x| 以双字算到约 2^-68 的相对误差，y·log|x| 也保留为双字，交给 exp 的核心；特殊值规则与 float 版相同。
 
-结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令。在相同的默认浮点环境（nearest-even 舍入、FTZ/DAZ 关闭）下，且使用同一套保留既定运算顺序与显式 FMA 的严格 IR/后端时，同一实现在支持 FMA3 的主机上逐位相同，标量调用与向量化循环也逐位相同；修改浮点环境或放宽编译规则不在此保证内，入口不替宿主隔离或恢复浮点环境。`source_acceptance` 检查前端不赋予 fast-math 许可，优化后仍禁止重排、隐式融合、近似或次正规数清零；优化器证明成立的 `nnan/ninf/nsz` 不在此禁令内。NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
+结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令。在相同的默认浮点环境（nearest-even 舍入、FTZ/DAZ 关闭）下，且使用同一套保留既定运算顺序与显式 FMA 的严格 IR/后端时，同一实现在支持 FMA3 的主机上逐位相同，标量调用与向量化循环也逐位相同；修改浮点环境或放宽编译规则不在此保证内，入口不替宿主隔离或恢复浮点环境。前端不赋予 fast-math 许可，优化后仍禁止重排、隐式融合、近似或次正规数清零；优化器证明成立的 `nnan/ninf/nsz` 不在此禁令内。NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
+
+`source_acceptance` 对六种函数各保留一个 float/std-double 与 double/CORE-MATH 独立真值输入，分别检查 4/3 ULP；不再检查 IR 文本、随机规模、全 binade 或标量/向量互证矩阵。
 
 ## 调用、生命周期与优化边界
 

@@ -145,7 +145,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 
 唯一版本清单位于 [cmake/toolchain-lock.json](cmake/toolchain-lock.json)，版本升级同时更新锁文件并验证构建环境，不在文档中维护第二份版本表。
 
-通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、Foundation 的 unordered_dense、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库；源码数学验收另按文件锁定 CORE-MATH 的正确舍入 binary64 函数，只链接 `atelier_source_minimal` 与 `atelier_source_measure`，不进入任何产品目标，输出目录保留其 MIT 许可证 `LICENSE.core-math.txt`。压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
+通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、Foundation 的 unordered_dense、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库；源码数学验收另按文件锁定 CORE-MATH 的正确舍入 binary64 函数，只链接 `atelier_source_minimal`，不进入任何产品目标，输出目录保留其 MIT 许可证 `LICENSE.core-math.txt`。压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
 
 原生代码使用 C++23，警告视为错误；编译使用 clang-cl，静态归档使用 llvm-lib，链接使用 lld-link。只维护 CMake 构建定义。IDE 应使用相同 preset 和准备好的工具链环境。
 
@@ -243,34 +243,25 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## JIT 业务执行闭环
 
-正式消费者包含 [source/program.hpp](src/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。标量/枚举值参数和返回值使用 Runtime 的 `Scalar`，借用参数使用 `Argument`，不会暴露 LLVM 或私有 DLL 参数布局。原生或描述型记录、Array 和只读 String 也通过 `Argument::borrow` 进入同一接口；布局来自 Runtime，生成代码访问调用方原有缓冲。[独立最小消费者](acceptance/source/main.cpp)仅依赖该公共入口，验证同步结果、兼容替换、旧版本租约和程序关闭后的挂起帧存活。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
+正式消费者包含 [source/program.hpp](src/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。标量/枚举值参数和返回值使用 Runtime 的 `Scalar`，借用参数使用 `Argument`，不会暴露 LLVM 或私有 DLL 参数布局。原生或描述型记录、Array 和只读 String 也通过 `Argument::borrow` 进入同一接口；布局来自 Runtime，生成代码访问调用方原有缓冲。[公共验收入口](acceptance/source/main.cpp)分派下列独立代表，不重复基础同步/热更用例。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
 
-[原生值借用消费者](acceptance/source/native_values.cpp)验证 C++ 持有 `Array<原生记录>`、源码按引用原地更新、C++ 直接读取结果；包括 64 字节对齐、零元素复制、嵌套数组、UTF-8 字节读取、只读/别名/越界与兼容版本替换。调用链及边界见[原生值借用](docs/native-value-borrows.md)。
+[原生值借用消费者](acceptance/source/native_values.cpp)保留一个小型原生记录数组的共享布局、只读/可写别名与原地更新代表，以及借用后的 GC、失败前已提交写入和拥有者析构。调用链及边界见[原生值借用](docs/native-value-borrows.md)。
 
-[拥有值消费者](acceptance/source/owned_values.cpp)进一步验证源码临时 String/Array、原生批处理、记录/元素的直接可写引用、字面量、深复制和全部退出路径的清理。类型与调用效果声明沿同一 Runtime 发布，`AFUNCTION(BorrowSafe)` 开放受控原生算法。实际语法与范围见[拥有型基础值](docs/source-owned-values.md)，端到端入口仍为 `source_acceptance`。
+[拥有值清理](acceptance/source/modules.cpp)与[组合字段清理](acceptance/source/value_fields.cpp)分别保留跨函数和复合记录的故障代表；重复的 owned-values 入口已移除。类型与调用效果声明沿同一 Runtime 发布，`AFUNCTION(BorrowSafe)` 开放受控原生算法。实际语法与范围见[拥有型基础值](docs/source-owned-values.md)，端到端入口仍为 `source_acceptance`。
 
-[模块函数消费者](acceptance/source/modules.cpp)覆盖前向/嵌套调用、直接定型参数、跨函数引用别名、逐层资源清理、对象根与 GC，以及 async 入口调用同步助手。宿主通过 `Program::request(name, source, entry_name)` 选择公开入口；整模块随代码版本一起发布和退休。当前内部调用图无环，不支持递归或调用 async 函数。详见[同模块多函数](docs/source-function-modules.md)。
+[模块函数消费者](acceptance/source/modules.cpp)覆盖深层原生失败、助手参数部分复制失败的逐层清理，以及对象根的失败后回收。宿主通过 `Program::request(name, source, entry_name)` 选择公开入口；整模块随代码版本一起发布和退休。当前内部调用图无环，不支持递归或调用 async 函数。详见[同模块多函数](docs/source-function-modules.md)。
 
-[项目快照消费者](acceptance/source/projects.cpp)通过 `Program::request(SourceSnapshot)` 验证跨文件助手、原生对象的源码派生类、Runtime 标量、向量与枚举字段默认值及字段属性（范围与展示文本）和具名多入口；值区间内只读 `self` 的继承原生字段与源码字段，不改变借用规则和 GC 规则（不盖写代号、不推进收集、借用存储不动），写入、字段借用和读取其他对象仍拒绝。类型与整组代码一次发布；失败保留全部旧版本，兼容更新保留对象状态并可追加类、方法、函数和类型，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+[项目快照消费者](acceptance/source/projects.cpp)保留当前 Source 文件往返、跨文件属性依赖更新，以及真实 World owner 的热更新、失败保旧和关闭后旧租约执行。类型与整组代码一次发布；兼容更新保留对象状态，旧租约保有旧模块。宿主 API、诊断定位和重建边界见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
 
-[类型声明消费者](acceptance/source/types.cpp)验证源码 `enum/struct` 的前向嵌套声明、Runtime 布局与反射、C++ 和 JIT 共用存储、值复制清理及类型与代码联合发布；[值字段消费者](acceptance/source/value_fields.cpp)覆盖 String、已注册 Array 和记录的字段组合及作用域清理。新类型可在创建对象后随代码更新追加，已发布类型的定义与身份保持不变；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
+[类型声明消费者](acceptance/source/types.cpp)用一份 C++ 独立布局与固定输入验证源码 `enum/struct` 共用存储；[值字段消费者](acceptance/source/value_fields.cpp)保留 String、Array 和记录组合的助手失败、部分构造与赋值失败清理。新类型可在创建对象后随代码更新追加，已发布类型的定义与身份保持不变；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
-同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)覆盖原生互调、源码临时值、Runtime 字段读写、大值与高对齐，以及失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
+同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)保留构造失败后重试、按值/可写别名快照、高对齐暂存寿命及大值失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
 
 单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。
 
-同一入口包含[连续会话验收](acceptance/source/session.cpp)：原生与描述型对象各用一个 Runtime 和一个 Program，预热 4 轮后采样 32 轮；每轮 32 个 tick，每 tick 启动 8 个跨 2～12 个 yield 的协程任务，每 8 个 tick 兼容更新一次，部分任务在 ready 或 suspended 状态取消，宿主交错推进分步 GC。每轮结束时只剩接收者的一个对象和一个根，四个旧版本集中退休、代码页回到 `MEM_FREE`，预热后的活跃分配增长不超过 64 KiB；最后关闭入口并取消剩余任务，对象、根和代码全部释放。
+同一入口包含[交错会话验收](acceptance/source/session.cpp)：一个原生宿主、两个代码版本、四个任务交错经过 yield、GC、完成与 ready/suspended 取消。完成两次后只剩宿主的一份根和对象，释放租约与关闭入口后代码页及展开表退休，最后对象、根和待回收数归零。不再进行多轮预热、规模放大或分配器计时。
 
-正式接口的性能与资源基线（2026-09-28 的实现）见[测量记录](docs/research/runtime-stage-measurements.md)。测量不随普通构建或验收执行；复跑命令：
-
-```powershell
-cmake --build --preset release --target atelier_source_measure
-./out/release/atelier_source_measure.exe --batches 7 --calls 20000 --max-tasks 1024
-# 代码生成证据：每个用例的 .s / 优化后 .ll、对象字节数，以及失败点密集模块的编译时间与内存
-./out/release/atelier_source_measure.exe --artifacts out/codegen
-# 编译单元：500/3000 行合成引擎库、1/10/50 个类，改一个类、改被调用/没被调用的引擎函数后重新发布的耗时与 code 变化数
-./out/release/atelier_source_measure.exe --compile-units
-```
+正式接口的历史性能与资源基线见[测量记录](docs/research/runtime-stage-measurements.md)。`atelier_source_measure` 及 `--math-measure` 已移除，历史数值和原始证据保留，不代表当前验收结果。
 
 [机器推进源码](acceptance/jit/advance_machine.source)经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树、[LLVM 降低与本机编译](src/jit/source_backend.cpp)，操作既有原生/描述型机器。循环、正值分支、`advance(float)` 调用及 `state.cycles` 更新由源码决定；`state.heat` 保持不变。宿主适配器另行创建并返回同类型执行后快照，它仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值。公共数据结构复用 [machine.hpp](acceptance/machine.hpp)。
 
@@ -284,7 +275,7 @@ cmake --build --preset release --target atelier_source_measure
 
 开发/发布的正式目标均运行上述[真实端到端验收](acceptance/jit/business.cpp)。当前支持单源码选定入口、项目快照的多个同步入口与模块内函数、标量、同步值借用、String/Array/记录拥有型局部、源码 enum/struct、受控原生算法调用、既有成员、`if/while/for/break/continue/return`，以及单绑定对象类型的持有/观察局部、弱引用直接成员访问、`null/new/observe/try_acquire`、身份比较与词法引用清理。完整现行词法、数值、引用与协程规则见 [LANGUAGE.md](LANGUAGE.md)；长期设计方向见[语言契约](docs/language-contract.md)，执行协议见[运行时说明](docs/runtime-model.md#业务执行协议)。原生/描述型对象验收覆盖各 GC 阶段入场、嵌套区间保护、强弱跨挂起和区间外回收；多返回场景覆盖首/中/末早退、正常落尾和原生/快照发布失败，检查引用清理与部分副作用。
 
-语言基础沿同一 Runtime/source/JIT 入口支持 `core.bool`、短路逻辑、受检查的整数除余/移位、四种数值类型的显式转换、局部只读 const 与编译期模块常量，以及带作用域清理的 for/break/continue。`GetX`／`SetX` 自动派生 [Property 调用糖](LANGUAGE.md#计算属性-property)，强引用可隐式赋给弱目标，反向仍需显式 `try_acquire`；不增加新的 Runtime 存储或引用体系。[语言基础消费者](acceptance/source/foundations.cpp)通过 `source_acceptance` 覆盖执行、拒绝、setter 失败传播和弱引用跨挂起；[项目消费者](acceptance/source/projects.cpp)覆盖属性依赖更新与旧版本；[bool 调用边界消费者](acceptance/jit/bool_abi.cpp)通过 `jit_acceptance` 覆盖布尔值、借用及结果契约。运行入口为 `cmake --build --preset dev --target source_acceptance jit_acceptance`，release 使用同名目标；语义以 [LANGUAGE.md](LANGUAGE.md) 为准。
+语言基础沿同一 Runtime/source/JIT 入口支持 `core.bool`、短路逻辑、受检查的整数除余/移位、四种数值类型的显式转换、局部只读 const 与编译期模块常量，以及带作用域清理的 for/break/continue。`GetX`／`SetX` 自动派生 [Property 调用糖](LANGUAGE.md#计算属性-property)，强引用可隐式赋给弱目标，反向仍需显式 `try_acquire`；不增加新的 Runtime 存储或引用体系。[语言基础消费者](acceptance/source/foundations.cpp)通过 `source_acceptance` 保留属性求值顺序与 setter 失败、bool 紧凑 ABI、短路清理及受检查算术失败后恢复；[项目消费者](acceptance/source/projects.cpp)覆盖属性依赖更新与旧版本；[bool 调用边界消费者](acceptance/jit/bool_abi.cpp)通过 `jit_acceptance` 覆盖布尔值、借用及结果契约。运行入口为 `cmake --build --preset dev --target source_acceptance jit_acceptance`，release 使用同名目标；语义以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
 构建将 `advance_machine.source` 复制到可执行文件旁，业务验收在启动时读取并编译它；运行时须保留此文件。修改项目中的源码后重新构建即可更新副本，新增验收也会在同一进程中独立编译不同源码并执行。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。编译错误的位置与运行停点分别维护：实际断点、单步和局部值通过[调试接口](docs/source-debugger.md)使用；编辑器磁盘检测沿[源码工作流](docs/modules/editor/source-editor.md)执行，PDB 和任意机器指令源码映射尚未接入。
 
@@ -309,25 +300,9 @@ cmake --build --preset release --target atelier_source_measure
 
 每个 Runtime 自动发布 `core.f32/core.f64` 和 `math.vector2/3/4`、`math.quaternion`、`math.matrix4` 及对应 `d` 后缀双精度类型。C++、反射和源码使用同一原生类型身份；World 与相机直接消费共享数学库。源码数学局部和运算直接生成 LLVM IR，模块经过 O2 优化；没有开启 fast-math。完整语义、迁移边界和示例见[数学合同](docs/math.md)。
 
-定向验收通过 `math_acceptance`、`atelier_runtime_acceptance`、`reflection_acceptance`、`source_acceptance` 和 `jit_acceptance` 执行。真实数组计算测量使用现有消费者：
+源码数学通过 `source_acceptance` 保留每种行为的一份独立真值代表，不展开宽度、参数、随机或全 binade 矩阵。六种超越函数各有一个 float/std-double 与 double/CORE-MATH 输入；另保留紧凑 ABI、稳健归一化、变换组合、原生失败不覆盖结果及 async double。原生数学与反射的独立路径仍由其各自入口覆盖。
 
-```powershell
-. ./tools/enter-dev.ps1
-cmake --build --preset release --target atelier_source_minimal
-./out/release/atelier_source_minimal.exe --math-measure
-```
-
-该测量比较 65,536 个位置在 32 个 Tick 中的向量源码、逐分量源码及 C++ 运算，排除编译与重置时间，并验证结果一致。测量范围和实际数据见[数学研究记录](docs/research/engine-math-design.md)。
-
-超越函数另有两项独立测量：
-
-```powershell
-cmake --build --preset release --target atelier_source_measure
-./out/release/atelier_source_measure.exe --math-timing
-./out/release/atelier_source_measure.exe --math-sweep 1000000000
-```
-
-`--math-timing` 对 2^20 个参数报告 double、float 源码循环和 C++ `std::` double、float 循环的每元素纳秒，取 9 次中位数。`--math-sweep` 把 double 超越函数与 CORE-MATH 的正确舍入值逐个比较，报告最大 ULP 距离、对应参数和非正确舍入的个数；参数数量向上取整到 2^22 的倍数，固定种子与线程数无关。结果见[超越函数](docs/math.md#超越函数)。
+已移除的数组计时、超越函数计时与大规模扫描不再提供运行入口；历史结果见[数学研究记录](docs/research/engine-math-design.md)与[超越函数](docs/math.md#超越函数)。
 
 ## 执行链路
 

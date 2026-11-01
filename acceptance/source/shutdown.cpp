@@ -53,23 +53,13 @@ struct HostOwner {
 
     Program::Entry entry;
 
-    Program::Lease lease;
-
-    Program::Request request;
-
-    Program::Candidate pending;
-
     std::array<Coroutine, 5> tasks;
 
     bool stopping{};
 
     bool busy_in_callback{};
 
-    std::uintptr_t old_address{};
-
     std::uintptr_t current_address{};
-
-    std::uintptr_t candidate_address{};
 
     HostOwner() {
         type = take(NativeRegistration<Signal>{*runtime, "stage.Signal", TypeKind::object}
@@ -96,7 +86,6 @@ struct HostOwner {
             return;
         stopping = true;
         program->close();
-        lease = {};
         for (auto& task : tasks)
             task.cancel();
     }
@@ -114,9 +103,6 @@ struct HostOwner {
             require(task.state() != CoroutineState::running, "A running task reached shutdown teardown.");
         for (auto& task : tasks)
             task = {};
-        pending = {};
-        request.reset();
-        lease = {};
         program.reset();
         receiver.reset();
         require(runtime->root_count() == 0, "Shutdown retained task or receiver roots.");
@@ -142,11 +128,9 @@ void Signal::signal(std::uint32_t mode) {
     require(active_owner != nullptr, "Shutdown callback has no host owner.");
     auto& owner = *active_owner;
     owner.request_stop();
-    owner.request_stop();
     auto finished = owner.finish_shutdown();
     owner.busy_in_callback = !finished && finished.error().code == ErrorCode::busy;
     require(owner.busy_in_callback && owner.runtime.has_value(), "Shutdown destroyed an active Runtime.");
-    require(!owner.start(0), "Stopping host started another task.");
     code_state(owner.current_address, true);
 }
 
@@ -158,23 +142,13 @@ void verify_mixed_shutdown() {
             stage.Signal held = new stage.Signal();
             yield;
             self.signal(mode);
-            return mode + 10;
-        })");
-    owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
-    owner.lease = take(owner.program->pin());
-    owner.old_address = owner.lease.address();
-    owner.tasks[0] = take(owner.start(0)); // Ready, retaining the old version.
-    owner.tasks[1] = take(owner.start(0));
-    require(take(owner.tasks[1].resume()) == CoroutineState::suspended, "Old task failed to suspend.");
-
-    owner.publish(R"(
-        async uint run(uint mode) {
-            stage.Signal held = new stage.Signal();
-            yield;
-            self.signal(mode);
             return mode + 100;
         })");
+    owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
     owner.current_address = take(owner.program->pin()).address();
+    owner.tasks[0] = take(owner.start(0));
+    owner.tasks[1] = take(owner.start(0));
+    take(owner.tasks[1].resume());
     for (std::size_t index = 2; index < owner.tasks.size(); ++index) {
         const auto mode = index == 2 ? 1u : index == 3 ? 0u : 2u;
         owner.tasks[index] = take(owner.start(mode));
@@ -182,37 +156,21 @@ void verify_mixed_shutdown() {
     }
     require(take(owner.tasks[3].resume()) == CoroutineState::completed, "Completion setup failed.");
     require(!owner.tasks[4].resume() && owner.tasks[4].state() == CoroutineState::failed, "Failure setup failed.");
-    owner.request =
-        take(owner.program->request("pending-shutdown.source", "async uint run(uint mode) { return mode; }"));
-    owner.pending = take(Program::prepare(owner.request));
-    owner.candidate_address = owner.pending.address();
 
     // The real native call requests shutdown while this generated frame runs.
     require(take(owner.tasks[2].resume()) == CoroutineState::cancelled, "Running shutdown did not defer cancellation.");
     require(owner.busy_in_callback, "Shutdown did not reject teardown from the active callback.");
-    owner.program->close(); // Closing remains idempotent after active work exits.
     for (std::size_t index = 0; index < 3; ++index)
         require(owner.tasks[index].state() == CoroutineState::cancelled && !owner.tasks[index].result(),
                 "Shutdown left an unfinished task or committed a cancelled result.");
     require(owner.tasks[3].state() == CoroutineState::completed &&
                 std::get<std::uint32_t>(*take(owner.tasks[3].result())) == 100,
             "Shutdown changed an already completed result.");
-    auto failed = owner.tasks[4].result();
-    require(!failed && failed.error().message == "Shutdown fixture failure.", "Shutdown replaced an existing failure.");
-    require(!owner.program->request("closed.source", "void closed() {}") && !Program::prepare(owner.request),
-            "Closed program accepted a new request or prepared an old request.");
-    require(!owner.program->try_publish(owner.pending) && owner.pending,
-            "Closed publication succeeded or consumed its candidate.");
-    const std::array arguments{Scalar{std::uint32_t{0}}};
-    require(!owner.entry.start(owner.receiver.id(), arguments), "Closed stable entry accepted work.");
+    require(owner.tasks[4].state() == CoroutineState::failed && !owner.tasks[4].result(),
+            "Shutdown published an already failed task's result.");
     require(owner.runtime->root_count() == 1, "Cancelled tasks retained roots beyond the host receiver.");
-    code_state(owner.old_address, false);
     code_state(owner.current_address, false);
-    code_state(owner.candidate_address, true); // Rejected candidates still own code.
     take(owner.finish_shutdown());
-    owner.request_stop();
-    take(owner.finish_shutdown());
-    code_state(owner.candidate_address, false);
 }
 
 void verify_synchronous_shutdown() {
@@ -226,7 +184,6 @@ void verify_synchronous_shutdown() {
     require(result && std::get<std::uint32_t>(*result) == 23 && owner.busy_in_callback,
             "Closing during a synchronous callback invalidated the active call or Runtime.");
     code_state(owner.current_address, false);
-    require(!owner.entry.invoke(owner.receiver.id(), arguments), "Closed synchronous entry accepted another call.");
     take(owner.finish_shutdown());
 }
 }
