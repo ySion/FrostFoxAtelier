@@ -28,19 +28,7 @@ struct Inventory {
     AGENERATED_BODY(Inventory)
 
     AFIELD()
-    String label;
-
-    AFIELD()
     Array<Item> items;
-
-    AFIELD()
-    Array<String> tags;
-
-    AFIELD()
-    Array<Array<std::int32_t>> batches;
-
-    AFIELD(Strong = "core.Object")
-    ReferenceSlot owner;
 };
 
 }

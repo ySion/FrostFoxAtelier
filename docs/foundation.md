@@ -191,30 +191,17 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 
 构建与运行方式遵循 [README 的必要性验收](../README.md#构建与端到端验收)，按改动选择以下消费者；这里描述覆盖范围，不记录某次交付的通过状态。
 
-Map/Set 的[资源目录消费者](../acceptance/foundation/associative.cpp)包含在 foundation_acceptance：拥有资源与独立快照、64 字节对齐、move-only 资源、复制/构造失败、透明查询、UTF-8 与嵌入零、冲突密集增删、ObjectId 跨上下文/代际、ObjectId/TypeId 哈希覆盖每个身份字段及 GC 不保活。业务接入由 `world_acceptance` 和 `editor_document_acceptance` 覆盖；后者沿真实 Project→Workspace→UI 接受帧验证中文/非 BMP 资源键、目录刷新、虚拟列表与 reset 身份。检查在 dev/release 中均有效，不依赖 assert。
+`foundation_acceptance` 保留资源所有权和失败清理的代表序列，检查在 dev/release 中均有效，不依赖 assert：
 
-[生命周期消费者](../acceptance/foundation/lifecycle.cpp)进一步覆盖有状态 Hash/Equal 移动后复用、可抛比较结果与非透明键转换的拒绝、资源子树提升时的移动赋值顺序、自赋值/自移动/自交换、重复清空/释放/删除、空与末尾切片、SSO 边界和无效 UTF-8 失败保值；同样进入 foundation_acceptance。SharedArray 部分核对接管缓冲不复制、共享句柄写入后另一句柄不变、唯一句柄原地写入、空句柄与移动后的源、自操作、复制赋值与移动赋值放开被替换的块，以及 8 个线程对同一块并发复制、析构和写入后计数回到独占；const、move-only 和智能指针元素在编译期被拒绝。原子内存序在 x64 上不能由验收区分。Array 生命周期变化同时由反射值与源码拥有值的既有消费者覆盖。
+- [资源目录消费者](../acceptance/foundation/associative.cpp)：Map 部分复制失败后，已有目标和源资源仍存活，退出作用域后全部释放。
+- [生命周期消费者](../acceptance/foundation/lifecycle.cpp)：资源子树提升时的移动赋值顺序，以及 SharedArray 多线程复制、写时分离和线程结束后的共享缓冲释放。原子内存序在 x64 上不能由这项验收区分。
+- [拥有资源消费者](../acceptance/foundation/main.cpp)：Array 自身别名追加/填充、构造与复制失败后的清理，以及宏生成原生 Inventory、描述型 Array 字段、独立快照、Runtime 值复制与 GC 析构资源的链路。
+- [Array 缓冲寿命](../acceptance/foundation/array_lifetime.cpp)与 [String 缓冲寿命](../acceptance/foundation/string_lifetime.cpp)：分别执行一次 Array 拷贝/销毁和一次 String 目录清空，严格比较前后 mimalloc 活分配字节；不是元素 live 计数，也不是性能采样。两个可执行文件随同一个 `foundation_acceptance` 入口运行，不输出计时或性能报告。
 
-[消费者](../acceptance/foundation/main.cpp)实际运行原生 Inventory、宏生成元数据、描述型字段、保存独立快照、Runtime 值复制与 GC 回收资源的链路，同时覆盖自身追加、UTF-8、15/16 字节边界、内联/堆复制移动、容量复用、ASCII 块边界的合法/非法 UTF-8、过对齐元素、move-only 资源、失败清理、容量溢出及错误类型借用。Array 的验收覆盖标量批量复制与自身切片追加、赋值复用中的活前缀/新尾部、空值与零初始化、重叠删除、过对齐数据包、实际选中的模板构造/赋值副作用，以及预留目标复制失败时的强保证；填充式 resize 覆盖值引用自身元素时的扩容、缩小保留容量，以及资源复制失败时数组不变；ObjectReference、ReferenceSlot 与 ObjectRoot 作为 SharedArray 元素在编译期被拒绝。共享 Runtime 值赋值也确认标量数组的容量复用。生成器 CLI 覆盖持久视图和数组隐藏引用的拒绝。[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)覆盖目录组装的拒绝与回滚、行序、包含式计数、同帧累加、父项不符与未登记标记、`record`、`Suspend` 和嵌套帧。检查在 dev/release 中均有效；总 `acceptance` 入口包含 foundation 验收。
+[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)检查目录组装、层级与记录序列，入口仍为 `foundation_acceptance`。
 
 [源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 额外覆盖原生缓冲直接写入、64 字节对齐记录、String、嵌套数组、别名和同步存续期；[拥有值消费者](../acceptance/source/owned_values.cpp)覆盖 String/Array 局部、原生算法、深复制、部分失败与作用域清理；该目标也包含在 `jit_acceptance` 中。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。
 
-## 字符串性能采样入口
-
-```powershell
-cmake --build --preset release --target atelier_string_measure
-./out/release/atelier_string_measure.exe
-```
-
-该目标独立于普通验收，输出 JSON Lines：短文本构造/复制、预留容量赋值和拼接、已验证文本追加、外部 UTF-8 写入、4 KiB 复制，以及 2 万项保留名称目录的耗时、分配次数和内存。MSVC STL 对照使用相同的外部 UTF-8 校验合同；结果是具体工作负载采样，计时阈值不作为功能验收条件。
-
-## Array 性能采样入口
-
-```powershell
-cmake --build --preset release --target atelier_array_measure
-./out/release/atelier_array_measure.exe
-```
-
-独立 JSON Lines 采样覆盖 4096 个整数的复制、预留追加、复用赋值、扩容、保序删除与过滤，64 项增量构造、值初始化，512 个过对齐 64 字节数据包复制，以及 64 个拥有型 String 的追加与赋值。与 MSVC std::vector 使用相同输入、全局 mimalloc 和有效操作；复制/过滤场景包括准备工作，删除场景循环移除并补回 32 项，不混入重新构造整个批次的时间。7 次样本取中位数，记录分配次数与分配器取整字节；不以采样阈值判断功能通过。安全边界、工业实现取舍和实测结果见[Array 研究](research/array-storage-performance.md)。
+历史采样及条件见[字符串研究](research/string-storage-performance.md)和 [Array 研究](research/array-storage-performance.md)；当前没有独立的 Array/String 性能测量入口。
