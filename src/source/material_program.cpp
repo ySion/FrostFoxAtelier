@@ -4,27 +4,21 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <stdexcept>
 
 namespace atelier::source {
 using namespace detail;
 namespace {
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
 struct Samples {
     std::span<const MaterialTexture> textures;
-    char error[512]{};
+    // The backend stops at the first failed callback. Owning errors and caught
+    // exceptions stay on the host side; only the status crosses the C ABI.
+    std::optional<Error> error{};
+    std::exception_ptr failure{};
+    const char* unknown_failure{};
 };
 std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
@@ -34,16 +28,19 @@ std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* 
         const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
         if (texture == samples.textures.end() || !texture->sample)
             throw std::runtime_error("Missing material texture binding.");
-        const auto value = take(texture->sample(texture->data, {uv[0], uv[1]}));
+        auto value = texture->sample(texture->data, {uv[0], uv[1]});
+        if (!value) {
+            samples.error = std::move(value.error());
+            return 1;
+        }
         for (std::size_t i = 0; i < 4; ++i)
-            if (!std::isfinite(value[i]))
+            if (!std::isfinite((*value)[i]))
                 throw std::runtime_error("Material sample result is not finite.");
-        std::memcpy(result, &value, sizeof(value));
+        std::memcpy(result, &*value, sizeof(*value));
         return 0;
-    } catch (const std::exception& error) {
-        std::snprintf(samples.error, sizeof(samples.error), "%s", error.what());
     } catch (...) {
-        std::snprintf(samples.error, sizeof(samples.error), "%s", "Material sampler failed.");
+        samples.failure = std::current_exception();
+        samples.unknown_failure = "Material sampler failed.";
     }
     return 1;
 }
@@ -57,16 +54,19 @@ std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const flo
             throw std::runtime_error("Missing material texture binding.");
         if (!texture->orientation)
             throw std::runtime_error("Missing material sample_orientation callback.");
-        const auto value = take(texture->orientation(texture->data, {uv[0], uv[1]}));
+        auto value = texture->orientation(texture->data, {uv[0], uv[1]});
+        if (!value) {
+            samples.error = std::move(value.error());
+            return 1;
+        }
         for (std::size_t i = 0; i < 2; ++i)
-            if (!std::isfinite(value[i]))
+            if (!std::isfinite((*value)[i]))
                 throw std::runtime_error("Material sample_orientation result is not finite.");
-        std::memcpy(result, &value, sizeof(value));
+        std::memcpy(result, &*value, sizeof(*value));
         return 0;
-    } catch (const std::exception& error) {
-        std::snprintf(samples.error, sizeof(samples.error), "%s", error.what());
     } catch (...) {
-        std::snprintf(samples.error, sizeof(samples.error), "%s", "Material sample_orientation failed.");
+        samples.failure = std::current_exception();
+        samples.unknown_failure = "Material sample_orientation failed.";
     }
     return 1;
 }
@@ -160,7 +160,8 @@ Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, 
 }
 
 Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
-                                       std::span<std::byte> output, std::span<const MaterialTexture> textures) const {
+                                       std::span<std::byte> output, std::span<const MaterialTexture> textures) const
+    try {
     const auto state = state_; // Samplers may release the caller's last outer owner.
     if (context.size() != state->context.size || parameters.size() != state->parameters.size ||
         output.size() != state->output.size)
@@ -196,12 +197,29 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
     Samples samples{textures};
     char error[1024]{};
     if (atelier_invoke_business(view.shade, &samples, arguments, info.signature.parameter_count, &result, error,
-                                sizeof(error)))
-        return std::unexpected(Error{ErrorCode::invocation_failed, *samples.error ? samples.error : error});
+                                sizeof(error))) {
+        if (samples.error)
+            return std::unexpected(std::move(*samples.error));
+        if (samples.failure) {
+            try {
+                std::rethrow_exception(samples.failure);
+            } catch (const std::bad_alloc&) {
+                throw;
+            } catch (const std::exception& failure) {
+                return std::unexpected(Error{ErrorCode::invocation_failed, failure.what()});
+            } catch (...) {
+                return std::unexpected(Error{ErrorCode::invocation_failed, samples.unknown_failure});
+            }
+        }
+        return std::unexpected(Error{ErrorCode::invocation_failed, error});
+    }
     if (!finite_value(info.signature.result, info.environment, output_data))
         return std::unexpected(Error{ErrorCode::invocation_failed, "Material output is not finite."});
     std::memcpy(output.data(), output_data, output.size());
     return {};
+} catch (const std::bad_alloc&) {
+    // Reporting allocation failure must not allocate another diagnostic string.
+    return std::unexpected(Error{ErrorCode::capacity_exceeded, {}});
 }
 
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime, TypeId context, TypeId output,
@@ -243,10 +261,11 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
         std::vector<std::vector<std::byte>> initial(binding.values.size());
         std::vector<bool> captured(binding.values.size());
         struct Defaults {
-            std::function<const std::byte*(std::uint32_t)> capture;
+            std::function<Result<const std::byte*>(std::uint32_t)> capture;
+            std::optional<Error> error;
             std::exception_ptr failure;
         } defaults;
-        defaults.capture = [&](std::uint32_t index) -> const std::byte* {
+        defaults.capture = [&](std::uint32_t index) -> Result<const std::byte*> {
             if (captured[index])
                 return initial[index].data();
             captured[index] = true;
@@ -255,14 +274,20 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
             if (runtime.describe(value.type)) {
                 atelier::detail::ValueStorage storage;
                 auto bytes = std::span(storage.prepare(value.size, value.alignment), value.size);
-                take(runtime.initialize_value(value.type, bytes));
+                auto initialized = runtime.initialize_value(value.type, bytes);
+                if (!initialized)
+                    return std::unexpected(std::move(initialized.error()));
                 std::memcpy(initial[index].data(), bytes.data(), bytes.size());
-                take(runtime.destroy_value(value.type, bytes));
+                auto destroyed = runtime.destroy_value(value.type, bytes);
+                if (!destroyed)
+                    return std::unexpected(std::move(destroyed.error()));
             } else
                 for (const auto& field : value.fields) {
                     if (field.type.kind != ValueKind::record)
                         continue;
-                    defaults.capture(field.type.type_index);
+                    auto result = defaults.capture(field.type.type_index);
+                    if (!result)
+                        return std::unexpected(std::move(result.error()));
                     const auto& child = initial[field.type.type_index];
                     if (!child.empty())
                         std::memcpy(initial[index].data() + field.offset, child.data(), child.size());
@@ -272,11 +297,14 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
         const auto capture = [](void* state, std::uint32_t type) noexcept -> const std::byte* {
             auto& defaults = *static_cast<Defaults*>(state);
             try {
-                return defaults.capture(type);
+                auto result = defaults.capture(type);
+                if (result)
+                    return *result;
+                defaults.error = std::move(result.error());
             } catch (...) {
                 defaults.failure = std::current_exception();
-                return nullptr;
             }
+            return nullptr;
         };
         EnvironmentView environment(binding);
         // Material locals never call native lifecycle operations: plain default
@@ -292,6 +320,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
                                      &defaults, capture, context_type.type_index, output_type.type_index,
                                      texture_type.type_index, sample_texture, sample_orientation, &code, error,
                                      sizeof(error))) {
+            if (defaults.error)
+                return std::unexpected(std::move(*defaults.error));
             if (defaults.failure)
                 std::rethrow_exception(defaults.failure);
             return std::unexpected(Error{ErrorCode::invalid_definition, error});
@@ -336,8 +366,12 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
             return fail(Error{ErrorCode::invalid_definition, "Material defaults must be finite."});
         state->defaults.assign(bytes, bytes + p.size);
         return std::shared_ptr<const MaterialProgram>(new MaterialProgram(std::move(state)));
+    } catch (const std::bad_alloc&) {
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, {}});
     } catch (const std::exception& error) {
         return fail(Error{ErrorCode::invalid_definition, error.what()});
+    } catch (...) {
+        return fail(Error{ErrorCode::invalid_definition, "Material default capture failed."});
     }
 }
 }

@@ -30,11 +30,30 @@ void take(Result<void> value) {
 bool near(float a, float b) {
     return std::abs(a - b) < 0.00001f;
 }
+const Error callback_error{
+    ErrorCode::execution_aborted,
+    [] {
+        std::string message;
+        for (unsigned i = 0; i < 128; ++i)
+            message += "材质纹理读取失败，请保留完整诊断；";
+        return message;
+    }(),
+    SourceLocation{"materials/输入.ms", 0x1020304050607080ull, 12345, 67, 89, "E:/project/materials/输入.ms"}};
+void require_error(const Error& actual, const Error& expected) {
+    require(actual.code == expected.code && actual.message == expected.message &&
+                actual.source.has_value() == expected.source.has_value(),
+            "Material callback changed Error code/message/source presence.");
+    if (expected.source) {
+        const auto& a = *actual.source;
+        const auto& e = *expected.source;
+        require(a.path == e.path && a.version == e.version && a.offset == e.offset && a.line == e.line &&
+                    a.column == e.column && a.disk_path == e.disk_path,
+                "Material callback changed one of the six source location fields.");
+    }
+}
 struct UnusedDefault {
     float value;
-    UnusedDefault() {
-        throw std::runtime_error("Unrelated native constructor must not run during material compilation.");
-    }
+    UnusedDefault() { throw std::runtime_error(callback_error.message); }
 };
 struct GenericOutput {
     float value{7};
@@ -275,6 +294,20 @@ void verify_source_materials() {
         const auto output = take(runtime.native_type<material::Output>());
         const auto texture_input = take(runtime.native_type<material::TextureInput>());
         const auto types_before = runtime.type_count();
+        // Only the material that uses this native value may capture its default.
+        // Runtime has already classified the constructor exception; compilation
+        // must return that Error rather than relabeling it as a definition error.
+        const auto failed_defaults =
+            source::compile_material(runtime, context, output, texture_input, "failed-defaults.ms", R"(
+            struct Params { unused.Value input; };
+            Params defaults() { Params p; return p; }
+            material.Output shade(material.Context c, Params p) {
+                material.Output o; o.coverage=p.input.value; return o;
+            }
+        )");
+        require(!failed_defaults, "Material compilation ignored native default construction failure.");
+        require_error(failed_defaults.error(), {ErrorCode::construction_failed, callback_error.message});
+        require(runtime.type_count() == types_before, "Failed default capture published partial Source types.");
         // Each select uses the previous value in both arms. Start small so a
         // recurrence regression fails before the 32-branch case exhausts memory.
         for (const std::size_t count : {8u, 16u, 32u}) {
@@ -655,19 +688,27 @@ void verify_source_materials() {
         require(!failed && failed.error().message.contains(reason) &&
                     std::memcmp(before.data(), &orientation_untouched, before.size()) == 0,
                 "Orientation failure lost its diagnostic or partially published Output.");
+        return std::move(failed.error());
     };
     orientation_failure("Missing material sample_orientation callback", oriented->default_parameters());
-    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> {
-        return std::unexpected(Error{ErrorCode::invocation_failed, "orientation unavailable"});
-    };
-    orientation_failure("orientation unavailable", oriented->default_parameters());
+    orientation_bindings[0].orientation =
+        +[](const void*, math::Vector2) -> Result<math::Vector2> { return std::unexpected(callback_error); };
+    require_error(orientation_failure("", oriented->default_parameters()), callback_error);
     orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> {
         return math::Vector2{1, std::numeric_limits<float>::quiet_NaN()};
     };
     orientation_failure("sample_orientation result is not finite", oriented->default_parameters());
     orientation_bindings[0].orientation =
-        +[](const void*, math::Vector2) -> Result<math::Vector2> { throw std::runtime_error("orientation exception"); };
-    orientation_failure("orientation exception", oriented->default_parameters());
+        +[](const void*, math::Vector2) -> Result<math::Vector2> { throw std::runtime_error(callback_error.message); };
+    require_error(orientation_failure("", oriented->default_parameters()),
+                  {ErrorCode::invocation_failed, callback_error.message});
+    orientation_bindings[0].orientation =
+        +[](const void*, math::Vector2) -> Result<math::Vector2> { throw std::bad_alloc{}; };
+    require(orientation_failure("", oriented->default_parameters()).code == ErrorCode::capacity_exceeded,
+            "Orientation bad_alloc was not classified as capacity_exceeded.");
+    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> { throw 17; };
+    require_error(orientation_failure("", oriented->default_parameters()),
+                  {ErrorCode::invocation_failed, "Material sample_orientation failed."});
     orientation_bindings[0].orientation = query_orientation;
     orientation_probe.queries = orientation_probe.samples = 0;
     const std::array invalid_orientation_uv{1.0f, 0.0f};
@@ -738,13 +779,30 @@ void verify_source_materials() {
                 untouched.coverage == 123,
             "Duplicate named texture binding did not fail atomically.");
     auto bad = textures;
-    bad[1].sample = [](const void*, math::Vector2) -> Result<math::Vector4> {
-        return std::unexpected(Error{ErrorCode::invocation_failed, "texture unavailable"});
+    const auto sample_failure = [&] {
+        std::array<std::byte, sizeof(material::Output)> before;
+        std::memcpy(before.data(), &untouched, before.size());
+        auto failed = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                                  std::as_writable_bytes(std::span(&untouched, 1)), bad);
+        require(!failed && std::memcmp(before.data(), &untouched, before.size()) == 0,
+                "Sampler failure partially published Output.");
+        return std::move(failed.error());
     };
-    auto failed = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
-                              std::as_writable_bytes(std::span(&untouched, 1)), bad);
-    require(!failed && failed.error().message == "texture unavailable" && untouched.coverage == 123,
-            "Sampler failure changed the caller output or lost its diagnostic.");
+    // Alpha fails first; a later texture's error must not replace it.
+    bad[0].sample = [](const void*, math::Vector2) -> Result<math::Vector4> {
+        return std::unexpected(Error{ErrorCode::invalid_storage, "later texture failure"});
+    };
+    bad[1].sample = [](const void*, math::Vector2) -> Result<math::Vector4> { return std::unexpected(callback_error); };
+    require_error(sample_failure(), callback_error);
+    bad[1].sample = [](const void*, math::Vector2) -> Result<math::Vector4> {
+        throw std::runtime_error(callback_error.message);
+    };
+    require_error(sample_failure(), {ErrorCode::invocation_failed, callback_error.message});
+    bad[1].sample = [](const void*, math::Vector2) -> Result<math::Vector4> { throw std::bad_alloc{}; };
+    require(sample_failure().code == ErrorCode::capacity_exceeded,
+            "Sampler bad_alloc was not classified as capacity_exceeded.");
+    bad[1].sample = [](const void*, math::Vector2) -> Result<math::Vector4> { throw 23; };
+    require_error(sample_failure(), {ErrorCode::invocation_failed, "Material sampler failed."});
     auto changed_bindings = textures;
     Texture brighter{{0.8f, 0.1f, 0.4f, 0.7f}};
     changed_bindings[0].data = &brighter;
