@@ -747,7 +747,5 @@ void verify_missing_resources() {
     editor::Session cyclic;
     require(!cyclic.material_resource(repaired.assets(), left, &missing),
             "Asset parent cycle was accepted or collapsed into a missing stand-in.");
-    std::ofstream(evidence / "acceptance.txt")
-        << "Missing resources acceptance: PASS\nPreserved sparse author keys, strict/tolerant load, default surface, same-path edits, missing mesh/collision, restore, structural and parent-cycle rejection.\n";
     std::puts("Missing resources acceptance: PASS");
 }

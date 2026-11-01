@@ -1422,13 +1422,6 @@ void repro_lighting(const std::filesystem::path& executable, const std::filesyst
     repro_material_inputs(d, root / "MaterialInputs");
     d.client.reset();
     editor.close();
-    write(root / "result.json",
-          Json{{"status", "passed"},
-               {"cases",
-                {"current-schema-and-format-only", "retired-view-keys-rejected", "rejected-repro-preserves-state",
-                 "view-and-environment-agreement", "selection-resolved-before-replacement", "current-repro-reopen",
-                 "sky-map-and-rotation", "material-draft-dependencies", "material-exact-inputs-and-strict-reopen"}}}
-              .dump(2));
     std::cout << "Editor Repro Lighting E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
 
@@ -1807,13 +1800,6 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
             "A repro of a component whose mesh is missing lost its bound material, or copied the mesh's default");
     d.client.reset();
     editor.close();
-    write(root / "result.json",
-          Json{{"status", "passed"},
-               {"cases",
-                {"slot-relationship-drift", "loaded-content-drift", "mixed-loaded-versions", "equal-loaded-versions",
-                 "repaired-retry", "slot-relationship-reopen", "default-material-draft",
-                 "missing-default-export-strict-reopen", "missing-mesh-bound-material"}}}
-              .dump(2));
 }
 
 void repro_paths(const std::filesystem::path& executable, const std::filesystem::path& root, bool deep_control) {
@@ -1895,13 +1881,6 @@ void repro_paths(const std::filesystem::path& executable, const std::filesystem:
     require(
         !std::filesystem::exists(atelier::platform::windows_file_path(directory / "instances" / (instance + ".json"))),
         "Deep-path instance descriptor was not removed on close");
-    write(root / "result.json", Json{{"status", "passed"},
-                                     {"cases",
-                                      {"long-destination", "long-source", "deep-project-reopen-save", "source-archive",
-                                       "cli-request", "descriptor-cleanup"}},
-                                     {"deep_control", deep_control},
-                                     {"last_repro", utf8(repro.wstring())}}
-                                    .dump(2));
     std::cout << "Editor Control path E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
 
@@ -2079,13 +2058,6 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
     editor.close();
     require(read(project / "Content/Scenes/Main.scene").at("entities").empty(),
             "Diagnostic session changed the saved scene");
-    write(root / "result.json",
-          Json{{"status", "passed"},
-               {"cases",
-                {"shared-schema", "summary-inspection", "idempotent-patch", "atomic-rejection", "real-render-compare",
-                 "coverage-presets", "rolling-focus-capture", "focus-precision-atomicity", "four-volume-repro",
-                 "history-and-scene-isolation", "clean-close"}}}
-              .dump(2));
     std::cout << "Editor DDGI Control E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
 
@@ -2264,12 +2236,6 @@ int wmain(int argc, wchar_t** argv) {
             reject_nested_destination(argv[1], root);
             repro_examples(argv[1], root / "examples");
             repro_gltf_defaults(argv[1], root / "gltf");
-            write(root / "result.json",
-                  Json{{"status", "passed"},
-                       {"cases",
-                        {"nested-exports", "deep-control", "nested-destination-rejected", "examples-scene-assets",
-                         "gltf-default-materials", "missing-mesh-bound-material"}}}
-                      .dump(2));
             return 0;
         }
         const auto directory = root / "Control";
@@ -2402,13 +2368,6 @@ int wmain(int argc, wchar_t** argv) {
             require(read(project / "Content/Scenes/Main.scene") == original_scene &&
                         sha256_file(project / "Content/Scenes/Main.scene") == original_scene_hash,
                     "Description inspection changed the original saved scene.");
-            write(root / "result.json",
-                  Json{{"status", "passed"},
-                       {"cases",
-                        {"discovery", "shared-option-descriptions", "utf8-newlines", "aggregate-field-descriptions",
-                         "bounded-object-directory", "single-object-inspection", "stale-cursor-and-object",
-                         "undo-to-clean", "placeholder-inspection", "saved-scene-preserved", "clean-close"}}}
-                      .dump(2));
             std::cout << "Editor Control descriptions E2E: PASS | " << utf8(root.wstring()) << '\n';
             return 0;
         }

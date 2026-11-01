@@ -170,20 +170,7 @@ Result<void> Session::set_main_camera(ObjectId target) {
     ATELIER_TRY_BIND(created, create_environment({}, {}));
     ATELIER_TRY_BIND(parts, world::components(runtime_, created->id()));
     ATELIER_TRY(runtime_.write_reference(parts->front().id(), *field, *reference));
-    EntityChange change;
-    change.added = true;
-    change.removals.emplace_back().root = std::move(*created);
-    const auto id = change.removals.front().id();
-    names_.emplace(id, L"Environment");
-    auto attached = world_.attach(id);
-    if (!attached) {
-        names_.erase(id);
-        return std::unexpected(attached.error());
-    }
-    remember(std::move(change));
-    if (attached->notification_error)
-        return std::unexpected(*attached->notification_error);
-    return {};
+    return publish_environment(std::move(*created));
 }
 
 Result<void> Session::apply_reference(const ReferenceFieldChange& change, bool forward) {
@@ -283,20 +270,7 @@ Result<void> Session::set_environment(const rendering::SceneLightingSettings& se
     // The first edit creates the Environment with its values: one history item, and
     // Play receives the complete component in one add.
     ATELIER_TRY_BIND(created, create_environment(edit->paths, edit->values));
-    EntityChange change;
-    change.added = true;
-    change.removals.emplace_back().root = std::move(*created);
-    const auto id = change.removals.front().id();
-    names_.emplace(id, L"Environment");
-    auto attached = world_.attach(id);
-    if (!attached) {
-        names_.erase(id);
-        return std::unexpected(attached.error());
-    }
-    remember(std::move(change));
-    if (attached->notification_error)
-        return std::unexpected(*attached->notification_error);
-    return {};
+    return publish_environment(std::move(*created));
 }
 
 Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
@@ -316,9 +290,13 @@ Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
     if (after.source.empty() && !after.resolved)
         return {};
     ATELIER_TRY_BIND(created, create_environment({}, {}, &after));
+    return publish_environment(std::move(*created));
+}
+
+Result<void> Session::publish_environment(ObjectRoot root) {
     EntityChange change;
     change.added = true;
-    change.removals.emplace_back().root = std::move(*created);
+    change.removals.emplace_back().root = std::move(root);
     const auto id = change.removals.front().id();
     names_.emplace(id, L"Environment");
     auto attached = world_.attach(id);

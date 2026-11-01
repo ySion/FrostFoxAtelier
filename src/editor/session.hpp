@@ -907,6 +907,8 @@ private:
     Result<ObjectRoot> create_environment(std::span<const world::FieldPath>, std::span<const Scalar>,
                                           const presentation::SkyMapBinding* = nullptr);
 
+    Result<void> publish_environment(ObjectRoot);
+
     void set_selection(Selection); // Single-object selection; resets the Entity set.
 
     Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
