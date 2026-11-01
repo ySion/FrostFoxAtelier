@@ -5,8 +5,6 @@ using PollHook = void (*)(void*, Invocation&);
 struct ExecutionStats {
     std::size_t polls{};
 
-    bool entered{};
-
     bool explicit_cleanup{};
 };
 
@@ -51,7 +49,6 @@ struct FixtureInvocation {
         return {this,
                 [](void* context, Invocation& invocation) -> Result<void> {
                     auto& state = *static_cast<FixtureInvocation*>(context);
-                    state.stats.entered = true;
                     if (!state.make_snapshot)
                         return {};
                     const std::array names{"progress", "state.heat", "state.cycles"};
@@ -121,50 +118,31 @@ Result<ExecutionResult> finish_fixture(Result<BusinessValue> result, FixtureInvo
 }
 
 Result<ExecutionResult> execute_fixture(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
-                                        std::span<const BusinessValue> arguments, bool start_collection = false,
-                                        ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
-                                        void* hook_state = nullptr, bool make_snapshot = false) {
-    if (statistics)
-        *statistics = {};
-    if (start_collection && runtime.collection_phase() == CollectionPhase::idle) {
-        auto started = runtime.begin_collection();
-        if (!started)
-            return std::unexpected(std::move(started.error()));
-    }
+                                        std::span<const BusinessValue> arguments, ExecutionStats* statistics = nullptr,
+                                        PollHook hook = nullptr, void* hook_state = nullptr,
+                                        bool make_snapshot = false) {
     FixtureInvocation state{make_snapshot, hook, hook_state};
     auto result = source_detail::execute_typed(runtime, binding, code, receiver, arguments, state.observer());
     return finish_fixture(std::move(result), state, statistics);
 }
 
 Result<ObjectRoot> execute_machine(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
-                                   float amount, std::uint32_t steps, bool start_collection = false,
-                                   ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
-                                   void* hook_state = nullptr) {
+                                   float amount, std::uint32_t steps, ExecutionStats* statistics = nullptr,
+                                   PollHook hook = nullptr, void* hook_state = nullptr) {
     const auto arguments = machine_arguments(amount, steps);
-    auto result = execute_fixture(runtime, binding, code, receiver, arguments, start_collection, statistics, hook,
-                                  hook_state, true);
+    auto result = execute_fixture(runtime, binding, code, receiver, arguments, statistics, hook, hook_state, true);
     if (!result)
         return std::unexpected(std::move(result.error()));
     return std::move(result->snapshot);
 }
 
 template <class Entry>
-Result<ExecutionResult> invoke_fixture(const Entry& entry, ObjectId receiver, std::span<const BusinessValue> arguments,
-                                       ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
-                                       void* context = nullptr, bool make_snapshot = false) {
-    if (statistics)
-        *statistics = {};
-    FixtureInvocation state{make_snapshot, hook, context};
-    auto result = ProgramAccess::invoke(entry, receiver, arguments, state.observer());
-    return finish_fixture(std::move(result), state, statistics);
-}
-
-template <class Entry>
 Result<ObjectRoot> invoke_machine(const Entry& entry, ObjectId receiver, float amount, std::uint32_t steps,
-                                  ExecutionStats* statistics = nullptr, PollHook hook = nullptr,
-                                  void* context = nullptr) {
+                                  ExecutionStats* statistics = nullptr) {
     const auto arguments = machine_arguments(amount, steps);
-    auto result = invoke_fixture(entry, receiver, arguments, statistics, hook, context, true);
+    FixtureInvocation state{true};
+    auto result =
+        finish_fixture(ProgramAccess::invoke(entry, receiver, arguments, state.observer()), state, statistics);
     if (!result)
         return std::unexpected(std::move(result.error()));
     return std::move(result->snapshot);

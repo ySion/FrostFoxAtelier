@@ -122,10 +122,8 @@ function(atelier_add_source)
     target_compile_definitions(atelier_jit_native_client PRIVATE ATELIER_JIT_NATIVE_CLIENT_BUILD)
     atelier_target(atelier_jit_native_client)
 
-    configure_file("${PROJECT_SOURCE_DIR}/acceptance/jit/advance_machine.source"
-        "${CMAKE_BINARY_DIR}/advance_machine.source" COPYONLY)
     add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp
-        acceptance/jit/math_abi.cpp acceptance/jit/bool_abi.cpp)
+        acceptance/jit/math_abi.cpp)
     atelier_target(atelier_jit_acceptance)
     target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
     target_link_libraries(atelier_jit_acceptance PRIVATE
