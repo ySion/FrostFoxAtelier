@@ -230,13 +230,7 @@ Result<void> flex_widths(std::uint32_t index, float available) {
         } else {
             if (input.width.rule == SizeRule::flex || (wrapping && input.width.rule != SizeRule::fixed && input.width.rule != SizeRule::content))
                 return flex_dependency(child);
-            double width = available;
-            if (input.width.rule == SizeRule::fixed) width = input.width.value;
-            else if (input.width.rule == SizeRule::content || !alignment(child, true).fill) {
-                ATELIER_TRY_BIND(natural, intrinsic_width(child));
-                width = input.width.rule == SizeRule::expand ? std::min<double>(available, *natural) : *natural;
-            }
-            ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), child));
+            ATELIER_TRY_BIND(result, cell_width(child, available));
             box_for(child).width = *result;
             child_work.slot_width = wrapping ? *result : available;
             flex_items.push_back(flex_item(child, input.height, 0, vertical(input.padding)));
@@ -253,15 +247,10 @@ Result<void> flex_widths(std::uint32_t index, float available) {
     for (auto line = state.lines_begin; line < state.lines_end; ++line) {
         flex_allocate_line(line, available, parent.gap);
         for (auto at = flex_lines[line].begin; at < flex_lines[line].end; ++at) {
-            const auto& item = flex_items[at]; const auto& input = slots[item.node].input;
+            const auto& item = flex_items[at];
             ATELIER_TRY_BIND(slot, coordinate(item.target, item.node));
             work_for(item.node).slot_width = *slot;
-            double width = item.target;
-            if (!alignment(item.node, true).fill && (input.width.rule == SizeRule::expand || input.width.rule == SizeRule::flex)) {
-                ATELIER_TRY_BIND(natural, intrinsic_width(item.node));
-                width = std::min<double>(width, *natural);
-            }
-            ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), item.node));
+            ATELIER_TRY_BIND(result, cell_width(item.node, item.target));
             box_for(item.node).width = *result;
         }
     }

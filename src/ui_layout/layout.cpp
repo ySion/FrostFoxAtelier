@@ -543,14 +543,14 @@ struct LayoutDocument::Impl {
         return {};
     }
 
-    Result<float> cell_width(std::uint32_t index, float slot_width) {
+    Result<float> cell_width(std::uint32_t index, double slot_width) {
         const auto& input = slots[index].input;
         double width = slot_width;
         if (input.width.rule == SizeRule::fixed)
             width = input.width.value;
         else if (input.width.rule == SizeRule::content || !alignment(index, true).fill) {
             ATELIER_TRY_BIND(natural, intrinsic_width(index));
-            width = input.width.rule == SizeRule::expand ? std::min(slot_width, *natural) : *natural;
+            width = input.width.rule == SizeRule::content ? *natural : std::min<double>(slot_width, *natural);
         }
         return constrained(width, input.width, horizontal(input.padding), index);
     }
@@ -874,14 +874,7 @@ struct LayoutDocument::Impl {
                         continue;
                     }
                 }
-                double width = available;
-                if (input.width.rule == SizeRule::fixed)
-                    width = input.width.value;
-                else if (input.width.rule == SizeRule::content || !alignment(child, true).fill) {
-                    ATELIER_TRY_BIND(natural, intrinsic_width(child));
-                    width = input.width.rule == SizeRule::expand ? std::min(*natural, available) : *natural;
-                }
-                ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), child));
+                ATELIER_TRY_BIND(result, cell_width(child, available));
                 box_for(child).width = *result;
                 state.slot_width = shared ? *result : available;
                 if (shared)
@@ -891,15 +884,9 @@ struct LayoutDocument::Impl {
                            weight_sums);
             for (std::size_t i = 0; i < share_indices.size(); ++i) {
                 const auto child = share_indices[i];
-                const auto& input = slots[child].input;
                 ATELIER_TRY_BIND(slot, coordinate(share_output[i], child));
                 work_for(child).slot_width = *slot;
-                double width = *slot;
-                if (!alignment(child, true).fill) {
-                    ATELIER_TRY_BIND(natural, intrinsic_width(child));
-                    width = std::min(width, static_cast<double>(*natural));
-                }
-                ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), child));
+                ATELIER_TRY_BIND(result, cell_width(child, *slot));
                 box_for(child).width = *result;
             }
             work_for(index).lines_end = lines.size();
