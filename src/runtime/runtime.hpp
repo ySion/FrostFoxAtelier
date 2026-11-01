@@ -981,9 +981,8 @@ public:
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
     [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, std::span<const FieldId> path,
                                                           F&& callback) {
-        auto borrowed = borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path, !std::is_const_v<T>);
-        if (!borrowed)
-            return std::unexpected(borrowed.error());
+        ATELIER_TRY_BIND(
+            borrowed, borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path, !std::is_const_v<T>));
         try {
             return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
         } catch (const std::exception& error) {

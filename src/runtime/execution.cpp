@@ -11,9 +11,7 @@ auto invalid_slot() {
 }
 
 Result<ExecutionScope> ExecutionScope::enter(Runtime& runtime) {
-    auto ready = runtime.enter_execution();
-    if (!ready)
-        return std::unexpected(std::move(ready.error()));
+    ATELIER_TRY(runtime.enter_execution());
     return ExecutionScope(runtime);
 }
 
@@ -25,9 +23,7 @@ ExecutionScope::~ExecutionScope() {
 ExecutionScope::ExecutionScope(ExecutionScope&& other) noexcept : runtime_(std::exchange(other.runtime_, nullptr)) {}
 
 Result<ExecutionInspection> ExecutionInspection::enter(Runtime& runtime) {
-    auto ready = runtime.enter_execution_inspection();
-    if (!ready)
-        return std::unexpected(std::move(ready.error()));
+    ATELIER_TRY(runtime.enter_execution_inspection());
     return ExecutionInspection(runtime);
 }
 
@@ -55,9 +51,7 @@ ExecutionFrame::~ExecutionFrame() {
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object_id) {
     if (slot >= size())
         return invalid_slot();
-    auto root = runtime_.hold(object_id);
-    if (!root)
-        return std::unexpected(std::move(root.error()));
+    ATELIER_TRY_BIND(root, runtime_.hold(object_id));
     if (references_.empty())
         slots_[slot] = std::move(*root);
     else
@@ -69,17 +63,13 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& ref
     if (slot >= size())
         return invalid_slot();
     if (!references_.empty()) {
-        auto valid = runtime_.validate_reference(reference);
-        if (!valid)
-            return valid;
+        ATELIER_TRY(runtime_.validate_reference(reference));
         if (reference.description().form != ValueForm::strong_reference)
             return std::unexpected(Error{ErrorCode::type_mismatch, "Holding slots require a strong reference."});
         references_[slot] = reference;
         return {};
     }
-    auto root = runtime_.hold(reference);
-    if (!root)
-        return std::unexpected(std::move(root.error()));
+    ATELIER_TRY_BIND(root, runtime_.hold(reference));
     slots_[slot] = std::move(*root);
     return {};
 }
@@ -87,9 +77,7 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& ref
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId declared_type) {
     if (slot >= size())
         return invalid_slot();
-    auto root = runtime_.hold(object, declared_type);
-    if (!root)
-        return std::unexpected(std::move(root.error()));
+    ATELIER_TRY_BIND(root, runtime_.hold(object, declared_type));
     if (references_.empty())
         slots_[slot] = std::move(*root);
     else
@@ -113,9 +101,7 @@ Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
 Result<void> ExecutionFrame::create(std::uint32_t slot, TypeId type) {
     if (slot >= size())
         return invalid_slot();
-    auto root = runtime_.create(type);
-    if (!root)
-        return std::unexpected(std::move(root.error()));
+    ATELIER_TRY_BIND(root, runtime_.create(type));
     if (references_.empty())
         slots_[slot] = std::move(*root);
     else
@@ -230,9 +216,7 @@ Result<CoroutineState> Coroutine::resume() {
         return std::unexpected(Error{ErrorCode::busy, "Coroutine is already running."});
     if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended)
         return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine has already terminated."});
-    auto scope = ExecutionScope::enter(active->runtime);
-    if (!scope)
-        return std::unexpected(std::move(scope.error()));
+    ATELIER_TRY_BIND(scope, ExecutionScope::enter(active->runtime));
     active->state = CoroutineState::running;
     Result<CoroutineStep> step;
     try {

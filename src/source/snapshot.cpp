@@ -65,14 +65,10 @@ Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesy
 }
 
 Result<std::vector<SourceFile>> engine_sources(const std::filesystem::path& root) {
-    auto paths = engine_source_paths(root);
-    if (!paths)
-        return std::unexpected(paths.error());
+    ATELIER_TRY_BIND(paths, engine_source_paths(root));
     std::vector<SourceFile> files;
     for (const auto& relative : *paths) {
-        auto file = read_source_file(root / relative, "engine/" + utf8(relative));
-        if (!file)
-            return std::unexpected(file.error());
+        ATELIER_TRY_BIND(file, read_source_file(root / relative, "engine/" + utf8(relative)));
         files.push_back(std::move(*file));
     }
     return files;

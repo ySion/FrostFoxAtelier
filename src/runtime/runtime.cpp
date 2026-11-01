@@ -1237,9 +1237,7 @@ struct Runtime::Impl {
         signature.execution = definition.execution;
         signature.parameters.reserve(definition.parameters.size());
         for (const auto& parameter : definition.parameters) {
-            auto value = resolve_value(parameter, parameter.passing != ParameterPassing::value);
-            if (!value)
-                return std::unexpected(std::move(value.error()));
+            ATELIER_TRY_BIND(value, resolve_value(parameter, parameter.passing != ParameterPassing::value));
             if (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only &&
                 parameter.passing != ParameterPassing::reference)
                 return failure(ErrorCode::invalid_definition, "Unknown parameter passing mode.");
@@ -1248,9 +1246,7 @@ struct Runtime::Impl {
             signature.parameters.push_back({*value, parameter.passing});
         }
         if (definition.result) {
-            auto value = resolve_value(*definition.result);
-            if (!value)
-                return std::unexpected(std::move(value.error()));
+            ATELIER_TRY_BIND(value, resolve_value(*definition.result));
             signature.result = *value;
         }
         if (definition.receiver) {
@@ -1640,9 +1636,7 @@ Result<void> Runtime::check_execution_entry() const {
 }
 
 Result<void> Runtime::enter_execution() {
-    auto ready = check_execution_entry();
-    if (!ready)
-        return ready;
+    ATELIER_TRY(check_execution_entry());
     if (impl_->active_executions == std::numeric_limits<std::size_t>::max())
         return failure(ErrorCode::capacity_exceeded, "Execution nesting space exhausted.");
     ++impl_->active_executions;
@@ -1654,9 +1648,7 @@ void Runtime::leave_execution() noexcept {
 }
 
 Result<void> Runtime::enter_execution_inspection() {
-    auto ready = check_execution_entry();
-    if (!ready)
-        return ready;
+    ATELIER_TRY(check_execution_entry());
     if (impl_->active_executions == 0)
         return failure(ErrorCode::busy, "Execution inspection requires an active generated invocation.");
     // Share reference traversal's read-only admission, including root copying
@@ -1672,9 +1664,7 @@ void Runtime::leave_execution_inspection() noexcept {
 }
 
 Result<void> Runtime::check_code_publication() const {
-    auto ready = check_execution_entry();
-    if (!ready)
-        return ready;
+    ATELIER_TRY(check_execution_entry());
     if (impl_->active_executions != 0)
         return failure(ErrorCode::busy, "Code publication requires all generated invocations to return.");
     return {};
@@ -1744,9 +1734,7 @@ Runtime::~Runtime() {
 Result<TypeId> Runtime::register_type(TypeDefinition definition) {
     std::vector<TypeDefinition> definitions;
     definitions.push_back(std::move(definition));
-    auto published = register_types(std::move(definitions));
-    if (!published)
-        return std::unexpected(std::move(published.error()));
+    ATELIER_TRY_BIND(published, register_types(std::move(definitions)));
     return published->front();
 }
 
@@ -1834,15 +1822,11 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
 }
 
 Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> definitions) {
-    auto publication = prepare_types(std::move(definitions));
-    if (!publication)
-        return std::unexpected(std::move(publication.error()));
+    ATELIER_TRY_BIND(publication, prepare_types(std::move(definitions)));
     std::vector<TypeId> result;
     for (const auto& type : (*publication)->state_->staged)
         result.push_back(type->info.id);
-    auto ready = (*publication)->reserve_commit(*this);
-    if (!ready)
-        return std::unexpected(std::move(ready.error()));
+    ATELIER_TRY((*publication)->reserve_commit(*this));
     (*publication)->commit(*this);
     return result;
 }
@@ -2175,9 +2159,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             if (method.name.empty() || !method.invoke) {
                 return failure(ErrorCode::invalid_definition, "Methods require a name and implementation.");
             }
-            auto signature = impl_->resolve_signature(method.signature, id, staged);
-            if (!signature)
-                return std::unexpected(std::move(signature.error()));
+            ATELIER_TRY_BIND(signature, impl_->resolve_signature(method.signature, id, staged));
             auto& names = method.parameter_names;
             if (!names.empty() && names.size() != signature->parameters.size())
                 return failure(ErrorCode::invalid_definition,
@@ -2425,9 +2407,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
     // resolver after all layouts and their GC-reference closure are complete.
     for (std::size_t i = 0; i < staged.size(); ++i) {
         for (const auto& method : definitions[i].methods) {
-            auto signature = impl_->resolve_signature(method.signature, staged[i]->info.id, staged);
-            if (!signature)
-                return std::unexpected(std::move(signature.error()));
+            ATELIER_TRY_BIND(signature, impl_->resolve_signature(method.signature, staged[i]->info.id, staged));
         }
     }
     auto& catalog = publication->state_->catalog;
@@ -2485,9 +2465,7 @@ Result<bool> Runtime::is_a(TypeId actual, TypeId expected) const {
 }
 
 Result<ObjectReference> Runtime::cast_reference(const ObjectReference& reference, TypeId target) const {
-    auto valid = validate_reference(reference);
-    if (!valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(validate_reference(reference));
     const auto up = is_a(reference.description().type, target);
     if (!up)
         return std::unexpected(up.error());
@@ -2549,17 +2527,13 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
                                                      std::span<const FieldId> path, bool write) {
     if (!impl_->roots->alive || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
-    auto index = resolve_object(object);
-    if (!index)
-        return std::unexpected(index.error());
+    ATELIER_TRY_BIND(index, resolve_object(object));
     const auto* expected = impl_->native(representation);
     if (!expected)
         return failure(ErrorCode::invalid_type, "Register the native value type before exposing its members.");
     if (!path.empty()) {
         NativeBorrow borrow{*this, nullptr};
-        auto field = resolve_field(object, path);
-        if (!field)
-            return std::unexpected(field.error());
+        ATELIER_TRY_BIND(field, resolve_field(object, path));
         if (field->value.form != ValueForm::inline_value || field->value.type != expected->info.id)
             return failure(ErrorCode::type_mismatch, "Field does not have the requested native value representation.");
         borrow.storage = field->data;
@@ -2581,9 +2555,7 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
 }
 
 Result<ReferenceField> Runtime::reference_field(ObjectId object, std::span<const FieldId> path) const {
-    auto address = resolve_field(object, path);
-    if (!address)
-        return std::unexpected(address.error());
+    ATELIER_TRY_BIND(address, resolve_field(object, path));
     if (address->value.form == ValueForm::inline_value)
         return failure(ErrorCode::type_mismatch, "Field is not an object reference or reference sequence.");
     ReferenceField field;
@@ -2595,9 +2567,7 @@ Result<ReferenceField> Runtime::reference_field(ObjectId object, std::span<const
 Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const void* storage, bool sequence) const {
     if (!impl_->native_borrows || impl_->roots->traversals)
         return failure(ErrorCode::busy, "Native field lookup requires a protected native borrow.");
-    auto index = resolve_object(object);
-    if (!index)
-        return std::unexpected(index.error());
+    ATELIER_TRY_BIND(index, resolve_object(object));
     CallbackScope scope{impl_->callbacks};
     const auto& slot = impl_->slots[*index];
     struct Cursor {
@@ -2654,9 +2624,7 @@ Result<Runtime::Address> Runtime::resolve_reference_field(const ReferenceField& 
 }
 
 Result<ObjectReference> Runtime::read_reference(const ReferenceField& field) const {
-    auto address = resolve_reference_field(field);
-    if (!address)
-        return std::unexpected(address.error());
+    ATELIER_TRY_BIND(address, resolve_reference_field(field));
     return read_reference_at(*address);
 }
 
@@ -2731,18 +2699,14 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
     for (const auto& change : changes) {
         const auto& field =
             std::visit([](const auto& operation) -> const ReferenceField& { return operation.field; }, change);
-        auto address = resolve_reference_field(field);
-        if (!address)
-            return std::unexpected(address.error());
+        ATELIER_TRY_BIND(address, resolve_reference_field(field));
         for (const auto& previous : prepared) {
             if (previous.address.data == address->data)
                 return failure(ErrorCode::argument_mismatch, "A batch cannot modify the same storage twice.");
         }
         Prepared plan{field.object_, *address, {}, 0, 0, 0, {}};
         if (const auto* write = std::get_if<ReferenceWrite>(&change)) {
-            auto valid = validate_reference_assignment(address->value, write->value);
-            if (!valid)
-                return valid;
+            ATELIER_TRY(validate_reference_assignment(address->value, write->value));
             plan.reference = write->value.id();
         } else {
             const auto& splice = std::get<SequenceSplice>(change);
@@ -2758,10 +2722,8 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
             plan.final_size = sequence.size() - splice.erase_count + splice.inserted.size();
             plan.inserted.reserve(splice.inserted.size());
             for (const auto& reference : splice.inserted) {
-                auto valid =
-                    validate_reference_assignment({address->value.type, ValueForm::strong_reference}, reference);
-                if (!valid)
-                    return valid;
+                ATELIER_TRY(
+                    validate_reference_assignment({address->value.type, ValueForm::strong_reference}, reference));
                 plan.inserted.push_back(reference.id());
             }
         }
@@ -2903,9 +2865,7 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> stora
         const auto expected = operation == SequenceMutation::add ? info.element.value_or(TypeId{}) : type_id;
         if (expected == TypeId{} || input_type != expected)
             return failure(ErrorCode::type_mismatch, "Sequence input type does not match its operation.");
-        auto valid = impl_->value_type(expected, input);
-        if (!valid)
-            return std::unexpected(valid.error());
+        ATELIER_TRY_BIND(valid, impl_->value_type(expected, input));
         break;
     }
     case SequenceMutation::assign_text:
@@ -3300,9 +3260,7 @@ void Runtime::commit_reference_write(Address address, ObjectId object) noexcept 
 Result<void> Runtime::write_reference_at(Address address, const ObjectReference& reference) {
     if (impl_->changing_references)
         return failure(ErrorCode::busy, "Reference write cannot reenter batch preparation.");
-    auto valid = validate_reference_assignment(address.value, reference);
-    if (!valid)
-        return valid;
+    ATELIER_TRY(validate_reference_assignment(address.value, reference));
     commit_reference_write(address, reference.id());
     return {};
 }
@@ -3497,9 +3455,7 @@ std::optional<std::uint32_t> Runtime::element_index(FieldId member) const {
 }
 
 Result<Runtime::Address> Runtime::resolve_array(ObjectId object, std::span<const FieldId> path) const {
-    auto address = resolve_field(object, path);
-    if (!address)
-        return address;
+    ATELIER_TRY_BIND(address, resolve_field(object, path));
     if (address->value.form != ValueForm::inline_value ||
         impl_->lookup(address->value.type)->info.kind != TypeKind::array)
         return failure(ErrorCode::type_mismatch, "Element operations require an inline Array field.");
@@ -3744,9 +3700,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
             if (!fields)
                 return failure(ErrorCode::argument_mismatch,
                                "Source entry cannot borrow object-field storage across safe points.");
-            auto address = resolve_field(argument.object_, argument.path_);
-            if (!address)
-                return std::unexpected(address.error());
+            ATELIER_TRY_BIND(address, resolve_field(argument.object_, argument.path_));
             if (address->value.form != ValueForm::inline_value)
                 return failure(ErrorCode::argument_mismatch, "Reference parameter requires inline value storage.");
             actual = impl_->lookup(address->value.type);
@@ -3779,9 +3733,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
             copied_offset += expected->info.size;
             // Plain copied values need their lifetime started, but trivial destruction
             // requires no Runtime callback when the independent scratch owner ends.
-            auto constructed = impl_->try_construct(*expected, destination, data);
-            if (!constructed)
-                return constructed;
+            ATELIER_TRY(impl_->try_construct(*expected, destination, data));
             if (!data) {
                 std::visit(
                     [&](const auto& value) {
@@ -3853,18 +3805,14 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span
     }
     CallbackScope scope{impl_->callbacks};
     PreparedArguments prepared;
-    auto checked = prepare_arguments(signature, arguments, prepared, true);
-    if (!checked)
-        return checked;
+    ATELIER_TRY(prepare_arguments(signature, arguments, prepared, true));
     if (!signature.receiver->read_only)
         impl_->stamp(*index);
     const auto invoke = [&](ValueOutput staging) -> Result<void> {
         CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), prepared.values()};
         context.result_value = staging;
         try {
-            auto invoked = type->methods[method.index_](context);
-            if (!invoked)
-                return invoked;
+            ATELIER_TRY(type->methods[method.index_](context));
             if (record_result) {
                 if (context.result || !context.result_written || context.result_value.type != staging.type ||
                     context.result_value.data != staging.data)
@@ -3895,9 +3843,7 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span
     if (record_result) {
         detail::ValueStorage staging_owner;
         auto* staging = staging_owner.prepare(result_type->info.size, result_type->info.alignment);
-        auto constructed = impl_->try_construct(*result_type, staging);
-        if (!constructed)
-            return constructed;
+        ATELIER_TRY(impl_->try_construct(*result_type, staging));
         return invoke({result_type->info.id, staging});
     }
     return invoke({});

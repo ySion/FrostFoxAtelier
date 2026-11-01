@@ -356,9 +356,7 @@ struct Program::Contract {
         std::vector<const TypeInfo*> catalog;
         catalog.reserve(metadata.size());
         for (const auto& dependency : metadata) {
-            auto info = binding.runtime->describe(dependency.value.id);
-            if (!info)
-                return std::unexpected(std::move(info.error()));
+            ATELIER_TRY_BIND(info, binding.runtime->describe(dependency.value.id));
             if (!dependency.matches(**info))
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Bound Runtime metadata changed."});
             catalog.push_back(*info);
@@ -452,9 +450,8 @@ struct Program::Version {
                 const AbiArguments encoded(contract->binding, declaration->signature, arguments);
                 if (!encoded.status)
                     return std::unexpected(encoded.status.error());
-                auto result = invoke(receiver, encoded.values, {}, nullptr, scope.trace(), debug_scope.state());
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result,
+                                 invoke(receiver, encoded.values, {}, nullptr, scope.trace(), debug_scope.state()));
                 auto decoded = detail::scalar_value(*result, &contract->binding);
                 if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
                     (info.signature.result != ValueKind::void_value && !decoded))
@@ -488,9 +485,8 @@ struct Program::Version {
                 // native value here would execute an unrelated default constructor.
                 ::atelier::detail::ValueStorage staging_owner;
                 auto* staged = staging_owner.prepare(value.size, value.alignment);
-                auto result = invoke(receiver, encoded.values, {}, staged, scope.trace(), debug_scope.state());
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result,
+                                 invoke(receiver, encoded.values, {}, staged, scope.trace(), debug_scope.state()));
                 if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
                     return std::unexpected(Error{ErrorCode::invocation_failed,
                                                  "Compiled aggregate result changed its typed output storage."});
@@ -523,12 +519,8 @@ struct Program::Version {
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
         const auto& binding = contract->binding;
-        auto activation = ExecutionScope::enter(*binding.runtime);
-        if (!activation)
-            return std::unexpected(std::move(activation.error()));
-        auto checked = check_source_arguments(binding, info.signature, arguments);
-        if (!checked)
-            return std::unexpected(std::move(checked.error()));
+        ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
+        ATELIER_TRY(check_source_arguments(binding, info.signature, arguments));
         std::uint32_t site = no_diagnostic_location;
         auto result = execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
                                        declaration->signature.receiver.has_value(), receiver, arguments, observer,
@@ -734,24 +726,16 @@ Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Ve
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Starting a coroutine requires a coroutine declaration."});
     const auto& binding = version->contract->binding;
-    auto activation = ExecutionScope::enter(*binding.runtime);
-    if (!activation)
-        return std::unexpected(std::move(activation.error()));
-    auto checked = check_source_arguments(binding, version->info.signature, arguments);
-    if (!checked)
-        return std::unexpected(std::move(checked.error()));
+    ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
+    ATELIER_TRY(check_source_arguments(binding, version->info.signature, arguments));
     const bool hold_receiver = version->declaration->signature.receiver.has_value() || receiver != ObjectId{};
     if (hold_receiver) {
-        auto checked_receiver = check_source_receiver(binding, receiver);
-        if (!checked_receiver)
-            return std::unexpected(std::move(checked_receiver.error()));
+        ATELIER_TRY(check_source_receiver(binding, receiver));
     }
     auto frame =
         std::make_unique<Program::Frame>(std::move(version), observer, std::move(capture), std::move(debugger));
     if (hold_receiver) {
-        auto held = frame->invocation.frame.hold(receiver_slot, receiver, binding.type);
-        if (!held)
-            return std::unexpected(std::move(held.error()));
+        ATELIER_TRY(frame->invocation.frame.hold(receiver_slot, receiver, binding.type));
     }
     BusinessCoroutine* compiled{};
     char diagnostic[512]{};
@@ -1011,9 +995,7 @@ Result<Program::Entry> Program::bind_signature(SignatureDefinition expected) con
             Error{ErrorCode::invalid_definition, "Business source declaration has not been published."});
     if (const auto& receiver = owner->declaration->signature.receiver)
         expected.receiver = ReceiverDefinition{receiver->type, receiver->read_only};
-    auto resolved = owner->contract->binding.runtime->resolve_signature(expected);
-    if (!resolved)
-        return std::unexpected(std::move(resolved.error()));
+    ATELIER_TRY_BIND(resolved, owner->contract->binding.runtime->resolve_signature(expected));
     if (*resolved != owner->declaration->signature)
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Host binding does not match the published source signature."});
@@ -1147,27 +1129,18 @@ Result<void> Program::try_publish(Candidate& candidate) {
     if (prepared.sequence != owner->latest_request || prepared.sequence <= owner->published_request)
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Candidate is stale or its request was already published."});
-    auto compatible =
-        prepared.compilation_contract->compatible(prepared.code.get(), prepared.source_name, owner->declaration.get());
-    if (!compatible)
-        return compatible;
-    auto admission = owner->contract->binding.runtime->check_code_publication();
-    if (!admission)
-        return admission;
-    auto unchanged = owner->contract->unchanged();
-    if (!unchanged)
-        return unchanged;
+    ATELIER_TRY(
+        prepared.compilation_contract->compatible(prepared.code.get(), prepared.source_name, owner->declaration.get()));
+    ATELIER_TRY(owner->contract->binding.runtime->check_code_publication());
+    ATELIER_TRY(owner->contract->unchanged());
     if (prepared.type_publication) {
-        auto ready = prepared.type_publication->reserve_commit(*owner->contract->binding.runtime);
-        if (!ready)
-            return ready;
+        ATELIER_TRY(prepared.type_publication->reserve_commit(*owner->contract->binding.runtime));
     }
     auto declaration = owner->declaration;
     if (!declaration) {
         const auto info = atelier_business_info(prepared.code.get());
-        auto signature = prepared.compilation_contract->resolve_signature(info, prepared.type_publication.get());
-        if (!signature)
-            return std::unexpected(std::move(signature.error()));
+        ATELIER_TRY_BIND(signature,
+                         prepared.compilation_contract->resolve_signature(info, prepared.type_publication.get()));
         declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
     }
     // Allocation precedes the noexcept constructor's transfer of candidate code.

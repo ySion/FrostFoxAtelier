@@ -312,20 +312,14 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
             if (runtime.describe(value.type)) {
                 atelier::detail::ValueStorage storage;
                 auto bytes = std::span(storage.prepare(value.size, value.alignment), value.size);
-                auto initialized = runtime.initialize_value(value.type, bytes);
-                if (!initialized)
-                    return std::unexpected(std::move(initialized.error()));
+                ATELIER_TRY(runtime.initialize_value(value.type, bytes));
                 std::memcpy(initial[index].data(), bytes.data(), bytes.size());
-                auto destroyed = runtime.destroy_value(value.type, bytes);
-                if (!destroyed)
-                    return std::unexpected(std::move(destroyed.error()));
+                ATELIER_TRY(runtime.destroy_value(value.type, bytes));
             } else
                 for (const auto& field : value.fields) {
                     if (field.type.kind != ValueKind::record)
                         continue;
-                    auto result = defaults.capture(field.type.type_index);
-                    if (!result)
-                        return std::unexpected(std::move(result.error()));
+                    ATELIER_TRY_BIND(result, defaults.capture(field.type.type_index));
                     const auto& child = initial[field.type.type_index];
                     if (!child.empty())
                         std::memcpy(initial[index].data() + field.offset, child.data(), child.size());

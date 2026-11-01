@@ -175,19 +175,15 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
                                                     "Vector field defaults are " + field.type + "() or " + field.type +
                                                         " with one constant per component."));
             for (const auto& argument : arguments) {
-                auto value = fold_scalar(snapshot, argument, leaf);
-                if (!value)
-                    return std::unexpected(value.error());
+                ATELIER_TRY_BIND(value, fold_scalar(snapshot, argument, leaf));
                 result.default_leaves.push_back(*value);
             }
         }
         if (result.default_leaves.empty())
             result.default_leaves.assign(components, zero_leaf(leaf));
     } else {
-        auto value =
-            initializer.text.empty() ? Result<Scalar>{zero_leaf(leaf)} : fold_scalar(snapshot, initializer, leaf);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, initializer.text.empty() ? Result<Scalar>{zero_leaf(leaf)}
+                                                         : fold_scalar(snapshot, initializer, leaf));
         result.default_leaves = {*value};
     }
     if (field.range) {
@@ -199,9 +195,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         for (std::size_t side = 0; side < sides.size(); ++side) {
             if (field.bounds[side].text.empty())
                 continue;
-            auto bound = fold_scalar(snapshot, field.bounds[side], leaf);
-            if (!bound)
-                return std::unexpected(bound.error());
+            ATELIER_TRY_BIND(bound, fold_scalar(snapshot, field.bounds[side], leaf));
             *sides[side] = *bound;
         }
     }
@@ -574,13 +568,9 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             locations = diagnostic_locations(info, map.get(), request->source_name, request->sequence, &line_starts);
         }
         for (std::size_t i = 0; i < codes.size(); ++i) {
-            auto compatible = unit.contract->compatible(codes[i].get(), request->source_name);
-            if (!compatible)
-                return std::unexpected(compatible.error());
+            ATELIER_TRY(unit.contract->compatible(codes[i].get(), request->source_name));
             auto info = atelier_business_info(codes[i].get());
-            auto signature = unit.contract->resolve_signature(info, request->type_publication_.get());
-            if (!signature)
-                return std::unexpected(signature.error());
+            ATELIER_TRY_BIND(signature, unit.contract->resolve_signature(info, request->type_publication_.get()));
             const auto& method = unit.names[i];
             if (unit.receiver) {
                 const bool tick = method == "tick" || method == "post_physics_tick" || method == "late_tick";
@@ -635,12 +625,8 @@ Result<void> Program::publish_module(Candidate& candidate) {
     if (prepared.sequence != state_->latest_request || prepared.sequence <= state_->published_request)
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Source snapshot candidate is stale or already published."});
-    auto ready = state_->contract->binding.runtime->check_code_publication();
-    if (!ready)
-        return ready;
-    auto unchanged = state_->contract->unchanged();
-    if (!unchanged)
-        return unchanged;
+    ATELIER_TRY_BIND(ready, state_->contract->binding.runtime->check_code_publication());
+    ATELIER_TRY(state_->contract->unchanged());
     if (prepared.type_publication) {
         ready = prepared.type_publication->reserve_commit(*state_->contract->binding.runtime);
         if (!ready)
