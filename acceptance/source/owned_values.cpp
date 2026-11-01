@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "source/native_values.hpp"
 #include "source/program.hpp"
 
@@ -34,22 +35,7 @@ struct ForwardMethodHost {
     void inspect(const ReferencingValue&) {}
 };
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void publish(Program& program, std::string_view source) {
     auto candidate = take(Program::prepare(take(program.request("owned-values.source", source))));

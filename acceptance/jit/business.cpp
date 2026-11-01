@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "business.hpp"
 #include "jit/source_backend.hpp"
 #include "source/program.hpp"
@@ -40,22 +41,7 @@ using namespace source_detail;
 
 using BusinessProgram = atelier::source::Program;
 
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 template <class T>
 void reject(const Result<T>& result, ErrorCode code, const char* message) {

@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "source/material_program.hpp"
 #include "material/program.hpp"
 #include "runtime/native.hpp"
@@ -14,22 +15,7 @@
 namespace {
 using namespace atelier;
 
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 bool near(float a, float b) {
     return std::abs(a - b) < 0.00001f;

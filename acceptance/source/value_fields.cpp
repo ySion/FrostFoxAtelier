@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "source/native_values.hpp"
 #include "source/program.hpp"
 
@@ -21,22 +22,7 @@ struct ReferencingField {
     ReferenceSlot target;
 };
 
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void publish(Program& program, std::string_view source, std::string_view entry = {}) {
     auto candidate = take(Program::prepare(take(program.request("value-fields.source", source, entry))));

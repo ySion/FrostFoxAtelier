@@ -1,25 +1,11 @@
 #pragma once
 
+#include "../helpers.hpp"
 #include "runtime/native.hpp"
 #include <stdexcept>
 
 namespace atelier::acceptance::inheritance {
-inline void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-inline void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 template <class T>
 void reject(Result<T> value, ErrorCode code) {

@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "foundation/fixture.hpp"
 #include "foundation/shared_array.hpp"
 
@@ -19,22 +20,7 @@ using namespace atelier;
 
 using namespace atelier::acceptance::foundation;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 // Real owned native resources exercise Array's copy failure and over-aligned storage.
 struct alignas(64) Resource {

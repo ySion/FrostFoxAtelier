@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "runtime/foundation.hpp"
 
 #include <array>
@@ -9,22 +10,7 @@
 namespace {
 using namespace atelier;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 struct PrecisionOwner {
     double value{};

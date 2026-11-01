@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 
@@ -25,22 +26,7 @@ constexpr std::size_t measured_cycles = 32;
 
 constexpr std::int64_t live_byte_tolerance = 64 * 1024;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 double elapsed_ns(Clock::time_point start) {
     return std::chrono::duration<double, std::nano>(Clock::now() - start).count();

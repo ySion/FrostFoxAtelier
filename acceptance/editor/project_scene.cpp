@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "editor/session.hpp"
 #include "editor/project.hpp"
 #include "assets/file.hpp"
@@ -22,27 +23,12 @@ using Json = nlohmann::json;
 
 const char* acceptance_phase = "document initialization";
 
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void changed(Result<world::Commit> value) {
     auto commit = take(std::move(value));
     if (commit.notification_error)
         throw std::runtime_error(commit.notification_error->message);
-}
-
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
 }
 
 void material_float(editor::Session& session, ObjectId object, std::string_view path, float value,

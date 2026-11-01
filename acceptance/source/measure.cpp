@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "source/program.hpp"
 #include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
@@ -30,22 +31,7 @@ using source::Program;
 
 using Clock = std::chrono::steady_clock;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 std::uint32_t uint_result(Result<std::optional<Scalar>> result) {
     auto value = take(std::move(result));

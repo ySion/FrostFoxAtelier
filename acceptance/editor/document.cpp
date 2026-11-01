@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "editor/session.hpp"
 #include "editor/project.hpp"
 #include "editor/assets.hpp"
@@ -34,27 +35,12 @@
 namespace {
 using namespace atelier;
 
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void changed(Result<world::Commit> result) {
     const auto commit = take(std::move(result));
     if (commit.notification_error)
         throw std::runtime_error(commit.notification_error->message);
-}
-
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
 }
 
 material::ProgramSurfaceRef snapshot_surface(const application::SceneSnapshot& snapshot, std::size_t mesh = 0,

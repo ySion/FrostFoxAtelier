@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "reflection/fixture.hpp"
 #include "source/program.hpp"
 #include <array>
@@ -13,22 +14,7 @@ using namespace atelier::acceptance::reflection;
 
 using source::Program;
 
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
+using namespace atelier::acceptance::helpers;
 
 void publish(Program& program, std::string_view text) {
     auto request = take(program.request("shared-calls.source", text));

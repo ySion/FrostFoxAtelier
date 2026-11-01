@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/instances.hpp"
@@ -37,22 +38,7 @@ using math::Vector2;
 
 using math::Vector3;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 template <class T>
 void reject(const Result<T>& result, const char* message) {

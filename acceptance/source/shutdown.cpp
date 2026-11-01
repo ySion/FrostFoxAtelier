@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 
@@ -12,22 +13,7 @@ using namespace atelier;
 
 using source::Program;
 
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void code_state(std::uintptr_t address, bool live) {
     require(address != 0, "Shutdown code address is missing.");

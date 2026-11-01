@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "presentation/presentation.hpp"
 #include "material/resources.hpp"
 #include "runtime/native.hpp"
@@ -20,22 +21,7 @@ namespace w = atelier::world;
 
 namespace p = atelier::presentation;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void committed(Result<w::Commit> result) {
     const auto commit = take(std::move(result));

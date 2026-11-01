@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "physics/physics.hpp"
 #include "physics/timing.hpp"
 #include "presentation/presentation.hpp"
@@ -18,23 +19,7 @@
 
 namespace {
 
-void require(bool condition, const char* message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
-template <class T>
-T take(atelier::Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(atelier::Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
+using namespace atelier::acceptance::helpers;
 
 void committed(atelier::Result<atelier::world::Commit> result) {
     const auto value = take(std::move(result));
