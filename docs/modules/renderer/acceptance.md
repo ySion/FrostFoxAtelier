@@ -4,7 +4,7 @@
 
 ## 运行
 
-- `renderer_acceptance` 目标包含下面 11 个入口，每个入口一个独立进程，使用真实窗口，限时 1800 s，任一失败即整体失败。每个入口另有单独目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口是 `renderer_acceptance_default`），按改动只跑相关入口时用它。日志写在构建目录的 `renderer-acceptance-<入口>.log`；Scene Lit 入口的图像与 CSV 证据写在 `renderer-evidence/<入口>/`，默认入口的截图直接写在可执行文件目录。也可以直接运行 `atelier_renderer_acceptance --<入口> --output <绝对目录>`，默认入口不带参数。
+- `renderer_acceptance` 目标包含下面除 `--scene-lit-benchmark` 外的 10 个验收入口，每个入口一个独立进程，使用真实窗口，限时 1800 s，任一失败即整体失败。每个入口另有单独目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口是 `renderer_acceptance_default`），按改动只跑相关入口时用它。日志写在构建目录的 `renderer-acceptance-<入口>.log`；Scene Lit 入口的图像与 CSV 证据写在 `renderer-evidence/<入口>/`，默认入口的截图直接写在可执行文件目录。也可以直接运行 `atelier_renderer_acceptance --<入口> --output <绝对目录>`，默认入口不带参数。
 - 验证层：门禁的 debug/GBV 选择以 [README 的构建与端到端验收规则](../../../README.md#构建与端到端验收)为准。默认入口、`--scene-lit` 和 `--material-programs` 自身请求 GPU-based validation；环境变量 `ATELIER_GPU_VALIDATION=debug` 会把进程内的 GBV 请求降为 debug layer。`--scene-lit-stability` 自身只请求 debug layer；`--scene-lit-benchmark` 关闭验证，计时采样期间不读回图像。
 - 检查不依赖 `assert`，Dev 和 Release 中同样生效。改动核心运行时或构建链时两种配置都要跑。
 - 硬件：RHI 要求同时支持 Mesh Shader、DXR 1.1 inline RayQuery 和 SV_Barycentrics 的 GPU。阈值和下文读数来自 RX 6800 XT，其他 GPU 没有跑过。窗口必须可见，运行期间桌面不能被其他全屏程序占用。
@@ -168,6 +168,8 @@ D3D12 debug layer。同一 Renderer 上依次跑 DDGI 读回诊断、上一节�
 | 正交相机当作相机背后 | 441408 个背景像素都有运动 |
 
 ## `--scene-lit-benchmark`
+
+这是独立测量入口，不进入 `renderer_acceptance`、`acceptance_window`、`acceptance` 或生成的窗口验收清单，因此门禁 `-Full` 不执行它。保留独立目标 `renderer_acceptance_scene_lit_benchmark` 以及直接运行 `atelier_renderer_acceptance --scene-lit-benchmark` 的方式；单独运行仍须遵守 [README 的窗口锁规则](../../../README.md#构建与端到端验收)。
 
 不开验证，原生 2560×1440 room；计时采样期间不读回图像，结束后保存一张证据图。检查完成样本的合同：异步样本属于已提交的帧，各级 timestamp 有限、非负，子区间属于完成的父区间，DDGI 分类查询是全部可见性查询的子集，固定场景在同一完成样本里执行除阴影 atlas 更新外的每个计时区间。同一入口再测有无天空贴图两种情况。它输出耗时，不以耗时作为通过条件。设了 4K 贴图后 compose 中位数从 0.498 ms 变为 0.576 ms，GPU 合计从 4.04 ms 变为 4.12 ms，DDGI 主追踪不变；贴图上传帧的分项见 [Scene Lit](scene-lit.md)。
 

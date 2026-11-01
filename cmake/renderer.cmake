@@ -63,7 +63,9 @@ function(atelier_add_renderer)
             COMMAND "${CMAKE_COMMAND}" -D "MODE=${_mode}" -P "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"
             DEPENDS atelier_renderer_acceptance
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" USES_TERMINAL VERBATIM)
-        list(APPEND _entries ${_entry})
+        if(NOT _mode STREQUAL "scene-lit-benchmark")
+            list(APPEND _entries ${_entry})
+        endif()
     endforeach()
     add_custom_target(renderer_acceptance DEPENDS ${_entries})
     set_property(GLOBAL PROPERTY ATELIER_RENDERER_ACCEPTANCE ${_entries})
