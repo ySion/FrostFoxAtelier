@@ -197,7 +197,7 @@ void verify_render_performance(Application& app, const std::filesystem::path& ou
         require(result.at("status") == "ok", "Direct-light Control operation failed.");
         return result;
     };
-    control_call({{"op", "view.set"}, {"args", {{"patch", {{"direct_candidates", 8}}}}}});
+    control_call({{"op", "op.call"}, {"args", {{"id", "view.set"}, {"args", {{"direct_candidates", 8}}}}}});
     require(Access::performance(app).snapshot().first_frame == full.first_frame,
             "An unchanged Control patch reset the performance domain.");
     const auto cluster_report = control_call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});

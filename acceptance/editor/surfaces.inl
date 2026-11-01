@@ -315,9 +315,9 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             // Refresh only stale requests; a fresh request must still prove busy/idle.
             for (unsigned attempt = 0; attempt < 8; ++attempt) {
                 const auto state = client.call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
-                auto reply = client.call({{"op", "view.set"},
+                auto reply = client.call({{"op", "op.call"},
                                           {"state_token", state.at("state_token")},
-                                          {"args", {{"patch", api::Json::object()}}}});
+                                          {"args", {{"id", "view.set"}, {"args", api::Json::object()}}}});
                 if (reply.at("status") != "error" || reply.at("error").at("code") != "stale_state")
                     return reply;
             }
