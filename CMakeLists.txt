@@ -111,6 +111,7 @@ include(cmake/jit.cmake)
 atelier_add_source()
 
 include(cmake/reflection.cmake)
+include(cmake/style.cmake)
 include(cmake/foundation.cmake)
 
 add_library(atelier_material STATIC
