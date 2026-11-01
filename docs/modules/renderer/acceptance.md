@@ -18,9 +18,9 @@
 
 默认回退用真实 `compile_material` 的未知标识符错误产生缺失定义，保留 `Broken.source` 与原编译诊断，再由 material 的正常解析入口生成引擎默认 ProgramSurface。该程序与正常程序共用批次和 17 条管线；Smooth 与 GBuffer/TAA 编辑深度检查品红外观和完整 Opaque 覆盖，并在修复后恢复原 Mask 孔洞。它证明前端失败到默认消费，不是自然 DXC/PSO 拒绝或 Editor 自动编译调度的证据。
 
-新组贯通 Smooth、Flat/MatCap/Cavity、编辑线深度、GBuffer、TAA 无抖动编辑深度、程序化阴影孔洞。真实 DDGI 房间验证完全离屏的暖/冷发光、仅参数替换、被 Mask 丢弃的亮发光体不照明；同几何 Opaque/Masked 实例换序仍保留非 opaque 候选执行。新增读回写入 `native-outputs.csv`，图像为同目录 `native-*.png`，程序输入为 `NativeMask.source` / `NativeOpaque.source`。
+新组贯通 Smooth、Flat/MatCap/Cavity、编辑线深度、GBuffer、TAA 无抖动编辑深度、程序化阴影孔洞。真实 DDGI 房间验证完全离屏的暖/冷发光、仅参数替换，以及 GI 内部将 Mask 按不透明几何遍历、保留被相机裁掉表面的完整着色与发光；同几何 Opaque/Masked 实例换序不影响该近似。相机与直接阴影的 Mask 孔洞另行验证。新增读回写入 `native-outputs.csv`，图像为同目录 `native-*.png`，程序输入为 `NativeMask.source` / `NativeOpaque.source`。
 
-纹理用非对称红/蓝棋盘和坐标图对照：最终缩放 UV、世界位置、变化的法线/切线及纹理驱动坐标在镜像非均匀变换下仍正确过滤；GBuffer 与编辑深度使用过滤 coverage。相同程序集合的参数/图片修改无需重新准备 PSO，已准备但未采用的图片在旧帧连续绘制后仍有效。同一图片的 linear/sRGB 解释、类型化空值、Repeat/Clamp/Mirror 与 orientation 折点分别检查。DDGI 用 LOD0 仅接受蓝纹素、过滤后为紫色且 coverage 为负的输入，区分正确的命中后过滤、错误的 LOD0 着色及错误的二次 coverage 拒绝。
+纹理用非对称红/蓝棋盘和坐标图对照：最终缩放 UV、世界位置、变化的法线/切线及纹理驱动坐标在镜像非均匀变换下仍正确过滤；GBuffer 与编辑深度使用过滤 coverage。相同程序集合的参数/图片修改无需重新准备 PSO，已准备但未采用的图片在旧帧连续绘制后仍有效。同一图片的 linear/sRGB 解释、类型化空值、Repeat/Clamp/Mirror 与 orientation 折点分别检查。DDGI 用 LOD0 蓝纹素 coverage 为正、红纹素 coverage 为负且两者单点发光都为零的输入，验证 GI 不透明近似下命中后仍先过滤最终 UV 再计算材质：过滤后的红蓝乘积产生中性发光，不因负的过滤 coverage 被二次拒绝。
 
 这证明原生纹理多 pass 与批次寿命；正式 Editor/presentation 绑定、保存/历史、accepted-frame 点击由编辑器与 World 入口验证，原生 CPU `evaluate` 对照不称为点击验收。极端掠射、非有限/溢出梯度到最粗 mip 仍缺定向 GPU 用例；合法 ProgramSurface 自然触发 DXC/PSO 失败仍没有确定性夹具，不以取消、前端拒绝或直接 RHI 的 `#error` 代替。必要回归为两配置此入口与 `renderer_acceptance_default` / `renderer_acceptance_scene_lit`；逐轮实际结果以门禁日志为准。旧图像/光照场景通过验收专用 `standard_fixture.inl` 作者夹具构造真实 StandardPBR MS/MI，再提交同一公开批次 API；生产中不存在固定材质兼容入口。
 
@@ -34,7 +34,7 @@ GPU validation，一个 641×385 的窗口，覆盖 Renderer 的帧合同和工�
 - Scene Lit 异步准备：未就绪的 Lit 帧返回 not_ready，不编码、不 Present、不改 capture；准备期间工作室帧照常接受；开启需要新管线组的设置时 total 增加，帧回到 not_ready，组就绪后恢复。
 - 材质：分区、负 UV 与图像方向、sRGB 与线性 opacity、Mask 在四种 AA 下与公开 FP32 深度一致、Mask 在光栅和射线阴影中一致、同一几何的 Mask/Opaque 实例交换顺序与增删、法线图、打包粗糙度金属度、单面与双面发光、未用图片随几何一起退休。
 - 标准材质默认消费：共享错误 Surface 在 Smooth / Scene Lit 显示品红，完整 Opaque 深度取代原 Mask 孔洞；恢复正常 Surface 后孔洞恢复。图像为 `material-default-smooth.png` / `material-default-lit.png`；资源失效、作者值与诊断的上游行为由 `editor_material_acceptance` / `project_scene_acceptance` 覆盖。
-- 材质光输运：DDGI 射线命中把贴图颜色带到中性接收面；只换贴图内容就更新 DDGI；完全位于视锥上方的贴图发光面经 DDGI 照亮接收面（入口先检查发光面四角都在视锥外）；镜像变换下单面发光仍按作者朝向；被 Mask 裁掉的发光纹素不贡献光。
+- 材质光输运：DDGI 射线命中把贴图颜色带到中性接收面；只换贴图内容就更新 DDGI；完全位于视锥上方的贴图发光面经 DDGI 照亮接收面（入口先检查发光面四角都在视锥外）；镜像变换下单面发光仍按作者朝向，双面发光不受几何正反面限制。
 - Cavity：保持 FP32 深度和背景、凸凹不换号、ridge 与 valley 独立、零强度不编码 pass、半径与 resize、透视、纯线框跳过、非法参数在编码前拒绝。
 - 选中：四种 AA 和多个相机位置下边线连续；DDGI 叠层后边线和深度不变；跨眼平面、近裁剪面、1e-20/1e20 尺度、镜像和 8 px 线宽下内部不铺色、边线宽度有界；显式线框模式不铺面。
 - 视口显示：Flat 与 Smooth 法线、MatCap 不改场景、hidden-line 深度预通道、全部边线、线宽按物理像素、模式切换复用缓存；参考网格与轴线不写深度、共面时几何优先、透视下无斑点、空场景显示网格、奇异相机只跳过网格。

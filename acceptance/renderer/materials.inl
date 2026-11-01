@@ -500,16 +500,10 @@ void material_transport_cases(render::Renderer& renderer, const std::filesystem:
     ++frame.scene_identity;
     const auto two_sided = mean_rgb(capture("material-two-sided-emission.png"), left);
     check(two_sided[2] > two_sided[0] + 20, "two-sided emission is independent from geometric front-facing");
-    emitter.parameters.coverage = material::Coverage::mask;
-    emitter.parameters.base_color[3] = 0;
-    publish_emitter();
-    ++frame.scene_identity;
-    const auto masked = mean_rgb(capture("material-masked-emission.png"), left);
-    check(masked[0] < 2 && masked[1] < 2 && masked[2] < 2, "discarded emitter texels cannot contribute light");
     frame.meshes = {};
     frame.lights = {};
     ++drawing.id;
     take(prepared_render(renderer, frame));
     std::puts(
-        "Material transport acceptance: PASS (textured DDGI, material edits, disconnected Mask/opaque closure, offscreen textured emission through DDGI, emission sides/Mask)");
+        "Material transport acceptance: PASS (textured DDGI, material edits, disconnected Mask/opaque closure, offscreen textured emission through DDGI, emission sides)");
 }
