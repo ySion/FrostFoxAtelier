@@ -134,34 +134,26 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 - **结构错误**直接失败：版本不是 1、未知键、`nodes` 或 `settings` 不是对象、节点名非法、缺少 `type`、`position` 不是两个有限数、`properties` 不是对象、`inputs` 不是以端口名为键的对象或连接不是 `"节点.输出"` 形式、display 不是节点名。保存时每个图节点必须恰有一个条目，名字合法且不重复，位置有限。
 - 保留的值在文档中一直覆盖写出的值；网络编辑器接入时，编辑一个保留了值的参数或端口要先丢弃这份保留，与 Scene 的规则相同；改名或删除节点时，还要改写或删除保留的连接、display 和保留节点里指向它的名字。
 
+验收的宽容用例只保留“缺失节点类型 → null 节点并保留冻结数据”的往返。未知 leaf、连接、settings 和不能作为节点的已知类型等额外宽容仍是上述现行产品行为，待单独审查；缩减验收不改变这些路径，也不引入旧版本兼容加载。
+
 ## 验收
 
-`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）覆盖：撒点的精确点数、确定性、三角形之间互不影响、概率取整和最小间距；按用途变换（逆转置法线、奇异变换下的平面法线、镜像时图元反转与 vertex 列重排）；删除、合并冲突、Promote、写时复制；Copy to Points 的 S·O·T 与 N/up 对齐、NaN 与越界变体；发布的分块、丢弃与逐块复用。BVH 在 3200 个三角形的起伏高度场上，用向下、向上、近水平和受距离限制的射线以及最近点查询，与按另一套公式写成的 double 暴力解比较命中、距离和命中点；同一叶中叠放的两个三角形从两侧都取到较近的一个。Ray 节点核对最近的抬高三角形、重心坐标、命中法线、背后和范围外的未命中、删除未命中点，以及 minimum 模式取到比正下方更近的角点。图与求值器部分构建 Grid → Transform → Merge ← Line → CopyToPoints，与直接调用操作的结果逐字节比较，并核对每个节点的求值与命中次数：
+`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）保留独立真值和必要生命周期序列，不以被测操作自己的输出生成期望：
 
-- 首次求值每个节点一次，再次求值零次，求值不给任何对象盖章；
-- 经 `Runtime::write` 和 `with_native` 改参数只重算该节点及下游，另一分支不动；撤销后全部命中缓存；什么也没改的可写借用不触发求值；图种子只重算带上下文的节点；
-- 节点失败阻断下游并保留输出，同键不重试，参数改回后命中缓存；
-- 资源版本变化但解析结果相同不重算，换了网格只重算读取它的节点，缺失的网格出现后重试；
-- 内容相同的两个节点共享结果；成环、端口越界、图外节点被拒绝；单输入端口替换连接；删除节点断开下游并清除 display；缓存预算为 0 时撤销也要重算。
+- **数学与布局**：面积 1、3 的两个三角形按密度 4 分别得到 4、12 点，位置在三角形内且法线为 +Z；一个最小间距样本核对点对距离。非均匀缩放与 Y 轴 90° 旋转的点、向量、法线用解析式，镜像用输入三角形的角顺序与属性作真值。删除、空／混合拓扑合并用固定索引，Promote 的平均值来自源网格顶点；Copy to Points 用手写 S·O·T 矩阵及 N/up 轴，发布分块用已知 floor 结果和 3×4 布局。
+- **概率取整**：面积 1、密度 2.25，取固定种子 0…2235。每次只能得到 2 或 3 点，总平均与 2.25 的误差严格小于 .03。在独立均匀随机的模型下，向上取整数 X 服从 Binomial(2236, .25)，接受区间为 492…626，精确二项求和覆盖率约 99.902133%；2236 是达到 99.9% 覆盖的最小种子数。实际固定种子运行是确定性的，不把统计模型称为实测分布或耗时证据。
+- **BVH 与 Ray**：18 个高度场三角形超过保留叶的 16 上限，一个斜射线和一个最近点查询各与独立 double 暴力公式比较。Ray 用可解析的抬高三角形核对命中与未命中、覆盖已有结果列但不改旧输入、删除未命中点，以及 minimum 模式的已知最近角点。
+- **ABI 与隔离**：plain 记录默认 false/0，经 Runtime 写入 `{true, 3}` 后原生节点产生三点；实例副本只写一个矩阵，原矩阵不变。Source 从 `source::engine_sources` 和保留夹具构建：`hash`／`hash2` 对照离线 lowbias32 常量，`unit(0x80000000)` 为 .5；六点 ColumnBatch 读 P、写 N、新增八列，结果按网格坐标和加法公式核对，旧输入与 Lift 兄弟分支保持各自的解析值。
+- **故障与清理**：原生图 Grid → Transform → Merge ← Line → CopyToPoints 先发布已知 14 个实例，Transform 失败后旧发布仍可读，参数恢复后继续求值；Source 写过所有列后在 invoke 内越界，旧发布仍可读，修正后得到新值；删除 display 后清除输出及节点状态。三种操作序列各保留一份，不附加缓存计数、容量观察或拒绝矩阵。
 
-列存储的边界验收包括：零图元与三角形／四边形混合拓扑，删除后转为均匀或空拓扑，与空几何合并时的顶点偏移；只修改实例副本的一个矩阵，原值不变且引用列继续共享；零元素与小列的非零填充、detail String 填充、按实际 capacity 计入 `bytes()`，共享副本不减记预算；Ray 再次处理已有结果列时覆盖输出而不改写输入。
-
-自有语言节点部分用工程共用的加载函数 `source::engine_sources` 读取引擎文件，再加一个夹具文件组成项目快照，构建 MeshImport → Scatter → Jitter（两个，amount 不同）/ RandomScale，Grid → 夹具 Lift（不带上下文）和夹具 Shift（只读上下文的种子），五路 Merge，并按文档公式和 random.hpp 的哈希独立算出期望值：
-
-- 源码的 `procedural.hash`、`hash2`（经夹具里的包装函数调用）与 random.hpp 逐位相同，`unit` 精确等于 (x >> 8) · 2⁻²⁴，最大输入得到 1 − 2⁻²⁴ 而不是 1；
-- 输出的 P 和 pscale 与期望一致（一个 Jitter 的 axis_scale 为 (1, 0, 2)），与 Jitter 同读 Scatter 结果的 RandomScale 看到未改动的 P（Jitter 写的是副本）；求值不盖章；
-- 经 `Runtime::write` 和源码方法写 `self` 改参数，都只重算该节点及下游，撤销后命中缓存；图种子经 Context 到达 Jitter、RandomScale 和 Shift（Shift 的输入与种子无关，所以重算只能来自它自己的键），不重算不带上下文的 Lift；
-- 兼容发布：改 Jitter 方法体只重算两个 Jitter 节点和下游，输出用上新方法体；内容不变的发布不重算任何节点；只改 RandomScale 的空白只重算它和下游；改引擎助手只重算代码直接或间接调用了它的节点（改 `random_vector` 只重算 Jitter，改 `hash` 再加上 RandomScale，Lift 和 Shift 都不重算），输出不变；
-- 立方体上撒点 → 夹具把偶数点的 N 置零 → NormalAlign → CopyToPoints，up 依次取 +Y、+Z、−Y 和零：实例矩阵与 C++ CopyToPoints 直接使用 N 和同值 up 列的结果一致。立方体的面法线沿坐标轴，这几个 up 覆盖四元数的四个分支、平行时的最短旋转和正对 −Z 的半圈；改 up 只重算 NormalAlign 和下游；
-- 输入缺少读取的列、按值参数、列类型与已有列不符、没有 evaluate、evaluate 没有参数（因而可以写 `self`）的类型各自失败，只阻断下游；没有 Program 的求值器里自有语言节点失败，C++ 节点照常求值。
-- 六点输入的多列夹具读取 P、改写 N 并新增八列，逐元素核对结果及旧输入／兄弟分支隔离；增列之后发现缺列或类型不符时准备失败；写过所有列后在真正的 invoke 内触发数组越界时保留旧发布、同键不重试，参数修正后重新执行并发布新值。
+跨模块工程 Source 消费的 K5 验收由 Editor 的 `project_execution.cpp` 负责，此入口不重复。`Geometry::bytes()` 的生产缓存预算接口不随容量观察用例删除。
 
 ```powershell
 . ./tools/enter-dev.ps1
 cmake --build --preset release --target procedural_acceptance
 ```
 
-`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）用同一张图核对图文件：保存不盖章且文本是规范 JSON；连接按端口名和输出名、按连接顺序写出，参数含向量、四元数、枚举、String 和 `Array<String>`，隐藏的连接列表不进属性；在另一个 Runtime 中重开，求值输出逐字节相同，再次保存字节相同，名字和位置不变；加入未知节点、指向它的多输入连接、不存在的端口、类型不符和未知的参数叶后宽容加载，每项恰好报告一次，能解析的连接照常建立，保存结果与改过的文本逐字节相同，保留的节点移动后保存新位置；settings 中不符的种子和指向未加载节点的 display 保留并写回；会成环的连接保留并写回，构造失败的节点使加载失败；九种结构错误被拒绝；重名或缺少条目的文档不能保存。
+`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）以手写当前 v1 JSON 为金值，读取 Grid → Transform 的非默认参数、位置、seed、display 与连接，再保存为相同规范字节。只保留 Missing 类型变成 null 节点且冻结 JSON 无损往返，以及构造失败不能吞成缺失类型两条边界。九种严格加载反例和额外宽容矩阵不再作为验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
 
 ```powershell
 cmake --build --preset release --target procedural_graph_acceptance
