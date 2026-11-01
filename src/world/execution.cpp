@@ -428,24 +428,6 @@ Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite
     return {};
 }
 
-Result<void> World::remove_tick_prerequisite(ObjectId object, ObjectId prerequisite) {
-    auto& state = *impl_;
-    if (auto ready = state.admit(); !ready)
-        return ready;
-    const auto unlink = [](auto& edges, ObjectId key, ObjectId value) {
-        const auto found = edges.find(key);
-        if (found == edges.end())
-            return;
-        std::erase(found->second, value);
-        if (found->second.empty())
-            edges.erase(found);
-    };
-    unlink(state.prerequisites, object, prerequisite);
-    unlink(state.dependents, prerequisite, object);
-    state.schedule_dirty = true;
-    return {};
-}
-
 Result<void> World::observe_lifecycle(LifecycleObserver observer) {
     if (auto ready = impl_->admit(); !ready)
         return ready;

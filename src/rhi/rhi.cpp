@@ -473,8 +473,6 @@ Result<Context> Context::open(const ContextOptions& options) {
     const GfxResult wait_result = gfxSetWaitTimeout(state->context, options.wait_timeout_ms);
     if (wait_result != kGfxResult_NoError)
         return std::unexpected(execution_error(wait_result));
-    state->info.adapter = state->context.getName();
-    state->info.vendor_id = state->context.getVendorId();
     state->info.frames_in_flight = gfxGetBackBufferCount(state->context);
     auto* device = gfxGetDevice(state->context);
     // gfx drops its DXR device when it cannot obtain the DXR interfaces.

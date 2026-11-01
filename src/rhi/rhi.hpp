@@ -65,10 +65,6 @@ struct ContextOptions {
 };
 
 struct ContextInfo {
-    std::string adapter;
-
-    std::uint32_t vendor_id = 0;
-
     std::uint32_t frames_in_flight = 0;
 
     bool debug_layer = false;

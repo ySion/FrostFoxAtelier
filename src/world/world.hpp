@@ -795,8 +795,6 @@ public:
     // persist across stop/start and are dropped when either object leaves.
     [[nodiscard]] Result<void> add_tick_prerequisite(ObjectId object, ObjectId prerequisite);
 
-    [[nodiscard]] Result<void> remove_tick_prerequisite(ObjectId object, ObjectId prerequisite);
-
     [[nodiscard]] Result<void> observe_lifecycle(LifecycleObserver);
 
     // Unsubscribing during dispatch immediately prevents later calls, including

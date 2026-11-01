@@ -1402,14 +1402,6 @@ bool Application::pointer_ready() const noexcept {
            frame->drawing->surface_revision == surface_revision_ && frame->drawing->dpi_scale == window_.dpi_scale();
 }
 
-bool Application::over_viewport(float x, float y) const noexcept {
-    if (!pointer_ready())
-        return false;
-    const auto* viewport = ui_.presented()->find(editor::control::viewport);
-    return viewport && x >= viewport->bounds.x && y >= viewport->bounds.y &&
-           x < viewport->bounds.x + viewport->bounds.width && y < viewport->bounds.y + viewport->bounds.height;
-}
-
 void Application::request_menu(const ui::ContextMenuRequest& request) {
     const auto frame = ui_.presented();
     const auto* source = frame ? frame->find(request.source) : nullptr;

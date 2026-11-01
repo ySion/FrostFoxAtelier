@@ -471,8 +471,6 @@ private:
 
     bool pointer_ready() const noexcept;
 
-    bool over_viewport(float, float) const noexcept;
-
     bool viewport_input(const ui::Event&, std::uint32_t native_key);
 };
 }
