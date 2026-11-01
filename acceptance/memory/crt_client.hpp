@@ -9,8 +9,6 @@
 #endif
 
 extern "C" {
-ATELIER_CRT_CLIENT void* atelier_crt_allocate(std::size_t size) noexcept;
-
 ATELIER_CRT_CLIENT void* atelier_crt_resize(void* block, std::size_t size) noexcept;
 
 ATELIER_CRT_CLIENT void atelier_crt_free(void* block) noexcept;
