@@ -702,8 +702,9 @@ struct Fixture {
             atelier::rhi::Validation validation = atelier::rhi::Validation::gpu)
         : window(benchmark ? 2560 : 960, benchmark ? 1440 : 540),
           renderer(take(render::Renderer::open(
-              window.hwnd,
-              {.validation = benchmark ? atelier::rhi::Validation::disabled : validation, .vsync = false}))),
+              window.hwnd, {.validation = benchmark ? atelier::rhi::Validation::disabled : validation,
+                            .vsync = false,
+                            .shader_cache = shader_cache_directory()}))),
           drawing{.id = 20000, .extent = take(renderer.target()).extent, .draws = {}},
           frame{drawing,
                 camera(drawing.extent),

@@ -5,14 +5,18 @@
 ## 运行
 
 - `renderer_acceptance` 目标包含下面 11 个入口，每个入口一个独立进程，使用真实窗口，限时 1800 s，任一失败即整体失败。每个入口另有单独目标 `renderer_acceptance_<入口>`（`-` 换成 `_`，默认入口是 `renderer_acceptance_default`），按改动只跑相关入口时用它。日志写在构建目录的 `renderer-acceptance-<入口>.log`；Scene Lit 入口的图像与 CSV 证据写在 `renderer-evidence/<入口>/`，默认入口的截图直接写在可执行文件目录。也可以直接运行 `atelier_renderer_acceptance --<入口> --output <绝对目录>`，默认入口不带参数。
-- 验证层：默认入口、`--scene-lit` 和 `--material-programs` 请求 GPU-based validation，[验收门禁](../../../tools/acceptance-gate.ps1)对这三个入口保留 GBV。`--scene-lit-stability` 及门禁中的其余窗口入口使用 D3D12 debug layer；`--scene-lit-benchmark` 关闭验证，计时采样期间不读回图像。直接运行时，环境变量 `ATELIER_GPU_VALIDATION=debug` 会把进程内的 GBV 请求降为 debug layer。GBV 下首次准备 Lit 或材质批次管线可能需要几分钟；其余入口在 debug layer 下多为 5–30 s。
+- 验证层：门禁的 debug/GBV 选择以 [README 的构建与端到端验收规则](../../../README.md#构建与端到端验收)为准。默认入口、`--scene-lit` 和 `--material-programs` 自身请求 GPU-based validation；环境变量 `ATELIER_GPU_VALIDATION=debug` 会把进程内的 GBV 请求降为 debug layer。`--scene-lit-stability` 自身只请求 debug layer；`--scene-lit-benchmark` 关闭验证，计时采样期间不读回图像。
 - 检查不依赖 `assert`，Dev 和 Release 中同样生效。改动核心运行时或构建链时两种配置都要跑。
 - 硬件：RHI 要求同时支持 Mesh Shader、DXR 1.1 inline RayQuery 和 SV_Barycentrics 的 GPU。阈值和下文读数来自 RX 6800 XT，其他 GPU 没有跑过。窗口必须可见，运行期间桌面不能被其他全屏程序占用。
 - 期望值由独立真值或参考帧得出：解析或数值积分的真值、同一场景清历史后收敛的终点、关闭被测效果的对照帧，不取自被测实现。帧间比较用 RGB8 最大通道差，mean/p95 在实际几何像素或指定 ROI 上统计。
 
+Renderer 消费者（默认入口、Scene Lit fixture、原生材质批次）共用可执行文件目录下的 `renderer-shader-cache/`，即通常的 `out/<配置>/renderer-shader-cache/`；不随当前工作目录或 `--output` 改变，也不使用 Editor 的用户缓存。缓存只复用已有 RHI 编译阶段字节码，不保留 GPU 对象或 PSO，缓存失效仍按原路径重编译。材质程序的直接 RHI 对照仍保留自己的证据目录缓存，`acceptance/rhi/preparation_cases.cpp` 的缓存验收不变。
+
+默认入口的 `lit_preparation_case` 每次先在同一窗口使用独立 Renderer，并清空相邻的 `renderer-preparation-shader-cache/`，保持首帧和新增管线组的 `not_ready`、准备期间工作室绘制及准备完成后的全部断言。它关闭后，其余用例才使用持久缓存；热跑也不会跳过冷准备覆盖。因此默认入口的热跑仍包含这一段冷编译和新 Context/PSO 准备，不能把总耗时等同缓存命中成本。
+
 ## `--material-programs`
 
-`renderer_acceptance_material_programs` 是窗口/GPU 入口，门禁对它保留实际 GBV。`material_programs.cpp` 保留原 72 行 CPU/compute LOD0 与 144 行运行期数学对照，分别写入 `outputs.csv` / `math-outputs.csv`；此处的手工坏 HLSL 仅是直接 RHI 失败对照。
+`renderer_acceptance_material_programs` 是窗口/GPU 入口，验证级别遵循上述 README 规则。`material_programs.cpp` 保留原 72 行 CPU/compute LOD0 与 144 行运行期数学对照，分别写入 `outputs.csv` / `math-outputs.csv`；此处的手工坏 HLSL 仅是直接 RHI 失败对照。
 
 同一入口随后执行 `material_batches.inl` 的公开原生 Renderer 消费：两个真实 MS、不同 Params 布局与具名纹理输入、显式父 Surface 的子/孙/兄弟解析；编译 Runtime 销毁后准备批次。检查 pending 不替换 Capture、准备/取消/CPU 拒绝期间旧整组逐像素不变、缺失/不完整/越界槽表和无 batch 网格帧拒绝、准备完成后颜色/coverage 同时变化，以及 live batch 的 close busy 与无 capture 的在途退休。
 
@@ -26,7 +30,7 @@
 
 ## 默认入口
 
-GPU validation，一个 641×385 的窗口，覆盖 Renderer 的帧合同和工作室显示：
+一个 641×385 的窗口，覆盖 Renderer 的帧合同和工作室显示：
 
 - 帧合同：接受、跳过、最小化、隐藏、resize 时接受旧目标并报告下一目标、过期尺寸不发布 capture、编码前失败可恢复且保留上次 capture、owner 线程限制、关闭幂等且在 HWND 销毁前排空。
 - UI：线性预乘混合到 sRGB 目标、半开裁剪、R8 覆盖图带行 padding、绘制顺序、一次 draw 覆盖多 clip 和多张图片、圆角与边框、版本上传一次并退休旧版本、无效形状在编码前拒绝。
@@ -41,7 +45,7 @@ GPU validation，一个 641×385 的窗口，覆盖 Renderer 的帧合同和工�
 
 ## `--scene-lit`
 
-GPU validation，room 场景：
+room 场景：
 
 - 环境：没有天光、灯和发光体时完全黑，不存在隐含环境光；场景天光照亮表面且与阴影源无关；移除天光后收敛到黑，不残留历史。
 - 逐项图像：四种光源各自产生几何阴影；矩形尺寸和单面背侧；HDR 发光保留各通道且不在曝光前截断；曝光、粗糙度、金属度；GTAO 不压暗直接光和自发光、只压暗间接接触；DDGI 产生可见反弹并按墙色分开染色、表面变化后更新；SSSR 在环境回退之上加屏幕反射，源离屏后保留有限回退；正交相机。

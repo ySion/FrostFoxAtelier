@@ -13,6 +13,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -27,6 +28,14 @@ void check(bool condition, const char* text) {
     if (!condition) {
         throw std::runtime_error(text);
     }
+}
+
+std::filesystem::path shader_cache_directory() {
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    check(length && length < executable.size(), "locate Renderer acceptance shader cache");
+    executable.resize(length);
+    return std::filesystem::path(executable).parent_path() / L"renderer-shader-cache";
 }
 
 template <class T>
@@ -699,9 +708,18 @@ int main(int argc, char** argv) try {
                                     mode == "--scene-lit-quality");
     }
     Window window;
-    auto renderer =
-        take(render::Renderer::open(window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false}));
-    lit_preparation_case(renderer, window.hwnd);
+    const auto shader_cache = shader_cache_directory();
+    {
+        // Keep first-render/new-group not_ready coverage cold even on a warm run.
+        const auto cold_cache = shader_cache.parent_path() / L"renderer-preparation-shader-cache";
+        std::filesystem::remove_all(cold_cache);
+        auto renderer = take(render::Renderer::open(
+            window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false, .shader_cache = cold_cache}));
+        lit_preparation_case(renderer, window.hwnd);
+        take(renderer.close());
+    }
+    auto renderer = take(render::Renderer::open(
+        window.hwnd, {.validation = atelier::rhi::Validation::gpu, .vsync = false, .shader_cache = shader_cache}));
     cavity_cases(renderer, window);
     material_cases(renderer);
     material_transport_cases(renderer);

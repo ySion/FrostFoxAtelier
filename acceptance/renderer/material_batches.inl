@@ -154,7 +154,7 @@ void run(HWND window, const std::filesystem::path& output) {
     auto table = surfaces(output);
     auto renderer = take(render::Renderer::open(
         window,
-        {.validation = atelier::rhi::Validation::gpu, .vsync = false, .shader_cache = output / "native-shader-cache"}));
+        {.validation = atelier::rhi::Validation::gpu, .vsync = false, .shader_cache = shader_cache_directory()}));
     auto batch = take(renderer.prepare_materials(table));
     check(batch.surfaces().size() == table.size(), "batch retains exact frozen surface order");
     ui::Frame drawing{.id = 30000, .extent = take(renderer.target()).extent, .draws = {}};
