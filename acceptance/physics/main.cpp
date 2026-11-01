@@ -1,20 +1,17 @@
 #include "../helpers.hpp"
 #include "physics/physics.hpp"
-#include "physics/timing.hpp"
 #include "presentation/presentation.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <vector>
-#include <limits>
 #include <string_view>
 
 namespace {
@@ -58,28 +55,20 @@ const Scenario scenarios[]{
     {"world_mesh", simulate_world},
     {"rigid_shapes", rigid_shapes},
     {"forces", forces},
-    {"contacts", simulate_filter_and_trigger},
-    {"collision_matrix", collision_matrix},
-    {"queries", queries},
     {"cooked_assets", simulate_cooked_assets},
     {"fixed_step", fixed_step},
-    {"frame_timing", frame_timing},
     {"lifecycle", lifecycle},
-    {"world_ownership", world_ownership},
     {"character", character},
     {"constraint", constraint},
-    {"ragdoll", ragdoll},
     {"special_integration", simulate_special_systems},
     {"components", component_lifecycle},
     {"entity_bindings", entity_physics_bindings},
     {"trace_queries", trace_queries},
     {"query_components", query_components},
-    {"query_exclusions", query_exclusions},
     {"primitive_composition", primitive_composition},
     {"primitive_authoring", primitive_authoring},
     {"mirrored_scale", mirrored_scale},
     {"pose_publication", pose_publication},
-    {"solver_determinism", solver_determinism},
     {"contact_capacity", contact_capacity},
     {"render_interpolation", render_interpolation},
 };

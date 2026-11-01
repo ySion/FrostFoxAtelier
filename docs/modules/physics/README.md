@@ -85,8 +85,8 @@ cmake --build --preset dev --target physics_acceptance editor_document_acceptanc
 cmake --build --preset release --target physics_acceptance editor_document_acceptance
 ```
 
-`physics_acceptance` 按独立场景逐项输出 RUN/PASS/FAIL。`physics_examples_acceptance` 验证 9 个官方场景的真实磁盘往返、Jolt 模拟和编辑器 GPU 画面。完整覆盖矩阵、单场景重跑方法和结果见[物理验收](acceptance.md)。`editor_document_acceptance` 覆盖工程缓存、Primitive 配置历史和场景文档；`editor_acceptance` 的真实窗口用例包含 Entity Structure 添加/删除 CollisionComponent 及撤销，运行时需要可授予前台焦点的桌面会话。
+`physics_acceptance` 按独立场景逐项输出 RUN/PASS/FAIL，只保留当前 Cook 往返、每类数学行为一个独立真值代表和必要生命周期/故障清理序列。`physics_examples_acceptance` 验证 9 个官方场景的真实磁盘往返、Jolt 模拟和编辑器 GPU 画面，不随无窗口用例裁剪删除。当前保留范围与单场景重跑方法见[物理验收](acceptance.md)。`editor_document_acceptance` 覆盖工程缓存、Primitive 配置历史和场景文档；`editor_acceptance` 的真实窗口用例包含 Entity Structure 添加/删除 CollisionComponent 及撤销，运行时需要可授予前台焦点的桌面会话。
 
 编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)，逐次日志由根 README 的验收门禁记录。
 
-尚未提供 Convex/Compound/Heightfield、焊接、独立查询/模拟参与开关、具名碰撞 Profile、异步查询或专用服务器可执行宿主。刚体逐个加入（`CreateAndAddBody`，约 0.5 µs 一个）；已有刚体的运行中一次生成大批刚体（例如关卡流式加载、一次实例化很多预制体）时也会出现前两步的建树尖峰，Jolt 为此提供批量加入（`AddBodiesPrepare` / `AddBodiesFinalize`），出现运行中大批生成的需求时再测量、再接入。当前验收覆盖已公开行为，没有测量大规模吞吐，也不承诺跨平台位级确定性。
+尚未提供 Convex/Compound/Heightfield、焊接、独立查询/模拟参与开关、具名碰撞 Profile、异步查询或专用服务器可执行宿主。刚体逐个加入（`CreateAndAddBody`，约 0.5 µs 一个）；已有刚体的运行中一次生成大批刚体（例如关卡流式加载、一次实例化很多预制体）时也会出现前两步的建树尖峰，Jolt 为此提供批量加入（`AddBodiesPrepare` / `AddBodiesFinalize`），出现运行中大批生成的需求时再测量、再接入。验收代表不等于全部公开行为的组合矩阵，没有测量大规模吞吐，也不承诺跨平台位级确定性；`physics-cpu` 作为独立测量入口保留，不进入验收或 Full 清单。

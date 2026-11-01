@@ -1,6 +1,6 @@
 # 物理场景验收
 
-场景由正式 Runtime、World 和 `PhysicsScene` 公开接口构建，使用仓库锁定的真实 Jolt。入口为 `acceptance/physics/main.cpp`；`scenarios.inl` 提供独立模块场景，`integration.inl` 保留静态网格、触发、Cook 和专用系统组合消费者。验收宿主显式链接 `atelier_physics` 与 `atelier_presentation`，不自行初始化 Jolt 或访问后端内部对象。
+场景由正式 Runtime、World 和 `PhysicsScene` 公开接口构建，使用仓库锁定的真实 Jolt。入口为 `acceptance/physics/main.cpp`；`scenarios.inl` 提供独立模块场景，`integration.inl` 保留静态网格、当前 Cook 格式和旋转布娃娃代表。验收宿主显式链接 `atelier_physics` 与 `atelier_presentation`，不自行初始化 Jolt 或访问后端内部对象。
 
 Physics 本身只依赖 World、geometry 和 Jolt。创建 `PhysicsScene` 时，宿主必须传入 `MeshReader` 函数引用；编辑器及本验收接入 `presentation::read_mesh_source`，按实际 Primitive 身份取得拥有型 `geometry::MeshSource`（source + 不可变 MeshRef），不读取或持有默认材质。插值交换值 `world::PresentedPose` 同时携带显示位姿与权威位姿；Physics 的返回 span 在下一次更新、姿态/生命周期编辑、暂停或析构时失效，插值与位姿权威规则未变。
 
@@ -15,43 +15,39 @@ cmake --build --preset dev --target physics_examples_acceptance project_scene_ac
 cmake --build --preset release --target physics_examples_acceptance project_scene_acceptance
 
 ./out/dev/atelier_physics_acceptance.exe --list
-./out/dev/atelier_physics_acceptance.exe --scenario ragdoll
-./out/release/atelier_physics_acceptance.exe --scenario world_ownership
+./out/dev/atelier_physics_acceptance.exe --scenario special_integration
+./out/release/atelier_physics_acceptance.exe --scenario lifecycle
 ```
 
 不带参数运行全部场景；`--scenario NAME` 只运行指定项，未知名称或参数返回失败。`--list` 列出当前场景，每项输出 RUN 和 PASS/FAIL，最后汇总成功数与总数。数值检查按场景使用容差，不依赖可被编译移除的 `assert`。场景失败后通过 RAII 释放 World/Jolt 资源并继续报告其他场景。
 
 ## 场景与检查点
 
-| 场景名 | 构建的物理场景 | 主要检查 |
+每类数学行为只保留一个代表，预期取作者输入、解析几何或不变量，不以另一份解算输出为真值。生命周期序列保留各自必要的触发条件与清理断言；故障注入不是错误文本矩阵。
+
+| 场景名 | 类别 | 保留检查与独立依据 |
 | --- | --- | --- |
-| `world_mesh` | 三角网格地面、球、箱体 | 下落与支撑高度、Entity 位姿回写；source + MeshRef 精确匹配；拒绝 Entity/非网格 Primitive 的几何读取；同 source 不同 MeshRef 的非对称替换改变射线结果、保留旧快照并使旧句柄失效；动态三角网格拒绝、前后步回调、接触和停止清理 |
-| `rigid_shapes` | Box/Sphere/Capsule 下落及运动学平台 | 重力、各形状支撑高度、休眠、静态体拒绝施力、运动学目标、非法配置不覆盖原值 |
-| `forces` | 零重力下三个相同动态体 | 等效力与冲量、延迟消费且只消费一次、传送保留/清除速度、自定义重力、NaN 拒绝 |
-| `primitive_composition` | Entity 子树中的网格刚体、动态碰撞子实体和视觉后代，组成顺序倒置 | 独立句柄/命令、世界姿态创建、父先子回写、查询身份、视觉跟随、只卸载目标、重建代际和旧命令拒绝 |
-| `primitive_authoring` | 反射配置的缩放网格与运动学触发子实体 | 属性验证回滚、Box 缩放、owner Entity 刚体查找、运动学目标到达后停止、局部位姿转换、非法缩放拒绝并清理 |
-| `mirrored_scale` | 镜像的非对称三角网格（运行时构建与 Cook 各一）、负缩放 Box、(-1,-1,-1) 动态体及其子体、嵌套零缩放空间 | 镜像位置与正面、Box 尺寸取绝对值、镜像 Character 拒绝、镜像回写保持局部 TRS、零缩放不建刚体且只在最上层节点报告一次、恢复后重建；全程 halt 策略 |
-| `pose_publication` | 静态地面、已睡眠与仍下落的动态体、下落体下的睡眠子体、空间父节点下的动态体 | 刚睡眠体回写最终位姿；远处祖先之下的睡眠体在结构编辑引起的全量协调后不被唤醒；绕过 World 写入静态体与睡眠体的 TRS 后，下一步刚体随之传送且与 World 一致；下落体回写；移动父节点下的睡眠子体保持世界位姿；`on_before_step` 中写入静态体和下落体的 TRS，在本步内传送刚体、不被本步回写覆盖；显式传送的静态体回写；绕过 World 平移非物理祖先后，下一步其下刚体随之传送、句柄不变；绕过 World 把祖先改为均匀缩放后重建其下刚体，改为不均匀缩放后下一步重新检查并按对象报告；同一步内前一子步的回调把刚体改挂到新祖先、后一子步的回调移动该祖先，刚体在本步内随之传送、句柄不变 |
-| `solver_determinism` | 160 个动态箱子在多线程求解池上下落堆叠 120 帧 | 两次全新运行的全部刚体状态与 World 局部 TRS 逐位一致 |
-| `contact_capacity` | 小 World 的推导容量；接触约束容量为 8 时 32 个地面上的箱子，halt 策略；容量为 4 时 4 个静止箱子与 28 个落地箱子 | 推导默认值、超限显式值拒绝、显式值保留、低于 4 的值报告为 4；30 步全部完成、World 仍运行，每步计入 `contact_overflows`，只有一条合并 30 次、字段为 `contact_constraints` 的 `capacity_exceeded` 警告。Jolt 的刚体对与接触流形共用一块缓冲，单独调小刚体对不会先满，因此只验收接触缓冲；落地箱子占满缓冲期间静止接触失去约束，移走落地箱子后每个静止箱子仍在地面上并收到接触事件 |
-| `render_interpolation` | 下落刚体及其视觉子 Entity、落地睡眠且挂在下落刚体下的子刚体及其视觉子 Entity、另一个落地睡眠的刚体及其视觉子 Entity，120 Hz 显示帧 | World 位姿每两帧变一次且等于权威矩阵，呈现矩阵每帧都变并落在上一步与本步之间；睡眠子刚体的视觉子孙停在 World 位姿；两步之间经 keep_world 改挂到下落刚体下的睡眠刚体、两步之间在下落刚体下新建的 Ragdoll，其视觉子孙都停在 World 位姿；`render_items()` 不含呈现位姿；`set_transform` 后立即画在新位姿、之后不拖影，绕过 World 的写入同样；全部睡眠后呈现表为空、版本号不再前进，World、物理与呈现的静止帧不给任何对象盖写代号 |
-| `contacts` | 触发区与被过滤对象 | began/persisted/ended 归并、无阻挡响应、停用 Exit 原因、查询容量截断与过滤；事件保留场景与刚体代际，历史结束事件不能操作重建后的刚体 |
-| `collision_matrix` | 相交的运动学体和动态体 | Ignore/Overlap/Block 双向 9 组 × Sensor 开/关，共 18 组；Ignore 优先、仅双方 Block 且非 Sensor 时分离、单次 Enter |
-| `queries` | 两个不同距离的静态体 | Ray any/closest/all、命中排序/身份/材质/法线、类别与组件过滤、Sphere Sweep/Overlap、完成步号、无效参数 |
-| `cooked_assets` | 磁盘 Cook 网格反复加载到新 World | 形状可查询、二进制往返、损坏/版本不符拒绝；来源/缩放不符时按当前缩放运行期重建一次（`runtime_cooks`），缓存校验仍报不符 |
-| `fixed_step` | 自由落体与触发区内双动态体 | 经 `World::update` 驱动：半帧积累、8 子步上限与丢时、暂停/单步、重复请求合并、重入拒绝、前后回调失败停止 World、30/120 Hz 宿主得到相同 60 步、pre_physics/post_physics Tick 位于全部子步前后并收到整帧时间；前步、后步、首接触回调成功 stop 后无后续回调，完成步保留，重启无旧时间或事件且产生新 began |
-| `frame_timing` | 地面上的动态体，每帧 2.5 个固定步长 | 在帧阶段计时 Recorder 帧内调用 `World::update`：停止的 World 不记录阶段；运行后无结构错误，各 World 阶段、`physics.step/reconcile/events` 各进入 1 次，`world.schedule` 只在启动后的首帧进入，`physics.substep/solve/write_back` 次数等于 `last_step().steps`；不检查耗时数值 |
-| `lifecycle` | 同时存在的两个独立 Runtime/World/场景 | 失效命令拒绝、停用/重启代际、重复 disable/stop/close、销毁一场景不影响另一场景、运行中重建场景；前步、后步、首接触回调成功 close 后 update 无错退出、无后续回调，清理 body/呈现/剩余时间并保留完成步；直接写 `body.enabled`（不经 World）在下一步建立或撤销刚体，组件停用时不建，重新启用、detach/restore 随之撤销与恢复；同一 World 上重建 40 次场景复用能力登记，物理登记不使 Primitive 计为呈现 |
-| `world_ownership` | 同一 Runtime 中两个 World | 拒绝跨 World 角色/布娃娃创建、句柄限定场景、detach 清理、转移后仅新 World 可创建 |
-| `character` | 胶囊角色落地、移动和跳跃 | grounded、跳跃只消费一次、输入/重复创建拒绝、销毁重建代际、根停用清理 |
-| `constraint` | 固定锚点悬挂动态体 | 距离保持、无效端点/区间拒绝、约束删除失效、显式删除及端点停用后唤醒休眠体并自由落下 |
-| `ragdoll` | 两部件布娃娃落到地面 | 层级拒绝、全部部件位姿/步号、重力和碰撞、重复创建/销毁拒绝、重建及 World stop 清理 |
-| `special_integration` | 角色台阶/坡道/移动平台、旋转布娃娃 | 组合运动、布娃娃局部转世界、平台继承、普通 Body 替换专用系统、停用/退出清理 |
-| `components` | 组件拥有的角色、布娃娃及摆锤 | 重复 reconcile 幂等、非零初始部件位姿的幂等、绑定部件上原生控制器创建的原子拒绝、keep_world 重挂保留句柄/冲量状态/运动相位、组合停用与独立空间参考停用的区分、删除恢复、detach/重启代际、位姿写入者排他、约束释放/唤醒、跨 World 目标拒绝 |
-| `trace_queries` | 触碰、首个阻挡、遮挡后目标、通道忽略对象和 Sensor | 通道/对象类型 test/single/multi、Entity/Component 忽略集合、容量摘要、基础 closest 合同、球心与接触点、初始穿透、掩码/枚举/零长度/浮点溢出边界 |
-| `query_components` | 有空间父节点的查询组件和可停用目标 | 旋转/缩放与剪切空间链、独立空间参考停用时保留请求、自身忽略、自动/一次请求、暂停与立即查询、失败清空结果、组合祖先停用、删除恢复、跨 World、旧命中失效 |
-| `entity_bindings` | 嵌套角色、布娃娃与显式部件 Entity 绑定，metadata 与网格分离 | world/local 位姿转换、公开持有引用序列、重复/活动绑定拒绝、批姿态发布保留显示尺度、目标禁用/恢复、同一 Entity 的两个位姿写入者拒绝 |
-| `query_exclusions` | 组合父与同组物理部件、actual owner 自体和远近目标 | ignore_self 不猜父组、活动显式排除与调用方集合合并、重复/空绑定拒绝保留旧集合、固定步消费与清空生效 |
+| `world_mesh` | K3/K6 | 同 source 换 MeshRef：宽 8 的地面覆盖 x=3，X 减半后不覆盖；已取得的旧 Mesh 快照不被改写 |
+| `rigid_shapes` | K3 | 一个 Box 落地，地面 y=0 加半高 .5 得支撑中心 y=.5 |
+| `forces` | K3 | 一个已有冲量的动态体执行默认 teleport，动量清零 |
+| `primitive_composition` | K3 | 子位置 (4,2,0) 经父 yaw90° 与平移 (10,2,0)，刚体初始世界位置为 (10,4,-4) |
+| `primitive_authoring` | K3 | Box 半宽 .5 乘 scale4，表面 x=2；运动学子体目标世界 x=12 到达后速度为零，父 x=10 故局部 x=2 |
+| `mirrored_scale` | K3 | 非对称斜面镜像后 x∈[-2,-1]，x=-1.5 时 y=1、正面朝 -X；镜像父下世界 +X 运动使子局部 x 减少且保留作者旋转/scale |
+| `pose_publication` | K3 | before-step 写作者 z=3，同一步 World 与物理结果均为字面 3 |
+| `contact_capacity` | K3/K6 | 一次完整的 28 个拥塞体加 4 个受影响体序列：确认进入溢出，移走拥塞体，确认退出溢出，四个原接触恢复且支撑中心仍为 y=.5 |
+| `render_interpolation` | K3 | 直接写作者 x=-40 后呈现 x=-40，不沿旧位姿拖尾；不再以旧/新解算输出互比证明正常插值 |
+| `cooked_assets` | K1/K3 | 当前 Cook 格式一次真实磁盘往返与加载，宽 8 的立方体形状覆盖 x=3；不含旧版本、损坏、source/scale 不匹配矩阵 |
+| `fixed_step` | K6 | before/after/contact 成功 stop 后无后续回调及旧事件；前步失败不解算，后步失败保留已完成一步，重启清除待单步 |
+| `lifecycle` | K6 | before/after/contact 成功 close；Tick/任务/激活/stop/close 五种失败入口完成逆序 End/注销与清理，旧命令不影响新代；销毁一个 Scene 不影响另一个 |
+| `character` | K3 | 一个胶囊角色落地，radius .35 + half-height .6 得支撑中心约 .95，沿用原容差 |
+| `constraint` | K3 | 固定锚点 (0,5,0)、距离区间 [2,2]，受重力与冲量后欧氏距离仍为 2 |
+| `special_integration` | K3 | 一个 yaw90° 布娃娃，局部 arm(.6,0,0) 经平移 (-10,2,0) 得 x=-10、z=-.6 |
+| `components` | K3/K6 | 重挂后运动学位置取作者正弦公式；Character remove/restore、stop/restart 后端代际；Ragdoll part/控制器停用释放；约束端点移除后释放并唤醒另一端 |
+| `trace_queries` | K3 | line 距离 5.5/表面 z=2.5/法线 -Z；半径 .25 的 sweep 距离 2.25、球心 z=-.75、接触 z=-.5；overlap 中心为原点 |
+| `query_components` | K3/K6 | 作者 start=-5、end=-5+2×10=15；remove/restore 与 stop 清缓存；首次协调前请求不能污染重启 |
+| `entity_bindings` | K3/K6 | 嵌套 Character 初始 x=12、z=0；布娃娃写回保留作者显示 scale；part 失活撤销后端；位姿写入冲突后清理不泄漏 |
+
+拒绝、错误文本、容量/过滤/启用等额外矩阵、计时调用计数及两次求解输出互比已退出本入口，不改变产品能力或失败合同。`physics-cpu` 保留为测量入口，不属于验收或 Full 清单。窗口 Physic 场景与编辑器入口另列如下，未随本轮无窗口裁剪删除。
 
 ## 官方 Physic 场景
 
