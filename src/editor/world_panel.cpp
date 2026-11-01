@@ -72,10 +72,9 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
             return false;
         if (option->option == ViewOption::probe_debug_volume && value > renderer::probe_volume_limit)
             return false;
-        auto changed = set_view_option(candidate, option->option,
-                                       double(value) - (option->option == ViewOption::probe_debug_volume ? 1 : 0));
-        if (!changed)
-            return std::unexpected(changed.error());
+        ATELIER_TRY_BIND(changed,
+                         set_view_option(candidate, option->option,
+                                         double(value) - (option->option == ViewOption::probe_debug_volume ? 1 : 0)));
         return true;
     }
     if (action.key < field_first || action.key >= choice_first)
@@ -92,9 +91,7 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
         const auto* checked = std::get_if<bool>(&action.value);
         if (!checked)
             return false;
-        auto changed = set_view_option(candidate, option->option, *checked ? 1 : 0);
-        if (!changed)
-            return std::unexpected(changed.error());
+        ATELIER_TRY_BIND(changed, set_view_option(candidate, option->option, *checked ? 1 : 0));
         return true;
     }
     if (option->kind == ViewValueKind::boolean || option->kind == ViewValueKind::enumeration)

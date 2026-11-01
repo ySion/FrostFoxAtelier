@@ -301,20 +301,14 @@ namespace {
 Result<world::Trs> viewport_frame(const Session& session, ObjectId entity, const math::Matrix4& matrix,
                                   std::optional<world::Trs> authored = {}) {
     auto& runtime = session.world().runtime();
-    auto value = authored ? Result<world::Trs>{*authored} : world::read_transform(runtime, entity);
-    if (!value)
-        return std::unexpected(value.error());
-    auto parent = world::spatial_parent(runtime, entity);
-    if (!parent)
-        return std::unexpected(parent.error());
+    ATELIER_TRY_BIND(value, authored ? Result<world::Trs>{*authored} : world::read_transform(runtime, entity));
+    ATELIER_TRY_BIND(parent, world::spatial_parent(runtime, entity));
     while (*parent != ObjectId{}) {
         const auto spatial = world::has_transform(runtime, *parent);
         if (!spatial)
             return std::unexpected(spatial.error());
         if (*spatial) {
-            auto pose = world::read_transform(runtime, *parent);
-            if (!pose)
-                return std::unexpected(pose.error());
+            ATELIER_TRY_BIND(pose, world::read_transform(runtime, *parent));
             value->rotation = pose->rotation * value->rotation;
         }
         parent = world::spatial_parent(runtime, *parent);
@@ -372,14 +366,10 @@ Result<void> ViewportTool::preview_world(Session& session, std::uint64_t token, 
     std::vector<world::Trs> local;
     local.reserve(values.size());
     for (std::size_t i = 0; i < values.size(); ++i) {
-        auto parent = world::spatial_parent(session.world().runtime(), entities[i]);
-        if (!parent)
-            return std::unexpected(parent.error());
+        ATELIER_TRY_BIND(parent, world::spatial_parent(session.world().runtime(), entities[i]));
         auto matrix = math::Matrix4::identity();
         if (*parent != ObjectId{}) {
-            auto read = world::world_matrix(session.world().runtime(), *parent);
-            if (!read)
-                return std::unexpected(read.error());
+            ATELIER_TRY_BIND(read, world::world_matrix(session.world().runtime(), *parent));
             matrix = *read;
         }
         const auto original = session.original_transform(token, entities[i]);
@@ -410,9 +400,7 @@ Result<void> ViewportTool::preview_world(Session& session, std::uint64_t token, 
             desired[12] = value.position.x;
             desired[13] = value.position.y;
             desired[14] = value.position.z;
-            auto converted = world::relative_transform(desired, matrix, original->scale);
-            if (!converted)
-                return std::unexpected(converted.error());
+            ATELIER_TRY_BIND(converted, world::relative_transform(desired, matrix, original->scale));
             for (std::size_t axis = 0; axis < 3; ++axis)
                 converted->scale[axis] = original->scale[axis] * value.scale[axis] / frame->scale[axis];
             local.push_back(*converted);
@@ -423,16 +411,10 @@ Result<void> ViewportTool::preview_world(Session& session, std::uint64_t token, 
             return invalid("The viewport frame is singular.");
         // Keep the original affine frame, including inherited shear. The proxy
         // TRS only expresses the gesture's delta; it never replaces object space.
-        auto delta = world::multiply(*inverse, world::transform_matrix(value));
-        if (!delta)
-            return std::unexpected(delta.error());
-        auto desired = world::multiply(*original_world, *delta);
-        if (!desired)
-            return std::unexpected(desired.error());
+        ATELIER_TRY_BIND(delta, world::multiply(*inverse, world::transform_matrix(value)));
+        ATELIER_TRY_BIND(desired, world::multiply(*original_world, *delta));
         // A mirrored Entity keeps its own negative axes instead of the canonical X reflection.
-        auto converted = world::relative_transform(*desired, matrix, original->scale);
-        if (!converted)
-            return std::unexpected(converted.error());
+        ATELIER_TRY_BIND(converted, world::relative_transform(*desired, matrix, original->scale));
         for (std::size_t axis = 0; axis < 3; ++axis)
             if (original->scale[axis] == 0)
                 converted->scale[axis] = 0;
@@ -648,9 +630,7 @@ Result<void> ViewportTool::snap_selection(Session& session, std::span<const Obje
                 value.position[axis] = std::round(value.position[axis] / settings.grid_spacing) * settings.grid_spacing;
     }
     const auto token = next_session_++;
-    auto result = session.begin_transform(selected->entities, token);
-    if (!result)
-        return result;
+    ATELIER_TRY_BIND(result, session.begin_transform(selected->entities, token));
     result = preview_world(session, token, selected->entities, values);
     if (result)
         return session.commit_edit(token);
@@ -780,8 +760,7 @@ Result<void> ViewportTool::begin(Session& session, const ViewportView&, ToolSett
     if (!selected)
         return invalid("Select an Entity with a Transform.");
     const auto token = next_session_++;
-    if (auto begun = session.begin_transform(selected->entities, token, amend_creation); !begun)
-        return begun;
+    ATELIER_TRY(session.begin_transform(selected->entities, token, amend_creation));
     Gesture gesture;
     gesture.operation = operation;
     gesture.handle = handle;
@@ -943,9 +922,7 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
                                                 L"  Z: " + number(factors.z, 4) + basis();
     }
     g.last = p;
-    auto changed = preview_world(session, g.session, g.entities, values, g.operation == Operation::scale);
-    if (!changed)
-        return changed;
+    ATELIER_TRY_BIND(changed, preview_world(session, g.session, g.entities, values, g.operation == Operation::scale));
     g.valid = true;
     // Typed input shows the raw entry in brackets like Blender: "[2|]".
     hint_ = g.typed.empty() ? readout : readout + L"  [" + g.typed + L"|]";
@@ -958,9 +935,7 @@ Result<void> ViewportTool::clear_channel(Session& session, std::span<const Objec
         return invalid("Select an Entity with a Transform.");
     auto values = selected->transforms;
     for (std::size_t i = 0; i < values.size(); ++i) {
-        auto original = world::read_transform(session.world().runtime(), selected->entities[i]);
-        if (!original)
-            return std::unexpected(original.error());
+        ATELIER_TRY_BIND(original, world::read_transform(session.world().runtime(), selected->entities[i]));
         auto& value = values[i];
         value = *original;
         if (channel == Operation::move)
@@ -971,9 +946,7 @@ Result<void> ViewportTool::clear_channel(Session& session, std::span<const Objec
             value.scale = {1, 1, 1};
     }
     const auto token = next_session_++;
-    auto result = session.begin_transform(selected->entities, token);
-    if (!result)
-        return result;
+    ATELIER_TRY_BIND(result, session.begin_transform(selected->entities, token));
     result = session.preview_transform(token, values);
     if (result)
         result = session.commit_edit(token);
@@ -992,9 +965,7 @@ Result<void> ViewportTool::finish(Session& session) {
         return {};
     if (!gesture_->valid)
         return invalid("Correct the invalid transform value before confirming, or press Esc to cancel.");
-    auto result = session.commit_edit(gesture_->session);
-    if (!result)
-        return result;
+    ATELIER_TRY_BIND(result, session.commit_edit(gesture_->session));
     gesture_.reset();
     hover_ = Handle::none;
     hint_.clear();
@@ -1003,9 +974,7 @@ Result<void> ViewportTool::finish(Session& session) {
 
 Result<void> ViewportTool::cancel(Session& session) {
     if (gesture_ && session.owns_edit(gesture_->session)) {
-        auto result = session.cancel_edit();
-        if (!result)
-            return result;
+        ATELIER_TRY_BIND(result, session.cancel_edit());
     }
     gesture_.reset();
     marquee_.reset();
@@ -1041,9 +1010,7 @@ Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, c
     const V2 p{event.x, event.y};
     if (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::secondary &&
         (gesture_ || (marquee_ && marquee_->await_press))) {
-        auto result = cancel(session);
-        if (!result)
-            return std::unexpected(result.error());
+        ATELIER_TRY_BIND(result, cancel(session));
         return true;
     }
     if (gesture_) {

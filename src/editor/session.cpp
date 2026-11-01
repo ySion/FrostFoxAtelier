@@ -74,27 +74,20 @@ std::wstring_view Session::name(ObjectId entity) const noexcept {
 }
 
 Result<void> Session::admit_entity_edit(ObjectId entity) const {
-    auto state = world::inspect_entity(world_.runtime(), entity);
-    if (!state)
-        return std::unexpected(state.error());
+    ATELIER_TRY_BIND(state, world::inspect_entity(world_.runtime(), entity));
     if (!state->can_edit || !names_.contains(entity))
         return invalid("The Entity is not editable in this document.");
-    auto members = world_.members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(members, world_.members());
     if (std::ranges::none_of(*members, [entity](const auto& member) { return member.id() == entity; }))
         return invalid("The Entity is not a member of this document.");
     return {};
 }
 
 Result<world::ComponentStatus> Session::admit_component_edit(ObjectId component) const {
-    auto state = world::inspect_component(world_.runtime(), component);
-    if (!state)
-        return std::unexpected(state.error());
+    ATELIER_TRY_BIND(state, world::inspect_component(world_.runtime(), component));
     if (!state->valid || state->owner == ObjectId{})
         return invalid("The Component is not attached to an editable Entity.");
-    if (auto ready = admit_entity_edit(state->owner); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(admit_entity_edit(state->owner));
     return state;
 }
 
@@ -139,12 +132,8 @@ Result<ObjectId> Session::main_camera() const {
     const auto existing = environment();
     if (existing == ObjectId{})
         return ObjectId{};
-    auto field = runtime_.find_field(presentation_types_.environment_component, "main_camera");
-    if (!field)
-        return std::unexpected(field.error());
-    auto value = runtime_.read_reference(existing, *field);
-    if (!value)
-        return std::unexpected(value.error());
+    ATELIER_TRY_BIND(field, runtime_.find_field(presentation_types_.environment_component, "main_camera"));
+    ATELIER_TRY_BIND(value, runtime_.read_reference(existing, *field));
     return value->id();
 }
 
@@ -153,55 +142,34 @@ Result<void> Session::set_main_camera(ObjectId target) {
         return invalid("Finish the current edit before changing the main camera.");
     if (world_.running() || world_.closed())
         return invalid("Main camera authoring requires an open, stopped document.");
-    auto reference = runtime_.null_reference(types_.entity, ValueForm::weak_reference);
-    if (!reference)
-        return std::unexpected(reference.error());
+    ATELIER_TRY_BIND(reference, runtime_.null_reference(types_.entity, ValueForm::weak_reference));
     if (target != ObjectId{}) {
-        if (auto ready = admit_entity_edit(target); !ready)
-            return ready;
-        auto cameras = world_.members(presentation_.cameras());
-        if (!cameras)
-            return std::unexpected(cameras.error());
+        ATELIER_TRY(admit_entity_edit(target));
+        ATELIER_TRY_BIND(cameras, world_.members(presentation_.cameras()));
         if (std::ranges::count(*cameras, target, &world::CapabilityMember::entity) != 1)
             return invalid("Set as Main Camera requires an Entity with exactly one CameraComponent.");
-        auto held = runtime_.hold(target, types_.entity);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime_.hold(target, types_.entity));
         reference = runtime_.observe(held->reference());
         if (!reference)
             return std::unexpected(reference.error());
     }
-    auto field = runtime_.find_field(presentation_types_.environment_component, "main_camera");
-    if (!field)
-        return std::unexpected(field.error());
+    ATELIER_TRY_BIND(field, runtime_.find_field(presentation_types_.environment_component, "main_camera"));
     if (const auto existing = environment(); existing != ObjectId{}) {
-        auto owner = admit_property_edit(existing);
-        if (!owner)
-            return std::unexpected(owner.error());
-        auto before = runtime_.read_reference(existing, *field);
-        if (!before)
-            return std::unexpected(before.error());
+        ATELIER_TRY_BIND(owner, admit_property_edit(existing));
+        ATELIER_TRY_BIND(before, runtime_.read_reference(existing, *field));
         if (*before == *reference && !has_retained(existing))
             return {};
-        auto held = runtime_.hold(existing);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime_.hold(existing));
         ReferenceFieldChange change{std::move(*held), *owner, {*field}, *before, *reference};
-        if (auto written = apply_reference(change, true); !written)
-            return written;
+        ATELIER_TRY(apply_reference(change, true));
         remember(std::move(change));
         return {};
     }
     if (target == ObjectId{})
         return {};
-    auto created = create_environment({}, {});
-    if (!created)
-        return std::unexpected(created.error());
-    auto parts = world::components(runtime_, created->id());
-    if (!parts)
-        return std::unexpected(parts.error());
-    if (auto written = runtime_.write_reference(parts->front().id(), *field, *reference); !written)
-        return written;
+    ATELIER_TRY_BIND(created, create_environment({}, {}));
+    ATELIER_TRY_BIND(parts, world::components(runtime_, created->id()));
+    ATELIER_TRY(runtime_.write_reference(parts->front().id(), *field, *reference));
     EntityChange change;
     change.added = true;
     change.removals.emplace_back().root = std::move(*created);
@@ -219,59 +187,39 @@ Result<void> Session::set_main_camera(ObjectId target) {
 }
 
 Result<void> Session::apply_reference(const ReferenceFieldChange& change, bool forward) {
-    auto owner = admit_property_edit(change.root.id());
-    if (!owner)
-        return std::unexpected(owner.error());
+    ATELIER_TRY_BIND(owner, admit_property_edit(change.root.id()));
     if (*owner != change.entity)
         return invalid("The reference field's owning Entity changed.");
     return runtime_.write_reference(change.root.id(), change.path, forward ? change.after : change.before);
 }
 
 Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_removal(std::span<const ObjectId> targets) {
-    auto selected = main_camera();
-    if (!selected)
-        return std::unexpected(selected.error());
+    ATELIER_TRY_BIND(selected, main_camera());
     if (!world_.contains(*selected))
         return std::nullopt;
     for (auto node = *selected; node != ObjectId{};) {
         if (std::ranges::find(targets, node) != targets.end()) {
             const auto existing = environment();
-            auto owner = admit_property_edit(existing);
-            if (!owner)
-                return std::unexpected(owner.error());
-            auto field = runtime_.find_field(presentation_types_.environment_component, "main_camera");
-            if (!field)
-                return std::unexpected(field.error());
-            auto before = runtime_.read_reference(existing, *field);
-            if (!before)
-                return std::unexpected(before.error());
-            auto after = runtime_.null_reference(types_.entity, ValueForm::weak_reference);
-            if (!after)
-                return std::unexpected(after.error());
-            auto held = runtime_.hold(existing);
-            if (!held)
-                return std::unexpected(held.error());
+            ATELIER_TRY_BIND(owner, admit_property_edit(existing));
+            ATELIER_TRY_BIND(field, runtime_.find_field(presentation_types_.environment_component, "main_camera"));
+            ATELIER_TRY_BIND(before, runtime_.read_reference(existing, *field));
+            ATELIER_TRY_BIND(after, runtime_.null_reference(types_.entity, ValueForm::weak_reference));
+            ATELIER_TRY_BIND(held, runtime_.hold(existing));
             return ReferenceFieldChange{std::move(*held), *owner, {*field}, *before, *after};
         }
-        auto parent = world::parent_entity(runtime_, node);
-        if (!parent)
-            return std::unexpected(parent.error());
+        ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, node));
         node = *parent;
     }
     return std::nullopt;
 }
 
 Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
-    auto current = presentation_.environment();
-    if (!current)
-        return std::unexpected(current.error());
+    ATELIER_TRY_BIND(current, presentation_.environment());
     renderer::ViewSettings before;
     renderer::ViewSettings after;
     static_cast<rendering::SceneLightingSettings&>(before.lit) = *current;
     static_cast<rendering::SceneLightingSettings&>(after.lit) = settings;
-    auto fields = detail::author_fields(world_.runtime(), presentation_types_.environment_component);
-    if (!fields)
-        return std::unexpected(fields.error());
+    ATELIER_TRY_BIND(fields, detail::author_fields(world_.runtime(), presentation_types_.environment_component));
     EnvironmentEdit edit;
     for (const auto& option : view_options()) {
         if (!world_option(option.option))
@@ -307,49 +255,34 @@ Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::Scen
 
 Result<ObjectId> Session::admit_environment_edit(ObjectId existing) const {
     // The World Settings show a disabled Environment's defaults, which an edit would silently diff against.
-    auto status = world::inspect_component(world_.runtime(), existing);
-    if (!status)
-        return std::unexpected(status.error());
-    auto owner = world::effective_enabled(world_.runtime(), status->owner);
-    if (!owner)
-        return std::unexpected(owner.error());
+    ATELIER_TRY_BIND(status, world::inspect_component(world_.runtime(), existing));
+    ATELIER_TRY_BIND(owner, world::effective_enabled(world_.runtime(), status->owner));
     if (!status->enabled || !*owner)
         return invalid("The Environment is disabled; enable it in Parameters before changing World settings.");
     return admit_property_edit(existing);
 }
 
 Result<void> Session::set_environment(const rendering::SceneLightingSettings& settings) {
-    auto edit = environment_edit(settings);
-    if (!edit)
-        return std::unexpected(edit.error());
+    ATELIER_TRY_BIND(edit, environment_edit(settings));
     if (edit->paths.empty())
         return {};
     if (editing())
         return invalid("Finish the current property edit before changing World settings.");
     if (const auto existing = environment(); existing != ObjectId{}) {
-        auto entity = admit_environment_edit(existing);
-        if (!entity)
-            return std::unexpected(entity.error());
-        auto root = runtime_.hold(existing);
-        if (!root)
-            return std::unexpected(root.error());
+        ATELIER_TRY_BIND(entity, admit_environment_edit(existing));
+        ATELIER_TRY_BIND(root, runtime_.hold(existing));
         FieldGroupChange change{std::move(*root), *entity, edit->paths, 0, {}, edit->values};
         for (const auto& path : edit->paths) {
-            auto value = world_.read(existing, path);
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(value, world_.read(existing, path));
             change.before.push_back(*value);
         }
-        if (auto written = world_.write(existing, edit->paths, edit->values); !written)
-            return written;
+        ATELIER_TRY(world_.write(existing, edit->paths, edit->values));
         remember(std::move(change));
         return {};
     }
     // The first edit creates the Environment with its values: one history item, and
     // Play receives the complete component in one add.
-    auto created = create_environment(edit->paths, edit->values);
-    if (!created)
-        return std::unexpected(created.error());
+    ATELIER_TRY_BIND(created, create_environment(edit->paths, edit->values));
     EntityChange change;
     change.added = true;
     change.removals.emplace_back().root = std::move(*created);
@@ -371,27 +304,18 @@ Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
         return invalid("Finish the current property edit before changing World settings.");
     presentation::SkyMapBinding after{asset.key, asset.map};
     if (const auto existing = environment(); existing != ObjectId{}) {
-        auto entity = admit_environment_edit(existing);
-        if (!entity)
-            return std::unexpected(entity.error());
-        auto before = presentation::read_sky_map(runtime_, existing);
-        if (!before)
-            return std::unexpected(before.error());
+        ATELIER_TRY_BIND(entity, admit_environment_edit(existing));
+        ATELIER_TRY_BIND(before, presentation::read_sky_map(runtime_, existing));
         if (before->source == after.source && before->resolved == after.resolved)
             return {};
-        auto root = runtime_.hold(existing);
-        if (!root)
-            return std::unexpected(root.error());
-        if (auto set = presentation::set_sky_map_binding(runtime_, existing, after); !set)
-            return set;
+        ATELIER_TRY_BIND(root, runtime_.hold(existing));
+        ATELIER_TRY(presentation::set_sky_map_binding(runtime_, existing, after));
         remember(SkyMapChange{std::move(*root), *entity, std::move(*before), std::move(after)});
         return {};
     }
     if (after.source.empty() && !after.resolved)
         return {};
-    auto created = create_environment({}, {}, &after);
-    if (!created)
-        return std::unexpected(created.error());
+    ATELIER_TRY_BIND(created, create_environment({}, {}, &after));
     EntityChange change;
     change.added = true;
     change.removals.emplace_back().root = std::move(*created);
@@ -410,46 +334,30 @@ Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
 
 Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath> paths, std::span<const Scalar> values,
                                                const presentation::SkyMapBinding* sky) {
-    auto members = world_.members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
         return invalid("Editor Entity limit reached.");
-    auto entity = world::create_entity(runtime_);
-    if (!entity)
-        return std::unexpected(entity.error());
-    auto component = world::create_component(runtime_, presentation_types_.environment_component);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(entity, world::create_entity(runtime_));
+    ATELIER_TRY_BIND(component, world::create_component(runtime_, presentation_types_.environment_component));
     if (!paths.empty())
-        if (auto written = world_.write(component->id(), paths, values); !written)
-            return std::unexpected(written.error());
+        ATELIER_TRY(world_.write(component->id(), paths, values));
     if (sky)
-        if (auto set = presentation::set_sky_map_binding(runtime_, component->id(), *sky); !set)
-            return std::unexpected(set.error());
+        ATELIER_TRY(presentation::set_sky_map_binding(runtime_, component->id(), *sky));
     const std::array parts{world::Attachment{component->id()}};
-    auto composed = world_.attach_components(entity->id(), parts);
-    if (!composed)
-        return std::unexpected(composed.error());
+    ATELIER_TRY_BIND(composed, world_.attach_components(entity->id(), parts));
     return std::move(*entity);
 }
 
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
-    if (auto valid = validate_name(name); !valid)
-        return valid;
-    if (auto ready = admit_entity_edit(entity); !ready)
-        return ready;
+    ATELIER_TRY(validate_name(name));
+    ATELIER_TRY(admit_entity_edit(entity));
     const auto at = names_.find(entity);
     if (at == names_.end())
         return invalid("The Entity does not belong to this document.");
     if (at->second == name)
         return {};
-    auto root = runtime_.hold(entity);
-    if (!root)
-        return std::unexpected(root.error());
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return cancelled;
+    ATELIER_TRY_BIND(root, runtime_.hold(entity));
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
     NameChange change{std::move(*root), at->second, name};
     at->second = std::move(name);
     remember(std::move(change));
@@ -485,16 +393,12 @@ void Session::prune_selection() noexcept {
 Result<void> Session::select(ObjectId object) {
     Selection next;
     if (object != ObjectId{}) {
-        auto entity = admit_property_edit(object);
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, admit_property_edit(object));
         next = {*entity, object};
     }
     if (next == selection_ && selected_entities_.size() == (next.entity == ObjectId{} ? 0u : 1u))
         return {};
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return cancelled;
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
     set_selection(next);
     return {};
 }
@@ -505,8 +409,7 @@ Result<void> Session::select_entities(std::span<const ObjectId> entities, Object
     for (const auto entity : entities) {
         if (std::ranges::find(next, entity) != next.end())
             continue;
-        if (auto ready = admit_entity_edit(entity); !ready)
-            return ready;
+        ATELIER_TRY(admit_entity_edit(entity));
         next.push_back(entity);
     }
     if (active == ObjectId{} || std::ranges::find(next, active) == next.end())
@@ -517,9 +420,7 @@ Result<void> Session::select_entities(std::span<const ObjectId> entities, Object
     }
     if (next == selected_entities_ && selection_ == Selection{active, active})
         return {};
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return cancelled;
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
     selected_entities_ = std::move(next);
     selection_ = {active, active};
     ++revision_;
@@ -527,57 +428,39 @@ Result<void> Session::select_entities(std::span<const ObjectId> entities, Object
 }
 
 Result<world::Commit> Session::add_entity(TypeId actual) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    auto members = world_.members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
         return invalid("Editor Entity limit reached.");
-    auto root = world::create_entity(runtime_, actual == TypeId{} ? types_.entity : actual);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(root, world::create_entity(runtime_, actual == TypeId{} ? types_.entity : actual));
     return attach_created(std::move(*root), L"Entity");
 }
 
 Result<void> Session::set_transform(ObjectId entity, world::Trs value) {
-    if (auto valid = admit_entity_edit(entity); !valid)
-        return valid;
-    auto canonical = world::canonical_transform(value);
-    if (!canonical)
-        return std::unexpected(canonical.error());
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
+    ATELIER_TRY(admit_entity_edit(entity));
+    ATELIER_TRY_BIND(canonical, world::canonical_transform(value));
+    ATELIER_TRY(cancel_edit());
     const bool spatial = take(world::has_transform(runtime_, entity));
     const auto before = spatial ? std::optional(take(world::read_transform(runtime_, entity))) : std::nullopt;
     const auto before_origin = take(world::space_reference(runtime_, entity));
     if (before && *before == *canonical)
         return {};
-    auto root = runtime_.hold(entity);
-    if (!root)
-        return std::unexpected(root.error());
-    if (auto written = world_.set_transform(entity, *canonical); !written)
-        return written;
+    ATELIER_TRY_BIND(root, runtime_.hold(entity));
+    ATELIER_TRY(world_.set_transform(entity, *canonical));
     remember(TransformPresenceChange{std::move(*root), before, *canonical, before_origin,
                                      take(world::space_reference(runtime_, entity))});
     return {};
 }
 
 Result<void> Session::remove_transform(ObjectId entity) {
-    if (auto valid = admit_entity_edit(entity); !valid)
-        return valid;
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
+    ATELIER_TRY(admit_entity_edit(entity));
+    ATELIER_TRY(cancel_edit());
     if (!take(world::has_transform(runtime_, entity)))
         return {};
     const auto before = take(world::read_transform(runtime_, entity));
     const auto before_origin = take(world::space_reference(runtime_, entity));
-    auto root = runtime_.hold(entity);
-    if (!root)
-        return std::unexpected(root.error());
-    if (auto removed = world_.remove_transform(entity); !removed)
-        return removed;
+    ATELIER_TRY_BIND(root, runtime_.hold(entity));
+    ATELIER_TRY(world_.remove_transform(entity));
     remember(TransformPresenceChange{
         std::move(*root), before, {}, before_origin, take(world::space_reference(runtime_, entity))});
     return {};
@@ -585,22 +468,17 @@ Result<void> Session::remove_transform(ObjectId entity) {
 
 Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optional<ObjectId> origin,
                                                    world::ReparentRule rule) {
-    if (auto valid = admit_entity_edit(entity); !valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(admit_entity_edit(entity));
     if (origin && *origin != ObjectId{})
-        if (auto valid = admit_entity_edit(*origin); !valid)
-            return std::unexpected(valid.error());
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return std::unexpected(cancelled.error());
+        ATELIER_TRY(admit_entity_edit(*origin));
+    ATELIER_TRY(cancel_edit());
     SpaceReferenceChange change;
     change.root = take(runtime_.hold(entity));
     change.before_origin = take(world::space_reference(runtime_, entity));
     change.spatial = take(world::has_transform(runtime_, entity));
     if (change.spatial)
         change.before = take(world::read_transform(runtime_, entity));
-    auto changed = world_.set_space_reference(entity, origin, rule);
-    if (!changed)
-        return changed;
+    ATELIER_TRY_BIND(changed, world_.set_space_reference(entity, origin, rule));
     if (changed->changed) {
         change.after_origin = take(world::space_reference(runtime_, entity));
         if (change.spatial)
@@ -620,8 +498,7 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
     // The input may be selected_entities(), which publication updates below.
     const std::vector<ObjectId> targets(entities.begin(), entities.end());
     if (parent != ObjectId{})
-        if (auto valid = admit_entity_edit(parent); !valid)
-            return std::unexpected(valid.error());
+        ATELIER_TRY(admit_entity_edit(parent));
     const auto sibling_index = [&](ObjectId target, ObjectId owner) {
         std::size_t result{};
         if (owner != ObjectId{})
@@ -643,10 +520,8 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
     change.moves.reserve(targets.size());
     const auto publish = [&]() -> Result<world::Commit> {
         for (const auto entity : targets) {
-            if (auto valid = admit_entity_edit(entity); !valid)
-                return std::unexpected(valid.error());
-            if (auto cancelled = cancel_edit(); !cancelled)
-                return std::unexpected(cancelled.error());
+            ATELIER_TRY(admit_entity_edit(entity));
+            ATELIER_TRY(cancel_edit());
             ReparentChange::Move move;
             move.root = take(runtime_.hold(entity));
             move.before_parent = take(world::parent_entity(runtime_, entity));
@@ -663,9 +538,7 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
                     for (const auto& child : take(world::children(runtime_, object)))
                         pending.push_back(child.id());
             }
-            auto changed = world_.reparent(entity, parent, rule, index);
-            if (!changed)
-                return changed;
+            ATELIER_TRY_BIND(changed, world_.reparent(entity, parent, rule, index));
             if (changed->changed) {
                 move.after_parent = take(world::parent_entity(runtime_, entity));
                 move.after_index = sibling_index(entity, move.after_parent);
@@ -694,56 +567,36 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
 
 Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset, math::Vector3 position,
                                                   Project* project) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    auto members = world_.members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
         return invalid("Editor Entity limit reached.");
     std::vector<presentation::MaterialBinding> defaults;
     if (project) {
-        auto resolved = mesh_defaults(project->assets(), asset);
-        if (!resolved)
-            return std::unexpected(resolved.error());
+        ATELIER_TRY_BIND(resolved, mesh_defaults(project->assets(), asset));
         defaults = std::move(*resolved);
     }
-    auto root = presentation::create_static_mesh_entity(
-        world_, {asset.mesh, {position, {}, {1.f, 1.f, 1.f}}, asset.key, std::move(defaults)});
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(root, presentation::create_static_mesh_entity(
+                               world_, {asset.mesh, {position, {}, {1.f, 1.f, 1.f}}, asset.key, std::move(defaults)}));
     return attach_created(std::move(*root), asset.name);
 }
 
 Result<world::Commit> Session::create_light(presentation::LightKind kind, math::Vector3 position) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    auto members = world_.members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
         return invalid("Editor Entity limit reached.");
-    auto entity = world::create_entity(runtime_);
-    if (!entity)
-        return std::unexpected(entity.error());
-    auto light = world::create_component(runtime_, presentation_types_.light_component);
-    if (!light)
-        return std::unexpected(light.error());
+    ATELIER_TRY_BIND(entity, world::create_entity(runtime_));
+    ATELIER_TRY_BIND(light, world::create_component(runtime_, presentation_types_.light_component));
     auto configured = runtime_.with_native<presentation::LightComponent>(light->id(), [&](auto& value) -> Result<void> {
         value.settings.kind = kind;
         return presentation::validate_light(runtime_, value.settings);
     });
     if (!configured)
         return std::unexpected(configured.error());
-    auto positioned = world_.set_transform(entity->id(), {position, {}, {1, 1, 1}});
-    if (!positioned)
-        return std::unexpected(positioned.error());
+    ATELIER_TRY_BIND(positioned, world_.set_transform(entity->id(), {position, {}, {1, 1, 1}}));
     const std::array parts{world::Attachment{light->id()}};
-    auto attached = world_.attach_components(entity->id(), parts);
-    if (!attached)
-        return attached;
+    ATELIER_TRY_BIND(attached, world_.attach_components(entity->id(), parts));
     if (attached->notification_error)
         return std::unexpected(*attached->notification_error);
     const auto label = kind == presentation::LightKind::point       ? L"Point Light"
@@ -753,25 +606,14 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind, math::
 }
 
 Result<world::Commit> Session::create_camera(math::Vector3 position) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    auto members = world_.members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
         return invalid("Editor Entity limit reached.");
-    auto entity = world::create_entity(runtime_);
-    if (!entity)
-        return std::unexpected(entity.error());
-    auto camera = world::create_component(runtime_, presentation_types_.camera_component);
-    if (!camera)
-        return std::unexpected(camera.error());
-    if (auto positioned = world_.set_transform(entity->id(), {position, {}, {1, 1, 1}}); !positioned)
-        return std::unexpected(positioned.error());
-    auto composed = world_.attach_components(entity->id(), std::array{world::Attachment{camera->id()}});
-    if (!composed)
-        return composed;
+    ATELIER_TRY_BIND(entity, world::create_entity(runtime_));
+    ATELIER_TRY_BIND(camera, world::create_component(runtime_, presentation_types_.camera_component));
+    ATELIER_TRY(world_.set_transform(entity->id(), {position, {}, {1, 1, 1}}));
+    ATELIER_TRY_BIND(composed, world_.attach_components(entity->id(), std::array{world::Attachment{camera->id()}}));
     return attach_created(std::move(*entity), L"Camera");
 }
 
@@ -797,13 +639,10 @@ Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities
     if (entities.empty())
         return world::Commit{};
     const std::vector<ObjectId> requested(entities.begin(), entities.end());
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
     std::vector<ObjectId> targets;
     for (const auto entity : requested) {
-        if (auto ready = admit_entity_edit(entity); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(admit_entity_edit(entity));
         auto parent = take(world::parent_entity(runtime_, entity));
         bool included{};
         while (parent != ObjectId{}) {
@@ -816,12 +655,9 @@ Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities
         if (!included)
             targets.push_back(entity);
     }
-    auto clear = main_camera_removal(targets);
-    if (!clear)
-        return std::unexpected(clear.error());
+    ATELIER_TRY_BIND(clear, main_camera_removal(targets));
     if (*clear)
-        if (auto written = apply_reference(**clear, true); !written)
-            return std::unexpected(written.error());
+        ATELIER_TRY(apply_reference(**clear, true));
     auto removed = world_.detach_batch(targets);
     if (!removed) {
         if (*clear)
@@ -847,14 +683,9 @@ Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities
 }
 
 Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    if (auto ready = admit_entity_edit(entity); !ready)
-        return std::unexpected(ready.error());
-    auto supported = runtime_.is_a(type, types_.component);
-    if (!supported)
-        return std::unexpected(supported.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY(admit_entity_edit(entity));
+    ATELIER_TRY_BIND(supported, runtime_.is_a(type, types_.component));
     if (!*supported)
         return invalid("Adding a component requires a Component type.");
     const auto members = world::components(runtime_, entity);
@@ -862,9 +693,7 @@ Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
         return std::unexpected(members.error());
     if (members->size() >= maximum_components)
         return invalid("Editor Component limit reached.");
-    auto root = world::create_component(runtime_, type);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(root, world::create_component(runtime_, type));
     ComponentChange change;
     change.added = true;
     change.removal.root = std::move(*root);
@@ -872,13 +701,9 @@ Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
     const auto spatial = world::component_requires_space(runtime_, change.removal.id());
     if (!spatial)
         return std::unexpected(spatial.error());
-    auto has_space = world::has_transform(runtime_, entity);
-    if (!has_space)
-        return std::unexpected(has_space.error());
+    ATELIER_TRY_BIND(has_space, world::has_transform(runtime_, entity));
     if (*spatial && !*has_space) {
-        auto positioned = world_.set_transform(entity, {});
-        if (!positioned)
-            return std::unexpected(positioned.error());
+        ATELIER_TRY_BIND(positioned, world_.set_transform(entity, {}));
         change.created_transform = true;
     }
     const std::array attachments{world::Attachment{change.removal.id()}};
@@ -896,14 +721,9 @@ Result<world::Commit> Session::add_component(ObjectId entity, TypeId type) {
 }
 
 Result<world::Commit> Session::remove_component(ObjectId component) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    if (auto ready = admit_component_edit(component); !ready)
-        return std::unexpected(ready.error());
-    auto removed = world_.remove_component(component);
-    if (!removed)
-        return std::unexpected(removed.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY(admit_component_edit(component));
+    ATELIER_TRY_BIND(removed, world_.remove_component(component));
     auto result = std::move(removed->commit);
     if (result.changed) {
         if (selection_.object == component)
@@ -916,34 +736,23 @@ Result<world::Commit> Session::remove_component(ObjectId component) {
 Result<ObjectId> Session::admit_property_edit(ObjectId object) const {
     if (world_.running() || world_.closed())
         return invalid("Properties require an open, stopped document.");
-    auto type = runtime_.type_of(object);
-    if (!type)
-        return std::unexpected(type.error());
-    auto entity = runtime_.is_a(*type, types_.entity);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(type, runtime_.type_of(object));
+    ATELIER_TRY_BIND(entity, runtime_.is_a(*type, types_.entity));
     if (*entity) {
-        if (auto ready = admit_entity_edit(object); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(admit_entity_edit(object));
         return object;
     }
-    auto component = admit_component_edit(object);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(component, admit_component_edit(object));
     return component->owner;
 }
 
 Result<std::vector<ComponentType>> Session::component_types() const {
     std::vector<ComponentType> result;
     for (const auto type : runtime_.types()) {
-        auto info = runtime_.describe(type);
-        if (!info)
-            return std::unexpected(info.error());
+        ATELIER_TRY_BIND(info, runtime_.describe(type));
         if ((*info)->kind != TypeKind::object)
             continue;
-        auto matches = runtime_.is_a(type, types_.component);
-        if (!matches)
-            return std::unexpected(matches.error());
+        ATELIER_TRY_BIND(matches, runtime_.is_a(type, types_.component));
         if (*matches)
             result.push_back({type, std::string((*info)->name)});
     }
@@ -951,23 +760,16 @@ Result<std::vector<ComponentType>> Session::component_types() const {
 }
 
 Result<std::vector<Property>> Session::properties(ObjectId object) const {
-    if (auto ready = admit_property_edit(object); !ready)
-        return std::unexpected(ready.error());
-    auto type = runtime_.type_of(object);
-    if (!type)
-        return std::unexpected(type.error());
-    auto fields = detail::scalar_fields(world_.runtime(), *type);
-    if (!fields)
-        return std::unexpected(fields.error());
+    ATELIER_TRY(admit_property_edit(object));
+    ATELIER_TRY_BIND(type, runtime_.type_of(object));
+    ATELIER_TRY_BIND(fields, detail::scalar_fields(world_.runtime(), *type));
     std::vector<Property> result;
     const bool entity = take(runtime_.is_a(*type, types_.entity));
     const bool spatial = entity && take(world::has_transform(world_.runtime(), object));
     for (auto& field : *fields) {
         if (entity && !spatial && detail::transform_path(types_, field.path))
             continue;
-        auto value = read_property(object, field.path);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, read_property(object, field.path));
         std::string name;
         for (const auto& part : field.names) {
             if (!name.empty())
@@ -981,32 +783,21 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
 }
 
 Result<Scalar> Session::read_property(ObjectId object, std::span<const FieldId> path) const {
-    if (auto ready = admit_property_edit(object); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(admit_property_edit(object));
     return world_.read(object, path);
 }
 
 Result<void> Session::configure_body(ObjectId component, physics::BodySettings settings) {
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
-    auto state = admit_component_edit(component);
-    if (!state)
-        return std::unexpected(state.error());
-    auto physical = runtime_.is_a(state->type, types_.primitive_component);
-    if (!physical)
-        return std::unexpected(physical.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(state, admit_component_edit(component));
+    ATELIER_TRY_BIND(physical, runtime_.is_a(state->type, types_.primitive_component));
     if (!*physical)
         return invalid("Selected Component is not a physics body.");
-    auto before = physics::read_settings(runtime_, component);
-    if (!before)
-        return std::unexpected(before.error());
+    ATELIER_TRY_BIND(before, physics::read_settings(runtime_, component));
     if (*before == settings)
         return {};
-    auto held = runtime_.hold(component);
-    if (!held)
-        return std::unexpected(held.error());
-    if (auto changed = physics::configure(runtime_, component, settings); !changed)
-        return changed;
+    ATELIER_TRY_BIND(held, runtime_.hold(component));
+    ATELIER_TRY(physics::configure(runtime_, component, settings));
     remember(BodyChange{std::move(*held), state->owner, std::move(*before), std::move(settings)});
     return {};
 }
@@ -1016,20 +807,12 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
         return invalid("A field edit is already active.");
     if (!control_session)
         return invalid("A field edit requires a control session.");
-    auto entity = admit_property_edit(object);
-    if (!entity)
-        return std::unexpected(entity.error());
-    auto before = world_.read(object, path);
-    if (!before)
-        return std::unexpected(before.error());
-    auto root = runtime_.hold(object);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(object));
+    ATELIER_TRY_BIND(before, world_.read(object, path));
+    ATELIER_TRY_BIND(root, runtime_.hold(object));
     std::variant<world::Trs, Scalar> value{*before};
     if (detail::transform_path(types_, path)) {
-        auto transform = world::read_transform(runtime_, object);
-        if (!transform)
-            return std::unexpected(transform.error());
+        ATELIER_TRY_BIND(transform, world::read_transform(runtime_, object));
         value = *transform;
     }
     active_.emplace(FieldChange{std::move(*root), *entity, {path.begin(), path.end()}, control_session, value, value});
@@ -1046,19 +829,13 @@ Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::F
         if (std::ranges::find(paths.begin(), paths.begin() + static_cast<std::ptrdiff_t>(i), paths[i]) !=
             paths.begin() + static_cast<std::ptrdiff_t>(i))
             return invalid("A group edit names the same field more than once.");
-    auto entity = admit_property_edit(object);
-    if (!entity)
-        return std::unexpected(entity.error());
-    auto root = runtime_.hold(object);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(object));
+    ATELIER_TRY_BIND(root, runtime_.hold(object));
     FieldGroupChange change{std::move(*root), *entity, {paths.begin(), paths.end()}, control_session, {}, {}};
     for (const auto& path : paths) {
         if (detail::transform_path(types_, path))
             return invalid("Transform fields use the transform edit.");
-        auto value = world_.read(object, path);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, world_.read(object, path));
         change.before.push_back(*value);
     }
     change.after = change.before;
@@ -1071,13 +848,10 @@ Result<void> Session::preview_group_edit(std::uint64_t control_session, std::spa
         return invalid("No matching group edit.");
     if (values.size() != group_->paths.size())
         return invalid("A group edit needs one value per field.");
-    auto entity = admit_property_edit(group_->root.id());
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(group_->root.id()));
     if (*entity != group_->entity)
         return invalid("The property's owning Entity changed.");
-    if (auto written = write_group(group_->root.id(), group_->paths, values); !written)
-        return written;
+    ATELIER_TRY(write_group(group_->root.id(), group_->paths, values));
     ++revision_;
     forward_edit();
     return {};
@@ -1090,9 +864,7 @@ Result<void> Session::write_group(ObjectId object, std::span<const world::FieldP
     for (std::size_t i = 0; i < paths.size(); ++i) {
         if (!detail::finite_scalar(values[i]))
             return invalid("Property values must be finite.");
-        auto value = read_property(object, paths[i]);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, read_property(object, paths[i]));
         if (value->index() != values[i].index())
             return invalid("A group edit value changed its field type.");
     }
@@ -1100,9 +872,7 @@ Result<void> Session::write_group(ObjectId object, std::span<const world::FieldP
 }
 
 Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) {
-    auto entity = admit_property_edit(change.root.id());
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(change.root.id()));
     if (*entity != change.entity)
         return invalid("The property's owning Entity changed.");
     const auto& values = forward ? change.after : change.before;
@@ -1110,9 +880,7 @@ Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) 
 }
 
 Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPatch> patch) {
-    auto entity = admit_property_edit(object);
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(object));
     for (const auto& leaf : patch)
         if (object == *entity && !leaf.path.empty() &&
             (leaf.path.front() == types_.position_fields.front().front() ||
@@ -1121,24 +889,18 @@ Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPa
             return invalid("Transform fields require scene.transform_set/clear/remove.");
     if (patch.empty())
         return {};
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
-    auto root = runtime_.hold(object);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(root, runtime_.hold(object));
     FieldGroupChange change{std::move(*root), *entity, {}, 0, {}, {}};
     for (const auto& leaf : patch) {
-        auto before = read_property(object, leaf.path);
-        if (!before)
-            return std::unexpected(before.error());
+        ATELIER_TRY_BIND(before, read_property(object, leaf.path));
         change.paths.push_back(leaf.path);
         change.before.push_back(*before);
         change.after.push_back(leaf.value);
     }
     if (change.before == change.after)
         return {};
-    if (auto written = write_group(object, change.paths, change.after); !written)
-        return written;
+    ATELIER_TRY(write_group(object, change.paths, change.after));
     remember(std::move(change));
     return {};
 }
@@ -1162,15 +924,9 @@ Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::u
     for (const auto entity : entities) {
         if (std::ranges::any_of(change.entries, [&](const auto& entry) { return entry.root.id() == entity; }))
             return invalid("A transform edit names an Entity twice.");
-        auto state = admit_entity_edit(entity);
-        if (!state)
-            return std::unexpected(state.error());
-        auto value = world::read_transform(runtime_, entity);
-        if (!value)
-            return std::unexpected(value.error());
-        auto root = runtime_.hold(entity);
-        if (!root)
-            return std::unexpected(root.error());
+        ATELIER_TRY_BIND(state, admit_entity_edit(entity));
+        ATELIER_TRY_BIND(value, world::read_transform(runtime_, entity));
+        ATELIER_TRY_BIND(root, runtime_.hold(entity));
         change.entries.push_back({std::move(*root), entity, *value, *value});
     }
     if (amend_creation) {
@@ -1221,14 +977,10 @@ Result<void> Session::write_transforms(const TransformChange& change, std::span<
         const auto canonical = world::canonical_transform(values[i]);
         if (!canonical)
             return std::unexpected(canonical.error());
-        auto entity = admit_property_edit(entry.root.id());
-        if (!entity)
-            return std::unexpected(entity.error());
+        ATELIER_TRY_BIND(entity, admit_property_edit(entry.root.id()));
         if (*entity != entry.entity)
             return invalid("The transform's owning Entity changed.");
-        auto value = world::read_transform(runtime_, entry.root.id());
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, world::read_transform(runtime_, entry.root.id()));
         previous.push_back(*value);
     }
     if (!std::ranges::equal(previous, values))
@@ -1249,9 +1001,7 @@ Result<void> Session::write_transforms(const TransformChange& change, std::span<
 
 Result<void> Session::set_property(ObjectId object, std::span<const FieldId> path, Scalar value,
                                    std::uint64_t control_session) {
-    auto begun = begin_edit(object, path, control_session);
-    if (!begun)
-        return begun;
+    ATELIER_TRY_BIND(begun, begin_edit(object, path, control_session));
     auto changed = preview_edit(control_session, std::move(value));
     if (changed)
         changed = commit_edit(control_session);
@@ -1268,9 +1018,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session, float value) {
 Result<void> Session::preview_edit(std::uint64_t control_session, Scalar value) {
     if (!active_ || active_->control_session != control_session)
         return invalid("No matching field edit.");
-    auto entity = admit_property_edit(active_->root.id());
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(active_->root.id()));
     if (*entity != active_->entity)
         return invalid("The property's owning Entity changed.");
     if (!detail::finite_scalar(value))
@@ -1313,9 +1061,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
         return invalid("No matching field edit.");
     if (group_) {
         for (std::size_t i = 0; i < group_->paths.size(); ++i) {
-            auto value = world_.read(group_->root.id(), group_->paths[i]);
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(value, world_.read(group_->root.id(), group_->paths[i]));
             group_->after[i] = *value;
         }
         if (group_->before != group_->after)
@@ -1326,9 +1072,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
     if (transform_) {
         bool changed{};
         for (auto& entry : transform_->entries) {
-            auto value = world::read_transform(runtime_, entry.root.id());
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(value, world::read_transform(runtime_, entry.root.id()));
             entry.after = *value;
             changed |= entry.after != entry.before;
         }
@@ -1338,20 +1082,14 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
         live_leaves_.clear();
         return {};
     }
-    auto entity = admit_property_edit(active_->root.id());
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(active_->root.id()));
     if (*entity != active_->entity)
         return invalid("The property's owning Entity changed.");
     if (std::holds_alternative<world::Trs>(active_->before)) {
-        auto value = world::read_transform(runtime_, active_->root.id());
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, world::read_transform(runtime_, active_->root.id()));
         active_->after = *value;
     } else {
-        auto value = world_.read(active_->root.id(), active_->path);
-        if (!value)
-            return std::unexpected(value.error());
+        ATELIER_TRY_BIND(value, world_.read(active_->root.id(), active_->path));
         active_->after = *value;
     }
     if (active_->before != active_->after)
@@ -1362,9 +1100,7 @@ Result<void> Session::commit_edit(std::uint64_t control_session) {
 }
 
 Result<void> Session::apply_field(const FieldChange& change, bool forward) {
-    auto entity = admit_property_edit(change.root.id());
-    if (!entity)
-        return std::unexpected(entity.error());
+    ATELIER_TRY_BIND(entity, admit_property_edit(change.root.id()));
     if (*entity != change.entity)
         return invalid("The property's owning Entity changed.");
     const auto& value = forward ? change.after : change.before;
@@ -1374,12 +1110,9 @@ Result<void> Session::apply_field(const FieldChange& change, bool forward) {
 }
 
 Result<void> Session::cancel_edit() {
-    if (auto cancelled = cancel_material_edit(); !cancelled)
-        return cancelled;
+    ATELIER_TRY(cancel_material_edit());
     if (group_) {
-        auto restored = apply_group(*group_, false);
-        if (!restored)
-            return restored;
+        ATELIER_TRY_BIND(restored, apply_group(*group_, false));
         ++revision_;
         forward_edit();
         group_.reset();
@@ -1420,9 +1153,7 @@ Result<void> Session::cancel_edit() {
             return std::unexpected(current.error());
         changed = *current != std::get<Scalar>(active_->before);
     }
-    auto restored = apply_field(*active_, false);
-    if (!restored)
-        return restored;
+    ATELIER_TRY_BIND(restored, apply_field(*active_, false));
     if (changed)
         ++revision_;
     forward_edit();
@@ -1432,26 +1163,16 @@ Result<void> Session::cancel_edit() {
 }
 
 Result<void> Session::reset_position(ObjectId component) {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return cancelled;
-    auto before = world::read_transform(runtime_, component);
-    if (!before)
-        return std::unexpected(before.error());
-    auto state = admit_entity_edit(component);
-    if (!state)
-        return std::unexpected(state.error());
-    auto root = runtime_.hold(component);
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(before, world::read_transform(runtime_, component));
+    ATELIER_TRY_BIND(state, admit_entity_edit(component));
+    ATELIER_TRY_BIND(root, runtime_.hold(component));
     auto after = *before;
     after.position = {parameters_[0].default_value, parameters_[1].default_value, parameters_[2].default_value};
     if (after == *before)
         return {};
     FieldChange change{std::move(*root), component, {}, 0, *before, after};
-    auto applied = world_.set_transform(component, after);
-    if (!applied)
-        return applied;
+    ATELIER_TRY_BIND(applied, world_.set_transform(component, after));
     remember(std::move(change));
     return {};
 }
@@ -1461,57 +1182,44 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
         [&](auto& item) -> Result<world::Commit> {
             using T = std::decay_t<decltype(item)>;
             if constexpr (std::is_same_v<T, NameChange>) {
-                if (auto ready = admit_entity_edit(item.root.id()); !ready)
-                    return std::unexpected(ready.error());
+                ATELIER_TRY(admit_entity_edit(item.root.id()));
                 names_.at(item.root.id()) = forward ? item.after : item.before;
                 set_selection({item.root.id(), item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, TransformPresenceChange>) {
-                if (auto valid = admit_entity_edit(item.root.id()); !valid)
-                    return std::unexpected(valid.error());
+                ATELIER_TRY(admit_entity_edit(item.root.id()));
                 const auto& value = forward ? item.after : item.before;
-                auto changed =
-                    value ? world_.set_transform(item.root.id(), *value) : world_.remove_transform(item.root.id());
-                if (!changed)
-                    return std::unexpected(changed.error());
+                ATELIER_TRY_BIND(changed, value ? world_.set_transform(item.root.id(), *value)
+                                                : world_.remove_transform(item.root.id()));
                 if (value) {
-                    auto restored =
-                        world_.set_space_reference(item.root.id(), forward ? item.after_origin : item.before_origin,
-                                                   world::ReparentRule::keep_local);
-                    if (!restored)
-                        return std::unexpected(restored.error());
+                    ATELIER_TRY_BIND(restored, world_.set_space_reference(
+                                                   item.root.id(), forward ? item.after_origin : item.before_origin,
+                                                   world::ReparentRule::keep_local));
                 }
                 set_selection({item.root.id(), item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, SpaceReferenceChange>) {
-                if (auto valid = admit_entity_edit(item.root.id()); !valid)
-                    return std::unexpected(valid.error());
-                auto changed = world_.set_space_reference(
-                    item.root.id(), forward ? item.after_origin : item.before_origin, world::ReparentRule::keep_local);
-                if (!changed)
-                    return changed;
+                ATELIER_TRY(admit_entity_edit(item.root.id()));
+                ATELIER_TRY_BIND(changed, world_.set_space_reference(item.root.id(),
+                                                                     forward ? item.after_origin : item.before_origin,
+                                                                     world::ReparentRule::keep_local));
                 if (item.spatial)
-                    if (auto restored = world_.set_transform(item.root.id(), forward ? item.after : item.before);
-                        !restored)
-                        return std::unexpected(restored.error());
+                    ATELIER_TRY(world_.set_transform(item.root.id(), forward ? item.after : item.before));
                 set_selection({item.root.id(), item.root.id()});
                 return world::Commit{true, changed->notification_error};
             } else if constexpr (std::is_same_v<T, ReparentChange>) {
                 world::Commit result;
                 for (std::size_t i = 0; i < item.moves.size(); ++i) {
                     const auto& move = item.moves[forward ? i : item.moves.size() - 1 - i];
-                    if (auto valid = admit_entity_edit(move.root.id()); !valid)
-                        return std::unexpected(valid.error());
+                    ATELIER_TRY(admit_entity_edit(move.root.id()));
                     auto changed = world_.reparent(move.root.id(), forward ? move.after_parent : move.before_parent,
                                                    world::ReparentRule::keep_local,
                                                    forward ? move.after_index : move.before_index);
                     if (!changed)
                         return changed;
                     for (const auto& transform : move.transforms) {
-                        auto restored =
-                            world_.set_transform(transform.root.id(), forward ? transform.after : transform.before);
-                        if (!restored)
-                            return std::unexpected(restored.error());
+                        ATELIER_TRY_BIND(restored, world_.set_transform(transform.root.id(),
+                                                                        forward ? transform.after : transform.before));
                     }
                     result.changed = true;
                     if (!result.notification_error)
@@ -1520,21 +1228,15 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 }
                 return result;
             } else if constexpr (std::is_same_v<T, FieldGroupChange>) {
-                auto written = apply_group(item, forward);
-                if (!written)
-                    return std::unexpected(written.error());
+                ATELIER_TRY_BIND(written, apply_group(item, forward));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, FieldChange>) {
-                auto written = apply_field(item, forward);
-                if (!written)
-                    return std::unexpected(written.error());
+                ATELIER_TRY_BIND(written, apply_field(item, forward));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, ReferenceFieldChange>) {
-                auto written = apply_reference(item, forward);
-                if (!written)
-                    return std::unexpected(written.error());
+                ATELIER_TRY_BIND(written, apply_reference(item, forward));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, TransformChange>) {
@@ -1542,17 +1244,13 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 values.reserve(item.entries.size());
                 for (const auto& entry : item.entries)
                     values.push_back(forward ? entry.after : entry.before);
-                auto written = write_transforms(item, values);
-                if (!written)
-                    return std::unexpected(written.error());
+                ATELIER_TRY_BIND(written, write_transforms(item, values));
                 std::vector<ObjectId> entities;
                 for (const auto& entry : item.entries) {
                     entities.push_back(entry.entity);
                 }
                 // Retain the document-history policy: the edited objects become the selection.
-                if (auto selected = select_entities(entities, entities.empty() ? ObjectId{} : entities.back());
-                    !selected)
-                    return std::unexpected(selected.error());
+                ATELIER_TRY(select_entities(entities, entities.empty() ? ObjectId{} : entities.back()));
                 if (item.inspection.entity == selection_.entity) {
                     const auto owner = admit_property_edit(item.inspection.object);
                     if (owner && *owner == selection_.entity)
@@ -1560,46 +1258,31 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 }
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, MaterialValueChange>) {
-                auto admitted = admit_material_edit(item.root.id());
-                if (!admitted)
-                    return std::unexpected(admitted.error());
-                auto changed = apply_material_entries(item.root.id(), item.entries, forward, project);
-                if (!changed)
-                    return std::unexpected(changed.error());
+                ATELIER_TRY_BIND(admitted, admit_material_edit(item.root.id()));
+                ATELIER_TRY_BIND(changed, apply_material_entries(item.root.id(), item.entries, forward, project));
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
-                auto state = admit_component_edit(item.root.id());
-                if (!state)
-                    return std::unexpected(state.error());
+                ATELIER_TRY_BIND(state, admit_component_edit(item.root.id()));
                 if (state->owner != item.entity)
                     return invalid("The material binding's owning Entity changed.");
-                auto changed =
-                    presentation::set_material_bindings(runtime_, item.root.id(), forward ? item.after : item.before);
-                if (!changed)
-                    return std::unexpected(changed.error());
+                ATELIER_TRY_BIND(changed, presentation::set_material_bindings(runtime_, item.root.id(),
+                                                                              forward ? item.after : item.before));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, SkyMapChange>) {
-                auto state = admit_component_edit(item.root.id());
-                if (!state)
-                    return std::unexpected(state.error());
+                ATELIER_TRY_BIND(state, admit_component_edit(item.root.id()));
                 if (state->owner != item.entity)
                     return invalid("The sky map's owning Entity changed.");
-                auto changed =
-                    presentation::set_sky_map_binding(runtime_, item.root.id(), forward ? item.after : item.before);
-                if (!changed)
-                    return std::unexpected(changed.error());
+                ATELIER_TRY_BIND(changed, presentation::set_sky_map_binding(runtime_, item.root.id(),
+                                                                            forward ? item.after : item.before));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, BodyChange>) {
-                auto state = admit_component_edit(item.root.id());
-                if (!state)
-                    return std::unexpected(state.error());
+                ATELIER_TRY_BIND(state, admit_component_edit(item.root.id()));
                 if (state->owner != item.entity)
                     return invalid("The physics body's owning Entity changed.");
-                auto changed = physics::configure(runtime_, item.root.id(), forward ? item.after : item.before);
-                if (!changed)
-                    return std::unexpected(changed.error());
+                ATELIER_TRY_BIND(changed,
+                                 physics::configure(runtime_, item.root.id(), forward ? item.after : item.before));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, RetainedChange>) {
@@ -1613,21 +1296,16 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                     commit.notification_error.reset();
                 };
                 if (item.added == forward) {
-                    auto restored = world_.restore(item.removals);
-                    if (!restored)
-                        return std::unexpected(restored.error());
+                    ATELIER_TRY_BIND(restored, world_.restore(item.removals));
                     if (item.cleared_camera)
-                        if (auto written = apply_reference(*item.cleared_camera, false); !written)
-                            return std::unexpected(written.error());
+                        ATELIER_TRY(apply_reference(*item.cleared_camera, false));
                     merge(*restored);
                     std::vector<ObjectId> restored_ids;
                     for (const auto& removal : item.removals)
                         restored_ids.push_back(removal.id());
                     if (result.changed) {
-                        if (auto selected =
-                                select_entities(restored_ids, restored_ids.empty() ? ObjectId{} : restored_ids.back());
-                            !selected)
-                            return std::unexpected(selected.error());
+                        ATELIER_TRY(
+                            select_entities(restored_ids, restored_ids.empty() ? ObjectId{} : restored_ids.back()));
                     }
                     return result;
                 }
@@ -1635,8 +1313,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 for (const auto& removal : item.removals)
                     targets.push_back(removal.id());
                 if (item.cleared_camera)
-                    if (auto written = apply_reference(*item.cleared_camera, true); !written)
-                        return std::unexpected(written.error());
+                    ATELIER_TRY(apply_reference(*item.cleared_camera, true));
                 auto removed = world_.detach_batch(targets);
                 if (!removed) {
                     if (item.cleared_camera)
@@ -1654,9 +1331,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 const bool attach = item.added == forward;
                 if (attach) {
                     if (item.created_transform) {
-                        auto added = world_.set_transform(item.removal.owner, {});
-                        if (!added)
-                            return std::unexpected(added.error());
+                        ATELIER_TRY_BIND(added, world_.set_transform(item.removal.owner, {}));
                     }
                     auto restored = world_.restore(item.removal);
                     if (!restored) {
@@ -1668,14 +1343,10 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                         set_selection({item.removal.owner, item.removal.id()});
                     return restored;
                 }
-                auto removed = world_.remove_component(item.removal.id());
-                if (!removed)
-                    return std::unexpected(removed.error());
+                ATELIER_TRY_BIND(removed, world_.remove_component(item.removal.id()));
                 item.removal = std::move(*removed);
                 if (item.created_transform && item.removal.commit.changed) {
-                    auto removed_space = world_.remove_transform(item.removal.owner);
-                    if (!removed_space)
-                        return std::unexpected(removed_space.error());
+                    ATELIER_TRY_BIND(removed_space, world_.remove_transform(item.removal.owner));
                 }
                 if (item.removal.commit.changed && selection_.object == item.removal.id())
                     set_selection({item.removal.owner, item.removal.owner});
@@ -1690,9 +1361,7 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
 Result<world::Commit> Session::undo(Project* project) {
     if (cursor_)
         ++revision_;
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
     if (!cursor_)
         return world::Commit{};
     auto result = replay(history_[cursor_ - 1].change, false, project);
@@ -1707,9 +1376,7 @@ Result<world::Commit> Session::undo(Project* project) {
 Result<world::Commit> Session::redo(Project* project) {
     if (cursor_ < history_.size())
         ++revision_;
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
     if (cursor_ == history_.size())
         return world::Commit{};
     auto result = replay(history_[cursor_].change, true, project);
@@ -1722,12 +1389,8 @@ Result<world::Commit> Session::redo(Project* project) {
 }
 
 Result<world::Commit> Session::close() {
-    auto cancelled = cancel_edit();
-    if (!cancelled)
-        return std::unexpected(cancelled.error());
-    auto closed = world_.close();
-    if (!closed)
-        return closed;
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(closed, world_.close());
     physics_.reset();
     history_.clear();
     names_.clear();
@@ -1748,9 +1411,7 @@ Result<world::Commit> Session::start() {
         return invalid("Finish the active edit before starting the World.");
     if (world_.running() || world_.closed())
         return world_.start();
-    auto scene = physics::PhysicsScene::create(world_, physics_types_, presentation::read_mesh_source);
-    if (!scene)
-        return std::unexpected(scene.error());
+    ATELIER_TRY_BIND(scene, physics::PhysicsScene::create(world_, physics_types_, presentation::read_mesh_source));
     physics_ = std::move(*scene);
     auto started = world_.start();
     if (!world_.running())
@@ -1766,9 +1427,7 @@ Result<void> Session::update(float amount) {
 }
 
 Result<world::Commit> Session::stop() {
-    auto result = world_.stop();
-    if (!result)
-        return result;
+    ATELIER_TRY_BIND(result, world_.stop());
     if (!world_.running())
         physics_.reset();
     return result;
@@ -1776,13 +1435,9 @@ Result<world::Commit> Session::stop() {
 
 Result<void> Session::collect_step() {
     if (runtime_.collection_phase() == CollectionPhase::idle) {
-        auto started = runtime_.begin_collection();
-        if (!started)
-            return started;
+        ATELIER_TRY_BIND(started, runtime_.begin_collection());
     }
-    auto progress = runtime_.collect_step({32});
-    if (!progress)
-        return std::unexpected(progress.error());
+    ATELIER_TRY_BIND(progress, runtime_.collect_step({32}));
     if (runtime_.collection_phase() == CollectionPhase::idle) {
         std::erase_if(names_, [&](const auto& item) { return !runtime_.type_of(item.first); });
         std::erase_if(retained_, [&](const auto& item) { return !runtime_.type_of(item.first); });

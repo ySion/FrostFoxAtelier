@@ -41,9 +41,7 @@ Result<void> validate_ui(const source::SourceFile& file) {
     // Compilation only. Project expressions and event handlers are evaluated
     // exclusively by the isolated runner, including UI previews.
     Runtime runtime;
-    auto registered = ui_language::register_types(runtime);
-    if (!registered)
-        return std::unexpected(registered.error());
+    ATELIER_TRY_BIND(registered, ui_language::register_types(runtime));
     auto module = ui_language::Module::compile(runtime, file.path, file.source);
     const auto reject = [&](std::string message) -> Result<void> {
         SourceLocation location{file.path, file.version, 0, 1, 1, file.disk_path};
@@ -73,12 +71,8 @@ Result<void> validate_ui(const source::SourceFile& file) {
 ProjectCode::ProjectCode(world::World& world) : world_(world), report_(std::make_shared<ProjectBuild>()) {}
 
 Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
-    auto paths = project.source_paths();
-    if (!paths)
-        return std::unexpected(paths.error());
-    auto engine = source::engine_sources(source::default_engine_root());
-    if (!engine)
-        return std::unexpected(engine.error());
+    ATELIER_TRY_BIND(paths, project.source_paths());
+    ATELIER_TRY_BIND(engine, source::engine_sources(source::default_engine_root()));
     source::SourceSnapshot result;
     result.name = assets::utf8(project.name());
     result.version = 14695981039346656037ULL;
@@ -92,12 +86,8 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
         return true;
     };
     for (const auto& relative : *paths) {
-        auto path = project.resolve(relative);
-        if (!path)
-            return std::unexpected(path.error());
-        auto file = source::read_source_file(*path, assets::utf8(relative.generic_wstring()));
-        if (!file)
-            return std::unexpected(file.error());
+        ATELIER_TRY_BIND(path, project.resolve(relative));
+        ATELIER_TRY_BIND(file, source::read_source_file(*path, assets::utf8(relative.generic_wstring())));
         if (!add(std::move(*file)))
             return fail("Project and engine Source exceed the 16 MiB compilation limit.");
     }
@@ -110,12 +100,8 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
 Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project& project) {
     if (project.ui_source().empty())
         return std::optional<source::SourceFile>{};
-    auto path = project.resolve(project.ui_source());
-    if (!path)
-        return std::unexpected(path.error());
-    auto file = source::read_source_file(*path, assets::utf8(project.ui_source().generic_wstring()));
-    if (!file)
-        return std::unexpected(file.error());
+    ATELIER_TRY_BIND(path, project.resolve(project.ui_source()));
+    ATELIER_TRY_BIND(file, source::read_source_file(*path, assets::utf8(project.ui_source().generic_wstring())));
     return std::optional<source::SourceFile>{std::move(*file)};
 }
 
@@ -301,9 +287,7 @@ Result<void> ProjectCode::bind() {
                                                        : nullptr;
             if (!tick && name != "begin" && name != "end")
                 continue;
-            auto entry = program_->entry(method.name);
-            if (!entry)
-                return std::unexpected(entry.error());
+            ATELIER_TRY_BIND(entry, program_->entry(method.name));
             if (tick)
                 *tick = [entry = *entry](Runtime&, ObjectId self, float dt) {
                     const std::array<Scalar, 1> args{dt};
@@ -320,8 +304,7 @@ Result<void> ProjectCode::bind() {
             }
         }
         if (behavior.begin || behavior.tick || behavior.post_physics_tick || behavior.late_tick || behavior.end)
-            if (auto bound = world_.bind_behavior(type.type, std::move(behavior)); !bound)
-                return bound;
+            ATELIER_TRY(world_.bind_behavior(type.type, std::move(behavior)));
     }
     return {};
 }

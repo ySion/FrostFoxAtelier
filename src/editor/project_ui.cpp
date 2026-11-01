@@ -60,8 +60,7 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
         auto frame = session.prepare();
         if (!frame)
             return failed(describe("restored layout", frame.error()));
-        if (auto collected = collect(); !collected)
-            return std::unexpected(collected.error());
+        ATELIER_TRY(collect());
         return *frame;
     };
     std::vector<ui::Control> controls;
@@ -87,8 +86,7 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
     accepted_controls_ = std::move(controls);
     accepted_ = true;
     error_.clear();
-    if (auto collected = collect(); !collected)
-        return std::unexpected(collected.error());
+    ATELIER_TRY(collect());
     return *frame;
 }
 
@@ -98,13 +96,9 @@ Result<bool> ProjectUI::event(const ui::Action& action) {
 
 Result<void> ProjectUI::collect() {
     if (runtime_.collection_phase() == CollectionPhase::idle) {
-        auto started = runtime_.begin_collection();
-        if (!started)
-            return started;
+        ATELIER_TRY_BIND(started, runtime_.begin_collection());
     }
-    auto collected = runtime_.collect_step({32});
-    if (!collected)
-        return std::unexpected(collected.error());
+    ATELIER_TRY_BIND(collected, runtime_.collect_step({32}));
     return {};
 }
 

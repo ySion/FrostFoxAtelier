@@ -89,14 +89,11 @@ Result<void> SourceEditor::open(const std::filesystem::path& path) {
     }
     if (files_.size() >= 16)
         return failure("Close a source document before opening more than 16 files.");
-    auto bytes = assets::read_file(canonical, 1024 * 1024);
-    if (!bytes)
-        return std::unexpected(bytes.error());
+    ATELIER_TRY_BIND(bytes, assets::read_file(canonical, 1024 * 1024));
     auto file = std::make_unique<File>();
     file->path = canonical;
     file->key = next_key_++;
-    if (auto loaded = load(*file, std::move(*bytes)); !loaded)
-        return loaded;
+    ATELIER_TRY(load(*file, std::move(*bytes)));
     selected_ = file->key;
     problem_line_ = 0;
     files_.push_back(std::move(file));
@@ -125,8 +122,7 @@ Result<void> SourceEditor::save(File& file, bool overwrite) {
             text.insert(0, "\xef\xbb\xbf");
         if (text.size() > 1024 * 1024)
             return failure("Source file exceeds 1 MiB of UTF-8 text.");
-        if (auto saved = write_file(file.path, text); !saved)
-            return saved;
+        ATELIER_TRY(write_file(file.path, text));
         file.document->edit().break_group();
         file.disk = std::move(text);
         file.saved_text = file.document->text();
@@ -140,9 +136,7 @@ Result<void> SourceEditor::save(File& file, bool overwrite) {
 }
 
 Result<void> SourceEditor::reload(File& file) {
-    auto bytes = assets::read_file(file.path, 1024 * 1024);
-    if (!bytes)
-        return std::unexpected(bytes.error());
+    ATELIER_TRY_BIND(bytes, assets::read_file(file.path, 1024 * 1024));
     return load(file, std::move(*bytes));
 }
 
@@ -276,19 +270,15 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
                 return failure("Relative log source has no original absolute root.");
             path = root / path;
         }
-        auto disk = assets::read_file(path, 1024 * 1024);
-        if (!disk)
-            return std::unexpected(disk.error());
+        ATELIER_TRY_BIND(disk, assets::read_file(path, 1024 * 1024));
         if (location.version && source::content_hash(*disk) != *location.version)
             return failure("The recorded source version is stale; no location was applied.");
-        if (auto opened = open(path); !opened)
-            return opened;
+        ATELIER_TRY(open(path));
         auto* file = active();
         if (!file || file->dirty())
             return failure("Save or discard the source draft before locating a recorded position.");
         if (file->disk != *disk)
-            if (auto loaded = load(*file, *disk); !loaded)
-                return loaded;
+            ATELIER_TRY(load(*file, *disk));
         auto& buffer = file->document->edit();
         if (!location.line && location.offset) {
             if (*location.offset > disk->size())

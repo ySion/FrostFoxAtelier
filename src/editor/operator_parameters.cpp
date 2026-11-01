@@ -95,8 +95,7 @@ Result<void> register_editor_types(Runtime& runtime) {
         view.fields.push_back(std::move(field));
     }
     definitions.push_back(std::move(view));
-    if (auto registered = runtime.register_types(std::move(definitions)); !registered)
-        return std::unexpected(registered.error());
+    ATELIER_TRY(runtime.register_types(std::move(definitions)));
     return {};
 }
 }

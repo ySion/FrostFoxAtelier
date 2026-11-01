@@ -34,9 +34,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
     const auto visit = [&](auto&& self, TypeId current, ScalarField prefix) -> Result<void> {
         if (prefix.path.size() > 16)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Scene field nesting exceeds 16 levels."});
-        auto info = runtime.describe(current);
-        if (!info)
-            return std::unexpected(info.error());
+        ATELIER_TRY_BIND(info, runtime.describe(current));
         if ((*info)->kind == TypeKind::record &&
             current == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{})) {
             prefix.path.push_back((*info)->fields.front().id);
@@ -54,9 +52,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
             return {};
         }
         if (!prefix.path.empty() && (*info)->kind == TypeKind::array) {
-            auto element = runtime.describe(*(*info)->element);
-            if (!element)
-                return std::unexpected(element.error());
+            ATELIER_TRY_BIND(element, runtime.describe(*(*info)->element));
             if ((*element)->kind != TypeKind::scalar && (*element)->kind != TypeKind::enumeration &&
                 (*element)->kind != TypeKind::string)
                 return std::unexpected(
@@ -95,15 +91,11 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
                 result.push_back(std::move(child));
                 continue;
             }
-            auto added = self(self, field.value.type, std::move(child));
-            if (!added)
-                return added;
+            ATELIER_TRY_BIND(added, self(self, field.value.type, std::move(child)));
         }
         return {};
     };
-    auto visited = visit(visit, type, {});
-    if (!visited)
-        return std::unexpected(visited.error());
+    ATELIER_TRY_BIND(visited, visit(visit, type, {}));
     return result;
 }
 

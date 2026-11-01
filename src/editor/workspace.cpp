@@ -135,8 +135,7 @@ Result<void> Workspace::locate_output() {
     const auto location = output.selected_source();
     if (!location)
         return std::unexpected(Error{ErrorCode::invalid_storage, "The selected record has no source location."});
-    if (auto located = source_editor.locate(*location); !located)
-        return located;
+    ATELIER_TRY(source_editor.locate(*location));
     dock.select(source_control::tab);
     return {};
 }
@@ -412,8 +411,7 @@ Result<bool> Workspace::reveal_in_tree(const Session& session, ObjectId entity) 
             break;
         ancestors.push_back(*parent);
     }
-    if (auto expanded = set_tree_expanded(session, EntityTree::scene_tree, ancestors, true); !expanded)
-        return std::unexpected(expanded.error());
+    ATELIER_TRY(set_tree_expanded(session, EntityTree::scene_tree, ancestors, true));
     return tree_query.empty() || std::ranges::any_of(scene_tree_.rows, [&](const auto& row) {
                return scene_tree_.objects[row.node] == entity;
            });
@@ -493,8 +491,7 @@ ui::ControlKey Workspace::bind_operator(OperatorCall call) {
 Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const ui::Action& action) {
     if (action.kind == ui::ActionKind::activate &&
         (action.key == control::group_components || action.key == control::group_categories)) {
-        if (auto cancelled = session.cancel_edit(); !cancelled)
-            return std::unexpected(cancelled.error());
+        ATELIER_TRY(session.cancel_edit());
         parameter_by_category_ = action.key == control::group_categories;
         return true;
     }
@@ -640,10 +637,8 @@ bool Workspace::sync_world(const Session& session) {
 
 Result<void> Workspace::set_view_settings(Session& session, const renderer::ViewSettings& candidate,
                                           std::array<float, 3> focus) {
-    if (auto valid = validate_view_options(candidate, focus); !valid)
-        return valid;
-    if (auto changed = session.set_environment(candidate.lit); !changed)
-        return changed;
+    ATELIER_TRY(validate_view_options(candidate, focus));
+    ATELIER_TRY(session.set_environment(candidate.lit));
     if (view != candidate) {
         lighting.cancel();
         view = candidate;

@@ -61,13 +61,10 @@ Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, std::string_vie
     if ((*info)->kind != TypeKind::record)
         return std::unexpected(invalid("Operator parameters and results must be records: " + std::string(name)));
     auto value = std::make_unique<Parameters>(runtime, *type, **info);
-    if (auto ready = runtime.initialize_value(*type, value->bytes); !ready)
-        return std::unexpected(ready.error());
+    ATELIER_TRY(runtime.initialize_value(*type, value->bytes));
     value->initialized = true;
     if ((*info)->contains_references) {
-        auto root = runtime.root_value(*type, value->bytes);
-        if (!root)
-            return std::unexpected(root.error());
+        ATELIER_TRY_BIND(root, runtime.root_value(*type, value->bytes));
         value->root = std::move(*root);
     }
     return value;
@@ -100,9 +97,7 @@ Result<void> admit(const Context& context, const ContextOverride& changes) {
     const auto& selection = *changes.selection;
     if (selection.entities.size() > Session::maximum_entities)
         return std::unexpected(rejected("The selection exceeds the Entity limit."));
-    auto members = context.document.world().members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(members, context.document.world().members());
     std::unordered_set<ObjectId> entities;
     std::unordered_set<ObjectId> seen;
     for (const auto& member : *members)
@@ -186,14 +181,10 @@ Result<std::optional<bool>> operator_state(const OperatorInfo& info, const Conte
     if (info.parameters.empty())
         return info.state(context, {});
     auto& runtime = context.document.world().runtime();
-    auto value = parameters(runtime, info.parameters);
-    if (!value)
-        return std::unexpected(value.error());
+    ATELIER_TRY_BIND(value, parameters(runtime, info.parameters));
     if (info.seed)
-        if (auto seeded = info.seed(context, {(*value)->type, (*value)->bytes.data()}); !seeded)
-            return std::unexpected(seeded.error());
-    if (auto decoded = decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, args, {}); !decoded)
-        return std::unexpected(decoded.error());
+        ATELIER_TRY(info.seed(context, {(*value)->type, (*value)->bytes.data()}));
+    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, args, {}));
     return info.state(context, {(*value)->type, (*value)->bytes.data()});
 }
 
@@ -207,8 +198,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         return std::unexpected(rejected("Operator arguments must be an object."));
     if (info->parameters.empty() && !request.args.empty())
         return std::unexpected(rejected("Unknown argument for " + request.id + ": " + request.args.begin().key()));
-    if (auto admitted = admit(base, request.context); !admitted)
-        return std::unexpected(admitted.error());
+    ATELIER_TRY(admit(base, request.context));
     Context context = base;
     if (request.context.selection)
         context.selection = *request.context.selection;
@@ -253,13 +243,10 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         if (!decoded)
             return std::unexpected(decoded.error());
     } else if (!info->parameters.empty()) {
-        auto made = parameters(runtime, info->parameters);
-        if (!made)
-            return std::unexpected(made.error());
+        ATELIER_TRY_BIND(made, parameters(runtime, info->parameters));
         value = std::move(*made);
         if (info->seed)
-            if (auto seeded = info->seed(context, ValueOutput{value->type, value->bytes.data()}); !seeded)
-                return std::unexpected(seeded.error());
+            ATELIER_TRY(info->seed(context, ValueOutput{value->type, value->bytes.data()}));
         const ResolveReference reference = [&](const auto& json, TypeId type,
                                                ValueForm form) -> std::optional<ObjectReference> {
             if (json.is_null()) {
@@ -268,28 +255,20 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
             }
             return resolve ? resolve(json, type, form) : std::nullopt;
         };
-        if (auto decoded =
-                decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args, reference);
-            !decoded)
-            return std::unexpected(decoded.error());
+        ATELIER_TRY(decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args, reference));
     }
     std::unique_ptr<Parameters> output;
     if (!info->result.empty()) {
-        auto made = parameters(runtime, info->result);
-        if (!made)
-            return std::unexpected(made.error());
+        ATELIER_TRY_BIND(made, parameters(runtime, info->result));
         output = std::move(*made);
     }
-    if (auto ended = host.end_interaction(); !ended)
-        return std::unexpected(ended.error());
+    ATELIER_TRY(host.end_interaction());
     const auto recorded = document.recorded();
     const auto undo = document.undo_count();
     const auto redo = document.redo_count();
-    if (auto executed =
-            info->execute(host, context, {value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch},
-                          output ? ValueOutput{output->type, output->bytes.data()} : ValueOutput{});
-        !executed)
-        return std::unexpected(executed.error());
+    ATELIER_TRY(info->execute(host, context,
+                              {value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch},
+                              output ? ValueOutput{output->type, output->bytes.data()} : ValueOutput{}));
     if (auto violation = history_violation(*info, recorded, undo, redo, document.recorded(), document.undo_count(),
                                            document.redo_count());
         !violation.empty())
@@ -298,14 +277,11 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         return OperatorReport{OperatorStatus::cancelled, {}};
     OperatorReport report{OperatorStatus::finished, {}};
     if (output) {
-        auto fields = detail::author_fields(runtime, output->type);
-        if (!fields)
-            return std::unexpected(fields.error());
+        ATELIER_TRY_BIND(fields, detail::author_fields(runtime, output->type));
         if (std::ranges::any_of(*fields, [](const auto& field) { return field.form != ValueForm::inline_value; }))
             return std::unexpected(invalid("Operator results cannot contain references."));
-        auto encoded = encode_properties(runtime, PropertyTarget{output->type, {}, output->bytes}, *fields, {});
-        if (!encoded)
-            return std::unexpected(encoded.error());
+        ATELIER_TRY_BIND(encoded,
+                         encode_properties(runtime, PropertyTarget{output->type, {}, output->bytes}, *fields, {}));
         report.result = std::move(*encoded);
     }
     return report;
@@ -355,9 +331,7 @@ Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<F
                     schema = {{"type", "array"}, {"format", "material.entries"}, {"default", Json::array()}};
                     break;
                 }
-                auto nested = record_schema(value, field.value.type, path, defaults);
-                if (!nested)
-                    return nested;
+                ATELIER_TRY_BIND(nested, record_schema(value, field.value.type, path, defaults));
                 schema = std::move(*nested);
                 break;
             }
@@ -366,9 +340,7 @@ Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<F
                 if (!defaults)
                     break;
                 String text;
-                if (auto read = runtime.read(value.type, value.bytes, path, ValueOutput{field.value.type, &text});
-                    !read)
-                    return std::unexpected(read.error());
+                ATELIER_TRY(runtime.read(value.type, value.bytes, path, ValueOutput{field.value.type, &text}));
                 schema["default"] = std::string(text.c_str(), text.size());
                 break;
             }
@@ -419,13 +391,9 @@ Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const Opera
         return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
     if (op.parameters == "@context.object")
         return Json{{"dynamic", "context.object"}};
-    auto value = parameters(runtime, op.parameters);
-    if (!value)
-        return std::unexpected(value.error());
+    ATELIER_TRY_BIND(value, parameters(runtime, op.parameters));
     std::vector<FieldId> path;
-    auto schema = record_schema(**value, (*value)->type, path, !op.seed);
-    if (!schema)
-        return schema;
+    ATELIER_TRY_BIND(schema, record_schema(**value, (*value)->type, path, !op.seed));
     (*schema)["title"] = op.parameters;
     if (op.seed)
         (*schema)["seeded"] = true;
@@ -435,9 +403,7 @@ Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const Opera
 Result<assets::json_format::Json> result_schema(Runtime& runtime, const OperatorInfo& op) {
     if (op.result.empty())
         return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
-    auto value = parameters(runtime, op.result);
-    if (!value)
-        return std::unexpected(value.error());
+    ATELIER_TRY_BIND(value, parameters(runtime, op.result));
     std::vector<FieldId> path;
     auto schema = record_schema(**value, (*value)->type, path, false);
     if (schema)

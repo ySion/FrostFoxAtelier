@@ -83,9 +83,7 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
         }
         return false;
     };
-    auto items = context.document.presentation().render_items();
-    if (!items)
-        return std::unexpected(items.error());
+    ATELIER_TRY_BIND(items, context.document.presentation().render_items());
     std::vector<ObjectId> rendered;
     for (const auto& item : *items) {
         rendered.push_back(item.entity);
@@ -95,9 +93,7 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
             include(math::transform_point(math::Vector3{vertex.position[0], vertex.position[1], vertex.position[2]},
                                           item.world));
     }
-    auto members = context.document.world().members();
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(members, context.document.world().members());
     for (const auto& member : *members) {
         if (!wanted(member.id()) || std::ranges::find(rendered, member.id()) != rendered.end())
             continue;
@@ -201,8 +197,7 @@ OperatorInfo transform_presence(bool add) {
             add ? "Give the active Entity an identity Transform" : "Remove the active Entity's Transform",
             OperatorFlag::undo,
             [add](const Context& context) -> Result<void> {
-                if (auto editable = editable_entity(context); !editable)
-                    return editable;
+                ATELIER_TRY(editable_entity(context));
                 const auto spatial = world::has_transform(context.document.world().runtime(), context.selection.active);
                 if (!spatial)
                     return std::unexpected(spatial.error());
@@ -259,8 +254,7 @@ Result<void> scene_duplicate(OperatorHost& host, const Context& context, const S
         return unavailable("Duplicate placement requires a viewport context.");
     auto result = context.document.duplicate_entities(context.selection.entities);
     host.scene_changed();
-    if (auto completed = committed(std::move(result)); !completed)
-        return completed;
+    ATELIER_TRY(committed(std::move(result)));
     return p.place ? host.place_duplicates() : Result<void>{};
 }
 
@@ -365,9 +359,7 @@ Result<void> scene_parent(OperatorHost& host, const Context& context, const Scen
     const auto reference = runtime.read_reference({document.types().entity, ValueForm::weak_reference}, p.parent);
     if (!reference)
         return std::unexpected(reference.error());
-    auto parent = runtime.try_acquire(*reference);
-    if (!parent)
-        return std::unexpected(parent.error());
+    ATELIER_TRY_BIND(parent, runtime.try_acquire(*reference));
     if (!reference->is_null() && !*parent)
         return std::unexpected(Error{ErrorCode::invalid_object, "The parent Entity is no longer alive."});
     auto result =
@@ -386,9 +378,7 @@ Result<void> scene_space_reference(OperatorHost& host, const Context& context, c
         return std::unexpected(reference.error());
     if (p.world_space && !reference->is_null())
         return std::unexpected(Error{ErrorCode::argument_mismatch, "World space requires a null origin."});
-    auto held = runtime.try_acquire(*reference);
-    if (!held)
-        return std::unexpected(held.error());
+    ATELIER_TRY_BIND(held, runtime.try_acquire(*reference));
     if (!reference->is_null() && !*held)
         return std::unexpected(Error{ErrorCode::invalid_object, "The spatial origin Entity is no longer alive."});
     std::optional<ObjectId> origin;
@@ -457,8 +447,7 @@ Result<void> seed_view(const Context& context, ValueOutput out) {
             value = EnumValue{field.value.type, static_cast<std::uint32_t>(number)};
             break;
         }
-        if (auto written = runtime.write(out.type, storage, std::span{&field.id, 1}, value); !written)
-            return written;
+        ATELIER_TRY(runtime.write(out.type, storage, std::span{&field.id, 1}, value));
     }
     return {};
 }
@@ -486,8 +475,7 @@ Result<void> view_settings(OperatorHost& host, const Context& context, const Ope
                     return static_cast<double>(leaf);
             },
             *value);
-        if (auto changed = set_view_option(candidate, options[i].option, number); !changed)
-            return std::unexpected(changed.error());
+        ATELIER_TRY(set_view_option(candidate, options[i].option, number));
     }
     if (candidate.grid_plane != context.view.grid_plane)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Persistent grid plane follows camera view."});
@@ -523,10 +511,9 @@ OperatorInfo open_document(std::string id, std::wstring title, DocumentRequest::
                ValueOutput) -> Result<void> {
             const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
             const bool scene = kind == DocumentRequest::Kind::open_scene;
-            auto path = operation_path(host, context, p.path, scene ? PathPurpose::scene_open : PathPurpose::folder,
-                                       context.project ? context.project->root() / "Content" : std::filesystem::path{});
-            if (!path)
-                return std::unexpected(path.error());
+            ATELIER_TRY_BIND(
+                path, operation_path(host, context, p.path, scene ? PathPurpose::scene_open : PathPurpose::folder,
+                                     context.project ? context.project->root() / "Content" : std::filesystem::path{}));
             if (!*path)
                 return {};
             host.replace_document(
@@ -572,25 +559,20 @@ OperatorInfo source_open(std::string id, std::wstring title, bool create, bool p
 Result<void> save_scene(OperatorHost& host, const Context& context, const SceneSave& p) {
     if (p.path.empty() && !p.as_new)
         return host.save_scene({});
-    auto path = operation_path(host, context, p.path, PathPurpose::scene_save, context.project->root() / "Content");
-    if (!path)
-        return std::unexpected(path.error());
+    ATELIER_TRY_BIND(
+        path, operation_path(host, context, p.path, PathPurpose::scene_save, context.project->root() / "Content"));
     if (!*path)
         return {};
     return host.save_scene((**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path);
 }
 
 Result<void> import_asset(OperatorHost& host, const Context& context, const AssetImport& p, AssetResult& result) {
-    auto path =
-        operation_path(host, context, p.path, p.kind == ImportKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
-                       context.project->root() / "Content");
-    if (!path)
-        return std::unexpected(path.error());
+    ATELIER_TRY_BIND(path, operation_path(host, context, p.path,
+                                          p.kind == ImportKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
+                                          context.project->root() / "Content"));
     if (!*path)
         return {};
-    auto imported = host.import_asset(p.kind, **path);
-    if (!imported)
-        return std::unexpected(imported.error());
+    ATELIER_TRY_BIND(imported, host.import_asset(p.kind, **path));
     result.asset = String{StringView{*imported}};
     return {};
 }
@@ -618,11 +600,9 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
             return std::unexpected(detail::caught_error(error, ErrorCode::argument_mismatch));
         }
     }
-    auto chosen =
-        operation_path(host, context, p.path, source ? PathPurpose::material_source_save : PathPurpose::material_save,
-                       project.root() / "Content");
-    if (!chosen)
-        return std::unexpected(chosen.error());
+    ATELIER_TRY_BIND(chosen, operation_path(host, context, p.path,
+                                            source ? PathPurpose::material_source_save : PathPurpose::material_save,
+                                            project.root() / "Content"));
     if (!*chosen)
         return {};
     const auto& path = **chosen;
@@ -642,9 +622,7 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
         return std::unexpected(created.error());
     result.asset = String{StringView{*created}};
     if (context.interactive) {
-        auto loaded = context.document.material_resource(project.assets(), *created);
-        if (!loaded)
-            return std::unexpected(loaded.error());
+        ATELIER_TRY_BIND(loaded, context.document.material_resource(project.assets(), *created));
         host.asset_created(*created, true);
     }
     return {};
@@ -685,15 +663,12 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"view.from_camera", L"View from Camera",
          "Copy the selected scene camera's pose and projection into the editor viewport once", OperatorFlag::none,
          [](const Context& context) -> Result<void> {
-             if (auto editable = editable_entity(context); !editable)
-                 return editable;
+             ATELIER_TRY(editable_entity(context));
              const auto camera = context.document.presentation().camera(context.selection.active);
              return camera ? Result<void>{} : std::unexpected(camera.error());
          },
          [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) -> Result<void> {
-             auto snapshot = context.document.presentation().camera(context.selection.active);
-             if (!snapshot)
-                 return std::unexpected(snapshot.error());
+             ATELIER_TRY_BIND(snapshot, context.document.presentation().camera(context.selection.active));
              auto camera = host.camera();
              if (!camera.view_from(*snapshot))
                  return unavailable("The camera view cannot be represented in the editor viewport.");
@@ -702,13 +677,10 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"scene.main_camera_set", L"Set as Main Camera",
          "Select this Entity's camera for Play; disabled cameras may be selected", OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
-             if (auto editable = editable_entity(context); !editable)
-                 return editable;
+             ATELIER_TRY(editable_entity(context));
              if (context.document.world().running())
                  return unavailable("Stop the document before changing its main camera.");
-             auto cameras = context.document.world().members(context.document.presentation().cameras());
-             if (!cameras)
-                 return std::unexpected(cameras.error());
+             ATELIER_TRY_BIND(cameras, context.document.world().members(context.document.presentation().cameras()));
              if (std::ranges::count(*cameras, context.selection.active, &world::CapabilityMember::entity) != 1)
                  return unavailable("Select an Entity with exactly one CameraComponent.");
              return {};
@@ -724,9 +696,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
              if (!context.scene_available || context.document.world().running())
                  return unavailable("Open a stopped document first.");
              const auto environment = context.document.environment();
-             auto selected = context.document.main_camera();
-             if (!selected)
-                 return std::unexpected(selected.error());
+             ATELIER_TRY_BIND(selected, context.document.main_camera());
              if (*selected == ObjectId{} && (environment == ObjectId{} || !context.document.has_retained(environment)))
                  return unavailable("The scene has no main camera selection.");
              return {};
@@ -781,11 +751,9 @@ void register_builtin_operators(OperatorRegistry& registry) {
              if (selection.object != selection.active && selection.entities.size() != 1)
                  return std::unexpected(
                      Error{ErrorCode::unsupported_operation, "Inspect a component with only its Entity selected."});
-             auto selected = selection.object != selection.active
-                                 ? context.document.select(selection.object)
-                                 : context.document.select_entities(selection.entities, selection.active);
-             if (!selected)
-                 return selected;
+             ATELIER_TRY_BIND(selected, selection.object != selection.active
+                                            ? context.document.select(selection.object)
+                                            : context.document.select_entities(selection.entities, selection.active));
              host.scene_changed();
              return {};
          }});
@@ -899,8 +867,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"scene.set_properties", L"Set Properties", "Apply a scalar patch to the inspected object's actual type",
          OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
-             if (auto editable = editable_entity(context); !editable)
-                 return editable;
+             ATELIER_TRY(editable_entity(context));
              const auto object = context.selection.object;
              if (object == context.selection.active)
                  return {};

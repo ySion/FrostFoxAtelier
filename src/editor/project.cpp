@@ -225,9 +225,7 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
         (*relative.begin() != L"Source" || !relative.filename().wstring().ends_with(L".ui.source")))
         return failure("Project UI must be a .ui.source file inside Source.");
     if (!relative.empty()) {
-        auto path = resolve(relative);
-        if (!path)
-            return std::unexpected(path.error());
+        ATELIER_TRY_BIND(path, resolve(relative));
     }
     try {
         const auto path = take(resolve("Config/Project.json"));
@@ -241,9 +239,7 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
             config.erase("ui_source");
         else
             config["ui_source"] = assets::utf8(relative.generic_wstring());
-        auto saved = write_file(path, config.dump(2) + "\n");
-        if (!saved)
-            return saved;
+        ATELIER_TRY_BIND(saved, write_file(path, config.dump(2) + "\n"));
         ui_source_ = relative;
         return {};
     } catch (const std::exception& error) {
@@ -295,8 +291,7 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
             return failure("The asset identity file could not be moved; the rename was undone.");
         }
     }
-    if (auto refreshed = refresh(); !refreshed)
-        return std::unexpected(refreshed.error());
+    ATELIER_TRY(refresh());
     return target_relative;
 }
 
@@ -393,9 +388,7 @@ Result<void> Project::refresh() {
 }
 
 Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
-    auto published = import_mesh_files(source, {});
-    if (!published)
-        return std::unexpected(published.error());
+    ATELIER_TRY_BIND(published, import_mesh_files(source, {}));
     return std::move(published->mesh.key);
 }
 
@@ -665,36 +658,23 @@ std::filesystem::path collision_path(std::string_view key, math::Vector3 scale) 
 Result<std::filesystem::path> Project::cook_collision(std::string_view key, math::Vector3 scale) {
     if (!key.starts_with("project/"))
         return failure("Collision Cook requires a project mesh identity.");
-    auto asset = assets_.mesh(key);
-    if (!asset)
-        return std::unexpected(asset.error());
-    auto cooked = physics::cook_triangle_mesh(asset->mesh, scale, key);
-    if (!cooked)
-        return std::unexpected(cooked.error());
-    auto path = resolve(collision_path(key, scale));
-    if (!path)
-        return std::unexpected(path.error());
-    if (auto written = write_file(*path, *cooked); !written)
-        return std::unexpected(written.error());
+    ATELIER_TRY_BIND(asset, assets_.mesh(key));
+    ATELIER_TRY_BIND(cooked, physics::cook_triangle_mesh(asset->mesh, scale, key));
+    ATELIER_TRY_BIND(path, resolve(collision_path(key, scale)));
+    ATELIER_TRY(write_file(*path, *cooked));
     return *path;
 }
 
 Result<std::shared_ptr<const std::string>> Project::collision(std::string_view key, math::Vector3 scale) {
     if (!key.starts_with("project/"))
         return failure("Collision asset requires a project mesh identity.");
-    auto asset = assets_.mesh(key);
-    if (!asset)
-        return std::unexpected(asset.error());
-    auto path = resolve(collision_path(key, scale));
-    if (!path)
-        return std::unexpected(path.error());
+    ATELIER_TRY_BIND(asset, assets_.mesh(key));
+    ATELIER_TRY_BIND(path, resolve(collision_path(key, scale)));
     if (auto bytes = assets::read_file(*path, 128ull * 1024 * 1024 + 8192);
         bytes && physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, key))
         return std::make_shared<const std::string>(std::move(*bytes));
     // The cache is derived data: a missing or stale entry is rebuilt from the source mesh.
-    auto cooked = physics::cook_triangle_mesh(asset->mesh, scale, key);
-    if (!cooked)
-        return std::unexpected(cooked.error());
+    ATELIER_TRY_BIND(cooked, physics::cook_triangle_mesh(asset->mesh, scale, key));
     static_cast<void>(write_file(*path, *cooked)); // A failed write only costs the next load another Cook.
     return std::make_shared<const std::string>(std::move(*cooked));
 }

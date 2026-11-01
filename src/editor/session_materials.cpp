@@ -112,13 +112,9 @@ Result<void> Session::publish_texture(std::string_view key, material::ImageRef i
     if (world_.closed() || key.empty() || !image)
         return failure("Texture publication needs a live Session, asset key and complete image.");
     if (const auto at = textures_.find(std::string(key)); at != textures_.end()) {
-        auto replaced = material::update_texture(runtime_, at->second.id(), image);
-        if (!replaced)
-            return replaced;
+        ATELIER_TRY_BIND(replaced, material::update_texture(runtime_, at->second.id(), image));
     } else {
-        auto root = material::create_texture(runtime_, key, image);
-        if (!root)
-            return std::unexpected(root.error());
+        ATELIER_TRY_BIND(root, material::create_texture(runtime_, key, image));
         textures_.emplace(key, std::move(*root));
     }
     unavailable_.erase(std::pair{assets::AssetKind::texture, std::string(key)});
@@ -132,13 +128,9 @@ Result<void> Session::reimport_texture(Project& project, std::string_view key, c
         return failure("Finish the active edit and stop the editor World before reimporting.");
     // Validate an existing Runtime target before touching the committed file.
     if (const auto at = textures_.find(std::string(key)); at != textures_.end()) {
-        auto current = material::read_texture(runtime_, at->second.id());
-        if (!current)
-            return std::unexpected(current.error());
+        ATELIER_TRY_BIND(current, material::read_texture(runtime_, at->second.id()));
     }
-    auto imported = project.reimport_texture(key, source);
-    if (!imported)
-        return std::unexpected(imported.error());
+    ATELIER_TRY_BIND(imported, project.reimport_texture(key, source));
     return publish_texture(imported->key, std::move(imported->image));
 }
 
@@ -156,9 +148,7 @@ Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, std::string
     auto asset = reader.texture(key);
     if (!asset && !missing)
         return std::unexpected(asset.error());
-    auto root = material::create_texture(runtime_, key, asset ? asset->image : material::ImageRef{});
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(root, material::create_texture(runtime_, key, asset ? asset->image : material::ImageRef{}));
     textures_.emplace(std::string(key), *root);
     if (!asset) {
         missing->push_back(remember_unavailable(reader, assets::AssetKind::texture, key, asset.error()));
@@ -178,9 +168,7 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
             missing->push_back(*item);
             return at->second.root;
         }
-        auto surface = material::capture_program(runtime_, at->second.root.id());
-        if (!surface)
-            return std::unexpected(surface.error());
+        ATELIER_TRY_BIND(surface, material::capture_program(runtime_, at->second.root.id()));
         if ((*surface)->uses_default_material()) {
             if (at->second.error) {
                 if (!missing)
@@ -188,9 +176,7 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
                 missing->push_back(
                     {std::string(key), *at->second.error, std::nullopt, world::DiagnosticKind::unreadable_resource});
             } else if (const auto* author = std::get_if<assets::MaterialInstanceAsset>(&at->second.author.author)) {
-                auto parent = material_resource(reader, author->parent_key, missing);
-                if (!parent)
-                    return std::unexpected(parent.error());
+                ATELIER_TRY_BIND(parent, material_resource(reader, author->parent_key, missing));
             }
         }
         return at->second.root;
@@ -203,9 +189,7 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
     if (!missing || key.empty() || key.starts_with("builtin/") ||
         (listed && (listed->kind != assets::AssetKind::material || !asset.error().message.starts_with("Cannot read "))))
         return std::unexpected(asset.error());
-    auto root = material::create_source(runtime_, key, {});
-    if (!root)
-        return std::unexpected(root.error());
+    ATELIER_TRY_BIND(root, material::create_source(runtime_, key, {}));
     MaterialDocument document;
     document.root = *root;
     document.author.key = key;
@@ -219,9 +203,7 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
 Result<ObjectRoot> Session::open_material(Project& project, std::string_view key) {
     if (const auto* item = unavailable(assets::AssetKind::material, key))
         return stand_in(*item);
-    auto asset = project.assets().material(key);
-    if (!asset)
-        return std::unexpected(asset.error());
+    ATELIER_TRY_BIND(asset, project.assets().material(key));
     std::vector<MissingResource> missing;
     auto result = material_resource(project.assets(), *asset, &missing);
     if (result)
@@ -424,9 +406,7 @@ Session::mesh_defaults(assets::Reader& reader, const assets::MeshAsset& asset, s
     std::vector<presentation::MaterialBinding> result;
     result.reserve(asset.materials.size());
     for (const auto& item : asset.materials) {
-        auto root = material_resource(reader, item.key, missing ? missing : &unreported);
-        if (!root)
-            return std::unexpected(root.error());
+        ATELIER_TRY_BIND(root, material_resource(reader, item.key, missing ? missing : &unreported));
         report_resources(world_, root->id(), unreported);
         unreported.clear();
         result.push_back({item.slot, std::move(*root), false});
@@ -436,28 +416,22 @@ Session::mesh_defaults(assets::Reader& reader, const assets::MeshAsset& asset, s
 
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
 Session::mesh_surfaces(assets::Reader& reader, const assets::MeshAsset& asset) {
-    auto defaults = mesh_defaults(reader, asset);
-    if (!defaults)
-        return std::unexpected(defaults.error());
+    ATELIER_TRY_BIND(defaults, mesh_defaults(reader, asset));
     auto result = std::make_shared<std::vector<material::ProgramSurfaceRef>>();
     if (!asset.mesh)
         return result;
     for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i) {
         const auto at = std::ranges::find(*defaults, presentation::material_slot_name(*asset.mesh, i),
                                           &presentation::MaterialBinding::slot);
-        auto surface = at == defaults->end() ? material::default_world_surface()
-                                             : material::capture_program(runtime_, at->resource.id());
-        if (!surface)
-            return std::unexpected(surface.error());
+        ATELIER_TRY_BIND(surface, at == defaults->end() ? material::default_world_surface()
+                                                        : material::capture_program(runtime_, at->resource.id()));
         result->push_back(std::move(*surface));
     }
     return result;
 }
 
 Result<assets::MaterialAsset> Session::material_asset(ObjectId object) const {
-    auto key = material::material_key(world_.runtime(), object);
-    if (!key)
-        return std::unexpected(key.error());
+    ATELIER_TRY_BIND(key, material::material_key(world_.runtime(), object));
     assets::MaterialAsset result;
     result.key = *key;
     if (!key->empty()) {
@@ -471,9 +445,7 @@ Result<assets::MaterialAsset> Session::material_asset(ObjectId object) const {
         result.author = assets::MaterialInstanceAsset{at->second, {}};
     else
         return failure("Scene material has no author identity.");
-    auto state = material::read_instance(world_.runtime(), object);
-    if (!state)
-        return std::unexpected(state.error());
+    ATELIER_TRY_BIND(state, material::read_instance(world_.runtime(), object));
     std::get<assets::MaterialInstanceAsset>(result.author).entries = std::move(state->entries);
     return result;
 }
@@ -484,9 +456,7 @@ Result<std::vector<assets::MaterialAsset>> Session::material_assets() const {
     for (const auto& [key, document] : materials_) {
         if (unavailable(assets::AssetKind::material, key))
             continue;
-        auto asset = material_asset(document.root.id());
-        if (!asset)
-            return std::unexpected(asset.error());
+        ATELIER_TRY_BIND(asset, material_asset(document.root.id()));
         result.push_back(std::move(*asset));
     }
     return result;
@@ -585,9 +555,7 @@ std::vector<ObjectId> Session::material_objects() const {
 Result<void> Session::admit_material_edit(ObjectId object) const {
     if (world_.closed() || world_.running())
         return failure("Stop the World before editing a material.");
-    auto asset = material_asset(object);
-    if (!asset)
-        return std::unexpected(asset.error());
+    ATELIER_TRY_BIND(asset, material_asset(object));
     if (asset->key.starts_with("builtin/"))
         return failure("Installed material authors are read-only; create a Material Instance.");
     if (std::holds_alternative<assets::MaterialSourceAsset>(asset->author))
@@ -602,22 +570,16 @@ Result<void> Session::begin_material_edit(ObjectId object, std::uint64_t control
         return failure("A material edit requires a control session.");
     if (material_edit_ && material_edit_->root.id() == object && material_edit_->control == control)
         return {};
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
-    if (auto admitted = admit_material_edit(object); !admitted)
-        return admitted;
-    auto held = runtime_.hold(object);
-    if (!held)
-        return std::unexpected(held.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY(admit_material_edit(object));
+    ATELIER_TRY_BIND(held, runtime_.hold(object));
     material_edit_ = MaterialEdit{std::move(*held), control, scene_material_parents_.contains(object), {}};
     return {};
 }
 
 Result<void> Session::apply_material_entries(ObjectId object, std::span<const MaterialEntryChange> changes,
                                              bool forward, Project* project) {
-    auto state = material::read_instance(runtime_, object);
-    if (!state)
-        return std::unexpected(state.error());
+    ATELIER_TRY_BIND(state, material::read_instance(runtime_, object));
     for (const auto& change : changes) {
         const auto& value = forward ? change.after : change.before;
         const auto at = std::ranges::find(state->entries, change.path, &material::Override::path);
@@ -638,16 +600,12 @@ Result<void> Session::apply_material_entries(ObjectId object, std::span<const Ma
                     previous && previous->asset_key == binding->asset_key)
                     texture = state->textures[index];
             if (project && value->enabled && !binding->asset_key.empty() && !texture.registered()) {
-                auto surface = material::capture_program(runtime_, object);
-                if (!surface)
-                    return std::unexpected(surface.error());
+                ATELIER_TRY_BIND(surface, material::capture_program(runtime_, object));
                 if (!(*surface)->uses_default_material() &&
                     std::ranges::find((*surface)->definition()->textures(), change.path,
                                       &material::TextureDefault::path) != (*surface)->definition()->textures().end()) {
                     std::vector<MissingResource> missing;
-                    auto resolved = texture_resource(project->assets(), binding->asset_key, &missing);
-                    if (!resolved)
-                        return std::unexpected(resolved.error());
+                    ATELIER_TRY_BIND(resolved, texture_resource(project->assets(), binding->asset_key, &missing));
                     report_resources(world_, object, missing);
                     texture = std::move(*resolved);
                 }
@@ -670,14 +628,10 @@ Result<void> Session::preview_material_entry(std::uint64_t control, material::Ov
     if (project && entry.enabled)
         if (const auto* texture = std::get_if<material::TextureBinding>(&entry.value);
             texture && !texture->asset_key.empty()) {
-            auto view = inspect_material(material_edit_->root.id());
-            if (!view)
-                return std::unexpected(view.error());
+            ATELIER_TRY_BIND(view, inspect_material(material_edit_->root.id()));
             const auto field = std::ranges::find(view->declarations, entry.path, &MaterialParameterView::path);
             if (field != view->declarations.end() && !field->components) {
-                auto resolved = texture_resource(project->assets(), texture->asset_key);
-                if (!resolved)
-                    return std::unexpected(resolved.error());
+                ATELIER_TRY_BIND(resolved, texture_resource(project->assets(), texture->asset_key));
             }
         }
     const auto path = entry.path;
@@ -694,9 +648,7 @@ Result<void> Session::preview_material_entry(std::uint64_t control, std::string_
     } catch (const std::exception& error) {
         return failure(error.what());
     }
-    auto state = material::read_instance(runtime_, material_edit_->root.id());
-    if (!state)
-        return std::unexpected(state.error());
+    ATELIER_TRY_BIND(state, material::read_instance(runtime_, material_edit_->root.id()));
     auto changes = material_edit_->entries;
     auto at = std::ranges::find(changes, path, &MaterialEntryChange::path);
     if (at == changes.end()) {
@@ -704,9 +656,7 @@ Result<void> Session::preview_material_entry(std::uint64_t control, std::string_
         at = std::prev(changes.end());
     } else
         at->after = std::move(entry);
-    auto result = apply_material_entries(material_edit_->root.id(), std::span(&*at, 1), true);
-    if (!result)
-        return result;
+    ATELIER_TRY_BIND(result, apply_material_entries(material_edit_->root.id(), std::span(&*at, 1), true));
     material_edit_->entries = std::move(changes);
     ++revision_;
     forward_edit();
@@ -726,9 +676,7 @@ Result<void> Session::commit_material_edit(std::uint64_t control) {
     if (material_edit_->scene)
         remember(std::move(change));
     else {
-        auto key = material::material_key(runtime_, change.root.id());
-        if (!key)
-            return std::unexpected(key.error());
+        ATELIER_TRY_BIND(key, material::material_key(runtime_, change.root.id()));
         auto& document = materials_.at(*key);
         document.history.erase(document.history.begin() + static_cast<std::ptrdiff_t>(document.cursor),
                                document.history.end());
@@ -747,9 +695,7 @@ Result<void> Session::commit_material_edit(std::uint64_t control) {
 Result<void> Session::cancel_material_edit() {
     if (!material_edit_)
         return {};
-    auto restored = apply_material_entries(material_edit_->root.id(), material_edit_->entries, false);
-    if (!restored)
-        return restored;
+    ATELIER_TRY_BIND(restored, apply_material_entries(material_edit_->root.id(), material_edit_->entries, false));
     forward_edit();
     material_edit_.reset();
     ++revision_;
@@ -805,13 +751,11 @@ std::vector<std::string> Session::dirty_materials() const {
 }
 
 Result<void> Session::material_undo(std::string_view key, bool redo, Project* project) {
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
+    ATELIER_TRY(cancel_edit());
     const auto at = materials_.find(std::string(key));
     if (at == materials_.end())
         return failure("Material asset is not open.");
-    if (auto admitted = admit_material_edit(at->second.root.id()); !admitted)
-        return admitted;
+    ATELIER_TRY(admit_material_edit(at->second.root.id()));
     auto& doc = at->second;
     if (!material_can_undo(key, redo))
         return {};
@@ -836,12 +780,8 @@ Result<void> Session::save_material(Project& project, std::string_view key) {
         return failure("Material asset is not open.");
     if (const auto* item = unavailable(assets::AssetKind::material, key))
         return stand_in(*item);
-    auto asset = material_asset(at->second.root.id());
-    if (!asset)
-        return std::unexpected(asset.error());
-    auto saved = project.save_material(*asset);
-    if (!saved)
-        return saved;
+    ATELIER_TRY_BIND(asset, material_asset(at->second.root.id()));
+    ATELIER_TRY_BIND(saved, project.save_material(*asset));
     if (const auto* instance = std::get_if<assets::MaterialInstanceAsset>(&asset->author))
         at->second.saved = instance->entries;
     ++revision_;
@@ -850,18 +790,13 @@ Result<void> Session::save_material(Project& project, std::string_view key) {
 
 Result<void> Session::set_material_texture(Project& project, ObjectId object, std::string_view path,
                                            std::string_view key) {
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
-    auto view = inspect_material(object);
-    if (!view)
-        return std::unexpected(view.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(view, inspect_material(object));
     const auto field = std::ranges::find(view->declarations, path, &MaterialParameterView::path);
     if (field == view->declarations.end() || field->components)
         return failure("Unknown material texture declaration.");
     if (!key.empty()) {
-        auto texture = texture_resource(project.assets(), key);
-        if (!texture)
-            return std::unexpected(texture.error());
+        ATELIER_TRY_BIND(texture, texture_resource(project.assets(), key));
     }
     auto value = std::get<material::TextureBinding>(field->value);
     if (const auto previous = entry_at(view->entries, path);
@@ -869,8 +804,7 @@ Result<void> Session::set_material_texture(Project& project, ObjectId object, st
         value = std::get<material::TextureBinding>(previous->value);
     value.asset_key = key;
     constexpr auto control = std::numeric_limits<std::uint64_t>::max();
-    if (auto begun = begin_material_edit(object, control); !begun)
-        return begun;
+    ATELIER_TRY(begin_material_edit(object, control));
     auto changed = preview_material_entry(control, {std::string(path), std::move(value), true});
     if (changed)
         changed = commit_material_edit(control);
@@ -883,36 +817,23 @@ Result<void> Session::set_material_texture(Project& project, ObjectId object, st
 }
 
 Result<void> Session::replace_material_bindings(ObjectId object, std::vector<presentation::MaterialBinding> after) {
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
-    auto component = admit_component_edit(object);
-    if (!component)
-        return std::unexpected(component.error());
-    auto before = presentation::read_material_bindings(runtime_, object);
-    if (!before)
-        return std::unexpected(before.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(component, admit_component_edit(object));
+    ATELIER_TRY_BIND(before, presentation::read_material_bindings(runtime_, object));
     const auto equal = [](const auto& a, const auto& b) {
         return a.slot == b.slot && a.resource.id() == b.resource.id() && a.overridden == b.overridden;
     };
     if (std::ranges::equal(*before, after, equal))
         return {};
-    auto root = runtime_.hold(object);
-    if (!root)
-        return std::unexpected(root.error());
-    auto changed = presentation::set_material_bindings(runtime_, object, after);
-    if (!changed)
-        return changed;
+    ATELIER_TRY_BIND(root, runtime_.hold(object));
+    ATELIER_TRY_BIND(changed, presentation::set_material_bindings(runtime_, object, after));
     remember(MaterialBindingChange{std::move(*root), component->owner, std::move(*before), std::move(after)});
     return {};
 }
 
 Result<void> Session::assign_material(Project& project, ObjectId object, std::string_view slot, std::string_view key) {
-    auto resource = material_resource(project.assets(), key);
-    if (!resource)
-        return std::unexpected(resource.error());
-    auto bindings = presentation::read_material_bindings(runtime_, object);
-    if (!bindings)
-        return std::unexpected(bindings.error());
+    ATELIER_TRY_BIND(resource, material_resource(project.assets(), key));
+    ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
     const auto at = std::ranges::find(*bindings, slot, &presentation::MaterialBinding::slot);
     if (at == bindings->end())
         bindings->push_back({std::string(slot), std::move(*resource), true});
@@ -924,46 +845,32 @@ Result<void> Session::assign_material(Project& project, ObjectId object, std::st
 }
 
 Result<void> Session::clear_material(ObjectId object, std::string_view slot) {
-    auto bindings = presentation::read_material_bindings(runtime_, object);
-    if (!bindings)
-        return std::unexpected(bindings.error());
+    ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
     std::erase_if(*bindings, [&](const auto& binding) { return binding.slot == slot && binding.overridden; });
     return replace_material_bindings(object, std::move(*bindings));
 }
 
 Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::string_view slot) {
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return std::unexpected(cancelled.error());
-    if (auto admitted = admit_component_edit(component); !admitted)
-        return std::unexpected(admitted.error());
-    auto bindings = presentation::read_material_bindings(runtime_, component);
-    if (!bindings)
-        return std::unexpected(bindings.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY(admit_component_edit(component));
+    ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, component));
     const auto at = std::ranges::find(*bindings, slot, &presentation::MaterialBinding::slot);
     ObjectRoot parent;
     if (at != bindings->end())
         parent = at->resource;
     else {
-        auto mesh = presentation::read_static_mesh(runtime_, component);
-        if (!mesh)
-            return std::unexpected(mesh.error());
+        ATELIER_TRY_BIND(mesh, presentation::read_static_mesh(runtime_, component));
         const auto fallback = std::ranges::find(mesh->mesh.defaults, slot, &presentation::MaterialBinding::slot);
         if (fallback != mesh->mesh.defaults.end())
             parent = fallback->resource;
         else {
             assets::Reader installed;
-            auto grid = material_resource(installed, "builtin/material/default-grid");
-            if (!grid)
-                return std::unexpected(grid.error());
+            ATELIER_TRY_BIND(grid, material_resource(installed, "builtin/material/default-grid"));
             parent = std::move(*grid);
         }
     }
-    auto parent_key = material::material_key(runtime_, parent.id());
-    if (!parent_key)
-        return std::unexpected(parent_key.error());
-    auto instance = material::create_instance(runtime_, {}, material::InstanceState{parent, {}, {}});
-    if (!instance)
-        return std::unexpected(instance.error());
+    ATELIER_TRY_BIND(parent_key, material::material_key(runtime_, parent.id()));
+    ATELIER_TRY_BIND(instance, material::create_instance(runtime_, {}, material::InstanceState{parent, {}, {}}));
     scene_material_parents_.emplace(instance->id(), *parent_key);
     if (at == bindings->end())
         bindings->push_back({std::string(slot), *instance, true});
@@ -980,13 +887,9 @@ Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::strin
 }
 
 Result<void> Session::set_material_override(ObjectId object, std::string_view path, bool enabled, Project* project) {
-    if (auto cancelled = cancel_edit(); !cancelled)
-        return cancelled;
-    if (auto admitted = admit_material_edit(object); !admitted)
-        return admitted;
-    auto view = inspect_material(object);
-    if (!view)
-        return std::unexpected(view.error());
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY(admit_material_edit(object));
+    ATELIER_TRY_BIND(view, inspect_material(object));
     auto entry = entry_at(view->entries, path);
     if (!entry) {
         if (!enabled)
@@ -998,8 +901,7 @@ Result<void> Session::set_material_override(ObjectId object, std::string_view pa
     }
     entry->enabled = enabled;
     constexpr auto control = std::numeric_limits<std::uint64_t>::max() - 1;
-    if (auto begun = begin_material_edit(object, control); !begun)
-        return begun;
+    ATELIER_TRY(begin_material_edit(object, control));
     auto changed = preview_material_entry(control, std::move(*entry), project);
     if (changed)
         changed = commit_material_edit(control);
@@ -1013,8 +915,7 @@ Result<void> Session::set_material_override(ObjectId object, std::string_view pa
 
 Result<void> Session::discard_material_override(ObjectId object, std::string_view path) {
     constexpr auto control = std::numeric_limits<std::uint64_t>::max() - 2;
-    if (auto begun = begin_material_edit(object, control); !begun)
-        return begun;
+    ATELIER_TRY(begin_material_edit(object, control));
     auto changed = preview_material_entry(control, path, std::nullopt);
     if (changed)
         changed = commit_material_edit(control);

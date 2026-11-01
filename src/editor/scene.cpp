@@ -480,8 +480,7 @@ Result<ArrayLeaf> ArrayLeaf::create(Runtime& runtime, TypeId type) {
     result.value_ = std::make_shared<Value>(runtime, type);
     auto& value = *result.value_;
     value.storage = {value.bytes.prepare((*info)->size, (*info)->alignment), (*info)->size};
-    if (auto made = runtime.initialize_value(type, value.storage); !made)
-        return std::unexpected(made.error());
+    ATELIER_TRY(runtime.initialize_value(type, value.storage));
     value.live = true;
     return result;
 }
@@ -569,9 +568,7 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, c
                 Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
         if (!record.is_object())
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
-        auto schema = detail::author_fields(runtime, target.type);
-        if (!schema)
-            return std::unexpected(schema.error());
+        ATELIER_TRY_BIND(schema, detail::author_fields(runtime, target.type));
         read_record(runtime, target, *schema, record, {}, resolve, write, nullptr);
         return {};
     } catch (const Rejected& error) {
@@ -3422,8 +3419,7 @@ Result<void> Session::discard_retained(ObjectId object) {
     if (object == ObjectId{})
         before = retained_document_;
     else {
-        if (auto ready = admit_property_edit(object); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(admit_property_edit(object));
         const auto at = retained_.find(object);
         if (at == retained_.end())
             return {};
