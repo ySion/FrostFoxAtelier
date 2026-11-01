@@ -4,6 +4,8 @@ param(
     # Both configurations always build. Each test target runs only where listed:
     # 'target' or 'release:target' runs in release, 'dev:target' in dev. Commas may join items.
     [string[]]$Targets = @(),
+    # Pre-push batch: build dev/release and run every registered leaf once in release.
+    [switch]$Full,
     [ValidateSet('dev', 'release')][string[]]$Configs = @('dev', 'release'),
     [ValidateRange(1, 256)][int]$Jobs = 4,
     # Diagnostic only: deliberately time out one registered window target, not a test run.
@@ -14,6 +16,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $Configs = @($Configs | Select-Object -Unique)
 if (-not $Configs.Count) { throw 'At least one configuration is required.' }
+if ($Full -and ($Targets.Count -or $ProbeWindowTarget)) { throw '-Full cannot be combined with -Targets or -ProbeWindowTarget.' }
+if ($Full -and ('dev' -notin $Configs -or 'release' -notin $Configs)) { throw '-Full requires both dev and release configurations.' }
+if ($Full) { $Configs = @('dev', 'release') }
+$tier = if ($ProbeWindowTarget) { 'probe' } elseif ($Full) { 'full' } else { 'targeted' }
 $requested = @{ dev = [System.Collections.Generic.List[string]]::new(); release = [System.Collections.Generic.List[string]]::new() }
 foreach ($item in @($Targets | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
     $config, $target = if ($item -match '^(dev|release):(.+)$') { $Matches[1], $Matches[2] } else { 'release', $item }
@@ -24,8 +30,7 @@ foreach ($item in @($Targets | ForEach-Object { $_ -split ',' } | ForEach-Object
     if ($target -notin $requested[$config]) { $requested[$config].Add($target) }
 }
 if ($ProbeWindowTarget -and $Targets.Count) { throw '-ProbeWindowTarget cannot be combined with -Targets.' }
-# Default GPU validation scope: GBV for RHI and selected Renderer entries; every other
-# window target runs with ATELIER_GPU_VALIDATION=debug (the D3D12 debug layer).
+# Only Full uses GBV for these entries. Targeted runs and all other windows use debug.
 $gbvTargets = @('rhi_acceptance', 'renderer_acceptance_default', 'renderer_acceptance_scene_lit', 'renderer_acceptance_material_programs')
 $results = [System.Collections.Generic.List[object]]::new()
 $lockOwned = $false
@@ -46,6 +51,7 @@ if ((Test-Path $history) -and (Get-Content -LiteralPath $history -TotalCount 1) 
 }
 $plannedScope = @($Configs | ForEach-Object {
     if ($ProbeWindowTarget) { "$_=probe:$ProbeWindowTarget" }
+    elseif ($Full -and $_ -eq 'release') { 'release=build+all-registered-leaves' }
     elseif ($requested[$_].Count) { "$_=build+targets:$($requested[$_] -join ',')" }
     else { "$_=build" }
 }) -join '; '
@@ -60,7 +66,7 @@ function Write-Gate([string]$Message) {
 }
 function Add-Result([string]$Config, [string]$Target, [string]$Layer, [string]$Result, [double]$Seconds, [string]$Log,
     [string]$Validation = 'none') {
-    $row = [pscustomobject]@{ Run = $run; Tier = $(if ($ProbeWindowTarget) { 'probe' } else { 'targeted' })
+    $row = [pscustomobject]@{ Run = $run; Tier = $tier
         Config = $Config; Layer = $Layer; Target = $Target; Result = $Result
         Seconds = [math]::Round($Seconds, 2); Log = $Log; Validation = $Validation }
     $results.Add($row)
@@ -309,7 +315,10 @@ try {
             continue
         }
         $headless = @()
-        foreach ($target in $requested[$config]) {
+        $selected = if ($Full -and $config -eq 'release') {
+            @($headlessList + $windowList | Select-Object -Unique)
+        } else { $requested[$config] }
+        foreach ($target in $selected) {
             if ($target -in $headlessList) { $headless += $target }
             elseif ($target -in $windowList) { $windowRuns.Add([pscustomobject]@{ Config = $config; Target = $target }) }
             else { throw "Not a registered acceptance target: ${config}:$target" }
@@ -392,7 +401,7 @@ try {
         foreach ($entry in $windowRuns) {
             $config = $entry.Config; $target = $entry.Target
             $layer = if ($ProbeWindowTarget) { 'probe' } else { 'window' }
-            $validation = if ($target -in $gbvTargets) { 'gbv' } else { 'debug' }
+            $validation = if ($Full -and $target -in $gbvTargets) { 'gbv' } else { 'debug' }
             $longest = if ($minutes.ContainsKey($target)) { [double]$minutes[$target][$config] } else { 15.0 }
             # Last three completed runs can raise the floor; probes/timeouts cannot inflate it.
             $recent = @($pastWindows | Where-Object { $_.Config -eq $config -and $_.Target -eq $target } | Select-Object -Last 3)
@@ -420,7 +429,7 @@ try {
         $results | Export-Csv (Join-Path $runDirectory 'summary.csv') -NoTypeInformation -Encoding utf8
         $executedScope = @($results | ForEach-Object { "$($_.Config)=$($_.Layer)" } | Select-Object -Unique) -join '; '
         if (-not $executedScope) { $executedScope = 'none' }
-        $summary = "Run=$(if ($ProbeWindowTarget) { 'probe' } else { 'targeted' }) Exit=$exitCode`nRequested: $plannedScope`nExecuted: $executedScope`n"
+        $summary = "Run=$tier Exit=$exitCode`nRequested: $plannedScope`nExecuted: $executedScope`n"
         $summary += $results | Format-Table Config, Layer, Target, Validation, Result, Seconds -AutoSize | Out-String -Width 200
         Set-Content (Join-Path $runDirectory 'summary.txt') $summary
         Write-Gate "DONE exit=$exitCode summary=$runDirectory"

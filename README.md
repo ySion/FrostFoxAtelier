@@ -101,19 +101,21 @@ git submodule update --init --recursive
 
 cmake --preset dev
 cmake --preset release
-# 必要性测试：两种配置都构建，只运行列出的目标；不带配置前缀的目标在 release 运行。
+# 每片快速门禁：两种配置都构建，只运行列出的目标；不带配置前缀的目标在 release 运行。
 pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets renderer_acceptance_scene_lit,editor_dialogs_acceptance
 # 改到核心运行时或构建链时，同一组目标用 dev: 前缀在 dev 再跑一次：
 pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets world_acceptance,dev:world_acceptance
+# 批次推送前完整门禁：双配置 all 构建，release 全部无窗口与窗口叶目标各一次。
+pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Full
 ```
 
-验收只做**必要性测试**：直接覆盖本次改动行为的测试，即改动对应的验收目标或入口、复现用例和变异检查。不因“可能受影响”运行整组无窗口目标或整组窗口目标，也不安排全量或夜间运行。两种配置都必须构建通过；测试默认只在 release 运行，只有改到核心运行时或构建链时才在 dev 再跑同一组。交付时写明跑了哪些必要测试、为什么这些就够；集成只运行各线列出的必要测试的并集。
+**每片快速门禁**默认双配置 `all` 构建，只运行直接覆盖本次改动的目标或入口、复现用例和变异检查，不因“可能受影响”扩成整组。测试默认在 release 运行；改到核心运行时或构建链时，同一组在 dev 再跑一次。交付写明目标与覆盖理由。**批次推送前完整门禁**使用 `-Full`：双配置 `all` 构建后，release 的全部已注册无窗口与窗口叶目标各运行一次；每片的 dev 定向回归仍须执行，不由 release 全套替代。验收保留与删除的标准只见[工程指南](docs/engineering.md#验收保留标准)。
 
-`-Targets` 中的每一项是 `目标`、`release:目标` 或 `dev:目标`，逗号分隔；名称必须来自 CMake 生成的目标清单，否则脚本失败。汇总目标 `renderer_acceptance` 会被拒绝：它让全部入口共用一个验证级别，应改列需要的 `renderer_acceptance_<入口>`。`-Configs` 默认 `dev,release`，脚本总是先构建这些配置的 `all`。
+`-Targets` 中的每一项是 `目标`、`release:目标` 或 `dev:目标`，逗号分隔；名称必须来自 CMake 生成的目标清单，否则脚本失败。汇总目标 `renderer_acceptance` 会被拒绝：它让全部入口共用一个验证级别，应改列需要的 `renderer_acceptance_<入口>`。`-Configs` 默认 `dev,release`，脚本总是先构建这些配置的 `all`。`-Full` 要求两种配置都在场，不能与 `-Targets` 或 `-ProbeWindowTarget` 同用；它读取构建后 CMake 生成的两类清单，去重后执行叶目标，不另列全套名单，也不重复执行聚合目标。
 
-**GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。`rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit`、`renderer_acceptance_material_programs` 用 `gbv`（D3D12 debug layer + GPU-based validation）；材质程序入口需要验证动态资源索引，不能降为 debug。其余窗口目标用 `debug`，只开 debug layer，包括 Renderer 的其余入口和全部编辑器窗口目标（含 Control 拉起的编辑器）。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证，`scene-lit-stability` 只开 debug layer。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原来的 GBV 运行。
+**GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。快速门禁全部设置为 `debug`。只有 `-Full` 中的 `rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit`、`renderer_acceptance_material_programs` 四项设置为 `gbv`（D3D12 debug layer + GPU-based validation），其余窗口仍为 `debug`，包括全部编辑器窗口目标及 Control 子进程。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证，`scene-lit-stability` 只开 debug layer。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原有验证级别运行。
 
-debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 barrier；以下错误只有 GBV 能发现：着色器执行时访问越界、未初始化或已销毁的描述符（bindless 和动态索引尤其如此），描述符类型与着色器声明不符，以及着色器实际访问的资源与其当前状态不符。只出现在编辑器路径（编辑器 UI、弹窗、Control、示例工程场景）或被降级的 Renderer 入口（temporal、quality、stability、clustered、shadows、cost、benchmark）里的这类错误，脚本不再自动发现；改动涉及这些路径的 GPU 资源绑定时，不设该变量直接运行对应目标，按 GBV 复查。
+debug layer 仍在 CPU 侧检查 API 参数、对象创建和命令列表上的 barrier；以下错误只有 GBV 能发现：着色器执行时访问越界、未初始化或已销毁的描述符（bindless 和动态索引尤其如此），描述符类型与着色器声明不符，以及着色器实际访问的资源与其当前状态不符。快速门禁不自动发现这些 GBV 专属错误；`-Full` 仅在上述四项覆盖的执行路径中启用 GBV，其余窗口仍不覆盖这些错误。改动涉及未覆盖路径的 GPU 资源绑定时，需安排该路径的 GBV 复查；不经脚本运行时仍须遵守窗口锁，并确认入口实际请求 GBV。
 
 CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单，总入口 `acceptance` 依赖两者，只供手动排查，不是交付或集成要求。直接运行 CMake 目标不取得跨工作树锁，也没有脚本的逐目标超时保护和验证级别设置；必要测试应使用脚本。
 
@@ -129,7 +131,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 窗口目标的超时按配置取**包含冷编译的近期最长耗时的 2 倍**、最少 5 分钟；表中保留冷启动观测下限，并读取 CSV 中该配置/目标最近三次成功窗口运行，取两者较大值。超时和 probe 不作为完整耗时样本，避免故障反复扩大预算。未测量目标默认 30 分钟。超时按目标计，Renderer 的每个入口是单独目标，各自也用默认 30 分钟，与运行脚本的单入口限时一致；ec-5 实测各入口整进程都在 6 分钟以内。release Control 在先前完整运行基础上另留 310 秒冷管线准备，预算为 23 分钟。`history.csv` 中加入验证级别之前的行，`Validation` 列为空。着色器缓存落地前不能用热缓存样本缩短这些下限，后续根据 CSV 数据人工收紧。超时先用 `PrintWindow` 逐个截取当前 Windows Job 内进程的可见顶层窗口，不读取桌面或覆盖它的其他应用；没有窗口时只记录“没有可截的窗口”，不退回整桌面截图。每个截图辅助进程最多等待 4 秒，失败或卡住也继续终止包含编辑器子进程的 Job 进程树，记录 `TIMEOUT` 后继续下一项。激活器只在当前日志等待“click the editor title bar to begin”、之后尚无“activation acquired”或 `FAIL` 且编辑器仍响应时注入激活。
 持锁执行窗口目标时，脚本自身设为 `AboveNormal`，Windows Job 同时把该优先级应用于 cmake、Ninja 和所有验收子进程（Windows 不自动继承父进程的 AboveNormal）；锁外构建与无窗口目标保持 `Normal`，退出时恢复脚本原优先级。
 
-每次运行的日志、超时截图 `*.log.timeout.<窗口句柄>.png`、`summary.txt` 和 `summary.csv` 位于 `out/acceptance-gate/<时间戳-PID>/`；汇总首行为 `Run=targeted`（超时 probe 为 `Run=probe`），并区分请求范围和实际执行的配置/层（`build`、`headless`、`window` 或 `probe`）。每个目标记录配置、层、`PASS/FAIL/TIMEOUT`、秒数和验证级别（窗口目标为 `gbv` 或 `debug`，构建和无窗口目标为 `none`），并追加至 `out/acceptance-gate/history.csv`。任一失败或超时令脚本返回非 0。仅验证超时清理时，可在已完成构建后运行 `pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Configs release -ProbeWindowTarget editor_control_acceptance -ProbeTimeoutSeconds 30`，在冷管线准备阶段检查整个父子进程树的终止；probe 不启动激活器，不注入输入，不能与 `-Targets` 同用。该模式仍持锁，但明确记为 probe，不是测试通过。
+每次运行的日志、超时截图 `*.log.timeout.<窗口句柄>.png`、`summary.txt` 和 `summary.csv` 位于 `out/acceptance-gate/<时间戳-PID>/`；汇总首行为 `Run=targeted`、`Run=full` 或 `Run=probe`，并区分请求范围和实际执行的配置/层（`build`、`headless`、`window` 或 `probe`）。每个目标记录配置、层、`PASS/FAIL/TIMEOUT`、秒数和验证级别（窗口目标为 `gbv` 或 `debug`，构建和无窗口目标为 `none`），并追加至 `out/acceptance-gate/history.csv`。并行无窗口目标的秒数取自各自 `result.csv`；窗口目标的起止时刻见 `gate.log` 的 `Starting` 和结果行。任一失败或超时令脚本返回非 0。仅验证超时清理时，可在已完成构建后运行 `pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Configs release -ProbeWindowTarget editor_control_acceptance -ProbeTimeoutSeconds 30`，在冷管线准备阶段检查整个父子进程树的终止；probe 不启动激活器，不注入输入，不能与 `-Targets` 或 `-Full` 同用。该模式仍持锁，但明确记为 probe，不是测试通过。
 
 测量入口统一以 `--profile-*` 命名（如 `atelier_editor_document_acceptance --profile-scene-cpu`、`atelier_editor --profile-render-performance`），只输出数值报告，不属于验收，也不进入总入口；其中的数值不作为任何通过条件。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
