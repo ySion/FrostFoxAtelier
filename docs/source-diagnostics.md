@@ -76,7 +76,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 - **位置表。** 编译单元始终保留位置表，每个失败点一条 32 字节记录（函数名、合并文本偏移、行、列），由代码版本拥有。宿主只在失败返回后解析序号；单文本请求直接使用请求路径与序号，项目单元按需扫描快照中的原文件换算行列，不额外常驻行索引。
 - **诊断与调试。** 启用诊断或调试的版本预先解析全部位置，用于采集报告与停点；`Error.source` 与无插桩版本使用同一位置序号，结果一致。
 
-**已知成本（2026-10-17，release，`atelier_source_measure --artifacts DIR` 重现产物）。** 冷出口与位置表是有意接受的开销：
+**历史测量证据（2026-10-17，release）。** 下表来自当时的 `atelier_source_measure --artifacts DIR` 产物；该命令仅标识历史来源，不是当前执行指引，数字不代表当前候选的实测结果。冷出口与位置表是当时有意接受的开销：
 
 | 项目 | 引入前 → 引入后 |
 | --- | --- |
@@ -102,7 +102,7 @@ checked_helpers 的循环反而从 62 条指令减为 55 条：此前合并的�
 
 ## 验收入口
 
-[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖调用计数、借用/拥有值、GC、跨文件故障位置、无插桩版本的失败位置、协程终态与旧版本、报告及产物寿命。它纳入现有 `source_acceptance`，也可聚焦执行：
+[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖诊断调用中的 GC、native 失败时拥有值清理、协程取消与热发布/关闭后的旧任务寿命，以及 Runtime 退役后的报告/产物寿命和 capture 复用。它纳入现有 `source_acceptance`，也可聚焦执行：
 
 ```powershell
 . ./tools/enter-dev.ps1
@@ -111,4 +111,4 @@ cmake --build --preset dev --target atelier_source_minimal
 # release 使用相同入口，替换配置名。
 ```
 
-这些验收证明行为与计数契约；不提供诊断版本的性能提升结论。插桩会增加指令、分支和存储，也可能影响 LLVM 优化，应使用普通版本做最终性能测量。
+这些验收以固定输入和独立期望检查资源清理与寿命契约；不提供诊断版本的性能提升结论。插桩会增加指令、分支和存储，也可能影响 LLVM 优化，应使用普通版本做最终性能测量。

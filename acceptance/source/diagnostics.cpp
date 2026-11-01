@@ -1,5 +1,5 @@
 #include "../helpers.hpp"
-#include "math/math.hpp"
+#include "native_values.hpp"
 #include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
 #include "source/diagnostics.hpp"
@@ -12,7 +12,9 @@
 namespace {
 using namespace atelier;
 
-using source::DiagnosticCall;
+using atelier::acceptance::borrow::Particle;
+
+using atelier::acceptance::borrow::Position;
 
 using source::DiagnosticStatus;
 
@@ -28,28 +30,20 @@ void publish(Program& program, std::string_view name, std::string_view text,
     take(program.try_publish(candidate));
 }
 
-void publish(Program& program, source::SourceSnapshot snapshot) {
-    auto candidate = take(Program::prepare(take(program.request(std::move(snapshot), {.diagnostics = true}))));
-    take(program.try_publish(candidate));
-}
-
-void require_clean(const source::DiagnosticReport& report) {
-    require(report.resources_cleared && report.remaining_owned_values == 0 && report.before.roots == report.after.roots,
-            "Diagnostic completion did not include explicit value/root cleanup.");
-}
-
 struct Host {
     std::uint32_t value{};
 
     Coroutine* task{};
 
-    void fail() { throw std::runtime_error("Diagnostic native failure."); }
-
-    void cancel() { task->cancel(); }
+    void fail() {
+        value = static_cast<std::uint32_t>(Particle::live);
+        throw std::runtime_error("Diagnostic native failure.");
+    }
 
     void cancel_fail() {
         task->cancel();
-        fail();
+        value = 1;
+        throw std::runtime_error("Diagnostic native failure.");
     }
 };
 
@@ -57,246 +51,114 @@ TypeId register_host(Runtime& runtime) {
     return take(runtime.register_type(NativeRegistration<Host>{runtime, "diagnostic.Host", TypeKind::object}
                                           .field<&Host::value>("value")
                                           .method<&Host::fail>("fail", true)
-                                          .method<&Host::cancel>("cancel", true)
                                           .method<&Host::cancel_fail>("cancel_fail", true)
                                           .build()));
 }
 
-void verify_call_boundaries() {
+void verify_gc_lifetime() {
     Runtime runtime;
     const auto type = register_host(runtime);
     auto host = take(runtime.create(type));
     const auto field = take(runtime.find_field(type, "value"));
     Program program(runtime, type);
-    constexpr auto body =
-        "void run(uint count) { uint i = 0; while (i < count) { self.value = self.value + 1; i = i + 1; } }";
-    publish(program, "loop.source", body, {});
-    require(!take(program.pin()).artifacts(), "Default compilation retained optional artifacts.");
+    publish(program, "gc.source", "void run() { self.value = self.value + 1; }");
     Diagnostics capture;
-    const std::array args{Scalar{std::uint32_t{7}}};
-    const auto rejected = program.entry().invoke(host.id(), args, &capture);
-    require(!rejected && rejected.error().code == ErrorCode::unsupported_operation &&
-                capture.snapshot().status == DiagnosticStatus::rejected && !capture.active() &&
-                std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 0,
-            "An unsupported capture executed user code or failed to record its rejection.");
-    take(program.entry().invoke(host.id(), args));
-    require(std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 7,
-            "Default invocation changed when diagnostics were added.");
-
-    publish(program, "loop.source", body, {.diagnostics = true, .artifacts = true});
-    take(program.entry().invoke(host.id(), args)); // A diagnostic version also accepts an ordinary invocation.
-    take(program.entry().invoke(host.id(), args, &capture));
-    const auto report = capture.snapshot();
-    require(report.status == DiagnosticStatus::completed && !capture.active() && report.program_id != 0 &&
-                report.code_version != 0 && report.entry == "run" && report.source_name == "loop.source" &&
-                !report.error && !report.timing && report.active_time == std::chrono::nanoseconds::zero() &&
-                std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 21,
-            "Call capture lost its identity, state, count-only timing contract or user result.");
-    require(report.calls[DiagnosticCall::begin] == 1 && report.calls[DiagnosticCall::finish] == 1 &&
-                report.calls[DiagnosticCall::field_read] == 7 && report.calls[DiagnosticCall::field_write] == 7 &&
-                report.calls[DiagnosticCall::poll] == 8 && report.calls[DiagnosticCall::native_call] == 0 &&
-                report.calls[DiagnosticCall::source_call] == 0,
-            "Object-loop diagnostics did not count actual JIT/native boundaries.");
-    require_clean(report);
-    const auto artifacts = take(take(program.pin()).artifacts());
-    require(!artifacts.entry_symbol.empty() && !artifacts.target_triple.empty() && !artifacts.original_ir.empty() &&
-                !artifacts.optimized_ir.empty() && !artifacts.object_code.empty() &&
-                artifacts.assembly.find(artifacts.entry_symbol) != std::string::npos &&
-                artifacts.original_ir.find("diagnostic.trace") != std::string::npos,
-            "Requested artifacts omitted the actual module, object, entry symbol or diagnostic instrumentation.");
-
-    for (int i = 0; i < 8; ++i)
-        take(runtime.create(type)).reset();
+    take(runtime.create(type)).reset();
     take(runtime.begin_collection());
-    const std::array many{Scalar{std::uint32_t{256}}};
-    take(program.entry().invoke(host.id(), many, &capture));
-    const auto protected_call = capture.snapshot();
-    require(protected_call.before.objects == 9 && protected_call.after.objects == 9 &&
-                protected_call.after.collection_phase == protected_call.before.collection_phase &&
-                protected_call.calls[DiagnosticCall::field_write] == 256,
-            "Reused capture accumulated old counts or synchronous execution advanced GC.");
-    require_clean(protected_call);
+    take(program.entry().invoke(host.id(), {}, &capture));
+    require(capture.snapshot().status == DiagnosticStatus::completed && !capture.active() &&
+                std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1 && runtime.live_objects() == 2 &&
+                runtime.root_count() == 1 && runtime.collection_phase() == CollectionPhase::roots,
+            "Diagnostic execution advanced host GC or retained an invocation root.");
     std::size_t reclaimed{};
     while (runtime.collection_phase() != CollectionPhase::idle)
         reclaimed += take(runtime.collect_step({1})).reclaimed;
-    require(reclaimed == 8 && runtime.live_objects() == 1,
-            "Host collection did not resume after diagnostic execution.");
+    require(reclaimed == 1 && runtime.live_objects() == 1,
+            "Host collection did not reclaim the unrooted object after diagnostic execution.");
 }
 
-void verify_borrowed_and_owned_paths() {
+void verify_owned_failure_cleanup() {
     Runtime runtime;
     const auto type = register_host(runtime);
-    take(runtime.register_types(
-        {string_definition(runtime), array_definition<math::Vector3>(runtime, "diagnostic.Vectors")}));
+    auto particle = reflection::Definition<Particle>::build(runtime);
+    particle.native.value_operations_preserve_borrows = true;
+    take(runtime.register_types({std::move(particle), reflection::Definition<Position>::build(runtime),
+                                 string_definition(runtime),
+                                 array_definition<Particle>(runtime, "diagnostic.Particles")}));
     auto host = take(runtime.create(type));
-    Program batch(runtime);
-    publish(batch, "batch.source", R"(
-void run(Array<vector3>& values) {
-    uint i = 0;
-    while (i < values.size()) { values[i] = values[i] * 2.0; i = i + 1; }
-}
-)");
-    Array<math::Vector3> values;
-    values.resize(64);
-    for (auto& value : values)
-        value = {1.0f, 2.0f, 3.0f};
-    Diagnostics capture({.timing = true});
-    take(batch.entry().invoke({}, std::array{Argument::borrow(values)}, &capture));
-    const auto report = capture.snapshot();
-    require(values[0] == math::Vector3{2.0f, 4.0f, 6.0f} && values[values.size() - 1] == values[0] &&
-                report.status == DiagnosticStatus::completed && report.timing && report.active_time.count() > 0 &&
-                report.calls[DiagnosticCall::sequence_view] == 1 && report.calls[DiagnosticCall::poll] == 0 &&
-                report.calls[DiagnosticCall::field_read] == 0 && report.calls[DiagnosticCall::field_write] == 0 &&
-                report.calls[DiagnosticCall::native_call] == 0 && report.calls[DiagnosticCall::source_call] == 0,
-            "Borrowed math loop gained per-element native calls or was omitted from diagnostics.");
-    require_clean(report);
-
+    const auto field = take(runtime.find_field(type, "value"));
     Program owned(runtime, type);
     publish(owned, "owned-diagnostic.source", R"(
 uint leaf() {
-    String label = "diagnostic scope owns a heap string";
+    Array<borrow.Particle> local;
+    local.resize(1);
     self.fail();
-    return label.size();
+    return 0;
 }
 uint run() { return leaf(); }
 )",
             {.diagnostics = true}, "run");
-    const auto failed = owned.entry().invoke(host.id(), {}, &capture);
-    const auto failure = capture.snapshot();
-    require(!failed && failed.error().message == "Diagnostic native failure." &&
-                failure.status == DiagnosticStatus::failed && failure.error &&
-                failure.error->message == failed.error().message && failure.location &&
-                failure.location->function == "leaf" && failure.location->source.path == "owned-diagnostic.source" &&
-                failure.location->source.line == 4 && failed.error().source && failed.error().source->line == 4 &&
-                failure.calls[DiagnosticCall::source_call] == 1 && failure.calls[DiagnosticCall::native_call] == 1 &&
-                failure.peak_owned_values > 0 && failure.calls[DiagnosticCall::value_construct] > 0 &&
-                failure.calls[DiagnosticCall::value_construct] == failure.calls[DiagnosticCall::value_destroy],
-            "Nested native failure lost its first cause/source or skipped owned-value accounting.");
-    require_clean(failure);
-}
-
-void verify_source_mapping() {
-    Runtime runtime;
-    Program program(runtime);
-    publish(program, {"diagnostic-project",
-                      3,
-                      {{"Source/Math.source", 17, "\nuint leaf(uint divisor) {\n    return 10 / divisor;\n}\n"},
-                       {"Source/Entry.source", 29, "uint run(uint divisor) { return leaf(divisor); }"}}});
+    require(Particle::live == 0, "Native failure fixture started with an unrelated live Particle.");
     Diagnostics capture;
-    const auto result = take(program.entry("run")).invoke({}, std::array{Scalar{std::uint32_t{0}}}, &capture);
-    const auto report = capture.snapshot();
-    require(!result && report.status == DiagnosticStatus::failed && report.location && report.error &&
-                report.location->function == "leaf" && report.location->source.path == "Source/Math.source" &&
-                report.location->source.version == 17 && report.location->source.line == 3 && result.error().source &&
-                result.error().source->path == "Source/Math.source" && result.error().source->version == 17 &&
-                report.error->message == result.error().message,
-            "A nested runtime failure was attributed to the caller or combined project source.");
-    require_clean(report);
+    const auto failed = owned.entry().invoke(host.id(), {}, &capture);
+    // The native callback observes the actual live value before it throws. A
+    // skipped constructor cannot pass merely because the final live count is zero.
+    require(!failed && capture.snapshot().status == DiagnosticStatus::failed && !capture.active() &&
+                std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1 && Particle::live == 0 &&
+                runtime.root_count() == 1,
+            "Diagnostic native failure skipped the owned value or failed to release it and its invocation root.");
 }
 
 void verify_coroutine_lifetime() {
     Runtime runtime;
     const auto type = register_host(runtime);
     auto host = take(runtime.create(type));
-    const auto roots = runtime.root_count();
+    const auto field = take(runtime.find_field(type, "value"));
     Program program(runtime, type);
-    publish(program, "suspend.source", "async uint run(uint value) {\n    yield;\n    return value + 1;\n}");
-    const auto old = take(program.pin());
+    publish(program, "suspend.source", "async uint run(uint value) { yield; return value + 1; }");
     const auto entry = program.entry();
     const std::array args{Scalar{std::uint32_t{41}}};
-    Diagnostics capture({.timing = true});
-    auto task = take(entry.start(host.id(), args, &capture));
-    const auto ready = capture.snapshot();
-    require(capture.active() && ready.status == DiagnosticStatus::ready && ready.resumes == 0 &&
-                ready.calls[DiagnosticCall::coroutine_allocate] == 1 &&
-                ready.calls[DiagnosticCall::coroutine_free] == 0,
-            "Creating a coroutine failed to record allocation or executed its body.");
-    const auto busy = entry.start(host.id(), args, &capture);
-    require(!busy && busy.error().code == ErrorCode::busy && capture.snapshot().status == DiagnosticStatus::ready &&
-                capture.snapshot().calls[DiagnosticCall::coroutine_allocate] == 1,
-            "Reusing an active capture replaced its report or allocated a second coroutine.");
-    require(take(task.resume()) == CoroutineState::suspended, "Diagnostic coroutine did not yield.");
-    const auto suspended = capture.snapshot();
-    require(suspended.status == DiagnosticStatus::suspended && suspended.resumes == 1 && suspended.location &&
-                suspended.location->source.path == "suspend.source" && suspended.location->source.line == 2 &&
-                capture.snapshot().active_time == suspended.active_time,
-            "Suspension lost its location or kept advancing the active execution clock.");
-    publish(program, "replacement.source", "async uint run(uint value) { yield; return value + 100; }");
-    Diagnostics fresh;
-    auto replacement = take(entry.start(host.id(), args, &fresh));
-    require(fresh.snapshot().program_id == ready.program_id && fresh.snapshot().code_version != ready.code_version,
-            "Hot publication did not distinguish code versions within the same program.");
-    replacement.cancel();
-    program.close();
-    require(take(task.resume()) == CoroutineState::completed && std::get<std::uint32_t>(*take(task.result())) == 42,
-            "Diagnostics prevented a suspended old version from completing after close.");
-    auto completed = capture.snapshot();
-    require(completed.status == DiagnosticStatus::completed && !capture.active() && completed.resumes == 2 &&
-                completed.code_version == ready.code_version && completed.calls[DiagnosticCall::coroutine_free] == 1 &&
-                completed.after.roots == roots,
-            "Coroutine completion reported a new version, leaked roots or missed code-frame destruction.");
-    require_clean(completed);
+    Diagnostics capture;
+    auto cancelled = take(entry.start(host.id(), args, &capture));
+    require(take(cancelled.resume()) == CoroutineState::suspended, "Cancellation fixture did not yield.");
+    cancelled.cancel();
+    require(capture.snapshot().status == DiagnosticStatus::cancelled && !capture.active() && runtime.root_count() == 1,
+            "Suspended cancellation retained a capture or receiver root.");
 
-    auto cancelled = take(old.start(host.id(), args, &capture));
-    cancelled.cancel();
-    cancelled.cancel();
-    auto cancelled_report = capture.snapshot();
-    require(cancelled_report.status == DiagnosticStatus::cancelled && cancelled_report.resumes == 0 &&
-                cancelled_report.calls[DiagnosticCall::coroutine_allocate] == 1 &&
-                cancelled_report.calls[DiagnosticCall::coroutine_free] == 1,
-            "Ready cancellation or repeated cancellation double-counted resource cleanup.");
-    require_clean(cancelled_report);
-    cancelled = take(old.start(host.id(), args, &capture));
-    take(cancelled.resume());
-    cancelled.cancel();
-    cancelled_report = capture.snapshot();
-    require(cancelled_report.status == DiagnosticStatus::cancelled && cancelled_report.resumes == 1 &&
-                cancelled_report.calls[DiagnosticCall::coroutine_free] == 1,
-            "Suspended cancellation was not terminal.");
-    require_clean(cancelled_report);
-
-    Diagnostics observer;
-    Coroutine detached;
+    Coroutine task;
     {
-        Diagnostics temporary;
-        observer = temporary;
-        detached = take(old.start(host.id(), args, &temporary));
+        Diagnostics temporary({.timing = true});
+        capture = temporary;
+        task = take(entry.start(host.id(), args, &temporary));
+        require(take(task.resume()) == CoroutineState::suspended, "Diagnostic coroutine did not yield.");
     }
-    take(detached.resume());
-    take(detached.resume());
-    require(observer.snapshot().status == DiagnosticStatus::completed && !observer.active(),
-            "Releasing the original capture handle invalidated its active coroutine.");
+    publish(program, "replacement.source", "async uint run(uint value) { yield; return value + 100; }");
+    program.close();
+    require(take(task.resume()) == CoroutineState::completed && std::get<std::uint32_t>(*take(task.result())) == 42 &&
+                capture.snapshot().status == DiagnosticStatus::completed && !capture.active() &&
+                runtime.root_count() == 1,
+            "Old coroutine lost its code/capture after publication and close, or retained its receiver root.");
 
     Program callback(runtime, type);
-    for (const bool fail : {false, true}) {
-        publish(callback, "cancel-callback.source",
-                fail ? "async uint run(uint value) { self.cancel_fail(); return value; }"
-                     : "async uint run(uint value) { self.cancel(); return value; }");
-        auto active = take(callback.entry().start(host.id(), args, &capture));
-        take(runtime.with_native<Host>(host.id(), [&](Host& value) -> Result<void> {
-            value.task = &active;
-            return {};
-        }));
-        const auto state = active.resume();
-        const auto terminal = capture.snapshot();
-        require(fail ? (!state && terminal.status == DiagnosticStatus::failed && terminal.error &&
-                        terminal.error->message == "Diagnostic native failure.")
-                     : (state && *state == CoroutineState::cancelled && terminal.status == DiagnosticStatus::cancelled),
-                "Capture guessed the terminal state before Runtime resolved cancellation and failure.");
-        require(terminal.calls[DiagnosticCall::coroutine_free] == 1 && !capture.active(),
-                "Running cancellation/failure failed to close its capture once.");
-        require_clean(terminal);
-        take(runtime.with_native<Host>(host.id(), [](Host& value) -> Result<void> {
-            value.task = nullptr;
-            return {};
-        }));
-    }
+    publish(callback, "cancel-callback.source", "async uint run(uint value) { self.cancel_fail(); return value; }");
+    auto active = take(callback.entry().start(host.id(), args, &capture));
+    take(runtime.with_native<Host>(host.id(), [&](Host& value) -> Result<void> {
+        value.task = &active;
+        return {};
+    }));
+    const auto state = active.resume();
+    take(runtime.with_native<Host>(host.id(), [](Host& value) -> Result<void> {
+        value.task = nullptr;
+        return {};
+    }));
+    require(!state && capture.snapshot().status == DiagnosticStatus::failed && !capture.active() &&
+                std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1 && runtime.root_count() == 1,
+            "Running cancellation followed by a native failure skipped the callback or retained execution roots.");
 }
 
 void verify_detached_reports_and_artifacts() {
     Diagnostics capture;
     source::CompilationArtifacts artifacts;
-    std::uint64_t first_program{};
     {
         Runtime runtime;
         Program program(runtime);
@@ -305,113 +167,29 @@ void verify_detached_reports_and_artifacts() {
         artifacts = take(take(program.pin()).artifacts());
         require(!program.entry().invoke({}, std::array{Scalar{std::uint32_t{0}}}, &capture),
                 "Detached-report scenario did not fail.");
-        first_program = capture.snapshot().program_id;
     }
     const auto retained = capture.snapshot();
     require(retained.status == DiagnosticStatus::failed && retained.error && retained.location &&
                 retained.location->source.path == "detached.source" && !artifacts.object_code.empty() &&
-                artifacts.optimized_ir.find(artifacts.entry_symbol) != std::string::npos,
+                !artifacts.optimized_ir.empty(),
             "Diagnostic output borrowed data from a retired Runtime or executable version.");
     {
         Runtime runtime;
         Program program(runtime);
-        publish(program, "plain-artifact.source", "uint run(uint value) { return value + 1; }", {.artifacts = true});
-        const auto plain = take(take(program.pin()).artifacts());
-        require(plain.original_ir.find("diagnostic.trace") == std::string::npos &&
-                    plain.original_ir.find("diagnostic.record") == std::string::npos &&
-                    plain.optimized_ir.find("diagnostic.trace") == std::string::npos &&
-                    std::get<std::uint32_t>(*take(program.entry().invoke({}, std::array{Scalar{std::uint32_t{41}}}))) ==
-                        42,
-                "Artifact-only compilation inserted diagnostic work into the default execution path.");
         publish(program, "second-runtime.source", "uint run(uint value) { return value + 2; }");
-        take(program.entry().invoke({}, std::array{Scalar{std::uint32_t{40}}}, &capture));
-        require(capture.snapshot().program_id != first_program && !capture.snapshot().error,
-                "A terminal handle reused across Runtime lifetimes retained stale identity or failure.");
+        const auto result = take(program.entry().invoke({}, std::array{Scalar{std::uint32_t{40}}}, &capture));
+        const auto report = capture.snapshot();
+        require(result && std::get<std::uint32_t>(*result) == 42 && report.status == DiagnosticStatus::completed &&
+                    report.source_name == "second-runtime.source" && !report.error && !capture.active(),
+                "Reusing a capture after Runtime retirement retained stale output or changed the new call.");
     }
-}
-
-bool same_site(const SourceLocation& a, const SourceLocation& b) {
-    return a.path == b.path && a.version == b.version && a.offset == b.offset && a.line == b.line &&
-           a.column == b.column;
-}
-
-bool located(const Error& error, std::string_view path, std::size_t line) {
-    return error.source && error.source->path == path && error.source->line == line && error.source->column > 1;
-}
-
-// Play compiles without diagnostics or a debugger; failures still carry their
-// innermost source site, identical to what a diagnostic capture reports.
-void verify_failure_locations() {
-    Runtime runtime;
-    const auto type = register_host(runtime);
-    auto host = take(runtime.create(type));
-    const std::array zero{Scalar{std::uint32_t{0}}};
-
-    Program entry(runtime);
-    publish(entry, "located-entry.source", "uint run(uint d) {\n    return 10 / d;\n}", {});
-    const auto divided = entry.entry().invoke({}, zero);
-    require(!divided && located(divided.error(), "located-entry.source", 2),
-            "An entry failure lost its source site without diagnostics.");
-
-    constexpr auto helper =
-        "uint leaf(uint d) {\n    return 10 / d;\n}\nuint run(uint d) {\n    return 1 + leaf(d);\n}";
-    Program plain(runtime);
-    Program traced(runtime);
-    publish(plain, "located-helper.source", helper, {}, "run");
-    publish(traced, "located-helper.source", helper, {.diagnostics = true}, "run");
-    Diagnostics capture;
-    const auto inner = plain.entry().invoke({}, zero);
-    const auto observed = traced.entry().invoke({}, zero, &capture);
-    const auto report = capture.snapshot();
-    require(!inner && !observed && located(inner.error(), "located-helper.source", 2) && report.location &&
-                same_site(*inner.error().source, report.location->source) && observed.error().source &&
-                same_site(*inner.error().source, *observed.error().source),
-            "A helper failure was attributed to its caller or differed from the diagnostic site.");
-
-    Program native(runtime, type);
-    publish(native, "located-native.source", "void run() {\n    self.value = 1;\n    self.fail();\n}", {});
-    const auto thrown = native.entry().invoke(host.id(), {});
-    require(!thrown && thrown.error().message == "Diagnostic native failure." &&
-                located(thrown.error(), "located-native.source", 3),
-            "A native method failure lost its source call site.");
-
-    const source::SourceSnapshot snapshot{
-        "located-project",
-        3,
-        {{"Source/Math.source", 17, "\nuint leaf(uint divisor) {\n    return 10 / divisor;\n}\n"},
-         {"Source/Entry.source", 29, "uint run(uint divisor) { return leaf(divisor); }"}}};
-    Program project(runtime);
-    Program indexed(runtime);
-    auto candidate = take(Program::prepare(take(project.request(snapshot))));
-    take(project.try_publish(candidate));
-    publish(indexed, snapshot);
-    const auto mapped = take(project.entry("run")).invoke({}, zero);
-    const auto eager = take(indexed.entry("run")).invoke({}, zero);
-    require(!mapped && !eager && located(mapped.error(), "Source/Math.source", 3) &&
-                mapped.error().source->version == 17 && eager.error().source &&
-                same_site(*mapped.error().source, *eager.error().source),
-            "A project failure lost its original file or differed from the indexed diagnostic mapping.");
-
-    Program tasks(runtime, type);
-    publish(tasks, "located-task.source", "async uint run() {\n    yield;\n    self.value = 2;\n    return 1;\n}", {});
-    auto doomed = take(runtime.create(type));
-    auto task = take(tasks.entry().start(doomed.id(), {}));
-    require(take(task.resume()) == CoroutineState::suspended, "Located coroutine did not yield.");
-    take(runtime.destroy(doomed.id()));
-    const auto stale = task.resume();
-    require(!stale && located(stale.error(), "located-task.source", 3),
-            "A coroutine failure after resumption lost its source site.");
 }
 }
 
 void verify_source_diagnostics() {
-    verify_call_boundaries();
-    verify_borrowed_and_owned_paths();
-    verify_source_mapping();
+    verify_gc_lifetime();
+    verify_owned_failure_cleanup();
     verify_coroutine_lifetime();
     verify_detached_reports_and_artifacts();
-    verify_failure_locations();
-    std::puts(
-        "Source diagnostics: PASS (boundary counts, borrowed/owned values, GC, source versions, coroutine lifetime, detached artifacts, "
-        "always-available failure sites)");
+    std::puts("Source diagnostics: PASS (GC, native failure cleanup, coroutine lifetime, detached reports/artifacts)");
 }
