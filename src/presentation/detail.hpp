@@ -70,8 +70,10 @@ Result<void> check_value(Runtime& runtime, const T& value) {
 }
 // presentation::material_surfaces inside the caller's read-only borrow of the mesh component;
 // the result equals the component's cache unless something changed. store_surfaces caches it.
-Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material_surfaces(Runtime&, ObjectId,
-                                                                                          const StaticMeshComponent&);
+// Optional live dependencies come from these same captures, not the final sampled inputs;
+// discard the collection if capture or storage fails.
+Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
+material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&, std::unordered_set<ObjectId>* dependencies = nullptr);
 Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>);
 // One EnvironmentComponent per World, disabled components included.
 world::World::Admission unique_environment(world::CapabilityId environments);

@@ -1,4 +1,5 @@
 #include "presentation/presentation.hpp"
+#include "material/resources.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 #include <mimalloc.h>
@@ -1049,6 +1050,7 @@ int main() {
         lit_materials_and_lights();
         environment_and_group_writes();
         presentation_cache();
+        material_dependency_updates();
         scene_cameras();
         hierarchical_lifecycle();
         hierarchical_reference_lifetime();
@@ -1057,7 +1059,7 @@ int main() {
         attachment_space_and_authoring();
         mirrored_and_degenerate_space();
         frame_phases();
-        std::puts("World acceptance: PASS (22/22)");
+        std::puts("World acceptance: PASS (23/23)");
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());

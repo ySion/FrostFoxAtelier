@@ -411,8 +411,9 @@ public:
     // a mesh slot is read again when its component or an Entity on its spatial
     // chain was written, the lights when any light or Entity on a light's chain
     // was, and everything after World::revision advances; only changed meshes are
-    // rebuilt. Slots whose surfaces come from bound or default materials and
-    // slots not in the cache (isolated, degenerate) are read on every update, as
+    // rebuilt. Material captures index live parent/texture dependencies; their
+    // writes or deaths refresh affected slots, while spatial-only edits reuse
+    // surfaces. Slots not in the cache (isolated, degenerate) are read on every update, as
     // are the lights while one is not drawn, so failures are reported as by
     // extraction on every update and persistent ones keep counting repeats.
     // Must be called at a host safe point (Runtime::change_cursor is busy otherwise).
@@ -454,6 +455,8 @@ private:
     Result<void> update_meshes(std::uint64_t serial, const detail::Presented* presented) const;
     // Re-reads one mesh slot; true when its item changed.
     Result<bool> update_mesh(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
+    // Replace only after a successful capture/storage, even when the Surface owner is unchanged.
+    void index_materials(std::size_t slot, std::unordered_set<ObjectId> dependencies) const;
     // Rebuilds the spatial chains of the mesh slots and the light sources for a new layout.
     Result<void> index_layout(world::World::SpatialPass&, std::span<const world::CapabilityMember> meshes) const;
     // `failed`: an active light was not drawn. `moved`: a presented pose moved a light.
@@ -465,7 +468,9 @@ private:
     // Aligned with the meshes and lights buckets at each extraction call.
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
-    mutable std::vector<bool> slotted_; // Whether each cached item's surfaces come from bound or default materials.
+    mutable std::vector<bool> materials_dirty_; // Component/binding or resource changed, not just space.
+    mutable std::vector<std::unordered_set<ObjectId>> material_dependencies_;
+    mutable std::unordered_map<ObjectId, std::unordered_set<std::uint32_t>> material_dependents_;
     mutable std::vector<LightRenderItem> lights_cache_;
     mutable rendering::SceneLightingSettings environment_cache_;
     // Writes stamped after `cursor_` are not yet read; valid while `tracked_`.

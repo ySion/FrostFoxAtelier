@@ -4,6 +4,7 @@
 #include "material/image.hpp"
 #include "source/material_program.hpp"
 
+#include <unordered_set>
 #include <variant>
 
 namespace atelier::material {
@@ -218,5 +219,17 @@ Result<void> update_instance(Runtime&, ObjectId, const InstanceState&);
 // texture/parent loss refreshes content and diagnostics; structural or Runtime
 // failures return errors, never the old owner disguised as a newly valid result.
 Result<ProgramSurfaceRef> capture_program(Runtime&, ObjectId);
+
+struct ProgramCapture {
+    ProgramSurfaceRef surface;
+    // Live identities read by this capture, including the root, ancestors and
+    // empty/disabled/dormant textures, not merely the final sampled inputs.
+    // These are observations, not roots or a promise of continued liveness.
+    std::unordered_set<ObjectId> dependencies;
+};
+// Same resolution/errors as capture_program, with dependencies collected during
+// that traversal. Successful fallback excludes dead edges. No partial result on
+// failure; an equal Surface owner can still have different dependencies.
+Result<ProgramCapture> capture_program_with_dependencies(Runtime&, ObjectId);
 
 } // namespace atelier::material

@@ -105,7 +105,8 @@ Result<void> detail::store_surfaces(Runtime& runtime, ObjectId id,
     });
 }
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
-detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshComponent& value) {
+detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshComponent& value,
+                          std::unordered_set<ObjectId>* dependencies) {
     using Snapshot = std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>;
     const auto& mesh = Access::geometry(value);
     if (!mesh)
@@ -140,7 +141,13 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
         auto reference = runtime.sequence_read(sequence, index);
         if (!reference)
             return std::unexpected(reference.error());
-        return material::capture_program(runtime, reference->id());
+        if (!dependencies)
+            return material::capture_program(runtime, reference->id());
+        auto captured = material::capture_program_with_dependencies(runtime, reference->id());
+        if (!captured)
+            return std::unexpected(captured.error());
+        dependencies->merge(captured->dependencies);
+        return std::move(captured->surface);
     };
     for (std::size_t i = 0; i < mesh->materials().size(); ++i) {
         material::ProgramSurfaceRef surface;

@@ -13,6 +13,8 @@
 
 `resolve_source` / `resolve_instance` 只消费明确的定义、父快照、作者项和图片；`capture_program` 从活 Runtime 捕获并复用未变内容。两条入口都返回 `ProgramSurface`，不会回读磁盘或回写作者值。
 
+`capture_program_with_dependencies` 在同一次 live 捕获中返回 `ProgramCapture { surface, dependencies }`。依赖是实际验证/读取的 live 材质与纹理 ObjectId 去重集合，包含顶层、父链、空图像和 disabled/dormant 纹理，不等于最终采样输入。它不保活对象，也不改变 Surface 的代码/图片租约；已死祖先或纹理成功回退后不进入集合，捕获失败不交付部分集合。原 `capture_program` 复用同一解析逻辑，但不分配依赖集合。Scene 消费它建立自己的[变化索引](../presentation/README.md#提取缓存)，不引入全局 dirty 消费或销毁通知。
+
 ## 作者格式、编辑与历史
 
 唯一材质 codec 为 v2（[`material_format.hpp`](../../../src/assets/material_format.hpp)）：

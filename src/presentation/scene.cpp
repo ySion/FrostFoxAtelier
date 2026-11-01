@@ -127,25 +127,25 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
         pass.degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
         return drop();
     const bool moved = !cached || !same_bytes(cached->world, **matrix);
+    if (cached && !materials_dirty_[slot]) {
+        if (moved)
+            cached->world = **matrix;
+        return moved;
+    }
     std::optional<Error> unusable;
+    std::unordered_set<ObjectId> dependencies;
     std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> uncached;
     auto read =
         runtime.with_native<const StaticMeshComponent>(object, [&](const StaticMeshComponent& value) -> Result<bool> {
             const auto& geometry = Access::geometry(value);
-            const bool slotted = !Access::material_slots(value).empty() || !Access::default_slots(value).empty();
             const bool same_base = cached && cached->geometry == geometry;
-            // Unslotted surfaces follow from geometry alone; slots with a bound
-            // or default material capture their resources on every update.
-            if (same_base && !slotted && !slotted_[slot])
-                return moved;
-            auto surfaces = detail::material_surfaces(runtime, object, value);
+            auto surfaces = detail::material_surfaces(runtime, object, value, &dependencies);
             if (!surfaces) {
                 unusable = std::move(surfaces.error());
                 return false;
             }
             if (*surfaces != Access::surfaces(value))
                 uncached = *surfaces;
-            slotted_[slot] = slotted;
             if (same_base && cached->surfaces == *surfaces)
                 return moved;
             if (!cached)
@@ -171,9 +171,29 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
             return std::unexpected(*unusable);
         return drop();
     }
+    // Content identity can stay equal after a reparent or dormant texture edit.
+    // Commit the actual live edges independently of the visible change/version.
+    index_materials(slot, std::move(dependencies));
+    materials_dirty_[slot] = false;
     if (*read)
         cached->world = **matrix;
     return *read;
+}
+
+void Scene::index_materials(std::size_t slot, std::unordered_set<ObjectId> dependencies) const {
+    auto& previous = material_dependencies_[slot];
+    const auto index = static_cast<std::uint32_t>(slot);
+    for (const auto object : previous)
+        if (!dependencies.contains(object)) {
+            const auto found = material_dependents_.find(object);
+            found->second.erase(index);
+            if (found->second.empty())
+                material_dependents_.erase(found);
+        }
+    for (const auto object : dependencies)
+        if (!previous.contains(object))
+            material_dependents_[object].insert(index);
+    previous = std::move(dependencies);
 }
 
 Result<void> Scene::index_layout(world::World::SpatialPass& pass,
@@ -229,7 +249,9 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
     if (!tracked || layout_revision_ != world_->revision()) {
         layout_revision_ = world_->revision();
         mesh_slots_.assign(count, {});
-        slotted_.assign(count, false);
+        materials_dirty_.assign(count, true);
+        material_dependencies_.assign(count, {});
+        material_dependents_.clear();
         presented_list_.clear();
         volatile_.clear();
         volatile_flags_.assign(count, false);
@@ -242,7 +264,9 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         for (std::size_t slot = 0; slot < count; ++slot)
             dirty_.push_back(static_cast<std::uint32_t>(slot));
     } else {
-        const auto mark = [&](std::uint32_t slot) {
+        const auto mark = [&](std::uint32_t slot, bool material = false) {
+            if (material)
+                materials_dirty_[slot] = true;
             if (std::exchange(marks_[slot], serial) != serial)
                 dirty_.push_back(slot);
         };
@@ -252,10 +276,19 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
                 for (const auto slot : found->second)
                     mark(slot);
             if (const auto found = mesh_components_.find(object); found != mesh_components_.end())
-                mark(found->second);
+                mark(found->second, true);
+            if (const auto found = material_dependents_.find(object); found != material_dependents_.end())
+                for (const auto slot : found->second)
+                    mark(slot, true);
             if (!lights_dirty_ && light_sources_.contains(object))
                 lights_dirty_ = true;
         }
+        // changed_objects lists live writes only. Check each distinct dependency
+        // once for death/generation loss; successful fallback replaces its edges.
+        for (const auto& [object, slots] : material_dependents_)
+            if (runtime.changed_since(object, cursor_))
+                for (const auto slot : slots)
+                    mark(slot, true);
         std::erase_if(volatile_, [&](std::uint32_t slot) { return !volatile_flags_[slot]; });
         for (const auto slot : volatile_)
             mark(slot);
@@ -267,7 +300,7 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
             return std::unexpected(changed.error());
         if (*changed)
             mesh_slots_[slot].changed = version_ = serial;
-        const bool always = slotted_[slot] || !mesh_slots_[slot].item;
+        const bool always = !mesh_slots_[slot].item;
         if (always && !volatile_flags_[slot])
             volatile_.push_back(slot);
         volatile_flags_[slot] = always;
@@ -303,9 +336,9 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
             }
         }
     }
-    // Nothing but this update writes while it runs: surface caches and captured material
-    // resources, which slotted meshes re-read on every update anyway. Taking the cursor
-    // after them keeps the next update from reading those slots again.
+    // Nothing but this update writes while it runs: derived surfaces/resources
+    // already consumed by the affected slots. Other Scenes have their own cursors.
+    // Taking ours after these writes avoids recapturing our own publications.
     auto cursor = runtime.change_cursor();
     if (!cursor)
         return std::unexpected(cursor.error());

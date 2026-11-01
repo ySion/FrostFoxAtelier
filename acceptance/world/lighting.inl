@@ -553,6 +553,155 @@ void environment_and_group_writes() {
     std::puts(
         "[pass] Environment: defaults without one, uniqueness with disabled ones also for content before the Scene, invalid values fall back, atomic group writes with exact restore, the sky map set only as a key-and-map pair");
 }
+void material_dependency_updates() {
+    Runtime runtime;
+    const auto types = register_all_types(runtime);
+    w::World world(runtime, types), other_world(runtime, types);
+    const auto scene = take(p::Scene::create(world, types));
+    const auto other = take(p::Scene::create(other_world, types));
+    auto source = take(material::create_source(runtime, "source", {mesh_material_definition(), {}}));
+    auto a = take(material::create_instance(runtime, "a", {source, {}, {}}));
+    auto b = take(material::create_instance(runtime, "b", {source, {}, {}}));
+    auto leaf = take(material::create_instance(runtime, "leaf", {a, {}, {}}));
+    auto first = take(p::create_static_mesh_entity(world, {geometry::cube_mesh(), {}, {}, {{"slot/0", leaf, false}}}));
+    auto second = take(p::create_static_mesh_entity(world, {geometry::cube_mesh(), {}, {}, {{"slot/0", leaf, false}}}));
+    auto foreign =
+        take(p::create_static_mesh_entity(other_world, {geometry::cube_mesh(), {}, {}, {{"slot/0", leaf, false}}}));
+    const auto first_mesh = take(w::components(runtime, first.id())).front().id();
+    const auto second_mesh = take(w::components(runtime, second.id())).front().id();
+    committed(world.attach(first.id()));
+    committed(world.attach(second.id()));
+    committed(other_world.attach(foreign.id()));
+    auto version = take(scene.update());
+    (void)take(other.update());
+    const auto old = scene.mesh_slots()[0].item->surfaces;
+    take(material::update_instance(runtime, leaf.id(), {b, {}, {}}));
+    require(take(scene.update()) == version && scene.mesh_slots()[0].item->surfaces == old,
+            "Same-Surface reparent invented a visible change.");
+    (void)take(other.update());
+    take(material::update_instance(runtime, a.id(), {source, {{"roughness", .9f}}, {{}}}));
+    require(take(scene.update()) == version, "Former parent still changed the rebound material.");
+    take(material::update_instance(runtime, b.id(), {source, {{"roughness", .7f}}, {{}}}));
+    version = take(scene.update());
+    (void)take(other.update());
+    for (const auto& slot : scene.mesh_slots())
+        require(near(take(slot.item->surfaces->front()->evaluate({})).roughness, .7f),
+                "Shared-parent edit did not reach every rebound slot.");
+    require(near(take(other.mesh_slots()[0].item->surfaces->front()->evaluate({})).roughness, .7f) &&
+                near(take(old->front()->evaluate({})).roughness, .25f),
+            "One Scene consumed another's changes or mutated an old snapshot.");
+    take(runtime.write(first.id(), types.position_fields[0], Scalar{3.f}));
+    const auto surfaces = scene.mesh_slots()[0].item->surfaces;
+    version = take(scene.update());
+    require(scene.mesh_slots()[0].item->world[12] == 3 && scene.mesh_slots()[0].item->surfaces == surfaces &&
+                take(scene.update()) == version,
+            "Pure space movement replaced material content or failed to settle.");
+    // The hot/empty-dirty path must still reject reference-traversal admission.
+    std::pair<const p::Scene*, unsigned> visits{&scene, 0};
+    take(runtime.visit_references(first_mesh, {&visits, [](void* context, const ObjectReference&) -> Result<void> {
+                                                   auto& state = *static_cast<decltype(visits)*>(context);
+                                                   const auto result = state.first->update();
+                                                   require(!result && result.error().code == ErrorCode::busy,
+                                                           "Hot Scene bypassed Runtime traversal admission.");
+                                                   ++state.second;
+                                                   return {};
+                                               }}));
+    require(visits.second != 0, "Traversal admission fixture did not visit a reference.");
+    (void)take(scene.update());
+    take(runtime.destroy(b.id()));
+    (void)take(scene.update());
+    require(scene.mesh_slots()[0].item->surfaces->front()->uses_default_material(),
+            "A dead parent missing from changed_objects did not refresh the Scene.");
+    // A new identity is observed only after the live leaf republishes its edge.
+    auto replacement = take(material::create_instance(runtime, "replacement", {source, {{"roughness", .4f}}, {{}}}));
+    take(material::update_instance(runtime, leaf.id(), {replacement, {}, {}}));
+    (void)take(scene.update());
+    require(near(take(scene.mesh_slots()[0].item->surfaces->front()->evaluate({})).roughness, .4f),
+            "A replacement parent did not recover the live leaf.");
+    auto removal = take(world.remove_component(first_mesh));
+    (void)take(scene.update());
+    take(material::update_instance(runtime, replacement.id(), {source, {{"roughness", .8f}}, {{}}}));
+    (void)take(scene.update());
+    require(scene.mesh_slots().size() == 1 && scene.mesh_slots()[0].item->component == second_mesh &&
+                near(take(scene.mesh_slots()[0].item->surfaces->front()->evaluate({})).roughness, .8f),
+            "Layout removal left dependency edges pointing to old bucket positions.");
+    committed(world.restore(removal));
+    (void)take(scene.update());
+    const auto first_failure = scene.mesh_slots()[0].item->component;
+    take(runtime.destroy(leaf.id()));
+    (void)take(scene.update());
+    (void)take(scene.update());
+    const auto reports = world.take_diagnostics();
+    require(reports.size() == 2 && reports[0].object == first_failure && reports[0].repeats == 2 &&
+                reports[1].repeats == 2 && reports[0].field == std::vector<std::string>{"materials"},
+            "Failed material slots did not retry in bucket order with their original diagnostics.");
+    take(world.set_failure_policy(w::FailurePolicy::halt));
+    const auto failed = scene.update();
+    const auto direct = material::capture_program(runtime, leaf.id());
+    require(!failed && !direct && failed.error().code == direct.error().code &&
+                failed.error().message == direct.error().message,
+            "Halt did not preserve the material capture's first error.");
+    take(world.set_failure_policy(w::FailurePolicy::isolate));
+    for (const auto mesh : {first_mesh, second_mesh})
+        take(p::set_mesh_binding(runtime, mesh, {"", geometry::cube_mesh(), {{"slot/0", replacement, false}}}));
+    (void)take(scene.update());
+    require(scene.mesh_slots().size() == 2 && scene.mesh_slots()[0].item && scene.mesh_slots()[1].item,
+            "A failed whole update did not recover after rebinding.");
+    // Live empty images and disabled overrides matter even when they are not sampled.
+    Runtime compiler;
+    take(material::register_program_types(compiler));
+    const auto program = take(source::compile_material(
+        compiler, take(compiler.native_type<material::Context>()), take(compiler.native_type<material::Output>()),
+        take(compiler.native_type<material::TextureInput>()), "dependency-texture.source", R"(
+            struct Params { float roughness; };
+            struct Textures { material.TextureInput color; };
+            Params defaults() { Params p; p.roughness=0.5; return p; }
+            material.Output shade(material.Context c, Params p, Textures t) {
+                vector4 color=sample(t.color,c.uv); material.Output o;
+                o.base_color=vector3(color.x,color.y,color.z); o.roughness=p.roughness;
+                o.normal_world=c.normal_world; return o;
+            }
+        )"));
+    const std::array<material::TextureDefault, 1> inputs{
+        {{"color", {"base"}, material::TextureColor::linear, {.2f, .3f, .4f, 1}}}};
+    const auto definition = take(material::make_definition(program, {}, inputs));
+    auto image = take(material::create_texture(runtime, "base", {}));
+    auto disabled = take(material::create_texture(runtime, "disabled", {}));
+    auto textured_source = take(material::create_source(runtime, "textured", {definition, {image}}));
+    auto textured = take(material::create_instance(
+        runtime, "textured-child",
+        {textured_source, {{"color", material::TextureBinding{"disabled"}, false}}, {disabled}}));
+    for (const auto mesh : {first_mesh, second_mesh})
+        take(p::set_mesh_binding(runtime, mesh, {"", geometry::cube_mesh(), {{"slot/0", textured, false}}}));
+    (void)take(scene.update());
+    const auto empty_surfaces = scene.mesh_slots()[0].item->surfaces;
+    require(empty_surfaces->front()->diagnostics().size() == 2, "Missing-image fixture did not report both edges.");
+    const auto red = std::make_shared<const material::Image>(1, 1, std::vector<std::uint8_t>{255, 0, 0, 255});
+    take(material::update_texture(runtime, image.id(), red));
+    (void)take(scene.update());
+    for (const auto& slot : scene.mesh_slots())
+        require(near(take(slot.item->surfaces->front()->evaluate({})).base_color.x, 1.f) &&
+                    slot.item->surfaces->front()->diagnostics().size() == 1,
+                "Live empty texture recovery did not reach every dependent slot.");
+    take(material::update_texture(runtime, disabled.id(), red));
+    (void)take(scene.update());
+    require(scene.mesh_slots()[0].item->surfaces->front()->diagnostics().empty(),
+            "Unsampled disabled texture recovery did not clear its diagnostic.");
+    const auto red_surfaces = scene.mesh_slots()[0].item->surfaces;
+    take(runtime.destroy(image.id()));
+    (void)take(scene.update());
+    require(near(take(scene.mesh_slots()[0].item->surfaces->front()->evaluate({})).base_color.x, .2f) &&
+                near(take(red_surfaces->front()->evaluate({})).base_color.x, 1.f) &&
+                near(take(empty_surfaces->front()->evaluate({})).base_color.x, .2f),
+            "Texture death did not restore typed defaults or changed old image leases.");
+    version = take(scene.update());
+    require(take(scene.update()) == version, "A successful dead-texture fallback did not settle.");
+    committed(other_world.close());
+    committed(world.close());
+    std::puts(
+        "[pass] Material dependencies: equal-owner reparent, shared changes, independent Scenes, death/recovery, layout, old leases, busy admission and ordered isolate/halt retry");
+}
+
 // Scene::update keeps one cached extraction: an unchanged update keeps the version;
 // every presented input advances it, values written past World included, and only
 // the slots that changed take the new serial. Failures are reported on every update.

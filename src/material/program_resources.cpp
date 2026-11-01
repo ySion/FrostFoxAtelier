@@ -225,9 +225,10 @@ struct ProgramAccess {
             return false;
         return std::unexpected(type.error());
     }
-    // Called under a const borrow. No allocation on steady captures; allocate a
-    // replacement table only when a texture publishes new content or is lost.
-    static Result<std::optional<std::vector<ImageRef>>> current_images(Runtime& runtime, const Material& value) {
+    // Called under a const borrow. Without dependency collection, steady captures
+    // allocate only when a texture publishes new content or is lost.
+    static Result<std::optional<std::vector<ImageRef>>> current_images(Runtime& runtime, const Material& value,
+                                                                       std::unordered_set<ObjectId>* dependencies) {
         auto size = runtime.sequence_size(value.texture_field_);
         if (!size)
             return std::unexpected(size.error());
@@ -251,6 +252,8 @@ struct ProgramAccess {
             }
             auto checked =
                 runtime.with_native<const TextureResource>(reference->id(), [&](const auto& texture) -> Result<void> {
+                    if (dependencies)
+                        dependencies->insert(reference->id());
                     // Texture identity/key are immutable; update_texture is its sole
                     // content writer. Existing ProgramSurfaces retain the old pixels.
                     if (texture.image_ != value.images_[i]) {
@@ -498,16 +501,22 @@ struct ProgramAccess {
             return {};
         });
     }
-    static Result<ProgramSurfaceRef> capture(Runtime& runtime, ObjectId id, bool source) {
+    static Result<ProgramSurfaceRef> capture(Runtime& runtime, ObjectId id,
+                                             std::unordered_set<ObjectId>* dependencies = nullptr) {
+        auto source = source_role(runtime, id);
+        if (!source)
+            return std::unexpected(source.error());
         ProgramSurfaceRef next_parent;
         ProgramSurfaceRef refreshed;
         std::optional<std::vector<ImageRef>> next_images;
-        if (source) {
+        if (*source) {
             auto captured =
                 runtime.with_native<const MaterialSource>(id, [&](const auto& value) -> Result<ProgramSurfaceRef> {
                     if (!value.published_)
                         return failure("Material source is not initialized.");
-                    auto images = current_images(runtime, value);
+                    if (dependencies)
+                        dependencies->insert(id);
+                    auto images = current_images(runtime, value, dependencies);
                     if (!images)
                         return std::unexpected(images.error());
                     if (!*images)
@@ -531,16 +540,18 @@ struct ProgramAccess {
             runtime.with_native<const MaterialInstance>(id, [&](const auto& value) -> Result<ProgramSurfaceRef> {
                 if (!value.published_)
                     return failure("Material instance is not initialized.");
+                if (dependencies)
+                    dependencies->insert(id);
                 auto reference = runtime.read_reference(value.parent_field_);
                 if (!reference)
                     return std::unexpected(reference.error());
                 auto live = available(runtime, *reference, value.parent_id_);
                 if (!live)
                     return std::unexpected(live.error());
-                auto parent_surface = *live ? capture_program(runtime, reference->id()) : missing_parent();
+                auto parent_surface = *live ? capture(runtime, reference->id(), dependencies) : missing_parent();
                 if (!parent_surface)
                     return std::unexpected(parent_surface.error());
-                auto images = current_images(runtime, value);
+                auto images = current_images(runtime, value, dependencies);
                 if (!images)
                     return std::unexpected(images.error());
                 if (*parent_surface == value.parent_surface_ && !*images)
@@ -889,9 +900,14 @@ Result<void> update_instance(Runtime& runtime, ObjectId id, const InstanceState&
     }
 }
 Result<ProgramSurfaceRef> capture_program(Runtime& runtime, ObjectId id) {
-    auto role = source_role(runtime, id);
-    if (!role)
-        return std::unexpected(role.error());
-    return detail::ProgramAccess::capture(runtime, id, *role);
+    return detail::ProgramAccess::capture(runtime, id);
+}
+Result<ProgramCapture> capture_program_with_dependencies(Runtime& runtime, ObjectId id) {
+    ProgramCapture result;
+    auto surface = detail::ProgramAccess::capture(runtime, id, &result.dependencies);
+    if (!surface)
+        return std::unexpected(surface.error());
+    result.surface = std::move(*surface);
+    return result;
 }
 } // namespace atelier::material

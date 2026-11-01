@@ -575,6 +575,61 @@ void fallback_boundaries() {
         return {};
     }));
 }
+
+void capture_dependencies() {
+    Runtime runtime;
+    take(register_resource_types(runtime));
+    auto empty = take(create_texture(runtime, "image/color", {}));
+    auto dormant = take(create_texture(runtime, "image/dormant", pixel({255, 0, 0, 255})));
+    auto source = take(create_source(runtime, "source", source_state(definition(compile()), empty, {})));
+    auto a = take(create_instance(runtime, "a", instance_state(source)));
+    auto b = take(create_instance(runtime, "b", instance_state(source)));
+    auto state = instance_state(a, {{"removed", TextureBinding{"image/dormant"}, false}});
+    state.textures[0] = dormant;
+    auto child = take(create_instance(runtime, "child", state));
+    const auto first = take(capture_program_with_dependencies(runtime, child.id()));
+    require(first.surface == take(capture_program(runtime, child.id())) && first.dependencies.size() == 5 &&
+                first.dependencies.contains(child.id()) && first.dependencies.contains(a.id()) &&
+                first.dependencies.contains(source.id()) && first.dependencies.contains(empty.id()) &&
+                first.dependencies.contains(dormant.id()),
+            "Capture lost its live empty image, dormant texture, or actual parent chain.");
+    state.parent = b;
+    take(update_instance(runtime, child.id(), state));
+    const auto rebound = take(capture_program_with_dependencies(runtime, child.id()));
+    require(rebound.surface == first.surface && rebound.dependencies.size() == 5 &&
+                !rebound.dependencies.contains(a.id()) && rebound.dependencies.contains(b.id()),
+            "An unchanged Surface concealed a changed parent dependency.");
+    take(update_texture(runtime, empty.id(), pixel({255, 0, 0, 255})));
+    const auto restored = take(capture_program_with_dependencies(runtime, child.id()));
+    near(color_red(restored.surface), .5f);
+    near(color_red(first.surface), .05f);
+    take(runtime.destroy(empty.id()));
+    const auto lost = take(capture_program_with_dependencies(runtime, child.id()));
+    require(!lost.dependencies.contains(empty.id()) && lost.dependencies.contains(dormant.id()),
+            "Successful texture fallback retained a dead dependency or discarded a live dormant edge.");
+    near(color_red(lost.surface), .05f);
+    take(runtime.destroy(b.id()));
+    const auto orphan = take(capture_program_with_dependencies(runtime, child.id()));
+    require(orphan.surface->uses_default_material() && orphan.dependencies.size() == 2 &&
+                orphan.dependencies.contains(child.id()) && orphan.dependencies.contains(dormant.id()),
+            "Successful parent fallback kept the dead parent or its unreachable ancestors.");
+    const auto nested = take(runtime.with_native<const MaterialInstance>(
+        child.id(), [&](const auto&) { return capture_program_with_dependencies(runtime, child.id()); }));
+    require(nested.surface == orphan.surface && nested.dependencies == orphan.dependencies,
+            "Dependency capture changed the legal nested const-borrow contract.");
+    const auto bad = capture_program_with_dependencies(runtime, ObjectId{});
+    const auto ordinary = capture_program(runtime, ObjectId{});
+    require(!bad && !ordinary && bad.error().code == ordinary.error().code &&
+                bad.error().message == ordinary.error().message,
+            "Dependency capture changed the original capture error.");
+    auto temporary = take(create_instance(runtime, "temporary", instance_state(source)));
+    const auto id = temporary.id();
+    const auto lease = take(capture_program_with_dependencies(runtime, id));
+    temporary = {};
+    collect(runtime);
+    require(!runtime.type_of(id) && lease.dependencies.contains(id), "Dependency observations rooted a material.");
+    near(color_red(lease.surface), .05f);
+}
 }
 
 int main() {
@@ -583,6 +638,7 @@ int main() {
         ownership_and_filtering();
         whole_material_fallback();
         fallback_boundaries();
+        capture_dependencies();
         std::puts(
             "Material resources: PASS (MS/MI/MI, sparse intent, typed/default fallback, ancestor diagnostics, destruction/recovery, structural rejection, const capture, owning CPU/HLSL surface; GPU group adoption not covered)");
         return 0;

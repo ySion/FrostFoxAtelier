@@ -18,12 +18,12 @@ Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只�
 
 - 缓存内容：网格桶每个位置一个 `MeshSlot`，`item` 是该位置的 RenderItem（隔离或退化时为空），`changed` 是最后改变它的更新序号；上一次更新的灯光结果；上一次的 Environment 设置。
 - 布局：`World::revision()` 前进时，网格槽全部清空重建，`mesh_layout()` 记下这次更新的序号。在此之前，每个槽位都对应同一个组件，消费者可以按槽位保留自己的派生数据。
-- 每次更新：`update()` 先取 Runtime 的[写代号](../../runtime-model.md#写代号与变化游标)游标，在一次 presentation 遍历中只重新读取上次游标之后被写过的网格：布局建立时为每个槽记下空间链（自身 Entity 在前），链上每个 Entity 和网格组件都指向该槽，任一被写过就重读该槽，所以只改父 Entity 时重读的正是它之下的槽；经 `Runtime::write`、`with_native` 或 JIT 绕过 World 的写入同样盖章。重读的槽与缓存逐字节比较，只对变化的网格校验 Material、重算 surfaces；带材质槽或默认材质的网格和不在缓存中的槽每次都重读，带材质槽或默认材质的按指针比较 surfaces，所以共享材质资源的编辑也能发现。灯光组件或灯光链上的 Entity 被写过、有灯未被绘制、或呈现位姿移动了灯时，灯光整体重新提取并与缓存比较；Environment 每次读取。提取只用只读借用，不给读到的对象盖章。`update()` 必须在宿主安全点调用：在 Runtime 回调、原生借用或执行期间取游标返回 busy，更新以此失败。
+- 每次更新：在一次 presentation 遍历中消费 Runtime 自上次[变化游标](../../runtime-model.md#写代号与变化游标)以来的 `changed_objects`。布局建立时为每槽记下空间链（自身 Entity 在前），链上 Entity 与网格组件分别指向该槽；仅空间变化只更新矩阵，不重捕获材质。组件/绑定变化或材质依赖变化才重新捕获 surfaces。每次成功捕获同时取得实际遍历到的 live 材质、父链、纹理身份，Scene 按 ObjectId→槽建立反向索引；去重的依赖再用 `changed_since` 检查死亡，因为死对象不会出现在 `changed_objects` 中。经 `Runtime::write`、`with_native` 或 JIT 绕过 World 的写入同样盖章。脏槽仍按桶顺序处理；失败槽逐次重试。灯光组件或灯光链上的 Entity 被写过、有灯未被绘制、或呈现位姿移动了灯时，灯光整体重新提取并与缓存比较；Environment 每次读取。未变捕获使用只读借用，变化的派生 surfaces 缓存写回后才取本 Scene 的结束游标；各 Scene 独立消费，不互相清除变化。`update()` 必须在宿主安全点调用：在 Runtime 回调、原生借用或执行期间取游标返回 busy；即使无脏槽也不跳过此准入。
 - 版本号：`update()` 返回最近一次改变了某个网格槽、网格布局、灯光或 Environment 设置的更新序号。它单调、只在内容变化时前进；消费者保存上次同步的版本号，版本号相同时整帧跳过，否则只处理 `changed`、`mesh_layout()`、`lights_changed()` 大于该值的部分。版本号只在同一个 Scene 内可比；`identity()` 在进程内唯一、不被之后的 Scene 复用，消费者用它识别换了的 Scene。`render_items()` 也推进缓存，序号与 `update()` 共用，所以其他调用方插入的提取不会让消费者漏掉变化。
 - 所有权：缓存的 RenderItem 共享持有网格几何与 surfaces，组件被销毁或换了网格、材质后，旧内容保留到下一次更新。Scene 析构时释放全部缓存，它总是先于 World 析构。
 - 失败隔离：隔离或退化的网格不留在缓存中，每次更新都重新读取并报告，持续的失败和零缩放警告按更新次数累计 `repeats`；修复后在下一次更新回到缓存。调用失败（halt 策略或 World 级错误）时返回错误，失败前已更新的槽保留新值和序号；下一次成功的更新返回的版本号不小于这些序号，消费者不会漏掉它们。
 
-静止帧不读任何网格或灯光成员，开销与成员数无关，只剩取游标、列举被写对象和 Environment 的读取与校验；带材质槽或默认材质的网格是例外，每次更新都重读。
+静止成功帧不逐槽深捕获材质，也不读取网格或灯光成员；仍需取游标、列举被写对象、按去重依赖检查死亡，以及读取和校验 Environment。依赖数可随独立材质数增长，不能因此声称整帧开销与场景规模无关。布局变化清空重建索引；索引只保存完整 ObjectId，不持 ObjectRoot，不延长业务对象寿命。
 
 ### 呈现位姿
 
@@ -51,6 +51,8 @@ Renderer 用上一帧 Frame 里的矩阵算运动向量（`scene_lit.cpp` 中 `p
 StaticMeshComponent 没有内联固定材质值。显式绑定和默认绑定的正式引用序列均指向 `material.Resource`；MS/MI 作者语义归材质模块，presentation 不持有 GPU 或另一套参数 schema。
 
 `material_surfaces(Runtime&, ObjectId)` 返回共享不可变的 `vector<ProgramSurfaceRef>`；`RenderItem::surfaces` 复用同一结果。每槽用 `capture_program` 捕获完整程序、参数、图片及诊断，正常无绑定槽用 `default_world_surface()`。定义/父链失效的品红替代属于材质解析结果，不在 presentation 重新合成固定参数。
+
+Scene 的依赖来自同一次真实捕获，不从最终 `Surface.inputs()` 反推：包含 live 空图像与仍存在的 disabled/dormant 纹理边，以观察恢复和诊断变化。成功回退后移出已死依赖；成功捕获即使 Surface owner 相同也替换依赖（例如等值换父），不为纯拓扑变化推进可见版本。直接绑定的材质死亡或捕获错误仍遵循 isolate/halt、首错顺序和重复诊断，不伪装成成功回退。单对象 `material_surfaces` 仍每次捕获，没有跨调用观察缓存。
 
 宿主将这份 CPU 候选冻结为完整 SceneSnapshot，完成 MaterialBatch 准备后采用；只有 Renderer 接受的帧才能替换屏幕拾取快照。presentation 提取成功不表示 GPU 已准备或已显示。材质定义、作者格式和采样合同见[材质系统](../renderer/materials.md)。
 
