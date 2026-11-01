@@ -9,18 +9,12 @@ using detail::error;
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, ObjectId id) {
     return runtime.with_native<const StaticMeshComponent>(
         id, [&](const StaticMeshComponent& value) -> Result<std::vector<MaterialBinding>> {
-            auto field = runtime.reference_field(id, Access::materials(value));
-            if (!field)
-                return std::unexpected(field.error());
+            ATELIER_TRY_BIND(field, runtime.reference_field(id, Access::materials(value)));
             std::vector<MaterialBinding> result;
             result.reserve(Access::material_slots(value).size());
             for (std::size_t i = 0; i < Access::material_slots(value).size(); ++i) {
-                auto reference = runtime.sequence_read(*field, i);
-                if (!reference)
-                    return std::unexpected(reference.error());
-                auto root = runtime.hold(*reference);
-                if (!root)
-                    return std::unexpected(root.error());
+                ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
+                ATELIER_TRY_BIND(root, runtime.hold(*reference));
                 result.push_back(
                     {Access::material_slots(value)[i], std::move(*root), Access::material_overrides(value)[i]});
             }
@@ -29,15 +23,11 @@ Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, Ob
 }
 
 Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<const MaterialBinding> bindings) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return ready;
-    auto component = world::inspect_component(runtime, id);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY_BIND(component, world::inspect_component(runtime, id));
     if (!component->valid)
         return error(ErrorCode::invalid_member, "Material bindings need a live mesh component.");
-    if (auto admitted = world::admit_component_edit(runtime, id); !admitted)
-        return std::unexpected(admitted.error());
+    ATELIER_TRY(world::admit_component_edit(runtime, id));
     return runtime.with_native<StaticMeshComponent>(id, [&](auto& value) -> Result<void> {
         const auto& mesh = Access::geometry(value);
         if (bindings.size() > (mesh ? mesh->materials().size() : 0))
@@ -57,26 +47,16 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<cons
                 matches += material_slot_name(*mesh, i) == binding.slot;
             if (matches != 1)
                 return error(ErrorCode::argument_mismatch, "Material slot is missing or ambiguous: " + binding.slot);
-            auto held = runtime.hold(binding.resource.reference());
-            if (!held)
-                return std::unexpected(held.error());
-            auto surface = material::capture_program(runtime, held->id());
-            if (!surface)
-                return std::unexpected(surface.error());
+            ATELIER_TRY_BIND(held, runtime.hold(binding.resource.reference()));
+            ATELIER_TRY_BIND(surface, material::capture_program(runtime, held->id()));
             names.push_back(binding.slot);
             flags.push_back(binding.overridden);
             references.push_back(held->reference());
         }
-        auto field = runtime.reference_field(id, Access::materials(value));
-        if (!field)
-            return std::unexpected(field.error());
-        auto size = runtime.sequence_size(*field);
-        if (!size)
-            return std::unexpected(size.error());
+        ATELIER_TRY_BIND(field, runtime.reference_field(id, Access::materials(value)));
+        ATELIER_TRY_BIND(size, runtime.sequence_size(*field));
         const ReferenceChange change = SequenceSplice{*field, 0, *size, references};
-        auto written = runtime.apply_reference_changes({&change, 1});
-        if (!written)
-            return written;
+        ATELIER_TRY_BIND(written, runtime.apply_reference_changes({&change, 1}));
         Access::material_slots(value) = std::move(names);
         Access::material_overrides(value) = std::move(flags);
         Access::surfaces(value).reset();
@@ -90,8 +70,7 @@ Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material
         id, [&](const StaticMeshComponent& value) { return detail::material_surfaces(runtime, id, value); });
     if (!snapshot)
         return snapshot;
-    if (auto stored = detail::store_surfaces(runtime, id, *snapshot); !stored)
-        return std::unexpected(stored.error());
+    ATELIER_TRY(detail::store_surfaces(runtime, id, *snapshot));
     return snapshot;
 }
 
@@ -126,15 +105,11 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
     std::optional<ReferenceField> explicit_field;
     std::optional<ReferenceField> default_field;
     if (!slots.empty()) {
-        auto references = runtime.reference_field(id, Access::materials(value));
-        if (!references)
-            return std::unexpected(references.error());
+        ATELIER_TRY_BIND(references, runtime.reference_field(id, Access::materials(value)));
         explicit_field = std::move(*references);
     }
     if (!defaults.empty()) {
-        auto references = runtime.reference_field(id, Access::default_materials(value));
-        if (!references)
-            return std::unexpected(references.error());
+        ATELIER_TRY_BIND(references, runtime.reference_field(id, Access::default_materials(value)));
         default_field = std::move(*references);
     }
     std::shared_ptr<std::vector<material::ProgramSurfaceRef>> next;
@@ -145,14 +120,10 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
         return *next;
     };
     const auto capture = [&](const ReferenceField& sequence, std::size_t index) -> Result<material::ProgramSurfaceRef> {
-        auto reference = runtime.sequence_read(sequence, index);
-        if (!reference)
-            return std::unexpected(reference.error());
+        ATELIER_TRY_BIND(reference, runtime.sequence_read(sequence, index));
         if (!dependencies)
             return material::capture_program(runtime, reference->id());
-        auto captured = material::capture_program_with_dependencies(runtime, reference->id());
-        if (!captured)
-            return std::unexpected(captured.error());
+        ATELIER_TRY_BIND(captured, material::capture_program_with_dependencies(runtime, reference->id()));
         dependencies->merge(captured->dependencies);
         return std::move(captured->surface);
     };
@@ -160,19 +131,13 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
         material::ProgramSurfaceRef surface;
         const auto name = material_slot_name(*mesh, i);
         if (const auto at = std::ranges::find(slots, name); at != slots.end()) {
-            auto captured = capture(*explicit_field, static_cast<std::size_t>(at - slots.begin()));
-            if (!captured)
-                return std::unexpected(captured.error());
+            ATELIER_TRY_BIND(captured, capture(*explicit_field, static_cast<std::size_t>(at - slots.begin())));
             surface = *captured;
         } else if (const auto at = std::ranges::find(defaults, name); at != defaults.end()) {
-            auto captured = capture(*default_field, static_cast<std::size_t>(at - defaults.begin()));
-            if (!captured)
-                return std::unexpected(captured.error());
+            ATELIER_TRY_BIND(captured, capture(*default_field, static_cast<std::size_t>(at - defaults.begin())));
             surface = *captured;
         } else if (base_changed) {
-            auto captured = material::default_world_surface();
-            if (!captured)
-                return std::unexpected(captured.error());
+            ATELIER_TRY_BIND(captured, material::default_world_surface());
             surface = *captured;
         } else
             surface = (*cached)[i];

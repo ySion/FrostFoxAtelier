@@ -41,9 +41,7 @@ Result<void> detail::camera_rules(const CameraComponent& value) {
 world::World::Admission detail::unique_camera(world::CapabilityId cameras) {
     return [cameras](const world::World& world,
                      std::span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
-        auto members = world.members(cameras);
-        if (!members)
-            return std::unexpected(members.error());
+        ATELIER_TRY_BIND(members, world.members(cameras));
         std::unordered_map<ObjectId, ObjectId> owners;
         const auto visit = [&](ObjectId owner, ObjectId component) -> Result<void> {
             const auto [at, inserted] = owners.emplace(owner, component);
@@ -54,11 +52,9 @@ world::World::Admission detail::unique_camera(world::CapabilityId cameras) {
             return {};
         };
         for (const auto& candidate : candidates)
-            if (auto valid = visit(candidate.owner, candidate.component); !valid)
-                return valid;
+            ATELIER_TRY(visit(candidate.owner, candidate.component));
         for (const auto& member : *members)
-            if (auto valid = visit(member.entity, member.component); !valid)
-                return valid;
+            ATELIER_TRY(visit(member.entity, member.component));
         return {};
     };
 }
@@ -67,12 +63,8 @@ Result<CameraSnapshot> Scene::camera(ObjectId entity) const {
     auto& runtime = world_->runtime();
     if (!world_->contains(entity))
         return error(ErrorCode::invalid_member, "Camera Entity is not in this World.");
-    auto owner = runtime.hold(entity, world_->types().entity);
-    if (!owner)
-        return std::unexpected(owner.error());
-    auto members = world_->members(cameras_);
-    if (!members)
-        return std::unexpected(members.error());
+    ATELIER_TRY_BIND(owner, runtime.hold(entity, world_->types().entity));
+    ATELIER_TRY_BIND(members, world_->members(cameras_));
     ObjectId component;
     for (const auto& member : *members)
         if (member.entity == entity) {
@@ -82,25 +74,15 @@ Result<CameraSnapshot> Scene::camera(ObjectId entity) const {
         }
     if (component == ObjectId{})
         return error(ErrorCode::invalid_member, "Camera Entity has no CameraComponent.");
-    auto held = runtime.hold(component, types_.camera_component);
-    if (!held)
-        return std::unexpected(held.error());
-    auto valid = runtime.validate(component);
-    if (!valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY_BIND(held, runtime.hold(component, types_.camera_component));
+    ATELIER_TRY_BIND(valid, runtime.validate(component));
     if (*valid)
         return std::unexpected((*valid)->error);
-    auto space = world_->spatial_pass(world::DiagnosticPhase::presentation);
-    if (!space)
-        return std::unexpected(space.error());
-    auto matrix = space->matrix(entity);
-    if (!matrix)
-        return std::unexpected(matrix.error());
+    ATELIER_TRY_BIND(space, world_->spatial_pass(world::DiagnosticPhase::presentation));
+    ATELIER_TRY_BIND(matrix, space->matrix(entity));
     if (!*matrix)
         return error(ErrorCode::invalid_member, "Camera has an invalid spatial chain.");
-    auto rotation = space->rotation(entity);
-    if (!rotation)
-        return std::unexpected(rotation.error());
+    ATELIER_TRY_BIND(rotation, space->rotation(entity));
     if (!*rotation)
         return error(ErrorCode::invalid_member, "Camera has an invalid rotation chain.");
     const auto& q = **rotation;
@@ -118,39 +100,23 @@ Result<CameraSnapshot> Scene::camera(ObjectId entity) const {
 
 Result<CameraSnapshot> Scene::main_camera() const {
     auto& runtime = world_->runtime();
-    auto environments = world_->members(environments_);
-    if (!environments)
-        return std::unexpected(environments.error());
+    ATELIER_TRY_BIND(environments, world_->members(environments_));
     if (environments->empty() || !environments->front().active)
         return error(ErrorCode::invalid_member, "No active Environment selects a main camera.");
-    auto environment = runtime.hold(environments->front().component, types_.environment_component);
-    if (!environment)
-        return std::unexpected(environment.error());
-    auto field = runtime.find_field(types_.environment_component, "main_camera");
-    if (!field)
-        return std::unexpected(field.error());
-    auto selected = runtime.read_reference(environment->id(), *field);
-    if (!selected)
-        return std::unexpected(selected.error());
-    auto target = runtime.try_acquire(*selected);
-    if (!target)
-        return std::unexpected(target.error());
+    ATELIER_TRY_BIND(environment, runtime.hold(environments->front().component, types_.environment_component));
+    ATELIER_TRY_BIND(field, runtime.find_field(types_.environment_component, "main_camera"));
+    ATELIER_TRY_BIND(selected, runtime.read_reference(environment->id(), *field));
+    ATELIER_TRY_BIND(target, runtime.try_acquire(*selected));
     if (!*target)
         return error(ErrorCode::invalid_member, "Main camera is unset or its Entity is no longer alive.");
     const auto entity = (*target)->id();
     if (!world_->contains(entity))
         return error(ErrorCode::invalid_member, "Main camera Entity is not in this World.");
-    auto enabled = world::effective_enabled(runtime, entity);
-    if (!enabled)
-        return std::unexpected(enabled.error());
+    ATELIER_TRY_BIND(enabled, world::effective_enabled(runtime, entity));
     if (!*enabled)
         return error(ErrorCode::invalid_member, "Main camera Entity or its ancestor is disabled.");
-    auto snapshot = camera(entity);
-    if (!snapshot)
-        return std::unexpected(snapshot.error());
-    auto component = world::inspect_component(runtime, snapshot->component);
-    if (!component)
-        return std::unexpected(component.error());
+    ATELIER_TRY_BIND(snapshot, camera(entity));
+    ATELIER_TRY_BIND(component, world::inspect_component(runtime, snapshot->component));
     if (!component->enabled)
         return error(ErrorCode::invalid_member, "Main CameraComponent is disabled.");
     return snapshot;

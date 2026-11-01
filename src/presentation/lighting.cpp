@@ -79,9 +79,7 @@ Result<void> detail::environment_rules(const EnvironmentComponent& value) {
 world::World::Admission detail::unique_environment(world::CapabilityId environments) {
     return [environments](const world::World& world,
                           std::span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
-        auto members = world.members(environments);
-        if (!members)
-            return std::unexpected(members.error());
+        ATELIER_TRY_BIND(members, world.members(environments));
         ObjectId first;
         const auto visit = [&](ObjectId object) -> Result<void> {
             if (first != ObjectId{} && first != object)
@@ -91,25 +89,19 @@ world::World::Admission detail::unique_environment(world::CapabilityId environme
             return {};
         };
         for (const auto& candidate : candidates)
-            if (auto valid = visit(candidate.component); !valid)
-                return valid;
+            ATELIER_TRY(visit(candidate.component));
         for (const auto& member : *members)
-            if (auto valid = visit(member.component); !valid)
-                return valid;
+            ATELIER_TRY(visit(member.component));
         return {};
     };
 }
 
 Result<rendering::SceneLightingSettings> Scene::environment() const {
-    auto environments = world_->members(environments_);
-    if (!environments)
-        return std::unexpected(environments.error());
+    ATELIER_TRY_BIND(environments, world_->members(environments_));
     for (const auto& [owner, object, active] : *environments) {
         if (!active)
             continue;
-        auto invalid = world_->runtime().validate(object);
-        if (!invalid)
-            return std::unexpected(invalid.error());
+        ATELIER_TRY_BIND(invalid, world_->runtime().validate(object));
         if (*invalid) {
             const auto& failure = **invalid;
             if (!world_->contain(failure.error,
@@ -136,17 +128,10 @@ namespace {
 template <class Owner, class T>
 Result<void> set_value(world::World& world, ObjectId object, std::string_view name, const T& value) {
     auto& runtime = world.runtime();
-    if (auto valid = detail::check_value(runtime, value); !valid)
-        return valid;
-    auto owner = runtime.native_type<Owner>();
-    if (!owner)
-        return std::unexpected(owner.error());
-    auto type = runtime.native_type<T>();
-    if (!type)
-        return std::unexpected(type.error());
-    auto field = runtime.find_field(*owner, name);
-    if (!field)
-        return std::unexpected(field.error());
+    ATELIER_TRY(detail::check_value(runtime, value));
+    ATELIER_TRY_BIND(owner, runtime.native_type<Owner>());
+    ATELIER_TRY_BIND(type, runtime.native_type<T>());
+    ATELIER_TRY_BIND(field, runtime.find_field(*owner, name));
     return world.write(object, std::span{&*field, 1}, ValueInput{*type, &value});
 }
 }
@@ -167,10 +152,8 @@ Result<void> set_sky_map_binding(Runtime& runtime, ObjectId object, SkyMapBindin
     } catch (const std::exception& failure) {
         return error(ErrorCode::invalid_definition, failure.what());
     }
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return ready;
-    if (auto owner = world::admit_component_edit(runtime, object); !owner)
-        return std::unexpected(owner.error());
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY(world::admit_component_edit(runtime, object));
     return runtime.with_native<EnvironmentComponent>(object, [&](EnvironmentComponent& component) -> Result<void> {
         detail::Access::sky_map(component) = std::move(source);
         detail::Access::sky_map_resolved(component) = std::move(binding.resolved);
@@ -197,14 +180,10 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
         failed = &unused;
     if (!moved)
         moved = &unused;
-    auto pass = world_->spatial_pass(DiagnosticPhase::lighting);
-    if (!pass)
-        return std::unexpected(pass.error());
+    ATELIER_TRY_BIND(pass, world_->spatial_pass(DiagnosticPhase::lighting));
     auto& runtime = world_->runtime();
     std::vector<LightRenderItem> result;
-    auto lights = world_->members(lights_);
-    if (!lights)
-        return std::unexpected(lights.error());
+    ATELIER_TRY_BIND(lights, world_->members(lights_));
     valid_lights_.resize(lights->size());
     {
         for (std::size_t slot = 0; slot < lights->size(); ++slot) {
@@ -222,9 +201,8 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                 continue;
             }
             if (!valid_lights_.contains(slot, *settings)) {
-                auto invalid = runtime.validate_value(types_.light_settings, std::as_bytes(std::span{&*settings, 1}));
-                if (!invalid)
-                    return std::unexpected(invalid.error());
+                ATELIER_TRY_BIND(
+                    invalid, runtime.validate_value(types_.light_settings, std::as_bytes(std::span{&*settings, 1})));
                 if (*invalid) {
                     const auto& failure = **invalid;
                     if (!world_->contain(failure.error, world::validation_diagnostic(failure, DiagnosticPhase::lighting,
@@ -235,16 +213,12 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                 }
                 valid_lights_.insert(slot, *settings);
             }
-            auto matrix = pass->matrix(owner);
-            if (!matrix)
-                return std::unexpected(matrix.error());
+            ATELIER_TRY_BIND(matrix, pass->matrix(owner));
             if (!*matrix) {
                 *failed = true;
                 continue;
             }
-            auto frame = pass->orientation(owner);
-            if (!frame)
-                return std::unexpected(frame.error());
+            ATELIER_TRY_BIND(frame, pass->orientation(owner));
             if (!*frame) {
                 *failed = true;
                 continue;
@@ -264,9 +238,7 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                                  axis({0, sign, 0}),
                                  *settings};
             if (presented && !presented->empty()) {
-                auto offset = presented->find(*pass, owner);
-                if (!offset)
-                    return std::unexpected(offset.error());
+                ATELIER_TRY_BIND(offset, presented->find(*pass, owner));
                 if (*offset) {
                     *moved = true;
                     const auto& [shift, turn] = **offset;

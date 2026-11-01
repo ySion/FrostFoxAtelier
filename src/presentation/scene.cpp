@@ -24,31 +24,21 @@ Result<Scene> Scene::create(world::World& world, const Types& types) {
     Scene scene{world, types};
     // The admission guards later changes; content already in the World is checked here,
     // before registrations that a rejected creation would leave behind.
-    auto environments = world.register_capability(types.environment_component);
-    if (!environments)
-        return std::unexpected(environments.error());
+    ATELIER_TRY_BIND(environments, world.register_capability(types.environment_component));
     auto unique = detail::unique_environment(*environments);
-    if (auto existing = unique(world, {}); !existing)
-        return std::unexpected(existing.error());
-    auto cameras = world.register_capability(types.camera_component);
-    if (!cameras)
-        return std::unexpected(cameras.error());
+    ATELIER_TRY(unique(world, {}));
+    ATELIER_TRY_BIND(cameras, world.register_capability(types.camera_component));
     auto camera_unique = detail::unique_camera(*cameras);
-    if (auto existing = camera_unique(world, {}); !existing)
-        return std::unexpected(existing.error());
+    ATELIER_TRY(camera_unique(world, {}));
     auto meshes = world.register_capability(types.static_mesh_component, [](Runtime& runtime, ObjectId object) {
         return runtime.with_native<const StaticMeshComponent>(
             object, [](const StaticMeshComponent& value) -> Result<bool> { return bool(Access::geometry(value)); });
     });
     if (!meshes)
         return std::unexpected(meshes.error());
-    auto lights = world.register_capability(types.light_component);
-    if (!lights)
-        return std::unexpected(lights.error());
-    if (auto admitted = world.add_admission(types.environment_component, std::move(unique)); !admitted)
-        return std::unexpected(admitted.error());
-    if (auto admitted = world.add_admission(types.camera_component, std::move(camera_unique)); !admitted)
-        return std::unexpected(admitted.error());
+    ATELIER_TRY_BIND(lights, world.register_capability(types.light_component));
+    ATELIER_TRY(world.add_admission(types.environment_component, std::move(unique)));
+    ATELIER_TRY(world.add_admission(types.camera_component, std::move(camera_unique)));
     scene.meshes_ = *meshes;
     scene.lights_ = *lights;
     scene.environments_ = *environments;
@@ -98,9 +88,7 @@ Result<const detail::Presented::Offset*> detail::Presented::find(world::World::S
     for (auto node = entity; node != ObjectId{};) {
         if (const auto found = offsets_.find(node); found != offsets_.end())
             return found->second ? &*found->second : nullptr;
-        auto parent = pass.parent(node);
-        if (!parent)
-            return std::unexpected(parent.error());
+        ATELIER_TRY_BIND(parent, pass.parent(node));
         node = *parent;
     }
     return nullptr;
@@ -126,9 +114,7 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
         cached.reset();
         return had;
     };
-    auto matrix = pass.matrix(owner);
-    if (!matrix)
-        return std::unexpected(matrix.error());
+    ATELIER_TRY_BIND(matrix, pass.matrix(owner));
     if (!*matrix ||
         pass.degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
         return drop();
@@ -229,9 +215,7 @@ Result<void> Scene::index_layout(world::World::SpatialPass& pass,
         });
     }
     chain_starts_.push_back(static_cast<std::uint32_t>(chains_.size()));
-    auto lights = world_->members(lights_);
-    if (!lights)
-        return std::unexpected(lights.error());
+    ATELIER_TRY_BIND(lights, world_->members(lights_));
     for (const auto& light : *lights) {
         light_sources_.insert(light.component);
         chain(light.entity, [&](ObjectId node) { light_sources_.insert(node); });
@@ -241,12 +225,8 @@ Result<void> Scene::index_layout(world::World::SpatialPass& pass,
 
 Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented* presented) const {
     auto& runtime = world_->runtime();
-    auto pass = world_->spatial_pass(DiagnosticPhase::presentation);
-    if (!pass)
-        return std::unexpected(pass.error());
-    auto meshes = world_->members(meshes_);
-    if (!meshes)
-        return std::unexpected(meshes.error());
+    ATELIER_TRY_BIND(pass, world_->spatial_pass(DiagnosticPhase::presentation));
+    ATELIER_TRY_BIND(meshes, world_->members(meshes_));
     const auto count = meshes->size();
     // A failed update leaves unread writes behind; the next one reads every slot.
     const bool tracked = std::exchange(tracked_, false);
@@ -265,8 +245,7 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         presented_marks_.assign(count, 0);
         mesh_layout_ = version_ = serial;
         lights_dirty_ = true;
-        if (auto indexed = index_layout(*pass, *meshes); !indexed)
-            return indexed;
+        ATELIER_TRY(index_layout(*pass, *meshes));
         for (std::size_t slot = 0; slot < count; ++slot)
             dirty_.push_back(static_cast<std::uint32_t>(slot));
     } else {
@@ -301,9 +280,7 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         std::ranges::sort(dirty_);
     }
     for (const auto slot : dirty_) {
-        auto changed = update_mesh(*pass, slot, (*meshes)[slot]);
-        if (!changed)
-            return std::unexpected(changed.error());
+        ATELIER_TRY_BIND(changed, update_mesh(*pass, slot, (*meshes)[slot]));
         if (*changed)
             mesh_slots_[slot].changed = version_ = serial;
         const bool always = !mesh_slots_[slot].item;
@@ -345,9 +322,7 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
     // Nothing but this update writes while it runs: derived surfaces/resources
     // already consumed by the affected slots. Other Scenes have their own cursors.
     // Taking ours after these writes avoids recapturing our own publications.
-    auto cursor = runtime.change_cursor();
-    if (!cursor)
-        return std::unexpected(cursor.error());
+    ATELIER_TRY_BIND(cursor, runtime.change_cursor());
     cursor_ = *cursor;
     tracked_ = true;
     return {};
@@ -359,17 +334,14 @@ Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presen
     static const detail::Presented still{{}};
     std::optional<detail::Presented> moving;
     const auto& offsets = presented.empty() ? still : moving.emplace(presented);
-    if (auto meshes = update_meshes(serial, &offsets); !meshes)
-        return std::unexpected(meshes.error());
+    ATELIER_TRY(update_meshes(serial, &offsets));
     // Lights are extracted again when one was written, one is not drawn, or a presented pose moves or moved one.
     const bool moving_lights =
         std::ranges::any_of(offsets.entities(), [&](ObjectId entity) { return light_sources_.contains(entity); });
     if (lights_dirty_ || lights_failed_ || lights_moved_ || moving_lights) {
         bool failed{};
         bool moved{};
-        auto lights = extract_lights(&offsets, &failed, &moved);
-        if (!lights)
-            return std::unexpected(lights.error());
+        ATELIER_TRY_BIND(lights, extract_lights(&offsets, &failed, &moved));
         lights_dirty_ = false;
         lights_failed_ = failed;
         lights_moved_ = moved;
@@ -377,13 +349,11 @@ Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presen
             lights_cache_ = std::move(*lights);
             lights_changed_ = version_ = serial;
         }
-    } else if (auto pass = world_->spatial_pass(DiagnosticPhase::lighting); !pass) {
+    } else {
         // The Environment reports in the lighting pass; a new one keeps counting its persistent failures.
-        return std::unexpected(pass.error());
+        ATELIER_TRY(world_->spatial_pass(DiagnosticPhase::lighting));
     }
-    auto environment = this->environment();
-    if (!environment)
-        return std::unexpected(environment.error());
+    ATELIER_TRY_BIND(environment, this->environment());
     if (!(*environment == environment_cache_)) {
         environment_cache_ = *environment;
         version_ = serial;
@@ -392,8 +362,7 @@ Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presen
 }
 
 Result<std::vector<RenderItem>> Scene::render_items() const {
-    if (auto meshes = update_meshes(++serial_, nullptr); !meshes)
-        return std::unexpected(meshes.error());
+    ATELIER_TRY(update_meshes(++serial_, nullptr));
     std::vector<RenderItem> result;
     result.reserve(static_cast<std::size_t>(
         std::ranges::count_if(mesh_slots_, [](const MeshSlot& slot) { return slot.item.has_value(); })));
