@@ -131,7 +131,10 @@ RWStructuredBuffer<uint> output_value;
 
 void raw_buffer_views() {
     auto owner = open_context();
-    require(owner.info().gpu_validation, "RAW SRV regression requires GPU validation");
+    require(owner.info().debug_layer && owner.info().gpu_validation == expected_gpu_validation(),
+            "RAW SRV validation differs from the requested mode");
+    std::printf("raw-buffer-views: debug-layer=%u gpu-validation=%u\n", unsigned(owner.info().debug_layer),
+                unsigned(owner.info().gpu_validation));
     const auto gfx = owner.borrow();
     auto debug = debug_queue(gfx);
     PipelineDesc desc;
@@ -210,7 +213,7 @@ RWStructuredBuffer<uint4> result;
     check_debug(debug.Get());
     require(correct, "RAW byte addressing, range bounds or Structured control disagreed");
     std::puts(
-        "raw-buffer-views: stride=12 range-offset=48 range-bytes=24 tail-offset=80 tail-bytes=4 raw/structured GPU-values/GBV=PASS");
+        "raw-buffer-views: stride=12 range-offset=48 range-bytes=24 tail-offset=80 tail-bytes=4 raw/structured GPU-values=PASS");
 }
 
 void indirect_constants() {

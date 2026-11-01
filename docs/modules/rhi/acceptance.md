@@ -18,6 +18,8 @@ cmake --preset release
 cmake --build --preset release --target rhi_acceptance
 ```
 
+快速门禁设置 `ATELIER_GPU_VALIDATION=debug`，正式消费者须报告 `debug-layer=1 gpu-validation=0`；`-Full` 对此目标设置 `gbv`，未设置环境变量的直接运行也保留 GPU 验证请求，须报告两者均为 1。验收期望仅由输入模式推出，实际标志另行核对并打印；debug 通过不代表 GBV 通过。
+
 `rhi_acceptance` 运行正式消费者和三个独立后端回归。主进程上限 180 秒，各回归上限 60 秒；这与 Context 的单次 GPU 等待预算不同。检查在发布构建中同样有效。
 
 | 项目 | 已验证条件 |

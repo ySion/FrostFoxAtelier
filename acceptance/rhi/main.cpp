@@ -291,10 +291,12 @@ int main() {
                     "headless target synchronization changed the target");
             require(gfxGetRecordingFrameSequence(context.borrow()) == 1, "headless synchronization advanced a frame");
         }
-        require(context.info().debug_layer && context.info().gpu_validation, "validation not enabled");
+        require(context.info().debug_layer && context.info().gpu_validation == expected_gpu_validation(),
+                "validation differs from the requested mode");
         print_adapter(context.borrow());
         auto debug = debug_queue(context.borrow());
-        std::puts("debug-layer=1 gpu-validation=1");
+        std::printf("debug-layer=%u gpu-validation=%u\n", unsigned(context.info().debug_layer),
+                    unsigned(context.info().gpu_validation));
         PipelineDesc compute_desc;
         compute_desc.source.cs = compute_source;
         auto compute = take(context.prepare(compute_desc));

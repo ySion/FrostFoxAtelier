@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rhi_acceptance {
@@ -22,6 +23,12 @@ inline void check(GfxResult result) {
 
 inline void check_hr(HRESULT result) {
     require(SUCCEEDED(result), "native D3D12 operation failed");
+}
+
+inline bool expected_gpu_validation() {
+    char mode[8]{};
+    const auto length = GetEnvironmentVariableA("ATELIER_GPU_VALIDATION", mode, sizeof(mode));
+    return std::string_view(mode, length < sizeof(mode) ? length : 0) != "debug";
 }
 
 inline ComPtr<ID3D12InfoQueue> debug_queue(GfxContext context) {

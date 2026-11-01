@@ -312,7 +312,10 @@ struct Device {
         : owner(need(rhi::Context::open(
               {.window = window, .validation = rhi::Validation::gpu, .shader_cache = shader_cache}))),
           debug(rhi_acceptance::debug_queue(owner.borrow())) {
-        require(owner.info().gpu_validation, "B0 GPU acceptance requires actual GPU validation");
+        require(owner.info().debug_layer && owner.info().gpu_validation == rhi_acceptance::expected_gpu_validation(),
+                "B0 validation differs from the requested mode");
+        std::printf("material-programs: debug-layer=%u gpu-validation=%u\n", unsigned(owner.info().debug_layer),
+                    unsigned(owner.info().gpu_validation));
         rhi_acceptance::print_adapter(owner.borrow());
     }
 
