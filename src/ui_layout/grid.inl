@@ -115,7 +115,7 @@
         plan.count = grid_items.size() - plan.begin;
         if (automatic) {
             grid_occupancy.clear();
-            if (auto status = grid_extent(index, plan, columns, rows, true); !status) return status;
+            ATELIER_TRY(grid_extent(index, plan, columns, rows, true));
             // grid_extent rebuilt explicit rectangles when it established the stride.
             const bool row_flow = spec.auto_flow == AutoFlow::row;
             auto primary = [&](const GridItem& item) { return row_flow ? item.column : item.row; };
@@ -140,8 +140,8 @@
                 const auto s = secondary(item);
                 auto p = grid_locked_cursors[s];
                 for (;;) {
-                    if (auto status = grow(static_cast<std::uint64_t>(p) + primary_span(item),
-                                           static_cast<std::uint64_t>(s) + secondary_span(item)); !status) return status;
+                    ATELIER_TRY(grow(static_cast<std::uint64_t>(p) + primary_span(item),
+                                     static_cast<std::uint64_t>(s) + secondary_span(item)));
                     auto candidate = item; assign(candidate, p, s);
                     const auto collision = grid_collision(candidate, (static_cast<std::size_t>(plan.columns) + 63) / 64);
                     if (!collision) {
@@ -164,7 +164,7 @@
                 const auto primary_count = row_flow ? plan.columns : plan.rows;
                 for (;;) {
                     if (static_cast<std::uint64_t>(p) + primary_span(item) > primary_count) { p = 0; ++s; }
-                    if (auto status = grow(primary_count, static_cast<std::uint64_t>(s) + secondary_span(item)); !status) return status;
+                    ATELIER_TRY(grow(primary_count, static_cast<std::uint64_t>(s) + secondary_span(item)));
                     auto candidate = item; assign(candidate, p, s);
                     const auto collision = grid_collision(candidate, (static_cast<std::size_t>(plan.columns) + 63) / 64);
                     if (!collision) {
@@ -181,7 +181,7 @@
                     } else p = (row_flow ? collision->column : collision->row) + 1;
                 }
             }
-        } else if (auto status = grid_extent(index, plan, columns, rows, false); !status) return status;
+        } else ATELIER_TRY(grid_extent(index, plan, columns, rows, false));
         plan.columns_begin = grid_tracks.size();
         grid_tracks.resize(grid_tracks.size() + plan.columns);
         plan.rows_begin = grid_tracks.size();
@@ -335,7 +335,7 @@
         for (std::uint32_t track = 0; track < count; ++track) {
             auto& value = grid_tracks[offset + track];
             value.position = total;
-            if (auto result = coordinate(value.size, index); !result) return std::unexpected(result.error());
+            ATELIER_TRY(coordinate(value.size, index));
             total += value.size;
             if (track + 1 < count) total += gap;
         }
@@ -350,7 +350,7 @@
         return last.position + last.size - grid_tracks[offset + start].position;
     }
     Result<void> grid_widths(std::uint32_t index, float available) {
-        if (auto status = prepare_grid(index); !status) return status;
+        ATELIER_TRY(prepare_grid(index));
         const auto plan = grid_plans[slots[index].work_index];
         for (std::size_t i = plan.begin; i < plan.begin + plan.count; ++i) {
             const auto item = grid_items[i];
@@ -360,19 +360,16 @@
             if (input.width.rule == SizeRule::flex || input.height.rule == SizeRule::flex)
                 return std::unexpected(grid_error(item.node, ErrorCode::unsupported_dependency, InputField::flow));
             if (grid_contributes(index, item, true, false)) {
-                auto width = intrinsic_width(item.node);
-                if (!width) return std::unexpected(width.error());
+                ATELIER_TRY_BIND(width, intrinsic_width(item.node));
             }
         }
-        if (auto result = grid_size_axis(index, true, available); !result) return std::unexpected(result.error());
+        ATELIER_TRY(grid_size_axis(index, true, available));
         const bool natural_rows = work_for(index).needs_height && slots[index].input.height.rule != SizeRule::fixed;
         for (std::size_t i = plan.begin; i < plan.begin + plan.count; ++i) {
             // cell_width may resolve nested intrinsic grids and grow shared buffers.
             const auto item = grid_items[i];
-            auto slot_width = coordinate(grid_area(plan, item, true), item.node);
-            if (!slot_width) return std::unexpected(slot_width.error());
-            auto width = cell_width(item.node, *slot_width);
-            if (!width) return std::unexpected(width.error());
+            ATELIER_TRY_BIND(slot_width, coordinate(grid_area(plan, item, true), item.node));
+            ATELIER_TRY_BIND(width, cell_width(item.node, *slot_width));
             box_for(item.node).width = *width;
             work_for(item.node).slot_width = *slot_width;
             const auto& input = slots[item.node].input;
@@ -392,30 +389,28 @@
     }
     Result<void> grid_arrange(std::uint32_t index, float width, float height) {
         (void)width;
-        if (auto result = grid_size_axis(index, false, height); !result) return std::unexpected(result.error());
+        ATELIER_TRY(grid_size_axis(index, false, height));
         const auto plan = grid_plans[slots[index].work_index];
         const auto& parent = slots[index].input;
         for (std::size_t i = plan.begin; i < plan.begin + plan.count; ++i) {
             const auto& item = grid_items[i];
             const auto& input = slots[item.node].input;
-            auto slot_height = coordinate(grid_area(plan, item, false), item.node);
-            if (!slot_height) return std::unexpected(slot_height.error());
+            ATELIER_TRY_BIND(slot_height, coordinate(grid_area(plan, item, false), item.node));
             work_for(item.node).slot_height = *slot_height;
             const auto align_y = alignment(item.node, false), align_x = alignment(item.node, true);
             double desired = input.height.rule == SizeRule::fixed ? input.height.value :
                 (input.height.rule == SizeRule::content ? work_for(item.node).natural_height : *slot_height);
             if (input.height.rule == SizeRule::expand && !align_y.fill)
                 desired = std::min<double>(desired, work_for(item.node).natural_height);
-            auto actual_height = constrained(desired, input.height, vertical(input.padding), item.node);
-            if (!actual_height) return std::unexpected(actual_height.error());
+            ATELIER_TRY_BIND(actual_height, constrained(desired, input.height, vertical(input.padding), item.node));
             auto& box = box_for(item.node);
             box.height = *actual_height;
             auto x = coordinate(parent.padding.left + grid_tracks[plan.columns_begin + item.column].position +
                 (static_cast<double>(work_for(item.node).slot_width) - box.width) * align_x.offset, item.node);
             auto y = coordinate(parent.padding.top + grid_tracks[plan.rows_begin + item.row].position +
                 (static_cast<double>(*slot_height) - box.height) * align_y.offset, item.node);
-            if (!x) return std::unexpected(x.error());
-            if (!y) return std::unexpected(y.error());
+            ATELIER_TRY(x);
+            ATELIER_TRY(y);
             box.x = *x; box.y = *y;
         }
         return {};

@@ -1,4 +1,5 @@
 #include "layout.hpp"
+#include "foundation/result.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -548,17 +549,14 @@ struct LayoutDocument::Impl {
         if (input.width.rule == SizeRule::fixed)
             width = input.width.value;
         else if (input.width.rule == SizeRule::content || !alignment(index, true).fill) {
-            auto natural = intrinsic_width(index);
-            if (!natural)
-                return std::unexpected(natural.error());
+            ATELIER_TRY_BIND(natural, intrinsic_width(index));
             width = input.width.rule == SizeRule::expand ? std::min(slot_width, *natural) : *natural;
         }
         return constrained(width, input.width, horizontal(input.padding), index);
     }
 
     Result<void> resolve_tracks(std::uint32_t index, float available) {
-        if (auto status = validate_rows(index); !status)
-            return status;
+        ATELIER_TRY(validate_rows(index));
         const auto& table = slots[index];
         const auto offset = tracks.size();
         work_for(index).tracks = offset;
@@ -575,9 +573,7 @@ struct LayoutDocument::Impl {
                 const auto at = column++;
                 if (input.collapsed || table.input.columns[at].rule != SizeRule::content)
                     continue;
-                auto natural = intrinsic_width(cell);
-                if (!natural)
-                    return std::unexpected(natural.error());
+                ATELIER_TRY_BIND(natural, intrinsic_width(cell));
                 tracks[offset + at] = std::max(tracks[offset + at], *natural);
             }
         }
@@ -591,10 +587,8 @@ struct LayoutDocument::Impl {
                     {rule.minimum, rule.value, rule.maximum ? std::optional<double>(*rule.maximum) : std::nullopt});
                 share_indices.push_back(static_cast<std::uint32_t>(column));
             } else {
-                auto size =
-                    constrained(rule.rule == SizeRule::fixed ? rule.value : tracks[offset + column], rule, 0, index);
-                if (!size)
-                    return std::unexpected(size.error());
+                ATELIER_TRY_BIND(size, constrained(rule.rule == SizeRule::fixed ? rule.value : tracks[offset + column],
+                                                   rule, 0, index));
                 tracks[offset + column] = *size;
                 fixed += *size;
             }
@@ -602,9 +596,7 @@ struct LayoutDocument::Impl {
         allocate_slots(shares, std::max(0.0, static_cast<double>(available) - fixed), share_output, events,
                        weight_sums);
         for (std::size_t i = 0; i < share_indices.size(); ++i) {
-            auto size = coordinate(share_output[i], index);
-            if (!size)
-                return std::unexpected(size.error());
+            ATELIER_TRY_BIND(size, coordinate(share_output[i], index));
             tracks[offset + share_indices[i]] = *size;
         }
         return {};
@@ -638,8 +630,7 @@ struct LayoutDocument::Impl {
                 return std::unexpected(Error{ErrorCode::unsupported_dependency, id(index)});
             bool missing = false;
             if (slot.input.kind == Kind::grid) {
-                if (auto status = prepare_grid(index); !status)
-                    return std::unexpected(status.error());
+                ATELIER_TRY(prepare_grid(index));
                 for (const auto child : slot.children)
                     if (in_flow(slots[child].input, slot.input) && grid_intrinsic_required(child) &&
                         !work_for(child).intrinsic_valid) {
@@ -647,8 +638,7 @@ struct LayoutDocument::Impl {
                         missing = true;
                     }
             } else if (slot.input.kind == Kind::table) {
-                if (auto status = validate_rows(index); !status)
-                    return std::unexpected(status.error());
+                ATELIER_TRY(validate_rows(index));
                 for (const auto row : slot.children) {
                     if (!in_flow(slots[row].input, slot.input))
                         continue;
@@ -678,14 +668,10 @@ struct LayoutDocument::Impl {
             double value = padding;
             std::size_t count = 0;
             if (slot.input.kind == Kind::measured) {
-                auto size = measured(index, {});
-                if (!size)
-                    return std::unexpected(size.error());
+                ATELIER_TRY_BIND(size, measured(index, {}));
                 value += size->width;
             } else if (slot.input.kind == Kind::grid) {
-                auto size = grid_intrinsic(index);
-                if (!size)
-                    return std::unexpected(size.error());
+                ATELIER_TRY_BIND(size, grid_intrinsic(index));
                 value += *size;
             } else if (slot.input.kind == Kind::table) {
                 // The scratch track buffer is also safe here: no reentrant computation.
@@ -706,10 +692,9 @@ struct LayoutDocument::Impl {
                 }
                 for (std::size_t column = 0; column < slot.input.columns.size(); ++column) {
                     const auto& rule = slot.input.columns[column];
-                    auto size = constrained(rule.rule == SizeRule::fixed ? rule.value : tracks[offset + column], rule,
-                                            0, index);
-                    if (!size)
-                        return std::unexpected(size.error());
+                    ATELIER_TRY_BIND(size,
+                                     constrained(rule.rule == SizeRule::fixed ? rule.value : tracks[offset + column],
+                                                 rule, 0, index));
                     value += *size;
                     if (column)
                         value += slot.input.cross_gap;
@@ -729,9 +714,7 @@ struct LayoutDocument::Impl {
                         value = std::max(value, static_cast<double>(padding) + work_for(child).intrinsic_width);
                 }
             }
-            auto result = constrained(value, slot.input.width, padding, index);
-            if (!result)
-                return std::unexpected(result.error());
+            ATELIER_TRY_BIND(result, constrained(value, slot.input.width, padding, index));
             state.intrinsic_width = *result;
             state.intrinsic_valid = true;
             stack.pop_back();
@@ -810,15 +793,12 @@ struct LayoutDocument::Impl {
                             Error{ErrorCode::unsupported_dependency, id(child), 0, InputField::alignment});
                 }
             if (parent.kind == Kind::grid) {
-                if (auto status = grid_widths(index, available); !status)
-                    return status;
+                ATELIER_TRY(grid_widths(index, available));
             } else if (is_flex(index)) {
-                if (auto status = flex_widths(index, available); !status)
-                    return status;
+                ATELIER_TRY(flex_widths(index, available));
             }
             if (parent.kind == Kind::table) {
-                if (auto status = resolve_tracks(index, available); !status)
-                    return status;
+                ATELIER_TRY(resolve_tracks(index, available));
             }
             const auto table = table_for_row(index);
             std::size_t column = 0;
@@ -850,9 +830,7 @@ struct LayoutDocument::Impl {
                      !alignment(child, false).fill || (in_flow(input, parent) && work_for(index).needs_height));
                 if (table != no_slot && in_flow(input, parent)) {
                     const auto slot_width = tracks[work_for(table).tracks + cell_column];
-                    auto width = cell_width(child, slot_width);
-                    if (!width)
-                        return std::unexpected(width.error());
+                    ATELIER_TRY_BIND(width, cell_width(child, slot_width));
                     box_for(child).width = *width;
                     state.slot_width = slot_width;
                     continue;
@@ -860,23 +838,15 @@ struct LayoutDocument::Impl {
                 if (parent.kind == Kind::wrap && in_flow(input, parent)) {
                     float slot_width = 0;
                     if (parent.item_width > 0) {
-                        auto size = coordinate(repeat_width, child);
-                        if (!size)
-                            return std::unexpected(size.error());
+                        ATELIER_TRY_BIND(size, coordinate(repeat_width, child));
                         slot_width = *size;
                     } else {
-                        auto natural = intrinsic_width(child);
-                        if (!natural)
-                            return std::unexpected(natural.error());
+                        ATELIER_TRY_BIND(natural, intrinsic_width(child));
                         slot_width = input.width.rule == SizeRule::expand ? std::min(available, *natural) : *natural;
-                        auto size = constrained(slot_width, input.width, horizontal(input.padding), child);
-                        if (!size)
-                            return std::unexpected(size.error());
+                        ATELIER_TRY_BIND(size, constrained(slot_width, input.width, horizontal(input.padding), child));
                         slot_width = *size;
                     }
-                    auto width = cell_width(child, slot_width);
-                    if (!width)
-                        return std::unexpected(width.error());
+                    ATELIER_TRY_BIND(width, cell_width(child, slot_width));
                     box_for(child).width = *width;
                     state.slot_width = slot_width;
                     const bool first = lines.size() == work_for(index).lines_begin;
@@ -908,14 +878,10 @@ struct LayoutDocument::Impl {
                 if (input.width.rule == SizeRule::fixed)
                     width = input.width.value;
                 else if (input.width.rule == SizeRule::content || !alignment(child, true).fill) {
-                    auto natural = intrinsic_width(child);
-                    if (!natural)
-                        return std::unexpected(natural.error());
+                    ATELIER_TRY_BIND(natural, intrinsic_width(child));
                     width = input.width.rule == SizeRule::expand ? std::min(*natural, available) : *natural;
                 }
-                auto result = constrained(width, input.width, horizontal(input.padding), child);
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), child));
                 box_for(child).width = *result;
                 state.slot_width = shared ? *result : available;
                 if (shared)
@@ -926,20 +892,14 @@ struct LayoutDocument::Impl {
             for (std::size_t i = 0; i < share_indices.size(); ++i) {
                 const auto child = share_indices[i];
                 const auto& input = slots[child].input;
-                auto slot = coordinate(share_output[i], child);
-                if (!slot)
-                    return std::unexpected(slot.error());
+                ATELIER_TRY_BIND(slot, coordinate(share_output[i], child));
                 work_for(child).slot_width = *slot;
                 double width = *slot;
                 if (!alignment(child, true).fill) {
-                    auto natural = intrinsic_width(child);
-                    if (!natural)
-                        return std::unexpected(natural.error());
+                    ATELIER_TRY_BIND(natural, intrinsic_width(child));
                     width = std::min(width, static_cast<double>(*natural));
                 }
-                auto result = constrained(width, input.width, horizontal(input.padding), child);
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), child));
                 box_for(child).width = *result;
             }
             work_for(index).lines_end = lines.size();
@@ -955,14 +915,10 @@ struct LayoutDocument::Impl {
             auto& state = work_for(index);
             std::optional<float> special_height;
             if (slot.input.kind == Kind::grid) {
-                auto result = grid_heights(index);
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, grid_heights(index));
                 special_height = *result;
             } else if (is_flex(index)) {
-                auto result = flex_heights(index);
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, flex_heights(index));
                 special_height = *result;
             } else if (slot.input.kind == Kind::wrap) {
                 double height = 0;
@@ -978,9 +934,7 @@ struct LayoutDocument::Impl {
                     lines[line].y = height;
                     height += lines[line].height;
                 }
-                auto result = coordinate(height, index);
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, coordinate(height, index));
                 special_height = *result;
             }
             const auto padding = vertical(slot.input.padding);
@@ -996,9 +950,8 @@ struct LayoutDocument::Impl {
                     alignment(index, false).fill) {
                     height = slot.input.height.basis.value;
                 } else if (slot.input.kind == Kind::measured) {
-                    auto size = measured(index, std::max(0.0f, box_for(index).width - horizontal(slot.input.padding)));
-                    if (!size)
-                        return std::unexpected(size.error());
+                    ATELIER_TRY_BIND(
+                        size, measured(index, std::max(0.0f, box_for(index).width - horizontal(slot.input.padding))));
                     height += size->height;
                 } else if (special_height)
                     height += *special_height;
@@ -1015,14 +968,11 @@ struct LayoutDocument::Impl {
                             height = std::max(height, static_cast<double>(padding) + work_for(child).natural_height);
                     }
                 }
-                auto result = constrained(height, slot.input.height, padding, index);
-                if (!result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, constrained(height, slot.input.height, padding, index));
                 state.natural_height = *result;
             }
             if (state.needs_baseline)
-                if (auto status = resolve_baseline(index); !status)
-                    return status;
+                ATELIER_TRY(resolve_baseline(index));
         }
         return {};
     }
@@ -1047,13 +997,10 @@ struct LayoutDocument::Impl {
                 std::unexpected(Error{ErrorCode::unsupported_dependency, id(index), 0, InputField::alignment})};
         };
         if (input.kind == Kind::measured) {
-            auto size = measured(index, std::max(0.0f, box_for(index).width - horizontal(input.padding)));
-            if (!size)
-                return std::unexpected(size.error());
-            auto result =
-                coordinate(static_cast<double>(input.padding.top) + size->first_baseline.value_or(size->height), index);
-            if (!result)
-                return std::unexpected(result.error());
+            ATELIER_TRY_BIND(size, measured(index, std::max(0.0f, box_for(index).width - horizontal(input.padding))));
+            ATELIER_TRY_BIND(
+                result, coordinate(static_cast<double>(input.padding.top) + size->first_baseline.value_or(size->height),
+                                   index));
             state.first_baseline = *result;
             return {};
         }
@@ -1078,8 +1025,7 @@ struct LayoutDocument::Impl {
             // so use the same placement once and skip it in the top-down pass.
             const auto width = std::max(0.0f, box_for(index).width - horizontal(input.padding));
             const auto height = std::max(0.0f, state.natural_height - vertical(input.padding));
-            if (auto status = arrange_children(index, width, height); !status)
-                return status;
+            ATELIER_TRY(arrange_children(index, width, height));
             state.children_arranged = true;
             if (is_flex(index) && input.kind == Kind::row) {
                 const auto& flex = flex_states[slots[index].work_index];
@@ -1095,9 +1041,7 @@ struct LayoutDocument::Impl {
             baseline = box_for(first).y + work_for(first).first_baseline.value_or(box_for(first).height);
         } else if (input.kind == Kind::wrap) {
             const auto& line = lines[work_for(first).line];
-            auto height = height_in_slot(first, line.height);
-            if (!height)
-                return std::unexpected(height.error());
+            ATELIER_TRY_BIND(height, height_in_slot(first, line.height));
             baseline = input.padding.top + line.y + (line.height - *height) * alignment(first, false).offset +
                        work_for(first).first_baseline.value_or(*height);
         } else {
@@ -1116,9 +1060,7 @@ struct LayoutDocument::Impl {
                         (spec.wrap != Wrap::no_wrap && spec.align_lines != Distribution::start))
                         return unsupported();
                     if (line.baseline) {
-                        auto result = coordinate(input.padding.top + line.ascent, index);
-                        if (!result)
-                            return std::unexpected(result.error());
+                        ATELIER_TRY_BIND(result, coordinate(input.padding.top + line.ascent, index));
                         state.first_baseline = *result;
                         return {};
                     }
@@ -1134,9 +1076,7 @@ struct LayoutDocument::Impl {
                 return unsupported();
             baseline = input.padding.top + work_for(first).first_baseline.value_or(work_for(first).natural_height);
         }
-        auto result = coordinate(baseline, index);
-        if (!result)
-            return std::unexpected(result.error());
+        ATELIER_TRY_BIND(result, coordinate(baseline, index));
         state.first_baseline = *result;
         return {};
     }
@@ -1145,11 +1085,9 @@ struct LayoutDocument::Impl {
         const auto& parent = slots[index].input;
         const bool specialized = parent.kind == Kind::grid || is_flex(index);
         if (parent.kind == Kind::grid) {
-            if (auto status = grid_arrange(index, width, height); !status)
-                return status;
+            ATELIER_TRY(grid_arrange(index, width, height));
         } else if (is_flex(index)) {
-            if (auto status = flex_arrange(index, width, height); !status)
-                return status;
+            ATELIER_TRY(flex_arrange(index, width, height));
         }
         shares.clear();
         share_indices.clear();
@@ -1175,13 +1113,9 @@ struct LayoutDocument::Impl {
                     continue;
                 }
             }
-            auto result = height_in_slot(child, available_height);
-            if (!result)
-                return std::unexpected(result.error());
+            ATELIER_TRY_BIND(result, height_in_slot(child, available_height));
             box_for(child).height = *result;
-            auto slot_height = coordinate(shared ? *result : available_height, child);
-            if (!slot_height)
-                return std::unexpected(slot_height.error());
+            ATELIER_TRY_BIND(slot_height, coordinate(shared ? *result : available_height, child));
             work_for(child).slot_height = *slot_height;
             if (shared)
                 fixed += work_for(child).slot_height;
@@ -1189,13 +1123,9 @@ struct LayoutDocument::Impl {
         allocate_slots(shares, std::max(0.0, static_cast<double>(height) - fixed), share_output, events, weight_sums);
         for (std::size_t i = 0; i < share_indices.size(); ++i) {
             const auto child = share_indices[i];
-            auto slot = coordinate(share_output[i], child);
-            if (!slot)
-                return std::unexpected(slot.error());
+            ATELIER_TRY_BIND(slot, coordinate(share_output[i], child));
             work_for(child).slot_height = *slot;
-            auto result = height_in_slot(child, *slot);
-            if (!result)
-                return std::unexpected(result.error());
+            ATELIER_TRY_BIND(result, height_in_slot(child, *slot));
             box_for(child).height = *result;
         }
         double cursor = 0;
@@ -1250,10 +1180,8 @@ struct LayoutDocument::Impl {
             }
             auto left = coordinate(x, child);
             auto top = coordinate(y, child);
-            if (!left)
-                return std::unexpected(left.error());
-            if (!top)
-                return std::unexpected(top.error());
+            ATELIER_TRY(left);
+            ATELIER_TRY(top);
             box.x = *left;
             box.y = *top;
         }
@@ -1269,8 +1197,7 @@ struct LayoutDocument::Impl {
             const auto& parent = slots[index].input;
             const float width = std::max(0.0f, box_for(index).width - horizontal(parent.padding));
             const float height = std::max(0.0f, box_for(index).height - vertical(parent.padding));
-            if (auto status = arrange_children(index, width, height); !status)
-                return status;
+            ATELIER_TRY(arrange_children(index, width, height));
         }
         return {};
     }
@@ -1378,8 +1305,7 @@ std::uint64_t LayoutDocument::input_revision() const noexcept {
 
 Result<void> LayoutDocument::set_root(const RootInput& input) {
     auto& d = *impl_;
-    if (auto status = d.editable(); !status)
-        return status;
+    ATELIER_TRY(d.editable());
     if ((input.kind != Kind::row && input.kind != Kind::column && input.kind != Kind::overlay) ||
         !valid_padding(input.padding) || !nonnegative(input.gap) ||
         (input.kind == Kind::overlay && (input.gap != 0 || input.flow)) ||
@@ -1389,8 +1315,7 @@ Result<void> LayoutDocument::set_root(const RootInput& input) {
     auto& old = d.slots[0].input;
     if (old.kind == input.kind && old.padding == input.padding && old.gap == input.gap && old.flow == input.flow)
         return {};
-    if (auto status = d.revision_available(); !status)
-        return status;
+    ATELIER_TRY(d.revision_available());
     old.kind = input.kind;
     old.padding = input.padding;
     old.gap = input.gap;
@@ -1402,8 +1327,7 @@ Result<void> LayoutDocument::set_root(const RootInput& input) {
 
 Result<LayoutNodeId> LayoutDocument::create(LayoutNodeId parent, const NodeInput& input, std::size_t position) {
     auto& d = *impl_;
-    if (auto status = d.editable(); !status)
-        return std::unexpected(status.error());
+    ATELIER_TRY(d.editable());
     if (!d.valid(parent))
         return std::unexpected(Error{ErrorCode::invalid_node, parent});
     if (!container(d.slots[parent.slot_].input.kind))
@@ -1420,8 +1344,7 @@ Result<LayoutNodeId> LayoutDocument::create(LayoutNodeId parent, const NodeInput
     if (d.slots[parent.slot_].depth >= d.limits.max_depth ||
         (d.free_head == no_slot && d.slots.size() >= d.limits.max_nodes))
         return std::unexpected(Error{ErrorCode::capacity_exceeded, parent});
-    if (auto status = d.revision_available(); !status)
-        return std::unexpected(status.error());
+    ATELIER_TRY(d.revision_available());
     NodeInput prepared = input; // Copy fallible descriptor storage before editing the pool.
     d.reserve_child(parent.slot_);
     const auto index = d.free_head == no_slot ? static_cast<std::uint32_t>(d.slots.size()) : d.free_head;
@@ -1454,8 +1377,7 @@ Result<NodeInput> LayoutDocument::input(LayoutNodeId node) const {
 
 Result<void> LayoutDocument::update(LayoutNodeId node, const NodeInput& input) {
     auto& d = *impl_;
-    if (auto status = d.editable(); !status)
-        return status;
+    ATELIER_TRY(d.editable());
     if (!d.valid(node))
         return std::unexpected(Error{ErrorCode::invalid_node, node});
     if (node.slot_ == 0)
@@ -1469,8 +1391,7 @@ Result<void> LayoutDocument::update(LayoutNodeId node, const NodeInput& input) {
         return std::unexpected(Error{ErrorCode::invalid_structure, node});
     if (slot.input == input)
         return {};
-    if (auto status = d.revision_available(); !status)
-        return status;
+    ATELIER_TRY(d.revision_available());
     NodeInput prepared = input;
     prepared.content_key = slot.input.content_key;
     prepared.content_revision = slot.input.content_revision;
@@ -1485,8 +1406,7 @@ Result<void> LayoutDocument::update(LayoutNodeId node, const NodeInput& input) {
 
 Result<void> LayoutDocument::move(LayoutNodeId node, LayoutNodeId parent, std::size_t position) {
     auto& d = *impl_;
-    if (auto status = d.editable(); !status)
-        return status;
+    ATELIER_TRY(d.editable());
     if (!d.valid(node))
         return std::unexpected(Error{ErrorCode::invalid_node, node});
     if (!d.valid(parent))
@@ -1509,8 +1429,7 @@ Result<void> LayoutDocument::move(LayoutNodeId node, LayoutNodeId parent, std::s
         static_cast<std::size_t>(std::find(source.begin(), source.end(), node.slot_) - source.begin());
     if (old_parent == parent.slot_ && position == old_position)
         return {};
-    if (auto status = d.revision_available(); !status)
-        return status;
+    ATELIER_TRY(d.revision_available());
     d.collect_subtree(node.slot_);
     const auto delta = static_cast<std::int64_t>(d.slots[parent.slot_].depth) + 1 - d.slots[node.slot_].depth;
     for (const auto descendant : d.stack) {
@@ -1533,14 +1452,12 @@ Result<void> LayoutDocument::move(LayoutNodeId node, LayoutNodeId parent, std::s
 
 Result<void> LayoutDocument::remove(LayoutNodeId node) {
     auto& d = *impl_;
-    if (auto status = d.editable(); !status)
-        return status;
+    ATELIER_TRY(d.editable());
     if (!d.valid(node))
         return std::unexpected(Error{ErrorCode::invalid_node, node});
     if (node.slot_ == 0)
         return std::unexpected(Error{ErrorCode::root_operation, node});
-    if (auto status = d.revision_available(); !status)
-        return status;
+    ATELIER_TRY(d.revision_available());
     d.collect_subtree(node.slot_);
     auto& siblings = d.slots[d.slots[node.slot_].parent].children;
     siblings.erase(std::find(siblings.begin(), siblings.end(), node.slot_));
@@ -1558,8 +1475,7 @@ Result<void> LayoutDocument::remove(LayoutNodeId node) {
 
 Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeNodeInput> input) {
     auto& d = *impl_;
-    if (auto status = d.editable(); !status)
-        return std::unexpected(status.error());
+    ATELIER_TRY(d.editable());
     if (input.size() >= d.limits.max_nodes)
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
     struct Plan {
@@ -1677,8 +1593,7 @@ Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeN
     }
     if (!changed)
         return result;
-    if (auto status = d.revision_available(); !status)
-        return std::unexpected(status.error());
+    ATELIER_TRY(d.revision_available());
 
     // All descriptor copies and allocations precede the logical commit. Capacity
     // may grow on failure, but inputs, identities, dirty state and publication stay.
@@ -1765,12 +1680,9 @@ Result<LayoutView> LayoutDocument::compute(Size viewport, std::uint64_t provider
     d.current_provider = provider_revision;
     d.prepare_work();
     d.box_for(0).height = viewport.height;
-    if (auto status = d.resolve_widths(viewport); !status)
-        return std::unexpected(status.error());
-    if (auto status = d.resolve_heights(); !status)
-        return std::unexpected(status.error());
-    if (auto status = d.arrange(viewport); !status)
-        return std::unexpected(status.error());
+    ATELIER_TRY(d.resolve_widths(viewport));
+    ATELIER_TRY(d.resolve_heights());
+    ATELIER_TRY(d.arrange(viewport));
     for (const auto& box : d.working) {
         if (!std::isfinite(box.x) || !std::isfinite(box.y) || !nonnegative(box.width) || !nonnegative(box.height))
             return std::unexpected(Error{ErrorCode::numeric_overflow, box.node});
@@ -2027,8 +1939,7 @@ Result<void> VirtualList::reset(std::size_t count, double estimated_height) {
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
     if (!list_height(estimated_height))
         return std::unexpected(Error{ErrorCode::invalid_input});
-    if (auto status = revision_available(); !status)
-        return status;
+    ATELIER_TRY(revision_available());
     std::vector<double> heights(count, estimated_height);
     std::vector<double> sums(count + 1);
     rebuild(sums, heights);
@@ -2046,8 +1957,7 @@ Result<void> VirtualList::set_viewport(double scroll, double height, double over
     scroll = std::min(scroll, std::max(0.0, extent() - height));
     if (scroll == scroll_ && height == viewport_ && overscan == overscan_)
         return {};
-    if (auto status = revision_available(); !status)
-        return status;
+    ATELIER_TRY(revision_available());
     scroll_ = scroll;
     viewport_ = height;
     overscan_ = overscan;
@@ -2060,8 +1970,7 @@ Result<void> VirtualList::set_height(std::size_t row, double height) {
         return std::unexpected(Error{ErrorCode::invalid_input});
     if (heights_[row] == height)
         return {};
-    if (auto status = revision_available(); !status)
-        return status;
+    ATELIER_TRY(revision_available());
     const auto anchor = std::min(locate(scroll_), heights_.size() - 1);
     const auto within = scroll_ - prefix(anchor);
     const auto delta = height - heights_[row];
@@ -2076,8 +1985,7 @@ Result<void> VirtualList::set_height(std::size_t row, double height) {
 Result<void> VirtualList::invalidate_heights(double estimated_height) {
     if (!list_height(estimated_height))
         return std::unexpected(Error{ErrorCode::invalid_input});
-    if (auto status = revision_available(); !status)
-        return status;
+    ATELIER_TRY(revision_available());
     const auto anchor = heights_.empty() ? 0 : std::min(locate(scroll_), heights_.size() - 1);
     const auto within = scroll_ - prefix(anchor);
     std::fill(heights_.begin(), heights_.end(), estimated_height);
@@ -2094,8 +2002,7 @@ Result<void> VirtualList::insert(std::size_t position, std::size_t count, double
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
     if (!count)
         return {};
-    if (auto status = revision_available(); !status)
-        return status;
+    ATELIER_TRY(revision_available());
     auto anchor = heights_.empty() ? 0 : std::min(locate(scroll_), heights_.size() - 1);
     const auto within = scroll_ - prefix(anchor);
     std::vector<double> heights;
@@ -2119,8 +2026,7 @@ Result<void> VirtualList::erase(std::size_t position, std::size_t count) {
         return std::unexpected(Error{ErrorCode::invalid_input});
     if (!count)
         return {};
-    if (auto status = revision_available(); !status)
-        return status;
+    ATELIER_TRY(revision_available());
     auto anchor = std::min(locate(scroll_), heights_.size() - 1);
     double within = scroll_ - prefix(anchor);
     if (anchor >= position + count)

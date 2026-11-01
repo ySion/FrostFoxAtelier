@@ -223,8 +223,7 @@ Result<void> flex_widths(std::uint32_t index, float available) {
             double natural = 0;
             if (input.width.rule == SizeRule::content ||
                 (input.width.rule == SizeRule::flex && input.width.basis.natural) || !alignment(child, true).fill) {
-                auto measured_width = intrinsic_width(child);
-                if (!measured_width) return std::unexpected(measured_width.error());
+                ATELIER_TRY_BIND(measured_width, intrinsic_width(child));
                 natural = *measured_width;
             }
             flex_items.push_back(flex_item(child, input.width, natural, horizontal(input.padding)));
@@ -234,12 +233,10 @@ Result<void> flex_widths(std::uint32_t index, float available) {
             double width = available;
             if (input.width.rule == SizeRule::fixed) width = input.width.value;
             else if (input.width.rule == SizeRule::content || !alignment(child, true).fill) {
-                auto natural = intrinsic_width(child);
-                if (!natural) return std::unexpected(natural.error());
+                ATELIER_TRY_BIND(natural, intrinsic_width(child));
                 width = input.width.rule == SizeRule::expand ? std::min<double>(available, *natural) : *natural;
             }
-            auto result = constrained(width, input.width, horizontal(input.padding), child);
-            if (!result) return std::unexpected(result.error());
+            ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), child));
             box_for(child).width = *result;
             child_work.slot_width = wrapping ? *result : available;
             flex_items.push_back(flex_item(child, input.height, 0, vertical(input.padding)));
@@ -257,17 +254,14 @@ Result<void> flex_widths(std::uint32_t index, float available) {
         flex_allocate_line(line, available, parent.gap);
         for (auto at = flex_lines[line].begin; at < flex_lines[line].end; ++at) {
             const auto& item = flex_items[at]; const auto& input = slots[item.node].input;
-            auto slot = coordinate(item.target, item.node);
-            if (!slot) return std::unexpected(slot.error());
+            ATELIER_TRY_BIND(slot, coordinate(item.target, item.node));
             work_for(item.node).slot_width = *slot;
             double width = item.target;
             if (!alignment(item.node, true).fill && (input.width.rule == SizeRule::expand || input.width.rule == SizeRule::flex)) {
-                auto natural = intrinsic_width(item.node);
-                if (!natural) return std::unexpected(natural.error());
+                ATELIER_TRY_BIND(natural, intrinsic_width(item.node));
                 width = std::min<double>(width, *natural);
             }
-            auto result = constrained(width, input.width, horizontal(input.padding), item.node);
-            if (!result) return std::unexpected(result.error());
+            ATELIER_TRY_BIND(result, constrained(width, input.width, horizontal(input.padding), item.node));
             box_for(item.node).width = *result;
         }
     }
@@ -291,8 +285,8 @@ Result<float> flex_heights(std::uint32_t index) {
         }
         auto known_height = height_limit;
         if (!known_height && input.height.rule == SizeRule::content) {
-            auto result = constrained(natural + vertical(input.padding), input.height, vertical(input.padding), index);
-            if (!result) return std::unexpected(result.error());
+            ATELIER_TRY_BIND(result, constrained(natural + vertical(input.padding), input.height,
+                                                vertical(input.padding), index));
             known_height = std::max(0.0, static_cast<double>(*result) - vertical(input.padding));
         }
         flex_build_lines(index, known_height.value_or(natural), wrapping);
@@ -352,21 +346,16 @@ Result<void> flex_arrange(std::uint32_t index, float width, float height) {
             const auto main_alignment = alignment(child, state.row);
             const auto cross_alignment = alignment(child, !state.row);
             if (state.row) {
-                auto result = height_in_slot(child, cross_slot);
-                if (!result) return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, height_in_slot(child, cross_slot));
                 bounds.height = *result;
-                auto slot = coordinate(cross_slot, child);
-                if (!slot) return std::unexpected(slot.error());
+                ATELIER_TRY_BIND(slot, coordinate(cross_slot, child));
                 child_work.slot_height = *slot;
             } else {
-                auto result = height_in_slot(child, item.target);
-                if (!result) return std::unexpected(result.error());
+                ATELIER_TRY_BIND(result, height_in_slot(child, item.target));
                 bounds.height = *result;
-                auto slot = coordinate(item.target, child);
-                if (!slot) return std::unexpected(slot.error());
+                ATELIER_TRY_BIND(slot, coordinate(item.target, child));
                 child_work.slot_height = *slot;
-                auto cross = coordinate(cross_slot, child);
-                if (!cross) return std::unexpected(cross.error());
+                ATELIER_TRY_BIND(cross, coordinate(cross_slot, child));
                 child_work.slot_width = *cross;
             }
             const double main_size = state.row ? bounds.width : bounds.height;
@@ -378,8 +367,8 @@ Result<void> flex_arrange(std::uint32_t index, float width, float height) {
                 cross = cross_origin + line.ascent - child_work.first_baseline.value_or(bounds.height);
             auto x = coordinate(parent.padding.left + (state.row ? main : cross), child);
             auto y = coordinate(parent.padding.top + (state.row ? cross : main), child);
-            if (!x) return std::unexpected(x.error());
-            if (!y) return std::unexpected(y.error());
+            ATELIER_TRY(x);
+            ATELIER_TRY(y);
             bounds.x = *x; bounds.y = *y;
             main_cursor += item.target + parent.gap + spacing.between;
         }
