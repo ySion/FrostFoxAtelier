@@ -96,6 +96,6 @@ Grid跨度是否贡献自然需求为常数时间查询：同规则轴直接判�
 
 ## 正式验收与复现
 
-当前46项布局场景继续覆盖数值边界、全部分布、反向/换行、真实混字号基线、跨行跨列、自动定位、容量、嵌套、内容更新与失败保旧；Flex/Grid场景位于[flex_grid.inl](../../../acceptance/ui_layout/flex_grid.inl)，审计补充位于[audit.inl](../../../acceptance/ui_layout/audit.inl)。复合消费者用真正Grid外壳和Flex工具栏，文字仍来自真实DirectWrite。已运行版本见[审计记录](audit.md)，新增完整树批次场景的运行状态见[验收记录](acceptance.md)。
+Flex/Grid 的解析代表检查 basis 加权缩小、一次 space_evenly 分布、反向换行、固定/权重/跨格轨道、同批重叠 Content 约束及自动占位。它们位于 `acceptance/ui_layout/flex_grid.inl` 和 `audit.inl`，独立真值及完整保留范围见[验收记录](acceptance.md)。不以参数矩阵或两个布局输出互比代替独立真值。
 
-在正式环境中构建ui_layout_acceptance的dev/release目标；使用`./out/release/atelier_ui_layout_acceptance.exe --flex-grid-performance`测量新场景。结果分开报告整次操作、compute、内部测量和消费协调，不能把回调外全部工作都称为纯布局。最新数字与可执行文件记录在[验收](acceptance.md)。
+在正式环境中构建 `ui_layout_acceptance` 的 Dev/Release 目标。[审计记录](audit.md)保留固定旧版本的性能依据，旧性能入口已移除，不作为当前命令或验收结果。

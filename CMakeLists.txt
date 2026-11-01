@@ -93,17 +93,12 @@ target_include_directories(atelier_ui_layout PUBLIC src)
 target_compile_features(atelier_ui_layout PUBLIC cxx_std_23)
 atelier_target(atelier_ui_layout)
 
-add_executable(atelier_ui_layout_minimal acceptance/ui_layout/minimal.cpp)
-atelier_target(atelier_ui_layout_minimal)
-target_link_libraries(atelier_ui_layout_minimal PRIVATE atelier_ui_layout)
-
 add_executable(atelier_ui_layout_acceptance acceptance/ui_layout/main.cpp)
 atelier_target(atelier_ui_layout_acceptance)
 target_link_libraries(atelier_ui_layout_acceptance PRIVATE atelier_ui_layout dwrite)
 atelier_headless_acceptance(ui_layout_acceptance
-    COMMAND $<TARGET_FILE:atelier_ui_layout_minimal>
     COMMAND $<TARGET_FILE:atelier_ui_layout_acceptance>
-    DEPENDS atelier_ui_layout_minimal atelier_ui_layout_acceptance)
+    DEPENDS atelier_ui_layout_acceptance)
 
 include(cmake/jit.cmake)
 atelier_add_source()

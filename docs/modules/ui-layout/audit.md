@@ -1,6 +1,6 @@
 # 布局阶段审计与优化
 
-本页保留各次审计的代码基线、修复与同输入测量。日期和数值只适用于对应版本；当前接口从[模块入口](README.md)进入。
+本页保留各次审计的代码基线、修复与同输入测量。日期和数值只适用于对应版本；下列旧性能入口已移除，不能按当前检出复现。当前接口从[模块入口](README.md)进入，当前代表范围见[验收](acceptance.md)。
 
 ## 2026-10-04 审计记录
 
@@ -24,7 +24,7 @@
 
 结构、生命周期及性能专家最终二审均未留下阻塞项。计划/前缀只保存compute内的索引；轨道批次期间不进入回调或嵌套求解。失败后下一次求解重建计划并清理增量，测量缓存、几何、索引仍通过原提交点发布。入口、句柄、借用和拥有式快照合同保持。
 
-日志、三轮数据与源码/工具链/程序哈希位于`out/review/ui-layout-followup/`，主要文件为`dev-acceptance.log`、`release-acceptance.log`、`performance-summary.json`和`environment.json`。正式复现入口仍是`ui_layout_acceptance`、`ui_acceptance`，性能用既有`--audit-performance`和`--flex-grid-performance`。
+日志、三轮数据与源码/工具链/程序哈希位于`out/review/ui-layout-followup/`，主要文件为`dev-acceptance.log`、`release-acceptance.log`、`performance-summary.json`和`environment.json`。当时使用`ui_layout_acceptance`、`ui_acceptance`，以及旧性能入口`--audit-performance`和`--flex-grid-performance`。
 
 ### 同输入性能
 
@@ -95,7 +95,7 @@ Grid 作者交叉核对共享分配和基线修改；结构作者交叉核对 Gr
 
 行向大跨度 Grid 内部缓冲峰值从 257,232 降至 216,272 字节，列向从 322,768 降至 306,384 字节。十万折叠树的整个文档峰值仍为 140,498,456 字节，节点描述的保留与创建峰值没有被折叠优化消除。43 节点复合场景仍为 64,064 字节；旧虚拟编辑器从 151,544 增至 152,364 字节（增加 820 字节），最多实例化 22 行及资源引用数量保持。统计口径仍排除 provider、拥有式快照和部分公开描述内存。
 
-使用正式消费者的 `--audit-performance`、`--flex-grid-performance` 和 `--editor-performance` 复现。各轮原始数据在 `out/review/ui-layout-audit/{before,after}-{audit,flex-grid,editor}-{1,2,3}.jsonl`，摘要见 `out/review/ui-layout-audit/performance-summary.json`。
+当时使用消费者的 `--audit-performance`、`--flex-grid-performance` 和 `--editor-performance`。各轮原始数据在 `out/review/ui-layout-audit/{before,after}-{audit,flex-grid,editor}-{1,2,3}.jsonl`，摘要见 `out/review/ui-layout-audit/performance-summary.json`。
 
 ### 研究核对
 

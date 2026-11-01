@@ -75,7 +75,7 @@ auto held = document.snapshot(); // 显式复制几何与索引，供跨发布�
 
 ## 性能与内存观察
 
-通过两次`stats()`的差值观察measure_calls、node_visits和内部缓冲分配；调用`--performance`复现[正式场景成本](audit.md)。`topology_commits` 统计产生变化的完整树提交，`topology_links_written` 统计改变的最终孩子序列写入的节点数；它们不计普通 `move`，也不表示整个调用没有其他扫描。内部缓冲计数排除provider、快照、公开结果 ID 数组及列描述复制，不能把其零分配推广到整个调用链。频繁读取使用view；只有需要跨发布保存时才复制快照。
+通过两次`stats()`的差值观察measure_calls、node_visits和内部缓冲分配；[历史场景成本](audit.md)不代表当前工作负载。`topology_commits` 统计产生变化的完整树提交，`topology_links_written` 统计改变的最终孩子序列写入的节点数；它们不计普通 `move`，也不表示整个调用没有其他扫描。内部缓冲计数排除provider、快照、公开结果 ID 数组及列描述复制，不能把其零分配推广到整个调用链。频繁读取使用view；只有需要跨发布保存时才复制快照。
 
 ## 原生Flex与二维Grid
 
@@ -83,7 +83,7 @@ auto held = document.snapshot(); // 显式复制几何与索引，供跨发布�
 
 ## 大型列表
 
-用VirtualList保存逻辑高度和滚动范围，range返回的行才实例化为LayoutDocument节点。计算成功后反馈实际行高；如果修正估计改变了范围，补齐新进入的行。可直接参考已运行的[VirtualInspector](../../../acceptance/ui_layout/scaling.inl)：按业务key保留可见节点，统一处理宽度/provider版本的高度失效，回收离屏缓存；已提交帧仍可持有旧段落直到消费结束。
+用VirtualList保存逻辑高度和滚动范围，range返回的行才实例化为LayoutDocument节点。计算成功后反馈实际行高；如果修正估计改变了范围，补齐新进入的行。调用方按业务key保留可见节点，统一处理宽度/provider版本的高度失效，回收离屏缓存；已提交帧仍可持有旧段落直到消费结束。
 
 同一窗口内滚动时，使用range.local_origin作为composition偏移，无需把每个像素的滚动写进节点。宽度/字体政策改变时统一重估高度，并保留顶端锚点；局部内容变化只更新对应行。未知高度的extent仍是估计。
 

@@ -1,6 +1,6 @@
 # 原生布局历史性能证据
 
-历史记录：下列数字分别对应24、27、29、35项版本，负载和资源持有方式不同，不能直接相除声称提速。当前39项结果与同场景前后比较见[审计](../../modules/ui-layout/audit.md)。原始out材料不随源码提交；缺失时不能声称已在本机重现旧版本。
+历史记录：下列数字分别对应24、27、29、35项版本，负载和资源持有方式不同，不能直接相除声称提速。后续固定版本与同场景前后比较见[审计](../../modules/ui-layout/audit.md)。本文的性能入口已从当前消费者移除，命令仅说明历史采样方法；当前代表范围见[验收](../../modules/ui-layout/acceptance.md)。原始out材料不随源码提交；缺失时不能声称已在本机重现旧版本。
 
 ## 24项版本：全量Inspector与物品格
 
@@ -97,7 +97,7 @@ AMD Ryzen 9 3950X，项目锁定工具链，显式Microsoft YaHei UI，外壳120
 
 原始输出：`out/review/ui-layout-editor/editor-performance.jsonl`。本轮证据目录为`out/review/ui-layout-editor/`。此前单列表与文字微场景结果保留在[scaling](../../modules/ui-layout/virtual-list.md)，其数据/消费工作不同，不据此宣称等价提速。计时是本机样本，不是跨机器硬帧预算。
 
-复现：正式开发环境下构建`ui_layout_acceptance`目标，两配置命令见[README](../../modules/ui-layout/README.md)；随后运行`./out/release/atelier_ui_layout_acceptance.exe --editor-performance`。
+当时在正式开发环境下构建 `ui_layout_acceptance` 目标，再运行旧入口 `atelier_ui_layout_acceptance.exe --editor-performance`；当前检出不再提供该入口。
 
 
 ## 35项版本：Flex/Grid

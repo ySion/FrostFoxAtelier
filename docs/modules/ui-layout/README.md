@@ -1,6 +1,6 @@
 # UI 布局核心
 
-`atelier_ui_layout` 是正式原生布局核心。支持稳定节点身份、共享列、重复格、Flex 伸缩/换行/分布/首基线、二维 Grid 轨道/跨格/自动放置，以及逻辑列表的可见范围和滚动锚点。当前布局消费者包含 46 个场景；固定版本的验收和性能证据见[验收记录](acceptance.md)与[审计记录](audit.md)。场景数量表示当前覆盖，历史 PASS 和性能数据只适用于记录中的版本。
+`atelier_ui_layout` 是正式原生布局核心。支持稳定节点身份、共享列、重复格、Flex 伸缩/换行/分布/首基线、二维 Grid 轨道/跨格/自动放置，以及逻辑列表的可见范围和滚动锚点。当前布局消费者包含 14 个代表场景，覆盖与独立真值见[验收记录](acceptance.md)；[审计记录](audit.md)中的历史 PASS 和性能数据只适用于记录中的版本。
 
 尺寸语义、CSS 兼容边界和不支持的循环依赖见[Flex/Grid 合同](flex-grid.md)。正式控件、文字与输入由[UI 模块](../ui/README.md)提供；声明式作者层和真实窗口消费见[编辑器](../editor/README.md)。布局验收不替代这些上层模块的验收。
 
@@ -13,7 +13,7 @@
 | Flex/Grid 核心 | 已实现上述原生能力，数值边界、失败保旧、身份与快照寿命纳入正式验收；未开放的尺寸循环及基线组合见合同 |
 | 文字与绘制 | 生产 Session 使用 DirectWrite 完成文字排版与命中，UiFrame 持有对应资源；布局库负责控件几何 |
 | 大型集合 | VirtualList 提供行高、范围与锚点；生产 Table 按可见行列绘制。普通 list/tree 仍保留完整控件实例，裁剪不等于实例虚拟化 |
-| 更新成本 | 属性更新按脏控件同步；结构变化通过 `set_tree` 一次提交最终父子关系与兄弟顺序，保留节点身份。[完整树批次验收](acceptance.md#完整树批次增量)已在 Dev/Release 通过；契约与成本见[UI 更新](../ui/updates.md#失效与实际成本) |
+| 更新成本 | 属性更新按脏控件同步；结构变化通过 `set_tree` 一次提交最终父子关系与兄弟顺序，保留节点身份。[完整树代表](acceptance.md#保留范围与独立真值)检查祖先反转与逃逸后代；契约与成本见[UI 更新](../ui/updates.md#失效与实际成本) |
 
 ## 当前入口
 
@@ -66,7 +66,7 @@ cmake --preset release
 cmake --build --preset release --target ui_layout_acceptance
 ```
 
-该目标依次运行无文字依赖的 `atelier_ui_layout_minimal` 和真实DirectWrite的 `atelier_ui_layout_acceptance`；总体 `acceptance` 也包含它们。布局目标只验证CPU布局消费；窗口/渲染/输入由编辑器端到端验收覆盖，非Windows构建仍未经验证。
+该目标运行真实 DirectWrite 的 `atelier_ui_layout_acceptance`，同时包含无文字依赖的解析几何代表；总体 `acceptance` 也包含它。布局目标只验证CPU布局消费；窗口/渲染/输入由编辑器端到端验收覆盖，非Windows构建仍未经验证。
 
 ## 研究与历史
 

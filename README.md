@@ -191,12 +191,12 @@ RHI 采用固定 gfx 与局部补丁，提供 Compute、Mesh、Vertex 管线和�
 
 ## UI 布局核心
 
-正式静态目标 `atelier_ui_layout` 的唯一公开入口是 `ui_layout/layout.hpp`。`LayoutDocument` 统一管理节点身份、结构编辑、测量缓存和事务几何发布；核心不链接 Runtime/JIT/RHI/DirectWrite。DirectWrite 只在验收的文字 Adapter 中使用；正式验收包含最小消费者和 41 个场景。
+正式静态目标 `atelier_ui_layout` 的唯一公开入口是 `ui_layout/layout.hpp`。`LayoutDocument` 统一管理节点身份、结构编辑、测量缓存和事务几何发布；核心不链接 Runtime/JIT/RHI/DirectWrite。DirectWrite 只在验收的文字 Adapter 中使用；正式验收由一个消费者执行 14 个代表场景。
 
 - 尺寸与排布：Fixed/Content/Expand、数值 min/max、对齐/锚定、table 共享列、wrap 自然换行与自适应重复槽、collapsed；原生 Flex 支持 basis/grow/shrink、分行/分布/reverse 和首基线，二维 Grid 支持轨道、跨度及显式或 sparse 自动放置。
-- `VirtualList` 管理逻辑行高、可见范围与滚动锚点；10 万逻辑行的真实消费者只实例化窗口中的行。滚动控件本身仍由上层实现。
+- `VirtualList` 管理逻辑行高、可见范围与滚动锚点；调用方只需实例化可见范围中的行。滚动控件本身仍由上层实现。
 - `LayoutView::find` 按完整身份提供常数时间查询。编辑和失败保留当前借用，下次成功发布终止借用；跨发布使用 `LayoutSnapshot` 保有几何。
-- 几何快照不拥有内容资源。真实 `TextFrame` 消费者固定相应内容版本，包括未参与测量的固定尺寸叶，完整帧成功后才替换；headless 编辑命令、ghost 取消/提交、失败恢复及旧资源寿命已有验收。
+- 几何快照不拥有内容资源；布局验收保留几何快照跨发布/析构及测量失败保旧的代表。完整帧须固定相应内容版本，包括未参与测量的固定尺寸叶；生产段落与 Coverage 的寿命由[UI 验收](docs/modules/ui/README.md#限额与验收)负责。
 
 环境准备和配置仍使用上方正式 presets；仅运行布局验收：
 
