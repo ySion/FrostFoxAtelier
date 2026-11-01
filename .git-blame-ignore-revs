@@ -1,2 +1,8 @@
 # Pure clang-format 23.1.1 pass (120 columns, Attach braces, Never short functions).
 1d4f4720beb723687b47f7fa3d1f6b58c96e9231
+
+# One variable per declaration (atelier_style --fix, then clang-format).
+fa09ce0ec0e9421f55d2cc1b824542f6cd8fa916
+
+# One blank line between adjacent declarations outside function bodies.
+cc57c8440ab4b1b172cee1b7431ea68450e17f74
