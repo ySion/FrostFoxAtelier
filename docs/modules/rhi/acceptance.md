@@ -6,6 +6,20 @@
 
 下文基础矩阵保留 2026-10-16 的原始计数，覆盖当时基线 `5e5d73c8ce1fbf4c07a100dc4cd61e42ed939f54` 加矩形清除与固定 depth bias；2026-10-19 异步准备批次当时仅在 Release 验证，现已随完整入口通过两配置。2026-10-27 的记录见 [RAW SRV 接入](#raw-srv-接入2026-10-27)。本文记录实际运行证据，不替代 Renderer/Application 的产品验收。
 
+## 当前保留代表与验证范围
+
+2026-11-02 的裁剪仅修改验收及运行清单，产品合同和实现不变；冻结件基于本地 `main` 的 `4a488a288add118471d23ba45cc3a03549594a4d`。主树整合同时纠正快速门禁改为 debug 后遗留的 GBV-only 断言，未修改 gate 或产品。`out/acceptance-gate/20261102-072619-099-43904/` 记录 Dev/Release `all` 通过、Release `rhi_acceptance` 在默认 debug 下通过（7.34 秒），主进程与两个后端回归退出 0；双配置实际编译数据库的 `atelier_style` 各 8 个 TU、零发现。本次没有运行 Dev RHI 或 GBV，GBV 留待下一次 `-Full`；不能将此结果当作 GBV 通过或与旧完整矩阵比较提速。
+
+- Compute → Mesh → Vertex 保留 6 帧的提前释放、管线替换和 90 个参数字；Mesh/Vertex 各读回一张代表图，共 4,096 个颜色像素与 2,048 个深度像素。不缩小帧槽回绕序列。
+- RAW/Structured 字节布局与 range 偏移各保留一个原有代表；跨阶段根参数用固定输入核对 RGBA `64/110/37/255`，indexed indirect 用 `91/0/0/255`。冷大 CBV 搬表只派发一次，独立期望为 73，保留 [a1eb44b7](https://github.com/ySion/FrostFoxAtelier/commit/a1eb44b7f3e6f1363fb60e5e6357d32f3908fec7) 中已修 UAF 的受控反例条件，移除 64 次 finish 与 single/multi 矩阵。
+- FP16 MRT、D32 SRV、mip 2 与 GPU 生成 indirect 各保留一个结果；64 个 indirect word 的独立期望为 `i*7+19`。移除 timestamp/profile 矩阵。RayQuery 的 build → trace → update → trace 与提交前退休保留，仅删除 AS DataSize 观察。
+- atlas 固定 mip 2，保留目标 slice 与未改动邻 slice，共 1,536 个字；按输入矩形和固定颜色/深度核对。depth bias 仅留 Vertex 正 clamp 单图，以解析式 `.25+.125*(x+.5)/64+.001` 核对，不再用另一张 GPU 图作为期望。
+- DXIL 缓存 K1 不变；异步成功派发由缓存场景覆盖，准备中采用/丢弃/关闭仍保留 48 作业、live-object 阳性对照及零泄漏检查。普通 warning/error 仍不能被 LIVE 报告吞掉。
+- 后端回归只保留 `null-list` 与 `timeout`；后者仍建立真实阻塞，执行 timeout → 失败销毁保留 → 放行 → 排空，以外部读回计数严格为 1 核对。重复 Mesh PS 图归入主场景；拒绝与错误文本矩阵、额外模式和性能阈值删除。
+- `shared_buffer_reads_and_writes` 按裁定删除，其特定 IA/range 再绑定序列不再由此验收保留；现有 Full GBV 只覆盖实际执行的消费者，不声称等价替代该序列。历史红绿证据保留在下文。
+
+窗口函数与窗口相关正常观察尚未删改，待 Editor 日志零错误冒烟通过后再实施已批准的窗口裁剪；窗口故障造景与 timeout 清理序列继续保留。旧完整矩阵的通过与耗时不能当作本候选通过或提速的证据。
+
 ## 命令与环境
 
 在仓库根目录的 PowerShell 中执行：
@@ -20,7 +34,7 @@ cmake --build --preset release --target rhi_acceptance
 
 快速门禁设置 `ATELIER_GPU_VALIDATION=debug`，正式消费者须报告 `debug-layer=1 gpu-validation=0`；`-Full` 对此目标设置 `gbv`，未设置环境变量的直接运行也保留 GPU 验证请求，须报告两者均为 1。验收期望仅由输入模式推出，实际标志另行核对并打印；debug 通过不代表 GBV 通过。
 
-`rhi_acceptance` 运行正式消费者和三个独立后端回归。主进程上限 180 秒，各回归上限 60 秒；这与 Context 的单次 GPU 等待预算不同。检查在发布构建中同样有效。
+`rhi_acceptance` 运行正式消费者和 `null-list`、`timeout` 两个独立后端回归。主进程上限 180 秒，各回归上限 60 秒；这与 Context 的单次 GPU 等待预算不同。检查在发布构建中同样有效。以下环境表对应裁剪前的历史运行。
 
 | 项目 | 已验证条件 |
 | --- | --- |
@@ -30,9 +44,9 @@ cmake --build --preset release --target rhi_acceptance
 | null-list / timeout 回归 | D3D12 debug layer |
 | 依赖与工具链 | 版本、归档与 hash 以 [依赖锁](../../../cmake/dependencies-lock.json)、[工具链锁](../../../cmake/toolchain-lock.json)为准 |
 
-## 正式验收矩阵
+## 历史完整验收矩阵
 
-以下场景在最近一次 Dev、Release 验收均通过，各进程退出 0，D3D12 InfoQueue 无非预期 warning/error；存活对象阳性对照的预期 LIVE_* 报告单独计数。
+以下场景在裁剪前的最近一次 Dev、Release 验收均通过，各进程退出 0，D3D12 InfoQueue 无非预期 warning/error；存活对象阳性对照的预期 LIVE_* 报告单独计数。它们不代表当前候选仍逐项执行这些矩阵。
 
 | 场景 | 实际检查 |
 | --- | --- |
@@ -113,9 +127,9 @@ Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_r
 
 最近一次配置与完整输出保存在 `out/rhi-window-target-sync/`：`configure-dev.log`、`configure-release.log`、`dev.log`、`release.log`。最终补丁从 pristine 源码重放后的四个 gfx 文件与两种已验收配置的源码 hash 一致。
 
-正式运行器每次更新 `out/<preset>/rhi-acceptance.log` 和 `rhi-regression-{null-list,mesh-pixel-state,timeout}.log`。许可证与补丁部署于 `out/<preset>/licenses/rhi/`。`out/` 受 Git 忽略，本机证据不随克隆交付；这些路径不能作为其他工作树已通过的证明。
+正式运行器每次更新 `out/<preset>/rhi-acceptance.log` 和 `rhi-regression-{null-list,timeout}.log`；旧 `rhi-regression-mesh-pixel-state.log` 不再更新，不能用于证明当前候选通过。许可证与补丁部署于 `out/<preset>/licenses/rhi/`。`out/` 受 Git 忽略，本机证据不随克隆交付；这些路径不能作为其他工作树已通过的证明。
 
-坏 shader、故意阻塞的 GPU 等待和失败后录制会打印预期错误，结果应结合场景检查、退出码与 InfoQueue 判断。null-list 回归刻意将一个 Program/Kernel 留给 Context 清理，会产生上游句柄未显式释放诊断；正式消费者没有该诊断。
+故意阻塞的 GPU 等待与失败销毁仍会打印预期错误，结果应结合场景检查、退出码与 InfoQueue 判断；坏 shader 与失败后录制矩阵仅在旧日志中出现。null-list 回归刻意将一个 Program/Kernel 留给 Context 清理，会产生上游句柄未显式释放诊断；正式消费者没有该诊断。
 
 ## 重要变更的验证来源
 

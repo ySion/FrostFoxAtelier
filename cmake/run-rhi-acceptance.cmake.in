@@ -7,7 +7,7 @@ message("${_out}${_err}")
 if(NOT "${_result}" STREQUAL "0")
     message(FATAL_ERROR "RHI acceptance failed: ${_result}")
 endif()
-foreach(_case null-list mesh-pixel-state timeout)
+foreach(_case null-list timeout)
     execute_process(COMMAND "$<TARGET_FILE:atelier_gfx_regression>" "--${_case}"
         WORKING_DIRECTORY "${_root}" TIMEOUT 60
         RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)

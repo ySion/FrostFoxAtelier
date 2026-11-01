@@ -3,7 +3,6 @@
 
 #include <array>
 #include <bit>
-#include <cmath>
 #include <utility>
 
 namespace rhi_acceptance {
@@ -101,12 +100,9 @@ RWStructuredBuffer<uint> indirect_values; uint frame_tag;
     auto args = gfxCreateBuffer<std::uint32_t>(gfx, 3);
     auto indirect_values = gfxCreateBuffer<std::uint32_t>(gfx, 64);
     auto indirect_readback = gfxCreateBuffer<std::uint32_t>(gfx, 64, nullptr, kGfxCpuAccess_Read);
-    auto timestamp = gfxCreateTimestampQuery(gfx);
     require(color && normal && depth && mip_texture && samples && sample_readback && color_readback &&
-                normal_readback && mip_values && mip_readback && args && indirect_values && indirect_readback &&
-                timestamp,
+                normal_readback && mip_values && mip_readback && args && indirect_values && indirect_readback,
             "Scene Lit resources unavailable");
-    check(gfxCommandBeginTimestampQuery(gfx, timestamp));
     check(gfxCommandClearTexture(gfx, depth));
     check(gfxCommandBindColorTarget(gfx, 0, color));
     check(gfxCommandBindColorTarget(gfx, 1, normal));
@@ -144,9 +140,6 @@ RWStructuredBuffer<uint> indirect_values; uint frame_tag;
     check(gfxCommandBindKernel(gfx, indirect.kernel()));
     check(gfxCommandDispatchIndirect(gfx, args));
     check(gfxCommandCopyBuffer(gfx, indirect_readback, indirect_values));
-    check(gfxCommandEndTimestampQuery(gfx, timestamp));
-    for (std::uint32_t i = 0; i < owner.info().frames_in_flight; ++i)
-        complete(owner.frame());
     complete(owner.finish());
     const auto* sample_data = gfxBufferGetData<std::uint32_t>(gfx, sample_readback);
     const auto* color_data = gfxBufferGetData<std::uint16_t>(gfx, color_readback);
@@ -170,110 +163,11 @@ RWStructuredBuffer<uint> indirect_values; uint frame_tag;
         require(mip_data[i] == 113 + i, "nonzero UAV/SRV mip mismatch");
     for (std::uint32_t i = 0; i < 64; ++i)
         require(indirect_data[i] == i * 7 + 19, "GPU-generated indirect dispatch mismatch");
-    const float milliseconds = gfxTimestampQueryGetDuration(gfx, timestamp);
-    require(std::isfinite(milliseconds) && milliseconds > 0, "retired GPU timestamp unavailable");
-    constexpr std::size_t query_count = 8;
-    constexpr std::uint32_t measured_frames = 6;
-    const auto slots = owner.info().frames_in_flight;
-    require(slots > 0, "timestamp acceptance requires frame slots");
-    std::array<GfxTimestampQuery, query_count> queries{};
-    std::array<GfxTimestampQuerySample, query_count> cached{};
-    std::array<GfxBuffer, measured_frames> frame_readbacks{};
-    std::array<std::uint64_t, measured_frames> recording_sequences{};
-    for (auto& readback : frame_readbacks) {
-        readback = gfxCreateBuffer<std::uint32_t>(gfx, 64, nullptr, kGfxCpuAccess_Read);
-        require(static_cast<bool>(readback), "timestamp-associated readback creation failed");
-    }
-    const auto before_finish = gfxGetRecordingFrameSequence(gfx);
-    require(before_finish != 0, "owned recording frame has no sequence");
-    complete(owner.finish()); // Diagnostic flush must not advance the recording-frame identity.
-    require(gfxGetRecordingFrameSequence(gfx) == before_finish, "finish changed recording-frame identity");
-    for (auto& query : queries) {
-        query = gfxCreateTimestampQuery(gfx);
-        require(static_cast<bool>(query), "timestamp batch creation failed");
-        require(gfxTimestampQueryGetSample(gfx, query).frame_sequence == 0,
-                "new timestamp fabricated a completed sample");
-    }
-    std::uint64_t previous_sequence = 0;
-    for (std::uint32_t frame = 0; frame < measured_frames + slots - 1; ++frame) {
-        if (frame < measured_frames) {
-            recording_sequences[frame] = gfxGetRecordingFrameSequence(gfx);
-            require(recording_sequences[frame] != 0, "recording-frame sequence unavailable");
-            check(gfxProgramSetParameter(gfx, indirect.program(), "frame_tag",
-                                         static_cast<std::uint32_t>(recording_sequences[frame])));
-            check(gfxCommandBindKernel(gfx, indirect.kernel()));
-            for (auto query : queries) {
-                check(gfxCommandBeginTimestampQuery(gfx, query));
-                for (std::uint32_t dispatch = 0; dispatch < 4; ++dispatch)
-                    check(gfxCommandDispatch(gfx, 8, 1, 1));
-                check(gfxCommandEndTimestampQuery(gfx, query));
-            }
-            check(gfxCommandCopyBuffer(gfx, frame_readbacks[frame], indirect_values));
-            require(gfxGetRecordingFrameSequence(gfx) == recording_sequences[frame],
-                    "recording changed frame identity before submission");
-        }
-        for (std::size_t i = 0; i < query_count; ++i) {
-            const auto sample = gfxTimestampQueryGetSample(gfx, queries[i]);
-            require(sample.frame_sequence == cached[i].frame_sequence && sample.duration_ms == cached[i].duration_ms,
-                    "timestamp getter changed before frame slot retirement");
-        }
-        complete(owner.frame());
-        const bool retired = frame >= slots - 1;
-        bool positive = false;
-        std::uint64_t sequence = 0;
-        for (std::size_t i = 0; i < query_count; ++i) {
-            const auto sample = gfxTimestampQueryGetSample(gfx, queries[i]);
-            const auto repeated = gfxTimestampQueryGetSample(gfx, queries[i]);
-            require(sample.frame_sequence == repeated.frame_sequence && sample.duration_ms == repeated.duration_ms,
-                    "timestamp getter consumed or changed completed sample");
-            if (!retired) {
-                require(sample.frame_sequence == 0, "timestamp completed before its frame slot retired");
-            } else {
-                require(sample.frame_sequence != 0 && std::isfinite(sample.duration_ms) && sample.duration_ms >= 0,
-                        "retired raw timestamp sample invalid");
-                if (i == 0)
-                    sequence = sample.frame_sequence;
-                require(sample.frame_sequence == sequence, "queries from one GPU frame have different sequences");
-                positive = positive || sample.duration_ms > 0;
-                if (previous_sequence == 0 && sample.duration_ms > 0) {
-                    const double smoothed = gfxTimestampQueryGetDuration(gfx, queries[i]);
-                    const double expected_smoothed = sample.duration_ms * 0.05;
-                    require(std::abs(smoothed - expected_smoothed) <= 1e-6 + sample.duration_ms * 1e-5,
-                            "raw timestamp getter returned legacy smoothed duration or changed smoothing");
-                }
-            }
-            cached[i] = sample;
-        }
-        if (retired) {
-            require(positive, "completed timestamp frame contains no positive GPU duration");
-            require(previous_sequence == 0 || sequence == previous_sequence + 1,
-                    "completed timestamp frame sequence did not advance once");
-            previous_sequence = sequence;
-            const auto completed_frame = frame - (slots - 1);
-            require(sequence == recording_sequences[completed_frame],
-                    "completed timestamp does not identify its recorded readback");
-            const auto* completed_data = gfxBufferGetData<std::uint32_t>(gfx, frame_readbacks[completed_frame]);
-            require(completed_data != nullptr, "completed timestamp-associated readback unavailable");
-            for (std::uint32_t i = 0; i < 64; ++i)
-                require(completed_data[i] == i * 7 + 19 + static_cast<std::uint32_t>(sequence),
-                        "timestamp/readback recording-frame association mismatch");
-        }
-    }
-    complete(owner.frame());
-    for (std::size_t i = 0; i < query_count; ++i) {
-        const auto sample = gfxTimestampQueryGetSample(gfx, queries[i]);
-        require(sample.frame_sequence == cached[i].frame_sequence && sample.duration_ms == cached[i].duration_ms,
-                "idle GPU frame fabricated a timestamp sample");
-        check(gfxDestroyTimestampQuery(gfx, queries[i]));
-    }
     for (auto buffer : {samples, sample_readback, color_readback, normal_readback, mip_values, mip_readback, args,
                         indirect_values, indirect_readback})
         check(gfxDestroyBuffer(gfx, buffer));
-    for (auto readback : frame_readbacks)
-        check(gfxDestroyBuffer(gfx, readback));
     for (auto texture : {color, normal, depth, mip_texture})
         check(gfxDestroyTexture(gfx, texture));
-    check(gfxDestroyTimestampQuery(gfx, timestamp));
     draw = {};
     sample = {};
     mip_write = {};
@@ -282,8 +176,6 @@ RWStructuredBuffer<uint> indirect_values; uint frame_tag;
     indirect = {};
     complete(owner.close());
     check_debug(debug.Get());
-    std::printf(
-        "scene-lit-resources: FP16-MRT/D32-SRV/mip-2-UAV-SRV/GPU-indirect=PASS timestamp=%.6fms raw-queries=8 frames=6 retirement/cache/sequence/smoothing/recording-readback/finish-stability=PASS\n",
-        milliseconds);
+    std::puts("scene-lit-resources: FP16-MRT/D32-SRV/mip-2-UAV-SRV/GPU-indirect=PASS");
 }
 } // namespace rhi_acceptance

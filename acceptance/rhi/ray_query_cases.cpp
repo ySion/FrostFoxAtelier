@@ -154,9 +154,6 @@ float origin_shift;
         check(gfxTopLevelAccelerationStructureAddInstance(gfx, tlas, instances[i]));
     }
     check(gfxTopLevelAccelerationStructureBuild(gfx, tlas));
-    require(gfxBottomLevelAccelerationStructureGetDataSize(gfx, blas) > 0 &&
-                gfxTopLevelAccelerationStructureGetDataSize(gfx, tlas) > 0,
-            "inline RayQuery acceleration structures were not built");
     check(gfxProgramSetParameter(gfx, pipeline.program(), "scene", tlas));
     check(gfxProgramSetParameter(gfx, pipeline.program(), "output_hits", output));
     check(gfxProgramSetParameter(gfx, pipeline.program(), "origin_shift", 0.0f));

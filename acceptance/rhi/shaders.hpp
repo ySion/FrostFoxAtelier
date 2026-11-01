@@ -48,5 +48,4 @@ inline constexpr char increment_source[] = R"(
 RWStructuredBuffer<uint> counter;
 [numthreads(1,1,1)] void main() { counter[0] += 1; }
 )";
-inline constexpr char invalid_source[] = "THIS IS NOT VALID HLSL";
 } // namespace rhi_acceptance

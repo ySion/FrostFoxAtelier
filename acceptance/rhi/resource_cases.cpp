@@ -64,69 +64,31 @@ float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) :
                                       D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     require(extra && readback && texture, "root budget graphics resources unavailable");
     check(gfxProgramSetParameter(gfx, pipeline.program(), "extra", extra));
-    for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
-        const std::array<std::uint32_t, 4> shared = {iteration + 3, iteration + 7, 0, 0};
-        std::array<std::uint32_t, 28> vertex_values{};
-        std::array<std::uint32_t, 28> pixel_values{};
-        vertex_values[24] = 61 + iteration;
-        pixel_values[24] = 103 + iteration;
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "shared_value", shared));
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "vertex_values", vertex_values));
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "pixel_values", pixel_values));
-        check(gfxCommandBindColorTarget(gfx, 0, texture));
-        check(gfxCommandBindKernel(gfx, pipeline.kernel()));
-        check(gfxCommandDraw(gfx, 3));
-        check(gfxCommandCopyTextureToBuffer(gfx, readback, texture));
-        complete(owner.finish());
-        const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
-        require(pixels != nullptr, "root budget graphics readback unavailable");
-        for (std::size_t i = 0; i < 64 * 32; ++i)
-            require(pixels[4 * i] == vertex_values[24] + shared[0] &&
-                        pixels[4 * i + 1] == pixel_values[24] + shared[1] && pixels[4 * i + 2] == blue &&
-                        pixels[4 * i + 3] == 255,
-                    "cross-stage root constant fallback corrupted GPU pixels");
-    }
+    const std::array<std::uint32_t, 4> shared = {3, 7, 0, 0};
+    std::array<std::uint32_t, 28> vertex_values{};
+    std::array<std::uint32_t, 28> pixel_values{};
+    vertex_values[24] = 61;
+    pixel_values[24] = 103;
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "shared_value", shared));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "vertex_values", vertex_values));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "pixel_values", pixel_values));
+    check(gfxCommandBindColorTarget(gfx, 0, texture));
+    check(gfxCommandBindKernel(gfx, pipeline.kernel()));
+    check(gfxCommandDraw(gfx, 3));
+    check(gfxCommandCopyTextureToBuffer(gfx, readback, texture));
+    complete(owner.finish());
+    const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
+    require(pixels != nullptr, "root budget graphics readback unavailable");
+    for (std::size_t i = 0; i < 64 * 32; ++i)
+        require(pixels[4 * i] == 64 && pixels[4 * i + 1] == 110 && pixels[4 * i + 2] == 37 && pixels[4 * i + 3] == 255,
+                "cross-stage root constant fallback corrupted GPU pixels");
     check(gfxDestroyBuffer(gfx, extra));
     check(gfxDestroyBuffer(gfx, readback));
     check(gfxDestroyTexture(gfx, texture));
     pipeline = {};
     complete(owner.close());
     check_debug(debug.Get());
-    std::puts("root-budget-graphics: VS/PS-globals=32+32 SRV-table=1 shared-offsets/updates/pixels=PASS");
-}
-
-void root_budget_compute() {
-    auto owner = open_context();
-    const auto gfx = owner.borrow();
-    auto debug = debug_queue(gfx);
-    PipelineDesc desc;
-    desc.source.cs = R"(
-uint4 values[16];
-RWStructuredBuffer<uint> output_value;
-[numthreads(1,1,1)] void main() { output_value[0] = values[15].x; }
-)";
-    auto pipeline = take(owner.prepare(desc));
-    auto output = gfxCreateBuffer<std::uint32_t>(gfx, 1);
-    auto readback = gfxCreateBuffer<std::uint32_t>(gfx, 1, nullptr, kGfxCpuAccess_Read);
-    require(output && readback, "root budget compute resources unavailable");
-    check(gfxProgramSetParameter(gfx, pipeline.program(), "output_value", output));
-    for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
-        std::array<std::uint32_t, 64> values{};
-        values[60] = 121 + iteration;
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "values", values));
-        check(gfxCommandBindKernel(gfx, pipeline.kernel()));
-        check(gfxCommandDispatch(gfx, 1, 1, 1));
-        check(gfxCommandCopyBuffer(gfx, readback, output));
-        complete(owner.finish());
-        const auto* value = gfxBufferGetData<std::uint32_t>(gfx, readback);
-        require(value && *value == values[60], "256-byte globals plus UAV fallback corrupted GPU output");
-    }
-    check(gfxDestroyBuffer(gfx, output));
-    check(gfxDestroyBuffer(gfx, readback));
-    pipeline = {};
-    complete(owner.close());
-    check_debug(debug.Get());
-    std::puts("root-budget-compute: globals=64 UAV-table=1 updates/GPU-values=PASS");
+    std::puts("root-budget-graphics: VS/PS-globals=32+32 SRV-table=1 shared-offsets/pixels=PASS");
 }
 
 void raw_buffer_views() {
@@ -235,41 +197,33 @@ RWStructuredBuffer<uint> output_value;
     auto filler = gfxCreateBuffer(gfx, 4, nullptr, kGfxCpuAccess_Write);
     require(args && output && readback && filler, "indirect resources unavailable");
     // Four live buffers fill the pinned gfx table before its first constant pool.
-    // Every following finish must make that pool reusable without advancing frames.
-    for (std::uint32_t iteration = 0; iteration < 64; ++iteration) {
-        std::array<std::uint32_t, 128> large{};
-        large[124] = 73 + iteration;
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "LargeData", large));
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "gfx_DispatchID", std::uint32_t{0}));
-        check(gfxProgramSetParameter(gfx, pipeline.program(), "output_value", output));
-        check(gfxCommandBindKernel(gfx, pipeline.kernel()));
-        if (iteration % 2 == 0)
-            check(gfxCommandDispatchIndirect(gfx, args));
-        else
-            check(gfxCommandMultiDispatchIndirect(gfx, args, 1));
-        check(gfxCommandCopyBuffer(gfx, readback, output));
-        complete(owner.finish());
-        const auto* value = gfxBufferGetData<std::uint32_t>(gfx, readback);
-        require(value && *value == large[124], "indirect constants or finish-only reuse corrupted output");
-    }
+    // Installing the large CBV must not leave the indirect argument reference stale.
+    std::array<std::uint32_t, 128> large{};
+    large[124] = 73;
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "LargeData", large));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "gfx_DispatchID", std::uint32_t{0}));
+    check(gfxProgramSetParameter(gfx, pipeline.program(), "output_value", output));
+    check(gfxCommandBindKernel(gfx, pipeline.kernel()));
+    check(gfxCommandDispatchIndirect(gfx, args));
+    check(gfxCommandCopyBuffer(gfx, readback, output));
+    complete(owner.finish());
+    const auto* value = gfxBufferGetData<std::uint32_t>(gfx, readback);
+    require(value && *value == 73, "cold indirect dispatch lost its arguments or large constants");
     for (auto buffer : {args, output, readback, filler})
         check(gfxDestroyBuffer(gfx, buffer));
     pipeline = {};
     complete(owner.close());
     check_debug(debug.Get());
-    std::puts("indirect-constants: single/multi-dispatch=PASS finish-only-iterations=64 GPU-values=PASS");
+    std::puts("indirect-constants: cold-buffer-table-growth GPU-value=73 PASS");
 }
 
-void indirect_graphics(PipelineKind kind, bool indexed) {
+void indirect_graphics() {
     auto owner = open_context();
     const auto gfx = owner.borrow();
     auto debug = debug_queue(gfx);
     PipelineDesc desc;
-    desc.kind = kind;
-    if (kind == PipelineKind::mesh)
-        desc.source.ms = mesh_source;
-    else
-        desc.source.vs = vertex_source;
+    desc.kind = PipelineKind::vertex;
+    desc.source.vs = vertex_source;
     desc.source.ps = R"(
 uint4 large[32];
 float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); }
@@ -277,9 +231,7 @@ float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); 
     check(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM));
     check(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
     auto pipeline = take(owner.prepare(desc));
-    const std::array<std::uint32_t, 5> arguments = kind == PipelineKind::mesh
-                                                       ? std::array<std::uint32_t, 5>{1, 1, 1, 0, 0}
-                                                       : std::array<std::uint32_t, 5>{3, 1, 0, 0, 0};
+    const std::array<std::uint32_t, 5> arguments = {3, 1, 0, 0, 0};
     const std::array<std::uint32_t, 3> triangle = {0, 1, 2};
     auto args = gfxCreateBuffer(gfx, sizeof(arguments), arguments.data(), kGfxCpuAccess_Write);
     auto indices = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data(), kGfxCpuAccess_Write);
@@ -294,13 +246,8 @@ float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); 
     check(gfxCommandClearTexture(gfx, texture));
     check(gfxCommandBindColorTarget(gfx, 0, texture));
     check(gfxCommandBindKernel(gfx, pipeline.kernel()));
-    if (kind == PipelineKind::mesh)
-        check(gfxCommandDrawMeshIndirect(gfx, args));
-    else if (indexed) {
-        check(gfxCommandBindIndexBuffer(gfx, indices));
-        check(gfxCommandMultiDrawIndexedIndirect(gfx, args, 1));
-    } else
-        check(gfxCommandMultiDrawIndirect(gfx, args, 1));
+    check(gfxCommandBindIndexBuffer(gfx, indices));
+    check(gfxCommandMultiDrawIndexedIndirect(gfx, args, 1));
     check(gfxCommandCopyTextureToBuffer(gfx, readback, texture));
     complete(owner.finish());
     const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
@@ -314,114 +261,7 @@ float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); 
     pipeline = {};
     complete(owner.close());
     check_debug(debug.Get());
-    std::printf("indirect-graphics: kind=%s indexed=%d pixels=2048 PASS\n",
-                kind == PipelineKind::mesh ? "mesh" : "vertex", indexed);
-}
-
-void shared_buffer_reads_and_writes() {
-    auto owner = open_context();
-    const auto gfx = owner.borrow();
-    auto debug = debug_queue(gfx);
-    PipelineDesc raster;
-    raster.kind = PipelineKind::vertex;
-    raster.source.vs = R"(
-struct Output { float4 position : SV_Position; nointerpolation uint value : COLOR; };
-Output main(uint id : SV_VertexID, uint value : DATA) {
-    Output o;
-    o.position = float4(id == 0 ? float2(-1,-1) : id == 1 ? float2(-1,3) : float2(3,-1), 0, 1);
-    o.value = value; return o;
-})";
-    raster.source.ps = R"(
-StructuredBuffer<uint> indices, values;
-float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) : SV_Target {
-    return float4(value, values[2], indices[0] + 1, 255) / 255.0;
-})";
-    check(gfxDrawStateSetColorTarget(raster.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM));
-    check(gfxDrawStateSetCullMode(raster.draw_state, D3D12_CULL_MODE_NONE));
-    auto draw = take(owner.prepare(raster));
-    PipelineDesc compute;
-    compute.source.cs = R"(
-StructuredBuffer<uint> indices, values;
-RWStructuredBuffer<uint> result;
-[numthreads(1,1,1)] void main() { result[0] = values[indices[0]] + values[2] * 256; }
-)";
-    auto read = take(owner.prepare(compute));
-    compute.source.cs = R"(
-RWStructuredBuffer<uint> indices, values;
-[numthreads(1,1,1)] void main() {
-    for (uint i = 0; i < 3; ++i) { indices[i] = (indices[i] + 1) % 3; values[i] += 1; }
-})";
-    auto write = take(owner.prepare(compute));
-    const std::array<std::uint32_t, 3> triangle{2, 0, 1};
-    const std::array<std::uint32_t, 3> data{17, 31, 43};
-    auto indices = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data());
-    auto values = gfxCreateBuffer<std::uint32_t>(gfx, 3, data.data());
-    auto index_view = gfxCreateBufferRange(gfx, indices, 0, sizeof(triangle));
-    auto value_view = gfxCreateBufferRange(gfx, values, 0, sizeof(data));
-    auto upload = gfxCreateBuffer<std::uint32_t>(gfx, 3, data.data(), kGfxCpuAccess_Write);
-    auto other = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data(), kGfxCpuAccess_Write);
-    auto result = gfxCreateBuffer<std::uint32_t>(gfx, 1);
-    auto readback = gfxCreateBuffer<std::uint32_t>(gfx, 1, nullptr, kGfxCpuAccess_Read);
-    auto pixels = gfxCreateBuffer(gfx, 64 * 32 * 4, nullptr, kGfxCpuAccess_Read);
-    auto target = gfxCreateTexture2D(gfx, 64, 32, DXGI_FORMAT_R8G8B8A8_UNORM, 1, nullptr,
-                                     D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    require(indices && values && index_view && value_view && upload && other && result && readback && pixels && target,
-            "shared IA/SRV buffer resources unavailable");
-    for (auto p : {draw.program(), read.program(), write.program()}) {
-        check(gfxProgramSetParameter(gfx, p, "indices", index_view));
-        check(gfxProgramSetParameter(gfx, p, "values", value_view));
-    }
-    check(gfxProgramSetParameter(gfx, read.program(), "result", result));
-    check(gfxCommandBindIndexBuffer(gfx, indices));
-    check(gfxCommandBindVertexBuffer(gfx, values));
-    for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
-        // Install A before writing through its range aliases in this same list.
-        // finish() between these draws would mask a missing IA reinstall.
-        check(gfxCommandBindColorTarget(gfx, 0, target));
-        check(gfxCommandBindKernel(gfx, draw.kernel()));
-        check(gfxCommandDrawIndexed(gfx, 3));
-        if (iteration % 2 != 0) {
-            // Only change the logical binds to B; no draw installs B in IA.
-            check(gfxCommandBindIndexBuffer(gfx, other));
-            check(gfxCommandBindVertexBuffer(gfx, other));
-        }
-        check(gfxCommandCopyBuffer(gfx, value_view, upload));
-        check(gfxCommandBindKernel(gfx, write.kernel()));
-        check(gfxCommandDispatch(gfx, 1, 1, 1));
-        check(gfxCommandDispatch(gfx, 1, 1, 1)); // Ordered UAV read-modify-write.
-        check(gfxCommandBindIndexBuffer(gfx, indices));
-        check(gfxCommandBindVertexBuffer(gfx, values));
-        check(gfxCommandBindKernel(gfx, draw.kernel()));
-        check(gfxCommandDrawIndexed(gfx, 3));
-        check(gfxCommandBindKernel(gfx, read.kernel()));
-        check(gfxCommandDispatch(gfx, 1, 1, 1));
-        check(gfxCommandCopyBuffer(gfx, readback, result));
-        check(gfxCommandBindKernel(gfx, draw.kernel()));
-        check(gfxCommandDrawIndexed(gfx, 3)); // IA and pixel reads after a compute read.
-        check(gfxCommandCopyTextureToBuffer(gfx, pixels, target));
-        complete(owner.finish());
-        const auto first = (2 + 2 * (iteration + 1)) % 3;
-        const auto red = data[first] + 2;
-        const auto green = data[2] + 2;
-        const auto blue = first + 1;
-        const auto* color = gfxBufferGetData<std::uint8_t>(gfx, pixels);
-        const auto* word = gfxBufferGetData<std::uint32_t>(gfx, readback);
-        require(color && word && *word == red + green * 256, "shared buffer compute read saw stale writes");
-        for (std::size_t i = 0; i < 64 * 32; ++i)
-            require(color[4 * i] == red && color[4 * i + 1] == green && color[4 * i + 2] == blue &&
-                        color[4 * i + 3] == 255,
-                    "shared IA/SRV reads or post-write IA reinstall corrupted pixels");
-    }
-    for (auto buffer : {index_view, value_view, indices, values, upload, other, result, readback, pixels})
-        check(gfxDestroyBuffer(gfx, buffer));
-    check(gfxDestroyTexture(gfx, target));
-    draw = {};
-    read = {};
-    write = {};
-    complete(owner.close());
-    check_debug(debug.Get());
-    std::puts(
-        "shared-buffer-reads: same-list draw/bind-B/alias-write/rebind-A/draw COPY_DEST/UAV/UAV-to-read pixels=PASS");
+    std::puts("indirect-graphics: indexed-vertex pixels=2048 PASS");
 }
 
 void texture_ranges() {
@@ -635,13 +475,9 @@ float4 main(uint id : SV_VertexID) : SV_Position {
 
 void resource_cases() {
     root_budget_graphics();
-    root_budget_compute();
     raw_buffer_views();
     indirect_constants();
-    indirect_graphics(PipelineKind::vertex, false);
-    indirect_graphics(PipelineKind::vertex, true);
-    indirect_graphics(PipelineKind::mesh, false);
-    shared_buffer_reads_and_writes();
+    indirect_graphics();
     texture_ranges();
     window_target_sync();
 }
