@@ -174,7 +174,6 @@ void material_cases(render::Renderer& renderer, const std::filesystem::path& out
         scene_lit_e2e::png(capture, output / "material-lit-coverage.png");
         check(red[0] > red[1] + 20 && green[1] > green[0] + 20, "Lit consumes textured and per-slot base colors");
     }
-    scene_lit_e2e::png(capture, output / "material-lit-coverage.png");
     frame.view.lit.antialiasing = render::Antialiasing::none;
     frame.camera_cut = true;
     error_material("material-default-lit.png");

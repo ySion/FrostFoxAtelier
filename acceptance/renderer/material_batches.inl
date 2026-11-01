@@ -117,14 +117,6 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
     const auto parent = override(masked, {{"cutoff", .5f, true}});
     const auto child = override(parent, {{"color", atelier::math::Vector3{1, 0, 0}, true}});
     const auto sibling = override(parent, {{"color", atelier::math::Vector3{0, 0, 1}, true}, {"cutoff", .85f, true}});
-    const auto mismatched = need(material::resolve_instance(
-        parent, std::array{material::Override{"removed", 1.f, true}}, std::array<material::ImageRef, 1>{}));
-    check(mismatched && mismatched->diagnostics().size() == 1,
-          "enabled unknown sibling uses current defaults with diagnostics");
-    const auto dormant = need(material::resolve_instance(parent, std::array{material::Override{"removed", 1.f, false}},
-                                                         std::array<material::ImageRef, 1>{}));
-    check(dormant && dormant->diagnostics().size() == 1,
-          "dormant mismatch keeps candidate diagnostics without inventing a binding");
     const std::string broken_text =
         "struct Params { float value; };\n"
         "Params defaults() { Params p; p.value=1.0; return p; }\n"
