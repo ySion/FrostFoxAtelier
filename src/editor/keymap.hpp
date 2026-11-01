@@ -8,8 +8,10 @@ struct KeymapEntry {
     RegionKind region;
     KeyPhase phase;
     std::uint32_t key;
-    unsigned modifiers{}, ignored{}; // Control=1, Shift=2, Alt=4; ignored preserves existing modifier behavior.
-    bool repeat{}, text{true};
+    unsigned modifiers{};
+    unsigned ignored{}; // Control=1, Shift=2, Alt=4; ignored preserves existing modifier behavior.
+    bool repeat{};
+    bool text{true};
     OperatorCall call;
     std::wstring_view shortcut;
 };

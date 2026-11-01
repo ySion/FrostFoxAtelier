@@ -45,9 +45,13 @@ struct ViewportScene {
 struct ViewportView {
     ui::Rect bounds;
     float dpi_scale{1};
-    math::Matrix4 view, projection;
+    math::Matrix4 view;
+    math::Matrix4 projection;
     math::Matrix4d inverse; // view * projection, inverted.
-    math::Vector3 eye, right, up, forward;
+    math::Vector3 eye;
+    math::Vector3 right;
+    math::Vector3 up;
+    math::Vector3 forward;
     math::Vector3 construction_normal{0, 1, 0};
     bool orthographic{};
     float far_depth{};
@@ -58,7 +62,8 @@ struct ViewportView {
     // Screen position; empty outside the camera's near/far depth interval.
     std::optional<math::Vector2> project(math::Vector3) const noexcept;
     struct Ray {
-        math::Vector3 origin, direction;
+        math::Vector3 origin;
+        math::Vector3 direction;
     };
     Ray ray(float x, float y) const noexcept;
     float pixel_size(math::Vector3 at) const noexcept; // Metres per physical pixel at that depth.
@@ -144,7 +149,8 @@ private:
     struct Gesture {
         Operation operation{};
         Handle handle{};
-        bool modal{}, valid{true};
+        bool modal{};
+        bool valid{true};
         ToolSettings settings;
         int axis{-1}; // Constraint axis, or -1.
         bool plane{}; // Constraint is the plane normal to axis.
@@ -153,7 +159,8 @@ private:
         std::vector<world::Trs> before;
         world::Trs active_frame;
         math::Vector3 pivot;
-        math::Vector2 start, last;
+        math::Vector2 start;
+        math::Vector2 last;
         float angle{}; // Unwrapped screen angle for rotation.
         std::wstring typed; // Numeric input.
         Orientation orientation() const noexcept {
@@ -162,9 +169,12 @@ private:
         math::Quaternion basis() const noexcept;
     };
     struct Marquee {
-        math::Vector2 start, current;
+        math::Vector2 start;
+        math::Vector2 current;
         bool dragging{};
-        bool shift{}, control{}, await_press{};
+        bool shift{};
+        bool control{};
+        bool await_press{};
         ui::PointerButton button{ui::PointerButton::primary};
     };
     std::optional<Gesture> gesture_;
@@ -179,7 +189,8 @@ private:
                                           math::Vector3 cursor);
     struct Hit {
         ObjectId entity;
-        math::Vector3 position, normal{0, 1, 0};
+        math::Vector3 position;
+        math::Vector3 normal{0, 1, 0};
     };
     static std::optional<Hit> trace(const ViewportView&, float x, float y, bool locators);
     Result<void> place_cursor(const ViewportView&, math::Vector2, ToolSettings, bool control);

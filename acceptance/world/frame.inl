@@ -24,8 +24,10 @@ void frame_phases() {
         return std::ranges::count_if(events,
                                      [&](const Event& e) { return std::get<0>(e) == phase && std::get<1>(e) == id; });
     };
-    auto a = take(w::create_entity(runtime)), b = take(w::create_entity(runtime));
-    auto c = take(w::create_entity(runtime)), d = take(w::create_entity(runtime));
+    auto a = take(w::create_entity(runtime));
+    auto b = take(w::create_entity(runtime));
+    auto c = take(w::create_entity(runtime));
+    auto d = take(w::create_entity(runtime));
     for (const auto* entity : {&a, &b, &c, &d})
         committed(world.attach(entity->id()));
     auto k = take(w::create_component(runtime, types.counter));
@@ -68,7 +70,8 @@ void frame_phases() {
     // A running rebind takes effect from the next phase without replaying Begin.
     // Requests queued by a Tick commit when its phase ends.
     const auto d_id = d.id();
-    bool queued = false, nested_bind = false;
+    bool queued = false;
+    bool nested_bind = false;
     take(world.bind_behavior(types.entity,
                              {.begin = [&](Runtime&, ObjectId id) -> Result<void> {
                                   events.emplace_back('B', id, 0.f);
@@ -149,7 +152,8 @@ void frame_phases() {
         committed(
             invalidated.attach_components(owner.id(), std::array{w::Attachment{first.id()}, w::Attachment{next.id()}}));
         committed(invalidated.attach(owner.id()));
-        bool gc_blocked = false, dead_ticked = false;
+        bool gc_blocked = false;
+        bool dead_ticked = false;
         take(invalidated.bind_behavior(types.counter, {.tick = [&](Runtime& rt, ObjectId id, float) -> Result<void> {
                                            if (id == first.id()) {
                                                const auto gc = rt.begin_collection();
@@ -175,8 +179,8 @@ void frame_phases() {
     w::World shown(runtime, types);
     auto owner = take(w::create_entity(runtime));
     committed(shown.attach(owner.id()));
-    auto lit = take(w::create_component(runtime, types.counter)),
-         dark = take(w::create_component(runtime, types.counter));
+    auto lit = take(w::create_component(runtime, types.counter));
+    auto dark = take(w::create_component(runtime, types.counter));
     committed(shown.attach_components(owner.id(), std::array{w::Attachment{lit.id()}, w::Attachment{dark.id()}}));
     take(runtime.write(lit.id(), types.counter_value, Scalar{1.f}));
     const auto glowing = take(shown.register_capability(types.counter, [&](Runtime& rt, ObjectId id) -> Result<bool> {
@@ -254,7 +258,8 @@ void frame_phases() {
     // An admission may read the World but not edit it or register admissions while it runs; one
     // that throws rejects the edit like a returned error, and the previous value is restored.
     enum class Probe { none, reenter, raise } probe{};
-    std::optional<Result<void>> nested_write, nested_admission;
+    std::optional<Result<void>> nested_write;
+    std::optional<Result<void>> nested_admission;
     take(shown.add_admission(
         types.counter, [&](const w::World&, std::span<const w::World::AdmissionCandidate> candidates) -> Result<void> {
             if (probe == Probe::reenter) {
@@ -282,7 +287,8 @@ void frame_phases() {
     probe = Probe::none;
     // A rejected edit returns the field to its exact previous bytes, even a value that bypassed
     // the write path: NaN keeps its payload and an out-of-bounds value is not clamped.
-    bool deny = false, raise = false;
+    bool deny = false;
+    bool raise = false;
     const auto denied = [&](const w::World&, std::span<const w::World::AdmissionCandidate>) -> Result<void> {
         if (deny)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Restore probe denied the edit."});
@@ -296,8 +302,8 @@ void frame_phases() {
     committed(shown.attach_components(lamp.id(), std::array{w::Attachment{bulb.id()}}));
     committed(shown.attach(lamp.id()));
     const auto field = [&](TypeId type, std::string_view name) { return take(runtime.find_field(type, name)); };
-    const auto settings = field(types.light_component, "settings"),
-               intensity = field(take(runtime.native_type<p::LightSettings>()), "intensity");
+    const auto settings = field(types.light_component, "settings");
+    const auto intensity = field(take(runtime.native_type<p::LightSettings>()), "intensity");
     const auto color = field(types.light_settings, "color");
     const auto x = field(take(runtime.native_type<math::Vector3>()), "x");
     const auto rejected = [&](Result<void> result) {

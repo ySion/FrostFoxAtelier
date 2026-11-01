@@ -102,7 +102,8 @@ void static_mesh_entity_creation() {
             "Running attachment or null mesh behavior violated the factory contract.");
     committed(world.stop());
 
-    const auto objects_before = runtime.live_objects(), roots_before = runtime.root_count();
+    const auto objects_before = runtime.live_objects();
+    const auto roots_before = runtime.root_count();
     auto invalid = description;
     invalid.transform.scale.x = std::numeric_limits<float>::infinity();
     reject(p::create_static_mesh_entity(world, invalid), "Factory accepted non-finite scale.");

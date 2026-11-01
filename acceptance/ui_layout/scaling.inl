@@ -147,7 +147,9 @@ void virtual_range_and_anchor() {
 
 struct VirtualInspector {
     struct Row {
-        LayoutNodeId node, label, value;
+        LayoutNodeId node;
+        LayoutNodeId label;
+        LayoutNodeId value;
     };
     struct Output {
         std::shared_ptr<const TextFrame> frame;

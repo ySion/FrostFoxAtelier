@@ -49,7 +49,9 @@ private:
 };
 
 struct Resources {
-    std::int64_t allocations, bytes, live;
+    std::int64_t allocations;
+    std::int64_t bytes;
+    std::int64_t live;
 };
 Resources resources() {
     // Flush mimalloc v3 page statistics outside the timed interval.
@@ -105,8 +107,10 @@ void workload(const char* implementation) {
     for (int i = 0; i != 32; ++i)
         utf8 += "装备🙂";
     const std::string large(4096, 'b');
-    const S short_source{StringView{"Transform"}}, owned_source{StringView{ascii}}, unicode_source{StringView{utf8}},
-        long_source{StringView{large}};
+    const S short_source{StringView{"Transform"}};
+    const S owned_source{StringView{ascii}};
+    const S unicode_source{StringView{utf8}};
+    const S long_source{StringView{large}};
     S scratch;
     scratch.reserve(512);
     std::printf("{\"kind\":\"string_layout\",\"implementation\":\"%s\",\"object_bytes\":%zu}\n", implementation,

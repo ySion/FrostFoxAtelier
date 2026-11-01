@@ -98,12 +98,15 @@ void verify_type_validation() {
             .validate<&valid_derived>()
             .build(),
     }));
-    const auto span_type = types[0], settings_type = types[1], base = types[2], derived = types[3];
+    const auto span_type = types[0];
+    const auto settings_type = types[1];
+    const auto base = types[2];
+    const auto derived = types[3];
     const auto vector3 = take(runtime.native_type<math::Vector3>());
-    const auto settings = take(runtime.find_field(base, "settings")),
-               span = take(runtime.find_field(settings_type, "span"));
-    const auto gain = take(runtime.find_field(settings_type, "gain")),
-               tint = take(runtime.find_field(settings_type, "tint"));
+    const auto settings = take(runtime.find_field(base, "settings"));
+    const auto span = take(runtime.find_field(settings_type, "span"));
+    const auto gain = take(runtime.find_field(settings_type, "gain"));
+    const auto tint = take(runtime.find_field(settings_type, "tint"));
     const auto y = take(runtime.find_field(vector3, "y"));
     require(take(runtime.find_field(span_type, "low")) != gain, "Distinct record fields share an identity.");
 

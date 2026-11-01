@@ -16,7 +16,8 @@ struct ScopeLifetime;
 // property/transaction routes. Neither the component nor this value retains Entities.
 struct EditBinding {
     ui::ControlKey group{};
-    bool enabled{}, modified{};
+    bool enabled{};
+    bool modified{};
     std::vector<ui::NumberField> fields;
     bool operator==(const EditBinding&) const = default;
 };
@@ -52,8 +53,11 @@ struct CodeBinding {
 using TooltipBinding = std::shared_ptr<const ui::Tooltip>;
 // One flattened host row (see ui::flatten_tree); TreeItem copies it into its descriptor.
 struct TreeRowBinding {
-    std::uint32_t index{}, depth{};
-    bool branch{}, expanded{}, primary{};
+    std::uint32_t index{};
+    std::uint32_t depth{};
+    bool branch{};
+    bool expanded{};
+    bool primary{};
     std::bitset<128> lines;
     bool operator==(const TreeRowBinding&) const = default;
 };
@@ -69,7 +73,9 @@ struct KeyBinding {
     // A node in this component, or a dotted path through named static component
     // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.
     std::string node;
-    ui::ControlKey key{}, label{}, body{};
+    ui::ControlKey key{};
+    ui::ControlKey label{};
+    ui::ControlKey body{};
     bool operator==(const KeyBinding&) const = default;
 };
 struct Item {
@@ -82,10 +88,15 @@ struct Item {
     bool operator==(const Item&) const = default;
 };
 struct Statistics {
-    std::uint64_t binding_evaluations{}, event_evaluations{}, publications{}, node_creations{}, node_removals{};
+    std::uint64_t binding_evaluations{};
+    std::uint64_t event_evaluations{};
+    std::uint64_t publications{};
+    std::uint64_t node_creations{};
+    std::uint64_t node_removals{};
     ObjectId instance;
     // Actual Context lifetimes in this root's entire subtree, including refused candidates.
-    std::uint64_t scope_creations{}, scope_retirements{};
+    std::uint64_t scope_creations{};
+    std::uint64_t scope_retirements{};
 };
 
 // Call during the host Runtime's existing bootstrap, before its first object.
@@ -121,7 +132,8 @@ public:
                                                    const Module* previous = nullptr);
     std::shared_ptr<Component> find(std::string_view) const;
     struct Compilation {
-        std::size_t compiled{}, reused{};
+        std::size_t compiled{};
+        std::size_t reused{};
     };
     Compilation compilation() const noexcept { return compilation_; }
 

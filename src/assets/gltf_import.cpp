@@ -16,12 +16,17 @@ namespace {
 using Json = nlohmann::json;
 // Sized for the 2K Intel Sponza (largest file: 3.75M triangles, 134 MiB of buffers, 72 images,
 // 1.1 GiB decoded) with about 2x headroom; documented in docs/modules/editor/projects.md.
-constexpr std::size_t maximum_document = 16ull << 20, maximum_buffers = 512ull << 20, maximum_image_file = 64ull << 20,
-                      maximum_images = 256, maximum_decoded = 2ull << 30, maximum_triangles = 8'000'000,
-                      maximum_nodes = 65536;
+constexpr std::size_t maximum_document = 16ull << 20;
+constexpr std::size_t maximum_buffers = 512ull << 20;
+constexpr std::size_t maximum_image_file = 64ull << 20;
+constexpr std::size_t maximum_images = 256;
+constexpr std::size_t maximum_decoded = 2ull << 30;
+constexpr std::size_t maximum_triangles = 8'000'000;
+constexpr std::size_t maximum_nodes = 65536;
 constexpr std::size_t no_slot = ~std::size_t{};
 
-const Json empty_array = Json::array(), empty_object = Json::object();
+const Json empty_array = Json::array();
+const Json empty_object = Json::object();
 
 void require(bool ok, std::string_view message) {
     if (!ok)
@@ -107,7 +112,10 @@ Matrix local_matrix(const Json& node) {
     const auto t = numbers<3>(node, "translation", {0, 0, 0});
     const auto q = numbers<4>(node, "rotation", {0, 0, 0, 1});
     const auto s = numbers<3>(node, "scale", {1, 1, 1});
-    const double x = q[0], y = q[1], z = q[2], w = q[3];
+    const double x = q[0];
+    const double y = q[1];
+    const double z = q[2];
+    const double w = q[3];
     const std::array<double, 9> rotation{1 - 2 * (y * y + z * z), 2 * (x * y + z * w),     2 * (x * z - y * w),
                                          2 * (x * y - z * w),     1 - 2 * (x * x + z * z), 2 * (y * z + x * w),
                                          2 * (x * z + y * w),     2 * (y * z - x * w),     1 - 2 * (x * x + y * y)};
@@ -123,7 +131,8 @@ Matrix local_matrix(const Json& node) {
 }
 struct Accessor {
     const std::byte* data{};
-    std::size_t count{}, stride{};
+    std::size_t count{};
+    std::size_t stride{};
     std::uint32_t component{};
 };
 std::size_t component_size(std::uint32_t type) {
@@ -147,10 +156,10 @@ Accessor accessor(const Json& gltf, std::span<const std::string_view> buffers, c
                                  : type == "VEC3" ? 3
                                                   : 4) *
                                 component_size(component);
-    const std::uint64_t view_offset = view.value("byteOffset", std::uint64_t{}),
-                        view_length = member(view, "byteLength").get<std::uint64_t>();
-    const std::uint64_t offset = a.value("byteOffset", std::uint64_t{}),
-                        count = member(a, "count").get<std::uint64_t>();
+    const std::uint64_t view_offset = view.value("byteOffset", std::uint64_t{});
+    const std::uint64_t view_length = member(view, "byteLength").get<std::uint64_t>();
+    const std::uint64_t offset = a.value("byteOffset", std::uint64_t{});
+    const std::uint64_t count = member(a, "count").get<std::uint64_t>();
     const std::uint64_t stride = view.value("byteStride", width);
     require(count > 0 && count <= std::uint64_t{1} << 32 && stride >= width && stride <= 252,
             "accessor has an invalid count or stride.");
@@ -234,7 +243,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
         require(nodes.is_array() && nodes.size() <= maximum_nodes, "too many nodes.");
         const auto& scene = element(gltf, "scenes", gltf.value("scene", Json(0u)));
         // Depth-first in file order, so parts follow the document.
-        std::vector<std::pair<std::size_t, Matrix>> placed, stack;
+        std::vector<std::pair<std::size_t, Matrix>> placed;
+        std::vector<std::pair<std::size_t, Matrix>> stack;
         std::vector<bool> visited(nodes.size());
         const auto push = [&](const Json& indices, const Matrix& parent) {
             require(indices.is_array(), "node lists must be arrays.");
@@ -272,7 +282,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
         bool default_used = false;
         std::size_t corners{};
         struct Skipped {
-            std::size_t primitives{}, triangles{};
+            std::size_t primitives{};
+            std::size_t triangles{};
         };
         std::map<std::size_t, Skipped> skipped;
         for (const auto& [index, world] : placed)
@@ -308,7 +319,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
                     "buffer is shorter than its byteLength.");
             buffer_files.push_back(file);
         }
-        std::vector<std::size_t> image_slot(field(gltf, "images", empty_array).size(), no_slot), image_files;
+        std::vector<std::size_t> image_slot(field(gltf, "images", empty_array).size(), no_slot);
+        std::vector<std::size_t> image_files;
         const auto texture_image = [&](const Json& info) {
             require(info.value("texCoord", 0) == 0, "textures must use TEXCOORD_0.");
             const auto& texture = element(gltf, "textures", member(info, "index"));
@@ -338,7 +350,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
                     if (materials[m].contains(key))
                         texture_image(materials[m][key]);
             }
-        std::vector<std::string_view> buffers, image_sources;
+        std::vector<std::string_view> buffers;
+        std::vector<std::string_view> image_sources;
         for (const auto file : buffer_files)
             buffers.push_back(result.files[file].bytes);
         for (const auto file : image_files)
@@ -372,8 +385,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
             };
             const auto& pbr = pbr_of(source_material);
             const auto color = numbers<4>(pbr, "baseColorFactor", {1, 1, 1, 1});
-            const auto metallic = static_cast<float>(number(pbr, "metallicFactor", 1)),
-                       roughness = static_cast<float>(number(pbr, "roughnessFactor", 1));
+            const auto metallic = static_cast<float>(number(pbr, "metallicFactor", 1));
+            const auto roughness = static_cast<float>(number(pbr, "roughnessFactor", 1));
             const auto normal_scale = source_material.contains("normalTexture")
                                           ? static_cast<float>(number(source_material["normalTexture"], "scale", 1))
                                           : 1.f;
@@ -386,8 +399,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
             require(std::ranges::all_of(
                         emissive, [](float value) { return std::isfinite(value) && value >= 0 && value <= 65504.f; }),
                     "invalid emissive factor.");
-            const bool mask = alpha_mode(source_material) == "MASK",
-                       two_sided = source_material.value("doubleSided", false);
+            const bool mask = alpha_mode(source_material) == "MASK";
+            const bool two_sided = source_material.value("doubleSided", false);
             author.parent_key =
                 mask ? (two_sided ? "builtin/material/standard-mask-double" : "builtin/material/standard-mask-single")
                      : (two_sided ? "builtin/material/standard-opaque-double"
@@ -483,8 +496,9 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
                     }
                     return a;
                 };
-                const auto normal = optional("NORMAL", "VEC3"), tangent = optional("TANGENT", "VEC4"),
-                           uv = optional("TEXCOORD_0", "VEC2");
+                const auto normal = optional("NORMAL", "VEC3");
+                const auto tangent = optional("TANGENT", "VEC4");
+                const auto uv = optional("TEXCOORD_0", "VEC2");
                 require(uv || std::ranges::all_of(result.textures[slot], [](const auto& path) { return path.empty(); }),
                         "a textured primitive has no TEXCOORD_0.");
                 std::vector<geometry::Vertex> source(position.count);
@@ -526,7 +540,8 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
                     }
                     if (!normal) {
                         // glTF fronts are counter-clockwise before the node transform; sign(det) restores them after it.
-                        std::array<double, 3> a{}, b{};
+                        std::array<double, 3> a{};
+                        std::array<double, 3> b{};
                         for (std::size_t axis = 0; axis < 3; ++axis) {
                             a[axis] = double(triangle[1].position[axis]) - triangle[0].position[axis];
                             b[axis] = double(triangle[2].position[axis]) - triangle[0].position[axis];

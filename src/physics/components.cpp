@@ -402,7 +402,8 @@ Result<void> ComponentSimulation::removed(ObjectId object, bool detached) try {
 Result<void> ComponentSimulation::reconcile() try {
     contained_ = false;
     auto& runtime = world_.runtime();
-    std::unordered_set<ObjectId> seen, owners;
+    std::unordered_set<ObjectId> seen;
+    std::unordered_set<ObjectId> owners;
     std::unordered_map<ObjectId, ObjectId> writers;
     std::vector<std::pair<Entry, bool>> desired_entries;
     const auto is = [&]<class T>(ObjectId id) {

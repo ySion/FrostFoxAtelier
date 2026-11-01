@@ -95,7 +95,8 @@ struct TextProvider {
     };
     struct Paragraph {
         ComPtr<IDWriteTextLayout> layout;
-        std::uint64_t content_revision{}, provider_revision{};
+        std::uint64_t content_revision{};
+        std::uint64_t provider_revision{};
     };
     struct Resolved {
         std::shared_ptr<const Paragraph> paragraph;
@@ -105,14 +106,26 @@ struct TextProvider {
     std::map<std::uint64_t, Content> content;
     std::map<std::uint64_t, std::shared_ptr<Paragraph>> paragraphs;
     std::vector<DWRITE_LINE_METRICS> line_metrics;
-    std::uint64_t calls{}, creates{}, fail_at{}, epoch{1}, measure_nanoseconds{};
+    std::uint64_t calls{};
+    std::uint64_t creates{};
+    std::uint64_t fail_at{};
+    std::uint64_t epoch{1};
+    std::uint64_t measure_nanoseconds{};
     struct Costs {
-        std::uint64_t format{}, create{}, wrapping{}, width{}, metrics{};
+        std::uint64_t format{};
+        std::uint64_t create{};
+        std::uint64_t wrapping{};
+        std::uint64_t width{};
+        std::uint64_t metrics{};
     } costs;
     std::wstring font_family{L"Segoe UI"};
     bool wrap_enabled{true};
     float scale{1};
-    bool invalid{}, exception{}, allocation_exception{}, try_reentry{}, reentry_rejected{};
+    bool invalid{};
+    bool exception{};
+    bool allocation_exception{};
+    bool try_reentry{};
+    bool reentry_rejected{};
     LayoutDocument* active{};
     LayoutNodeId active_leaf{};
     TextProvider() {
@@ -277,7 +290,8 @@ struct TextFrame {
 };
 
 struct ComputeCosts {
-    std::uint64_t total{}, measure{};
+    std::uint64_t total{};
+    std::uint64_t measure{};
     LayoutView run(LayoutDocument& document, TextProvider& provider, Size viewport) {
         const auto before = provider.measure_nanoseconds;
         const auto start = std::chrono::steady_clock::now();
@@ -290,7 +304,8 @@ struct ComputeCosts {
 };
 
 void identity_and_reuse() {
-    LayoutDocument a(nullptr, nullptr, {4, 3}), b(nullptr, nullptr, {4, 3});
+    LayoutDocument a(nullptr, nullptr, {4, 3});
+    LayoutDocument b(nullptr, nullptr, {4, 3});
     const auto parent = accepted(a.create(a.root(), column()));
     const auto child = accepted(a.create(parent, fixed_box(20, 10)));
     require(a.root() != b.root() && a.node_count() == 3, "document identities or count");
@@ -405,10 +420,12 @@ void bounded_allocation() {
     } while (std::next_permutation(order.begin(), order.end()));
     LayoutDocument d(nullptr, nullptr, {3, 1});
     accepted(d.set_root({Kind::row}));
-    auto first = fixed_box(0, 1), second = first;
+    auto first = fixed_box(0, 1);
+    auto second = first;
     first.width = Axis::expand(1, 80);
     second.width = Axis::expand();
-    const auto a = accepted(d.create(d.root(), first)), b = accepted(d.create(d.root(), second));
+    const auto a = accepted(d.create(d.root(), first));
+    const auto b = accepted(d.create(d.root(), second));
     auto result = accepted(d.compute({100, 10}, 1));
     require(box(result, a).width == 80 && box(result, b).width == 20, "whole-pool minimum policy");
     result = accepted(d.compute({40, 10}, 1));
@@ -432,7 +449,8 @@ void bounded_allocation() {
 }
 void weight_dynamic_range() {
     std::array<unsigned, 3> order{0, 1, 2};
-    const std::array<float, 3> weights{1e30f, 1, 1e-30f}, expected{1, 1, 98};
+    const std::array<float, 3> weights{1e30f, 1, 1e-30f};
+    const std::array<float, 3> expected{1, 1, 98};
     do {
         LayoutDocument d(nullptr, nullptr, {4, 1});
         accepted(d.set_root({Kind::row}));
@@ -450,12 +468,14 @@ void weight_dynamic_range() {
 void slots_padding_and_columns() {
     LayoutDocument d(nullptr, nullptr, {3, 1});
     accepted(d.set_root({Kind::row, {2, 3, 2, 3}, 4}));
-    auto first = fixed_box(0, 10), second = first;
+    auto first = fixed_box(0, 10);
+    auto second = first;
     first.width = Axis::expand(1, 20);
     first.horizontal_alignment = Alignment::fit(.5f);
     first.vertical_alignment = Alignment::stretch(.5f);
     second.width = Axis::expand();
-    const auto a = accepted(d.create(d.root(), first)), b = accepted(d.create(d.root(), second));
+    const auto a = accepted(d.create(d.root(), first));
+    const auto b = accepted(d.create(d.root(), second));
     auto result = accepted(d.compute({108, 40}, 1));
     require(box(result, a).width == 20 && box(result, a).x == 17 && box(result, a).y == 15 && box(result, b).x == 56 &&
                 box(result, b).width == 50,
@@ -650,7 +670,8 @@ void local_cache_and_slot_reuse() {
     p.content[2] = {L"Second pane", 16, 1};
     LayoutDocument d(TextProvider::measure, &p, {3, 1});
     accepted(d.set_root({Kind::row}));
-    const auto a = accepted(d.create(d.root(), text(1))), b = accepted(d.create(d.root(), text(2)));
+    const auto a = accepted(d.create(d.root(), text(1)));
+    const auto b = accepted(d.create(d.root(), text(2)));
     accepted(d.compute({400, 100}, p.epoch));
     auto before = p.calls;
     ++p.content[1].revision;
@@ -889,7 +910,8 @@ int main(int argc, char** argv) {
             {"final_tree_capacity_reuse", final_tree_capacity_reuse},
             {"final_tree_measurement_recovery", final_tree_measurement_recovery},
             {"final_tree_linear_siblings", final_tree_linear_siblings}};
-        unsigned passed = 0, failed = 0;
+        unsigned passed = 0;
+        unsigned failed = 0;
         for (const auto& [name, run] : cases) {
             try {
                 run();

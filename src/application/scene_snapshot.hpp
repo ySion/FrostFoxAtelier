@@ -251,7 +251,9 @@ private:
         bool seen{};
     };
     struct Synced {
-        std::uint64_t scene, version, world_revision;
+        std::uint64_t scene;
+        std::uint64_t version;
+        std::uint64_t world_revision;
         std::vector<ObjectId> selection;
     };
     struct Prepared {
@@ -260,7 +262,8 @@ private:
         std::optional<renderer::Error> failure;
     };
     std::optional<std::tuple<std::uint64_t, std::uint64_t, bool, renderer::Shading>> accepted_material_;
-    std::unordered_map<ObjectId, Key> mesh_keys_, light_keys_;
+    std::unordered_map<ObjectId, Key> mesh_keys_;
+    std::unordered_map<ObjectId, Key> light_keys_;
     std::uint64_t next_key_{1};
     std::vector<std::uint32_t> dense_; // Mesh slot to its index in `meshes`, or absent.
     std::optional<Synced> synced_;
@@ -268,9 +271,11 @@ private:
     std::vector<material::ProgramSurfaceRef> surfaces_;
     std::vector<editor::ViewportScene::Locator> locators_;
     std::unordered_set<ObjectId> locator_sources_;
-    std::uint64_t locator_cursor_{}, request_{};
+    std::uint64_t locator_cursor_{};
+    std::uint64_t request_{};
     std::shared_ptr<const editor::ViewportScene> picking_;
-    std::optional<Prepared> pending_, adopted_;
+    std::optional<Prepared> pending_;
+    std::optional<Prepared> adopted_;
     void material_event(std::string_view code, const renderer::Error* error = nullptr) const noexcept {
         try {
             logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,

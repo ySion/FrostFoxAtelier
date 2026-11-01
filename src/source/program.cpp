@@ -49,7 +49,8 @@ SourceLocation resolve_location(const SourceMap* map, std::string_view path, std
                 continue;
             const auto& file = map->snapshot->files[piece.file];
             const auto mapped = std::min(file.source.size(), piece.offset + offset - piece.begin);
-            std::size_t line = 1, column = 1;
+            std::size_t line = 1;
+            std::size_t column = 1;
             if (line_starts) {
                 const auto& lines = (*line_starts)[piece.file];
                 const auto index =
@@ -485,7 +486,9 @@ struct Program::State {
     std::shared_ptr<const Version> current;
     std::shared_ptr<const ModuleVersion> module;
     const std::uint64_t id{next_program_id()};
-    std::uint64_t latest_request{}, published_request{}, revision{};
+    std::uint64_t latest_request{};
+    std::uint64_t published_request{};
+    std::uint64_t revision{};
     bool open{true};
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
     std::optional<std::size_t> find(std::string_view name) const {
@@ -508,7 +511,8 @@ struct Program::Frame final : CoroutineFrame {
     Invocation invocation;
     std::unique_ptr<BusinessCoroutine, decltype(&atelier_destroy_business_coroutine)> code_frame{
         nullptr, &atelier_destroy_business_coroutine};
-    bool observed_terminal{}, captures_owned{};
+    bool observed_terminal{};
+    bool captures_owned{};
     DiagnosticStatus terminal{DiagnosticStatus::cancelled};
     DebugStatus debug_terminal{DebugStatus::cancelled};
     Frame(std::shared_ptr<const Version> owner, InvocationObserver observer, std::shared_ptr<DiagnosticState> capture,

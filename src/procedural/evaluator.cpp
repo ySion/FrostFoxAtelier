@@ -370,7 +370,8 @@ struct Evaluator::Impl {
         lists.reserve(state.ports->multiple.size()); // Borrowed below; must not move.
         std::vector<Argument> arguments;
         arguments.reserve(state.ports->parameters.size());
-        std::uint32_t input = 0, output = 0;
+        std::uint32_t input = 0;
+        std::uint32_t output = 0;
         const auto upstream = [&](const Input& connection) -> const Geometry& {
             return nodes.at(connection.from).entry->outputs[connection.output];
         };

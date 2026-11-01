@@ -14,7 +14,8 @@ namespace atelier::rhi::detail {
 struct ShaderSource {
     std::wstring name; // DXC main-file name: diagnostics and relative includes.
     std::string text;
-    std::wstring profile, entry;
+    std::wstring profile;
+    std::wstring entry;
 };
 
 struct CompiledShader {

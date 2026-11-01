@@ -295,7 +295,8 @@ Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::Co
                 return std::ranges::find_if(scene_tree_.rows,
                                             [&](const auto& row) { return scene_tree_.objects[row.node] == entity; });
             };
-            const auto first = row_of(session.selection().entity), last = row_of(target->object);
+            const auto first = row_of(session.selection().entity);
+            const auto last = row_of(target->object);
             if (first != scene_tree_.rows.end() && last != scene_tree_.rows.end()) {
                 for (auto at = std::min(first, last); at <= std::max(first, last); ++at)
                     if (const auto entity = scene_tree_.objects[at->node];
@@ -659,8 +660,8 @@ std::string range_note(const FieldRange& range) {
     const auto add = [&](const std::string& part) { note += (note.empty() ? "" : "，") + part; };
     if (range.ui_min || range.ui_max)
         add("范围 " + (range.ui_min ? text(*range.ui_min) : "-∞") + " – " + (range.ui_max ? text(*range.ui_max) : "∞"));
-    const bool lock_min = range.hard_min && range.hard_min == range.ui_min,
-               lock_max = range.hard_max && range.hard_max == range.ui_max;
+    const bool lock_min = range.hard_min && range.hard_min == range.ui_min;
+    const bool lock_max = range.hard_max && range.hard_max == range.ui_max;
     if (lock_min && lock_max)
         add("上下限锁定");
     else if (lock_min)
@@ -954,7 +955,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         if (pane.active)
             slots->push_back({pane.active->content,
                               {pane.active->key != control::scene_tab && pane.active->key != control::parameters_tab}});
-        const bool h = pane.horizontal, first = pane.collapsed == 1, second = pane.collapsed == 2;
+        const bool h = pane.horizontal;
+        const bool first = pane.collapsed == 1;
+        const bool second = pane.collapsed == 2;
         panes->push_back({pane.key,
                           {double(pane.bounds.width),
                            double(pane.bounds.height),
@@ -1531,7 +1534,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         const auto channel = [&](std::size_t lane) {
                             return tuple.size() > lane ? std::clamp(tuple[lane].value, 0.0, 1.0) : 0.0;
                         };
-                        const double r = channel(0), g = channel(1), b = channel(2);
+                        const double r = channel(0);
+                        const double g = channel(1);
+                        const double b = channel(2);
                         PropertyRow row;
                         row.key = property_key(prefix, Binding::Kind::property_row);
                         row.title =
@@ -1603,8 +1608,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                       std::holds_alternative<std::uint32_t>(property.value);
                 const auto [minimum, maximum] = legal_range(property.value, property.range);
                 const auto key = property_key(property.path);
-                const double value = scalar_number(property.value),
-                             initial = default_value ? scalar_number(*default_value) : value;
+                const double value = scalar_number(property.value);
+                const double initial = default_value ? scalar_number(*default_value) : value;
                 ui_language::EditBinding edit{
                     0,
                     editable,
@@ -1799,7 +1804,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 } else {
                     row.edit.enabled = row.enabled;
                     for (std::size_t lane = 0; lane < field.components; ++lane) {
-                        const auto value = lane_value(field.value, lane), initial = lane_value(field.initial, lane);
+                        const auto value = lane_value(field.value, lane);
+                        const auto initial = lane_value(field.initial, lane);
                         row.edit.fields.push_back({key(field.path, Binding::Kind::material_field, lane),
                                                    field.components == 1 ? L"" : std::wstring(1, L"XYZW"[lane]), value,
                                                    initial, -std::numeric_limits<float>::max(),
@@ -1933,7 +1939,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                  std::wstring_view::npos;
         const bool scale_matches =
             show_position && std::wstring_view(L"scale transform x y z 缩放").find(folded) != std::wstring_view::npos;
-        ui_language::EditBinding rotation_edit, scale_edit;
+        ui_language::EditBinding rotation_edit;
+        ui_language::EditBinding scale_edit;
         if (show_position) {
             const auto trs = take(world::read_transform(runtime, *transform));
             const auto angles = euler_degrees(trs.rotation);
@@ -1955,7 +1962,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 rotation_edit.fields.back().single_precision = scale_edit.fields.back().single_precision = true;
             }
         }
-        const bool matches = position_matches || rotation_matches || scale_matches, empty = groups->empty() && !matches;
+        const bool matches = position_matches || rotation_matches || scale_matches;
+        const bool empty = groups->empty() && !matches;
         ui_language::EditBinding position{show_position ? bind(*transform, {}, Binding::Kind::position_default)
                                                         : ui::ControlKey{74},
                                           entity_status.can_edit && show_position, group_modified, std::move(fields)};
@@ -2629,7 +2637,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     return result;
 }
 std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {
-    const auto high = std::max({c[0], c[1], c[2]}), low = std::min({c[0], c[1], c[2]}), span = high - low;
+    const auto high = std::max({c[0], c[1], c[2]});
+    const auto low = std::min({c[0], c[1], c[2]});
+    const auto span = high - low;
     double h = 0;
     if (span > 0) {
         if (high == c[0])
@@ -2644,9 +2654,12 @@ std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {
     return {h, high > 0 ? span / high : 0, high};
 }
 std::array<double, 3> hsv_to_rgb(std::array<double, 3> hsv) noexcept {
-    const auto h = std::fmod(std::max(hsv[0], 0.0), 360.0) / 60, s = std::clamp(hsv[1], 0.0, 1.0),
-               v = std::max(hsv[2], 0.0);
-    const auto chroma = v * s, x = chroma * (1 - std::abs(std::fmod(h, 2.0) - 1)), m = v - chroma;
+    const auto h = std::fmod(std::max(hsv[0], 0.0), 360.0) / 60;
+    const auto s = std::clamp(hsv[1], 0.0, 1.0);
+    const auto v = std::max(hsv[2], 0.0);
+    const auto chroma = v * s;
+    const auto x = chroma * (1 - std::abs(std::fmod(h, 2.0) - 1));
+    const auto m = v - chroma;
     const int sector = int(h);
     const std::array<std::array<double, 3>, 6> table{
         {{chroma, x, 0}, {x, chroma, 0}, {0, chroma, x}, {0, x, chroma}, {x, 0, chroma}, {chroma, 0, x}}};

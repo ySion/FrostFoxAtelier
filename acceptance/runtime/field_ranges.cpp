@@ -45,7 +45,8 @@ struct RangedOwner {
 };
 // Matches the described ranges.Pair layout: two floats, then a Vector3.
 struct PairValue {
-    float a, b;
+    float a;
+    float b;
     math::Vector3 tint;
 };
 
@@ -183,12 +184,22 @@ void verify_field_ranges() {
             return mode;
         }(),
     }));
-    const auto record = published[0], owner = published[1], derived = published[2], pair = published[3],
-               holder = published[4], mode = published[5];
+    const auto record = published[0];
+    const auto owner = published[1];
+    const auto derived = published[2];
+    const auto pair = published[3];
+    const auto holder = published[4];
+    const auto mode = published[5];
     const auto field = [&](TypeId type, std::string_view name) { return take(runtime.find_field(type, name)); };
-    const auto speed = field(owner, "speed"), count = field(owner, "count"), samples = field(owner, "samples");
-    const auto ui_only = field(owner, "ui_only"), albedo = field(owner, "albedo"), nested = field(owner, "nested");
-    const auto gain = field(record, "gain"), loose = field(record, "free"), x = field(vector3, "x");
+    const auto speed = field(owner, "speed");
+    const auto count = field(owner, "count");
+    const auto samples = field(owner, "samples");
+    const auto ui_only = field(owner, "ui_only");
+    const auto albedo = field(owner, "albedo");
+    const auto nested = field(owner, "nested");
+    const auto gain = field(record, "gain");
+    const auto loose = field(record, "free");
+    const auto x = field(vector3, "x");
 
     const auto& inherited = take(runtime.describe(derived))->fields;
     const auto speed_info = std::ranges::find(inherited, speed, &FieldInfo::id);
@@ -203,8 +214,13 @@ void verify_field_ranges() {
         take(runtime.write(id, path, value));
         return take(runtime.read(id, path));
     };
-    const std::array speed_path{speed}, count_path{count}, samples_path{samples}, ui_path{ui_only};
-    const std::array component{albedo, x}, gain_path{nested, gain}, free_path{nested, loose};
+    const std::array speed_path{speed};
+    const std::array count_path{count};
+    const std::array samples_path{samples};
+    const std::array ui_path{ui_only};
+    const std::array component{albedo, x};
+    const std::array gain_path{nested, gain};
+    const std::array free_path{nested, loose};
     require(stored(speed_path, Scalar{150.0f}) == Scalar{100.0f} && stored(speed_path, Scalar{-1.0f}) == Scalar{0.0f} &&
                 stored(speed_path, Scalar{50.0f}) == Scalar{50.0f},
             "Scalar writes ignored hard bounds or applied the UI range.");
@@ -225,7 +241,8 @@ void verify_field_ranges() {
             "A math component did not inherit its vector's bounds.");
     require(stored(gain_path, Scalar{5.0f}) == Scalar{2.0f}, "A nested record leaf ignored its hard bound.");
 
-    const std::array albedo_path{albedo}, nested_path{nested};
+    const std::array albedo_path{albedo};
+    const std::array nested_path{nested};
     const auto read_albedo = [&] {
         math::Vector3 value;
         take(runtime.read(id, albedo_path, ValueOutput{vector3, &value}));
@@ -249,7 +266,8 @@ void verify_field_ranges() {
             "A rejected record write changed an unconstrained leaf.");
 
     auto holding = take(runtime.create(holder));
-    const std::array pair_path{field(holder, "pair")}, level_path{field(holder, "level")};
+    const std::array pair_path{field(holder, "pair")};
+    const std::array level_path{field(holder, "level")};
     require(take(runtime.read(holding.id(), level_path)) == Scalar{3.0f} &&
                 (take(runtime.write(holding.id(), level_path, Scalar{9.0f})),
                  take(runtime.read(holding.id(), level_path))) == Scalar{5.0f},
@@ -268,7 +286,8 @@ void verify_field_ranges() {
     rejected(described("bad.EnumUnderlying", TypeKind::object,
                        {described_field("value", {mode}, {}, {Scalar{std::uint32_t{7}}})}),
              "An enum default of the wrong underlying type was accepted.");
-    PairValue pair_input{5.0f, -5.0f, {2.0f, -1.0f, 0.5f}}, pair_output{};
+    PairValue pair_input{5.0f, -5.0f, {2.0f, -1.0f, 0.5f}};
+    PairValue pair_output{};
     take(runtime.write(holding.id(), pair_path, ValueInput{pair, &pair_input}));
     take(runtime.read(holding.id(), pair_path, ValueOutput{pair, &pair_output}));
     require(pair_output.a == 1.0f && pair_output.b == -5.0f && pair_output.tint == math::Vector3{1.0f, 0.0f, 0.5f},
@@ -284,8 +303,8 @@ void verify_field_ranges() {
     reject(runtime.constrain(owner, speed_path, Scalar{1.0}), ErrorCode::type_mismatch,
            "constrain() accepted the wrong scalar type.");
 
-    const auto accumulate = take(runtime.find_method(owner, "accumulate")),
-               observe = take(runtime.find_method(owner, "observe"));
+    const auto accumulate = take(runtime.find_method(owner, "accumulate"));
+    const auto observe = take(runtime.find_method(owner, "observe"));
     reject(runtime.call(id, accumulate, std::array{Argument::field(id, speed_path), Argument{Scalar{1.0f}}}),
            ErrorCode::argument_mismatch, "A hard-bounded field was borrowed writably.");
     reject(runtime.call(id, accumulate, std::array{Argument::field(id, component), Argument{Scalar{1.0f}}}),

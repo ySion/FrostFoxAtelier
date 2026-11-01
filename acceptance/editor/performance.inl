@@ -40,7 +40,8 @@ void verify_render_performance(Application& app, const std::filesystem::path& ou
             "Non-Lit performance displayed a fabricated zero.");
     const auto width = table().data->columns[0].width;
     const auto grip = table().columns[0].resize;
-    const float x = grip.x + grip.width * .5f, y = grip.y + grip.height * .5f;
+    const float x = grip.x + grip.width * .5f;
+    const float y = grip.y + grip.height * .5f;
     Access::input(app, {.kind = ui::EventKind::pointer_down, .x = x, .y = y, .button = ui::PointerButton::primary});
     Access::input(app, {.kind = ui::EventKind::pointer_move, .x = x + 48, .y = y});
     Access::input(app, {.kind = ui::EventKind::pointer_up, .x = x + 48, .y = y, .button = ui::PointerButton::primary});
@@ -290,7 +291,8 @@ int profile_editor_render_performance(Application& app, const char* output_direc
     const auto output = std::filesystem::path(assets::wide(output_directory));
     require(output.is_absolute(), "Render performance evidence needs an absolute directory.");
     std::filesystem::create_directories(output);
-    const auto project = Access::project_root(app), scene = Access::scene_path(app);
+    const auto project = Access::project_root(app);
+    const auto scene = Access::scene_path(app);
     require(!project.empty() && !scene.empty(), "Render performance requires a loaded project Scene.");
     const auto scene_file = project / scene;
     const auto file_hash = atelier::control::sha256_file(scene_file);
@@ -305,8 +307,9 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         return Json(nullptr);
     }();
     const auto* original_document = &app.document();
-    const auto history = app.document().undo_count(), redo = app.document().redo_count(),
-               revision = app.document().revision();
+    const auto history = app.document().undo_count();
+    const auto redo = app.document().redo_count();
+    const auto revision = app.document().revision();
     const auto dirty = app.document().dirty();
     const auto unchanged_author = [&] {
         require(&app.document() == original_document && Access::project_root(app) == project &&
@@ -451,8 +454,10 @@ int profile_editor_render_performance(Application& app, const char* output_direc
                     next_frame(deadline);
                     const auto bounds = Access::accepted_view(app)->bounds;
                     const auto pixels = renderer::detail::raster_viewport(bounds).scissor;
-                    const int width = pixels.right - pixels.left, height = pixels.bottom - pixels.top;
-                    RECT outer{}, client{};
+                    const int width = pixels.right - pixels.left;
+                    const int height = pixels.bottom - pixels.top;
+                    RECT outer{};
+                    RECT client{};
                     require(GetWindowRect(app.window(), &outer) != 0 && GetClientRect(app.window(), &client) != 0,
                             "Cannot read the performance window rectangle.");
                     const std::array<LONG, 4> state{outer.right - outer.left, outer.bottom - outer.top, width, height};
@@ -487,7 +492,8 @@ int profile_editor_render_performance(Application& app, const char* output_direc
                     const auto dy = std::lround(
                         double(1440 - height) *
                         (docked && std::abs(1440 - height) > 2 ? double(client.bottom - client.top) / height : 1.));
-                    const auto next_width = state[0] + dx, next_height = state[1] + dy;
+                    const auto next_width = state[0] + dx;
+                    const auto next_height = state[1] + dy;
                     sample["requested_outer_extent"] = {next_width, next_height};
                     require(next_width > 0 && next_height > 0 && next_width <= 16384 && next_height <= 16384,
                             "Scene View calibration exceeds the 16384-pixel window limit; resolution was not reduced.");
@@ -603,9 +609,11 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         // Finish cold uploads and obtain a real completed sample before the two
         // timed cases. The fixed case warmup is additional to this preparation.
         std::uint64_t bytes = 0;
-        unsigned stable = 0, prepared = 0;
+        unsigned stable = 0;
+        unsigned prepared = 0;
         const auto cold_deadline = Clock::now() + std::chrono::minutes(5);
-        Clock::time_point cold_begin{}, cold_end{};
+        Clock::time_point cold_begin{};
+        Clock::time_point cold_end{};
         while (stable < 16 || prepared < 32 || !app.frame_statistics().scene_lit_gpu_timing_valid) {
             cold_end = next_frame(cold_deadline);
             invariant();
@@ -658,12 +666,16 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         }
         view.lit.direct_cluster_inspect = false;
         struct Sample {
-            std::uint64_t sequence{}, frame{}, observed_frame{}, resources{};
+            std::uint64_t sequence{};
+            std::uint64_t frame{};
+            std::uint64_t observed_frame{};
+            std::uint64_t resources{};
             std::uint32_t mask{};
             std::array<std::uint32_t, 3> clusters{};
             std::array<float, editor::FramePerformance::total_pass> ms{};
             std::array<std::uint32_t, 14> shadows{};
-            std::uint64_t probe_rays{}, shadow_rays{};
+            std::uint64_t probe_rays{};
+            std::uint64_t shadow_rays{};
             std::array<std::uint64_t, 2> ddgi_visibility_rays{};
             std::uint32_t reflection_work_items{};
         };
@@ -679,7 +691,8 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         struct CpuSample {
             std::uint64_t frame_id{};
             std::array<std::uint64_t, 4> draws{};
-            std::uint64_t scene_instances{}, scene_culled_instances{};
+            std::uint64_t scene_instances{};
+            std::uint64_t scene_culled_instances{};
             timing::FrameRecord record;
         };
         // Called right after next_frame, so the last step is the accepted one.
@@ -749,7 +762,8 @@ int profile_editor_render_performance(Application& app, const char* output_direc
             std::uint64_t sequence = 0;
             unsigned accepted = 0;
             auto previous = frame_end(app.frame_record());
-            const auto measurement_start = previous, deadline = Clock::now() + std::chrono::minutes(10);
+            const auto measurement_start = previous;
+            const auto deadline = Clock::now() + std::chrono::minutes(10);
             while (samples.size() < 240) {
                 orbit_step();
                 const auto presented = next_frame(deadline);
@@ -887,7 +901,8 @@ int profile_editor_render_performance(Application& app, const char* output_direc
             std::vector<CpuSample> cpu;
             cpu.reserve(240);
             auto previous = frame_end(app.frame_record());
-            const auto measurement_start = previous, deadline = Clock::now() + std::chrono::minutes(10);
+            const auto measurement_start = previous;
+            const auto deadline = Clock::now() + std::chrono::minutes(10);
             for (unsigned accepted = 0; accepted < 240; ++accepted) {
                 const auto presented = next_frame(deadline);
                 invariant();

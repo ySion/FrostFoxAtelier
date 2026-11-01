@@ -67,7 +67,8 @@ void atlas_rectangles(Context& owner) {
     check(gfxDrawStateSetColorTarget(color_desc.draw_state, 0, DXGI_FORMAT_R32G32B32A32_FLOAT));
     check(gfxDrawStateSetCullMode(color_desc.draw_state, D3D12_CULL_MODE_NONE));
     auto color_draw = take(owner.prepare(color_desc));
-    const std::array<float, 4> depth_clear{1, 0, 0, 0}, color_clear{.75f, .5f, .125f, 1};
+    const std::array<float, 4> depth_clear{1, 0, 0, 0};
+    const std::array<float, 4> color_clear{.75f, .5f, .125f, 1};
     auto depth = gfxCreateTexture2DArray(gfx, 64, 32, 2, DXGI_FORMAT_D32_FLOAT, 3, depth_clear.data(),
                                          D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
     auto color = gfxCreateTexture2DArray(gfx, 64, 32, 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 3, color_clear.data(),
@@ -187,7 +188,8 @@ void raster_bias(Context& owner, PipelineKind kind) {
     const auto gfx = owner.borrow();
     struct Bias {
         std::int32_t constant;
-        float slope, clamp;
+        float slope;
+        float clamp;
     };
     constexpr std::array<Bias, 7> biases{
         {{0, 0, 0}, {0, 0, 0}, {262144, 0, 0}, {-262144, 0, 0}, {0, 2, 0}, {262144, 2, .001f}, {-262144, -2, -.001f}}};
@@ -242,7 +244,8 @@ void raster_bias(Context& owner, PipelineKind kind) {
         const float expected = .25f + .125f * (float(p % 64) + .5f) / 64;
         require(std::fabs(data[0][p] - expected) < 1e-6f, "default depth bias changed raster depth");
         require(std::fabs(data[1][p] - data[0][p]) < 1e-6f, "explicit zero bias differs from default");
-        const float positive = data[2][p] - data[0][p], negative = data[3][p] - data[0][p];
+        const float positive = data[2][p] - data[0][p];
+        const float negative = data[3][p] - data[0][p];
         require(positive > .0005f && positive < .05f && negative < -.0005f && negative > -.05f,
                 "constant depth bias sign/magnitude mismatch");
         require(std::fabs((data[4][p] - data[0][p]) - (2 * .125f / 64)) < 1e-5f, "slope-scaled depth bias mismatch");

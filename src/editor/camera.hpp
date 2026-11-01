@@ -65,7 +65,12 @@ public:
 private:
     CameraView view_{CameraView::perspective};
     math::Vector3 target_;
-    float yaw_{}, pitch_{}, distance_{};
-    float roll_{}, vertical_fov_{45}, near_clip_{.05f}, far_clip_{30000};
+    float yaw_{};
+    float pitch_{};
+    float distance_{};
+    float roll_{};
+    float vertical_fov_{45};
+    float near_clip_{.05f};
+    float far_clip_{30000};
 };
 }

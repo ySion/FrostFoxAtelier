@@ -61,7 +61,9 @@ void verify_viewport_splitter_drag(Application& app, const std::filesystem::path
             app.presented()->find(app.docking().divider(control::scene_tab, ui::DragAxis::horizontal));
         require(divider != nullptr, "Overshoot divider is absent.");
         const math::Vector2 start{divider->bounds.x + divider->bounds.width * .5f, before.y + before.height * .35f};
-        const math::Vector2 inside{start.x - 48, start.y}, past{before.x + 20, start.y}, further{before.x + 5, start.y};
+        const math::Vector2 inside{start.x - 48, start.y};
+        const math::Vector2 past{before.x + 20, start.y};
+        const math::Vector2 further{before.x + 5, start.y};
         const auto preview = [&] {
             const auto placement = Access::dock_presentation(app);
             require(placement.preview.has_value(), "Overshoot drag has no divider preview.");

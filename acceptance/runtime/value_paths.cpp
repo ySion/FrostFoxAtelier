@@ -140,20 +140,35 @@ void verify_value_paths() {
                    described_field("twin", TypeReference{"values.Twin"}),
                    described_field("point", TypeReference::native<math::Vector3>(), hard(-1.0f, 1.0f))}),
     }));
-    const auto string_type = types[0], leaf_type = types[1], float_array = types[2], leaf_array = types[3],
-               settings_type = types[4];
-    const auto fragile_array = types[6], sticky_type = types[7], pair_type = types[8], twin_type = types[10],
-               bag_type = types[11];
+    const auto string_type = types[0];
+    const auto leaf_type = types[1];
+    const auto float_array = types[2];
+    const auto leaf_array = types[3];
+    const auto settings_type = types[4];
+    const auto fragile_array = types[6];
+    const auto sticky_type = types[7];
+    const auto pair_type = types[8];
+    const auto twin_type = types[10];
+    const auto bag_type = types[11];
     const auto f64 = take(runtime.native_type<double>());
     const auto field = [&](TypeId type, const char* name) { return take(runtime.find_field(type, name)); };
     const auto at = [&](TypeId array, std::uint32_t index) { return take(runtime.element(array, index)); };
-    const auto gain = field(leaf_type, "gain"), leaf = field(settings_type, "leaf"),
-               label = field(settings_type, "label");
-    const auto weights = field(settings_type, "weights"), leaves = field(settings_type, "leaves");
-    const auto pair_text = field(pair_type, "text"), pair_weight = field(pair_type, "weight");
-    const auto name = field(bag_type, "name"), settings = field(bag_type, "settings"), pair = field(bag_type, "pair");
-    const auto fragile = field(bag_type, "fragile"), sticky = field(bag_type, "sticky"), link = field(bag_type, "link");
-    const auto twin = field(bag_type, "twin"), first = field(twin_type, "first"), second = field(twin_type, "second");
+    const auto gain = field(leaf_type, "gain");
+    const auto leaf = field(settings_type, "leaf");
+    const auto label = field(settings_type, "label");
+    const auto weights = field(settings_type, "weights");
+    const auto leaves = field(settings_type, "leaves");
+    const auto pair_text = field(pair_type, "text");
+    const auto pair_weight = field(pair_type, "weight");
+    const auto name = field(bag_type, "name");
+    const auto settings = field(bag_type, "settings");
+    const auto pair = field(bag_type, "pair");
+    const auto fragile = field(bag_type, "fragile");
+    const auto sticky = field(bag_type, "sticky");
+    const auto link = field(bag_type, "link");
+    const auto twin = field(bag_type, "twin");
+    const auto first = field(twin_type, "first");
+    const auto second = field(twin_type, "second");
     constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
 
     // Caller-owned records take the same paths, exact types and hard bounds as object fields.
@@ -255,7 +270,8 @@ void verify_value_paths() {
             "A failed whole-Array write changed the field.");
     // Field-by-field assignment would change `first` before `second` throws; the prepared copy does not.
     struct TwinValue {
-        Array<Fragile> first, second;
+        Array<Fragile> first;
+        Array<Fragile> second;
     };
     TwinValue twin_value;
     twin_value.first.add(good[0]);
@@ -297,7 +313,8 @@ void verify_value_paths() {
     }));
 
     // restore undoes the caller's own write with what it read before: bit for bit, without bounds.
-    const auto f32 = take(runtime.native_type<float>()), vector3 = take(runtime.native_type<math::Vector3>());
+    const auto f32 = take(runtime.native_type<float>());
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
     const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
     const auto undo = [&](std::span<const FieldId> path, float rejected) {
         float previous{};

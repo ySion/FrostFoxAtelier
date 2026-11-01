@@ -204,7 +204,8 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
         if (!boolean && !enumeration)
             for (std::size_t i = 0; i < options.size(); ++i) {
                 const auto* item = view_option(options[i]);
-                const auto value = displayed(view, item->option), initial = view_value(defaults, item->option);
+                const auto value = displayed(view, item->option);
+                const auto initial = view_value(defaults, item->option);
                 edit.modified |= value != initial;
                 const bool integer = item->kind == ViewValueKind::integer;
                 constexpr std::array names{L"X", L"Y", L"Z"};

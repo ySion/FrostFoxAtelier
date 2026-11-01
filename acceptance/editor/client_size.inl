@@ -36,7 +36,8 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
                 "Rejected client size opened a window, created a project or published Control");
     }
     struct Extent {
-        unsigned width, height;
+        unsigned width;
+        unsigned height;
     };
     const std::array cases{Extent{}, Extent{1601, 1003}, Extent{3840, 2054}};
     auto observations = Json::array();
@@ -64,7 +65,8 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
         require(GetClientRect(window, &client) && client.right - client.left == static_cast<LONG>(expected.width) &&
                     client.bottom - client.top == static_cast<LONG>(expected.height),
                 "Native client dimensions differ from the physical-pixel contract");
-        Json current, stable_viewport;
+        Json current;
+        Json stable_viewport;
         unsigned stable{};
         const auto deadline = std::chrono::steady_clock::now() + 30s;
         while (stable < 3 && std::chrono::steady_clock::now() < deadline) {
@@ -73,7 +75,10 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
             if (!frame.empty() && frame.at("extent") == Json::array({expected.width, expected.height})) {
                 const auto& viewport = frame.at("viewport");
                 require(viewport.is_array() && viewport.size() == 4, "Control omitted the accepted viewport bounds");
-                const double x = viewport[0], y = viewport[1], width = viewport[2], height = viewport[3];
+                const double x = viewport[0];
+                const double y = viewport[1];
+                const double width = viewport[2];
+                const double height = viewport[3];
                 require(std::isfinite(x + y + width + height) && x >= 0 && y >= 0 && width > 0 && height > 0 &&
                             x + width <= expected.width && y + height <= expected.height,
                         "Accepted viewport escaped its client area");

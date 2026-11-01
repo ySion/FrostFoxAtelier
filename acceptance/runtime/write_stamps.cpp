@@ -59,15 +59,21 @@ void verify_write_stamps() {
              .method<&StampNative::add_to>("add_to")
              .method<&StampNative::plus>("plus")
              .build()}));
-    const auto leaf_type = types[0], native = types[2];
+    const auto leaf_type = types[0];
+    const auto native = types[2];
     const auto field = [&](const char* name) { return take(runtime.find_field(native, name)); };
     const auto method = [&](const char* name) { return take(runtime.find_method(native, name)); };
-    const std::array x{field("x")}, leaf{field("leaf")}, values{field("values")}, target{field("target")};
+    const std::array x{field("x")};
+    const std::array leaf{field("leaf")};
+    const std::array values{field("values")};
+    const std::array target{field("target")};
     // Seventy objects span two write pages; a is on the first and b on the second.
     std::vector<ObjectRoot> roots;
     for (int i = 0; i < 70; ++i)
         roots.push_back(take(runtime.create(native)));
-    const auto a = roots[3].id(), b = roots[66].id(), other = roots[5].id();
+    const auto a = roots[3].id();
+    const auto b = roots[66].id();
+    const auto other = roots[5].id();
     std::vector<ObjectId> changed{other};
     const auto expect = [&](const char* what, auto&& action, std::vector<ObjectId> written) {
         const auto cursor = take(runtime.change_cursor());

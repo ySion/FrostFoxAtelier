@@ -117,7 +117,8 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
     const auto& defaults = Access::default_slots(value);
     if (!base_changed && slots.empty() && defaults.empty())
         return cached;
-    std::optional<ReferenceField> explicit_field, default_field;
+    std::optional<ReferenceField> explicit_field;
+    std::optional<ReferenceField> default_field;
     if (!slots.empty()) {
         auto references = runtime.reference_field(id, Access::materials(value));
         if (!references)

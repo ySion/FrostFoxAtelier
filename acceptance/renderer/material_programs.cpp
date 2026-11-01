@@ -199,7 +199,8 @@ Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
 }
 using Environment = std::array<Texture, 2>;
 struct Record {
-    std::uint32_t program{}, environment{};
+    std::uint32_t program{};
+    std::uint32_t environment{};
     material::Context context;
     std::vector<std::byte> parameters;
     // Independently selected texel weights, not computed by the CPU sampler.
@@ -457,8 +458,15 @@ material.Output shade(material.Context c, Params p, Textures textures) {
 
     struct Case {
         const char* name;
-        float x, low, high, a, b, t, scalar_fraction;
-        std::array<float, 3> start, finish;
+        float x;
+        float low;
+        float high;
+        float a;
+        float b;
+        float t;
+        float scalar_fraction;
+        std::array<float, 3> start;
+        std::array<float, 3> finish;
         std::array<float, 2> fraction;
         material::Output wanted;
     };
@@ -584,7 +592,9 @@ material.Output shade(material.Context c, Params p, Textures textures) {
         const double alpha_a = double(environment[0].image->pixels()[11]) / 255;
         const double alpha_b = double(environment[1].image->pixels()[11]) / 255;
         wanted.metallic = static_cast<float>(alpha_a * (1 - double(test.t)) + alpha_b * test.t);
-        const auto cpu_fields = fields(cpu), gpu_fields = fields(gpu[i]), expected_fields = fields(wanted);
+        const auto cpu_fields = fields(cpu);
+        const auto gpu_fields = fields(gpu[i]);
+        const auto expected_fields = fields(wanted);
         correct &= calls[0] == 1 && calls[1] == 1;
         for (std::size_t field = 0; field < names.size(); ++field) {
             const bool sampling = field == names.size() - 1;

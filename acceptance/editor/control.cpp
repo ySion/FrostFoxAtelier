@@ -528,7 +528,8 @@ void verify_operators(Driver& d, const std::string& entity) {
                 after.at("undo") == before.at("undo"),
             "A context selection must frame its Entity without changing the document selection or history");
 
-    const auto undo = before.at("undo").get<std::size_t>(), redo = before.at("redo").get<std::size_t>();
+    const auto undo = before.at("undo").get<std::size_t>();
+    const auto redo = before.at("redo").get<std::size_t>();
     require(undo > 0, "The operator check needs scene history");
     d.op("edit.undo");
     after = d.inspect();
@@ -607,7 +608,8 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
         return d.ok("editor.inspect", std::move(args));
     };
     const auto collect = [&](unsigned limit, const Json& expected) {
-        Json actual = Json::array(), cursor = nullptr;
+        Json actual = Json::array();
+        Json cursor = nullptr;
         unsigned pages{};
         do {
             Json args{{"limit", limit}};
@@ -632,7 +634,8 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
     };
     collect(1, full.at("assets"));
     collect(maximum, full.at("assets"));
-    const auto first = page({{"limit", 1}}), cursor = first.at("next_cursor");
+    const auto first = page({{"limit", 1}});
+    const auto cursor = first.at("next_cursor");
     require(!cursor.is_null() && first.at("detail") == "assets", "Small project did not return an assets continuation");
     const auto continuation = page({{"limit", 1}, {"cursor", cursor}});
     for (const auto& limit : Json::array({0, -1, 257, 1.5, "2", nullptr}))
@@ -1104,9 +1107,10 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     result.roughness=0.5; result.normal_world=context.normal_world; return result;
 }
 )";
-    const std::string source_file = "Content/Materials/Frozen.ms.material",
-                      parent_file = "Content/Materials/Parent.material", leaf_file = "Content/Materials/Leaf.material",
-                      texture_file = "Content/Textures/Active.bmp";
+    const std::string source_file = "Content/Materials/Frozen.ms.material";
+    const std::string parent_file = "Content/Materials/Parent.material";
+    const std::string leaf_file = "Content/Materials/Leaf.material";
+    const std::string texture_file = "Content/Textures/Active.bmp";
     const auto source = d.op("asset.new_material_source", {{"path", source_file}, {"source", source_text}})
                             .at("result")
                             .at("asset")
@@ -1166,7 +1170,8 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
             component = item.at("components")[0].at("handle");
     d.ok("material.assign", {{"component", component}, {"slot", "slot/0"}, {"asset", leaf}});
     d.op("scene.save");
-    const auto parent_author = read(project / parent_file), leaf_author = read(project / leaf_file);
+    const auto parent_author = read(project / parent_file);
+    const auto leaf_author = read(project / leaf_file);
     const auto hash_json = [](const Json& value) {
         const auto text = value.dump();
         return sha256(std::as_bytes(std::span(text)));
@@ -1278,7 +1283,8 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     auto observations = Json::array();
     d.settle();
     for (const auto* kind : {"source-text", "policy", "disabled-entry", "parent", "pixels"}) {
-        std::string relative, contents;
+        std::string relative;
+        std::string contents;
         if (std::string_view(kind) == "source-text") {
             relative = source_path;
             contents = source_text + "\n// valid changed Source\n";
@@ -1344,7 +1350,8 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
               .dump(2));
 }
 void repro_lighting(const std::filesystem::path& executable, const std::filesystem::path& root) {
-    const auto project = root / "Project", directory = root / "Control";
+    const auto project = root / "Project";
+    const auto directory = root / "Control";
     project_fixture(project);
     Process editor(executable,
                    L"--project " + quote(project) + L" --control-directory " + quote(directory) + L" --no-activate",
@@ -1404,18 +1411,20 @@ void reject_nested_destination(const std::filesystem::path& executable, const st
 // map; not the unused original HDRI, the unrelated Physic example or the READMEs.
 void repro_examples(const std::filesystem::path& executable, const std::filesystem::path& root) try {
     const std::filesystem::path shipped = ATELIER_EXAMPLE_PROJECT;
-    const auto project = root / "Project", directory = root / "Control";
+    const auto project = root / "Project";
+    const auto directory = root / "Control";
     for (const auto* folder : {L"Config", L"Source", L"Content/Sponza", L"Content/Physic"}) {
         std::filesystem::create_directories(atelier::platform::windows_file_path((project / folder).parent_path()));
         std::filesystem::copy(atelier::platform::windows_file_path(shipped / folder),
                               atelier::platform::windows_file_path(project / folder),
                               std::filesystem::copy_options::recursive);
     }
-    const std::string sponza = "Content/Sponza/", building = sponza + "NewSponza/NewSponza_Main_glTF_003.gltf",
-                      curtains = sponza + "SponzaExtend/NewSponza_Curtains_glTF.gltf";
+    const std::string sponza = "Content/Sponza/";
+    const std::string building = sponza + "NewSponza/NewSponza_Main_glTF_003.gltf";
+    const std::string curtains = sponza + "SponzaExtend/NewSponza_Curtains_glTF.gltf";
     // A mesh may spell an image in another case than its file; the repro copies the catalogue's file once.
-    const std::string image = "textures/arch_stone_wall_01_BaseColor.png",
-                      alias = "Textures/Arch_Stone_Wall_01_BaseColor.png";
+    const std::string image = "textures/arch_stone_wall_01_BaseColor.png";
+    const std::string alias = "Textures/Arch_Stone_Wall_01_BaseColor.png";
     {
         std::ifstream stream(atelier::platform::windows_file_path(project / building), std::ios::binary);
         std::string text(std::istreambuf_iterator<char>(stream), {});
@@ -1515,7 +1524,9 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
 // name. The repro carries the default material, its texture and their identity files, reopens
 // strictly and exports the same files again.
 void repro_gltf_defaults(const std::filesystem::path& executable, const std::filesystem::path& root) {
-    const auto project = root / "Project", directory = root / "Control", source = root / "source";
+    const auto project = root / "Project";
+    const auto directory = root / "Control";
+    const auto source = root / "source";
     project_fixture(project);
     write(source / "textures/color.png", std::string(tiny_png.begin(), tiny_png.end()));
     std::string bin;
@@ -1567,9 +1578,11 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
                           .at("asset")
                           .get<std::string>();
     d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", mesh}}}});
-    const std::string folder = "Content/Meshes/scene/", material = folder + "Materials/paint.material",
-                      trim = folder + "Materials/trim.material";
-    const auto identity = read(project / (folder + "scene.gltf.asset.json")), defaults = identity.at("materials");
+    const std::string folder = "Content/Meshes/scene/";
+    const std::string material = folder + "Materials/paint.material";
+    const std::string trim = folder + "Materials/trim.material";
+    const auto identity = read(project / (folder + "scene.gltf.asset.json"));
+    const auto defaults = identity.at("materials");
     require(defaults.size() == 2 &&
                 defaults.at("paint") ==
                     "project/" + read(project / (material + ".asset.json")).at("id").get<std::string>() &&
@@ -1612,7 +1625,8 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     };
     auto observations = Json::array();
     const auto rejected = [&](const char* label) {
-        const auto before = d.inspect(), details = component_details();
+        const auto before = d.inspect();
+        const auto details = component_details();
         std::map<std::filesystem::path, std::string> hashes;
         for (const auto& file : std::filesystem::recursive_directory_iterator(project))
             if (file.is_regular_file() && *file.path().lexically_relative(project).begin() != L"Cache")
@@ -1842,7 +1856,8 @@ void repro_paths(const std::filesystem::path& executable, const std::filesystem:
     std::cout << "Editor Control path E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
 void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::path& root) {
-    const auto project = root / "Project", directory = root / "Control";
+    const auto project = root / "Project";
+    const auto directory = root / "Control";
     project_fixture(project);
     Process editor(executable,
                    L"--project " + quote(project) + L" --control-directory " + quote(directory) + L" --no-activate",
@@ -1900,7 +1915,9 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
                {"probe_radius", .12}};
     d.op("view.set", patch);
     state = d.inspect();
-    const auto base_view = state.at("view"), entities = state.at("entities"), undo = state.at("undo");
+    const auto base_view = state.at("view");
+    const auto entities = state.at("entities");
+    const auto undo = state.at("undo");
     const auto token = d.token;
     d.op("view.set", patch);
     require(d.token == token, "Repeated DDGI view patch changed the state token");
@@ -2022,7 +2039,8 @@ void ddgi_debug(const std::filesystem::path& executable, const std::filesystem::
     std::cout << "Editor DDGI Control E2E: PASS | " << utf8(root.wstring()) << '\n';
 }
 void camera_projection(const std::filesystem::path& executable, const std::filesystem::path& root) {
-    const auto project = root / "Project", directory = root / "Control";
+    const auto project = root / "Project";
+    const auto directory = root / "Control";
     project_fixture(project);
     Process editor(executable,
                    L"--project " + quote(project) + L" --control-directory " + quote(directory) +
@@ -2475,8 +2493,8 @@ int wmain(int argc, wchar_t** argv) {
                 "Scene Lit settings or explicit zero-sky contract changed");
         for (const auto& sample : samples) {
             const std::filesystem::path output = wide(compared.at("result").at("directory").get<std::string>());
-            const auto width = sample.at("extent")[0].get<std::uint64_t>(),
-                       height = sample.at("extent")[1].get<std::uint64_t>();
+            const auto width = sample.at("extent")[0].get<std::uint64_t>();
+            const auto height = sample.at("extent")[1].get<std::uint64_t>();
             require(std::filesystem::file_size(output / wide(sample.at("depth").get<std::string>())) ==
                         width * height * 4,
                     "Depth readback size is incorrect");

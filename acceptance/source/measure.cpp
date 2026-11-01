@@ -117,13 +117,18 @@ public:
 private:
     const char* name_;
     const char* model_;
-    std::size_t scale_, operations_;
+    std::size_t scale_;
+    std::size_t operations_;
     std::vector<double> values_;
 };
 
 struct Resources {
-    std::int64_t allocations{}, allocated_bytes{}, live_bytes{}, committed_bytes{};
-    std::int64_t private_bytes{}, working_set_bytes{};
+    std::int64_t allocations{};
+    std::int64_t allocated_bytes{};
+    std::int64_t live_bytes{};
+    std::int64_t committed_bytes{};
+    std::int64_t private_bytes{};
+    std::int64_t working_set_bytes{};
 };
 Resources resources() {
     // v3 accumulates block counters in pages. Flush outside timed regions so
@@ -535,10 +540,13 @@ void measure_compile_units() {
     constexpr int samples = 5;
     for (const int lines : {500, 3000})
         for (const int classes : {1, 10, 50}) {
-            const int functions = lines / 5, chains = functions / 8;
+            const int functions = lines / 5;
+            const int chains = functions / 8;
             const auto snapshot = [&](int class_edit, int called_edit, int uncalled_edit) {
-                const int called = 7, uncalled = (chains - 1) * 8;
-                std::string engine, project = "float game_probe(float x) { return x + 1.0; }\n";
+                const int called = 7;
+                const int uncalled = (chains - 1) * 8;
+                std::string engine;
+                std::string project = "float game_probe(float x) { return x + 1.0; }\n";
                 for (int i = 0; i < functions; ++i) {
                     const int edit = i == called ? called_edit : i == uncalled ? uncalled_edit : 0;
                     engine += "float bench.f" + std::to_string(i) + "(float x) {\n    float a = x * 1." +
@@ -576,7 +584,8 @@ void measure_compile_units() {
             const std::array scenarios{"edit_class", "edit_called_engine", "edit_uncalled_engine"};
             for (std::size_t which = 0; which < scenarios.size(); ++which) {
                 std::vector<double> times;
-                std::size_t changed_class{}, changed_global{};
+                std::size_t changed_class{};
+                std::size_t changed_global{};
                 for (int sample = 0; sample < samples; ++sample) {
                     const auto before = codes();
                     ++edits[which];
@@ -624,13 +633,19 @@ void measure_math_sweep(std::uint64_t requested) {
         publish(kernel, "sweep.source",
                 "void run(Array<double>& a, const Array<double>& b) { uint i = 0; while (i < a.size()) { a[i] = math." +
                     std::string(function.name) + (function.binary ? "(a[i], b[i])" : "(a[i])") + "; i = i + 1; } }");
-        Array<double> lanes, others;
+        Array<double> lanes;
+        Array<double> others;
         lanes.resize(chunk);
         others.resize(chunk);
         std::vector<double> inputs(chunk);
         struct Tally {
-            std::uint64_t worst{}, inexact{}, beyond{};
-            double x{}, y{}, result{}, expected{};
+            std::uint64_t worst{};
+            std::uint64_t inexact{};
+            std::uint64_t beyond{};
+            double x{};
+            double y{};
+            double result{};
+            double expected{};
         };
         std::vector<Tally> tallies(segments);
         const auto started = Clock::now();
@@ -648,7 +663,9 @@ void measure_math_sweep(std::uint64_t requested) {
             parallel([&](std::size_t begin, std::size_t end, unsigned s) {
                 auto& tally = tallies[s];
                 for (std::size_t i = begin; i < end; ++i) {
-                    const double x = inputs[i], y = others[i], result = lanes[i];
+                    const double x = inputs[i];
+                    const double y = others[i];
+                    const double result = lanes[i];
                     if (periodic && !(std::fabs(x) <= math_reference::periodic_limit)) {
                         tally.beyond += std::isfinite(x) ? !(std::fabs(result) <= 1) : !std::isnan(result);
                         continue;
@@ -705,7 +722,9 @@ void measure_math_timing() {
     // Each native function is its own lambda type, so the C++ loop inlines the std:: call site.
     const auto measure = [&](const char* name, const char* call, double low, double high, double second_low,
                              double second_high, auto native) {
-        std::vector<double> first(count), second(count), output(1);
+        std::vector<double> first(count);
+        std::vector<double> second(count);
+        std::vector<double> output(1);
         for (std::size_t i = 0; i < count; ++i) {
             first[i] = uniform(low, high);
             second[i] = uniform(second_low, second_high);
@@ -717,7 +736,8 @@ void measure_math_timing() {
                         ">& b) { uint i = 0; "
                         "while (i < a.size()) { a[i] = " +
                         call + "; i = i + 1; } }");
-            Array<T> lanes, others;
+            Array<T> lanes;
+            Array<T> others;
             for (std::size_t i = 0; i < count; ++i) {
                 lanes.add(static_cast<T>(first[i]));
                 others.add(static_cast<T>(second[i]));
@@ -735,7 +755,8 @@ void measure_math_timing() {
             return median(times);
         };
         const auto cpp = [&]<class T>() {
-            const std::vector<T> lanes(first.begin(), first.end()), others(second.begin(), second.end());
+            const std::vector<T> lanes(first.begin(), first.end());
+            const std::vector<T> others(second.begin(), second.end());
             std::vector<T> results(count);
             std::vector<double> times;
             for (int sample = 0; sample <= samples; ++sample) {
@@ -748,9 +769,10 @@ void measure_math_timing() {
             output[0] += results[count / 2];
             return median(times);
         };
-        const double source_double = source.template operator()<double>("double"),
-                     source_float = source.template operator()<float>("float");
-        const double cpp_double = cpp.template operator()<double>(), cpp_float = cpp.template operator()<float>();
+        const double source_double = source.template operator()<double>("double");
+        const double source_float = source.template operator()<float>("float");
+        const double cpp_double = cpp.template operator()<double>();
+        const double cpp_float = cpp.template operator()<float>();
         std::printf(
             "{\"record\":\"math_timing\",\"function\":\"%s\",\"elements\":%zu,\"source_double_ns\":%.3f,\"source_float_ns\":%.3f,"
             "\"cpp_double_ns\":%.3f,\"cpp_float_ns\":%.3f,\"checksum\":\"%a\"}\n",

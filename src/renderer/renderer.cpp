@@ -68,7 +68,8 @@ WeldedMesh weld(const geometry::Mesh& mesh) {
     for (const auto& part : mesh.parts())
         for (std::uint32_t t = part.first_vertex / 3; t < (part.first_vertex + part.vertex_count) / 3; ++t) {
             const auto* v = source.data() + std::size_t(t) * 3;
-            std::array<double, 3> a{}, b{};
+            std::array<double, 3> a{};
+            std::array<double, 3> b{};
             for (std::size_t i = 0; i < 3; ++i) {
                 a[i] = double(v[1].position[i]) - v[0].position[i];
                 b[i] = double(v[2].position[i]) - v[0].position[i];
@@ -107,7 +108,9 @@ bool finite(float value) {
     return std::isfinite(value);
 }
 float half_float(std::uint16_t h) {
-    const std::uint32_t sign = std::uint32_t(h & 0x8000u) << 16, exponent = (h >> 10) & 31u, mantissa = h & 1023u;
+    const std::uint32_t sign = std::uint32_t(h & 0x8000u) << 16;
+    const std::uint32_t exponent = (h >> 10) & 31u;
+    const std::uint32_t mantissa = h & 1023u;
     if (exponent == 31)
         return std::bit_cast<float>(sign | 0x7f800000u | (mantissa << 13));
     if (exponent)
@@ -300,13 +303,15 @@ void validate(const Frame& frame, MeshChecks& meshes) {
     meshes.commit(frame.meshes);
 }
 struct GridCamera {
-    std::array<float, 16> view_projection, inverse;
+    std::array<float, 16> view_projection;
+    std::array<float, 16> inverse;
 };
 std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     if ((!frame.view.reference_grid && !frame.view.origin_axes) || frame.scene_viewport.width == 0 ||
         frame.scene_viewport.height == 0)
         return {};
-    math::Matrix4d view, projection;
+    math::Matrix4d view;
+    math::Matrix4d projection;
     for (std::size_t i = 0; i < 16; ++i) {
         view.elements[i] = frame.camera.view[i];
         projection.elements[i] = frame.camera.projection[i];
@@ -357,7 +362,8 @@ Instance prepare_instance(const MeshInstance& mesh) {
     return {mesh.world, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
 }
 struct TextureKey {
-    std::uint64_t identity, revision;
+    std::uint64_t identity;
+    std::uint64_t revision;
     bool color{};
     bool operator==(const TextureKey&) const = default;
 };
@@ -372,12 +378,15 @@ struct CachedImage {
     GfxTexture texture;
     bool used{};
     std::uint32_t slot{}; // Index in this frame's ui_textures while used.
-    std::uint64_t texel_bytes{}, cpu_bytes{};
+    std::uint64_t texel_bytes{};
+    std::uint64_t cpu_bytes{};
 };
 enum class UiShading : std::uint32_t { solid, coverage, image, capsule };
 struct UiInstance {
-    ui::Rect bounds, uv;
-    ui::Color tint, border_color;
+    ui::Rect bounds;
+    ui::Rect uv;
+    ui::Color tint;
+    ui::Color border_color;
     ui::CornerRadii radius;
     ui::Color image_background;
     float border_width{};
@@ -426,9 +435,12 @@ struct Renderer::State {
     GfxContext gfx;
     Options options;
     rhi::Pipeline ui_pipeline;
-    rhi::Pipeline background, grid, grid_depth;
+    rhi::Pipeline background;
+    rhi::Pipeline grid;
+    rhi::Pipeline grid_depth;
     rhi::Pipeline cavity_composite;
-    GfxTexture cavity_normals, cavity_color;
+    GfxTexture cavity_normals;
+    GfxTexture cavity_color;
     ui::PixelExtent cavity_extent{};
     std::optional<std::array<float, 16>> cavity_projection;
     std::optional<GridCamera> grid_camera;
@@ -449,18 +461,23 @@ struct Renderer::State {
     // visibility and selection never reorder draws. Ranges index draw_instances.
     struct MeshGroup {
         CachedGeometry* geometry;
-        std::uint32_t visible_first{}, visible_count{}, selected_first{}, selected_count{};
+        std::uint32_t visible_first{};
+        std::uint32_t visible_count{};
+        std::uint32_t selected_first{};
+        std::uint32_t selected_count{};
     };
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
     std::vector<MeshGroup> mesh_groups;
     // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
-    std::vector<std::uint32_t> instance_groups, draw_instances;
+    std::vector<std::uint32_t> instance_groups;
+    std::vector<std::uint32_t> draw_instances;
     detail::FrameSlots<std::uint32_t> draw_order_slots; // draw_instances, read in place.
     detail::FrameSlots<Instance> instance_slots;
     std::unique_ptr<detail::SceneLit> scene_lit;
     std::vector<detail::SceneLitDraw> lit_draws;
     detail::MaterialFrame materials;
-    detail::DeviceTable<std::uint32_t> program_indices, program_offsets;
+    detail::DeviceTable<std::uint32_t> program_indices;
+    detail::DeviceTable<std::uint32_t> program_offsets;
     std::size_t live_material_batches{};
     std::vector<std::weak_ptr<detail::MaterialProgramSet>> material_program_sets;
     // Keep only the last used code set across snapshot retirement/empty views.
@@ -635,7 +652,8 @@ struct Renderer::State {
         std::vector<std::uint8_t> pixels(side * side * 4);
         for (unsigned y = 0; y < side; ++y)
             for (unsigned x = 0; x < side; ++x) {
-                float nx = 2 * (float(x) + .5f) / side - 1, ny = 1 - 2 * (float(y) + .5f) / side;
+                float nx = 2 * (float(x) + .5f) / side - 1;
+                float ny = 1 - 2 * (float(y) + .5f) / side;
                 const float radius = std::hypot(nx, ny);
                 if (radius > 1) {
                     nx /= radius;
@@ -870,7 +888,8 @@ struct Renderer::State {
                 "Set cavity raster viewport");
         const auto& v = frame.scene_viewport;
         const auto& c = frame.view.cavity;
-        const std::array<float, 4> viewport{v.x, v.y, v.width, v.height}, controls{c.ridge, c.valley, c.radius, 0};
+        const std::array<float, 4> viewport{v.x, v.y, v.width, v.height};
+        const std::array<float, 4> controls{c.ridge, c.valley, c.radius, 0};
         require(gfxProgramSetParameter(gfx, program, "cavity_normals", cavity_normals), "Bind cavity normals");
         require(gfxProgramSetParameter(gfx, program, "cavity_color", cavity_color), "Bind studio color");
         require(gfxProgramSetParameter(gfx, program, "cavity_depth", depth), "Bind cavity depth");
@@ -960,7 +979,8 @@ struct Renderer::State {
                 depth_extent = extent;
             }
             require(gfxCommandClearTexture(gfx, depth), "Clear depth");
-            GfxBuffer instance_data{}, order{};
+            GfxBuffer instance_data{};
+            GfxBuffer order{};
             require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
@@ -1011,7 +1031,8 @@ struct Renderer::State {
                         instance_slots.write(gfx, context.info().frames_in_flight, instances, true, "Scene instance");
                     // Match SceneLit's CPU-composed view/projection before the
                     // precise clip path; chained GPU matrices differ by ULPs.
-                    math::Matrix4d camera_view, camera_projection;
+                    math::Matrix4d camera_view;
+                    math::Matrix4d camera_projection;
                     for (std::size_t i = 0; i < 16; ++i) {
                         camera_view.elements[i] = frame.camera.view[i];
                         camera_projection.elements[i] = frame.camera.projection[i];
@@ -1199,7 +1220,8 @@ struct Renderer::State {
                               gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read)};
             allocation(bool(color.buffer));
             require(gfxCommandCopyBackBufferToBuffer(gfx, color.buffer, pitch), "Capture window color");
-            BufferOwner z{gfx, {}}, motion{gfx, {}};
+            BufferOwner z{gfx, {}};
+            BufferOwner motion{gfx, {}};
             const std::uint32_t motion_pitch = (extent.width * 8 + 255) & ~255u;
             if (draw_scene) {
                 z.buffer = gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read);

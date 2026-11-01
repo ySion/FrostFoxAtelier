@@ -39,7 +39,8 @@ double elapsed_ns(Clock::time_point start) {
 }
 
 struct Snapshot {
-    std::int64_t live_bytes{}, private_bytes{};
+    std::int64_t live_bytes{};
+    std::int64_t private_bytes{};
 };
 Snapshot snapshot() {
     // Checkpoint-only: flush mimalloc's page counters outside timed work.
@@ -112,11 +113,20 @@ void publish(Program& program, std::uint32_t generation) {
 
 struct Pending {
     Coroutine task;
-    std::uint32_t seed{}, steps{}, generation{}, resumes{};
+    std::uint32_t seed{};
+    std::uint32_t steps{};
+    std::uint32_t generation{};
+    std::uint32_t resumes{};
 };
 struct Totals {
-    std::uint32_t created{}, completed{}, cancelled_ready{}, cancelled_suspended{}, old_completions{};
-    std::size_t ticks{}, gc_steps{}, retired_versions{};
+    std::uint32_t created{};
+    std::uint32_t completed{};
+    std::uint32_t cancelled_ready{};
+    std::uint32_t cancelled_suspended{};
+    std::uint32_t old_completions{};
+    std::size_t ticks{};
+    std::size_t gc_steps{};
+    std::size_t retired_versions{};
     double max_tick_ns{};
 };
 void advance(Runtime& runtime, std::vector<Pending>& tasks, std::uint32_t current, Totals& totals) {
@@ -158,7 +168,9 @@ void advance(Runtime& runtime, std::vector<Pending>& tasks, std::uint32_t curren
 void verify_session(bool native) {
     const char* model = native ? "native" : "described";
     Totals totals;
-    Snapshot baseline{}, final{}, maximum{};
+    Snapshot baseline{};
+    Snapshot final{};
+    Snapshot maximum{};
     std::array<double, measured_cycles> retirement_ns{};
     const auto session_started = Clock::now();
     {

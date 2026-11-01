@@ -48,7 +48,10 @@ struct FallibleRecord {
 };
 
 struct alignas(32) ValueResource {
-    static inline int live{}, next_id{}, last_destroyed{}, previous_destroyed{};
+    static inline int live{};
+    static inline int next_id{};
+    static inline int last_destroyed{};
+    static inline int previous_destroyed{};
     static inline int remaining_constructions{-1};
     static inline bool fail_assignment{};
     static inline Runtime* callback_runtime{};
@@ -143,7 +146,9 @@ void verify_value_operations() {
     ValueResource::callback_runtime = &runtime;
     ValueResource::callback_object_type = object;
 
-    alignas(32) std::array<std::byte, 256> source{}, destination{}, scratch{};
+    alignas(32) std::array<std::byte, 256> source{};
+    alignas(32) std::array<std::byte, 256> destination{};
+    alignas(32) std::array<std::byte, 256> scratch{};
     auto source_bytes = std::span{source};
     auto destination_bytes = std::span{destination};
     const auto read_revision = [](const auto& bytes) {
@@ -996,7 +1001,8 @@ void verify_reference_definitions() {
             "A reference slot used the target object's instance size.");
 
     require(NativeReferenceNode::constructions == 0, "Definition publication ran a native constructor.");
-    alignas(32) std::array<std::byte, 256> source{}, destination{};
+    alignas(32) std::array<std::byte, 256> source{};
+    alignas(32) std::array<std::byte, 256> destination{};
     std::vector<ObjectReference> references;
     for (const auto id : ids) {
         const auto* info = take(runtime.describe(id));
@@ -1286,7 +1292,9 @@ void verify_reference_graph() {
            "Field path dereferenced object identity storage.");
     require(take(runtime.read_reference(a_id, next)) == strong_b, "Rejected reference mutation changed the field.");
 
-    alignas(32) std::array<std::byte, 256> source{}, destination{}, failed{};
+    alignas(32) std::array<std::byte, 256> source{};
+    alignas(32) std::array<std::byte, 256> destination{};
+    alignas(32) std::array<std::byte, 256> failed{};
     const auto value_size = take(runtime.describe(ids[3]))->size;
     require(value_size <= source.size(), "Reference record exceeds acceptance storage.");
     take(runtime.initialize_value(ids[3], source));
@@ -1318,7 +1326,8 @@ void verify_reference_graph() {
     reject(runtime.root_value(ids[3], std::span{source}.subspan(1)), ErrorCode::invalid_storage,
            "Value root accepted misaligned storage.");
 
-    NativeGraphLinks native_source, native_copy;
+    NativeGraphLinks native_source;
+    NativeGraphLinks native_copy;
     auto native_source_bytes = std::as_writable_bytes(std::span{&native_source, 1});
     auto native_copy_bytes = std::as_writable_bytes(std::span{&native_copy, 1});
     take(runtime.write_reference({ids[0], ValueForm::strong_reference}, native_source.visible, strong_a));
@@ -1346,12 +1355,14 @@ void verify_reference_graph() {
 
     struct Probe {
         Runtime& runtime;
-        ObjectId owner, native;
+        ObjectId owner;
+        ObjectId native;
         FieldId field;
         MethodId method;
         TypeId value_type;
         std::span<std::byte> storage;
-        ObjectReference strong, weak;
+        ObjectReference strong;
+        ObjectReference weak;
         std::size_t calls{};
     } probe{runtime, a_id, b_id, next, mirror, ids[3], source, strong_b, weak_b};
     const auto mirrors_before = NativeGraphNode::mirrors;
@@ -1498,7 +1509,8 @@ void advance_collection(Runtime& runtime, CollectionPhase phase) {
 }
 
 std::size_t finish_collection(Runtime& runtime) {
-    std::size_t steps = 0, reclaimed = 0;
+    std::size_t steps = 0;
+    std::size_t reclaimed = 0;
     while (runtime.collection_phase() != CollectionPhase::idle) {
         require(++steps < 10000, "Collection did not finish within the acceptance work limit.");
         reclaimed += step_collection(runtime).reclaimed;
@@ -1536,7 +1548,8 @@ void verify_collection_cycle() {
     auto a = take(runtime.create(ids[0]));
     auto b = take(runtime.create(ids[1]));
     auto* native = CollectionNode::last_constructed;
-    const auto a_id = a.id(), b_id = b.id();
+    const auto a_id = a.id();
+    const auto b_id = b.id();
     const auto strong = a.reference();
     const auto weak = take(runtime.observe(strong));
     take(runtime.write_reference(a_id, next, b.reference()));
@@ -1683,8 +1696,10 @@ void verify_collection_value_mutations() {
                                     .field<&CollectionValue::resource>("resource")
                                     .build(),
                                 NativeRegistration<ValueResource>{runtime, "gc.Resource", TypeKind::record}.build()}));
-    CollectionValue source, destination;
-    CollectionLinks late_value, copy_source;
+    CollectionValue source;
+    CollectionValue destination;
+    CollectionLinks late_value;
+    CollectionLinks copy_source;
     const auto source_bytes = std::as_bytes(std::span{&source, 1});
     const auto destination_bytes = std::as_writable_bytes(std::span{&destination, 1});
     const auto late_bytes = std::as_bytes(std::span{&late_value, 1});
@@ -1951,7 +1966,9 @@ struct CancelOuter {
 };
 struct CancelControl {
     static inline ValueRoot* root{};
-    static inline bool cancel_outer{}, cancel_leaf{}, canceled{};
+    static inline bool cancel_outer{};
+    static inline bool cancel_leaf{};
+    static inline bool canceled{};
     static inline std::size_t late_accesses{};
     static void cancel() noexcept {
         root->reset();
@@ -2086,7 +2103,8 @@ void verify_active_value_roots() {
 struct ReentrantValue {
     static inline void* context{};
     static inline void (*exercise)(void*){};
-    static inline bool inside{}, failed{};
+    static inline bool inside{};
+    static inline bool failed{};
     static inline std::size_t calls{};
     static void run() noexcept {
         if (!exercise || inside)
@@ -2142,13 +2160,21 @@ void verify_deep_value_walks() {
                                {},
                                {}});
         const auto types = take(runtime.register_types(std::move(definitions)));
-        const auto deep = types[0], leaf = types[depth], target_type = types[depth + 1], object_type = types[depth + 2];
-        alignas(32) std::array<std::byte, 512> source{}, destination{}, scratch{}, nested_source{}, nested_copy{};
+        const auto deep = types[0];
+        const auto leaf = types[depth];
+        const auto target_type = types[depth + 1];
+        const auto object_type = types[depth + 2];
+        alignas(32) std::array<std::byte, 512> source{};
+        alignas(32) std::array<std::byte, 512> destination{};
+        alignas(32) std::array<std::byte, 512> scratch{};
+        alignas(32) std::array<std::byte, 512> nested_source{};
+        alignas(32) std::array<std::byte, 512> nested_copy{};
         require(take(runtime.describe(deep))->size <= source.size(), "Deep value fixture storage is too small.");
         struct NestedValues {
             Runtime* runtime;
             TypeId type;
-            std::span<std::byte> source, copy;
+            std::span<std::byte> source;
+            std::span<std::byte> copy;
         };
         NestedValues nested{&runtime, deep, nested_source, nested_copy};
         ReentrantValue::context = &nested;
@@ -2190,7 +2216,8 @@ void verify_deep_value_walks() {
 
         auto strong = take(runtime.create(target_type));
         auto weak = take(runtime.create(target_type));
-        const auto strong_id = strong.id(), weak_id = weak.id();
+        const auto strong_id = strong.id();
+        const auto weak_id = weak.id();
         const auto strong_field = take(runtime.find_field(leaf, "strong"));
         const auto weak_field = take(runtime.find_field(leaf, "weak"));
         take(runtime.write_reference(leaf, source, {&strong_field, 1}, strong.reference()));
@@ -2200,7 +2227,8 @@ void verify_deep_value_walks() {
             Runtime* runtime;
             TypeId type;
             std::span<const std::byte> storage;
-            std::size_t visits{}, nested_visits{};
+            std::size_t visits{};
+            std::size_t nested_visits{};
         };
         NestedTrace tracing{&runtime, deep, destination};
         const ReferenceVisitor visitor{
@@ -2288,7 +2316,8 @@ void verify_scalar_block() {
     const auto type = types[1];
     const auto size = take(runtime.describe(type))->size;
     require(size == 6 * sizeof(T), "Scalar block unexpectedly contains padding.");
-    alignas(T) std::array<std::byte, 128> source, destination;
+    alignas(T) std::array<std::byte, 128> source;
+    alignas(T) std::array<std::byte, 128> destination;
     source.fill(std::byte{0x5a});
     destination.fill(std::byte{0x6b});
     take(runtime.initialize_value(type, source));
@@ -2355,7 +2384,8 @@ void verify_scalar_plans() {
                                       {{"callback", {TypeReference{"scalar.Callbacks"}}}, {"number", {u32}}},
                                       {},
                                       {}}}));
-    alignas(ScalarCallbacks) std::array<std::byte, 32> source{}, destination{};
+    alignas(ScalarCallbacks) std::array<std::byte, 32> source{};
+    alignas(ScalarCallbacks) std::array<std::byte, 32> destination{};
     take(runtime.initialize_value(ids[1], source));
     take(runtime.copy_construct_value(ids[1], destination, source));
     require(reinterpret_cast<const ScalarCallbacks*>(destination.data())->value == 101,

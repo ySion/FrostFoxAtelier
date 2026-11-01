@@ -728,7 +728,8 @@ bool Session::material_editing(std::uint64_t control) const noexcept {
     return material_edit_ && material_edit_->control == control;
 }
 bool Session::is_material(ObjectId object) const {
-    const auto type = runtime_.type_of(object), base = runtime_.native_type<material::Material>();
+    const auto type = runtime_.type_of(object);
+    const auto base = runtime_.native_type<material::Material>();
     if (!type || !base)
         return false;
     const auto matches = runtime_.is_a(*type, *base);

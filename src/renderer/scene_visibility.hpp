@@ -16,18 +16,22 @@ class SceneFrustum {
 public:
     SceneFrustum(const std::array<float, 16>& view, const std::array<float, 16>& projection, float width, float height,
                  float far_depth) {
-        math::Matrix4d v, p;
+        math::Matrix4d v;
+        math::Matrix4d p;
         for (std::size_t i = 0; i < 16; ++i) {
             v.elements[i] = view[i];
             p.elements[i] = projection[i];
         }
         const auto vp = v * p;
         // Enclose both temporal jitter phases and fractional viewport edges.
-        const double x = 1 + 2 / std::max(1.f, width), y = 1 + 2 / std::max(1.f, height);
+        const double x = 1 + 2 / std::max(1.f, width);
+        const double y = 1 + 2 / std::max(1.f, height);
         for (std::size_t row = 0; row < 4; ++row) {
             const auto offset = row * 4;
-            const double cx = vp.elements[offset], cy = vp.elements[offset + 1];
-            const double cz = vp.elements[offset + 2], cw = vp.elements[offset + 3];
+            const double cx = vp.elements[offset];
+            const double cy = vp.elements[offset + 1];
+            const double cz = vp.elements[offset + 2];
+            const double cw = vp.elements[offset + 3];
             planes_[0][row] = cw * x + cx;
             planes_[1][row] = cw * x - cx;
             planes_[2][row] = cw * y + cy;
@@ -46,7 +50,9 @@ public:
     [[nodiscard]] bool visible(const geometry::Bounds& bounds, const std::array<float, 16>& world) const {
         if (!finite_)
             return true;
-        std::array<double, 4> center{}, extent{}, world_magnitude{};
+        std::array<double, 4> center{};
+        std::array<double, 4> extent{};
+        std::array<double, 4> world_magnitude{};
         for (std::size_t row = 0; row < 3; ++row) {
             center[row] = (double(bounds.minimum[row]) + bounds.maximum[row]) * .5;
             extent[row] = (double(bounds.maximum[row]) - bounds.minimum[row]) * .5;

@@ -108,7 +108,8 @@ struct SpaceGraph {
     std::unordered_map<ObjectId, math::Matrix4> matrices;
     // Reused only inside this evaluation phase; no author data survives it.
     std::vector<ObjectId> matrix_path;
-    Set<ObjectId> matrix_seen, parent_seen;
+    Set<ObjectId> matrix_seen;
+    Set<ObjectId> parent_seen;
     explicit SpaceGraph(Runtime& r) : runtime(r) {}
     Result<SpaceNode*> node(ObjectId);
     Result<ObjectId> parent(ObjectId);
@@ -125,9 +126,12 @@ struct SpaceCache {
     struct Entry {
         Trs local; // As read in pass `checked`.
         ObjectId parent; // Resolved spatial parent; null is world space.
-        std::uint64_t checked{}, version{}, parent_version{};
+        std::uint64_t checked{};
+        std::uint64_t version{};
+        std::uint64_t parent_version{};
         math::Matrix4 world{};
-        bool spatial{}, composed{};
+        bool spatial{};
+        bool composed{};
         // A zero scale axis on this node or an ancestor; FP32 rounding can leave
         // the composed matrix of such a space with a tiny nonzero determinant.
         bool flat{};
@@ -164,7 +168,8 @@ namespace atelier::world {
 
 struct World::Impl {
     struct Task {
-        ObjectId object, entity;
+        ObjectId object;
+        ObjectId entity;
         Coroutine coroutine;
     };
     struct Pending {
@@ -174,7 +179,8 @@ struct World::Impl {
         bool member_required{};
     };
     struct Scheduled {
-        ObjectId object, entity;
+        ObjectId object;
+        ObjectId entity;
         const Behavior* behavior{};
     };
     // An isolated behavior failure. Begin-faulted objects never began; Tick-
@@ -186,7 +192,8 @@ struct World::Impl {
         TypeId type;
         const Behavior* behavior{};
         std::uint32_t capabilities{}; // Bit i: in the bucket of registrations[i].
-        bool enabled{}, begun{};
+        bool enabled{};
+        bool begun{};
         Fault fault{};
     };
     // Execution and registration state of one member, parallel to `members`.
@@ -197,7 +204,9 @@ struct World::Impl {
         ObjectId parent;
         ObjectId origin; // Explicit non-world spatial origin, if any.
         std::size_t size{1}; // Members in its composition subtree, itself included.
-        bool enabled{}, eligible{}, begun{};
+        bool enabled{};
+        bool eligible{};
+        bool begun{};
         Fault fault{};
         std::vector<ComponentState> components;
     };
@@ -210,14 +219,21 @@ struct World::Impl {
     Types types;
     World& world;
     std::shared_ptr<detail::WorldLifetime> lifetime{std::make_shared<detail::WorldLifetime>()};
-    bool running{}, closing{}, closed{}, transitioning{}, flushing{}, updating{}, relocating{};
+    bool running{};
+    bool closing{};
+    bool closed{};
+    bool transitioning{};
+    bool flushing{};
+    bool updating{};
+    bool relocating{};
     std::size_t dispatch_depth{};
     // Composition preorder: every member's subtree is one contiguous range.
     std::vector<Member> members;
     std::vector<MemberState> states;
     Map<ObjectId, std::size_t> positions;
     // Derived lazily from `states`.
-    bool schedule_dirty{true}, buckets_dirty{true};
+    bool schedule_dirty{true};
+    bool buckets_dirty{true};
     std::uint64_t revision{1}; // World::revision; advanced by changed().
     std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
     std::vector<Bucket> buckets;
@@ -230,7 +246,8 @@ struct World::Impl {
     static constexpr std::uint32_t bit(CapabilityId id) noexcept { return 1u << id.value; }
     Result<std::uint32_t> capabilities_of(ObjectId component, TypeId type) const;
     // Tick prerequisite edges, both directions; only between current participants.
-    std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites, dependents;
+    std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites;
+    std::unordered_map<ObjectId, std::vector<ObjectId>> dependents;
     void forget_prerequisites(ObjectId) noexcept;
     struct SimulationEntry {
         std::uint64_t id;
@@ -241,7 +258,8 @@ struct World::Impl {
     detail::SpaceCache space;
     std::vector<Task> tasks;
     struct Translation {
-        ObjectId component, entity;
+        ObjectId component;
+        ObjectId entity;
         math::Vector3 delta;
     };
     std::vector<Translation> translations;
@@ -274,7 +292,8 @@ struct World::Impl {
     FailurePolicy policy{FailurePolicy::isolate};
     static constexpr std::size_t diagnostic_capacity = 1024;
     std::vector<Diagnostic> diagnostics;
-    std::uint64_t next_diagnostic{1}, dropped_diagnostics{};
+    std::uint64_t next_diagnostic{1};
+    std::uint64_t dropped_diagnostics{};
     // A consumer failure reported again in the next pass of its phase extends
     // one entry; a pass without it resolves it. Presentation and lighting
     // passes are extraction calls; physics and command passes are updates.
@@ -289,7 +308,8 @@ struct World::Impl {
         std::size_t operator()(const DiagnosticKey&) const noexcept;
     };
     struct Recent {
-        std::uint64_t serial, pass;
+        std::uint64_t serial;
+        std::uint64_t pass;
     };
     std::unordered_map<DiagnosticKey, Recent, DiagnosticKeyHash> recent;
     std::array<std::uint64_t, std::size_t(DiagnosticPhase::lifecycle) + 1> passes{};

@@ -57,7 +57,8 @@ JPH::JobSystemThreadPool* solver_jobs{};
 std::atomic<std::uint64_t> next_scene_id{1};
 // Derived Capacity buffers per body slot, the ratios of Jolt's Samples (10240 bodies,
 // 65536 body pairs, 20480 contact constraints).
-constexpr std::size_t body_pairs_per_body = 8, contacts_per_body = 2;
+constexpr std::size_t body_pairs_per_body = 8;
+constexpr std::size_t contacts_per_body = 2;
 constexpr float fixed_step = 1.f / 60.f;
 
 std::unexpected<Error> failure(ErrorCode code, const char* message) {
@@ -188,7 +189,9 @@ Result<JPH::ShapeRefC> mesh_shape(const geometry::Mesh& mesh, math::Vector3 scal
             const auto& value = vertices[index + offset].position;
             return JPH::Vec3(value[0] * scale.x, value[1] * scale.y, value[2] * scale.z);
         };
-        const auto a = point(0), b = point(1), c = point(2);
+        const auto a = point(0);
+        const auto b = point(1);
+        const auto c = point(2);
         // The inverse-transpose keeps the authored front under a mirrored scale.
         const auto& normal = vertices[index].normal;
         if ((b - a).Cross(c - a).Dot(JPH::Vec3(normal[0] / scale.x, normal[1] / scale.y, normal[2] / scale.z)) >= 0)
@@ -207,7 +210,13 @@ Result<JPH::ShapeRefC> restore_shape(std::string_view bytes, const geometry::Mes
     if (!bytes.starts_with(magic))
         return failure(ErrorCode::invalid_storage, "Collision asset magic is invalid.");
     std::size_t cursor = magic.size();
-    std::uint64_t version{}, jolt{}, source_size{}, source_hash{}, geometry_hash{}, payload_size{}, payload_hash{};
+    std::uint64_t version{};
+    std::uint64_t jolt{};
+    std::uint64_t source_size{};
+    std::uint64_t source_hash{};
+    std::uint64_t geometry_hash{};
+    std::uint64_t payload_size{};
+    std::uint64_t payload_hash{};
     if (!read_number(bytes, cursor, 4, version) || !read_number(bytes, cursor, 8, jolt) ||
         !read_number(bytes, cursor, 4, source_size) || !read_number(bytes, cursor, 8, source_hash) ||
         !read_number(bytes, cursor, 8, geometry_hash) || !read_number(bytes, cursor, 8, payload_size) ||
@@ -310,7 +319,8 @@ struct PhysicsScene::Impl {
     static constexpr JPH::ObjectLayer moving_layer = 1;
     struct RawContact {
         ContactPhase phase;
-        JPH::BodyID first, second;
+        JPH::BodyID first;
+        JPH::BodyID second;
     };
     struct Contacts final : JPH::ContactListener {
         Impl* owner{};
@@ -361,7 +371,8 @@ struct PhysicsScene::Impl {
     JPH::PhysicsSystem system;
     struct Body {
         JPH::BodyID id;
-        ObjectId entity, component;
+        ObjectId entity;
+        ObjectId component;
         MotionKind motion;
         BodySettings settings;
         geometry::MeshRef mesh;
@@ -410,14 +421,18 @@ struct PhysicsScene::Impl {
     // The poses the latest step published and the World accepted, with their history.
     struct Interpolated {
         ObjectId entity;
-        Pose from, to;
+        Pose from;
+        Pose to;
     };
     std::vector<Interpolated> interpolated;
     // Bodies whose pose this step publishes: moved by Jolt or teleported.
-    JPH::BodyIDVector moved, active;
+    JPH::BodyIDVector moved;
+    JPH::BodyIDVector active;
     // A spatial ancestor as one reconcile pass reads it; each part is read on first use.
     struct Ancestor {
-        std::optional<bool> member, active, moving_body;
+        std::optional<bool> member;
+        std::optional<bool> active;
+        std::optional<bool> moving_body;
         std::optional<world::Trs> local;
         std::optional<ObjectId> parent;
     };
@@ -433,7 +448,9 @@ struct PhysicsScene::Impl {
     // Entities a failure or a degenerate space left without a body; every step tries them again.
     std::vector<ObjectId> retry;
     // Written objects to reconcile: since the cursor, and those step handlers wrote.
-    std::vector<ObjectId> changed, pending, handler_writes;
+    std::vector<ObjectId> changed;
+    std::vector<ObjectId> pending;
+    std::vector<ObjectId> handler_writes;
     std::unordered_map<ObjectId, std::vector<ObjectId>>& below() {
         if (dependents_stale) {
             dependents.clear();
@@ -456,7 +473,8 @@ struct PhysicsScene::Impl {
     }
     std::unordered_map<JPH::BodyID, ObjectId> body_components;
     struct Distance {
-        BodyHandle first, second;
+        BodyHandle first;
+        BodyHandle second;
         JPH::Ref<JPH::TwoBodyConstraint> constraint;
     };
     std::map<std::uint64_t, Distance> distances;
@@ -489,10 +507,12 @@ struct PhysicsScene::Impl {
     }
     std::optional<ContactEvent> make_event(JPH::BodyID first, JPH::BodyID second, std::uint64_t step,
                                            std::uint64_t scene) const {
-        auto a = body_components.find(first), b = body_components.find(second);
+        auto a = body_components.find(first);
+        auto b = body_components.find(second);
         if (a == body_components.end() || b == body_components.end())
             return std::nullopt;
-        auto x = bodies.find(a->second), y = bodies.find(b->second);
+        auto x = bodies.find(a->second);
+        auto y = bodies.find(b->second);
         if (x == bodies.end() || y == bodies.end())
             return std::nullopt;
         if (first.GetIndexAndSequenceNumber() > second.GetIndexAndSequenceNumber()) {
@@ -573,7 +593,8 @@ struct PhysicsScene::Impl {
         }
     }
     Response response(JPH::BodyID first, JPH::BodyID second) const {
-        auto a = body_components.find(first), b = body_components.find(second);
+        auto a = body_components.find(first);
+        auto b = body_components.find(second);
         if (a == body_components.end() || b == body_components.end()) {
             const bool left_ragdoll = ragdoll_ids.contains(first);
             const bool right_ragdoll = ragdoll_ids.contains(second);
@@ -582,12 +603,14 @@ struct PhysicsScene::Impl {
                 return Response::block;
             return Response::ignore;
         }
-        auto left = bodies.find(a->second), right = bodies.find(b->second);
+        auto left = bodies.find(a->second);
+        auto right = bodies.find(b->second);
         if (left == bodies.end() || right == bodies.end())
             return Response::ignore;
         const auto& x = left->second.settings;
         const auto& y = right->second.settings;
-        const auto xy = x.response(y.category), yx = y.response(x.category);
+        const auto xy = x.response(y.category);
+        const auto yx = y.response(x.category);
         if (xy == Response::ignore || yx == Response::ignore)
             return Response::ignore;
         if (x.sensor || y.sensor || xy == Response::overlap || yx == Response::overlap)
@@ -929,8 +952,8 @@ Result<void> PhysicsScene::reconcile(ObjectId entity) {
                 return std::unexpected(state.error());
             if (!state->active)
                 continue;
-            auto character = runtime.is_a(state->type, types_.character_component),
-                 ragdoll = runtime.is_a(state->type, types_.ragdoll_component);
+            auto character = runtime.is_a(state->type, types_.character_component);
+            auto ragdoll = runtime.is_a(state->type, types_.ragdoll_component);
             if (!character)
                 return std::unexpected(character.error());
             if (!ragdoll)
@@ -1717,7 +1740,8 @@ Result<void> PhysicsScene::relocate(std::span<const ObjectId> entities) {
     struct Target {
         ObjectId entity;
         std::optional<BodyHandle> body;
-        world::Trs pose, local;
+        world::Trs pose;
+        world::Trs local;
     };
     std::vector<Target> targets;
     targets.reserve(entities.size());
@@ -1793,7 +1817,8 @@ Result<bool> PhysicsScene::controller_transform_matches(ObjectId entity, math::V
     for (std::size_t i = 0; i < 3; ++i)
         if (std::abs(position[i] - authored->position[i]) > 1e-5f * std::max(1.f, std::abs(authored->position[i])))
             return false;
-    const auto expected = rotation(authored->rotation), actual = rotation(orientation);
+    const auto expected = rotation(authored->rotation);
+    const auto actual = rotation(orientation);
     const auto sign = actual.Dot(expected) < 0 ? -1.f : 1.f;
     return std::abs(actual.GetX() - sign * expected.GetX()) <= 1e-5f &&
            std::abs(actual.GetY() - sign * expected.GetY()) <= 1e-5f &&

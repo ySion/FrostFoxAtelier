@@ -5,8 +5,10 @@
 
 namespace atelier::source::detail {
 struct DiagnosticMetadata {
-    std::uint64_t program_id{}, code_version{};
-    std::string entry, source_name;
+    std::uint64_t program_id{};
+    std::uint64_t code_version{};
+    std::string entry;
+    std::string source_name;
     std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
 };
 struct DiagnosticState {
@@ -14,13 +16,16 @@ struct DiagnosticState {
     std::shared_ptr<const DiagnosticMetadata> metadata;
     BusinessTrace trace;
     DiagnosticStatus status{DiagnosticStatus::unused};
-    bool active{}, clock_running{}, failed{};
+    bool active{};
+    bool clock_running{};
+    bool failed{};
     ErrorCode error_code{ErrorCode::invocation_failed};
     char error[512]{};
     std::uint64_t resumes{};
     std::chrono::steady_clock::time_point started;
     std::chrono::nanoseconds active_time{};
-    DiagnosticResources before, after;
+    DiagnosticResources before;
+    DiagnosticResources after;
 };
 struct DiagnosticAccess {
     static Result<std::shared_ptr<DiagnosticState>>

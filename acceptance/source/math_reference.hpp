@@ -54,7 +54,8 @@ inline std::uint64_t ulp_distance(double result, double reference) {
         const auto bits = std::bit_cast<std::int64_t>(value);
         return bits < 0 ? std::numeric_limits<std::int64_t>::min() - bits : bits;
     };
-    const auto a = key(result), b = key(reference);
+    const auto a = key(result);
+    const auto b = key(reference);
     return a < b ? static_cast<std::uint64_t>(b) - static_cast<std::uint64_t>(a)
                  : static_cast<std::uint64_t>(a) - static_cast<std::uint64_t>(b);
 }

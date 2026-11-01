@@ -119,7 +119,9 @@ bool valid_utf8(std::string_view value) noexcept {
         const auto first = static_cast<unsigned char>(value[i++]);
         if (first < 0x80)
             continue;
-        unsigned count{}, code{}, minimum{};
+        unsigned count{};
+        unsigned code{};
+        unsigned minimum{};
         if (first >= 0xc2 && first <= 0xdf) {
             count = 1;
             code = first & 0x1f;

@@ -85,10 +85,10 @@ void verify_project_workspace(editor::Project& project) {
             require(table, "Project resource has no accepted table.");
             const auto cell = std::ranges::find(table->cells, key, &ui::TableCellGeometry::row);
             require(cell != table->cells.end(), "Project resource has no accepted visible cell.");
-            const auto left = std::max(cell->bounds.x, static_cast<float>(cell->clip.left)),
-                       right = std::min(cell->bounds.x + cell->bounds.width, static_cast<float>(cell->clip.right));
-            const auto top = std::max(cell->bounds.y, static_cast<float>(cell->clip.top)),
-                       bottom = std::min(cell->bounds.y + cell->bounds.height, static_cast<float>(cell->clip.bottom));
+            const auto left = std::max(cell->bounds.x, static_cast<float>(cell->clip.left));
+            const auto right = std::min(cell->bounds.x + cell->bounds.width, static_cast<float>(cell->clip.right));
+            const auto top = std::max(cell->bounds.y, static_cast<float>(cell->clip.top));
+            const auto bottom = std::min(cell->bounds.y + cell->bounds.height, static_cast<float>(cell->clip.bottom));
             require(right > left && bottom > top, "Project resource table cell is clipped.");
             pointer_click((left + right) / 2, (top + bottom) / 2);
             return;
@@ -120,13 +120,14 @@ void verify_project_workspace(editor::Project& project) {
         }
         const auto* box = surface.presented()->find(key);
         require(box && visible(*box), "Project UI target is not reachable through scrolling.");
-        const auto x = box->bounds.x + box->bounds.width / 2, y = box->bounds.y + box->bounds.height / 2;
+        const auto x = box->bounds.x + box->bounds.width / 2;
+        const auto y = box->bounds.y + box->bounds.height / 2;
         pointer_click(x, y);
     };
     present({1600, 1000}, 1);
     present({1600, 1000}, 1);
-    const auto shell_source = workspace.ui_statistics("AssetBrowserShell"),
-               details_source = workspace.ui_statistics("AssetResults");
+    const auto shell_source = workspace.ui_statistics("AssetBrowserShell");
+    const auto details_source = workspace.ui_statistics("AssetResults");
     require(shell_source && details_source && shell_source->binding_evaluations > 0 &&
                 shell_source->node_creations > 0 && details_source->binding_evaluations > 0 &&
                 details_source->node_creations > 0,
@@ -139,8 +140,8 @@ void verify_project_workspace(editor::Project& project) {
     const auto details_incarnation = details->incarnation;
     const auto initial_data = surface.presented()->find_table(browser::results)->data;
     present({1600, 1000}, 1);
-    const auto shell_idle = workspace.ui_statistics("AssetBrowserShell"),
-               details_idle = workspace.ui_statistics("AssetResults");
+    const auto shell_idle = workspace.ui_statistics("AssetBrowserShell");
+    const auto details_idle = workspace.ui_statistics("AssetResults");
     require(shell_idle && details_idle && shell_idle->instance == shell_source->instance &&
                 details_idle->instance == details_source->instance &&
                 shell_idle->binding_evaluations == shell_source->binding_evaluations &&
@@ -283,7 +284,8 @@ void verify_project_workspace(editor::Project& project) {
     header(browser::type_column);
     order({"Z-folder", "A-large.txt", "B-small.txt", "C-small.txt", "D.scene"});
     const auto resize = surface.presented()->find_table(browser::results)->columns.front().resize;
-    const auto resize_x = resize.x + resize.width / 2, resize_y = resize.y + resize.height / 2;
+    const auto resize_x = resize.x + resize.width / 2;
+    const auto resize_y = resize.y + resize.height / 2;
     input({.kind = ui::EventKind::pointer_down, .x = resize_x, .y = resize_y, .button = ui::PointerButton::primary});
     input({.kind = ui::EventKind::pointer_move,
            .x = resize_x - 500,

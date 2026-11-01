@@ -123,22 +123,27 @@ struct Node {
     bool operator==(const Node&) const = default;
 };
 struct Binding {
-    std::uint32_t node{}, operation{};
+    std::uint32_t node{};
+    std::uint32_t operation{};
     Property property{};
     language::SourcePosition position;
 };
 struct Event {
-    std::uint32_t node{}, operation{};
+    std::uint32_t node{};
+    std::uint32_t operation{};
 };
 struct SourceMapping {
-    std::size_t begin{}, end{};
+    std::size_t begin{};
+    std::size_t end{};
     language::SourcePosition origin;
 };
 
 // UI structure and source positions only. Expressions and handlers are typed and
 // compiled by the ordinary Source compiler, in one module per component type.
 struct Declaration {
-    std::string name, source_name, generated_source;
+    std::string name;
+    std::string source_name;
+    std::string generated_source;
     std::vector<Input> inputs;
     std::vector<State> states;
     std::vector<Node> nodes;

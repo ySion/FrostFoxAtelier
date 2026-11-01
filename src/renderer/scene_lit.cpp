@@ -54,7 +54,8 @@ std::array<float, 16> floats(const math::Matrix4d& value) {
     return result;
 }
 float halton(std::uint32_t index, std::uint32_t base) {
-    float value = 0, factor = 1;
+    float value = 0;
+    float factor = 1;
     while (index) {
         factor /= base;
         value += factor * (index % base);
@@ -63,8 +64,11 @@ float halton(std::uint32_t index, std::uint32_t base) {
     return value;
 }
 struct GpuInstance {
-    std::array<float, 16> world, previous_world;
-    std::array<float, 4> normal_x, normal_y, normal_z;
+    std::array<float, 16> world;
+    std::array<float, 16> previous_world;
+    std::array<float, 4> normal_x;
+    std::array<float, 4> normal_y;
+    std::array<float, 4> normal_z;
     std::array<std::uint32_t, 4> geometry; // RT geometry slot, stable key low, history valid, stable key high.
     bool operator==(const GpuInstance&) const = default;
 };
@@ -110,40 +114,91 @@ static_assert(sizeof(ProbeInspection::Ray) == 96);
 struct SceneLit::State {
     rhi::Context& context;
     GfxContext gfx;
-    rhi::Pipeline sun_trace_prepare, cluster_build, cluster_inspect;
-    rhi::Pipeline probe_copy, probe_present, ao, ao_depth_reduce, ao_resolve, depth_first, depth_pyramid, ssr_reset,
-        ssr_classify, ssr_prepare, ssr_trace;
-    rhi::Pipeline reflection_resolve, reflection_filter, brdf, taa, bloom_downsample, bloom_blur, tone_map, tone;
-    rhi::Pipeline smaa_edges_pass, smaa_weights_pass, smaa_neighborhood, smaa_resolve;
+    rhi::Pipeline sun_trace_prepare;
+    rhi::Pipeline cluster_build;
+    rhi::Pipeline cluster_inspect;
+    rhi::Pipeline probe_copy;
+    rhi::Pipeline probe_present;
+    rhi::Pipeline ao;
+    rhi::Pipeline ao_depth_reduce;
+    rhi::Pipeline ao_resolve;
+    rhi::Pipeline depth_first;
+    rhi::Pipeline depth_pyramid;
+    rhi::Pipeline ssr_reset;
+    rhi::Pipeline ssr_classify;
+    rhi::Pipeline ssr_prepare;
+    rhi::Pipeline ssr_trace;
+    rhi::Pipeline reflection_resolve;
+    rhi::Pipeline reflection_filter;
+    rhi::Pipeline brdf;
+    rhi::Pipeline taa;
+    rhi::Pipeline bloom_downsample;
+    rhi::Pipeline bloom_blur;
+    rhi::Pipeline tone_map;
+    rhi::Pipeline tone;
+    rhi::Pipeline smaa_edges_pass;
+    rhi::Pipeline smaa_weights_pass;
+    rhi::Pipeline smaa_neighborhood;
+    rhi::Pipeline smaa_resolve;
     rhi::Pipeline probe_debug_geometry;
-    GfxTexture probe_age, probe_sample_cursor, probe_debug_depth;
+    GfxTexture probe_age;
+    GfxTexture probe_sample_cursor;
+    GfxTexture probe_debug_depth;
     std::array<GfxTimestampQuery, 15> queries{}; // FrameStats::scene_lit_gpu_pass_mask scopes.
     std::uint32_t encoded_pass_mask{};
-    GfxSamplerState sampler, shadow_sampler;
+    GfxSamplerState sampler;
+    GfxSamplerState shadow_sampler;
     ui::PixelExtent extent{};
     std::array<GfxTexture, 7> gbuffer_textures{};
     GfxTexture indirect_half; // DDGI receiver irradiance at one representative per 2x2 block.
-    GfxBuffer probe_fallback,
+    GfxBuffer probe_fallback;
+    GfxBuffer
         probe_fallback_arguments; // Receivers without a matching representative: count, packed pixels; indirect dispatch.
     std::uint32_t probe_fallback_capacity{};
-    GfxTexture hdr, indirect, ao_texture, ao_raw, reflection_trace, reflection_hit_trace, brdf_lut;
+    GfxTexture hdr;
+    GfxTexture indirect;
+    GfxTexture ao_texture;
+    GfxTexture ao_raw;
+    GfxTexture reflection_trace;
+    GfxTexture reflection_hit_trace;
+    GfxTexture brdf_lut;
     GfxTexture ao_depth; // GTAO view depth with four reduced levels for distant horizon taps.
-    std::array<float, 4> ao_view_x{}, ao_view_y{},
-        ao_view_z{}; // Jittered projection terms for view-space reconstruction.
-    std::array<GfxTexture, 2> history_depth{}, history_normal{}, history_geometry_normal{}, taa_history{},
-        reflection_history{}, reflection_hit_history{}, reflection_moments{}, reflection_scratch{}, ao_history{},
-        bloom{};
-    GfxTexture tone_color, smaa_edges, smaa_weights, smaa_output, smaa_area, smaa_search;
-    std::array<GfxTexture, 2> smaa_spatial{}, history_surface_id{};
-    GfxBuffer cluster_depth, cluster_count, cluster_source;
-    std::array<std::uint32_t, 2> cluster_tiles{}, cluster_origin{};
+    std::array<float, 4> ao_view_x{};
+    std::array<float, 4> ao_view_y{};
+    std::array<float, 4> ao_view_z{}; // Jittered projection terms for view-space reconstruction.
+    std::array<GfxTexture, 2> history_depth{};
+    std::array<GfxTexture, 2> history_normal{};
+    std::array<GfxTexture, 2> history_geometry_normal{};
+    std::array<GfxTexture, 2> taa_history{};
+    std::array<GfxTexture, 2> reflection_history{};
+    std::array<GfxTexture, 2> reflection_hit_history{};
+    std::array<GfxTexture, 2> reflection_moments{};
+    std::array<GfxTexture, 2> reflection_scratch{};
+    std::array<GfxTexture, 2> ao_history{};
+    std::array<GfxTexture, 2> bloom{};
+    GfxTexture tone_color;
+    GfxTexture smaa_edges;
+    GfxTexture smaa_weights;
+    GfxTexture smaa_output;
+    GfxTexture smaa_area;
+    GfxTexture smaa_search;
+    std::array<GfxTexture, 2> smaa_spatial{};
+    std::array<GfxTexture, 2> history_surface_id{};
+    GfxBuffer cluster_depth;
+    GfxBuffer cluster_count;
+    GfxBuffer cluster_source;
+    std::array<std::uint32_t, 2> cluster_tiles{};
+    std::array<std::uint32_t, 2> cluster_origin{};
     ShadowCache shadow_cache;
-    GfxTexture shadow_static, shadow_dynamic;
+    GfxTexture shadow_static;
+    GfxTexture shadow_dynamic;
     struct ShadowTables {
         DeviceTable<GpuShadowFace> face_table;
         DeviceTable<GpuShadowLight> light_table;
         DeviceTable<std::uint32_t> instance_table;
-        GfxBuffer faces, lights, instances; // This frame's tables.
+        GfxBuffer faces;
+        GfxBuffer lights;
+        GfxBuffer instances; // This frame's tables.
         std::vector<GpuShadowFace> previous_faces;
         std::vector<GpuShadowLight> previous_lights;
         std::vector<std::uint32_t> previous_instances;
@@ -158,7 +213,9 @@ struct SceneLit::State {
     };
     std::array<GfxTexture, 12> pyramid{};
     std::uint32_t pyramid_count{};
-    std::array<GfxTexture, 2> probe_irradiance{}, probe_distance{}, probe_offsets{};
+    std::array<GfxTexture, 2> probe_irradiance{};
+    std::array<GfxTexture, 2> probe_distance{};
+    std::array<GfxTexture, 2> probe_offsets{};
     GfxTexture probe_presentation{}; // Display-only cache; never a transport feedback input.
     GfxTexture probe_response; // Per directional texel: author-change epoch and effective response visits.
     GfxBuffer probe_ray_hits;
@@ -184,31 +241,45 @@ struct SceneLit::State {
         }
     } light_tables;
     // This frame's light tables.
-    GfxBuffer gpu_sources, gpu_proposals, gpu_light_cells, gpu_spatial_proposals, gpu_spatial_source_slots;
-    GfxBuffer reflection_work, reflection_counter, reflection_arguments;
+    GfxBuffer gpu_sources;
+    GfxBuffer gpu_proposals;
+    GfxBuffer gpu_light_cells;
+    GfxBuffer gpu_spatial_proposals;
+    GfxBuffer gpu_spatial_source_slots;
+    GfxBuffer reflection_work;
+    GfxBuffer reflection_counter;
+    GfxBuffer reflection_arguments;
     // Ray hit views by RT geometry slot: Geometry::vertices, indices, faces and closure.
-    std::vector<GfxBuffer> rt_vertices, rt_indices, rt_faces, rt_closure;
+    std::vector<GfxBuffer> rt_vertices;
+    std::vector<GfxBuffer> rt_indices;
+    std::vector<GfxBuffer> rt_faces;
+    std::vector<GfxBuffer> rt_closure;
     // Programs keep parameter values. Rebind only after the geometry table changes,
     // including programs prepared later for optional diagnostics.
     std::vector<GfxProgram> geometry_bound_programs;
     GfxProgram material_program{}; // Value only; a retired batch is never dereferenced.
-    GfxBuffer sun_trace_list, sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
+    GfxBuffer sun_trace_list;
+    GfxBuffer sun_trace_arguments; // Pixels with a sun beyond every cascade, one entry each.
     LightFrame light_frame;
     GfxBuffer ray_counters;
     // Word 85 is a copy of the SSSR work counter; the shaders own words 0..84.
-    static constexpr std::uint32_t ray_counter_count = 86, reflection_work_counter = 85;
+    static constexpr std::uint32_t ray_counter_count = 86;
+    static constexpr std::uint32_t reflection_work_counter = 85;
     GfxBuffer ltc; // Rectangle-light LTC table, ltc_lut::size squared cells.
     static constexpr std::size_t readback_count = 32;
     std::array<GfxBuffer, readback_count> ray_readback{};
-    std::array<std::uint64_t, readback_count> readback_sequences{}, readback_frame_ids{};
+    std::array<std::uint64_t, readback_count> readback_sequences{};
+    std::array<std::uint64_t, readback_count> readback_frame_ids{};
     // Receiver depth read back from another camera or scene must not fit cascades.
     std::array<std::uint64_t, readback_count> readback_depth_epochs{};
     std::uint64_t depth_epoch{};
     std::array<std::uint32_t, readback_count> readback_pass_masks{};
     std::array<ShadowSample, readback_count> readback_shadows{};
     struct InspectionState {
-        GfxBuffer output, rays;
-        std::array<GfxBuffer, readback_count> readback{}, ray_readback{};
+        GfxBuffer output;
+        GfxBuffer rays;
+        std::array<GfxBuffer, readback_count> readback{};
+        std::array<GfxBuffer, readback_count> ray_readback{};
         std::array<ProbeInspection, readback_count> metadata{};
         std::shared_ptr<const ProbeInspection> published;
         std::uint32_t traced_probe{~0u};
@@ -219,23 +290,31 @@ struct SceneLit::State {
     struct Geometry {
         geometry::MeshRef source;
         // The Renderer upload these views reference, and the one this pass found.
-        SceneGeometry shared, current;
+        SceneGeometry shared;
+        SceneGeometry current;
         // Views of the shared buffers; geometry owns vertices and indices as BLAS input.
-        GfxBuffer vertices, indices, faces;
+        GfxBuffer vertices;
+        GfxBuffer indices;
+        GfxBuffer faces;
         GfxBuffer closure; // closure_words of source.
         GfxGeometry geometry;
         GfxBottomLevelAccelerationStructure blas;
         std::uint32_t slot{};
-        bool used{}, opaque{true}, next_opaque{true};
+        bool used{};
+        bool opaque{true};
+        bool next_opaque{true};
     };
     struct Object {
         GfxTopLevelAccelerationStructureInstance instance;
         const geometry::Mesh* geometry{};
         std::array<float, 16> world{};
-        std::array<float, 4> normal_x{}, normal_y{}, normal_z{};
+        std::array<float, 4> normal_x{};
+        std::array<float, 4> normal_y{};
+        std::array<float, 4> normal_z{};
         std::vector<material::ProgramSurfaceRef> program_surfaces;
         ShadowBounds shadow_bounds;
-        bool shadow_dynamic{}, shadow_tracked{};
+        bool shadow_dynamic{};
+        bool shadow_tracked{};
         bool used{};
     };
     struct ObjectKey {
@@ -262,36 +341,62 @@ struct SceneLit::State {
     bool resolved_complete{};
     std::uint64_t material_revision{}; // MaterialFrame revision the complete pass compared surfaces against.
     std::vector<GpuInstance> instances;
-    std::array<float, 16> view_projection{}, inverse_view_projection{}, previous_view_projection{},
-        previous_inverse_view_projection{};
+    std::array<float, 16> view_projection{};
+    std::array<float, 16> inverse_view_projection{};
+    std::array<float, 16> previous_view_projection{};
+    std::array<float, 16> previous_inverse_view_projection{};
     std::array<float, 16> camera_view{};
     float far_depth{};
-    std::array<float, 4> viewport{}, environment{}, controls{}, temporal{}, jitter{}, probe_history{}, probe_controls{};
+    std::array<float, 4> viewport{};
+    std::array<float, 4> environment{};
+    std::array<float, 4> controls{};
+    std::array<float, 4> temporal{};
+    std::array<float, 4> jitter{};
+    std::array<float, 4> probe_history{};
+    std::array<float, 4> probe_controls{};
     // Holding the map keeps its address from naming a newer map while these textures live.
     rendering::SkyMapRef sky_source;
-    GfxTexture sky_background, sky_cube;
+    GfxTexture sky_background;
+    GfxTexture sky_cube;
     GfxSamplerState sky_sampler;
-    std::array<float, 4> sky{}, sky_radiance{}; // cos/sin of the yaw, 2^k, bound; sky_color * sky_intensity.
+    std::array<float, 4> sky{};
+    std::array<float, 4> sky_radiance{}; // cos/sin of the yaw, 2^k, bound; sky_color * sky_intensity.
     float sky_yaw{};
-    std::array<float, 4> probe_scene_min{}, probe_scene_max{};
-    std::array<std::uint32_t, 4> size_frame{}, source_counts{}, probe_update_settings{};
+    std::array<float, 4> probe_scene_min{};
+    std::array<float, 4> probe_scene_max{};
+    std::array<std::uint32_t, 4> size_frame{};
+    std::array<std::uint32_t, 4> source_counts{};
+    std::array<std::uint32_t, 4> probe_update_settings{};
     std::uint32_t hit_candidates{};
     std::array<std::uint32_t, 4> light_grid_counts_gpu{};
     bool spatial_uploaded{};
     std::array<std::uint32_t, 4> screen_dispatch{};
     std::array<float, 4> raster_transform{1, 1, 0, 0};
     std::uint32_t effect_flags{};
-    std::uint64_t scene_identity{}, reset_events{}, sequence{};
-    std::uint32_t parity{}, probe_parity{}, probe_response_epoch{}, probe_geometry_pending{}, probe_sequence{};
+    std::uint64_t scene_identity{};
+    std::uint64_t reset_events{};
+    std::uint64_t sequence{};
+    std::uint32_t parity{};
+    std::uint32_t probe_parity{};
+    std::uint32_t probe_response_epoch{};
+    std::uint32_t probe_geometry_pending{};
+    std::uint32_t probe_sequence{};
     std::uint32_t probe_history_mode{};
-    float previous_probe_bounce{.85f}, previous_indirect_gain{1};
+    float previous_probe_bounce{.85f};
+    float previous_indirect_gain{1};
     bool previous_probe_feedback_visibility{true};
     std::uint32_t previous_effect_flags{};
     std::uint32_t history_invalid{};
     Antialiasing previous_antialiasing{Antialiasing::none};
-    bool history_valid{}, enabled{}, brdf_ready{}, tlas_built{};
+    bool history_valid{};
+    bool enabled{};
+    bool brdf_ready{};
+    bool tlas_built{};
     std::uint32_t full_window_frames{};
-    bool light_changed{}, material_changed{}, coverage_changed{}, emitter_changed{};
+    bool light_changed{};
+    bool material_changed{};
+    bool coverage_changed{};
+    bool emitter_changed{};
     const MaterialFrame* material_frame{};
     explicit State(rhi::Context& owner) : context(owner), gfx(owner.borrow()) {}
 
@@ -501,7 +606,8 @@ struct SceneLit::State {
         upload_lut(smaa_search, smaa_lut::search_width, smaa_lut::search_height, DXGI_FORMAT_R8_UNORM,
                    smaa_lut::search_bytes());
         struct LtcCell {
-            float inverse[4], amplitude[2];
+            float inverse[4];
+            float amplitude[2];
         };
         static_assert(sizeof(LtcCell) * ltc_lut::size * ltc_lut::size == sizeof(ltc_lut::table));
         ltc = gfxCreateBuffer<LtcCell>(gfx, ltc_lut::size * ltc_lut::size, ltc_lut::table.data());
@@ -664,7 +770,8 @@ struct SceneLit::State {
             return;
         retire_targets();
         extent = next;
-        const auto w = next.width, h = next.height;
+        const auto w = next.width;
+        const auto h = next.height;
         for (std::size_t i = 0; i < gbuffer_textures.size(); ++i)
             gbuffer_textures[i] =
                 texture(w, h,
@@ -709,7 +816,8 @@ struct SceneLit::State {
             t = texture((w + 3) / 4, (h + 3) / 4, DXGI_FORMAT_R16G16B16A16_FLOAT, 8);
         // Logical level zero is the existing FP32 primary depth, not a (z,z) copy.
         // Keep the original twelve logical levels, including the 1x1 fallback.
-        std::uint32_t pw = (w + 1) / 2, ph = (h + 1) / 2;
+        std::uint32_t pw = (w + 1) / 2;
+        std::uint32_t ph = (h + 1) / 2;
         pyramid_count = 0;
         while (pyramid_count < 11) {
             pyramid[pyramid_count++] = texture(pw, ph, DXGI_FORMAT_R32G32_FLOAT, 8);
@@ -727,7 +835,8 @@ struct SceneLit::State {
     }
     void probes(const SceneLitSettings& settings, const std::array<float, 3>& focus, FrameStats& stats) {
         probe_field.describe(settings, focus);
-        const auto w = probe_field.width * 8, h = probe_field.height * 8;
+        const auto w = probe_field.width * 8;
+        const auto h = probe_field.height * 8;
         if (probe_irradiance[0].getWidth() != w || probe_irradiance[0].getHeight() != h) {
             for (auto* pair : {&probe_irradiance, &probe_distance, &probe_offsets})
                 for (auto& t : *pair)
@@ -861,7 +970,8 @@ struct SceneLit::State {
         require(gfxCommandDispatch(gfx, x, y, z), "Dispatch Scene Lit compute");
     }
     void dispatch_screen(const rhi::Pipeline& pipeline, GfxTexture depth, std::uint32_t visibility_counter = 0) {
-        const auto width = screen_dispatch[2] - screen_dispatch[0], height = screen_dispatch[3] - screen_dispatch[1];
+        const auto width = screen_dispatch[2] - screen_dispatch[0];
+        const auto height = screen_dispatch[3] - screen_dispatch[1];
         if (width && height)
             dispatch(pipeline, depth, (width + 7) / 8, (height + 7) / 8, 1, visibility_counter);
     }
@@ -904,8 +1014,11 @@ struct SceneLit::State {
         if (sample.frame_sequence == 0)
             return;
         std::array<float, 8> timings{};
-        std::array<float, 2> ddgi_timings{}, ddgi_update_timings{};
-        float cluster_timing{}, shadow_timing{}, shading_timing{};
+        std::array<float, 2> ddgi_timings{};
+        std::array<float, 2> ddgi_update_timings{};
+        float cluster_timing{};
+        float shadow_timing{};
+        float shading_timing{};
         for (std::size_t i = 0; i < queries.size(); i++) {
             const auto pass = gfxTimestampQueryGetSample(gfx, queries[i]);
             if (pass.frame_sequence != sample.frame_sequence)
@@ -1152,10 +1265,13 @@ struct SceneLit::State {
         material_changed = false;
         coverage_changed = false;
         emitter_changed = false;
-        bool geometry_changed = false, topology_changed = false, transform_changed = false, views_changed = false;
+        bool geometry_changed = false;
+        bool topology_changed = false;
+        bool transform_changed = false;
+        bool views_changed = false;
         // Indices whose GpuInstance changed; only this range is copied to the GPU.
-        std::size_t dirty_first = instances.size() != count ? 0 : count,
-                    dirty_last = instances.size() != count ? count : 0;
+        std::size_t dirty_first = instances.size() != count ? 0 : count;
+        std::size_t dirty_last = instances.size() != count ? count : 0;
         const auto dirty = [&](std::size_t index) {
             dirty_first = std::min(dirty_first, index);
             dirty_last = std::max(dirty_last, index + 1);
@@ -1487,7 +1603,8 @@ struct SceneLit::State {
         gpu_instances = instance_table.write(gfx, context.info().frames_in_flight, instances, dirty_first, dirty_last,
                                              "Scene Lit instance");
         if (geometry_changed || topology_changed || transform_changed) {
-            std::array<double, 3> low, high;
+            std::array<double, 3> low;
+            std::array<double, 3> high;
             low.fill(std::numeric_limits<double>::max());
             high.fill(-std::numeric_limits<double>::max());
             for (const auto& mesh : frame.meshes) {
@@ -1721,7 +1838,8 @@ struct SceneLit::State {
         if (settings.ddgi) {
             prepare_inspection(frame);
             probe_history_mode = static_cast<std::uint32_t>(settings.probe_history);
-            const auto total = probe_field.total, budget = probe_field.scheduled;
+            const auto total = probe_field.total;
+            const auto budget = probe_field.scheduled;
             probe_history = {.6f, probe_geometry_pending ? .85f : .95f, std::exp(-frame.render_delta_seconds / .15f),
                              .93f};
             probe_controls = {settings.probe_bounce, settings.probe_feedback_visibility ? 1.f : 0.f, 0, 0};
@@ -1785,8 +1903,8 @@ struct SceneLit::State {
             bind(resolve, "lit_probe_visibility_cache", probe_visibility_cache);
             bind(resolve, "lit_probe_visibility_cache_mode", cache_visibility ? (reuse_visibility ? 2u : 1u) : 0u);
             bind(resolve, "lit_probe_visibility_offsets", probe_offsets[1 - probe_parity]);
-            const auto blocks_x = (screen_dispatch[2] - screen_dispatch[0] + 1) / 2,
-                       blocks_y = (screen_dispatch[3] - screen_dispatch[1] + 1) / 2;
+            const auto blocks_x = (screen_dispatch[2] - screen_dispatch[0] + 1) / 2;
+            const auto blocks_y = (screen_dispatch[3] - screen_dispatch[1] + 1) / 2;
             if (blocks_x && blocks_y)
                 dispatch(probe_resolve, depth, (blocks_x + 7) / 8, (blocks_y + 7) / 8, 1, 3);
             require(gfxCommandClearBuffer(gfx, probe_fallback), "Reset DDGI exact receiver list");
@@ -2164,8 +2282,8 @@ struct SceneLit::State {
     }
     // Returns whether the map or its yaw changed; tint changes reach the probes through environment.
     bool prepare_sky(const SceneLitSettings& settings) {
-        const bool replaced = settings.sky_map != sky_source,
-                   turned = settings.sky_map && settings.sky_rotation != sky_yaw;
+        const bool replaced = settings.sky_map != sky_source;
+        const bool turned = settings.sky_map && settings.sky_rotation != sky_yaw;
         sky_yaw = settings.sky_rotation;
         if (replaced) {
             retire(sky_background);
@@ -2192,7 +2310,8 @@ struct SceneLit::State {
                 sky_cube = gfxCreateTextureCube(gfx, rendering::SkyMap::cube_size, DXGI_FORMAT_R32G32B32A32_FLOAT);
                 allocation(bool(sky_cube));
                 // gfx copies cube faces at the placed-footprint row pitch, so rows are padded to it.
-                constexpr std::size_t size = rendering::SkyMap::cube_size, row = size * 4 * sizeof(float);
+                constexpr std::size_t size = rendering::SkyMap::cube_size;
+                constexpr std::size_t row = size * 4 * sizeof(float);
                 constexpr std::size_t pitch = (row + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) /
                                               D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
                 std::vector<std::byte> face(size * pitch);
@@ -2377,7 +2496,10 @@ void SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) const {
         invalid(l.kind == LightKind::directional || l.range > 0, "Local light range must be positive");
         invalid(l.kind != LightKind::rectangle || (l.width > 0 && l.height > 0),
                 "Rectangle dimensions must be positive");
-        float direction_length = 0, right_length = 0, up_length = 0, orthogonal = 0;
+        float direction_length = 0;
+        float right_length = 0;
+        float up_length = 0;
+        float orthogonal = 0;
         for (std::size_t i = 0; i < 3; i++) {
             invalid(finite(l.position[i]) && finite(l.direction[i]) && finite(l.color[i]) && l.color[i] >= 0 &&
                         finite(l.right[i]) && finite(l.up[i]),
@@ -2389,7 +2511,8 @@ void SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) const {
         }
         invalid(std::abs(direction_length - 1) < .002f, "Light propagation direction must be unit length");
         if (l.kind == LightKind::rectangle) {
-            float right_dot = 0, up_dot = 0;
+            float right_dot = 0;
+            float up_dot = 0;
             for (std::size_t i = 0; i < 3; i++) {
                 right_dot += l.right[i] * l.direction[i];
                 up_dot += l.up[i] * l.direction[i];

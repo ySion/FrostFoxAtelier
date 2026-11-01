@@ -110,7 +110,8 @@ void producer_churn(const fs::path& root) {
 
 int pressure(const fs::path& root) {
     auto run = start(root / "run");
-    constexpr std::size_t producer_count = 4, attempts = 1024;
+    constexpr std::size_t producer_count = 4;
+    constexpr std::size_t attempts = 1024;
     std::array<std::vector<log::SubmitResult>, producer_count> results;
     std::array<std::exception_ptr, producer_count> failures;
     std::barrier ready{static_cast<std::ptrdiff_t>(producer_count)};
@@ -142,7 +143,8 @@ int pressure(const fs::path& root) {
     for (const auto& failure : failures)
         if (failure)
             std::rethrow_exception(failure);
-    std::uint64_t accepted{}, rejected{};
+    std::uint64_t accepted{};
+    std::uint64_t rejected{};
     std::set<std::pair<std::uint64_t, std::uint64_t>> pending;
     for (const auto& producer : results)
         for (const auto& result : producer) {

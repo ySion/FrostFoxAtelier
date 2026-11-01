@@ -48,7 +48,8 @@ struct Reference {
 };
 
 struct PrimitiveRange {
-    std::uint32_t first, count;
+    std::uint32_t first;
+    std::uint32_t count;
 };
 
 [[nodiscard]] inline std::unexpected<Error> failure(std::string message) {
@@ -183,9 +184,11 @@ private:
     static Result<void> admit_name(StringView name);
     Result<void> fits(Layer layer, const ColumnData& data) const;
 
-    std::uint32_t vertices_{}, primitives_{}, uniform_{};
-    SharedArray<std::uint32_t> vertex_points_,
-        offsets_; // offsets_ is empty when every primitive has uniform_ vertices.
+    std::uint32_t vertices_{};
+    std::uint32_t primitives_{};
+    std::uint32_t uniform_{};
+    SharedArray<std::uint32_t> vertex_points_;
+    SharedArray<std::uint32_t> offsets_; // offsets_ is empty when every primitive has uniform_ vertices.
     std::vector<Attribute> attributes_; // P first.
     std::vector<Reference> references_;
     SharedArray<std::uint32_t> instance_references_;

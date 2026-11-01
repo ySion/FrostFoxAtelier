@@ -25,7 +25,8 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
     const auto history = app.document().undo_count();
     const auto cursor = Access::cursor_position(app);
     if (GetForegroundWindow() != app.window()) {
-        RECT clip_before{}, clip_after{};
+        RECT clip_before{};
+        RECT clip_after{};
         require(GetClipCursor(&clip_before), "Cannot inspect background input ownership.");
         const auto captured = GetCapture();
         const auto camera = Access::camera_view(app);

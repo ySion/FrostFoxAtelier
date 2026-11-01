@@ -338,8 +338,8 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
         return std::unexpected(Error{ErrorCode::invalid_definition, "DDGI volume fitting requires rendered geometry."});
     struct Bounds {
         math::Vector3 low{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-                          std::numeric_limits<float>::max()},
-            high = -low;
+                          std::numeric_limits<float>::max()};
+        math::Vector3 high = -low;
     };
     Bounds world_bounds;
     std::unordered_map<const geometry::Mesh*, Bounds> local_bounds;
@@ -1081,8 +1081,8 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
             return std::unexpected(applied.error());
         return true;
     }
-    const bool rgb = event.key >= color_rgb && event.key < color_rgb + 3,
-               hsv = event.key >= color_hsv && event.key < color_hsv + 3;
+    const bool rgb = event.key >= color_rgb && event.key < color_rgb + 3;
+    const bool hsv = event.key >= color_hsv && event.key < color_hsv + 3;
     if (!rgb && !hsv)
         return false;
     if (event.kind != ui::ActionKind::edit_preview && event.kind != ui::ActionKind::edit_commit &&
@@ -1650,7 +1650,8 @@ bool Application::pie_input(const ui::Event& input, WPARAM native_key) {
     const bool release = input.kind == ui::EventKind::key_up &&
                          native_key == (workspace_.menu->group == editor::control::viewport_axis_pie ? VK_OEM_3 : 'Z');
     if (release && !pie_release_select_) {
-        const auto dx = pointer_position_.x - workspace_.menu->x, dy = pointer_position_.y - workspace_.menu->y;
+        const auto dx = pointer_position_.x - workspace_.menu->x;
+        const auto dy = pointer_position_.y - workspace_.menu->y;
         pie_release_select_ = dx * dx + dy * dy > 324 * window_.dpi_scale() * window_.dpi_scale() ||
                               std::chrono::steady_clock::now() - menu_requested_ >= std::chrono::milliseconds(200);
     }
@@ -1674,7 +1675,8 @@ bool Application::pie_input(const ui::Event& input, WPARAM native_key) {
             }
         // Use the invocation point as the gesture origin even if the visible
         // menu was fitted away from a screen edge. Slots come from accepted DSL geometry.
-        const auto dx = pointer_position_.x - workspace_.menu->x, dy = pointer_position_.y - workspace_.menu->y;
+        const auto dx = pointer_position_.x - workspace_.menu->x;
+        const auto dy = pointer_position_.y - workspace_.menu->y;
         const auto distance = std::hypot(dx, dy);
         ui::ControlKey key{};
         float best = -2.f;

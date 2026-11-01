@@ -26,7 +26,8 @@ void tooltip_contracts() {
         c.prepare();
         const auto viewport_bounds = c.frame->find(40)->bounds;
         const auto label_bounds = c.frame->find(2)->bounds;
-        const float x = label_bounds.x + 10 * dpi, y = label_bounds.y + 10 * dpi;
+        const float x = label_bounds.x + 10 * dpi;
+        const float y = label_bounds.y + 10 * dpi;
         c.ui.input({.kind = ui::EventKind::pointer_move, .x = x, .y = y});
         c.prepare();
         require(!c.frame->tooltip, "help appeared before its hover delay");

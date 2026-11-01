@@ -44,7 +44,9 @@ struct alignas(64) Packet {
     std::array<std::uint32_t, 16> words;
 };
 struct Resources {
-    std::int64_t allocations, bytes, live;
+    std::int64_t allocations;
+    std::int64_t bytes;
+    std::int64_t live;
 };
 Resources resources() {
     mi_collect(true); // Flush page statistics outside timing.

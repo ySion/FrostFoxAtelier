@@ -54,11 +54,17 @@ std::string required(const llvm::json::Object& object, llvm::StringRef name) {
     return value->str();
 }
 struct Header {
-    std::string path, include, output;
+    std::string path;
+    std::string include;
+    std::string output;
     bool included{};
 };
 struct Config {
-    std::string source, database, cpp, depfile, resource_dir;
+    std::string source;
+    std::string database;
+    std::string cpp;
+    std::string depfile;
+    std::string resource_dir;
     std::vector<Header> headers;
 };
 Config read_config(const char* path) {
@@ -76,7 +82,8 @@ Config read_config(const char* path) {
     const auto* headers = object->getArray("headers");
     if (!headers || headers->empty())
         throw std::runtime_error("No reflection headers configured.");
-    std::set<std::string> paths, outputs;
+    std::set<std::string> paths;
+    std::set<std::string> outputs;
     for (const auto& item : *headers) {
         const auto* header = item.getAsObject();
         if (!header)
@@ -100,16 +107,23 @@ struct Marker {
 };
 using Options = std::map<std::string, std::string>;
 struct Field {
-    std::string cpp_name, name, form, target;
+    std::string cpp_name;
+    std::string name;
+    std::string form;
+    std::string target;
     bool hidden{};
     unsigned line{};
     bool direct_layout{};
-    std::string label{}, category{}, description{};
+    std::string label{};
+    std::string category{};
+    std::string description{};
     // Designated FieldRange initializers, empty when the field declares no range.
     std::string range{};
 };
 struct Method {
-    std::string cpp_name, name, pointer;
+    std::string cpp_name;
+    std::string name;
+    std::string pointer;
     unsigned line{};
     bool preserves_borrows{};
     std::string description{};
@@ -119,8 +133,13 @@ struct Type {
     const CXXRecordDecl* declaration{};
     std::size_t header{};
     unsigned line{};
-    bool object{}, class_tag{};
-    std::string qualified, scope, name, runtime_name, base;
+    bool object{};
+    bool class_tag{};
+    std::string qualified;
+    std::string scope;
+    std::string name;
+    std::string runtime_name;
+    std::string base;
     std::vector<Field> fields;
     std::vector<Method> methods;
     const EnumDecl* enumeration{};
@@ -700,8 +719,8 @@ void members(State& state, Type& type, ASTContext& context) {
         const auto canonical = field->getType().getCanonicalType();
         const auto* field_record = canonical->getAsCXXRecordDecl();
         const auto record_name = field_record ? field_record->getQualifiedNameAsString() : "";
-        const bool slot = record_name == "atelier::ReferenceSlot",
-                   sequence = record_name == "atelier::ReferenceSequence";
+        const bool slot = record_name == "atelier::ReferenceSlot";
+        const bool sequence = record_name == "atelier::ReferenceSequence";
         if (!marker) {
             if (contains_reference_storage(field->getType(), context))
                 state.error(

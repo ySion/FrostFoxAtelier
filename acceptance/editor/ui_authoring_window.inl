@@ -60,7 +60,8 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
                                                  item.kind == atelier::ui::ControlKind::label;
                                       }) == 1,
             "Asset shell has no unique accepted status row.");
-    const auto status_key = status->key, status_incarnation = status->incarnation;
+    const auto status_key = status->key;
+    const auto status_incarnation = status->incarnation;
     const auto status_height = status->bounds.height / dpi;
     std::vector<std::pair<ControlKey, std::uint64_t>> identities;
     for (const auto key : {browser::path, browser::search, browser::directories, browser::content, browser::results}) {
@@ -109,7 +110,8 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
         require_input_focus(app);
         require(valid || Access::ui_error(app).empty(),
                 "Asset authoring rejection check started from an unrecovered failed candidate.");
-        const auto revision = Access::ui_revision(app), start = GetTickCount64();
+        const auto revision = Access::ui_revision(app);
+        const auto start = GetTickCount64();
         model(atelier::editor::write_file(path, text));
         while (GetTickCount64() - start < 10000) {
             tick(app, 1);
@@ -227,7 +229,8 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     const auto save = [&](const char* label, const std::string& text, bool valid, float expected_height,
                           const auto& verify_edit) {
         require_input_focus(app);
-        const auto previous = Access::ui_revision(app), start = GetTickCount64();
+        const auto previous = Access::ui_revision(app);
+        const auto start = GetTickCount64();
         model(atelier::editor::write_file(path, text));
         while (GetTickCount64() - start < 10000) {
             tick(app, 1);
@@ -318,7 +321,8 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     verify_hierarchy();
     timings << "minimized_restore," << GetTickCount64() - restored_start << ',' << Access::ui_revision(app) << '\n';
     capture(app, output / "ui-live-minimized-recovered.png");
-    const auto count = entities(app).size(), history = app.document().undo_count();
+    const auto count = entities(app).size();
+    const auto history = app.document().undo_count();
     click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
     require(entities(app).size() == count + 1 && app.document().undo_count() == history + 1,
             "A hot-updated tool did not dispatch exactly one real command.");

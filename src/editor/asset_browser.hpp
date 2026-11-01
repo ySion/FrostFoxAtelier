@@ -14,13 +14,31 @@ struct Item;
 
 namespace atelier::editor {
 namespace browser_control {
-inline constexpr ui::ControlKey root = 1ULL << 44, project = root + 1, engine = root + 2, up = root + 3,
-                                path = root + 4, search = root + 5, clear = root + 6, filter = root + 7,
-                                list = root + 8, details = root + 9, tiles = root + 10, open = root + 11,
-                                add = root + 12, view_menu = root + 13, actions = root + 14, back = root + 15,
-                                directories = root + 16, results = root + 17, content = root + 18, divider = root + 19,
-                                filter_first = root + 20, rename = root + 40;
-inline constexpr ui::TableKey name_column = 1, type_column = 2, size_column = 3;
+inline constexpr ui::ControlKey root = 1ULL << 44;
+inline constexpr ui::ControlKey project = root + 1;
+inline constexpr ui::ControlKey engine = root + 2;
+inline constexpr ui::ControlKey up = root + 3;
+inline constexpr ui::ControlKey path = root + 4;
+inline constexpr ui::ControlKey search = root + 5;
+inline constexpr ui::ControlKey clear = root + 6;
+inline constexpr ui::ControlKey filter = root + 7;
+inline constexpr ui::ControlKey list = root + 8;
+inline constexpr ui::ControlKey details = root + 9;
+inline constexpr ui::ControlKey tiles = root + 10;
+inline constexpr ui::ControlKey open = root + 11;
+inline constexpr ui::ControlKey add = root + 12;
+inline constexpr ui::ControlKey view_menu = root + 13;
+inline constexpr ui::ControlKey actions = root + 14;
+inline constexpr ui::ControlKey back = root + 15;
+inline constexpr ui::ControlKey directories = root + 16;
+inline constexpr ui::ControlKey results = root + 17;
+inline constexpr ui::ControlKey content = root + 18;
+inline constexpr ui::ControlKey divider = root + 19;
+inline constexpr ui::ControlKey filter_first = root + 20;
+inline constexpr ui::ControlKey rename = root + 40;
+inline constexpr ui::TableKey name_column = 1;
+inline constexpr ui::TableKey type_column = 2;
+inline constexpr ui::TableKey size_column = 3;
 }
 class AssetBrowser {
 public:
@@ -63,7 +81,9 @@ public:
 
 private:
     View view_{View::details};
-    bool engine_{true}, has_project_{}, can_create_{};
+    bool engine_{true};
+    bool has_project_{};
+    bool can_create_{};
     unsigned filter_{};
     std::wstring query_;
     std::filesystem::path directory_;

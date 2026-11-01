@@ -671,7 +671,8 @@ struct Session::GraphCodec {
         std::vector<std::pair<ObjectId, std::vector<world::Attachment>>> anchored;
         Project* project{};
         std::unordered_map<ObjectId, std::wstring> labels;
-        std::unordered_set<std::string> material_keys, texture_keys;
+        std::unordered_set<std::string> material_keys;
+        std::unordered_set<std::string> texture_keys;
         std::unordered_map<ObjectId, std::uint64_t> identities_before;
         std::unordered_map<ObjectId, std::string> material_parents_before;
         UnavailableResources unavailable_before;
@@ -757,12 +758,15 @@ struct Session::GraphCodec {
         } identities{session, session.local_ids_, session.next_local_id_};
         auto& runtime = session.world_.runtime();
         Graph graph;
-        std::vector<ObjectId> roots, nodes;
+        std::vector<ObjectId> roots;
+        std::vector<ObjectId> nodes;
         std::unordered_set<ObjectId> members;
         for (const auto& member : take(session.world_.members()))
             members.insert(member.id());
         std::erase_if(session.local_ids_, [&](const auto& entry) { return !runtime.type_of(entry.first); });
-        std::unordered_set<ObjectId> selected(requested.begin(), requested.end()), seen, root_seen;
+        std::unordered_set<ObjectId> selected(requested.begin(), requested.end());
+        std::unordered_set<ObjectId> seen;
+        std::unordered_set<ObjectId> root_seen;
         root_seen.reserve(requested.size());
         for (const auto object : requested) {
             const auto state = take(world::inspect_entity(runtime, object));
@@ -902,7 +906,8 @@ struct Session::GraphCodec {
                                           business_fields(runtime, session.types_, session.presentation_types_, type),
                                           reference));
         };
-        Json values = Json::array(), root_keys = Json::array();
+        Json values = Json::array();
+        Json root_keys = Json::array();
         for (auto object : roots) {
             const auto key = std::to_string(ids.at(object));
             root_keys.push_back(key);
@@ -923,7 +928,8 @@ struct Session::GraphCodec {
                     }
                 }
             }
-            Json children = Json::array(), parts = Json::array();
+            Json children = Json::array();
+            Json parts = Json::array();
             for (const auto& child : take(world::children(runtime, object)))
                 children.push_back(std::to_string(ids.at(child.id())));
             for (const auto& part : take(world::components(runtime, object))) {
@@ -1133,7 +1139,8 @@ struct Session::GraphCodec {
         auto& runtime = session.runtime_;
         const auto type = take(runtime.type_of(object));
         const auto fields = take(detail::author_fields(runtime, type));
-        Json op = {{"op", "set"}, {"id", live_id(session, object)}}, properties = Json::object();
+        Json op = {{"op", "set"}, {"id", live_id(session, object)}};
+        Json properties = Json::object();
         if (key)
             *key = "field " + op.at("id").get<std::string>();
         for (const auto& path : paths) {
@@ -1583,7 +1590,8 @@ struct Session::GraphCodec {
                     throw std::runtime_error("Entity child has a wrong type or multiple parents.");
             }
         }
-        std::unordered_set<std::uint64_t> roots, visited;
+        std::unordered_set<std::uint64_t> roots;
+        std::unordered_set<std::uint64_t> visited;
         const auto visit = [&](auto&& self, std::uint64_t key) -> void {
             if (!visited.insert(key).second)
                 throw std::runtime_error("Entity composition contains a cycle or duplicate.");
@@ -1787,8 +1795,8 @@ struct Session::GraphCodec {
             for (const auto& part : entity.at("components")) {
                 const auto object = ids.at(local_key(part.at("id")));
                 const auto type = take(runtime.type_of(object));
-                const bool light = derives(runtime, type, session.presentation_types_.light_component),
-                           physical = physical_type(runtime, type);
+                const bool light = derives(runtime, type, session.presentation_types_.light_component);
+                const bool physical = physical_type(runtime, type);
                 const bool environment = derives(runtime, type, session.presentation_types_.environment_component);
                 const bool camera = derives(runtime, type, session.presentation_types_.camera_component);
                 const auto light_defaults = light ? snapshot(object, "settings") : Defaults{};
@@ -2479,7 +2487,8 @@ struct Session::GraphCodec {
                     if (!records.emplace(key, &definition).second)
                         throw std::runtime_error("Duplicate Live material identity.");
                 }
-                std::unordered_set<std::uint64_t> visiting, complete;
+                std::unordered_set<std::uint64_t> visiting;
+                std::unordered_set<std::uint64_t> complete;
                 std::function<ObjectRoot(std::uint64_t)> restore;
                 restore = [&](std::uint64_t key) -> ObjectRoot {
                     const auto live = live_object(session, key);
@@ -2516,8 +2525,8 @@ struct Session::GraphCodec {
                 fields(op, {"op", "key", "width", "height", "file"});
                 const auto key = op.at("key").get<std::string>();
                 subject += " " + key;
-                const auto width = assets::json_format::identity(op.at("width")),
-                           height = assets::json_format::identity(op.at("height"));
+                const auto width = assets::json_format::identity(op.at("width"));
+                const auto height = assets::json_format::identity(op.at("height"));
                 if (!width || !height || width > 8192 || height > 8192)
                     throw std::runtime_error("Invalid Play texture dimensions.");
                 const auto bytes = width * height * 4;
@@ -2692,7 +2701,8 @@ void Session::forward_change(const Change& change, bool forward) {
                     std::vector<Add> adds;
                     std::unordered_map<std::string, std::size_t> added_entities;
                     for (const auto& removal : item.removals) {
-                        const auto root = removal.id(), parent = take(world::parent_entity(runtime_, root));
+                        const auto root = removal.id();
+                        const auto parent = take(world::parent_entity(runtime_, root));
                         const auto index = C::live_position(*this, root, parent);
                         auto graph = C::capture(*this, {&root, 1}, true, false, true).data;
                         for (const auto& entity : graph.at("entities"))
@@ -2744,7 +2754,8 @@ void Session::forward_change(const Change& change, bool forward) {
                         push(*imported_camera);
                     camera();
                 } else if constexpr (std::is_same_v<T, ComponentChange>) {
-                    const auto owner = item.removal.owner, component = item.removal.id();
+                    const auto owner = item.removal.owner;
+                    const auto component = item.removal.id();
                     if (item.added == forward) {
                         if (item.created_transform)
                             push(set(owner, "space", C::live_space(*this, owner)));
@@ -2791,7 +2802,8 @@ void Session::forward_change(const Change& change, bool forward) {
                 } else if constexpr (std::is_same_v<T, ReparentChange>) {
                     for (std::size_t i = 0; i < item.moves.size(); ++i) {
                         const auto& move = item.moves[forward ? i : item.moves.size() - 1 - i];
-                        const auto root = move.root.id(), parent = forward ? move.after_parent : move.before_parent;
+                        const auto root = move.root.id();
+                        const auto parent = forward ? move.after_parent : move.before_parent;
                         const auto transform = std::ranges::find_if(
                             move.transforms, [&](const auto& entry) { return entry.root.id() == root; });
                         push({{"op", "move"},
@@ -2811,7 +2823,8 @@ void Session::forward_change(const Change& change, bool forward) {
                     // Play resolves a binding only to a material it already has, so definitions go first.
                     const auto component = item.root.id();
                     const auto bindings = take(presentation::read_material_bindings(runtime_, component));
-                    Json definitions = Json::array(), table = Json::array();
+                    Json definitions = Json::array();
+                    Json table = Json::array();
                     std::unordered_set<ObjectId> defined;
                     for (const auto& binding : bindings) {
                         const auto resource = binding.resource.id();
@@ -3192,7 +3205,9 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         }
         drop(object, names);
     };
-    static const std::array<std::string, 1> space{"space"}, name{"name"}, sky{"sky_map"};
+    static const std::array<std::string, 1> space{"space"};
+    static const std::array<std::string, 1> name{"name"};
+    static const std::array<std::string, 1> sky{"sky_map"};
     static const std::array<std::string, 2> body{"properties", "body"};
     std::visit(
         [&](const auto& item) {
@@ -3304,7 +3319,8 @@ Result<RetainedView> Session::retained(ObjectId object) const {
             entry = &at->second;
         }
         view.type = entry->type;
-        const bool document = object == ObjectId{}, material = !document && is_material(object);
+        const bool document = object == ObjectId{};
+        const bool material = !document && is_material(object);
         std::vector<detail::ScalarField> schema;
         if (!document && !material)
             schema = business_fields(world_.runtime(), types_, presentation_types_, take(runtime_.type_of(object)));
@@ -3324,7 +3340,8 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                 if (path.size() == 1)
                     return {true, mismatch};
                 const auto names = path.subspan(1);
-                bool exact{}, prefix{};
+                bool exact{};
+                bool prefix{};
                 for (const auto& field : schema) {
                     if (std::ranges::equal(field.names, names))
                         exact = true;

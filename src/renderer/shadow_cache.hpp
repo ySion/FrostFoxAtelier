@@ -10,7 +10,9 @@ namespace atelier::renderer::detail {
 
 inline constexpr std::uint32_t shadow_atlas_extent = 4096;
 inline constexpr std::uint32_t shadow_tile_border = 2;
-inline constexpr std::uint32_t shadow_high_tier_lights = 16, shadow_face_redraw_budget = 24, shadow_fade_frames = 8;
+inline constexpr std::uint32_t shadow_high_tier_lights = 16;
+inline constexpr std::uint32_t shadow_face_redraw_budget = 24;
+inline constexpr std::uint32_t shadow_fade_frames = 8;
 inline constexpr float shadow_near_ratio = 1e-6f;
 inline constexpr float shadow_maximum_near = 1e-5f;
 
@@ -18,10 +20,12 @@ inline constexpr float shadow_maximum_near = 1e-5f;
 // back after its frame completed. Absent until a reading of the current
 // camera epoch (scene and camera cut) arrives.
 struct ShadowReceiverDepth {
-    float minimum{}, maximum{};
+    float minimum{};
+    float maximum{};
 };
 struct ShadowBounds {
-    std::array<float, 3> minimum{}, maximum{};
+    std::array<float, 3> minimum{};
+    std::array<float, 3> maximum{};
 };
 // Derived from the existing SceneLit object/geometry cache. All current scene
 // casters are supplied, including objects outside the main camera. A dynamic
@@ -35,9 +39,12 @@ struct ShadowCaster {
 // static-to-dynamic migration dirties static at old_bounds and dynamic at both
 // bounds. Color/roughness edits do not produce a change.
 struct ShadowChange {
-    ShadowBounds old_bounds, new_bounds;
-    bool old_present{}, new_present{};
-    bool static_changed{}, dynamic_changed{};
+    ShadowBounds old_bounds;
+    ShadowBounds new_bounds;
+    bool old_present{};
+    bool new_present{};
+    bool static_changed{};
+    bool dynamic_changed{};
 };
 
 // HLSL StructuredBuffer layout, row vectors, D3D reversed-Z. Point face order:
@@ -78,8 +85,12 @@ struct ShadowUpdate {
     std::vector<std::uint32_t> instances;
 };
 struct ShadowPlanStats {
-    std::uint32_t requested_faces{}, reused_faces{}, static_updates{}, dynamic_updates{};
-    std::uint32_t rendered_instances{}, resolution_downgrades{};
+    std::uint32_t requested_faces{};
+    std::uint32_t reused_faces{};
+    std::uint32_t static_updates{};
+    std::uint32_t dynamic_updates{};
+    std::uint32_t rendered_instances{};
+    std::uint32_t resolution_downgrades{};
     // Shadow-casting lights the atlas could not hold even at the minimum
     // resolution. They contribute no direct light this frame.
     std::uint32_t dropped_lights{};
@@ -90,7 +101,10 @@ struct ShadowPlanStats {
     // previous projection and contents), the longest consecutive deferral
     // among them in frames, the 128² cells held by all requested faces, and
     // resident lights withheld from direct light until every face is drawn.
-    std::uint32_t deferred_faces{}, deferral_frames{}, atlas_cells{}, pending_lights{};
+    std::uint32_t deferred_faces{};
+    std::uint32_t deferral_frames{};
+    std::uint32_t atlas_cells{};
+    std::uint32_t pending_lights{};
 };
 // Every shadow-casting light that is lit this frame is resident at once.
 // Reservation runs in importance order, directional lights first. Only the

@@ -7,7 +7,8 @@ namespace atelier::acceptance {
 inline bool dungeons_roundtrip_equal(std::string_view before, std::string_view after) {
     if (before == after)
         return true;
-    const auto original = nlohmann::json::parse(before), reopened = nlohmann::json::parse(after);
+    const auto original = nlohmann::json::parse(before);
+    const auto reopened = nlohmann::json::parse(after);
     for (const auto& change : nlohmann::json::diff(original, reopened)) {
         const auto path = change.at("path").get<std::string>();
         // World canonicalizes rotations at load. A float quaternion can move

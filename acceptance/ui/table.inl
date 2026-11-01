@@ -145,7 +145,8 @@ void shared_table_view() {
         require(request.source == 10 && request.table == ui::TableSelection{1002, 1},
                 "context request invented a row ControlKey");
         const auto header = geometry().columns.front();
-        const auto hx = header.bounds.x + 20 * dpi, hy = header.bounds.y + header.bounds.height * .5f;
+        const auto hx = header.bounds.x + 20 * dpi;
+        const auto hy = header.bounds.y + header.bounds.height * .5f;
         c.ui.input({.kind = ui::EventKind::pointer_down, .x = hx, .y = hy});
         const auto sorted = actions_of(c.ui.input({.kind = ui::EventKind::pointer_up, .x = hx, .y = hy}));
         require(sorted.size() == 1 && sorted[0].kind == ui::ActionKind::table_sort &&

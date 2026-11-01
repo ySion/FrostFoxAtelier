@@ -337,7 +337,8 @@ ByteAddressBuffer material_parameters;
     compute(MaterialPass::probe_exact, shaders::lit_ddgi, "DDGIExact");
     compute(MaterialPass::inspect, shaders::lit_ddgi, "DDGIInspect");
     compute(MaterialPass::inspect_update, shaders::lit_ddgi, "DDGIUpdateInspect");
-    const auto studio_vs = prefix + shaders::scene_vs, studio_ps = prefix + shaders::scene_ps;
+    const auto studio_vs = prefix + shaders::scene_vs;
+    const auto studio_ps = prefix + shaders::scene_ps;
     const auto cavity_ps = prefix + shaders::cavity_surface_ps;
     for (const auto& [pass, style] : {std::pair{MaterialPass::studio, PipelineStyle::surface},
                                       {MaterialPass::cavity, PipelineStyle::cavity_surface},

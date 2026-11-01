@@ -18,25 +18,33 @@ namespace atelier::editor {
 class FramePerformance {
 public:
     using Clock = std::chrono::steady_clock;
-    static constexpr std::size_t window_size = 120, pass_count = 16, total_pass = 15;
+    static constexpr std::size_t window_size = 120;
+    static constexpr std::size_t pass_count = 16;
+    static constexpr std::size_t total_pass = 15;
     // CPU table rows; a phase row is cpu_frame_row plus its catalog index.
-    static constexpr ui::TableKey cpu_frame_row = 1000, cpu_unattributed_row = cpu_frame_row + timing::capacity;
+    static constexpr ui::TableKey cpu_frame_row = 1000;
+    static constexpr ui::TableKey cpu_unattributed_row = cpu_frame_row + timing::capacity;
     enum class State { unavailable, waiting, ready };
     struct Pass {
-        std::string_view key, title;
+        std::string_view key;
+        std::string_view title;
         int parent{-1};
         unsigned depth{};
         bool in_total{};
     };
     struct Timing {
-        double current{}, mean{}, p95{}, max{};
+        double current{};
+        double mean{};
+        double p95{};
+        double max{};
         std::optional<double> share;
         std::size_t active_samples{};
         bool current_active{};
     };
     struct Cpu {
         std::size_t samples{};
-        std::uint64_t sequence{}, frame_id{}; // Recorder sequence and accepted UI frame of the latest sample.
+        std::uint64_t sequence{};
+        std::uint64_t frame_id{}; // Recorder sequence and accepted UI frame of the latest sample.
         // By catalog index; empty until the phase is entered in this domain.
         std::array<std::optional<Timing>, timing::capacity> phases{};
         std::array<std::uint32_t, timing::capacity> current_entries{};
@@ -49,8 +57,10 @@ public:
         ui::PixelExtent extent{};
         ui::Rect viewport{};
         std::size_t samples{};
-        std::uint64_t sequence{}, frame_id{};
-        std::uint64_t scene_identity{}, first_frame{};
+        std::uint64_t sequence{};
+        std::uint64_t frame_id{};
+        std::uint64_t scene_identity{};
+        std::uint64_t first_frame{};
         renderer::Antialiasing antialiasing{};
         std::uint32_t direct_candidates{};
         bool ddgi{};
@@ -91,17 +101,24 @@ private:
         double unattributed{};
     };
     std::optional<Domain> domain_;
-    std::uint64_t first_frame_{}, sequence_{}, frame_id_{};
+    std::uint64_t first_frame_{};
+    std::uint64_t sequence_{};
+    std::uint64_t frame_id_{};
     std::array<std::array<double, pass_count>, window_size> samples_{};
     std::array<std::uint32_t, window_size> masks_{};
-    std::size_t next_{}, count_{};
+    std::size_t next_{};
+    std::size_t count_{};
     std::vector<CpuSample> cpu_; // window_size entries, allocated once.
     std::array<std::uint32_t, timing::capacity> cpu_entries_{};
-    std::size_t cpu_next_{}, cpu_count_{};
-    std::uint64_t cpu_seen_{}, cpu_sequence_{}, cpu_frame_{};
+    std::size_t cpu_next_{};
+    std::size_t cpu_count_{};
+    std::uint64_t cpu_seen_{};
+    std::uint64_t cpu_sequence_{};
+    std::uint64_t cpu_frame_{};
     std::array<double, window_size> intervals_{};
     std::array<Clock::time_point, window_size> interval_ends_{};
-    std::size_t interval_next_{}, interval_count_{};
+    std::size_t interval_next_{};
+    std::size_t interval_count_{};
     std::optional<std::pair<std::uint64_t, Clock::time_point>> previous_sample_; // Sequence and begin in this domain.
     std::uint64_t structure_errors_{};
     const timing::Marker* first_structure_error_{};
@@ -112,7 +129,8 @@ private:
     std::array<float, 6> widths_{180, 72, 72, 72, 72, 64};
     ui::TableSelection selection_{};
     std::shared_ptr<const ui::TableData> table_;
-    std::wstring status_, resources_;
+    std::wstring status_;
+    std::wstring resources_;
     bool dirty_{};
     void clear_cpu();
     void rebuild_table();

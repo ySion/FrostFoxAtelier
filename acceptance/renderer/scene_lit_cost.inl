@@ -91,7 +91,8 @@ void cost_cases(Fixture& f) {
     counts << "case,cached_frame,reference_frame,cached_queries,reference_queries\n";
     struct PairedSample {
         const char* name{};
-        std::array<std::uint64_t, 2> frames{}, rays{};
+        std::array<std::uint64_t, 2> frames{};
+        std::array<std::uint64_t, 2> rays{};
         std::array<bool, 2> received{};
         bool written{};
     };
@@ -111,8 +112,10 @@ void cost_cases(Fixture& f) {
             reference.frame.meshes = reference.room.meshes;
             reference.frame.lights = reference.lights;
             reference.frame.camera_cut = true;
-            render::Capture actual, expected;
-            const auto a = f.step(&actual), b = reference.step(&expected);
+            render::Capture actual;
+            render::Capture expected;
+            const auto a = f.step(&actual);
+            const auto b = reference.step(&expected);
             // Transient skips may consume different public frame IDs. Pair by
             // accepted observation, then attach each delayed sample by its own
             // actual ID; never assume the two contexts complete in lockstep.
@@ -142,7 +145,8 @@ void cost_cases(Fixture& f) {
                     }
                 }
         }
-        bool case_reuse = false, case_sample = false;
+        bool case_reuse = false;
+        bool case_sample = false;
         for (std::size_t i = first; i < samples.size(); ++i)
             if (samples[i].written) {
                 case_sample = true;

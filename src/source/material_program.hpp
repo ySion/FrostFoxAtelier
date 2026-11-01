@@ -6,7 +6,8 @@
 namespace atelier::source {
 
 struct MaterialLayout {
-    std::size_t size{}, alignment{};
+    std::size_t size{};
+    std::size_t alignment{};
 };
 struct MaterialParameter {
     // Persistent B0 key is the declared field path, never a Runtime FieldId or

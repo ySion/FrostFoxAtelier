@@ -134,7 +134,8 @@ ui Late(in double rows) { Tree tree { rows: input.rows; TreeItem item {} } }
     take(append(true));
     draw();
     require(live.diagnostic().empty(), "Restored aliases did not clear the region diagnostic.");
-    const std::array<language::InputValue, 1> invalid_late{0.0}, valid_late{1.0};
+    const std::array<language::InputValue, 1> invalid_late{0.0};
+    const std::array<language::InputValue, 1> valid_late{1.0};
     take(append(true));
     take(live.append("Late", 0, {}, invalid_late, controls));
     require(!surface.set_controls(controls) && live.reject_controls("Refused first mount"),
@@ -205,10 +206,11 @@ ui Late(in double rows) { Tree tree { rows: input.rows; TreeItem item {} } }
         capacity += "Empty n" + std::to_string(i) + " { mounted: input.visible; edit: input.edit; }";
     capacity += "}";
     auto limited_type = take(language::Component::compile(runtime, "capacity.ui.source", capacity, "Capacity"));
-    const std::array<language::InputValue, 2> hidden{false, language::EditBinding{}},
-        shown{true, language::EditBinding{}};
+    const std::array<language::InputValue, 2> hidden{false, language::EditBinding{}};
+    const std::array<language::InputValue, 2> shown{true, language::EditBinding{}};
     auto limited = take(language::Instance::create(limited_type, 0, next_key, {}, hidden));
-    const auto roots = runtime.root_count(), objects = runtime.live_objects();
+    const auto roots = runtime.root_count();
+    const auto objects = runtime.live_objects();
     const auto excessive = limited->update(shown);
     require(!excessive && excessive.error().message.find("instantiated declaration nodes") != std::string::npos &&
                 runtime.root_count() == roots && runtime.live_objects() == objects && limited->controls().empty(),

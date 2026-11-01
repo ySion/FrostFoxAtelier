@@ -40,7 +40,10 @@ std::string hex(std::span<const unsigned char> bytes) {
     return result;
 }
 std::uint64_t started(HANDLE process) {
-    FILETIME creation{}, exit{}, kernel{}, user{};
+    FILETIME creation{};
+    FILETIME exit{};
+    FILETIME kernel{};
+    FILETIME user{};
     check(GetProcessTimes(process, &creation, &exit, &kernel, &user) != FALSE, "Read process identity");
     return (std::uint64_t(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
 }
@@ -220,12 +223,14 @@ Json parse(std::string_view text) {
 
 struct Server::Impl {
     struct Pending {
-        Json request, response;
+        Json request;
+        Json response;
         std::shared_ptr<Peer> peer;
         Handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
         std::chrono::steady_clock::time_point deadline;
     };
-    std::filesystem::path root, descriptor_path;
+    std::filesystem::path root;
+    std::filesystem::path descriptor_path;
     Json identity;
     std::wstring pipe_name;
     Handle stop{CreateEventW(nullptr, TRUE, FALSE, nullptr)};

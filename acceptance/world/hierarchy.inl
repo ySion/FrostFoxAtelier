@@ -6,22 +6,33 @@ void hierarchical_lifecycle() {
     const auto later = take(program.bind<void>(FunctionExecution::coroutine));
     w::World world(runtime, types);
     take(world.set_failure_policy(w::FailurePolicy::halt));
-    auto root = take(w::create_entity(runtime)), child = take(w::create_entity(runtime));
-    auto leaf = take(w::create_entity(runtime)), other = take(w::create_entity(runtime));
-    auto a = take(w::create_component(runtime, types.counter)), b = take(w::create_component(runtime, types.counter));
-    auto c = take(w::create_component(runtime, types.counter)), d = take(w::create_component(runtime, types.counter));
-    const auto child_id = child.id(), leaf_id = leaf.id(), c_id = c.id(), d_id = d.id();
+    auto root = take(w::create_entity(runtime));
+    auto child = take(w::create_entity(runtime));
+    auto leaf = take(w::create_entity(runtime));
+    auto other = take(w::create_entity(runtime));
+    auto a = take(w::create_component(runtime, types.counter));
+    auto b = take(w::create_component(runtime, types.counter));
+    auto c = take(w::create_component(runtime, types.counter));
+    auto d = take(w::create_component(runtime, types.counter));
+    const auto child_id = child.id();
+    const auto leaf_id = leaf.id();
+    const auto c_id = c.id();
+    const auto d_id = d.id();
     const std::array root_components{w::Attachment{a.id()}, w::Attachment{b.id()}};
-    const std::array child_components{w::Attachment{c_id}}, leaf_components{w::Attachment{d_id}};
+    const std::array child_components{w::Attachment{c_id}};
+    const std::array leaf_components{w::Attachment{d_id}};
     committed(world.attach_components(root.id(), root_components));
     committed(world.attach_components(child_id, child_components));
     committed(world.attach_components(leaf_id, leaf_components));
     committed(world.reparent(leaf_id, child_id, w::ReparentRule::keep_local));
     committed(world.reparent(child_id, root.id(), w::ReparentRule::keep_local));
     using Event = std::pair<char, ObjectId>;
-    std::vector<Event> events, registrations;
-    std::vector<ObjectId> activations, deactivations;
-    ObjectId fail_begin, fail_end;
+    std::vector<Event> events;
+    std::vector<Event> registrations;
+    std::vector<ObjectId> activations;
+    std::vector<ObjectId> deactivations;
+    ObjectId fail_begin;
+    ObjectId fail_end;
     std::size_t phantom_activation{};
     const auto hook = [&](char phase, ObjectId id, ObjectId failure) -> Result<void> {
         events.emplace_back(phase, id);
@@ -183,10 +194,14 @@ void hierarchical_reference_lifetime() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
     w::World world(runtime, types);
-    auto parent = take(w::create_entity(runtime)), child = take(w::create_entity(runtime)),
-         leaf = take(w::create_entity(runtime));
+    auto parent = take(w::create_entity(runtime));
+    auto child = take(w::create_entity(runtime));
+    auto leaf = take(w::create_entity(runtime));
     auto component = take(w::create_component(runtime, types.counter));
-    const auto parent_id = parent.id(), child_id = child.id(), leaf_id = leaf.id(), component_id = component.id();
+    const auto parent_id = parent.id();
+    const auto child_id = child.id();
+    const auto leaf_id = leaf.id();
+    const auto component_id = component.id();
     const std::array group{w::Attachment{component_id}};
     committed(world.attach_components(child_id, group));
     committed(world.reparent(leaf_id, child_id, w::ReparentRule::keep_local));
@@ -208,14 +223,19 @@ void hierarchical_reference_lifetime() {
 }
 
 void hierarchical_space_boundaries() {
-    Runtime runtime, foreign_runtime;
+    Runtime runtime;
+    Runtime foreign_runtime;
     const auto types = register_all_types(runtime);
     (void)register_all_types(foreign_runtime);
-    w::World world(runtime, types), other(runtime, types);
-    auto a = take(w::create_entity(runtime)), b = take(w::create_entity(runtime)),
-         group = take(w::create_entity(runtime));
-    auto x = take(w::create_entity(runtime)), y = take(w::create_entity(runtime));
-    auto foreign_world_entity = take(w::create_entity(runtime)), foreign = take(w::create_entity(foreign_runtime));
+    w::World world(runtime, types);
+    w::World other(runtime, types);
+    auto a = take(w::create_entity(runtime));
+    auto b = take(w::create_entity(runtime));
+    auto group = take(w::create_entity(runtime));
+    auto x = take(w::create_entity(runtime));
+    auto y = take(w::create_entity(runtime));
+    auto foreign_world_entity = take(w::create_entity(runtime));
+    auto foreign = take(w::create_entity(foreign_runtime));
     auto ability = take(w::create_component(runtime, types.component));
     take(world.set_transform(a.id(), {{10, 0, 0}, {}, {1, 1, 1}}));
     take(world.set_transform(b.id(), {{100, 0, 0}, {}, {1, 1, 1}}));
@@ -227,7 +247,8 @@ void hierarchical_space_boundaries() {
     committed(world.attach(a.id()));
     committed(world.attach(b.id()));
     committed(other.attach(foreign_world_entity.id()));
-    const auto before_x = take(w::world_matrix(runtime, x.id())), before_y = take(w::world_matrix(runtime, y.id()));
+    const auto before_x = take(w::world_matrix(runtime, x.id()));
+    const auto before_y = take(w::world_matrix(runtime, y.id()));
     const auto equal_matrix = [](const auto& left, const auto& right) {
         for (std::size_t i = 0; i < 16; ++i)
             if (!near(left[i], right[i]))
@@ -276,14 +297,16 @@ void hierarchical_space_boundaries() {
     committed(world.reparent(group.id(), a.id(), w::ReparentRule::keep_world));
     take(world.set_transform(b.id(), {{100, 0, 0}, {}, {2, 1, 1}}));
     take(world.set_transform(y.id(), {{0, 2, 0}, {0, 0, std::sin(.4f), std::cos(.4f)}, {1, 1, 1}}));
-    const auto local_x = take(w::read_transform(runtime, x.id())), local_y = take(w::read_transform(runtime, y.id()));
+    const auto local_x = take(w::read_transform(runtime, x.id()));
+    const auto local_y = take(w::read_transform(runtime, y.id()));
     reject(world.reparent(group.id(), b.id(), w::ReparentRule::keep_world),
            "Nonspatial-root keep-world discarded shear in a later frontier.");
     require(take(w::parent_entity(runtime, group.id())) == a.id() &&
                 take(w::read_transform(runtime, x.id())) == local_x &&
                 take(w::read_transform(runtime, y.id())) == local_y,
             "Failed frontier batch changed the first frontier or composition parent.");
-    auto anchor = take(w::create_entity(runtime)), probe = take(w::create_entity(runtime));
+    auto anchor = take(w::create_entity(runtime));
+    auto probe = take(w::create_entity(runtime));
     take(world.set_transform(anchor.id(), {}));
     take(world.set_transform(probe.id(), {{3, 4, 5}, {}, {1, 1, 1}}));
     committed(world.set_space_reference(probe.id(), anchor.id(), w::ReparentRule::keep_local));
@@ -315,7 +338,8 @@ void hierarchical_space_boundaries() {
     require(probe.id() == probe_id && take(w::spatial_parent(runtime, probe_id)) == a.id() &&
                 near(inherited_probe[12], 13),
             "Re-added Transform restored hidden world-space configuration or replaced Entity identity.");
-    auto optional_space = take(w::create_entity(runtime)), temporary_origin = take(w::create_entity(runtime));
+    auto optional_space = take(w::create_entity(runtime));
+    auto temporary_origin = take(w::create_entity(runtime));
     auto environment = take(w::create_component(runtime, types.environment_component));
     const auto optional_id = optional_space.id();
     take(world.set_transform(optional_id, probe_local));
@@ -334,8 +358,9 @@ void hierarchical_space_boundaries() {
     require(optional_space.id() == optional_id && !take(w::space_reference(runtime, optional_id)).has_value() &&
                 equal_matrix(take(w::world_matrix(runtime, optional_id)), w::transform_matrix(probe_local)),
             "Re-added Transform reactivated an expired hidden origin.");
-    auto stretched = take(w::create_entity(runtime)), turned = take(w::create_entity(runtime)),
-         carried = take(w::create_entity(runtime));
+    auto stretched = take(w::create_entity(runtime));
+    auto turned = take(w::create_entity(runtime));
+    auto carried = take(w::create_entity(runtime));
     take(world.set_transform(stretched.id(), {{0, 0, 0}, {}, {2, 1, 1}}));
     take(world.set_transform(turned.id(), {{1, 0, 0}, {}, {.5f, 1, 1}}));
     take(world.set_transform(carried.id(), {{0, 1, 0}, {}, {1, 1, 1}}));
@@ -345,8 +370,8 @@ void hierarchical_space_boundaries() {
     committed(world.start());
     const std::array poses{w::SimulationPose{x.id(), {201, 3, 0}, {}}, w::SimulationPose{a.id(), {200, 0, 0}, {}}};
     take(world.apply_simulation_transforms(poses));
-    const auto parent_world = take(w::world_matrix(runtime, a.id())),
-               child_world = take(w::world_matrix(runtime, x.id()));
+    const auto parent_world = take(w::world_matrix(runtime, a.id()));
+    const auto child_world = take(w::world_matrix(runtime, x.id()));
     require(near(parent_world[12], 200) && near(child_world[12], 201) && near(child_world[13], 3),
             "Child-first physics pose batch used stale ancestor world pose.");
     const std::array invalid_poses{w::SimulationPose{a.id(), {300, 0, 0}, {}},
@@ -394,19 +419,24 @@ void forest_publication() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
     w::World world(runtime, types);
-    auto p = take(w::create_entity(runtime)), q = take(w::create_entity(runtime)),
-         existing = take(w::create_entity(runtime));
+    auto p = take(w::create_entity(runtime));
+    auto q = take(w::create_entity(runtime));
+    auto existing = take(w::create_entity(runtime));
     take(world.set_transform(p.id(), {{100, 0, 0}, {}, {1, 1, 1}}));
     take(world.set_transform(q.id(), {{200, 0, 0}, {}, {1, 1, 1}}));
     committed(world.attach(p.id()));
     committed(world.attach(existing.id(), w::append, p.id()));
     committed(world.attach(q.id()));
-    auto x = take(w::create_entity(runtime)), y = take(w::create_entity(runtime)), z = take(w::create_entity(runtime));
-    auto cx = take(w::create_component(runtime, types.counter)), cy = take(w::create_component(runtime, types.counter));
+    auto x = take(w::create_entity(runtime));
+    auto y = take(w::create_entity(runtime));
+    auto z = take(w::create_entity(runtime));
+    auto cx = take(w::create_component(runtime, types.counter));
+    auto cy = take(w::create_component(runtime, types.counter));
     take(world.set_transform(x.id(), {{1, 0, 0}, {}, {1, 1, 1}}));
     take(world.set_transform(y.id(), {{10, 0, 0}, {}, {1, 1, 1}}));
     take(world.set_transform(z.id(), {{2, 0, 0}, {}, {1, 1, 1}}));
-    const std::array x_capabilities{w::Attachment{cx.id()}}, y_capabilities{w::Attachment{cy.id()}};
+    const std::array x_capabilities{w::Attachment{cx.id()}};
+    const std::array y_capabilities{w::Attachment{cy.id()}};
     committed(world.attach_components(x.id(), x_capabilities));
     committed(world.attach_components(y.id(), y_capabilities));
     committed(world.reparent(z.id(), x.id(), w::ReparentRule::keep_local));
@@ -515,7 +545,8 @@ void forest_publication() {
                 near(take(w::world_matrix(runtime, x.id()))[12], 211),
             "Forest history restore changed identities, spatial refs, parents or Begin order.");
     verify_publication = false;
-    auto first = take(w::create_entity(runtime)), second = take(w::create_entity(runtime));
+    auto first = take(w::create_entity(runtime));
+    auto second = take(w::create_entity(runtime));
     const std::array legacy{first.id(), second.id()};
     committed(world.attach_batch(legacy, 0, p.id()));
     auto siblings = take(w::children(runtime, p.id()));
@@ -556,8 +587,9 @@ void attachment_space_and_authoring() {
     source::Program task_program(runtime, types.counter);
     publish(task_program, "async void later() { yield; self.advance(50.0); }");
     const auto later = take(task_program.bind<void>(FunctionExecution::coroutine));
-    auto root = take(w::create_entity(runtime)), logical = take(w::create_entity(runtime)),
-         child = take(w::create_entity(runtime));
+    auto root = take(w::create_entity(runtime));
+    auto logical = take(w::create_entity(runtime));
+    auto child = take(w::create_entity(runtime));
     take(world.set_transform(root.id(), {{10, 0, 0}, {}, {1, 1, 1}}));
     take(world.set_transform(child.id(), {{2, 0, 0}, {}, {1, 1, 1}}));
     committed(world.reparent(logical.id(), root.id(), w::ReparentRule::keep_local));
@@ -589,9 +621,13 @@ void attachment_space_and_authoring() {
     auto counter = take(w::create_component(runtime, types.counter));
     const std::array counter_parts{w::Attachment{counter.id()}};
     committed(world.attach_components(child.id(), counter_parts));
-    unsigned begins{}, ends{}, lifecycle_events{};
+    unsigned begins{};
+    unsigned ends{};
+    unsigned lifecycle_events{};
     bool space_reentry_rejected{};
-    ObjectId prepared_id{}, a_id{}, b_id{};
+    ObjectId prepared_id{};
+    ObjectId a_id{};
+    ObjectId b_id{};
     take(world.bind_behavior(
         types.entity,
         {.begin = [&](Runtime&, ObjectId object) -> Result<void> {
@@ -623,7 +659,9 @@ void attachment_space_and_authoring() {
     take(world.start_task(counter.id(), [later](Runtime&, ObjectId receiver) { return later.start(receiver, {}); }));
     take(world.update(0));
     const auto running_pose = take(w::world_matrix(runtime, child.id()));
-    const auto events_before = lifecycle_events, ends_before = ends, begins_before = begins;
+    const auto events_before = lifecycle_events;
+    const auto ends_before = ends;
+    const auto begins_before = begins;
     require(world.activity().tasks == 1, "Space continuity fixture did not suspend a real task.");
     committed(world.set_space_reference(child.id(), ObjectId{}, w::ReparentRule::keep_world));
     require(take(w::space_reference(runtime, child.id())) == std::optional<ObjectId>{ObjectId{}} &&
@@ -673,7 +711,8 @@ void attachment_space_and_authoring() {
     take(p::set_material_bindings(runtime, mesh.id(), bindings));
     take(p::set_light(world, light.id(), {}));
 
-    auto a = take(w::create_entity(runtime)), b = take(w::create_entity(runtime));
+    auto a = take(w::create_entity(runtime));
+    auto b = take(w::create_entity(runtime));
     a_id = a.id();
     b_id = b.id();
     take(world.set_transform(a_id, {{2, 0, 0}, {}, {1, 1, 1}}));
@@ -728,7 +767,8 @@ void attachment_space_and_authoring() {
                 take(w::read_transform(runtime, follower.id())) == follower_local &&
                 take(w::world_matrix(runtime, follower.id())).elements == follower_matrix.elements,
             "Restoring an outgoing-origin history changed authored space or its effective matrix.");
-    auto huge_parent = take(w::create_entity(runtime)), huge_child = take(w::create_entity(runtime));
+    auto huge_parent = take(w::create_entity(runtime));
+    auto huge_child = take(w::create_entity(runtime));
     const w::Trs huge{{}, {}, {1e30f, 1e30f, 1e30f}};
     take(world.set_transform(huge_parent.id(), huge));
     take(world.set_transform(huge_child.id(), huge));
@@ -800,8 +840,10 @@ void mirrored_and_degenerate_space() {
                 near(kept.scale.z, -1) && near(std::abs(kept.rotation.w), 1) &&
                 same(w::transform_matrix(split), inverted) && same(w::transform_matrix(kept), inverted),
             "Mirrored decomposition lost the matrix or the preferred sign pattern.");
-    auto a = take(w::create_entity(runtime)), d = take(w::create_entity(runtime)), b = take(w::create_entity(runtime)),
-         c = take(w::create_entity(runtime));
+    auto a = take(w::create_entity(runtime));
+    auto d = take(w::create_entity(runtime));
+    auto b = take(w::create_entity(runtime));
+    auto c = take(w::create_entity(runtime));
     take(world.set_transform(a.id(), {{5, 0, 0}, {0, 0, half, half}, {2, 2, 2}}));
     take(world.set_transform(d.id(), {{0, 5, 0}, {half, 0, 0, half}, {4, 4, 4}}));
     take(world.set_transform(b.id(), {{0, 0, 5}, {0, half, 0, half}, {-1, 1, 1}}));
@@ -822,9 +864,11 @@ void mirrored_and_degenerate_space() {
                 local.scale.z > 0,
             "Keep-world under a mirrored parent lost the world pose or kept a now-redundant reflection.");
     // A zero axis is stored; its subtree is skipped and reported once, on the cause.
-    auto flat = take(w::create_entity(runtime)), u = take(w::create_entity(runtime)),
-         v = take(w::create_entity(runtime));
-    auto u_shape = add_shape(runtime, types, world, u.id()), v_shape = add_shape(runtime, types, world, v.id());
+    auto flat = take(w::create_entity(runtime));
+    auto u = take(w::create_entity(runtime));
+    auto v = take(w::create_entity(runtime));
+    auto u_shape = add_shape(runtime, types, world, u.id());
+    auto v_shape = add_shape(runtime, types, world, v.id());
     take(world.set_transform(flat.id(), {{0, 0, 0}, {}, {1, 0, 1}}));
     committed(world.reparent(u.id(), flat.id(), w::ReparentRule::keep_local));
     committed(world.reparent(v.id(), u.id(), w::ReparentRule::keep_local));
@@ -854,15 +898,17 @@ void mirrored_and_degenerate_space() {
     // Under a rotated zero axis, a rotated child's FP32 matrix keeps a rounding
     // residue in its determinant; the space is still degenerate.
     const auto turn = [](float degrees, math::Vector3 axis) {
-        const float length = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z),
-                    angle = degrees * 3.14159265f / 360, s = std::sin(angle) / length;
+        const float length = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+        const float angle = degrees * 3.14159265f / 360;
+        const float s = std::sin(angle) / length;
         return math::Quaternion{axis.x * s, axis.y * s, axis.z * s, std::cos(angle)};
     };
     bool residue = false;
     for (const float degrees : {17.f, 37.f, 53.f, 71.f}) {
-        auto tilted = take(w::create_entity(runtime)), leaf = take(w::create_entity(runtime));
-        auto tilted_shape = add_shape(runtime, types, world, tilted.id()),
-             leaf_shape = add_shape(runtime, types, world, leaf.id());
+        auto tilted = take(w::create_entity(runtime));
+        auto leaf = take(w::create_entity(runtime));
+        auto tilted_shape = add_shape(runtime, types, world, tilted.id());
+        auto leaf_shape = add_shape(runtime, types, world, leaf.id());
         take(world.set_transform(tilted.id(), {{}, turn(degrees, {1, 2, 3}), {0, 1, 1}}));
         take(world.set_transform(leaf.id(), {{}, turn(29, {1, 2, 3}), {1, 1, 1}}));
         committed(world.reparent(leaf.id(), tilted.id(), w::ReparentRule::keep_local));
@@ -902,15 +948,15 @@ void mirrored_and_degenerate_space() {
         const math::Vector3 value{m[row * 4], m[row * 4 + 1], m[row * 4 + 2]};
         return value * (1 / std::sqrt(math::dot(value, value)));
     };
-    const math::Quaternion tilt{std::sin(.3f) * .6f, std::sin(.3f) * .8f, 0, std::cos(.3f)},
-        roll{0, std::sin(.5f), 0, std::cos(.5f)};
+    const math::Quaternion tilt{std::sin(.3f) * .6f, std::sin(.3f) * .8f, 0, std::cos(.3f)};
+    const math::Quaternion roll{0, std::sin(.5f), 0, std::cos(.5f)};
     for (const auto& [scale, odd] :
          {std::pair{math::Vector3{-1, 1, 1}, true}, std::pair{math::Vector3{-1, -1, 1}, false}}) {
         auto parent = take(w::create_entity(runtime));
         take(world.set_transform(parent.id(), {{0, 0, 20}, roll, scale}));
         committed(world.attach(parent.id()));
-        const auto rectangle = light(parent.id(), p::LightKind::rectangle, tilt),
-                   sun = light(parent.id(), p::LightKind::directional, tilt);
+        const auto rectangle = light(parent.id(), p::LightKind::rectangle, tilt);
+        const auto sun = light(parent.id(), p::LightKind::directional, tilt);
         for (const auto& value : take(scene.light_items())) {
             if (value.component != rectangle && value.component != sun)
                 continue;

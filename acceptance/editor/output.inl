@@ -217,7 +217,8 @@ void verify_output_projection() {
             "Output real logging finish failed.");
     const auto deadline = GetTickCount64() + 10000;
     do {
-        const auto count = hosted.records().size(), read = hosted.source_status(directory)->bytes_read;
+        const auto count = hosted.records().size();
+        const auto read = hosted.source_status(directory)->bytes_read;
         hosted.poll();
         require(hosted.records().size() - count <= 256 &&
                     hosted.source_status(directory)->bytes_read - read <= 256 * 1024,

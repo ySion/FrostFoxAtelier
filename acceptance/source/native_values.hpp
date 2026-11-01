@@ -27,7 +27,11 @@ struct Position {
 ASTRUCT(Name = "borrow.Particle")
 struct alignas(64) Particle {
     AGENERATED_BODY(Particle)
-    static inline int live{}, copies{}, moves{}, destroyed{}, copy_budget{-1};
+    static inline int live{};
+    static inline int copies{};
+    static inline int moves{};
+    static inline int destroyed{};
+    static inline int copy_budget{-1};
     AFIELD()
     Position position;
     AFIELD()
@@ -56,7 +60,8 @@ struct alignas(64) Particle {
 ACLASS(Name = "borrow.Algorithms")
 struct Algorithms {
     AGENERATED_BODY(Algorithms)
-    static inline std::uint32_t calls{}, failures{};
+    static inline std::uint32_t calls{};
+    static inline std::uint32_t failures{};
     AFUNCTION(BorrowSafe)
     std::uint32_t process(Array<Particle>& values, const Array<Particle>& input, const String& text) const {
         if (values.data() == input.data() || text.view() != "owned/火花/long-text-for-heap")

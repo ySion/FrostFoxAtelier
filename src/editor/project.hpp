@@ -67,7 +67,9 @@ public:
 private:
     Result<std::vector<assets::ProjectEntry>> scan_entries(bool create_identities) const;
     Result<MeshImportPublication> import_mesh_files(const std::filesystem::path&, std::string_view existing_key);
-    std::filesystem::path root_, startup_, ui_source_;
+    std::filesystem::path root_;
+    std::filesystem::path startup_;
+    std::filesystem::path ui_source_;
     std::wstring name_;
     std::vector<std::filesystem::path> roots_;
     assets::Reader assets_;

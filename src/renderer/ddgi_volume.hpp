@@ -8,19 +8,31 @@ namespace atelier::renderer::detail {
 // Matches the shader constant layout. Physical slots stay fixed when the
 // logical window scrolls. Previous descriptors address an immutable snapshot.
 struct GpuProbeVolume {
-    std::array<float, 4> origin{}, spacing{}, tracking{};
+    std::array<float, 4> origin{};
+    std::array<float, 4> spacing{};
+    std::array<float, 4> tracking{};
     std::array<std::uint32_t, 4> grid{}; // XYZ counts, first physical pool slot.
-    std::array<std::int32_t, 4> scroll{}, movement{}; // movement.w invalidates this slot range.
+    std::array<std::int32_t, 4> scroll{};
+    std::array<std::int32_t, 4> movement{}; // movement.w invalidates this slot range.
 };
 static_assert(sizeof(GpuProbeVolume) == 96);
 
 struct ProbeField {
-    std::array<GpuProbeVolume, probe_volume_limit> current{}, previous{};
-    std::array<std::array<std::int64_t, 3>, probe_volume_limit> cells{}, previous_cells{};
+    std::array<GpuProbeVolume, probe_volume_limit> current{};
+    std::array<GpuProbeVolume, probe_volume_limit> previous{};
+    std::array<std::array<std::int64_t, 3>, probe_volume_limit> cells{};
+    std::array<std::array<std::int64_t, 3>, probe_volume_limit> previous_cells{};
     std::array<ProbeVolumeSettings, probe_volume_limit> committed{};
     std::array<std::array<std::uint32_t, 4>, probe_resident_limit / 4> work{};
     std::array<std::uint8_t, probe_resident_limit> warmup{};
-    std::uint32_t total{}, width{1}, height{1}, scheduled{}, round_robin_progress{}, cursor{}, warm_cursor{}, stride{1};
+    std::uint32_t total{};
+    std::uint32_t width{1};
+    std::uint32_t height{1};
+    std::uint32_t scheduled{};
+    std::uint32_t round_robin_progress{};
+    std::uint32_t cursor{};
+    std::uint32_t warm_cursor{};
+    std::uint32_t stride{1};
     bool valid{};
 
     static std::uint32_t count(const GpuProbeVolume& v) { return v.grid[0] * v.grid[1] * v.grid[2]; }

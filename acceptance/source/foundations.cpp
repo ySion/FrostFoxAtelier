@@ -33,7 +33,8 @@ T result(Result<std::optional<Scalar>> value) {
     return std::get<T>(*take(std::move(value)));
 }
 struct Work {
-    static inline std::uint32_t live{}, destroyed{};
+    static inline std::uint32_t live{};
+    static inline std::uint32_t destroyed{};
     String label;
     Work() { ++live; }
     Work(const Work& other) : label(other.label) { ++live; }
@@ -48,7 +49,8 @@ struct Host {
     bool enabled{};
     bool before{true};
     bool after{true};
-    std::uint32_t guard{0xa55aa55a}, calls{};
+    std::uint32_t guard{0xa55aa55a};
+    std::uint32_t calls{};
     bool alias(bool copy, const bool& read, bool& write) {
         write = copy;
         return read;
@@ -427,7 +429,8 @@ void verify_flags_and_scopes() {
 void verify_short_circuit() {
     Runtime runtime;
     const auto host_type = register_foundations(runtime);
-    Program owned(runtime, host_type), roots(runtime, host_type);
+    Program owned(runtime, host_type);
+    Program roots(runtime, host_type);
     publish(owned, R"(
         bool run(bool fail) {
             foundation.Work local;

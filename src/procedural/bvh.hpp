@@ -37,7 +37,9 @@ private:
         std::uint32_t count;
     };
     struct Triangle {
-        math::Vector3 a, b, c;
+        math::Vector3 a;
+        math::Vector3 b;
+        math::Vector3 c;
         std::uint32_t primitive;
     };
     std::vector<Node> nodes_;

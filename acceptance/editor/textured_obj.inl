@@ -182,11 +182,11 @@ void verify_textured_obj() {
             "Sibling defaults did not resolve to the same material resource.");
     // import_mesh already owns its first bundle; reopen to exercise the project cache.
     auto shared_project = take(editor::Project::open(project.root()));
-    const auto shared_a = take(shared_project.assets().mesh(key)),
-               shared_b = take(shared_project.assets().mesh(sibling_key));
+    const auto shared_a = take(shared_project.assets().mesh(key));
+    const auto shared_b = take(shared_project.assets().mesh(sibling_key));
     editor::Session shared;
-    const auto surfaces_a = take(shared.mesh_surfaces(shared_project.assets(), shared_a)),
-               surfaces_b = take(shared.mesh_surfaces(shared_project.assets(), shared_b));
+    const auto surfaces_a = take(shared.mesh_surfaces(shared_project.assets(), shared_a));
+    const auto surfaces_b = take(shared.mesh_surfaces(shared_project.assets(), shared_b));
     require(shared_a.mesh != shared_b.mesh && material_input(*(*surfaces_a)[1], "base_color_texture").image ==
                                                   material_input(*(*surfaces_b)[1], "base_color_texture").image,
             "Different model assets decoded the same atlas more than once.");
@@ -198,11 +198,11 @@ void verify_textured_obj() {
     take(editor::write_file(texture, bmp));
     fs::last_write_time(texture, fs::last_write_time(texture) + std::chrono::seconds(2));
     take(project.refresh());
-    const auto changed_asset = take(project.assets().mesh(key)),
-               sibling_changed = take(project.assets().mesh(sibling_key));
+    const auto changed_asset = take(project.assets().mesh(key));
+    const auto sibling_changed = take(project.assets().mesh(sibling_key));
     editor::Session refreshed;
-    const auto current = take(refreshed.mesh_surfaces(project.assets(), changed_asset)),
-               current_sibling = take(refreshed.mesh_surfaces(project.assets(), sibling_changed));
+    const auto current = take(refreshed.mesh_surfaces(project.assets(), changed_asset));
+    const auto current_sibling = take(refreshed.mesh_surfaces(project.assets(), sibling_changed));
     const auto changed_pixels = material_input(*(*current)[1], "base_color_texture").image;
     require(sibling_changed.mesh != sibling_mesh &&
                 changed_pixels == material_input(*(*current_sibling)[1], "base_color_texture").image &&
@@ -262,7 +262,9 @@ void verify_sponza_project() {
     require(items.size() == 2, "Sponza scene should contain the building and its curtains.");
     // Every slot shows the material generated from its glTF material; counts follow the shipped 2K assets.
     struct Expected {
-        std::size_t triangles, slots, textured;
+        std::size_t triangles;
+        std::size_t slots;
+        std::size_t textured;
     };
     constexpr std::array expected{Expected{3738878, 27, 24}, Expected{1997366, 4, 4}};
     std::size_t triangles{};

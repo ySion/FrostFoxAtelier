@@ -7,7 +7,8 @@ struct TreeHost {
     std::vector<ui::TreeNode> nodes;
     std::vector<ui::TreeRow> rows;
     std::wstring filter;
-    ui::ControlKey primary{}, disabled{};
+    ui::ControlKey primary{};
+    ui::ControlKey disabled{};
     void add(ui::ControlKey key, ui::ControlKey parent, std::wstring name, bool expanded = true) {
         nodes.push_back({parent ? node(parent) : ui::no_tree_node, expanded, {}});
         keys.push_back(key);
@@ -78,7 +79,8 @@ struct TreeHost {
     ui::Reply toggle(ui::ControlKey key) {
         const auto box = geometry(key).disclosure;
         require(box.width > 0, "branch has no disclosure hit area");
-        const auto x = box.x + box.width * .5f, y = box.y + box.height * .5f;
+        const auto x = box.x + box.width * .5f;
+        const auto y = box.y + box.height * .5f;
         require(c.ui.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y}).capture == ui::Capture::acquire,
                 "disclosure did not capture");
         auto up = c.ui.input({.kind = ui::EventKind::pointer_up, .x = x, .y = y});
@@ -169,8 +171,8 @@ void shared_tree_view() {
         h.describe();
         require(h.shown(28) && h.shown(29), "scrolled rows were not described");
         // Arrow keys before the next description stop at the end of the focused row's described neighbours.
-        const auto first_down = actions_of(key(c.ui, ui::Key::down)),
-                   second_down = actions_of(key(c.ui, ui::Key::down));
+        const auto first_down = actions_of(key(c.ui, ui::Key::down));
+        const auto second_down = actions_of(key(c.ui, ui::Key::down));
         require(first_down.size() == 1 && first_down[0].key == 4 && second_down.empty(),
                 "Down stepped across undescribed rows");
         // A primary row is revealed once when it becomes primary, not on every description.
@@ -300,7 +302,8 @@ void shared_tree_view() {
     drag.prepare();
     for (const auto ending : {ui::EventKind::key_down, ui::EventKind::focus_lost, ui::EventKind::capture_lost}) {
         const auto b = drag.frame->find(81)->bounds;
-        const auto x = b.x + b.width * .5f, y = b.y + b.height * .5f;
+        const auto x = b.x + b.width * .5f;
+        const auto y = b.y + b.height * .5f;
         drag.ui.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y});
         const auto begun = actions_of(drag.ui.input({.kind = ui::EventKind::pointer_move, .x = x + 25, .y = y}));
         require(std::ranges::any_of(begun,

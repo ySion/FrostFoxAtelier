@@ -51,7 +51,15 @@ Result<math::Matrix4> multiply(const math::Matrix4& a, const math::Matrix4& b) {
 }
 
 bool singular(const math::Matrix4& m) noexcept {
-    const double a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const double a = m[0];
+    const double b = m[1];
+    const double c = m[2];
+    const double d = m[4];
+    const double e = m[5];
+    const double f = m[6];
+    const double g = m[8];
+    const double h = m[9];
+    const double i = m[10];
     return a * (e * i - f * h) + b * (f * g - d * i) + c * (d * h - e * g) == 0;
 }
 
@@ -70,16 +78,23 @@ Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& 
     for (const auto* matrix : {&world, &parent})
         if ((*matrix)[3] != 0 || (*matrix)[7] != 0 || (*matrix)[11] != 0 || (*matrix)[15] != 1)
             return invalid();
-    const double a = parent[0], b = parent[1], c = parent[2];
-    const double d = parent[4], e = parent[5], f = parent[6];
-    const double g = parent[8], h = parent[9], i = parent[10];
+    const double a = parent[0];
+    const double b = parent[1];
+    const double c = parent[2];
+    const double d = parent[4];
+    const double e = parent[5];
+    const double f = parent[6];
+    const double g = parent[8];
+    const double h = parent[9];
+    const double i = parent[10];
     const std::array<double, 9> cof{e * i - f * h, f * g - d * i, d * h - e * g, c * h - b * i, a * i - c * g,
                                     b * g - a * h, b * f - c * e, c * d - a * f, a * e - b * d};
     const double determinant = a * cof[0] + b * cof[1] + c * cof[2];
     if (determinant == 0)
         return invalid();
     std::array<double, 9> local{};
-    std::array<double, 3> position{}, scale{};
+    std::array<double, 3> position{};
+    std::array<double, 3> scale{};
     for (std::size_t row = 0; row < 3; ++row)
         for (std::size_t col = 0; col < 3; ++col)
             for (std::size_t k = 0; k < 3; ++k)
@@ -118,7 +133,10 @@ Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& 
         return invalid();
     // Transpose the row-vector rotation into the conventional column-vector form.
     const auto m = [&](int row, int col) { return local[std::size_t(col * 3 + row)]; };
-    double x{}, y{}, z{}, w{};
+    double x{};
+    double y{};
+    double z{};
+    double w{};
     const double trace = m(0, 0) + m(1, 1) + m(2, 2);
     if (trace > 0) {
         const double s = 2 * std::sqrt(trace + 1);

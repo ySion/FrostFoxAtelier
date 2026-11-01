@@ -18,7 +18,8 @@ void entity_lifecycle_and_detached_graph() {
             .base<LifecycleEntity>()
             .publish());
     const auto value_field = take(runtime.find_field(entity_type, "value"));
-    w::World world(runtime, types), foreign(runtime, types);
+    w::World world(runtime, types);
+    w::World foreign(runtime, types);
     const auto foreign_scene = take(p::Scene::create(foreign, types));
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime, derived_type));
@@ -29,7 +30,9 @@ void entity_lifecycle_and_detached_graph() {
     using Event = std::pair<char, ObjectId>;
     std::vector<Event> events;
     std::vector<std::pair<w::Lifecycle, ObjectId>> registrations;
-    ObjectId fail_begin, fail_tick, fail_end;
+    ObjectId fail_begin;
+    ObjectId fail_tick;
+    ObjectId fail_end;
     bool queue_disable{};
     bool fail_registration{true};
     const auto hook = [&](char phase, ObjectId id, ObjectId failure) -> Result<void> {
@@ -201,7 +204,8 @@ void entity_lifecycle_and_detached_graph() {
             "Detached destruction retained capabilities.");
     auto garbage = take(w::create_entity(runtime));
     auto garbage_component = take(w::create_component(runtime, types.component));
-    const auto garbage_id = garbage.id(), garbage_component_id = garbage_component.id();
+    const auto garbage_id = garbage.id();
+    const auto garbage_component_id = garbage_component.id();
     const std::array garbage_shape{w::Attachment{garbage_component.id()}};
     committed(foreign.attach_components(garbage.id(), garbage_shape));
     garbage.reset();

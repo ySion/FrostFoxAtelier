@@ -45,7 +45,9 @@ private:
     ui::ControlKey restore_focus_{};
     std::uint64_t revision_{};
     std::uint64_t measurement_revision_{};
-    bool visible_{}, dirty_{}, closed_{};
+    bool visible_{};
+    bool dirty_{};
+    bool closed_{};
     unsigned open_present_count_{};
     bool opening_{};
     float measured_dpi_{};

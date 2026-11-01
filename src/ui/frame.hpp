@@ -8,35 +8,51 @@
 namespace atelier::ui {
 
 struct PixelExtent {
-    std::uint32_t width{}, height{};
+    std::uint32_t width{};
+    std::uint32_t height{};
     bool operator==(const PixelExtent&) const = default;
 };
 struct Rect {
-    float x{}, y{}, width{}, height{};
+    float x{};
+    float y{};
+    float width{};
+    float height{};
     bool operator==(const Rect&) const = default;
 };
 // Half-open physical pixel bounds; intersect with the actual render target.
 struct Clip {
-    std::int32_t left{}, top{}, right{}, bottom{};
+    std::int32_t left{};
+    std::int32_t top{};
+    std::int32_t right{};
+    std::int32_t bottom{};
     bool operator==(const Clip&) const = default;
 };
 // Linear, straight RGBA in [0,1]. Coverage multiplies alpha, not RGB.
 // Consumers pair shader output with matching blending: straight/SRC_ALPHA or
 // premultiplied/ONE, with INV_SRC_ALPHA for the destination in either case.
 struct Color {
-    float r{}, g{}, b{}, a{1};
+    float r{};
+    float g{};
+    float b{};
+    float a{1};
     bool operator==(const Color&) const = default;
 };
 struct CornerRadii {
-    float top_left{}, top_right{}, bottom_right{}, bottom_left{};
+    float top_left{};
+    float top_right{};
+    float bottom_right{};
+    float bottom_left{};
     bool operator==(const CornerRadii&) const = default;
 };
 // Immutable color image snapshot. RGB bytes encode sRGB(linear RGB * alpha);
 // alpha is linear. Sampling therefore returns linear premultiplied color.
 // Identity/revision and publication follow the same rules as Coverage.
 struct ColorImage {
-    std::uint64_t identity{}, revision{};
-    std::uint32_t width{}, height{}, row_pitch{};
+    std::uint64_t identity{};
+    std::uint64_t revision{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t row_pitch{};
     std::vector<std::uint8_t> pixels;
 };
 // R8 coverage, top-left origin, rows advancing downward. Pixels are UNORM and
@@ -44,8 +60,11 @@ struct ColorImage {
 // an identity/revision pair must never name different bytes or dimensions.
 // Producers relinquish mutable aliases before publishing shared_ptr<const>.
 struct Coverage {
-    std::uint64_t identity{}, revision{};
-    std::uint32_t width{}, height{}, row_pitch{};
+    std::uint64_t identity{};
+    std::uint64_t revision{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t row_pitch{};
     std::vector<std::uint8_t> pixels;
 };
 struct DrawQuad {

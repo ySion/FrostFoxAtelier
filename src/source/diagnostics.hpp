@@ -16,20 +16,26 @@ struct DiagnosticLocation {
     SourceLocation source;
 };
 struct DiagnosticResources {
-    std::size_t objects{}, roots{}, pending_reclamation{};
+    std::size_t objects{};
+    std::size_t roots{};
+    std::size_t pending_reclamation{};
     CollectionPhase collection_phase{CollectionPhase::idle};
 };
 struct DiagnosticReport {
-    std::uint64_t program_id{}, code_version{};
-    std::string entry, source_name;
+    std::uint64_t program_id{};
+    std::uint64_t code_version{};
+    std::string entry;
+    std::string source_name;
     DiagnosticStatus status{DiagnosticStatus::unused};
     DiagnosticCounters calls;
-    std::uint64_t resumes{}, peak_owned_values{};
+    std::uint64_t resumes{};
+    std::uint64_t peak_owned_values{};
     std::size_t remaining_owned_values{};
     bool resources_cleared{};
     bool timing{};
     std::chrono::nanoseconds active_time{};
-    DiagnosticResources before, after;
+    DiagnosticResources before;
+    DiagnosticResources after;
     std::optional<DiagnosticLocation> location;
     std::optional<Error> error;
 };
@@ -49,8 +55,12 @@ public:
 };
 
 struct CompilationArtifacts {
-    std::string entry_symbol, target_triple, cpu_features;
-    std::string original_ir, optimized_ir, assembly;
+    std::string entry_symbol;
+    std::string target_triple;
+    std::string cpu_features;
+    std::string original_ir;
+    std::string optimized_ir;
+    std::string assembly;
     // Actual compiler output before JIT relocation; section-relative symbols
     // and relocations are included in assembly. These bytes are not executable.
     std::vector<std::byte> object_code;

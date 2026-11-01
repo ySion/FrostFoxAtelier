@@ -109,7 +109,8 @@ std::vector<assets::EngineDependency> installed_assets(const Json& manifest) {
         const auto key = record.at("key").get<std::string>();
         if (!keys.insert(key).second)
             throw Failure("invalid_request", "Duplicate engine asset: " + key);
-        const auto semantic = version(record.at("semantic_version")), encoding = version(record.at("digest_version"));
+        const auto semantic = version(record.at("semantic_version"));
+        const auto encoding = version(record.at("digest_version"));
         const auto name = record.at("kind").get<std::string>();
         if (name != "mesh" && name != "material")
             throw Failure("dependency_mismatch", "Installed engine asset kind differs: " + key);
@@ -605,7 +606,8 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
                 return;
             }
             const auto source = std::ranges::find_if(data.material_sources, [&](const auto& file) {
-                const auto named = control::wide(file.path), path = relative.generic_wstring();
+                const auto named = control::wide(file.path);
+                const auto path = relative.generic_wstring();
                 return CompareStringOrdinal(named.c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL;
             });
             material::ImageRef image;

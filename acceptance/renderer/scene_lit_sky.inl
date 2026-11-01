@@ -8,8 +8,8 @@ atelier::rendering::SkyMapRef sky_map(std::uint32_t width, Radiance&& radiance) 
     std::vector<float> rgb(std::size_t(width) * height * 3);
     for (std::uint32_t y = 0; y < height; ++y)
         for (std::uint32_t x = 0; x < width; ++x) {
-            const double longitude = 2 * std::numbers::pi * ((x + .5) / width - .5),
-                         latitude = std::numbers::pi * (.5 - (y + .5) / height);
+            const double longitude = 2 * std::numbers::pi * ((x + .5) / width - .5);
+            const double latitude = std::numbers::pi * (.5 - (y + .5) / height);
             const Vec3 value = radiance(SkyDirection{std::sin(longitude) * std::cos(latitude), std::sin(latitude),
                                                      std::cos(longitude) * std::cos(latitude)});
             for (unsigned c = 0; c < 3; ++c)
@@ -22,11 +22,14 @@ SkyDirection sky_yawed(const SkyDirection& d, double degrees) {
     return {d[0] * std::cos(a) + d[2] * std::sin(a), d[1], -d[0] * std::sin(a) + d[2] * std::cos(a)};
 }
 SkyDirection sky_direction(double longitude_degrees, double latitude_degrees) {
-    const double lon = longitude_degrees * std::numbers::pi / 180, lat = latitude_degrees * std::numbers::pi / 180;
+    const double lon = longitude_degrees * std::numbers::pi / 180;
+    const double lat = latitude_degrees * std::numbers::pi / 180;
     return {std::sin(lon) * std::cos(lat), std::sin(lat), std::cos(lon) * std::cos(lat)};
 }
 render::Camera sky_look(Vec3 eye, Vec3 forward, Vec3 up, float aspect, float scale) {
-    const auto z = normalize(forward), x = normalize(cross(up, z)), y = cross(z, x);
+    const auto z = normalize(forward);
+    const auto x = normalize(cross(up, z));
+    const auto y = cross(z, x);
     render::Camera result;
     result.view = {x[0], y[0], z[0], 0, x[1],         y[1],         z[1],         0,
                    x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1};
@@ -88,7 +91,9 @@ void sky_uniform_equivalence(Fixture& f) {
     check(options.sky_map->scale_exponent() == 2, "a 2^17 constant sky map is stored at 2^-2");
     f.frame.environment = {radiance[0] / peak, radiance[1] / peak, radiance[2] / peak};
     const auto constant = f.capture("sky-constant-map", 2);
-    std::size_t surfaces = 0, background = 0, background_failures = 0;
+    std::size_t surfaces = 0;
+    std::size_t background = 0;
+    std::size_t background_failures = 0;
     for (unsigned y = 0; y < constant.extent.height; ++y)
         for (unsigned x = 0; x < constant.extent.width; ++x) {
             const auto i = std::size_t(y) * constant.extent.width + x;
@@ -152,7 +157,8 @@ void sky_background_geometry(Fixture& f) {
     for (double yaw : {0., 35.}) {
         options.sky_rotation = float(yaw);
         const auto image = f.capture(yaw == 0 ? "sky-marker-yaw-0" : "sky-marker-yaw-35", 2);
-        double ex = 0, ey = 0;
+        double ex = 0;
+        double ey = 0;
         for (const auto& d : marker_texels) {
             const auto p = sky_pixel(f.frame, sky_yawed(d, yaw));
             ex += p[0];
@@ -160,7 +166,9 @@ void sky_background_geometry(Fixture& f) {
         }
         ex /= double(marker_texels.size());
         ey /= double(marker_texels.size());
-        double weight = 0, ox = 0, oy = 0;
+        double weight = 0;
+        double ox = 0;
+        double oy = 0;
         unsigned brightest = 0;
         for (unsigned y = 0; y < image.extent.height; ++y)
             for (unsigned x = 0; x < image.extent.width; ++x) {
@@ -198,7 +206,8 @@ void sky_background_geometry(Fixture& f) {
 
     constexpr std::uint32_t checker_width = 4096;
     {
-        constexpr std::uint32_t width = checker_width, height = width / 2;
+        constexpr std::uint32_t width = checker_width;
+        constexpr std::uint32_t height = width / 2;
         std::vector<float> rgb(std::size_t(width) * height * 3);
         for (std::uint32_t y = 0; y < height; ++y)
             for (std::uint32_t x = 0; x < width; ++x)
@@ -281,15 +290,20 @@ void sky_background_temporal(Fixture& f) {
         return on ? Vec3{4, 4, 4} : Vec3{};
     });
     const auto turn = [&](unsigned frame) {
-        const double yaw = (1.5 * frame - 18) * std::numbers::pi / 180, orbit = 25. * frame * std::numbers::pi / 180;
+        const double yaw = (1.5 * frame - 18) * std::numbers::pi / 180;
+        const double orbit = 25. * frame * std::numbers::pi / 180;
         f.frame.camera = sky_look({float(.5 * std::cos(orbit)), 0, float(.5 * std::sin(orbit))},
                                   {float(std::sin(yaw)), 0, float(std::cos(yaw))}, {0, 1, 0}, aspect, 1.8f);
     };
     struct Marker {
-        double dx, dy, energy, trail;
+        double dx;
+        double dy;
+        double energy;
+        double trail;
     };
     const auto measure = [&](const render::Capture& image) {
-        double ex = 0, ey = 0;
+        double ex = 0;
+        double ey = 0;
         for (const auto& d : marker_texels) {
             const auto q = sky_pixel(f.frame, d);
             ex += q[0];
@@ -303,7 +317,10 @@ void sky_background_temporal(Fixture& f) {
             radius = std::max(radius, std::hypot(q[0] - ex, q[1] - ey));
         }
         radius += 3;
-        double weight = 0, outside = 0, ox = 0, oy = 0;
+        double weight = 0;
+        double outside = 0;
+        double ox = 0;
+        double oy = 0;
         for (unsigned y = 0; y < image.extent.height; ++y)
             for (unsigned x = 0; x < image.extent.width; ++x) {
                 const unsigned code = pixel(image, x, y)[1];
@@ -343,7 +360,8 @@ void sky_background_temporal(Fixture& f) {
             previous.camera = f.frame.camera;
             turn(24);
             const double yaw = (1.5 * 24 - 18) * std::numbers::pi / 180;
-            const SkyDirection x_axis{std::cos(yaw), 0, -std::sin(yaw)}, z_axis{std::sin(yaw), 0, std::cos(yaw)};
+            const SkyDirection x_axis{std::cos(yaw), 0, -std::sin(yaw)};
+            const SkyDirection z_axis{std::sin(yaw), 0, std::cos(yaw)};
             const auto& v = f.frame.scene_viewport;
             double motion_error = 0;
             std::size_t nonfinite = 0;
@@ -351,8 +369,8 @@ void sky_background_temporal(Fixture& f) {
                 for (unsigned x = 0; x < image.extent.width; ++x) {
                     if (!sky_inside(f.frame, x, y))
                         continue;
-                    const double a = ((x + .5 - v.x) / v.width * 2 - 1) * aspect / 1.8,
-                                 b = (1 - (y + .5 - v.y) / v.height * 2) / 1.8;
+                    const double a = ((x + .5 - v.x) / v.width * 2 - 1) * aspect / 1.8;
+                    const double b = (1 - (y + .5 - v.y) / v.height * 2) / 1.8;
                     const SkyDirection d{a * x_axis[0] + z_axis[0], b, a * x_axis[2] + z_axis[2]};
                     const auto q = sky_pixel(previous, d);
                     const auto i = (std::size_t(y) * image.extent.width + x) * 2;
@@ -407,7 +425,8 @@ void sky_background_temporal(Fixture& f) {
     f.frame.camera.projection = {1 / (3.8f * aspect), 0, 0, 0, 0,          1 / 3.8f, 0, 0, 0, 0,
                                  -1 / 39.9f,          0, 0, 0, 40 / 39.9f, 1};
     const auto parallel = f.capture("sky-orthographic-t2x", 4);
-    std::size_t background = 0, moving = 0;
+    std::size_t background = 0;
+    std::size_t moving = 0;
     for (unsigned y = 0; y < parallel.extent.height; ++y)
         for (unsigned x = 0; x < parallel.extent.width; ++x) {
             if (!sky_inside(f.frame, x, y) || depth(parallel, x, y) > 0)
@@ -437,7 +456,8 @@ void sky_background_temporal(Fixture& f) {
                 continue;
             double pixel_worst = 0;
             for (unsigned c = 0; c < 3; ++c) {
-                double sum = 0, squares = 0;
+                double sum = 0;
+                double squares = 0;
                 for (const auto& frame : still) {
                     const double v = pixel(frame, x, y)[c];
                     sum += v;
@@ -486,7 +506,10 @@ void sky_probe_misses(Fixture& f) {
     options.probe_update_budget = 245;
     options.probe_rays = 128;
     struct Board {
-        Vec3 centre, normal, tangent, bitangent;
+        Vec3 centre;
+        Vec3 normal;
+        Vec3 tangent;
+        Vec3 bitangent;
     };
     const float s = std::sqrt(3.f) / 2;
     const std::array<Board, 5> boards{{{{0, 0, 8}, {0, 1, 0}, {1, 0, 0}, {0, 0, 1}},
@@ -535,7 +558,8 @@ void sky_probe_misses(Fixture& f) {
         }
         return result;
     };
-    constexpr unsigned settle = 3 * warmup_frames, frames = 32;
+    constexpr unsigned settle = 3 * warmup_frames;
+    constexpr unsigned frames = 32;
     f.frame.environment = {1, 1, 1};
     options.sky_map = {};
     const auto uniform = board_radiance(f.average("sky-boards-uniform", settle, frames));
@@ -556,8 +580,8 @@ void sky_probe_misses(Fixture& f) {
                 axis[c] = 1;
                 axis = sky_yawed(axis, yaw);
                 const auto& n = boards[i].normal;
-                const double expected = tint[c] * (1 + n[0] * axis[0] + n[1] * axis[1] + n[2] * axis[2]) / 2,
-                             ratio = observed[i][c] / uniform[i][c];
+                const double expected = tint[c] * (1 + n[0] * axis[0] + n[1] * axis[1] + n[2] * axis[2]) / 2;
+                const double ratio = observed[i][c] / uniform[i][c];
                 std::printf("SceneLit %s board %zu channel %u: ratio=%.3f expected=%.3f\n", name, i, c, ratio,
                             expected);
                 f.metrics << name << "-board-" << i << '-' << c << ',' << ratio << ',' << expected << ",0,0\n";
@@ -606,7 +630,8 @@ void sky_real_stability(Fixture& f, const atelier::rendering::SkyMapRef& map) {
                 continue;
             double worst = 0;
             for (unsigned c = 0; c < 3; ++c) {
-                double sum = 0, squares = 0;
+                double sum = 0;
+                double squares = 0;
                 for (const auto& frame : frames) {
                     const double v = frame.rgba[i * 4 + c];
                     sum += v;
@@ -619,7 +644,8 @@ void sky_real_stability(Fixture& f, const atelier::rendering::SkyMapRef& map) {
         }
         return percentile(deviations, 95);
     };
-    const double uniform = noise("sky-real-uniform-mean", false), mapped = noise("sky-real-kloppenheim", true);
+    const double uniform = noise("sky-real-uniform-mean", false);
+    const double mapped = noise("sky-real-kloppenheim", true);
     std::printf("SceneLit sky real HDRI temporal deviation p95: uniform=%.3f map=%.3f codes\n", uniform, mapped);
     f.metrics << "sky-real-temporal-deviation-p95," << mapped << ',' << uniform << ",0,0\n";
     check(mapped <= std::max(2 * uniform, 1.), "a real HDRI sun keeps DDGI temporally stable");

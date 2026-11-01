@@ -412,7 +412,8 @@ struct Runtime::Impl {
         // Non-trivial values only: byte ranges (null swap) and native swaps that exchange two
         // values without throwing. Empty when the type cannot, so writes fall back to assignment.
         struct SwapPart {
-            std::size_t offset, size;
+            std::size_t offset;
+            std::size_t size;
             void (*swap)(void*, void*) noexcept;
         };
         std::vector<SwapPart> swap_parts;
@@ -466,9 +467,14 @@ struct Runtime::Impl {
     std::uint64_t epoch{};
     std::size_t marked{};
     std::size_t pending{};
-    std::size_t root_cursor{}, root_limit{}, sweep_cursor{}, sweep_limit{};
-    std::uint32_t gray_head{no_slot}, gray_tail{no_slot};
-    std::uint32_t root_head{no_slot}, root_tail{no_slot};
+    std::size_t root_cursor{};
+    std::size_t root_limit{};
+    std::size_t sweep_cursor{};
+    std::size_t sweep_limit{};
+    std::uint32_t gray_head{no_slot};
+    std::uint32_t gray_tail{no_slot};
+    std::uint32_t root_head{no_slot};
+    std::uint32_t root_tail{no_slot};
     struct TraceFrame {
         const Type* type;
         const void* storage;
@@ -1638,7 +1644,8 @@ struct detail::TypePublication::State {
     std::size_t first_index{};
     std::vector<std::unique_ptr<Runtime::Impl::Type>> staged;
     std::vector<const TypeInfo*> catalog;
-    bool reserved{}, committed{};
+    bool reserved{};
+    bool committed{};
 };
 detail::TypePublication::TypePublication() : state_(std::make_unique<State>()) {}
 detail::TypePublication::~TypePublication() = default;
@@ -2463,7 +2470,8 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
     struct Cursor {
         const Impl::Type* type;
         void* storage;
-        std::size_t next{}, depth{};
+        std::size_t next{};
+        std::size_t depth{};
     };
     std::vector<Cursor> cursors{{impl_->lookup(slot.type), slot.storage}};
     std::vector<FieldId> path;
@@ -2563,7 +2571,9 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
         ObjectId owner;
         Address address;
         ObjectId reference;
-        std::size_t first{}, erased{}, final_size{};
+        std::size_t first{};
+        std::size_t erased{};
+        std::size_t final_size{};
         std::vector<ObjectId> inserted;
     };
     std::vector<Prepared> prepared;

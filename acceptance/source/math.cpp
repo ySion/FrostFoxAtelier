@@ -321,7 +321,8 @@ void verify_elementwise() {
                 + math.min(v, w) + math.max(w, 0.25) + math.floor(w) + math.sqrt(math.abs(v));
         }
     )");
-    Vector3 v{-0.5f, 0.75f, 2.0f}, w{0.25f, -1.5f, 3.5f};
+    Vector3 v{-0.5f, 0.75f, 2.0f};
+    Vector3 w{0.25f, -1.5f, 3.5f};
     const float t = 0.25f;
     const auto lanes = evaluate<Vector3>(runtime, vectors.entry(),
                                          std::array{Argument::borrow(v), Argument::borrow(w), Argument{Scalar{t}}});
@@ -332,7 +333,8 @@ void verify_elementwise() {
             std::sqrt(std::fabs(v[i]));
         require(same(lanes[i], expected), "Float vector element-wise built-ins changed a lane.");
     }
-    Program pair(runtime, {}), quad(runtime, {});
+    Program pair(runtime, {});
+    Program quad(runtime, {});
     publish(pair, "vector2 run(vector2 v) { return math.fract(v); }");
     publish(quad, "vector4 run(vector4 v) { return math.sign(v) + math.trunc(v) + math.ceil(v); }");
     math::Vector2 small{-1e-30f, 2.75f};
@@ -350,7 +352,8 @@ void verify_elementwise() {
                 + math.fract(w) + math.step(0.5d, v) + math.smoothstep(0.0d, 2.0d, w);
         }
     )");
-    Vector3d dv{-0.5, 0.75, 2.0}, dw{0.25, -1.5, 3.5};
+    Vector3d dv{-0.5, 0.75, 2.0};
+    Vector3d dw{0.25, -1.5, 3.5};
     const double dt = 0.75;
     const auto dlanes = evaluate<Vector3d>(
         runtime, wide.entry(), std::array{Argument::borrow(dv), Argument::borrow(dw), Argument{Scalar{dt}}});
@@ -413,7 +416,8 @@ void verify_elementwise() {
     Array<float> samples;
     for (const float value : floats)
         samples.add(value);
-    const float low = -0.5f, high = 2.0f;
+    const float low = -0.5f;
+    const float high = 2.0f;
     take(kernel.entry().invoke({},
                                std::array{Argument::borrow(samples), Argument{Scalar{low}}, Argument{Scalar{high}}}));
     for (std::size_t i = 0; i < floats.size(); ++i) {
@@ -480,7 +484,8 @@ void verify_transcendental() {
     ScalarCalls<float> scalar(runtime, "float");
     for (const auto& function : functions) {
         const bool periodic = function.name == "sin" || function.name == "cos";
-        std::vector<float> first = binades, second;
+        std::vector<float> first = binades;
+        std::vector<float> second;
         const auto around = [&](float x, int count) {
             for (auto value = x, below = x; count-- > 0;
                  value = std::nextafter(value, inf), below = std::nextafter(below, -inf)) {
@@ -543,7 +548,8 @@ void verify_transcendental() {
         publish(kernel,
                 "void run(Array<float>& a, const Array<float>& b) { uint i = 0; while (i < a.size()) { a[i] = math." +
                     function.name + (function.binary ? "(a[i], b[i])" : "(a[i])") + "; i = i + 1; } }");
-        Array<float> lanes, others;
+        Array<float> lanes;
+        Array<float> others;
         for (std::size_t i = 0; i < first.size(); ++i) {
             lanes.add(first[i]);
             others.add(second[i]);
@@ -551,7 +557,9 @@ void verify_transcendental() {
         take(kernel.entry().invoke({}, std::array{Argument::borrow(lanes), Argument::borrow(std::as_const(others))}));
         const auto call = "math." + function.name + (function.binary ? "(x, y)" : "(x)");
         for (std::size_t i = 0; i < first.size(); ++i) {
-            const float x = first[i], y = second[i], result = lanes[i];
+            const float x = first[i];
+            const float y = second[i];
+            const float result = lanes[i];
             char text[256];
             const auto fail = [&](const char* reason, double expected) {
                 std::snprintf(text, sizeof(text), "%s at (%a, %a) returned %a, expected %a: %s", call.c_str(),
@@ -574,10 +582,14 @@ void verify_transcendental() {
     // Exact results the contract names, including signed zeros and IEEE infinities.
     struct Exact {
         const char* call;
-        float x, y, expected;
+        float x;
+        float y;
+        float expected;
     };
-    constexpr float pi = 0x1.921fb6p+1f, half_pi = 0x1.921fb6p+0f, quarter_pi = 0x1.921fb6p-1f,
-                    three_quarters_pi = 0x1.2d97c8p+1f;
+    constexpr float pi = 0x1.921fb6p+1f;
+    constexpr float half_pi = 0x1.921fb6p+0f;
+    constexpr float quarter_pi = 0x1.921fb6p-1f;
+    constexpr float three_quarters_pi = 0x1.2d97c8p+1f;
     const std::array exact{
         Exact{"math.sin(x)", 0.0f, 0, 0.0f},
         Exact{"math.sin(x)", -0.0f, 0, -0.0f},
@@ -644,12 +656,14 @@ void verify_transcendental() {
     }
 
     // Vector lanes and scalar arguments give the scalar results bit for bit.
-    Program vectors(runtime, {}), splats(runtime, {});
+    Program vectors(runtime, {});
+    Program splats(runtime, {});
     publish(
         vectors,
         "vector4 run(vector4 v, vector4 w) { return math.sin(v) + math.cos(w) + math.exp(v) + math.log(w) + math.atan2(v, w) + math.pow(w, v); }");
     publish(splats, "vector2 run(vector2 v, float s) { return math.pow(v, s) + math.atan2(s, v); }");
-    math::Vector4 v{0.5f, -2.25f, 10.0f, 1e-3f}, w{3.5f, 0.25f, 1e4f, 7.0f};
+    math::Vector4 v{0.5f, -2.25f, 10.0f, 1e-3f};
+    math::Vector4 w{3.5f, 0.25f, 1e4f, 7.0f};
     const auto lanes =
         evaluate<math::Vector4>(runtime, vectors.entry(), std::array{Argument::borrow(v), Argument::borrow(w)});
     for (std::size_t i = 0; i < 4; ++i)
@@ -692,7 +706,8 @@ void verify_transcendental_double() {
     ScalarCalls<double> scalar(runtime, "double");
     for (const auto& function : math_reference::functions) {
         const bool periodic = function.name == "sin" || function.name == "cos";
-        std::vector<double> first = binades, second;
+        std::vector<double> first = binades;
+        std::vector<double> second;
         const auto around = [&](double x, int count) {
             for (int i = -count; i <= count; ++i)
                 first.push_back(step(x, i));
@@ -774,7 +789,8 @@ void verify_transcendental_double() {
         publish(kernel,
                 "void run(Array<double>& a, const Array<double>& b) { uint i = 0; while (i < a.size()) { a[i] = math." +
                     name + (function.binary ? "(a[i], b[i])" : "(a[i])") + "; i = i + 1; } }");
-        Array<double> lanes, others;
+        Array<double> lanes;
+        Array<double> others;
         for (std::size_t i = 0; i < first.size(); ++i) {
             lanes.add(first[i]);
             others.add(second[i]);
@@ -782,7 +798,9 @@ void verify_transcendental_double() {
         take(kernel.entry().invoke({}, std::array{Argument::borrow(lanes), Argument::borrow(std::as_const(others))}));
         const auto call = "math." + name + (function.binary ? "(x, y)" : "(x)");
         for (std::size_t i = 0; i < first.size(); ++i) {
-            const double x = first[i], y = second[i], result = lanes[i];
+            const double x = first[i];
+            const double y = second[i];
+            const double result = lanes[i];
             const auto fail = [&](const char* reason, double expected) {
                 char text[256];
                 std::snprintf(text, sizeof(text), "%s at (%a, %a) returned %a, expected %a: %s", call.c_str(), x, y,
@@ -805,10 +823,14 @@ void verify_transcendental_double() {
     // Exact results the contract names, including signed zeros and IEEE infinities.
     struct Exact {
         const char* call;
-        double x, y, expected;
+        double x;
+        double y;
+        double expected;
     };
-    constexpr double pi = 0x1.921fb54442d18p+1, half_pi = 0x1.921fb54442d18p+0, quarter_pi = 0x1.921fb54442d18p-1,
-                     three_quarters_pi = 0x1.2d97c7f3321d2p+1;
+    constexpr double pi = 0x1.921fb54442d18p+1;
+    constexpr double half_pi = 0x1.921fb54442d18p+0;
+    constexpr double quarter_pi = 0x1.921fb54442d18p-1;
+    constexpr double three_quarters_pi = 0x1.2d97c7f3321d2p+1;
     const std::array exact{
         Exact{"math.sin(x)", 0.0, 0, 0.0},
         Exact{"math.sin(x)", -0.0, 0, -0.0},
@@ -882,7 +904,8 @@ void verify_transcendental_double() {
         const char* scalar;
         bool swap;
     };
-    const math::Vector4d v{0.5, -2.25, 600.0, 1e-3}, w{3.5, 0.25, 1.7, 7.0};
+    const math::Vector4d v{0.5, -2.25, 600.0, 1e-3};
+    const math::Vector4d w{3.5, 0.25, 1.7, 7.0};
     for (const auto& item :
          {Lanes{"math.sin(v)", "math.sin(x)", false}, Lanes{"math.cos(v)", "math.cos(x)", false},
           Lanes{"math.exp(v)", "math.exp(x)", false}, Lanes{"math.log(w)", "math.log(x)", true},
@@ -953,7 +976,8 @@ void verify_source_math() {
     require(result.x == 1.0f && result.y == 2.0f && result.z == 3.0f && previous.x == 4.0f,
             "Typed math result or old math lease changed across publication.");
 
-    Program compact_float(runtime, {}), compact_double(runtime, {});
+    Program compact_float(runtime, {});
+    Program compact_double(runtime, {});
     publish(compact_float, "void run(vector3& value) { value = value * 2.0; }");
     publish(compact_double, "void run(vector3d& value) { value = value * 2.0d; }");
     {
@@ -1141,7 +1165,8 @@ void measure_precision(Runtime& runtime, std::string_view scalar, std::string_vi
     constexpr std::size_t ticks = 32;
     constexpr std::size_t samples = 5;
     const Real dt = Real(0.125);
-    Array<Vector> positions, velocities;
+    Array<Vector> positions;
+    Array<Vector> velocities;
     positions.resize(count);
     velocities.resize(count);
     const auto reset = [&] {
@@ -1155,7 +1180,8 @@ void measure_precision(Runtime& runtime, std::string_view scalar, std::string_vi
     const std::string signature = "void run(Array<" + std::string(vector) + ">& positions, const Array<" +
                                   std::string(vector) + ">& velocities, " + std::string(scalar) +
                                   " dt) { uint i = 0; while (i < positions.size()) { ";
-    Program vector_program(runtime, {}), scalar_program(runtime, {});
+    Program vector_program(runtime, {});
+    Program scalar_program(runtime, {});
     publish(vector_program, signature + "positions[i] = positions[i] + velocities[i] * dt; i = i + 1; } }");
     publish(scalar_program, signature + "positions[i].x = positions[i].x + velocities[i].x * dt; "
                                         "positions[i].y = positions[i].y + velocities[i].y * dt; "

@@ -9,7 +9,8 @@ using atelier::material::Coverage;
 enum class Input { base_color, roughness, metallic, normal, emissive, opacity };
 struct Texture {
     ImageRef image;
-    std::array<float, 2> scale{1, 1}, offset{};
+    std::array<float, 2> scale{1, 1};
+    std::array<float, 2> offset{};
     float rotation{};
     Address address{Address::repeat};
     std::uint32_t channel{};
@@ -17,11 +18,15 @@ struct Texture {
 };
 struct Parameters {
     std::array<float, 4> base_color{1, 1, 1, 1};
-    float roughness{.65f}, metallic{}, normal_scale{1}, normal_y_sign{1};
+    float roughness{.65f};
+    float metallic{};
+    float normal_scale{1};
+    float normal_y_sign{1};
     std::array<float, 3> emissive{};
     Coverage coverage{Coverage::opaque};
     float alpha_cutoff{.5f};
-    bool double_sided{true}, emission_two_sided{true};
+    bool double_sided{true};
+    bool emission_two_sided{true};
     bool operator==(const Parameters&) const = default;
 };
 struct Description {
@@ -111,7 +116,8 @@ namespace render {
 // Compact author fixture notation, NOT aliases of the removed product material
 // API. prepare() below is the only conversion into native draw snapshots.
 struct Material {
-    float roughness{.65f}, metallic{};
+    float roughness{.65f};
+    float metallic{};
     std::array<float, 3> emissive{};
 };
 struct MeshInstance {

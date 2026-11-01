@@ -55,7 +55,8 @@ Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMe
     auto& runtime = world.runtime();
     struct Construction {
         Runtime& runtime;
-        ObjectRoot entity, component;
+        ObjectRoot entity;
+        ObjectRoot component;
         ~Construction() {
             // The graph is unpublished. Either destruction entry also handles
             // ordinary strong-reference cycles; no partial factory result escapes.

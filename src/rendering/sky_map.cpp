@@ -20,9 +20,13 @@ std::uint16_t half_bits(float value) noexcept {
 
 // D3D face selection, including its Z, Y, X precedence on ties.
 std::size_t cube_texel(double x, double y, double z) noexcept {
-    const double ax = std::abs(x), ay = std::abs(y), az = std::abs(z);
+    const double ax = std::abs(x);
+    const double ay = std::abs(y);
+    const double az = std::abs(z);
     std::size_t face;
-    double sc, tc, major;
+    double sc;
+    double tc;
+    double major;
     if (ax > ay && ax > az) {
         face = x >= 0 ? 0 : 1;
         major = ax;
@@ -58,13 +62,15 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
             throw std::invalid_argument("Sky map radiance must be finite, non-negative and at most 2^32 per channel.");
     constexpr double pi = std::numbers::pi;
     const auto texel_direction = [](double u, double v) {
-        const double longitude = 2 * pi * (u - .5), latitude = pi * (.5 - v);
+        const double longitude = 2 * pi * (u - .5);
+        const double latitude = pi * (.5 - v);
         return std::array<double, 3>{std::sin(longitude) * std::cos(latitude), std::sin(latitude),
                                      std::cos(longitude) * std::cos(latitude)};
     };
 
     std::array<double, 3> sum{};
-    double total = 0, brightest = -1;
+    double total = 0;
+    double brightest = -1;
     for (std::uint32_t y = 0; y < height; ++y) {
         const double solid_angle =
             2 * pi / width * (std::sin(pi * (.5 - double(y) / height)) - std::sin(pi * (.5 - double(y + 1) / height)));
@@ -93,17 +99,21 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
     // Splat sub-texels of at most 0.5 degrees so every cube texel (at least ~16 degrees)
     // receives many samples. Normalizing by the sampled area reproduces constant maps
     // exactly; a texel's sampled area differs from its solid angle by <1%.
-    const std::uint32_t split = std::max<std::uint32_t>(1, (720 + width - 1) / width), columns = width * split,
-                        rows = height * split;
+    const std::uint32_t split = std::max<std::uint32_t>(1, (720 + width - 1) / width);
+    const std::uint32_t columns = width * split;
+    const std::uint32_t rows = height * split;
     std::vector<double> splat(std::size_t(6) * cube_size * cube_size * 4);
-    std::vector<double> column_sin(columns), column_cos(columns);
+    std::vector<double> column_sin(columns);
+    std::vector<double> column_cos(columns);
     for (std::uint32_t x = 0; x < columns; ++x) {
         const double longitude = 2 * pi * ((x + .5) / columns - .5);
         column_sin[x] = std::sin(longitude);
         column_cos[x] = std::cos(longitude);
     }
     for (std::uint32_t y = 0; y < rows; ++y) {
-        const double latitude = pi * (.5 - (y + .5) / rows), up = std::sin(latitude), across = std::cos(latitude);
+        const double latitude = pi * (.5 - (y + .5) / rows);
+        const double up = std::sin(latitude);
+        const double across = std::cos(latitude);
         const double solid_angle =
             2 * pi / columns * (std::sin(pi * (.5 - double(y) / rows)) - std::sin(pi * (.5 - double(y + 1) / rows)));
         const float* source = &rgb[std::size_t(y / split) * width * 3];
@@ -176,7 +186,8 @@ SkyMapRef decode_radiance_hdr(std::string_view bytes) {
         require(!entry.starts_with("FORMAT=") || entry == "FORMAT=32-bit_rle_rgbe",
                 "Radiance HDR must use the 32-bit_rle_rgbe format.");
     const auto resolution = line();
-    std::uint32_t width{}, height{};
+    std::uint32_t width{};
+    std::uint32_t height{};
     {
         const char* cursor = resolution.data();
         const char* const end = cursor + resolution.size();
@@ -209,7 +220,8 @@ SkyMapRef decode_radiance_hdr(std::string_view bytes) {
         if (width >= 8 && width < 32768 && bytes.size() - at >= 4 && bytes[at] == 2 && bytes[at + 1] == 2 &&
             !(bytes[at + 2] & 0x80)) {
             at += 2;
-            const std::uint32_t high = byte(), low = byte();
+            const std::uint32_t high = byte();
+            const std::uint32_t low = byte();
             require((high << 8 | low) == width, "Radiance HDR scanline width does not match the header.");
             for (std::size_t channel = 0; channel < 4; ++channel)
                 for (std::size_t x = 0; x < width;) {

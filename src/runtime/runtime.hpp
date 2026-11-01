@@ -52,7 +52,9 @@ enum class ErrorCode {
 struct SourceLocation {
     std::string path;
     std::uint64_t version{};
-    std::size_t offset{}, line{1}, column{1};
+    std::size_t offset{};
+    std::size_t line{1};
+    std::size_t column{1};
     // Optional original absolute disk path. Only a saved-file snapshot supplies
     // this association, in which case version is the saved-byte content hash.
     // Virtual/request-local versions have no implied disk identity.
@@ -524,7 +526,10 @@ struct NativeLayout {
 // editors. Hard bounds are enforced by every Runtime write: values clamp to the closed
 // range, and NaN/Inf are rejected before any byte changes.
 struct FieldRange {
-    std::optional<Scalar> ui_min{}, ui_max{}, hard_min{}, hard_max{};
+    std::optional<Scalar> ui_min{};
+    std::optional<Scalar> ui_max{};
+    std::optional<Scalar> hard_min{};
+    std::optional<Scalar> hard_max{};
     [[nodiscard]] bool constrains() const noexcept { return hard_min || hard_max; }
     bool operator==(const FieldRange&) const = default;
 };
@@ -548,7 +553,8 @@ struct FieldDefinition {
     std::vector<Scalar> default_leaves{};
     // Optional presentation text; never part of field identity or value layout.
     // Empty text leaves display-name/group fallback to the consumer.
-    std::string label{}, category{};
+    std::string label{};
+    std::string category{};
     // Owned UTF-8 help text; publication normalizes CRLF/CR to LF.
     // Empty means no description. Only LF and tab are permitted controls.
     std::string description{};
@@ -596,7 +602,9 @@ struct FieldInfo {
     // The defined leaves; an enum's leaf is published as its EnumValue.
     std::vector<Scalar> default_leaves{};
     // Owned by the type descriptor, including inherited field copies.
-    std::string label{}, category{}, description{};
+    std::string label{};
+    std::string category{};
+    std::string description{};
     FieldRange range{};
 };
 

@@ -255,8 +255,8 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
     const auto target = resolve(target_relative);
     if (!target)
         return std::unexpected(target.error());
-    const auto native_source = platform::windows_file_path(*source),
-               native_target = platform::windows_file_path(*target);
+    const auto native_source = platform::windows_file_path(*source);
+    const auto native_target = platform::windows_file_path(*target);
     std::error_code error;
     if (!std::filesystem::exists(native_source, error))
         return failure("The asset no longer exists on disk.");
@@ -406,7 +406,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         // A read-only scan cannot create unrelated sidecars during a failed import.
         const auto catalog = take(scan_entries(false));
         const auto same_path = [](const std::filesystem::path& a, const std::filesystem::path& b) {
-            const auto left = a.lexically_normal().generic_wstring(), right = b.lexically_normal().generic_wstring();
+            const auto left = a.lexically_normal().generic_wstring();
+            const auto right = b.lexically_normal().generic_wstring();
             return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
         };
         const auto file_entry = [&](const std::filesystem::path& path) -> const assets::ProjectEntry* {
@@ -428,7 +429,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             relative /= source.stem();
         auto target_relative = relative / source.filename();
         std::string resource = requested.empty() ? "project/" + identity() : requested;
-        Json metadata = Json::object(), defaults = Json::object();
+        Json metadata = Json::object();
+        Json defaults = Json::object();
         std::vector<std::filesystem::path> owned;
         std::string dependency_error;
         if (!requested.empty()) {
@@ -530,7 +532,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         }
         assets::Reader current = assets_;
         take(current.publish(catalog));
-        std::set<std::string> returned_materials, slots;
+        std::set<std::string> returned_materials;
+        std::set<std::string> slots;
         std::vector<std::wstring> names;
         for (const auto& entry : catalog)
             if (same_path(entry.path.parent_path(), relative / "Materials"))

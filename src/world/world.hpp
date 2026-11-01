@@ -174,9 +174,13 @@ public:
 
 using FieldPath = std::vector<FieldId>;
 struct Types {
-    TypeId entity, component;
-    TypeId vector3, quaternion;
-    TypeId primitive_component, collision_component, spatial_component;
+    TypeId entity;
+    TypeId component;
+    TypeId vector3;
+    TypeId quaternion;
+    TypeId primitive_component;
+    TypeId collision_component;
+    TypeId spatial_component;
     std::array<std::array<FieldId, 2>, 3> position_fields;
     std::array<std::array<FieldId, 2>, 4> rotation_fields;
     std::array<std::array<FieldId, 2>, 3> scale_fields;
@@ -357,7 +361,8 @@ struct CapabilityId {
 };
 using CapabilityPredicate = std::function<Result<bool>(Runtime&, ObjectId component)>;
 struct CapabilityMember {
-    ObjectId entity, component;
+    ObjectId entity;
+    ObjectId component;
     bool active{}; // Enabled with an effectively enabled owner.
 };
 // False for failures of the World or Runtime itself (busy/reentry, code
@@ -381,7 +386,8 @@ public:
         std::function<Result<void>(Runtime&, ObjectId)> begin{};
         std::function<Result<void>(Runtime&, ObjectId, float)> tick{}; // pre_physics
         std::function<Result<void>(Runtime&, ObjectId)> end{};
-        std::function<Result<void>(Runtime&, ObjectId, float)> post_physics_tick{}, late_tick{};
+        std::function<Result<void>(Runtime&, ObjectId, float)> post_physics_tick{};
+        std::function<Result<void>(Runtime&, ObjectId, float)> late_tick{};
     };
     using LifecycleObserver = std::function<Result<void>(World&, Lifecycle, ObjectId)>;
     using TaskStart = std::function<Result<Coroutine>(Runtime&, ObjectId)>;
@@ -526,7 +532,8 @@ public:
     // value when it fails. Runtime writes outside World are not admitted.
     // owner is the proposed Entity, even before an incoming component is attached.
     struct AdmissionCandidate {
-        ObjectId component, owner;
+        ObjectId component;
+        ObjectId owner;
     };
     using Admission = std::function<Result<void>(const World&, std::span<const AdmissionCandidate> candidates)>;
     [[nodiscard]] Result<void> add_admission(TypeId component_type, Admission);

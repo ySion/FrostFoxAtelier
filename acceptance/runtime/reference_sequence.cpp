@@ -11,14 +11,16 @@ using atelier::acceptance::inheritance::require;
 using atelier::acceptance::inheritance::collect;
 using atelier::acceptance::inheritance::Prefix;
 struct Element {
-    ReferenceSlot weak_link, strong_link;
+    ReferenceSlot weak_link;
+    ReferenceSlot strong_link;
     float value{};
 };
 struct ElementDerived : Element {
     float extra{};
 };
 struct Holder {
-    ReferenceSequence items, hidden;
+    ReferenceSequence items;
+    ReferenceSequence hidden;
     ReferenceSlot tail;
     float value{};
 };
@@ -26,7 +28,12 @@ struct HolderDerived : Prefix, Holder {
     float extra{};
 };
 struct Types {
-    TypeId element, derived, holder, holder_derived, mixed, described;
+    TypeId element;
+    TypeId derived;
+    TypeId holder;
+    TypeId holder_derived;
+    TypeId mixed;
+    TypeId described;
 };
 
 Types publish(Runtime& runtime) {
@@ -69,7 +76,8 @@ void splice(Runtime& runtime, const ReferenceField& field, std::size_t first, st
     take(runtime.apply_reference_changes(changes));
 }
 void graph_and_batch(TypeId Types::* holder_kind) {
-    Runtime runtime, other;
+    Runtime runtime;
+    Runtime other;
     const auto types = publish(runtime);
     const auto holder_type = types.*holder_kind;
     auto holder = take(runtime.create(holder_type));
@@ -77,7 +85,8 @@ void graph_and_batch(TypeId Types::* holder_kind) {
     const auto items = take(runtime.reference_field(holder.id(), items_id));
     const auto tail = take(runtime.find_field(holder_type, "tail"));
     reject(runtime.read_reference(holder.id(), items_id), ErrorCode::type_mismatch);
-    auto first = take(runtime.create(types.derived)), second = take(runtime.create(types.derived));
+    auto first = take(runtime.create(types.derived));
+    auto second = take(runtime.create(types.derived));
     const std::array incoming{first.reference(), second.reference()};
     take(runtime.with_native<Element>(first.id(), [&](Element& a) -> Result<void> {
         return runtime.with_native<Element>(second.id(), [&](Element& b) -> Result<void> {
@@ -141,7 +150,9 @@ void graph_and_batch(TypeId Types::* holder_kind) {
                     return {};
                 }}));
     require(enumerated == 2, "Sequence enumeration lost elements.");
-    const auto id = holder.id(), a_id = first.id(), b_id = second.id();
+    const auto id = holder.id();
+    const auto a_id = first.id();
+    const auto b_id = second.id();
     auto tail_object = take(runtime.create(types.derived));
     take(runtime.write_reference(id, tail, tail_object.reference()));
     first.reset();

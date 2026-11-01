@@ -1247,8 +1247,9 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
                 return i;
         return {};
     };
-    const auto position = match(types().position_fields), rotation = match(types().rotation_fields),
-               scale = match(types().scale_fields);
+    const auto position = match(types().position_fields);
+    const auto rotation = match(types().rotation_fields);
+    const auto scale = match(types().scale_fields);
     if (*transform && (position || rotation || scale)) {
         auto current = read_transform(runtime(), object);
         if (!current)

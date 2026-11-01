@@ -55,8 +55,8 @@ std::uint32_t TextEdit::line_start(std::size_t row) const noexcept {
 std::wstring_view TextEdit::line(std::size_t row) const noexcept {
     if (row >= lines_.size())
         return {};
-    const auto start = lines_[row],
-               end = row + 1 < lines_.size() ? lines_[row + 1] - 1 : static_cast<std::uint32_t>(current_.text.size());
+    const auto start = lines_[row];
+    const auto end = row + 1 < lines_.size() ? lines_[row + 1] - 1 : static_cast<std::uint32_t>(current_.text.size());
     return std::wstring_view(current_.text).substr(start, end - start);
 }
 TextPosition TextEdit::snap(std::uint32_t offset, bool trailing) const noexcept {
@@ -91,7 +91,8 @@ bool TextEdit::select_all() {
 void TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view inserted) {
     // Re-segment only the touched logical lines. Newlines isolate grapheme
     // clusters; unchanged suffix offsets need a shift, not another ICU scan.
-    const auto start = line_start(line_at(first)), end = line_start(line_at(last) + 1);
+    const auto start = line_start(line_at(first));
+    const auto end = line_start(line_at(last) + 1);
     auto segment = current_.text.substr(start, first - start);
     segment.append(inserted);
     segment.append(current_.text, last, end - last);
@@ -179,8 +180,8 @@ TextEdit::Change TextEdit::replace_range(std::uint32_t first, std::uint32_t last
     return Change::text;
 }
 TextEdit::Change TextEdit::erase(bool backwards) {
-    auto first = std::min(current_.caret.offset, current_.anchor.offset),
-         last = std::max(current_.caret.offset, current_.anchor.offset);
+    auto first = std::min(current_.caret.offset, current_.anchor.offset);
+    auto last = std::max(current_.caret.offset, current_.anchor.offset);
     if (first == last) {
         auto at = std::lower_bound(boundaries_.begin(), boundaries_.end(), first);
         if (backwards) {

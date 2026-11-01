@@ -16,10 +16,12 @@ struct TextFailure final : std::exception {
 std::uint64_t new_identity();
 struct RasterText {
     std::shared_ptr<const Coverage> coverage;
-    float left{}, top{};
+    float left{};
+    float top{};
 };
 struct TextKey {
-    std::uint64_t owner{}, key{};
+    std::uint64_t owner{};
+    std::uint64_t key{};
     bool header{};
     TextKey(std::uint64_t value) : key(value) {}
     TextKey(std::uint64_t owner_value, std::uint64_t value, bool is_header)
@@ -27,8 +29,13 @@ struct TextKey {
     auto operator<=>(const TextKey&) const = default;
 };
 struct TextStatistics {
-    std::uint64_t measure_calls{}, text_layouts{}, rasterizations{}, raster_bytes{}, coverage_cache_hits{};
-    std::uint64_t live_coverages{}, live_coverage_bytes{};
+    std::uint64_t measure_calls{};
+    std::uint64_t text_layouts{};
+    std::uint64_t rasterizations{};
+    std::uint64_t raster_bytes{};
+    std::uint64_t coverage_cache_hits{};
+    std::uint64_t live_coverages{};
+    std::uint64_t live_coverage_bytes{};
 };
 
 // Immutable paragraph geometry retained by accepted frames. Native types stay private.

@@ -1,6 +1,12 @@
 // Private validation and state resolution shared by measurement and painting.
 struct VisualState {
-    bool enabled{true}, hover{}, pressed{}, focus{}, selected{}, invalid{}, modified{};
+    bool enabled{true};
+    bool hover{};
+    bool pressed{};
+    bool focus{};
+    bool selected{};
+    bool invalid{};
+    bool modified{};
     bool operator==(const VisualState&) const = default;
 };
 bool valid_style(const Style& style) {
@@ -69,8 +75,8 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
     const bool button = kind == ControlKind::button || kind == ControlKind::combo || kind == ControlKind::tab;
     const bool item = kind == ControlKind::item || kind == ControlKind::tree_item || kind == ControlKind::menu_item;
     const bool toggle = kind == ControlKind::checkbox || kind == ControlKind::foldout;
-    const bool number = kind == ControlKind::number || kind == ControlKind::text_edit,
-               splitter = kind == ControlKind::splitter;
+    const bool number = kind == ControlKind::number || kind == ControlKind::text_edit;
+    const bool splitter = kind == ControlKind::splitter;
     if (button || item || number || toggle)
         value.text_vertical_align = TextVerticalAlign::center;
     if (button)

@@ -104,7 +104,8 @@ void audit_selection_work(Fixture& f) {
 
 void audit_surface_history(Fixture& f) {
     const Room defaults;
-    constexpr std::uint64_t front_key = 0x100000007ull, back_key = 0x200000007ull;
+    constexpr std::uint64_t front_key = 0x100000007ull;
+    constexpr std::uint64_t back_key = 0x200000007ull;
     f.frame.view = {};
     f.frame.view.shading = render::Shading::scene_lit;
     auto& options = f.frame.view.lit;
@@ -142,8 +143,9 @@ void audit_surface_history(Fixture& f) {
     f.frame.camera_cut = true;
     const auto clean = f.capture("audit-di-high-key-clean");
     check(revealed.depth == clean.depth, "surface identity isolation and its reset frame observe identical geometry");
-    const auto old_color = mean_rgb(before, roi), new_color = mean_rgb(revealed, roi),
-               clean_color = mean_rgb(clean, roi);
+    const auto old_color = mean_rgb(before, roi);
+    const auto new_color = mean_rgb(revealed, roi);
+    const auto clean_color = mean_rgb(clean, roi);
     std::printf("SceneLit high-key direct blue: revealed=%.3f clean=%.3f; old red=%.3f\n", new_color[2], clean_color[2],
                 old_color[0]);
     check(old_color[0] > 30 && clean_color[2] > 30,

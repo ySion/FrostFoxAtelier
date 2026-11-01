@@ -32,7 +32,8 @@ void take(Result<void> result) {
 
 // Real owned native resources exercise Array's copy failure and over-aligned storage.
 struct alignas(64) Resource {
-    static inline int live{}, copies_until_failure = -1;
+    static inline int live{};
+    static inline int copies_until_failure = -1;
     std::unique_ptr<int> value;
     explicit Resource(int number = 0) : value(std::make_unique<int>(number)) { ++live; }
     Resource(const Resource& other) {
@@ -58,7 +59,8 @@ struct alignas(64) Resource {
 // These ordinary value types expose constructor/assignment events selected by
 // C++ overload resolution, despite having a trivially copyable representation.
 struct SelectedOperations {
-    static inline int moves{}, assignments{};
+    static inline int moves{};
+    static inline int assignments{};
     int value;
     explicit SelectedOperations(int number) : value(number) {}
     SelectedOperations(const SelectedOperations&) = default;

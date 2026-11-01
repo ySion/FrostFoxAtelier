@@ -39,10 +39,14 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
         POINT point{static_cast<LONG>(item->bounds.x + item->bounds.width * .5f),
                     static_cast<LONG>(item->bounds.y + item->bounds.height * .5f)};
         MapWindowPoints(app.menu_window(), owner, &point, 1);
-        bool found{}, responsive{}, closed{}, captured{};
+        bool found{};
+        bool responsive{};
+        bool closed{};
+        bool captured{};
         std::jthread probe([&](std::stop_token stop) {
             struct Lookup {
-                HWND owner{}, dialog{};
+                HWND owner{};
+                HWND dialog{};
             } lookup{owner};
             const auto deadline = GetTickCount64() + 10000;
             while (!stop.stop_requested() && GetTickCount64() < deadline && !lookup.dialog) {

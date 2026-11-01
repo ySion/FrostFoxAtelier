@@ -18,7 +18,8 @@ void flex_allocation_and_distribution() {
                 close(box(view, children[2]).width, 30),
             "Flex changed Expand saturation 120/150/30");
     accepted(document.remove(children[2]));
-    auto first = NodeInput::box(1, 10), second = first;
+    auto first = NodeInput::box(1, 10);
+    auto second = first;
     first.width = Axis::flex(Basis::fixed(200), 1, 1);
     second.width = Axis::flex(Basis::fixed(100), 1, 1);
     accepted(document.update(children[0], first));
@@ -51,7 +52,8 @@ void flex_allocation_and_distribution() {
     root.flow->align_items = Alignment::fit(1);
     struct Placement {
         Distribution distribution;
-        float first, second;
+        float first;
+        float second;
     };
     const std::array placements{Placement{Distribution::start, 0, 30},
                                 Placement{Distribution::center, 25, 55},
@@ -108,7 +110,8 @@ void flex_wrapping_and_alignment() {
             "Flex basis packing or inter-line gap");
     struct Lines {
         Distribution distribution;
-        float first, second;
+        float first;
+        float second;
     };
     const std::array lines{Lines{Distribution::start, 0, 30},
                            Lines{Distribution::center, 35, 65},
@@ -236,11 +239,13 @@ void flex_real_text_baseline() {
     natural_root.gap = 4;
     natural_root.flow = FlexSpec{};
     accepted(content_basis.set_root(natural_root));
-    auto natural_a = NodeInput::measured(1, 2), natural_b = NodeInput::measured(2);
+    auto natural_a = NodeInput::measured(1, 2);
+    auto natural_b = NodeInput::measured(2);
     natural_a.width = natural_b.width = Axis::flex(Basis::content(), 1, 1, 20);
     const auto natural_id_a = accepted(content_basis.create(content_basis.root(), natural_a));
     const auto natural_id_b = accepted(content_basis.create(content_basis.root(), natural_b));
-    const auto width_a = provider.fresh(1, {}).width, width_b = provider.fresh(2, {}).width;
+    const auto width_a = provider.fresh(1, {}).width;
+    const auto width_b = provider.fresh(2, {}).width;
     const auto available = width_a + width_b + 104;
     view = accepted(content_basis.compute({available, 120}, provider.epoch));
     require(close(box(view, natural_id_a).width, width_a + 50) && close(box(view, natural_id_b).width, width_b + 50),
@@ -553,7 +558,11 @@ struct FlexGridEditorScene {
     TextProvider provider;
     LayoutDocument document{TextProvider::measure, &provider, {256, 10, 128, 8192}};
     ComputeCosts compute_costs;
-    LayoutNodeId shell, toolbar, inspector, help, status;
+    LayoutNodeId shell;
+    LayoutNodeId toolbar;
+    LayoutNodeId inspector;
+    LayoutNodeId help;
+    LayoutNodeId status;
     std::vector<LayoutNodeId> values;
     std::shared_ptr<const TextFrame> published;
     Size viewport{1100, 700};
@@ -710,7 +719,8 @@ void timed_flex_grid(const char* name, FlexGridEditorScene& scene, Action action
     for (unsigned i = 0; i < 8; ++i)
         action(i);
     const auto before = scene.document.stats();
-    const auto compute_before = scene.compute_costs.total, measure_before = scene.compute_costs.measure;
+    const auto compute_before = scene.compute_costs.total;
+    const auto measure_before = scene.compute_costs.measure;
     const auto creates = scene.provider.creates;
     std::vector<double> times;
     times.reserve(samples);

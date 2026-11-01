@@ -31,8 +31,9 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     const auto stats_type = take(runtime.find_type("inspection.Stats"));
     const auto settings_type = take(runtime.find_type("inspection.Settings"));
     const auto enum_type = take(runtime.find_type("inspection.Mode"));
-    const std::array health{take(runtime.find_field(entity_type, "health"))},
-        energy{take(runtime.find_field(stats_type, "energy"))}, mode{take(runtime.find_field(settings_type, "mode"))};
+    const std::array health{take(runtime.find_field(entity_type, "health"))};
+    const std::array energy{take(runtime.find_field(stats_type, "energy"))};
+    const std::array mode{take(runtime.find_field(settings_type, "mode"))};
     changed(document.add_entity(entity_type));
     const auto entity = document.selection().entity;
     require(document.selection() == editor::Selection{entity, entity} && !take(world::has_transform(runtime, entity)),
@@ -74,7 +75,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         const auto* item = surface.presented()->find(key);
         require(item, "Object inspection has no accepted hit target.");
         const auto box = item->bounds;
-        const auto x = box.x + box.width * .65f, y = box.y + box.height * .5f;
+        const auto x = box.x + box.width * .65f;
+        const auto y = box.y + box.height * .5f;
         dispatch(surface.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y}));
         dispatch(surface.input({.kind = ui::EventKind::pointer_up, .x = x, .y = y}));
     };
@@ -103,7 +105,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
                 return control.key;
         return ui::ControlKey{};
     };
-    const auto entity_row = structure_key(entity), component_row = structure_key(stats);
+    const auto entity_row = structure_key(entity);
+    const auto component_row = structure_key(stats);
     const auto& tree_rows = surface.presented()->tree_rows;
     const auto entity_geometry = std::ranges::find(tree_rows, entity_row, &ui::TreeRowGeometry::key);
     const auto component_geometry = std::ranges::find(tree_rows, component_row, &ui::TreeRowGeometry::key);
@@ -216,7 +219,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         // Saved data the types cannot apply stays visible: placeholder titles, a Saved Data group,
         // a marked Scene Tree row and an undoable discard.
         auto altered = nlohmann::json::parse(saved);
-        bool renamed{}, extended{};
+        bool renamed{};
+        bool extended{};
         for (auto& item : altered["entities"])
             for (auto& component : item["components"]) {
                 if (component["type"] == "inspection.Stats") {
@@ -232,7 +236,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         auto kept = take(editor::Session::deserialize(altered.dump(), project, prepare));
         auto& kept_runtime = kept->world().runtime();
         const auto kept_settings = take(kept_runtime.find_type("inspection.Settings"));
-        ObjectId owner, extra;
+        ObjectId owner;
+        ObjectId extra;
         for (const auto& member : take(kept->world().members()))
             for (const auto& component : take(world::components(kept_runtime, member.id())))
                 if (take(kept_runtime.type_of(component.id())) == kept_settings) {

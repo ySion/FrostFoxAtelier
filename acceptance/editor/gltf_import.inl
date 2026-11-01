@@ -342,14 +342,15 @@ void verify_gltf_import() {
         require(at != mesh.materials.end(), "A mesh slot has no default material.");
         return at->key;
     };
-    const auto opaque_key = default_of(asset, "opaque"), leaf_key = default_of(asset, "leaf");
+    const auto opaque_key = default_of(asset, "opaque");
+    const auto leaf_key = default_of(asset, "leaf");
     require(asset.materials.size() == 2 &&
                 listed(project, opaque_key).path == fs::path("Content/Meshes/scene/Materials/opaque.material") &&
                 listed(project, leaf_key).path == fs::path("Content/Meshes/scene/Materials/leaf.material"),
             "Import Mesh did not publish one material per slot as the mesh's defaults.");
     {
-        const auto opaque_asset = take(project.assets().material(opaque_key)),
-                   leaf_asset = take(project.assets().material(leaf_key));
+        const auto opaque_asset = take(project.assets().material(opaque_key));
+        const auto leaf_asset = take(project.assets().material(leaf_key));
         const auto& opaque = std::get<assets::MaterialInstanceAsset>(opaque_asset.author);
         const auto& leaf = std::get<assets::MaterialInstanceAsset>(leaf_asset.author);
         const auto file = [&](const std::string& texture) { return listed(project, texture).path.filename(); };
@@ -482,7 +483,8 @@ void verify_gltf_import() {
                 return i;
         throw std::runtime_error("Missing glTF slot.");
     };
-    const auto opaque_slot = index("opaque"), leaf_slot = index("leaf");
+    const auto opaque_slot = index("opaque");
+    const auto leaf_slot = index("leaf");
     const auto opaque_root = take(document.material_resource(project.assets(), opaque_key));
     const auto captured = [](editor::Session& session, const ObjectRoot& root) {
         return take(material::capture_program(session.world().runtime(), root.id()));

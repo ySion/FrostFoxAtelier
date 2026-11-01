@@ -150,7 +150,9 @@ uint run(uint input) {
 )",
             {.debugging = true}, "run");
     std::uint64_t caller_id{};
-    bool entered_leaf{}, returned_to_caller{}, initialized_result{};
+    bool entered_leaf{};
+    bool returned_to_caller{};
+    bool initialized_result{};
     std::size_t into_stops{};
     Debugger into([&](const DebugSnapshot& stop) {
         require(++into_stops < 64 && !stop.frames.empty(), "Stepping did not make bounded progress.");
@@ -201,8 +203,10 @@ uint run(uint input) {
     return i;
 }
 )");
-    std::size_t loop_stops{}, all_stops{};
-    bool scope_available{}, scope_finished{};
+    std::size_t loop_stops{};
+    std::size_t all_stops{};
+    bool scope_available{};
+    bool scope_finished{};
     Debugger loop([&](const DebugSnapshot& stop) {
         require(++all_stops < 128 && stop.frames.size() == 1, "Loop stepping failed to advance.");
         const auto& frame = stop.frames[0];
@@ -294,7 +298,8 @@ DebugSnapshot verify_inspection_and_previews() {
         values.add(static_cast<float>(i + 1));
     String text("abcdefghijklmnop");
     const std::array args{Argument::borrow(std::as_const(values)), Argument::borrow(std::as_const(text))};
-    bool inspected{}, entered_native{};
+    bool inspected{};
+    bool entered_native{};
     DebugSnapshot retained;
     Debugger debugger(
         [&](const DebugSnapshot& stop) {
@@ -479,7 +484,8 @@ async uint run(uint value) {
     Coroutine* current{};
     std::vector<std::uint64_t> activations;
     std::uint64_t version{};
-    bool saw_yield{}, crossed_yield{};
+    bool saw_yield{};
+    bool crossed_yield{};
     std::size_t stops{};
     Debugger debugger([&](const DebugSnapshot& stop) {
         require(++stops < 64 && current && current->state() == CoroutineState::running &&

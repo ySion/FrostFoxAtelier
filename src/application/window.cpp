@@ -19,7 +19,8 @@ DWORD native_error() {
 // BGRA plus a dark dilation keeps light strokes readable on any scene surface.
 HCURSOR tool_cursor(ui::Icon icon, UINT dpi) {
     const auto size = std::clamp(MulDiv(32, static_cast<int>(dpi), 96), 16, 256);
-    const auto glyph = size * 3 / 4, padding = (size - glyph) / 2;
+    const auto glyph = size * 3 / 4;
+    const auto padding = (size - glyph) / 2;
     std::vector<std::uint8_t> alpha(static_cast<std::size_t>(glyph * glyph));
     ui::raster_icon(icon, static_cast<std::uint32_t>(glyph), alpha);
     std::vector<std::uint32_t> pixels(static_cast<std::size_t>(size * size));
@@ -38,7 +39,8 @@ HCURSOR tool_cursor(ui::Icon icon, UINT dpi) {
                     if (dx * dx + dy * dy <= radius * radius + 1)
                         outline = std::max(outline, sample(x + dx, y + dy));
             const auto shadow = outline * (255 - ink) / 255;
-            const auto opacity = ink + shadow, color = (240 * ink + 18 * shadow) / 255;
+            const auto opacity = ink + shadow;
+            const auto color = (240 * ink + 18 * shadow) / 255;
             pixels[static_cast<std::size_t>(y * size + x)] = (opacity << 24) | (color << 16) | (color << 8) | color;
         }
     BITMAPINFO info{};
@@ -193,7 +195,8 @@ void Window::cursor(ui::Cursor intent) {
             adjustment_cursor_ = nullptr;
             cursor_size_ = size;
             const int stride = ((size + 15) / 16) * 2;
-            std::vector<BYTE> mask(static_cast<std::size_t>(stride * size), 0xff), ink(mask.size(), 0);
+            std::vector<BYTE> mask(static_cast<std::size_t>(stride * size), 0xff);
+            std::vector<BYTE> ink(mask.size(), 0);
             // Original adjustment glyph: opposing arrows with a central fine-step notch.
             const auto shape = [](int x, int y) {
                 return (y == 16 && x >= 4 && x <= 27) || (x >= 4 && x <= 9 && std::abs(y - 16) == x - 4) ||
@@ -201,7 +204,8 @@ void Window::cursor(ui::Cursor intent) {
             };
             for (int y = 0; y < size; ++y)
                 for (int x = 0; x < size; ++x) {
-                    const int sx = x * 32 / size, sy = y * 32 / size;
+                    const int sx = x * 32 / size;
+                    const int sy = y * 32 / size;
                     bool edge = false;
                     for (int dy = -1; dy <= 1; ++dy)
                         for (int dx = -1; dx <= 1; ++dx)

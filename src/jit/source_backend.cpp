@@ -60,7 +60,11 @@ struct DiagnosticCatalog {
     std::vector<std::uint32_t> debug_sites;
 };
 struct Artifacts {
-    std::string target_triple, cpu_features, original_ir, optimized_ir, assembly;
+    std::string target_triple;
+    std::string cpu_features;
+    std::string original_ir;
+    std::string optimized_ir;
+    std::string assembly;
     std::vector<std::byte> object_code;
 };
 struct CompiledBusiness {
@@ -96,7 +100,8 @@ struct CompiledBusiness {
     std::shared_ptr<DiagnosticCatalog> diagnostics;
     std::shared_ptr<Artifacts> artifacts;
     std::string entry_symbol;
-    CoroutineAction resume{}, destroy{};
+    CoroutineAction resume{};
+    CoroutineAction destroy{};
 };
 
 void* allocate_coroutine(std::uint64_t size, std::uint32_t alignment) noexcept {
@@ -1016,7 +1021,8 @@ private:
         ir_.SetInsertPoint(next);
     }
     struct Sequence {
-        llvm::Value *data{}, *size{};
+        llvm::Value* data{};
+        llvm::Value* size{};
     };
     Sequence sequence_view(llvm::Value* value, language::ValueType type) {
         const auto& layout = source_.value_layouts.at(type.type_index);
@@ -1672,7 +1678,9 @@ private:
     llvm::Module* module_;
     llvm::IRBuilder<> ir_;
     llvm::Function* entry_{};
-    llvm::Value *invocation_{}, *result_output_{}, *failure_output_{};
+    llvm::Value* invocation_{};
+    llvm::Value* result_output_{};
+    llvm::Value* failure_output_{};
     llvm::BasicBlock* failure_{};
     llvm::BasicBlock* finish_{};
     llvm::PHINode* failure_status_{};
@@ -1680,35 +1688,49 @@ private:
     // Failure edges are cold; without weights, block placement would make
     // each single-predecessor failure stub the fall-through.
     llvm::MDNode* failure_weights_{};
-    llvm::BasicBlock *coroutine_return_{}, *coroutine_final_{}, *coroutine_cancel_{}, *coroutine_free_{};
-    llvm::Value *coroutine_id_{}, *coroutine_handle_{}, *coroutine_alignment_{};
+    llvm::BasicBlock* coroutine_return_{};
+    llvm::BasicBlock* coroutine_final_{};
+    llvm::BasicBlock* coroutine_cancel_{};
+    llvm::BasicBlock* coroutine_free_{};
+    llvm::Value* coroutine_id_{};
+    llvm::Value* coroutine_handle_{};
+    llvm::Value* coroutine_alignment_{};
     llvm::StructType* abi_value_type_{};
     llvm::AllocaInst* call_arguments_{};
     llvm::AllocaInst* call_result_{};
     llvm::AllocaInst* float_result_{};
-    llvm::AllocaInst *double_result_{}, *source_result_{}, *call_math_result_{}, *math_field_result_{};
+    llvm::AllocaInst* double_result_{};
+    llvm::AllocaInst* source_result_{};
+    llvm::AllocaInst* call_math_result_{};
+    llvm::AllocaInst* math_field_result_{};
     llvm::AllocaInst* uint_result_{};
     llvm::AllocaInst* source_failure_{};
     std::vector<llvm::Value*> locals_;
     std::vector<llvm::AllocaInst*> source_value_results_;
     std::vector<OwnedValue> owned_;
-    std::vector<std::size_t> owned_local_slots_, expression_value_slots_, value_temporaries_;
+    std::vector<std::size_t> owned_local_slots_;
+    std::vector<std::size_t> expression_value_slots_;
+    std::vector<std::size_t> value_temporaries_;
     std::vector<std::vector<std::size_t>> argument_value_slots_;
     std::vector<Sequence> parameter_views_;
     std::vector<std::uint32_t> local_slots_;
     std::vector<std::uint32_t> temporary_slots_;
     std::vector<std::uint32_t> temporaries_;
     struct LoopTarget {
-        llvm::BasicBlock *end, *step;
+        llvm::BasicBlock* end;
+        llvm::BasicBlock* step;
         std::size_t scope_depth;
     };
     std::vector<LoopTarget> loops_;
     std::vector<language::NodeId> scopes_;
     std::uint32_t strong_slots_{business_root_slots};
     std::uint32_t weak_slots_{};
-    const std::uint32_t first_strong_slot_, first_weak_slot_;
-    const bool public_entry_, protected_values_;
-    DiagnosticCatalog *diagnostics_{}, *catalog_{};
+    const std::uint32_t first_strong_slot_;
+    const std::uint32_t first_weak_slot_;
+    const bool public_entry_;
+    const bool protected_values_;
+    DiagnosticCatalog* diagnostics_{};
+    DiagnosticCatalog* catalog_{};
     bool debugging_{};
     std::uint32_t function_index_{};
     language::SourcePosition position_;
@@ -1716,16 +1738,39 @@ private:
     llvm::Value* trace_{};
     llvm::Value* borrow_active_{};
     std::uint32_t max_call_arguments_{};
-    bool has_call_result_{}, has_source_calls_{};
-    llvm::FunctionCallee begin_, create_, read_float_, write_float_, read_double_, write_double_, read_value_,
-        write_value_, read_uint_, write_uint_;
-    llvm::FunctionCallee read_bool_, write_bool_;
-    llvm::FunctionCallee call_, poll_, finish_call_, clear_, reference_, same_reference_;
-    llvm::FunctionCallee construct_value_, assign_value_, destroy_value_, mutate_sequence_;
-    llvm::FunctionCallee sample_texture_, sample_orientation_;
-    llvm::FunctionCallee debug_enter_, debug_point_, debug_leave_;
-    llvm::StructType *debug_frame_type_{}, *debug_local_type_{};
-    llvm::AllocaInst *debug_frame_{}, *debug_locals_{};
+    bool has_call_result_{};
+    bool has_source_calls_{};
+    llvm::FunctionCallee begin_;
+    llvm::FunctionCallee create_;
+    llvm::FunctionCallee read_float_;
+    llvm::FunctionCallee write_float_;
+    llvm::FunctionCallee read_double_;
+    llvm::FunctionCallee write_double_;
+    llvm::FunctionCallee read_value_;
+    llvm::FunctionCallee write_value_;
+    llvm::FunctionCallee read_uint_;
+    llvm::FunctionCallee write_uint_;
+    llvm::FunctionCallee read_bool_;
+    llvm::FunctionCallee write_bool_;
+    llvm::FunctionCallee call_;
+    llvm::FunctionCallee poll_;
+    llvm::FunctionCallee finish_call_;
+    llvm::FunctionCallee clear_;
+    llvm::FunctionCallee reference_;
+    llvm::FunctionCallee same_reference_;
+    llvm::FunctionCallee construct_value_;
+    llvm::FunctionCallee assign_value_;
+    llvm::FunctionCallee destroy_value_;
+    llvm::FunctionCallee mutate_sequence_;
+    llvm::FunctionCallee sample_texture_;
+    llvm::FunctionCallee sample_orientation_;
+    llvm::FunctionCallee debug_enter_;
+    llvm::FunctionCallee debug_point_;
+    llvm::FunctionCallee debug_leave_;
+    llvm::StructType* debug_frame_type_{};
+    llvm::StructType* debug_local_type_{};
+    llvm::AllocaInst* debug_frame_{};
+    llvm::AllocaInst* debug_locals_{};
 };
 
 llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Program& program, BusinessFrameLayout& layout,
@@ -2089,18 +2134,21 @@ struct BusinessCode {
     std::shared_ptr<CompiledBusiness> state;
 };
 struct MaterialCode {
-    BusinessCode shade, defaults;
+    BusinessCode shade;
+    BusinessCode defaults;
     std::string hlsl;
     std::vector<language::MaterialTextureInput> textures;
     std::vector<MaterialTextureInfo> texture_views;
-    std::uint32_t parameters{}, resources{UINT32_MAX};
+    std::uint32_t parameters{};
+    std::uint32_t resources{UINT32_MAX};
 };
 struct BusinessCoroutineState {
     std::shared_ptr<CompiledBusiness> code;
     std::vector<BusinessValue> arguments;
     void* handle{};
     std::uint64_t bits{};
-    std::uint32_t status{}, completed{};
+    std::uint32_t status{};
+    std::uint32_t completed{};
     BusinessFailure failure{};
     bool running{};
     ~BusinessCoroutineState() {

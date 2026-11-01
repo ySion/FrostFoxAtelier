@@ -26,7 +26,8 @@ template <Real T>
 struct BasicVector<T, 2> {
     using Scalar = T;
     static constexpr std::size_t dimensions = 2;
-    T x{}, y{};
+    T x{};
+    T y{};
     constexpr T& operator[](std::size_t i) noexcept {
         if (i == 0)
             return x;
@@ -47,7 +48,9 @@ template <Real T>
 struct BasicVector<T, 3> {
     using Scalar = T;
     static constexpr std::size_t dimensions = 3;
-    T x{}, y{}, z{};
+    T x{};
+    T y{};
+    T z{};
     constexpr T& operator[](std::size_t i) noexcept {
         if (i == 0)
             return x;
@@ -72,7 +75,10 @@ template <Real T>
 struct BasicVector<T, 4> {
     using Scalar = T;
     static constexpr std::size_t dimensions = 4;
-    T x{}, y{}, z{}, w{};
+    T x{};
+    T y{};
+    T z{};
+    T w{};
     constexpr T& operator[](std::size_t i) noexcept {
         if (i == 0)
             return x;
@@ -206,7 +212,10 @@ template <Real T, std::size_t N>
 template <Real T>
 struct BasicQuaternion {
     using Scalar = T;
-    T x{}, y{}, z{}, w{1};
+    T x{};
+    T y{};
+    T z{};
+    T w{1};
     constexpr bool operator==(const BasicQuaternion&) const = default;
 };
 template <Real T>
@@ -451,9 +460,15 @@ struct NormalTransform {
 enum class NormalTransformFailure { singular, unrepresentable };
 [[nodiscard]] inline std::expected<NormalTransform, NormalTransformFailure>
 normal_transform(const std::array<float, 9>& linear) noexcept {
-    const double a = linear[0], b = linear[1], c = linear[2];
-    const double d = linear[3], e = linear[4], f = linear[5];
-    const double g = linear[6], h = linear[7], i = linear[8];
+    const double a = linear[0];
+    const double b = linear[1];
+    const double c = linear[2];
+    const double d = linear[3];
+    const double e = linear[4];
+    const double f = linear[5];
+    const double g = linear[6];
+    const double h = linear[7];
+    const double i = linear[8];
     // Double intermediates avoid overflow/underflow for finite float entries.
     const std::array<double, 9> cofactors{e * i - f * h, f * g - d * i, d * h - e * g, c * h - b * i, a * i - c * g,
                                           b * g - a * h, b * f - c * e, c * d - a * f, a * e - b * d};

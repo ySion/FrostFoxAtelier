@@ -104,7 +104,10 @@ void parameter_fields(BusinessType type, const BusinessEnvironment& environment,
 }
 struct MaterialProgram::State {
     std::unique_ptr<MaterialCode, decltype(&atelier_destroy_material)> code{nullptr, atelier_destroy_material};
-    MaterialLayout context, output, parameters, resources;
+    MaterialLayout context;
+    MaterialLayout output;
+    MaterialLayout parameters;
+    MaterialLayout resources;
     std::vector<MaterialParameter> fields;
     std::vector<MaterialTextureInput> textures;
     std::vector<std::byte> defaults;
@@ -180,7 +183,10 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
     if (!finite_value(info.signature.parameters[0].type, info.environment, context.data()) ||
         !finite_value(info.signature.parameters[1].type, info.environment, parameters.data()))
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Material inputs must be finite values."});
-    atelier::detail::ValueStorage context_storage, parameter_storage, output_storage, resource_storage;
+    atelier::detail::ValueStorage context_storage;
+    atelier::detail::ValueStorage parameter_storage;
+    atelier::detail::ValueStorage output_storage;
+    atelier::detail::ValueStorage resource_storage;
     auto* context_data = context_storage.prepare(context.size(), state->context.alignment);
     auto* parameter_data = parameter_storage.prepare(parameters.size(), state->parameters.alignment);
     auto* output_data = output_storage.prepare(output.size(), state->output.alignment);
@@ -248,7 +254,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
         if (!publication)
             return fail(publication.error());
         const auto binding = bind_type(runtime, {}, (*publication)->catalog());
-        const auto context_type = value_kind(binding, context), output_type = value_kind(binding, output);
+        const auto context_type = value_kind(binding, context);
+        const auto output_type = value_kind(binding, output);
         const auto texture_type = value_kind(binding, texture_input);
         if (context_type.kind != ValueKind::record || output_type.kind != ValueKind::record ||
             texture_type.kind != ValueKind::record)

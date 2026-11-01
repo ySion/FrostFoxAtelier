@@ -45,7 +45,8 @@ void verify_ui_code_reuse() {
     const auto mapping =
         std::ranges::find_if(declaration.mappings, [](const auto& value) { return value.origin.line == 4; });
     require(mapping != declaration.mappings.end(), "Relocated dispatch has no current property mapping.");
-    std::size_t line = 1, column = 1;
+    std::size_t line = 1;
+    std::size_t column = 1;
     for (std::size_t i = 0; i < mapping->begin; ++i) {
         if (declaration.generated_source[i] == '\n') {
             ++line;
@@ -83,7 +84,8 @@ void verify_ui_code_reuse() {
 }
 
 struct UiReloadResources {
-    std::size_t private_bytes{}, executable_bytes{};
+    std::size_t private_bytes{};
+    std::size_t executable_bytes{};
 };
 UiReloadResources ui_reload_resources() {
     UiReloadResources result;
@@ -125,7 +127,8 @@ void profile_ui_reload(const std::filesystem::path& path) {
         << "round,phase,compile_ms,publish_ms,compiled,reused,scope_creations,scope_retirements,roots,live_objects,private_bytes,executable_committed_bytes\n";
     Runtime runtime;
     take(ui_language::register_types(runtime));
-    const auto baseline_roots = runtime.root_count(), baseline_live = runtime.live_objects();
+    const auto baseline_roots = runtime.root_count();
+    const auto baseline_live = runtime.live_objects();
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session surface(fonts);
     require(surface.set_surface({{640, 480}, 1, 1}).has_value(), "UI profile surface failed.");

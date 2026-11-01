@@ -49,7 +49,10 @@ struct EditorScene {
     LayoutDocument document{TextProvider::measure, &provider, {256, 6}};
     ComputeCosts compute_costs;
     VirtualInspector inspector;
-    LayoutNodeId inspector_host, hierarchy_group, canvas, status;
+    LayoutNodeId inspector_host;
+    LayoutNodeId hierarchy_group;
+    LayoutNodeId canvas;
+    LayoutNodeId status;
     float requested_width{420};
     std::optional<float> ghost_width;
     std::uint64_t commits{};
@@ -264,7 +267,8 @@ template <class Action>
 void timed_editor(const char* name, EditorScene& scene, Action action, unsigned samples = 80) {
     for (unsigned i = 0; i < 8; ++i)
         action(i);
-    const auto shell = scene.document.stats(), list = scene.inspector.document.stats();
+    const auto shell = scene.document.stats();
+    const auto list = scene.inspector.document.stats();
     const auto compute_before = scene.compute_costs.total + scene.inspector.compute_costs.total;
     const auto measure_before = scene.compute_costs.measure + scene.inspector.compute_costs.measure;
     const auto creates = scene.provider.creates + scene.inspector.provider.creates;
@@ -282,7 +286,8 @@ void timed_editor(const char* name, EditorScene& scene, Action action, unsigned 
     const auto compute_us = (scene.compute_costs.total + scene.inspector.compute_costs.total - compute_before) / 1000.0;
     const auto measure_us =
         (scene.compute_costs.measure + scene.inspector.compute_costs.measure - measure_before) / 1000.0;
-    const auto after_shell = scene.document.stats(), after_list = scene.inspector.document.stats();
+    const auto after_shell = scene.document.stats();
+    const auto after_list = scene.inspector.document.stats();
     std::sort(times.begin(), times.end());
     std::printf(
         "{\"kind\":\"editor\",\"scenario\":\"%s\",\"samples\":%u,\"median_us\":%.3f,\"p95_us\":%.3f,\"compute_mean_us\":%.3f,\"measure_in_compute_mean_us\":%.3f,\"compute_outside_measure_mean_us\":%.3f,\"consumer_mean_us\":%.3f,\"measure_calls\":%llu,\"node_visits\":%llu,\"paragraph_creates\":%llu,\"buffer_allocations\":%llu}\n",

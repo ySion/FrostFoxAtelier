@@ -33,7 +33,8 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
                     return error(ErrorCode::invalid_member, "Subtree has inconsistent World membership.");
             }
         }
-        std::size_t first{}, count{};
+        std::size_t first{};
+        std::size_t count{};
         std::vector<bool> before;
         if (data->world) {
             auto at = state.member(object);
@@ -90,7 +91,8 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         return std::unexpected(data.error());
     if (data->enabled == enabled)
         return Commit{};
-    bool registered{}, owner_enabled{};
+    bool registered{};
+    bool owner_enabled{};
     if (data->owner != ObjectId{}) {
         auto owner = state.composition_entity(data->owner);
         if (!owner)
@@ -519,7 +521,10 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
 
 std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
     struct PhaseMarkers {
-        const timing::Marker &phase, &tick, &commands, &flush;
+        const timing::Marker& phase;
+        const timing::Marker& tick;
+        const timing::Marker& commands;
+        const timing::Marker& flush;
     };
     static constexpr std::array<PhaseMarkers, 3> markers{
         {{phases::pre_physics, phases::pre_physics_tick, phases::pre_physics_commands, phases::pre_physics_flush},

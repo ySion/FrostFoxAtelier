@@ -102,7 +102,9 @@ void verify_runtime_math_precision() {
          std::move(owner),
          {"precision.Triple", TypeKind::record, {{"x", {f64}}, {"y", {f64}}, {"z", {f64}}}, {}, {}},
          {"precision.Described", TypeKind::object, {{"triple", {TypeReference{"precision.Triple"}}}}, {}, {}}}));
-    const auto owner_type = published[1], triple_type = published[2], described_type = published[3];
+    const auto owner_type = published[1];
+    const auto triple_type = published[2];
+    const auto described_type = published[3];
     SignatureDefinition plain_signature;
     plain_signature.parameters = {{triple_type}};
     const auto* triple_info = take(runtime.describe(triple_type));
@@ -235,8 +237,10 @@ void verify_runtime_math_precision() {
             "Mathematical value arguments did not snapshot independently from borrowed references.");
 
     const auto vector3 = take(runtime.native_type<math::Vector3>());
-    const math::Vector3 small_a{2, 3, 4}, small_c{5, 6, 7};
-    const math::Vector3d large_b{1.0 + amount, 2, 3}, large_d{4, 5.0 + amount, 6};
+    const math::Vector3 small_a{2, 3, 4};
+    const math::Vector3 small_c{5, 6, 7};
+    const math::Vector3d large_b{1.0 + amount, 2, 3};
+    const math::Vector3d large_d{4, 5.0 + amount, 6};
     // Packed copies use 216 bytes: float vectors leave a four-byte alignment gap
     // before double vectors. This crosses the inline boundary without 128-byte
     // padding per vector, and exercises both native invocation and snapshots.
@@ -265,7 +269,8 @@ void verify_runtime_math_precision() {
     take(runtime.write(described.id(), nested_path, Scalar{1.0 + amount}));
     require(std::get<double>(take(runtime.read(described.id(), nested_path))) == 1.0 + amount,
             "Nested described double field did not preserve precision.");
-    alignas(double) std::array<std::byte, 3 * sizeof(double)> source{}, destination{};
+    alignas(double) std::array<std::byte, 3 * sizeof(double)> source{};
+    alignas(double) std::array<std::byte, 3 * sizeof(double)> destination{};
     take(runtime.initialize_value(triple_type, source));
     const std::array expected{1.0 + amount, 0x1p40, -0x1p-40};
     std::memcpy(source.data(), expected.data(), source.size());

@@ -23,9 +23,12 @@ struct PlayChannel {
     virtual void service(editor::Session&, editor::Project&, const Report&) = 0;
 };
 struct RunOptions {
-    std::filesystem::path project, scene_snapshot, report;
+    std::filesystem::path project;
+    std::filesystem::path scene_snapshot;
+    std::filesystem::path report;
     HANDLE stop_event{}; // Inherited event; this process closes its own handle.
-    bool headless{}, preview_ui{};
+    bool headless{};
+    bool preview_ui{};
     // Stops the World at the first object failure (acceptance and CI) instead of isolating it.
     bool halt{};
     std::uint64_t frames{};

@@ -249,8 +249,8 @@ Result<void> ProjectCode::build(const Project& project) {
 bool ProjectCode::adds_behavior(const source::Program::Candidate& candidate) const {
     auto& runtime = world_.runtime();
     for (const auto& type : candidate.classes()) {
-        const auto entity = runtime.is_a(type.base, world_.types().entity),
-                   component = runtime.is_a(type.base, world_.types().component);
+        const auto entity = runtime.is_a(type.base, world_.types().entity);
+        const auto component = runtime.is_a(type.base, world_.types().component);
         if (!entity || !component || (!*entity && !*component))
             continue;
         for (const auto& entry : candidate.entries())
@@ -262,8 +262,8 @@ bool ProjectCode::adds_behavior(const source::Program::Candidate& candidate) con
 Result<void> ProjectCode::validate(const source::Program::Candidate& candidate) const {
     auto& runtime = world_.runtime();
     for (const auto& type : candidate.classes()) {
-        const auto entity = runtime.is_a(type.base, world_.types().entity),
-                   component = runtime.is_a(type.base, world_.types().component);
+        const auto entity = runtime.is_a(type.base, world_.types().entity);
+        const auto component = runtime.is_a(type.base, world_.types().component);
         if (!entity || !component)
             return fail("Cannot resolve a project class's published native base.");
     }

@@ -11,7 +11,10 @@ void boundaries(const fs::path& root) {
     options.categories = {{"acceptance.cpu", log::Severity::info}, {"acceptance.off", log::Severity::off}};
     auto run = start(root / "run", options);
 
-    unsigned categories{}, codes{}, contexts{}, arguments{};
+    unsigned categories{};
+    unsigned codes{};
+    unsigned contexts{};
+    unsigned arguments{};
     const auto category = [&] {
         ++categories;
         return "acceptance.filtered";

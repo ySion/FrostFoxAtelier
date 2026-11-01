@@ -97,7 +97,9 @@ inline std::string read_small(const std::filesystem::path& path, std::size_t max
     return result;
 }
 struct FileIdentity {
-    DWORD volume{}, high{}, low{};
+    DWORD volume{};
+    DWORD high{};
+    DWORD low{};
     bool operator==(const FileIdentity&) const = default;
 };
 inline FileIdentity file_identity(HANDLE handle) {

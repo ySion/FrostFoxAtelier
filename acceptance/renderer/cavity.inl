@@ -5,11 +5,13 @@ void cavity_cases(render::Renderer& renderer, Window& window, const std::filesys
     std::vector<geometry::Vertex> vertices;
     const auto fold = [&](float center, float sign) {
         for (float side : {-1.f, 1.f}) {
-            const float x0 = center + (side < 0 ? -.6f : 0), x1 = center + (side < 0 ? 0 : .6f);
+            const float x0 = center + (side < 0 ? -.6f : 0);
+            const float x1 = center + (side < 0 ? 0 : .6f);
             const auto z = [&](float x) { return 3 + sign * std::abs(x - center) * .7f; };
             const std::array<float, 3> n{sign * side * .7f, 0, -1};
             for (unsigned corner : std::array<unsigned, 6>{0, 1, 2, 0, 2, 3}) {
-                const float x = (corner == 1 || corner == 2) ? x1 : x0, y = corner >= 2 ? .8f : -.8f;
+                const float x = (corner == 1 || corner == 2) ? x1 : x0;
+                const float y = corner >= 2 ? .8f : -.8f;
                 vertices.push_back({{x, y, z(x)}, {n[0], n[1], n[2]}});
             }
         }
@@ -148,12 +150,16 @@ void cavity_cases(render::Renderer& renderer, Window& window, const std::filesys
     frame.view.cavity = {};
     // A compact real 3D scene complements the signed-fold measurements.
     std::vector<geometry::Vertex> sphere;
-    constexpr unsigned rings = 16, slices = 32;
+    constexpr unsigned rings = 16;
+    constexpr unsigned slices = 32;
     constexpr float pi = 3.141592653589793f;
     const auto vertex = [&](unsigned row, unsigned column) {
-        const float latitude = pi * (float(row) / rings - .5f), longitude = 2 * pi * column / slices;
+        const float latitude = pi * (float(row) / rings - .5f);
+        const float longitude = 2 * pi * column / slices;
         const float radial = (row == 0 || row == rings) ? 0 : std::cos(latitude);
-        const float x = radial * std::cos(longitude), y = std::sin(latitude), z = radial * std::sin(longitude);
+        const float x = radial * std::cos(longitude);
+        const float y = std::sin(latitude);
+        const float z = radial * std::sin(longitude);
         return geometry::Vertex{{x * .5f, y * .5f, z * .5f}, {x, y, z}, {float(column) / slices, float(row) / rings}};
     };
     for (unsigned row = 0; row < rings; ++row)

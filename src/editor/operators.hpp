@@ -40,7 +40,8 @@ struct SelectionContext {
     bool operator==(const SelectionContext&) const = default;
 };
 struct HistoryState {
-    bool undo{}, redo{};
+    bool undo{};
+    bool redo{};
 };
 struct Context {
     Session& document;
@@ -55,9 +56,14 @@ struct Context {
     ToolSettings tools;
     math::Vector3 cursor{}; // The viewport's 3D cursor: where new Entities appear.
     renderer::ViewSettings view{};
-    std::filesystem::path source{}, editor_ui_source{};
-    bool project_running{}, project_stopping{}, play_linked{}, build_ready{};
-    bool show_fps{}, viewport_options{};
+    std::filesystem::path source{};
+    std::filesystem::path editor_ui_source{};
+    bool project_running{};
+    bool project_stopping{};
+    bool play_linked{};
+    bool build_ready{};
+    bool show_fps{};
+    bool viewport_options{};
     CameraView camera_view{CameraView::perspective};
 };
 // Control replaces fields for one call; the document selection does not change.
@@ -84,7 +90,8 @@ enum class PathPurpose {
 struct DocumentRequest {
     enum class Kind { new_project, open_project, open_scene, build } kind;
     std::filesystem::path path;
-    bool interactive{}, rebuild{};
+    bool interactive{};
+    bool rebuild{};
 };
 // Host capabilities an operator may use; the application implements them.
 class OperatorHost {

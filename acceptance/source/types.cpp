@@ -103,7 +103,8 @@ void verify_source_types() {
     require(signed_info->enumeration->values.front().second == 0x80000000u &&
                 signed_info->enumeration->values.back().second == 0x7fffffffu,
             "Signed enum boundaries were not preserved.");
-    std::vector<std::byte> storage(damage_info->size), copied(damage_info->size);
+    std::vector<std::byte> storage(damage_info->size);
+    std::vector<std::byte> copied(damage_info->size);
     take(runtime.initialize_value(damage, storage));
     const auto amount_offset = *field(*damage_info, "amount").offset;
     const auto kind_offset = *field(*damage_info, "kind").offset;

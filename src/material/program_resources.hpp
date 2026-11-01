@@ -17,7 +17,8 @@ enum class Coverage : std::uint32_t { opaque, mask };
 
 struct Policy {
     Coverage coverage{Coverage::opaque};
-    bool double_sided{}, emission_two_sided{};
+    bool double_sided{};
+    bool emission_two_sided{};
 };
 enum class TextureColor : std::uint32_t { linear, srgb };
 
@@ -40,7 +41,8 @@ struct Override {
     bool enabled{true};
 };
 struct AuthorDiagnostic {
-    std::string path, message;
+    std::string path;
+    std::string message;
     bool operator==(const AuthorDiagnostic&) const = default;
 };
 

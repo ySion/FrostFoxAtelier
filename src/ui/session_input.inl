@@ -593,8 +593,8 @@ Reply Session::input(const Event& event) {
                         geometry->paragraph->matches(selected.text)
                             ? geometry->paragraph
                             : self.text.edited_snapshot(edit.key, *geometry->paragraph, selected.text);
-                    const bool left = event.key == Key::left || event.key == Key::home,
-                               edge = event.key == Key::home || event.key == Key::end;
+                    const bool left = event.key == Key::left || event.key == Key::home;
+                    const bool edge = event.key == Key::home || event.key == Key::end;
                     auto position = selected.caret;
                     if (!event.shift && !edge && selected.caret.offset != selected.anchor.offset) {
                         const auto ranges =

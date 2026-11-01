@@ -9,7 +9,10 @@ struct MaterialTextureInput {
 };
 struct MaterialModule {
     Program program;
-    std::uint32_t context{}, parameters{}, output{}, texture_input{};
+    std::uint32_t context{};
+    std::uint32_t parameters{};
+    std::uint32_t output{};
+    std::uint32_t texture_input{};
     std::uint32_t resources{UINT32_MAX};
     std::vector<MaterialTextureInput> textures;
 };

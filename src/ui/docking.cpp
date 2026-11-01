@@ -6,13 +6,18 @@
 namespace atelier::ui {
 namespace {
 constexpr float divider_width = 8;
-constexpr ControlKey close_offset = 1'000'000, wrapper_offset = 2'000'000, open_offset = 3'000'000,
-                     preview_offset = 4'000'000, command_offset = 5'000'000;
+constexpr ControlKey close_offset = 1'000'000;
+constexpr ControlKey wrapper_offset = 2'000'000;
+constexpr ControlKey open_offset = 3'000'000;
+constexpr ControlKey preview_offset = 4'000'000;
+constexpr ControlKey command_offset = 5'000'000;
 bool inside(Rect r, float x, float y) {
     return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
 }
 struct SplitRange {
-    float span{}, low{}, high{};
+    float span{};
+    float low{};
+    float high{};
 };
 SplitRange split_range(float size, float first, float second) {
     const auto span = std::max(0.f, size - divider_width);
@@ -489,7 +494,8 @@ bool DockSpace::apply(const Action& action, const UiFrame& frame) {
                 return true;
             const auto scale = frame.drawing->dpi_scale;
             const bool horizontal = node->axis == DragAxis::horizontal;
-            const auto a = minimum(*node->first), b = minimum(*node->second);
+            const auto a = minimum(*node->first);
+            const auto b = minimum(*node->second);
             const auto range = split_range((horizontal ? pane->bounds.width : pane->bounds.height) / scale,
                                            horizontal ? a.width : a.height, horizontal ? b.width : b.height);
             const auto cut =
@@ -580,10 +586,13 @@ void DockSpace::present_node(Presentation& result, const Node& node, ControlKey 
         return;
     }
     const bool horizontal = pane.horizontal;
-    const auto a = minimum(*node.first), b = minimum(*node.second);
+    const auto a = minimum(*node.first);
+    const auto b = minimum(*node.second);
     const auto range = split_range(horizontal ? bounds.width : bounds.height, horizontal ? a.width : a.height,
                                    horizontal ? b.width : b.height);
-    const auto span = range.span, floor = range.low, ceiling = range.high;
+    const auto span = range.span;
+    const auto floor = range.low;
+    const auto ceiling = range.high;
     const auto cut = node.collapsed == 1   ? 0.f
                      : node.collapsed == 2 ? span
                                            : std::clamp(span * node.fraction, floor, ceiling);
@@ -597,7 +606,8 @@ void DockSpace::present_node(Presentation& result, const Node& node, ControlKey 
                     horizontal ? std::min(divider_width, bounds.width) : bounds.width,
                     horizontal ? bounds.height : std::min(divider_width, bounds.height)};
     result.panes.push_back(std::move(pane));
-    Rect first{0, 0, bounds.width, bounds.height}, second = first;
+    Rect first{0, 0, bounds.width, bounds.height};
+    Rect second = first;
     (horizontal ? first.width : first.height) = cut;
     (horizontal ? second.x : second.y) = cut + divider_width;
     (horizontal ? second.width : second.height) = std::max(0.f, span - cut);

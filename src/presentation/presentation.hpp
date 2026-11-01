@@ -266,9 +266,13 @@ private:
 [[nodiscard]] Result<void> set_light(world::World&, ObjectId light_component, LightSettings);
 
 struct Types {
-    TypeId static_mesh_component, static_mesh_entity;
-    TypeId light_kind, light_settings, light_component;
-    TypeId environment_component, camera_component;
+    TypeId static_mesh_component;
+    TypeId static_mesh_entity;
+    TypeId light_kind;
+    TypeId light_settings;
+    TypeId light_component;
+    TypeId environment_component;
+    TypeId camera_component;
 };
 // Call once per Runtime, after world::register_types.
 [[nodiscard]] Result<Types> register_types(Runtime&);
@@ -291,7 +295,8 @@ struct StaticMeshEntityDesc {
 [[nodiscard]] Result<ObjectRoot> create_static_mesh_entity(world::World&, const StaticMeshEntityDesc&);
 
 struct RenderItem {
-    ObjectId entity, component;
+    ObjectId entity;
+    ObjectId component;
     math::Matrix4 world;
     geometry::MeshRef geometry;
     // Exact immutable candidates. The host's MaterialBatch chooses the adopted
@@ -299,26 +304,33 @@ struct RenderItem {
     std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surfaces{};
 };
 struct LightRenderItem {
-    ObjectId entity, component;
+    ObjectId entity;
+    ObjectId component;
     math::Vector3 position;
     // Orthonormal world axes from the rotation chain, excluding scale/shear.
     // direction is propagation along local +Z; rectangle lies in local XY.
-    math::Vector3 direction, right, up;
+    math::Vector3 direction;
+    math::Vector3 right;
+    math::Vector3 up;
     // Range and physical dimensions are world metres, not scaled. Directional
     // source_radius is angular (radians); see LightSettings.
     LightSettings settings;
 };
 
 struct CameraMatrices {
-    math::Matrix4 view, projection;
+    math::Matrix4 view;
+    math::Matrix4 projection;
     float far_depth{}; // Derived near/far clipping depth, not background zero.
 };
 // Values, not borrowed payloads; extracting a camera holds no roots afterwards.
 struct CameraSnapshot {
-    ObjectId entity, component;
+    ObjectId entity;
+    ObjectId component;
     math::Vector3 position;
     math::Quaternion rotation;
-    float vertical_fov{}, near_clip{}, far_clip{};
+    float vertical_fov{};
+    float near_clip{};
+    float far_clip{};
     // Left-handed +Z forward, row vectors; infinite reversed Z (depth=near/view Z),
     // with a separate finite +Z far clipping boundary in the returned snapshot.
     [[nodiscard]] Result<CameraMatrices> matrices(float aspect) const;
@@ -464,7 +476,10 @@ private:
                                                         bool* moved = nullptr) const;
     world::World* world_;
     Types types_;
-    world::CapabilityId meshes_, lights_, environments_, cameras_;
+    world::CapabilityId meshes_;
+    world::CapabilityId lights_;
+    world::CapabilityId environments_;
+    world::CapabilityId cameras_;
     // Aligned with the meshes and lights buckets at each extraction call.
     mutable detail::PassedValues<LightSettings> valid_lights_;
     mutable std::vector<MeshSlot> mesh_slots_;
@@ -485,12 +500,21 @@ private:
     mutable std::vector<std::uint32_t> chain_starts_;
     // Light components and the Entities on their chains.
     mutable std::unordered_set<ObjectId> light_sources_;
-    mutable std::vector<std::uint32_t> dirty_, volatile_, presented_list_;
+    mutable std::vector<std::uint32_t> dirty_;
+    mutable std::vector<std::uint32_t> volatile_;
+    mutable std::vector<std::uint32_t> presented_list_;
     mutable std::vector<bool> volatile_flags_;
-    mutable std::vector<std::uint64_t> marks_, presented_marks_; // Serial of the update that last listed each slot.
-    mutable bool lights_dirty_{true}, lights_failed_{}, lights_moved_{};
+    mutable std::vector<std::uint64_t> marks_;
+    mutable std::vector<std::uint64_t> presented_marks_; // Serial of the update that last listed each slot.
+    mutable bool lights_dirty_{true};
+    mutable bool lights_failed_{};
+    mutable bool lights_moved_{};
     std::uint64_t identity_{};
-    mutable std::uint64_t serial_{}, version_{}, mesh_layout_{}, lights_changed_{}, layout_revision_{};
+    mutable std::uint64_t serial_{};
+    mutable std::uint64_t version_{};
+    mutable std::uint64_t mesh_layout_{};
+    mutable std::uint64_t lights_changed_{};
+    mutable std::uint64_t layout_revision_{};
 };
 
 }

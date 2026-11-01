@@ -21,7 +21,8 @@ public:
     enum class Change { none, selection, text, rejected };
     struct Snapshot {
         std::wstring text;
-        TextPosition caret, anchor;
+        TextPosition caret;
+        TextPosition anchor;
         bool operator==(const Snapshot&) const = default;
     };
     TextEdit(std::wstring text, std::size_t limit, bool select_all, bool single_line = true);
@@ -47,13 +48,16 @@ public:
 
 private:
     struct Selection {
-        TextPosition caret, anchor;
+        TextPosition caret;
+        TextPosition anchor;
         bool operator==(const Selection&) const = default;
     };
     struct Entry {
         std::uint32_t first;
-        std::wstring removed, inserted;
-        Selection before, after;
+        std::wstring removed;
+        std::wstring inserted;
+        Selection before;
+        Selection after;
         Group group;
     };
     Snapshot current_;
@@ -61,9 +65,14 @@ private:
     std::vector<std::uint32_t> boundaries_;
     std::vector<std::uint32_t> lines_;
     std::vector<Entry> history_;
-    std::size_t limit_{}, applied_{}, bytes_{};
-    bool active_{}, merge_{}, single_line_{true};
-    std::uint64_t revision_{1}, selection_revision_{1};
+    std::size_t limit_{};
+    std::size_t applied_{};
+    std::size_t bytes_{};
+    bool active_{};
+    bool merge_{};
+    bool single_line_{true};
+    std::uint64_t revision_{1};
+    std::uint64_t selection_revision_{1};
     void splice(std::uint32_t, std::uint32_t, std::wstring_view);
     Change replace_range(std::uint32_t, std::uint32_t, std::wstring_view, Group);
 };

@@ -109,7 +109,10 @@ void raster_icon(Icon icon, std::uint32_t pixels, std::span<std::uint8_t> alpha)
     // Area sampling preserves thin strokes when shrinking the source mask.
     for (unsigned y = 0; y < pixels; ++y)
         for (unsigned x = 0; x < pixels; ++x) {
-            const double left = x * ratio, right = (x + 1) * ratio, top = y * ratio, bottom = (y + 1) * ratio;
+            const double left = x * ratio;
+            const double right = (x + 1) * ratio;
+            const double top = y * ratio;
+            const double bottom = (y + 1) * ratio;
             double sum = 0;
             for (unsigned sy = unsigned(top); sy < std::min(source_size, unsigned(std::ceil(bottom))); ++sy)
                 for (unsigned sx = unsigned(left); sx < std::min(source_size, unsigned(std::ceil(right))); ++sx)

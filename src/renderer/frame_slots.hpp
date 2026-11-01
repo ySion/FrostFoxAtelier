@@ -77,7 +77,8 @@ private:
         std::uint64_t revision{};
     };
     std::vector<Slot> slots_;
-    std::uint64_t revision_{1}, sequence_{};
+    std::uint64_t revision_{1};
+    std::uint64_t sequence_{};
 };
 // A persistent default-heap table for data that passes read many times per
 // frame; upload-heap reads cost Dungeon's direct passes about 2%. Changed

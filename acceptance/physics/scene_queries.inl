@@ -15,7 +15,8 @@ void trace_queries() {
     step(f.world, *f.scene, 0);
     p::TraceSettings query;
     query.channel = 7;
-    const Vector3 start{0, 0, -3}, end{0, 0, 12};
+    const Vector3 start{0, 0, -3};
+    const Vector3 end{0, 0, 12};
     p::QueryFilter legacy;
     legacy.category = 7;
     const auto closest = take(f.scene->raycast(start, end, legacy));
@@ -101,8 +102,10 @@ void trace_queries() {
 
 void query_exclusions() {
     PhysicsFixture f;
-    auto group = f.make({0, 0, -3}), part = f.make({0, 0, 0});
-    auto target = f.make({0, 0, 4}), farther = f.make({0, 0, 7});
+    auto group = f.make({0, 0, -3});
+    auto part = f.make({0, 0, 0});
+    auto target = f.make({0, 0, 4});
+    auto farther = f.make({0, 0, 7});
     committed(f.world.reparent(part.id(), group.id(), w::ReparentRule::keep_world));
     auto owner = take(w::create_entity(f.runtime));
     take(f.world.set_transform(owner.id(), {}));
@@ -160,7 +163,8 @@ void affine_query_space() {
     auto target = f.make({0, 0, 0});
     auto frame = take(w::create_entity(f.runtime));
     take(f.world.set_transform(frame.id(), {{0, 0, 0}, {0, 0, 0, 1}, {2, 1, 1}}));
-    auto logical = take(w::create_entity(f.runtime)), owner = take(w::create_entity(f.runtime));
+    auto logical = take(w::create_entity(f.runtime));
+    auto owner = take(w::create_entity(f.runtime));
     take(f.world.set_transform(owner.id(), {{0, 0, -3}, {0, 0, .38268343f, .92387953f}, {1, 1, 1}}));
     committed(f.world.attach(frame.id()));
     committed(f.world.attach(logical.id()));

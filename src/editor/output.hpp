@@ -8,17 +8,25 @@
 
 namespace atelier::editor {
 namespace output_control {
-inline constexpr ui::ControlKey table = 691, base = 1ULL << 38;
-inline constexpr ui::ControlKey level = base, category = base + 1, search = base + 2, body = base + 3,
-                                locate = base + 4, open_directory = base + 5, health = base + 6,
-                                clear_filters = base + 7, empty = base + 8;
+inline constexpr ui::ControlKey table = 691;
+inline constexpr ui::ControlKey base = 1ULL << 38;
+inline constexpr ui::ControlKey level = base;
+inline constexpr ui::ControlKey category = base + 1;
+inline constexpr ui::ControlKey search = base + 2;
+inline constexpr ui::ControlKey body = base + 3;
+inline constexpr ui::ControlKey locate = base + 4;
+inline constexpr ui::ControlKey open_directory = base + 5;
+inline constexpr ui::ControlKey health = base + 6;
+inline constexpr ui::ControlKey clear_filters = base + 7;
+inline constexpr ui::ControlKey empty = base + 8;
 }
 
 // One UI-thread projection, independent of the logging backend's worker. Disk
 // readers and explicitly unpersisted owned records share the same cache/model.
 class Output {
 public:
-    static constexpr std::size_t maximum_records = 4096, maximum_body_bytes = 8 * 1024 * 1024;
+    static constexpr std::size_t maximum_records = 4096;
+    static constexpr std::size_t maximum_body_bytes = 8 * 1024 * 1024;
     struct Item {
         ui::TableKey key{};
         logging::Record record;
@@ -26,13 +34,17 @@ public:
         std::optional<logging::SubmitStatus> rejection;
     };
     struct Row {
-        ui::TableKey key{}, record_key{};
+        ui::TableKey key{};
+        ui::TableKey record_key{};
         std::uint64_t count{1};
     };
     struct Statistics {
         std::size_t body_bytes{};
-        std::uint64_t evicted_records{}, evicted_body_bytes{}, invalid_owned{}, duplicate_owned{},
-            uncertain_submissions{};
+        std::uint64_t evicted_records{};
+        std::uint64_t evicted_body_bytes{};
+        std::uint64_t invalid_owned{};
+        std::uint64_t duplicate_owned{};
+        std::uint64_t uncertain_submissions{};
     };
     Output();
     ~Output();
@@ -76,7 +88,8 @@ private:
     bool pending_change_{};
     std::string memory_run_;
     std::optional<logging::RunInfo> host_;
-    std::uint64_t sequence_{}, next_key_{1};
+    std::uint64_t sequence_{};
+    std::uint64_t next_key_{1};
     using Identity = std::tuple<std::string, std::uint32_t, std::uint64_t, std::uint64_t>;
     std::set<Identity> owned_identities_;
     std::deque<Identity> owned_order_;
@@ -85,13 +98,16 @@ private:
     std::size_t unpersisted_{};
     logging::Severity minimum_{logging::Severity::trace};
     std::array<float, 5> widths_{82, 130, 600, 240, 220};
-    std::wstring category_, query_, attachment_error_;
+    std::wstring category_;
+    std::wstring query_;
+    std::wstring attachment_error_;
     mutable bool dirty_{true};
     mutable bool health_dirty_{true};
     mutable std::vector<Row> rows_;
     mutable std::shared_ptr<const ui::TableData> table_;
     mutable std::shared_ptr<ui::CodeDocument> body_;
-    mutable ui::TableKey selected_{}, body_key_{};
+    mutable ui::TableKey selected_{};
+    mutable ui::TableKey body_key_{};
     mutable std::wstring health_;
     void retain(logging::Record, std::filesystem::path = {}, std::optional<logging::SubmitStatus> = {});
     void rebuild() const;

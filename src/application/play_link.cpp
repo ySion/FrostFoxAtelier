@@ -31,13 +31,16 @@ std::string dump(const Json& value) {
 }
 }
 struct LiveLink::Impl {
-    HANDLE read, write;
+    HANDLE read;
+    HANDLE write;
     std::mutex mutex;
     std::condition_variable wake;
     std::deque<std::string> outbox;
     std::vector<std::string> inbox;
-    std::atomic_bool closed{}, stopping{};
-    std::thread reader, writer;
+    std::atomic_bool closed{};
+    std::atomic_bool stopping{};
+    std::thread reader;
+    std::thread writer;
     Impl(HANDLE in, HANDLE out) : read(in), write(out) {}
     ~Impl() {
         stopping = true;
@@ -137,8 +140,10 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
     Pending resources;
     try {
         for (const auto& op : ops) {
-            std::string encoded, mesh_bytes;
-            std::string_view text = op.text, content;
+            std::string encoded;
+            std::string mesh_bytes;
+            std::string_view text = op.text;
+            std::string_view content;
             std::filesystem::path file;
             std::size_t resource_bytes{};
             if (op.texture && op.mesh)

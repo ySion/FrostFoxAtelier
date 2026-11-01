@@ -52,7 +52,9 @@ bool same_operand(const BusinessValue& a, const BusinessValue& b) {
 }
 struct Observation {
     std::uint64_t bits{};
-    std::uint32_t begins{}, calls{}, finishes{};
+    std::uint32_t begins{};
+    std::uint32_t calls{};
+    std::uint32_t finishes{};
     InvocationObserver observer() {
         return {this,
                 [](void* context, Invocation&) -> Result<void> {
@@ -179,7 +181,8 @@ void verify_storage(Runtime& runtime, const Binding& binding) {
         bool flip(bool& value) { value = !value; return value; }
         bool run(const bool& read, bool& write) { bool copy = read; write = copy; return flip(write); }
     )");
-    GuardedBool read{true}, write{false};
+    GuardedBool read{true};
+    GuardedBool write{false};
     const std::array arguments{BusinessValue{ValueKind::boolean, 0, ArgumentStorage::read_only, read.value},
                                BusinessValue{ValueKind::boolean, 0, ArgumentStorage::reference, write.value}};
     const auto result = take(execute_typed(runtime, binding, code.get(), {}, arguments));

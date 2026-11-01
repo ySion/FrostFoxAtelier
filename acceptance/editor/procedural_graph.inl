@@ -36,12 +36,12 @@ void verify_procedural_graph() {
         document.nodes.push_back({name, std::move(root), position});
         return id;
     };
-    const auto grid = add("grid", take(runtime.native_type<Grid>()), {0, 0}),
-               moved = add("moved", take(runtime.native_type<Transform>()), {200, 0});
-    const auto line = add("line", take(runtime.native_type<Line>()), {0, 120}),
-               merged = add("merged", take(runtime.native_type<Merge>()), {400, 60});
-    const auto copied = add("copied", take(runtime.native_type<CopyToPoints>()), {600, 60}),
-               promote = add("promote", take(runtime.native_type<Promote>()), {100.5f, -40.25f});
+    const auto grid = add("grid", take(runtime.native_type<Grid>()), {0, 0});
+    const auto moved = add("moved", take(runtime.native_type<Transform>()), {200, 0});
+    const auto line = add("line", take(runtime.native_type<Line>()), {0, 120});
+    const auto merged = add("merged", take(runtime.native_type<Merge>()), {400, 60});
+    const auto copied = add("copied", take(runtime.native_type<CopyToPoints>()), {600, 60});
+    const auto promote = add("promote", take(runtime.native_type<Promote>()), {100.5f, -40.25f});
     take(runtime.with_native<Graph>(graph, [](Graph& value) -> Result<void> {
         value.seed = 7;
         return {};

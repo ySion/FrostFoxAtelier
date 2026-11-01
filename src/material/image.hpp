@@ -26,7 +26,8 @@ public:
     bool has_alpha() const noexcept { return has_alpha_; }
 
 private:
-    std::uint32_t width_, height_;
+    std::uint32_t width_;
+    std::uint32_t height_;
     std::vector<std::uint8_t> pixels_;
     bool has_alpha_{};
 };

@@ -15,13 +15,16 @@ struct RasterViewport {
 // logical rectangle with integer hardware edges, then preserve its pixel-center
 // coverage and projection through an explicit scissor and final clip transform.
 inline RasterViewport raster_viewport(const ui::Rect& logical) {
-    const float left = std::floor(logical.x), top = std::floor(logical.y);
-    const float right = std::ceil(logical.x + logical.width), bottom = std::ceil(logical.y + logical.height);
+    const float left = std::floor(logical.x);
+    const float top = std::floor(logical.y);
+    const float right = std::ceil(logical.x + logical.width);
+    const float bottom = std::ceil(logical.y + logical.height);
     RasterViewport result{{left, top, right - left, bottom - top},
                           {static_cast<int>(std::ceil(logical.x - .5f)), static_cast<int>(std::ceil(logical.y - .5f)),
                            static_cast<int>(std::ceil(logical.x + logical.width - .5f)),
                            static_cast<int>(std::ceil(logical.y + logical.height - .5f))}};
-    const double width = result.hardware.width, height = result.hardware.height;
+    const double width = result.hardware.width;
+    const double height = result.hardware.height;
     // A subpixel rectangle can have no pixel centers and a rounded zero extent.
     // Its empty scissor already suppresses output; avoid a nonfinite transform.
     if (width > 0 && height > 0)

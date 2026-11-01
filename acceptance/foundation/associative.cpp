@@ -18,7 +18,8 @@ void require(bool condition, const char* message) {
 // An owned resource catalog exercises the public container's lifecycle under
 // refresh, independent snapshots, failed construction and dense deletion.
 struct alignas(64) Resource {
-    static inline int live{}, copies_until_failure = -1;
+    static inline int live{};
+    static inline int copies_until_failure = -1;
     std::unique_ptr<int> payload;
     explicit Resource(int id) {
         if (id < 0)
@@ -217,7 +218,8 @@ void verify_associative_containers() {
             "Move-only Set failed to remove its borrowed key.");
 
     // The hash adapter reuses the Runtime's existing full identity contract.
-    Runtime left, right;
+    Runtime left;
+    Runtime right;
     const auto object = *left.find_type("core.Object");
     auto first = left.create(object);
     auto sibling = left.create(object);

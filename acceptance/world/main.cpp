@@ -63,7 +63,8 @@ struct DerivedCounter : Counter {
     float extra{7.f};
 };
 struct Holder {
-    ReferenceSlot entity, component;
+    ReferenceSlot entity;
+    ReferenceSlot component;
 };
 
 TypeId holder_type(Runtime& runtime, const w::Types& types) {
@@ -284,7 +285,10 @@ void editing_and_execution() {
                 take(scene.render_items()).size() == 1,
             "World.stop removed editor presentation or membership.");
     auto removal = take(world.detach(entity.id()));
-    const auto entity_id = entity.id(), collision_id = collision.id(), cube_id = cube.id(), counter_id = counter.id();
+    const auto entity_id = entity.id();
+    const auto collision_id = collision.id();
+    const auto cube_id = cube.id();
+    const auto counter_id = counter.id();
     entity.reset();
     collision.reset();
     cube.reset();
@@ -329,7 +333,9 @@ void reference_lifetime() {
     auto keeper = take(runtime.create(holder));
     const auto entity_field = take(runtime.find_field(holder, "entity"));
     const auto component_field = take(runtime.find_field(holder, "component"));
-    ObjectId entity_id, cube_id, sibling_id;
+    ObjectId entity_id;
+    ObjectId cube_id;
+    ObjectId sibling_id;
     {
         w::World world(runtime, types);
         auto entity = take(w::create_entity(runtime));
@@ -392,9 +398,12 @@ void reference_lifetime() {
 }
 
 void worlds_and_requests() {
-    Runtime runtime, other;
-    const auto types = register_all_types(runtime), foreign_types = register_all_types(other);
-    w::World first(runtime, types), second(runtime, types);
+    Runtime runtime;
+    Runtime other;
+    const auto types = register_all_types(runtime);
+    const auto foreign_types = register_all_types(other);
+    w::World first(runtime, types);
+    w::World second(runtime, types);
     const auto second_scene = take(p::Scene::create(second, types));
     auto entity = take(w::create_entity(runtime));
     auto foreign = take(w::create_entity(other));
@@ -441,8 +450,12 @@ void lifecycle_subscription_unsubscribe() {
     w::World world(runtime, types);
     auto entity = take(w::create_entity(runtime));
     auto component = take(w::create_component(runtime, types.component));
-    std::uint64_t skipped{}, self{};
-    std::size_t first_calls{}, skipped_calls{}, self_calls{}, stateful_calls{};
+    std::uint64_t skipped{};
+    std::uint64_t self{};
+    std::size_t first_calls{};
+    std::size_t skipped_calls{};
+    std::size_t self_calls{};
+    std::size_t stateful_calls{};
     const auto first = take(world.subscribe_lifecycle([&](w::World& current, w::Lifecycle, ObjectId) -> Result<void> {
         ++first_calls;
         current.unsubscribe_lifecycle(skipped);
@@ -528,7 +541,9 @@ void ordered_lifecycle() {
                  .publish());
     using Event = std::pair<char, ObjectId>;
     std::vector<Event> events;
-    ObjectId fail_begin, fail_tick, fail_end;
+    ObjectId fail_begin;
+    ObjectId fail_tick;
+    ObjectId fail_end;
     w::World world(runtime, types);
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime));
@@ -633,7 +648,8 @@ void ordered_lifecycle() {
 void isolated_failures() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
-    source::Program ticking(runtime, types.counter), waiting(runtime, types.counter);
+    source::Program ticking(runtime, types.counter);
+    source::Program waiting(runtime, types.counter);
     auto candidate = take(source::Program::prepare(
         take(ticking.request("world-failure.source", "void tick(float dt) {\n    self.steps = 10 / self.steps;\n}\n",
                              {}, {.diagnostics = true}))));
@@ -645,16 +661,26 @@ void isolated_failures() {
     const auto translate = take(runtime.find_method(types.component, "translate_owner"));
     w::World world(runtime, types);
     require(world.failure_policy() == w::FailurePolicy::isolate, "World did not default to object isolation.");
-    auto e = take(w::create_entity(runtime)), f = take(w::create_entity(runtime)), g = take(w::create_entity(runtime));
-    auto a = take(w::create_component(runtime, types.counter)), b = take(w::create_component(runtime, types.counter));
-    auto c = take(w::create_component(runtime, types.counter)), d = take(w::create_component(runtime, types.counter));
+    auto e = take(w::create_entity(runtime));
+    auto f = take(w::create_entity(runtime));
+    auto g = take(w::create_entity(runtime));
+    auto a = take(w::create_component(runtime, types.counter));
+    auto b = take(w::create_component(runtime, types.counter));
+    auto c = take(w::create_component(runtime, types.counter));
+    auto d = take(w::create_component(runtime, types.counter));
     auto m = take(w::create_component(runtime, types.counter));
-    const auto a_id = a.id(), b_id = b.id(), c_id = c.id(), d_id = d.id(), m_id = m.id();
+    const auto a_id = a.id();
+    const auto b_id = b.id();
+    const auto c_id = c.id();
+    const auto d_id = d.id();
+    const auto m_id = m.id();
     take(world.set_transform(f.id(), {}));
     take(world.set_transform(g.id(), {}));
     // A registered simulation owns g's pose, as PhysicsScene does for bodies.
     std::vector<ObjectId> relocations;
-    bool refuse_relocation{}, throw_relocation{}, relocation_reentry_rejected{};
+    bool refuse_relocation{};
+    bool throw_relocation{};
+    bool relocation_reentry_rejected{};
     take(world.add_simulation({.step = [](float) -> Result<void> { return {}; },
                                .writes_pose = [g = g.id()](ObjectId entity) { return entity == g; },
                                .relocated = [&](std::span<const ObjectId> moved) -> Result<void> {
@@ -676,7 +702,8 @@ void isolated_failures() {
     using Event = std::pair<char, ObjectId>;
     std::vector<Event> events;
     ObjectId fail_begin;
-    bool world_failure{}, fail_observer{true};
+    bool world_failure{};
+    bool fail_observer{true};
     take(world.bind_behavior(
         types.counter,
         {.begin = [&](Runtime&, ObjectId id) -> Result<void> {

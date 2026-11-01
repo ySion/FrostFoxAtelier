@@ -79,7 +79,8 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
             const auto at = positions.find(key);
             return at == positions.end() ? nullptr : &list[at->second];
         };
-        std::map<std::filesystem::path, const ProjectEntry*> previous_files, next_files;
+        std::map<std::filesystem::path, const ProjectEntry*> previous_files;
+        std::map<std::filesystem::path, const ProjectEntry*> next_files;
         for (const auto& entry : entries_)
             previous_files.emplace(entry.path, &entry);
         for (const auto& entry : entries)
@@ -104,7 +105,8 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
             if (old->bytes != next->bytes || old->modified != next->modified)
                 return true;
             for (const auto& path : cached.second.dependencies) {
-                const auto a = previous_files.find(path), b = next_files.find(path);
+                const auto a = previous_files.find(path);
+                const auto b = next_files.find(path);
                 if (a == previous_files.end() || b == next_files.end() || a->second->bytes != b->second->bytes ||
                     a->second->modified != b->second->modified)
                     return true;
@@ -237,7 +239,8 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
         std::vector<std::pair<std::size_t, SlotMaterial>> ordered;
         std::set<std::string> bound;
         for (const auto& binding : entry.materials) {
-            std::size_t matches{}, index{};
+            std::size_t matches{};
+            std::size_t index{};
             for (std::size_t i = 0; i < mesh.materials().size(); ++i)
                 if (geometry::material_slot_name(mesh, i) == binding.slot) {
                     ++matches;

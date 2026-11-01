@@ -17,7 +17,8 @@ struct DebugTables {
     std::vector<std::uint32_t> sites;
 };
 struct DebugMetadata {
-    std::uint64_t program_id{}, code_version{};
+    std::uint64_t program_id{};
+    std::uint64_t code_version{};
     std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
     std::shared_ptr<const DebugTables> tables;
 };
@@ -30,8 +31,12 @@ struct DebugSessionState {
     std::optional<DebugSnapshot> last_stop;
     DebugStatus status{DebugStatus::unused};
     DebugAction action{DebugAction::continue_execution};
-    std::uint64_t next_stop_id{}, step_activation{};
-    bool active{}, entry_stopped{}, error_stopped{}, handler_failed{};
+    std::uint64_t next_stop_id{};
+    std::uint64_t step_activation{};
+    bool active{};
+    bool entry_stopped{};
+    bool error_stopped{};
+    bool handler_failed{};
 };
 std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo&);
 std::shared_ptr<const DebugMetadata> make_debug_metadata(const DiagnosticMetadata&, const BusinessCodeInfo&,

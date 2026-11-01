@@ -119,7 +119,8 @@ void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std
     if (nodes.size() >= no_tree_node)
         throw std::invalid_argument("A tree has too many nodes.");
     // Ancestor path of the current node: node and its row (no_tree_node when not shown).
-    std::array<std::uint32_t, 128> path{}, path_rows{};
+    std::array<std::uint32_t, 128> path{};
+    std::array<std::uint32_t, 128> path_rows{};
     std::uint32_t path_size{};
     const auto descend = [&](std::uint32_t index) {
         const auto parent = nodes[index].parent;
@@ -194,12 +195,14 @@ std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows, TreeViewpo
     if (rows.empty())
         return result;
     const auto last = static_cast<std::uint32_t>(rows.size() - 1);
-    const double row_height = std::max(1.f, viewport.row_height), height = std::max(0.f, viewport.height);
+    const double row_height = std::max(1.f, viewport.row_height);
+    const double height = std::max(0.f, viewport.height);
     // NaN or a negative position maps to the first row.
     const auto row_at = [&](double y) {
         return y > 0 ? static_cast<std::uint32_t>(std::min(std::floor(y / row_height), static_cast<double>(last))) : 0u;
     };
-    const auto begin = row_at(viewport.scroll - height), end = row_at(viewport.scroll + 2 * height);
+    const auto begin = row_at(viewport.scroll - height);
+    const auto end = row_at(viewport.scroll + 2 * height);
     result.reserve(end - begin + 3 + pinned.size() * 4);
     result.push_back(0);
     result.push_back(last);

@@ -5,7 +5,8 @@
 namespace atelier::ui {
 enum class DockSide { tabs, left, right, top, bottom };
 struct DockTab {
-    ControlKey key{}, content{};
+    ControlKey key{};
+    ControlKey content{};
     std::wstring title;
     ui_layout::Size minimum{220, 140}; // Includes pane chrome; shrinks only if the host is smaller.
     std::vector<std::string> classes{};
@@ -39,14 +40,21 @@ public:
     std::vector<MenuItem> menu_items(ControlKey source, const UiFrame*);
     struct PresentedTab {
         const DockTab* view{};
-        ControlKey wrapper{}, close{};
+        ControlKey wrapper{};
+        ControlKey close{};
     };
     struct Pane {
-        ControlKey key{}, parent{};
+        ControlKey key{};
+        ControlKey parent{};
         Rect bounds;
-        bool split{}, horizontal{}, maximized{};
+        bool split{};
+        bool horizontal{};
+        bool maximized{};
         unsigned collapsed{};
-        double value{.5}, minimum{.5}, maximum{.5}, step{1};
+        double value{.5};
+        double minimum{.5};
+        double maximum{.5};
+        double step{1};
         Rect divider;
         std::vector<PresentedTab> tabs;
         const DockTab* active{};
@@ -69,11 +77,13 @@ private:
         DragAxis axis{};
         float fraction{.5f};
         unsigned collapsed{}; // 0 none, 1 first, 2 second; fraction always retains expanded geometry.
-        std::unique_ptr<Node> first, second;
+        std::unique_ptr<Node> first;
+        std::unique_ptr<Node> second;
         bool split() const noexcept { return first != nullptr; }
     };
     struct Drop {
-        ControlKey pane{}, before{};
+        ControlKey pane{};
+        ControlKey before{};
         DockSide side{};
         Rect preview{};
     };
@@ -85,8 +95,13 @@ private:
         ControlKey source{};
         Rect preview;
     };
-    ControlKey base_{}, next_{}, focused_{}, maximized_{}, menu_pane_{};
-    bool menu_add_{}, menu_type_{};
+    ControlKey base_{};
+    ControlKey next_{};
+    ControlKey focused_{};
+    ControlKey maximized_{};
+    ControlKey menu_pane_{};
+    bool menu_add_{};
+    bool menu_type_{};
     std::vector<ControlKey> closed_tabs_;
     std::vector<DockTab> tabs_;
     std::unique_ptr<Node> root_;

@@ -123,7 +123,8 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
     if (!module)
         return failure(diagnostic_.empty() ? "No compiled UI module." : diagnostic_);
     auto at = regions_.find(name);
-    bool blocked{}, retried{};
+    bool blocked{};
+    bool retried{};
     if (at == regions_.end()) {
         if (!module->find(name))
             return report(Error{ErrorCode::invalid_definition, "UI module is missing component: " + std::string(name)});

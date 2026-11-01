@@ -331,7 +331,8 @@ void verify_project_document() {
     {
         // The orphan is absent from the catalogue. The transaction now protects its
         // identity file during preflight, before publishing the BMP or any other file.
-        const auto source = evidence / "refresh-source", target = folder / "Content/Meshes/Refresh";
+        const auto source = evidence / "refresh-source";
+        const auto target = folder / "Content/Meshes/Refresh";
         std::string bmp(70, '\0');
         bmp[0] = 'B';
         bmp[1] = 'M';

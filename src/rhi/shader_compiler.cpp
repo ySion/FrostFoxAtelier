@@ -24,12 +24,14 @@ using Digest = std::array<std::uint8_t, 32>;
 // never match and age out through trimming.
 constexpr std::uint32_t cache_format = 1;
 constexpr std::array<char, 4> cache_magic{'A', 'S', 'H', 'C'};
-constexpr std::uintmax_t cache_limit = 512ull << 20, cache_trim_target = 256ull << 20;
+constexpr std::uintmax_t cache_limit = 512ull << 20;
+constexpr std::uintmax_t cache_trim_target = 256ull << 20;
 
 struct CacheHeader {
     std::array<char, 4> magic;
     std::uint32_t format;
-    std::uint64_t bytecode_size, reflection_size;
+    std::uint64_t bytecode_size;
+    std::uint64_t reflection_size;
     Digest checksum; // Bytecode followed by reflection.
 };
 static_assert(sizeof(CacheHeader) == 56);
@@ -215,7 +217,9 @@ Result<ShaderCompiler> ShaderCompiler::open(std::filesystem::path cache) {
             Error{ErrorCode::creation_failed, kGfxResult_InternalError, "DXC instance creation failed"});
     ComPtr<IDxcVersionInfo> version;
     ComPtr<IDxcVersionInfo2> commit;
-    UINT32 major = 0, minor = 0, commits = 0;
+    UINT32 major = 0;
+    UINT32 minor = 0;
+    UINT32 commits = 0;
     char* hash = nullptr;
     if (SUCCEEDED(compiler.compiler_.As(&version)) && SUCCEEDED(version->GetVersion(&major, &minor)) &&
         SUCCEEDED(version.As(&commit)) && SUCCEEDED(commit->GetCommitInfo(&commits, &hash)) && hash)

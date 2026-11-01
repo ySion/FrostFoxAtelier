@@ -251,7 +251,8 @@ std::string coverage_body(const source::MaterialProgram& program) {
     // DLL ABI. Inspect the selected branch, not inactive point/footprint text.
     const auto hlsl = take(program.hlsl_coverage("CoverageCheck"));
     constexpr std::string_view begin = "#if ATELIER_MATERIAL_COVERAGE\n";
-    const auto first = hlsl.find(begin), last = hlsl.find("#elif ATELIER_MATERIAL_FOOTPRINT\n");
+    const auto first = hlsl.find(begin);
+    const auto last = hlsl.find("#elif ATELIER_MATERIAL_FOOTPRINT\n");
     require(first != std::string::npos && last != std::string::npos && first < last &&
                 hlsl.contains("#define ATELIER_MATERIAL_COVERAGE 1\n"),
             "Coverage HLSL did not select its owning lowering.");
@@ -263,7 +264,8 @@ std::string coverage_body(const source::MaterialProgram& program) {
     return body;
 }
 std::size_t occurrences(std::string_view text, std::string_view token) {
-    std::size_t count{}, position{};
+    std::size_t count{};
+    std::size_t position{};
     while ((position = text.find(token, position)) != std::string_view::npos) {
         ++count;
         position += token.size();
@@ -273,8 +275,17 @@ std::size_t occurrences(std::string_view text, std::string_view token) {
 }
 
 void verify_source_materials() {
-    std::shared_ptr<const source::MaterialProgram> a, b, revised, reordered, numeric, footprint, oriented;
-    std::shared_ptr<const source::MaterialProgram> coverage, overwritten, generic, vector_output;
+    std::shared_ptr<const source::MaterialProgram> a;
+    std::shared_ptr<const source::MaterialProgram> b;
+    std::shared_ptr<const source::MaterialProgram> revised;
+    std::shared_ptr<const source::MaterialProgram> reordered;
+    std::shared_ptr<const source::MaterialProgram> numeric;
+    std::shared_ptr<const source::MaterialProgram> footprint;
+    std::shared_ptr<const source::MaterialProgram> oriented;
+    std::shared_ptr<const source::MaterialProgram> coverage;
+    std::shared_ptr<const source::MaterialProgram> overwritten;
+    std::shared_ptr<const source::MaterialProgram> generic;
+    std::shared_ptr<const source::MaterialProgram> vector_output;
     {
         Runtime runtime;
         take(material::register_program_types(runtime));
@@ -352,7 +363,8 @@ void verify_source_materials() {
             }
         )"));
         const auto lazy_body = coverage_body(*lazy_shared);
-        const auto branch = lazy_body.find("if ("), sampled = lazy_body.find("::atelier_material_sample(");
+        const auto branch = lazy_body.find("if (");
+        const auto sampled = lazy_body.find("::atelier_material_sample(");
         require(branch != std::string::npos && sampled != std::string::npos &&
                     occurrences(lazy_body, "::atelier_material_sample(") == 1,
                 "Sharing a preceding conditional value duplicated its branch-only sample.");
@@ -534,15 +546,18 @@ void verify_source_materials() {
     } // All content below is used after its compilation Runtime is destroyed.
 
     require(!coverage->hlsl_coverage("bad::namespace"), "Coverage HLSL lost namespace validation.");
-    const auto a_coverage = coverage_body(*a), b_coverage = coverage_body(*b);
+    const auto a_coverage = coverage_body(*a);
+    const auto b_coverage = coverage_body(*b);
     require(occurrences(a_coverage, "::atelier_material_sample(") == 1 &&
                 b_coverage.contains("::atelier_material_sample("),
             "Coverage did not remove unrelated sampling or lost a required helper/token sample.");
-    const auto constant_coverage = coverage_body(*oriented), replaced_coverage = coverage_body(*overwritten);
+    const auto constant_coverage = coverage_body(*oriented);
+    const auto replaced_coverage = coverage_body(*overwritten);
     require(!constant_coverage.contains("::atelier_material_sample") && !constant_coverage.contains("if (") &&
                 !replaced_coverage.contains("::atelier_material_sample"),
             "Coverage retained unrelated orientation/branches, overwritten values or unused helper arguments.");
-    const auto control_coverage = coverage_body(*coverage), math_coverage = coverage_body(*numeric);
+    const auto control_coverage = coverage_body(*coverage);
+    const auto math_coverage = coverage_body(*numeric);
     require(control_coverage.contains("if (") && control_coverage.contains("::atelier_material_sample(") &&
                 !control_coverage.contains("sin(") && !math_coverage.contains("floor("),
             "Coverage lost control dependencies or retained unrelated shading math.");
@@ -629,7 +644,8 @@ void verify_source_materials() {
     // integration is separately owned by the material resource acceptance.
     struct OrientationProbe {
         unsigned address{}; // repeat, clamp, mirror
-        mutable std::uint32_t queries{}, samples{};
+        mutable std::uint32_t queries{};
+        mutable std::uint32_t samples{};
         mutable math::Vector2 sampled_uv{};
     } orientation_probe;
     const auto query_orientation = +[](const void* data, math::Vector2 uv) -> Result<math::Vector2> {
@@ -716,7 +732,8 @@ void verify_source_materials() {
     require(orientation_probe.queries == 0 && orientation_probe.samples == 0,
             "Nonfinite orientation coordinates reached the host sampler.");
 
-    Texture alpha{{0.1f, 0.2f, 0.3f, 0.9f}, true}, color{{0.2f, 0.4f, 0.6f, 0.8f}};
+    Texture alpha{{0.1f, 0.2f, 0.3f, 0.9f}, true};
+    Texture color{{0.2f, 0.4f, 0.6f, 0.8f}};
     const auto textures = bindings(*a, color, alpha);
     require(a->textures().size() == 3 && a->textures()[0].key == "alpha" && a->textures()[1].key == "surface.color" &&
                 a->textures()[2].key == "unused" && revised->textures().empty(),
@@ -729,7 +746,8 @@ void verify_source_materials() {
     material::Context context;
     context.uv = {0.25f, 0.75f};
     context.normal_world = {0.0f, 1.0f, 0.0f};
-    const auto out_a = evaluate(*a, context, textures), out_b = evaluate(*b, context, textures);
+    const auto out_a = evaluate(*a, context, textures);
+    const auto out_b = evaluate(*b, context, textures);
     require(near(out_a.coverage, -0.25f) && near(out_a.base_color.x, 0.05f) && near(out_a.base_color.z, 0.15f) &&
                 near(out_a.roughness, 0.65f) && out_a.normal_world == context.normal_world,
             "Detached material A lost sampling, parameters or registered native defaults.");

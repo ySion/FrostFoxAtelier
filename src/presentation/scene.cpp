@@ -112,7 +112,8 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
                                 const world::CapabilityMember& member) const {
     auto& runtime = world_->runtime();
     auto& cached = mesh_slots_[slot].item;
-    const auto owner = member.entity, object = member.component;
+    const auto owner = member.entity;
+    const auto object = member.component;
     // Isolated and degenerate items leave the cache: an unusable space is
     // reported once on its Entity, an invalid material on its component.
     const auto drop = [&] {
@@ -359,7 +360,8 @@ Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presen
     const bool moving_lights =
         std::ranges::any_of(offsets.entities(), [&](ObjectId entity) { return light_sources_.contains(entity); });
     if (lights_dirty_ || lights_failed_ || lights_moved_ || moving_lights) {
-        bool failed{}, moved{};
+        bool failed{};
+        bool moved{};
         auto lights = extract_lights(&offsets, &failed, &moved);
         if (!lights)
             return std::unexpected(lights.error());

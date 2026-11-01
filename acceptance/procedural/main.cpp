@@ -73,7 +73,8 @@ Quaternion axis_angle(Vector3 axis, float degrees) {
 
 Geometry triangles(std::initializer_list<Vector3> corners) {
     Array<Vector3> points{corners};
-    Array<std::uint32_t> vertices, offsets{0};
+    Array<std::uint32_t> vertices;
+    Array<std::uint32_t> offsets{0};
     for (std::uint32_t i = 0; i < points.size(); ++i)
         vertices.add(i);
     for (std::uint32_t t = 1; t <= points.size() / 3; ++t)
@@ -90,13 +91,18 @@ bool inside(Vector3 p, Vector3 a, Vector3 b, Vector3 c) {
 }
 
 void scatter_counts_and_stability() {
-    const Vector3 a0{0, 0, 0}, a1{2, 0, 0}, a2{0, 1, 0}; // Area 1.
-    const Vector3 b0{10, 0, 0}, b1{13, 0, 0}, b2{10, 2, 0}; // Area 3.
+    const Vector3 a0{0, 0, 0};
+    const Vector3 a1{2, 0, 0};
+    const Vector3 a2{0, 1, 0}; // Area 1.
+    const Vector3 b0{10, 0, 0};
+    const Vector3 b1{13, 0, 0};
+    const Vector3 b2{10, 2, 0}; // Area 3.
     const auto surface = triangles({a0, a1, a2, b0, b1, b2});
     const auto points = take(scatter(surface, {.density = 4, .seed = 7}));
     const auto& positions = points.positions();
     const auto& source = column<std::uint32_t>(points, "sourceprim", Layer::point);
-    std::uint32_t first = 0, second = 0;
+    std::uint32_t first = 0;
+    std::uint32_t second = 0;
     for (std::size_t i = 0; i < positions.size(); ++i) {
         if (source[i] == 0) {
             ++first;
@@ -165,7 +171,8 @@ void transform_by_usage() {
     take(grid_points.add<Vector3>("Cd", Layer::point, {0.2f, 0.4f, 0.6f}));
     take(grid_points.add<Vector3>("v", Layer::point, {1, 0, 1}));
     const auto before = grid_points.positions();
-    const Vector3 t{1, 2, 3}, s{2, 3, 0.5f};
+    const Vector3 t{1, 2, 3};
+    const Vector3 s{2, 3, 0.5f};
     const auto q = axis_angle({0, 1, 0}, 90);
     take(transform(grid_points, t, q, s));
     const auto& after = grid_points.positions();
@@ -277,7 +284,8 @@ void removal_merge_and_promotion() {
                 mixed.uniform_primitive_size() == 0 && mixed.primitive(0).first == 0 && mixed.primitive(0).count == 3 &&
                 mixed.primitive(1).first == 3 && mixed.primitive(1).count == 4,
             "Mixed polygon ranges are wrong.");
-    const bool remove_triangle[]{true, false}, remove_all[]{true, true};
+    const bool remove_triangle[]{true, false};
+    const bool remove_all[]{true, true};
     const auto quad = take(mixed.remove_flagged(Layer::primitive, remove_triangle));
     require(quad.count(Layer::point) == 7 && quad.count(Layer::primitive) == 1 && quad.uniform_primitive_size() == 4 &&
                 quad.primitive(0).first == 0 && quad.primitive(0).count == 4 &&
@@ -523,8 +531,9 @@ std::optional<double> brute_ray(const std::vector<Corners>& triangles, math::Vec
         if (t < 0 || t > limit || (best && t >= *best))
             continue;
         const auto q = o + d * t;
-        const double s0 = math::dot(math::cross(b - a, q - a), n), s1 = math::dot(math::cross(c - b, q - b), n),
-                     s2 = math::dot(math::cross(a - c, q - c), n);
+        const double s0 = math::dot(math::cross(b - a, q - a), n);
+        const double s1 = math::dot(math::cross(c - b, q - b), n);
+        const double s2 = math::dot(math::cross(a - c, q - c), n);
         if ((s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0))
             best = t;
     }
@@ -542,8 +551,9 @@ double brute_closest(const std::vector<Corners>& triangles, math::Vector3d p) {
     for (const auto& [a, b, c] : triangles) {
         const auto n = math::cross(b - a, c - a);
         const auto q = p - n * (math::dot(p - a, n) / math::dot(n, n));
-        const double s0 = math::dot(math::cross(b - a, q - a), n), s1 = math::dot(math::cross(c - b, q - b), n),
-                     s2 = math::dot(math::cross(a - c, q - c), n);
+        const double s0 = math::dot(math::cross(b - a, q - a), n);
+        const double s1 = math::dot(math::cross(c - b, q - b), n);
+        const double s2 = math::dot(math::cross(a - c, q - c), n);
         const auto offset = q - p;
         const double distance =
             s0 >= 0 && s1 >= 0 && s2 >= 0
@@ -560,13 +570,18 @@ void bvh_queries() {
     Array<Vector3> positions;
     for (std::uint32_t r = 0; r < side; ++r)
         for (std::uint32_t c = 0; c < side; ++c) {
-            const float x = float(c) * 0.5f, z = float(r) * 0.5f;
+            const float x = float(c) * 0.5f;
+            const float z = float(r) * 0.5f;
             positions.add({x, std::sin(x * 0.7f) * std::cos(z * 0.4f) * 1.5f + 0.1f * x, z});
         }
-    Array<std::uint32_t> vertices, offsets{0};
+    Array<std::uint32_t> vertices;
+    Array<std::uint32_t> offsets{0};
     for (std::uint32_t r = 0; r + 1 < side; ++r)
         for (std::uint32_t c = 0; c + 1 < side; ++c) {
-            const std::uint32_t p00 = r * side + c, p01 = p00 + 1, p10 = p00 + side, p11 = p10 + 1;
+            const std::uint32_t p00 = r * side + c;
+            const std::uint32_t p01 = p00 + 1;
+            const std::uint32_t p10 = p00 + side;
+            const std::uint32_t p11 = p10 + 1;
             const bool flip = (r + c) % 2 != 0;
             for (const auto point :
                  flip ? std::array{p00, p10, p11, p00, p11, p01} : std::array{p00, p10, p01, p01, p10, p11})
@@ -577,7 +592,9 @@ void bvh_queries() {
     const auto surface = take(Geometry::polygons(std::move(positions), std::move(vertices), offsets));
     const auto bvh = take(Bvh::build(surface));
     const auto references = corners(surface);
-    std::uint32_t random = 12345, hits = 0, misses = 0;
+    std::uint32_t random = 12345;
+    std::uint32_t hits = 0;
+    std::uint32_t misses = 0;
     const auto next = [&] {
         random = hash(random);
         return unit(random);
@@ -632,7 +649,8 @@ void bvh_queries() {
     // Two stacked triangles share one leaf; the nearer one is found from either side.
     const auto stacked =
         take(Bvh::build(triangles({{0, 1, 0}, {0, 1, 4}, {4, 1, 0}, {0, 0, 0}, {0, 0, 4}, {4, 0, 0}})));
-    const auto above = stacked.ray({1, 5, 1}, {0, -1, 0}, 10), below = stacked.ray({1, -5, 1}, {0, 1, 0}, 10);
+    const auto above = stacked.ray({1, 5, 1}, {0, -1, 0}, 10);
+    const auto below = stacked.ray({1, -5, 1}, {0, 1, 0}, 10);
     require(above && above->primitive == 0 && near(above->distance, 4) && below && below->primitive == 1 &&
                 near(below->distance, 5),
             "A ray did not keep the nearest of several hits.");
@@ -747,7 +765,8 @@ public:
 };
 
 struct Counts {
-    std::uint64_t evaluations, hits;
+    std::uint64_t evaluations;
+    std::uint64_t hits;
     bool operator==(const Counts&) const = default;
 };
 void expect(const Evaluator& evaluator, std::initializer_list<std::pair<ObjectId, Counts>> nodes, const char* message) {
@@ -864,14 +883,20 @@ void graph_evaluation() {
     const auto graph = graph_root.id();
     reject(add_node(runtime, graph, type<Graph>(runtime)), "A graph was added as a node.");
     const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
-    const auto grid_root = add(type<Grid>(runtime)), moved_root = add(type<Transform>(runtime)),
-               line_root = add(type<Line>(runtime)), merged_root = add(type<Merge>(runtime)),
-               copied_root = add(type<CopyToPoints>(runtime));
-    const auto grid_node = grid_root.id(), moved = moved_root.id(), line_node = line_root.id(),
-               merged = merged_root.id(), copied = copied_root.id();
-    const auto vector2 = type<Vector2>(runtime), vector3 = type<Vector3>(runtime);
-    const auto translate = field(runtime, type<Transform>(runtime), "translate"),
-               scale = field(runtime, type<Transform>(runtime), "scale");
+    const auto grid_root = add(type<Grid>(runtime));
+    const auto moved_root = add(type<Transform>(runtime));
+    const auto line_root = add(type<Line>(runtime));
+    const auto merged_root = add(type<Merge>(runtime));
+    const auto copied_root = add(type<CopyToPoints>(runtime));
+    const auto grid_node = grid_root.id();
+    const auto moved = moved_root.id();
+    const auto line_node = line_root.id();
+    const auto merged = merged_root.id();
+    const auto copied = copied_root.id();
+    const auto vector2 = type<Vector2>(runtime);
+    const auto vector3 = type<Vector3>(runtime);
+    const auto translate = field(runtime, type<Transform>(runtime), "translate");
+    const auto scale = field(runtime, type<Transform>(runtime), "scale");
     const auto write_vector = [&](ObjectId node, FieldId at, Vector3 value) {
         take(runtime.write(node, at, ValueInput{vector3, &value}));
     };
@@ -1162,7 +1187,9 @@ class fixture.Unbound : procedural.PointNode {
 )";
 
 Vector3 random_vector(std::uint32_t x) {
-    const auto a = hash(x), b = hash(a), c = hash(b);
+    const auto a = hash(x);
+    const auto b = hash(a);
+    const auto c = hash(b);
     return Vector3{unit(a), unit(b), unit(c)} * 2.f - Vector3{1, 1, 1};
 }
 
@@ -1189,10 +1216,12 @@ void source_nodes() {
     Runtime runtime;
     take(register_types(runtime));
     Project project;
-    const std::string jitter_path = "engine/procedural/jitter.source", random_path = "engine/procedural/random.source",
-                      scale_path = "engine/procedural/random_scale.source";
-    const auto jitter_text = project.text(jitter_path), random_text = project.text(random_path),
-               scale_text = project.text(scale_path);
+    const std::string jitter_path = "engine/procedural/jitter.source";
+    const std::string random_path = "engine/procedural/random.source";
+    const std::string scale_path = "engine/procedural/random_scale.source";
+    const auto jitter_text = project.text(jitter_path);
+    const auto random_text = project.text(random_path);
+    const auto scale_text = project.text(scale_path);
     project.files["fixture.source"] = std::string{fixture_source};
     source::Program program{runtime};
     project.publish(program);
@@ -1202,8 +1231,10 @@ void source_nodes() {
         require(found != classes.end(), "A Source node class was not published.");
         return found->type;
     };
-    const auto jitter_type = source_type("procedural.Jitter"), scale_type = source_type("procedural.RandomScale"),
-               lift_type = source_type("fixture.Lift"), shift_type = source_type("fixture.Shift");
+    const auto jitter_type = source_type("procedural.Jitter");
+    const auto scale_type = source_type("procedural.RandomScale");
+    const auto lift_type = source_type("fixture.Lift");
+    const auto shift_type = source_type("fixture.Shift");
     const auto point_ports = take(ports(runtime, jitter_type));
     require(point_ports.evaluate == MethodId{} && point_ports.parameters.empty() &&
                 point_ports.inputs == std::vector<std::string>{"input"} &&
@@ -1213,8 +1244,9 @@ void source_nodes() {
     reject(ports(runtime, type<PointNode>(runtime)), "The PointNode base was accepted as a node.");
     // Source draws exactly the C++ values: the same integer hashes, and units below 1 even for
     // the largest top 24 bits.
-    const auto source_hash = take(program.entry("test_hash")), source_hash2 = take(program.entry("test_hash2")),
-               source_unit = take(program.entry("test_unit"));
+    const auto source_hash = take(program.entry("test_hash"));
+    const auto source_hash2 = take(program.entry("test_hash2"));
+    const auto source_unit = take(program.entry("test_unit"));
     const auto call = [](const source::Program::Entry& entry, auto... values) {
         return *take(entry.invoke({}, std::array{Scalar{values}...}));
     };
@@ -1235,10 +1267,15 @@ void source_nodes() {
     const auto add = [&](ObjectId owner, TypeId node_type) {
         return roots.emplace_back(take(add_node(runtime, owner, node_type))).id();
     };
-    const auto imported = add(graph, type<MeshImport>(runtime)), scattered = add(graph, type<Scatter>(runtime)),
-               grid_node = add(graph, type<Grid>(runtime)), jittered = add(graph, jitter_type),
-               twin = add(graph, jitter_type), scaled = add(graph, scale_type), lifted = add(graph, lift_type),
-               shifted = add(graph, shift_type), merged = add(graph, type<Merge>(runtime));
+    const auto imported = add(graph, type<MeshImport>(runtime));
+    const auto scattered = add(graph, type<Scatter>(runtime));
+    const auto grid_node = add(graph, type<Grid>(runtime));
+    const auto jittered = add(graph, jitter_type);
+    const auto twin = add(graph, jitter_type);
+    const auto scaled = add(graph, scale_type);
+    const auto lifted = add(graph, lift_type);
+    const auto shifted = add(graph, shift_type);
+    const auto merged = add(graph, type<Merge>(runtime));
     take(runtime.with_native<MeshImport>(imported, [](MeshImport& node) -> Result<void> {
         node.mesh = String{"fixture/a"};
         return {};
@@ -1263,7 +1300,9 @@ void source_nodes() {
     // The same graph by direct calls and the documented hash; `factor` scales Jitter's offsets.
     struct Settings {
         std::uint32_t seed{};
-        float amount{0.25f}, height{1.f}, factor{1.f};
+        float amount{0.25f};
+        float height{1.f};
+        float factor{1.f};
     };
     const auto expected = [&](Settings settings) {
         const auto points =
@@ -1420,10 +1459,11 @@ void source_nodes() {
     // branches, the parallel fallback and the half turn; ZeroEven adds zero normals.
     const auto aligned_root = take(runtime.create(type<Graph>(runtime)));
     const auto aligned = aligned_root.id();
-    const auto surface = add(aligned, type<MeshImport>(runtime)), spread = add(aligned, type<Scatter>(runtime)),
-               zeroed = add(aligned, source_type("fixture.ZeroEven")),
-               oriented = add(aligned, source_type("procedural.NormalAlign")),
-               copies = add(aligned, type<CopyToPoints>(runtime));
+    const auto surface = add(aligned, type<MeshImport>(runtime));
+    const auto spread = add(aligned, type<Scatter>(runtime));
+    const auto zeroed = add(aligned, source_type("fixture.ZeroEven"));
+    const auto oriented = add(aligned, source_type("procedural.NormalAlign"));
+    const auto copies = add(aligned, type<CopyToPoints>(runtime));
     take(runtime.with_native<MeshImport>(surface, [](MeshImport& node) -> Result<void> {
         node.mesh = String{"fixture/a"};
         return {};
@@ -1464,13 +1504,14 @@ void source_nodes() {
     // Types that cannot bind, or input without the columns a node reads, fail only themselves.
     const auto faults_root = take(runtime.create(type<Graph>(runtime)));
     const auto faults = faults_root.id();
-    const auto points = add(faults, type<Grid>(runtime)), unread = add(faults, jitter_type),
-               by_value = add(faults, source_type("fixture.ByValue")),
-               retyped = add(faults, source_type("fixture.WrongColumn")),
-               unbound = add(faults, source_type("fixture.Unbound")),
-               counter = add(faults, source_type("fixture.Counter")),
-               missing_after_write = add(faults, source_type("fixture.MissingAfterWrite")),
-               gathered = add(faults, type<Merge>(runtime));
+    const auto points = add(faults, type<Grid>(runtime));
+    const auto unread = add(faults, jitter_type);
+    const auto by_value = add(faults, source_type("fixture.ByValue"));
+    const auto retyped = add(faults, source_type("fixture.WrongColumn"));
+    const auto unbound = add(faults, source_type("fixture.Unbound"));
+    const auto counter = add(faults, source_type("fixture.Counter"));
+    const auto missing_after_write = add(faults, source_type("fixture.MissingAfterWrite"));
+    const auto gathered = add(faults, type<Merge>(runtime));
     for (const auto node : {unread, by_value, retyped, unbound, counter, missing_after_write}) {
         take(connect(runtime, faults, points, 0, node, 0));
         take(connect(runtime, faults, node, 0, gathered, 0));
@@ -1506,8 +1547,10 @@ void source_nodes() {
     // Eight new columns grow the two-attribute input while N already needs a writable borrow.
     // A bounds failure occurs inside invoke, after writing every column, not during preparation.
     const auto batch_root = take(runtime.create(type<Graph>(runtime)));
-    const auto batch_graph = batch_root.id(), batch_input = add(batch_graph, type<Grid>(runtime)),
-               batch = add(batch_graph, source_type("fixture.ColumnBatch")), sibling = add(batch_graph, lift_type);
+    const auto batch_graph = batch_root.id();
+    const auto batch_input = add(batch_graph, type<Grid>(runtime));
+    const auto batch = add(batch_graph, source_type("fixture.ColumnBatch"));
+    const auto sibling = add(batch_graph, lift_type);
     take(runtime.with_native<Grid>(batch_input, [](Grid& node) -> Result<void> {
         node.rows = 2;
         node.columns = 3;
@@ -1546,7 +1589,8 @@ void source_nodes() {
     take(batching.evaluate());
     const auto* previous = batching.output();
     const auto batch_type = source_type("fixture.ColumnBatch");
-    const auto fail = field(runtime, batch_type, "fail"), offset = field(runtime, batch_type, "offset");
+    const auto fail = field(runtime, batch_type, "fail");
+    const auto offset = field(runtime, batch_type, "offset");
     take(runtime.write(batch, offset, Scalar{9.f}));
     take(runtime.write(batch, fail, Scalar{true}));
     take(batching.evaluate());
@@ -1573,7 +1617,8 @@ void source_nodes() {
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
 geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
     const auto height = [&](std::uint32_t r, std::uint32_t c) {
-        const float x = float(c) * size / float(quads), z = float(r) * size / float(quads);
+        const float x = float(c) * size / float(quads);
+        const float z = float(r) * size / float(quads);
         return Vector3{x, std::sin(x * 0.21f) * std::cos(z * 0.13f) * 4.f + 0.05f * x, z};
     };
     std::vector<geometry::Vertex> vertices;
@@ -1662,10 +1707,13 @@ void profile(const char* path) {
     const auto graph_root = take(runtime.create(type<Graph>(runtime)));
     const auto graph = graph_root.id();
     const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
-    const auto imported = add(type<MeshImport>(runtime)), scattered = add(type<Scatter>(runtime)),
-               gridded = add(type<Grid>(runtime)), lifted = add(type<Transform>(runtime)),
-               cast = add(type<Ray>(runtime)), merged = add(type<Merge>(runtime)),
-               copied = add(type<CopyToPoints>(runtime));
+    const auto imported = add(type<MeshImport>(runtime));
+    const auto scattered = add(type<Scatter>(runtime));
+    const auto gridded = add(type<Grid>(runtime));
+    const auto lifted = add(type<Transform>(runtime));
+    const auto cast = add(type<Ray>(runtime));
+    const auto merged = add(type<Merge>(runtime));
+    const auto copied = add(type<CopyToPoints>(runtime));
     take(runtime.with_native<MeshImport>(imported.id(), [](MeshImport& node) -> Result<void> {
         node.mesh = String{"profile/terrain"};
         return {};

@@ -101,7 +101,8 @@ int run_project_command(std::span<wchar_t*> arguments) {
             throw std::runtime_error("--run-project requires a project folder.");
         RunOptions options;
         options.project = arguments.front();
-        HANDLE live_read{}, live_write{};
+        HANDLE live_read{};
+        HANDLE live_write{};
         for (std::size_t i = 1; i < arguments.size(); ++i) {
             const std::wstring_view option = arguments[i];
             if (option == L"--headless") {
@@ -273,7 +274,9 @@ int run_project(const RunOptions& options) {
             startup_checkpoint();
         }
         SceneSnapshot scene;
-        std::uint64_t frame{}, surface_revision{1}, ui_revision{};
+        std::uint64_t frame{};
+        std::uint64_t surface_revision{1};
+        std::uint64_t ui_revision{};
         double elapsed{};
         bool started{};
         std::optional<atelier::presentation::CameraSnapshot> accepted_camera;
@@ -282,7 +285,8 @@ int run_project(const RunOptions& options) {
         std::string ui_error;
         RenderClock lighting_clock;
         LitFallback lit_fallback;
-        std::string render_failure, material_failure;
+        std::string render_failure;
+        std::string material_failure;
         const auto prepare_scene = [&] {
             timing::Scope snapshot{phases::scene};
             auto refreshed = scene.refresh(document, false);

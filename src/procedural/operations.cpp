@@ -30,7 +30,15 @@ Vector3 narrow(Vector3d v) {
 
 // sign(det) * cofactor rows of the linear part, in double; a zero determinant keeps sign +1.
 std::array<double, 9> normal_rows(const Matrix4& m) {
-    const double a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const double a = m[0];
+    const double b = m[1];
+    const double c = m[2];
+    const double d = m[4];
+    const double e = m[5];
+    const double f = m[6];
+    const double g = m[8];
+    const double h = m[9];
+    const double i = m[10];
     std::array<double, 9> cofactors{e * i - f * h, f * g - d * i, d * h - e * g, c * h - b * i, a * i - c * g,
                                     b * g - a * h, b * f - c * e, c * d - a * f, a * e - b * d};
     if (a * cofactors[0] + b * cofactors[1] + c * cofactors[2] < 0)
@@ -70,7 +78,9 @@ Geometry import_mesh(const geometry::Mesh& mesh) {
     const auto vertices = mesh.vertices();
     std::unordered_map<Key, std::uint32_t, KeyHash> welded;
     Array<Vector3> positions;
-    Array<std::uint32_t> vertex_points, offsets, materials;
+    Array<std::uint32_t> vertex_points;
+    Array<std::uint32_t> offsets;
+    Array<std::uint32_t> materials;
     Array<Vector3> normals;
     Array<Vector2> uvs;
     vertex_points.reserve(vertices.size());
@@ -143,8 +153,11 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         return failure("Scatter needs triangle primitives.");
     const auto& points = surface.positions();
     const auto vertex_points = surface.vertex_points();
-    Array<Vector3> positions, normals;
-    Array<std::uint32_t> ids, primitives, ordinals;
+    Array<Vector3> positions;
+    Array<Vector3> normals;
+    Array<std::uint32_t> ids;
+    Array<std::uint32_t> primitives;
+    Array<std::uint32_t> ordinals;
     Array<Vector2> barycentrics;
     for (std::uint32_t t = 0; t < triangles; ++t) {
         const auto v0 = widen(points[vertex_points[t * 3]]);
@@ -162,7 +175,8 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
             return failure("Scatter would create 2^32 - 1 points or more.");
         const auto face = narrow(normal / (area * 2));
         for (std::uint32_t k = 0; k < static_cast<std::uint32_t>(count); ++k) {
-            float r1 = unit(hash(seed, 2 * k + 1)), r2 = unit(hash(seed, 2 * k + 2));
+            float r1 = unit(hash(seed, 2 * k + 1));
+            float r2 = unit(hash(seed, 2 * k + 2));
             if (r1 + r2 > 1) {
                 r1 = 1 - r1;
                 r2 = 1 - r2;
@@ -177,7 +191,8 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     }
     if (settings.min_distance > 0 && !positions.empty()) {
         // Cells as wide as the distance: a kept point closer than it lies in a neighbouring cell.
-        const double cell = settings.min_distance, limit = cell * cell;
+        const double cell = settings.min_distance;
+        const double limit = cell * cell;
         struct CellHash {
             std::size_t operator()(const std::array<std::int64_t, 3>& c) const noexcept {
                 return hash(static_cast<std::uint32_t>(c[0]),
@@ -298,7 +313,8 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
     if ((from == Layer::instance && to != Layer::detail) || (to == Layer::instance && from != Layer::detail))
         return failure("Instance attributes only exchange with detail.");
     // Sources of each target element as offsets into `sources`.
-    Array<std::uint32_t> starts{0}, sources;
+    Array<std::uint32_t> starts{0};
+    Array<std::uint32_t> sources;
     const auto vertex_points = geometry.vertex_points();
     const auto primitives = geometry.count(Layer::primitive);
     const auto targets = geometry.count(to);
@@ -328,7 +344,8 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
             }
         }
     } else { // To points from vertices or primitives: bucket the vertices by point.
-        Array<std::uint32_t> counts, vertex_primitive;
+        Array<std::uint32_t> counts;
+        Array<std::uint32_t> vertex_primitive;
         counts.resize(targets + 1);
         vertex_primitive.resize(vertex_points.size());
         for (std::uint32_t p = 0; p < primitives; ++p) {
@@ -358,7 +375,8 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
                 Array<T> result;
                 result.reserve(targets);
                 for (std::uint32_t i = 0; i < targets; ++i) {
-                    const auto first = starts[i], end = starts[i + 1];
+                    const auto first = starts[i];
+                    const auto end = starts[i + 1];
                     if (first == end) {
                         result.emplace();
                         continue;

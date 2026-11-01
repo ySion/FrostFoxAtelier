@@ -264,7 +264,8 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
     // root. Stable source identity resolves equal weights independently of
     // packing order; ambiguous legacy identities use the packed index last.
     const auto better = [&](std::uint32_t a, std::uint32_t b) {
-        const float pa = proposals[a].probability, pb = proposals[b].probability;
+        const float pa = proposals[a].probability;
+        const float pb = proposals[b].probability;
         if (pa != pb)
             return pa > pb;
         const auto& ka = keys_[a];
@@ -325,9 +326,12 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
             mass += proposals[selected[slot]].probability;
         check(std::isfinite(mass) && mass > 0, "Spatial light proposal mass is invalid");
         header.mass = static_cast<float>(mass);
-        std::array<double, light_grid_cell_capacity> scaled{}, actual{};
-        std::array<std::uint32_t, light_grid_cell_capacity> below{}, above{};
-        std::uint32_t below_count = 0, above_count = 0;
+        std::array<double, light_grid_cell_capacity> scaled{};
+        std::array<double, light_grid_cell_capacity> actual{};
+        std::array<std::uint32_t, light_grid_cell_capacity> below{};
+        std::array<std::uint32_t, light_grid_cell_capacity> above{};
+        std::uint32_t below_count = 0;
+        std::uint32_t above_count = 0;
         for (std::uint32_t slot = 0; slot < count; ++slot) {
             const auto source = selected[slot];
             spatial_proposals.push_back({source, 1, slot, 0});
@@ -339,7 +343,8 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
                 above[above_count++] = slot;
         }
         while (below_count && above_count) {
-            const auto under = below[--below_count], over = above[--above_count];
+            const auto under = below[--below_count];
+            const auto over = above[--above_count];
             auto& proposal = spatial_proposals[header.offset + under];
             proposal.accept = static_cast<float>(std::clamp(scaled[under], 0., 1.));
             proposal.alias = over;

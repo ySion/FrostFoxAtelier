@@ -1,7 +1,9 @@
 // Included by business.cpp inside its anonymous namespace.
 struct TypedUiController {
-    float opacity{}, cursor{};
-    std::uint32_t selected{}, revisions{};
+    float opacity{};
+    float cursor{};
+    std::uint32_t selected{};
+    std::uint32_t revisions{};
     void reset_focus() {
         opacity = 1.0f;
         cursor = 2.0f;
@@ -163,8 +165,13 @@ void typed_value(BusinessValue actual, BusinessValue expected, const char* messa
     require(actual.kind == expected.kind && actual.bits == expected.bits, message);
 }
 struct TypedTrace {
-    std::uint32_t begins{}, finishes{}, clears{}, clears_after_finish{};
-    bool fail_begin{}, fail_poll{}, fail_finish{};
+    std::uint32_t begins{};
+    std::uint32_t finishes{};
+    std::uint32_t clears{};
+    std::uint32_t clears_after_finish{};
+    bool fail_begin{};
+    bool fail_poll{};
+    bool fail_finish{};
     bool receiver_at_finish{};
 };
 BusinessServices typed_trace_services() {
@@ -364,7 +371,8 @@ void typed_reject_source(const Binding& binding, BusinessCode* existing, std::st
                                                  static_cast<std::uint32_t>(source.size()), &environment, &retained,
                                                  diagnostic, sizeof(diagnostic));
     require(status != 0 && retained == existing, "Typed compile rejection replaced the prior executable.");
-    unsigned line{}, column{};
+    unsigned line{};
+    unsigned column{};
     require(sscanf_s(diagnostic, "typed-invalid.source:%u:%u:", &line, &column) == 2 && line != 0 && column != 0,
             "Typed source rejection lost its source/line/column diagnostic.");
 }
@@ -606,7 +614,8 @@ void verify_typed_return_cleanup(Runtime& runtime, const Binding& binding) {
     auto receiver = take(runtime.create(binding.type));
     const std::array arguments{scalar(4.0f)};
     const BusinessValue sentinel{ValueKind::u32, 0xbad00badu};
-    std::uint32_t success_clears{}, failure_clears{};
+    std::uint32_t success_clears{};
+    std::uint32_t failure_clears{};
     for (const bool fail : {false, true, false, false}) {
         TypedTrace trace;
         trace.fail_finish = fail;

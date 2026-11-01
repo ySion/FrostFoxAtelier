@@ -6,7 +6,8 @@ void verify_dungeons() {
     auto project = take(editor::Project::open(root));
     const auto manifest = nlohmann::json::parse(take(assets::read_file(folder / "Import/models.json")));
     require(manifest.size() == 2314, "Dungeons model library is incomplete.");
-    std::size_t models{}, textured{};
+    std::size_t models{};
+    std::size_t textured{};
     std::unordered_set<const material::Image*> images;
     editor::Session resolved;
     for (const auto& row : manifest) {
@@ -94,7 +95,9 @@ void verify_dungeons() {
                         controls, [](const auto& c) { return c.parent == editor::control::entity_tree; }) <= row_limit,
                 "Selecting the last Dungeons Entity did not expand and reveal its row.");
     }
-    std::size_t fbx{}, materials{}, textures{};
+    std::size_t fbx{};
+    std::size_t materials{};
+    std::size_t textures{};
     for (const auto& file : fs::recursive_directory_iterator(folder / "Originals"))
         if (file.is_regular_file()) {
             const auto extension = file.path().extension();

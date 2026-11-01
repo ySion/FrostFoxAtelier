@@ -39,9 +39,11 @@ private:
     friend class Scope;
     friend void install(std::initializer_list<std::span<Marker* const>>);
     friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
-    std::string_view key_, title_;
+    std::string_view key_;
+    std::string_view title_;
     const Marker* parent_;
-    std::uint8_t index_{unregistered}, parent_index_{unregistered};
+    std::uint8_t index_{unregistered};
+    std::uint8_t parent_index_{unregistered};
 };
 
 // The root of every host frame and the only marker owned by foundation.
@@ -149,7 +151,8 @@ public:
 private:
     Recorder* recorder_;
     Clock::time_point start_{};
-    std::uint8_t index_{}, previous_{};
+    std::uint8_t index_{};
+    std::uint8_t previous_{};
 };
 
 // Adds one entry measured by another clock, such as stages inside a third-party

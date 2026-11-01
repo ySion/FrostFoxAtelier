@@ -11,7 +11,8 @@ struct Host final : editor::OperatorHost {
     editor::ToolSettings tools;
     editor::Workspace panels;
     editor::ViewportTool viewport;
-    int tool_changes{}, scene_changes{};
+    int tool_changes{};
+    int scene_changes{};
     Result<std::optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path&,
                                                              std::wstring_view) override {
         return std::unexpected(Error{ErrorCode::unsupported_operation, "A native file picker requires a window."});
@@ -455,7 +456,8 @@ void verify_operator_parameters() {
         changed(edited.undo());
         for (const auto channel : {"location", "rotation", "scale"}) {
             invoke("scene.transform_clear", {{"channel", channel}});
-            auto expected_first = first_pose, expected_second = second_pose;
+            auto expected_first = first_pose;
+            auto expected_second = second_pose;
             if (std::string_view(channel) == "location")
                 expected_first.position = expected_second.position = {};
             else if (std::string_view(channel) == "rotation")
@@ -745,11 +747,14 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         const auto entity = patched.selection().entity;
         const world::Trs pose{{3, -2, 5}, {}, {2, 1, 4}};
         take(patched.set_transform(entity, pose));
-        const std::array a{take(rt.find_field(actor_type, "a"))}, z{take(rt.find_field(actor_type, "z"))};
+        const std::array a{take(rt.find_field(actor_type, "a"))};
+        const std::array z{take(rt.find_field(actor_type, "z"))};
         take(patched.set_property(entity, a, std::int32_t{7}, 101));
         changed(patched.undo());
         patched.mark_saved();
-        const auto history = patched.undo_count(), redo = patched.redo_count(), recorded = patched.recorded();
+        const auto history = patched.undo_count();
+        const auto redo = patched.redo_count();
+        const auto recorded = patched.recorded();
         const auto invoke = [&](ObjectId object, Json args) {
             auto context = controls.panels.operator_context(patched, &project, false);
             editor::ContextOverride override;

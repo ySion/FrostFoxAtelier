@@ -24,7 +24,8 @@ public:
         bool operator==(const StreamStatus&) const = default;
     };
     struct OutputStatus {
-        StreamStatus standard_output, standard_error;
+        StreamStatus standard_output;
+        StreamStatus standard_error;
         bool process_exited{};
         bool pending{}; // Pipe handles still need polling, independently of buffered bytes already available to take.
     };
@@ -33,7 +34,8 @@ public:
         std::uint64_t offset{}; // Byte offset in this stream; gaps identify precisely where retention dropped bytes.
     };
     struct RawOutput {
-        RawStream standard_output, standard_error;
+        RawStream standard_output;
+        RawStream standard_error;
         OutputStatus status;
     };
     static constexpr std::size_t output_capacity = 64 * 1024; // Retained bytes per stream.
@@ -70,10 +72,14 @@ private:
         std::string bytes; // Capacity is reserved before launch; byte draining never allocates.
         StreamStatus status;
     };
-    HANDLE process_{}, job_{}, stop_{};
+    HANDLE process_{};
+    HANDLE job_{};
+    HANDLE stop_{};
     std::filesystem::path log_directory_;
     std::array<OutputPipe, 2> output_;
-    bool stopping_{}, forced_{}, exited_{};
+    bool stopping_{};
+    bool forced_{};
+    bool exited_{};
     std::optional<DWORD> exit_code_;
     std::chrono::steady_clock::time_point stop_deadline_{};
     void drain() noexcept;

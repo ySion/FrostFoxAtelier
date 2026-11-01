@@ -363,7 +363,9 @@ __declspec(noinline) void verify_stack(const Unit& unit, std::size_t minimum_sta
     const auto host_storage = reinterpret_cast<std::uintptr_t>(&snapshot);
     require(host_storage > snapshot.storage_address && host_storage - snapshot.storage_address >= minimum_stack,
             "Generated stack allocation did not reach the requested size.");
-    std::uint32_t outer_frames{}, inner_frames{}, host_frames{};
+    std::uint32_t outer_frames{};
+    std::uint32_t inner_frames{};
+    std::uint32_t host_frames{};
     for (std::uint32_t i = 0; i < snapshot.count; ++i) {
         outer_frames += outer_range.contains(snapshot.frames[i]) ? 1u : 0u;
         inner_frames += inner_range.contains(snapshot.frames[i]) ? 1u : 0u;
@@ -396,7 +398,9 @@ __declspec(noinline) void verify_cross_unit(LLJIT& jit, const Unit& callee) {
     const auto returned = address.toPtr<std::uint32_t (*)(StackSnapshot*)>()(&snapshot);
     require(snapshot.count <= std::size(snapshot.frames) && returned == snapshot.count + 21,
             "Cross-unit generated call returned an invalid result.");
-    std::uint32_t caller_frames{}, callee_frames{}, host_frames{};
+    std::uint32_t caller_frames{};
+    std::uint32_t callee_frames{};
+    std::uint32_t host_frames{};
     for (std::uint32_t i = 0; i < snapshot.count; ++i) {
         caller_frames += caller_range.contains(snapshot.frames[i]) ? 1u : 0u;
         callee_frames += callee_range.contains(snapshot.frames[i]) ? 1u : 0u;

@@ -112,7 +112,8 @@ int main(int argc, char** argv) {
         std::fputs("Unknown physics scenario; use --list.\n", stderr);
         return EXIT_FAILURE;
     }
-    unsigned passed = 0, failed = 0;
+    unsigned passed = 0;
+    unsigned failed = 0;
     for (const auto& scenario : scenarios) {
         if (!selected.empty() && selected != scenario.name)
             continue;

@@ -128,15 +128,27 @@ void verify_array_elements() {
             .validate<&valid_owner>()
             .build(),
     }));
-    const auto probe_type = types[0], fragile_type = types[1], probe_array = types[2], float_array = types[3];
-    const auto point_array = types[4], swapper_type = types[7], swapper_array = types[8], owner_type = types[9];
-    const auto f32 = take(runtime.native_type<float>()), vector3 = take(runtime.native_type<math::Vector3>());
+    const auto probe_type = types[0];
+    const auto fragile_type = types[1];
+    const auto probe_array = types[2];
+    const auto float_array = types[3];
+    const auto point_array = types[4];
+    const auto swapper_type = types[7];
+    const auto swapper_array = types[8];
+    const auto owner_type = types[9];
+    const auto f32 = take(runtime.native_type<float>());
+    const auto vector3 = take(runtime.native_type<math::Vector3>());
     const auto field = [&](TypeId type, const char* name) { return take(runtime.find_field(type, name)); };
-    const auto probes = field(owner_type, "probes"), weights = field(owner_type, "weights"),
-               points = field(owner_type, "points");
-    const auto fragile = field(owner_type, "fragile"), layers = field(owner_type, "layers");
-    const auto gain = field(probe_type, "gain"), free = field(probe_type, "free"), value = field(fragile_type, "value");
-    const auto y = field(vector3, "y"), z = field(vector3, "z");
+    const auto probes = field(owner_type, "probes");
+    const auto weights = field(owner_type, "weights");
+    const auto points = field(owner_type, "points");
+    const auto fragile = field(owner_type, "fragile");
+    const auto layers = field(owner_type, "layers");
+    const auto gain = field(probe_type, "gain");
+    const auto free = field(probe_type, "free");
+    const auto value = field(fragile_type, "value");
+    const auto y = field(vector3, "y");
+    const auto z = field(vector3, "z");
     const auto at = [&](TypeId array, std::uint32_t index) { return take(runtime.element(array, index)); };
     constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
 
@@ -148,7 +160,10 @@ void verify_array_elements() {
 
     auto owner = take(runtime.create(owner_type));
     const auto id = owner.id();
-    const std::array probes_path{probes}, weights_path{weights}, points_path{points}, fragile_path{fragile};
+    const std::array probes_path{probes};
+    const std::array weights_path{weights};
+    const std::array points_path{points};
+    const std::array fragile_path{fragile};
     const auto count = [&](std::span<const FieldId> path) { return take(runtime.element_count(id, path)); };
     take(runtime.insert_element(id, probes_path, 0));
     take(runtime.insert_element(id, probes_path, 1));
@@ -189,7 +204,8 @@ void verify_array_elements() {
            "A whole-element write accepted a NaN leaf.");
 
     // Ranged Arrays of scalars and vectors bound every element.
-    const float heavy = 4.0f, missing = nan;
+    const float heavy = 4.0f;
+    const float missing = nan;
     take(runtime.insert_element(id, weights_path, 0, {f32, &heavy}));
     reject(runtime.insert_element(id, weights_path, 0, {f32, &missing}), ErrorCode::argument_mismatch,
            "arrays.Owner.weights[0]: Hard-bounded fields reject NaN and infinity.", "An Array insertion accepted NaN.");
@@ -293,8 +309,8 @@ void verify_array_elements() {
         return {};
     });
     take(busy);
-    const auto touch = take(runtime.find_method(owner_type, "touch")),
-               total = take(runtime.find_method(owner_type, "total"));
+    const auto touch = take(runtime.find_method(owner_type, "touch"));
+    const auto total = take(runtime.find_method(owner_type, "total"));
     reject(runtime.call(id, touch, std::array{Argument::field(id, probes_path)}), ErrorCode::argument_mismatch,
            "An Array with hard-bounded elements was borrowed writably.");
     Scalar sum;

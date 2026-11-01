@@ -26,7 +26,8 @@ int verify_physics_examples_window(Application& app, const char* output_director
             "Physic did not open Smooth rendering with its authored lighting settings preserved.");
     struct Example {
         const char* name;
-        std::size_t entities, roots;
+        std::size_t entities;
+        std::size_t roots;
     };
     constexpr std::array examples{
         Example{"Overview", 25, 12},  Example{"RigidBodies", 10, 7}, Example{"Forces", 10, 7},

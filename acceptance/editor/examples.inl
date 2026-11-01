@@ -53,7 +53,8 @@ void verify_examples() {
             take(camera.matrices(16.f / 9));
             require(camera.entity != ObjectId{} && take(document->main_camera()) == camera.entity,
                     "An example has no usable authored main camera.");
-            std::size_t saved_bindings{}, loaded_bindings{};
+            std::size_t saved_bindings{};
+            std::size_t loaded_bindings{};
             for (const auto& entity : nlohmann::json::parse(original)["entities"])
                 for (const auto& part : entity["components"])
                     if (const auto at = part.find("materials"); at != part.end())

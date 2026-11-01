@@ -56,14 +56,18 @@ struct State {
     detail::Logger* logger{};
     std::atomic<RunState> lifecycle{RunState::running};
     std::array<std::atomic<std::uint64_t>, 8> submissions{};
-    std::atomic<std::uint64_t> failures{}, notifications{}, sequence{};
+    std::atomic<std::uint64_t> failures{};
+    std::atomic<std::uint64_t> notifications{};
+    std::atomic<std::uint64_t> sequence{};
     std::atomic<bool> last_flush{};
     std::atomic<bool> explicit_flush{};
     std::mutex first_mutex;
     FacilityIssue first_issue;
     std::string first_notice;
     CapturedDiagnostic first_error;
-    bool has_issue{}, has_notice{}, has_error{};
+    bool has_issue{};
+    bool has_notice{};
+    bool has_error{};
     std::mutex producers_mutex;
     std::array<quill::detail::ThreadContext*, maximum_producers> producers{};
     std::uint64_t next_producer{1};
@@ -211,7 +215,8 @@ struct State {
 std::atomic<State*> active_state{};
 struct Producer {
     State* state{};
-    std::uint64_t id{}, sequence{};
+    std::uint64_t id{};
+    std::uint64_t sequence{};
 };
 thread_local Producer producer;
 thread_local std::exception_ptr producer_context_error;
@@ -487,7 +492,11 @@ struct Run::Impl {
     std::shared_ptr<State> state{std::make_shared<State>()};
     std::shared_ptr<JsonSink> sink;
     Handle lock;
-    bool backend_started{}, emergency_cleanup{}, summary_published{}, acknowledged{}, flushed{};
+    bool backend_started{};
+    bool emergency_cleanup{};
+    bool summary_published{};
+    bool acknowledged{};
+    bool flushed{};
     DWORD owner{GetCurrentThreadId()};
 };
 Run::Run() : impl_(std::make_unique<Impl>()) {}

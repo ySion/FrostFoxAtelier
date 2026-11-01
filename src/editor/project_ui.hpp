@@ -24,7 +24,8 @@ private:
     Runtime runtime_;
     ui::ControlKey next_key_{1ULL << 41};
     std::unique_ptr<ui_language::LiveDocument> document_;
-    std::filesystem::path root_, entry_;
+    std::filesystem::path root_;
+    std::filesystem::path entry_;
     std::wstring title_;
     std::string error_;
     std::vector<ui::Control> accepted_controls_;

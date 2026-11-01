@@ -210,7 +210,8 @@ struct RootObservation {
     ObjectId snapshot;
     ObjectId garbage;
     CollectionPhase phase{CollectionPhase::roots};
-    bool observed{}, garbage_alive{true};
+    bool observed{};
+    bool garbage_alive{true};
 };
 void observe_roots(void* data, Invocation& invocation) {
     auto& observation = *static_cast<RootObservation*>(data);
@@ -393,7 +394,8 @@ void verify_failures_and_admission(BusinessCode* code) {
 }
 
 void verify_identity_boundaries(BusinessCode* code) {
-    Runtime runtime, foreign;
+    Runtime runtime;
+    Runtime foreign;
     const auto types = register_machines(runtime);
     const auto foreign_types = register_machines(foreign);
     const auto binding = bind_type(runtime, types[0]);
@@ -436,7 +438,8 @@ void verify_identity_boundaries(BusinessCode* code) {
 }
 
 void verify_frame_protocol() {
-    Runtime runtime, foreign;
+    Runtime runtime;
+    Runtime foreign;
     const auto types = register_machines(runtime);
     const auto other_types = register_machines(foreign);
     auto receiver = take(runtime.create(types[0]));
@@ -808,7 +811,8 @@ void verify_reference_collection(Runtime& runtime, const Binding& binding) {
     struct Observation {
         ObjectId object;
         ObjectId garbage;
-        unsigned calls{}, cycles{};
+        unsigned calls{};
+        unsigned cycles{};
     } state{{}, garbage_id};
     NativeAction capture{&state, [](void* context, CallContext& call) {
                              auto& state = *static_cast<Observation*>(context);
@@ -870,7 +874,8 @@ void verify_reference_loop_slots(Runtime& runtime, const Binding& binding) {
     auto receiver = take(runtime.create(binding.type));
     struct Iterations {
         std::array<ObjectId, 4> objects{};
-        std::size_t calls{}, cycles{};
+        std::size_t calls{};
+        std::size_t cycles{};
     } state;
     NativeAction capture{&state, [](void* context, CallContext& call) {
                              auto& state = *static_cast<Iterations*>(context);
@@ -1207,7 +1212,8 @@ void verify_reference_temporaries(Runtime& runtime, const Binding& binding) {
         ObjectId receiver;
         ObjectId temporary;
         ObjectId held;
-        unsigned calls{}, cycles{};
+        unsigned calls{};
+        unsigned cycles{};
     } state{receiver.id(), {}, {}};
     NativeAction observe{
         &state, [](void* context, CallContext& call) {
@@ -1827,7 +1833,9 @@ void verify_reload_active_calls(Runtime& runtime, const Binding& binding) {
         BusinessProgram::Candidate* first_candidate;
         BusinessProgram::Candidate* second_candidate;
         ObjectId other;
-        unsigned calls{}, polls{}, nested{};
+        unsigned calls{};
+        unsigned polls{};
+        unsigned nested{};
     } state{&first, &second, &binding, &first_candidate, &second_candidate, other.id()};
     NativeAction attempt{&state, [](void* context, CallContext& call) {
                              auto& state = *static_cast<Active*>(context);
@@ -1912,7 +1920,8 @@ struct ReloadGcAttempt {
     BusinessProgram* program;
     BusinessProgram::Candidate* candidate;
     unsigned calls{};
-    bool busy{}, threw{};
+    bool busy{};
+    bool threw{};
 };
 thread_local ReloadGcAttempt* reload_gc_attempt{};
 struct ReloadGcProbe {

@@ -250,7 +250,8 @@ Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::Scen
     auto current = presentation_.environment();
     if (!current)
         return std::unexpected(current.error());
-    renderer::ViewSettings before, after;
+    renderer::ViewSettings before;
+    renderer::ViewSettings after;
     static_cast<rendering::SceneLightingSettings&>(before.lit) = *current;
     static_cast<rendering::SceneLightingSettings&>(after.lit) = settings;
     auto fields = detail::author_fields(world_.runtime(), presentation_types_.environment_component);

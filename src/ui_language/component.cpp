@@ -99,7 +99,8 @@ namespace detail {
 struct Context;
 struct NodeState {
     ui::Control control;
-    ui::ControlKey label{}, body{};
+    ui::ControlKey label{};
+    ui::ControlKey body{};
     EditBinding edit;
     TextEditBinding text_edit;
     ActionBinding action;
@@ -113,11 +114,13 @@ struct NodeState {
     std::unique_ptr<Instance> child;
     std::map<ui::ControlKey, std::unique_ptr<Instance>> repeated;
     NodeState* previous{}; // Borrowed accepted owner; transferred only at commit.
-    std::size_t begin{}, count{};
+    std::size_t begin{};
+    std::size_t count{};
     bool dirty{true};
 };
 struct ScopeLifetime {
-    std::uint64_t created{}, retired{};
+    std::uint64_t created{};
+    std::uint64_t retired{};
 };
 struct DefinitionState;
 struct InstanceData {
@@ -148,10 +151,15 @@ struct DefinitionState {
     std::vector<std::variant<bool, double>> states;
     std::optional<std::vector<std::variant<bool, double>>> state_undo;
     std::vector<std::vector<bool>> dependencies;
-    std::vector<bool> dirty, reads;
+    std::vector<bool> dirty;
+    std::vector<bool> reads;
     std::vector<ui::Control> published;
     std::size_t subtree_nodes{};
-    bool evaluating{}, initializing{}, handling_event{}, event_checked{}, publication_pending{true};
+    bool evaluating{};
+    bool initializing{};
+    bool handling_event{};
+    bool event_checked{};
+    bool publication_pending{true};
     explicit DefinitionState(InstanceData& owner) : scope(owner) {}
     const Declaration& declaration() const { return component->declaration(); }
     void read(std::size_t index) {
@@ -936,13 +944,15 @@ Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::str
 // remain available until Session has consumed its cleanup effects.
 struct detail::PreparedUpdate {
     struct Change {
-        std::size_t node{}, next_count{};
+        std::size_t node{};
+        std::size_t next_count{};
         std::vector<ui::Control> controls;
         std::unique_ptr<Instance> child;
         std::map<ui::ControlKey, std::unique_ptr<Instance>> additions;
         std::vector<ui::ControlKey> removals;
         std::vector<std::unique_ptr<PreparedUpdate>> children;
-        bool unmount{}, controls_changed{};
+        bool unmount{};
+        bool controls_changed{};
     };
     InstanceData& scope;
     std::unique_ptr<DefinitionState> replacement;
@@ -950,9 +960,13 @@ struct detail::PreparedUpdate {
     std::shared_ptr<Component> definition;
     std::vector<Change> changes;
     std::vector<ui::Control> reordered;
-    std::uint64_t creations{}, removals{};
+    std::uint64_t creations{};
+    std::uint64_t removals{};
     std::size_t subtree_nodes{};
-    bool resized{}, control_changes{}, materialized{}, committed{};
+    bool resized{};
+    bool control_changes{};
+    bool materialized{};
+    bool committed{};
     PreparedUpdate(InstanceData& owner, std::unique_ptr<DefinitionState> next, std::shared_ptr<Component> type)
         : scope(owner), replacement(std::move(next)), data(replacement ? *replacement : *owner.value),
           definition(std::move(type)) {}
@@ -1376,7 +1390,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         update->control_changes |= change.controls_changed;
         if (!std::ranges::equal(previous, output, {}, &ui::Control::key, &ui::Control::key)) {
             keys_changed = true;
-            std::vector<ui::ControlKey> before, after;
+            std::vector<ui::ControlKey> before;
+            std::vector<ui::ControlKey> after;
             for (const auto& item : previous)
                 before.push_back(item.key);
             for (const auto& item : output)
@@ -1423,7 +1438,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         const auto candidate = update->resized ? std::span<const ui::Control>(update->reordered)
                                                : std::span<const ui::Control>(data.published);
         update->control_changes = !std::ranges::equal(value->published, candidate);
-        std::vector<ui::ControlKey> before, after;
+        std::vector<ui::ControlKey> before;
+        std::vector<ui::ControlKey> after;
         for (const auto& control : value->published)
             before.push_back(control.key);
         for (const auto& control : candidate)

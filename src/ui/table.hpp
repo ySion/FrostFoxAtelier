@@ -11,8 +11,11 @@ enum class TableView { details, list, tiles };
 // density keeps the same row storage and selection identity.
 struct TableLayout {
     TableView view{TableView::details};
-    float row_height{23}, header_height{25};
-    float tile_width{90}, tile_height{66}, item_gap{3};
+    float row_height{23};
+    float header_height{25};
+    float tile_width{90};
+    float tile_height{66};
+    float item_gap{3};
     bool operator==(const TableLayout&) const = default;
 };
 enum class TableSortDirection { ascending, descending };
@@ -22,7 +25,8 @@ struct TableSort {
     bool operator==(const TableSort&) const = default;
 };
 struct TableSelection {
-    TableKey row{}, column{};
+    TableKey row{};
+    TableKey column{};
     bool operator==(const TableSelection&) const = default;
 };
 struct TableColumnResize {
@@ -33,7 +37,8 @@ struct TableColumnResize {
 struct TableColumn {
     TableKey key{};
     std::wstring title;
-    float width{160}, min_width{40}; // DIPs.
+    float width{160};
+    float min_width{40}; // DIPs.
     TextAlign alignment{TextAlign::left};
     bool sortable{true};
     bool operator==(const TableColumn&) const = default;

@@ -53,7 +53,8 @@ std::uint32_t atelier_jit_native_capture(StackSnapshot* snapshot) noexcept {
         return 0;
     CONTEXT context{};
     RtlCaptureContext(&context);
-    ULONG_PTR stack_low{}, stack_high{};
+    ULONG_PTR stack_low{};
+    ULONG_PTR stack_high{};
     GetCurrentThreadStackLimits(&stack_low, &stack_high);
     UNWIND_HISTORY_TABLE history{};
     snapshot->count = 0;

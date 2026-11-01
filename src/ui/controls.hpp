@@ -7,13 +7,16 @@ namespace atelier::ui {
 enum class VectorAxis { none, x, y, z, w };
 inline constexpr float single_line_height = 23;
 inline constexpr float scalar_field_width = 140; // One tuple column in a default-width Parameters pane.
-inline constexpr float stow_rail_width = 12, stow_collapsed_height = 12, stow_arrow_region_height = 12;
+inline constexpr float stow_rail_width = 12;
+inline constexpr float stow_collapsed_height = 12;
+inline constexpr float stow_arrow_region_height = 12;
 // Shared number/text editor geometry. Content may grow for larger fonts.
 ui_layout::NodeInput single_line_layout(float width = 0);
 // Slider endpoints are a navigation range; the number retains its legal range.
 struct SliderRange {
     ControlKey key{};
-    double minimum{}, maximum{1};
+    double minimum{};
+    double maximum{1};
     bool operator==(const SliderRange&) const = default;
 };
 // A scalar/vector row is a composition of ordinary controls. All keys belong
@@ -21,15 +24,23 @@ struct SliderRange {
 struct NumberField {
     ControlKey key{};
     std::wstring label;
-    double value{}, default_value{}, minimum{-10000}, maximum{10000};
-    double drag_step{.01}, fine_step{.001};
+    double value{};
+    double default_value{};
+    double minimum{-10000};
+    double maximum{10000};
+    double drag_step{.01};
+    double fine_step{.001};
     VectorAxis axis{VectorAxis::none};
     std::optional<SliderRange> slider{};
     bool single_precision{};
     bool operator==(const NumberField&) const = default;
 };
 struct ParameterRow {
-    ControlKey key{}, label_key{}, body_key{}, group_key{}, parent{};
+    ControlKey key{};
+    ControlKey label_key{};
+    ControlKey body_key{};
+    ControlKey group_key{};
+    ControlKey parent{};
     std::wstring label;
     bool enabled{true};
     // When the host filters out fields, retain the complete group's state.
@@ -46,7 +57,8 @@ void append_number_row(std::vector<Control>&, ParameterRow, std::span<const Numb
 struct MenuItem {
     ControlKey key{};
     std::wstring text;
-    bool enabled{true}, selected{};
+    bool enabled{true};
+    bool selected{};
     std::optional<EditCommand> edit_command;
     std::wstring shortcut{};
     bool separator_before{};
@@ -67,9 +79,11 @@ struct TreeNode {
     std::wstring_view text;
 };
 struct TreeRow {
-    std::uint32_t node{}, parent{no_tree_node}; // parent: index of the parent row.
+    std::uint32_t node{};
+    std::uint32_t parent{no_tree_node}; // parent: index of the parent row.
     std::uint32_t depth{};
-    bool branch{}, expanded{};
+    bool branch{};
+    bool expanded{};
     std::bitset<128> lines; // Control::tree_lines.
 };
 // Visible rows of nodes, replacing rows. A nonempty filter (ASCII case folding)

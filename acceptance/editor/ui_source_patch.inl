@@ -4,7 +4,8 @@ void verify_ui_source_patch() {
     namespace language = ui_language;
     Runtime runtime;
     take(ui_language::register_types(runtime));
-    const auto roots = runtime.root_count(), objects = runtime.live_objects();
+    const auto roots = runtime.root_count();
+    const auto objects = runtime.live_objects();
     const auto folder =
         std::filesystem::temp_directory_path() /
         ("atelier-ui-patch-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -110,12 +111,14 @@ ui Late() { Text label { text: "Late"; height: 17; } }
         };
         live.poll(now);
         draw();
-        const auto first = find(L"First").key, second = find(L"Second").key;
+        const auto first = find(L"First").key;
+        const auto second = find(L"Second").key;
         const auto identity = live.statistics("Board")->instance;
         const auto unrelated = *live.statistics("Unrelated");
         const auto incarnation = surface.presented()->find(first)->incarnation;
         const auto unchanged = [&](std::uint64_t created, std::uint64_t retired) {
-            const auto board = *live.statistics("Board"), other = *live.statistics("Unrelated");
+            const auto board = *live.statistics("Board");
+            const auto other = *live.statistics("Unrelated");
             require(board.instance == identity && board.scope_creations == created &&
                         board.scope_retirements == retired,
                     "Patch recreated a retained scope or retired one at the wrong stage.");

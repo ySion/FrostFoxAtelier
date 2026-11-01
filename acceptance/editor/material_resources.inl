@@ -59,8 +59,8 @@ void verify_material_resources() {
     const auto material_path = project.root() / "Content/Materials/Stone.material";
     auto metadata_path = material_path;
     metadata_path += L".asset.json";
-    const auto material_bytes = take(assets::read_file(material_path)),
-               metadata_bytes = take(assets::read_file(metadata_path));
+    const auto material_bytes = take(assets::read_file(material_path));
+    const auto metadata_bytes = take(assets::read_file(metadata_path));
     const auto catalog_revision = project.revision();
     require(take(editor::Project::open(project.root())).assets().material(key).has_value(),
             "Normalized material path did not survive reopening.");
@@ -79,8 +79,8 @@ void verify_material_resources() {
             "MS creation accepted an MI suffix.");
     editor::Session document;
     auto& runtime = document.world().runtime();
-    const auto resource = take(document.open_material(project, key)),
-               source = take(document.open_material(project, source_key));
+    const auto resource = take(document.open_material(project, key));
+    const auto source = take(document.open_material(project, source_key));
     require(take(document.open_material(project, key)).id() == resource.id(),
             "Shared asset acquired another Runtime identity.");
     const auto inspection = take(document.inspect_material(resource.id()));
@@ -440,8 +440,8 @@ void verify_material_resources() {
         auto loaded = take(editor::Session::deserialize(saved, recovery));
         auto& session = *loaded;
         auto& r = session.world().runtime();
-        const auto root = take(session.open_material(recovery, mi)),
-                   child_root = take(session.open_material(recovery, child));
+        const auto root = take(session.open_material(recovery, mi));
+        const auto child_root = take(session.open_material(recovery, child));
         const auto restored_mesh = component(session, take(session.world().members()).front().id(),
                                              session.presentation_types().static_mesh_component);
         const auto restored_local = take(presentation::read_material_bindings(r, restored_mesh)).front().resource;
@@ -527,8 +527,8 @@ void verify_material_resources() {
         return bytes;
     };
     fs::create_directories(project.root() / "Content/Sky");
-    const auto sky_file = project.root() / "Content/Sky/Clear.HDR",
-               broken_file = project.root() / "Content/Sky/Broken.hdr";
+    const auto sky_file = project.root() / "Content/Sky/Clear.HDR";
+    const auto broken_file = project.root() / "Content/Sky/Broken.hdr";
     take(editor::write_file(sky_file, radiance(1, char(129))));
     take(editor::write_file(broken_file, "broken\n"));
     take(project.refresh());
@@ -539,7 +539,8 @@ void verify_material_resources() {
                 "HDR was not catalogued as a sky.");
         return at->key;
     };
-    const auto clear = sky_key(L"Clear.HDR"), broken = sky_key(L"Broken.hdr");
+    const auto clear = sky_key(L"Clear.HDR");
+    const auto broken = sky_key(L"Broken.hdr");
     const auto sky = take(project.assets().sky_map(clear));
     require(sky.key == clear && sky.map && sky.map->width() == 2 &&
                 take(project.assets().sky_map(clear)).map == sky.map,
@@ -722,7 +723,8 @@ void verify_missing_resources() {
     fs::remove(take(repaired.resolve(source_path)));
     const auto read_error = repaired.assets().source(source_path);
     require(!read_error, "Deleted material source remained readable.");
-    editor::Session strict_missing, tolerant_missing;
+    editor::Session strict_missing;
+    editor::Session tolerant_missing;
     const auto fresh_error = strict_missing.material_resource(repaired.assets(), broken_ms);
     std::vector<editor::MissingResource> absent_source;
     take(tolerant_missing.material_resource(repaired.assets(), broken_ms, &absent_source));

@@ -7,11 +7,22 @@
 
 namespace atelier::editor {
 namespace world_control {
-inline constexpr ui::ControlKey root = 1ULL << 43, tab = root + 1, content = root + 2, slot = root + 3,
-                                setup = root + 4, lighting_tab = root + 8, ddgi_tab = root + 9, effects_tab = root + 10,
-                                diagnostics_tab = root + 11, performance_tab = root + 12, performance_table = root + 13,
-                                performance_status = root + 14, performance_resources = root + 15,
-                                slot_first = root + 16, field_first = root + 256, choice_first = root + 4096;
+inline constexpr ui::ControlKey root = 1ULL << 43;
+inline constexpr ui::ControlKey tab = root + 1;
+inline constexpr ui::ControlKey content = root + 2;
+inline constexpr ui::ControlKey slot = root + 3;
+inline constexpr ui::ControlKey setup = root + 4;
+inline constexpr ui::ControlKey lighting_tab = root + 8;
+inline constexpr ui::ControlKey ddgi_tab = root + 9;
+inline constexpr ui::ControlKey effects_tab = root + 10;
+inline constexpr ui::ControlKey diagnostics_tab = root + 11;
+inline constexpr ui::ControlKey performance_tab = root + 12;
+inline constexpr ui::ControlKey performance_table = root + 13;
+inline constexpr ui::ControlKey performance_status = root + 14;
+inline constexpr ui::ControlKey performance_resources = root + 15;
+inline constexpr ui::ControlKey slot_first = root + 16;
+inline constexpr ui::ControlKey field_first = root + 256;
+inline constexpr ui::ControlKey choice_first = root + 4096;
 constexpr ui::ControlKey field(ViewOption option) {
     return field_first + static_cast<unsigned>(option);
 }

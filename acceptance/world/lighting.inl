@@ -19,7 +19,8 @@ void lit_materials_and_lights() {
     const auto lease = take(program.pin());
     w::World world(runtime, types);
     const auto scene = take(p::Scene::create(world, types));
-    std::vector<ObjectId> begins, ends;
+    std::vector<ObjectId> begins;
+    std::vector<ObjectId> ends;
     take(world.bind_behavior(types.light_component, {[&](Runtime&, ObjectId object) -> Result<void> {
                                                          begins.push_back(object);
                                                          return {};
@@ -47,7 +48,9 @@ void lit_materials_and_lights() {
     auto point = take(w::create_component(runtime, types.light_component));
     auto rectangle = take(w::create_component(runtime, derived));
     auto directional = take(w::create_component(runtime, types.light_component));
-    const auto point_id = point.id(), rectangle_id = rectangle.id(), directional_id = directional.id();
+    const auto point_id = point.id();
+    const auto rectangle_id = rectangle.id();
+    const auto directional_id = directional.id();
     p::LightSettings point_settings;
     point_settings.intensity = 20;
     point_settings.range = 25;
@@ -78,8 +81,9 @@ void lit_materials_and_lights() {
     take(world.set_transform(point_entity.id(), {{1, 0, 0}, child_rotation, {5, 6, 7}}));
     take(world.set_transform(rectangle_entity.id(), {{0, 1, 0}, rectangle_rotation, {8, 9, 10}}));
     take(world.set_transform(directional_entity.id(), {}));
-    const std::array rect_group{w::Attachment{rectangle_id}}, point_group{w::Attachment{point_id}},
-        sun_group{w::Attachment{directional_id}};
+    const std::array rect_group{w::Attachment{rectangle_id}};
+    const std::array point_group{w::Attachment{point_id}};
+    const std::array sun_group{w::Attachment{directional_id}};
     committed(world.attach_components(rectangle_entity.id(), rect_group));
     committed(world.attach_components(point_entity.id(), point_group));
     committed(world.attach_components(directional_entity.id(), sun_group));
@@ -284,8 +288,8 @@ void lit_materials_and_lights() {
     {
         const auto warm = take(material::create_instance(runtime, "", {source_material, {{"roughness", .2f}}, {{}}}));
         const auto cool = take(material::create_instance(runtime, "", {source_material, {{"roughness", .8f}}, {{}}}));
-        const std::array<p::MaterialBinding, 1> warm_binding{{{"slot/0", warm, true}}},
-            cool_binding{{{"slot/0", cool, true}}};
+        const std::array<p::MaterialBinding, 1> warm_binding{{{"slot/0", warm, true}}};
+        const std::array<p::MaterialBinding, 1> cool_binding{{{"slot/0", cool, true}}};
         take(p::set_material_bindings(runtime, root, warm_binding));
         take(p::set_material_bindings(runtime, twin_mesh, warm_binding));
         const auto shared = take(scene.render_items());
@@ -428,7 +432,8 @@ void environment_and_group_writes() {
     moved.probe_volumes[0].maximum = {32, 33, 34};
     require(take(scene.environment()) == moved, "A group write did not move the volume as one edit.");
     const std::array sky_paths{path("sky_enabled"), path("sky_intensity")};
-    const std::array<Scalar, 2> too_bright{true, 65504.5f}, sky_values{true, 2.f};
+    const std::array<Scalar, 2> too_bright{true, 65504.5f};
+    const std::array<Scalar, 2> sky_values{true, 2.f};
     reject(world.write(environment.id(), sky_paths, too_bright),
            "Sky radiance above the HDR scene range was accepted.");
     take(world.write(environment.id(), sky_paths, sky_values));
@@ -556,7 +561,8 @@ void environment_and_group_writes() {
 void material_dependency_updates() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types), other_world(runtime, types);
+    w::World world(runtime, types);
+    w::World other_world(runtime, types);
     const auto scene = take(p::Scene::create(world, types));
     const auto other = take(p::Scene::create(other_world, types));
     auto source = take(material::create_source(runtime, "source", {mesh_material_definition(), {}}));
@@ -872,7 +878,8 @@ void scene_cameras() {
     };
     auto [a, ca] = make_camera(types.camera_component);
     auto [b, cb] = make_camera(derived);
-    auto group = take(w::create_entity(runtime)), origin = take(w::create_entity(runtime));
+    auto group = take(w::create_entity(runtime));
+    auto origin = take(w::create_entity(runtime));
     // Deliberately different composition and spatial parents; zero and negative
     // scales affect translation, but camera axes are rotations only.
     const auto quarter = std::sqrt(.5f);
@@ -890,8 +897,8 @@ void scene_cameras() {
     take(runtime.write_reference(environment.id(), selected, a.reference()));
     const auto roots = runtime.root_count();
     const auto snapshot = take(scene.main_camera());
-    const auto forward = math::rotate(snapshot.rotation, math::Vector3{0, 0, 1}),
-               up = math::rotate(snapshot.rotation, math::Vector3{0, 1, 0});
+    const auto forward = math::rotate(snapshot.rotation, math::Vector3{0, 0, 1});
+    const auto up = math::rotate(snapshot.rotation, math::Vector3{0, 1, 0});
     require(snapshot.entity == a.id() && near(snapshot.position.x, 13) && near(snapshot.position.y, 5) &&
                 near(snapshot.position.z, 8) && near(forward.x, 1) && near(forward.y, 0) && near(forward.z, 0) &&
                 near(up.x, 0) && near(up.y, 0) && near(up.z, 1) && runtime.root_count() == roots,

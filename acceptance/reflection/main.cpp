@@ -296,7 +296,8 @@ void verify_math_calls(Runtime& runtime) {
     }
 
     const auto direction_field = take(runtime.find_field(type, "direction"));
-    const math::Vector3d copy{tiny, 2, 3}, initial{1.0 + tiny, 4, 5};
+    const math::Vector3d copy{tiny, 2, 3};
+    const math::Vector3d initial{1.0 + tiny, 4, 5};
     take(runtime.write(object.id(), direction_field, ValueInput{vector3d, &initial}));
     const std::array direction_path{direction_field};
     const std::array vector_arguments{Argument::borrow(copy), Argument::field(object.id(), direction_path),
@@ -409,7 +410,8 @@ int main() {
         auto object = take(runtime.create(types[1]));
         require(Counter::live == 1, "Generated native construction did not run exactly once.");
         invoke(runtime, object.id(), types[1], "read", {}, 3.f);
-        const std::array count{Scalar{std::uint32_t{7}}}, scale{Scalar{2.f}};
+        const std::array count{Scalar{std::uint32_t{7}}};
+        const std::array scale{Scalar{2.f}};
         invoke(runtime, object.id(), types[1], "count", count, std::uint32_t{7});
         invoke(runtime, object.id(), types[1], "scale", scale, 6.f);
         require(!runtime.find_field(types[1], "sample_"), "Generated hidden record became public.");

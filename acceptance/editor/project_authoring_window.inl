@@ -35,8 +35,8 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
         if (model(runtime.type_of(item.id())) == component_type)
             component = item.id();
     require(component != atelier::ObjectId{}, "Native component menu did not create the Source type.");
-    const std::array speed{model(runtime.find_field(component_type, "speed"))},
-        moving{model(runtime.find_field(component_type, "moving"))};
+    const std::array speed{model(runtime.find_field(component_type, "speed"))};
+    const std::array moving{model(runtime.find_field(component_type, "moving"))};
     require(app.document().selection() == atelier::editor::Selection{entity, component} &&
                 app.presented()->find(app.field_control(component, speed)) &&
                 !app.presented()->find(control::position_fold),

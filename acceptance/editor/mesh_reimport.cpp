@@ -51,8 +51,9 @@ std::string bmp(unsigned char red, unsigned char green, unsigned char blue) {
 void fixture(const fs::path& source, std::string_view filename, int width,
              std::initializer_list<std::string_view> slots, unsigned char red, unsigned char blue,
              bool extra_texture = false) {
-    std::string mtl,
-        geometry = "mtllib model.mtl\nv 0 0 0\nv " + std::to_string(width) + " 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n";
+    std::string mtl;
+    std::string geometry =
+        "mtllib model.mtl\nv 0 0 0\nv " + std::to_string(width) + " 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n";
     for (const auto slot : slots) {
         mtl += "newmtl " + std::string(slot) + (slot == "New.ms" ? "\nKd 1 1 1\n" : "\nKd .8 .7 .6\n") +
                "map_Kd color.bmp\n";
@@ -96,8 +97,10 @@ void run(const fs::path& root) {
     const auto first = take(project.assets().mesh(key));
     require(first.materials.size() == 2 && first.mesh->materials().size() == 3,
             "Import treated the unbound OBJ slot as an authored MI.");
-    const auto paint_key = binding(first, "Paint"), trim_key = binding(first, "Trim");
-    const auto mesh_relative = project.entry(key)->path, mesh_file = take(project.resolve(mesh_relative));
+    const auto paint_key = binding(first, "Paint");
+    const auto trim_key = binding(first, "Trim");
+    const auto mesh_relative = project.entry(key)->path;
+    const auto mesh_file = take(project.resolve(mesh_relative));
     const auto mesh_identity = assets::json_format::parse(read(sidecar(mesh_file))).at("id");
     auto paint = take(project.assets().material(paint_key));
     parameter(paint, "roughness").value = .23f;
@@ -107,8 +110,10 @@ void run(const fs::path& root) {
     std::get<assets::MaterialInstanceAsset>(paint.author).parent_key = "builtin/material/standard-mask-single";
     const auto texture_key = std::get<material::TextureBinding>(parameter(paint, "base_color_texture").value).asset_key;
     take(project.save_material(paint));
-    const auto paint_relative = project.entry(paint_key)->path, paint_file = take(project.resolve(paint_relative));
-    const auto painted_bytes = read(paint_file), paint_identity = read(sidecar(paint_file));
+    const auto paint_relative = project.entry(paint_key)->path;
+    const auto paint_file = take(project.resolve(paint_relative));
+    const auto painted_bytes = read(paint_file);
+    const auto paint_identity = read(sidecar(paint_file));
     const auto texture_file = take(project.resolve(project.entry(texture_key)->path));
     const auto texture_identity = read(sidecar(texture_file));
     const auto old_image = take(project.assets().texture(texture_key)).image;
@@ -168,7 +173,8 @@ void run(const fs::path& root) {
                 std::get<math::Vector4>(parameter(new_material, "base_color").value) == math::Vector4{1, 1, 1, 1},
             "New authored white slot did not get an independent, correctly named MI.");
     const auto trim_file = take(project.resolve(project.entry(trim_key)->path));
-    const auto trim_bytes = read(trim_file), trim_identity = read(sidecar(trim_file));
+    const auto trim_bytes = read(trim_file);
+    const auto trim_identity = read(sidecar(trim_file));
     const auto renamed = take(project.rename(paint_relative, L"User Paint.material"));
     fixture(source, "updated.obj", 4, {"Paint", "New.ms"}, 40, 180);
     auto removed = take(project.reimport_mesh(key, source / "updated.obj"));
@@ -186,7 +192,8 @@ void run(const fs::path& root) {
 
     // Real on-disk content is replaced with equal byte counts and restored timestamps.
     // Explicit reimport must still replace a Reader's already cached mesh/pixels.
-    const auto mesh_stamp = fs::last_write_time(mesh_file), texture_stamp = fs::last_write_time(texture_file);
+    const auto mesh_stamp = fs::last_write_time(mesh_file);
+    const auto texture_stamp = fs::last_write_time(texture_file);
     const auto cached = take(project.assets().mesh(key)).mesh;
     const auto cached_image = take(project.assets().texture(texture_key)).image;
     fixture(source, "updated.obj", 5, {"Paint", "New.ms"}, 50, 160);
@@ -334,7 +341,8 @@ void gltf(const fs::path& root) {
     const auto companions = take(project.assets().mesh_dependency_files(key));
     require(companions.size() == 1 && companions[0].filename() == L"geometry.bin",
             "Raw glTF companion query omitted the external buffer.");
-    const auto body = binding(first, "Body"), trim = binding(first, "Trim");
+    const auto body = binding(first, "Body");
+    const auto trim = binding(first, "Trim");
     auto author = take(project.assets().material(trim));
     require(std::get<assets::MaterialInstanceAsset>(author.author).parent_key ==
                 "builtin/material/standard-mask-single",

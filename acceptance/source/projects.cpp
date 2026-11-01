@@ -140,7 +140,8 @@ class game.Ranged : project.RangedBody {
 )"}}});
     auto object = take(runtime.create(program.classes()[0].type));
     const auto id = object.id();
-    const std::array speed{take(runtime.find_field(base, "speed"))}, loose{take(runtime.find_field(base, "loose"))};
+    const std::array speed{take(runtime.find_field(base, "speed"))};
+    const std::array loose{take(runtime.find_field(base, "loose"))};
     const auto tint = take(runtime.find_field(base, "tint"));
     const auto vector3 = take(runtime.native_type<math::Vector3>());
     const std::array tint_path{tint};
@@ -387,11 +388,14 @@ void verify_project_self_reads() {
     const auto type = program.classes()[0].type;
     const auto node = take(runtime.create(type));
     const auto id = node.id();
-    const std::array gain{take(runtime.find_field(base, "gain"))}, quality{take(runtime.find_field(base, "quality"))},
-        offset{take(runtime.find_field(base, "offset"))}, bias{take(runtime.find_field(type, "bias"))};
+    const std::array gain{take(runtime.find_field(base, "gain"))};
+    const std::array quality{take(runtime.find_field(base, "quality"))};
+    const std::array offset{take(runtime.find_field(base, "offset"))};
+    const std::array bias{take(runtime.find_field(type, "bias"))};
     const auto vector3 = take(runtime.native_type<math::Vector3>());
     const auto quality_type = take(runtime.native_type<Quality>());
-    Array<float> values, input;
+    Array<float> values;
+    Array<float> input;
     for (int i = 0; i < 8; ++i) {
         input.add(static_cast<float>(i) * 0.5f - 3.0f);
         values.add(0.0f);
@@ -472,7 +476,8 @@ void verify_project_class_fields() {
     Program program(runtime);
     publish(program, snapshot(jitter));
     const auto type = program.classes()[0].type;
-    const auto axis = take(runtime.find_type("geo.Axis")), falloff = take(runtime.find_type("geo.Falloff"));
+    const auto axis = take(runtime.find_type("geo.Axis"));
+    const auto falloff = take(runtime.find_type("geo.Falloff"));
     const auto quality = take(runtime.native_type<Quality>());
     const auto* info = take(runtime.describe(type));
     const auto described = [&](std::string_view name) -> const FieldInfo& {
@@ -702,8 +707,8 @@ class procedural.Jitter : procedural.Base { float amount = 0.5f; float evaluate(
     require(take(source::engine_sources(root / "missing")).empty(), "A missing engine root produced sources.");
     // The build copies assets/engine beside the executable exactly; development builds read the tree.
     const std::filesystem::path tree{ATELIER_ENGINE_SOURCE_TREE};
-    const auto tree_files = take(source::engine_sources(tree)),
-               copy_files = take(source::engine_sources(executable_directory() / "engine"));
+    const auto tree_files = take(source::engine_sources(tree));
+    const auto copy_files = take(source::engine_sources(executable_directory() / "engine"));
     require(tree_files.size() == copy_files.size() &&
                 std::ranges::equal(tree_files, copy_files,
                                    [](const auto& a, const auto& b) {
@@ -800,7 +805,8 @@ float unshadowed() { return procedural.y; }
     const auto invoke = [&](std::string_view name, std::span<const Scalar> arguments) {
         return *take(take(program.entry(name)).invoke({}, arguments));
     };
-    const std::array five{Scalar{std::uint32_t{5}}}, half{Scalar{0.5f}};
+    const std::array five{Scalar{std::uint32_t{5}}};
+    const std::array half{Scalar{0.5f}};
     require(std::get<std::uint32_t>(invoke("project_hash", five)) == 162 &&
                 std::get<float>(invoke("project_scaled", half)) == 34.5f &&
                 std::get<float>(invoke("shadowed", {})) == 2.0f && std::get<float>(invoke("unshadowed", {})) == 9.0f,
@@ -966,7 +972,8 @@ void verify_project_code_reuse() {
                   "class game.B : procedural.Base { int run(int x) { return x + " +
                   std::string(b) + "; } }\n" + std::string(extra)}}};
     };
-    const std::array zero{Scalar{std::int32_t{0}}}, five{Scalar{std::int32_t{5}}};
+    const std::array zero{Scalar{std::int32_t{0}}};
+    const std::array five{Scalar{std::int32_t{5}}};
     const auto fault = [&](const Program::Lease& lease, ObjectId receiver, std::size_t line, std::uint64_t version) {
         const auto failed = lease.invoke(receiver, zero);
         return !failed && failed.error().source && failed.error().source->path == "Source/Game.source" &&

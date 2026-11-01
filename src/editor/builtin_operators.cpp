@@ -36,7 +36,8 @@ auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, cons
     return [execute](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
                      ValueOutput output) -> Result<void> {
         auto& runtime = context.document.world().runtime();
-        const auto parameter_type = runtime.native_type<P>(), result_type = runtime.native_type<R>();
+        const auto parameter_type = runtime.native_type<P>();
+        const auto result_type = runtime.native_type<R>();
         if (!parameter_type || *parameter_type != parameters.value.type || !result_type || *result_type != output.type)
             return std::unexpected(Error{ErrorCode::type_mismatch, "Operator parameters or result have another type."});
         return execute(host, context, *static_cast<const P*>(parameters.value.data), *static_cast<R*>(output.data));
@@ -53,8 +54,8 @@ Result<void> committed(Result<world::Commit> result) {
 Result<void> frame(OperatorHost& host, const Context& context, bool selected_only) {
     auto& runtime = context.document.world().runtime();
     math::Vector3 low{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-                      std::numeric_limits<float>::max()},
-        high = -low;
+                      std::numeric_limits<float>::max()};
+    math::Vector3 high = -low;
     bool any{};
     const auto include = [&](math::Vector3 p) {
         for (int i = 0; i < 3; ++i) {

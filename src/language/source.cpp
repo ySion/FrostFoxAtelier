@@ -324,8 +324,9 @@ private:
         for (auto& function : module_.functions) {
             // A self node preserves borrows only if every use is a BorrowSafe call or a by-value field
             // read; `(self.v).x = 1` shares its self node with the unused `self.v` read it was projected from.
-            std::vector<bool> allowed(function.expressions.size()), blocked(function.expressions.size()),
-                stored(function.expressions.size());
+            std::vector<bool> allowed(function.expressions.size());
+            std::vector<bool> blocked(function.expressions.size());
+            std::vector<bool> stored(function.expressions.size());
             function.preserves_borrows = true;
             for (const auto& statement : function.statements)
                 if (statement.kind == Statement::Kind::assign)
@@ -472,7 +473,8 @@ private:
         std::string name;
         ValueType type;
         bool native;
-        std::uint32_t getter{UINT32_MAX}, setter{UINT32_MAX};
+        std::uint32_t getter{UINT32_MAX};
+        std::uint32_t setter{UINT32_MAX};
     };
     struct PropertyUse {
         NodeId node;
@@ -961,7 +963,8 @@ private:
             else
                 return std::bit_cast<std::uint32_t>(result);
         } else {
-            const auto a = static_cast<std::uint32_t>(left), b = static_cast<std::uint32_t>(right);
+            const auto a = static_cast<std::uint32_t>(left);
+            const auto b = static_cast<std::uint32_t>(right);
             switch (operation) {
             case Operation::add:
                 return a + b;
@@ -1036,7 +1039,8 @@ private:
             if (right > 31 ||
                 (count_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(right)) < 0))
                 reject(node.position, "Constant shift count is outside 0..31.");
-            const auto value = static_cast<std::uint32_t>(left), count = static_cast<std::uint32_t>(right);
+            const auto value = static_cast<std::uint32_t>(left);
+            const auto count = static_cast<std::uint32_t>(right);
             if (node.operation == Operation::shift_left)
                 return value << count;
             if (input == ValueType::i32)
@@ -1289,7 +1293,8 @@ private:
                     (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
                     reject(symbol.position, "References support only == and != with another reference or null.");
             } else if (math_type(type) || math_type(right_type)) {
-                const auto left_math = math_type(type), right_math = math_type(right_type);
+                const auto left_math = math_type(type);
+                const auto right_math = math_type(right_type);
                 const auto op = operation.operation;
                 if ((op == Operation::equal || op == Operation::not_equal) && type == right_type) {
                     // Mathematical equality compares all components, with scalar IEEE semantics.

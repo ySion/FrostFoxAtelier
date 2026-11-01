@@ -457,8 +457,10 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
         auto old_parent = parent_entity(runtime, object);
         if (!old_parent)
             return std::unexpected(old_parent.error());
-        std::vector<ObjectRoot> old_roots, new_roots;
-        std::vector<ObjectReference> old_references, new_references;
+        std::vector<ObjectRoot> old_roots;
+        std::vector<ObjectRoot> new_roots;
+        std::vector<ObjectReference> old_references;
+        std::vector<ObjectReference> new_references;
         std::vector<ReferenceChange> changes;
         const auto sequence = [&](ObjectId id) {
             return runtime.with_native<Entity>(
@@ -563,13 +565,15 @@ Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph&
         if (!(*value)->spatial)
             continue;
         if (rule == ReparentRule::keep_world) {
-            auto old_parent = before.parent(root.id()), next_parent = candidate.parent(root.id());
+            auto old_parent = before.parent(root.id());
+            auto next_parent = candidate.parent(root.id());
             if (!old_parent)
                 return std::unexpected(old_parent.error());
             if (!next_parent)
                 return std::unexpected(next_parent.error());
             if (*old_parent != *next_parent) {
-                auto original = before.matrix(root.id()), origin = candidate.matrix(*next_parent);
+                auto original = before.matrix(root.id());
+                auto origin = candidate.matrix(*next_parent);
                 if (!original)
                     return std::unexpected(original.error());
                 if (!origin)
@@ -737,7 +741,8 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
         return error(ErrorCode::invalid_member, "Spatial reference requires an Entity Transform.");
     if (current && *current == origin)
         return Commit{};
-    detail::SpaceGraph before{runtime()}, candidate{runtime()};
+    detail::SpaceGraph before{runtime()};
+    detail::SpaceGraph candidate{runtime()};
     auto parent = parent_entity(runtime(), object);
     if (!parent)
         return std::unexpected(parent.error());
@@ -974,7 +979,8 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
     // World publication checks that complete graph; keep-world must evaluate
     // the current and prospective matrices now to compute local compensation.
     if (data->world || rule == ReparentRule::keep_world) {
-        detail::SpaceGraph before{runtime()}, candidate{runtime()};
+        detail::SpaceGraph before{runtime()};
+        detail::SpaceGraph candidate{runtime()};
         auto node = candidate.node(object);
         if (!node)
             return std::unexpected(node.error());
@@ -1084,7 +1090,8 @@ Result<Commit> World::attach_batch(std::span<const ObjectId> roots, std::size_t 
 namespace {
 struct AttachmentGraph {
     detail::SpaceGraph space;
-    std::vector<ObjectRoot> incoming, capabilities;
+    std::vector<ObjectRoot> incoming;
+    std::vector<ObjectRoot> capabilities;
     std::vector<std::pair<std::size_t, std::size_t>> ranges;
     explicit AttachmentGraph(Runtime& runtime) : space(runtime) {}
 };
@@ -1263,7 +1270,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     // A tree enters before an existing next sibling, at its parent's subtree
     // end, or at a root boundary. Equal gaps order deeper parents first, then input.
     struct Insertion {
-        std::size_t at, depth, attachment;
+        std::size_t at;
+        std::size_t depth;
+        std::size_t attachment;
     };
     std::vector<Insertion> insertions;
     insertions.reserve(attachments.size());
@@ -1344,7 +1353,8 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         relation_changes.reserve(parents.size() + attachments.size() + spaces.size());
         struct OriginFlags {
             Entity* entity;
-            bool explicit_origin, world_origin;
+            bool explicit_origin;
+            bool world_origin;
         };
         std::vector<OriginFlags> origin_flags;
         origin_flags.reserve(spaces.size());
@@ -1414,7 +1424,9 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         // Descending gaps leave earlier positions valid; equal gaps insert in reverse.
         for (auto it = insertions.rbegin(); it != insertions.rend(); ++it) {
             const auto [first, count] = tree_ranges[it->attachment];
-            const auto at = std::ptrdiff_t(it->at), from = std::ptrdiff_t(first), to = std::ptrdiff_t(first + count);
+            const auto at = std::ptrdiff_t(it->at);
+            const auto from = std::ptrdiff_t(first);
+            const auto to = std::ptrdiff_t(first + count);
             state.members.insert(state.members.begin() + at, std::make_move_iterator(arriving_members.begin() + from),
                                  std::make_move_iterator(arriving_members.begin() + to));
             state.states.insert(state.states.begin() + at, std::make_move_iterator(arriving.begin() + from),
@@ -1477,7 +1489,8 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         std::vector<ObjectReference> references;
     };
     struct Range {
-        std::size_t at, count;
+        std::size_t at;
+        std::size_t count;
         ObjectId parent;
     };
     std::vector<ParentPlan> parents;
@@ -1486,7 +1499,8 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
     removals.reserve(roots.size());
     std::vector<Range> ranges;
     ranges.reserve(roots.size());
-    std::unordered_set<ObjectId> ids, root_ids;
+    std::unordered_set<ObjectId> ids;
+    std::unordered_set<ObjectId> root_ids;
     for (const auto object : roots) {
         auto at = state.member(object);
         if (!at)
@@ -1623,8 +1637,8 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
                     for (const auto& item : state.states[i].components)
                         state.forget_prerequisites(item.id);
                 }
-            const auto first = state.members.begin() + std::ptrdiff_t(range->at),
-                       last = first + std::ptrdiff_t(range->count);
+            const auto first = state.members.begin() + std::ptrdiff_t(range->at);
+            const auto last = first + std::ptrdiff_t(range->count);
             for (auto it = first; it != last; ++it) {
                 state.positions.remove(it->id());
                 departed.push_back(std::move(*it));

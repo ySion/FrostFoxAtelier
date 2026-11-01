@@ -445,8 +445,20 @@ std::shared_ptr<ui::CodeDocument> Output::body() const {
 void Output::update_health() const {
     if (!health_dirty_)
         return;
-    std::uint64_t gaps{}, losses{}, invalid{}, duplicates{}, io{}, rejected{}, facilities{}, notices{}, updated{};
-    std::size_t waiting{}, behind{}, finished{}, incomplete{}, finals{};
+    std::uint64_t gaps{};
+    std::uint64_t losses{};
+    std::uint64_t invalid{};
+    std::uint64_t duplicates{};
+    std::uint64_t io{};
+    std::uint64_t rejected{};
+    std::uint64_t facilities{};
+    std::uint64_t notices{};
+    std::uint64_t updated{};
+    std::size_t waiting{};
+    std::size_t behind{};
+    std::size_t finished{};
+    std::size_t incomplete{};
+    std::size_t finals{};
     bool unknown_loss{};
     std::wstring issue;
     for (const auto& stream : streams_) {

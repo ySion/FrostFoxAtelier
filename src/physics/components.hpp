@@ -30,11 +30,16 @@ private:
     enum class Kind { character, ragdoll, distance, force, kinematic, query };
     struct Entry {
         Kind kind;
-        ObjectId entity, component, target{};
+        ObjectId entity;
+        ObjectId component;
+        ObjectId target{};
         SpecialHandle special{};
         ConstraintHandle constraint{};
-        BodyHandle body{}, other_body{};
-        std::vector<ObjectId> targets{}, metadata{}, ancestors{};
+        BodyHandle body{};
+        BodyHandle other_body{};
+        std::vector<ObjectId> targets{};
+        std::vector<ObjectId> metadata{};
+        std::vector<ObjectId> ancestors{};
         math::Vector3 origin{};
         math::Quaternion rotation{};
         double elapsed{};

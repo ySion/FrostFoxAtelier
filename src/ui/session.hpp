@@ -31,31 +31,40 @@ struct EditCommand {
 };
 
 struct Tooltip {
-    std::wstring title, identity, description;
+    std::wstring title;
+    std::wstring identity;
+    std::wstring description;
     bool operator==(const Tooltip&) const = default;
 };
 inline constexpr std::uint32_t maximum_tree_rows = 1u << 18;
 
 struct Control {
-    ControlKey key{}, parent{}; // Unique live keys; parent precedes child in the input.
+    ControlKey key{};
+    ControlKey parent{}; // Unique live keys; parent precedes child in the input.
     ControlKind kind{ControlKind::container};
     ui_layout::NodeInput layout{ui_layout::NodeInput::column()};
     std::wstring text;
     bool single_line{}; // Labels: one line with end ellipsis when their allocated width is exhausted.
     Role role{Role::normal};
     ControlIcon icon{ControlIcon::none}; // Standalone or leading glyph; text reserves the same measured icon space.
-    bool enabled{true}, selected{};
+    bool enabled{true};
+    bool selected{};
     bool click_action{}; // splitter grip only: activate on click; bool payload means Alt modifier.
-    double value{}, minimum{-10000}, maximum{10000};
+    double value{};
+    double minimum{-10000};
+    double maximum{10000};
     bool single_precision{}; // Float storage uses its shortest round-tripping decimal, without widened double noise.
-    double drag_step{0.01}, fine_step{0.001}; // Number/splitter: per DIP. Slider: keyboard increment.
+    double drag_step{0.01};
+    double fine_step{0.001}; // Number/splitter: per DIP. Slider: keyboard increment.
     DragAxis drag_axis{DragAxis::horizontal};
     std::vector<std::string> classes;
     StyleProperties style;
     std::shared_ptr<const StyleSheet> style_scope; // Applies to this control and its descendants.
-    bool invalid{}, modified{}; // Modified compares the authoritative value with its declared default.
+    bool invalid{};
+    bool modified{}; // Modified compares the authoritative value with its declared default.
     std::optional<double> default_value;
-    ControlKey context_target{}, context_group{}; // Context request target and optional group reset command.
+    ControlKey context_target{};
+    ControlKey context_group{}; // Context request target and optional group reset command.
     ControlKey selection_group{}; // Button group: arrow navigation; Tab visits the selected member.
     ControlKey action_target{}; // Button/table activation route; zero uses this control's key. Never a UI identity.
     // The host flattens its hierarchy and owns expansion and filtering. A tree
@@ -63,8 +72,10 @@ struct Control {
     // increasing tree_index, and Session lays out only those rows. Hosts keep the
     // focused row, its neighbours and ancestors, and the first and last rows described.
     std::uint32_t tree_row_count{}; // tree only.
-    std::uint32_t tree_index{}, tree_depth{}; // tree_item only: flattened position and depth (< 128).
-    bool tree_branch{}, tree_expanded{}; // tree_item only; expanded requires branch.
+    std::uint32_t tree_index{};
+    std::uint32_t tree_depth{}; // tree_item only: flattened position and depth (< 128).
+    bool tree_branch{};
+    bool tree_expanded{}; // tree_item only; expanded requires branch.
     // tree_item only: bit k (1..depth) draws the guide of the depth-k ancestor,
     // or of this row at k == depth, because it has a later sibling.
     std::bitset<128> tree_lines;
@@ -109,7 +120,8 @@ struct ControlBox {
     ControlKey radio_group{};
     std::shared_ptr<const TableData> table; // Exact immutable content accepted with this geometry.
     TableSelection table_selection;
-    ControlKey context_target{}, context_group{}; // Accepted menu route, including group actions.
+    ControlKey context_target{};
+    ControlKey context_group{}; // Accepted menu route, including group actions.
     TableLayout table_layout;
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
     std::shared_ptr<const Tooltip> tooltip; // Exact documentation accepted with this geometry.
@@ -117,7 +129,9 @@ struct ControlBox {
 };
 struct EditToken {
     ControlKey key{};
-    std::uint64_t incarnation{}, generation{}, revision{};
+    std::uint64_t incarnation{};
+    std::uint64_t generation{};
+    std::uint64_t revision{};
     bool operator==(const EditToken&) const = default;
 };
 struct TextCaret {
@@ -127,7 +141,8 @@ struct TextCaret {
 };
 struct TextInputAnchor {
     EditToken token;
-    std::uint64_t composition_id{}, composition_revision{};
+    std::uint64_t composition_id{};
+    std::uint64_t composition_revision{};
     Rect bounds; // Composition/replacement start; client physical pixels, height is line height.
     Clip clip; // Effective visible editable region, in the same space.
 };
@@ -140,22 +155,36 @@ struct TextInputState {
 // Focus and passive text bindings are not pending interactions. Field drafts
 // require commit/cancel; CodeDocument edits already belong to their document.
 struct InteractionState {
-    bool pointer{}, keyboard{}, text_draft{}, composition{}, clipboard{}, popup{};
+    bool pointer{};
+    bool keyboard{};
+    bool text_draft{};
+    bool composition{};
+    bool clipboard{};
+    bool popup{};
     bool active() const noexcept { return pointer || keyboard || text_draft || composition || clipboard || popup; }
 };
 struct TextGeometry {
     ControlKey key{};
     std::uint64_t incarnation{};
     std::shared_ptr<const detail::TextSnapshot> paragraph;
-    float x{}, y{}, dpi_scale{1}, scroll{}; // Final displayed origin, including horizontal scroll.
+    float x{};
+    float y{};
+    float dpi_scale{1};
+    float scroll{}; // Final displayed origin, including horizontal scroll.
     EditToken token;
     std::uint64_t composition_id{};
 };
 struct ScrollbarGeometry {
     ControlKey key{};
-    Rect bounds, track, thumb, decrement, increment;
+    Rect bounds;
+    Rect track;
+    Rect thumb;
+    Rect decrement;
+    Rect increment;
     Clip clip;
-    double maximum{}, value{}, page{};
+    double maximum{};
+    double value{};
+    double page{};
     bool horizontal{};
 };
 struct ValueLadderGeometry {
@@ -167,7 +196,8 @@ struct ValueLadderGeometry {
 };
 struct TreeRowGeometry {
     ControlKey key{};
-    std::uint32_t index{}, depth{}; // Accepted host row position.
+    std::uint32_t index{};
+    std::uint32_t depth{}; // Accepted host row position.
     Rect disclosure; // Accepted physical hit area; empty on leaves.
     bool expanded{};
 };
@@ -175,15 +205,19 @@ struct TreeRowGeometry {
 // which rows to describe from it; before a first layout the height is the surface's.
 struct TreeViewport {
     double scroll{};
-    float height{}, row_height{};
+    float height{};
+    float row_height{};
 };
 struct TableColumnGeometry {
     TableKey column{};
-    Rect bounds, resize;
+    Rect bounds;
+    Rect resize;
     Clip clip;
 };
 struct TableCellGeometry {
-    TableKey row{}, column{}, cell{};
+    TableKey row{};
+    TableKey column{};
+    TableKey cell{};
     Rect bounds;
     Clip clip;
 };
@@ -191,7 +225,8 @@ struct TableGeometry {
     ControlKey key{};
     std::shared_ptr<const TableData> data;
     TableSelection selection;
-    Rect header, body;
+    Rect header;
+    Rect body;
     Clip clip;
     std::vector<TableColumnGeometry> columns{};
     std::vector<TableCellGeometry> cells{}; // Only visible cells; stable data identities, never ControlKeys.
@@ -202,19 +237,23 @@ struct CodeLineGeometry {
     std::size_t row{};
     std::uint32_t start{};
     std::shared_ptr<const detail::TextSnapshot> paragraph;
-    float x{}, y{};
+    float x{};
+    float y{};
 };
 struct CodeGeometry {
     ControlKey key{};
-    std::uint64_t revision{}, selection_revision{};
+    std::uint64_t revision{};
+    std::uint64_t selection_revision{};
     Rect body;
-    float line_height{}, scale{1};
+    float line_height{};
+    float scale{1};
     std::vector<CodeLineGeometry> lines; // Accepted visible lines only.
 };
 struct TooltipGeometry {
     ControlKey owner{};
     std::uint64_t incarnation{};
-    Rect anchor, bounds; // Client physical pixels; overlay never participates in hit testing.
+    Rect anchor;
+    Rect bounds; // Client physical pixels; overlay never participates in hit testing.
     std::shared_ptr<const Tooltip> content;
     std::uint64_t generation{}; // The hover episode which produced this drawing; cancellation retires it.
 };
@@ -223,7 +262,8 @@ struct UiFrame {
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
     std::uint64_t session_identity{};
     std::uint64_t controls_revision{}; // Complete descriptor batch used by this candidate.
-    std::uint64_t style_revision{}, measure_provider_revision{};
+    std::uint64_t style_revision{};
+    std::uint64_t measure_provider_revision{};
     std::optional<TextCaret> caret;
     std::optional<TextInputAnchor> input_anchor{};
     std::vector<TextGeometry> text_geometry;
@@ -260,15 +300,20 @@ enum class ActionKind {
     expand
 };
 struct ContextMenuRequest {
-    ControlKey source{}, group{};
-    float x{}, y{};
+    ControlKey source{};
+    ControlKey group{};
+    float x{};
+    float y{};
     std::optional<TableSelection> table{};
 }; // Accepted client pixels.
 struct DragPoint {
-    float x{}, y{};
+    float x{};
+    float y{};
 }; // Accepted-frame client pixels.
 struct SelectionModifiers {
-    bool shift{}, control{}, double_click{};
+    bool shift{};
+    bool control{};
+    bool double_click{};
 }; // double_click: second click of a native double click.
 using ActionValue = std::variant<std::monostate, double, std::wstring, bool, ContextMenuRequest, DragPoint,
                                  TableSelection, TableSort, TableColumnResize, SelectionModifiers>;
@@ -362,7 +407,8 @@ enum class Cursor {
     scale
 };
 struct Reply {
-    bool consumed{}, redraw{};
+    bool consumed{};
+    bool redraw{};
     Capture capture{Capture::unchanged};
     std::optional<Cursor> cursor; // No change for non-pointer events.
     std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
@@ -412,12 +458,15 @@ enum class Key {
 using InputData = std::variant<std::monostate, std::wstring, ClipboardResult, ImeResult, CompositionEvent>;
 struct Event {
     EventKind kind{};
-    float x{}, y{}; // Client physical pixels; never reinterpret using a future frame.
+    float x{};
+    float y{}; // Client physical pixels; never reinterpret using a future frame.
     float wheel{}; // Positive scrolls toward the beginning, measured in wheel notches.
     PointerButton button{PointerButton::primary};
     Key key{Key::none};
     InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
-    bool shift{}, control{}, alt{};
+    bool shift{};
+    bool control{};
+    bool alt{};
     unsigned clicks{1}; // Native click count; two activates the accepted table row.
     bool repeat{}; // Native key auto-repeat; one-shot commands can ignore repeats.
 };
@@ -425,15 +474,26 @@ struct Statistics {
     // Cumulative since Session construction. prepares/rasterizations count
     // attempts; text_layouts counts successful native layout creations;
     // raster_bytes sums completed R8 pixel payloads, excluding native overhead.
-    std::uint64_t prepares{}, measure_calls{}, text_layouts{}, rasterizations{}, raster_bytes{}, coverage_cache_hits{};
-    std::uint64_t culled_text_controls{}, provider_revision{};
+    std::uint64_t prepares{};
+    std::uint64_t measure_calls{};
+    std::uint64_t text_layouts{};
+    std::uint64_t rasterizations{};
+    std::uint64_t raster_bytes{};
+    std::uint64_t coverage_cache_hits{};
+    std::uint64_t culled_text_controls{};
+    std::uint64_t provider_revision{};
     // Unique CPU coverages produced by this Session and still retained by any
     // owner (text cache, current/old frames or renderer). No per-frame scan.
-    std::uint64_t live_coverages{}, live_coverage_bytes{};
+    std::uint64_t live_coverages{};
+    std::uint64_t live_coverage_bytes{};
     // Successful descriptor changes; identical values do not count as updates.
-    std::uint64_t control_batches{}, controls_updated{}, controls_created{}, controls_removed{};
+    std::uint64_t control_batches{};
+    std::uint64_t controls_updated{};
+    std::uint64_t controls_created{};
+    std::uint64_t controls_removed{};
     // Attempts to synchronize a dirty control, and successful layout-node creates.
-    std::uint64_t layout_syncs{}, layout_nodes_created{};
+    std::uint64_t layout_syncs{};
+    std::uint64_t layout_nodes_created{};
     ui_layout::Stats layout;
 };
 

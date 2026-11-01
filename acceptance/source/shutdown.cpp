@@ -59,7 +59,9 @@ struct HostOwner {
     std::array<Coroutine, 5> tasks;
     bool stopping{};
     bool busy_in_callback{};
-    std::uintptr_t old_address{}, current_address{}, candidate_address{};
+    std::uintptr_t old_address{};
+    std::uintptr_t current_address{};
+    std::uintptr_t candidate_address{};
 
     HostOwner() {
         type = take(NativeRegistration<Signal>{*runtime, "stage.Signal", TypeKind::object}

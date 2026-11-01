@@ -44,7 +44,9 @@ int host_main(int argc, wchar_t** argv) {
     if (argc >= 3 && std::wstring_view(argv[1]) == L"--run-project")
         return atelier::application::run_project_command({argv + 2, static_cast<std::size_t>(argc - 2)});
     auto control_directory = atelier::control::default_directory();
-    bool no_control{}, no_activate{}, gpu_validation{};
+    bool no_control{};
+    bool no_activate{};
+    bool gpu_validation{};
     std::optional<atelier::ui::PixelExtent> initial_client;
     std::optional<std::filesystem::path> render_performance_output;
     const auto dimension = [](std::wstring_view value) {

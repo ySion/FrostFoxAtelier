@@ -20,11 +20,19 @@ void complete(Result<void> result) {
         throw std::runtime_error(result.error().message);
 }
 struct Vertex {
-    float x, y, z;
+    float x;
+    float y;
+    float z;
 };
 struct Hit {
-    std::uint32_t hit, instance, primitive, visible;
-    float u, v, distance, padding;
+    std::uint32_t hit;
+    std::uint32_t instance;
+    std::uint32_t primitive;
+    std::uint32_t visible;
+    float u;
+    float v;
+    float distance;
+    float padding;
 };
 static_assert(sizeof(Hit) == 32);
 constexpr std::uint32_t ray_count = 5;

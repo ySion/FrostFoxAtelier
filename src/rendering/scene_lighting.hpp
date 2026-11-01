@@ -37,7 +37,8 @@ struct ProbeVolumeSettings {
     ProbePlacement placement{ProbePlacement::fixed};
     // World bounds for fixed placement; offsets from Frame::lighting_focus
     // for follow_focus. Following snaps to whole cells without changing spacing.
-    std::array<float, 3> minimum{-6.f, -1.f, -6.f}, maximum{6.f, 5.f, 6.f};
+    std::array<float, 3> minimum{-6.f, -1.f, -6.f};
+    std::array<float, 3> maximum{6.f, 5.f, 6.f};
     std::array<std::uint32_t, 3> counts{8, 4, 8};
     float blend_cells{}; // Border transition measured in cells; 0..2.
 };
@@ -99,7 +100,8 @@ inline const char* probe_layout_error(const SceneLightingSettings& settings) noe
             return "Invalid DDGI placement or blend border";
         std::uint64_t count = 1;
         for (std::size_t axis = 0; axis < 3; ++axis) {
-            const float low = volume.minimum[axis], high = volume.maximum[axis];
+            const float low = volume.minimum[axis];
+            const float high = volume.maximum[axis];
             const auto n = volume.counts[axis];
             if (!std::isfinite(low) || !std::isfinite(high) || low < -100000 || high > 100000 || high <= low || n < 2 ||
                 n > 32)

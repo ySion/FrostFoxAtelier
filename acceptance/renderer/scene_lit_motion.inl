@@ -67,8 +67,10 @@ void quality_motion_history(Fixture& f) {
         f.frame.camera_cut = true;
         const auto reference = f.capture((name + "-reference").c_str(), 128);
         const auto reference_later = f.capture((name + "-reference-later").c_str(), 16);
-        double signal = 0, noise = 0;
-        std::size_t pixels = 0, changed = 0;
+        double signal = 0;
+        double noise = 0;
+        std::size_t pixels = 0;
+        std::size_t changed = 0;
         unsigned cross_channel = 0;
         std::array<double, times.size()> errors{};
         for (std::size_t i = 0; i < reference.depth.size(); ++i) {
@@ -76,7 +78,8 @@ void quality_motion_history(Fixture& f) {
             // receiver. Include the entire travel path, not only its endpoints.
             if (before.depth[i] <= 0 || std::abs(before.depth[i] - reference.depth[i]) > 1e-8f)
                 continue;
-            unsigned delta = 0, static_delta = 0;
+            unsigned delta = 0;
+            unsigned static_delta = 0;
             for (unsigned c = 0; c < 3; ++c) {
                 const auto k = i * 4 + c;
                 delta = std::max(delta, unsigned(std::abs(int(before.rgba[k]) - int(reference.rgba[k]))));
@@ -126,16 +129,19 @@ void quality_motion_history(Fixture& f) {
             distant.material = {.roughness = 1};
             f.room.meshes.push_back(distant);
             f.edited();
-            std::array<double, 4> brightness{}, variation{};
+            std::array<double, 4> brightness{};
+            std::array<double, 4> variation{};
             for (unsigned variant = 0; variant < (mode == 1 ? 4u : 2u); ++variant) {
-                const bool moving = variant % 2 != 0, t2x = variant >= 2;
+                const bool moving = variant % 2 != 0;
+                const bool t2x = variant >= 2;
                 options.antialiasing = t2x ? render::Antialiasing::smaa_t2x : render::Antialiasing::smaa;
                 const unsigned last = mode == 1 ? 256u : 80u;
                 f.room.meshes.back().world[12] = 50;
                 f.frame.camera_cut = true;
                 f.edited();
                 render::Capture previous;
-                std::size_t observations = 0, differences = 0;
+                std::size_t observations = 0;
+                std::size_t differences = 0;
                 for (unsigned step = 1; step <= last; ++step) {
                     if (moving) {
                         f.room.meshes.back().world[12] = 50 + float(step) * .01f;

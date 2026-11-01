@@ -21,7 +21,9 @@ class SnapshotBuilder {
     const DebugMetadata& metadata_;
     const DebugOptions& options_;
     DebugSnapshot result_;
-    std::size_t values_{}, elements_{}, text_bytes_{};
+    std::size_t values_{};
+    std::size_t elements_{};
+    std::size_t text_bytes_{};
 
     std::string text(std::string_view source, bool* truncated = nullptr) {
         auto count = std::min(source.size(), options_.max_text_bytes - text_bytes_);

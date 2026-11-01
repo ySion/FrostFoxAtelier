@@ -151,7 +151,9 @@ struct Readbacks {
     GfxBuffer parameters;
 };
 void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex) {
-    constexpr std::uint32_t width = 64, height = 32, frames = 6;
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    constexpr std::uint32_t frames = 6;
     constexpr std::uint32_t image_bytes = width * height * 4;
     const GfxContext gfx = context.borrow();
     const float depth_clear[4] = {1, 0, 0, 0};
@@ -209,7 +211,9 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
             vertex = take(context.prepare(graphics_desc(PipelineKind::vertex)));
     }
     check(context.finish());
-    std::uint64_t color_samples = 0, depth_samples = 0, parameter_samples = 0;
+    std::uint64_t color_samples = 0;
+    std::uint64_t depth_samples = 0;
+    std::uint64_t parameter_samples = 0;
     for (std::uint32_t frame = 0; frame < frames; ++frame) {
         const auto& out = outputs[frame];
         const auto* red = gfxBufferGetData<std::uint8_t>(gfx, out.mesh_color);

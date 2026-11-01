@@ -13,7 +13,8 @@ void publication_failures() {
     require(take(runtime.describe(runtime.object_type()))->name == "core.Object" &&
                 take(runtime.is_a(runtime.object_type(), runtime.object_type())),
             "Object root bootstrap failed.");
-    TypeDefinition a{"cycle.A", TypeKind::object, {}, {}, {}}, b{"cycle.B", TypeKind::object, {}, {}, {}};
+    TypeDefinition a{"cycle.A", TypeKind::object, {}, {}, {}};
+    TypeDefinition b{"cycle.B", TypeKind::object, {}, {}, {}};
     a.base = TypeReference{"cycle.B"};
     b.base = TypeReference{"cycle.A"};
     reject(runtime.register_types({a, b}), ErrorCode::invalid_definition);
@@ -74,7 +75,8 @@ void publication_failures() {
 }
 
 void objects_and_views() {
-    Runtime runtime, foreign;
+    Runtime runtime;
+    Runtime foreign;
     require(!runtime.belongs_to_context({}) && !foreign.belongs_to_context({}),
             "Null identity acquired a runtime context.");
     const auto types = register_types(runtime);
@@ -172,7 +174,9 @@ void objects_and_views() {
 
         auto hidden_target = take(runtime.create(types.leaf));
         auto own_target = take(runtime.create(types.leaf));
-        const auto hidden_id = hidden_target.id(), own_id = own_target.id(), id = object.id();
+        const auto hidden_id = hidden_target.id();
+        const auto own_id = own_target.id();
+        const auto id = object.id();
         take(runtime.write_reference({types.leaf, ValueForm::strong_reference}, native_base->hidden,
                                      hidden_target.reference()));
         take(runtime.write_reference(id, take(runtime.find_field(type, "edge")), own_target.reference()));

@@ -54,7 +54,8 @@ void png(const render::Capture& image, const std::filesystem::path& path) {
         compressed.insert(compressed.end(), raw.begin() + offset, raw.begin() + offset + count);
         offset += count;
     }
-    std::uint32_t a = 1, b = 0;
+    std::uint32_t a = 1;
+    std::uint32_t b = 0;
     for (auto value : raw) {
         a = (a + value) % 65521;
         b = (b + a) % 65521;
@@ -79,7 +80,8 @@ Vec3 normalize(Vec3 value) {
     return {value[0] / length, value[1] / length, value[2] / length};
 }
 render::Camera camera(ui::PixelExtent extent, bool orthographic = false) {
-    const Vec3 eye{0, 3, -7}, focus{0, .7f, 3};
+    const Vec3 eye{0, 3, -7};
+    const Vec3 focus{0, .7f, 3};
     const auto z = normalize(subtract(focus, eye));
     const auto x = normalize(cross({0, 1, 0}, z));
     const auto y = cross(z, x);
@@ -125,7 +127,10 @@ struct Room {
     }
 };
 struct Region {
-    unsigned left{}, top{}, right{}, bottom{};
+    unsigned left{};
+    unsigned top{};
+    unsigned right{};
+    unsigned bottom{};
     float expected_depth{};
 };
 Region project_region(const render::Camera& camera, ui::Rect viewport, ui::PixelExtent extent, Vec3 point,
@@ -180,7 +185,8 @@ Difference difference(const render::Capture& a, const render::Capture& b, bool s
         if (scene_only && (a.depth[i] == 0 || b.depth[i] == 0 || std::abs(a.depth[i] - b.depth[i]) > 1e-5f))
             continue;
         unsigned delta = 0;
-        int total_a = 0, total_b = 0;
+        int total_a = 0;
+        int total_b = 0;
         for (unsigned channel = 0; channel < 3; ++channel) {
             delta = std::max(delta, unsigned(std::abs(int(a.rgba[i * 4 + channel]) - int(b.rgba[i * 4 + channel]))));
             total_a += a.rgba[i * 4 + channel];
@@ -211,22 +217,27 @@ double percentile(std::vector<double> values, unsigned percent) {
 // (display dither) of the band that two HDR half-precision roundings allow.
 using Rgb3 = std::array<double, 3>;
 struct PlaneResponse {
-    Rgb3 diffuse{}, specular{};
+    Rgb3 diffuse{};
+    Rgb3 specular{};
 };
 PlaneResponse plane_response(const Rgb3& v, const Rgb3& l, const Rgb3& base, double roughness, double metallic) {
     PlaneResponse result;
-    const double nl = -l[2], nv = std::max(-v[2], 1e-4);
+    const double nl = -l[2];
+    const double nv = std::max(-v[2], 1e-4);
     if (nl <= 0)
         return result;
     const Rgb3 h{v[0] + l[0], v[1] + l[1], v[2] + l[2]};
     const double hl = std::sqrt(h[0] * h[0] + h[1] * h[1] + h[2] * h[2]);
-    const double nh = std::max(-h[2] / hl, 0.), vh = std::max((v[0] * h[0] + v[1] * h[1] + v[2] * h[2]) / hl, 0.);
-    const double a = std::max(roughness * roughness, .0025), a2 = a * a;
+    const double nh = std::max(-h[2] / hl, 0.);
+    const double vh = std::max((v[0] * h[0] + v[1] * h[1] + v[2] * h[2]) / hl, 0.);
+    const double a = std::max(roughness * roughness, .0025);
+    const double a2 = a * a;
     const double distribution = a2 / (std::numbers::pi * std::pow(nh * nh * (a2 - 1) + 1, 2));
-    const double gv = 2 * nv / (nv + std::sqrt(a2 + (1 - a2) * nv * nv)),
-                 gl = 2 * nl / (nl + std::sqrt(a2 + (1 - a2) * nl * nl));
+    const double gv = 2 * nv / (nv + std::sqrt(a2 + (1 - a2) * nv * nv));
+    const double gl = 2 * nl / (nl + std::sqrt(a2 + (1 - a2) * nl * nl));
     for (unsigned channel = 0; channel < 3; ++channel) {
-        const double f0 = .04 + (base[channel] - .04) * metallic, fresnel = f0 + (1 - f0) * std::pow(1 - vh, 5);
+        const double f0 = .04 + (base[channel] - .04) * metallic;
+        const double fresnel = f0 + (1 - f0) * std::pow(1 - vh, 5);
         result.diffuse[channel] = (1 - fresnel) * base[channel] * (1 - metallic) / std::numbers::pi * nl;
         result.specular[channel] = distribution * gv * gl * fresnel / std::max(4 * nl * nv, 1e-5) * nl;
     }
@@ -242,16 +253,21 @@ double display_code(double radiance) {
 double display_radiance(double code, double rounding) {
     if (code <= 0)
         return 0;
-    const double s = code / 255, mapped = (s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4)) * rounding;
+    const double s = code / 255;
+    const double mapped = (s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4)) * rounding;
     if (code >= 255 || mapped >= 1)
         return std::numeric_limits<double>::infinity();
-    const double a = 2.51 - 2.43 * mapped, b = .03 - .59 * mapped, c = -.14 * mapped;
+    const double a = 2.51 - 2.43 * mapped;
+    const double b = .03 - .59 * mapped;
+    const double c = -.14 * mapped;
     return (-b + std::sqrt(b * b - 4 * a * c)) / (2 * a);
 }
 // margin: the smallest distance of an observed code inside its band.
 struct Analytic {
-    std::size_t pixels{}, failures{};
-    double max_error{}, margin{std::numeric_limits<double>::infinity()};
+    std::size_t pixels{};
+    std::size_t failures{};
+    double max_error{};
+    double margin{std::numeric_limits<double>::infinity()};
 };
 // Visits each receiver pixel with its plane point p and unit view vector v.
 template <class Visit>
@@ -265,9 +281,10 @@ void plane_pixels(const render::Frame& frame, const render::Capture& image, floa
         for (unsigned x = 0; x < image.extent.width; ++x) {
             if (depth(image, x, y) <= 0)
                 continue;
-            const double nx = (x + .5 - viewport.x) / viewport.width * 2 - 1,
-                         ny = 1 - (y + .5 - viewport.y) / viewport.height * 2;
-            const double view_z = plane_z + view[14], scale = perspective ? view_z : 1;
+            const double nx = (x + .5 - viewport.x) / viewport.width * 2 - 1;
+            const double ny = 1 - (y + .5 - viewport.y) / viewport.height * 2;
+            const double view_z = plane_z + view[14];
+            const double scale = perspective ? view_z : 1;
             const Rgb3 p{nx * scale / projection[0] - view[12], ny * scale / projection[5] - view[13], plane_z};
             Rgb3 v{0, 0, -1};
             if (perspective) {
@@ -305,8 +322,8 @@ Analytic analytic_point_plane(const render::Frame& frame, const render::Capture&
             const double expected =
                 irradiance * (response.diffuse[channel] + response.specular[channel]) * light.color[channel];
             const double observed = pixel(image, x, y)[channel];
-            const double low = display_code(expected * (1 - 1. / 1024)) - 1,
-                         high = display_code(expected * (1 + 1. / 1024)) + 1;
+            const double low = display_code(expected * (1 - 1. / 1024)) - 1;
+            const double high = display_code(expected * (1 + 1. / 1024)) + 1;
             result.max_error = std::max(result.max_error, std::abs(observed - display_code(expected)));
             if (observed < low || observed > high) {
                 ++result.failures;
@@ -323,8 +340,10 @@ Analytic analytic_point_plane(const render::Frame& frame, const render::Capture&
 // least `samples` points and twelve per receiver distance to the rectangle, so
 // near receivers stay resolved.
 struct RectangleExpected {
-    unsigned x, y;
-    Rgb3 diffuse, specular;
+    unsigned x;
+    unsigned y;
+    Rgb3 diffuse;
+    Rgb3 specular;
 };
 std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, const render::Capture& image,
                                                   const render::Light& light, float plane_z, const Rgb3& base,
@@ -336,10 +355,13 @@ std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, co
                      light.right[2] * double(light.width)};
     const Rgb3 up{light.up[0] * double(light.height), light.up[1] * double(light.height),
                   light.up[2] * double(light.height)};
-    const double extent = .5 * (double(light.width) + light.height), range = std::max(double(light.range), 1e-3);
+    const double extent = .5 * (double(light.width) + light.height);
+    const double range = std::max(double(light.range), 1e-3);
     plane_pixels(frame, image, plane_z, [&](unsigned x, unsigned y, const Rgb3& p, const Rgb3& v) {
         Rgb3 to_centre{};
-        double d2 = 0, s = 0, t = 0;
+        double d2 = 0;
+        double s = 0;
+        double t = 0;
         for (unsigned i = 0; i < 3; ++i) {
             to_centre[i] = centre[i] - p[i];
             d2 += to_centre[i] * to_centre[i];
@@ -362,10 +384,12 @@ std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, co
         const double window =
             std::pow(std::clamp(1 - std::pow(std::max(std::sqrt(d2) - extent, 0.) / range, 4), 0., 1.), 2);
         const double area = double(light.width) * light.height / (double(k) * k);
-        Rgb3 diffuse{}, specular{};
+        Rgb3 diffuse{};
+        Rgb3 specular{};
         for (unsigned i = 0; i < k; ++i)
             for (unsigned j = 0; j < k; ++j) {
-                const double a = (i + .5) / k - .5, b = (j + .5) / k - .5;
+                const double a = (i + .5) / k - .5;
+                const double b = (j + .5) / k - .5;
                 Rgb3 l{};
                 double r2 = 0;
                 for (unsigned c = 0; c < 3; ++c) {
@@ -411,10 +435,10 @@ Analytic analytic_rectangle_plane(const render::Frame& frame, const render::Capt
     for (const auto& value : expected)
         for (unsigned c = 0; c < 3; ++c) {
             const double total = value.diffuse[c] + value.specular[c];
-            const double slack = specular_slack * value.specular[c] + peak_slack * peak,
-                         observed = pixel(image, value.x, value.y)[c];
-            const double low = display_code(total * (1 - 1. / 1024) - slack) - 1,
-                         high = display_code(total * (1 + 1. / 1024) + slack) + 1;
+            const double slack = specular_slack * value.specular[c] + peak_slack * peak;
+            const double observed = pixel(image, value.x, value.y)[c];
+            const double low = display_code(total * (1 - 1. / 1024) - slack) - 1;
+            const double high = display_code(total * (1 + 1. / 1024) + slack) + 1;
             result.max_error = std::max(result.max_error, std::abs(observed - display_code(total)));
             result.margin = std::min(result.margin, std::min(observed - low, high - observed));
             if (observed < low || observed > high) {
@@ -445,14 +469,17 @@ Analytic analytic_rectangle_diffuse(const render::Frame& frame, const render::Ca
     result.max_error = -std::numeric_limits<double>::infinity();
     for (const auto& value : expected) {
         const auto observed = pixel(image, value.x, value.y);
-        const double r = observed[0], b = observed[2], diffuse = value.diffuse[0];
+        const double r = observed[0];
+        const double b = observed[2];
+        const double diffuse = value.diffuse[0];
         const auto lower = [](double code) {
             return display_radiance(code - 1, 1 / (1 + 1. / 2048)) / (1 + 1. / 1024);
         };
         const auto upper = [](double code) {
             return display_radiance(code + 1, 1 / (1 - 1. / 2048)) / (1 - 1. / 1024);
         };
-        const double low = lower(r) - upper(b) - slack * diffuse, high = upper(r) - lower(b) + slack * diffuse;
+        const double low = lower(r) - upper(b) - slack * diffuse;
+        const double high = upper(r) - lower(b) + slack * diffuse;
         if (diffuse > 0 && std::isfinite(high))
             result.max_error = std::max(result.max_error, std::max(low - diffuse, diffuse - high) / diffuse);
         if (diffuse < low || diffuse > high) {
@@ -472,11 +499,15 @@ Analytic analytic_rectangle_diffuse(const render::Frame& frame, const render::Ca
 // must be black; one that misses every box grown by `margin` must match the same
 // frame rendered without shadows. Pixels in the margin band are not judged.
 struct Box {
-    Vec3 center, half;
+    Vec3 center;
+    Vec3 half;
 };
 struct ShadowTruth {
-    std::size_t occluded{}, lit{}, failures{};
-    unsigned max_lit_delta{}, max_occluded{};
+    std::size_t occluded{};
+    std::size_t lit{};
+    std::size_t failures{};
+    unsigned max_lit_delta{};
+    unsigned max_occluded{};
 };
 ShadowTruth shadow_truth(const render::Frame& frame, const render::Capture& shadowed, const render::Capture& unshadowed,
                          const render::Light& light, const std::vector<Box>& blockers, double margin) {
@@ -489,11 +520,12 @@ ShadowTruth shadow_truth(const render::Frame& frame, const render::Capture& shad
     const auto hits = [&](const std::array<double, 3>& origin, const std::array<double, 3>& direction, double length,
                           double grow) {
         for (const auto& box : blockers) {
-            double t_in = 1e-4, t_out = length;
+            double t_in = 1e-4;
+            double t_out = length;
             bool empty = false;
             for (unsigned axis = 0; axis < 3; ++axis) {
-                const double low = box.center[axis] - box.half[axis] - grow,
-                             high = box.center[axis] + box.half[axis] + grow;
+                const double low = box.center[axis] - box.half[axis] - grow;
+                const double high = box.center[axis] + box.half[axis] + grow;
                 if (low >= high) {
                     empty = true;
                     break;
@@ -505,7 +537,8 @@ ShadowTruth shadow_truth(const render::Frame& frame, const render::Capture& shad
                     }
                     continue;
                 }
-                double t0 = (low - origin[axis]) / direction[axis], t1 = (high - origin[axis]) / direction[axis];
+                double t0 = (low - origin[axis]) / direction[axis];
+                double t1 = (high - origin[axis]) / direction[axis];
                 if (t0 > t1)
                     std::swap(t0, t1);
                 t_in = std::max(t_in, t0);
@@ -523,8 +556,8 @@ ShadowTruth shadow_truth(const render::Frame& frame, const render::Capture& shad
             const double z = depth(shadowed, x, y);
             if (z <= 0 || z != depth(unshadowed, x, y))
                 continue;
-            const double nx = (x + .5 - viewport.x) / viewport.width * 2 - 1,
-                         ny = 1 - (y + .5 - viewport.y) / viewport.height * 2;
+            const double nx = (x + .5 - viewport.x) / viewport.width * 2 - 1;
+            const double ny = 1 - (y + .5 - viewport.y) / viewport.height * 2;
             const double view_z =
                 perspective ? projection[14] / (z - projection[10]) : (z - projection[14]) / projection[10];
             const double scale = perspective ? view_z : 1;
@@ -1090,8 +1123,10 @@ void image_cases(Fixture& f) {
           "world-space DDGI contributes actual indirect receiver color");
     const auto warm_region = f.region({-3.15f, .01f, 1.f});
     const auto cool_region = f.region({3.15f, .01f, 1.f});
-    const auto warm0 = mean_rgb(gi_off, warm_region), warm1 = mean_rgb(gi_on, warm_region);
-    const auto cool0 = mean_rgb(gi_off, cool_region), cool1 = mean_rgb(gi_on, cool_region);
+    const auto warm0 = mean_rgb(gi_off, warm_region);
+    const auto warm1 = mean_rgb(gi_on, warm_region);
+    const auto cool0 = mean_rgb(gi_off, cool_region);
+    const auto cool1 = mean_rgb(gi_on, cool_region);
     f.metrics << "warm_bounce_rgb," << warm1[0] - warm0[0] << ',' << warm1[1] - warm0[1] << ',' << warm1[2] - warm0[2]
               << '\n'
               << "cool_bounce_rgb," << cool1[0] - cool0[0] << ',' << cool1[1] - cool0[1] << ',' << cool1[2] - cool0[2]
@@ -1103,7 +1138,8 @@ void image_cases(Fixture& f) {
     const auto gi_updated = f.capture("07-ddgi-dynamic-update", warmup_frames);
     options.ddgi = false;
     const auto gi_updated_off = f.capture("07-ddgi-dynamic-off", warmup_frames);
-    const auto updated = mean_rgb(gi_updated, warm_region), updated0 = mean_rgb(gi_updated_off, warm_region);
+    const auto updated = mean_rgb(gi_updated, warm_region);
+    const auto updated0 = mean_rgb(gi_updated_off, warm_region);
     check(updated[2] - updated0[2] > updated[0] - updated0[0] + 1,
           "DDGI updates a changed surface's indirect color instead of retaining stale probes");
     // A fixed environment isolates AO from changing probe updates and random
@@ -1278,7 +1314,8 @@ void temporal_isolation(Fixture& f) {
     f.frame.view.lit = defaults;
     f.edited();
     const auto before_motion = f.capture("rigid-before", warmup_frames);
-    render::Capture moving, stopped;
+    render::Capture moving;
+    render::Capture stopped;
     for (unsigned index = 1; index <= 16; ++index) {
         f.room.meshes[4].world[12] = float(index) * .1f;
         check(f.step(index == 16 ? &moving : nullptr).stats.scene_lit_history_resets == 0,
@@ -1296,7 +1333,8 @@ void temporal_isolation(Fixture& f) {
     check(moving.motion.size() == motion_values && stopped.motion.size() == motion_values &&
               still.motion.size() == motion_values,
           "Scene Lit captures publish per-pixel surface motion");
-    std::size_t moving_pixels = 0, stale_pixels = 0;
+    std::size_t moving_pixels = 0;
+    std::size_t stale_pixels = 0;
     for (std::size_t i = 0; i < motion_values; i += 2) {
         const auto delta = [&](const render::Capture& c) {
             return std::max(std::abs(c.motion[i] - still.motion[i]), std::abs(c.motion[i + 1] - still.motion[i + 1]));
@@ -1338,7 +1376,8 @@ Difference region_difference(const render::Capture& a, const render::Capture& b,
 }
 
 void quality_shape(const render::Capture& image) {
-    std::size_t visible = 0, illuminated = 0;
+    std::size_t visible = 0;
+    std::size_t illuminated = 0;
     for (std::size_t index = 0; index < image.depth.size(); ++index) {
         if (image.depth[index] <= 0)
             continue;
@@ -1394,7 +1433,8 @@ render::Capture quality_static(Fixture& f, const std::string& name, Region refle
 }
 
 void quality_depth(Fixture& f) {
-    constexpr float near_plane = .1f, far_plane = 2000.f;
+    constexpr float near_plane = .1f;
+    constexpr float far_plane = 2000.f;
     const auto mesh = f.room.meshes[0];
     f.room.meshes = {mesh, mesh};
     f.room.meshes[0].world = box(-.15f, 0, .5f, .2f, .2f, .2f);
@@ -1424,7 +1464,8 @@ void quality_depth(Fixture& f) {
     f.frame.camera_cut = true;
     f.edited();
     const auto perspective = f.capture("quality-depth-near-far", 16);
-    const auto near_roi = f.region({-.15f, 0, .4f}), far_roi = f.region({350, 0, 900});
+    const auto near_roi = f.region({-.15f, 0, .4f});
+    const auto far_roi = f.region({350, 0, 900});
     mean_rgb(perspective, near_roi);
     mean_rgb(perspective, far_roi);
     const float near_depth =
@@ -1465,7 +1506,8 @@ void quality_depth(Fixture& f) {
     f.frame.camera_cut = true;
     f.edited();
     const auto orthographic = f.capture("quality-depth-orthographic", 16);
-    const auto ortho_near = f.region({-1, 0, .5f}), ortho_far = f.region({1, 0, 29.5f});
+    const auto ortho_near = f.region({-1, 0, .5f});
+    const auto ortho_far = f.region({1, 0, 29.5f});
     mean_rgb(orthographic, ortho_near);
     mean_rgb(orthographic, ortho_far);
     check(depth(orthographic, (ortho_near.left + ortho_near.right) / 2, (ortho_near.top + ortho_near.bottom) / 2) >
@@ -1647,7 +1689,8 @@ void quality_ddgi(Fixture& f) {
     std::vector<double> seam_ratios;
     for (unsigned column = 0; column < 61; ++column) {
         const float x = -4.5f + float(column) * .1f;
-        double near_red = 0, above_red = 0;
+        double near_red = 0;
+        double above_red = 0;
         for (const float y : {.035f, .10f, .2f, .35f, .6f, 1.f, 1.6f, 2.4f}) {
             const auto region =
                 project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {x, y, 5.38f}, 1);

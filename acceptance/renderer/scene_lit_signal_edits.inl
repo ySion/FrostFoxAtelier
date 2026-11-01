@@ -77,11 +77,13 @@ void quality_signal_edits(Fixture& f) {
         const auto reference_later = f.capture((name + "-clean-endpoint-later").c_str(), 16);
         check(before.depth == reference.depth && reference.depth == reference_later.depth,
               "signal edits preserve exact FP32 geometry depth");
-        double signal = 0, noise = 0;
+        double signal = 0;
+        double noise = 0;
         std::size_t changed = 0;
         std::array<double, times.size()> errors{};
         for (const auto i : receivers) {
-            unsigned delta = 0, static_delta = 0;
+            unsigned delta = 0;
+            unsigned static_delta = 0;
             for (unsigned c = 0; c < 3; ++c) {
                 const auto k = i * 4 + c;
                 delta = std::max(delta, unsigned(std::abs(int(before.rgba[k]) - int(reference.rgba[k]))));

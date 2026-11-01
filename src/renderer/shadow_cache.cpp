@@ -12,14 +12,16 @@ namespace atelier::renderer::detail {
 namespace {
 using V = math::Vector3d;
 using M = math::Matrix4d;
-constexpr std::uint32_t cell_size = 128, grid_size = shadow_atlas_extent / cell_size;
+constexpr std::uint32_t cell_size = 128;
+constexpr std::uint32_t grid_size = shadow_atlas_extent / cell_size;
 // lit_shadow_sampling offsets each receiver along its normal by one interior
 // texel: at most this fraction of its point distance or cascade radius, at
 // the smallest face. The 3x3 filter footprint stays inside the guard texels.
 constexpr double normal_offset_ratio = 2.0 / (cell_size - 2 * shadow_tile_border);
 constexpr std::uint32_t no_slot = ~0u;
 // Cascade fitting to the measured receiver depth; scene-lit.md gives the reasons.
-constexpr double fit_near_margin = .8, fit_far_margin = 1.25;
+constexpr double fit_near_margin = .8;
+constexpr double fit_far_margin = 1.25;
 constexpr std::int32_t fit_shrink_quarters = 2; // Quarter octaves.
 constexpr std::uint32_t fit_shrink_frames = 32;
 void check(bool condition, const char* message) {
@@ -112,7 +114,9 @@ double ceil_power_two(double value) {
     return std::exp2(std::ceil(std::log2(value)));
 }
 M view(V origin, V forward, V up) {
-    const auto z = unit(forward), x = unit(cross(up, z)), y = cross(z, x);
+    const auto z = unit(forward);
+    const auto x = unit(cross(up, z));
+    const auto y = cross(z, x);
     return {
         {x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -dot(origin, x), -dot(origin, y), -dot(origin, z), 1}};
 }
@@ -132,7 +136,9 @@ M expanded_projection(M vp, std::uint32_t size) {
     return vp;
 }
 struct Request {
-    std::uint32_t kind{}, size{128}, count{};
+    std::uint32_t kind{};
+    std::uint32_t size{128};
+    std::uint32_t count{};
     double projected_diameter{};
     double importance{}; // Point power times the camera solid angle of its support.
     std::array<bool, 6> needed{};
@@ -142,20 +148,25 @@ struct Request {
     std::array<float, 4> starts{};
     V origin{}; // Point and rectangle cube centre.
     // Orthographic matrices are snapped at the allocated resolution.
-    V axis_x{}, axis_y{}, axis_z{};
+    V axis_x{};
+    V axis_y{};
+    V axis_z{};
     std::array<V, 4> centers{};
     std::array<double, 4> radii{};
 };
 M request_projection(const Request& request, std::uint32_t face, std::uint32_t size) {
     if (request.kind == 1)
         return request.projection[face];
-    const auto x = request.axis_x, y = request.axis_y, z = request.axis_z;
+    const auto x = request.axis_x;
+    const auto y = request.axis_y;
+    const auto z = request.axis_z;
     const auto center = request.centers[face];
     const double radius = request.radii[face];
     const double texel = 2 * radius / (size - 2 * shadow_tile_border);
     const double cx = std::floor(dot(center, x) / texel + .5) * texel;
     const double cy = std::floor(dot(center, y) / texel + .5) * texel;
-    const double near_z = request.depth[face][0], far_z = request.depth[face][1];
+    const double near_z = request.depth[face][0];
+    const double far_z = request.depth[face][1];
     return {{x.x / radius, y.x / radius, -z.x / (far_z - near_z), 0, x.y / radius, y.y / radius,
              -z.y / (far_z - near_z), 0, x.z / radius, y.z / radius, -z.z / (far_z - near_z), 0, -cx / radius,
              -cy / radius, far_z / (far_z - near_z), 1}};
@@ -244,10 +255,13 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
     const auto inverse_projection = math::try_inverse(matrix(frame.camera.projection));
     const auto inverse_view = math::try_inverse(camera_view);
     check(bool(inverse_projection) && bool(inverse_view), "Invalid shadow camera inverse");
-    std::array<V, 4> near_corners, rays;
-    double camera_near = std::numeric_limits<double>::infinity(), camera_far = -camera_near;
+    std::array<V, 4> near_corners;
+    std::array<V, 4> rays;
+    double camera_near = std::numeric_limits<double>::infinity();
+    double camera_far = -camera_near;
     for (std::uint32_t i = 0; i < 4; ++i) {
-        const double x = i & 1 ? 1 : -1, y = i & 2 ? 1 : -1;
+        const double x = i & 1 ? 1 : -1;
+        const double y = i & 2 ? 1 : -1;
         near_corners[i] = unproject(*inverse_projection, x, y, 1);
         const auto far_clip = math::Vector4d{x, y, frame.camera.far_depth, 1} * (*inverse_projection);
         check(std::isfinite(far_clip.x) && std::isfinite(far_clip.y) && std::isfinite(far_clip.z) &&
@@ -285,7 +299,8 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
     // split lies past the conservative one, so no cascade is coarser. Cascade
     // 0 still starts at the camera near plane, so no receiver in front of the
     // fitted range is missed.
-    double fit_near = 0, fit_far = 0;
+    double fit_near = 0;
+    double fit_far = 0;
     if (fit && camera_near > 0) {
         fit_near = std::max(camera_near, (*fit)[0]);
         fit_far = std::min(far_z, (*fit)[1]);
@@ -305,7 +320,8 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
     request.axis_y = cross(request.axis_z, request.axis_x);
     // Stable world-space depth planes include off-camera casters. Quantization
     // avoids rebuilding the static layer for small motion inside scene bounds.
-    double low = std::numeric_limits<double>::infinity(), high = -low;
+    double low = std::numeric_limits<double>::infinity();
+    double high = -low;
     for (const auto& caster : casters)
         for (std::uint32_t i = 0; i < 8; ++i) {
             const double z = dot(corner(caster.bounds, i), request.axis_z);
@@ -313,7 +329,8 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
             high = std::max(high, z);
         }
     const double step = ceil_power_two(std::max(high - low, 1.0)) / 16;
-    double previous = camera_near, offset = 0;
+    double previous = camera_near;
+    double offset = 0;
     for (std::uint32_t face = 0; face < 4; ++face) {
         const double end = ends[face];
         const double start = face == 0 ? camera_near : previous - .1 * (previous - camera_near);
@@ -354,11 +371,17 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
 
 struct ShadowCache::State {
     struct Face {
-        std::uint32_t slot{no_slot}, size{}, generation{};
+        std::uint32_t slot{no_slot};
+        std::uint32_t size{};
+        std::uint32_t generation{};
         std::array<float, 16> projection{};
         std::array<float, 4> depth{}; // GpuShadowFace::depth of the drawn projection.
-        std::uint64_t used{}, pinned{};
-        bool stationary_valid{}, dynamic_valid{}, dynamic_nonempty{}, drawn{};
+        std::uint64_t used{};
+        std::uint64_t pinned{};
+        bool stationary_valid{};
+        bool dynamic_valid{};
+        bool dynamic_nonempty{};
+        bool drawn{};
     };
     struct Light {
         std::array<Face, 6> faces;
@@ -371,7 +394,11 @@ struct ShadowCache::State {
     // Cascades and lights without a stable key (no cached state to defer to)
     // always redraw, outside the budget.
     struct Redraw {
-        std::uint32_t source, face, plan_face, size, rank;
+        std::uint32_t source;
+        std::uint32_t face;
+        std::uint32_t plan_face;
+        std::uint32_t size;
+        std::uint32_t rank;
         bool exempt;
     };
     struct ReservationUndo {
@@ -382,24 +409,31 @@ struct ShadowCache::State {
     std::vector<ReservationUndo> reservation_undo;
     std::vector<Light> previous_lights;
     std::vector<Request> requests;
-    std::vector<std::uint32_t> sizes, order;
+    std::vector<std::uint32_t> sizes;
+    std::vector<std::uint32_t> order;
     std::vector<Redraw> redraws;
     std::vector<std::uint8_t> queued; // Per light: 1 has redraws, 2 also has an undrawn face.
     std::vector<ShadowCaster> receivers;
     std::array<bool, grid_size * grid_size> occupied{};
     ShadowFramePlan plan;
-    std::uint64_t scene{}, sequence{}, plan_serial{1};
+    std::uint64_t scene{};
+    std::uint64_t sequence{};
+    std::uint64_t plan_serial{1};
     std::uint32_t next_generation{};
-    bool initialized{}, pending{}, plan_ready{};
+    bool initialized{};
+    bool pending{};
+    bool plan_ready{};
     // Fitted cascade range in quarter octaves of camera view Z. Each end grows
     // at once and shrinks on its own, to the envelope of fit_shrink_frames
     // consecutive readings that all stayed at least fit_shrink_quarters inside it.
     struct FitEnd {
-        std::int32_t value{}, envelope{};
+        std::int32_t value{};
+        std::int32_t envelope{};
         std::uint32_t frames{};
     };
     struct Fit {
-        FitEnd lower, upper;
+        FitEnd lower;
+        FitEnd upper;
         bool valid{};
     } fit;
 
@@ -449,7 +483,9 @@ struct ShadowCache::State {
     void mark(const Face& face, bool value) {
         if (face.slot == no_slot)
             return;
-        const auto x = face.slot % grid_size, y = face.slot / grid_size, n = face.size / cell_size;
+        const auto x = face.slot % grid_size;
+        const auto y = face.slot / grid_size;
+        const auto n = face.size / cell_size;
         for (std::uint32_t row = 0; row < n; ++row)
             for (std::uint32_t column = 0; column < n; ++column)
                 occupied[(y + row) * grid_size + x + column] = value;
@@ -593,7 +629,8 @@ struct ShadowCache::State {
     }
     void redraw(const Redraw& item, const Request& request, std::span<const ShadowCaster> casters) {
         auto& face = lights[item.source].faces[item.face];
-        const auto vp = request_projection(request, item.face, item.size), draw_vp = expanded_projection(vp, item.size);
+        const auto vp = request_projection(request, item.face, item.size);
+        const auto draw_vp = expanded_projection(vp, item.size);
         const auto projection = packed(vp);
         if (!face.drawn || face.projection != projection) {
             face.projection = projection;
@@ -644,7 +681,8 @@ struct ShadowCache::State {
                 return a.exempt;
             if (queued[a.source] != queued[b.source])
                 return queued[a.source] > queued[b.source];
-            const auto wa = lights[a.source].waiting, wb = lights[b.source].waiting;
+            const auto wa = lights[a.source].waiting;
+            const auto wb = lights[b.source].waiting;
             if (wa != wb)
                 return wa > wb;
             return a.rank != b.rank ? a.rank < b.rank : a.face < b.face;
@@ -777,7 +815,8 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame
                         face.dynamic_valid = false;
                 }
             }
-    const auto camera_view = matrix(frame.camera.view), camera_vp = camera_view * matrix(frame.camera.projection);
+    const auto camera_view = matrix(frame.camera.view);
+    const auto camera_vp = camera_view * matrix(frame.camera.projection);
     auto& receivers = s.receivers;
     receivers.clear();
     receivers.reserve(casters.size());

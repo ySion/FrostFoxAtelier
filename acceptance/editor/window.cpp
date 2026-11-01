@@ -496,7 +496,8 @@ void require_input_focus(Application& app) {
 void tick(Application& app, unsigned count = 2) {
     using Access = atelier::application::EditorAcceptanceAccess;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
-    unsigned accepted{}, attempts{};
+    unsigned accepted{};
+    unsigned attempts{};
     while (accepted < count && attempts < 180) {
         // Material and view preparation do not spend the frame budget.
         if (!Access::view_preparing(app))
@@ -876,7 +877,8 @@ void verify_chrome_pixels(Application& app, const std::filesystem::path& output)
         if (control.kind == atelier::ui::ControlKind::number || control.kind == atelier::ui::ControlKind::text_edit)
             require(std::abs(control.bounds.height - field.height) < .1f,
                     "Single-line editors have inconsistent heights.");
-    const auto x = static_cast<int>(std::round(field.x)), y = static_cast<int>(std::round(field.y));
+    const auto x = static_cast<int>(std::round(field.x));
+    const auto y = static_cast<int>(std::round(field.y));
     // Current display: a sub-DIP authored edge rounds to one physical pixel.
     const auto stroke = std::max(1, static_cast<int>(std::round(.667f * app.presented()->drawing->dpi_scale)));
     pixel(x, y + 4 * stroke, 36);
@@ -885,7 +887,8 @@ void verify_chrome_pixels(Application& app, const std::filesystem::path& output)
     pixel(x + 8 * stroke, y, 36);
     pixel(x + 8 * stroke, y + stroke, 46);
     const auto selected = app.presented()->find(control::shelf_create)->bounds;
-    const auto tx = static_cast<int>(std::round(selected.x)), ty = static_cast<int>(std::round(selected.y));
+    const auto tx = static_cast<int>(std::round(selected.x));
+    const auto ty = static_cast<int>(std::round(selected.y));
     pixel(tx + 5 * stroke, ty, 38);
     pixel(tx + 5 * stroke, ty + 2 * stroke, 79);
     pixel(tx + 5 * stroke, static_cast<int>(std::round(selected.y + selected.height)) - 1, 79);
@@ -921,7 +924,8 @@ void verify_chrome_pixels(Application& app, const std::filesystem::path& output)
         const bool vertical = axis == atelier::ui::DragAxis::horizontal;
         const auto divider = app.docking().divider(vertical ? control::scene_tab : control::parameters_tab, axis);
         const auto rail = app.presented()->find(divider)->bounds;
-        const auto rx = static_cast<int>(std::round(rail.x)), ry = static_cast<int>(std::round(rail.y));
+        const auto rx = static_cast<int>(std::round(rail.x));
+        const auto ry = static_cast<int>(std::round(rail.y));
         if (vertical) {
             pixel(rx, ry + 8 * stroke, 0);
             pixel(rx + 2 * stroke, ry + 8 * stroke, 73);
@@ -1065,10 +1069,13 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
 }
 // Reads the product's frame timing record of the last step, which must have been accepted without capture.
 struct TimingSeries {
-    std::vector<double> layout, render;
+    std::vector<double> layout;
+    std::vector<double> render;
     atelier::renderer::FrameStats total;
-    std::uint64_t peak_live_coverages{}, peak_live_bytes{};
-    atelier::ui::Statistics start, finish;
+    std::uint64_t peak_live_coverages{};
+    std::uint64_t peak_live_bytes{};
+    atelier::ui::Statistics start;
+    atelier::ui::Statistics finish;
     explicit TimingSeries(const Application& app) : start(app.ui_statistics()) {}
     void record(const Application& app) {
         const auto& record = app.frame_record();
@@ -1260,7 +1267,10 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
 void verify_transform_projection(Application& app, const std::filesystem::path& output, atelier::ObjectId entity) {
     const auto transform = entity;
     const auto before = model(atelier::world::read_transform(app.document().world().runtime(), transform));
-    atelier::renderer::Capture original, rotated, scaled, restored;
+    atelier::renderer::Capture original;
+    atelier::renderer::Capture rotated;
+    atelier::renderer::Capture scaled;
+    atelier::renderer::Capture restored;
     require(app.step(&original), "Could not capture the original World transform.");
     require(atelier::application::EditorAcceptanceAccess::edit_field(app, transform,
                                                                      app.document().types().rotation_fields[2], .7f)
@@ -1615,7 +1625,8 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
     verify_menu_input_transitions(app);
     const auto first = app.document().selection().entity;
     const auto viewport = app.presented()->find(control::viewport)->bounds;
-    const float x = viewport.x + viewport.width * .5f, y = viewport.y + viewport.height * .5f;
+    const float x = viewport.x + viewport.width * .5f;
+    const float y = viewport.y + viewport.height * .5f;
     const auto move = [&](float px, float py) {
         Access::input(app, {.kind = ui::EventKind::pointer_move, .x = px, .y = py});
     };
@@ -2248,7 +2259,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
 
     verify_transform_projection(app, output, object);
 
-    atelier::renderer::Capture camera_before, camera_orbit, camera_zoom;
+    atelier::renderer::Capture camera_before;
+    atelier::renderer::Capture camera_orbit;
+    atelier::renderer::Capture camera_zoom;
     using CameraInput = atelier::application::EditorAcceptanceAccess;
     require(app.step(&camera_before), "Camera capture failed.");
     auto view = centre(app, control::viewport);
@@ -2443,7 +2456,8 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     std::ofstream(output / "ime-acceptance.txt") << "Sogou Pinyin acceptance: RUNNING\n";
     std::ofstream setup(output / "ime-platform.txt");
     const auto record_profile = [&](const char* label, HRESULT result, const TF_INPUTPROCESSORPROFILE& value) {
-        wchar_t clsid[40]{}, profile_id[40]{};
+        wchar_t clsid[40]{};
+        wchar_t profile_id[40]{};
         StringFromGUID2(value.clsid, clsid, 40);
         StringFromGUID2(value.guidProfile, profile_id, 40);
         setup << label << ": HRESULT=" << std::hex << result << "; type=" << value.dwProfileType
@@ -2576,7 +2590,8 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     check_active_profile(); // Only this thread's enabled profile may change; no enablement or default setters.
     const auto record_input = [&](const char* phase) {
         const auto context = ImmGetContext(app.window());
-        DWORD conversion{}, sentence{};
+        DWORD conversion{};
+        DWORD sentence{};
         const auto conversion_found = context && ImmGetConversionStatus(context, &conversion, &sentence);
         const auto stats = app.input_statistics();
         setup << phase << ": IMC=" << context << "; open=" << (context && ImmGetOpenStatus(context))
@@ -2627,11 +2642,14 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         // Desktop pixels inside the foreground editor include the OS candidate popup.
         RECT rect{};
         require(GetWindowRect(app.window(), &rect) != FALSE, "Cannot locate IME screenshot region.");
-        const auto width = rect.right - rect.left, height = rect.bottom - rect.top;
-        HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+        const auto width = rect.right - rect.left;
+        const auto height = rect.bottom - rect.top;
+        HDC screen = GetDC(nullptr);
+        HDC memory = CreateCompatibleDC(screen);
         HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
         struct CaptureScope {
-            HDC screen, memory;
+            HDC screen;
+            HDC memory;
             HBITMAP bitmap;
             ~CaptureScope() {
                 DeleteObject(bitmap);

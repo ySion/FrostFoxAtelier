@@ -17,12 +17,14 @@ struct PropertyRow {
     std::wstring title;
     ui_language::EditBinding edit;
     Kind kind{Kind::number};
-    bool checked{}, enabled{true};
+    bool checked{};
+    bool enabled{true};
     ui_language::ActionBinding change;
     std::wstring choice;
     ui::ControlKey target{};
     std::optional<std::array<double, 3>> swatch;
-    bool override_available{}, overridden{};
+    bool override_available{};
+    bool overridden{};
     ui_language::ActionBinding inherit;
     ui_language::TooltipBinding help;
     ui_language::ActionBinding pick;

@@ -43,7 +43,9 @@ void selection_depth_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     };
     bool continuous = true;
     for (unsigned pose = 0; pose < 8; ++pose) {
-        const float angle = .317f + pose * .027f, c = std::cos(angle), s = std::sin(angle);
+        const float angle = .317f + pose * .027f;
+        const float c = std::cos(angle);
+        const float s = std::sin(angle);
         const float offset = pose < 4 ? 0 : 37.173f * float(pose - 3);
         mesh.world[12] = -.731f + offset;
         mesh.world[13] = .427f - offset * .137f;
@@ -75,7 +77,8 @@ void selection_depth_cases(render::Renderer& renderer, ui::PixelExtent extent) {
             const auto name =
                 "selection-depth-" + std::to_string(pose) + "-" + std::to_string(static_cast<unsigned>(aa)) + ".ppm";
             snapshot(capture, name.c_str());
-            std::size_t expected{}, visible{};
+            std::size_t expected{};
+            std::size_t visible{};
             for (unsigned y = 0; y < extent.height; ++y)
                 for (unsigned x = 0; x < extent.width; ++x) {
                     if (!yellow(pixel(reference, x, y)))
@@ -156,7 +159,8 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
     floor.material.emissive = {.04f, .05f, .06f};
     floor.stable_key = 1;
     render::Frame frame{drawing, {}, {0, 0, float(extent.width), float(extent.height)}, {&floor, 1}};
-    constexpr float near_plane = .1f, far_plane = 100.f;
+    constexpr float near_plane = .1f;
+    constexpr float far_plane = 100.f;
     const render::Camera perspective{.projection = {1.5f * float(extent.height) / float(extent.width), 0, 0, 0, 0, 1.5f,
                                                     0, 0, 0, 0, -near_plane / (far_plane - near_plane), 1, 0, 0,
                                                     near_plane * far_plane / (far_plane - near_plane), 0}};
@@ -198,7 +202,9 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
         floor.selected = true;
         draw();
         snapshot(capture, (std::string{"selection-"} + name + ".ppm").c_str());
-        std::size_t samples = 0, changed = 0, yellow = 0;
+        std::size_t samples = 0;
+        std::size_t changed = 0;
+        std::size_t yellow = 0;
         for (unsigned y = extent.height * 3 / 5; y < extent.height * 9 / 10; ++y)
             for (unsigned x = extent.width * 3 / 8; x < extent.width * 5 / 8; ++x) {
                 if (depth(reference, x, y) == 0)

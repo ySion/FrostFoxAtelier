@@ -142,7 +142,10 @@ bool in_flow(const NodeInput& child, const NodeInput& parent) {
     return !child.collapsed && !child.out_of_flow && parent.kind != Kind::overlay;
 }
 struct BufferMemory {
-    std::uint64_t allocations{}, allocated{}, live{}, peak{};
+    std::uint64_t allocations{};
+    std::uint64_t allocated{};
+    std::uint64_t live{};
+    std::uint64_t peak{};
 };
 // Counts the actual backing allocations of internal buffers, using the process allocator.
 template <class T>
@@ -173,7 +176,8 @@ struct BufferAllocator {
 template <class T>
 using Buffer = std::vector<T, BufferAllocator<T>>;
 struct Share {
-    double minimum{}, weight{};
+    double minimum{};
+    double weight{};
     std::optional<double> maximum;
 };
 
@@ -183,7 +187,8 @@ struct Share {
 void allocate_slots(std::span<const Share> shares, double pool, Buffer<double>& output,
                     Buffer<std::pair<double, std::size_t>>& events, Buffer<double>& sums) {
     output.resize(shares.size());
-    double minimum_sum = 0, total_weight = 0;
+    double minimum_sum = 0;
+    double total_weight = 0;
     for (std::size_t i = 0; i < shares.size(); ++i) {
         output[i] = shares[i].minimum;
         minimum_sum += shares[i].minimum;
@@ -217,10 +222,13 @@ void allocate_slots(std::span<const Share> shares, double pool, Buffer<double>& 
     std::sort(events.begin(), events.end());
     const auto base = shares.size();
     sums.assign(base * 2, 0);
-    double remaining = pool - minimum_sum, level = 0, slope = 0;
+    double remaining = pool - minimum_sum;
+    double level = 0;
+    double slope = 0;
     std::size_t at = 0;
     while (at < events.size()) {
-        const double next = events[at].first, growth = (next - level) * slope;
+        const double next = events[at].first;
+        const double growth = (next - level) * slope;
         if (slope > 0 && remaining <= growth) {
             level += remaining / slope;
             remaining = 0;
@@ -258,20 +266,33 @@ struct LayoutDocument::Impl {
         explicit Slot(BufferMemory* memory) : children(BufferAllocator<std::uint32_t>{memory}) {}
         NodeInput input{};
         Buffer<std::uint32_t> children;
-        Cached intrinsic{}, constrained{};
-        std::uint32_t generation{1}, parent{no_slot}, next_free{no_slot}, depth{}, work_index{};
+        Cached intrinsic{};
+        Cached constrained{};
+        std::uint32_t generation{1};
+        std::uint32_t parent{no_slot};
+        std::uint32_t next_free{no_slot};
+        std::uint32_t depth{};
+        std::uint32_t work_index{};
         bool live{};
         std::uint64_t measured_generation{};
     };
     struct Work {
-        float intrinsic_width{}, natural_height{}, slot_width{}, slot_height{};
-        std::size_t pending_intrinsic{no_pending}, pending_width{no_pending};
-        bool intrinsic_valid{}, needs_height{};
+        float intrinsic_width{};
+        float natural_height{};
+        float slot_width{};
+        float slot_height{};
+        std::size_t pending_intrinsic{no_pending};
+        std::size_t pending_width{no_pending};
+        bool intrinsic_valid{};
+        bool needs_height{};
         bool uses_measurement{};
         bool needs_baseline{};
         bool children_arranged{};
         std::optional<float> first_baseline;
-        std::size_t tracks{no_pending}, line{no_pending}, lines_begin{}, lines_end{};
+        std::size_t tracks{no_pending};
+        std::size_t line{no_pending};
+        std::size_t lines_begin{};
+        std::size_t lines_end{};
     };
     struct Pending {
         std::uint32_t slot;
@@ -279,7 +300,10 @@ struct LayoutDocument::Impl {
         MeasuredSize size;
     };
     struct Line {
-        double width{}, height{}, y{}, cursor{};
+        double width{};
+        double height{};
+        double y{};
+        double cursor{};
         std::size_t count{};
     };
 
@@ -1102,7 +1126,8 @@ struct LayoutDocument::Impl {
             if (specialized && in_flow(input, parent))
                 continue;
             auto& box = box_for(child);
-            double x = parent.padding.left, y = parent.padding.top;
+            double x = parent.padding.left;
+            double y = parent.padding.top;
             if (!in_flow(input, parent)) {
                 x += static_cast<double>(width) * input.anchor_x - static_cast<double>(box.width) * input.pivot_x +
                      input.offset_x;
@@ -1133,7 +1158,8 @@ struct LayoutDocument::Impl {
                 x += (static_cast<double>(width) - box.width) * alignment(child, true).offset;
                 cursor += work_for(child).slot_height;
             }
-            auto left = coordinate(x, child), top = coordinate(y, child);
+            auto left = coordinate(x, child);
+            auto top = coordinate(y, child);
             if (!left)
                 return std::unexpected(left.error());
             if (!top)
@@ -1167,22 +1193,33 @@ struct LayoutDocument::Impl {
     Limits limits;
     bool active{};
     bool geometry_dirty{true};
-    bool has_grid_work{}, has_flex_work{}, has_placement_work{};
+    bool has_grid_work{};
+    bool has_flex_work{};
+    bool has_placement_work{};
     std::uint64_t geometry_generation{};
     std::uint32_t free_head{no_slot};
     std::size_t live_count{1};
-    std::uint64_t input_revision{1}, publication{}, published_input{}, published_provider{}, current_provider{};
+    std::uint64_t input_revision{1};
+    std::uint64_t publication{};
+    std::uint64_t published_input{};
+    std::uint64_t published_provider{};
+    std::uint64_t current_provider{};
     Size published_viewport{};
     Stats statistics{};
     BufferMemory memory;
     Buffer<Slot> slots;
-    Buffer<std::uint32_t> stack, order, share_indices;
+    Buffer<std::uint32_t> stack;
+    Buffer<std::uint32_t> order;
+    Buffer<std::uint32_t> share_indices;
     Buffer<Work> work;
     Buffer<Pending> pending;
-    Buffer<LayoutBox> working, published;
-    Buffer<std::uint32_t> working_index, published_index;
+    Buffer<LayoutBox> working;
+    Buffer<LayoutBox> published;
+    Buffer<std::uint32_t> working_index;
+    Buffer<std::uint32_t> published_index;
     Buffer<Share> shares;
-    Buffer<double> share_output, weight_sums;
+    Buffer<double> share_output;
+    Buffer<double> weight_sums;
     Buffer<std::pair<double, std::size_t>> events;
     Buffer<float> tracks;
     Buffer<Line> lines;
@@ -1389,9 +1426,14 @@ Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeN
     if (input.size() >= d.limits.max_nodes)
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
     struct Plan {
-        std::uint32_t slot{}, parent{}, depth{};
-        std::size_t begin{}, count{}, cursor{};
-        bool fresh{}, children_changed{};
+        std::uint32_t slot{};
+        std::uint32_t parent{};
+        std::uint32_t depth{};
+        std::size_t begin{};
+        std::size_t count{};
+        std::size_t cursor{};
+        bool fresh{};
+        bool children_changed{};
     };
     struct PreparedInput {
         std::uint32_t slot;
@@ -1447,7 +1489,8 @@ Result<std::vector<LayoutNodeId>> LayoutDocument::set_tree(std::span<const TreeN
     const auto old_size = d.slots.size();
     if (appended_count > d.limits.max_nodes - old_size)
         return std::unexpected(Error{ErrorCode::capacity_exceeded});
-    std::size_t used = 0, appended = 0;
+    std::size_t used = 0;
+    std::size_t appended = 0;
     std::vector<LayoutNodeId> result;
     result.reserve(input.size());
     for (std::size_t i = 0; i < input.size(); ++i) {
@@ -1817,7 +1860,8 @@ Result<void> VirtualList::reset(std::size_t count, double estimated_height) {
         return std::unexpected(Error{ErrorCode::invalid_input});
     if (auto status = revision_available(); !status)
         return status;
-    std::vector<double> heights(count, estimated_height), sums(count + 1);
+    std::vector<double> heights(count, estimated_height);
+    std::vector<double> sums(count + 1);
     rebuild(sums, heights);
     heights_.swap(heights);
     sums_.swap(sums);

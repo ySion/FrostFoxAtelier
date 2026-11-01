@@ -81,8 +81,14 @@ struct Tags : world::Component {
 };
 struct DerivedEnvironment : presentation::EnvironmentComponent {};
 struct Evidence {
-    unsigned prepared{}, destroyed{}, begins{}, ends{};
-    bool fail_tick{}, fail_begin{}, fail_end{}, live_runtime_on_release{true};
+    unsigned prepared{};
+    unsigned destroyed{};
+    unsigned begins{};
+    unsigned ends{};
+    bool fail_tick{};
+    bool fail_begin{};
+    bool fail_end{};
+    bool live_runtime_on_release{true};
 };
 struct Code {
     Runtime& runtime;
@@ -327,7 +333,8 @@ void verify_stop_reentry() {
     editor::Session* current{};
     ObjectId query;
     bool fail_tick{};
-    unsigned ends{}, live_ends{};
+    unsigned ends{};
+    unsigned live_ends{};
     editor::Session document([&](world::World& world) -> Result<std::shared_ptr<void>> {
         take(world.set_failure_policy(world::FailurePolicy::halt));
         take(world.bind_behavior(
@@ -475,7 +482,8 @@ void verify_codec_graph(editor::Project& project) {
     {
         editor::Session document;
         auto& runtime = document.world().runtime();
-        std::array<ObjectId, 3> entities, meshes;
+        std::array<ObjectId, 3> entities;
+        std::array<ObjectId, 3> meshes;
         for (std::size_t i = 0; i < entities.size(); ++i) {
             changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
             entities[i] = document.selection().entity;
@@ -483,8 +491,8 @@ void verify_codec_graph(editor::Project& project) {
         }
         assets::MaterialAsset author;
         std::get<assets::MaterialInstanceAsset>(author.author).entries = {{"roughness", .3f, true}};
-        const auto shared = take(document.material_resource(project.assets(), author)),
-                   independent = take(document.material_resource(project.assets(), author));
+        const auto shared = take(document.material_resource(project.assets(), author));
+        const auto independent = take(document.material_resource(project.assets(), author));
         for (std::size_t i = 0; i < meshes.size(); ++i) {
             const std::array<presentation::MaterialBinding, 1> bindings{
                 {{"slot/0", i == 2 ? independent : shared, true}}};
@@ -505,8 +513,9 @@ void verify_codec_graph(editor::Project& project) {
                 .resource;
         };
         const auto members = take(reopened->world().members());
-        const auto a = bindings_of(*reopened, members[0].id()), b = bindings_of(*reopened, members[1].id()),
-                   c = bindings_of(*reopened, members[2].id());
+        const auto a = bindings_of(*reopened, members[0].id());
+        const auto b = bindings_of(*reopened, members[1].id());
+        const auto c = bindings_of(*reopened, members[2].id());
         require(a.id() == b.id() && a.id() != c.id(),
                 "Scene reload split a shared inline material or merged equal independent materials.");
         material_float(*reopened, a.id(), "roughness", .6f, 830);
@@ -522,8 +531,8 @@ void verify_codec_graph(editor::Project& project) {
         }
         auto instances = take(editor::Session::deserialize(take(document.serialize()), project));
         const auto instance_members = take(instances->world().members());
-        const auto left = bindings_of(*instances, instance_members[0].id()),
-                   right = bindings_of(*instances, instance_members[1].id());
+        const auto left = bindings_of(*instances, instance_members[0].id());
+        const auto right = bindings_of(*instances, instance_members[1].id());
         require(left.id() == right.id() &&
                     take(material::read_instance(instances->world().runtime(), left.id())).parent.id() ==
                         take(instances->material_resource(project.assets(), key)).id(),
@@ -532,7 +541,8 @@ void verify_codec_graph(editor::Project& project) {
         take(document.select_entities(selected, entities[1]));
         changed(document.duplicate_entities(document.selected_entities()));
         const std::vector<ObjectId> copies(document.selected_entities().begin(), document.selected_entities().end());
-        const auto copy_a = bindings_of(document, copies[0]), copy_b = bindings_of(document, copies[1]);
+        const auto copy_a = bindings_of(document, copies[0]);
+        const auto copy_b = bindings_of(document, copies[1]);
         require(copy_a.id() == copy_b.id() && copy_a.id() != instance.id() &&
                     take(material::read_instance(runtime, copy_a.id())).parent.id() == parent.id(),
                 "Forest clone lost shared instance aliasing or copied the shared material asset.");
@@ -602,7 +612,8 @@ void verify_codec_graph(editor::Project& project) {
         material_float(target, resource.id(), "roughness", .2f, 832);
         const auto before = take(target.serialize());
         target.mark_saved();
-        const auto history = target.undo_count(), count = take(target.material_assets()).size();
+        const auto history = target.undo_count();
+        const auto count = take(target.material_assets()).size();
         for (unsigned i = 0; i < 8; ++i)
             take(target.collect_step());
         const auto objects = target.world().runtime().live_objects();
@@ -671,14 +682,18 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
     const auto fresh = [&] { return std::to_string(next++); };
     auto& entity = scene["entities"][0];
     auto& move = entity["components"][1];
-    const auto entity_id = entity["id"].get<std::string>(), move_id = move["id"].get<std::string>();
+    const auto entity_id = entity["id"].get<std::string>();
+    const auto move_id = move["id"].get<std::string>();
     move["properties"]["legacy_speed"] = 9.5;
     move["properties"]["count"] = -1;
     move["properties"]["allowed"] = "yes";
     entity["properties"]["health"] = 75.0;
     entity["tags"] = Json::array({"a", "b"});
     entity["space"]["pivot"] = Json::array({0, 0, 0});
-    const auto missing_id = fresh(), mesh_id = fresh(), constraint_id = fresh(), gone_id = fresh();
+    const auto missing_id = fresh();
+    const auto mesh_id = fresh();
+    const auto constraint_id = fresh();
+    const auto gone_id = fresh();
     entity["components"].push_back({{"id", missing_id},
                                     {"type", "game.Missing"},
                                     {"name", ""},
@@ -719,11 +734,12 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
                 count(issues, mismatch) == 3 && count(issues, unknown_key) == 4 && count(issues, unknown_type) == 3 &&
                 !document->dirty(),
             "Tolerant load did not report exactly the unresolved data, or marked the document dirty.");
-    const auto move_type = take(runtime.find_type("game.Move")), entity_type = take(runtime.find_type("game.Entity"));
-    const auto entity_object = take(document->local_object(std::stoull(entity_id))),
-               move_object = take(document->local_object(std::stoull(move_id)));
-    const auto mesh_object = take(document->local_object(std::stoull(mesh_id))),
-               constraint = take(document->local_object(std::stoull(constraint_id)));
+    const auto move_type = take(runtime.find_type("game.Move"));
+    const auto entity_type = take(runtime.find_type("game.Entity"));
+    const auto entity_object = take(document->local_object(std::stoull(entity_id)));
+    const auto move_object = take(document->local_object(std::stoull(move_id)));
+    const auto mesh_object = take(document->local_object(std::stoull(mesh_id)));
+    const auto constraint = take(document->local_object(std::stoull(constraint_id)));
     require(std::get<std::uint32_t>(take(runtime.read(move_object, field(*document, move_type, "count")))) == 7 &&
                 std::get<bool>(take(runtime.read(move_object, field(*document, move_type, "allowed")))) &&
                 std::get<float>(take(runtime.read(move_object, field(*document, move_type, "speed")))) == 4 &&
@@ -855,18 +871,18 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
     using enum world::DiagnosticKind;
     editor::Session document(prepare(evidence));
     auto& runtime = document.world().runtime();
-    const auto label_type = take(runtime.find_type("game.Label")),
-               caption_type = take(runtime.find_type("game.Caption"));
+    const auto label_type = take(runtime.find_type("game.Label"));
+    const auto caption_type = take(runtime.find_type("game.Caption"));
     const auto string_type = take(runtime.native_type<String>());
     changed(document.add_entity());
     const auto entity = document.selection().entity;
     changed(document.add_component(entity, label_type));
     const auto label = member(document, label_type);
     const auto caption = take(runtime.find_field(label_type, "caption"));
-    const world::FieldPath title{take(runtime.find_field(label_type, "title"))},
-        text{caption, take(runtime.find_field(caption_type, "text"))};
-    const world::FieldPath size{caption, take(runtime.find_field(caption_type, "size"))},
-        lines{caption, take(runtime.find_field(caption_type, "lines"))};
+    const world::FieldPath title{take(runtime.find_field(label_type, "title"))};
+    const world::FieldPath text{caption, take(runtime.find_field(caption_type, "text"))};
+    const world::FieldPath size{caption, take(runtime.find_field(caption_type, "size"))};
+    const world::FieldPath lines{caption, take(runtime.find_field(caption_type, "lines"))};
     const auto set = [&](ObjectId object, const world::FieldPath& path, std::string_view value) {
         String stored{StringView{value}};
         take(runtime.write(object, path, ValueInput{string_type, &stored}));
@@ -1002,8 +1018,11 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     using enum world::DiagnosticKind;
     // Each session owns a Runtime with its own identities, so types and fields resolve by name per session.
     struct Fields {
-        TypeId tags, strings, floats;
-        world::FieldPath names, weights;
+        TypeId tags;
+        TypeId strings;
+        TypeId floats;
+        world::FieldPath names;
+        world::FieldPath weights;
     };
     const auto fields = [](const Runtime& runtime) {
         const auto tags = take(runtime.find_type("game.Tags"));
@@ -1125,7 +1144,8 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
                 unchanged(),
             "A collecting write hook did not receive whole Array leaves, or the object changed.");
     // A tolerant decode reports from the record, applies the clamped Array and reports an exact conversion.
-    std::vector<std::vector<std::string>> kept, conversions;
+    std::vector<std::vector<std::string>> kept;
+    std::vector<std::vector<std::string>> conversions;
     const editor::PropertyReport report{
         [&](std::vector<std::string> at, const Json&, world::DiagnosticKind kind, const std::string&) {
             if (kind == mismatch)
@@ -1183,8 +1203,9 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     using enum world::DiagnosticKind;
     editor::Session a(prepare(evidence));
     auto& ra = a.world().runtime();
-    const auto entity_type = take(ra.find_type("game.Entity")), move_type = take(ra.find_type("game.Move")),
-               spatial_type = take(ra.find_type("game.Spatial"));
+    const auto entity_type = take(ra.find_type("game.Entity"));
+    const auto move_type = take(ra.find_type("game.Move"));
+    const auto spatial_type = take(ra.find_type("game.Spatial"));
     const auto added = [&](math::Vector3 position) {
         changed(a.add_entity(entity_type));
         const auto entity = a.selection().entity;
@@ -1230,8 +1251,8 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
             throw std::runtime_error(issues.front().message);
     };
     const auto b_move_type = take(rb.find_type("game.Move"));
-    const world::FieldPath speed{take(rb.find_field(b_move_type, "speed"))},
-        count{take(rb.find_field(b_move_type, "count"))};
+    const world::FieldPath speed{take(rb.find_field(b_move_type, "speed"))};
+    const world::FieldPath count{take(rb.find_field(b_move_type, "count"))};
     const auto position = [&](ObjectId object) { return take(world::read_transform(rb, object)).position; };
     const auto step = [&] { take(b->update(1.f / 60)); };
     require(!a.apply_live(R"({"ops":[]})", project), "An editor document accepted Play changes.");
@@ -1241,7 +1262,8 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
         step();
 
     // A field edit replaces only its own leaf; the game's write to a sibling stays.
-    const auto b_move = in_b(move), b_mover = in_b(mover);
+    const auto b_move = in_b(move);
+    const auto b_mover = in_b(mover);
     take(rb.write(b_move, count, Scalar{std::uint32_t{42}}));
     applied({{{"op", "set"}, {"id", id(move)}, {"properties", {{"speed", 5.f}}}, {"enabled", false}},
              {{"op", "set"}, {"id", id(mover)}, {"name", "Runner"}}});
@@ -1256,7 +1278,8 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     require(std::abs(position(b_mover).x - paused - 5.f / 60) < 1e-5f,
             "A re-enabled component did not tick with its new speed.");
     // String leaves apply as whole values; an admission that rejects one restores the whole previous String.
-    const auto b_label_type = take(rb.find_type("game.Label")), b_string = take(rb.native_type<String>());
+    const auto b_label_type = take(rb.find_type("game.Label"));
+    const auto b_string = take(rb.native_type<String>());
     const world::FieldPath title{take(rb.find_field(b_label_type, "title"))};
     const auto title_of = [&](const world::World& world, ObjectId object) {
         String value;
@@ -1393,11 +1416,14 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
                   {"graph", Json::parse(take(a.serialize_live_subtree(entity)))}}});
         return entity;
     };
-    const auto b_doomed = in_b(doomed), b_runner = in_b(runner),
-               b_environment = take(world::inspect_component(rb, in_b(environment))).owner;
+    const auto b_doomed = in_b(doomed);
+    const auto b_runner = in_b(runner);
+    const auto b_environment = take(world::inspect_component(rb, in_b(environment))).owner;
     // Member position 1 is the mover's child, so a root ordinal read as a member position fails here.
-    const auto second = placed(nullptr, 1), last = placed(nullptr, 99), first_child = placed(id(mover), 0),
-               last_child = placed(id(mover), 99);
+    const auto second = placed(nullptr, 1);
+    const auto last = placed(nullptr, 99);
+    const auto first_child = placed(id(mover), 0);
+    const auto last_child = placed(id(mover), 99);
     require(roots() == std::vector{b_mover, in_b(second), b_doomed, b_falling, b_environment, in_b(last)} &&
                 children_of(b_mover) == std::vector{in_b(first_child), b_runner, in_b(last_child)},
             "An add index is not the final position in its destination list, or did not clamp.");
@@ -1524,8 +1550,9 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
     const auto material_key = take(project.create_material("Content/Materials/Forwarded.material"));
     editor::Session a(prepare(evidence));
     auto& ra = a.world().runtime();
-    const auto entity_type = take(ra.find_type("game.Entity")), move_type = take(ra.find_type("game.Move")),
-               spatial_type = take(ra.find_type("game.Spatial"));
+    const auto entity_type = take(ra.find_type("game.Entity"));
+    const auto move_type = take(ra.find_type("game.Move"));
+    const auto spatial_type = take(ra.find_type("game.Spatial"));
     const auto added = [&](math::Vector3 position) {
         changed(a.add_entity(entity_type));
         const auto entity = a.selection().entity;
@@ -1540,7 +1567,8 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
     const auto mesh = member(a, a.presentation_types().static_mesh_component);
     take(a.assign_material(project, mesh, "slot/0", material_key));
     const auto shared = take(presentation::read_material_bindings(ra, mesh)).front().resource.id();
-    const auto speed = field(a, move_type, "speed"), mass = field(a, move_type, "mass");
+    const auto speed = field(a, move_type, "speed");
+    const auto mass = field(a, move_type, "mass");
 
     auto play_project = take(editor::Project::open(project.root()));
     auto b = take(editor::Session::deserialize(take(a.serialize()), play_project, prepare(evidence)));
@@ -1881,7 +1909,8 @@ void verify_environment_document(editor::Project& project) {
 void verify_camera_loading(editor::Project& project) {
     acceptance_phase = "Camera combined load validation";
     struct DerivedCamera : presentation::CameraComponent {
-        ReferenceSlot target, held_target;
+        ReferenceSlot target;
+        ReferenceSlot held_target;
         ReferenceSequence targets;
         Array<float> weights{.25f, .75f};
         DerivedCamera() {
@@ -1929,7 +1958,11 @@ void verify_camera_loading(editor::Project& project) {
             auto strict = editor::Session::deserialize(input.dump(), project, camera_type, editor::LoadPolicy::strict);
             const bool strict_ok = bool(strict) == valid;
             auto document = take(editor::Session::deserialize(input.dump(), project, camera_type));
-            bool tolerant_ok = true, references_ok = true, sequence_ok = true, array_ok = true, roundtrip_ok = true;
+            bool tolerant_ok = true;
+            bool references_ok = true;
+            bool sequence_ok = true;
+            bool array_ok = true;
+            bool roundtrip_ok = true;
             // Reopen the saved retained record as well as checking its first load.
             for (int pass = 0; pass < 2; ++pass) {
                 const auto component = take(document->local_object(component_id));
@@ -2226,8 +2259,9 @@ void run() {
     auto evidence = std::make_shared<Evidence>();
     editor::Session document(prepare(evidence));
     auto& runtime = document.world().runtime();
-    const auto entity_type = take(runtime.find_type("game.Entity")), move_type = take(runtime.find_type("game.Move")),
-               spatial_type = take(runtime.find_type("game.Spatial"));
+    const auto entity_type = take(runtime.find_type("game.Entity"));
+    const auto move_type = take(runtime.find_type("game.Move"));
+    const auto spatial_type = take(runtime.find_type("game.Spatial"));
     require(take(document.component_types()).size() >= 5, "Derived component discovery failed.");
     changed(document.add_entity(entity_type));
     const auto entity = document.selection().entity;
@@ -2237,7 +2271,8 @@ void run() {
     const auto move = member(document, move_type);
     require(take(world::has_transform(runtime, entity)) && take(world::parent_entity(runtime, entity)) == ObjectId{},
             "Non-spatial business component altered the root.");
-    const auto speed = field(document, move_type, "speed"), health = field(document, entity_type, "health");
+    const auto speed = field(document, move_type, "speed");
+    const auto health = field(document, entity_type, "health");
     require(std::get<float>(take(document.read_property(move, speed))) == 2 &&
                 take(document.properties(move)).size() == 4,
             "Default values or scalar discovery failed.");

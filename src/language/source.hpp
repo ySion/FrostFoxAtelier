@@ -61,11 +61,13 @@ struct ValueField {
 struct ValueLayout {
     std::string name;
     ValueType::Kind kind;
-    std::size_t size, alignment;
+    std::size_t size;
+    std::size_t alignment;
     ValueType element;
     std::vector<ValueField> fields;
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept {};
-    bool can_own{}, can_mutate{};
+    bool can_own{};
+    bool can_mutate{};
     math::Type math{};
     bool plain_value{};
     std::vector<std::byte> initial_value{}; // Material compilation captures plain native defaults, never callbacks.
@@ -90,7 +92,9 @@ struct Environment {
     ValueType texture_input{}; // Exact registered value type, only meaningful for materials.
 };
 struct SourcePosition {
-    std::size_t offset{}, line{1}, column{1};
+    std::size_t offset{};
+    std::size_t line{1};
+    std::size_t column{1};
 };
 struct Diagnostic {
     SourcePosition position;
@@ -182,7 +186,8 @@ struct Expression {
     Kind kind;
     ValueType type;
     SourcePosition position;
-    NodeId left{no_node}, right{no_node};
+    NodeId left{no_node};
+    NodeId right{no_node};
     std::uint32_t value{}; // local index or host catalog index
     Operation operation{Operation::add};
     NodeId receiver{no_node}; // field/call owner
@@ -198,7 +203,10 @@ struct Statement {
     enum class Kind { block, declare, assign, call, condition, loop, return_value, yield, break_loop, continue_loop };
     Kind kind;
     SourcePosition position;
-    NodeId target{no_node}, expression{no_node}, body{no_node}, alternative{no_node};
+    NodeId target{no_node};
+    NodeId expression{no_node};
+    NodeId body{no_node};
+    NodeId alternative{no_node};
     std::vector<NodeId> children;
     std::vector<std::uint32_t> locals{}; // declarations directly owned by this block
     NodeId step{no_node}; // optional loop step, also executed after continue

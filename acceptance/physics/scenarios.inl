@@ -15,7 +15,8 @@ struct PhysicsFixture {
     std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
 
     struct Entity {
-        atelier::ObjectRoot entity, body;
+        atelier::ObjectRoot entity;
+        atelier::ObjectRoot body;
         atelier::ObjectId id() const { return entity.id(); }
     };
     Entity make(Vector3 position, p::BodySettings settings = {}, bool body_enabled = true) {
@@ -230,7 +231,8 @@ void before_step_exit(bool close) {
     const auto completed = f.scene->completed_step();
     const auto pose = take(w::read_transform(f.runtime, entity.id()));
     const auto handle = f.handle(entity);
-    unsigned exits{}, after_calls{};
+    unsigned exits{};
+    unsigned after_calls{};
     f.scene->on_before_step([&](std::uint64_t, float) -> atelier::Result<void> {
         committed(close ? f.world.close() : f.world.stop());
         ++exits;
@@ -274,11 +276,15 @@ void callback_exit(bool contact, bool close) {
     sensor.sensor = true;
     sensor.half_extents = {10, 1, 1};
     f.make({}, sensor);
-    const auto left = f.make({-3, 0, 0}, dynamic_body()), right = f.make({3, 0, 0}, dynamic_body());
+    const auto left = f.make({-3, 0, 0}, dynamic_body());
+    const auto right = f.make({3, 0, 0}, dynamic_body());
     take(f.scene->set_gravity({}));
     f.start();
-    const auto old_left = f.handle(left), old_right = f.handle(right);
-    unsigned exits{}, after_calls{}, contacts{};
+    const auto old_left = f.handle(left);
+    const auto old_right = f.handle(right);
+    unsigned exits{};
+    unsigned after_calls{};
+    unsigned contacts{};
     const auto exit = [&] {
         committed(close ? f.world.close() : f.world.stop());
         ++exits;
@@ -487,7 +493,9 @@ void failed_lifecycle() {
     for (const auto exit : {Exit::tick, Exit::task, Exit::activation, Exit::stop, Exit::close}) {
         using Event = std::pair<char, atelier::ObjectId>;
         std::vector<Event> events;
-        bool fail_tick{}, fail_activation{}, fail_cleanup{};
+        bool fail_tick{};
+        bool fail_activation{};
+        bool fail_cleanup{};
         PhysicsFixture f;
         take(f.world.set_failure_policy(w::FailurePolicy::halt));
         auto first = f.make({0, 4, 0}, dynamic_body());
@@ -519,7 +527,8 @@ void failed_lifecycle() {
                 return {};
             }));
         f.start();
-        const auto first_handle = f.handle(first), second_handle = f.handle(second);
+        const auto first_handle = f.handle(first);
+        const auto second_handle = f.handle(second);
         take(f.scene->add_impulse(second.id(), {100, 0, 0}));
         fail_cleanup = true;
         if (exit == Exit::tick || exit == Exit::task) {

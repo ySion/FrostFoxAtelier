@@ -63,7 +63,8 @@ float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) :
     check(gfxProgramSetParameter(gfx, pipeline.program(), "extra", extra));
     for (std::uint32_t iteration = 0; iteration < 4; ++iteration) {
         const std::array<std::uint32_t, 4> shared = {iteration + 3, iteration + 7, 0, 0};
-        std::array<std::uint32_t, 28> vertex_values{}, pixel_values{};
+        std::array<std::uint32_t, 28> vertex_values{};
+        std::array<std::uint32_t, 28> pixel_values{};
         vertex_values[24] = 61 + iteration;
         pixel_values[24] = 103 + iteration;
         check(gfxProgramSetParameter(gfx, pipeline.program(), "shared_value", shared));
@@ -345,7 +346,8 @@ RWStructuredBuffer<uint> indices, values;
     for (uint i = 0; i < 3; ++i) { indices[i] = (indices[i] + 1) % 3; values[i] += 1; }
 })";
     auto write = take(owner.prepare(compute));
-    const std::array<std::uint32_t, 3> triangle{2, 0, 1}, data{17, 31, 43};
+    const std::array<std::uint32_t, 3> triangle{2, 0, 1};
+    const std::array<std::uint32_t, 3> data{17, 31, 43};
     auto indices = gfxCreateBuffer<std::uint32_t>(gfx, 3, triangle.data());
     auto values = gfxCreateBuffer<std::uint32_t>(gfx, 3, data.data());
     auto index_view = gfxCreateBufferRange(gfx, indices, 0, sizeof(triangle));
@@ -393,7 +395,9 @@ RWStructuredBuffer<uint> indices, values;
         check(gfxCommandCopyTextureToBuffer(gfx, pixels, target));
         complete(owner.finish());
         const auto first = (2 + 2 * (iteration + 1)) % 3;
-        const auto red = data[first] + 2, green = data[2] + 2, blue = first + 1;
+        const auto red = data[first] + 2;
+        const auto green = data[2] + 2;
+        const auto blue = first + 1;
         const auto* color = gfxBufferGetData<std::uint8_t>(gfx, pixels);
         const auto* word = gfxBufferGetData<std::uint32_t>(gfx, readback);
         require(color && word && *word == red + green * 256, "shared buffer compute read saw stale writes");
@@ -418,7 +422,10 @@ void texture_ranges() {
     auto owner = open_context();
     const auto gfx = owner.borrow();
     auto debug = debug_queue(gfx);
-    constexpr std::uint32_t bytes = 64 * 32 * 4, source_offset = 256, target_offset = 512, trailer = 512;
+    constexpr std::uint32_t bytes = 64 * 32 * 4;
+    constexpr std::uint32_t source_offset = 256;
+    constexpr std::uint32_t target_offset = 512;
+    constexpr std::uint32_t trailer = 512;
     std::vector<std::uint8_t> upload_data(source_offset + bytes, 0x5a);
     for (std::uint32_t i = 0; i < bytes; ++i)
         upload_data[source_offset + i] = static_cast<std::uint8_t>((i * 13 + 7) % 251);
@@ -502,7 +509,9 @@ float4 main(uint id : SV_VertexID) : SV_Position {
     require(static_cast<bool>(automatic), "auto-sized texture creation failed");
     struct Capture {
         GfxBuffer buffer;
-        std::uint32_t width, height, pitch;
+        std::uint32_t width;
+        std::uint32_t height;
+        std::uint32_t pitch;
     };
     std::vector<Capture> captures;
     constexpr std::array sizes{std::pair{641u, 73u}, std::pair{257u, 181u}, std::pair{703u, 97u},

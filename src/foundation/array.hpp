@@ -321,7 +321,8 @@ private:
                 ? std::max(total, capacity_ + std::min(max_size - capacity_, std::max(capacity_ / 2, std::size_t{8})))
                 : capacity_;
         T* destination = growing ? allocate(capacity) : data_;
-        std::size_t suffix = 0, prefix = 0;
+        std::size_t suffix = 0;
+        std::size_t prefix = 0;
         try {
             construct(destination + size_, count, suffix);
             if (growing)

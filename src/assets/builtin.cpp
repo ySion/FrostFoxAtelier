@@ -16,7 +16,8 @@ geometry::MeshRef plane() {
                                                   std::vector<std::uint8_t>{5, 3});
 }
 geometry::MeshRef sphere() {
-    constexpr unsigned rings = 12, segments = 24;
+    constexpr unsigned rings = 12;
+    constexpr unsigned segments = 24;
     std::vector<geometry::Vertex> vertices;
     vertices.reserve(6 * segments * (rings - 1));
     std::vector<std::uint8_t> edges;
@@ -24,14 +25,18 @@ geometry::MeshRef sphere() {
     const auto vertex = [](unsigned y, unsigned x) {
         const auto latitude = std::numbers::pi_v<float> * static_cast<float>(y) / rings;
         const auto longitude = 2 * std::numbers::pi_v<float> * static_cast<float>(x) / segments;
-        const auto a = std::sin(latitude) * std::cos(longitude), b = std::cos(latitude),
-                   c = std::sin(latitude) * std::sin(longitude);
+        const auto a = std::sin(latitude) * std::cos(longitude);
+        const auto b = std::cos(latitude);
+        const auto c = std::sin(latitude) * std::sin(longitude);
         return geometry::Vertex{
             {a * .5f, b * .5f, c * .5f}, {a, b, c}, {static_cast<float>(x) / segments, static_cast<float>(y) / rings}};
     };
     for (unsigned y = 0; y < rings; ++y)
         for (unsigned x = 0; x < segments; ++x) {
-            const auto a = vertex(y, x), b = vertex(y + 1, x), c = vertex(y + 1, x + 1), d = vertex(y, x + 1);
+            const auto a = vertex(y, x);
+            const auto b = vertex(y + 1, x);
+            const auto c = vertex(y + 1, x + 1);
+            const auto d = vertex(y, x + 1);
             if (y) {
                 vertices.insert(vertices.end(), {a, d, b});
                 edges.push_back(y + 1 == rings ? 7 : 6);

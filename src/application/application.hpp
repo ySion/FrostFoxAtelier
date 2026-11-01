@@ -136,11 +136,14 @@ private:
     bool vsync_{true};
     std::uint64_t menu_incarnation_{};
     ui::ControlKey menu_return_focus_{};
-    ui::ControlKey menu_context_target_{}, menu_context_group_{};
+    ui::ControlKey menu_context_target_{};
+    ui::ControlKey menu_context_group_{};
     ui::TableLayout menu_table_layout_;
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
     std::chrono::steady_clock::time_point menu_requested_;
-    bool pie_release_pending_{}, pie_release_select_{}, pie_pressed_{};
+    bool pie_release_pending_{};
+    bool pie_release_select_{};
+    bool pie_pressed_{};
     ui::ControlKey pie_hot_{};
     bool pending_source_focus_{};
     bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
@@ -151,7 +154,8 @@ private:
     bool camera_cut_{true}; // Retained until the renderer accepts the new view.
     std::vector<renderer::OverlayShape> overlay_;
     ui::Surface surface_;
-    std::uint64_t surface_revision_{1}, accepted_frames_{};
+    std::uint64_t surface_revision_{1};
+    std::uint64_t accepted_frames_{};
     bool closed_{};
     struct CameraDrag {
         ui::PointerButton button;

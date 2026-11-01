@@ -28,7 +28,10 @@ struct LinkPeer {
     void send(const LinkJson& message) { link->send(message.dump()); }
 };
 std::pair<std::unique_ptr<application::LiveLink>, LinkPeer> link_pair() {
-    HANDLE editor_read{}, peer_write{}, peer_read{}, editor_write{};
+    HANDLE editor_read{};
+    HANDLE peer_write{};
+    HANDLE peer_read{};
+    HANDLE editor_write{};
     require(CreatePipe(&editor_read, &peer_write, nullptr, 1 << 20) &&
                 CreatePipe(&peer_read, &editor_write, nullptr, 1 << 20),
             "Cannot create link pipes.");
@@ -53,8 +56,8 @@ void settle(application::PlayLink& link, std::size_t pending = 0) {
 // The editor end in-process against a scripted peer: numbering, spilling, splitting and divergence.
 void verify_link_protocol(const std::filesystem::path& root) {
     const auto spill = root / "Cache/Play/link-protocol";
-    const editor::LiveChange name_op{R"({"op":"set","id":"7","name":"A"})", {}},
-        remove_op{R"({"op":"remove","id":"8"})", {}};
+    const editor::LiveChange name_op{R"({"op":"set","id":"7","name":"A"})", {}};
+    const editor::LiveChange remove_op{R"({"op":"remove","id":"8"})", {}};
     const auto large_op = [](std::size_t bytes) {
         return editor::LiveChange{R"({"op":"set","id":"7","name":")" + std::string(bytes, 'a') + R"("})", {}};
     };
@@ -72,7 +75,8 @@ void verify_link_protocol(const std::filesystem::path& root) {
         peer.send(ack(1, "warning"));
         settle(link);
         require(link.divergence().empty(), "A warning acknowledgement diverged.");
-        const auto five = large_op(5 << 20), nine = large_op(9 << 20);
+        const auto five = large_op(5 << 20);
+        const auto nine = large_op(9 << 20);
         link.forward({five});
         const auto spilled = peer.next();
         require(spilled.at("seq") == 2 && spilled.contains("file") && !spilled.contains("ops"),
@@ -82,7 +86,8 @@ void verify_link_protocol(const std::filesystem::path& root) {
                 "The spilled file is not the batch Play applies.");
         // Past the 16 MiB batch limit the ops split at their boundary into consecutive batches.
         link.forward({nine, nine});
-        const auto first = peer.next(), second = peer.next();
+        const auto first = peer.next();
+        const auto second = peer.next();
         require(first.at("seq") == 3 && second.at("seq") == 4 && link.unacknowledged() == 3 &&
                     take(assets::read_file(assets::wide(second.at("file").get<std::string>()))) ==
                         R"({"ops":[)" + nine.text + "]}",
@@ -175,11 +180,12 @@ void verify_texture_link(const std::filesystem::path& root) {
     std::get<assets::MaterialInstanceAsset>(asset.author)
         .entries.push_back({"base_color_texture", material::TextureBinding{key}, true});
     const auto material_key = take(project.create_material("Content/Shared.material", asset));
-    editor::Session author, play;
+    editor::Session author;
+    editor::Session play;
     play.enter_play();
     auto play_project = take(editor::Project::open(root));
-    const auto author_root = take(author.open_material(project, material_key)),
-               play_root = take(play.open_material(play_project, material_key));
+    const auto author_root = take(author.open_material(project, material_key));
+    const auto play_root = take(play.open_material(play_project, material_key));
     const auto capture = [&] { return take(material::capture_program(play.world().runtime(), play_root.id())); };
     const auto input = [](const material::ProgramSurfaceRef& surface) {
         const auto declarations = surface->program().textures();
@@ -468,7 +474,8 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
         const auto imported_camera = take(document.main_camera());
         const auto imported_environment = take(world::inspect_component(runtime, document.environment())).owner;
         const auto verify_import = [&] {
-            const auto environment = inspect(imported_environment), camera = inspect(imported_camera);
+            const auto environment = inspect(imported_environment);
+            const auto camera = inspect(imported_camera);
             require(environment && camera, "A camera forest import lost a root over Play IPC.");
             for (const auto& part : environment->at("components"))
                 if (part.at("type") == "world.EnvironmentComponent") {

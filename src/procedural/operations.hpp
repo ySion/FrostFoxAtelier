@@ -53,7 +53,8 @@ Result<Geometry> copy_to_points(const Geometry& points, std::span<const Referenc
                                 StringView variant = "variant");
 
 struct Bounds {
-    math::Vector3 minimum, maximum;
+    math::Vector3 minimum;
+    math::Vector3 maximum;
 };
 // Of the points; empty geometry has none.
 [[nodiscard]] std::optional<Bounds> bounds(const Geometry& geometry) noexcept;

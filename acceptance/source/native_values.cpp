@@ -126,7 +126,9 @@ void verify_native_value_borrows() {
         }
         const auto* allocation = particles.data();
         const auto* text_allocation = particles[0].name.c_str();
-        const auto copies = Particle::copies, moves = Particle::moves, destroyed = Particle::destroyed;
+        const auto copies = Particle::copies;
+        const auto moves = Particle::moves;
+        const auto destroyed = Particle::destroyed;
         const String label{"tick"};
         std::uint32_t bytes = 99;
         const auto& read_only = particles; // A legal alias, deliberately not restricted by LLVM noalias.

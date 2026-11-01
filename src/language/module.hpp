@@ -8,7 +8,9 @@
 
 namespace atelier::language {
 struct SourcePiece {
-    std::size_t begin{}, end{}, offset{};
+    std::size_t begin{};
+    std::size_t end{};
+    std::size_t offset{};
     std::uint32_t file{};
 };
 struct MappedSource {
@@ -23,15 +25,19 @@ struct ModuleDiagnostic {
 };
 // Syntax only; types, defaults and bounds resolve when the snapshot is prepared.
 struct ClassField {
-    std::string name, type;
+    std::string name;
+    std::string type;
     MappedSource initializer;
     SourcePosition position;
     // An initializer spelled exactly `name(arguments)` or `name::item` also keeps that shape:
     // math vector and enum fields require it, scalar fields fold the whole initializer.
-    std::string initializer_name, initializer_item;
+    std::string initializer_name;
+    std::string initializer_item;
     std::vector<MappedSource> initializer_arguments;
     // Attributes. LockMin/LockMax already copy their UI bound to the hard side.
-    std::string label, category, description;
+    std::string label;
+    std::string category;
+    std::string description;
     std::array<MappedSource, 4> bounds; // ui_min, ui_max, hard_min, hard_max
     std::optional<SourcePosition> range; // the first range attribute
 };
@@ -44,7 +50,8 @@ struct ClassMethod {
     std::vector<std::string> parameters;
 };
 struct FunctionDeclaration {
-    std::string name, signature;
+    std::string name;
+    std::string signature;
     std::vector<std::string> parameters;
 };
 // A top-level struct, enum, constant or function. uses names every other top-level
@@ -60,7 +67,8 @@ struct TopLevel {
     std::string property; // eligible accessor projection for the complete project type-name check
 };
 struct ClassDeclaration {
-    std::string name, base;
+    std::string name;
+    std::string base;
     std::uint32_t file{};
     SourcePosition position;
     std::vector<ClassField> fields;

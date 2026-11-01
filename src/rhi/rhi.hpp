@@ -61,12 +61,15 @@ struct ContextInfo {
 };
 
 struct TargetInfo {
-    std::uint32_t width{}, height{};
-    bool windowed{}, drawable{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    bool windowed{};
+    bool drawable{};
 };
 using FrameCpuTimings = GfxFrameCpuTimings;
 struct FrameInfo {
-    TargetInfo rendered, next;
+    TargetInfo rendered;
+    TargetInfo next;
     bool occluded{};
     FrameCpuTimings cpu; // This submission's CPU wall time; GPU samples may describe an older frame.
 };

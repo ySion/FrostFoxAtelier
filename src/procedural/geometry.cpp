@@ -298,7 +298,9 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
         if (point_map[i] != absent)
             points.add(i);
     }
-    Array<std::uint32_t> vertices, new_vertex_points, offsets{0};
+    Array<std::uint32_t> vertices;
+    Array<std::uint32_t> new_vertex_points;
+    Array<std::uint32_t> offsets{0};
     for (const auto p : primitives) {
         const auto range = primitive(p);
         for (std::uint32_t v = range.first; v < range.first + range.count; ++v) {
@@ -353,7 +355,9 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
                 existing->usage != attribute.usage)
                 return failure("Merged attribute " + text(attribute.name) + " differs in layer, type or usage.");
         }
-    std::uint64_t vertices{}, primitives{}, instances{};
+    std::uint64_t vertices{};
+    std::uint64_t primitives{};
+    std::uint64_t instances{};
     std::uint32_t uniform = 0;
     bool same = true;
     for (const auto& input : inputs) {
@@ -372,7 +376,9 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         points += input.count(Layer::point);
     if (points >= absent || vertices >= absent || primitives >= absent || instances >= absent)
         return failure("Merged geometry needs fewer than 2^32 - 1 elements per layer.");
-    Array<std::uint32_t> vertex_points, offsets{0}, indices;
+    Array<std::uint32_t> vertex_points;
+    Array<std::uint32_t> offsets{0};
+    Array<std::uint32_t> indices;
     Array<math::Matrix4> transforms;
     std::uint32_t point_base = 0;
     for (const auto& input : inputs) {

@@ -12,7 +12,8 @@ void verify_property_tooltips() {
     const auto light = component(document, document.selection().entity, document.presentation_types().light_component);
     take(document.select(mesh));
     document.mark_saved();
-    const auto history = document.undo_count(), redo = document.redo_count();
+    const auto history = document.undo_count();
+    const auto redo = document.redo_count();
     const auto lighting = take(document.presentation().environment());
     auto& runtime = document.world().runtime();
     const auto* mesh_type = take(runtime.describe(take(runtime.type_of(mesh))));
@@ -85,8 +86,10 @@ void verify_property_tooltips() {
         return surface.presented();
     };
     publish();
-    const auto position_key = label(L"Position (m)"), rotation_key = label(L"Rotation (°)");
-    const auto position_help = help_for(position_key), rotation_help = help_for(rotation_key);
+    const auto position_key = label(L"Position (m)");
+    const auto rotation_key = label(L"Rotation (°)");
+    const auto position_help = help_for(position_key);
+    const auto rotation_help = help_for(rotation_key);
     require(position_help->title == L"Position (m)" &&
                 position_help->description == assets::wide(position.description) &&
                 position_help->identity == assets::wide(mesh_type->name) + L".position : " +

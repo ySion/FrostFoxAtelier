@@ -23,7 +23,8 @@ void check(HRESULT status) {
 std::atomic<std::uint64_t> next_identity{1};
 constexpr std::int64_t max_bitmap_bytes = 16 * 1024 * 1024;
 struct CoverageAccounting {
-    std::atomic<std::uint64_t> count{}, bytes{};
+    std::atomic<std::uint64_t> count{};
+    std::atomic<std::uint64_t> bytes{};
 };
 struct TrackedCoverage final : Coverage {
     std::shared_ptr<CoverageAccounting> accounting;
@@ -158,7 +159,8 @@ struct TextStore::Impl {
     struct Entry {
         std::wstring text;
         Font font;
-        bool wrap{}, ellipsis{};
+        bool wrap{};
+        bool ellipsis{};
         TextAlign alignment{TextAlign::left};
         std::uint64_t revision{1};
         std::array<Paragraph, 2> paragraphs;
@@ -262,7 +264,8 @@ struct TextSnapshot::Impl {
     float width{};
     mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
     Rect caret_box(TextPosition position) const {
-        FLOAT x{}, y{};
+        FLOAT x{};
+        FLOAT y{};
         DWRITE_HIT_TEST_METRICS metrics{};
         const bool trailing = position.trailing && position.offset != 0;
         check(layout->HitTestTextPosition(position.offset - (trailing ? 1 : 0), trailing, &x, &y, &metrics));
@@ -273,8 +276,10 @@ struct TextSnapshot::Impl {
             return;
         const auto boundaries = character_boundaries(text);
         for (auto offset : boundaries) {
-            const TextPosition leading{offset, false}, trailing{offset, offset != 0};
-            const auto first = caret_box(leading), last = caret_box(trailing);
+            const TextPosition leading{offset, false};
+            const TextPosition trailing{offset, offset != 0};
+            const auto first = caret_box(leading);
+            const auto last = caret_box(trailing);
             stops.push_back({leading, first.x});
             if (std::abs(first.x - last.x) > .01f)
                 stops.push_back({trailing, last.x});
@@ -403,9 +408,11 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         raster_icon(*bundled, pixels, coverage->pixels);
     else {
         const auto segment = [symbol](float x, float y, float ax, float ay, float bx, float by) {
-            const auto dx = bx - ax, dy = by - ay;
+            const auto dx = bx - ax;
+            const auto dy = by - ay;
             const auto t = std::clamp(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy), 0.f, 1.f);
-            const auto px = x - ax - t * dx, py = y - ay - t * dy;
+            const auto px = x - ax - t * dx;
+            const auto py = y - ay - t * dy;
             return px * px + py * py <= ((symbol == Symbol::world || symbol == Symbol::mesh ||
                                           symbol == Symbol::folder || symbol >= Symbol::search)
                                              ? .0016f
@@ -573,7 +580,8 @@ RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<
                                     (run.bounds.left - bounds.left);
                 const auto* source = run.pixels.data() + static_cast<std::size_t>(y - run.bounds.top) * run_width;
                 for (std::size_t x = 0; x < run_width; ++x) {
-                    const auto a = static_cast<unsigned>(source[x]), b = static_cast<unsigned>(destination[x]);
+                    const auto a = static_cast<unsigned>(source[x]);
+                    const auto b = static_cast<unsigned>(destination[x]);
                     destination[x] = static_cast<std::uint8_t>(a + b - (a * b + 127) / 255);
                 }
             }
@@ -611,7 +619,8 @@ Rect TextSnapshot::caret(TextPosition position) const {
     return impl_->caret_box(position);
 }
 Rect TextSnapshot::character(std::uint32_t position) const {
-    FLOAT x{}, y{};
+    FLOAT x{};
+    FLOAT y{};
     DWRITE_HIT_TEST_METRICS metrics{};
     check(impl_->layout->HitTestTextPosition(position, FALSE, &x, &y, &metrics));
     // The leading caret of an RTL run is its right edge. Native character
@@ -620,14 +629,16 @@ Rect TextSnapshot::character(std::uint32_t position) const {
 }
 TextPosition TextSnapshot::hit(float x, float y) const {
     impl_->resolve_stops();
-    BOOL trailing{}, inside{};
+    BOOL trailing{};
+    BOOL inside{};
     DWRITE_HIT_TEST_METRICS metrics{};
     check(impl_->layout->HitTestPoint(x, y, &trailing, &inside, &metrics));
     (void)inside;
     const TextPosition candidate{metrics.textPosition + (trailing ? metrics.length : 0), trailing != FALSE};
     auto selected = impl_->stops.front();
     for (auto stop : impl_->stops) {
-        const auto distance = std::abs(stop.x - x), previous = std::abs(selected.x - x);
+        const auto distance = std::abs(stop.x - x);
+        const auto previous = std::abs(selected.x - x);
         if (distance < previous || (distance == previous && stop.position == candidate))
             selected = stop;
     }

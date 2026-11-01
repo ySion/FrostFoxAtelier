@@ -268,7 +268,8 @@ void verify_declarative_parameters() {
     require(shelf_first.node_creations == static_cast<std::uint64_t>(shelf_nodes),
             "ToolShelf's Source node statistics did not account for the complete shelf subtree.");
     struct ShelfIdentity {
-        ui::ControlKey target, key;
+        ui::ControlKey target;
+        ui::ControlKey key;
         editor::MenuGroup group;
     };
     std::vector<ShelfIdentity> tools;
@@ -467,7 +468,8 @@ void verify_declarative_parameters() {
     const auto click_sample = [&](ui::ControlKey key) {
         const auto* box = ui.presented()->find(key);
         require(box && box->enabled, "Missing live sample control.");
-        const float x = box->bounds.x + box->bounds.width * .5f, y = box->bounds.y + box->bounds.height * .5f;
+        const float x = box->bounds.x + box->bounds.width * .5f;
+        const float y = box->bounds.y + box->bounds.height * .5f;
         static_cast<void>(ui.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y}));
         const auto reply = ui.input({.kind = ui::EventKind::pointer_up, .x = x, .y = y});
         bool handled{};

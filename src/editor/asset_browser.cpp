@@ -42,7 +42,8 @@ bool matches_filter(const AssetBrowser::Item& item, std::wstring_view query, uns
 }
 int compare_names(std::wstring_view a, std::wstring_view b) {
     for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
-        const auto left = std::towlower(a[i]), right = std::towlower(b[i]);
+        const auto left = std::towlower(a[i]);
+        const auto right = std::towlower(b[i]);
         if (left != right)
             return left < right ? -1 : 1;
     }
@@ -171,7 +172,8 @@ void AssetBrowser::update_directories(const Project* project) {
     };
     if (!valid({engine_, directory_}))
         visit({!has_project_, {}}, false);
-    std::size_t destination{}, cursor{};
+    std::size_t destination{};
+    std::size_t cursor{};
     for (std::size_t i = 0; i < navigation_.size(); ++i)
         if (valid(navigation_[i])) {
             if (i <= navigation_cursor_)
@@ -191,7 +193,8 @@ const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::direc
     struct Node {
         ui::ControlKey key;
         std::wstring_view name;
-        bool enabled, selected;
+        bool enabled;
+        bool selected;
         ui::ControlIcon icon;
     };
     std::vector<Node> labels;

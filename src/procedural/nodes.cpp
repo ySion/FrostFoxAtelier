@@ -100,7 +100,8 @@ void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& ou
         distances[i] = hit->distance;
         if (normals) {
             const auto a = corners[vertices[3 * hit->primitive]];
-            const auto b = corners[vertices[3 * hit->primitive + 1]], c = corners[vertices[3 * hit->primitive + 2]];
+            const auto b = corners[vertices[3 * hit->primitive + 1]];
+            const auto c = corners[vertices[3 * hit->primitive + 2]];
             if (const auto n = math::try_normalize(math::cross(b - a, c - a)))
                 (*normals)[i] = *n;
         }

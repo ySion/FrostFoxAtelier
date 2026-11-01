@@ -87,7 +87,8 @@ void resources() {
     {
         Runtime runtime;
         take(register_resource_types(runtime));
-        const auto color_image = pixel({128, 64, 32, 128}), data_image = pixel({48, 96, 192, 255});
+        const auto color_image = pixel({128, 64, 32, 128});
+        const auto data_image = pixel({48, 96, 192, 255});
         weak_color = color_image;
         auto color = take(create_texture(runtime, "image/color", color_image));
         auto data = take(create_texture(runtime, "image/data", data_image));
@@ -354,7 +355,10 @@ void ownership_and_filtering() {
     Runtime runtime;
     take(register_resource_types(runtime));
     ObjectRoot leaf;
-    ObjectId source_id, parent_id, texture_id, dormant_id;
+    ObjectId source_id;
+    ObjectId parent_id;
+    ObjectId texture_id;
+    ObjectId dormant_id;
     {
         auto color = take(create_texture(runtime, "image/color", pixel({255, 128, 0, 255})));
         auto data = take(create_texture(runtime, "image/data", pixel({0, 64, 128, 255})));

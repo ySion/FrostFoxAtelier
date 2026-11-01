@@ -151,7 +151,8 @@ void verify_viewport_local_constraints() {
     camera.set_view(CameraView::front);
     auto view = ViewportView::make(camera, {0, 0, 1000, 700}, 1);
     view.scene = snapshot.picking();
-    const auto center = *view.project({}), travel = center + math::Vector2{60, 0};
+    const auto center = *view.project({});
+    const auto travel = center + math::Vector2{60, 0};
     ViewportTool tool;
     ToolSettings settings;
     settings.tool = TransformTool::select;
@@ -467,12 +468,14 @@ void verify_viewport_editing() {
         changed(document.create_static_mesh(assets::mesh_assets().front(), at));
         return document.selection().entity;
     };
-    const auto first = create({-1.5f, 0, 0}), second = create({1.5f, 0, 0});
+    const auto first = create({-1.5f, 0, 0});
+    const auto second = create({1.5f, 0, 0});
     const auto root = [&](ObjectId entity) { return entity; };
     const auto transform = [&](ObjectId entity) {
         return take(world::read_transform(document.world().runtime(), root(entity)));
     };
-    const auto first_root = root(first), second_root = root(second);
+    const auto first_root = root(first);
+    const auto second_root = root(second);
     // CPU acceptance explicitly publishes a frozen scene at presentation boundaries.
     application::SceneSnapshot overlay_scene;
     take(overlay_scene.refresh(document));
@@ -521,7 +524,8 @@ void verify_viewport_editing() {
     require(document.selected_entities().size() == 2 && document.selection().entity == second,
             "Shift click did not preserve and extend the Entity selection.");
     const auto history = document.undo_count();
-    const auto before_first = transform(first), before_second = transform(second);
+    const auto before_first = transform(first);
+    const auto before_second = transform(second);
     take(key('G'));
     take(key('X'));
     take(text(L"2"));
@@ -747,7 +751,8 @@ void verify_viewport_editing() {
         camera.set_view(preset);
         auto orthographic = ViewportView::make(camera, view.bounds, view.dpi_scale);
         orthographic.scene = overlay_scene.picking();
-        const auto a = orthographic.ray(400, 300), b = orthographic.ray(420, 300);
+        const auto a = orthographic.ray(400, 300);
+        const auto b = orthographic.ray(420, 300);
         require(orthographic.orthographic && math::dot(a.direction, b.direction) > .99999f && a.origin != b.origin,
                 "Orthographic camera rays are not parallel and position-dependent.");
         require(orthographic.pixel_size({}) == orthographic.pixel_size({10, 20, 30}),
@@ -791,7 +796,8 @@ void verify_viewport_editing() {
             require(limited.set_state(state), "Finite far clipping camera was rejected.");
             auto bounded = ViewportView::make(limited, full.bounds, 1);
             bounded.scene = clipped_scene.picking();
-            const auto inside = full.project({-.5f, 0, 3.5f}), outside = full.project({.5f, 0, 4.5f});
+            const auto inside = full.project({-.5f, 0, 3.5f});
+            const auto outside = full.project({.5f, 0, 4.5f});
             require(inside && outside && tool.pick(clipped, full, inside->x, inside->y) == entity &&
                         tool.pick(clipped, full, outside->x, outside->y) == entity,
                     "Picking control missed the crossing polygon.");
@@ -1134,8 +1140,8 @@ void verify_viewport_editing() {
             const auto history = document.undo_count();
             take(document.begin_group_edit(component, lanes, 4242));
             const auto typed = [&](float v) { return Scalar{v}; };
-            const std::array first_preview{typed(.2f), typed(.4f), typed(.6f)},
-                second_preview{typed(.9f), typed(.1f), typed(.3f)};
+            const std::array first_preview{typed(.2f), typed(.4f), typed(.6f)};
+            const std::array second_preview{typed(.9f), typed(.1f), typed(.3f)};
             take(document.preview_group_edit(4242, first_preview));
             take(document.preview_group_edit(4242, second_preview));
             take(document.commit_edit(4242));

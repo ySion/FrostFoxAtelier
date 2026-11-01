@@ -32,7 +32,8 @@ inline void collect(Runtime& runtime) {
         take(runtime.collect_step({1}));
 }
 struct Base {
-    inline static int live{}, destroyed{};
+    inline static int live{};
+    inline static int destroyed{};
     inline static Base* latest{};
     float value{7};
     ReferenceSlot hidden;
@@ -55,7 +56,8 @@ struct Prefix {
     std::uint64_t sentinel{0x12345678};
 };
 struct Derived : Prefix, Base {
-    inline static int live{}, destroyed{};
+    inline static int live{};
+    inline static int destroyed{};
     inline static Derived* latest{};
     float extra{11};
     ReferenceSlot edge;
@@ -70,7 +72,8 @@ struct Derived : Prefix, Base {
     float derived_value() const { return extra; }
 };
 struct Resource {
-    inline static int live{}, destroyed{};
+    inline static int live{};
+    inline static int destroyed{};
     Resource() { ++live; }
     ~Resource() noexcept {
         --live;
@@ -86,7 +89,15 @@ struct Failing {
     ~Failing() noexcept = default;
 };
 struct Types {
-    TypeId derived, base, described_native, described_base, described_derived, leaf, holder, failing, grand;
+    TypeId derived;
+    TypeId base;
+    TypeId described_native;
+    TypeId described_base;
+    TypeId described_derived;
+    TypeId leaf;
+    TypeId holder;
+    TypeId failing;
+    TypeId grand;
 };
 inline Types register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;

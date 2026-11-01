@@ -68,7 +68,8 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
                          sheet_ != sheet || measured_dpi_ != dpi || measured_area_ != work_area ||
                          component_ != component;
     source_ = source;
-    LONG width = static_cast<LONG>(extent_.width), height = static_cast<LONG>(extent_.height);
+    LONG width = static_cast<LONG>(extent_.width);
+    LONG height = static_cast<LONG>(extent_.height);
     if (measure) {
         auto rows = std::make_shared<std::vector<ui_language::Item>>();
         rows->reserve(items.size());
@@ -142,7 +143,8 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
             reject("PopupMenu requires a visible menu root.");
             return;
         }
-        float title_width{}, shortcut_width{};
+        float title_width{};
+        float shortcut_width{};
         for (const auto& control : controls) {
             const auto* box = measurement->find(control.key);
             if (!box)
@@ -180,7 +182,8 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
         component_ = std::move(component);
         diagnostic_.clear();
     }
-    auto x = below ? anchor.left : anchor.right, y = below ? anchor.bottom : anchor.top;
+    auto x = below ? anchor.left : anchor.right;
+    auto y = below ? anchor.bottom : anchor.top;
     // Single-action confirmation opens with its action under the pointer.
     if (center_first_item) {
         x = anchor.left - std::min(width / 2, static_cast<LONG>(48 * dpi));

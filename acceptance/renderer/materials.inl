@@ -40,7 +40,8 @@ void material_cases(render::Renderer& renderer, const std::filesystem::path& out
     render::Frame frame{ui_frame, {}, {0, 0, float(ui_frame.extent.width), float(ui_frame.extent.height)}, meshes};
     render::Capture capture;
     auto result = take(prepared_render(renderer, frame, &capture));
-    const auto x = ui_frame.extent.width / 4, y = ui_frame.extent.height / 4;
+    const auto x = ui_frame.extent.width / 4;
+    const auto y = ui_frame.extent.height / 4;
     check(result.stats.scene_draw_calls == 1 && frame.candidate->batch.surfaces().size() == 2,
           "prepared material parts share one draw and bind distinct authored surfaces");
     for (const auto& point :
@@ -374,7 +375,8 @@ void material_transport_cases(render::Renderer& renderer, const std::filesystem:
             std::make_shared<const material::Image>(1, 1, std::vector<std::uint8_t>{rgb[0], rgb[1], rgb[2], 255});
         return std::make_shared<const material::Surface>(std::move(d));
     };
-    const auto warm = textured({255, 32, 16}), cool = textured({16, 48, 255});
+    const auto warm = textured({255, 32, 16});
+    const auto cool = textured({16, 48, 255});
     room.meshes[2].surfaces = std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{warm});
     room.meshes[3].surfaces = std::make_shared<const std::vector<material::SurfaceRef>>(std::vector{cool});
     ui::Frame drawing{.id = 12000, .extent = take(renderer.target()).extent, .draws = {}};
@@ -409,8 +411,10 @@ void material_transport_cases(render::Renderer& renderer, const std::filesystem:
     const auto direct = capture("material-ddgi-off.png");
     options.ddgi = true;
     const auto bounce = capture("material-ddgi-textured-bounce.png");
-    const auto l0 = mean_rgb(direct, left), l1 = mean_rgb(bounce, left), r0 = mean_rgb(direct, right),
-               r1 = mean_rgb(bounce, right);
+    const auto l0 = mean_rgb(direct, left);
+    const auto l1 = mean_rgb(bounce, left);
+    const auto r0 = mean_rgb(direct, right);
+    const auto r1 = mean_rgb(bounce, right);
     std::printf("Textured DDGI warm=(%.3f,%.3f,%.3f) cool=(%.3f,%.3f,%.3f)\n", l1[0] - l0[0], l1[1] - l0[1],
                 l1[2] - l0[2], r1[0] - r0[0], r1[1] - r0[1], r1[2] - r0[2]);
     check(l1[0] - l0[0] > l1[2] - l0[2] + 1 && r1[2] - r0[2] > r1[0] - r0[0] + 1,
@@ -439,7 +443,8 @@ void material_transport_cases(render::Renderer& renderer, const std::filesystem:
     const auto updated = capture("material-ddgi-texture-update.png");
     options.ddgi = false;
     const auto updated_direct = capture("material-ddgi-update-off.png");
-    const auto lu = mean_rgb(updated, left), ld = mean_rgb(updated_direct, left);
+    const auto lu = mean_rgb(updated, left);
+    const auto ld = mean_rgb(updated_direct, left);
     check(lu[2] - ld[2] > lu[0] - ld[0] + 1,
           "texture-only edit updates DDGI without replacing geometry or object identity");
     // The source lies entirely above the camera frustum (checked below). Mesh

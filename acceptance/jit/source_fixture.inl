@@ -3,7 +3,8 @@
 using PollHook = void (*)(void*, Invocation&);
 struct ExecutionStats {
     std::size_t polls{};
-    bool entered{}, explicit_cleanup{};
+    bool entered{};
+    bool explicit_cleanup{};
 };
 struct FixtureInvocation {
     bool make_snapshot{};

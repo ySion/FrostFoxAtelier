@@ -13,7 +13,9 @@ namespace atelier::rendering {
 class SkyMap final {
 public:
     // A 4^2 cube keeps DDGI probes stable under an unextracted sun at 64 rays; 16^2 and 8^2 flickered.
-    static constexpr std::uint32_t source_width_limit = 8192, width_limit = 4096, cube_size = 4;
+    static constexpr std::uint32_t source_width_limit = 8192;
+    static constexpr std::uint32_t width_limit = 4096;
+    static constexpr std::uint32_t cube_size = 4;
     // width * height RGB floats from row 0; width must be 2 * height. Sources wider than
     // width_limit are box-downsampled 2x2 once; mean, peak and cube use the full source.
     SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
@@ -34,7 +36,8 @@ public:
     std::span<const float> cube() const noexcept { return cube_; }
 
 private:
-    std::uint32_t width_{}, height_{};
+    std::uint32_t width_{};
+    std::uint32_t height_{};
     std::vector<std::uint16_t> pixels_;
     int scale_exponent_{};
     std::array<float, 3> mean_{};

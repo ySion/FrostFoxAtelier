@@ -110,7 +110,8 @@ void simulate_world() {
     require(stepped.steps == 1 && stepped.completed_step > paused.completed_step,
             "single step advances exactly one physics step");
     scene->set_paused(false);
-    std::uint32_t before_steps = 0, after_steps = 0;
+    std::uint32_t before_steps = 0;
+    std::uint32_t after_steps = 0;
     scene->on_before_step([&](std::uint64_t step, float delta) -> atelier::Result<void> {
         require(step == scene->completed_step() + 1 && std::abs(delta - 1.f / 60.f) < 1e-6f,
                 "before-step receives the pending fixed step");

@@ -24,11 +24,14 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
     const auto& physics = *play->physics_scene();
     const std::array phases{&physics::phases::step, &physics::phases::reconcile, &physics::phases::solve,
                             &physics::phases::write_back};
-    std::array<std::vector<double>, 5> active, sleeping;
+    std::array<std::vector<double>, 5> active;
+    std::array<std::vector<double>, 5> sleeping;
     // Costs that only the first steps pay, such as building the broad phase, vanish in the medians.
     Json first_frames = Json::array();
     application::SceneSnapshot snapshot;
-    std::size_t steps{}, quiet{}, frames{};
+    std::size_t steps{};
+    std::size_t quiet{};
+    std::size_t frames{};
     for (; frames < 1800 && quiet < 120; ++frames) {
         {
             timing::Recorder::Frame frame{recorder};
@@ -122,7 +125,8 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
     std::unordered_set<const geometry::Mesh*> unique;
     std::unordered_set<ObjectId> materials;
     std::unordered_map<const material::Image*, unsigned> image_modes;
-    std::size_t triangles{}, material_bindings{};
+    std::size_t triangles{};
+    std::size_t material_bindings{};
     for (const auto& mesh : snapshot.picking()->meshes) {
         unique.insert(mesh.geometry.get());
         triangles += mesh.geometry->vertices().size() / 3;
@@ -182,7 +186,9 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
                                                      height, camera.at("far_depth").get<float>());
         // The Renderer draws each visible geometry once per surface pass; parts count its material slots in use.
         std::unordered_set<const geometry::Mesh*> drawn;
-        std::size_t visible{}, visible_triangles{}, visible_geometry_parts{};
+        std::size_t visible{};
+        std::size_t visible_triangles{};
+        std::size_t visible_geometry_parts{};
         for (const auto& mesh : snapshot.meshes) {
             if (!frustum.visible(mesh.geometry->bounds(), mesh.world))
                 continue;
@@ -357,7 +363,8 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
         require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779, 1154}, 1, 1}),
                 "CPU profile UI surface failed.");
-        std::size_t controls{}, rows{};
+        std::size_t controls{};
+        std::size_t rows{};
         measure("ui_docked", [&] {
             const auto described =
                 workspace.describe(*document, {1779, 1154}, surface.presented().get(), &project, &surface);

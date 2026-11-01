@@ -21,9 +21,10 @@ void verify_color_edits() {
             result.push_back(take(document.read_property(object, path)));
         return result;
     };
-    const std::array first{Scalar{.2f}, Scalar{.4f}, Scalar{.6f}}, last{Scalar{.7f}, Scalar{.3f}, Scalar{.5f}};
-    const std::array invalid_type{Scalar{.8f}, Scalar{.9}, Scalar{.1f}},
-        invalid_range{Scalar{.8f}, Scalar{1e30f}, Scalar{.1f}};
+    const std::array first{Scalar{.2f}, Scalar{.4f}, Scalar{.6f}};
+    const std::array last{Scalar{.7f}, Scalar{.3f}, Scalar{.5f}};
+    const std::array invalid_type{Scalar{.8f}, Scalar{.9}, Scalar{.1f}};
+    const std::array invalid_range{Scalar{.8f}, Scalar{1e30f}, Scalar{.1f}};
 
     changed(document.create_light(presentation::LightKind::point, {0, 2, 0}));
     const auto light = take(world::components(runtime, document.selection().entity)).front().id();
@@ -69,8 +70,10 @@ void verify_color_edits() {
     const auto preview = [&](std::uint64_t control, math::Vector4 value) {
         return document.preview_material_entry(control, {"base_color", value, true});
     };
-    const math::Vector4 first_color{.2f, .4f, .6f, .7f}, last_color{.7f, .3f, .5f, .7f},
-        non_finite{.8f, std::nanf(""), .1f, .7f}, hdr{.8f, 1.5f, .1f, .7f};
+    const math::Vector4 first_color{.2f, .4f, .6f, .7f};
+    const math::Vector4 last_color{.7f, .3f, .5f, .7f};
+    const math::Vector4 non_finite{.8f, std::nanf(""), .1f, .7f};
+    const math::Vector4 hdr{.8f, 1.5f, .1f, .7f};
     const auto material_before = color(document, material.id());
     document.mark_saved();
     const auto scene_history = document.undo_count();

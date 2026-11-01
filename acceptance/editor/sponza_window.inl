@@ -100,7 +100,8 @@ void verify_sponza_ddgi(atelier::application::Application& app, const std::files
     // Fitted sun cascades cover every converged receiver, so a static frame traces no direct rays.
     require(app.frame_statistics().scene_lit_gpu_timing_valid && app.frame_statistics().scene_lit_probe_rays == 0,
             "Sponza DDGI Off did not reach the renderer.");
-    const auto contribution = difference(on, off), noise = difference(on, stable);
+    const auto contribution = difference(on, off);
+    const auto noise = difference(on, stable);
     report << "Static mean absolute RGB difference (0..255): DDGI=" << contribution << " temporal=" << noise << '\n';
     report.flush();
     require(contribution > .5 && contribution > noise * 2,
@@ -175,7 +176,8 @@ void verify_sponza_ddgi(atelier::application::Application& app, const std::files
     settings.ddgi = false;
     model(Access::scene_lit_settings(app, settings));
     const auto unlit = luminance(shot("sponza-lights-off-ddgi-off", 64));
-    const auto early = luminance(dark_early) - unlit, late = luminance(dark_late) - unlit;
+    const auto early = luminance(dark_early) - unlit;
+    const auto late = luminance(dark_late) - unlit;
     report << "Lights off luminance (0..255): early=" << luminance(dark_early) << " settled=" << luminance(dark_late)
            << " unlit overlay floor=" << unlit << '\n';
     report.flush();
@@ -215,7 +217,8 @@ int verify_sponza_window(atelier::application::Application& app, const char* out
     require(app.step(&image) && image.frame_id, "Sponza frame was not accepted.");
     const auto view = app.presented()->find(atelier::editor::control::viewport);
     require(view != nullptr, "Sponza viewport is absent.");
-    std::size_t covered = 0, colored = 0;
+    std::size_t covered = 0;
+    std::size_t colored = 0;
     for (unsigned y = static_cast<unsigned>(view->bounds.y);
          y < view->bounds.y + view->bounds.height && y < image.extent.height; ++y)
         for (unsigned x = static_cast<unsigned>(view->bounds.x);
@@ -224,7 +227,9 @@ int verify_sponza_window(atelier::application::Application& app, const char* out
             if (image.depth[i] <= 0 || image.depth[i] > 1)
                 continue;
             ++covered;
-            const auto r = image.rgba[i * 4], g = image.rgba[i * 4 + 1], b = image.rgba[i * 4 + 2];
+            const auto r = image.rgba[i * 4];
+            const auto g = image.rgba[i * 4 + 1];
+            const auto b = image.rgba[i * 4 + 2];
             colored += std::max({r, g, b}) - std::min({r, g, b}) > 50;
         }
     require(covered > 10000 && colored > 1000, "Sponza capture lacks complete geometry or colored material textures.");

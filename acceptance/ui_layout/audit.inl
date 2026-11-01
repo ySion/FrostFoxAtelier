@@ -222,7 +222,8 @@ void grid_sparse_spans() {
 
 struct GridCollisionScene {
     LayoutDocument document{nullptr, nullptr, {4, 2}};
-    LayoutNodeId parent, moving;
+    LayoutNodeId parent;
+    LayoutNodeId moving;
     explicit GridCollisionScene(bool transpose = false) {
         GridSpec spec;
         if (transpose)

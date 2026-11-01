@@ -73,7 +73,8 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
                                              need(compiler.native_type<material::Output>()),
                                              need(compiler.native_type<material::TextureInput>()), name, text));
     };
-    const auto mask = compile("NativeMask", true), opaque = compile("NativeOpaque", false);
+    const auto mask = compile("NativeMask", true);
+    const auto opaque = compile("NativeOpaque", false);
     const auto white = std::make_shared<const material::Image>(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255});
     std::vector<std::uint8_t> ramp(256 * 4);
     for (unsigned i = 0; i < 256; ++i) {
@@ -184,7 +185,8 @@ void run(HWND window, const std::filesystem::path& output) {
     check(!busy && busy.error().cause.code == atelier::rhi::ErrorCode::busy && !busy.error().terminal,
           "live batch close is nonterminal and checked before destructive cleanup");
     wait(renderer, batch);
-    const auto x = drawing.extent.width / 4, y = drawing.extent.height / 4;
+    const auto x = drawing.extent.width / 4;
+    const auto y = drawing.extent.height / 4;
     std::ofstream log(output / "native-outputs.csv");
     log << "stage,left_r,left_g,left_b,left_depth,right_r,right_g,right_b,right_depth\n";
     const auto draw = [&](const char* name, bool save = false) {
@@ -280,7 +282,8 @@ void run(HWND window, const std::filesystem::path& output) {
             return need(material::resolve_instance(parent, entries, std::vector<material::ImageRef>(entries.size())));
         };
         const auto white = parameters(table[2], {{"color", atelier::math::Vector3{1, 1, 1}, true}});
-        std::vector<std::uint8_t> checks(256 * 256 * 4), coordinates(checks.size());
+        std::vector<std::uint8_t> checks(256 * 256 * 4);
+        std::vector<std::uint8_t> coordinates(checks.size());
         for (unsigned v = 0; v < 256; ++v)
             for (unsigned u = 0; u < 256; ++u) {
                 const auto at = (v * 256 + u) * 4;

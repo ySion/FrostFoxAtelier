@@ -77,7 +77,9 @@ void Camera::focus(math::Vector3 target) noexcept {
     distance_ = 5.f;
 }
 bool Camera::look_at(math::Vector3 eye, math::Vector3 target) noexcept {
-    const double dx = double(eye.x) - target.x, dy = double(eye.y) - target.y, dz = double(eye.z) - target.z;
+    const double dx = double(eye.x) - target.x;
+    const double dy = double(eye.y) - target.y;
+    const double dz = double(eye.z) - target.z;
     const auto distance = std::hypot(dx, dy, dz);
     if (!std::isfinite(target.x) || !std::isfinite(target.y) || !std::isfinite(target.z) || !std::isfinite(distance) ||
         distance < .5 || distance > 2000 || std::hypot(dx, dz) < 1e-6)
@@ -91,8 +93,8 @@ bool Camera::view_from(const presentation::CameraSnapshot& snapshot) noexcept {
         return false;
     const auto forward = math::rotate(*rotation, math::Vector3{0, 0, 1});
     const auto up = math::rotate(*rotation, math::Vector3{0, 1, 0});
-    const float yaw = std::atan2(-forward.x, -forward.z),
-                pitch = std::atan2(-forward.y, std::hypot(forward.x, forward.z));
+    const float yaw = std::atan2(-forward.x, -forward.z);
+    const float pitch = std::atan2(-forward.y, std::hypot(forward.x, forward.z));
     const math::Vector3 right{-std::cos(yaw), 0, std::sin(yaw)};
     const math::Vector3 upright{-std::sin(pitch) * std::sin(yaw), std::cos(pitch), -std::sin(pitch) * std::cos(yaw)};
     const float roll = std::atan2(math::dot(up, right), math::dot(up, upright));

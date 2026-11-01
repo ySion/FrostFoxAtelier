@@ -77,7 +77,8 @@ bool meets_hardware_floor(ID3D12Device& device) {
 namespace detail {
 struct PreparationJob {
     PipelineKind kind{};
-    std::string name, model;
+    std::string name;
+    std::string model;
     std::vector<std::pair<GfxShaderStage, ShaderSource>> stages;
     GfxKernelBuild* build{};
     std::atomic<bool> cancel{};
@@ -514,7 +515,8 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
     job->kind = desc.kind;
     job->model = desc.shader_model;
     job->name = desc.file_name ? desc.file_name : desc.name ? desc.name : "pipeline";
-    const std::wstring model = widen(desc.shader_model), entry = widen(desc.entry_point);
+    const std::wstring model = widen(desc.shader_model);
+    const std::wstring entry = widen(desc.entry_point);
     std::error_code error;
     const auto directory = desc.file_name ? std::filesystem::absolute(desc.file_path ? desc.file_path : ".", error)
                                           : std::filesystem::path{};

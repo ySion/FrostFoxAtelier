@@ -352,7 +352,8 @@ void verify_failure_locations() {
 
     constexpr auto helper =
         "uint leaf(uint d) {\n    return 10 / d;\n}\nuint run(uint d) {\n    return 1 + leaf(d);\n}";
-    Program plain(runtime), traced(runtime);
+    Program plain(runtime);
+    Program traced(runtime);
     publish(plain, "located-helper.source", helper, {}, "run");
     publish(traced, "located-helper.source", helper, {.diagnostics = true}, "run");
     Diagnostics capture;
@@ -376,7 +377,8 @@ void verify_failure_locations() {
         3,
         {{"Source/Math.source", 17, "\nuint leaf(uint divisor) {\n    return 10 / divisor;\n}\n"},
          {"Source/Entry.source", 29, "uint run(uint divisor) { return leaf(divisor); }"}}};
-    Program project(runtime), indexed(runtime);
+    Program project(runtime);
+    Program indexed(runtime);
     auto candidate = take(Program::prepare(take(project.request(snapshot))));
     take(project.try_publish(candidate));
     publish(indexed, snapshot);

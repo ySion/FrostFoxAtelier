@@ -7,7 +7,8 @@ namespace atelier::renderer::detail {
 // One draw per Renderer geometry group, in group order.
 struct SceneLitDraw {
     SceneGeometry geometry;
-    std::uint32_t first{}, count{}; // Visible instances in SceneLitDraws::draw_instances.
+    std::uint32_t first{};
+    std::uint32_t count{}; // Visible instances in SceneLitDraws::draw_instances.
 };
 struct SceneLitDraws {
     std::span<const SceneLitDraw> draws;

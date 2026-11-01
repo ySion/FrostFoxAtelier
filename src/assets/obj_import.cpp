@@ -59,7 +59,8 @@ std::vector<std::array<unsigned, 3>> triangulate(const std::vector<geometry::Ver
     for (unsigned i = 1; i < 3; ++i)
         if (std::abs(normal[i]) > std::abs(normal[axis]))
             axis = i;
-    const unsigned x = (axis + 1) % 3, y = (axis + 2) % 3;
+    const unsigned x = (axis + 1) % 3;
+    const unsigned y = (axis + 2) % 3;
     const double sign = normal[axis] < 0 ? -1 : 1;
     const auto cross = [&](unsigned a, unsigned b, unsigned c) {
         return sign * ((double(face[b].position[x]) - face[a].position[x]) *
@@ -74,8 +75,9 @@ std::vector<std::array<unsigned, 3>> triangulate(const std::vector<geometry::Ver
     while (remaining.size() > 3) {
         bool found = false;
         for (std::size_t i = 0; i < remaining.size(); ++i) {
-            const auto a = remaining[(i + remaining.size() - 1) % remaining.size()], b = remaining[i],
-                       c = remaining[(i + 1) % remaining.size()];
+            const auto a = remaining[(i + remaining.size() - 1) % remaining.size()];
+            const auto b = remaining[i];
+            const auto c = remaining[(i + 1) % remaining.size()];
             if (cross(a, b, c) < 0)
                 continue;
             bool inside = false;
@@ -103,7 +105,8 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
     const auto root = std::filesystem::canonical(source.parent_path());
     std::unordered_map<std::string, std::size_t> files;
     std::unordered_map<std::string, material::ImageRef> images;
-    std::size_t total_bytes{}, image_bytes{};
+    std::size_t total_bytes{};
+    std::size_t image_bytes{};
     const auto read = [&](const std::filesystem::path& relative) -> std::size_t {
         const auto key = utf8(relative.generic_wstring());
         if (const auto found = files.find(key); found != files.end())
@@ -148,7 +151,8 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
         const auto slot = read(relative);
         std::istringstream input(result.files[slot].bytes);
         input.imbue(std::locale::classic());
-        std::string line, kind;
+        std::string line;
+        std::string kind;
         AuthorMaterial* current = nullptr;
         std::size_t current_slot{};
         while (std::getline(input, line)) {
@@ -198,13 +202,15 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
     const auto source_slot = read(relative_path(utf8(source.filename().wstring())));
     std::istringstream input(result.files[source_slot].bytes);
     input.imbue(std::locale::classic());
-    std::vector<std::array<float, 3>> positions, normals;
+    std::vector<std::array<float, 3>> positions;
+    std::vector<std::array<float, 3>> normals;
     std::vector<std::array<float, 2>> uv;
     std::vector<geometry::Vertex> vertices;
     std::vector<std::uint8_t> masks;
     std::vector<geometry::MeshPart> parts;
     std::uint32_t material{};
-    std::string line, kind;
+    std::string line;
+    std::string kind;
     while (std::getline(input, line)) {
         if (auto p = line.find('#'); p != line.npos)
             line.resize(p);
@@ -232,7 +238,8 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
             while (row >> token) {
                 require(face.size() < 64, "OBJ polygon exceeds 64 corners.");
                 geometry::Vertex vertex{};
-                const auto a = token.find('/'), b = a == token.npos ? token.npos : token.find('/', a + 1);
+                const auto a = token.find('/');
+                const auto b = a == token.npos ? token.npos : token.find('/', a + 1);
                 std::ranges::copy(positions.at(index(std::string_view(token).substr(0, a), positions.size())),
                                   vertex.position);
                 if (a != token.npos && a + 1 < (b == token.npos ? token.size() : b))
@@ -258,7 +265,9 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
                 parts.push_back({static_cast<std::uint32_t>(vertices.size()), 0, material});
             for (const auto& t : triangles) {
                 std::array<geometry::Vertex, 3> triangle{face[t[0]], face[t[1]], face[t[2]]};
-                std::array<double, 3> a{}, b{}, n{};
+                std::array<double, 3> a{};
+                std::array<double, 3> b{};
+                std::array<double, 3> n{};
                 for (unsigned i = 0; i < 3; ++i) {
                     a[i] = double(triangle[1].position[i]) - triangle[0].position[i];
                     b[i] = double(triangle[2].position[i]) - triangle[0].position[i];
@@ -272,7 +281,8 @@ MeshImport load_obj(const std::filesystem::path& source, ImageCache* shared_imag
                         for (unsigned j = 0; j < 3; ++j)
                             triangle[i].normal[j] = static_cast<float>(n[j] / length);
                     }
-                    const auto j = t[(i + 1) % 3], k = t[(i + 2) % 3];
+                    const auto j = t[(i + 1) % 3];
+                    const auto k = t[(i + 2) % 3];
                     if ((j + 1) % face.size() == k || (k + 1) % face.size() == j)
                         mask |= static_cast<std::uint8_t>(1u << i);
                 }

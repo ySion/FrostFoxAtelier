@@ -104,7 +104,8 @@ struct Consumer {
     ui::Reply click(std::uint64_t key) {
         const auto* box = frame->find(key);
         require(box, "control missing");
-        const float x = box->bounds.x + box->bounds.width / 2, y = box->bounds.y + box->bounds.height / 2;
+        const float x = box->bounds.x + box->bounds.width / 2;
+        const float y = box->bounds.y + box->bounds.height / 2;
         auto down = ui.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y});
         require(down.capture == ui::Capture::acquire, "press did not request capture");
         return ui.input({.kind = ui::EventKind::pointer_up, .x = x, .y = y});
@@ -837,7 +838,8 @@ void control_candidate_revision() {
 #include "topology.inl"
 }
 int main() {
-    UVersionInfo icu{}, unicode{};
+    UVersionInfo icu{};
+    UVersionInfo unicode{};
     u_getVersion(icu);
     u_getUnicodeVersion(unicode);
     std::printf("UI system ICU %u.%u, Unicode %u.%u\n", icu[0], icu[1], unicode[0], unicode[1]);

@@ -27,7 +27,9 @@ void adopt_tangents(std::span<Vertex>);
 enum class Tangents : std::uint8_t { generate, authored };
 
 struct MeshPart {
-    std::uint32_t first_vertex{}, vertex_count{}, material{};
+    std::uint32_t first_vertex{};
+    std::uint32_t vertex_count{};
+    std::uint32_t material{};
 };
 
 struct MaterialSlot {
@@ -35,7 +37,8 @@ struct MaterialSlot {
 };
 
 struct Bounds {
-    std::array<float, 3> minimum{}, maximum{};
+    std::array<float, 3> minimum{};
+    std::array<float, 3> maximum{};
 };
 
 // Immutable CPU mesh resource, independent of World, Runtime and GPU lifetime.

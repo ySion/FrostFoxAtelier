@@ -286,13 +286,16 @@ Json scalar_json(const Scalar& scalar, const Runtime& runtime) {
         scalar);
 }
 struct Operation {
-    std::string_view name, description;
+    std::string_view name;
+    std::string_view description;
     bool changes;
     Json properties;
     std::vector<std::string> required;
 };
 const std::vector<Operation>& operations() {
-    static const Json str{{"type", "string"}}, obj{{"type", "object"}}, arr{{"type", "array"}};
+    static const Json str{{"type", "string"}};
+    static const Json obj{{"type", "object"}};
+    static const Json arr{{"type", "array"}};
     static const std::vector<Operation> values{
         {"capabilities", "Discover operations, arguments, limits and display options", false, {}, {}},
         {"op.list",
@@ -443,21 +446,32 @@ Json capabilities() {
 struct EditorControl::Impl {
     Application& app;
     control::Server server;
-    std::uint64_t version{1}, document_generation{1}, input_revision{}, next_handle{1}, edit_id{1ull << 62};
+    std::uint64_t version{1};
+    std::uint64_t document_generation{1};
+    std::uint64_t input_revision{};
+    std::uint64_t next_handle{1};
+    std::uint64_t edit_id{1ull << 62};
     struct Observation {
-        std::uint64_t document{}, session{}, input{}, project{}, code{}, view_revision{};
+        std::uint64_t document{};
+        std::uint64_t session{};
+        std::uint64_t input{};
+        std::uint64_t project{};
+        std::uint64_t code{};
+        std::uint64_t view_revision{};
         ui::PixelExtent extent;
         float dpi{};
         editor::CameraState camera;
         renderer::ViewSettings view;
-        bool editing{}, running{};
+        bool editing{};
+        bool running{};
         bool operator==(const Observation&) const = default;
     } observed;
     std::unordered_map<ObjectId, std::string> handles;
     std::unordered_map<std::string, ObjectId> objects;
     std::uint64_t pruned_revision{};
     struct Cached {
-        std::string id, request;
+        std::string id;
+        std::string request;
         Json response;
         std::size_t bytes{};
     };
@@ -468,31 +482,41 @@ struct EditorControl::Impl {
         renderer::ViewSettings view;
     };
     struct Job {
-        std::string id, token;
+        std::string id;
+        std::string token;
         std::shared_ptr<control::Peer> peer;
         Observation context;
         std::shared_ptr<std::atomic_bool> cancel = std::make_shared<std::atomic_bool>(false);
-        std::chrono::steady_clock::time_point deadline, started;
+        std::chrono::steady_clock::time_point deadline;
+        std::chrono::steady_clock::time_point started;
         std::vector<Case> cases;
         std::vector<unsigned> points;
-        std::size_t case_index{}, point_index{};
-        unsigned accepted{}, skipped{};
+        std::size_t case_index{};
+        std::size_t point_index{};
+        unsigned accepted{};
+        unsigned skipped{};
         ui::Rect bounds;
         std::filesystem::path directory;
         std::vector<control_artifacts::Sample> samples;
-        Json manifest, response;
+        Json manifest;
+        Json response;
         std::future<Json> writer;
-        bool rendering{}, preparing{}, complete{}, recorded{};
+        bool rendering{};
+        bool preparing{};
+        bool complete{};
+        bool recorded{};
         std::uint64_t history_resets{};
     };
     std::deque<std::unique_ptr<Job>> jobs;
     struct AcceptedFrame {
-        std::uint64_t id{}, count{};
+        std::uint64_t id{};
+        std::uint64_t count{};
         ui::Rect bounds;
         ui::PixelExtent extent;
         renderer::Camera camera;
         renderer::ViewSettings view;
-        std::array<float, 3> environment, lighting_focus;
+        std::array<float, 3> environment;
+        std::array<float, 3> lighting_focus;
         renderer::FrameStats stats;
     };
     std::optional<AcceptedFrame> last_frame;
@@ -994,7 +1018,8 @@ struct EditorControl::Impl {
         const auto revision = app.document_->revision();
         const auto instance = server.identity().at("instance_id");
         const Json* cursor = args.contains("cursor") ? &args.at("cursor") : nullptr;
-        unsigned entity_index{}, object_index{};
+        unsigned entity_index{};
+        unsigned object_index{};
         if (cursor) {
             control::fields(*cursor,
                             {"instance", "document", "revision", "entity", "component", "entity_name", "type"});
@@ -1014,7 +1039,8 @@ struct EditorControl::Impl {
                 throw Failure("invalid_request", "Inspection filters must be strings");
             return value;
         };
-        const auto entity_filter = filter("entity_name"), type_filter = filter("type");
+        const auto entity_filter = filter("entity_name");
+        const auto type_filter = filter("type");
         const auto entity_name =
             entity_filter.is_null() ? std::wstring{} : control::wide(entity_filter.get<std::string>());
         const auto entities = take(app.document_->world().members());
@@ -1163,7 +1189,8 @@ struct EditorControl::Impl {
             // dependencies or replace its exact Source snapshots with cache contents.
             const auto& doc = *app.document_;
             const auto compare = [](const std::filesystem::path& a, const std::filesystem::path& b) {
-                const auto left = a.generic_wstring(), right = b.generic_wstring();
+                const auto left = a.generic_wstring();
+                const auto right = b.generic_wstring();
                 return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
             };
             const auto less = [&](const auto& a, const auto& b) { return compare(a, b) == CSTR_LESS_THAN; };
@@ -1493,7 +1520,8 @@ struct EditorControl::Impl {
                          take(doc.create_scene_material(object(args.at("component")), text(args.at("slot")))).id())}};
             if (op == "material.assign") {
                 const auto component = object(args.at("component"));
-                const auto slot = text(args.at("slot")), asset = text(args.at("asset"));
+                const auto slot = text(args.at("slot"));
+                const auto asset = text(args.at("asset"));
                 if (asset.empty())
                     take(doc.clear_material(component, slot));
                 else {
@@ -1571,8 +1599,8 @@ struct EditorControl::Impl {
             if (manifest.contains("inspection")) {
                 const auto& value = manifest["inspection"];
                 control::fields(value, {"entity", "component"});
-                const auto a = integer(value.at("entity"), 0, editor::Session::maximum_entities),
-                           c = integer(value.at("component"), 0, editor::Session::maximum_components);
+                const auto a = integer(value.at("entity"), 0, editor::Session::maximum_entities);
+                const auto c = integer(value.at("component"), 0, editor::Session::maximum_components);
                 if (indices.size() != 1 || indices[0] != a)
                     throw Failure("dependency_mismatch", "Invalid repro component inspection");
                 inspection = c;
@@ -1632,7 +1660,8 @@ struct EditorControl::Impl {
     Json request(const Json& request, const std::shared_ptr<control::Peer>& peer) {
         app.sync_world_view();
         Json response;
-        std::string id, canonical;
+        std::string id;
+        std::string canonical;
         bool remember{};
         try {
             control::fields(request, {"protocol", "instance_id", "request_id", "op", "args", "state_token"});

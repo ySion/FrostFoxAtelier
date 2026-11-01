@@ -58,7 +58,8 @@ void stability_cases(Fixture& f) {
     volume.minimum = {-4.4f, -.4f, 0};
     volume.maximum = {4.4f, 4.4f, 7.5f};
     volume.counts = {5, 5, 7};
-    constexpr unsigned probe_count = 175, sample_count = 32;
+    constexpr unsigned probe_count = 175;
+    constexpr unsigned sample_count = 32;
     options.probe_update_budget = probe_count;
     options.probe_rays = 128;
     ++f.frame.scene_identity;
@@ -106,7 +107,9 @@ void stability_cases(Fixture& f) {
                std::ranges::all_of(record.position, finite) && std::ranges::all_of(record.transport, finite);
     };
     struct Changes {
-        float presentation{}, transport{}, maximum_presentation{};
+        float presentation{};
+        float transport{};
+        float maximum_presentation{};
     };
     const auto collect = [&](const char* name, render::ProbeHistory history,
                              std::array<std::uint32_t, 2> selected_pixel, bool receiver_expected, unsigned count,
@@ -117,7 +120,9 @@ void stability_cases(Fixture& f) {
         const auto first_frame = f.drawing.id + 1;
         const auto scene_identity = f.frame.scene_identity;
         std::uint64_t last_sequence = 0;
-        unsigned accepted = 0, held_comparisons = 0, response_hold_comparisons = 0;
+        unsigned accepted = 0;
+        unsigned held_comparisons = 0;
+        unsigned response_hold_comparisons = 0;
         Changes changes;
         std::shared_ptr<const render::ProbeInspection> previous;
         // Ordinary accepted render calls advance work; no Capture, sleep,
@@ -271,7 +276,9 @@ void stability_cases(Fixture& f) {
             options.probe_inspect_source = requested;
             const auto first_frame = f.drawing.id + 1;
             std::uint64_t last_sequence = 0;
-            unsigned samples = 0, selected_endpoints = 0, primary_distances = 0;
+            unsigned samples = 0;
+            unsigned selected_endpoints = 0;
+            unsigned primary_distances = 0;
             std::shared_ptr<const render::ProbeInspection> last;
             for (unsigned frame = 0; frame < 128 && samples < 8; ++frame) {
                 const auto result = f.step();
@@ -395,7 +402,9 @@ void stability_cases(Fixture& f) {
     // same visible weights and coverage as the actual receiver gather.
     {
         const auto bright_meshes = f.room.meshes;
-        constexpr unsigned response_frames = 384, baseline_frames = 64, drain_frames = 32;
+        constexpr unsigned response_frames = 384;
+        constexpr unsigned baseline_frames = 64;
+        constexpr unsigned drain_frames = 32;
         constexpr float response_delta = 1.f / 60.f;
         static_assert(sizeof(render::ProbeInspection::Ray) == 96);
         std::ofstream response(f.output / "ddgi-response.csv");
@@ -428,16 +437,20 @@ void stability_cases(Fixture& f) {
                 const auto response_identity = f.frame.scene_identity;
                 struct SourceFrame {
                     std::uint64_t id;
-                    unsigned phase, ordinal, phase_frame;
+                    unsigned phase;
+                    unsigned ordinal;
+                    unsigned phase_frame;
                     float delta;
                 };
                 std::vector<SourceFrame> source_frames;
                 source_frames.reserve(baseline_frames + 2 * response_frames + drain_frames);
-                std::array<unsigned, 3> samples{}, last_phase_frame{};
+                std::array<unsigned, 3> samples{};
+                std::array<unsigned, 3> last_phase_frame{};
                 struct ResponseStart {
                     bool valid{};
                     std::array<float, 4> position{};
-                    std::uint32_t epoch{}, visit{};
+                    std::uint32_t epoch{};
+                    std::uint32_t visit{};
                 };
                 std::array<std::array<ResponseStart, probe_count>, 3> response_start{};
                 std::array<bool, 3> mature_response{};
@@ -470,7 +483,8 @@ void stability_cases(Fixture& f) {
                           "DDGI response retains a finite visible rear-wall receiver");
                     for (std::size_t slot = 1; slot < sample->volumes.size(); ++slot)
                         check(!sample->volumes[slot].enabled, "DDGI response reconstructs exactly one volume");
-                    std::array<double, 3> presented{}, transported{};
+                    std::array<double, 3> presented{};
+                    std::array<double, 3> transported{};
                     double weight_sum = 0;
                     unsigned contributors = 0;
                     for (const auto& probe : sample->probes) {

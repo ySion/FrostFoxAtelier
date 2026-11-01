@@ -52,7 +52,10 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     Handle stop{CreateEventW(&security, TRUE, FALSE, nullptr)};
     if (!stop.value)
         return failure("Cannot create the run stop event");
-    Handle read_out, write_out, read_err, write_err;
+    Handle read_out;
+    Handle write_out;
+    Handle read_err;
+    Handle write_err;
     if (!CreatePipe(&read_out.value, &write_out.value, &security, 65536) ||
         !SetHandleInformation(read_out.value, HANDLE_FLAG_INHERIT, 0) ||
         !CreatePipe(&read_err.value, &write_err.value, &security, 65536) ||
@@ -62,7 +65,10 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
         CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, nullptr)};
     if (input.value == INVALID_HANDLE_VALUE)
         return failure("Cannot open run input");
-    Handle to_play, from_editor, from_play, to_editor; // Change link: editor->Play pipe, then Play->editor.
+    Handle to_play;
+    Handle from_editor;
+    Handle from_play;
+    Handle to_editor; // Change link: editor->Play pipe, then Play->editor.
     if (live && (!CreatePipe(&from_editor.value, &to_play.value, &security, 1 << 20) ||
                  !SetHandleInformation(to_play.value, HANDLE_FLAG_INHERIT, 0) ||
                  !CreatePipe(&from_play.value, &to_editor.value, &security, 1 << 20) ||
@@ -137,7 +143,8 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
                         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | DETACHED_PROCESS, nullptr, project.c_str(),
                         &startup.StartupInfo, &process))
         return failure("Cannot start the project runner");
-    Handle child{process.hProcess}, thread{process.hThread};
+    Handle child{process.hProcess};
+    Handle thread{process.hThread};
     if (!AssignProcessToJobObject(job.value, child.value)) {
         const auto error = GetLastError();
         TerminateProcess(child.value, 1);
@@ -201,7 +208,8 @@ void PlayProcess::drain() noexcept {
                 CloseHandle(output.handle);
                 output.handle = nullptr;
             };
-            DWORD available{}, received{};
+            DWORD available{};
+            DWORD received{};
             if (!PeekNamedPipe(output.handle, nullptr, 0, nullptr, &available, nullptr)) {
                 finish(GetLastError());
                 continue;

@@ -11,7 +11,8 @@ using SourceFile = language::SourceFile;
 using SourceSnapshot = language::SourceSnapshot;
 struct ClassInfo {
     std::string name;
-    TypeId type, base;
+    TypeId type;
+    TypeId base;
 };
 // parameter_names has one name per signature parameter; neither it nor code is part of entry compatibility.
 // code is process-unique and kept only while the entry's compile unit input is unchanged.

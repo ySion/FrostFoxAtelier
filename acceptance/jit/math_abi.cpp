@@ -103,7 +103,8 @@ void verify_required_services(Runtime& runtime, const Binding& binding) {
 enum class Fault { pointer, high_bits, native_failure };
 struct Observation {
     Fault fault;
-    std::uint32_t calls{}, finishes{};
+    std::uint32_t calls{};
+    std::uint32_t finishes{};
     math::Vector3d replacement{91.0, 92.0, 93.0};
     InvocationObserver observer() {
         return {this, nullptr, nullptr,

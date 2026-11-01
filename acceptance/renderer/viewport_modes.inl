@@ -17,7 +17,8 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     drawing.draws.push_back({{4, 4, 12, 12}, {4, 4, 16, 16}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
     render::Frame frame{drawing, {}, {0, 0, float(extent.width), float(extent.height)}, {meshes.data(), 1}};
     render::Capture capture;
-    const unsigned cx = extent.width / 2, cy = extent.height / 2;
+    const unsigned cx = extent.width / 2;
+    const unsigned cy = extent.height / 2;
     const auto render_frame = [&] {
         ++drawing.id;
         const auto result = take(prepared_render(renderer, frame, &capture));
@@ -98,7 +99,8 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
                 ++pixels;
         return pixels;
     };
-    const auto near_width = line_width(2), far_width = line_width(4);
+    const auto near_width = line_width(2);
+    const auto far_width = line_width(4);
     check(near_width >= 1 && far_width >= 1 && std::abs(int(near_width) - int(far_width)) <= 1,
           "perspective distance does not scale wire pixel width");
     frame.camera = {};

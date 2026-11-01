@@ -58,13 +58,23 @@ private:
     std::filesystem::path path_;
     ui::ControlKey& next_key_;
     std::map<std::string, Region, std::less<>> regions_;
-    std::shared_ptr<Module> active_, candidate_;
+    std::shared_ptr<Module> active_;
+    std::shared_ptr<Module> candidate_;
     std::optional<Stamp> stamp_;
-    Clock::time_point next_poll_{}, changed_at_{};
-    std::optional<std::string> attempted_source_, active_source_, candidate_source_, recovery_source_;
+    Clock::time_point next_poll_{};
+    Clock::time_point changed_at_{};
+    std::optional<std::string> attempted_source_;
+    std::optional<std::string> active_source_;
+    std::optional<std::string> candidate_source_;
+    std::optional<std::string> recovery_source_;
     void recover_initial();
-    std::string diagnostic_, failed_region_;
-    bool changed_{}, attempted_{}, candidate_failed_{}, pending_submission_{}, submission_failed_{};
+    std::string diagnostic_;
+    std::string failed_region_;
+    bool changed_{};
+    bool attempted_{};
+    bool candidate_failed_{};
+    bool pending_submission_{};
+    bool submission_failed_{};
     std::uint64_t revision_{};
 };
 }

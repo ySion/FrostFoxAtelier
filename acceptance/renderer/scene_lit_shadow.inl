@@ -147,7 +147,8 @@ void shadow_cases(Fixture& f) {
     const auto bright_region =
         project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {1.8f, -.8f, 4}, 2);
     const auto baseline = f.capture("shadow-point-settled", 20);
-    const auto blocked = mean_rgb(baseline, dark_region), bright = mean_rgb(baseline, bright_region);
+    const auto blocked = mean_rgb(baseline, dark_region);
+    const auto bright = mean_rgb(baseline, bright_region);
     check(bright[0] > 20 && blocked[0] < bright[0] * .12,
           "off-camera-ray caster produces an actual dark receiver shadow");
     warm("shadow-point-warm");
@@ -380,7 +381,8 @@ void shadow_cases(Fixture& f) {
           "sixteen lamps all keep their 256 diameter tier");
     lamps(20);
     stats = submit("shadow-tier-20");
-    const auto faces = stats.scene_lit_shadow_cache_faces, added = faces - tier16.scene_lit_shadow_cache_faces;
+    const auto faces = stats.scene_lit_shadow_cache_faces;
+    const auto added = faces - tier16.scene_lit_shadow_cache_faces;
     check(added > 0 && stats.scene_lit_shadow_cache_atlas_cells == tier16.scene_lit_shadow_cache_atlas_cells + added &&
               stats.scene_lit_shadow_cache_reused_faces == tier16.scene_lit_shadow_cache_faces &&
               stats.scene_lit_shadow_cache_static_updates == added &&
@@ -393,11 +395,14 @@ void shadow_cases(Fixture& f) {
     // Faces deferred near cube seams still project from their drawn origin.
     // Once still, stale faces drain at the same rate.
     constexpr std::uint32_t budget = 24;
-    const auto per_lamp = faces / 20, per_frame = budget / per_lamp * per_lamp,
-               rotation = (20 + budget / per_lamp - 1) / (budget / per_lamp);
+    const auto per_lamp = faces / 20;
+    const auto per_frame = budget / per_lamp * per_lamp;
+    const auto rotation = (20 + budget / per_lamp - 1) / (budget / per_lamp);
     check(faces % 20 == 0 && per_lamp >= 2 && per_lamp <= 6 && faces > 2 * per_frame,
           "budget fixture lamps need equal face sets beyond two frames of budget");
-    std::uint64_t first = 0, last = 0, seen = 0;
+    std::uint64_t first = 0;
+    std::uint64_t last = 0;
+    std::uint64_t seen = 0;
     unsigned observed = 0;
     for (unsigned frame = 0; frame < 12; ++frame) {
         for (auto& light : f.lights)
@@ -540,7 +545,8 @@ void shadow_cases(Fixture& f) {
     f.room.meshes.clear();
     f.lights.assign(32, {});
     for (std::size_t i = 0; i < 30; ++i) {
-        const float x = -2 + .6f * float(i % 6), y = -1.2f + .6f * float(i / 6);
+        const float x = -2 + .6f * float(i % 6);
+        const float y = -1.2f + .6f * float(i / 6);
         f.room.meshes.push_back(patch(90000 + i, x, y, -2.7f, .05f));
         auto& light = f.lights[i];
         light.stable_key = 90000 + i;
@@ -548,14 +554,16 @@ void shadow_cases(Fixture& f) {
         light.range = .4f;
         light.intensity = .5f;
     }
-    const std::array<float, 3> p0{3.2f, 0, -3}, p1{3.7f, 0, -3};
+    const std::array<float, 3> p0{3.2f, 0, -3};
+    const std::array<float, 3> p1{3.7f, 0, -3};
     f.room.meshes.push_back(patch(90100, 4.2f, 0, -2, .2f));
     auto& probe = f.lights[30];
     probe.stable_key = 90100;
     probe.position = p0;
     probe.range = 2;
     probe.intensity = .02f;
-    const std::array<float, 3> q0{3, -2.1f, -3}, q1{4.2f, -2.1f, -3};
+    const std::array<float, 3> q0{3, -2.1f, -3};
+    const std::array<float, 3> q1{4.2f, -2.1f, -3};
     f.room.meshes.push_back(patch(90101, 3, -2.1f, -2.5f, .1f));
     f.room.meshes.push_back(patch(90102, 4.2f, -2.1f, -2.4f, .1f));
     auto& q = f.lights[31];
@@ -609,7 +617,8 @@ void shadow_cases(Fixture& f) {
     // Perspective: the light projects to about 148 pixels, the 128 tier.
     f.frame.camera.projection = {4 / aspect, 0, 0, 0, 0, 4, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0};
     struct Grazing {
-        float height, intensity;
+        float height;
+        float intensity;
         const char* label;
     };
     for (const auto& [height, intensity, label] : std::array<Grazing, 2>{{{.013f, 150, "13mm"}, {.004f, 500, "4mm"}}}) {
@@ -633,7 +642,8 @@ void shadow_cases(Fixture& f) {
         const auto unshadowed = f.capture((name + "-unshadowed").c_str(), 2);
         options.shadows = true;
         const auto region = project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {.5f, 0, 4}, 1);
-        const auto lit = mean_rgb(shadowed, region), reference = mean_rgb(unshadowed, region);
+        const auto lit = mean_rgb(shadowed, region);
+        const auto reference = mean_rgb(unshadowed, region);
         std::printf("Shadow grazing plane %s: shadowed=%.3f unshadowed=%.3f\n", label, lit[0], reference[0]);
         check(reference[0] > 20, "grazing plane fixture receives measurable direct light");
         for (unsigned channel = 0; channel < 3; ++channel)
@@ -729,8 +739,11 @@ void shadow_cases(Fixture& f) {
     // Point, sun and rectangle accumulate exactly once each. Captures are
     // decoded through the documented display transform to linear radiance.
     const auto linear = [](std::uint8_t code) {
-        const double s = code / 255., y = s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4);
-        const double a = 2.51 - 2.43 * y, b = .03 - .59 * y, c = -.14 * y;
+        const double s = code / 255.;
+        const double y = s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4);
+        const double a = 2.51 - 2.43 * y;
+        const double b = .03 - .59 * y;
+        const double c = -.14 * y;
         return (-b + std::sqrt(b * b - 4 * a * c)) / (2 * a);
     };
     const auto radiance = [&](const render::Capture& image, Region region) {
@@ -1004,7 +1017,8 @@ void shadow_cases(Fixture& f) {
     }
     const auto far_region = project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {0, 0, 1000}, 8);
     const auto revealed_settled = f.capture("shadow-fit-reveal-settled", 64);
-    const auto first_far = mean_rgb(revealed, far_region)[0], settled_far = mean_rgb(revealed_settled, far_region)[0];
+    const auto first_far = mean_rgb(revealed, far_region)[0];
+    const auto settled_far = mean_rgb(revealed_settled, far_region)[0];
     check(first_far > 20 && std::abs(first_far - settled_far) <= 2, "the revealed receiver is lit on its first frame");
     truth("shadow-fit-reveal-truth", revealed_settled, {}, 0, 0);
     stats = warm("shadow-fit-reveal-warm");

@@ -260,11 +260,15 @@ struct Session::Impl {
         Control control;
         ui_layout::LayoutNodeId node;
         std::uint64_t incarnation{};
-        double scroll{}, scroll_limit{};
-        double scroll_x{}, scroll_x_limit{};
+        double scroll{};
+        double scroll_limit{};
+        double scroll_x{};
+        double scroll_x_limit{};
         float viewport_height{}; // Scrolling kinds: last laid-out content height, in DIP.
-        bool table_reveal{true}, tree_reveal{};
-        std::uint64_t code_selection_revision{}, code_revision{};
+        bool table_reveal{true};
+        bool tree_reveal{};
+        std::uint64_t code_selection_revision{};
+        std::uint64_t code_revision{};
         float code_width{};
         std::vector<detail::TextKey> table_text; // Visible cells only; old frames retain their own coverage.
         TableIndex table_index;
@@ -278,7 +282,9 @@ struct Session::Impl {
         float layout_tree_height{};
         std::uint64_t display_revision{};
         VisualState visual;
-        std::uint64_t theme_revision{}, parent_revision{}, inheritance_revision{};
+        std::uint64_t theme_revision{};
+        std::uint64_t parent_revision{};
+        std::uint64_t inheritance_revision{};
         StyleProperties inherited;
         std::vector<std::shared_ptr<const StyleSheet>> sheets;
         std::shared_ptr<const ResolvedStyle> resolved;
@@ -288,14 +294,21 @@ struct Session::Impl {
         std::shared_ptr<const ResolvedStyle> style;
         std::array<detail::RasterText, 7> labels;
         float text_height{};
-        double remainder{}, multiplier{1};
-        bool fine{}, multiply{};
+        double remainder{};
+        double multiplier{1};
+        bool fine{};
+        bool multiply{};
     };
     struct Press {
         ControlKey key{};
-        float x{}, y{}, last_x{}, last_y{};
-        double original{}, value{};
-        bool dragging{}, selecting{};
+        float x{};
+        float y{};
+        float last_x{};
+        float last_y{};
+        double original{};
+        double value{};
+        bool dragging{};
+        bool selecting{};
         PointerButton button{PointerButton::primary};
         std::optional<Ladder> ladder{};
         float slider_span{1}; // Accepted physical track width, frozen until release.
@@ -304,13 +317,15 @@ struct Session::Impl {
         bool horizontal{};
         TableSelection table_cell{};
         TableKey table_column{};
-        bool table_resize{}, table_activate{};
+        bool table_resize{};
+        bool table_activate{};
     };
     struct Edit {
         struct Composition {
             std::uint64_t id{};
             EditToken token;
-            std::uint32_t first{}, last{};
+            std::uint32_t first{};
+            std::uint32_t last{};
             Preedit preedit;
             std::uint64_t revision{detail::new_identity()};
         };
@@ -321,7 +336,8 @@ struct Session::Impl {
         std::uint64_t document_selection{};
         detail::TextEdit& buffer() { return document ? document->edit() : *field_buffer; }
         const detail::TextEdit& buffer() const { return document ? document->edit() : *field_buffer; }
-        double original_value{}, preview_value{};
+        double original_value{};
+        double preview_value{};
         bool text_mode{};
         float scroll{};
         std::optional<Composition> composition;
@@ -342,10 +358,16 @@ struct Session::Impl {
     std::uint64_t identity{detail::new_identity()};
     Style style;
     std::shared_ptr<const StyleSheet> style_sheet;
-    std::uint64_t style_revision{detail::new_identity()}, prepares{}, culled_text_controls{};
+    std::uint64_t style_revision{detail::new_identity()};
+    std::uint64_t prepares{};
+    std::uint64_t culled_text_controls{};
     std::uint64_t controls_revision{detail::new_identity()};
-    std::uint64_t control_batches{}, controls_updated{}, controls_created{}, controls_removed{};
-    std::uint64_t layout_syncs{}, layout_nodes_created{};
+    std::uint64_t control_batches{};
+    std::uint64_t controls_updated{};
+    std::uint64_t controls_created{};
+    std::uint64_t controls_removed{};
+    std::uint64_t layout_syncs{};
+    std::uint64_t layout_nodes_created{};
     std::uint64_t failed_frame_id{};
     Surface surface;
     detail::TextStore text;
@@ -356,11 +378,13 @@ struct Session::Impl {
     std::shared_ptr<const UiFrame> published;
     std::optional<Press> press;
     std::optional<Edit> edit;
-    ControlKey focus{}, hover{};
+    ControlKey focus{};
+    ControlKey hover{};
     ControlKey keyboard_pressed{};
     Key keyboard_key{Key::none};
     Key terminal_key{Key::none};
-    ControlKey popup{}, popup_return_focus{};
+    ControlKey popup{};
+    ControlKey popup_return_focus{};
     bool popup_dismissed{};
     struct TooltipHover {
         ControlKey owner{};
@@ -368,16 +392,21 @@ struct Session::Impl {
         Rect anchor;
         Clip clip;
         std::shared_ptr<const Tooltip> content;
-        float x{}, y{};
+        float x{};
+        float y{};
         std::chrono::steady_clock::time_point since;
         std::uint64_t generation{};
     };
     struct TooltipCache {
         std::shared_ptr<const Tooltip> content;
         std::uint64_t style_revision{};
-        float width{}, height{}, scale{};
-        ui_layout::MeasuredSize title_size{}, body_size{};
-        detail::RasterText title, body;
+        float width{};
+        float height{};
+        float scale{};
+        ui_layout::MeasuredSize title_size{};
+        ui_layout::MeasuredSize body_size{};
+        detail::RasterText title;
+        detail::RasterText body;
     };
     std::optional<TooltipHover> tooltip_hover;
     std::optional<TooltipCache> tooltip_cache;
@@ -795,7 +824,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
             const bool beveled = relief != BorderStyle::solid;
             const bool square = beveled || edges != BorderEdges::all || radius == CornerRadii{};
             if (square && border > 0) {
-                const auto right = std::round(bounds.x + bounds.width), bottom = std::round(bounds.y + bounds.height);
+                const auto right = std::round(bounds.x + bounds.width);
+                const auto bottom = std::round(bounds.y + bounds.height);
                 bounds.x = std::round(bounds.x);
                 bounds.y = std::round(bounds.y);
                 bounds.width = std::max(0.f, right - bounds.x);
@@ -817,10 +847,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 return;
             if (separate) {
                 const auto dark = shadow.value_or(Color{edge.r * .15f, edge.g * .15f, edge.b * .15f, edge.a});
-                const auto near = relief == BorderStyle::inset ? dark : edge,
-                           far = relief == BorderStyle::outset ? dark : edge;
-                const auto top = has_edge(edges, BorderEdges::top) ? border : 0.f,
-                           bottom = has_edge(edges, BorderEdges::bottom) ? border : 0.f;
+                const auto near = relief == BorderStyle::inset ? dark : edge;
+                const auto far = relief == BorderStyle::outset ? dark : edge;
+                const auto top = has_edge(edges, BorderEdges::top) ? border : 0.f;
+                const auto bottom = has_edge(edges, BorderEdges::bottom) ? border : 0.f;
                 if (top)
                     quad({bounds.x, bounds.y, bounds.width, border}, clip, near);
                 if (bottom)
@@ -870,13 +900,14 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                       appearance.indicator_border, BorderStyle::solid);
             if (length > 12 * scale && width > 7 * scale) {
                 const auto pitch = std::max(2.f, std::round(scale * 4.f / 3));
-                const auto center_x = bar.thumb.x + bar.thumb.width * .5f,
-                           center_y = bar.thumb.y + bar.thumb.height * .5f;
+                const auto center_x = bar.thumb.x + bar.thumb.width * .5f;
+                const auto center_y = bar.thumb.y + bar.thumb.height * .5f;
                 for (int row = 0; row < 4; ++row)
                     for (int column = 0; column < 3; ++column) {
-                        const auto across = (column - 1) * pitch, along = (row - 1.5f) * pitch;
-                        const auto x = std::round(center_x + (bar.horizontal ? along : across)),
-                                   y = std::round(center_y + (bar.horizontal ? across : along));
+                        const auto across = (column - 1) * pitch;
+                        const auto along = (row - 1.5f) * pitch;
+                        const auto x = std::round(center_x + (bar.horizontal ? along : across));
+                        const auto y = std::round(center_y + (bar.horizontal ? across : along));
                         quad({x + stroke, y + stroke, stroke, stroke}, bar.clip, appearance.indicator_border);
                         quad({x, y, stroke, stroke}, bar.clip, shadow);
                     }
@@ -1011,8 +1042,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                 const auto indent = tree_style.tree_indent * scale;
                 const auto start = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
                 const auto depth = state.control.tree_depth;
-                const auto cx = std::round(start + (depth + .5f) * indent),
-                           cy = std::round(bounds.y + bounds.height * .5f);
+                const auto cx = std::round(start + (depth + .5f) * indent);
+                const auto cy = std::round(bounds.y + bounds.height * .5f);
                 const auto tree_clip = intersect(clip, clip_rect(bounds));
                 const auto stroke = std::max(1.f, std::round(scale * .667f));
                 if (depth) {
@@ -1030,7 +1061,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     const bool expanded = state.control.tree_expanded;
                     if (expanded)
                         quad({cx, cy, stroke, bounds.y + bounds.height - cy}, tree_clip, tree_style.tree_line);
-                    const auto diameter = std::min(9 * scale, indent - 2 * scale), radius = diameter * .5f;
+                    const auto diameter = std::min(9 * scale, indent - 2 * scale);
+                    const auto radius = diameter * .5f;
                     paint_box({cx - radius, cy - radius, diameter, diameter}, tree_clip,
                               appearance.indicator_background, {}, {radius, radius, radius, radius}, 0, {},
                               BorderStyle::solid);
@@ -1094,8 +1126,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
                     const float offset = alignment == TextAlign::left    ? 0
                                          : alignment == TextAlign::right ? width - size
                                                                          : (width - size) * .5f;
-                    const float x = bounds.x + padding.left * scale + (leading ? 0 : offset),
-                                y = bounds.y + padding.top * scale + (above ? 0 : (height - size) * .5f);
+                    const float x = bounds.x + padding.left * scale + (leading ? 0 : offset);
+                    const float y = bounds.y + padding.top * scale + (above ? 0 : (height - size) * .5f);
                     if (size > 0) {
                         if (icon == Icon::maximize)
                             quad({x + size * .15f, y + size * .225f, size * .7f, size * .55f}, icon_clip,

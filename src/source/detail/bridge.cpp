@@ -123,7 +123,9 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     };
     struct FieldCursor {
         const TypeInfo* type;
-        std::size_t next{}, depth{}, prefix_length{};
+        std::size_t next{};
+        std::size_t depth{};
+        std::size_t prefix_length{};
         bool constrained{};
     };
     std::vector<FieldCursor> cursors{{info}};

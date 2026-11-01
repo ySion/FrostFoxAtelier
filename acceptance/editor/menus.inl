@@ -22,10 +22,12 @@ void verify_about(Application& app, std::wstring_view expected_project) {
             "Help omitted the About command.");
     const auto accepted_menu_frame = app.menu_frame()->drawing->id;
     struct DialogLookup {
-        HWND owner{}, found{};
+        HWND owner{};
+        HWND found{};
     } lookup{app.window()};
     const auto thread_id = GetWindowThreadProcessId(app.window(), nullptr);
-    std::wstring title, content;
+    std::wstring title;
+    std::wstring content;
     std::jthread dismiss([&](std::stop_token stop) {
         while (!stop.stop_requested() && !lookup.found && IsWindow(lookup.owner)) {
             EnumThreadWindows(
@@ -89,7 +91,8 @@ void verify_about(Application& app, std::wstring_view expected_project) {
     static_cast<void>(run->flush());
     auto opened = atelier::logging::Reader::open(run->info().directory);
     require(opened.has_value(), "Cannot read menu lifecycle evidence.");
-    bool requested{}, accepted{};
+    bool requested{};
+    bool accepted{};
     const auto deadline = GetTickCount64() + 5000;
     do {
         auto batch = (*opened)->poll();
@@ -380,7 +383,8 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     };
     context_at();
     require(app.menu_window() && app.menu_frame(), "The numeric field context menu did not open.");
-    RECT owner{}, popup{};
+    RECT owner{};
+    RECT popup{};
     GetWindowRect(app.window(), &owner);
     GetWindowRect(app.menu_window(), &popup);
     if (popup.right <= owner.right)

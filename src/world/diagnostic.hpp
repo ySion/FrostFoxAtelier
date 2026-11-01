@@ -127,7 +127,8 @@ struct Diagnostic {
     // The failing Entity or Component and its owner Entity (equal for an
     // Entity). Both are null for document-level entries. An identity remains
     // meaningful as a value after its object is destroyed.
-    ObjectId object, entity;
+    ObjectId object;
+    ObjectId entity;
     std::string type; // Qualified type name, e.g. world.StaticMeshComponent.
     std::vector<std::string> field; // Field path names; empty when not field-specific.
     std::optional<SourceLocation> source; // Script failures, when the Source program recorded one.

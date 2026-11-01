@@ -168,7 +168,8 @@ class Coverage {
             return value;
         }
         case Kind::binary: {
-            const auto left = operand(node.left), right = operand(node.right);
+            const auto left = operand(node.left);
+            const auto right = operand(node.right);
             if (node.operation == Operation::logical_and)
                 return {select(left[0], right[0], boolean(false))};
             if (node.operation == Operation::logical_or)
@@ -211,7 +212,8 @@ class Coverage {
             if (node.math_operation == MathOperation::cross) {
                 Value value;
                 for (std::size_t i = 0; i < 3; ++i) {
-                    const auto j = (i + 1) % 3, k = (i + 2) % 3;
+                    const auto j = (i + 1) % 3;
+                    const auto k = (i + 2) % 3;
                     value.push_back(binary(Operation::subtract,
                                            binary(Operation::multiply, arguments[0][j], arguments[1][k]),
                                            binary(Operation::multiply, arguments[0][k], arguments[1][j])));
@@ -285,7 +287,8 @@ class Coverage {
         }
         case Kind::condition: {
             const auto condition = expression(function, node.expression, flow)[0];
-            Flow yes{flow.locals, no_node, {}}, no{flow.locals, no_node, {}};
+            Flow yes{flow.locals, no_node, {}};
+            Flow no{flow.locals, no_node, {}};
             statement(function, node.body, yes);
             if (node.alternative != no_node)
                 statement(function, node.alternative, no);
@@ -757,7 +760,8 @@ class Hlsl {
         }
         text_ += detail::material_footprint_scalar_hlsl;
         const auto lane = [](std::string_view value, char component) {
-            const std::string a(value), c(1, component);
+            const std::string a(value);
+            const std::string c(1, component);
             return "ms_seed(" + a + ".v." + c + "," + a + ".d0." + c + "," + a + ".d1." + c + ")";
         };
         struct Element {
@@ -769,7 +773,8 @@ class Hlsl {
                                      {"abs", 1}, {"min", 2},  {"max", 2},   {"step", 2}, {"clamp", 3}, {"lerp", 3}};
         constexpr std::string_view components = "xyzw";
         for (std::size_t n = 2; n <= 4; ++n) {
-            const auto value = "float" + std::to_string(n), d = "ms_D" + value;
+            const auto value = "float" + std::to_string(n);
+            const auto d = "ms_D" + value;
             for (const auto& element : elements) {
                 const auto name = "ms_d" + std::string(element.name);
                 text_ += d + " " + name + "(" + d + " a";
@@ -814,7 +819,8 @@ class Hlsl {
         }
         text_ += "ms_Dfloat3 ms_dcross(ms_Dfloat3 a,ms_Dfloat3 b) { ms_Dfloat3 r;\n";
         for (std::size_t i = 0; i < 3; ++i) {
-            const auto j = components[(i + 1) % 3], k = components[(i + 2) % 3];
+            const auto j = components[(i + 1) % 3];
+            const auto k = components[(i + 2) % 3];
             const auto t = "t" + std::to_string(i);
             text_ += "ms_Dfloat " + t + "=ms_dsub(ms_dmul(" + lane("a", j) + "," + lane("b", k) + "),ms_dmul(" +
                      lane("a", k) + "," + lane("b", j) + "));\n";
@@ -852,7 +858,8 @@ class Hlsl {
         case Kind::local:
             return emit("ms_v" + std::to_string(node.value));
         case Kind::value_field: {
-            const auto owner = operand(node.left), field = field_name(function, node);
+            const auto owner = operand(node.left);
+            const auto field = field_name(function, node);
             if (!continuous(node.type))
                 return emit(owner + ".v." + field);
             return emit("ms_seed(" + owner + ".v." + field + "," + owner + ".d0." + field + "," + owner + ".d1." +

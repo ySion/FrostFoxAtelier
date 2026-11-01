@@ -143,7 +143,8 @@ void gltf(const fs::path& root) {
     write(root / "packed.bmp", bmp(0, 90, 200));
     write(root / "normal.bmp", bmp(128, 128, 255));
     std::string bin;
-    const float positions[3][3]{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, uv[3][2]{{0, 0}, {1, 0}, {0, 1}};
+    const float positions[3][3]{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    const float uv[3][2]{{0, 0}, {1, 0}, {0, 1}};
     for (std::size_t i = 0; i < 3; ++i)
         for (float v :
              {positions[i][0], positions[i][1], positions[i][2], 0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 1.f, uv[i][0], uv[i][1]})

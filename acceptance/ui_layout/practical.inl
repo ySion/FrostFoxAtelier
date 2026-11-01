@@ -1,6 +1,7 @@
 // Included by the existing production consumer; all scenes cross the public Interface.
 void publication_lookup_lifetime() {
-    LayoutDocument d(nullptr, nullptr, {5, 2}), foreign(nullptr, nullptr, {2, 1});
+    LayoutDocument d(nullptr, nullptr, {5, 2});
+    LayoutDocument foreign(nullptr, nullptr, {2, 1});
     const auto a = accepted(d.create(d.root(), NodeInput::box(20, 10)));
     const auto first = accepted(d.compute({100, 100}, 1));
     auto held = d.snapshot();
@@ -60,7 +61,9 @@ struct InspectorScene {
     TextProvider provider;
     LayoutDocument document{TextProvider::measure, &provider, {4096, 8}};
     LayoutNodeId table;
-    std::vector<LayoutNodeId> rows, labels, values;
+    std::vector<LayoutNodeId> rows;
+    std::vector<LayoutNodeId> labels;
+    std::vector<LayoutNodeId> values;
     explicit InspectorScene(std::size_t count) {
         auto input = NodeInput::table({Axis::content(40, 140), Axis::expand(1, 40)}, 12, 6);
         input.padding = {4, 4, 4, 4};
@@ -72,7 +75,8 @@ struct InspectorScene {
             append(i);
     }
     void append(std::size_t key) {
-        const auto label_key = key * 2 + 1, value_key = label_key + 1;
+        const auto label_key = key * 2 + 1;
+        const auto value_key = label_key + 1;
         provider.content[label_key] = {key % 5 == 0 ? L"属性名称与说明" : L"Name", 16, 1};
         provider.content[value_key] = {L"可动态编辑的属性内容，随实际列宽换行。 Value with trailing spaces  ", 16, 1};
         const auto row = accepted(document.create(table, NodeInput::row()));

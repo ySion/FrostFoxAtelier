@@ -14,7 +14,9 @@ struct Parameter {
     const char* name;
     const char* unit;
     std::array<FieldId, 2> path;
-    float minimum{-10000.f}, maximum{10000.f}, drag_step{.01f};
+    float minimum{-10000.f};
+    float maximum{10000.f};
+    float drag_step{.01f};
     float default_value{};
 };
 struct ComponentType {
@@ -26,7 +28,9 @@ struct Property {
     world::FieldPath path;
     TypeId type;
     Scalar value;
-    std::string label, category, description;
+    std::string label;
+    std::string category;
+    std::string description;
     FieldRange range{};
 };
 struct PropertyPatch {
@@ -34,7 +38,8 @@ struct PropertyPatch {
     Scalar value;
 };
 struct Selection {
-    ObjectId entity, object; // Entity context and inspected Entity/Component, in this document only.
+    ObjectId entity;
+    ObjectId object; // Entity context and inspected Entity/Component, in this document only.
     bool operator==(const Selection&) const = default;
 };
 // Tolerant loading keeps data it cannot apply and reports it; strict stops at the first warning.
@@ -86,11 +91,15 @@ struct LiveChange {
 struct MaterialParameterView {
     std::string path;
     std::uint32_t components{}; // 0 is a texture binding.
-    material::LocalValue value, initial;
+    material::LocalValue value;
+    material::LocalValue initial;
 };
 struct MaterialView {
-    std::string asset_key, parent_key;
-    bool source{}, scene{}, default_material{};
+    std::string asset_key;
+    std::string parent_key;
+    bool source{};
+    bool scene{};
+    bool default_material{};
     std::optional<source::SourceFile> source_file;
     std::vector<MaterialParameterView> declarations;
     std::vector<material::Override> entries;
@@ -338,7 +347,8 @@ private:
         ObjectRoot root;
         ObjectId entity;
         world::FieldPath path;
-        ObjectReference before, after; // Weak targets are not kept alive by history.
+        ObjectReference before;
+        ObjectReference after; // Weak targets are not kept alive by history.
     };
     // Removal records restore together as one forest transaction.
     struct EntityChange {
@@ -354,25 +364,32 @@ private:
     struct ReparentChange {
         struct Entry {
             ObjectRoot root;
-            world::Trs before, after;
+            world::Trs before;
+            world::Trs after;
         };
         struct Move {
             ObjectRoot root;
-            ObjectId before_parent, after_parent;
-            std::size_t before_index{}, after_index{};
+            ObjectId before_parent;
+            ObjectId after_parent;
+            std::size_t before_index{};
+            std::size_t after_index{};
             std::vector<Entry> transforms;
         };
         std::vector<Move> moves;
     };
     struct TransformPresenceChange {
         ObjectRoot root;
-        std::optional<world::Trs> before, after;
-        std::optional<ObjectId> before_origin, after_origin;
+        std::optional<world::Trs> before;
+        std::optional<world::Trs> after;
+        std::optional<ObjectId> before_origin;
+        std::optional<ObjectId> after_origin;
     };
     struct SpaceReferenceChange {
         ObjectRoot root;
-        std::optional<ObjectId> before_origin, after_origin;
-        world::Trs before, after;
+        std::optional<ObjectId> before_origin;
+        std::optional<ObjectId> after_origin;
+        world::Trs before;
+        world::Trs after;
         bool spatial{};
     };
     struct FieldChange {
@@ -381,20 +398,23 @@ private:
         world::FieldPath path;
         std::uint64_t control_session{};
         // TRS is one invariant group; ordinary business properties keep exact scalar types.
-        std::variant<world::Trs, Scalar> before, after;
+        std::variant<world::Trs, Scalar> before;
+        std::variant<world::Trs, Scalar> after;
     };
     struct FieldGroupChange {
         ObjectRoot root;
         ObjectId entity;
         std::vector<world::FieldPath> paths;
         std::uint64_t control_session{};
-        std::vector<Scalar> before, after;
+        std::vector<Scalar> before;
+        std::vector<Scalar> after;
     };
     struct TransformChange {
         struct Entry {
             ObjectRoot root;
             ObjectId entity;
-            world::Trs before, after;
+            world::Trs before;
+            world::Trs after;
         };
         std::vector<Entry> entries;
         std::uint64_t control_session{};
@@ -403,21 +423,25 @@ private:
     };
     struct NameChange {
         ObjectRoot root;
-        std::wstring before, after;
+        std::wstring before;
+        std::wstring after;
     };
     struct BodyChange {
         ObjectRoot root;
         ObjectId entity;
-        physics::BodySettings before, after;
+        physics::BodySettings before;
+        physics::BodySettings after;
     };
     struct MaterialBindingChange {
         ObjectRoot root;
         ObjectId entity;
-        std::vector<presentation::MaterialBinding> before, after;
+        std::vector<presentation::MaterialBinding> before;
+        std::vector<presentation::MaterialBinding> after;
     };
     struct MaterialEntryChange {
         std::string path;
-        std::optional<material::Override> before, after;
+        std::optional<material::Override> before;
+        std::optional<material::Override> after;
     };
     struct MaterialValueChange {
         ObjectRoot root;
@@ -427,7 +451,8 @@ private:
     struct SkyMapChange {
         ObjectRoot root;
         ObjectId entity;
-        presentation::SkyMapBinding before, after;
+        presentation::SkyMapBinding before;
+        presentation::SkyMapBinding after;
     };
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
     using Change =
@@ -438,13 +463,16 @@ private:
     // materials are unreferenced definitions kept for write-back; on a component, they
     // are the scene materials its kept binding table names.
     struct Retained {
-        std::string type, record, slots;
+        std::string type;
+        std::string record;
+        std::string slots;
         std::vector<ObjectRoot> materials;
         bool empty() const noexcept { return type.empty() && record.empty() && slots.empty() && materials.empty(); }
     };
     struct RetainedSwap {
         ObjectId object;
-        Retained before, after;
+        Retained before;
+        Retained after;
     };
     struct Entry {
         Change change;

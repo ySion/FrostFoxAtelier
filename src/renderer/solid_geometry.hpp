@@ -24,13 +24,15 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
         }
     };
     struct Edge {
-        std::uint32_t triangle{}, count{};
+        std::uint32_t triangle{};
+        std::uint32_t count{};
         std::int64_t direction{};
     };
     const auto vertices = mesh.vertices();
     const auto count = vertices.size() / 3;
     std::vector<TriangleVolume> result(count);
-    std::vector<std::uint32_t> parent(count), sizes(count, 1);
+    std::vector<std::uint32_t> parent(count);
+    std::vector<std::uint32_t> sizes(count, 1);
     std::vector<int> orientation(count, 1);
     std::vector<bool> eligible(count, true);
     for (std::uint32_t i = 0; i < count; ++i)
@@ -69,7 +71,8 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
         const Vector authored{double(v[0].normal[0]) + v[1].normal[0] + v[2].normal[0],
                               double(v[0].normal[1]) + v[1].normal[1] + v[2].normal[1],
                               double(v[0].normal[2]) + v[1].normal[2] + v[2].normal[2]};
-        const double alignment = dot(n, authored), length = std::hypot(n[0], n[1], n[2]);
+        const double alignment = dot(n, authored);
+        const double length = std::hypot(n[0], n[1], n[2]);
         eligible[i] = length > 0 && alignment != 0;
         orientation[i] = alignment < 0 ? -1 : 1;
         std::array<std::uint32_t, 3> ids;
@@ -78,7 +81,8 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
             ids[c] = positions.try_emplace(p, static_cast<std::uint32_t>(positions.size())).first->second;
         }
         for (std::size_t c = 0; c < 3; ++c) {
-            const auto a = ids[c], b = ids[(c + 1) % 3];
+            const auto a = ids[c];
+            const auto b = ids[(c + 1) % 3];
             if (a == b)
                 eligible[i] = false;
             const auto key = (std::uint64_t(std::min(a, b)) << 32) | std::max(a, b);
@@ -98,7 +102,8 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
         if (edge.count != 2 || edge.direction != 0)
             closed[root(edge.triangle)] = false;
     }
-    std::vector<double> volume(count), absolute_volume(count);
+    std::vector<double> volume(count);
+    std::vector<double> absolute_volume(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         const auto component = root(i);
         if (!closed[component])

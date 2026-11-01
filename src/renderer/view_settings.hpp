@@ -25,7 +25,8 @@ using rendering::probe_resident_limit;
 struct CavitySettings {
     bool operator==(const CavitySettings&) const = default;
     bool enabled{true};
-    float ridge{1.f}, valley{1.f}; // Independent convex/concave contrast, 0..2.
+    float ridge{1.f};
+    float valley{1.f}; // Independent convex/concave contrast, 0..2.
     float radius{1.f}; // Screen-space radius, 0.5..4 physical pixels.
 };
 
@@ -42,7 +43,9 @@ struct SceneLitSettings : rendering::SceneLightingSettings {
     ProbeCoverage probe_coverage{ProbeCoverage::status};
     std::int32_t probe_debug_volume{-1}; // Geometry overlay selection; -1 draws all slots.
     ProbeVisualization probe_visualization{ProbeVisualization::off};
-    bool probe_volume{}, probe_relocation{}, probe_xray{};
+    bool probe_volume{};
+    bool probe_relocation{};
+    bool probe_xray{};
     float probe_radius{.12f}; // Fraction of minimum grid spacing; display geometry only.
     bool probe_overlay() const noexcept {
         return probe_volume || probe_relocation || probe_visualization != ProbeVisualization::off;

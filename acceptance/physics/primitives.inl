@@ -2,7 +2,8 @@ void primitive_composition() {
     PhysicsFixture f;
     auto entity = take(w::create_entity(f.runtime));
     auto parent = take(w::create_component(f.runtime, f.presentation_types.static_mesh_component));
-    auto child_entity = take(w::create_entity(f.runtime)), visual_entity = take(w::create_entity(f.runtime));
+    auto child_entity = take(w::create_entity(f.runtime));
+    auto visual_entity = take(w::create_entity(f.runtime));
     auto alternate_parent = take(w::create_entity(f.runtime));
     auto child = take(w::create_component(f.runtime, f.world_types.collision_component));
     auto visual = take(w::create_component(f.runtime, f.presentation_types.static_mesh_component));
@@ -26,7 +27,8 @@ void primitive_composition() {
     f.start();
     take(f.scene->set_gravity({0, 0, 0}));
     require(f.scene->body_count() == 2, "Explicit child Entities did not create independent bodies.");
-    const auto a = take(f.scene->body_handle(parent.id())), b = take(f.scene->body_handle(child.id()));
+    const auto a = take(f.scene->body_handle(parent.id()));
+    const auto b = take(f.scene->body_handle(child.id()));
     require(a.entity == entity.id() && b.entity == child_entity.id() && a.component != b.component &&
                 a == take(f.scene->body_handle(entity.id())),
             "Primitive handles or Entity body selection are ambiguous.");
@@ -36,7 +38,8 @@ void primitive_composition() {
     take(f.scene->add_impulse(a, {300, 0, 0}));
     take(f.scene->add_impulse(b, {0, 0, 600}));
     f.advance(3);
-    const auto first = take(f.scene->read_body_state(a)), second = take(f.scene->read_body_state(b));
+    const auto first = take(f.scene->read_body_state(a));
+    const auto second = take(f.scene->read_body_state(b));
     require(first.linear_velocity.x > 0 && near(second.linear_velocity.x, 0) && second.linear_velocity.z > 0,
             "A command to one Primitive affected the Entity's other body.");
     for (const auto& state : {first, second}) {
@@ -199,7 +202,8 @@ void mirrored_scale() {
     committed(f.world.attach(walker.id()));
     // A uniform reflection (-1,-1,-1) decomposes as (-1,1,1) and a half turn; writeback must restore the authored TRS.
     const atelier::math::Quaternion turn{0, .38268343f, 0, .92387953f};
-    const w::Trs inverted_pose{{0, 0, 40}, turn, {-1, -1, -1}}, child_pose{{2, 0, 0}, turn, {1, 1, 1}};
+    const w::Trs inverted_pose{{0, 0, 40}, turn, {-1, -1, -1}};
+    const w::Trs child_pose{{2, 0, 0}, turn, {1, 1, 1}};
     auto inverted = f.make({0, 0, 40}, dynamic_body());
     take(f.world.set_transform(inverted.id(), inverted_pose));
     auto inverted_parent = take(w::create_entity(f.runtime));
@@ -212,8 +216,9 @@ void mirrored_scale() {
     auto flat = take(w::create_entity(f.runtime));
     take(f.world.set_transform(flat.id(), {{0, 0, 80}, {0, 0, 0, 1}, {1, 0, 1}}));
     committed(f.world.attach(flat.id()));
-    auto flat_child = f.make({}, dynamic_body()), flat_grandchild = f.make({}, dynamic_body()),
-         flat_sibling = f.make({});
+    auto flat_child = f.make({}, dynamic_body());
+    auto flat_grandchild = f.make({}, dynamic_body());
+    auto flat_sibling = f.make({});
     take(f.world.set_transform(flat_child.id(), {{0, 1, 0}, {0, 0, 0, 1}, {1, 0, 1}}));
     committed(f.world.reparent(flat_child.id(), flat.id(), w::ReparentRule::keep_local));
     committed(f.world.reparent(flat_grandchild.id(), flat_child.id(), w::ReparentRule::keep_local));
@@ -246,8 +251,8 @@ void mirrored_scale() {
     const auto same_rotation = [](atelier::math::Quaternion a, atelier::math::Quaternion b) {
         return std::abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) > 1 - 1e-5f;
     };
-    const auto root_local = take(w::read_transform(f.runtime, inverted.id())),
-               child_local = take(w::read_transform(f.runtime, inverted_child.id()));
+    const auto root_local = take(w::read_transform(f.runtime, inverted.id()));
+    const auto child_local = take(w::read_transform(f.runtime, inverted_child.id()));
     require(root_local.scale == inverted_pose.scale && same_rotation(root_local.rotation, inverted_pose.rotation) &&
                 root_local.position.x > .01f && near(root_local.position.z, 40),
             "A (-1,-1,-1) body did not round-trip its authored local TRS.");
@@ -392,7 +397,8 @@ void solver_determinism() {
         f.ground();
         std::vector<PhysicsFixture::Entity> boxes;
         for (unsigned i = 0; i < 160; ++i) {
-            const auto layer = i / 40, cell = i % 40;
+            const auto layer = i / 40;
+            const auto cell = i % 40;
             const float offset = layer % 2 ? .35f : 0.f;
             boxes.push_back(f.make({float(cell % 8) * 1.15f - 4 + offset, 1.5f + float(layer) * 1.6f,
                                     float(cell / 8) * 1.15f - 2 + offset},
@@ -414,7 +420,8 @@ void solver_determinism() {
         committed(f.world.stop());
         return poses;
     };
-    const auto first = run(), second = run();
+    const auto first = run();
+    const auto second = run();
     require(first.size() == second.size() &&
                 std::memcmp(first.data(), second.data(), first.size() * sizeof(float)) == 0,
             "The same physics input produced different poses on the solver pool.");
@@ -472,7 +479,8 @@ void contact_capacity() {
         f.scene =
             take(p::PhysicsScene::create(f.world, f.physics_types, pr::read_mesh_source, {.contact_constraints = 4}));
         auto floor = f.ground();
-        std::vector<PhysicsFixture::Entity> falling, resting;
+        std::vector<PhysicsFixture::Entity> falling;
+        std::vector<PhysicsFixture::Entity> resting;
         for (unsigned i = 0; i < 28; ++i)
             falling.push_back(f.make({10 + float(i % 7) * 1.5f, .59f, float(i / 7) * 1.5f}, dynamic_body()));
         for (unsigned i = 0; i < 4; ++i)
@@ -519,7 +527,8 @@ void render_interpolation() {
         committed(f.world.reparent(entity.id(), parent, w::ReparentRule::keep_local));
         return entity;
     };
-    auto above = visual(falling.id()), below = visual(carried.id());
+    auto above = visual(falling.id());
+    auto below = visual(carried.id());
     auto resting = f.make({-8, .5f, 0}, dynamic_body());
     auto rested = visual(resting.id());
     f.start();
@@ -546,7 +555,8 @@ void render_interpolation() {
     frame(half);
     float older = slot(above).item->world[13];
     frame(half);
-    float newer = slot(above).item->world[13], last = drawn(above)[13];
+    float newer = slot(above).item->world[13];
+    float last = drawn(above)[13];
     unsigned stepped = 0;
     for (unsigned i = 0; i < 8; ++i) {
         const auto steps = frame(half);

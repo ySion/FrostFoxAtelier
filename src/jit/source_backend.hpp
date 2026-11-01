@@ -24,7 +24,9 @@ struct BusinessTrace {
 static_assert(std::is_standard_layout_v<BusinessTrace> && std::is_trivially_copyable_v<BusinessTrace>);
 struct BusinessLocation {
     const char* function;
-    std::uint64_t offset, line, column;
+    std::uint64_t offset;
+    std::uint64_t line;
+    std::uint64_t column;
 };
 struct BusinessArtifacts {
     const char* entry_symbol;
@@ -68,7 +70,8 @@ struct BusinessValue {
     std::uint64_t bits{};
     ArgumentStorage storage{ArgumentStorage::value};
     const void* data{};
-    std::uint32_t slot{}, field{};
+    std::uint32_t slot{};
+    std::uint32_t field{};
 };
 static_assert(std::is_standard_layout_v<BusinessValue> && std::is_trivially_copyable_v<BusinessValue>);
 static_assert(sizeof(BusinessValue) == 40 && alignof(BusinessValue) == 8 && offsetof(BusinessValue, bits) == 8 &&
@@ -110,12 +113,14 @@ struct BusinessValueField {
 struct BusinessValueBinding {
     const char* name;
     ValueKind kind;
-    std::uint64_t size, alignment;
+    std::uint64_t size;
+    std::uint64_t alignment;
     BusinessType element;
     const BusinessValueField* fields;
     std::uint32_t field_count;
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
-    bool can_own{}, can_mutate{};
+    bool can_own{};
+    bool can_mutate{};
     math::Type math{};
     bool plain_value{};
 };
@@ -198,7 +203,8 @@ struct BusinessDebugFrame {
     BusinessDebugFrame* previous;
     const BusinessDebugLocal* locals;
     std::uint64_t activation;
-    std::uint32_t function, location;
+    std::uint32_t function;
+    std::uint32_t location;
 };
 static_assert(std::is_standard_layout_v<BusinessDebugFrame> && std::is_trivial_v<BusinessDebugFrame>);
 static_assert(sizeof(BusinessDebugFrame) == 32 && sizeof(BusinessDebugLocal) == 16);
@@ -293,7 +299,9 @@ static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_
 struct BusinessCode;
 struct BusinessCoroutine;
 struct CompileLocation {
-    std::uint64_t offset{}, line{}, column{};
+    std::uint64_t offset{};
+    std::uint64_t line{};
+    std::uint64_t column{};
 };
 struct MaterialCode;
 struct MaterialTextureInfo {
@@ -306,7 +314,9 @@ struct MaterialCodeView {
     BusinessCode* defaults;
     const char* hlsl;
     const MaterialTextureInfo* textures;
-    std::uint32_t texture_count, parameters, resources;
+    std::uint32_t texture_count;
+    std::uint32_t parameters;
+    std::uint32_t resources;
 };
 
 }

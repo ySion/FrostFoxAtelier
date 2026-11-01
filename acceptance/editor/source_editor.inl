@@ -2,7 +2,8 @@
 // publication/error recovery. No mock compiler, document or text input path.
 void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::Session& surface) {
     auto project = take(editor::Project::create(folder));
-    const auto helper = folder / "Source/Math.source", component = folder / "Source/Move.source";
+    const auto helper = folder / "Source/Math.source";
+    const auto component = folder / "Source/Move.source";
     std::string saved = "// Saved helper\nfloat travel(float speed,float dt) { return speed * dt; }\n";
     std::string broken = "// Changed helper\n\nfloat travel(float speed,float dt) {\n    return missing;\n}\n";
     saved.resize(256, ' ');

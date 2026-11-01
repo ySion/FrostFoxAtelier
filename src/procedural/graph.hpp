@@ -45,7 +45,8 @@ private:
 
 // Input port `input` reads output `output` of the node in the same position of inputs_.
 struct Connection {
-    std::uint32_t input, output;
+    std::uint32_t input;
+    std::uint32_t output;
 };
 
 // The base of graph nodes. Public fields of a node type are its parameters. Its const
@@ -116,7 +117,8 @@ Result<Ports> ports(Runtime& runtime, TypeId node);
 
 struct Input {
     ObjectId from;
-    std::uint32_t output, input;
+    std::uint32_t output;
+    std::uint32_t input;
     bool operator==(const Input&) const = default;
 };
 // Connections into `node`, ordered by input port; a multiple port keeps connection order.

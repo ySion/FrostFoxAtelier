@@ -191,7 +191,8 @@ void quality_contracts(Fixture& f) {
     options.probe_rays = 1;
     ++f.frame.scene_identity;
     const auto sky_sparse = f.capture("contract-sky-1-ray", 128);
-    const double sky64 = mean_rgb(sky_reference, sky_region)[0], sky1 = mean_rgb(sky_sparse, sky_region)[0];
+    const double sky64 = mean_rgb(sky_reference, sky_region)[0];
+    const double sky1 = mean_rgb(sky_sparse, sky_region)[0];
     std::printf("SceneLit uniform sky receiver: 64 rays=%.4f, 1 ray=%.4f\n", sky64, sky1);
     check(sky64 > 10 && std::abs(sky1 - sky64) <= 5,
           "one-ray directional history preserves constant-sky energy after convergence");

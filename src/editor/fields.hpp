@@ -9,7 +9,9 @@ struct ScalarField {
     std::vector<std::string> names;
     world::FieldPath path;
     TypeId type;
-    std::string label, category, description;
+    std::string label;
+    std::string category;
+    std::string description;
     ValueForm form{ValueForm::inline_value};
     // Inline leaves are scalars, enumerations, strings or whole Arrays of those; only the first two are Scalar values.
     TypeKind kind{TypeKind::scalar};

@@ -83,7 +83,8 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
     const auto center = view.project(pivot);
     if (!center || tool == TransformTool::select)
         return;
-    const float scale = view.dpi_scale, unit = view.pixel_size(pivot) * scale;
+    const float scale = view.dpi_scale;
+    const float unit = view.pixel_size(pivot) * scale;
     const auto line = [&](Handle h, V2 a, V2 b, ui::Color color, float width = 1.f) {
         emit(h, Shape{Shape::Kind::segment, {a.x, a.y, b.x, b.y}, width * scale, color});
     };
@@ -101,8 +102,10 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
                 const auto a = 2 * pi * float(n) / 96;
                 return pivot + (u * std::cos(a) + v * std::sin(a)) * (unit * radius);
             };
-            const auto a = at(step), b = at(step + 1);
-            const auto pa = view.project(a), pb = view.project(b);
+            const auto a = at(step);
+            const auto b = at(step + 1);
+            const auto pa = view.project(a);
+            const auto pb = view.project(b);
             if (!pa || !pb)
                 continue;
             // Front arcs are opaque; arcs behind the ball's silhouette plane read as faded.
@@ -135,7 +138,8 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
             const auto size = length(d);
             if (size < 8 * scale)
                 continue;
-            const auto direction = d / size, side = V2{-direction.y, direction.x};
+            const auto direction = d / size;
+            const auto side = V2{-direction.y, direction.x};
             const auto h = static_cast<Handle>(int(Handle::move_x) + axis);
             line(h, *center, *tip, shade(color, .62f), 1.25f);
             // Solid cone: filled by a fan of strokes from the tip to the base.
@@ -144,8 +148,10 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
                 line(h, *tip, base + side * (float(k) * 1.f * scale), color, 1.5f);
             line(h, base - side * (5 * scale), base + side * (5 * scale), shade(color, .45f), 1.25f);
             // Plane handle: a diamond centred at 0.3 of the two other axes.
-            const auto u = frame[(axis + 1) % 3], v = frame[(axis + 2) % 3];
-            const float at = reach * .3f, half = reach * .045f;
+            const auto u = frame[(axis + 1) % 3];
+            const auto v = frame[(axis + 2) % 3];
+            const float at = reach * .3f;
+            const float half = reach * .045f;
             const std::array corners{
                 pivot + (u * at + v * (at - half)) * unit, pivot + (u * (at + half) + v * at) * unit,
                 pivot + (u * at + v * (at + half)) * unit, pivot + (u * (at - half) + v * at) * unit};
@@ -175,10 +181,14 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
         box(Handle::move_view, *center, 7, srgb(0xee, 0xee, 0xe6));
 }
 struct TriangleHit {
-    float distance, u, v;
+    float distance;
+    float u;
+    float v;
 };
 std::optional<TriangleHit> triangle(const ViewportView::Ray& ray, V3 a, V3 b, V3 c) {
-    const auto edge1 = b - a, edge2 = c - a, h = math::cross(ray.direction, edge2);
+    const auto edge1 = b - a;
+    const auto edge2 = c - a;
+    const auto h = math::cross(ray.direction, edge2);
     const auto det = math::dot(edge1, h);
     if (std::abs(det) < 1e-8f)
         return {};
@@ -209,7 +219,8 @@ math::Vector3 euler_degrees(math::Quaternion value) noexcept {
 }
 math::Quaternion from_euler_degrees(math::Vector3 value) noexcept {
     const auto axis_rotation = [](V3 axis, double degrees) {
-        const auto half_angle = degrees * std::numbers::pi / 360, s = std::sin(half_angle);
+        const auto half_angle = degrees * std::numbers::pi / 360;
+        const auto s = std::sin(half_angle);
         return math::Quaterniond{axis.x * s, axis.y * s, axis.z * s, std::cos(half_angle)};
     };
     const auto q = axis_rotation(axes[2], value.z) * axis_rotation(axes[1], value.y) * axis_rotation(axes[0], value.x);
@@ -246,8 +257,8 @@ std::optional<V2> ViewportView::project(V3 p) const noexcept {
               bounds.y + (1 - clip.y / clip.w) * bounds.height * .5f};
 }
 ViewportView::Ray ViewportView::ray(float x, float y) const noexcept {
-    const double nx = 2 * (x - bounds.x) / std::max(bounds.width, 1.f) - 1,
-                 ny = 1 - 2 * (y - bounds.y) / std::max(bounds.height, 1.f);
+    const double nx = 2 * (x - bounds.x) / std::max(bounds.width, 1.f) - 1;
+    const double ny = 1 - 2 * (y - bounds.y) / std::max(bounds.height, 1.f);
     const auto p = math::Vector4d{nx, ny, 1, 1} * inverse;
     const auto far = math::Vector4d{nx, ny, .5, 1} * inverse;
     const V3 near{float(p.x / p.w), float(p.y / p.w), float(p.z / p.w)};
@@ -488,7 +499,8 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, f
                 if (!surface.policy().double_sided && math::dot(context.geometric_normal_world, ray.direction) >= 0)
                     continue;
                 const std::array weights{1 - t->u - t->v, t->u, t->v};
-                V3 shading{}, tangent{};
+                V3 shading{};
+                V3 tangent{};
                 float handedness{};
                 std::array<V3, 3> positions;
                 for (std::size_t corner = 0; corner < 3; ++corner) {
@@ -618,7 +630,10 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const Viewp
     for (const auto& item : view.scene->meshes) {
         if (std::ranges::find(found, item.entity) != found.end())
             continue;
-        float left = std::numeric_limits<float>::max(), top = left, right = -left, bottom = -left;
+        float left = std::numeric_limits<float>::max();
+        float top = left;
+        float right = -left;
+        float bottom = -left;
         for (const auto& vertex : item.geometry->vertices()) {
             const auto& p = vertex.position;
             const auto projected = view.project(math::transform_point(V3{p[0], p[1], p[2]}, item.world));
@@ -675,7 +690,8 @@ Result<void> ViewportTool::select_click(Session& session, const ViewportView& vi
 }
 Result<void> ViewportTool::select_box(Session& session, const ViewportView& view, ToolSettings settings,
                                       const Marquee& marquee) {
-    const auto a = marquee.start, b = marquee.current;
+    const auto a = marquee.start;
+    const auto b = marquee.current;
     const auto hits =
         pick_box(session, view, {std::min(a.x, b.x), std::min(a.y, b.y), std::abs(a.x - b.x), std::abs(a.y - b.y)});
     const auto mode = marquee.control ? SelectMode::subtract
@@ -788,7 +804,8 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
             const auto axis = frame[g.axis];
             const auto normal = math::try_normalize(view.forward - axis * math::dot(view.forward, axis));
             if (normal) {
-                const auto a = on_plane(view, g.start, g.pivot, *normal), b = on_plane(view, p, g.pivot, *normal);
+                const auto a = on_plane(view, g.start, g.pivot, *normal);
+                const auto b = on_plane(view, p, g.pivot, *normal);
                 if (a && b)
                     delta = axis * math::dot(*b - *a, axis);
             }
@@ -796,7 +813,8 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
                 delta = axis * *typed;
         } else {
             const auto normal = g.plane ? frame[g.axis] : view.forward;
-            const auto a = on_plane(view, g.start, g.pivot, normal), b = on_plane(view, p, g.pivot, normal);
+            const auto a = on_plane(view, g.start, g.pivot, normal);
+            const auto b = on_plane(view, p, g.pivot, normal);
             if (a && b)
                 delta = *b - *a;
             if (typed)
@@ -808,7 +826,8 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
             for (int axis = 0; axis < 3; ++axis) {
                 if (g.axis >= 0 && (g.plane ? axis == g.axis : axis != g.axis))
                     continue;
-                const float step = g.settings.grid_spacing, origin = g.active_frame.position[axis];
+                const float step = g.settings.grid_spacing;
+                const float origin = g.active_frame.position[axis];
                 delta[axis] = std::round((origin + delta[axis]) / step) * step - origin;
             }
         for (auto& value : values)
@@ -821,9 +840,11 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
                       number(delta.z, 4) + L" m (" + number(math::length(delta), 4) + L" m)" + basis();
     } else if (g.operation == Operation::rotate) {
         const auto axis = g.axis >= 0 ? frame[g.axis] : -view.forward;
-        const auto a = on_plane(view, g.last, g.pivot, axis), b = on_plane(view, p, g.pivot, axis);
+        const auto a = on_plane(view, g.last, g.pivot, axis);
+        const auto b = on_plane(view, p, g.pivot, axis);
         if (a && b) {
-            const auto u = math::try_normalize(*a - g.pivot), v = math::try_normalize(*b - g.pivot);
+            const auto u = math::try_normalize(*a - g.pivot);
+            const auto v = math::try_normalize(*b - g.pivot);
             if (u && v)
                 g.angle += std::atan2(math::dot(axis, math::cross(*u, *v)), math::dot(*u, *v));
         } else
@@ -1171,8 +1192,8 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
             const auto draw_axis = [&](int axis) {
                 const auto direction = math::rotate(basis, axes[axis]);
                 const float reach = view.pixel_size(gesture_->pivot) * view.dpi_scale * 4000;
-                const auto a = view.project(gesture_->pivot - direction * reach),
-                           b = view.project(gesture_->pivot + direction * reach);
+                const auto a = view.project(gesture_->pivot - direction * reach);
+                const auto b = view.project(gesture_->pivot + direction * reach);
                 const auto color = colors[axis];
                 if (a && b)
                     stroke(*a, *b, 1.5f, {color.r, color.g, color.b, .9f});
@@ -1194,7 +1215,8 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
             const float total = length(d);
             const float dash = 6 * view.dpi_scale;
             for (float at = 0; at < total; at += dash * 2) {
-                const auto a = *center + d * (at / total), b = *center + d * (std::min(at + dash, total) / total);
+                const auto a = *center + d * (at / total);
+                const auto b = *center + d * (std::min(at + dash, total) / total);
                 stroke(a, b, 1.f, {0, 0, 0, .85f});
             }
         }
@@ -1202,7 +1224,8 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
     if (const auto p = view.project(cursor)) {
         // Blender 4.x 3D cursor, measured at 1x: 10 px dashed red/white ring and
         // four black ticks crossing it along the view's screen axes.
-        const float scale = view.dpi_scale, r = 10 * scale;
+        const float scale = view.dpi_scale;
+        const float r = 10 * scale;
         for (int segment = 0; segment < 48; ++segment) {
             // 16 alternating dashes, each drawn as three short chords.
             const auto point = [&](int n) {
@@ -1230,7 +1253,9 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
     {
         // Houdini orientation triad: fixed lower-left corner, world axes projected
         // through the camera rotation only, coloured discs with dark axis letters.
-        const float scale = view.dpi_scale, arm = 22 * scale, disc = 7.5f * scale;
+        const float scale = view.dpi_scale;
+        const float arm = 22 * scale;
+        const float disc = 7.5f * scale;
         // Above the tool hint line, as in Houdini.
         const V2 origin{view.bounds.x + 40 * scale, view.bounds.y + view.bounds.height - 62 * scale};
         struct Arm {
@@ -1270,7 +1295,8 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
         }
     }
     if (marquee_ && marquee_->dragging) {
-        const auto a = marquee_->start, b = marquee_->current;
+        const auto a = marquee_->start;
+        const auto b = marquee_->current;
         out.push_back({Shape::Kind::rectangle,
                        {std::min(a.x, b.x), std::min(a.y, b.y), std::abs(a.x - b.x), std::abs(a.y - b.y)},
                        view.dpi_scale,

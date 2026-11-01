@@ -22,16 +22,23 @@ using MeshReader = Result<geometry::MeshSource> (&)(Runtime&, ObjectId component
                                                          math::Vector3 scale, std::string_view source_key);
 
 struct Types {
-    TypeId character_component{}, ragdoll_component{}, ragdoll_part_component{}, distance_constraint_component{},
-        force_component{}, kinematic_motion_component{}, scene_query_component{};
+    TypeId character_component{};
+    TypeId ragdoll_component{};
+    TypeId ragdoll_part_component{};
+    TypeId distance_constraint_component{};
+    TypeId force_component{};
+    TypeId kinematic_motion_component{};
+    TypeId scene_query_component{};
 };
 [[nodiscard]] Result<Types> register_types(Runtime&);
 [[nodiscard]] Result<void> configure(Runtime&, ObjectId component, BodySettings);
 [[nodiscard]] Result<BodySettings> read_settings(Runtime&, ObjectId component);
 
 struct BodyHandle {
-    ObjectId entity, component;
-    std::uint64_t scene{}, revision{};
+    ObjectId entity;
+    ObjectId component;
+    std::uint64_t scene{};
+    std::uint64_t revision{};
     bool operator==(const BodyHandle&) const = default;
 };
 
@@ -41,7 +48,8 @@ struct ContactEvent {
     ContactPhase phase;
     // Historical instances at contact time. An ended event remains meaningful
     // after removal; using either handle for a command still checks its revision.
-    BodyHandle first, second;
+    BodyHandle first;
+    BodyHandle second;
     std::uint64_t step_id{};
     bool trigger{};
     ContactExitReason exit_reason{ContactExitReason::separated};
@@ -52,32 +60,39 @@ using StepHandler = std::function<Result<void>(std::uint64_t step_id, float fixe
 struct BodyState {
     BodyHandle handle;
     std::uint64_t step_id{};
-    math::Vector3 position, linear_velocity, angular_velocity;
+    math::Vector3 position;
+    math::Vector3 linear_velocity;
+    math::Vector3 angular_velocity;
     math::Quaternion rotation;
     bool sleeping{};
 };
 struct SpecialHandle {
     ObjectId entity;
-    std::uint64_t scene{}, revision{};
+    std::uint64_t scene{};
+    std::uint64_t revision{};
     bool operator==(const SpecialHandle&) const = default;
 };
 struct CharacterSettings {
-    float radius{.35f}, capsule_half_height{.6f};
-    float max_slope_radians{.7853982f}, jump_speed{5.f};
+    float radius{.35f};
+    float capsule_half_height{.6f};
+    float max_slope_radians{.7853982f};
+    float jump_speed{5.f};
     float step_height{.4f};
     bool operator==(const CharacterSettings&) const = default;
 };
 struct CharacterState {
     SpecialHandle handle;
     std::uint64_t step_id{};
-    math::Vector3 position{}, velocity{};
+    math::Vector3 position{};
+    math::Vector3 velocity{};
     bool grounded{};
 };
 struct RagdollPart {
     std::string name;
     int parent{-1};
     math::Vector3 local_position{};
-    float radius{.2f}, capsule_half_height{.25f};
+    float radius{.2f};
+    float capsule_half_height{.25f};
 };
 struct RagdollPose {
     SpecialHandle handle;
@@ -106,20 +121,24 @@ class RagdollPartComponent : public world::Component {
 public:
     std::int32_t parent_index{-1};
     math::Vector3 rest_position{};
-    float radius{.2f}, capsule_half_height{.25f};
+    float radius{.2f};
+    float capsule_half_height{.25f};
 };
 class DistanceConstraintComponent : public world::Component {
 public:
     ReferenceSlot target; // Registered weak Entity reference, persisted as a scene-local identity.
-    float minimum{1}, maximum{1};
+    float minimum{1};
+    float maximum{1};
 };
 class ForceComponent : public world::Component {
 public:
-    math::Vector3 force{}, initial_impulse{};
+    math::Vector3 force{};
+    math::Vector3 initial_impulse{};
 };
 class KinematicMotionComponent : public world::Component {
 public:
-    math::Vector3 velocity{}, amplitude{};
+    math::Vector3 velocity{};
+    math::Vector3 amplitude{};
     float period{4};
 };
 [[nodiscard]] Result<void> set_constraint_target(Runtime&, ObjectId component, ObjectId entity);
@@ -133,7 +152,8 @@ namespace detail {
 class ComponentSimulation;
 }
 struct ConstraintHandle {
-    std::uint64_t scene{}, revision{};
+    std::uint64_t scene{};
+    std::uint64_t revision{};
     bool operator==(const ConstraintHandle&) const = default;
 };
 enum class QueryMode : std::uint8_t { any, closest, all };
@@ -153,18 +173,24 @@ struct QueryFilter {
     }();
     QueryPolicy policy{QueryPolicy::interaction};
     // Borrowed only for the duration of the synchronous call.
-    std::span<const ObjectId> ignored_entities{}, ignored_components{};
-    bool include_sensors{true}, ignore_touches{}, stop_at_block{};
+    std::span<const ObjectId> ignored_entities{};
+    std::span<const ObjectId> ignored_components{};
+    bool include_sensors{true};
+    bool ignore_touches{};
+    bool stop_at_block{};
 };
 struct QueryHit {
     BodyHandle body;
     float fraction{};
-    math::Vector3 point{}, normal{};
+    math::Vector3 point{};
+    math::Vector3 normal{};
     std::uint32_t sub_shape{};
-    bool sensor{}, initial_overlap{};
+    bool sensor{};
+    bool initial_overlap{};
     bool blocking{};
     PhysicsMaterial material{};
-    float distance{}, penetration_depth{};
+    float distance{};
+    float penetration_depth{};
     math::Vector3 location{}; // Ray point or swept shape center; point is the surface contact.
 };
 struct QueryResult {
@@ -173,7 +199,8 @@ struct QueryResult {
     bool overflow{};
     bool has_block{};
     bool has_hit{}; // Before capacity truncation; test mode does not retain hits.
-    math::Vector3 start{}, end{};
+    math::Vector3 start{};
+    math::Vector3 end{};
 };
 enum class TraceShape : std::uint32_t { line, sphere_sweep, sphere_overlap };
 enum class TraceSelection : std::uint32_t { channel, object_type };
@@ -182,12 +209,15 @@ struct TraceSettings {
     TraceShape shape{TraceShape::line};
     TraceSelection selection{TraceSelection::channel};
     TraceMode mode{TraceMode::single};
-    std::uint32_t channel{}, object_types{0xffff}, capacity{64};
+    std::uint32_t channel{};
+    std::uint32_t object_types{0xffff};
+    std::uint32_t capacity{64};
     float radius{.25f}; // Sphere radius in world units, independent of component scale.
     bool include_sensors{true};
 };
 struct QueryIgnore {
-    std::span<const ObjectId> entities{}, components{};
+    std::span<const ObjectId> entities{};
+    std::span<const ObjectId> components{};
 };
 // Configuration is persistent; results/requests are transient. Script Tick reads
 // the previous completed physics step, then may request the next fixed-step query.
@@ -195,8 +225,10 @@ class SceneQueryComponent : public world::Component {
 public:
     ReferenceSequence ignored_entities;
     TraceSettings settings;
-    math::Vector3 start{}, end{0, 0, 10}; // Owner Entity-local endpoints; overlap uses start.
-    bool automatic{true}, ignore_self{true};
+    math::Vector3 start{};
+    math::Vector3 end{0, 0, 10}; // Owner Entity-local endpoints; overlap uses start.
+    bool automatic{true};
+    bool ignore_self{true};
     void request_query() noexcept { pending_ = true; }
     bool query_ready() const noexcept { return ready_; }
     bool has_hit() const noexcept { return hit_; }
@@ -209,19 +241,27 @@ public:
 
 private:
     friend class detail::ComponentSimulation;
-    bool pending_{}, ready_{}, hit_{}, blocking_{}, overflow_{};
+    bool pending_{};
+    bool ready_{};
+    bool hit_{};
+    bool blocking_{};
+    bool overflow_{};
     std::uint32_t count_{};
     float distance_{};
-    math::Vector3 point_{}, normal_{};
+    math::Vector3 point_{};
+    math::Vector3 normal_{};
 };
 struct StepResult {
-    std::uint32_t steps{}, rejected_commands{}, dropped_contact_notifications{};
+    std::uint32_t steps{};
+    std::uint32_t rejected_commands{};
+    std::uint32_t dropped_contact_notifications{};
     // Triangle shapes cooked at runtime since the previous step because a cooked shape no longer matched its scale or mesh.
     std::uint32_t runtime_cooks{};
     // Fixed substeps whose solve ignored some contacts because a Capacity buffer
     // was full; the simulation continues and each one reports a physics warning.
     std::uint32_t contact_overflows{};
-    float remaining{}, dropped{};
+    float remaining{};
+    float dropped{};
     std::uint64_t completed_step{};
     bool contacts_incomplete{};
 };
@@ -229,7 +269,9 @@ struct StepResult {
 // Jolt's solver buffers, fixed when a PhysicsScene is created. A zero field is
 // derived from the Primitives in the World at creation.
 struct Capacity {
-    std::uint32_t bodies{}, body_pairs{}, contact_constraints{};
+    std::uint32_t bodies{};
+    std::uint32_t body_pairs{};
+    std::uint32_t contact_constraints{};
     bool operator==(const Capacity&) const = default;
 };
 
@@ -337,22 +379,32 @@ private:
     std::unique_ptr<Impl> impl_;
     std::unique_ptr<detail::ComponentSimulation> components_;
     ContactHandler handler_;
-    StepHandler before_step_, after_step_;
-    std::uint64_t subscription_{}, simulation_{};
+    StepHandler before_step_;
+    StepHandler after_step_;
+    std::uint64_t subscription_{};
+    std::uint64_t simulation_{};
     // World buckets of the components that can claim an Entity's physics pose.
-    world::CapabilityId primitives_, characters_, ragdolls_;
+    world::CapabilityId primitives_;
+    world::CapabilityId characters_;
+    world::CapabilityId ragdolls_;
     StepResult last_step_{};
     std::vector<world::PresentedPose> presented_;
     float remaining_{};
-    std::uint64_t completed_step_{}, scene_id_{}, next_revision_{1};
+    std::uint64_t completed_step_{};
+    std::uint64_t scene_id_{};
+    std::uint64_t next_revision_{1};
     // Writes stamped after cursor_ are reconciled by the next step while tracked_; a
     // World::revision other than reconciled_ reconciles everything.
-    std::uint64_t cursor_{}, reconciled_{};
+    std::uint64_t cursor_{};
+    std::uint64_t reconciled_{};
     // Bodies and controllers removed; with next_revision_ it tells when the component
     // controllers must be reconciled again (controlled_).
-    std::uint64_t edits_{}, controlled_{};
+    std::uint64_t edits_{};
+    std::uint64_t controlled_{};
     std::uint32_t runtime_cooks_{};
-    bool paused_{}, single_step_{}, tracked_{};
+    bool paused_{};
+    bool single_step_{};
+    bool tracked_{};
     // Set at creation and whenever Jolt holds no body (ordinary or ragdoll part); the
     // next step with bodies builds the broad phase once.
     bool unbuilt_{true};

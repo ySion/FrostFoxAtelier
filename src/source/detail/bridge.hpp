@@ -46,11 +46,13 @@ struct BoundValue {
     TypeId type;
     std::string name;
     ValueKind kind;
-    std::size_t size, alignment;
+    std::size_t size;
+    std::size_t alignment;
     BusinessType element{ValueKind::void_value};
     std::vector<BoundValueField> fields;
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
-    bool can_own{}, can_mutate{};
+    bool can_own{};
+    bool can_mutate{};
     math::Type math{};
     bool plain_value{};
     bool operator==(const BoundValue&) const = default;
@@ -64,7 +66,11 @@ struct Binding {
     std::vector<TypeId> dependencies;
     std::vector<BoundEnum> enumerations{};
     std::vector<BoundValue> values{};
-    TypeId f32{}, f64{}, u32{}, i32{}, boolean{};
+    TypeId f32{};
+    TypeId f64{};
+    TypeId u32{};
+    TypeId i32{};
+    TypeId boolean{};
     bool operator==(const Binding&) const = default;
 };
 Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});

@@ -75,11 +75,15 @@ template <class T>
 using Result = std::expected<T, Error>;
 
 struct Size {
-    float width{}, height{};
+    float width{};
+    float height{};
     bool operator==(const Size&) const = default;
 };
 struct Insets {
-    float left{}, top{}, right{}, bottom{};
+    float left{};
+    float top{};
+    float right{};
+    float bottom{};
     bool operator==(const Insets&) const = default;
 };
 enum class SizeRule { fixed, content, expand, flex };
@@ -97,7 +101,8 @@ struct Axis {
     float minimum{};
     std::optional<float> maximum;
     Basis basis{};
-    float grow_weight{}, shrink_weight{};
+    float grow_weight{};
+    float shrink_weight{};
     static Axis fixed(float size) { return {SizeRule::fixed, size, 0, {}}; }
     static Axis content(float minimum = 0, std::optional<float> maximum = {}) {
         return {SizeRule::content, 0, minimum, maximum};
@@ -116,7 +121,8 @@ struct Alignment {
     float offset{};
     // Default inherits the parent's Flex cross alignment, or stretches otherwise.
     // Use the factories for an explicit override.
-    bool first_baseline{}, inherited{true};
+    bool first_baseline{};
+    bool inherited{true};
     static Alignment stretch(float offset = 0) { return {true, offset, false, false}; }
     static Alignment fit(float offset = 0) { return {false, offset, false, false}; }
     static Alignment baseline() { return {false, 0, true, false}; }
@@ -126,34 +132,48 @@ enum class Distribution { start, center, end, space_between, space_around, space
 enum class Wrap { no_wrap, wrap, wrap_reverse };
 struct FlexSpec {
     Wrap wrap{Wrap::no_wrap};
-    Distribution justify{Distribution::start}, align_lines{Distribution::start};
+    Distribution justify{Distribution::start};
+    Distribution align_lines{Distribution::start};
     Alignment align_items{Alignment::stretch()};
     bool reverse{};
     bool operator==(const FlexSpec&) const = default;
 };
 struct Cell {
-    std::optional<std::uint32_t> row{}, column{};
-    std::uint32_t row_span{1}, column_span{1};
+    std::optional<std::uint32_t> row{};
+    std::optional<std::uint32_t> column{};
+    std::uint32_t row_span{1};
+    std::uint32_t column_span{1};
     bool operator==(const Cell&) const = default;
 };
 enum class AutoFlow { row, column };
 struct GridSpec {
-    std::vector<Axis> columns{}, rows{};
-    float column_gap{}, row_gap{};
+    std::vector<Axis> columns{};
+    std::vector<Axis> rows{};
+    float column_gap{};
+    float row_gap{};
     AutoFlow auto_flow{AutoFlow::row};
-    Axis implicit_column{Axis::content()}, implicit_row{Axis::content()};
+    Axis implicit_column{Axis::content()};
+    Axis implicit_row{Axis::content()};
     bool operator==(const GridSpec&) const = default;
 };
 enum class Kind { row, column, overlay, box, measured, table, wrap, grid };
 struct NodeInput {
     Kind kind{Kind::box};
-    Axis width{Axis::expand()}, height{Axis::content()};
+    Axis width{Axis::expand()};
+    Axis height{Axis::content()};
     Insets padding{};
     float gap{};
     bool out_of_flow{};
-    Alignment horizontal_alignment{}, vertical_alignment{};
-    float anchor_x{}, anchor_y{}, pivot_x{}, pivot_y{}, offset_x{}, offset_y{};
-    std::uint64_t content_key{}, content_revision{};
+    Alignment horizontal_alignment{};
+    Alignment vertical_alignment{};
+    float anchor_x{};
+    float anchor_y{};
+    float pivot_x{};
+    float pivot_y{};
+    float offset_x{};
+    float offset_y{};
+    std::uint64_t content_key{};
+    std::uint64_t content_revision{};
     // Collapsing preserves identity but excludes the entire subtree from layout.
     bool collapsed{};
     // Table: column gap. Wrap/Flex: line gap. Grid uses its own typed spec.
@@ -194,7 +214,9 @@ struct Limits {
     std::size_t max_grid_cells{1048576}; // Auto-placement workspace, not logical items.
 };
 struct MeasureQuery {
-    std::uint64_t content_key{}, content_revision{}, provider_revision{};
+    std::uint64_t content_key{};
+    std::uint64_t content_revision{};
+    std::uint64_t provider_revision{};
     // Absent: unwrapped intrinsic size. Present: natural size at content width.
     // No implicit viewport-height limit is passed to the provider.
     std::optional<float> width;
@@ -205,7 +227,8 @@ struct MeasureError {
     std::uint32_t code{};
 };
 struct MeasuredSize {
-    float width{}, height{};
+    float width{};
+    float height{};
     std::optional<float> first_baseline;
     MeasuredSize() = default;
     MeasuredSize(Size size) : width(size.width), height(size.height) {}
@@ -216,12 +239,18 @@ using MeasureResult = std::expected<MeasuredSize, MeasureError>;
 using Measure = MeasureResult (*)(void*, const MeasureQuery&);
 
 struct LayoutBox {
-    LayoutNodeId node{}, parent{};
-    float x{}, y{}, width{}, height{}; // Parent-local, unrounded outer rectangle.
+    LayoutNodeId node{};
+    LayoutNodeId parent{};
+    float x{};
+    float y{};
+    float width{};
+    float height{}; // Parent-local, unrounded outer rectangle.
     bool operator==(const LayoutBox&) const = default;
 };
 struct LayoutView {
-    std::uint64_t publication{}, input_revision{}, provider_revision{};
+    std::uint64_t publication{};
+    std::uint64_t input_revision{};
+    std::uint64_t provider_revision{};
     Size viewport{};
     std::span<const LayoutBox> boxes; // Ordered preorder; root first.
     // O(1). Uses this publication, including nodes removed since it was published.
@@ -238,7 +267,9 @@ private:
     std::span<const std::uint32_t> index_;
 };
 struct LayoutSnapshot {
-    std::uint64_t publication{}, input_revision{}, provider_revision{};
+    std::uint64_t publication{};
+    std::uint64_t input_revision{};
+    std::uint64_t provider_revision{};
     Size viewport{};
     std::vector<LayoutBox> boxes; // Geometry only; does not retain text/resources.
     LayoutView view() const noexcept;
@@ -249,14 +280,23 @@ private:
     std::vector<std::uint32_t> index_;
 };
 struct Stats {
-    std::uint64_t computes{}, publications{}, measure_calls{}, intrinsic_queries{}, width_queries{}, cache_hits{},
-        node_visits{};
+    std::uint64_t computes{};
+    std::uint64_t publications{};
+    std::uint64_t measure_calls{};
+    std::uint64_t intrinsic_queries{};
+    std::uint64_t width_queries{};
+    std::uint64_t cache_hits{};
+    std::uint64_t node_visits{};
     // Internal node/work buffers; excludes public track descriptors, provider,
     // owned snapshots, returned identity arrays and the owner allocation itself.
-    std::uint64_t buffer_allocations{}, buffer_bytes_allocated{}, buffer_bytes{}, peak_buffer_bytes{};
+    std::uint64_t buffer_allocations{};
+    std::uint64_t buffer_bytes_allocated{};
+    std::uint64_t buffer_bytes{};
+    std::uint64_t peak_buffer_bytes{};
     std::uint64_t geometry_reuses{};
     // Changed complete-tree commits and child links written in final sequences.
-    std::uint64_t topology_commits{}, topology_links_written{};
+    std::uint64_t topology_commits{};
+    std::uint64_t topology_links_written{};
 };
 inline constexpr std::size_t append_position = std::numeric_limits<std::size_t>::max();
 
@@ -309,9 +349,12 @@ private:
 // Logical collection geometry. Positional rows do not replace business identities.
 // Instantiate the returned range through the existing LayoutDocument Interface.
 struct VisibleRange {
-    std::size_t begin{}, end{};
+    std::size_t begin{};
+    std::size_t end{};
     // Extent sums caller-supplied heights, including estimates for unmeasured rows.
-    double local_origin{}, scroll{}, extent{};
+    double local_origin{};
+    double scroll{};
+    double extent{};
     std::uint64_t revision{};
 };
 class VirtualList {
@@ -337,9 +380,13 @@ private:
     void rebuild(std::vector<double>& sums, const std::vector<double>& heights) const noexcept;
     Result<void> revision_available() const;
     std::size_t max_items_;
-    double gap_, scroll_{}, viewport_{}, overscan_{};
+    double gap_;
+    double scroll_{};
+    double viewport_{};
+    double overscan_{};
     std::uint64_t revision_{1};
-    std::vector<double> heights_, sums_;
+    std::vector<double> heights_;
+    std::vector<double> sums_;
 };
 
 } // namespace atelier::ui_layout

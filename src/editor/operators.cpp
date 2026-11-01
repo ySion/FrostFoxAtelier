@@ -89,7 +89,8 @@ Result<void> admit(const Context& context, const ContextOverride& changes) {
     auto members = context.document.world().members();
     if (!members)
         return std::unexpected(members.error());
-    std::unordered_set<ObjectId> entities, seen;
+    std::unordered_set<ObjectId> entities;
+    std::unordered_set<ObjectId> seen;
     for (const auto& member : *members)
         entities.insert(member.id());
     for (const auto entity : selection.entities) {
@@ -261,7 +262,9 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     }
     if (auto ended = host.end_interaction(); !ended)
         return std::unexpected(ended.error());
-    const auto recorded = document.recorded(), undo = document.undo_count(), redo = document.redo_count();
+    const auto recorded = document.recorded();
+    const auto undo = document.undo_count();
+    const auto redo = document.redo_count();
     if (auto executed =
             info->execute(host, context, {value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch},
                           output ? ValueOutput{output->type, output->bytes.data()} : ValueOutput{});

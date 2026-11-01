@@ -44,7 +44,8 @@ void controller_relation_state() {
     committed(f.world.attach_components(moving.id(), std::array{w::Attachment{motion.id()}}));
     f.start();
     f.advance(15);
-    const auto force_handle = f.handle(forced), motion_handle = f.handle(moving);
+    const auto force_handle = f.handle(forced);
+    const auto motion_handle = f.handle(moving);
     const auto velocity = f.state(forced).linear_velocity.x;
     committed(f.world.reparent(forced.id(), origin.id(), w::ReparentRule::keep_world));
     committed(f.world.reparent(moving.id(), origin.id(), w::ReparentRule::keep_world));
@@ -55,7 +56,8 @@ void controller_relation_state() {
                 f.state(forced).linear_velocity.x >= velocity * .95f &&
                 near(f.state(moving).position.x, expected, .002f),
             "Keep-world reparent replaced a body, replayed initial impulse, or reset the kinematic phase.");
-    const auto before_force = f.state(forced), before_motion = f.state(moving);
+    const auto before_force = f.state(forced);
+    const auto before_motion = f.state(moving);
     for (const auto target : {forced.id(), moving.id()})
         committed(f.world.set_space_reference(target, alternate.id(), w::ReparentRule::keep_world));
     step(f.world, *f.scene, 0);
@@ -185,7 +187,8 @@ void component_lifecycle() {
         value.rest_position = {0, .8f, 0};
         return {};
     }));
-    auto first_entity = take(w::create_entity(f.runtime)), second_entity = take(w::create_entity(f.runtime));
+    auto first_entity = take(w::create_entity(f.runtime));
+    auto second_entity = take(w::create_entity(f.runtime));
     take(f.world.set_transform(first_entity.id(), {}));
     take(f.world.set_transform(second_entity.id(), {}));
     committed(f.world.attach_components(first_entity.id(), std::array{w::Attachment{first_part.id()}}));

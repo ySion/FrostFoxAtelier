@@ -24,47 +24,105 @@ std::array<double, 3> hsv_to_rgb(std::array<double, 3>) noexcept;
 std::wstring color_hex(std::array<double, 3>);
 std::optional<std::array<double, 3>> parse_color_hex(std::wstring_view);
 namespace control {
-inline constexpr ui::ControlKey workbench = 18, position_fold = 57;
+inline constexpr ui::ControlKey workbench = 18;
+inline constexpr ui::ControlKey position_fold = 57;
 inline constexpr ui::ControlKey viewport = 40;
-inline constexpr ui::ControlKey viewport_pivot = 845, viewport_modes = 846;
-inline constexpr ui::ControlKey viewport_snap = 847, viewport_camera = 848, viewport_tools_menu = 849,
-                                viewport_hud = 850, viewport_readout = 851, viewport_rail_snap = 852,
-                                viewport_add_menu = 853;
-inline constexpr ui::ControlKey viewport_delete_menu = 855, viewport_shading_pie = 856, shading_preset_first = 890;
-inline constexpr ui::ControlKey viewport_axis_pie = 857, viewport_cavity = 858, viewport_pie = 859;
-inline constexpr ui::ControlKey cavity_enabled = 910, cavity_group_first = 911, cavity_value_first = 920;
-inline constexpr ui::ControlKey viewport_fps = 904, viewport_fly_reticle = 860, viewport_hint = 861;
+inline constexpr ui::ControlKey viewport_pivot = 845;
+inline constexpr ui::ControlKey viewport_modes = 846;
+inline constexpr ui::ControlKey viewport_snap = 847;
+inline constexpr ui::ControlKey viewport_camera = 848;
+inline constexpr ui::ControlKey viewport_tools_menu = 849;
+inline constexpr ui::ControlKey viewport_hud = 850;
+inline constexpr ui::ControlKey viewport_readout = 851;
+inline constexpr ui::ControlKey viewport_rail_snap = 852;
+inline constexpr ui::ControlKey viewport_add_menu = 853;
+inline constexpr ui::ControlKey viewport_delete_menu = 855;
+inline constexpr ui::ControlKey viewport_shading_pie = 856;
+inline constexpr ui::ControlKey shading_preset_first = 890;
+inline constexpr ui::ControlKey viewport_axis_pie = 857;
+inline constexpr ui::ControlKey viewport_cavity = 858;
+inline constexpr ui::ControlKey viewport_pie = 859;
+inline constexpr ui::ControlKey cavity_enabled = 910;
+inline constexpr ui::ControlKey cavity_group_first = 911;
+inline constexpr ui::ControlKey cavity_value_first = 920;
+inline constexpr ui::ControlKey viewport_fps = 904;
+inline constexpr ui::ControlKey viewport_fly_reticle = 860;
+inline constexpr ui::ControlKey viewport_hint = 861;
 // Blender header menus and grouped header widgets.
-inline constexpr ui::ControlKey viewport_view_menu = 974, viewport_select_menu = 975, viewport_object_menu = 976,
-                                viewport_header_add = 977;
-inline constexpr ui::ControlKey viewport_shading_modes = 948, viewport_select_modes = 949, viewport_snapping = 978;
-inline constexpr ui::ControlKey object_clear_menu = 979, object_snap_menu = 980, view_viewpoint_menu = 995,
-                                select_mode_menu = 996, viewport_orientation = 998;
+inline constexpr ui::ControlKey viewport_view_menu = 974;
+inline constexpr ui::ControlKey viewport_select_menu = 975;
+inline constexpr ui::ControlKey viewport_object_menu = 976;
+inline constexpr ui::ControlKey viewport_header_add = 977;
+inline constexpr ui::ControlKey viewport_shading_modes = 948;
+inline constexpr ui::ControlKey viewport_select_modes = 949;
+inline constexpr ui::ControlKey viewport_snapping = 978;
+inline constexpr ui::ControlKey object_clear_menu = 979;
+inline constexpr ui::ControlKey object_snap_menu = 980;
+inline constexpr ui::ControlKey view_viewpoint_menu = 995;
+inline constexpr ui::ControlKey select_mode_menu = 996;
+inline constexpr ui::ControlKey viewport_orientation = 998;
 // Houdini's right-hand display bar: view toggles that never touch scene history.
-inline constexpr ui::ControlKey display_bar = 1006, display_grid = 1007, display_axes = 1008, display_wire = 1009,
-                                display_triangles = 1010, display_cavity = 1011, display_fps = 1012,
-                                display_wire_only = 1013, display_lit = 1014;
+inline constexpr ui::ControlKey display_bar = 1006;
+inline constexpr ui::ControlKey display_grid = 1007;
+inline constexpr ui::ControlKey display_axes = 1008;
+inline constexpr ui::ControlKey display_wire = 1009;
+inline constexpr ui::ControlKey display_triangles = 1010;
+inline constexpr ui::ControlKey display_cavity = 1011;
+inline constexpr ui::ControlKey display_fps = 1012;
+inline constexpr ui::ControlKey display_wire_only = 1013;
+inline constexpr ui::ControlKey display_lit = 1014;
 inline constexpr ui::ControlKey display_toggle_first = 1015; // Eight bar buttons: 1015..1022, below dynamic bindings.
 inline constexpr ui::ControlKey inline_rename = 1023;
 // Colour editor popup and its fields (fixed keys; one editor at a time).
-inline constexpr ui::ControlKey color_editor = 940, color_rgb = 941, color_hsv = 944, color_hex = 953,
-                                color_revert = 954, color_done = 955, color_group = 956; // rgb 941..943, hsv 944..946
-inline constexpr ui::ControlKey scene_tab = 600, entities_tab = 601, parameters_tab = 602;
-inline constexpr ui::ControlKey assets_tab = 604, assets_content = 650;
-inline constexpr ui::ControlKey output_tab = 607, output_content = 690, output_table = 691;
-inline constexpr ui::ControlKey structure_tab = 608, structure_content = 694, structure_tree = 695,
-                                structure_filter = 696;
-inline constexpr ui::ControlKey shelf = 730, shelf_tabs = 731, shelf_create = 732, shelf_view = 733, shelf_body = 734,
-                                shelf_handle = 735, shelf_contents = 736;
+inline constexpr ui::ControlKey color_editor = 940;
+inline constexpr ui::ControlKey color_rgb = 941;
+inline constexpr ui::ControlKey color_hsv = 944;
+inline constexpr ui::ControlKey color_hex = 953;
+inline constexpr ui::ControlKey color_revert = 954;
+inline constexpr ui::ControlKey color_done = 955;
+inline constexpr ui::ControlKey color_group = 956; // rgb 941..943, hsv 944..946
+inline constexpr ui::ControlKey scene_tab = 600;
+inline constexpr ui::ControlKey entities_tab = 601;
+inline constexpr ui::ControlKey parameters_tab = 602;
+inline constexpr ui::ControlKey assets_tab = 604;
+inline constexpr ui::ControlKey assets_content = 650;
+inline constexpr ui::ControlKey output_tab = 607;
+inline constexpr ui::ControlKey output_content = 690;
+inline constexpr ui::ControlKey output_table = 691;
+inline constexpr ui::ControlKey structure_tab = 608;
+inline constexpr ui::ControlKey structure_content = 694;
+inline constexpr ui::ControlKey structure_tree = 695;
+inline constexpr ui::ControlKey structure_filter = 696;
+inline constexpr ui::ControlKey shelf = 730;
+inline constexpr ui::ControlKey shelf_tabs = 731;
+inline constexpr ui::ControlKey shelf_create = 732;
+inline constexpr ui::ControlKey shelf_view = 733;
+inline constexpr ui::ControlKey shelf_body = 734;
+inline constexpr ui::ControlKey shelf_handle = 735;
+inline constexpr ui::ControlKey shelf_contents = 736;
 inline constexpr ui::ControlKey scene_content = 640;
 inline constexpr ui::ControlKey scene_shading = 646;
-inline constexpr ui::ControlKey shading_first = 760, edges_first = 763, topology_first = 767;
-inline constexpr ui::ControlKey scene_guides = 645, guide_background = 769, guide_grid = 770, guide_axes = 771;
+inline constexpr ui::ControlKey shading_first = 760;
+inline constexpr ui::ControlKey edges_first = 763;
+inline constexpr ui::ControlKey topology_first = 767;
+inline constexpr ui::ControlKey scene_guides = 645;
+inline constexpr ui::ControlKey guide_background = 769;
+inline constexpr ui::ControlKey guide_grid = 770;
+inline constexpr ui::ControlKey guide_axes = 771;
 inline constexpr ui::ControlKey shading_scene_lit = 772;
-inline constexpr ui::ControlKey scene_path = 642, scene_back = 643, scene_forward = 644;
-inline constexpr ui::ControlKey entity_path = 22, entity_back = 25, entity_forward = 26;
-inline constexpr ui::ControlKey entity_tree = 23, tree_world = 27, tree_filter = 28;
-inline constexpr ui::ControlKey parameter_path = 76, parameter_back = 78, parameter_forward = 79, world_context = 720;
+inline constexpr ui::ControlKey scene_path = 642;
+inline constexpr ui::ControlKey scene_back = 643;
+inline constexpr ui::ControlKey scene_forward = 644;
+inline constexpr ui::ControlKey entity_path = 22;
+inline constexpr ui::ControlKey entity_back = 25;
+inline constexpr ui::ControlKey entity_forward = 26;
+inline constexpr ui::ControlKey entity_tree = 23;
+inline constexpr ui::ControlKey tree_world = 27;
+inline constexpr ui::ControlKey tree_filter = 28;
+inline constexpr ui::ControlKey parameter_path = 76;
+inline constexpr ui::ControlKey parameter_back = 78;
+inline constexpr ui::ControlKey parameter_forward = 79;
+inline constexpr ui::ControlKey world_context = 720;
 constexpr bool is_path(ui::ControlKey key) {
     return key == scene_path || key == entity_path || key == parameter_path;
 }
@@ -73,16 +131,26 @@ constexpr int navigation_direction(ui::ControlKey key) {
            : key == scene_forward || key == entity_forward || key == parameter_forward ? 1
                                                                                        : 0;
 }
-inline constexpr ui::ControlKey parameter_search = 54, parameter_search_toggle = 86;
-inline constexpr ui::ControlKey add_component = 87, component_choice_first = 1ULL << 40;
-inline constexpr ui::ControlKey parameter_list = 84, group_components = 1ULL << 42,
-                                group_categories = group_components + 1;
-inline constexpr ui::ControlKey parameter_menu = 500, menu_group_reset = 501, menu_reset = 502, menu_copy = 503,
-                                menu_paste = 504;
-inline constexpr auto file_menu = menu_key(MenuGroup::file), edit_menu = menu_key(MenuGroup::edit),
-                      create_menu = menu_key(MenuGroup::create), view_menu = menu_key(MenuGroup::view),
-                      window_menu = menu_key(MenuGroup::window), help_menu = menu_key(MenuGroup::help);
-inline constexpr ui::ControlKey menu_bar_handle = 715, menu_bar_body = 716;
+inline constexpr ui::ControlKey parameter_search = 54;
+inline constexpr ui::ControlKey parameter_search_toggle = 86;
+inline constexpr ui::ControlKey add_component = 87;
+inline constexpr ui::ControlKey component_choice_first = 1ULL << 40;
+inline constexpr ui::ControlKey parameter_list = 84;
+inline constexpr ui::ControlKey group_components = 1ULL << 42;
+inline constexpr ui::ControlKey group_categories = group_components + 1;
+inline constexpr ui::ControlKey parameter_menu = 500;
+inline constexpr ui::ControlKey menu_group_reset = 501;
+inline constexpr ui::ControlKey menu_reset = 502;
+inline constexpr ui::ControlKey menu_copy = 503;
+inline constexpr ui::ControlKey menu_paste = 504;
+inline constexpr auto file_menu = menu_key(MenuGroup::file);
+inline constexpr auto edit_menu = menu_key(MenuGroup::edit);
+inline constexpr auto create_menu = menu_key(MenuGroup::create);
+inline constexpr auto view_menu = menu_key(MenuGroup::view);
+inline constexpr auto window_menu = menu_key(MenuGroup::window);
+inline constexpr auto help_menu = menu_key(MenuGroup::help);
+inline constexpr ui::ControlKey menu_bar_handle = 715;
+inline constexpr ui::ControlKey menu_bar_body = 716;
 constexpr bool is_menu(ui::ControlKey key) {
     return menu_group(key) != nullptr;
 }
@@ -151,9 +219,11 @@ struct Workspace {
     struct ColorEdit {
         ObjectId object;
         std::vector<world::FieldPath> paths;
-        std::array<double, 3> original{}, value{};
+        std::array<double, 3> original{};
+        std::array<double, 3> value{};
         double maximum{1};
-        float x{}, y{};
+        float x{};
+        float y{};
         std::wstring hex;
         bool composition_failed{};
         std::optional<material::Override> material_entry; // Keeps vector4 alpha; no fixed material schema.
@@ -219,11 +289,15 @@ struct Workspace {
     Result<void> locate_output(); // Uses the record's original root/version, never the active project.
     bool source_history() const noexcept { return dock.focused_tab() == source_control::tab; }
     bool project_open{};
-    bool scene_available{true}, project_running{}, project_stopping{}, project_ui_configured{};
+    bool scene_available{true};
+    bool project_running{};
+    bool project_stopping{};
+    bool project_ui_configured{};
     // While a Play run follows the document: change batches it has not acknowledged yet.
     std::optional<std::size_t> play_pending;
     bool play_diverged{}; // Play stopped following the document until it restarts.
-    bool menu_bar_collapsed{}, shelf_collapsed{};
+    bool menu_bar_collapsed{};
+    bool shelf_collapsed{};
     bool parameter_search_visible{};
     ControlWorkbench workbench;
     WorldPanel lighting;
@@ -252,7 +326,9 @@ struct Workspace {
         enum class Kind { assign, clear, edit, texture, create_scene, discard };
         Kind kind{};
         ObjectId object;
-        std::string slot{}, key{}, path{};
+        std::string slot{};
+        std::string key{};
+        std::string path{};
     };
     std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
     Selection menu_selection() const noexcept { return menu_selection_; }
@@ -290,7 +366,8 @@ private:
             return at == objects.end() ? ui::no_tree_node : static_cast<std::uint32_t>(at - objects.begin());
         }
     };
-    EntityTreeView scene_tree_, structure_tree_;
+    EntityTreeView scene_tree_;
+    EntityTreeView structure_tree_;
     void build_structure_tree(const Session&, ObjectId entity);
     std::vector<std::uint32_t> window_tree(EntityTreeView&, ObjectId primary, std::wstring_view filter,
                                            ui::TreeViewport, std::span<const ObjectId> pinned);

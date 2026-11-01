@@ -36,7 +36,8 @@ struct Options {
 // prepared on Context workers from their first request; a view that enables a
 // new group raises total and is not ready again until that group completes.
 struct Preparation {
-    std::uint32_t done{}, total{};
+    std::uint32_t done{};
+    std::uint32_t total{};
     bool ready{};
 };
 // One immutable candidate's material programs, parameters and GPU preparation.
@@ -84,7 +85,8 @@ struct Light {
     float source_radius{}; // Point sphere radius (m); directional angular radius (radians).
     std::array<float, 3> right{1, 0, 0};
     std::array<float, 3> up{0, 1, 0}; // Rectangle unit world tangent axes.
-    float width{1.f}, height{1.f}; // Rectangle emitting dimensions (m).
+    float width{1.f};
+    float height{1.f}; // Rectangle emitting dimensions (m).
     bool two_sided{};
     bool casts_shadow{true}; // Direct-light visibility at every receiving point, including DDGI hits.
 };
@@ -133,10 +135,15 @@ enum class FrameStatus { accepted, skipped, not_ready };
 // encoded commands, including an occluded Present; pre-encoding skips have zero
 // activity. Legacy counts are not GPU timings. Errors provide no complete statistics.
 struct ProbeVolumeStats {
-    bool enabled{}, rolling{};
-    std::array<float, 3> minimum{}, maximum{}, spacing{};
+    bool enabled{};
+    bool rolling{};
+    std::array<float, 3> minimum{};
+    std::array<float, 3> maximum{};
+    std::array<float, 3> spacing{};
     std::array<std::uint32_t, 3> counts{};
-    std::uint32_t resident{}, updated{}, reset_probes{}; // CPU schedule, not GPU-valid probe counts.
+    std::uint32_t resident{};
+    std::uint32_t updated{};
+    std::uint32_t reset_probes{}; // CPU schedule, not GPU-valid probe counts.
 };
 // One receiver's actual gather inputs. Linear irradiance, not display RGB.
 // Identity: volume, physical probe, support stage (0 unused, 1 pending,
@@ -152,11 +159,14 @@ struct ProbeContribution {
         response{}; // Requested epoch, min/max effective observations over tile, active visit cursor.
 };
 struct ProbeInspection {
-    std::uint64_t sequence{}, frame_id{}, scene_identity{};
+    std::uint64_t sequence{};
+    std::uint64_t frame_id{};
+    std::uint64_t scene_identity{};
     std::array<std::uint32_t, 2> pixel{};
     ProbeHistory history{ProbeHistory::live};
     std::int32_t requested_probe{-1}; // -1 automatic; explicit requests never fall back to another probe.
-    std::uint32_t rays{}, updates{};
+    std::uint32_t rays{};
+    std::uint32_t updates{};
     std::array<ProbeVolumeStats, probe_volume_limit> volumes{};
     // Receiver identity: gather status, selected volume, contributors, reserved.
     // Irradiance RGB / coverage; weights: sum, dominance; position: world XYZ.
@@ -184,12 +194,13 @@ struct FrameStats {
     std::uint64_t ui_quads{}; // Visible instances that overlap their clip; all share one draw.
     std::uint64_t ui_instance_upload_bytes{};
     std::uint64_t scene_draw_calls{};
-    std::uint64_t scene_instances{},
-        scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.
+    std::uint64_t scene_instances{};
+    std::uint64_t scene_culled_instances{}; // Current primary raster frustum; full lighting scene is retained.
     std::uint64_t material_upload_count{}; // New immutable scene image versions, including neutral defaults.
     std::uint64_t cached_material_images{}; // Excludes UI textures and gfx's retirement queue.
     std::uint64_t viewport_draw_calls{}; // Background and reference guides; excludes scene geometry.
-    std::uint64_t overlay_shapes{}, overlay_draw_calls{};
+    std::uint64_t overlay_shapes{};
+    std::uint64_t overlay_draw_calls{};
     std::uint64_t coverage_upload_count{};
     std::uint64_t coverage_upload_bytes{}; // Tight R8 payload; excludes copy padding/scratch.
     // Current renderer cache only, excluding gfx's in-flight retirement queue.
@@ -211,27 +222,33 @@ struct FrameStats {
     float scene_lit_direct_cluster_gpu_ms{}; // Light list construction; subset of direct lighting.
     float scene_lit_direct_shading_gpu_ms{}; // Light evaluation fused with HDR composition; subset of direct lighting.
     // Completed conservative receiver clusters, not per-pixel light counts.
-    std::uint32_t scene_lit_direct_cluster_cells{}, scene_lit_direct_cluster_overflows{},
-        scene_lit_direct_cluster_max_sources{};
+    std::uint32_t scene_lit_direct_cluster_cells{};
+    std::uint32_t scene_lit_direct_cluster_overflows{};
+    std::uint32_t scene_lit_direct_cluster_max_sources{};
     // Optional completed counts at actual GBuffer receivers: 0..64, then >64.
     // Conservative local analytic support only; no directional sources or visibility test.
     std::array<std::uint32_t, 66> scene_lit_direct_receiver_histogram{};
     std::uint32_t scene_lit_direct_receiver_max_sources{};
     float scene_lit_shadow_cache_gpu_ms{}; // Atlas updates only; subset of direct lighting.
-    std::uint32_t scene_lit_shadow_cache_faces{}, scene_lit_shadow_cache_reused_faces{};
-    std::uint32_t scene_lit_shadow_cache_static_updates{}, scene_lit_shadow_cache_dynamic_updates{},
-        scene_lit_shadow_cache_draws{};
+    std::uint32_t scene_lit_shadow_cache_faces{};
+    std::uint32_t scene_lit_shadow_cache_reused_faces{};
+    std::uint32_t scene_lit_shadow_cache_static_updates{};
+    std::uint32_t scene_lit_shadow_cache_dynamic_updates{};
+    std::uint32_t scene_lit_shadow_cache_draws{};
     // Dropped lights cast shadows but did not fit the atlas; they contribute no direct light.
-    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{}, scene_lit_shadow_cache_dropped_lights{},
-        scene_lit_shadow_cache_near_plane_faces{};
+    std::uint32_t scene_lit_shadow_cache_resolution_downgrades{};
+    std::uint32_t scene_lit_shadow_cache_dropped_lights{};
+    std::uint32_t scene_lit_shadow_cache_near_plane_faces{};
     // Missing taps: point-light taps without a drawn face. A sun receiver beyond
     // every cascade traces instead, counted in the direct part of shadow rays.
-    std::uint32_t scene_lit_shadow_cache_missing_taps{}, scene_lit_shadow_cache_plane_fallbacks{};
+    std::uint32_t scene_lit_shadow_cache_missing_taps{};
+    std::uint32_t scene_lit_shadow_cache_plane_fallbacks{};
     // Faces deferred by the per-frame redraw budget, their longest consecutive deferral
     // in frames, the 128² atlas cells held by requested faces, and lights withheld
     // from direct light until all of their faces are drawn.
-    std::uint32_t scene_lit_shadow_cache_deferred_faces{}, scene_lit_shadow_cache_deferral_frames{},
-        scene_lit_shadow_cache_atlas_cells{};
+    std::uint32_t scene_lit_shadow_cache_deferred_faces{};
+    std::uint32_t scene_lit_shadow_cache_deferral_frames{};
+    std::uint32_t scene_lit_shadow_cache_atlas_cells{};
     std::uint32_t scene_lit_shadow_cache_pending_lights{};
     // Enabled scopes in that completed sample: bits 0..7 main, 8..9 DDGI,
     // 10..11 DDGI update, 12 light lists, 13 shadow atlas updates, 14 direct shading and composition.
@@ -240,17 +257,20 @@ struct FrameStats {
     std::array<std::uint64_t, 2>
         scene_lit_ddgi_visibility_rays{}; // Probe-hit shading, receiver gather; subsets of visibility queries.
     std::uint64_t scene_lit_resource_bytes{}; // Logical resources; excludes in-flight retirement.
-    std::uint64_t scene_lit_shadow_rays{}, scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
+    std::uint64_t scene_lit_shadow_rays{};
+    std::uint64_t scene_lit_probe_rays{}; // Actual completed visibility/primary probe queries.
     std::uint32_t
         scene_lit_reflection_work_items{}; // Pixels SSSR classified for hierarchy traversal in that completed sample.
-    std::uint32_t scene_lit_light_sources{}, scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
-    std::uint32_t scene_lit_spatial_sources{},
-        scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
+    std::uint32_t scene_lit_light_sources{};
+    std::uint32_t scene_lit_shadow_sources{}; // Analytic lights; those casting shadows.
+    std::uint32_t scene_lit_spatial_sources{};
+    std::uint32_t scene_lit_spatial_cells{}; // Retained sources and nonempty proposal cells; not a culling count.
     std::uint64_t scene_lit_spatial_bytes{}; // Three current logical GPU buffers, including empty sentinels.
     bool scene_lit_spatial_changed{}; // Proposal buffers uploaded in this encoded render.
     std::uint64_t scene_lit_history_resets{}; // Reset events in this encoded render; ordinary next frame is zero.
     bool scene_lit_gpu_timing_valid{};
-    std::uint64_t scene_lit_gpu_sample_sequence{}, scene_lit_gpu_sample_frame_id{};
+    std::uint64_t scene_lit_gpu_sample_sequence{};
+    std::uint64_t scene_lit_gpu_sample_frame_id{};
 };
 struct FrameResult {
     FrameStatus status{FrameStatus::skipped};

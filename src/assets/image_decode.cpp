@@ -54,7 +54,8 @@ material::ImageRef decode(std::string_view bytes, PixelBudget* budget) {
                     factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder)) &&
                 SUCCEEDED(decoder->GetFrame(0, &frame)),
             "Cannot decode texture.");
-    UINT width{}, height{};
+    UINT width{};
+    UINT height{};
     require(SUCCEEDED(frame->GetSize(&width, &height)) && width && height && width <= 8192 && height <= 8192,
             "Texture exceeds the 8192-pixel dimension limit.");
     if (budget)

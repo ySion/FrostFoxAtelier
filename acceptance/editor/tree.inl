@@ -17,7 +17,8 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
         return box ? box->parent : ControlKey{};
     };
     const auto child_of = [&](ControlKey child, ControlKey parent) {
-        const auto c = row(child), p = row(parent);
+        const auto c = row(child);
+        const auto p = row(parent);
         const auto tree = tree_of(parent);
         return tree && tree_of(child) == tree && c.depth == p.depth + 1 && c.index > p.index &&
                std::none_of(app.presented()->tree_rows.begin(), app.presented()->tree_rows.end(), [&](const auto& r) {
@@ -55,8 +56,8 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
         component_object(app.document(), entity, app.document().presentation_types().static_mesh_component);
     const auto members = model(atelier::world::components(app.document().world().runtime(), entity)).size();
     click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
-    const auto structure_entity = Access::structure_control(app, entity),
-               structure_root = Access::structure_control(app, root);
+    const auto structure_entity = Access::structure_control(app, entity);
+    const auto structure_root = Access::structure_control(app, root);
     require(structure_entity && structure_root && child_of(structure_root, structure_entity) &&
                 app.presented()->find(control::add_component),
             "Entity Structure did not expose real component membership and its add command.");

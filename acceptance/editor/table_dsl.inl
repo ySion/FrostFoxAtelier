@@ -100,7 +100,8 @@ ui Results(in TableBinding model, in Text view, in double width) {
     inputs[2] = 360.0;
     present();
     auto cell = surface.presented()->find_table(41)->cells.back();
-    const float x = cell.bounds.x + 4, y = cell.bounds.y + 4;
+    const float x = cell.bounds.x + 4;
+    const float y = cell.bounds.y + 4;
     auto held = surface.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y, .clicks = 2});
     require(held.capture == ui::Capture::acquire, "View switch fixture did not hold an item.");
     inputs[1] = std::wstring{L"list"};
@@ -165,7 +166,10 @@ ui Board(in TableBinding model, in ActionBinding open, in Key context,
     writable->columns = {{11, L"Name", 64, 40}, {12, L"Type", 64, 40}};
     writable->rows = {{101, {{1001, L"First"}, {1002, L"Mesh"}}}, {102, {{1003, L"Second"}, {1004, L"Scene"}}}};
     const std::shared_ptr<const ui::TableData> snapshot = std::move(writable);
-    constexpr ui::ControlKey table_key = 701, open = 9001, other_open = 9002, context = 9003;
+    constexpr ui::ControlKey table_key = 701;
+    constexpr ui::ControlKey open = 9001;
+    constexpr ui::ControlKey other_open = 9002;
+    constexpr ui::ControlKey context = 9003;
     const language::TableBinding original{snapshot, {101, 11}, true};
     const auto copies = [&](ui::TableSelection selection) {
         return language::ItemList{std::make_shared<const std::vector<language::Item>>(std::vector<language::Item>{
@@ -286,7 +290,8 @@ ui Board(in TableBinding model, in ActionBinding open, in Key context,
                 !actions[0].target,
             "Table sort was redirected through its activation binding.");
     actions.clear();
-    const auto edge = header.resize.x + header.resize.width * .5f, y = header.resize.y + 8;
+    const auto edge = header.resize.x + header.resize.width * .5f;
+    const auto y = header.resize.y + 8;
     route(surface.input({.kind = ui::EventKind::pointer_down, .x = edge, .y = y}));
     route(surface.input({.kind = ui::EventKind::pointer_move, .x = edge + 8, .y = y}));
     route(surface.input({.kind = ui::EventKind::pointer_up, .x = edge + 8, .y = y}));

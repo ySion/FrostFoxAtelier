@@ -41,7 +41,8 @@ private:
 class PlayLink final {
 public:
     static constexpr std::size_t maximum_batch = 16 * 1024 * 1024;
-    static constexpr std::size_t maximum_pending = 256, maximum_pending_bytes = 64 * 1024 * 1024;
+    static constexpr std::size_t maximum_pending = 256;
+    static constexpr std::size_t maximum_pending_bytes = 64 * 1024 * 1024;
     // Shared by texture pixels and encoded mesh snapshots, independent of JSON limits.
     static constexpr std::size_t maximum_pending_resource_bytes = 256 * 1024 * 1024;
     ~PlayLink() { static_cast<void>(close()); }
@@ -67,7 +68,8 @@ private:
     // Owns every spill file until ACK/close, or until an unsent batch is abandoned.
     struct Pending {
         std::uint64_t seq{};
-        std::size_t bytes{}, resource_bytes{};
+        std::size_t bytes{};
+        std::size_t resource_bytes{};
         std::vector<std::filesystem::path> files;
         Pending() = default;
         Pending(Pending&&) noexcept = default;
@@ -75,9 +77,13 @@ private:
     };
     std::unique_ptr<LiveLink> link_;
     std::filesystem::path spill_;
-    std::uint64_t next_seq_{1}, next_request_{1}, next_texture_{1}, next_mesh_{1};
+    std::uint64_t next_seq_{1};
+    std::uint64_t next_request_{1};
+    std::uint64_t next_texture_{1};
+    std::uint64_t next_mesh_{1};
     std::deque<Pending> pending_;
-    std::size_t pending_bytes_{}, pending_resource_bytes_{};
+    std::size_t pending_bytes_{};
+    std::size_t pending_resource_bytes_{};
     std::string divergence_;
     std::optional<std::chrono::steady_clock::time_point> closed_since_;
     std::unordered_map<std::uint64_t, std::string> inspected_;

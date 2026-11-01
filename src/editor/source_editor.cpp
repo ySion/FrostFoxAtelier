@@ -207,7 +207,8 @@ bool SourceEditor::locate_problem() {
     if (!problem_line_)
         return false;
     if (!problem_path_.empty()) {
-        const auto line = problem_line_, column = problem_column_;
+        const auto line = problem_line_;
+        const auto column = problem_column_;
         const auto path = problem_path_;
         const auto source = problem_source_;
         auto disk = assets::read_file(path, 1024 * 1024);
@@ -302,7 +303,8 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
                           const ProjectBuild* build, bool running) {
     using namespace ui_language;
     auto* file = active();
-    std::wstring diagnostic, status = L"Open a source file from Asset Browser or File > Open Source.";
+    std::wstring diagnostic;
+    std::wstring status = L"Open a source file from Asset Browser or File > Open Source.";
     bool conflict = false;
     problem_line_ = 0;
     problem_path_.clear();

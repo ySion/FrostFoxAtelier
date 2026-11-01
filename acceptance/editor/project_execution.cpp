@@ -106,7 +106,8 @@ struct RunLog {
                                    [&](const auto& item) { return item.entry.event_code == code && predicate(item); });
     }
     struct ExpectedDiagnostic {
-        std::string_view category, code;
+        std::string_view category;
+        std::string_view code;
         logging::Severity severity;
         std::size_t count;
         std::vector<logging::Field> fields{};
@@ -138,7 +139,9 @@ struct RunLog {
         for (const auto& record : records) {
             if (record.entry.severity < logging::Severity::warning)
                 continue;
-            std::size_t matches{}, index{}, matched{};
+            std::size_t matches{};
+            std::size_t index{};
+            std::size_t matched{};
             for (const auto& rule : expected) {
                 if (record.entry.category == rule.category && record.entry.event_code == rule.code &&
                     record.entry.severity == rule.severity && std::ranges::all_of(rule.fields, [&](const auto& wanted) {
@@ -233,7 +236,9 @@ struct RawHandle {
     RawHandle& operator=(const RawHandle&) = delete;
 };
 struct RawChild {
-    RawHandle child, ready, advance;
+    RawHandle child;
+    RawHandle ready;
+    RawHandle advance;
     application::PlayProcess process;
     explicit RawChild(std::wstring_view mode, std::wstring_view runner_arguments = {}) {
         SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
@@ -241,7 +246,10 @@ struct RawChild {
         ready.value = CreateEventW(&security, TRUE, FALSE, nullptr);
         advance.value = CreateEventW(&security, TRUE, FALSE, nullptr);
         require(stop.value && ready.value && advance.value, "Cannot create raw-output fixture events.");
-        RawHandle out, write_out, err, write_err;
+        RawHandle out;
+        RawHandle write_out;
+        RawHandle err;
+        RawHandle write_err;
         // Larger than production pipes so a confirmed-exited child can leave
         // more than one poll/close budget queued, with no scheduling race.
         require(CreatePipe(&out.value, &write_out.value, &security, 1024 * 1024) &&
@@ -296,7 +304,8 @@ struct RawChild {
                                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | DETACHED_PROCESS, nullptr, nullptr,
                                &startup.StartupInfo, &created),
                 "Cannot start raw-output fixture child.");
-        RawHandle process_handle{created.hProcess}, thread{created.hThread};
+        RawHandle process_handle{created.hProcess};
+        RawHandle thread{created.hThread};
         if (!AssignProcessToJobObject(job.value, process_handle.value)) {
             TerminateProcess(process_handle.value, 1);
             WaitForSingleObject(process_handle.value, 1000);
@@ -334,7 +343,9 @@ int raw_output_child(std::span<char*> arguments) {
     const auto handle = [](const char* text) {
         return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(text)));
     };
-    const auto stop = handle(arguments[1]), ready = handle(arguments[2]), advance = handle(arguments[3]);
+    const auto stop = handle(arguments[1]);
+    const auto ready = handle(arguments[2]);
+    const auto advance = handle(arguments[3]);
     if (mode == "split") {
         write_raw(STD_OUTPUT_HANDLE, std::string(4095, 'a') + "\xe4");
         SetEvent(ready);
@@ -386,7 +397,8 @@ void verify_raw_output() {
         child.await_ready();
         child.process.poll();
         const auto first = child.process.take_raw_output();
-        std::string out = first.standard_output.bytes, err = first.standard_error.bytes;
+        std::string out = first.standard_output.bytes;
+        std::string err = first.standard_error.bytes;
         require(out == std::string(4095, 'a') + "\xe4" && err.empty() && !first.status.standard_output.eof,
                 "A UTF-8 fragment was decoded, dropped or held until a newline.");
         const auto empty = child.process.take_raw_output();
@@ -407,7 +419,8 @@ void verify_raw_output() {
                     first.standard_output.received_bytes + first.standard_error.received_bytes <=
                         Process::output_budget,
                 "An exited child bypassed the poll budget or closed a pipe with unread tail bytes.");
-        std::string out, err;
+        std::string out;
+        std::string err;
         complete_output(child.process, out, err);
         require(out == std::string(96 * 1024, 'o') && err == std::string(96 * 1024, 'e'),
                 "Post-exit polling lost a multi-budget tail.");
@@ -507,7 +520,8 @@ void verify_raw_output() {
 #include "play_link.inl"
 void run(const std::filesystem::path& root) {
     auto project = take(editor::Project::create(root));
-    const auto helper = root / "Source/Math.source", component = root / "Source/Move.source";
+    const auto helper = root / "Source/Math.source";
+    const auto component = root / "Source/Move.source";
     // Project Source calls the engine's procedural library; procedural.unit(2^31) is exactly 0.5.
     const std::string helpers =
         "float travel(float speed,float dt) { return speed * dt * (2.0f * procedural.unit(2147483648)); }\n";
@@ -687,7 +701,8 @@ void run(const std::filesystem::path& root) {
     require(!broken_ui.diagnostic().empty(), "A broken project UI did not report its error.");
     take(editor::write_file(root / "Source/UI/Main.ui.source", editor::ProjectCode::ui_source()));
 
-    const auto snapshot = root / "Cache/run.scene", report = root / "Cache/result.scene";
+    const auto snapshot = root / "Cache/run.scene";
+    const auto report = root / "Cache/result.scene";
     take(editor::write_file(snapshot, original));
     {
         // A real startup collision must reject before loading or simulating any

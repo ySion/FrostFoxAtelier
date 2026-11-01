@@ -50,7 +50,8 @@ void final_tree_transactions() {
 }
 
 void final_tree_validation_atomicity() {
-    LayoutDocument d(nullptr, nullptr, {5, 2}), foreign(nullptr, nullptr, {2, 1});
+    LayoutDocument d(nullptr, nullptr, {5, 2});
+    LayoutDocument foreign(nullptr, nullptr, {2, 1});
     const auto a = accepted(d.create(d.root(), column()));
     const auto b = accepted(d.create(d.root(), column()));
     const auto c = accepted(d.create(d.root(), fixed_box(10, 10)));
@@ -150,7 +151,8 @@ void final_tree_measurement_recovery() {
     provider.content[2] = {L"Second real paragraph", 16, 1};
     LayoutDocument d(TextProvider::measure, &provider, {4, 2});
     const auto parent = accepted(d.create(d.root(), column()));
-    const auto a = accepted(d.create(parent, text(1))), b = accepted(d.create(parent, text(2)));
+    const auto a = accepted(d.create(parent, text(1)));
+    const auto b = accepted(d.create(parent, text(2)));
     const auto initial = accepted(d.compute({160, 200}, provider.epoch));
     const auto held = d.snapshot();
     for (auto& [key, content] : provider.content) {

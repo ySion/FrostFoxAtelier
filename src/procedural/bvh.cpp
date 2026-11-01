@@ -32,7 +32,8 @@ Vector3 upper(Vector3 a, Vector3 b) {
 }
 
 struct Box {
-    Vector3 minimum{infinity, infinity, infinity}, maximum{-infinity, -infinity, -infinity};
+    Vector3 minimum{infinity, infinity, infinity};
+    Vector3 maximum{-infinity, -infinity, -infinity};
     void add(Vector3 point) {
         minimum = lower(minimum, point);
         maximum = upper(maximum, point);
@@ -49,19 +50,24 @@ struct Box {
 
 // Ericson, Real-Time Collision Detection 5.1.5: (v, w) with q = a + v (b - a) + w (c - a).
 math::Vector2d closest_on_triangle(Vector3d p, Vector3d a, Vector3d b, Vector3d c) {
-    const auto ab = b - a, ac = c - a, ap = p - a;
-    const double d1 = math::dot(ab, ap), d2 = math::dot(ac, ap);
+    const auto ab = b - a;
+    const auto ac = c - a;
+    const auto ap = p - a;
+    const double d1 = math::dot(ab, ap);
+    const double d2 = math::dot(ac, ap);
     if (d1 <= 0 && d2 <= 0)
         return {0, 0};
     const auto bp = p - b;
-    const double d3 = math::dot(ab, bp), d4 = math::dot(ac, bp);
+    const double d3 = math::dot(ab, bp);
+    const double d4 = math::dot(ac, bp);
     if (d3 >= 0 && d4 <= d3)
         return {1, 0};
     const double vc = d1 * d4 - d3 * d2;
     if (vc <= 0 && d1 >= 0 && d3 <= 0)
         return {d1 / (d1 - d3), 0};
     const auto cp = p - c;
-    const double d5 = math::dot(ab, cp), d6 = math::dot(ac, cp);
+    const double d5 = math::dot(ab, cp);
+    const double d6 = math::dot(ac, cp);
     if (d6 >= 0 && d5 <= d6)
         return {0, 1};
     const double vb = d5 * d2 - d1 * d6;
@@ -109,7 +115,10 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         order[i] = i;
     }
     struct Task {
-        std::uint32_t node, begin, end, depth;
+        std::uint32_t node;
+        std::uint32_t begin;
+        std::uint32_t end;
+        std::uint32_t depth;
     };
     std::vector<Task> tasks{{0, 0, count, 0}};
     result.nodes_.reserve(2 * std::size_t{count} / leaf_size + 1);
@@ -117,7 +126,8 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     while (!tasks.empty()) {
         const auto [node, begin, end, depth] = tasks.back();
         tasks.pop_back();
-        Box box, spread;
+        Box box;
+        Box spread;
         for (auto i = begin; i < end; ++i) {
             box.add(bounds[order[i]]);
             spread.add(centers[order[i]]);
@@ -198,14 +208,16 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
 std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float max_distance) const noexcept {
     if (nodes_.empty())
         return std::nullopt;
-    const auto origin = widen(origin_float), direction = widen(direction_float);
+    const auto origin = widen(origin_float);
+    const auto direction = widen(direction_float);
     // Box tests stay in float: an overflowing slab distance is an infinite one, which is right.
     const Vector3 inverse{1 / direction_float.x, 1 / direction_float.y, 1 / direction_float.z};
     double best = max_distance;
     float bound = max_distance; // best rounded up to float.
     // Entry distance into a box, or infinity when the ray misses it within `bound`.
     const auto enter = [&](const Node& node) {
-        float near = 0, far = bound;
+        float near = 0;
+        float far = bound;
         for (std::size_t axis = 0; axis < 3; ++axis) {
             // Parallel to the slab: both signs of zero keep the range when the origin is inside.
             if (direction_float[axis] == 0) {
@@ -213,8 +225,8 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
                     return infinity;
                 continue;
             }
-            float a = (node.minimum[axis] - origin_float[axis]) * inverse[axis],
-                  b = (node.maximum[axis] - origin_float[axis]) * inverse[axis];
+            float a = (node.minimum[axis] - origin_float[axis]) * inverse[axis];
+            float b = (node.maximum[axis] - origin_float[axis]) * inverse[axis];
             if (a > b)
                 std::swap(a, b);
             if (a > near)
@@ -238,7 +250,8 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
             for (auto i = node.first; i < node.first + node.count; ++i) {
                 const auto& triangle = triangles_[i];
                 const auto a = widen(triangle.a);
-                const auto e1 = widen(triangle.b) - a, e2 = widen(triangle.c) - a;
+                const auto e1 = widen(triangle.b) - a;
+                const auto e2 = widen(triangle.c) - a;
                 const auto p = math::cross(direction, e2);
                 const double determinant = math::dot(e1, p);
                 if (determinant == 0)
@@ -266,7 +279,8 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
             }
             continue;
         }
-        const float left = enter(nodes_[node.first]), right = enter(nodes_[node.first + 1]);
+        const float left = enter(nodes_[node.first]);
+        const float right = enter(nodes_[node.first + 1]);
         const bool left_first = left <= right;
         const std::pair<std::uint32_t, float> near{left_first ? node.first : node.first + 1, left_first ? left : right};
         const std::pair<std::uint32_t, float> far{left_first ? node.first + 1 : node.first, left_first ? right : left};
@@ -304,7 +318,9 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
         if (node.count) {
             for (auto i = node.first; i < node.first + node.count; ++i) {
                 const auto& triangle = triangles_[i];
-                const auto a = widen(triangle.a), b = widen(triangle.b), c = widen(triangle.c);
+                const auto a = widen(triangle.a);
+                const auto b = widen(triangle.b);
+                const auto c = widen(triangle.c);
                 const auto uv = closest_on_triangle(point, a, b, c);
                 const auto position = a + (b - a) * uv.x + (c - a) * uv.y;
                 const auto offset = position - point;
@@ -318,7 +334,8 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
             }
             continue;
         }
-        const double left = distance(nodes_[node.first]), right = distance(nodes_[node.first + 1]);
+        const double left = distance(nodes_[node.first]);
+        const double right = distance(nodes_[node.first + 1]);
         const bool left_first = left <= right;
         stack[top++] = {left_first ? node.first + 1 : node.first, left_first ? right : left};
         stack[top++] = {left_first ? node.first : node.first + 1, left_first ? left : right};

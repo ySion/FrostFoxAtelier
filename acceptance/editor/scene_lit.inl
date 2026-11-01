@@ -107,7 +107,8 @@ void verify_environment_sky_application() {
         return std::shared_ptr<void>{};
     });
     application::SceneSnapshot snapshot;
-    const std::array<float, 3> dark{}, radiance{.025f, .05f, .075f};
+    const std::array<float, 3> dark{};
+    const std::array<float, 3> radiance{.025f, .05f, .075f};
     const auto sky = [](const Session& session) {
         return rendering::sky_radiance(take(session.presentation().environment()));
     };
@@ -287,7 +288,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     edit_material("roughness", .27f);
     edit_material("metallic", .6f);
     edit_material("emissive", math::Vector3{4, 0, 0});
-    std::array<ObjectId, 3> light_entities, lights;
+    std::array<ObjectId, 3> light_entities;
+    std::array<ObjectId, 3> lights;
     constexpr std::array kinds{presentation::LightKind::point, presentation::LightKind::rectangle,
                                presentation::LightKind::directional};
     for (std::size_t i = 0; i < kinds.size(); ++i) {
@@ -319,7 +321,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
                 scene_lit_material(snapshot_surface(snapshot)).emissive.x == 4 && snapshot.lights[1].two_sided &&
                 snapshot.lights[1].width == 2,
             "World material and light values did not reach the formal renderer snapshot.");
-    const auto key = snapshot.meshes[0].stable_key, light_key = snapshot.lights[0].stable_key;
+    const auto key = snapshot.meshes[0].stable_key;
+    const auto light_key = snapshot.lights[0].stable_key;
     require(key && light_key && key != light_key, "Opaque component identities collided in the renderer projection.");
     edit(mesh_entity, "position.x", 2.f);
     edit(light_entities[0], "position.x", 3.f);

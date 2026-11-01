@@ -10,12 +10,14 @@ namespace {
 using namespace language;
 using namespace language::detail;
 struct Fragment {
-    std::size_t begin{}, end{};
+    std::size_t begin{};
+    std::size_t end{};
     SourcePosition position;
 };
 struct Evaluation {
     Fragment source;
-    std::uint32_t node{}, operation{};
+    std::uint32_t node{};
+    std::uint32_t operation{};
     std::optional<Property> property;
     InputKind kind{InputKind::boolean};
     std::uint32_t argument{};
@@ -71,7 +73,8 @@ bool container_node(NodeKind kind) {
 struct Header {
     std::string name;
     std::vector<Input> inputs;
-    SourcePosition begin, body;
+    SourcePosition begin;
+    SourcePosition body;
 };
 Input parse_input(Tokens& tokens) {
     Input value;
@@ -323,7 +326,9 @@ private:
     }
     Fragment fragment(std::string_view terminator) {
         const auto begin = token_.position;
-        std::size_t parentheses{}, brackets{}, braces{};
+        std::size_t parentheses{};
+        std::size_t brackets{};
+        std::size_t braces{};
         while (token_.kind != Token::Kind::end) {
             if (!parentheses && !brackets && !braces && token_.text == terminator)
                 return {begin.offset, token_.position.offset, begin};
@@ -377,7 +382,8 @@ private:
                                  kind == NodeKind::component ? std::string(type.text) : std::string{}});
         expect("{");
         std::vector<std::string_view> properties;
-        bool has_event{}, tooltip_binding{};
+        bool has_event{};
+        bool tooltip_binding{};
         while (!accept("}")) {
             if (accept("on")) {
                 const auto event = identifier();
@@ -742,14 +748,16 @@ std::string Declaration::diagnostic(std::string_view message) const {
     if (colon == message.npos)
         return std::string(message);
     colon += 2;
-    std::size_t line{}, column{};
+    std::size_t line{};
+    std::size_t column{};
     auto first = std::from_chars(message.data() + colon, message.data() + message.size(), line);
     if (first.ec != std::errc{} || first.ptr == message.data() + message.size() || *first.ptr != ':')
         return std::string(message);
     auto second = std::from_chars(first.ptr + 1, message.data() + message.size(), column);
     if (second.ec != std::errc{})
         return std::string(message);
-    std::size_t offset{}, current_line = 1;
+    std::size_t offset{};
+    std::size_t current_line = 1;
     while (current_line < line && offset < generated_source.size())
         if (generated_source[offset++] == '\n')
             ++current_line;

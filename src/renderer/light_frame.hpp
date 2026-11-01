@@ -16,18 +16,25 @@ inline constexpr float light_grid_spacing = 8.f;
 static_assert(light_grid_counts == std::array<std::uint32_t, 3>{16, 8, 16} && light_grid_cell_capacity == 32);
 
 struct GpuLightSource {
-    std::array<float, 4> origin_range{}, direction_radius{}, radiance{}, edge1_area{}, edge2{};
+    std::array<float, 4> origin_range{};
+    std::array<float, 4> direction_radius{};
+    std::array<float, 4> radiance{};
+    std::array<float, 4> edge1_area{};
+    std::array<float, 4> edge2{};
     // kind: point=0, rectangle=1, directional=2. flags: two-sided=1, casts shadows=2; reserved.
     std::array<std::uint32_t, 4> meta{};
     bool operator==(const GpuLightSource&) const = default;
 };
 struct GpuLightProposal {
-    float probability{}, accept{};
-    std::uint32_t alias{}, reserved{};
+    float probability{};
+    float accept{};
+    std::uint32_t alias{};
+    std::uint32_t reserved{};
     bool operator==(const GpuLightProposal&) const = default;
 };
 struct GpuLightCell {
-    std::uint32_t offset{}, count{};
+    std::uint32_t offset{};
+    std::uint32_t count{};
     float mass{};
     std::uint32_t reserved{};
 };
@@ -62,7 +69,8 @@ public:
     std::vector<std::uint32_t> spatial_source_slots; // (cell << 5) | slot, or no_light_source.
     bool spatial_changed{};
     std::uint32_t spatial_nonempty_cells{};
-    std::uint32_t local_count{}, directional_count{};
+    std::uint32_t local_count{};
+    std::uint32_t directional_count{};
     bool changed{}; // Sources and proposals were rebuilt for this snapshot.
     // Current source content changed, independently of reordering. Stable
     // identities distinguish edits from reordering; unknown correspondence is
@@ -80,15 +88,27 @@ private:
     struct KeyHash {
         std::size_t operator()(const SourceKey&) const noexcept;
     };
-    std::vector<GpuLightSource> analytic_, next_analytic_, previous_sources_;
-    std::vector<SourceKey> analytic_keys_, next_analytic_keys_, keys_, previous_keys_;
+    std::vector<GpuLightSource> analytic_;
+    std::vector<GpuLightSource> next_analytic_;
+    std::vector<GpuLightSource> previous_sources_;
+    std::vector<SourceKey> analytic_keys_;
+    std::vector<SourceKey> next_analytic_keys_;
+    std::vector<SourceKey> keys_;
+    std::vector<SourceKey> previous_keys_;
     std::unordered_map<SourceKey, std::uint32_t, KeyHash> previous_lookup_;
-    std::vector<double> powers_, scaled_, actual_;
-    std::vector<std::uint32_t> below_, above_;
+    std::vector<double> powers_;
+    std::vector<double> scaled_;
+    std::vector<double> actual_;
+    std::vector<std::uint32_t> below_;
+    std::vector<std::uint32_t> above_;
     std::vector<std::array<std::uint32_t, light_grid_cell_capacity>> spatial_bins_;
-    std::uint64_t scene_identity_{}, frame_id_{};
-    std::uint64_t source_revision_{}, spatial_source_revision_{}, spatial_frame_id_{};
-    bool valid_{}, advance_previous_{};
+    std::uint64_t scene_identity_{};
+    std::uint64_t frame_id_{};
+    std::uint64_t source_revision_{};
+    std::uint64_t spatial_source_revision_{};
+    std::uint64_t spatial_frame_id_{};
+    bool valid_{};
+    bool advance_previous_{};
     bool spatial_initialized_{};
 
     void update_impl(const Frame&, std::uint64_t sequence);

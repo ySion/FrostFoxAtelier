@@ -43,8 +43,10 @@ void shared_menu_semantics() {
         return *at;
     };
     open();
-    const auto checked_box = marker(1), unchecked_box = marker(2), checked_radio = marker(3),
-               unchecked_radio = marker(4);
+    const auto checked_box = marker(1);
+    const auto unchecked_box = marker(2);
+    const auto checked_radio = marker(3);
+    const auto unchecked_radio = marker(4);
     require(!checked_box.empty() && !unchecked_box.empty() && !checked_radio.empty() && !unchecked_radio.empty() &&
                 checked_box != unchecked_box && checked_radio != unchecked_radio && checked_box != checked_radio &&
                 unchecked_box != unchecked_radio,

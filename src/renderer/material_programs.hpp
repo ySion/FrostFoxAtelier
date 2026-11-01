@@ -34,12 +34,17 @@ enum class MaterialPass : std::size_t {
     count
 };
 struct ProgramSurfaceRecord {
-    std::uint32_t program{}, parameter_base{}, input_base{};
+    std::uint32_t program{};
+    std::uint32_t parameter_base{};
+    std::uint32_t input_base{};
     std::array<std::uint32_t, 3> flags{}; // Masked, double sided, two-sided emission.
 };
 static_assert(sizeof(ProgramSurfaceRecord) == 24);
 struct ProgramInputRecord {
-    std::uint32_t slot{}, texture{~0u}, address{}, count{};
+    std::uint32_t slot{};
+    std::uint32_t texture{~0u};
+    std::uint32_t address{};
+    std::uint32_t count{};
     math::Vector4 empty_value{};
 };
 static_assert(sizeof(ProgramInputRecord) == 32);
@@ -89,8 +94,11 @@ struct MaterialBatchState {
     std::vector<GfxTexture> textures;
     std::shared_ptr<MaterialProgramSet> code;
     std::optional<Error> failure;
-    GfxBuffer surface_buffer{}, parameter_buffer{}, input_buffer{};
-    bool uploading{}, ready{};
+    GfxBuffer surface_buffer{};
+    GfxBuffer parameter_buffer{};
+    GfxBuffer input_buffer{};
+    bool uploading{};
+    bool ready{};
 
     MaterialBatchState(rhi::Context&, std::size_t&);
     ~MaterialBatchState();

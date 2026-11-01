@@ -20,7 +20,8 @@ void probe_volume_cases(Fixture& f) {
     fine.minimum = {-2, -1, 0};
     fine.maximum = {2, 3, 6};
     fine.counts = {5, 5, 7};
-    const auto near_region = f.region({0, 1, 4}), far_region = f.region({3, 1, 4});
+    const auto near_region = f.region({0, 1, 4});
+    const auto far_region = f.region({3, 1, 4});
     const auto single = f.capture("volumes-00-single", 32);
     check(mean_rgb(single, far_region)[2] > mean_rgb(single, far_region)[1] + 90,
           "single-volume missing receiver support is explicit");
@@ -34,7 +35,8 @@ void probe_volume_cases(Fixture& f) {
           "second volume supplies actual visible receiver support");
     s.probe_coverage = render::ProbeCoverage::volume;
     const auto sources = f.capture("volumes-02-sources");
-    const auto inner = mean_rgb(sources, near_region), outer = mean_rgb(sources, far_region);
+    const auto inner = mean_rgb(sources, near_region);
+    const auto outer = mean_rgb(sources, far_region);
     check(inner[2] > inner[0] + 80 && outer[0] > outer[2] + 80,
           "stable slot priority selects near_region and fallback volumes");
     s.probe_coverage = render::ProbeCoverage::contributors;
@@ -147,7 +149,8 @@ void probe_volume_cases(Fixture& f) {
         for (float side : {-1.f, 1.f}) {
             render::MeshInstance wall;
             wall.geometry = atelier::geometry::cube_mesh();
-            std::array<float, 3> center{}, size{42, 42, 42};
+            std::array<float, 3> center{};
+            std::array<float, 3> size{42, 42, 42};
             center[axis] = side * 20;
             size[axis] = 1;
             wall.world = box(center[0], center[1], center[2], size[0], size[1], size[2]);
@@ -195,14 +198,16 @@ void probe_debug_cases(Fixture& f) {
     options.probe_volume = false;
     options.probe_visualization = render::ProbeVisualization::off;
     f.edited();
-    const auto dark_region = f.region({0, 1, 4}), outside_region = f.region({3, 1, 4});
+    const auto dark_region = f.region({0, 1, 4});
+    const auto outside_region = f.region({3, 1, 4});
     auto pending = f.capture("debug-01-pending", 1);
     const auto pending_color = mean_rgb(pending, dark_region);
     check(pending_color[0] > pending_color[2] + 80,
           "unvisited actual receiver support is pending, not reported as dark light");
     options.probe_update_budget = 27;
     const auto coverage = f.capture("debug-02-coverage-dark-outside", 32);
-    const auto dark = mean_rgb(coverage, dark_region), outside = mean_rgb(coverage, outside_region);
+    const auto dark = mean_rgb(coverage, dark_region);
+    const auto outside = mean_rgb(coverage, outside_region);
     check(dark[1] > dark[0] + 70 && dark[2] > dark[0] + 70, "valid zero-irradiance receiver support is cyan");
     check(outside[2] > outside[1] + 90 && outside[2] > outside[0] + 120, "receiver outside the real volume is blue");
     check(pending.depth == coverage.depth, "receiver diagnostics preserve FP32 geometry depth");

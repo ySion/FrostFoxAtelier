@@ -15,7 +15,8 @@ bool missing(DWORD code) noexcept {
 struct SnapshotChanged {};
 struct Fingerprint {
     FileIdentity identity;
-    std::uint64_t size{}, modified{};
+    std::uint64_t size{};
+    std::uint64_t modified{};
     bool operator==(const Fingerprint&) const = default;
 };
 Fingerprint fingerprint(HANDLE handle) {
@@ -28,7 +29,8 @@ Fingerprint fingerprint(HANDLE handle) {
 }
 struct Budget {
     ReadBudget limit;
-    std::size_t bytes{}, lines{};
+    std::size_t bytes{};
+    std::size_t lines{};
     std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
     bool worked{};
     // Permit one bounded input unit before yielding, otherwise a slow directory
@@ -58,15 +60,23 @@ struct Reader::Impl {
     ReaderStatus status;
     std::optional<RunInfo> run;
     std::optional<PublishedHealth> health;
-    Metadata manifest, summary;
+    Metadata manifest;
+    Metadata summary;
     std::optional<Segment> current;
     std::deque<FileIdentity> completed;
     std::vector<FileIdentity> pending;
-    std::string chunk, tail;
+    std::string chunk;
+    std::string tail;
     std::size_t chunk_cursor{};
-    std::uint64_t offset{}, consumed{}, line_start{}, high_water{};
-    bool oversized{}, missing_final_reported{}, lost_current_reported{}, final_gap_reported{},
-        missing_segment_reported{};
+    std::uint64_t offset{};
+    std::uint64_t consumed{};
+    std::uint64_t line_start{};
+    std::uint64_t high_water{};
+    bool oversized{};
+    bool missing_final_reported{};
+    bool lost_current_reported{};
+    bool final_gap_reported{};
+    bool missing_segment_reported{};
     using Key = std::pair<std::uint64_t, std::uint64_t>;
     std::deque<Key> recent;
     std::set<Key> keys;

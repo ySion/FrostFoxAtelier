@@ -12,7 +12,9 @@ void verify_entity_composition() {
             take(grouped.set_transform(entity, {{x, 0, 0}, {}, {1, 1, 1}}));
             return entity;
         };
-        const auto parent = add(10), first = add(2), second = add(5);
+        const auto parent = add(10);
+        const auto first = add(2);
+        const auto second = add(5);
         changed(grouped.reparent(first, parent, world::ReparentRule::keep_local));
         changed(grouped.reparent(second, parent, world::ReparentRule::keep_local));
         const auto before = take(grouped.serialize());
@@ -28,12 +30,14 @@ void verify_entity_composition() {
                 ops.push_back(json::parse(op.text));
             require(!ops.empty() && take(play->apply_live(json{{"ops", ops}}.dump(), project)).empty(),
                     "Group reparent Live failed to apply the recorded moves.");
-            auto actual = json::parse(take(play->serialize())), expected = json::parse(take(grouped.serialize()));
+            auto actual = json::parse(take(play->serialize()));
+            auto expected = json::parse(take(grouped.serialize()));
             actual.erase("next_id");
             expected.erase("next_id");
             require(actual == expected, "Group reparent Live diverged in order, transforms or object identities.");
         };
-        const auto history = grouped.undo_count(), recorded = grouped.recorded();
+        const auto history = grouped.undo_count();
+        const auto recorded = grouped.recorded();
         take(grouped.select_entities(std::array{first, second}, second));
         changed(grouped.reparent(grouped.selected_entities(), {}, world::ReparentRule::keep_world));
         require(grouped.undo_count() == history + 1 && grouped.recorded() == recorded + 1 &&
@@ -68,7 +72,8 @@ void verify_entity_composition() {
         take(grouped.set_transform(second, {{5, 0, 0}, editor::from_euler_degrees({0, 0, 45}), {1, 1, 1}}));
         changed(grouped.reparent(second, parent, world::ReparentRule::keep_local));
         const auto before = take(grouped.serialize());
-        const auto history = grouped.undo_count(), recorded = grouped.recorded();
+        const auto history = grouped.undo_count();
+        const auto recorded = grouped.recorded();
         const auto rejected = [](const Result<world::Commit>& result) {
             require(!result && result.error().code == ErrorCode::argument_mismatch && !result.error().source &&
                         result.error().message ==
@@ -101,9 +106,11 @@ void verify_entity_composition() {
     {
         const Error cause{ErrorCode::invocation_failed, "Reparent notification failed\n完整 cause",
                           SourceLocation{"Source/Reparent.source", 139, 17, 3, 5, "E:/saved/Reparent.source"}};
-        ObjectId first, second;
+        ObjectId first;
+        ObjectId second;
         world::World* current{};
-        bool armed{}, cleanup_failed{};
+        bool armed{};
+        bool cleanup_failed{};
         editor::Session grouped([&](world::World& world) -> Result<std::shared_ptr<void>> {
             current = &world;
             take(world.observe_lifecycle([&](world::World&, world::Lifecycle phase, ObjectId object) -> Result<void> {
@@ -130,7 +137,8 @@ void verify_entity_composition() {
         second = grouped.selection().entity;
         take(grouped.set_transform(second, {{7, 0, 0}, {}, {1, 1, 1}}));
         const auto before = take(grouped.serialize());
-        const auto history = grouped.undo_count(), recorded = grouped.recorded();
+        const auto history = grouped.undo_count();
+        const auto recorded = grouped.recorded();
         take(grouped.set_failure_policy(world::FailurePolicy::halt));
         changed(grouped.start());
         armed = true;
@@ -168,8 +176,8 @@ void verify_entity_composition() {
         take(document.set_transform(child, {{.3f, 0, 0}, editor::from_euler_degrees({0, 0, 90}), {1, 1, 1}}));
         changed(document.reparent(child, parent, world::ReparentRule::keep_local));
         take(document.select_entities(std::array{parent, child}, child));
-        const auto parent_before = take(world::read_transform(runtime, parent)),
-                   child_before = take(world::read_transform(runtime, child));
+        const auto parent_before = take(world::read_transform(runtime, parent));
+        const auto child_before = take(world::read_transform(runtime, child));
         application::SceneSnapshot snapshot;
         take(snapshot.refresh(document));
         editor::Camera camera;
@@ -501,7 +509,10 @@ void verify_entity_composition() {
             changed(ordered.add_entity());
             return ordered.selection().entity;
         };
-        const auto first = add(), second = add(), third = add(), child = add();
+        const auto first = add();
+        const auto second = add();
+        const auto third = add();
+        const auto child = add();
         changed(ordered.reparent(child, first, world::ReparentRule::keep_local));
         const auto roots = [&] {
             std::vector<ObjectId> values;
@@ -644,7 +655,8 @@ void verify_entity_composition() {
         take(forest.select_entities(selected, origin));
         changed(forest.duplicate_entities(forest.selected_entities()));
         require(forest.selected_entities().size() == 2, "Different-parent forest copy changed the selected roots.");
-        const auto copied_follower = forest.selected_entities()[0], copied_origin = forest.selected_entities()[1];
+        const auto copied_follower = forest.selected_entities()[0];
+        const auto copied_origin = forest.selected_entities()[1];
         const auto copied_descendant = take(world::children(rt, copied_follower)).front().id();
         const auto copied_component =
             component(forest, copied_follower, forest.presentation_types().static_mesh_component);
@@ -659,7 +671,8 @@ void verify_entity_composition() {
                     take(world::world_matrix(rt, copied_descendant))[12] == 109,
                 "Copied cross-root space changed world placement.");
         const auto copied_graph = graph();
-        const auto first_order = children(first_parent), second_order = children(second_parent);
+        const auto first_order = children(first_parent);
+        const auto second_order = children(second_parent);
         changed(forest.undo());
         collect(forest);
         require(graph() == original_graph,
@@ -731,7 +744,8 @@ void verify_entity_composition() {
         };
         const auto root_id = subtree_json.at("roots")[0].get<std::string>();
         const auto child_ids = row(subtree_json, root_id).at("children");
-        bool ordinary_weak{}, ordinary_sequence{};
+        bool ordinary_weak{};
+        bool ordinary_sequence{};
         for (const auto& value : row(subtree_json, child_ids[0].get<std::string>()).at("components")) {
             if (value.at("type") == "physics.DistanceConstraintComponent")
                 ordinary_weak = value.at("properties").at("target") == nlohmann::json{{"$ref", child_ids[1]}};
@@ -750,7 +764,8 @@ void verify_entity_composition() {
             auto& runtime = instance.world().runtime();
             const auto children = take(world::children(runtime, root));
             require(children.size() == 2, "Imported composition lost its child Entities.");
-            const auto owner = children[0].id(), target = children[1].id();
+            const auto owner = children[0].id();
+            const auto target = children[1].id();
             const auto restored_constraint =
                 component(instance, owner, instance.physics_types().distance_constraint_component);
             const auto restored_query = component(instance, owner, instance.physics_types().scene_query_component);
@@ -779,8 +794,8 @@ void verify_entity_composition() {
                 require(identities.insert(object).second,
                         "Repeated composition import reused a Runtime object from another instance.");
         const auto before = nlohmann::json::parse(take(graph.serialize()));
-        const auto imported_first_id = before.at("roots")[1].get<std::string>(),
-                   imported_second_id = before.at("roots")[2].get<std::string>();
+        const auto imported_first_id = before.at("roots")[1].get<std::string>();
+        const auto imported_second_id = before.at("roots")[2].get<std::string>();
         require(root_id != imported_first_id && root_id != imported_second_id &&
                     imported_first_id != imported_second_id,
                 "Repeated composition import reused a persistent local ID.");
