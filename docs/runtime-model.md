@@ -1,12 +1,12 @@
 # 类型与对象运行时
 
-本文维护运行时协议，依据当前源码。业务可观察语义以[语言契约](language-contract.md)和 [LANGUAGE.md](../LANGUAGE.md) 为准，能力范围与构建入口见 [README](../README.md)，模块归属、执行链及已知成本见[执行结构说明](runtime-structure.md)。研究笔记只记录依据和候选，不是另一份契约。
+本文维护运行时协议，依据当前源码。业务可观察语义以[语言契约](language-contract.md)和 [LANGUAGE.md](../LANGUAGE.md) 为准，能力范围与构建入口见 [README](../README.md)，模块归属、执行链及已知成本见[执行结构说明](runtime-structure.md)。现行取舍的原始依据见本页末尾。
 
 | 状态 | 内容 |
 | --- | --- |
 | 已实现 | 成组类型发布、原生与描述型对象/记录、对象单继承、定型引用与强引用序列、受保护原生借用、成组引用修改、外部对象根和值根、观察取得、隐藏字段与嵌套引用遍历、对象写代号与变化游标、非移动分步 GC；共享函数签名、同步/协程 JIT 执行、协作安全点、单入口及项目快照的兼容方法体发布与旧版本保活 |
 | 尚未实现 | 引擎 Tick 调度、任意值执行栈、跨发布单元调用与热更新、对象布局迁移 |
-| 按需设计 | GC 的参与线程、并发/分代与堆布局；CDPT、LXR、Nofl 是[研究候选](research/gc-game-engine-options.md)，不自动成为实现任务 |
+| 按需设计 | GC 的参与线程、并发/分代与堆布局；统一在[能力边界](runtime-structure.md#已知成本与能力边界)记录，不因外部算法存在而安排替换 |
 
 项目快照通过同一 Program 接入多文件、原生派生类和具名同步入口，见[项目快照](source-function-modules.md#项目快照与多个公开入口)；下文单入口协议同样适用于单源码消费者。
 
@@ -332,7 +332,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 发布时派生需要析构的字段计划：内建平凡叶及只含平凡值的描述型子树无需逐字段调用空析构；任何显式注册的原生析构仍在原地址、原顺序执行一次，不能以“不含引用”代替平凡性判断。持有引用追踪与析构计划相互独立。
 
-无填充、仅由同一种内建 `f32`、`f64`、`i32` 或 `u32` 组成的描述型布局可执行标量块快路。初始化以字节偏移逐个建立正确标量类型，允许编译器合并写入；复制构造和非重叠赋值只复制 `TypeInfo::size` 字节。任意自定义原生类型、引用、空记录和异质子树均不采用此快路；自赋值、能力预检与部分重叠拒绝保持不变。实现依据与测量边界见[定向研究记录](research/runtime-source-reference.md#平凡操作与深层遍历的实现依据)。
+无填充、仅由同一种内建 `f32`、`f64`、`i32` 或 `u32` 组成的描述型布局可执行标量块快路。初始化以字节偏移逐个建立正确标量类型，允许编译器合并写入；复制构造和非重叠赋值只复制 `TypeInfo::size` 字节。任意自定义原生类型、引用、空记录和异质子树均不采用此快路；自赋值、能力预检与部分重叠拒绝保持不变。快路的对象生存期依据见[取舍依据](#取舍依据)，不据此承诺性能比例。
 
 ## 已实现的分步回收
 
@@ -444,4 +444,17 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 - 代码版本：跨发布单元调用与内联、一般方法身份与依赖失效、代码相关值操作，以及多声明/多单元下的依赖闭包与发布单位。类型目录只追加，已有类型的布局变化需要重建上下文；后台编译若引入，只处理安全快照。
 - 调度与工具：引擎 Tick 调度、永久通用 ABI、编辑器调试面板与 Control 调试指令、PDB/原生调试器集成。
 
-工业实现和论文依据见 [JIT 研究](research/jit-industrial-research.md)；技术债的处理时机见[执行结构说明](runtime-structure.md#已知成本与能力边界)。
+后端取舍与原始来源见[执行结构说明](runtime-structure.md#当前取舍)；技术债的处理时机统一见[能力边界](runtime-structure.md#已知成本与能力边界)。
+
+## 取舍依据
+
+以下只保留支撑现行实现的机制与差异；外部系统的性能数字、对象模型和线程保证不成为本项目承诺。
+
+- **不移动不等于免除引用协议。** [LLVM GC 接口](https://llvm.org/docs/GarbageCollection.html)提供编译器接线而不提供 collector；[Epic 增量 GC](https://dev.epicgames.com/documentation/unreal-engine/incremental-garbage-collection-in-unreal-engine)与 [Go 写屏障](https://go.dev/src/runtime/mbarrier.go)说明跨切片修改必须保护可达性。宿主 stage 是调度机会，不能替代根发布、写屏障和终止确认。
+- **预算仍是软上限。** [Metronome 的实时调度模型](https://research.ibm.com/publications/a-real-time-garbage-collector-with-low-overhead-and-consistent-utilization--2)要求可调度操作具有上界；任意原生调用、析构和系统调度不满足此证明，调用一次 Tick 不构成硬实时保证。[ZGC 的搬迁与读屏障](https://dev.java/learn/jvm/tool/garbage-collection/zgc-deepdive/)服务另一种布局约束，本项目不为非移动对象预置这些机制。
+- **候选算法的组合不能继承论文收益。** [Nofl](https://arxiv.org/html/2503.16971)的 lazy sweep 会转移成本到分配路径；[LXR](https://www.steveblackburn.org/pubs/papers/lxr-pldi-2022.pdf)包含存活对象复制；[CDPT](https://doi.org/10.1145/3808310)的阶段协议也不是游戏 stage。剥除搬迁或替换根协议后是新组合，不能引用原实验推算本项目速度，当前没有采纳它们。
+- **根、图内边和析构分别负责不同事情。** [cppgc 的 Member/Trace、Persistent、弱处理与清扫说明](https://chromium.googlesource.com/v8/v8.git/%2B/HEAD/include/cppgc/)提供职责对照，但其保守原生栈、可选压缩、弱引用自动置空和线程堆不是本项目合同；V8 的 Unified Heap 协作也不等于两种语言共用类型身份。
+- **登记身份不等于持有。** UE 的 `NewObject` 与 `TStrongObjectPtr` 是不同交付路径，见 [UObjectGlobals.cpp](https://github.com/EpicGames/UnrealEngine/blob/16d75d84714512edfb744e1fd0a59e9c74d57873/Engine/Source/Runtime/CoreUObject/Private/UObject/UObjectGlobals.cpp#L4803-L4874)及[对象指针](https://dev.epicgames.com/documentation/unreal-engine/object-pointers-in-unreal-engine)。本项目由 create 一起交付对象与首根是自身加强的保证；强持有不阻止已获准的显式销毁，旧身份保留不等于可以复活。
+- **身份验证不提供持续借用。** [Godot ObjectDB](https://github.com/godotengine/godot/blob/ed1daf0bf001b61586d9930840f2f1394092c079/core/object/object.cpp#L2284-L2318)的 validator 是代际身份对照；其 [GDScriptInstance](https://github.com/godotengine/godot/blob/ed1daf0bf001b61586d9930840f2f1394092c079/modules/gdscript/gdscript.cpp#L154-L253)另外附接脚本字段，不能证明统一原生布局。[RefCounted](https://docs.godotengine.org/en/stable/classes/class_refcounted.html)的 RC 也不代替本项目追踪不可达环。
+- **分阶段准备不等于整组原子发布。** [UE 的 Class 注册/Link](https://github.com/EpicGames/UnrealEngine/blob/16d75d84714512edfb744e1fd0a59e9c74d57873/Engine/Source/Runtime/CoreUObject/Private/UObject/Class.cpp#L127-L155)及 [Godot 的接口/函数体解析](https://github.com/godotengine/godot/blob/ed1daf0bf001b61586d9930840f2f1394092c079/modules/gdscript/gdscript_analyzer.cpp#L1268-L1405)仅提供阶段分离的对照；本项目的私有 staging、内联环拒绝和失败无可见半成品由自身发布事务保证。UE 固定源码链接需要相应访问权限。
+- **平凡快路不改变生命周期。** [cppgc FinalizerTrait](https://chromium.googlesource.com/v8/v8.git/+/3e6373bb9f915f75f8e5d1d0d64e4d5a7968d1fa/include/cppgc/internal/finalizer-trait.h)与 [MarkingWorklists](https://chromium.googlesource.com/v8/v8.git/+/3e6373bb9f915f75f8e5d1d0d64e4d5a7968d1fa/src/heap/cppgc-internal/marking-worklists.h)支持按实际工作分类和显式遍历；[P0593R6](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2020/p0593r6.html)与 [cstring.syn](https://eel.is/c++draft/cstring.syn)给出 memcpy 的对象生存期依据。它们不授权省略原生回调、把独立对象当数组或改变清理顺序；活跃 ValueRoot 索引是本项目实现，不声称 cppgc 使用相同结构。
