@@ -13,6 +13,7 @@
 #include <msctf.h>
 #include <imm.h>
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -596,10 +597,118 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
     return CallNextHookEx(nullptr, code, window, parameter);
 }
 
-void require_input_focus(Application& app) {
-    if (GetFocus() == app.window() && GetForegroundWindow() == app.window())
-        return;
+struct ForegroundChange {
+    std::uint64_t sequence{};
+
+    DWORD event_ms{};
+
+    ULONGLONG observed_ms{};
+
+    HWND window{};
+
+    DWORD process{};
+
+    std::array<wchar_t, MAX_PATH> executable{};
+
+    std::array<wchar_t, 256> window_class{};
+
+    DWORD process_error{};
+
+    DWORD class_error{};
+};
+
+struct ForegroundTrace {
+    // OUTOFCONTEXT delivers on the installing thread. The acceptance host owns
+    // the hook until thread exit; callbacks neither allocate nor pump messages.
+    static inline thread_local std::array<ForegroundChange, 8> changes{};
+
+    static inline thread_local std::uint64_t sequence{};
+
+    static inline thread_local unsigned hook_failures{};
+
+    static inline thread_local DWORD hook_error{};
+
+    HWINEVENTHOOK hook{};
+
+    ForegroundTrace()
+        : hook(SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, record, 0, 0,
+                               WINEVENT_OUTOFCONTEXT)) {
+        if (!hook) {
+            hook_error = GetLastError();
+            ++hook_failures;
+        }
+    }
+
+    ~ForegroundTrace() {
+        if (hook)
+            UnhookWinEvent(hook);
+    }
+
+    static void CALLBACK record(HWINEVENTHOOK, DWORD, HWND window, LONG, LONG, DWORD, DWORD event_ms) noexcept {
+        ForegroundChange change;
+        change.sequence = ++sequence;
+        change.event_ms = event_ms;
+        change.observed_ms = GetTickCount64();
+        change.window = window;
+        if (window) {
+            GetWindowThreadProcessId(window, &change.process);
+            if (!GetClassNameW(window, change.window_class.data(), static_cast<int>(change.window_class.size())))
+                change.class_error = GetLastError();
+            if (const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, change.process)) {
+                wchar_t path[32768]{};
+                DWORD length = 32768;
+                if (QueryFullProcessImageNameW(process, 0, path, &length)) {
+                    const std::wstring_view full(path, length);
+                    const auto slash = full.find_last_of(L"\\/");
+                    const auto name = slash == std::wstring_view::npos ? full : full.substr(slash + 1);
+                    std::copy_n(name.begin(), std::min(name.size(), change.executable.size() - 1),
+                                change.executable.begin());
+                } else
+                    change.process_error = GetLastError();
+                CloseHandle(process);
+            } else
+                change.process_error = GetLastError();
+        }
+        auto& slot = changes[(change.sequence - 1) % changes.size()];
+        slot = change;
+    }
+
+    static std::string diagnostic() {
+        std::string result = "; foreground_trace=last_8_events; observed_total=" + std::to_string(sequence) +
+                             "; now_uptime_ms=" + std::to_string(GetTickCount64()) +
+                             "; hook_failures=" + std::to_string(hook_failures) +
+                             "; hook_error=" + std::to_string(hook_error);
+        const auto first = sequence > changes.size() ? sequence - changes.size() : 0;
+        for (auto index = first; index < sequence; ++index) {
+            const auto& change = changes[index % changes.size()];
+            if (change.sequence != index + 1)
+                continue;
+            result +=
+                "\nforeground_event sequence=" + std::to_string(change.sequence) +
+                "; event_ms32=" + std::to_string(change.event_ms) +
+                "; observed_uptime_ms=" + std::to_string(change.observed_ms) + "; hwnd=" +
+                (change.window ? std::to_string(reinterpret_cast<std::uintptr_t>(change.window))
+                               : "none (无前台窗口)") +
+                "; pid=" + std::to_string(change.process) + "; exe=" +
+                (change.window && !change.process_error
+                     ? atelier::assets::utf8(change.executable.data())
+                     : "unknown (Win32=" + std::to_string(change.process_error) + ")") +
+                "; class=" +
+                (change.window && !change.class_error ? atelier::assets::utf8(change.window_class.data())
+                                                      : "unknown (Win32=" + std::to_string(change.class_error) + ")");
+        }
+        return result;
+    }
+};
+
+std::string input_failure_diagnostic(Application& app) {
     const auto foreground = GetForegroundWindow();
+    const auto focus = GetFocus();
+    const auto capture = GetCapture();
+    DWORD capture_process{};
+    const auto capture_thread = capture ? GetWindowThreadProcessId(capture, &capture_process) : 0;
+    const auto menu = app.menu_window();
+    const auto menu_visible = menu && IsWindowVisible(menu);
     DWORD owner{};
     GetWindowThreadProcessId(foreground, &owner);
     wchar_t class_name[256]{};
@@ -620,13 +729,28 @@ void require_input_focus(Application& app) {
                                 : atelier::assets::utf8(std::filesystem::path(process_name).filename().wstring());
     const auto window_class =
         class_size ? atelier::assets::utf8(class_name) : "unknown (Win32=" + std::to_string(class_error) + ")";
-    throw std::runtime_error(
-        "Acceptance interrupted by external focus loss; no further synthetic input was sent. editor_pid=" +
-        std::to_string(GetCurrentProcessId()) + "; play_running=" + std::to_string(Access::project_running(app)) +
-        "; play_pid=" + std::to_string(Access::project_process_id(app)) + "; foreground=" +
-        (foreground ? std::to_string(reinterpret_cast<std::uintptr_t>(foreground)) : "none (无前台窗口)") +
-        "; foreground_pid=" + std::to_string(owner) + "; executable=" + executable + "; class=" + window_class +
-        "; focus=" + std::to_string(reinterpret_cast<std::uintptr_t>(GetFocus())));
+    return "editor_pid=" + std::to_string(GetCurrentProcessId()) +
+           "; play_running=" + std::to_string(Access::project_running(app)) +
+           "; play_pid=" + std::to_string(Access::project_process_id(app)) + "; foreground=" +
+           (foreground ? std::to_string(reinterpret_cast<std::uintptr_t>(foreground)) : "none (无前台窗口)") +
+           "; foreground_pid=" + std::to_string(owner) + "; executable=" + executable + "; class=" + window_class +
+           "; focus=" + std::to_string(reinterpret_cast<std::uintptr_t>(focus)) +
+           "; capture=" + std::to_string(reinterpret_cast<std::uintptr_t>(capture)) +
+           "; capture_pid=" + std::to_string(capture_process) + "; capture_tid=" + std::to_string(capture_thread) +
+           "; capture_scope=current_thread; capture_owner=" +
+           (!capture                  ? "none"
+            : capture == app.window() ? "editor"
+            : capture == menu         ? "menu"
+                                      : "other") +
+           "; menu_window=" + std::to_string(reinterpret_cast<std::uintptr_t>(menu)) +
+           "; menu_visible=" + std::to_string(menu_visible) + ForegroundTrace::diagnostic();
+}
+
+void require_input_focus(Application& app) {
+    if (GetFocus() == app.window() && GetForegroundWindow() == app.window())
+        return;
+    throw std::runtime_error("Acceptance interrupted by external focus loss; no further synthetic input was sent. " +
+                             input_failure_diagnostic(app));
 }
 
 // Count only accepted frames of the current scene and view, not preparation
@@ -755,7 +879,8 @@ POINT centre(Application& app, ControlKey key) {
         ScreenToClient(app.window(), &pointer);
         throw std::runtime_error("Missing control " + std::to_string(key) +
                                  " in presented main/menu frames; popup keys:" + menu +
-                                 "; OS pointer=" + std::to_string(pointer.x) + "," + std::to_string(pointer.y));
+                                 "; OS pointer=" + std::to_string(pointer.x) + "," + std::to_string(pointer.y) + "; " +
+                                 input_failure_diagnostic(app));
     }
     const auto bounds = box ? box->bounds : cell->bounds;
     const auto clip = box ? box->clip : cell->clip;
@@ -1612,6 +1737,7 @@ RECT await_acceptance_activation(Application& app, const std::filesystem::path& 
 }
 
 void guard_acceptance_native_dialogs() {
+    static thread_local ForegroundTrace foreground_trace;
     if (!SetWindowsHookExW(WH_CBT, native_dialog_guard, nullptr, GetCurrentThreadId()))
         throw std::runtime_error("Cannot install the acceptance native dialog guard.");
 }

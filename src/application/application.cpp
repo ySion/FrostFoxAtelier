@@ -1436,13 +1436,20 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
                                        logging::native::Context{fields}, "Menu request adopted"));
 }
 
-void Application::close_menu(bool restore_focus) {
+void Application::close_menu(bool restore_focus, std::source_location caller) {
     pending_menu_ = 0;
     pie_release_pending_ = pie_release_select_ = pie_pressed_ = false;
     pie_hot_ = 0;
     const bool was_open = workspace_.menu.has_value() || menu_window();
     if (!was_open)
         return;
+    const std::array fields{
+        logging::Field{"source_control", workspace_.menu ? workspace_.menu->source : menu_host()->source()},
+        logging::Field{"incarnation", menu_incarnation_}, logging::Field{"restore_focus", restore_focus},
+        logging::Field{"caller_line", std::uint64_t{caller.line()}},
+        logging::Field{"caller_function", std::string(caller.function_name())}};
+    static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "menu", "menu.closed", logging::native::Context{fields},
+                                       "Menu closing"));
     workspace_.menu.reset();
     workspace_.menu_items.clear();
     for (auto& submenu : submenus_)
@@ -1505,6 +1512,11 @@ void Application::update_menu() {
                    ui_.style(), style_sheet_, workspace_.ui_component("PopupMenu"),
                    request.group == editor::control::viewport_delete_menu);
     if (!popup_->visible()) {
+        const std::array fields{logging::Field{"source_control", source->key},
+                                logging::Field{"incarnation", menu_incarnation_},
+                                logging::Field{"diagnostic", std::string(popup_->diagnostic())}};
+        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "menu", "menu.rejected",
+                                           logging::native::Context{fields}, "Popup update rejected"));
         workspace_.status = L"UI: " + assets::wide(std::string(popup_->diagnostic()));
         close_menu(false);
         return;

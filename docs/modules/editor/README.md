@@ -269,6 +269,17 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 菜单切换请求立即退役旧菜单的输入身份；新菜单首帧接受前只消费过渡输入，不能执行旧条目。普通命令先关闭旧菜单，再接管输入或捕获；checkbox 的 keep-open 路径仍保留当前菜单。原生事件与菜单生命周期的回归共用 `--acceptance-shortcuts`，不注入桌面键鼠。
 
+菜单生命周期沿统一进程日志的 `menu` 分类记录，不以逐帧日志代替业务状态：
+
+| event_code | 级别与时机 | 字段 |
+|---|---|---|
+| `menu.requested` | info，采用菜单请求 | `source_control`、`group`、`frame`、`incarnation` |
+| `menu.frame_accepted` | info，弹窗首帧接受 | `source_control`、`surface_revision`、`frame`、`present_attempts` |
+| `menu.closed` | info，已有逻辑或可见菜单进入关闭路径；无菜单的重复关闭不记录 | `source_control`、`incarnation`、`restore_focus`、`caller_line`、`caller_function`；后两项来自直接调用方的 `std::source_location` |
+| `menu.rejected` | 请求源失效或与活动编辑冲突时为 info；弹窗 update 后仍不可见时为 warning | 请求拒绝携带请求身份；更新拒绝携带 `source_control`、`incarnation`、原始 `diagnostic` |
+
+关闭来源用于区分 `cancel_interaction`、菜单 dismiss、命令执行及其他路径；它是直接调用位置，不是原生事件轨迹，单凭 `cancel_interaction` 不能进一步区分失焦、捕获丢失或其他取消。`PopupHost::hide` 不重复记录关闭事件，日志不改变关闭、回滚或恢复焦点的顺序。
+
 顶部菜单在未展开时不因 hover 改色；按下和展开的标题，以及展开菜单中当前指向的条目，共用 `#b36600` 橙色底面。菜单背景为 `#3a3a3a`，细框上/左为 `#949494`、下/右为 `#262626`。条目最低高 25⅓ DIP，快捷键为右对齐的灰色斜体，分隔线位于组间留白中央。PopupHost 用同一个 SS/文字测量入口计算标题与快捷键两列的宽度；短菜单不留空滚动槽，超出屏幕高度时预留实际滚动条空间。
 
 菜单关闭后，标题恢复透明底面和普通文字颜色；保留的逻辑焦点不产生灰色 active 底面。标题的橙色状态仅由按下和实际展开驱动。
@@ -353,6 +364,10 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开 About、文件选择、工程目录选择，以及 File → Exit 触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 
 所有无人值守的编辑器窗口入口（`--acceptance*`、`--snapshot*`）在 UI 线程上挂一个 WH_CBT 钩子：在验收声明的预期范围之外，只要创建顶层原生对话框（`#32770`，包括 MessageBoxW 和文件选择框），进程就立即以退出码 1 结束，并输出 `unexpected native dialog "<标题>"`，不会停在那里等人点击。只有 About 和上述对话框验收会声明预期范围。正常启动不挂钩子；由 Control 驱动的编辑器子进程和 `--profile-*` 测量入口不在覆盖范围内。
+
+同一验收宿主安装 `EVENT_SYSTEM_FOREGROUND` 的 `WINEVENT_OUTOFCONTEXT` 钩子，在固定缓冲中保留最近 8 次已投递前台切换的事件时间、观察时间、HWND、PID、可执行文件名和窗口类；钩子随安装线程退出卸载，不过滤本进程事件。事件时间是 WinEvent 的 32 位启动毫秒数（会回绕），观察时间是 `GetTickCount64`，均非日志墙钟。异步投递依赖现有消息循环，不额外泵消息或等待，尚未投递的事件不在记录中。
+
+只有焦点守卫或 `Missing control` 失败才拼接现场：当前前台身份、线程焦点、`GetCapture` 返回的本线程捕获窗口及 PID/TID 归属、活动菜单 HWND/可见性，以及上述切换记录。无前台明确报告，身份查询或钩子安装失败保留错误信息；空记录不证明没有切换，`GetCapture` 为空也不证明其他线程没有捕获。`Missing control` 保留原始错误，不替换为焦点失败。此诊断不重试、抢焦点、补开菜单、改变通过条件或减少截图。
 
 `editor_document_acceptance`消费正式 World/Session，覆盖空 Entity、实际组件增删、单次字段历史/控制会话、完整 TRS undo、成员资格、删除跨 GC 的同身份恢复、历史裁剪普通根保组/最终收集及关闭释放。旧 Scene 库和位置专用入口已删除。
 `atelier_editor --acceptance <输出目录>`运行同一正式窗口，用Win32消息和系统焦点/捕获操作驱动控件，再核对Runtime状态与GPU帧。

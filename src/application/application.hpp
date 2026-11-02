@@ -14,6 +14,7 @@
 #include "renderer/renderer.hpp"
 #include <chrono>
 #include <functional>
+#include <source_location>
 
 namespace atelier::application {
 class EditorControl;
@@ -328,7 +329,7 @@ private:
 
     void request_menu(const ui::ContextMenuRequest&);
 
-    void close_menu(bool restore_focus = true);
+    void close_menu(bool restore_focus = true, std::source_location caller = std::source_location::current());
 
     void update_menu();
 
