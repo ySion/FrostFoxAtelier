@@ -91,7 +91,7 @@ void forces() {
     auto impulsed = f.make({10, 0, 0}, dynamic_body());
     f.start();
     take(f.scene->set_gravity({0, 0, 0}));
-    take(f.scene->add_impulse(impulsed.id(), {10, 0, 0}));
+    take(f.scene->add_impulse(f.handle(impulsed), {10, 0, 0}));
     f.advance(1);
     take(f.scene->teleport(f.handle(impulsed), {20, 4, 0}, {0, 0, 0, 1}));
     f.advance(1);
@@ -286,7 +286,7 @@ void failed_lifecycle() {
         f.start();
         const auto first_handle = f.handle(first);
         const auto second_handle = f.handle(second);
-        take(f.scene->add_impulse(second.id(), {100, 0, 0}));
+        take(f.scene->add_impulse(f.handle(second), {100, 0, 0}));
         fail_cleanup = true;
         if (exit == Exit::tick || exit == Exit::task) {
             fail_tick = exit == Exit::tick;
@@ -337,7 +337,7 @@ void lifecycle() {
     auto other_entity = other.make({0, 4, 0}, dynamic_body());
     other.start();
     const auto old = f.handle(entity);
-    take(f.scene->add_impulse(entity.id(), {100, 0, 0}));
+    take(f.scene->add_impulse(f.handle(entity), {100, 0, 0}));
     committed(f.world.set_enabled(entity.body.id(), false));
     require(f.scene->body_count() == 0 && !f.scene->read_body_state(old), "disable releases the old body");
     committed(f.world.set_enabled(entity.body.id(), true));
@@ -375,7 +375,7 @@ void constraint() {
     auto pendulum = f.make({0, 3, 0}, dynamic_body());
     f.start();
     const auto handle = take(f.scene->create_distance_constraint(f.handle(anchor), f.handle(pendulum), 2, 2));
-    take(f.scene->add_impulse(pendulum.id(), {100, 0, 0}));
+    take(f.scene->add_impulse(f.handle(pendulum), {100, 0, 0}));
     f.advance(120);
     const auto position = f.state(pendulum).position;
     require(near(speed({position.x, position.y - 5, position.z}), 2, .1f),

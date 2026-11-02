@@ -250,18 +250,12 @@ namespace {
 template <class T, ReferenceSequence T::* Member>
 Result<std::vector<ObjectId>> bindings(Runtime& runtime, ObjectId component, std::size_t additional_capacity = 0) {
     return runtime.with_native<const T>(component, [&](const T& value) -> Result<std::vector<ObjectId>> {
-        auto field = runtime.reference_field(component, value.*Member);
-        if (!field)
-            return std::unexpected(field.error());
-        auto count = runtime.sequence_size(*field);
-        if (!count)
-            return std::unexpected(count.error());
+        ATELIER_TRY_BIND(field, runtime.reference_field(component, value.*Member));
+        ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
         std::vector<ObjectId> result;
         result.reserve(*count + additional_capacity);
         for (std::size_t i = 0; i < *count; ++i) {
-            auto reference = runtime.sequence_read(*field, i);
-            if (!reference)
-                return std::unexpected(reference.error());
+            ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
             result.push_back(reference->id());
         }
         return result;
@@ -286,12 +280,8 @@ Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const 
         references.push_back(roots.back().reference());
     }
     return runtime.with_native<T>(component, [&](T& value) -> Result<void> {
-        auto field = runtime.reference_field(component, value.*Member);
-        if (!field)
-            return std::unexpected(field.error());
-        auto count = runtime.sequence_size(*field);
-        if (!count)
-            return std::unexpected(count.error());
+        ATELIER_TRY_BIND(field, runtime.reference_field(component, value.*Member));
+        ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
         const std::array<ReferenceChange, 1> changes{SequenceSplice{*field, 0, *count, references}};
         return runtime.apply_reference_changes(changes);
     });
@@ -819,8 +809,7 @@ Result<void> ComponentSimulation::sample_query(ObjectId id, QueryIgnore ignore) 
 }
 
 Result<QueryResult> ComponentSimulation::execute_query(ObjectId id, QueryIgnore ignore) {
-    if (auto sampled = sample_query(id, ignore); !sampled)
-        return std::unexpected(sampled.error());
+    ATELIER_TRY(sample_query(id, ignore));
     return read_query_result(id);
 }
 

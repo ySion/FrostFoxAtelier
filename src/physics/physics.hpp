@@ -408,10 +408,6 @@ private:
 struct StepResult {
     std::uint32_t steps{};
 
-    std::uint32_t rejected_commands{};
-
-    std::uint32_t dropped_contact_notifications{};
-
     // Triangle shapes cooked at runtime since the previous step because a cooked shape no longer matched its scale or mesh.
     std::uint32_t runtime_cooks{};
 
@@ -421,11 +417,7 @@ struct StepResult {
 
     float remaining{};
 
-    float dropped{};
-
     std::uint64_t completed_step{};
-
-    bool contacts_incomplete{};
 };
 
 // Jolt's solver buffers, fixed when a PhysicsScene is created. A zero field is
@@ -455,9 +447,6 @@ public:
 
     PhysicsScene& operator=(const PhysicsScene&) = delete;
 
-    // The buffers this scene was created with, derived fields filled in.
-    [[nodiscard]] Capacity capacity() const noexcept { return capacity_; }
-
     // The latest step World::update ran; completed_step is cumulative.
     [[nodiscard]] const StepResult& last_step() const noexcept { return last_step_; }
 
@@ -470,10 +459,6 @@ public:
     [[nodiscard]] std::span<const world::PresentedPose> presented_poses() const noexcept { return presented_; }
 
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
-
-    [[nodiscard]] Result<void> add_force(ObjectId entity, math::Vector3);
-
-    [[nodiscard]] Result<void> add_impulse(ObjectId entity, math::Vector3);
 
     [[nodiscard]] Result<void> add_force(BodyHandle, math::Vector3);
 
@@ -598,8 +583,6 @@ private:
     Types types_;
 
     MeshReader mesh_reader_;
-
-    Capacity capacity_;
 
     std::unique_ptr<Impl> impl_;
 
