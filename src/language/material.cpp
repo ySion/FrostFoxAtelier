@@ -1,5 +1,6 @@
 #include "language/material.hpp"
 #include "language/material_footprint.hpp"
+#include "foundation/result.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -1200,13 +1201,9 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
             token_layout.fields[0].type != ValueType::u32)
             reject({}, "Material TextureInput requires its registered plain uint slot field.");
         const auto slot_offset = token_layout.fields[0].offset;
-        auto tree = compile_source(name, source, {{}, {}, {}, {}, values, true, token}, "shade");
-        if (!tree)
-            return std::unexpected(tree.error());
+        ATELIER_TRY_BIND(tree, compile_source(name, source, {{}, {}, {}, {}, values, true, token}, "shade"));
         const std::string_view entries[]{"shade", "defaults"};
-        auto exported = export_functions(*tree, entries, false);
-        if (!exported)
-            return std::unexpected(exported.error());
+        ATELIER_TRY(export_functions(*tree, entries, false));
         const auto& shade = tree->functions[tree->exports[0]];
         const auto& defaults = tree->functions[tree->exports[1]];
         if ((shade.parameters.size() != 2 && shade.parameters.size() != 3) ||

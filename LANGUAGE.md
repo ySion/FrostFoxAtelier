@@ -117,6 +117,8 @@ plain record 可以在同步源码与原生调用中按值传入和返回，借�
 - 比较结果是 bool，可以存储、传参、返回、做逻辑运算及比较相等；`(a < b) == (c < d)` 合法，`a < b < c` 仍因 bool 不支持排序而拒绝。条件只接受 bool，不做数值或引用真值转换。
 - 二元操作从左到右求值；成员接收者先于实参，实参从左到右求值。字段或元素赋值先求目标地址（包括接收者和索引），再求右侧，并保持所需存储到写入完成。嵌套调用不能覆盖外层已求出的参数。
 
+降低依据：[LLVM LangRef](https://llvm.org/docs/LangRef.html)的 `sdiv/srem`、移位和 `fptosi/fptoui` 含 UB/poison 条件，生成代码须先检查再进入合法运算分支，不能事后补救；不附加与上述回绕语义矛盾的 `nsw/nuw/exact`。bool 的 SSA `i1` 与规范存储 `0/1` 分别用比较及 `zext` 衔接。移位拒绝而不掩码是本项目的选择，不沿用 [C# 的 count & 31](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/expressions#1214-shift-operators)；类型约束与短路也不由 LLVM 默认行为代定。
+
 ### 拥有型 String/Array 与原生算法
 
 ```cpp

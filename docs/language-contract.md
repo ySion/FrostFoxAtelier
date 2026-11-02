@@ -92,9 +92,9 @@ GC 不搬迁存活对象，活对象的存储地址不因 GC 改变。地址稳�
 
 ## 参考证据
 
-- [UObject：类型、对象管理与执行](research/uobject-execution-model.md)
-- [UE-AS：符号与热更新](research/ue-as-symbols-and-reload.md)
-- [Godot：具名脚本与名称查找](research/godot-name-lookup.md)
-- [AngelScript / C#：值与引用语义](research/value-reference-semantics.md)
-- [UE / Godot：持有、观察与显式销毁](research/holding-observing-references.md)
+- 统一类型描述不要求统一执行后端或全经反射调用；Epic 的 [Blueprint 编译后端](https://dev.epicgames.com/documentation/en-us/unreal-engine/compiler-overview-for-blueprints-visual-scripting-in-unreal-engine)把 UClass/UFunction 描述与 VM 字节码生产分开。本项目采用共同 Runtime 语义和仅 JIT 的执行方向，不照搬该 VM。
+- 免手写 import 不等于免依赖；UE-AS 在共享符号查找之外仍[记录模块依赖](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/f347f57f05e992976b6c2be6612303b7e8099502/Engine/Plugins/Angelscript/ThirdParty/source/as_builder.cpp#L6735-L6816)，[文件模块名](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/f347f57f05e992976b6c2be6612303b7e8099502/Engine/Plugins/Angelscript/Source/AngelscriptCode/Private/Preprocessor/AngelscriptPreprocessor.cpp#L89-L109)和声明 namespace 也不是同一身份。源码链接需 Unreal 访问权限；本项目文件不承担语言作用域或持久身份。
+- Godot 的 [class_name 注册表](https://github.com/godotengine/godot/blob/876b290332ec6f2e6d173d08162a02aa7e6ca46d/core/object/script_language.cpp#L2643-L2708)是显式 opt-in 的全局短名表，不是任意类型自动全局可见。本项目选择作用域内短名和跨命名空间限定名，不引入全程序唯一短名回退。
+- [AngelScript 句柄赋值](https://www.angelcode.com/angelscript/sdk/docs/manual/doc_script_handle.html)与 [C# 值/引用类型](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/types)都区分内容与对象身份，但句法选择不同。本项目按类型解释普通赋值；复制引用不是克隆对象，组合值复制也不是递归复制对象图。
+- [UE 对象指针](https://dev.epicgames.com/documentation/unreal-engine/object-pointers-in-unreal-engine)与 [Godot WeakRef](https://docs.godotengine.org/en/stable/classes/class_weakref.html)提供持有/观察的对照，不替本项目决定显式销毁后的行为。失效后保留旧身份、拒绝解引用及不复活的合同由同一 Runtime 实施，机制依据见[运行时取舍](runtime-model.md#取舍依据)。
 - C# 官方：[访问规则](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/access-modifiers)、[partial 规则](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/partial-classes-and-methods)
