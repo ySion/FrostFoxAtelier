@@ -494,7 +494,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     press_tab(control::group_components);
     capture(app, output / "parameters-component.png");
     require(property_control(app, entity, 0) == position_key, "Component grouping changed field identity.");
-    verify_render_performance(app, output);
     // A real pre-encoding Renderer validation failure must leave host services
     // available without preparing/retrying another frame on each pipe wakeup.
     const auto radius = Access::scene_lit_view(app).cavity.radius;

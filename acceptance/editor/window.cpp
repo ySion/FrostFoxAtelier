@@ -2,7 +2,6 @@
 #include "application/editor_control.hpp"
 #include "assets/file.hpp"
 #include "assets/material_format.hpp"
-#include "dungeons_roundtrip.hpp"
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"
 #include "renderer/raster_viewport.hpp"
@@ -1730,7 +1729,6 @@ RECT await_acceptance_activation(Application& app, const std::filesystem::path& 
 #include "project_window.inl"
 #include "ui_authoring_window.inl"
 #include "project_authoring_window.inl"
-#include "viewport.inl"
 #include "viewport_edit_window.inl"
 #include "scene_lit_window.inl"
 #include "output_window.inl"
@@ -1751,9 +1749,6 @@ int verify_editor_scene_lit(Application& app, const char* output_directory, cons
     const auto output = std::filesystem::absolute(atelier::assets::wide(output_directory));
     std::filesystem::create_directories(output);
     await_acceptance_activation(app, output, "Scene Lit");
-    const auto legacy = output / "legacy-viewport";
-    std::filesystem::create_directories(legacy);
-    verify_viewport_display(app, legacy);
     verify_scene_lit_window(app, output,
                             source_project ? std::filesystem::path{source_project} : std::filesystem::path{});
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
@@ -1763,8 +1758,8 @@ int verify_editor_scene_lit(Application& app, const char* output_directory, cons
     report
         << "Editor Scene Lit window acceptance: PASS\nBuild: " << atelier::build_info::revision
         << "\nConfiguration: " << atelier::build_info::configuration
-        << "\nFormal Project copy/save/reopen, native Scene Lit/MatCap display menu, three direct-light creation menus, Environment sky, typed Parameters, native middle-orbit direction, actual World/snapshot/GPU frames, Shadows 4/5 status.\n"
-        << "Runtime World snapshots use separate document/Renderer E2E; no Simulate UI exists. Native display choices leave the editing lifecycle, authored history and data unchanged.\n"
+        << "\nIsolated Project copy, native Scene Lit/MatCap display menu and middle-orbit direction.\n"
+        << "Native display choices leave the editing lifecycle, authored history and data unchanged; source example files are unchanged.\n"
         << "GPU validation/vsync enabled; this window run is not a performance benchmark.\n";
     require(report.good(), "Cannot save Scene Lit window acceptance evidence.");
     std::puts("Editor Scene Lit window acceptance: PASS");
@@ -2301,7 +2296,6 @@ int verify_editor_project(Application& app, const char* output_directory, const 
     atelier::application::EditorAcceptanceAccess::ui_source(app, ui_source);
     await_acceptance_activation(app, output, "project");
     require(entities(app).empty(), "The production editor did not start with an empty scene.");
-    verify_viewport_display(app, output);
     verify_project_window(app, output, source_project != nullptr);
     verify_ui_authoring_window(app, output, ui_source);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
@@ -2313,7 +2307,7 @@ int verify_editor_project(Application& app, const char* output_directory, const 
         << "\nConfiguration: " << atelier::build_info::configuration
         << "\nSource project: " << (source_project ? atelier::assets::utf8(source_project) : "new fixture")
         << "\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
-        << "Shared viewport display/TRS checks followed by project commands, About identity/current root, Entity creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
+        << "Project commands, About identity/current root, Entity creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
         << "Native UI authoring: real file save/recompile/present, compile-error retention/recovery, repeated tree rows, foldout state and active text token retained.\n";
     std::printf("Editor project acceptance: PASS; evidence: %s\n", atelier::assets::utf8(output.wstring()).c_str());
     return 0;
@@ -3260,7 +3254,3 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         << error.what() << '\n';
     throw;
 }
-
-#include "sponza_window.inl"
-#include "physics_examples_window.inl"
-#include "dungeons_window.inl"

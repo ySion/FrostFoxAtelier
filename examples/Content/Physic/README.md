@@ -44,8 +44,8 @@ Body、Character、Ragdoll 在同一 Entity 上只能启用一种。角色和布
 按根 README 准备锁定工具链，运行：
 
 ```powershell
-cmake --build --preset dev --target physics_acceptance physics_examples_acceptance
-cmake --build --preset release --target physics_acceptance physics_examples_acceptance
+cmake --build --preset dev --target physics_acceptance
+cmake --build --preset release --target physics_acceptance
 ```
 
-`physics_examples_acceptance` 通过正式编辑器和 D3D12 GPU validation 捕获编辑与模拟画面，窗口证据位于 `out/<配置>/physics-examples-evidence/`。物理数学、持久化和生命周期代表由 `physics_acceptance` 承担；场景对象引用的保存重开由 Editor composition 代表覆盖，不重复运行九场景文档模拟矩阵。详见[物理验收](../../../docs/modules/physics/acceptance.md)。
+物理数学、当前 Cook 往返和生命周期代表由无窗口的 `physics_acceptance` 承担；场景对象引用的保存重开由 Editor composition 代表覆盖，不运行九场景的文档模拟或截图矩阵。详见[物理验收](../../../docs/modules/physics/acceptance.md)。

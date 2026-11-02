@@ -287,9 +287,7 @@ exit `$LASTEXITCODE
 # Renderer entries use the default floor: 30 minutes, the runner's own per-entry limit.
 $minutes = @{
     editor_control_acceptance = @{ dev = 12.9; release = 11.5 }
-    editor_sponza_acceptance = @{ dev = 10.4; release = 7.5 }
     editor_scene_lit_acceptance = @{ dev = 8.7; release = 7.6 }
-    editor_dungeons_acceptance = @{ dev = 8.6; release = 2.1 }
 }
 
 Push-Location $root

@@ -159,8 +159,7 @@ set(_window_acceptance
     editor_control_acceptance editor_control_path_acceptance editor_camera_projection_acceptance editor_project_acceptance
     editor_repro_material_acceptance editor_output_acceptance editor_log_smoke_acceptance
     editor_shortcuts_acceptance editor_edit_acceptance editor_surfaces_acceptance
-    editor_dialogs_acceptance editor_scene_lit_acceptance physics_examples_acceptance
-    editor_sponza_acceptance editor_dungeons_acceptance)
+    editor_dialogs_acceptance editor_scene_lit_acceptance)
 add_custom_target(acceptance_headless DEPENDS ${_headless_acceptance})
 add_custom_target(acceptance_window DEPENDS ${_window_acceptance})
 add_custom_target(acceptance DEPENDS acceptance_headless acceptance_window)

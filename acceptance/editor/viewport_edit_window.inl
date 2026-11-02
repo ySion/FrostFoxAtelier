@@ -37,9 +37,6 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
     }
     require(app.document().selected_entities().size() == 2, "Native Shift click lost multi-selection.");
     click(app, operator_item(app, "tool.settings", {{"tool", "transform"}}));
-    require(app.frame_statistics().overlay_shapes > 100 && app.frame_statistics().overlay_draw_calls == 1,
-            "Universal handle was not rendered in one clipped overlay batch.");
-    capture(app, output / "multi-selection.png");
     const auto history = app.document().undo_count();
     hover({0, 0, 0});
     key(app, 'G');

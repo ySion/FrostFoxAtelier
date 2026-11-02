@@ -371,8 +371,8 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 [Sponza](../../../examples/Content/Sponza/README.md) 与 Scene Lit Room、Physic、Dungeons 同属根目录的普通 [Examples 工程](../../../examples/README.md)，不随引擎部署。无参数启动为空文档；`--project ./examples` 打开工程配置指定的 Sponza，`--scene Content/...` 可明确选择其他场景，不必同时传相机参数。资源浏览器按 `Project / Content / 场景名` 展示目录，场景只保存到 Content。打开场景不自动改变视口模式或拟合 DDGI；每个场景保存自己的主相机，Play 使用该相机。需要固定编辑视图时，可选择 Main Camera 后用 View from Camera，或显式传入 `--material-camera` / `--scene-lit-camera`。
 
-`editor_sponza_acceptance` 运行真实依赖导入/重试/刷新/资源寿命、完整模型保存重开和正式编辑器 GPU 捕获。窗口证据在 `out/<配置>/sponza-evidence/`；基础材质像素与深度/线框检查由 `renderer_acceptance` 执行。
+`editor_examples_acceptance` 通过磁盘保存重开，按原场景 JSON 核对 Sponza 的网格资产身份；同目标中的独立小型 OBJ 夹具检查材质、UV、切线及资源寿命。材质颜色、深度和线框的代表见 [Renderer 验收](../renderer/acceptance.md)。
 
 ## Dungeons 地牢资源
 
-[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；端到端入口为 `editor_dungeons_acceptance`。
+[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；`editor_examples_acceptance` 中的 GenericOverview 代表检查网格、材质绑定及纹理资产身份的保存重开。

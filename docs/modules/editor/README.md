@@ -168,13 +168,13 @@ GPU 段：
 - GPU 段共 16 行；Direct lighting 下展开 Light list construction、Shadow atlas updates 与 Shading / HDR composition，DDGI 下展开 update/gather 及 update 的主射线与命中照明。原始 GPU 掩码使用 bit 0～14，其中 12～14 依次是灯列表、阴影 atlas 更新和着色；阴影 atlas 只在本帧有面重绘时置位。表格另以 bit 15 表示计算出的合计，子项不重复加进合计。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
 - 合计不含 UI、参考辅助线、探针显示叠层、Capture 或 CPU Present；父阶段可能包含传输、调度及计时边界开销，子阶段之和不保证等于父阶段。分组与原始计时范围见 [Scene Lit](../renderer/scene-lit.md)。
 
-统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。现有 `--acceptance-surfaces` 端到端入口同时验证真实 GPU 数据、CPU 阶段的存在、层级、进入次数与行序、Table 显示与列宽、禁用项、合计、概要读取和换域清理，并生成 `world-performance.png` 与 `performance.json`；窗口 `--acceptance` 与 Control 验收另检查整个运行期间（含 Capture 步）没有计时结构错误。
+统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。窗口 `--acceptance` 与 Control 验收检查整个运行期间（含 Capture 步）没有计时结构错误。
 
 ### 真实工程的原生 1440p 渲染对照
 
 直接光只有一条路径（灯列表、阴影 atlas 与融合 compose）。下面原生性能入口的 `clustered` 与 `clustered_orbit` 沿用原 case 名；2026-10-22 之前同名 case 测的是 RT 可见性的 A 路径，旧 `legacy` case 测的是已删除的 ReSTIR，前后对比时必须同时核对报告中的构建版本。
 
-`atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。性能表、Control 快照的结构验收由上文的 `--acceptance-surfaces` 承担。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此测量模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
+`atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此测量模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
 
 在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 记录经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
 
@@ -204,7 +204,7 @@ GPU 段：
 
 主 Renderer 在编码前返回可恢复错误时，Application 以 20 ms 起步、最多 250 ms 的退避间隔重试。门控位于事件、Project/Control 与 GC 服务之后，控件描述/场景提取/渲染之前；输入唤醒不会绕过重试时刻。每次消息等待最长 20 ms，关闭请求仍走正常退出链。成功接受帧或切换文档清除退避；终止性设备错误仍退出。正常帧没有增加帧率上限。
 
-现有 `--acceptance-surfaces` 原生验收覆盖真实 Renderer 参数拒绝、退避期间 Control 查询、修复后等待真实重试时刻并接受帧、再次失败时 WM_CLOSE 退出。2026-10-17 开发与发布版的完整 surfaces 及内嵌 performance 场景均 PASS、exit 0；证据位于 `out/editor-menu-transform-20261017/{dev,release}-surfaces-after/`，两份 `surfaces.csv` 均包含 `render-retry,validation-control-recovery-close,passed` 和菜单测量失效后重开的通过记录。
+现有 `--acceptance-surfaces` 原生验收覆盖真实 Renderer 参数拒绝、退避期间 Control 查询、修复后等待真实重试时刻并接受帧、再次失败时 WM_CLOSE 退出。
 
 ## 工作区与停靠
 
@@ -359,7 +359,9 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 ## 验收入口
 
-总 `acceptance` 目标中每项检查只运行一次：已有独立构建目标的文档模式（`--recovery`、`--materials`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--profile-*` 是测量入口，不进入总入口。
+总 `acceptance` 目标中每项检查只运行一次：独立文档模式（`--recovery`、`--materials`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--examples`、`--dungeons` 与 `--textured-obj` 归入无窗口目标 `editor_examples_acceptance`。`--profile-*` 是测量入口，不进入总入口。
+
+`editor_scene_lit_acceptance` 先运行光照作者模型的 CPU 代表，再在 Scene Lit Room 隔离副本上执行原生 Scene Lit/MatCap 菜单切换与中键轨道手势，检查显示切换不改变生命周期、场景数据和历史。保留 `07-scene-lit-edit.png`、`09-middle-orbit.png` 作为操作状态记录，不用它们判定渲染特性；独立像素真值代表由 [Renderer 验收](../renderer/acceptance.md) 维护。
 
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开 About、文件选择、工程目录选择，以及 File → Exit 触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 
@@ -386,7 +388,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 2026-10-12 相机手势与 Control 联合验收：通过真实 Application 输入及命名管道复现松手后残留 `camera_pan` 的拒绝，失败证据为 `out/camera-control-red.log`。相机状态合并后，Dev/Release 的同一入口均通过，覆盖 Shift+中键平移、中键旋转、Alt+左键旋转，以及正常松手、失焦、捕获丢失、转入菜单四种结束路径；还检查活动期间拒绝请求、非所属按键释放、迟到移动、原生捕获释放及场景历史隔离。证据在 `out/camera-control-{dev,release}.log` 和对应目录的 `surfaces.csv`。标准 `out/release/atelier_editor.exe` 已重新构建，包含 DDGI 整合与相机修复；旧进程继续使用其启动时加载的程序。
 `atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。
-`atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内先执行共享视口模式／TRS 验收，再接续工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
+`atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内执行工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
 S1 覆盖正常/hover/pressed/focus/invalid/disabled、颜色改变的同Coverage/零raster/零上传、非法Style整体拒绝、字体family/weight/size及caret同步失效、旧帧几何/像素寿命。256真实成员由 Create 菜单加入，验证屏外控件几何仍在、文字不生成、滚回恢复，以及连续拖调历史。
 S2 扩展覆盖本地/场景历史归属、非法 Enter/保留焦点、文本模式拖选、真实参数过滤、代理对/组合字符/ZWJ 删除、双向选区、CF_UNICODETEXT 读写。用真实剪贴板占用验证失败保留草稿；预先建立真实 Session 事务，使随后原生拖动的 begin 失败，验证后续 preview 停止、回滚/捕获释放和首错保留。

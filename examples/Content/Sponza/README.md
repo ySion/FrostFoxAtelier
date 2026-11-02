@@ -22,4 +22,4 @@ New Sponza 由 Frank Meinl 委托制作，Anton Kaplanyan 赞助，来源为 [In
 
 ## 验收
 
-`editor_sponza_acceptance` 验证完整模型和默认材质、Smooth/MatCap、Scene Lit 下 DDGI 开关、移动灯光和关灯消退；`editor_examples_acceptance` 保留 Sponza 一份磁盘保存重开，按原场景 JSON 核对网格资产身份，不修改仓库场景。`--textured-obj` 使用独立小型 OBJ 夹具检查材质、UV、切线及资源寿命，不重复加载 Sponza。当前 DDGI 实测与限制见 [Renderer 验收记录](../../../docs/modules/renderer/acceptance.md)。
+`editor_examples_acceptance` 保留 Sponza 一份磁盘保存重开，按原场景 JSON 核对网格资产身份，不修改仓库场景；同目标中的 `--textured-obj` 使用独立小型 OBJ 夹具检查材质、UV、切线及资源寿命，不重复加载 Sponza。渲染特性使用 [Renderer 的独立真值代表](../../../docs/modules/renderer/acceptance.md)，不检查本场景的 DDGI 开关对照、移动灯光或关灯消退矩阵。

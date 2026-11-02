@@ -11,8 +11,8 @@ Physics 本身只依赖 World、geometry 和 Jolt。创建 `PhysicsScene` 时，
 ```powershell
 cmake --build --preset dev --target physics_acceptance world_acceptance editor_document_acceptance
 cmake --build --preset release --target physics_acceptance world_acceptance editor_document_acceptance
-cmake --build --preset dev --target physics_examples_acceptance project_scene_acceptance
-cmake --build --preset release --target physics_examples_acceptance project_scene_acceptance
+cmake --build --preset dev --target project_scene_acceptance
+cmake --build --preset release --target project_scene_acceptance
 
 ./out/dev/atelier_physics_acceptance.exe --list
 ./out/dev/atelier_physics_acceptance.exe --scenario special_integration
@@ -47,13 +47,11 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 | `query_components` | K3/K6 | 作者 start=-5、end=-5+2×10=15；remove/restore 与 stop 清缓存；首次协调前请求不能污染重启 |
 | `entity_bindings` | K3/K6 | 嵌套 Character 初始 x=12、z=0；布娃娃写回保留作者显示 scale；part 失活撤销后端；位姿写入冲突后清理不泄漏 |
 
-拒绝、错误文本、容量/过滤/启用等额外矩阵、计时调用计数及两次求解输出互比已退出本入口，不改变产品能力或失败合同。`physics-cpu` 保留为测量入口，不属于验收或 Full 清单。窗口 Physic 场景与编辑器入口另列如下，未随本轮无窗口裁剪删除。
+`physics-cpu` 是测量入口，不属于验收或 Full 清单。编辑器的场景文档与运行接入范围另列如下。
 
 ## 官方 Physic 场景
 
 [Physic](../../../examples/Content/Physic/README.md) 包含 9 个组件场景。姿态与查询数学由上述 Physics 代表覆盖；约束目标和持有序列的场景对象映射由 Editor 的 entity composition 保存重开代表覆盖。这些示例不含独有外部资产身份，不另外保留批量文档模拟验收。
-
-`atelier_editor --acceptance-physics-examples <输出目录>` 为每次运行创建普通临时工程，只复制 Content/Physic。它使用正式 Application/Session/World/Jolt 以及 D3D12 GPU validation。每个场景输出编辑状态及实际模拟后的两张截图，检查被接受的帧和有效几何深度。此入口直接调用应用命令和模拟器，不发送原生鼠标输入。
 
 `--examples` 文档验收只保留 Sponza 的独有资产身份往返，不承担 Physic 全场景验证。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
 
@@ -61,6 +59,6 @@ cmake --build --preset release --target physics_examples_acceptance project_scen
 
 ## 边界
 
-底层场景是无窗口真实模拟；官方 Physic 另有上述 GPU 场景验收。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。验收不证明碰撞调试绘制或专用服务器宿主；文档检查、GPU 捕获和原生交互的证据范围分别陈述。
+底层场景是无窗口真实模拟。Project Run 使用独立会话推进物理，打开工程本身不会开始模拟。上述代表不证明九个 Physic 场景的 GPU 画面、碰撞调试绘制或专用服务器宿主。
 
 覆盖范围是已公开的基础物理 API；没有据此宣称 Convex/Compound/Heightfield、任意关节类型、骨骼动画映射、专用资产编辑或跨平台确定性已实现。当前场景不是负载基准，不给出性能预算或吞吐结论。

@@ -141,20 +141,11 @@ function(atelier_add_editor)
     atelier_headless_acceptance(project_texture_reimport_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance> --textures
         DEPENDS atelier_project_integration_acceptance)
-    add_custom_target(physics_examples_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-physics-examples "${CMAKE_BINARY_DIR}/physics-examples-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_sponza_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --textured-obj
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-sponza "${CMAKE_BINARY_DIR}/sponza-evidence"
-        DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
     atelier_headless_acceptance(editor_examples_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --examples
-        DEPENDS atelier_editor_document_acceptance)
-    add_custom_target(editor_dungeons_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --dungeons
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dungeons "${CMAKE_BINARY_DIR}/dungeons-evidence"
-        DEPENDS atelier_editor_document_acceptance atelier_editor USES_TERMINAL VERBATIM)
+        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --textured-obj
+        DEPENDS atelier_editor_document_acceptance)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)

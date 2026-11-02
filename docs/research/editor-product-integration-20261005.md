@@ -21,7 +21,7 @@ About 显示实时工程根目录与场景路径；工程成功打开后记录�
 
 ## 同一程序的工程验收
 
-`editor_project_acceptance` 调用正式程序的 `--acceptance-project` 模式。在同一次窗口激活后，先执行与视口专项相同的 `verify_viewport_display`（包含实际 RGB 模式变化及 World TRS → GPU），再接续工程操作链，减少重新启动和抢占前台。直接提供源工程的形式为：
+`editor_project_acceptance` 调用正式程序的 `--acceptance-project` 模式，在同一次窗口激活后执行工程操作链。当前覆盖范围见[编辑器验收入口](../modules/editor/README.md#验收入口)。直接提供源工程的形式为：
 
 ```powershell
 ./out/dev/atelier_editor.exe --acceptance-project ./out/dev/project-evidence E:/ffa_testproj

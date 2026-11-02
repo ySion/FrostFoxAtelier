@@ -30,7 +30,7 @@
 - `out/takeover-dev-edit-final.log`
 - `out/takeover-release-edit-final.log`
 - `out/takeover-edit-release-accepted/acceptance.txt`
-- 同目录 `multi-selection.png`、`box-selection.png`、`transform-parameters.png`、`resource-parameters.png`、`edit-mode.png`
+- 同目录 `box-selection.png`、`transform-parameters.png`、`resource-parameters.png`、`edit-mode.png`
 
 独立验收窗口正常退出，原编辑器窗口保留。本次不包含 Dev 原生窗口复验、真实系统 IME、多显示器 DPI 迁移、表面吸附或跨区域资源拖放；不据此宣称这些能力已验收。
 
