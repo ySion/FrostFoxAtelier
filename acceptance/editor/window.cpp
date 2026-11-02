@@ -13,6 +13,7 @@
 #include <msctf.h>
 #include <imm.h>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -23,6 +24,10 @@
 #include <thread>
 
 namespace atelier::application {
+struct PlayProcessAcceptanceAccess {
+    static DWORD process_id(const PlayProcess& run) { return run.running() ? GetProcessId(run.process_) : 0; }
+};
+
 struct EditorAcceptanceAccess {
     static void input(Application& app, ui::Event event, WPARAM key = 0) { app.input(event, key); }
 
@@ -143,6 +148,10 @@ struct EditorAcceptanceAccess {
     static const auto& project_build(const Application& app) { return app.workspace_.project_build; }
 
     static bool project_running(const Application& app) { return app.play_.running(); }
+
+    static DWORD project_process_id(const Application& app) {
+        return PlayProcessAcceptanceAccess::process_id(app.play_);
+    }
 
     static bool output_contains(const Application& app, std::wstring_view text) {
         const auto utf8 = assets::utf8(text);
@@ -588,8 +597,36 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
 }
 
 void require_input_focus(Application& app) {
-    require(GetFocus() == app.window() && GetForegroundWindow() == app.window(),
-            "Acceptance interrupted by external focus loss; no further synthetic input was sent.");
+    if (GetFocus() == app.window() && GetForegroundWindow() == app.window())
+        return;
+    const auto foreground = GetForegroundWindow();
+    DWORD owner{};
+    GetWindowThreadProcessId(foreground, &owner);
+    wchar_t class_name[256]{};
+    const auto class_size = GetClassNameW(foreground, class_name, 256);
+    const auto class_error = class_size ? ERROR_SUCCESS : GetLastError();
+    wchar_t process_name[32768]{};
+    DWORD name_size = 32768;
+    DWORD process_error{};
+    if (const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, owner)) {
+        if (!QueryFullProcessImageNameW(process, 0, process_name, &name_size))
+            process_error = GetLastError();
+        // Close before allocating diagnostic strings, including on query failure.
+        CloseHandle(process);
+    } else
+        process_error = GetLastError();
+    const auto executable = process_error
+                                ? std::string("unknown (Win32=") + std::to_string(process_error) + ")"
+                                : atelier::assets::utf8(std::filesystem::path(process_name).filename().wstring());
+    const auto window_class =
+        class_size ? atelier::assets::utf8(class_name) : "unknown (Win32=" + std::to_string(class_error) + ")";
+    throw std::runtime_error(
+        "Acceptance interrupted by external focus loss; no further synthetic input was sent. editor_pid=" +
+        std::to_string(GetCurrentProcessId()) + "; play_running=" + std::to_string(Access::project_running(app)) +
+        "; play_pid=" + std::to_string(Access::project_process_id(app)) + "; foreground=" +
+        (foreground ? std::to_string(reinterpret_cast<std::uintptr_t>(foreground)) : "none (无前台窗口)") +
+        "; foreground_pid=" + std::to_string(owner) + "; executable=" + executable + "; class=" + window_class +
+        "; focus=" + std::to_string(reinterpret_cast<std::uintptr_t>(GetFocus())));
 }
 
 // Count only accepted frames of the current scene and view, not preparation
@@ -599,20 +636,55 @@ void tick(Application& app, unsigned count = 2) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
     unsigned accepted{};
     unsigned attempts{};
+    unsigned steps{};
+    unsigned last_progress_step{};
+    std::optional<std::uint32_t> previous_done;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> material_progress;
+    std::string notice;
+    const auto preparation_diagnostic = [&] {
+        return " notice=\"" + notice + "\"; material_done/total=" +
+               (material_progress
+                    ? std::to_string(material_progress->first) + "/" + std::to_string(material_progress->second)
+                    : "unavailable") +
+               "; steps=" + std::to_string(steps) + "; last_done_increase_step=" + std::to_string(last_progress_step);
+    };
     while (accepted < count && attempts < 180) {
         // Material and view preparation do not spend the frame budget.
         if (!Access::view_preparing(app))
             ++attempts;
         const auto before = app.accepted_frames();
         require(app.step(), "Editor closed during input acceptance.");
+        ++steps;
+        // Observe the existing result text once; another prepare() could adopt or upload the batch.
+        notice = atelier::assets::utf8(Access::render_notice(app));
+        material_progress.reset();
+        constexpr std::string_view prefix = "Compiling materials ";
+        if (notice.starts_with(prefix)) {
+            const auto* begin = notice.data() + prefix.size();
+            const auto* end = notice.data() + notice.size();
+            std::uint32_t done{};
+            std::uint32_t total{};
+            const auto parsed_done = std::from_chars(begin, end, done);
+            if (parsed_done.ec == std::errc{} && parsed_done.ptr != end && *parsed_done.ptr == '/') {
+                const auto parsed_total = std::from_chars(parsed_done.ptr + 1, end, total);
+                if (parsed_total.ec == std::errc{} && parsed_total.ptr == end) {
+                    material_progress = std::pair{done, total};
+                    if (previous_done && done > *previous_done)
+                        last_progress_step = steps;
+                    previous_done = done;
+                }
+            }
+        }
         if (app.accepted_frames() > before && !Access::view_preparing(app))
             ++accepted;
-        require(std::chrono::steady_clock::now() < deadline,
-                "Scene materials or view pipelines were not prepared within 20 minutes.");
+        if (!(std::chrono::steady_clock::now() < deadline))
+            throw std::runtime_error("Scene materials or view pipelines were not prepared within 20 minutes." +
+                                     preparation_diagnostic());
     }
-    if (accepted < count)
+    if (accepted < count) {
         Access::frame_failure(app);
-    require(accepted >= count, "Editor did not accept a frame within 180 iterations.");
+        throw std::runtime_error("Editor did not accept a frame within 180 iterations." + preparation_diagnostic());
+    }
 }
 
 const atelier::ui::ControlBox* command_tool(Application& app, ControlKey target) {
