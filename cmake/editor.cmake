@@ -83,7 +83,10 @@ function(atelier_add_editor)
     atelier_deploy_rhi_runtime(atelier_editor)
     add_executable(atelier_editor_control_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/control.cpp")
     atelier_target(atelier_editor_control_acceptance)
-    target_link_libraries(atelier_editor_control_acceptance PRIVATE atelier_control_transport user32)
+    target_link_libraries(atelier_editor_control_acceptance PRIVATE atelier_control_transport atelier_logging user32)
+    add_custom_target(editor_log_smoke_acceptance
+        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/log-smoke-acceptance" --smoke-logs
+        DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_custom_target(editor_control_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-acceptance"
         DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)

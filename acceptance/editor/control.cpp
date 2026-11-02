@@ -1,4 +1,5 @@
 #include "control/control.hpp"
+#include "logging/logging.hpp"
 #include "platform/windows_path.hpp"
 #include <Windows.h>
 #include <algorithm>
@@ -213,6 +214,188 @@ Json discover_editor(const Process& editor, const std::filesystem::path& directo
         std::this_thread::sleep_for(30ms);
     }
     throw std::runtime_error("Editor did not publish its endpoint");
+}
+
+struct SmokeLog {
+    std::filesystem::path directory;
+
+    std::unique_ptr<atelier::logging::Reader> reader;
+
+    atelier::logging::ReadBatch latest;
+
+    std::vector<atelier::logging::Record> records;
+
+    explicit SmokeLog(std::filesystem::path path) : directory(std::move(path)) {
+        auto opened = atelier::logging::Reader::open(directory);
+        require(bool(opened), opened ? "" : opened.error().message);
+        reader = std::move(*opened);
+    }
+
+    void check(bool value, std::string_view message) const {
+        require(value, utf8(directory.wstring()) + ": " + std::string(message));
+    }
+
+    void poll() {
+        latest = reader->poll();
+        for (auto& record : latest.records) {
+            check(record.entry.severity < atelier::logging::Severity::error,
+                  "run=" + record.run_id + " pid=" + std::to_string(record.process_id) +
+                      " record=" + std::to_string(record.record_sequence) + " " + record.entry.event_code + ": " +
+                      record.entry.message);
+            records.push_back(std::move(record));
+        }
+        latest.records.clear();
+    }
+
+    std::size_t count(std::string_view code) const {
+        return std::ranges::count_if(records, [&](const auto& record) { return record.entry.event_code == code; });
+    }
+
+    const atelier::logging::Record& one(std::string_view code) const {
+        check(count(code) == 1, "Expected exactly one " + std::string(code));
+        return *std::ranges::find_if(records, [&](const auto& record) { return record.entry.event_code == code; });
+    }
+
+    // Only called after an OS exit, or the parent's OS-backed process_ended event.
+    void finish() {
+        reader->source_ended();
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        do {
+            poll();
+            if (latest.status.finished)
+                break;
+            std::this_thread::sleep_for(5ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        const auto& status = latest.status;
+        if (status.latest_issue)
+            check(false, utf8(status.latest_issue->file.wstring()) + ":" + std::to_string(status.latest_issue->offset) +
+                             " " + status.latest_issue->message);
+        check(latest.run && status.finished && status.has_final_summary && !status.incomplete &&
+                  !status.waiting_for_run && !status.partial_line && !status.unquantified_loss &&
+                  !status.invalid_lines && !status.invalid_metadata && !status.oversized_lines &&
+                  !status.incomplete_lines && !status.rotation_losses && !status.sequence_gaps &&
+                  !status.duplicate_records && !status.out_of_order_records && !status.io_failures,
+              "Formal log is missing, incomplete or corrupt");
+        check(latest.health && latest.health->final, "Missing final=true health");
+        const auto& report = latest.health->report;
+        const auto& health = report.health;
+        check(health.state == atelier::logging::RunState::finished && report.backend_acknowledged &&
+                  report.sink_flush_succeeded && report.summary_published && !health.rejected_queue_full &&
+                  !health.rejected_producer_limit && !health.rejected_record_too_large &&
+                  !health.rejected_invalid_record && !health.rejected_internal_failure && !health.facility_failures &&
+                  !health.backend_notifications && health.first_backend_notification.empty() &&
+                  !health.first_facility_issue && !health.first_error,
+              "Final logging health reports an error or facility fault");
+        one("application.started");
+        one("application.finished");
+    }
+};
+
+template <class T>
+const T& smoke_field(const atelier::logging::Record& record, std::string_view key) {
+    for (const auto& field : record.entry.fields)
+        if (field.key == key)
+            if (const auto* value = std::get_if<T>(&field.value))
+                return *value;
+    throw std::runtime_error("run=" + record.run_id + " record=" + std::to_string(record.record_sequence) + " " +
+                             record.entry.event_code + ": missing or mistyped field " + std::string(key));
+}
+
+void verify_smoke_logs(SmokeLog& parent, SmokeLog& child, const std::filesystem::path& project, DWORD pid) {
+    parent.finish();
+    const auto& attached = parent.one("play.run_attached");
+    const auto& ended = parent.one("play.process_ended");
+    const auto child_path = utf8(child.directory.generic_wstring());
+    parent.check(smoke_field<std::string>(attached, "directory") == child_path &&
+                     smoke_field<std::string>(attached, "project_root") == utf8(project.generic_wstring()) &&
+                     smoke_field<std::string>(ended, "directory") == child_path &&
+                     !smoke_field<bool>(ended, "forced") && smoke_field<std::uint64_t>(ended, "exit_code") == 0,
+                 "Play did not end normally in its attached run");
+    child.finish();
+    const auto& editor_run = *parent.latest.run;
+    const auto& runner_run = *child.latest.run;
+    parent.check(editor_run.process_name == "editor" && editor_run.process_id == pid && !editor_run.parent_run_id &&
+                     editor_run.directory == parent.directory,
+                 "Editor manifest does not identify the launched process");
+    child.check(runner_run.process_name == "runner" && runner_run.process_id != pid &&
+                    runner_run.run_id != editor_run.run_id && runner_run.parent_run_id == editor_run.run_id &&
+                    runner_run.directory == child.directory && child.directory.parent_path() == parent.directory,
+                "Runner manifest does not identify this Editor's child");
+    std::set<std::filesystem::path> runs;
+    for (const auto& item : std::filesystem::recursive_directory_iterator(parent.directory))
+        if (item.path().filename() == "run.json")
+            runs.insert(item.path().parent_path());
+    parent.check(runs == std::set{parent.directory, child.directory}, "Unattached or missing product run");
+    const auto& started = child.one("runner.started");
+    const auto& stopped = child.one("runner.stopped");
+    child.check(smoke_field<std::string>(started, "project_root") == utf8(project.generic_wstring()) &&
+                    !smoke_field<bool>(started, "preview_ui") && child.count("runner.stop_observed") == 1 &&
+                    smoke_field<std::uint64_t>(started, "document") == smoke_field<std::uint64_t>(stopped, "document"),
+                "Play did not start and observe cooperative stop in the same game document");
+}
+
+void smoke_logs(const std::filesystem::path& executable, const std::filesystem::path& root) {
+    const auto project = root / "Project";
+    const auto directory = root / "Control";
+    const auto logs = root / "Logs" / "editor";
+    std::cout << "Editor log smoke evidence: " << utf8(root.wstring()) << '\n' << std::flush;
+    std::filesystem::create_directories(project);
+    for (const auto* name : {L"Config", L"Source", L"Content"})
+        std::filesystem::copy(std::filesystem::path(ATELIER_EXAMPLE_PROJECT) / name, project / name,
+                              std::filesystem::copy_options::recursive);
+    require(!std::filesystem::exists(logs), "Smoke log directory must be fresh");
+    Process editor(executable,
+                   L"--project " + quote(project) + L" --control-directory " + quote(directory) + L" --log-directory " +
+                       quote(logs) + L" --no-activate --gpu-validation",
+                   root / "editor.log");
+    SmokeLog parent(logs);
+    std::unique_ptr<SmokeLog> child;
+    std::exception_ptr failure;
+    try {
+        Driver d(discover_editor(editor, directory));
+        const auto state = d.settle();
+        require(state.at("project") == utf8(project.generic_wstring()) &&
+                    state.at("scene_path") == read(project / "Config/Project.json").at("startup_scene") &&
+                    !state.at("last_frame").empty(),
+                "Examples did not open with its startup scene and an accepted frame");
+        d.op("play.start");
+        const auto deadline = std::chrono::steady_clock::now() + 125s;
+        bool started{};
+        do {
+            parent.poll();
+            if (!child && parent.count("play.run_attached")) {
+                const auto path =
+                    std::filesystem::path(wide(smoke_field<std::string>(parent.one("play.run_attached"), "directory")));
+                require(path.parent_path() == logs, "Play log is outside this Editor run");
+                child = std::make_unique<SmokeLog>(path);
+            }
+            if (child) {
+                child->poll();
+                started = child->count("runner.started") == 1;
+            }
+            require(WaitForSingleObject(editor.process, 0) == WAIT_TIMEOUT && !parent.count("play.process_ended"),
+                    "Editor or Play exited before the requested close");
+            if (started)
+                break;
+            std::this_thread::sleep_for(10ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        require(started, "Play did not publish runner.started");
+        // Driver releases its pipe before WM_CLOSE; Play intentionally remains active.
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    try {
+        editor.close();
+    } catch (const std::exception& error) {
+        if (!failure)
+            failure = std::current_exception();
+        else
+            std::cerr << "Smoke cleanup also failed: " << error.what() << '\n';
+    }
+    if (failure)
+        std::rethrow_exception(failure);
+    verify_smoke_logs(parent, *child, project, editor.pid);
+    std::cout << "Editor log smoke: PASS | " << utf8(root.wstring()) << '\n';
 }
 
 void error(const Json& result, std::string_view expected) {
@@ -2205,8 +2388,9 @@ int wmain(int argc, wchar_t** argv) {
                  (std::wstring_view(argv[3]) == L"--repro-paths" || std::wstring_view(argv[3]) == L"--ddgi-debug" ||
                   std::wstring_view(argv[3]) == L"--repro-lighting" ||
                   std::wstring_view(argv[3]) == L"--descriptions" || std::wstring_view(argv[3]) == L"--client-size" ||
-                  std::wstring_view(argv[3]) == L"--camera-projection")),
-            "Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions|--client-size|--camera-projection]");
+                  std::wstring_view(argv[3]) == L"--camera-projection" ||
+                  std::wstring_view(argv[3]) == L"--smoke-logs")),
+            "Usage: atelier_editor_control_acceptance editor.exe output-directory [--repro-paths|--ddgi-debug|--repro-lighting|--descriptions|--client-size|--camera-projection|--smoke-logs]");
         const bool descriptions = argc == 4 && std::wstring_view(argv[3]) == L"--descriptions";
         // Launched editors and their Play processes inherit the editor's harness cache, not the user's.
         if (!GetEnvironmentVariableW(L"ATELIER_SHADER_CACHE", nullptr, 0))
@@ -2214,6 +2398,10 @@ int wmain(int argc, wchar_t** argv) {
                                     (std::filesystem::absolute(argv[1]).parent_path() / L"shader-cache").c_str());
         const auto root = std::filesystem::absolute(argv[2]) / unique_id();
         std::filesystem::create_directories(root);
+        if (argc == 4 && std::wstring_view(argv[3]) == L"--smoke-logs") {
+            smoke_logs(argv[1], root);
+            return 0;
+        }
         if (argc == 4 && std::wstring_view(argv[3]) == L"--camera-projection") {
             camera_projection(argv[1], root);
             return 0;

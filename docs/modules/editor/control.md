@@ -283,6 +283,14 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 
 ## 端到端验收
 
+日志零错误冒烟使用真实 Examples 副本（Config、Source、Content，不复制 Cache），打开启动场景并接受渲染帧后，经 Control 启动 Play。观察到正式 `runner.started` 后，在 Play 仍活动时向编辑器发送 WM_CLOSE；沿用 10 秒退出等待及 exit code 0，不先 Stop、不自动重试请求。通过验收脚本串行运行窗口：
+
+    pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets editor_log_smoke_acceptance
+
+该目标调用 Control harness 的 `--smoke-logs`。每次证据保存在构建目录 `log-smoke-acceptance/<唯一目录>/`：`editor.log` 是子进程 stdout/stderr，正式 JSONL 位于 `Logs/editor/` 及其中的 `runner-N/`，成功时也保留。Reader 扫描完整轮转段，核对 Editor PID、父子 run 身份、全部附属 run 和磁盘 manifest；一次 Play 只能对应一个 Runner。父日志的 `play.process_ended` 必须确认该 Runner 的实际正常退出（非 forced、exit code 0），才排空子日志；Editor 则以进程句柄退出为依据。Runner 必须在同一文档中记录 started/stopped，且 `runner.stop_observed` 恰好一次；即时停止允许完成帧数为 0。两个进程都须记录 application.started/finished。
+
+任何 error/critical、日志设施故障、Reader 损坏/丢失、不健康或非 final 的最终 health、缺失日志或退出证据都失败；读取期间的 final=false 不提前判失败。不会以“Reader 能打开目录”、没有 stderr 或进程退出码为唯一通过证据，也不把 warning 文本中的关键词当 fault。该冒烟不能替代 glTF 导出后关闭等特定 K6 序列。
+
     cmake --build --preset dev --target editor_control_acceptance
     cmake --build --preset release --target editor_control_acceptance
 
