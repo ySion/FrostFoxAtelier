@@ -1363,7 +1363,8 @@ void Application::sync_text_input() {
         workspace_.status = L"Text input unavailable (Windows " + std::to_wstring(error) + L").";
 }
 
-void Application::cancel_interaction(const ui::Reply& reply) {
+void Application::cancel_interaction(const ui::Reply& reply, std::string_view input_event,
+                                     std::source_location caller) {
     // Session distinguishes native focus/capture loss from a forced UI cancellation.
     // Application-owned gestures must end for either kind before capture is released.
     finish_camera_fly(false);
@@ -1371,7 +1372,7 @@ void Application::cancel_interaction(const ui::Reply& reply) {
     camera_drag_.reset();
     workspace_.lighting.cancel();
     const auto color_cancelled = finish_color_edit(false);
-    close_menu(false);
+    close_menu(false, caller, input_event);
     effects(reply);
     if (!color_cancelled) {
         report_error(color_cancelled.error(), "editor.rollback_failed");
@@ -1436,7 +1437,7 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
                                        logging::native::Context{fields}, "Menu request adopted"));
 }
 
-void Application::close_menu(bool restore_focus, std::source_location caller) {
+void Application::close_menu(bool restore_focus, std::source_location caller, std::string_view input_event) {
     pending_menu_ = 0;
     pie_release_pending_ = pie_release_select_ = pie_pressed_ = false;
     pie_hot_ = 0;
@@ -1445,9 +1446,11 @@ void Application::close_menu(bool restore_focus, std::source_location caller) {
         return;
     const std::array fields{
         logging::Field{"source_control", workspace_.menu ? workspace_.menu->source : menu_host()->source()},
-        logging::Field{"incarnation", menu_incarnation_}, logging::Field{"restore_focus", restore_focus},
+        logging::Field{"incarnation", menu_incarnation_},
+        logging::Field{"restore_focus", restore_focus},
         logging::Field{"caller_line", std::uint64_t{caller.line()}},
-        logging::Field{"caller_function", std::string(caller.function_name())}};
+        logging::Field{"caller_function", std::string(caller.function_name())},
+        logging::Field{"input_event", std::string(input_event)}};
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "menu", "menu.closed", logging::native::Context{fields},
                                        "Menu closing"));
     workspace_.menu.reset();
@@ -1859,7 +1862,7 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
         auto reply = ui_.input(event);
         if (ui_.presented())
             workspace_.dock.focus_control(ui_.focused_control(), *ui_.presented());
-        cancel_interaction(reply);
+        cancel_interaction(reply, event.kind == ui::EventKind::focus_lost ? "focus_lost" : "capture_lost");
         return;
     }
     // Menu toggles must ignore repeats on both sides of menu_input(), including

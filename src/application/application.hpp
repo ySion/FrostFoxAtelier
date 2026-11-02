@@ -327,7 +327,8 @@ private:
 
     void request_menu(const ui::ContextMenuRequest&);
 
-    void close_menu(bool restore_focus = true, std::source_location caller = std::source_location::current());
+    void close_menu(bool restore_focus = true, std::source_location caller = std::source_location::current(),
+                    std::string_view input_event = {});
 
     void update_menu();
 
@@ -464,7 +465,8 @@ private:
                               ProjectOpenPolicy = ProjectOpenPolicy::allow_repair,
                               const std::function<Result<void>(const editor::Session&)>& admit = {});
 
-    void cancel_interaction(const ui::Reply&);
+    void cancel_interaction(const ui::Reply&, std::string_view input_event = {},
+                            std::source_location caller = std::source_location::current());
 
     void invalidate_surface();
 

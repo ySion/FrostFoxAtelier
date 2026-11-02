@@ -13,10 +13,12 @@
 #include <imm.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <future>
 #include <numeric>

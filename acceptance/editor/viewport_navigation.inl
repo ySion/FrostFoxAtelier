@@ -105,151 +105,255 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
         "Viewport navigation acceptance: PASS (axis pie, fast release, retained checkbox, history/cursor isolation)");
 }
 
+class FlyInputMonitor {
+    static inline thread_local FlyInputMonitor* current_{};
+
+    std::atomic<std::uint64_t> mouse_{};
+
+    std::atomic<std::uint64_t> keyboard_{};
+
+    std::atomic<bool> ready_{};
+
+    std::atomic<bool> available_{};
+
+    HANDLE stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+    std::thread thread_;
+
+    static LRESULT CALLBACK mouse(int code, WPARAM message, LPARAM data) noexcept {
+        if (code == HC_ACTION && !(reinterpret_cast<const MSLLHOOKSTRUCT*>(data)->flags & LLMHF_INJECTED))
+            current_->mouse_.fetch_add(1, std::memory_order_relaxed);
+        return CallNextHookEx(nullptr, code, message, data);
+    }
+
+    static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) noexcept {
+        if (code == HC_ACTION && !(reinterpret_cast<const KBDLLHOOKSTRUCT*>(data)->flags & LLKHF_INJECTED))
+            current_->keyboard_.fetch_add(1, std::memory_order_relaxed);
+        return CallNextHookEx(nullptr, code, message, data);
+    }
+
+public:
+    FlyInputMonitor() {
+        if (!stop_)
+            return;
+        try {
+            thread_ = std::thread([this] {
+                // Low-level callbacks must not wait for the acceptance thread's rendering or PNG writes.
+                current_ = this;
+                MSG message{};
+                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+                const auto module = GetModuleHandleW(nullptr);
+                const auto mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse, module, 0);
+                const auto keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, module, 0);
+                available_.store(mouse_hook && keyboard_hook);
+                ready_.store(true);
+                ready_.notify_one();
+                if (available_.load()) {
+                    for (;;) {
+                        const auto result =
+                            MsgWaitForMultipleObjectsEx(1, &stop_, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                        if (result != WAIT_OBJECT_0 + 1) {
+                            if (result != WAIT_OBJECT_0)
+                                available_.store(false);
+                            break;
+                        }
+                        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                            TranslateMessage(&message);
+                            DispatchMessageW(&message);
+                        }
+                    }
+                }
+                if (keyboard_hook)
+                    UnhookWindowsHookEx(keyboard_hook);
+                if (mouse_hook)
+                    UnhookWindowsHookEx(mouse_hook);
+                current_ = nullptr;
+            });
+            ready_.wait(false);
+        } catch (const std::exception&) {
+            // Diagnostic setup failure must not change the acceptance outcome.
+        }
+    }
+
+    ~FlyInputMonitor() {
+        if (thread_.joinable()) {
+            SetEvent(stop_);
+            thread_.join();
+        }
+        if (stop_)
+            CloseHandle(stop_);
+    }
+
+    std::string diagnostic() const {
+        if (!available_.load())
+            return "input monitor unavailable";
+        return std::format("non-injected mouse/keyboard events: {}/{}", mouse_.load(std::memory_order_relaxed),
+                           keyboard_.load(std::memory_order_relaxed));
+    }
+};
+
 // Only the foreground editor window acceptance may exercise global raw input and clipping.
 void verify_viewport_fly(Application& app, const std::filesystem::path& output) {
-    using namespace atelier;
-    namespace control = atelier::editor::control;
-    using Access = application::EditorAcceptanceAccess;
-    const auto snapshot = [&](const char* name) {
-        renderer::Capture image;
-        require(app.step(&image) && image.frame_id, "Fly viewport capture failed.");
-        png(image, output / name); // Navigation also works in an empty scene.
-    };
-    const auto require_foreground = [&] {
-        require(GetForegroundWindow() == app.window() && GetFocus() == app.window(),
-                "Fly acceptance lost foreground/focus ownership; no desktop input was sent.");
-    };
-    require_foreground();
-    const auto viewport = app.presented()->find(control::viewport)->bounds;
-    const math::Vector2 origin{viewport.x + viewport.width * .5f, viewport.y + viewport.height * .5f};
-    const auto pointer = [&](ui::EventKind kind, math::Vector2 point) {
-        Access::input(app, {.kind = kind, .x = point.x, .y = point.y});
-    };
-    const auto key = [&](WPARAM code, bool up = false, bool ctrl = false, ui::Key mapped = ui::Key::none) {
-        Access::input(
-            app, {.kind = up ? ui::EventKind::key_up : ui::EventKind::key_down, .key = mapped, .control = ctrl}, code);
-    };
-    const auto history = app.document().undo_count();
-    const auto cursor = Access::cursor_position(app);
-    require(bool(Access::invoke(app, "view.reset")), "Fly camera setup failed.");
-    tick(app, 2);
-    const auto visible_coverage = [](const auto& coverage) {
-        return coverage && coverage->width && coverage->height &&
-               std::ranges::any_of(coverage->pixels, [](auto alpha) { return alpha != 0; });
-    };
-    const auto verify_fly_ui = [&](bool flying) {
-        const auto& frame = *app.presented();
-        const auto* mode = frame.find(control::viewport_hud);
-        const auto* hint = frame.find(control::viewport_hint);
-        const auto* reticle = frame.find(control::viewport_fly_reticle);
-        require(mode && hint && !mode->enabled && !hint->enabled, "Passive navigation mode/hint was not published.");
-        if (flying) {
-            const auto bounds = frame.find(control::viewport)->bounds;
-            require(reticle && !reticle->enabled &&
+    FlyInputMonitor monitor;
+    try {
+        using namespace atelier;
+        namespace control = atelier::editor::control;
+        using Access = application::EditorAcceptanceAccess;
+        const auto snapshot = [&](const char* name) {
+            renderer::Capture image;
+            require(app.step(&image) && image.frame_id, "Fly viewport capture failed.");
+            png(image, output / name); // Navigation also works in an empty scene.
+        };
+        const auto require_foreground = [&] {
+            require(GetForegroundWindow() == app.window() && GetFocus() == app.window(),
+                    "Fly acceptance lost foreground/focus ownership; no desktop input was sent.");
+        };
+        require_foreground();
+        const auto viewport = app.presented()->find(control::viewport)->bounds;
+        const math::Vector2 origin{viewport.x + viewport.width * .5f, viewport.y + viewport.height * .5f};
+        const auto pointer = [&](ui::EventKind kind, math::Vector2 point) {
+            Access::input(app, {.kind = kind, .x = point.x, .y = point.y});
+        };
+        const auto key = [&](WPARAM code, bool up = false, bool ctrl = false, ui::Key mapped = ui::Key::none) {
+            Access::input(
+                app, {.kind = up ? ui::EventKind::key_up : ui::EventKind::key_down, .key = mapped, .control = ctrl},
+                code);
+        };
+        const auto history = app.document().undo_count();
+        const auto cursor = Access::cursor_position(app);
+        require(bool(Access::invoke(app, "view.reset")), "Fly camera setup failed.");
+        tick(app, 2);
+        const auto visible_coverage = [](const auto& coverage) {
+            return coverage && coverage->width && coverage->height &&
+                   std::ranges::any_of(coverage->pixels, [](auto alpha) { return alpha != 0; });
+        };
+        const auto verify_fly_ui = [&](bool flying) {
+            const auto& frame = *app.presented();
+            const auto* mode = frame.find(control::viewport_hud);
+            const auto* hint = frame.find(control::viewport_hint);
+            const auto* reticle = frame.find(control::viewport_fly_reticle);
+            require(mode && hint && !mode->enabled && !hint->enabled,
+                    "Passive navigation mode/hint was not published.");
+            if (flying) {
+                const auto bounds = frame.find(control::viewport)->bounds;
+                require(
+                    reticle && !reticle->enabled &&
                         visible_coverage(text_coverage(frame, control::viewport_fly_reticle)) &&
                         std::abs(reticle->bounds.x + reticle->bounds.width * .5f - bounds.x - bounds.width * .5f) < 1 &&
                         std::abs(reticle->bounds.y + reticle->bounds.height * .5f - bounds.y - bounds.height * .5f) < 1,
                     "Fly reticle is absent, interactive or not centered in the viewport.");
-        } else
-            require(!reticle, "Exiting fly retained its reticle.");
-    };
-    const auto begin_fly = [&] {
-        require_foreground();
-        pointer(ui::EventKind::pointer_move, origin);
-        Access::input(app, {.kind = ui::EventKind::key_down, .shift = true}, VK_OEM_3);
-        Access::input(app, {.kind = ui::EventKind::key_up, .shift = true}, VK_OEM_3);
-        Access::input(app, {.kind = ui::EventKind::key_up}, VK_SHIFT);
-        require(GetCapture() == app.window() && !Access::menu_open(app),
-                "Shift+accent-grave did not capture fly navigation.");
-        tick(app, 2);
-        if (!Access::camera_flying(app))
-            throw std::runtime_error("Fly lost ownership on its entry frames: " + assets::utf8(app.status_text()));
-        snapshot("viewport-fly-entry.png");
-        verify_fly_ui(true);
-    };
-    const auto move_fly = [&](WPARAM code) {
-        key(code);
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        tick(app, 2);
-        key(code, true);
-    };
-    const auto fly_entry = Access::camera_view(app);
-    const auto fly_eye = Access::camera_eye(app);
-    begin_fly();
-    // Native relative mouse input must look around without orbiting the eye.
-    INPUT motion{};
-    motion.type = INPUT_MOUSE;
-    motion.mi.dx = 35;
-    motion.mi.dy = 12;
-    motion.mi.dwFlags = MOUSEEVENTF_MOVE;
-    require_foreground();
-    require(GetCapture() == app.window(), "Fly acceptance lost capture before native mouse input.");
-    require(SendInput(1, &motion, sizeof(motion)) == 1, "Cannot inject native relative fly mouse input.");
-    tick(app, 3);
-    require(Access::camera_view(app) != fly_entry && math::length(Access::camera_eye(app) - fly_eye) < .001f,
-            "Fly mouse look failed or moved the eye as an orbit.");
-    snapshot("viewport-fly.png");
-    const auto before = Access::camera_eye(app);
-    move_fly('W');
-    require(math::length(Access::camera_eye(app) - before) > .001f, "Fly direction key did not move the camera.");
-    key(VK_ESCAPE, false, false, ui::Key::escape);
-    tick(app, 2);
-    require(GetCapture() != app.window() && Access::camera_view(app) == fly_entry,
-            "Fly Escape did not restore its exact entry camera.");
-    verify_fly_ui(false);
-    begin_fly();
-    move_fly('W');
-    const auto confirmed = Access::camera_view(app);
-    key(VK_RETURN, false, false, ui::Key::enter);
-    tick(app, 2);
-    require(GetCapture() != app.window() && Access::camera_view(app) == confirmed,
-            "Fly Enter discarded the accepted camera.");
-    verify_fly_ui(false);
-    for (unsigned ending = 0; ending < 5; ++ending) {
-        const auto entry = Access::camera_view(app);
-        begin_fly();
-        move_fly('E');
-        if (ending < 2)
-            Access::input(app, {.kind = ending == 0 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
-        else if (ending == 2)
-            ReleaseCapture();
-        else if (ending == 3) {
-            Access::input(app, {.kind = ui::EventKind::pointer_down,
-                                .x = origin.x,
-                                .y = origin.y,
-                                .button = ui::PointerButton::secondary});
-            Access::input(app, {.kind = ui::EventKind::pointer_up,
-                                .x = origin.x,
-                                .y = origin.y,
-                                .button = ui::PointerButton::secondary});
-        } else {
-            Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::f10}, VK_F10);
+            } else
+                require(!reticle, "Exiting fly retained its reticle.");
+        };
+        const auto begin_fly = [&] {
+            require_foreground();
+            pointer(ui::EventKind::pointer_move, origin);
+            Access::input(app, {.kind = ui::EventKind::key_down, .shift = true}, VK_OEM_3);
+            Access::input(app, {.kind = ui::EventKind::key_up, .shift = true}, VK_OEM_3);
+            Access::input(app, {.kind = ui::EventKind::key_up}, VK_SHIFT);
+            require(GetCapture() == app.window() && !Access::menu_open(app),
+                    "Shift+accent-grave did not capture fly navigation.");
             tick(app, 2);
-            require(Access::menu_open(app), "F10 did not transfer fly ownership to the menu.");
-            key(VK_ESCAPE, false, false, ui::Key::escape);
+            if (!Access::camera_flying(app))
+                throw std::runtime_error("Fly lost ownership on its entry frames: " + assets::utf8(app.status_text()));
+            snapshot("viewport-fly-entry.png");
+            verify_fly_ui(true);
+        };
+        const auto move_fly = [&](WPARAM code) {
+            key(code);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            tick(app, 2);
+            key(code, true);
+        };
+        const auto fly_entry = Access::camera_view(app);
+        const auto fly_eye = Access::camera_eye(app);
+        begin_fly();
+        // Native relative mouse input must look around without orbiting the eye.
+        INPUT motion{};
+        motion.type = INPUT_MOUSE;
+        motion.mi.dx = 35;
+        motion.mi.dy = 12;
+        motion.mi.dwFlags = MOUSEEVENTF_MOVE;
+        require_foreground();
+        require(GetCapture() == app.window(), "Fly acceptance lost capture before native mouse input.");
+        require(SendInput(1, &motion, sizeof(motion)) == 1, "Cannot inject native relative fly mouse input.");
+        tick(app, 3);
+        const auto looked_view = Access::camera_view(app);
+        const auto eye_displacement = math::length(Access::camera_eye(app) - fly_eye);
+        if (looked_view == fly_entry || !(eye_displacement < .001f)) {
+            float view_difference{};
+            for (std::size_t i = 0; i < looked_view.elements.size(); ++i)
+                view_difference = std::max(view_difference, std::abs(looked_view[i] - fly_entry[i]));
+            const auto differences =
+                std::format("view_max_abs_delta={:.9g}; eye_displacement={:.9g}", view_difference, eye_displacement);
+            require(looked_view != fly_entry, ("Fly mouse look did not change the view. " + differences).c_str());
+            require(eye_displacement < .001f, ("Fly mouse look moved the eye. " + differences).c_str());
         }
+        snapshot("viewport-fly.png");
+        const auto before = Access::camera_eye(app);
+        move_fly('W');
+        require(math::length(Access::camera_eye(app) - before) > .001f, "Fly direction key did not move the camera.");
+        key(VK_ESCAPE, false, false, ui::Key::escape);
         tick(app, 2);
-        require(GetCapture() != app.window() && Access::camera_view(app) == entry,
-                "Fly interruption retained capture or failed to restore camera.");
+        require(GetCapture() != app.window() && Access::camera_view(app) == fly_entry,
+                "Fly Escape did not restore its exact entry camera.");
         verify_fly_ui(false);
-        key('W', true);
-        pointer(ui::EventKind::pointer_move, origin);
-        tick(app, 1);
-        require(Access::camera_view(app) == entry, "Late fly input restarted cancelled movement.");
+        begin_fly();
+        move_fly('W');
+        const auto confirmed = Access::camera_view(app);
+        key(VK_RETURN, false, false, ui::Key::enter);
+        tick(app, 2);
+        require(GetCapture() != app.window() && Access::camera_view(app) == confirmed,
+                "Fly Enter discarded the accepted camera.");
+        verify_fly_ui(false);
+        for (unsigned ending = 0; ending < 5; ++ending) {
+            const auto entry = Access::camera_view(app);
+            begin_fly();
+            move_fly('E');
+            if (ending < 2)
+                Access::input(app, {.kind = ending == 0 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
+            else if (ending == 2)
+                ReleaseCapture();
+            else if (ending == 3) {
+                Access::input(app, {.kind = ui::EventKind::pointer_down,
+                                    .x = origin.x,
+                                    .y = origin.y,
+                                    .button = ui::PointerButton::secondary});
+                Access::input(app, {.kind = ui::EventKind::pointer_up,
+                                    .x = origin.x,
+                                    .y = origin.y,
+                                    .button = ui::PointerButton::secondary});
+            } else {
+                Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::f10}, VK_F10);
+                tick(app, 2);
+                require(Access::menu_open(app), "F10 did not transfer fly ownership to the menu.");
+                key(VK_ESCAPE, false, false, ui::Key::escape);
+            }
+            tick(app, 2);
+            require(GetCapture() != app.window() && Access::camera_view(app) == entry,
+                    "Fly interruption retained capture or failed to restore camera.");
+            verify_fly_ui(false);
+            key('W', true);
+            pointer(ui::EventKind::pointer_move, origin);
+            tick(app, 1);
+            require(Access::camera_view(app) == entry, "Late fly input restarted cancelled movement.");
+        }
+        begin_fly();
+        move_fly('D');
+        const auto clicked = Access::camera_view(app);
+        Access::input(app, {.kind = ui::EventKind::pointer_down, .x = origin.x, .y = origin.y});
+        Access::input(app, {.kind = ui::EventKind::pointer_up, .x = origin.x, .y = origin.y});
+        tick(app, 2);
+        require(GetCapture() != app.window(), "Fly left-click confirmation did not release capture.");
+        require(Access::camera_view(app) == clicked, "Fly left-click confirmation changed the view.");
+        require(Access::cursor_position(app) == cursor, "Fly left-click confirmation placed the scene cursor.");
+        require(bool(Access::invoke(app, "view.reset")), "Post-fly camera reset failed.");
+        tick(app, 2);
+        require(app.document().undo_count() == history && Access::cursor_position(app) == cursor,
+                "Fly navigation changed scene history or placed the 3D cursor.");
+        std::puts(
+            "Viewport fly acceptance: PASS (native raw mouse, movement, modal lifecycle and centered passive reticle)");
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string(error.what()) + "; " + monitor.diagnostic());
     }
-    begin_fly();
-    move_fly('D');
-    const auto clicked = Access::camera_view(app);
-    Access::input(app, {.kind = ui::EventKind::pointer_down, .x = origin.x, .y = origin.y});
-    Access::input(app, {.kind = ui::EventKind::pointer_up, .x = origin.x, .y = origin.y});
-    tick(app, 2);
-    require(GetCapture() != app.window() && Access::camera_view(app) == clicked &&
-                Access::cursor_position(app) == cursor,
-            "Fly left-click confirmation changed the view or placed the scene cursor.");
-    require(bool(Access::invoke(app, "view.reset")), "Post-fly camera reset failed.");
-    tick(app, 2);
-    require(app.document().undo_count() == history && Access::cursor_position(app) == cursor,
-            "Fly navigation changed scene history or placed the 3D cursor.");
-    std::puts(
-        "Viewport fly acceptance: PASS (native raw mouse, movement, modal lifecycle and centered passive reticle)");
 }
