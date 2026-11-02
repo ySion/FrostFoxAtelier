@@ -23,7 +23,11 @@ Entity 是唯一的组成与可选空间节点。它内联保存 position、rota
 
 Entity 的隐藏强引用序列分别拥有有序 children 和 components；组合 parent 和显式空间 origin 为弱引用，Component 强持 owner。同类型组件允许多实例，物理位姿写入者的排他规则由物理模块校验。普通根可以保住组成图；无外部根的引用环沿 Runtime GC 回收。
 
+强 owner 让外部业务引用和编辑历史能够保住同身份的组成组，代价是只持有一个仍挂载的 Component，也会经 owner 延长兄弟组件及其所引用 CPU 数据的寿命。GC 可以回收无外部根的环，不能回收仍有合法强根的组。退出 World 只撤销成员与运行参与，不保证这些对象、资产数据或在途资源已释放；资源驻留由各消费者的引用与租约决定。这些边界不能互相替代，外部引擎的 [Actor 生命周期](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-actor-lifecycle?application_version=5.6)仅作参与结束与回收分离的对照，不规定本项目的终结时点。
+
 World 为每个成员 Entity 持有 ObjectRoot，成员身份以 Entity 的 World 归属为准；执行和查询目录是派生索引。`members()` 按组合前序列出所有 Entity，每个身份一次，每棵子树占连续区间。attach 只从 Runtime 推导进入的子树，Begin/End 与生命周期通知只访问进出的子树，并调整受影响祖先的子树计数；插入点或移除点之后的成员只移动并更新下标，reparent 只移动源位置与目标位置之间的区间，均不重新从 Runtime 推导。启用与组件增删只更新对应成员。Tick 计划与类型目录在下次使用时由内存中的成员状态重建。`contains(entity)` 以常数时间判断成员资格。类型查询不改变执行顺序。`components / children` 返回普通 ObjectRoot 快照，保留身份与当前数据。对象可以活过旧 World；Runtime 必须晚于 World、对象操作和任务结束。
+
+统一业务身份不排斥 GPU 槽位、物理 body handle 或资产内容身份；这些标识管理各自的后端与资源寿命，不重新决定同一业务对象的类型、存亡或字段真值。消费者可以从权威状态生成紧凑工作集与只读快照，但须明确生产者和发布时点，不能把派生表示变成第二份可编辑真状态。物理回写和呈现插值分别沿下文与[物理模块](../physics/README.md#渲染插值)的路径；显示位姿不替代模拟位姿。表示分工可参照 [MassGameplay](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-mass-gameplay-in-unreal-engine?application_version=5.6) 与 [Frostbite 三种数据 schema](https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/gdc18-tools-tutorial-day-a-tale-of-three-data-schemas.pptx)，不照搬第二套业务身份。连续布局、批处理与并行安全仍是独立问题，遵循[工程指南](../../engineering.md#编程范式)，共同 ObjectId 本身不赋予并行访问许可。
 
 ## 完整创建与组合
 
@@ -86,7 +90,7 @@ attached/detached 表示 World 成员注册与注销，activated/deactivated 表
 
 `FailurePolicy` 默认为 isolate，Play 使用默认值；验收与编辑器测试用 `set_failure_policy(halt)` 选择首错即停，只能在 World 停止时切换。两种策略都把对象失败写入同一诊断日志。
 
-只有能归属到对象的错误才隔离：Begin/Tick/End 行为回调、任务恢复、生命周期观察者、呈现/灯光/物理的逐项校验与协调、单条平移命令与模拟位姿。World 与 Runtime 自身的错误在任何策略下都按 World 级处理：停止 World 或使整个调用失败，不写对象诊断。`isolatable(Error)` 是这条分界：busy（重入、遍历中）、rebuild_required（代码发布检查）、execution_aborted（执行中止）、capacity_exceeded（含分配失败）不可隔离；World 发现自身成员或组件索引不一致后，此后的任何失败都不再隔离。结构编辑、attach/detach、start/stop 等宿主调用的失败照常返回给调用者。
+只有能归属到对象的错误才隔离：Begin/Tick/End 行为回调、任务恢复、生命周期观察者、呈现/灯光/物理的逐项校验与协调、单条平移命令与模拟位姿。World 与 Runtime 自身的错误在任何策略下都按 World 级处理：停止 World 或使整个调用失败，不写对象诊断。其中 busy（重入、遍历中）、rebuild_required（代码发布检查）、execution_aborted（执行中止）、capacity_exceeded（含分配失败）不可隔离；World 发现自身成员或组件索引不一致后，此后的任何失败都不再隔离。结构编辑、attach/detach、start/stop 等宿主调用的失败照常返回给调用者。
 
 isolate 下：
 
@@ -129,3 +133,11 @@ Component 的 `translate_owner(dx,dy,dz)` 记录所属 Entity 的平移命令，
 `world_acceptance` 的 World 部分只保留静默正确性代表：`main.cpp` 的手算层级坐标 (4,2)、Mesh 恢复后的作者状态与资源身份、递归销毁；`hierarchy.inl` 的独立空间换算、镜像分解与一个 17° 零轴缓存序列；`lifecycle.inl` 及相关用例的强弱引用/唯一根跨 GC、任务取消、Begin/End 配对与逆序清理；`frame.inl` 的真实 Source 阶段末命令与接收者销毁/GC 屏障。relocated 异常后的旧 TRS 恢复和后续编辑仍保留。拒绝、错误文本、诊断计数及额外参数矩阵不再作为覆盖承诺，产品合同不因验收裁剪而改变。presentation 用例同在此入口，范围见其[模块文档](../presentation/README.md)。
 
 Scene 持久化与编辑器历史分别由 `project_scene_acceptance`、`editor_document_acceptance` 等宿主入口覆盖，不将 World 的 remove/restore 状态代表称为编辑器撤销重做验收。Scene 只读写 v10，见[项目场景](project-scenes.md#scene-v10)。编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)；配置选择与逐次日志遵循根 README 的验收门禁。
+
+## 后续方向
+
+以下方向已确定，尚未形成完整产品入口，不是当前能力或本轮实施承诺：
+
+- **World / Source**：保留原生任务与 Tick 依赖入口，待 Source 引用字段支持后接入同一对象、阶段与取消链。
+- **Runtime / World / Source**：可引用的核心 Class 沿同一 Runtime 类型定义驱动完整组合图实例化，统一默认值、内部引用与关系发布；核心类引用不强制包装成资产，作者资产工作流另有自己的身份与责任。
+- **Runtime / World / Editor**：文件归档与编辑事务复用状态捕获、引用修复和恢复机制。Runtime 负责类型、值与身份，World 负责组合和空间关系的验证与提交，Editor 负责事务范围和历史；保留现有身份与失败保证，尚未统一的回放不在这里宣称已完成。

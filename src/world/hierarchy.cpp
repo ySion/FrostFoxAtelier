@@ -457,9 +457,7 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
         ATELIER_TRY_BIND(reference, runtime.null_reference(*type, ValueForm::weak_reference));
         if (parent != ObjectId{}) {
             ATELIER_TRY_BIND(held, runtime.hold(parent));
-            reference = runtime.observe(held->reference());
-            if (!reference)
-                return std::unexpected(reference.error());
+            ATELIER_TRY(reference = runtime.observe(held->reference()));
         }
         auto field = runtime.with_native<Entity>(
             object, [&](Entity& value) { return runtime.reference_field(object, Access::parent(value)); });
@@ -661,9 +659,7 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
     ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
     if (origin && *origin != ObjectId{}) {
         ATELIER_TRY_BIND(held, runtime().hold(*origin, types().entity));
-        reference = runtime().observe(held->reference());
-        if (!reference)
-            return std::unexpected(reference.error());
+        ATELIER_TRY(reference = runtime().observe(held->reference()));
     }
     auto published = runtime().with_native<Entity>(object, [&](Entity& entity) -> Result<void> {
         ATELIER_TRY_BIND(field, runtime().reference_field(object, Access::origin(entity)));
@@ -682,11 +678,6 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
     if (auto applied = publish_transforms(runtime(), *changes); !applied)
         return impl_->finish(true, applied.error());
     return Commit{true, {}};
-}
-
-Result<void> World::apply_simulation_transform(ObjectId entity, math::Vector3 position, math::Quaternion rotation) {
-    const SimulationPose pose{entity, position, rotation};
-    return apply_simulation_transforms({&pose, 1});
 }
 
 Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses,
@@ -1217,9 +1208,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
             if (attachment.parent != ObjectId{}) {
                 ATELIER_TRY_BIND(held, runtime().hold(attachment.parent));
-                reference = runtime().observe(held->reference());
-                if (!reference)
-                    return std::unexpected(reference.error());
+                ATELIER_TRY(reference = runtime().observe(held->reference()));
             }
             auto slot = runtime().with_native<Entity>(attachment.entity, [&](Entity& entity) {
                 return runtime().reference_field(attachment.entity, Access::parent(entity));
@@ -1232,9 +1221,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
             if (plan.origin && *plan.origin != ObjectId{}) {
                 ATELIER_TRY_BIND(held, runtime().hold(*plan.origin, types().entity));
-                reference = runtime().observe(held->reference());
-                if (!reference)
-                    return std::unexpected(reference.error());
+                ATELIER_TRY(reference = runtime().observe(held->reference()));
             }
             auto slot = runtime().with_native<Entity>(plan.entity, [&](Entity& entity) {
                 origin_flags.push_back({&entity, plan.origin.has_value(), plan.origin && *plan.origin == ObjectId{}});

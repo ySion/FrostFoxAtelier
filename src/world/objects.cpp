@@ -99,15 +99,6 @@ Response BodySettings::response(std::uint32_t channel) const noexcept {
     return ignore_categories & bit ? Response::ignore : overlap_categories & bit ? Response::overlap : Response::block;
 }
 
-Result<void> BodySettings::set_response(std::uint32_t channel, Response value) {
-    if (channel >= 16 || (value != Response::ignore && value != Response::overlap && value != Response::block))
-        return error(ErrorCode::argument_mismatch, "Invalid collision channel or response.");
-    const auto bit = std::uint32_t{1} << channel;
-    ignore_categories = (ignore_categories & ~bit) | (value == Response::ignore ? bit : 0);
-    overlap_categories = (overlap_categories & ~bit) | (value == Response::overlap ? bit : 0);
-    return {};
-}
-
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
 Result<void> detail::body_rules(const BodySettings& value) {
     if (value.shape != ShapeKind::box && value.shape != ShapeKind::sphere && value.shape != ShapeKind::triangle_mesh &&

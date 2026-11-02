@@ -1,6 +1,6 @@
 # 物理场景验收
 
-场景由正式 Runtime、World 和 `PhysicsScene` 公开接口构建，使用仓库锁定的真实 Jolt。入口为 `acceptance/physics/main.cpp`；`scenarios.inl` 提供独立模块场景，`integration.inl` 保留静态网格、当前 Cook 格式和旋转布娃娃代表。验收宿主显式链接 `atelier_physics` 与 `atelier_presentation`，不自行初始化 Jolt 或访问后端内部对象。
+场景由正式 Runtime、World 和 `PhysicsScene` 公开接口构建，使用仓库锁定的真实 Jolt。入口为 `acceptance/physics/main.cpp`；`scenarios.inl` 提供独立模块场景，`integration.inl` 保留静态网格、当前 Cook 格式和旋转布娃娃代表。验收宿主显式链接 `atelier_physics` 与 `atelier_presentation`，不自行初始化 Jolt 或访问后端内部对象；任务退出守卫通过 World 已有的 `detail::Access` 读取活动任务数，不另设产品观察接口。
 
 Physics 本身只依赖 World、geometry 和 Jolt。创建 `PhysicsScene` 时，宿主必须传入 `MeshReader` 函数引用；编辑器及本验收接入 `presentation::read_mesh_source`，按实际 Primitive 身份取得拥有型 `geometry::MeshSource`（source + 不可变 MeshRef），不读取或持有默认材质。插值交换值 `world::PresentedPose` 同时携带显示位姿与权威位姿；Physics 的返回 span 在下一次更新、姿态/生命周期编辑、暂停或析构时失效，插值与位姿权威规则未变。
 

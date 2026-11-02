@@ -2,7 +2,7 @@ void trace_queries() {
     PhysicsFixture f;
     p::BodySettings touch;
     touch.category = 1;
-    take(touch.set_response(7, p::Response::overlap));
+    touch.overlap_categories = 1u << 7;
     auto near_body = f.make({0, 0, 0}, touch);
     p::BodySettings block;
     block.category = 2;

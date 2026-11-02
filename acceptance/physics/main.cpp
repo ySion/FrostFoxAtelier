@@ -1,6 +1,7 @@
 #include "../helpers.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
+#include "world/detail.hpp"
 
 #include <algorithm>
 #include <cmath>

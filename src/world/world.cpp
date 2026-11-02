@@ -13,7 +13,7 @@ using detail::Access;
 
 using detail::error;
 
-bool isolatable(const Error& failure) noexcept {
+static bool isolatable(const Error& failure) noexcept {
     switch (failure.code) {
     case ErrorCode::busy:
     case ErrorCode::rebuild_required:
@@ -548,29 +548,8 @@ std::uint64_t World::revision() const noexcept {
     return impl_->revision;
 }
 
-Activity World::activity() const noexcept {
-    const auto& state = *impl_;
-    Activity result{0, state.tasks.size()};
-    for (const auto& member : state.states) {
-        const auto ticks = [](const Behavior* behavior) {
-            return behavior && (behavior->tick || behavior->post_physics_tick || behavior->late_tick);
-        };
-        result.update_registrations += state.running && member.begun && member.fault == Impl::Fault::none &&
-                                       member.eligible && ticks(member.behavior);
-        for (const auto& item : member.components) {
-            result.update_registrations += state.running && item.begun && item.fault == Impl::Fault::none &&
-                                           member.eligible && item.enabled && ticks(item.behavior);
-        }
-    }
-    return result;
-}
-
 bool World::contains(ObjectId entity) const noexcept {
     return impl_->positions.contains(entity);
-}
-
-FailurePolicy World::failure_policy() const noexcept {
-    return impl_->policy;
 }
 
 Result<void> World::set_failure_policy(FailurePolicy policy) {

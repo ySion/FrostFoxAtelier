@@ -78,14 +78,15 @@ void hierarchical_lifecycle() {
     committed(world.reparent(child_id, other.id(), w::ReparentRule::keep_local));
     take(world.start_task(c_id, [later](Runtime&, ObjectId id) { return later.start(id, {}); }));
     take(world.update(0));
-    require(world.activity().tasks == 1, "Subtree sample did not own a suspended coroutine.");
+    require(w::detail::Access::state(world).tasks.size() == 1, "Subtree sample did not own a suspended coroutine.");
     events.clear();
     deactivations.clear();
     committed(world.set_enabled(other.id(), false));
     require(deactivations == std::vector<ObjectId>{leaf_id, child_id, other.id()},
             "Effective subtree disable notifications did not follow reverse Entity order.");
-    require(events.empty() && world.activity().tasks == 0 && !take(w::effective_enabled(runtime, child_id)) &&
-                !take(w::effective_enabled(runtime, leaf_id)) && take(w::inspect_entity(runtime, child_id)).enabled,
+    require(events.empty() && w::detail::Access::state(world).tasks.size() == 0 &&
+                !take(w::effective_enabled(runtime, child_id)) && !take(w::effective_enabled(runtime, leaf_id)) &&
+                take(w::inspect_entity(runtime, child_id)).enabled,
             "Ancestor disable altered local intent, repeated lifecycle or retained descendant tasks.");
     events.clear();
     activations.clear();
@@ -374,14 +375,15 @@ void attachment_space_and_authoring() {
     committed(world.start());
     take(world.start_task(counter.id(), [later](Runtime&, ObjectId receiver) { return later.start(receiver, {}); }));
     take(world.update(0));
-    require(world.activity().tasks == 1, "Space continuity fixture did not suspend a real task.");
+    require(w::detail::Access::state(world).tasks.size() == 1, "Space continuity fixture did not suspend a real task.");
     committed(world.set_space_reference(child.id(), ObjectId{}, w::ReparentRule::keep_world));
     require(take(w::space_reference(runtime, child.id())) == std::optional<ObjectId>{ObjectId{}} &&
-                world.activity().tasks == 1 && take(w::inspect_component(runtime, counter.id())).active,
+                w::detail::Access::state(world).tasks.size() == 1 &&
+                take(w::inspect_component(runtime, counter.id())).active,
             "Running origin change cancelled a task.");
     committed(world.set_space_reference(child.id(), std::nullopt, w::ReparentRule::keep_world));
     take(world.update(0));
-    require(world.activity().tasks == 0 &&
+    require(w::detail::Access::state(world).tasks.size() == 0 &&
                 std::get<float>(take(runtime.read(counter.id(), types.counter_value))) == 50.f,
             "Origin changes interrupted the suspended task's next execution.");
     auto a = take(w::create_entity(runtime));

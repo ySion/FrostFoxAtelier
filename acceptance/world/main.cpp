@@ -3,6 +3,7 @@
 #include "material/resources.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
+#include "world/detail.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -187,10 +188,10 @@ void editing_and_execution() {
     publish(deferred, "async void later() { yield; self.advance(50.0); }");
     const auto later = take(deferred.bind<void>(FunctionExecution::coroutine));
     take(world.start_task(counter.id(), [later](Runtime&, ObjectId receiver) { return later.start(receiver, {}); }));
-    require(world.activity().tasks == 1, "World did not own the real coroutine.");
+    require(w::detail::Access::state(world).tasks.size() == 1, "World did not own the real coroutine.");
     take(world.update(1.f)); // task suspends after its yield
     committed(world.set_enabled(entity.id(), false));
-    require(world.activity().tasks == 0, "Entity deactivation did not cancel its task.");
+    require(w::detail::Access::state(world).tasks.size() == 0, "Entity deactivation did not cancel its task.");
     take(world.update(1.f));
     require(std::get<float>(take(runtime.read(counter.id(), types.counter_value))) == 3.f,
             "Cancelled coroutine resumed or inactive Entity ran.");
@@ -221,9 +222,9 @@ void editing_and_execution() {
     committed(world.start());
     take(world.start_task(counter.id(), [later](Runtime&, ObjectId receiver) { return later.start(receiver, {}); }));
     take(world.update(0.f));
-    require(world.activity().tasks == 1, "Close sample did not contain a suspended real task.");
+    require(w::detail::Access::state(world).tasks.size() == 1, "Close sample did not contain a suspended real task.");
     committed(world.close());
-    require(world.activity().tasks == 0, "Close retained real task frames.");
+    require(w::detail::Access::state(world).tasks.size() == 0, "Close retained real task frames.");
     committed(w::destroy_entity(runtime, entity.id()));
     require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::invalid,
             "Explicit destroy did not invalidate a strongly held Entity.");
@@ -389,7 +390,7 @@ void failures_and_reentry() {
         return {};
     }));
     committed(world.close());
-    require(close_callbacks == 1 && world.activity().tasks == 0, "Close was not complete.");
+    require(close_callbacks == 1 && w::detail::Access::state(world).tasks.size() == 0, "Close was not complete.");
     committed(w::destroy_entity(runtime, entity.id()));
     std::puts("[pass] World close: exit callback observes the complete Detached state");
 }
@@ -554,7 +555,7 @@ void isolated_failures() {
     take(world.update(1));
     events.clear();
     take(world.update(1));
-    require(events == std::vector<Event>{{'T', d_id}, {'T', m_id}} && world.activity().tasks == 0,
+    require(events == std::vector<Event>{{'T', d_id}, {'T', m_id}} && w::detail::Access::state(world).tasks.size() == 0,
             "Tick or task failure did not stop only the failing object's Tick and tasks.");
 
     // A host clears faults after publishing fixed code: Tick resumes without a

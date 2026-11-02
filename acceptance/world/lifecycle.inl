@@ -67,9 +67,9 @@ void entity_lifecycle_and_detached_graph() {
     const auto later = take(program.bind<void>(FunctionExecution::coroutine));
     take(world.start_task(entity.id(), [later](Runtime&, ObjectId id) { return later.start(id, {}); }));
     take(world.update(0));
-    require(world.activity().tasks == 1, "Entity task was not retained after suspension.");
+    require(w::detail::Access::state(world).tasks.size() == 1, "Entity task was not retained after suspension.");
     committed(world.set_enabled(entity.id(), false));
-    require(world.activity().tasks == 0, "Disabling Entity did not cancel its own task.");
+    require(w::detail::Access::state(world).tasks.size() == 0, "Disabling Entity did not cancel its own task.");
     take(world.update(0));
     require(std::get<float>(take(runtime.read(entity.id(), value_field))) == 0.f, "Cancelled Entity task resumed.");
     committed(world.set_enabled(entity.id(), true));

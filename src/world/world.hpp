@@ -180,8 +180,6 @@ public:
 
     [[nodiscard]] Response response(std::uint32_t category) const noexcept;
 
-    [[nodiscard]] Result<void> set_response(std::uint32_t category, Response);
-
     bool operator==(const BodySettings&) const = default;
 };
 
@@ -456,12 +454,6 @@ struct RequestCompletion {
     Result<Commit> result;
 };
 
-struct Activity {
-    std::size_t update_registrations{};
-
-    std::size_t tasks{};
-};
-
 // isolate confines an object-attributable failure to that Entity or Component:
 // it is reported, excluded from its consumer, and a failed behavior stops
 // receiving Begin/Tick/tasks. halt keeps first-error shutdown and whole-call
@@ -505,12 +497,6 @@ struct CapabilityMember {
 
     bool active{}; // Enabled with an effectively enabled owner.
 };
-
-// False for failures of the World or Runtime itself (busy/reentry, code
-// publication, aborted execution, capacity/allocation); those stop the World
-// and fail the call under every policy, as does any failure after the World
-// found its own index inconsistent.
-[[nodiscard]] bool isolatable(const Error&) noexcept;
 
 // The invalid_value Diagnostic for a type-rule failure. `record` is the path of
 // the checked value inside `object`, empty when the object itself was checked.
@@ -559,8 +545,6 @@ public:
     [[nodiscard]] bool running() const noexcept;
 
     [[nodiscard]] bool closed() const noexcept;
-
-    [[nodiscard]] Activity activity() const noexcept;
 
     // Advances with every change of membership, composition, enablement, spatial
     // relations, Transform presence and capability membership, so capability
@@ -641,8 +625,6 @@ public:
     [[nodiscard]] Result<Commit> close();
 
     // Defaults to isolate. Changeable only while stopped.
-    [[nodiscard]] FailurePolicy failure_policy() const noexcept;
-
     [[nodiscard]] Result<void> set_failure_policy(FailurePolicy);
 
     // Object diagnostics in serial order; taking empties the log. Repeated
@@ -699,9 +681,6 @@ public:
     // and converted parent-first before any TRS is published; scale is retained.
     // `written`, when given, receives the exact local TRS published per Entity;
     // poses rejected under the isolate policy are not listed.
-    [[nodiscard]] Result<void> apply_simulation_transform(ObjectId entity, math::Vector3 position,
-                                                          math::Quaternion rotation);
-
     [[nodiscard]] Result<void> apply_simulation_transforms(std::span<const SimulationPose>,
                                                            std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
 

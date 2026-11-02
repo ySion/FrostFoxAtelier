@@ -304,7 +304,7 @@ void failed_lifecycle() {
                        : exit == Exit::stop     ? f.world.stop()
                                                 : f.world.close());
         }
-        require(!f.world.running() && f.world.activity().tasks == 0 && f.scene->body_count() == 0,
+        require(!f.world.running() && w::detail::Access::state(f.world).tasks.size() == 0 && f.scene->body_count() == 0,
                 "Failed World exit retained tasks or physical bodies.");
         require(!f.scene->read_body_state(first_handle) && !f.scene->read_body_state(second_handle) &&
                     !f.scene->body_handle(second.id()) && take(f.scene->overlap_sphere({4, 4, 0}, 2)).hits.empty(),
