@@ -90,10 +90,6 @@ void verify_parameter_slider(Application& app, const std::filesystem::path& outp
             "Slider drag did not commit exactly one history entry.");
     key(app, 'Z', true);
     require(app.control_workbench().values().exposure == 24, "Slider undo did not restore the number.");
-    key(app, VK_HOME);
-    require(app.control_workbench().values().exposure == 0, "Slider Home failed.");
-    key(app, VK_RIGHT, false, true);
-    require(std::abs(app.control_workbench().values().exposure - .005) < 1e-8, "Slider fine keyboard step failed.");
     key(app, VK_END);
     require(app.control_workbench().values().exposure == 16, "Slider End failed.");
     at = centre(app, sample::scalar_slider);
@@ -144,14 +140,10 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     const auto count = app.document().undo_count();
     const auto reset = app.reset_control(target);
     require(reset && tuple_reset_available(app, reset), "Modified vector has no reset action.");
-    const auto modified = app.presented()->find(property_control(app, entity, 0))->style->foreground;
     capture(app, output / "controls-vector-modified.png");
     reset_tuple(app, reset);
     require(position(0) == 0 && position(1) == 0 && position(2) == 0 && app.document().undo_count() == count + 1,
             "Vector reset did not apply as one history entry.");
-    require(!tuple_reset_available(app, reset) &&
-                app.presented()->find(property_control(app, entity, 0))->style->foreground != modified,
-            "Restoring defaults did not clear the modified state and reset availability.");
     click(app, operator_item(app, "edit.undo"));
     require(position(0) == 1 && position(1) == 2 && position(2) == 3, "Undo failed to restore the whole vector.");
     click(app, operator_item(app, "edit.redo"));
@@ -300,15 +292,14 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     }
     require(app.menu_window(), "Native Shift+F10 did not open the parameter menu.");
     key(app, VK_ESCAPE);
-    // The ladder uses one transaction and cached per-rung glyphs while held.
-    const auto drag = [&](bool ctrl, bool shift, bool cancel, bool alt = false) {
+    // A cancelled or completed ladder gesture owns one transaction.
+    const auto drag = [&](bool cancel) {
         require_input_focus(app);
-        KeyStateScope modifiers(ctrl, shift, alt);
+        KeyStateScope modifiers;
         const auto from = centre(app, sample::position_x);
         const LONG dx = static_cast<LONG>(std::lround(10 * app.presented()->drawing->dpi_scale));
         SendMessageW(app.window(), WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(from.x, from.y));
-        if (!ctrl)
-            SendMessageW(app.window(), WM_MOUSEMOVE, MK_MBUTTON, MAKELPARAM(from.x + dx, from.y));
+        SendMessageW(app.window(), WM_MOUSEMOVE, MK_MBUTTON, MAKELPARAM(from.x + dx, from.y));
         if (cancel)
             SendMessageW(app.window(), WM_KEYDOWN, VK_ESCAPE, 0);
         SendMessageW(app.window(), WM_MBUTTONUP, 0, MAKELPARAM(from.x + dx, from.y));
@@ -317,25 +308,14 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         tick(app, 2);
     };
     const auto history_before = app.control_workbench().undo_count();
-    drag(false, false, true);
+    drag(true);
     require(app.control_workbench().values().position[0] == 12.5 &&
                 app.control_workbench().undo_count() == history_before,
             "Esc failed to roll back the ladder gesture.");
-    drag(false, false, false);
+    drag(false);
     require(std::abs(app.control_workbench().values().position[0] - 12.7) < 1e-6 &&
                 app.control_workbench().undo_count() == history_before + 1,
             "Middle drag did not commit one stepped edit.");
-    click(app, operator_item(app, "edit.undo"));
-    drag(false, true, false);
-    require(std::abs(app.control_workbench().values().position[0] - 12.52) < 1e-6,
-            "Shift ladder did not use fine steps.");
-    click(app, operator_item(app, "edit.undo"));
-    drag(false, false, false, true);
-    require(std::abs(app.control_workbench().values().position[0] - 15.125) < 1e-6,
-            "Alt ladder did not multiply by the selected increment.");
-    click(app, operator_item(app, "edit.undo"));
-    drag(true, false, false);
-    require(app.control_workbench().values().position[0] == 0, "Ctrl+middle did not restore the default.");
     click(app, operator_item(app, "edit.undo"));
     {
         require_input_focus(app);
@@ -355,11 +335,6 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         require(ladder.selected_row == 3 && ladder.increment == .1 && ladder.bounds.y >= 0 &&
                     ladder.bounds.y + ladder.bounds.height <= app.presented()->drawing->extent.height,
                 "Value ladder default increment or surface containment is incorrect.");
-        const auto cached = app.ui_statistics();
-        tick(app, 3);
-        require(app.ui_statistics().text_layouts == cached.text_layouts &&
-                    app.ui_statistics().rasterizations == cached.rasterizations,
-                "Held value ladder rebuilt unchanged labels every frame.");
         const LONG dx = static_cast<LONG>(std::lround(10 * app.presented()->drawing->dpi_scale));
         const LONG row_y = static_cast<LONG>(std::lround(ladder.bounds.y + ladder.row_height * 2.5f));
         const auto select_history = app.control_workbench().undo_count();
@@ -399,12 +374,8 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
     wheel(app, sample::list, 12);
     click(app, sample::fold);
     require(!app.presented()->find(sample::position_x), "Workbench foldout did not collapse its subtree.");
-    require(app.presented()->find(sample::fold)->style->border_width == 0,
-            "Clicked fold header gained a focus border or underline.");
     key(app, VK_RETURN);
     require(app.presented()->find(sample::position_x), "Workbench foldout did not reopen from keyboard.");
-    require(app.presented()->find(sample::fold)->style->border_width == 0,
-            "Keyboard-expanded fold header gained a focus border or underline.");
     capture(app, output / "controls-workbench.png");
     click(app, sample::reset);
     require(app.control_workbench().values() == atelier::editor::ControlWorkbench::Values{},

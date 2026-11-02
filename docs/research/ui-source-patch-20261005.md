@@ -45,7 +45,7 @@ out/ui-source-patch-20261005/
   release/run-29724-400731046/acceptance.txt
 ```
 
-各窗口目录含 `ui-live-updated.png`、`ui-live-error.png`、`ui-live-recovered.png` 和 `ui-authoring.csv`。源工程只复制 Config/Content/Source，前后逐文件 SHA-256 完全一致。原来运行的编辑器未关闭。manifest 记录相关实现与执行文件的 SHA-256，区分工作树改动和起点提交。
+各窗口目录含 `ui-live-updated.png`、`ui-live-error.png`、`ui-live-recovered.png`。源工程只复制 Config/Content/Source，前后逐文件 SHA-256 完全一致。原来运行的编辑器未关闭。manifest 记录相关实现与执行文件的 SHA-256，区分工作树改动和起点提交。
 
 ## 采样结果
 

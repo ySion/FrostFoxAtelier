@@ -37,5 +37,5 @@
 
 - 开发与发布配置的 `editor_document_acceptance` 通过：默认收起、展开位置、隐藏时暂停筛选、重开查询保留、空选中状态、文档重置，以及原有 Source/JIT、项目和 Table 消费链。日志：`out/parameter-search-dev.log`、`out/parameter-search-release.log`。
 - 开发版普通窗口完整验收通过，接受 2728 帧。原生鼠标点击、空格重开、自动焦点、名称与数字字段等高、名称与图标居中、查询不进入场景历史及停靠/菜单/编辑/项目原有链通过。证据：`out/parameter-search-20261006/dev-window-final/acceptance.txt`，截图 `parameters-search-closed.png` / `parameters-search-open.png`。
-- 开发版项目与真实保存热更验收通过：展开的查询输入会话在布局/文字更新、编译失败与恢复后保留，Actor 换绑和各资源视图同时通过。证据：`out/parameter-search-20261006/dev-authoring/run-90880-431851359/acceptance.txt`，同目录 `ui-authoring.csv` / `asset-ui-authoring.csv`。
+- 开发版项目与真实保存热更验收通过：展开的查询输入会话在布局/文字更新、编译失败与恢复后保留，Actor 换绑和各资源视图同时通过。证据：`out/parameter-search-20261006/dev-authoring/run-90880-431851359/acceptance.txt`。
 - 当前用户的发布版编辑器窗口保持运行；本轮编译了发布版应用库并通过后台消费者，未替换被该进程占用的发布版可执行文件。新 UI 的真实窗口验收使用独立开发版进程。

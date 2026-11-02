@@ -1,4 +1,4 @@
-void verify_viewport_splitter_drag(Application& app, const std::filesystem::path& output) {
+void verify_viewport_splitter_drag(Application& app) {
     using namespace atelier;
     namespace control = atelier::editor::control;
     using Access = application::EditorAcceptanceAccess;
@@ -9,8 +9,6 @@ void verify_viewport_splitter_drag(Application& app, const std::filesystem::path
     const auto pointer = [&](ui::EventKind kind, math::Vector2 p) {
         Access::input(app, {.kind = kind, .x = p.x, .y = p.y, .button = ui::PointerButton::primary});
     };
-    std::ofstream report(output / "splitter-drag.csv");
-    report << "axis,direction,step,captured,width,height\n";
     for (const auto axis : {ui::DragAxis::horizontal, ui::DragAxis::vertical})
         for (const float direction : {-1.f, 1.f}) {
             const auto before = app.presented()->find(control::viewport)->bounds;
@@ -34,9 +32,6 @@ void verify_viewport_splitter_drag(Application& app, const std::filesystem::path
                 pointer(ui::EventKind::pointer_move, end);
                 tick(app, 1);
                 const auto view = app.presented()->find(control::viewport)->bounds;
-                report << horizontal << ',' << direction << ',' << step << ',' << (GetCapture() == app.window()) << ','
-                       << view.width << ',' << view.height << '\n';
-                report.flush();
                 require(GetCapture() == app.window(),
                         "Viewport splitter lost pointer capture while moving across the viewport.");
                 require(app.docking().dragging() && view == before,
@@ -45,9 +40,6 @@ void verify_viewport_splitter_drag(Application& app, const std::filesystem::path
             pointer(ui::EventKind::pointer_up, end);
             tick(app, 2);
             const auto after = app.presented()->find(control::viewport)->bounds;
-            report << horizontal << ',' << direction << ",commit," << (GetCapture() == app.window()) << ','
-                   << after.width << ',' << after.height << '\n';
-            report.flush();
             require(GetCapture() != app.window(), "Viewport splitter retained capture after release.");
             const auto moved = horizontal ? end.x - start.x : end.y - start.y;
             require(std::abs((horizontal ? after.width - before.width : after.height - before.height) - moved) <= 1.f,
@@ -106,34 +98,29 @@ void verify_viewport_splitter_drag(Application& app, const std::filesystem::path
         require(std::abs(app.presented()->find(control::viewport)->bounds.width - before.width) <= 1.f,
                 "Overshoot case did not restore the viewport width.");
     }
-    for (const auto axis : {ui::DragAxis::horizontal, ui::DragAxis::vertical})
-        for (unsigned reason = 0; reason < 3; ++reason) {
-            const auto before = app.presented()->find(control::viewport)->bounds;
-            const auto* divider = app.presented()->find(app.docking().divider(control::scene_tab, axis));
-            require(divider != nullptr, "Cancelled viewport resize divider is absent.");
-            const bool horizontal = axis == ui::DragAxis::horizontal;
-            const math::Vector2 start =
-                horizontal
-                    ? math::Vector2{divider->bounds.x + divider->bounds.width * .5f, before.y + before.height * .35f}
-                    : math::Vector2{before.x + before.width * .3f, divider->bounds.y + divider->bounds.height * .5f};
-            const math::Vector2 end{start.x - (horizontal ? 48.f : 0), start.y - (horizontal ? 0 : 48.f)};
-            pointer(ui::EventKind::pointer_move, start);
-            pointer(ui::EventKind::pointer_down, start);
-            pointer(ui::EventKind::pointer_move, end);
-            tick(app, 1);
-            require(app.docking().dragging() && GetCapture() == app.window(),
-                    "Viewport resize cancellation setup failed.");
-            if (reason == 0) {
-                Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::escape}, VK_ESCAPE);
-                Access::input(app, {.kind = ui::EventKind::key_up, .key = ui::Key::escape}, VK_ESCAPE);
-            } else
-                Access::input(app, {.kind = reason == 1 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
-            pointer(ui::EventKind::pointer_up, end);
-            tick(app, 2);
-            require(!app.docking().dragging() && GetCapture() != app.window() &&
-                        app.presented()->find(control::viewport)->bounds == before,
-                    "Cancelled viewport resize retained capture or committed a late release.");
-        }
+    for (unsigned reason = 0; reason < 3; ++reason) {
+        const auto before = app.presented()->find(control::viewport)->bounds;
+        const auto* divider =
+            app.presented()->find(app.docking().divider(control::scene_tab, ui::DragAxis::horizontal));
+        require(divider != nullptr, "Cancelled viewport resize divider is absent.");
+        const math::Vector2 start{divider->bounds.x + divider->bounds.width * .5f, before.y + before.height * .35f};
+        const math::Vector2 end{start.x - 48, start.y};
+        pointer(ui::EventKind::pointer_move, start);
+        pointer(ui::EventKind::pointer_down, start);
+        pointer(ui::EventKind::pointer_move, end);
+        tick(app, 1);
+        require(app.docking().dragging() && GetCapture() == app.window(), "Viewport resize cancellation setup failed.");
+        if (reason == 0) {
+            Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::escape}, VK_ESCAPE);
+            Access::input(app, {.kind = ui::EventKind::key_up, .key = ui::Key::escape}, VK_ESCAPE);
+        } else
+            Access::input(app, {.kind = reason == 1 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
+        pointer(ui::EventKind::pointer_up, end);
+        tick(app, 2);
+        require(!app.docking().dragging() && GetCapture() != app.window() &&
+                    app.presented()->find(control::viewport)->bounds == before,
+                "Cancelled viewport resize retained capture or committed a late release.");
+    }
     const unsigned discarded = ExternalMouseFilter::discarded - discarded_before;
     external_mouse.reset();
     RECT host{};

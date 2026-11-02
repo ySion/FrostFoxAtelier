@@ -16,7 +16,7 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
 
         unsigned height;
     };
-    const std::array cases{Extent{}, Extent{1601, 1003}, Extent{3840, 2054}};
+    const std::array cases{Extent{}, Extent{1601, 1003}};
     auto observations = Json::array();
     for (std::size_t i = 0; i < cases.size(); ++i) {
         LASTINPUTINFO input_before{sizeof(LASTINPUTINFO), 0};

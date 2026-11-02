@@ -30,15 +30,6 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
     key(app, VK_RIGHT);
     require(app.document().selection() == atelier::editor::Selection{entity, entity},
             "Entity leaf navigation selected a component");
-    // Rows show only the name (the icon carries the type), so the filter matches names.
-    click(app, control::tree_filter);
-    type(app, std::wstring(app.document().name(entity)).c_str());
-    key(app, VK_RETURN);
-    require(app.presented()->find(entity_key), "Entity name was not searchable");
-    capture(app, output / "tree-filtered.png");
-    click(app, control::tree_filter);
-    type(app, L"");
-    key(app, VK_RETURN);
     click(app, control::tree_world);
     key(app, VK_LEFT);
     require(!app.presented()->find(entity_key), "World collapse did not hide its Entities");

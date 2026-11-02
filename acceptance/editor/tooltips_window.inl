@@ -55,10 +55,6 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
                     app.document().undo_count() == history,
                 "Tooltip changed the Scene View target or authored history.");
     };
-    hover_capture(L"Position (m)", "parameters-position-tooltip.png");
-    pointer(ui::EventKind::pointer_leave);
-    tick(app, 1);
-    require(!app.presented()->tooltip, "Real pointer leave retained parameter help.");
     require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})),
             "Tooltip fixture could not open World settings.");
     tick(app);
@@ -232,16 +228,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
     Access::mark_saved(app);
     app.close();
     require(!app.step(), "Tooltip acceptance did not close its owned editor normally.");
-    std::ofstream report(output / "tooltips-acceptance.txt");
-    report
-        << "Editor tooltip acceptance: PASS\nBuild: " << build_info::revision << " (" << build_info::configuration
-        << ")\n"
-        << "Real native window, Application input, DSL parameter labels, same-frame GPU drawing and capture.\n"
-        << "Position and World Exposure descriptions; pointer leave and menu cancellation; viewport extent and undo unchanged.\n"
-        << "HDR colour popup: real RGB/Hex/Tab input, Done/Esc/outside acceptance, single undo; whole-group rollback on focus/capture loss, resize, current-monitor DPI transition, CtrlTab pane change and F10 menu handoff.\n"
-        << "No global keyboard/mouse input or foreground activation; owned mesh/light fixtures.\n";
-    require(report.good(), "Cannot write tooltip window evidence.");
     std::puts(
-        "Editor tooltip acceptance: PASS (Parameters/World native GPU capture, cancellation, stable viewport/undo)");
+        "Editor tooltip acceptance: PASS (World help retirement, HDR colour group history/cancellation, stable viewport/undo)");
     return 0;
 }

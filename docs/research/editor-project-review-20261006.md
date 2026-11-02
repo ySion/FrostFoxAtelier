@@ -66,7 +66,7 @@ UE 的 UClass 包含类默认对象及生成来源，Blueprint 的 Class Default
 | Release 工程与主编辑器 DSL 保存热更 | PASS | `out/acceptance-resume-ui-release/run-83284-497998734/` |
 | Dev Code 与工程 Source 工作流 | PASS，495 个接受帧 | `out/acceptance-resume-source-dev/` |
 
-保存热更专项验证语法与真实布局错误不发布候选、旧查询输入身份及折叠状态保留、修复后恢复更新、活动字段草稿保留、最小化期间不发布及恢复后单次发布。`ui-authoring.csv` 中布局失败保持 revision 3，修复发布 revision 4；最小化恢复发布 revision 6。资源浏览器同步覆盖布局和绑定错误、Tiles 布局变更及恢复。
+保存热更专项验证语法与真实布局错误不发布候选、旧查询输入身份及折叠状态保留、修复后恢复更新、活动字段草稿保留、最小化期间不发布及恢复后单次发布。该次记录中布局失败保持 revision 3，修复发布 revision 4；最小化恢复发布 revision 6。资源浏览器同步覆盖布局和绑定错误、Tiles 布局变更及恢复。
 
 源码窗口专项覆盖真实菜单、光标与选区、Ctrl+S/JIT 发布、错误保存与诊断点击、修正、大段剪贴板和撤销；随后验证 Actor Structure 添加 Source 组件、数值/bool 属性、场景保存重开、跨文件诊断、独立游戏运行和 UI 预览以及关闭。本次没有重跑系统 IME；此前的用户中止记录不计入通过结果。
 

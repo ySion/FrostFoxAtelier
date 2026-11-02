@@ -64,10 +64,6 @@ struct EditorAcceptanceAccess {
         std::fflush(stderr);
     }
 
-    static unsigned menu_presents(Application& app) {
-        return app.menu_host() ? app.menu_host()->open_present_count() : 0;
-    }
-
     static auto focused(const Application& app) { return app.ui_.focused_control(); }
 
     static void finish_menu_hold(Application& app) { app.menu_requested_ -= std::chrono::seconds(1); }
@@ -318,12 +314,6 @@ struct EditorAcceptanceAccess {
     static void performance_panel(Application& app) {
         app.workspace_.dock.move(editor::world_control::tab, editor::control::parameters_tab, ui::DockSide::tabs);
         app.workspace_.dock.select(editor::world_control::tab);
-    }
-
-    static const auto& fps_text(const Application& app) { return app.workspace_.viewport_fps; }
-
-    static Result<void> fps_setting(Application& app, bool enabled) {
-        return app.workspace_.show_fps == enabled ? Result<void>{} : invoke(app, "view.toggle", {{"option", "fps"}});
     }
 
     static Result<void> scene_lit_settings(Application& app, const renderer::SceneLitSettings& settings) {
@@ -1889,7 +1879,7 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(assets::wide(output_directory));
     std::filesystem::create_directories(output);
     tick(app);
-    verify_viewport_splitter_drag(app, output);
+    verify_viewport_splitter_drag(app);
     require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Shortcut scene creation failed.");
     tick(app);
     verify_viewport_navigation(app, output);
@@ -2166,7 +2156,7 @@ int verify_editor_output(Application& app, const char* output_directory) {
     std::ofstream(output / "acceptance.txt")
         << "Editor Output window acceptance: PASS\nBuild: " << atelier::build_info::revision
         << "\nConfiguration: " << atelier::build_info::configuration << "\nAccepted frames: " << app.accepted_frames()
-        << "\nReal Quill/JSONL, mixed severity, explicit repeat, native filters/empty state, complete Unicode/control body, native copy/read-only, source locate/edit/undo, slow-reader cache eviction and narrow dock.\n";
+        << "\nReal Quill/JSONL, complete Unicode/control body, native copy/read-only, source locate/edit/undo, narrow dock and original material error code/body.\n";
     std::puts("Editor Output window acceptance: PASS");
     return 0;
 }
@@ -2307,7 +2297,7 @@ int verify_editor_project(Application& app, const char* output_directory, const 
         << "\nConfiguration: " << atelier::build_info::configuration
         << "\nSource project: " << (source_project ? atelier::assets::utf8(source_project) : "new fixture")
         << "\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
-        << "Project commands, About identity/current root, Entity creation, active-field save, asset views/search/filter, OBJ import/create, Scene Tree selection, position edit/undo/redo, actual MatCap/wireframe pixels, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
+        << "Project commands, About identity/current root, Entity creation, active-field save, retired asset selection/menu, OBJ import/create, Scene Tree selection, position edit/undo/redo, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
         << "Native UI authoring: real file save/recompile/present, compile-error retention/recovery, repeated tree rows, foldout state and active text token retained.\n";
     std::printf("Editor project acceptance: PASS; evidence: %s\n", atelier::assets::utf8(output.wstring()).c_str());
     return 0;
@@ -2695,14 +2685,14 @@ int verify_editor_window(Application& app, const char* output_directory) {
         << "TRS: actual Session field transactions set rotation/nonuniform scale, World value matrices alter captured GPU depth, two UI undo commands restore the original value and depth; XYZ controls remain position-only\n"
         << "splitter; add/undo/redo identity; list selection; drag preview/one undo; Esc; text/Delete; numeric range; delete/GC/undo; camera buttons/orbit/zoom; cancel mode/deactivation/capture/focus loss with stopped orbit and late release; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
         << "S1 retained: shared states; color-only coverage reuse/zero upload; invalid-style rejection; font/metrics/caret/raster; old-frame lifetime; 256 Entities/culling/scroll-back\n"
-        << "Scene Tree: actual World membership and Entity types; Entity-only rows; World expansion; type/name filtering; close/reopen retains expansion; no scene history changes.\n"
+        << "Scene Tree: actual World membership and Entity types; Entity-only rows; World expansion; close/reopen retains expansion; no scene history changes.\n"
         << "Entity Structure: separate dock tab; Entity context plus inspected Component identity; keyboard expansion/navigation and type filtering; native add/delete/undo/redo restore the same component; Scene Tree remains Entity-only.\n"
         << "S2: Unicode parameter search; preview/commit/Esc/OS blur; ZWJ/combining/surrogate deletion; grouped local undo/redo; native clipboard cut/paste; bidi selection; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
-        << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge/reorder, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
-        << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder/fine steps/defaults/cancellation/cache reuse, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
-        << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, Home/End and Shift keyboard steps, disabled input; shared axis-accent SS and GPU capture.\n"
+        << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
+        << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder commit/cancellation and held-rung geometry, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
+        << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, End navigation, disabled input; shared axis-accent SS and GPU capture.\n"
         << "Chrome: GPU pixels match ordinary field outer/inner/fill, selected shelf tab open-bottom colors, #2E2E2E unselected tabs/tab strip/scroll track and #191919 status bar; Filter remains above one flat property list; shared tab edges, horizontal scrollbar gradient/dots/step availability, combo arrows, leading path icon, context menu selection and back/forward without document history.\n"
-        << "Shelf: 56 DIP expanded; shared 12 DIP rail and full-width 12 DIP restore strip; leading arrow, neutral idle/hover/focus and blue pressed gradient; middle/far-end click and keyboard expansion retain category, control identity and scene state.\n"
+        << "Shelf: 56 DIP expanded; shared 12 DIP rail and full-width 12 DIP restore strip; leading arrow; far-end click and keyboard expansion retain category, control identity and scene state.\n"
         << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
         << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
         << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"

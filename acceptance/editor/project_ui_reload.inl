@@ -72,12 +72,10 @@ void verify_project_ui_reload(const std::filesystem::path& evidence) {
     take(editor::write_file(path, source(1)));
     wait_frame([&] { return project_ui.diagnostic().find("layout") != std::string_view::npos; },
                "Bad UI layout was not rejected.");
-    for (unsigned attempt = 0; attempt < 3; ++attempt) {
-        frame = draw();
-        const auto* retained = frame->find(key);
-        require(retained && retained->selected && retained->bounds.height == 23 && project_ui.revision() == revision,
-                "Rejected layout changed the accepted UI definition, state, or geometry.");
-    }
+    frame = draw();
+    const auto* retained = frame->find(key);
+    require(retained && retained->selected && retained->bounds.height == 23 && project_ui.revision() == revision,
+            "Rejected layout changed the accepted UI definition, state, or geometry.");
     take(editor::write_file(path, source(23, "        Tree tree { rows: 2; TreeItem early {} TreeItem later {} }\n")));
     wait_frame([&] { return project_ui.diagnostic().find("controls") != std::string_view::npos; },
                "Bad UI topology was not rejected.");

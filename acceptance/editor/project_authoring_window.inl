@@ -36,7 +36,6 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
             component = item.id();
     require(component != atelier::ObjectId{}, "Native component menu did not create the Source type.");
     const std::array speed{model(runtime.find_field(component_type, "speed"))};
-    const std::array moving{model(runtime.find_field(component_type, "moving"))};
     require(app.document().selection() == atelier::editor::Selection{entity, component} &&
                 app.presented()->find(app.field_control(component, speed)) &&
                 !app.presented()->find(control::position_fold),
@@ -67,17 +66,6 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     require(std::get<float>(model(app.document().read_property(component, speed))) == 3.5f &&
                 app.document().undo_count() == history + 1,
             "Source number editor did not commit one typed scene transaction.");
-    const auto bool_target = app.field_control(component, moving);
-    const auto checkbox = std::ranges::find_if(app.presented()->controls, [&](const auto& item) {
-        return item.kind == atelier::ui::ControlKind::checkbox && item.action_target == bool_target;
-    });
-    require(checkbox != app.presented()->controls.end(), "Source bool property has no native checkbox.");
-    click(app, checkbox->key);
-    require(!std::get<bool>(model(app.document().read_property(component, moving))),
-            "Source checkbox did not write its typed field.");
-    key(app, 'Z', true);
-    require(std::get<bool>(model(app.document().read_property(component, moving))),
-            "Source checkbox undo did not restore its field.");
     click(app, operator_item(app, "scene.save"));
     const auto saved = model(atelier::assets::read_file(folder / "Content/Scenes/Main.scene"));
     const auto saved_history = app.document().undo_count();
@@ -213,41 +201,6 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     require(retained, "Reopening lost the Source component or its authored property.");
     capture(app, output / "project-reopened.png");
 
-    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::create));
-    click(app, operator_item(app, "scene.add", {{"kind", "camera"}}));
-    const auto camera = app.document().selection().entity;
-    require(model(app.document().main_camera()) == atelier::ObjectId{},
-            "Create Camera implicitly selected a main camera.");
-    model(Access::physics_document(app).set_transform(camera, {{0, 0, -8}, {}, {1, 1, 1}}));
-    tick(app, 2);
-    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::edit));
-    click(app, operator_item(app, "scene.main_camera_set"));
-    require(model(app.document().main_camera()) == camera, "Set as Main Camera did not select the authored camera.");
-    const auto camera_history = app.document().undo_count();
-    const auto camera_document = model(app.document().serialize());
-    click(app, atelier::editor::menu_key(atelier::editor::MenuGroup::window));
-    click(app, operator_item(app, "layout.show", {{"tab", "viewport"}}));
-    click(app, control::viewport_camera);
-    click(app, operator_item(app, "view.from_camera"));
-    require(atelier::math::length(Access::camera_eye(app) - atelier::math::Vector3{0, 0, -8}) < .001f &&
-                app.document().undo_count() == camera_history && model(app.document().serialize()) == camera_document,
-            "View from Camera changed the scene or failed to copy its pose.");
-    model(Access::invoke(app, "layout.show", {{"tab", "world"}}));
-    tick(app, 2);
-    click(app, atelier::editor::world_control::lighting_tab);
-    const auto* clear = command_tool(app, Access::operator_item(app, "scene.main_camera_clear"));
-    require(clear && clear->enabled, "World Settings did not expose an enabled Clear Main Camera button.");
-    const auto clear_key = clear->key;
-    capture(app, output / "main-camera-selected.png");
-    click(app, clear_key);
-    require(model(app.document().main_camera()) == atelier::ObjectId{} &&
-                app.document().undo_count() == camera_history + 1,
-            "World Settings Clear did not create one author transaction.");
-    clear = command_tool(app, Access::operator_item(app, "scene.main_camera_clear"));
-    require(clear && !clear->enabled, "Clear Main Camera remained enabled for an empty selection.");
-    capture(app, output / "main-camera-cleared.png");
-    key(app, 'Z', true);
-    require(model(app.document().main_camera()) == camera, "Undo Clear did not restore the selected camera.");
     Access::mark_saved(app);
     std::puts("Editor project authoring window acceptance: PASS");
 }

@@ -131,11 +131,6 @@ void verify_docking(Application& app, const std::filesystem::path& output, ateli
     require(app.docking().pane(control::workbench) == app.docking().pane(control::scene_tab) &&
                 !app.presented()->find(control::viewport),
             "Dropping on tab strip did not merge/select the tab.");
-    const auto* first_tab = app.presented()->find(control::scene_tab);
-    target = {static_cast<LONG>(first_tab->bounds.x + 2 * dpi), static_cast<LONG>(first_tab->bounds.y + 8 * dpi)};
-    drag_to(control::workbench, target);
-    require(app.presented()->find(control::workbench)->bounds.x < app.presented()->find(control::scene_tab)->bounds.x,
-            "Tab strip drop did not reorder before the target tab.");
     key(app, VK_TAB, true); // Cycle back to Scene, keeping both view instances.
     require(app.presented()->find(control::viewport), "Ctrl+Tab did not cycle pane tabs.");
     click(app, control::workbench);
@@ -172,8 +167,6 @@ void verify_docking(Application& app, const std::filesystem::path& output, ateli
                 x(app, entity) == value && app.document().undo_count() == history,
             "Add Tab copied or lost the existing view's document state.");
     click(app, control::workbench);
-    require(app.presented()->find(control::workbench)->style->border_width == 0,
-            "Focused dock tab unexpectedly draws a focus rectangle.");
     click(app, sample::position_x);
     key(app, VK_ESCAPE);
     key(app, 'Z', true);

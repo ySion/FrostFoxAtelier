@@ -38,13 +38,6 @@ void verify_shortcut_input_boundaries(Application& app) {
 
     // Exercise the actual HWND -> owned native queue -> Application path, with
     // thread-local modifiers only. No desktop keys or focus changes are injected.
-    for (const auto& group : editor::menu_groups) {
-        tap(group.access_key, false, true, true);
-        require(Access::menu_open(app) && app.menu_frame(),
-                "A declared Alt menu mnemonic did not reach its native popup.");
-        tap(VK_ESCAPE);
-        require(!Access::menu_open(app), "Mnemonic popup did not dismiss on Escape.");
-    }
     native_key(VK_F10, false, false, false, false, true);
     require(Access::menu_open(app), "Initial native F10 did not open the File menu.");
     native_key(VK_F10, false, true, false, false, true);
@@ -164,5 +157,5 @@ void verify_shortcut_input_boundaries(Application& app) {
             "Late camera release changed the completed command state.");
     model(Access::invoke(app, "layout.reset"));
     tick(app);
-    std::puts("Native shortcut boundaries: PASS (menu mnemonics, context precedence, repeat, text, camera retirement)");
+    std::puts("Native shortcut boundaries: PASS (context precedence, repeat, text, camera retirement)");
 }

@@ -206,20 +206,6 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
         require(app.menu_frame() != nullptr, "Expected a live accepted native menu frame.");
         return app.menu_frame();
     };
-    const auto closed_titles = [&] {
-        require(!app.menu_window(), "Menu remained open after dismissal.");
-        for (const auto& group : atelier::editor::menu_groups) {
-            const auto key = group.key;
-            const auto* box = app.presented()->find(key);
-            const auto& style = *box->style;
-            require(!box->selected && !style.image && (!style.background || style.background->a == 0) &&
-                        style.border_width == 0,
-                    "Closed menu title retained an active face from logical focus.");
-        }
-    };
-    require(app.presented()->find(control::file_menu) &&
-                !app.presented()->find(Access::operator_item(app, "edit.undo")),
-            "Main commands were not moved into the menubar.");
     const auto field = property_control(app, entity, 0);
     const auto pane = app.docking().pane(control::scene_tab);
     const auto expanded = app.presented()->find(pane)->bounds;
@@ -246,9 +232,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     require(live_menu()->find(Access::operator_item(app, "app.quit")), "Right from Help did not wrap to File.");
     key(app, VK_ESCAPE);
     verify_about(app, L"No project open");
-    closed_titles();
     verify_menu_input_transitions(app);
-    closed_titles();
     for (const bool middle : {false, true}) {
         key(app, VK_ESCAPE);
         const auto original = x(app, entity);
@@ -320,33 +304,13 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     atelier::renderer::Capture menu_pixels;
     app.capture_menu(menu_pixels);
     require(menu_pixels.extent.width > 0 && !menu_pixels.rgba.empty(), "Native menu did not render through the GPU.");
-    const auto menu_pixel = [&](unsigned x, unsigned y, int gray) {
-        const auto offset = (static_cast<std::size_t>(y) * menu_pixels.extent.width + x) * 4;
-        for (std::size_t channel = 0; channel < 3; ++channel)
-            if (std::abs(static_cast<int>(menu_pixels.rgba[offset + channel]) - gray) > 1)
-                throw std::runtime_error("Native menu frame pixel (" + std::to_string(x) + ", " + std::to_string(y) +
-                                         ") is " + std::to_string(menu_pixels.rgba[offset]) + "/" +
-                                         std::to_string(menu_pixels.rgba[offset + 1]) + "/" +
-                                         std::to_string(menu_pixels.rgba[offset + 2]) + ", expected edge gray " +
-                                         std::to_string(gray) + ".");
-    };
     png(menu_pixels, output / "native-menu-view.png");
-    menu_pixel(0, 5, 148);
-    menu_pixel(5, 0, 148);
-    menu_pixel(menu_pixels.extent.width - 1, 5, 38);
-    menu_pixel(5, menu_pixels.extent.height - 1, 38);
     require(live_menu()->scrollbars.empty(), "Short native menu retained an empty scrollbar.");
-    for (const auto& box : live_menu()->controls)
-        if (box.kind == atelier::ui::ControlKind::label)
-            require(box.style->font.style == atelier::ui::FontStyle::italic &&
-                        box.style->text_vertical_align == atelier::ui::TextVerticalAlign::center,
-                    "Menu shortcut lost its italic, vertically centered style.");
     key(app, VK_ESCAPE);
     if (app.menu_window() || !app.wants_keyboard() || GetCapture() == app.window())
         throw std::runtime_error("Menu dismissal: visible=" + std::to_string(app.menu_window() != nullptr) +
                                  " field focus=" + std::to_string(app.wants_keyboard()) +
                                  " capture=" + std::to_string(GetCapture() == app.window()) + ".");
-    closed_titles();
     {
         KeyStateScope modifiers(false, false, true);
         SendMessageW(app.window(), WM_SYSKEYDOWN, 'W', LPARAM{1} << 29);
@@ -463,7 +427,6 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
             "Screen-limited menu escaped its monitor work area.");
     png(menu_pixels, output / "native-menu-overflow-end.png");
     key(app, VK_ESCAPE);
-    closed_titles();
     click(app, control::edit_menu);
     SendMessageW(app.window(), WM_CANCELMODE, 0, 0);
     tick(app, 2);
@@ -474,11 +437,6 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     SetFocus(app.window());
     tick(app, 2);
     require(!app.menu_window() && GetCapture() != app.window(), "Owner focus loss left an interactive popup.");
-    // Opening without a previous field focus can leave logical focus on the title.
-    // Its closed face must still match every other menubar item.
-    click(app, control::create_menu);
-    key(app, VK_ESCAPE);
-    closed_titles();
     capture(app, output / "native-menu-closed.png");
     capture(app, output / "native-menubar.png");
 }

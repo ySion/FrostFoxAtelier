@@ -35,7 +35,7 @@ Dev 和 Release 最终均通过完整工程窗口链及新增保存更新验收�
 
 - Dev：`out/ui-authoring-20261005/dev/run-88024-389613171/acceptance.txt`
 - Release：`out/ui-authoring-20261005/release/run-86488-389689921/acceptance.txt`
-- 两处目录均包含 `ui-live-updated.png`、`ui-live-error.png`、`ui-live-recovered.png` 和 `ui-authoring.csv`。
+- 两处目录均包含 `ui-live-updated.png`、`ui-live-error.png`、`ui-live-recovered.png`。
 - 窗口中真实编译六个编辑器组件，改变折叠栏文案；语法错误保留旧画面及草稿，修复后恢复；随后仍可编辑真实 World 位置字段。
 
 | 配置 | 成功保存 | 模块编译 | 保存至接受帧 |

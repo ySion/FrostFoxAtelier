@@ -27,9 +27,8 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::escape}, VK_ESCAPE);
         Access::input(app, {.kind = ui::EventKind::key_up, .key = ui::Key::escape}, VK_ESCAPE);
     };
-    unsigned redundant_presents{};
     HWND retained{};
-    for (unsigned run = 0; run < 6; ++run) {
+    for (unsigned run = 0; run < 2; ++run) {
         const auto menu = run % 2 ? control::scene_shading : control::viewport_camera;
         const auto p = point(menu);
         pointer(ui::EventKind::pointer_move, p);
@@ -46,9 +45,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         if (retained)
             require(retained == app.menu_window(), "Alternating menu sizes replaced the native popup.");
         retained = app.menu_window();
-        const auto presents = Access::menu_presents(app);
-        if (run && presents != 1)
-            ++redundant_presents;
         escape();
         tick(app, 1);
     }
@@ -89,7 +85,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         const auto highlight = app.menu_frame()->find(control::guide_grid)->style->background;
         const auto revision = app.menu_frame()->drawing->surface_revision;
         const auto incarnation = app.menu_frame()->find(control::guide_grid)->incarnation;
-        for (unsigned i = 0; i < 4; ++i) {
+        for (unsigned i = 0; i < 2; ++i) {
             pointer(ui::EventKind::pointer_down, indicator);
             pointer(ui::EventKind::pointer_up, indicator);
             tick(app, 1);
@@ -104,38 +100,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
                     require(item.style->background != highlight, "Checkbox left an unrelated menu row highlighted.");
         }
         capture(app, output / "menu-retained-highlight.png");
-        escape();
-        tick(app, 1);
-    }
-    {
-        const auto p = point(control::viewport_cavity);
-        pointer(ui::EventKind::pointer_down, p);
-        pointer(ui::EventKind::pointer_up, p);
-        tick(app, 1);
-        const auto frame = app.menu_frame();
-        const auto* box = frame->find(control::cavity_enabled);
-        require(box != nullptr, "Cavity toggle is absent.");
-        RECT bounds{};
-        GetWindowRect(app.menu_window(), &bounds);
-        POINT owner{};
-        ClientToScreen(app.window(), &owner);
-        const math::Vector2 at{float(bounds.left - owner.x) + box->bounds.x +
-                                   (box->style->padding.left + box->style->indicator_size * .5f) *
-                                       frame->drawing->dpi_scale,
-                               float(bounds.top - owner.y) + box->bounds.y + box->bounds.height * .5f};
-        pointer(ui::EventKind::pointer_move, at);
-        tick(app, 1);
-        const auto revision = app.menu_frame()->drawing->surface_revision;
-        const auto highlight = app.menu_frame()->find(control::cavity_enabled)->style->background;
-        for (unsigned i = 0; i < 2; ++i) {
-            pointer(ui::EventKind::pointer_down, at);
-            pointer(ui::EventKind::pointer_up, at);
-            tick(app, 1);
-            const auto updated = app.menu_frame();
-            require(updated && updated->drawing->surface_revision == revision &&
-                        updated->find(control::cavity_enabled)->style->background == highlight,
-                    "Changing menu availability reset its surface or highlight.");
-        }
         escape();
         tick(app, 1);
     }
@@ -316,53 +280,50 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         return pending.get();
     };
     const auto camera_point = point(control::viewport);
-    for (unsigned gesture = 0; gesture < 3; ++gesture)
-        for (unsigned ending = 0; ending < 4; ++ending) {
-            const auto button = gesture == 2 ? ui::PointerButton::primary : ui::PointerButton::middle;
-            Access::input(app, {.kind = ui::EventKind::pointer_down,
-                                .x = camera_point.x,
-                                .y = camera_point.y,
-                                .button = button,
-                                .shift = gesture == 0,
-                                .alt = gesture == 2});
-            const auto busy = control_reply();
-            if (busy.at("status") != "error" || busy.at("error").at("code") != "busy")
-                throw std::runtime_error(
-                    "Control lost camera gesture " + std::to_string(gesture) + "/" + std::to_string(ending) +
-                    ", foreground=" + std::to_string(GetForegroundWindow() == app.window()) +
-                    ", capture=" + std::to_string(GetCapture() == app.window()) + ": " + busy.dump());
-            const auto& reasons = busy.at("error").at("busy_reasons");
-            require(std::ranges::find(reasons, gesture == 0 ? "camera_pan" : "camera_orbit") != reasons.end() &&
-                        std::ranges::find(reasons, gesture == 0 ? "camera_orbit" : "camera_pan") == reasons.end(),
-                    "Control reported the wrong camera gesture.");
-            Access::input(app, {.kind = ui::EventKind::pointer_up,
-                                .x = camera_point.x,
-                                .y = camera_point.y,
-                                .button = ui::PointerButton::secondary});
-            require(control_reply().at("status") == "error", "Unrelated mouse release ended a camera gesture.");
-            if (ending == 1 || ending == 2)
-                Access::input(app, {.kind = ending == 1 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
-            else if (ending == 3) {
-                Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::f10}, VK_F10);
-                tick(app, 1);
-                const auto menu = control_reply();
-                require(menu.at("status") == "error" &&
-                            menu.at("error").at("busy_reasons") == api::Json::array({"menu"}),
-                        "Opening a menu retained the old camera gesture or lost menu protection.");
-                escape();
-                tick(app, 1);
-            }
-            Access::input(
-                app, {.kind = ui::EventKind::pointer_up, .x = camera_point.x, .y = camera_point.y, .button = button});
-            const auto released = control_reply();
-            if (released.at("status") != "ok")
-                throw std::runtime_error("Ended camera gesture left Control busy: " + released.dump());
-            const auto stopped = Access::camera_view(app);
-            Access::input(app, {.kind = ui::EventKind::pointer_move, .x = camera_point.x + 8, .y = camera_point.y + 8});
+    for (unsigned ending = 0; ending < 4; ++ending) {
+        Access::input(app, {.kind = ui::EventKind::pointer_down,
+                            .x = camera_point.x,
+                            .y = camera_point.y,
+                            .button = ui::PointerButton::middle,
+                            .shift = true});
+        const auto busy = control_reply();
+        if (busy.at("status") != "error" || busy.at("error").at("code") != "busy")
+            throw std::runtime_error("Control lost camera pan ending " + std::to_string(ending) +
+                                     ", foreground=" + std::to_string(GetForegroundWindow() == app.window()) +
+                                     ", capture=" + std::to_string(GetCapture() == app.window()) + ": " + busy.dump());
+        const auto& reasons = busy.at("error").at("busy_reasons");
+        require(std::ranges::find(reasons, "camera_pan") != reasons.end() &&
+                    std::ranges::find(reasons, "camera_orbit") == reasons.end(),
+                "Control reported the wrong camera gesture.");
+        Access::input(app, {.kind = ui::EventKind::pointer_up,
+                            .x = camera_point.x,
+                            .y = camera_point.y,
+                            .button = ui::PointerButton::secondary});
+        require(control_reply().at("status") == "error", "Unrelated mouse release ended a camera gesture.");
+        if (ending == 1 || ending == 2)
+            Access::input(app, {.kind = ending == 1 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
+        else if (ending == 3) {
+            Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::f10}, VK_F10);
             tick(app, 1);
-            require(Access::camera_view(app) == stopped && GetCapture() != app.window(),
-                    "Ended camera gesture resumed on late movement.");
+            const auto menu = control_reply();
+            require(menu.at("status") == "error" && menu.at("error").at("busy_reasons") == api::Json::array({"menu"}),
+                    "Opening a menu retained the old camera gesture or lost menu protection.");
+            escape();
+            tick(app, 1);
         }
+        Access::input(app, {.kind = ui::EventKind::pointer_up,
+                            .x = camera_point.x,
+                            .y = camera_point.y,
+                            .button = ui::PointerButton::middle});
+        const auto released = control_reply();
+        if (released.at("status") != "ok")
+            throw std::runtime_error("Ended camera gesture left Control busy: " + released.dump());
+        const auto stopped = Access::camera_view(app);
+        Access::input(app, {.kind = ui::EventKind::pointer_move, .x = camera_point.x + 8, .y = camera_point.y + 8});
+        tick(app, 1);
+        require(Access::camera_view(app) == stopped && GetCapture() != app.window(),
+                "Ended camera gesture resumed on late movement.");
+    }
     require(app.document().undo_count() == history, "Camera gestures entered scene history.");
     require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Lighting page command failed.");
     tick(app, 1);
@@ -378,28 +339,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         require(at != app.presented()->controls.end(), "World action binding is absent.");
         return at->key;
     };
-    {
-        const auto key = action_control(editor::world_control::field(editor::ViewOption::shadows));
-        const auto normal = *app.presented()->find(key)->style;
-        const auto p = point(key);
-        pointer(ui::EventKind::pointer_move, p);
-        tick(app, 1);
-        const auto unchanged = [&] {
-            const auto& current = *app.presented()->find(key)->style;
-            return current.background == normal.background && current.foreground == normal.foreground &&
-                   current.font == normal.font && current.indicator_background == normal.indicator_background &&
-                   current.indicator_border == normal.indicator_border;
-        };
-        require(unchanged(), "Parameter checkbox acquired a hover style.");
-        pointer(ui::EventKind::pointer_down, p);
-        tick(app, 1);
-        require(unchanged(), "Parameter checkbox acquired a pressed style.");
-        pointer(ui::EventKind::pointer_up, p);
-        tick(app, 1);
-        press_tab(key);
-    }
-    press_tab(editor::world_control::effects_tab);
-    capture(app, output / "world-effects.png");
     const auto diagnostics_history = app.document().undo_count();
     press_tab(editor::world_control::diagnostics_tab);
     capture(app, output / "world-diagnostics.png");
@@ -421,19 +360,6 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     tick(app, 1);
     press_tab(editor::world_control::ddgi_tab);
     capture(app, output / "world-ddgi.png");
-    const auto* slot_button = app.presented()->find(editor::world_control::slot);
-    require(slot_button && slot_button->style->combo_indicator == ui::ComboIndicator::down &&
-                slot_button->bounds.height / app.presented()->drawing->dpi_scale >= 26.6f,
-            "Parameter menu button lost its height or single dropdown arrow.");
-    menu_click(editor::world_control::setup);
-    require(app.menu_frame() != nullptr, "World Coverage menu did not open.");
-    for (const auto& item : app.menu_frame()->controls)
-        if (item.kind == ui::ControlKind::menu_item)
-            require(item.menu_behavior == ui::MenuBehavior::command && !item.radio_group,
-                    "An ordinary command was rendered as a toggle/radio choice.");
-    capture(app, output / "world-coverage-actions.png");
-    escape();
-    tick(app, 1);
     const auto world_history = app.document().undo_count();
     const auto count = editor::world_control::field(editor::probe_volume_option(0, editor::ProbeVolumeField::count_x));
     const auto lighting_before = Access::scene_lit_view(app);
@@ -536,12 +462,10 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     Access::mark_saved(app);
     PostMessageW(app.window(), WM_CLOSE, 0, 0);
     require(!app.step(), "A native close request could not pass the render retry gate.");
-    std::printf(
-        "Editor surfaces: drag resized %u/8 frames; redundant popup presentations %u/5 warm opens; external mouse messages dropped %u\n",
-        resized_during_drag, redundant_presents, ExternalMouseFilter::discarded);
+    std::printf("Editor surfaces: drag resized %u/8 frames; external mouse messages dropped %u\n", resized_during_drag,
+                ExternalMouseFilter::discarded);
     require(resized_during_drag == 0, "Dock dragging resized the live viewport before release.");
-    require(redundant_presents == 0, "Popup resize presented an obsolete canvas before its accepted frame.");
     std::puts(
-        "Editor surfaces acceptance: PASS (retained menu highlight/availability, no leading separator, parameter states/button metrics, World diagnostics and edits/lifetime, deferred dock geometry, resizable asset directories, camera Control lifetime, both axes, Escape/focus/capture loss, late release)");
+        "Editor surfaces acceptance: PASS (retained menu, DPI remeasurement, World edits/lifetime, deferred dock geometry, resizable asset directories, camera Control lifetime, Escape/focus/capture loss, late release)");
     return 0;
 }

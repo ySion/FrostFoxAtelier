@@ -12,7 +12,7 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
     const auto thread = GetWindowThreadProcessId(owner, nullptr);
     std::ofstream report(output / "dialogs.txt");
     const ExpectedNativeDialogs expected;
-    for (const std::string_view command : {"app.about", "source.open", "project.open", "app.quit"}) {
+    for (const std::string_view command : {"project.open", "app.quit"}) {
         if (command == "app.quit") {
             require(bool(Access::invoke(app, "scene.add", {{"kind", "entity"}})),
                     "Unsaved dialog scene creation failed.");

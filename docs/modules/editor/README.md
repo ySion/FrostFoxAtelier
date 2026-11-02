@@ -307,7 +307,7 @@ PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则�
 
 无窗口的真实端到端说明验收包含在 `editor_document_acceptance` 默认运行中，覆盖 Runtime → 编辑器 → Source/JIT → 控件布局、延迟悬浮、World 说明和历史隔离；`atelier_ui_acceptance` 覆盖接受帧、取消、DPI 和绘制边界。
 
-原生画面验收使用 `atelier_editor --acceptance-tooltips <输出目录>`，由 `editor_surfaces_acceptance` 运行：在独立小场景中通过正式 Application 输入悬停 Position 与 World Exposure，输出 GPU 截图；同一入口覆盖颜色子字段提交后的组事务取消、失焦/捕获丢失、尺寸/DPI 变化、窗格与菜单交接，以及普通 Escape/外部点击接受。它不激活前台，也不注入全局键鼠。共享 UI、Transform、原生 shortcuts/tooltips/surfaces 的开发与发布版验收记录位于 `out/editor-chain-audit-20261017/`；细分覆盖见 [UI 验收](../ui/README.md#限额与验收)。
+原生画面验收使用 `atelier_editor --acceptance-tooltips <输出目录>`，由 `editor_surfaces_acceptance` 运行：在独立小场景中通过正式 Application 输入悬停 World Exposure，输出 GPU 截图，检查打开/关闭菜单后旧帮助不复活；同一入口覆盖颜色子字段提交后的组事务取消、失焦/捕获丢失、尺寸/DPI 变化、窗格与菜单交接，以及普通 Escape/外部点击接受。它不激活前台，也不注入全局键鼠。细分覆盖见 [UI 验收](../ui/README.md#限额与验收)。
 
 参数标签沿 Houdini 习惯由字段名生成：取最后一段，下划线分词并首字母大写（`material.base_color` → `Base Color`，项目源码字段 `moving` → `Moving`）；字段路径和绑定身份不变。颜色元组（基础色、自发光、灯光颜色）末尾带当前值色块，HDR 值仅在色块上截断到 `[0,1]`。组件分组与变换分组共用整宽折叠条。
 
@@ -363,7 +363,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 `editor_scene_lit_acceptance` 先运行光照作者模型的 CPU 代表，再在 Scene Lit Room 隔离副本上执行原生 Scene Lit/MatCap 菜单切换与中键轨道手势，检查显示切换不改变生命周期、场景数据和历史。保留 `07-scene-lit-edit.png`、`09-middle-orbit.png` 作为操作状态记录，不用它们判定渲染特性；独立像素真值代表由 [Renderer 验收](../renderer/acceptance.md) 维护。
 
-`editor_dialogs_acceptance` 使用正式编辑器菜单打开 About、文件选择、工程目录选择，以及 File → Exit 触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
+`editor_dialogs_acceptance` 使用正式编辑器菜单打开工程目录选择，以及 File → Exit 触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。About 的原生生命周期由普通窗口链检查。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 
 所有无人值守的编辑器窗口入口（`--acceptance*`、`--snapshot*`）在 UI 线程上挂一个 WH_CBT 钩子：在验收声明的预期范围之外，只要创建顶层原生对话框（`#32770`，包括 MessageBoxW 和文件选择框），进程就立即以退出码 1 结束，并输出 `unexpected native dialog "<标题>"`，不会停在那里等人点击。只有 About 和上述对话框验收会声明预期范围。正常启动不挂钩子；由 Control 驱动的编辑器子进程和 `--profile-*` 测量入口不在覆盖范围内。
 
@@ -377,16 +377,15 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 2026-10-07 的范围、修正及证据见[视口编辑验收记录](../../research/editor-viewport-edit-20261007.md)。
 `--viewport-edit` 的复制与组合代表检查独立身份、组件关系、物理配置、共享网格和 Undo/Redo；失败后原图/选择/历史保持，删除跨 GC 恢复同一对象。表面游标与中键选轴保留作者几何结果，菜单文案和容量拒绝不构成验收矩阵。窗口验收覆盖经 `WM_SYSKEYDOWN` 的 Alt 组合键与模态读数栏截图 `modal-readout.png`。
 
-`editor_shortcuts_acceptance` 通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、越过范围再拖回时回到指针下、松手提交与取消，以及六向视图、视角饼菜单、Ctrl+Numpad 相反视图、Shift+D、X、Z、快速松键、文本焦点隔离、原生菜单复用和 Persp 状态，并检查零缩放的 `degenerate_value` 在 Project Output 只占一行、再次出现时计数 `(×2)`。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭，以及 Cavity 开关和参数子菜单；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；分隔条手势期间丢弃系统发往编辑器线程的鼠标消息，结果与窗口位置和物理光标位置无关；GPU 截图与逐移动的 `splitter-drag.csv` 写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
+`editor_shortcuts_acceptance` 通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、越过范围再拖回时回到指针下、松手提交，以及单轴上的 Esc、失焦与捕获丢失取消。视角饼菜单保留透视选择、首次接受帧前快速松键和 Esc 取消；Shift+D、X、Z、文本焦点隔离和原生菜单复用仍沿真实输入执行，并检查零缩放的 `degenerate_value` 在 Project Output 只占一行、再次出现时计数 `(×2)`。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；分隔条手势期间丢弃系统发往编辑器线程的鼠标消息，结果与窗口位置和物理光标位置无关；操作截图写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
 
-本轮集成的 Dev / Release 编译、World、场景/JIT、材质及原生窗口快捷键/弹窗尺寸端到端均通过；包含 FPS 开关、采样、重复设置、被动文字绘制与关闭清理。发布版完整编辑器文档链及地牢的 2332 个模型、30 张共享图集、三个场景保存重开也通过。日志为 `out/stage-{dev,release}-{world,scene,materials,shortcuts,surfaces}.log`，发布版完整链为 `out/stage-release-{documents,dungeons}.log`；FPS 截图与逐移动记录在 `out/stage-{dev,release}-shortcuts/`。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
-`editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口且仅需一次 Present、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；stdout 汇报拖动期间尺寸变化、冗余菜单 Present 和丢弃的外部鼠标消息计数，`surface-evidence/` 中的 PNG 保存拖动预览和提交后的画面。菜单打开的 CPU 耗时计入[帧性能](#帧性能)中打开它的宿主阶段。
+`editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；`surface-evidence/` 中的 PNG 保存拖动预览和提交后的画面。菜单打开的 CPU 耗时计入[帧性能](#帧性能)中打开它的宿主阶段。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 
 2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门验证见[渲染验收](../renderer/acceptance.md#默认入口)。
 
 2026-10-11 的 DDGI 整合验收通过当时的 Scene Lighting → DDGI Debug 菜单点击 Probe Spheres 互斥项与 Volume Bounds 勾选项（当前入口已迁至 World → Diagnostics），确认显示设置生效且不写场景历史。Dev 与独立 Release 均通过，菜单截图和日志在 `out/ddgi-integration-20261011/surfaces-{dev,release}/` 及对应 `.log`。
 
-2026-10-12 相机手势与 Control 联合验收：通过真实 Application 输入及命名管道复现松手后残留 `camera_pan` 的拒绝，失败证据为 `out/camera-control-red.log`。相机状态合并后，Dev/Release 的同一入口均通过，覆盖 Shift+中键平移、中键旋转、Alt+左键旋转，以及正常松手、失焦、捕获丢失、转入菜单四种结束路径；还检查活动期间拒绝请求、非所属按键释放、迟到移动、原生捕获释放及场景历史隔离。证据在 `out/camera-control-{dev,release}.log` 和对应目录的 `surfaces.csv`。标准 `out/release/atelier_editor.exe` 已重新构建，包含 DDGI 整合与相机修复；旧进程继续使用其启动时加载的程序。
+相机手势与 Control 联合验收使用 Shift+中键平移代表，覆盖正常松手、失焦、捕获丢失、转入菜单四种结束路径；检查活动期间拒绝请求、非所属按键释放、迟到移动、原生捕获释放及场景历史隔离。中键轨道手势另由 Scene Lit 窗口链保留。
 `atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。
 `atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内执行工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
@@ -439,7 +438,7 @@ Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合�
 
 上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。Ctrl 切换 Entity 选择，Shift 按宿主展平的行选择范围（含尚未描述的行）；选择与视口共用 Session 的有序 Entity 集及活动 Entity。复用当前路径栏、字号、滚动条、输入捕获与接受帧；树层级来自真实 Entity 组合关系。
 
-共享 UI 端到端包含四档 DPI、宿主持有的展开与过滤、只描述窗口内的行、长树滚动、主行显露、行序校验、退休和失效命中；真实窗口验收新增 `tree-component-selection.png`、`tree-filtered.png`、`tree-view.png`，随完整窗口链执行。2026-10-03 开发版与发布版完整窗口链均通过，最终清理候选报告分别为 `out/dev/ui-stage-evidence/acceptance.txt`、`out/release/ui-stage-evidence/acceptance.txt`；共享 UI 16/16 与文档消费者同样通过。普通窗口验收仅在启动时等待一次前台激活，开始输入后失焦仍立即中断。本轮未运行搜狗验收。
+共享 UI 端到端包含四档 DPI、宿主持有的展开与过滤、只描述窗口内的行、长树滚动、主行显露、行序校验、退休和失效命中；真实窗口链保留组件选择、删除与 Undo 后的身份和目标，输出 `tree-component-selection.png`、`tree-view.png`。普通窗口验收仅在启动时等待一次前台激活，开始输入后失焦仍立即中断。
 
 ## 页签菜单与弹窗资源
 

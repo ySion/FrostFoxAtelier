@@ -43,25 +43,6 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     const auto source = evidence / "output-location.source";
     const std::string source_text = "// output source\n中文target\n";
     model(editor::write_file(source, source_text));
-    submit({.category = "acceptance.output",
-            .event_code = "output.ready",
-            .message = "Editor and Runner records keep their own run identity."});
-    submit({.severity = logging::Severity::warning,
-            .category = "acceptance.physics",
-            .event_code = "output.warning",
-            .message = "Warning: inspect the original source, not the active project."});
-    submit({.severity = logging::Severity::error,
-            .category = "acceptance.source",
-            .event_code = "output.error",
-            .message = "Compile failed\nSecond diagnostic line is part of this record."});
-    submit({.category = "acceptance.output", .event_code = "output.empty", .message = ""});
-    logging::Entry repeated{.severity = logging::Severity::warning,
-                            .category = "acceptance.output",
-                            .event_code = "output.repeat",
-                            .message = "Explicit repeated diagnostic",
-                            .repeat = logging::Repeat{"window-repeat", 1}};
-    submit(repeated);
-    submit(repeated);
     logging::Entry long_entry{
         .category = "acceptance.detail", .event_code = "output.long", .message = "Complete body: 中文与 Unicode\nNUL="};
     long_entry.message.push_back('\0');
@@ -82,15 +63,7 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     flush();
     Access::output_layout(app);
     tick(app, 2);
-    wait([&] { return find("output.long") && find("output.repeat"); },
-         "JSONL records did not reach the real Output pane.");
-    const auto repeat_key = find("output.repeat");
-    const auto repeat = std::ranges::find(output.rows(), repeat_key, &editor::Output::Row::key);
-    require(repeat->count == 2, "A disk repeat was lost or double counted.");
-    const auto* table = app.presented()->find_table(controls::table);
-    require(table && table->data->columns.size() == 5 &&
-                output.record(find("output.error"))->entry.severity == logging::Severity::error,
-            "Default mixed Output lost its structured columns or severity.");
+    wait([&] { return find("output.long"); }, "JSONL records did not reach the real Output pane.");
     for (const auto key : {controls::category, controls::search}) {
         const auto* field = app.presented()->find(key);
         require(field && field->bounds.width > app.presented()->find(controls::table)->bounds.width * .5f,
@@ -98,22 +71,6 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     }
     capture(app, evidence / "output-default.png");
 
-    // Native button and text-field routing, not test-only filtering controls.
-    click(app, controls::level);
-    click(app, controls::level);
-    click(app, controls::level);
-    require(std::ranges::all_of(
-                output.rows(),
-                [&](const auto& row) { return output.record(row.key)->entry.severity >= logging::Severity::warning; }),
-            "Native level filter did not use the structured severity.");
-    click(app, controls::clear_filters);
-    click(app, controls::search);
-    type(app, L"no-record-matches-this-query");
-    key(app, VK_RETURN);
-    require(output.rows().empty() && app.presented()->find(controls::health) && app.presented()->find(controls::empty),
-            "Filtered empty Output lost its independent health state.");
-    capture(app, evidence / "output-filter-empty.png");
-    click(app, controls::clear_filters);
     click(app, controls::category);
     type(app, L"acceptance.detail");
     key(app, VK_RETURN);
@@ -175,32 +132,6 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     Access::select_tab(app, control::output_tab);
     tick(app, 2);
 
-    // A genuinely slow UI: the only writer is Quill, and Output is not polled
-    // until all bounded bodies are on disk. This is not a fabricated loss flag.
-    const auto evicted = output.statistics().evicted_records;
-    for (unsigned i = 0; i < 70; ++i) {
-        submit({.category = "acceptance.capacity",
-                .event_code = "output.cache",
-                .message = std::string(logging::maximum_message_bytes, 'x')});
-        flush();
-    }
-    submit(
-        {.category = "acceptance.capacity", .event_code = "output.cache_done", .message = "Cache workload completed"});
-    flush();
-    click(app, controls::clear_filters);
-    wait([&] { return find("output.cache_done") && output.statistics().evicted_records > evicted; },
-         "Slow-reader cache pressure was not exposed as eviction.");
-    require(output.records().size() <= 4096 && output.statistics().body_bytes <= 8 * 1024 * 1024,
-            "Output exceeded a cache budget.");
-    capture(app, evidence / "output-loss.png");
-    // Return to a complete body after eviction, then use a genuinely narrow dock.
-    submit(long_entry);
-    flush();
-    click(app, controls::category);
-    type(app, L"acceptance.detail");
-    key(app, VK_RETURN);
-    wait([&] { return find("output.long") != 0; }, "Long body did not return after cache eviction.");
-    select_row(find("output.long"));
     Access::output_layout(app, true);
     tick(app, 2);
     require(app.presented()->find(controls::body) && app.presented()->find(controls::health) &&

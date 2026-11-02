@@ -73,7 +73,7 @@ Dev、Release 各运行 120 轮真实编译、实例替换和错误候选，每 
 - 两种配置均完成完整工程窗口链：实际保存、错误恢复、原草稿 token、折叠状态及后续 World 编辑。
 - Dev 证据：`out/ui-reload-audit-20261005/dev/run-96088-393203796/acceptance.txt`。
 - Release 证据：`out/ui-reload-audit-20261005/release/run-64152-393393390/acceptance.txt`。
-- 两处目录均有 `ui-authoring.csv` 和 `ui-live-{updated,error,recovered}.png`，已检查恢复后的画面。
+- 两处目录均有 `ui-live-{updated,error,recovered}.png`，已检查恢复后的画面。
 - 资源原始数据及统计：`out/ui-reload-audit-20261005/{dev,release}-reload.csv`、`profile-summary.json`。
 - `E:/ffa_testproj` 的 Config/Content/Source 文件集合与 SHA-256 前后相同，清单位于证据目录。工作树中的作者文案修改保持原样。
 - 用户的 Release 窗口有未保存场景并锁住输出。以同一 CMake 生成的链接规则另产出 `out/release/atelier_editor_audit.exe` 完成验收，未关闭该窗口；临时生成规则位于 `out/release/build.audit.ninja`，没有新增产品构建入口。

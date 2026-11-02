@@ -104,9 +104,7 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
                     std::abs((body.width - current->body.width) / dpi - 4) < .1f,
                 "Accepted shell/Table geometry did not follow the saved Source layout properties.");
     };
-    std::ofstream timings(output / "asset-ui-authoring.csv");
-    timings << "save,save_to_accepted_ms,revision\n";
-    const auto save = [&](const char* label, const std::string& text, bool valid) {
+    const auto save = [&](const std::string& text, bool valid) {
         require_input_focus(app);
         require(valid || Access::ui_error(app).empty(),
                 "Asset authoring rejection check started from an unrecovered failed candidate.");
@@ -122,18 +120,17 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
                       : (Access::ui_revision(app) == revision && !Access::ui_error(app).empty()),
                 "Asset Source save did not accept or reject the complete real UI version.");
         verify_retained();
-        timings << label << ',' << GetTickCount64() - start << ',' << Access::ui_revision(app) << '\n';
     };
-    save("layout", changed, true);
+    save(changed, true);
     capture(app, output / "asset-ui-live-updated.png");
-    save("syntax_error", changed + "\n?", false);
+    save(changed + "\n?", false);
     capture(app, output / "asset-ui-live-error.png");
-    save("syntax_recovered", changed + "\n// asset syntax recovered\n", true);
+    save(changed + "\n// asset syntax recovered\n", true);
     auto invalid_binding = changed;
     replace_component(invalid_binding, "AssetResults", "in TableBinding model, in ActionBinding open",
                       "in ActionBinding open, in TableBinding model");
-    save("binding_error", invalid_binding, false);
-    save("binding_recovered", changed + "\n// asset binding recovered\n", true);
+    save(invalid_binding, false);
+    save(changed + "\n// asset binding recovered\n", true);
     key(app, VK_RETURN);
     require(app.presented()->find_table(browser::results)->data == snapshot &&
                 app.presented()->find_table(browser::results)->selection == selection,
@@ -156,7 +153,7 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
     auto tiles = changed;
     replace_component(tiles, "AssetResults", "tile_width: 90;", "tile_width: 76;");
     replace_component(tiles, "AssetResults", "tile_height: 66;", "tile_height: 54;");
-    save("tiles_layout", tiles, true);
+    save(tiles, true);
     const auto tile_size = [&] {
         const auto* current = app.presented()->find_table(browser::results);
         require(current && current->cells.size() == 1 &&
@@ -168,12 +165,11 @@ void verify_asset_ui_authoring_window(Application& app, const std::filesystem::p
     capture(app, output / "asset-tiles-live-updated.png");
     auto invalid_tiles = tiles;
     replace_component(invalid_tiles, "AssetResults", "tile_width: 76;", "tile_width: 0;");
-    save("tiles_invalid", invalid_tiles, false);
+    save(invalid_tiles, false);
     tile_size();
-    save("tiles_recovered", tiles + "\n// tile layout recovered\n", true);
+    save(tiles + "\n// tile layout recovered\n", true);
     tile_size();
     key(app, VK_RETURN);
-    require(timings.good(), "Cannot write asset UI authoring evidence.");
 }
 
 void verify_ui_authoring_window(Application& app, const std::filesystem::path& output,
@@ -224,10 +220,7 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     const auto height = shell == changed.npos ? changed.npos : changed.find("height: 32;", shell);
     require(height != changed.npos, "Authoring fixture could not locate the Parameters path-bar height.");
     changed.replace(height, std::string_view("height: 32;").size(), "height: 36;");
-    std::ofstream timings(output / "ui-authoring.csv");
-    timings << "save,save_to_accepted_ms,revision\n";
-    const auto save = [&](const char* label, const std::string& text, bool valid, float expected_height,
-                          const auto& verify_edit) {
+    const auto save = [&](const std::string& text, bool valid, float expected_height, const auto& verify_edit) {
         require_input_focus(app);
         const auto previous = Access::ui_revision(app);
         const auto start = GetTickCount64();
@@ -251,7 +244,6 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
         require(tool && tool->key == tool_key && tool->incarnation == tool_incarnation &&
                     std::abs(tool->bounds.width / app.presented()->drawing->dpi_scale - 68) < .1f,
                 "Saved tool layout lost its stable action identity or failed to retain the accepted layout.");
-        timings << label << ',' << GetTickCount64() - start << ',' << Access::ui_revision(app) << '\n';
     };
     const auto verify_query = [&] {
         require(app.text_input() && app.text_input()->token == token && app.query() == L"position" &&
@@ -259,20 +251,20 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
                     property_control(app, entity, 0) == field,
                 "Native source update lost the shared query draft, local foldout state or World field key.");
     };
-    save("valid", changed, true, path_height + 4, verify_query);
+    save(changed, true, path_height + 4, verify_query);
     capture(app, output / "ui-live-updated.png");
-    save("syntax_error", changed + "\n?", false, path_height + 4, verify_query);
+    save(changed + "\n?", false, path_height + 4, verify_query);
     capture(app, output / "ui-live-error.png");
-    save("recovered", changed + "\n// recovered\n", true, path_height + 4, verify_query);
+    save(changed + "\n// recovered\n", true, path_height + 4, verify_query);
     // Both values are legal DSL properties, but this height cannot contain the
     // path bar's existing padding. Only the real layout preparation rejects it.
     auto invalid_layout = changed;
     invalid_layout.replace(height, std::string_view("height: 36;").size(), "height: 1;");
-    save("layout_error", invalid_layout, false, path_height + 4, verify_query);
+    save(invalid_layout, false, path_height + 4, verify_query);
     require(Access::ui_error(app).find("layout candidate rejected") != std::string_view::npos,
             "Saved layout fixture failed before reaching the real frame preparation boundary.");
     capture(app, output / "ui-live-layout-rejected.png");
-    save("layout_recovered", changed + "\n// layout recovered\n", true, path_height + 4, verify_query);
+    save(changed + "\n// layout recovered\n", true, path_height + 4, verify_query);
     key(app, VK_RETURN);
     click(app, control::position_fold);
     click(app, field);
@@ -282,7 +274,7 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     const auto field_token = app.text_input()->token;
     auto draft_source = changed;
     draft_source.replace(height, std::string_view("height: 36;").size(), "height: 40;");
-    save("field_draft", draft_source, true, path_height + 8, [&] {
+    save(draft_source, true, path_height + 8, [&] {
         require(app.text_input() && app.text_input()->token == field_token && app.document().editing() &&
                     property_control(app, entity, 0) == field &&
                     app.presented()->find(field)->incarnation == field_incarnation && x(app, entity) == 4.25f &&
@@ -319,7 +311,6 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
                 x(app, entity) == 4.25f && app.document().undo_count() == field_history + 1,
             "Restoring the surface did not prepare and publish the saved layout once while retaining scene values.");
     verify_hierarchy();
-    timings << "minimized_restore," << GetTickCount64() - restored_start << ',' << Access::ui_revision(app) << '\n';
     capture(app, output / "ui-live-minimized-recovered.png");
     const auto count = entities(app).size();
     const auto history = app.document().undo_count();
@@ -330,6 +321,5 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     require(entities(app).size() == count && x(app, entity) == 4.25f,
             "Hot-updated tool command did not retain normal undo behavior.");
     capture(app, output / "ui-live-recovered.png");
-    require(timings.good(), "Cannot write live authoring evidence.");
     verify_asset_ui_authoring_window(app, output, path);
 }

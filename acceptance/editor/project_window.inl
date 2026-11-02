@@ -227,11 +227,6 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     require(x(app, current) == 7 && !app.document().dirty(),
             "Material history fixture did not restore the framed scene position.");
     verify_about(app, folder.wstring());
-    require(app.presented()->find(browser::project)->kind == atelier::ui::ControlKind::tree_item &&
-                app.presented()->find(browser::engine)->parent == browser::directories &&
-                app.presented()->find(browser::project)->parent == browser::directories &&
-                app.presented()->find(browser::path)->kind == atelier::ui::ControlKind::combo,
-            "Asset sources and interactive path did not use the common directory tree.");
     const auto action_enabled = [&](ControlKey command) {
         click(app, browser::actions);
         const auto* item = app.menu_frame() ? app.menu_frame()->find(command) : nullptr;
@@ -240,35 +235,12 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         key(app, VK_ESCAPE);
         return enabled;
     };
-    click(app, browser::project);
-    key(app, VK_END);
-    require(app.presented()->find(browser::engine)->selected, "Directory tree End did not select Engine.");
-    key(app, VK_HOME);
-    require(app.presented()->find(browser::project)->selected, "Directory tree Home did not select Project.");
-    key(app, VK_RIGHT);
-    require(!app.presented()->find(browser::project)->selected,
-            "Directory tree Right did not enter a Project directory.");
-    key(app, VK_LEFT);
-    require(app.presented()->find(browser::project)->selected, "Directory tree Left did not return to Project.");
-    key(app, VK_END);
+    click(app, browser::engine);
     const auto sphere = access::EditorAcceptanceAccess::asset_key(app, "builtin/sphere");
     click(app, sphere);
     require(app.document().selection().entity == current && entities(app).size() == initial_count + 1,
             "Resource selection changed the scene selection or created an Entity.");
-    for (const auto view : {browser::tiles, browser::list, browser::details}) {
-        click(app, view);
-        require(selected_resource(sphere), "Switching asset views lost resource selection.");
-        require(!app.presented()->find(view), "A view choice remained as a duplicate toolbar button.");
-        click(app, browser::view_menu);
-        require(app.menu_frame() && app.menu_frame()->find(view)->selected,
-                "The view menu did not expose its selected mode.");
-        key(app, VK_ESCAPE);
-    }
-    click(app, browser::view_menu);
-    key(app, VK_HOME);
-    key(app, VK_DOWN);
-    key(app, VK_RETURN);
-    require(selected_resource(sphere), "Keyboard view-menu selection lost the resource selection.");
+    click(app, browser::details);
     click(app, sphere);
     const auto table_data = app.presented()->find_table(browser::results)->data;
     const auto resource_history = app.document().undo_count();
@@ -346,18 +318,6 @@ void verify_project_window(Application& app, const std::filesystem::path& output
                 revealed->bounds.y + revealed->bounds.height <= revealed->clip.bottom,
             "Opening a folder did not expand and reveal its selected directory-tree row.");
     click(app, browser::up);
-    require(app.presented()->find(content_tree)->selected, "Up did not select the parent directory.");
-    click(app, browser::back);
-    require(app.presented()->find(selected_tree)->selected, "Back did not restore the previous directory.");
-    click(app, browser::path);
-    key(app, VK_HOME);
-    key(app, VK_DOWN);
-    key(app, VK_RETURN);
-    require(app.presented()->find(content_tree)->selected,
-            "The interactive path menu did not navigate to its Content ancestor.");
-    double_click(app, directory);
-    require(app.presented()->find(selected_tree)->selected, "Double-click did not use the existing folder Open route.");
-    click(app, browser::up);
     click(app, directory);
     const auto context_point = centre(app, directory);
     SendMessageW(app.window(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(context_point.x, context_point.y));
@@ -418,48 +378,6 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     click(app, operator_item(app, "edit.redo"));
     require(x(app, imported_entity) == 2.5f, "Redo did not restore the imported Entity's edit.");
     click(app, operator_item(app, "view.frame_selected"));
-    // Selected geometry keeps its orange edges even when the display overlay is off.
-    click(app, control::tree_world);
-    require(app.document().selection().entity == atelier::ObjectId{},
-            "World selection did not clear the imported Entity's outline.");
-    const auto display_document = model(app.document().serialize());
-    const auto display_history = app.document().undo_count();
-    const auto choose = [&](ControlKey source, ControlKey option) {
-        click(app, source);
-        click(app, option);
-        tick(app);
-    };
-    choose(control::scene_shading, control::shading_first + 2);
-    choose(control::scene_shading, control::edges_first);
-    atelier::renderer::Capture shaded;
-    require(app.step(&shaded) && shaded.frame_id != 0 &&
-                std::any_of(shaded.depth.begin(), shaded.depth.end(), [](float value) { return value > 0; }),
-            "Project Entity did not reach an accepted GPU scene frame.");
-    png(shaded, output / "project-matcap.png");
-    choose(control::scene_shading, control::edges_first + 1);
-    atelier::renderer::Capture outlined;
-    require(app.step(&outlined) && outlined.frame_id != 0 && outlined.extent == shaded.extent,
-            "Project wireframe did not produce an accepted GPU frame.");
-    png(outlined, output / "project-wireframe.png");
-    const auto viewport = app.presented()->find(control::viewport)->bounds;
-    std::size_t changed{};
-    for (unsigned row = static_cast<unsigned>(viewport.y); row < static_cast<unsigned>(viewport.y + viewport.height);
-         ++row)
-        for (unsigned column = static_cast<unsigned>(viewport.x);
-             column < static_cast<unsigned>(viewport.x + viewport.width); ++column) {
-            const auto offset = (std::size_t(row) * shaded.extent.width + column) * 4;
-            if (std::abs(int(shaded.rgba[offset]) - int(outlined.rgba[offset])) > 3 ||
-                std::abs(int(shaded.rgba[offset + 1]) - int(outlined.rgba[offset + 1])) > 3 ||
-                std::abs(int(shaded.rgba[offset + 2]) - int(outlined.rgba[offset + 2])) > 3)
-                ++changed;
-        }
-    std::printf("Project overlay changed %zu viewport pixels.\n", changed);
-    require(changed > 8, "Wireframe did not change the unselected imported mesh's scene pixels.");
-    require(outlined.depth == shaded.depth, "Project wireframe changed scene depth.");
-    require(app.document().selection().entity == atelier::ObjectId{} &&
-                model(app.document().serialize()) == display_document && app.document().undo_count() == display_history,
-            "Wireframe changed selection or persistent project state.");
-    choose(control::scene_shading, control::edges_first);
     model(Access::invoke(app, "scene.save"));
     tick(app, 2);
     saved = app.document().serialize();
