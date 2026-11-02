@@ -352,20 +352,9 @@ struct ProgramAccess {
     static Result<Coroutine> start(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
                                    InvocationObserver = {});
 
-    static Result<Coroutine> start(const Program::Lease&, ObjectId, std::span<const BusinessValue>,
-                                   InvocationObserver = {});
-
-    static BusinessFrameLayout layout(const Program::Lease&) noexcept;
+    static std::uintptr_t address(const Program::Lease&) noexcept;
 
     static Result<Program::Candidate> prepare(const Program::Request&, Compiler);
-
-    static Result<void> compatible(const Program&, BusinessCode*, std::string_view);
-
-    static Result<void> unchanged(const Program&);
-
-    static void set_request_sequence(Program&, std::uint64_t) noexcept;
-
-    static std::uint64_t published_sequence(const Program&) noexcept;
 
     static Result<Coroutine> start_version(std::shared_ptr<const Program::Version>, ObjectId,
                                            std::span<const BusinessValue>, InvocationObserver,

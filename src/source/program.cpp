@@ -784,17 +784,13 @@ std::span<const EntryInfo> Program::Candidate::entries() const noexcept {
                                           : std::span<const EntryInfo>{};
 }
 
-std::uintptr_t Program::Candidate::address() const noexcept {
-    return *this ? atelier_business_info(prepared_->code.get()).entry_address : 0;
-}
-
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
 
 Program::Entry::Entry(std::weak_ptr<State> owner, std::optional<std::size_t> index)
     : owner_(std::move(owner)), index_(index) {}
 
-std::uintptr_t Program::Lease::address() const noexcept {
-    return version_ ? version_->info.entry_address : 0;
+std::uintptr_t ProgramAccess::address(const Program::Lease& lease) noexcept {
+    return lease.version_ ? lease.version_->info.entry_address : 0;
 }
 
 Result<CompilationArtifacts> Program::Lease::artifacts() const {
@@ -852,21 +848,12 @@ Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectI
     return version->invoke(receiver, arguments, observer);
 }
 
-Result<Coroutine> ProgramAccess::start(const Program::Lease& lease, ObjectId receiver,
-                                       std::span<const BusinessValue> arguments, InvocationObserver observer) {
-    return start_version(lease.version_, receiver, arguments, observer);
-}
-
 Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId receiver,
                                        std::span<const BusinessValue> arguments, InvocationObserver observer) {
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     return start_version(owner->select(entry.index_), receiver, arguments, observer);
-}
-
-BusinessFrameLayout ProgramAccess::layout(const Program::Lease& lease) noexcept {
-    return lease.version_ ? lease.version_->layout : BusinessFrameLayout{};
 }
 
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
@@ -1156,20 +1143,4 @@ Result<void> Program::try_publish(Candidate& candidate) {
     return {};
 }
 #include "source/detail/program_module.inl"
-
-Result<void> ProgramAccess::compatible(const Program& program, BusinessCode* code, std::string_view source_name) {
-    return program.state_->contract->compatible(code, source_name);
-}
-
-Result<void> ProgramAccess::unchanged(const Program& program) {
-    return program.state_->contract->unchanged();
-}
-
-void ProgramAccess::set_request_sequence(Program& program, std::uint64_t sequence) noexcept {
-    program.state_->latest_request = sequence;
-}
-
-std::uint64_t ProgramAccess::published_sequence(const Program& program) noexcept {
-    return program.state_->published_request;
-}
 }

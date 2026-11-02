@@ -43,6 +43,8 @@ Array 泛型拼写解析到已发布具体类型的同一身份；没有独立�
 
 错误时已完成的写入保留，失败不提交结果。布局依赖和参数传递方式不兼容时拒绝发布，旧代码租约仍按原版本执行；没有迁移原生布局或活动存储。
 
+取舍依据：UE-AS 的[数组引用失效诊断配置](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/a7890667d1abb289bc2cec16b3da075faf836f2d/Engine/Plugins/Angelscript/Source/AngelscriptCode/Public/AngelscriptManager.h#L19-L20)限定于编辑器，[原生调用适配](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/a7890667d1abb289bc2cec16b3da075faf836f2d/Engine/Source/Runtime/CoreUObject/Public/UObject/CoreNative.h#L36-L151)仍遵守真实 C++ 签名（源码需 Unreal 访问权限）。因此共享地址、const 引用或开发配置的检查都不是完整 lifetime 证明；本项目用所有配置一致的同步借用区间与 BorrowSafe 效果声明保护地址，不把原生按值调用宣传成零复制。
+
 ## 验收结果
 
 [端到端消费者](../acceptance/source/native_values.cpp)使用正式入口及宏生成的原生类型，验证：

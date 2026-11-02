@@ -107,9 +107,6 @@ public:
         std::span<const ClassInfo> classes() const noexcept;
 
         std::span<const EntryInfo> entries() const noexcept;
-
-        // Diagnostic only; this address is not a callable or owning handle.
-        std::uintptr_t address() const noexcept;
     };
 
     class Lease {
@@ -154,8 +151,6 @@ public:
 
     public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr, Debugger* = nullptr) const;
-
-        std::uintptr_t address() const noexcept;
 
         Result<CompilationArtifacts> artifacts() const;
 

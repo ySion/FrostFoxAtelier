@@ -77,7 +77,9 @@ Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映
 
 ## 范围与验收
 
-当前不提供任意机器指令暂停、C++ 单步、变量写入、表达式求值或反向执行。运行中的暂停/终止请求尚无独立控制句柄，`abort` 只在已有停点处理器返回时生效；不能据此承诺终止未命中停点的无限循环或抢占长时间原生调用。工业依据见[研究记录](research/source-debugger-research.md)。
+当前不提供任意机器指令暂停、C++ 单步、变量写入、表达式求值或反向执行。运行中的暂停/终止请求尚无独立控制句柄，`abort` 只在已有停点处理器返回时生效；不能据此承诺终止未命中停点的无限循环或抢占长时间原生调用。
+
+取舍依据：[AngelScript line callback](https://www.angelcode.com/angelscript/sdk/docs/manual/doc_debug.html)支持在回调内处理命令、返回后继续；这不赋予同步原生 JIT 任意弹栈后恢复的能力。[Lua hook](https://www.lua.org/manual/5.4/manual.html#lua_sethook)的回跳与重入边界说明停止点不能仅用显示行号表示；本项目用调用实例和语句身份跟踪单步。[LLVM 源码调试](https://llvm.org/docs/SourceLevelDebugging.html)也不保证优化后所有变量位置仍可用，故本模式显式维护可观察槽及初始化/作用域状态，不能展示陈旧地址的值。暂停始终保留原生栈、执行准入及既有根。
 
 [`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径保留 step-into/step-out 的固定值代表、Runtime 销毁后仍可读的拥有型快照、原生失败/处理器异常/abort 清理，以及 async 跨 yield、热发布和 close 后的旧帧完成。拒绝、精确错误文本、快照预算及从 debug_sites 反抄期望的断点矩阵已移除。它纳入 `source_acceptance`，也可单独运行：
 

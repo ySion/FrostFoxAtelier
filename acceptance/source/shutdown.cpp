@@ -1,4 +1,5 @@
 #include "../helpers.hpp"
+#include "source/detail/bridge.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 
@@ -145,7 +146,7 @@ void verify_mixed_shutdown() {
             return mode + 100;
         })");
     owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
-    owner.current_address = take(owner.program->pin()).address();
+    owner.current_address = source::detail::ProgramAccess::address(take(owner.program->pin()));
     owner.tasks[0] = take(owner.start(0));
     owner.tasks[1] = take(owner.start(0));
     take(owner.tasks[1].resume());
@@ -178,7 +179,7 @@ void verify_synchronous_shutdown() {
     ActiveOwner active(owner);
     owner.publish("uint run(uint mode) { self.signal(mode); return 23; }");
     owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>());
-    owner.current_address = take(owner.program->pin()).address();
+    owner.current_address = source::detail::ProgramAccess::address(take(owner.program->pin()));
     const std::array arguments{Scalar{std::uint32_t{1}}};
     const auto result = take(owner.entry.invoke(owner.receiver.id(), arguments));
     require(result && std::get<std::uint32_t>(*result) == 23 && owner.busy_in_callback,

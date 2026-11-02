@@ -37,6 +37,8 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 
 拥有型对象放在生成栈上，String 的短文本仍使用既有 SSO，长文本和 Array 缓冲仍由基础库分配。复制使用真实值语义；这里不把深复制描述为零拷贝。外部借用及传给原生方法的引用继续访问原存储。
 
+这采用 [RAII 的资源拥有模型](https://learn.microsoft.com/en-us/cpp/cpp/object-lifetime-and-resource-management-modern-cpp?view=msvc-170)，不是 [stackalloc 的栈缓冲分配](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/stackalloc)：局部本体和其拥有的动态缓冲可以位于不同存储区。[Span 的 owner/consumer/使用期限区分](https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/memory-t-usage-guidelines)可作借用对照，却不提供本项目的拥有责任或独占可写保证。无 GC 引用也不证明原生复制、移动和析构会保持借用有效。
+
 ## 借用与值操作契约
 
 `AFUNCTION(BorrowSafe)` 或 `NativeRegistration::method(name, true)` 是可信 C++ 生产者的声明：整个调用链不保存输入借用、不使仍使用的借用失效、不重入源码或挂起。Runtime 继续执行原生回调的 GC、生命周期与执行准入保护；编译器不能证明任意 C++ 实现遵守该声明。
