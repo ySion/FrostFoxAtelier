@@ -633,7 +633,23 @@ void require_input_focus(Application& app) {
 // fallbacks. GPU validation may take minutes to warm the pipelines up.
 void tick(Application& app, unsigned count = 2) {
     using Access = atelier::application::EditorAcceptanceAccess;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::minutes(20);
+    struct MaterialWait {
+        std::optional<Clock::time_point> began;
+
+        std::optional<Clock::time_point> ready;
+
+        bool completed{};
+
+        ~MaterialWait() {
+            if (!began)
+                return;
+            const auto elapsed = std::chrono::duration<double, std::milli>(ready.value_or(Clock::now()) - *began);
+            std::fprintf(stderr, "Editor material preparation: outcome=%s ready=%s elapsed_ms=%.3f\n",
+                         completed ? "success" : "failure", ready ? "true" : "false", elapsed.count());
+        }
+    } material_wait;
     unsigned accepted{};
     unsigned attempts{};
     unsigned steps{};
@@ -649,9 +665,7 @@ void tick(Application& app, unsigned count = 2) {
                "; steps=" + std::to_string(steps) + "; last_done_increase_step=" + std::to_string(last_progress_step);
     };
     while (accepted < count && attempts < 180) {
-        // Material and view preparation do not spend the frame budget.
-        if (!Access::view_preparing(app))
-            ++attempts;
+        const bool view_preparing = Access::view_preparing(app);
         const auto before = app.accepted_frames();
         require(app.step(), "Editor closed during input acceptance.");
         ++steps;
@@ -675,9 +689,17 @@ void tick(Application& app, unsigned count = 2) {
                 }
             }
         }
-        if (app.accepted_frames() > before && !Access::view_preparing(app))
+        if (material_progress && !material_wait.began)
+            material_wait.began = Clock::now();
+        // Sample after the step, including the first one: no presented frame exists while its materials compile.
+        if (!view_preparing && !material_progress)
+            ++attempts;
+        if (app.accepted_frames() > before && !Access::view_preparing(app)) {
+            if (material_wait.began && !material_wait.ready)
+                material_wait.ready = Clock::now();
             ++accepted;
-        if (!(std::chrono::steady_clock::now() < deadline))
+        }
+        if (!(Clock::now() < deadline))
             throw std::runtime_error("Scene materials or view pipelines were not prepared within 20 minutes." +
                                      preparation_diagnostic());
     }
@@ -685,6 +707,7 @@ void tick(Application& app, unsigned count = 2) {
         Access::frame_failure(app);
         throw std::runtime_error("Editor did not accept a frame within 180 iterations." + preparation_diagnostic());
     }
+    material_wait.completed = true;
 }
 
 const atelier::ui::ControlBox* command_tool(Application& app, ControlKey target) {
