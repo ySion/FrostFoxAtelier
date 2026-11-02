@@ -2987,33 +2987,3 @@ std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::Busines
 void atelier_destroy_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine) noexcept {
     delete coroutine;
 }
-
-std::uint32_t atelier_verify_business_link_failure(const atelier::source::detail::BusinessServices* services,
-                                                   char* error, std::uint32_t error_capacity) noexcept {
-    if (!error || error_capacity == 0)
-        return 1;
-    error[0] = '\0';
-    try {
-        if (!services)
-            throw std::runtime_error("Missing business services for link verification.");
-        auto program = atelier::language::compile_source("business-link-failure.source", "void candidate() {}", {});
-        if (!program)
-            throw std::runtime_error(program.error().message);
-        try {
-            (void)atelier::source::detail::compile(*services, *program, {}, {}, true);
-        } catch (const std::exception& failure) {
-            const std::string_view diagnostic(failure.what());
-            if (diagnostic.find("business_poll") != std::string_view::npos &&
-                diagnostic.find("business-link-failure.source") != std::string_view::npos &&
-                diagnostic.find("materialization") != std::string_view::npos)
-                return 0;
-            throw std::runtime_error("Business link failure lost its source or root cause: " + std::string(diagnostic));
-        }
-        throw std::runtime_error("Candidate with a missing business service unexpectedly compiled.");
-    } catch (const std::exception& failure) {
-        std::snprintf(error, error_capacity, "%s", failure.what());
-    } catch (...) {
-        std::snprintf(error, error_capacity, "%s", "Unknown business link verification failure.");
-    }
-    return 1;
-}

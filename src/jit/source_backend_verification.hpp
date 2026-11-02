@@ -17,8 +17,4 @@ extern "C" ATELIER_SOURCE_VERIFICATION std::uint32_t atelier_compile_business_wi
     atelier::source::detail::BusinessCode** output, char* error, std::uint32_t error_capacity,
     const char* entry_name = nullptr, atelier::source::CompileOptions options = {}) noexcept;
 
-extern "C" ATELIER_SOURCE_VERIFICATION std::uint32_t
-atelier_verify_business_link_failure(const atelier::source::detail::BusinessServices* services, char* error,
-                                     std::uint32_t error_capacity) noexcept;
-
 #undef ATELIER_SOURCE_VERIFICATION

@@ -235,7 +235,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 预编译 LLVM 的 Release 静态 CRT ABI 分别隔离在正式源码后端 `atelier_source_backend.dll` 和平台验收 `atelier_jit_probe.dll`；宿主与 `atelier_jit_native_client.dll` 保留原有开发/发布 CRT 配置。两个 LLVM DLL 共用构建中的展开支持与修复对象，LLVM/STL 对象、异常和分配所有权不跨隔离接口。运行完整 JIT 验收需保留上述 DLL 及本配置的 mimalloc/重定向 DLL；输出目录保留 LLVM、zlib、zstd 的许可证副本。
 
-长会话反复物化/退休、最多 512 个同时存活单元及定型成功调用的本机测量见[平台测量记录](docs/research/jit-industrial-research.md#平台测量2026-09-24)。这只是平台微型样例，不替代真实业务负载的编译延迟、稳态吞吐或行为热重载验收。
+平台的代码拥有、展开表登记与退休取舍见[现行执行结构](docs/runtime-structure.md#当前取舍)；功能验收不代表真实业务负载的编译延迟或稳态吞吐结论。
 
 **平台范围限制**：只验证受控、已定型 LLVM IR 的进程内同步执行，不支持任意 C++ 目标文件、C++ 静态构造/TLS 初始化或 C++ 异常跨 JIT 帧。平台探针只证明机器码执行、展开和退休路径。源码位置、断点/变量查看及兼容方法体更新由正式 Source 模块提供，分别见[源码调试](docs/source-debugger.md)与下节业务闭环；PDB 和原生调试器集成尚未接入。
 
@@ -259,7 +259,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 同一入口包含[交错会话验收](acceptance/source/session.cpp)：一个原生宿主、两个代码版本、四个任务交错经过 yield、GC、完成与 ready/suspended 取消。完成两次后只剩宿主的一份根和对象，释放租约与关闭入口后代码页及展开表退休，最后对象、根和待回收数归零。不再进行多轮预热、规模放大或分配器计时。
 
-正式接口的历史性能与资源基线见[测量记录](docs/research/runtime-stage-measurements.md)。`atelier_source_measure` 及 `--math-measure` 已移除，历史数值和原始证据保留，不代表当前验收结果。
+正式接口的现行成本边界见[执行结构](docs/runtime-structure.md#已知成本与能力边界)；交错会话验证资源寿命，不据此评估预算或沿用历史测量数值。
 
 [业务验收](acceptance/jit/business.cpp)内嵌最小源码，经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树及[LLVM 本机编译](src/jit/source_backend.cpp)，保留真实链接失败后旧程序可执行，以及源码引用、快照发布和活动拥有者销毁的清理代表。宿主适配器的同类型快照仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值；夹具复用 [machine.hpp](acceptance/machine.hpp)。
 
@@ -279,7 +279,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与成员桥接位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。字段/方法访问使用绑定时缓存的路径与 ID。共享签名与原生标量返回的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
 
-早退路径共用按需发射的用户槽清理块，每个 `return` 不重复生成整份清理 IR，并在快照复制与发布之前结束用户引用。槽复用尚未加入。快照、字段桥接与安全点的三个保持语义的变体因收益不稳定没有采用，数据见 [JIT 研究](docs/research/jit-industrial-research.md#快照字段桥接与安全点单因素实验)。
+早退路径共用按需发射的用户槽清理块，每个 `return` 不重复生成整份清理 IR，并在快照复制与发布之前结束用户引用。槽复用尚未加入，现行调用与清理链见[执行结构](docs/runtime-structure.md#从入口到执行清理)。
 
 ### 单入口兼容方法体热更新
 
@@ -308,7 +308,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 协程使用[现行规范](LANGUAGE.md#显式协程) 的 `async` 入口和 `yield` 语句。源码仍经 LLVM/LLJIT，新增显式协程转换；核心 [Coroutine](src/runtime/execution.hpp) 管理帧状态、恢复准入、合作取消和结果。挂起帧复用共享 GC 根并持有原代码版本；宿主决定恢复时机。真实源码验收覆盖挂起期间 GC、取消、失效接收者、错误首因、活动拥有者销毁和热更新后的旧代码退休，包含在既有 `jit_acceptance` 与总 `acceptance` 中。
 
-Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前没有 `await` 组合、跨线程恢复、原生深层挂起或挂起帧迁移；LLVM 降低与宿主绑定通过正式源码模块提供。设计取舍见[工业协程研究](docs/research/coroutine-runtime-research.md)，当前行为见[核心协议](docs/runtime-model.md#协程核心协议)。
+Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前没有 `await` 组合、跨线程恢复、原生深层挂起或挂起帧迁移；LLVM 降低与宿主绑定通过正式源码模块提供。设计取舍见[执行结构](docs/runtime-structure.md#当前取舍)，当前行为见[核心协议](docs/runtime-model.md#协程核心协议)。
 
 ```text
 原生 NativeRegistration<T>::build() ─┐

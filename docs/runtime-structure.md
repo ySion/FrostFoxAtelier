@@ -22,9 +22,9 @@
 | Runtime 桥接 | [bridge.hpp](../src/source/detail/bridge.hpp)、[bridge.cpp](../src/source/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额。内部策略观察点继续供验收使用，不推进 GC |
 | 调用诊断 | [diagnostics.hpp](../src/source/diagnostics.hpp)、[diagnostics.cpp](../src/source/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
 | 源码调试 | [debugger.hpp](../src/source/debugger.hpp)、[debugger.cpp](../src/source/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
-| 端到端消费者 | [公共验收分派入口](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[交错会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 公共消费者使用正式接口，交错会话用 OS 查询验证代码/展开表退休；完整验收通过内部接缝检查 raw ABI 和故障路径，均使用同一正式实现 |
+| 端到端消费者 | [公共验收分派入口](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[交错会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 业务调用使用正式接口；代码地址观察经内部 ProgramAccess 供 OS 查询验证退休，raw ABI 和故障路径同样通过内部接缝检查，均使用同一正式实现 |
 
-构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。后端 DLL 仍导出两个故障注入入口（[source_backend_verification.hpp](../src/jit/source_backend_verification.hpp)），只走编译与链接路径；当前 `jit_acceptance` 使用 missing-poll 编译入口验证失败保旧，另一独立验证入口已无消费者，产品接口留待单独审查。
+构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。后端 DLL 的 [missing-poll 编译入口](../src/jit/source_backend_verification.hpp)只走编译与链接路径，`jit_acceptance` 用它验证真实链接失败后旧程序仍可执行。
 
 `ValueType`、`BusinessType/BusinessParameter` 和 `FunctionSignature` 分别服务编译分类、私有 ABI 和 Runtime 语义描述。前两者由真实编译产物/元数据核对，不建立业务类型身份；它们的存在不等于三套类型体系。枚举索引只定位捕获的 Runtime 目录；ParameterPassing 在宿主与编译链间共用。私有 ABI 尚不是永久通用调用协议。
 
@@ -121,7 +121,12 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 - 发布检查 Runtime 静止，挂起帧保留旧版本；宿主在执行区间外推进 GC，源码轮询既不收集也不暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
 - 原生异常在受控边界转成状态，生成代码显式清理后提交结果。Windows 展开表服务当前栈回溯与代码寿命，不授权 C++ 异常穿越任意生成帧。
 
-工业来源见 [JIT 研究](research/jit-industrial-research.md)和[协程研究](research/coroutine-runtime-research.md)，它们不另维护执行合同。
+这些取舍的直接依据与适用边界：
+
+- [LLVM ORC 资源移除](https://llvm.org/docs/ORCv2.html#how-to-remove-code)不证明活动返回地址或直接调用已经消失，故代码退休由 Version 拥有关系决定；[Windows 动态展开表](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-rtladdfunctiontable)须随可执行分配登记和撤销，而不是为链接成功去掉 `.pdata/.xdata`。
+- 当前采用 COFF/JITLink allocation actions，不依赖完整 COFFPlatform。所核对的 [LLVM COFF runtime](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.1/compiler-rt/lib/orc/coff_platform.cpp)有特定回调异常桥限制；[debugger helper](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.1/llvm/lib/ExecutionEngine/Orc/Debugging/DebuggerSupport.cpp)不接通 COFF 源码调试。版本升级须复核这些路径，不能把平台展开成功当作源码调试或任意 C++ 异常互通。
+- [LLVM switched-resume](https://llvm.org/docs/Coroutines.html#switched-resume-lowering)复用编译器的帧布局与恢复/销毁拆分；冷启动、同线程推进、合作取消和旧版本 pin 仍由本项目负责。取消请求不等于外部操作已经停止，见 [.NET 合作取消](https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads)。不为假设需求增加有栈执行器，也不把 LLVM 转换等同 GC 或调度器。
+- 共享原生存储不等于相同调用 ABI 或零复制；UE-AS 的[真实 C++ caller 适配](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/a7890667d1abb289bc2cec16b3da075faf836f2d/Engine/Source/Runtime/CoreUObject/Public/UObject/CoreNative.h#L36-L151)提供这一边界的对照。该固定源码需要 Unreal 源码访问权限，本项目仍由共享签名、参数准备与 DLL 私有表示各自承担职责。
 
 ## 源码类型生产
 
@@ -143,8 +148,9 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 | 项目 | 现状与实际影响 | 处理时机与最小方向 |
 | --- | --- | --- |
-| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | [测量记录](research/runtime-stage-measurements.md)仅为历史资源基线，原测量入口已移除；交错会话只验证寿命，不评估预算。当前没有已证明需要池化、根表替换或退休队列的负载 |
+| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 交错会话只验证寿命，不评估预算；当前没有已证明需要池化、根表替换或退休队列的负载，不沿用旧测量数值作当前性能结论 |
 | 源码调试宿主接入 | 核心已有源码断点、单步、只读局部值和源码调用栈；平台继续提供动态展开信息 | 编辑器面板与 Control 调试指令仍处于[接入方案](modules/editor/control.md#源码调试接入待实现)阶段；核心能力与 C++ 单步、变量写入等边界见[调试合同](source-debugger.md) |
+| GC 参与线程与预算 | 当前单线程非移动分步回收，活动执行区间不推进 GC | 多线程参与、并发/分代及其他堆布局须先明确根发布、借用与生命周期协议，再以真实负载决定；外部 collector 的论文结果不构成实施排期 |
 
 `await`、跨模块调用、递归、多对象类型环境、对象引用参数、资源记录/容器按值调用和布局迁移属于尚未实现的能力；plain record 同步按值参数/结果、原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务；MLIR、有栈协程和并发调度没有实施计划。
 
